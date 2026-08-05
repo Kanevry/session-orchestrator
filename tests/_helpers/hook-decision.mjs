@@ -37,6 +37,20 @@
  *
  * Accepts both spawn shapes: `{ code }` (async `child_process.spawn` wrapper)
  * and `{ status }` (`spawnSync`).
+ *
+ * ## Helpers exported here
+ *
+ *   - `expectDeny` / `expectAllow` / `expectWarn` — the three decision classes.
+ *   - `expectGuardInactive` — the #992/#993 module-load-failure contract: a
+ *     deny-capable hook whose repo dependency failed to load must FAIL OPEN
+ *     VISIBLY (exit 0 + empty decision channel, so a broken module cannot brick
+ *     the session, PLUS a `GUARD INACTIVE` banner on stderr). This is the shared
+ *     assertion for all four late-binding hooks (destructive-guard,
+ *     enforce-scope, enforce-commands, sessions-ledger-guard) — A2/A3 import it
+ *     from here rather than re-hand-rolling the two-part check. It pins the
+ *     hook-AGNOSTIC contract (fail-open + the marker); pass `{ hookName }` to
+ *     additionally assert the hook-specific banner prefix and prove #993's
+ *     no-hard-wired-literal property.
  */
 
 import { expect } from 'vitest';
@@ -144,4 +158,30 @@ export function expectWarn(result, text) {
   }
 
   return obj;
+}
+
+/**
+ * Assert a deny-capable hook FAILED OPEN VISIBLY on a module-load failure
+ * (#992/#993): exit 0 with an EMPTY decision channel (a broken repo dependency
+ * must not brick the session — so the guard allows) AND a `GUARD INACTIVE` banner
+ * on stderr (so the outage is never silent, which is the whole #992 repair).
+ *
+ * The banner's prefix and consequence prose are hook-specific; this helper pins
+ * only the hook-AGNOSTIC contract. Pass `{ hookName }` to also assert the
+ * hook-specific prefix — `<hookName>: GUARD INACTIVE` — which is the #993
+ * non-regression proof that the loader emits the CALLER's name, not a hard-wired
+ * `pre-bash-destructive-guard` literal.
+ *
+ * @param {{code?: number|null, status?: number|null, stdout: string, stderr: string}} result
+ * @param {{hookName?: string}} [opts]
+ */
+export function expectGuardInactive(result, { hookName } = {}) {
+  // Fail-OPEN: the decision channel stays empty (allow), never a deny envelope —
+  // reuses expectAllow's empty-stdout half so a regression that started emitting
+  // a decision here fails loudly.
+  expectAllow(result);
+  expect(result.stderr).toContain('GUARD INACTIVE');
+  if (hookName !== undefined) {
+    expect(result.stderr).toContain(`${hookName}: GUARD INACTIVE`);
+  }
 }

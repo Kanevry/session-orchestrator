@@ -73,6 +73,7 @@ if (!shouldRunHook('pre-bash-destructive-guard')) process.exit(0);
 /** @type {typeof import('../scripts/lib/io.mjs').readStdin} */ let readStdin;
 /** @type {typeof import('../scripts/lib/io.mjs').emitAllow} */ let emitAllow;
 /** @type {typeof import('../scripts/lib/io.mjs').emitDeny} */ let emitDeny;
+/** @type {typeof import('../scripts/lib/io.mjs').emitWarn} */ let emitWarn;
 let resolveProjectDir;
 let resolvePluginRoot;
 /**
@@ -81,10 +82,10 @@ let resolvePluginRoot;
  * primitives).
  *
  * Held as ONE object rather than destructured into six bindings on purpose: the
- * required-export list then exists in exactly one place —
- * `COMMAND_BLOCKER_EXPORTS` in `_lib/guard-source-loader.mjs`, which validates
- * both the working-tree and the HEAD copy against it. The previous split (six
- * names destructured here, two of them checked there) is what let a HEAD copy
+ * required-export list then exists in exactly one place — the `requires` array
+ * on the `blocker` spec passed to `armGuard` (#993), which validates both the
+ * working-tree and the HEAD copy against it. The previous split (six names
+ * destructured here, two of them checked in the loader) is what let a HEAD copy
  * missing four exports banner "DEGRADED — still armed" and then fail open on
  * every command.
  *
@@ -96,7 +97,37 @@ let loadEffectivePolicy;
 let isSessionConfigHeading;
 let emitEvent;
 
+/**
+ * Labels of guard modules that loaded from HEAD rather than the working tree
+ * (#993/#995). Populated by `bootstrap()` from `armGuard`'s return; read by
+ * `main()`, which pushes a visible-channel DEGRADED notice when it is non-empty —
+ * the stderr degradation banner alone is invisible under the exit-0 protocol.
+ *
+ * @type {string[]}
+ */
+let degradedLabels = [];
+
 const PLUGIN_ROOT = path.resolve(import.meta.dirname, '..');
+
+/** This hook's name — threaded into both guard banners (#993: no hard-wired literal). */
+const HOOK_NAME = 'pre-bash-destructive-guard';
+
+/**
+ * The two consequence blocks, spliced VERBATIM into the DEGRADED and GUARD
+ * INACTIVE banners (#993). Byte-identical to the pre-#993 inline banner text so
+ * the #992 banner-visibility tests stay green.
+ */
+const GUARD_CONSEQUENCE = {
+  degraded: [
+    '    Consequence: destructive-command enforcement IS still armed, but it is evaluating the',
+    '    COMMITTED (HEAD) command lexer — any uncommitted change to that file is NOT in effect.',
+  ],
+  inactive: [
+    '    Consequence: destructive Bash commands (git reset --hard, rm -rf, git push --force,',
+    '    git stash, redirect-truncate of protected artefacts) are NOT being blocked. This is a',
+    '    BROKEN GUARD, not a policy decision — do not route around it, repair it.',
+  ],
+};
 
 /**
  * Project dir for banner keying, resolved WITHOUT `platform.mjs` — that module
@@ -117,22 +148,75 @@ function bannerProjectDir() {
  * @returns {Promise<void>}
  */
 async function bootstrap() {
-  ({ readStdin, emitAllow, emitDeny } = await import('../scripts/lib/io.mjs'));
-  ({ resolveProjectDir, resolvePluginRoot } = await import('../scripts/lib/platform.mjs'));
-  ({ readConfigFile } = await import('../scripts/lib/config.mjs'));
-  ({ loadEffectivePolicy } = await import('../scripts/lib/blocked-commands-policy.mjs'));
-  ({ isSessionConfigHeading } = await import('../scripts/lib/config/section-extractor.mjs'));
-  ({ emitEvent } = await import('../scripts/lib/events.mjs'));
+  const lib = (...seg) => pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', ...seg)).href;
 
-  const { loadCommandBlocker } = await import('./_lib/guard-source-loader.mjs');
-  // Throws unless the loaded namespace carries the COMPLETE required export set
-  // (working-tree copy or HEAD fallback alike) — the caller then banners
-  // GUARD INACTIVE rather than arming a guard that cannot evaluate.
-  ({ module: blocker } = await loadCommandBlocker({
-    specifier: pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'command-blocker.mjs')).href,
-    repoRoot: PLUGIN_ROOT,
-    projectDir: bannerProjectDir(),
-  }));
+  const { armGuard } = await import('./_lib/guard-source-loader.mjs');
+  // #993: one generic loader for every repo dependency. Only `blocker` opts into
+  // the `git show HEAD:` fallback (dependency-free, so data:-URL loadable) and
+  // carries the COMPLETE required-export set — validated on the working-tree AND
+  // the HEAD copy, so a partial namespace banners GUARD INACTIVE rather than
+  // arming a guard that fails open per command. A load failure of any entry
+  // throws; the caller banners GUARD INACTIVE.
+  const { modules, degraded } = await armGuard(
+    {
+      io: { specifier: lib('io.mjs') },
+      platform: { specifier: lib('platform.mjs') },
+      config: { specifier: lib('config.mjs') },
+      blockedCommandsPolicy: { specifier: lib('blocked-commands-policy.mjs') },
+      sectionExtractor: { specifier: lib('config', 'section-extractor.mjs') },
+      events: { specifier: lib('events.mjs') },
+      blocker: {
+        specifier: lib('command-blocker.mjs'),
+        headFallback: true,
+        requires: [
+          'tokenizeCommand',
+          'commandMatchesBlocked',
+          'extractRedirectTargets',
+          'redirectRuleMatches',
+          'resolveSegmentVerb',
+          'splitChainSegments',
+        ],
+      },
+    },
+    {
+      hookName: HOOK_NAME,
+      repoRoot: PLUGIN_ROOT,
+      projectDir: bannerProjectDir(),
+      consequence: GUARD_CONSEQUENCE,
+    }
+  );
+
+  ({ readStdin, emitAllow, emitDeny, emitWarn } = modules.io);
+  ({ resolveProjectDir, resolvePluginRoot } = modules.platform);
+  ({ readConfigFile } = modules.config);
+  ({ loadEffectivePolicy } = modules.blockedCommandsPolicy);
+  ({ isSessionConfigHeading } = modules.sectionExtractor);
+  ({ emitEvent } = modules.events);
+  blocker = modules.blocker;
+  degradedLabels = degraded;
+}
+
+/**
+ * Flush the aggregated allow-with-notice channel (#995).
+ *
+ * Warnings raised during rule evaluation accumulate in `notices` and are emitted
+ * ONCE, here, on the VISIBLE stdout channel via `emitWarn` (allow-with-notice) —
+ * else a plain `emitAllow`. Both exit 0 and never return, so this is always the
+ * last statement on an allow path.
+ *
+ * Why aggregate instead of `emitWarn`-ing inline at each warn site: `emitWarn`
+ * is `@returns never`, so an inline call mid-loop would exit BEFORE a later
+ * `block` rule was evaluated — flipping a would-be DENY into an ALLOW-with-notice
+ * (measured: `bash <33×-c>` overshoots the recursion cap, and a command that
+ * both trips the cap AND carries `rm -rf src/` would wave the delete through).
+ * A block, when it fires, exits via `emitDeny` and these notices are simply
+ * dropped: DENY wins, and the stderr copies of each notice remain for CI/debug.
+ *
+ * @param {string[]} notices
+ * @returns {never}
+ */
+function flushNotices(notices) {
+  return notices.length > 0 ? emitWarn(notices.join('\n')) : emitAllow();
 }
 
 // Module-level per-path policy cache (issue #250, extended for the #972
@@ -675,6 +759,22 @@ async function main() {
   const projectDir = resolveProjectDir();
   const sessionId = resolveSessionId(input);
 
+  // #995 — aggregated allow-with-notice channel. Warn-severity matches and
+  // fail-visible markers accumulate here (stderr copies are kept for parity) and
+  // flush ONCE, on the visible stdout channel, only after EVERY rule has been
+  // evaluated. See flushNotices for why inline emitWarn would fail open.
+  const notices = [];
+  // A guard armed from HEAD (working-tree module unparseable) is a visible-channel
+  // concern too: the DEGRADED banner rides stderr only, which exit-0 discards. The
+  // stderr banner already fired once-per-session inside armGuard; surface it on
+  // stdout so a degraded ALLOW is not silently indistinguishable from a healthy one.
+  if (degradedLabels.length > 0) {
+    notices.push(
+      `${HOOK_NAME}: DEGRADED — guard module(s) loaded from HEAD, not your working tree ` +
+        `(${degradedLabels.join(', ')}); uncommitted changes to them are NOT in effect. See #992.`
+    );
+  }
+
   // G3 — bypass: allow-destructive-ops: true in Session Config
   // Note: parseSessionConfig only returns known fields; allow-destructive-ops is
   // a new field, so we parse the raw markdown for it directly.
@@ -717,7 +817,10 @@ async function main() {
   for (const warning of warnings) {
     process.stderr.write(`⚠ pre-bash-destructive-guard: ${warning}\n`);
   }
-  if (!Array.isArray(rules)) return emitAllow();
+  // No usable policy anywhere → documented total fail-open. Flush any notice
+  // already queued (a DEGRADED head-fallback notice), else a plain allow: the
+  // policy-load warnings above stay stderr-only, as they always have.
+  if (!Array.isArray(rules)) return flushNotices(notices);
 
   // G5 — rule evaluation
   for (const rule of rules) {
@@ -748,15 +851,19 @@ async function main() {
         const reasons = [
           ...new Set(unresolved.map((e) => e.reason ?? 'variable/substitution')),
         ].join(', ');
-        process.stderr.write(
-          `⚠ pre-bash-destructive-guard: unresolved redirect target (${reasons}) — not matched (fail-visible)\n`
-        );
+        // #995 — the #988-T2 recursion-cap marker used to reach stderr only, so
+        // under exit-0 a budget-exhausted command (`bash <33×-c>` hiding
+        // `> CLAUDE.md`) allowed with an INVISIBLE notice. Aggregate onto the
+        // visible channel; keep the stderr copy for parity.
+        const msg = `pre-bash-destructive-guard: unresolved redirect target (${reasons}) — not matched (fail-visible)`;
+        process.stderr.write(`⚠ ${msg}\n`);
+        notices.push(msg);
       }
       if (!blocker.redirectRuleMatches(rule, command, { repoRoot: projectDir })) continue;
       if (severity !== 'block') {
-        process.stderr.write(
-          `⚠ pre-bash-destructive-guard: redirect target matched (rule: ${id}) — ${rationale}\n`
-        );
+        const msg = `pre-bash-destructive-guard: redirect target matched (rule: ${id}) — ${rationale}`;
+        process.stderr.write(`⚠ ${msg}\n`);
+        notices.push(msg); // #995 — visible on the allow-with-notice channel
         continue;
       }
       // Reason stays short (stdout-budget): operator + target, never the command.
@@ -782,9 +889,9 @@ async function main() {
           continue;
         }
       }
-      process.stderr.write(
-        `⚠ pre-bash-destructive-guard: '${pattern}' (rule: ${id}) — ${rationale}\n`
-      );
+      const msg = `pre-bash-destructive-guard: '${pattern}' (rule: ${id}) — ${rationale}`;
+      process.stderr.write(`⚠ ${msg}\n`);
+      notices.push(msg); // #995 — visible on the allow-with-notice channel
       // Best-effort telemetry — must never affect the warn/allow outcome.
       try {
         await emitEvent('orchestrator.destructive_guard.warned', {
@@ -832,8 +939,9 @@ async function main() {
     // Unknown severity → skip (conservative allow for unknown future severities)
   }
 
-  // G6 — no blocking match
-  return emitAllow();
+  // G6 — no blocking match. Flush the aggregated allow-with-notice channel
+  // (#995): emitWarn if any notice queued (visible), else a silent allow.
+  return flushNotices(notices);
 }
 
 // ---------------------------------------------------------------------------
@@ -857,8 +965,9 @@ try {
     const { emitGuardInactiveBanner } = await import('./_lib/guard-source-loader.mjs');
     // Unthrottled by design: EVERY call in an unarmed session says so (#992
     // hardening — the once-per-session marker it used to pass through was
-    // suppressible by a bare `touch` on a derivable tmp path).
-    emitGuardInactiveBanner({ error: loadError });
+    // suppressible by a bare `touch` on a derivable tmp path). hookName is
+    // threaded explicitly (#993 — no hard-wired literal in the loader).
+    emitGuardInactiveBanner({ hookName: HOOK_NAME, error: loadError, consequence: GUARD_CONSEQUENCE });
   } catch {
     // Last resort: even the banner helper failed to load. Emit unconditionally
     // (no once-per-session keying) — repeated noise beats a silent disarm.

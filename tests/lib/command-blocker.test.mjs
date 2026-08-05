@@ -448,6 +448,40 @@ describe('redirectRuleMatches (#983 — denylist polarity)', () => {
     ['/private/tmp target vs /tmp root', 'echo x > /private/tmp/r/CLAUDE.md', { repoRoot: '/tmp/r' }, true],
     ['/tmp target vs /private/tmp root', 'echo x > /tmp/r/CLAUDE.md', { repoRoot: '/private/tmp/r' }, true],
     ['/privatefoo is NOT the alias prefix', 'echo x > /privatefoo/CLAUDE.md', { repoRoot: '/foo' }, false],
+
+    // #994 R1 — a RELATIVE target is repo-root-relative, not shell-cwd-relative.
+    // A `..` that climbs out and lands BACK inside the root (worktree-sibling
+    // spellings) was silently allowed before, because the relative branch never
+    // resolved against repoRoot.
+    ['relative ../repo climbs back into the root', `echo x > ../repo/CLAUDE.md`, { repoRoot: ROOT }, true],
+    ['relative ../repo into a ** glob', `echo x > ../repo/.orchestrator/policy/blocked-commands.json`, { repoRoot: ROOT }, true],
+    ['relative ./a/../../repo normalizes back in', `echo x > ./a/../../repo/CLAUDE.md`, { repoRoot: ROOT }, true],
+    // Direction guards: a `..` that lands OUTSIDE the root is not judgeable.
+    ['relative ../other lands outside the root', `echo x > ../other/CLAUDE.md`, { repoRoot: ROOT }, false],
+    ['relative ../../etc lands outside the root', `echo x > ../../etc/CLAUDE.md`, { repoRoot: ROOT }, false],
+    ['relative ../repo WITHOUT repoRoot keeps the lexical no-match', `echo x > ../repo/CLAUDE.md`, {}, false],
+
+    // #994 R2 — the denylist globs are case-insensitive (`i` flag). On a
+    // case-insensitive volume `> claude.md` is the same inode as CLAUDE.md, so
+    // the lowercase / mixed-case spelling that used to slip past now denies.
+    ['lowercase claude.md matches CLAUDE.md', 'echo x > claude.md', {}, true],
+    ['mixed-case Claude.md matches CLAUDE.md', 'echo x > Claude.md', {}, true],
+    ['mixed-case .claude/Rules/ matches .claude/rules/**', 'echo x > .claude/Rules/security.md', {}, true],
+    ['lowercase security.md matches SECURITY.md', 'echo x > security.md', {}, true],
+    ['absolute lowercase claude.md matches', `echo x > ${ROOT}/claude.md`, { repoRoot: ROOT }, true],
+    // Direction guard: an unrelated name is not dragged in by the `i` flag.
+    ['OUT.LOG is not a denylisted target', 'echo x > OUT.LOG', {}, false],
+
+    // #994 R3 — alias/root-boundary spellings collapse to the same inode.
+    // Case-folded containment: /REPO vs /repo is one directory on APFS.
+    ['case-folded /REPO vs /repo root', 'echo x > /REPO/CLAUDE.md', { repoRoot: '/repo' }, true],
+    // /private/etc alias joins /private/{tmp,var}.
+    ['/etc alias vs /private/etc root', 'echo x > /etc/r/CLAUDE.md', { repoRoot: '/private/etc/r' }, true],
+    // /System/Volumes/Data firmlink strips to the same root on either side.
+    ['Data-volume target vs bare root', 'echo x > /System/Volumes/Data/repo/CLAUDE.md', { repoRoot: '/repo' }, true],
+    ['bare target vs Data-volume root', 'echo x > /repo/CLAUDE.md', { repoRoot: '/System/Volumes/Data/repo' }, true],
+    // Direction guard: a DIFFERENT firmlink volume is not the Data alias.
+    ['/System/Volumes/Other is not the Data alias', 'echo x > /System/Volumes/Other/repo/CLAUDE.md', { repoRoot: ROOT }, false],
   ])('%s', (_label, command, opts, expected) => {
     expect(redirectRuleMatches(RULE, command, opts)).toBe(expected);
   });

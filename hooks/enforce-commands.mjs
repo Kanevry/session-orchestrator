@@ -35,17 +35,125 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 if (!shouldRunHook('enforce-commands')) process.exit(0);
 
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-import { readStdin, emitAllow, emitDeny, emitWarn } from '../scripts/lib/io.mjs';
-import { resolveProjectDir } from '../scripts/lib/platform.mjs';
-import {
-  findScopeFile,
-  commandMatchesBlocked,
-  suggestForCommandBlock,
-  extractBashWriteTargets,
-  pathMatchesPattern,
-} from '../scripts/lib/hardening.mjs';
-import { readJson } from '../scripts/lib/common.mjs';
+// ---------------------------------------------------------------------------
+// #993 — late-bound repo dependencies
+//
+// These used to be STATIC imports. A SyntaxError in any of them failed at ESM
+// LINK time, before the first statement here ran: node exited 1 with 0 bytes on
+// stdout, and the `main().catch(...)` handler at the bottom of this file was
+// structurally unreachable (it only covers runtime errors inside `main()`).
+// Under the exit-0 PreToolUse protocol (#906) that crash is, on the only
+// decision-bearing channel, INDISTINGUISHABLE from an explicit `emitAllow()` —
+// the guard failed open and SILENTLY. This is the sibling defect #992 fixed for
+// pre-bash-destructive-guard; #993 generalises the same repair here.
+//
+// Binding them late (dynamic `import()` inside `bootstrap()`, below) turns that
+// link-time crash into a catchable runtime error, which is what makes the
+// GUARD INACTIVE banner in `_lib/guard-source-loader.mjs` reachable at all.
+//
+// `profile-gate.mjs` stays static on purpose — it has ZERO imports of its own
+// and gates whether this hook runs at all.
+// ---------------------------------------------------------------------------
+/** @type {typeof import('../scripts/lib/io.mjs').readStdin} */ let readStdin;
+/** @type {typeof import('../scripts/lib/io.mjs').emitAllow} */ let emitAllow;
+/** @type {typeof import('../scripts/lib/io.mjs').emitDeny} */ let emitDeny;
+/** @type {typeof import('../scripts/lib/io.mjs').emitWarn} */ let emitWarn;
+let resolveProjectDir;
+let readJson;
+let findScopeFile;
+let extractBashWriteTargets;
+let pathMatchesPattern;
+/**
+ * The `command-blocker.mjs` namespace, imported DIRECTLY (not via the
+ * hardening.mjs barrel — which does not carry the `headFallback` recovery, and
+ * whose re-export of `commandMatchesBlocked`/`suggestForCommandBlock` transitively
+ * fails when command-blocker breaks). Mirrors the direct binding in
+ * pre-bash-destructive-guard / sessions-ledger-guard. Held as ONE object so the
+ * required-export list lives in exactly one place: the `requires` array on the
+ * `blocker` spec passed to `armGuard`.
+ *
+ * @type {Record<string, Function>|null}
+ */
+let blocker = null;
+
+const PLUGIN_ROOT = path.resolve(import.meta.dirname, '..');
+
+/** This hook's name — threaded into the guard banner (#993: no hard-wired literal). */
+const HOOK_NAME = 'enforce-commands';
+
+/**
+ * The consequence block spliced VERBATIM into the DEGRADED and GUARD INACTIVE
+ * banners (#993), naming the enforcement this hook's outage stops applying.
+ */
+const GUARD_CONSEQUENCE = {
+  degraded: [
+    '    Consequence: command enforcement IS still armed, but it is evaluating the',
+    '    COMMITTED (HEAD) command-blocker — any uncommitted change to it is NOT in effect.',
+  ],
+  inactive: [
+    '    Consequence: blocked Bash commands (rm -rf, git push --force, git reset',
+    '    --hard, and the wave blockedCommands list) are NOT being screened. This is',
+    '    a BROKEN GUARD, not a policy decision — do not route around it, repair it.',
+  ],
+};
+
+/**
+ * Project dir for banner keying, resolved WITHOUT `platform.mjs` — that module
+ * is one of the ones that may have failed to load.
+ *
+ * @returns {string}
+ */
+function bannerProjectDir() {
+  return process.env.CLAUDE_PROJECT_DIR || process.cwd();
+}
+
+/**
+ * Bind every repo dependency late, making a load failure VISIBLE (GUARD INACTIVE
+ * banner) instead of a silent exit-1 / 0-byte disarm. Throws on any load failure;
+ * the entry-point catch banners.
+ *
+ * `hardening.mjs` is bound (no headFallback — it carries relative imports) for
+ * `findScopeFile` / `extractBashWriteTargets` / `pathMatchesPattern`; the two
+ * command-matching primitives come from the direct `blocker` namespace, which is
+ * the only entry that opts into the `git show HEAD:` recovery. Because hardening
+ * itself re-exports from command-blocker, a broken command-blocker fails hardening
+ * FIRST (it arms before the headFallback entry) — so that case degrades straight
+ * to GUARD INACTIVE, git or no git.
+ *
+ * @returns {Promise<void>}
+ */
+async function bootstrap() {
+  const lib = (...seg) => pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', ...seg)).href;
+
+  const { armGuard } = await import('./_lib/guard-source-loader.mjs');
+  const { modules } = await armGuard(
+    {
+      io: { specifier: lib('io.mjs') },
+      platform: { specifier: lib('platform.mjs') },
+      common: { specifier: lib('common.mjs') },
+      hardening: { specifier: lib('hardening.mjs') },
+      blocker: {
+        specifier: lib('command-blocker.mjs'),
+        headFallback: true,
+        requires: ['commandMatchesBlocked', 'suggestForCommandBlock'],
+      },
+    },
+    {
+      hookName: HOOK_NAME,
+      repoRoot: PLUGIN_ROOT,
+      projectDir: bannerProjectDir(),
+      consequence: GUARD_CONSEQUENCE,
+    }
+  );
+
+  ({ readStdin, emitAllow, emitDeny, emitWarn } = modules.io);
+  ({ resolveProjectDir } = modules.platform);
+  ({ readJson } = modules.common);
+  ({ findScopeFile, extractBashWriteTargets, pathMatchesPattern } = modules.hardening);
+  blocker = modules.blocker;
+}
 
 // Fallback safety list — applied when scope.blockedCommands is empty.
 // Keep in sync with hooks/enforce-commands.sh; v3 additions (#138, SECURITY-REQ-07)
@@ -115,12 +223,12 @@ async function main() {
   const patternsToCheck = useFallback ? FALLBACK_BLOCKED : blockedCommands;
 
   for (const pattern of patternsToCheck) {
-    if (commandMatchesBlocked(command, pattern)) {
+    if (blocker.commandMatchesBlocked(command, pattern)) {
       const prefix = useFallback
         ? 'Blocked by fallback safety list'
         : 'Blocked command';
       const reason = `${prefix}: '${pattern}' found in command`;
-      const suggestion = suggestForCommandBlock(pattern);
+      const suggestion = blocker.suggestForCommandBlock(pattern);
       if (enforcement === 'strict') {
         return emitDeny(reason, suggestion);
       }
@@ -179,6 +287,40 @@ function targetInWaveScope(target, allowedPaths, projectRoot) {
   return allowedPaths.some(
     (p) => pathMatchesPattern(norm, p) || pathMatchesPattern(target, p),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Entry point (#993)
+//
+// TWO distinct failure classes, two distinct handlers — do NOT merge them:
+//
+//   1. LOAD failure (`bootstrap()` throws): the guard never armed. Under the
+//      exit-0 protocol a bare exit-1 crash with 0 bytes of stdout is, on the
+//      only decision-bearing channel, indistinguishable from an allow. Now it
+//      exits 0 (still fail-OPEN — a broken module must not brick the session,
+//      and emitDeny itself may be the module that failed to load) but SAYS SO,
+//      loudly: GUARD INACTIVE.
+//   2. RUNTIME failure inside `main()`: pre-existing behaviour, unchanged. The
+//      guard armed and then tripped over a specific command; that fails CLOSED
+//      via emitDeny (SECURITY-REQ-01). The two paths MUST stay separate.
+// ---------------------------------------------------------------------------
+try {
+  await bootstrap();
+} catch (loadError) {
+  try {
+    const { emitGuardInactiveBanner } = await import('./_lib/guard-source-loader.mjs');
+    // hookName is threaded explicitly (#993 — no hard-wired literal in the loader).
+    emitGuardInactiveBanner({ hookName: HOOK_NAME, error: loadError, consequence: GUARD_CONSEQUENCE });
+  } catch {
+    // Last resort: even the banner helper failed to load. Emit unconditionally —
+    // repeated noise beats a silent disarm.
+    process.stderr.write(
+      '🚨 enforce-commands: GUARD INACTIVE — module load failed ' +
+        `(${String(loadError?.message || loadError).split('\n')[0]}). ` +
+        'Blocked Bash commands are NOT being screened. See issue #993.\n'
+    );
+  }
+  process.exit(0); // fail-open, but no longer fail-silent
 }
 
 // SECURITY-REQ-01 (F-03): top-level try/catch — never let exit 1 leak.

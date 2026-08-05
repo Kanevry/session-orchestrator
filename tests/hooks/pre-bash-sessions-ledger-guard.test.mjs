@@ -20,7 +20,8 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { expectAllow, expectDeny } from '../_helpers/hook-decision.mjs';
+import { expectAllow, expectDeny, expectGuardInactive } from '../_helpers/hook-decision.mjs';
+import { brokenModuleBoot } from '../_helpers/broken-module-boot.mjs';
 
 const HOOK = resolve(import.meta.dirname, '../..', 'hooks/pre-bash-sessions-ledger-guard.mjs');
 const LEDGER = '.orchestrator/metrics/sessions.jsonl';
@@ -29,9 +30,14 @@ const LEDGER = '.orchestrator/metrics/sessions.jsonl';
  * Spawn the hook with a JSON PreToolUse payload on stdin.
  * SO_DISABLED_HOOKS / SO_HOOK_PROFILE are cleared so an operator's ambient
  * bypass cannot silently turn every deny assertion into a vacuous allow.
+ *
+ * `execArgv` is threaded ahead of the hook path so the #993 late-binding suite
+ * can install a `module.register()` loader (via `brokenModuleBoot`) that corrupts
+ * a repo dependency at ESM LINK time — the exact failure `armGuard` must render
+ * VISIBLE instead of a silent exit-1 / 0-byte disarm.
  */
-function runHook({ toolName = 'Bash', command = '', env = {} } = {}) {
-  return spawnSync('node', [HOOK], {
+function runHook({ toolName = 'Bash', command = '', env = {}, execArgv = [] } = {}) {
+  return spawnSync('node', [...execArgv, HOOK], {
     input: JSON.stringify({ tool_name: toolName, tool_input: { command } }),
     encoding: 'utf-8',
     maxBuffer: 8 * 1024 * 1024,
@@ -209,8 +215,10 @@ describe('pre-bash-sessions-ledger-guard', () => {
       // `sudo -i` spawns a login SHELL, so the resolved verb is the synthetic
       // `sh` and `tee -a <ledger>` is stdin text, not this segment's write.
       ['a sudo -i login shell whose tee is stdin text', `sudo -i tee -a ${LEDGER}`],
-      // Precision of WRAPPER_FILE_FLAGS: `stdbuf -o` names a BUFFERING MODE,
-      // not a file, and shares its spelling with `time -o`. Treating every
+      // Precision of the writesFile contract (#996.1): `stdbuf -o` names a
+      // BUFFERING MODE, not a file, and shares its spelling with `time -o`, so
+      // resolveSegmentVerb does NOT flag it `writesFile: true` (only `time -o`/
+      // `--output` sit in its per-wrapper fileArgFlags). Treating every
       // value-taking wrapper flag as a write target would deny this.
       ['a stdbuf -o buffering MODE beside a ledger read', `stdbuf -o L cat ${LEDGER}`],
       // …and the same for a time -o report that goes somewhere else entirely.
@@ -240,5 +248,50 @@ describe('pre-bash-sessions-ledger-guard', () => {
         }),
       );
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #993 — load-failure visibility (late binding)
+//
+// Before #993 this hook STATICALLY imported command-blocker.mjs, so a SyntaxError
+// there failed at ESM LINK time: node exited 1 with 0 bytes on stdout, and the
+// hook's own `main().catch(...)` was structurally unreachable. Under the exit-0
+// PreToolUse protocol (#906) that crash is INDISTINGUISHABLE from an explicit
+// allow — a direct ledger write waves through a guard that never armed, silently.
+//
+// The dependencies are now bound late (dynamic `import()` in `bootstrap()`), so
+// the link-time crash becomes a catchable error that banners GUARD INACTIVE.
+// ---------------------------------------------------------------------------
+describe('#993 — GUARD INACTIVE on a broken command-blocker', { timeout: 30000 }, () => {
+  it('fails open VISIBLY (exit 0 + GUARD INACTIVE), not exit-1 / 0-byte, when command-blocker cannot load', () => {
+    // Bug this catches: at the pre-#993 static-import shape, this exact spawn
+    // produced EXIT=1 / stdout 0 bytes / decision NONE — a would-be DENY of a
+    // direct ledger write read by the harness as no-decision, i.e. ALLOWED.
+    //
+    // command-blocker has `headFallback: true`, so breaking ONLY the working-tree
+    // copy would recover from `git show HEAD:` and merely DEGRADE (guard still
+    // armed). To reach the total-outage GUARD INACTIVE class the HEAD copy must
+    // fail too — `alsoBreakHeadFallback: true` corrupts the data:-URL import the
+    // fallback uses. This mirrors the destructive-guard's own INACTIVE test
+    // (tests/hooks/pre-bash-destructive-guard.test.mjs, the `alsoBreakHeadFallback`
+    // case): the task's bare `{ moduleBasename }` hint would only DEGRADE here.
+    const result = runHook({
+      // A real deny shape: with the guard armed this is blocked (see the #958
+      // suite above), so the fail-OPEN below is meaningful, not a no-op allow.
+      command: `echo '{}' >> ${LEDGER}`,
+      execArgv: brokenModuleBoot({
+        moduleBasename: 'command-blocker.mjs',
+        alsoBreakHeadFallback: true,
+      }),
+    });
+
+    // Fail-OPEN (empty decision channel) + the GUARD INACTIVE banner on stderr,
+    // with the hook-specific prefix — the #993 non-hard-wiring proof that the
+    // loader emits THIS hook's name, not a `pre-bash-destructive-guard` literal.
+    expectGuardInactive(result, { hookName: 'pre-bash-sessions-ledger-guard' });
+    // The consequence prose names the concrete outage, so the operator reads a
+    // disarmed guard rather than a harness crash and does not route around it.
+    expect(result.stderr).toContain('NOT being blocked');
   });
 });

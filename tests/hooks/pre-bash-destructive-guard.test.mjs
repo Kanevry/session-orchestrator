@@ -26,7 +26,8 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { unwritablePath } from '../_helpers/unwritable-path.mjs';
 
-import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
+import { expectDeny, expectAllow, expectWarn, expectGuardInactive } from '../_helpers/hook-decision.mjs';
+import { brokenModuleBoot } from '../_helpers/broken-module-boot.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -975,10 +976,11 @@ describe('#983 redirect-truncate-protected — deny/allow by target', { timeout:
 
   it('warns (fail-visible) but allows on an unresolved redirect target: `echo x > "$OUT"`', async () => {
     // Variable indirection is never a match candidate (#641 FP class) — the
-    // guard must surface it on stderr instead of blocking on a guess.
+    // guard must surface it instead of blocking on a guess. #995: the notice now
+    // rides the VISIBLE stdout channel (allow-with-notice), not stderr alone.
     const dir = await mkProjectTracked();
     const result = await runHook({ projectDir: dir, stdin: bashPayload('echo x > "$OUT"') });
-    expectAllow(result);
+    expectWarn(result, 'unresolved redirect target');
     expect(result.stderr).toContain('unresolved redirect target');
   });
 
@@ -1035,7 +1037,10 @@ describe('#983 redirect-truncate-protected — deny/allow by target', { timeout:
   ])('warns (fail-visible) when a recursion cap cut a payload subtree: %s', async (reason, command) => {
     const dir = await mkProjectTracked();
     const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
-    expectAllow(result);
+    // #995: the #988-T2 budget/depth marker now reaches the VISIBLE stdout
+    // channel — the measured bypass was `bash <33×-c>` hiding `> CLAUDE.md`
+    // producing a marker on stderr ONLY, i.e. a clean ALLOW under exit-0.
+    expectWarn(result, `unresolved redirect target (${reason})`);
     expect(result.stderr).toContain(`unresolved redirect target (${reason})`);
   });
 });
@@ -1130,7 +1135,8 @@ describe('git-stash-any — conditional warn', { timeout: 30000 }, () => {
       projectDir: dir,
       stdin: bashPayload('git stash'),
     });
-    expectAllow(result);
+    // #995: the warn now rides the visible allow-with-notice channel too.
+    expectWarn(result, 'git-stash-any');
     expect(result.stderr).toContain('git-stash-any');
   });
 });
@@ -1197,13 +1203,14 @@ describe('no match → allow', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('severity warn — git revert', { timeout: 15000 }, () => {
-  it('exits 0 with ⚠ on stderr for "git revert HEAD"', async () => {
+  it('exits 0 with ⚠ (visible allow-with-notice) for "git revert HEAD"', async () => {
     const dir = await mkProjectTracked();
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload('git revert HEAD'),
     });
-    expectAllow(result);
+    // #995: warn is now visible on stdout (systemMessage), stderr copy retained.
+    expectWarn(result, 'git-revert-commit');
     expect(result.stderr).toContain('⚠');
     expect(result.stderr).toContain('git-revert-commit');
   });
@@ -1255,11 +1262,12 @@ describe('policy cache mtime-invalidation — #250', { timeout: 15000 }, () => {
     const dir = await mkProjectTracked({ policy: permissivePolicy });
 
     // Act 1: spawn hook with a command matching pattern → warn (exit 0).
+    // #995: a warn match now flushes a visible allow-with-notice on stdout.
     const first = await runHook({
       projectDir: dir,
       stdin: bashPayload('foo-destructive-marker --yes'),
     });
-    expectAllow(first);
+    expectWarn(first, 'foo-marker');
 
     // Modify policy on disk: same pattern now blocks. Advance mtime to ensure
     // the cache-invalidation contract (mtime comparison) would trigger a reload
@@ -1320,7 +1328,8 @@ describe('destructive-guard telemetry — orchestrator.destructive_guard.blocked
     const dir = await mkProjectTracked();
     const command = 'git revert HEAD';
     const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
-    expectAllow(result);
+    // #995: warn is now an allow-WITH-notice (visible stdout), not a silent allow.
+    expectWarn(result, 'git-revert-commit');
 
     const events = readEvents(dir).filter((e) => e.event === 'orchestrator.destructive_guard.warned');
     expect(events).toHaveLength(1);
@@ -1364,34 +1373,13 @@ describe('destructive-guard telemetry — orchestrator.destructive_guard.blocked
 // ---------------------------------------------------------------------------
 
 /**
- * Build a `--import` bootstrap data: URL that installs a loader corrupting
- * command-blocker.mjs (and, optionally, every data:-URL module — which is how
- * the HEAD fallback itself is broken, since that fallback imports the committed
- * source through a data: URL).
+ * This hook late-binds `command-blocker.mjs`, so the shared `brokenModuleBoot`
+ * probe (tests/_helpers/broken-module-boot.mjs — imported by all four
+ * deny-capable hooks per #993) is pinned to that basename here. All existing
+ * call sites keep their `{ alsoBreakHeadFallback, headSource }` shape.
  */
-function brokenBlockerBoot({ alsoBreakHeadFallback = false, headSource = null } = {}) {
-  // `headSource` replaces the HEAD copy with a WELL-FORMED but incomplete module
-  // instead of breaking it outright — the shape-check case (a HEAD copy older
-  // than the working tree, i.e. exactly what happens when a newly added export
-  // is the thing that broke).
-  const headOverride = headSource ?? (alsoBreakHeadFallback ? 'export const broken = ;' : null);
-  const loader = `
-export async function load(url, context, next) {
-  if (url.endsWith('command-blocker.mjs')) {
-    return { format: 'module', shortCircuit: true, source: 'export const broken = ;' };
-  }
-  ${
-    headOverride !== null
-      ? `if (url.startsWith('data:text/javascript')) {
-    return { format: 'module', shortCircuit: true, source: ${JSON.stringify(headOverride)} };
-  }`
-      : ''
-  }
-  return next(url, context);
-}`;
-  const loaderUrl = `data:text/javascript;base64,${Buffer.from(loader, 'utf8').toString('base64')}`;
-  const boot = `import { register } from 'node:module';\nregister(${JSON.stringify(loaderUrl)});\n`;
-  return ['--import', `data:text/javascript;base64,${Buffer.from(boot, 'utf8').toString('base64')}`];
+function brokenBlockerBoot(opts = {}) {
+  return brokenModuleBoot({ moduleBasename: 'command-blocker.mjs', ...opts });
 }
 
 describe('#992 — load-failure visibility and HEAD fallback', { timeout: 30000 }, () => {
@@ -1417,7 +1405,11 @@ describe('#992 — load-failure visibility and HEAD fallback', { timeout: 30000 
       stdin: bashPayload('rm -rf /'),
       execArgv: brokenBlockerBoot(),
     });
-    expect(result.stderr).toContain('DEGRADED');
+    // Hook-specific prefix (#993): armGuard must emit the CALLER's hookName, not
+    // a hard-wired literal. A bare `toContain('DEGRADED')` would survive a
+    // regression that reinstated a default hookName; pinning the full prefix
+    // does not.
+    expect(result.stderr).toContain('pre-bash-destructive-guard: DEGRADED');
     expect(result.stderr).toContain('running against HEAD, not your working tree');
     expect(result.stderr).toContain('command-blocker.mjs');
     // The banner is stderr-only: stdout carries the decision envelope and nothing
@@ -1436,9 +1428,10 @@ describe('#992 — load-failure visibility and HEAD fallback', { timeout: 30000 
       execArgv: brokenBlockerBoot({ alsoBreakHeadFallback: true }),
     });
     // exit 0 + empty stdout: still fail-open (a broken module must not brick the
-    // session) but no longer a crash — and no longer silent, per the stderr below.
-    expectAllow(result);
-    expect(result.stderr).toContain('GUARD INACTIVE');
+    // session) but no longer a crash — and no longer silent. The shared helper
+    // pins fail-open + the GUARD INACTIVE marker; the hookName arg additionally
+    // pins the hook-specific prefix (#993 non-hard-wiring proof).
+    expectGuardInactive(result, { hookName: 'pre-bash-destructive-guard' });
     expect(result.stderr).toContain('are NOT being blocked');
   });
 
@@ -1484,6 +1477,59 @@ describe('#992 — load-failure visibility and HEAD fallback', { timeout: 30000 
     // fixture overlay rules shadowed by the real repo's floor policy. The claim
     // under test is narrower — the #992 degradation path contributed NOTHING.
     expect(result.stderr).not.toMatch(/DEGRADED|GUARD INACTIVE|running against HEAD/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #995 — fail-visible aggregation: warn notices reach the VISIBLE stdout
+// channel, and the aggregation must NEVER convert a would-be DENY into an
+// ALLOW-with-notice. Measured bypass: `bash <33×-c>` overshoots
+// MAX_PAYLOAD_EVALUATIONS=32, so the budget-exhausted marker landed on stderr
+// only (invisible under exit-0) and stdout stayed empty — a clean ALLOW.
+// ---------------------------------------------------------------------------
+
+describe('#995 — aggregated allow-with-notice never fail-opens', { timeout: 15000 }, () => {
+  it('a command that BOTH trips the recursion cap AND carries `rm -rf src/` stays DENY', async () => {
+    // Bug this catches: emitting the fail-visible warn INLINE (emitWarn @returns
+    // never) at the redirect rule would exit BEFORE the later rm-rf block rule
+    // ran, waving the `rm -rf src/` through as an ALLOW-with-notice. Aggregation
+    // holds the notice and lets the block win. The redirect rule is placed FIRST
+    // here (a warn pushed before a block) so this exercises the ordering, not
+    // merely rule precedence.
+    const policy = {
+      version: 1,
+      rules: [
+        {
+          id: 'redirect-truncate-protected',
+          type: 'redirect-truncate',
+          pattern: '>',
+          severity: 'block',
+          'target-denylist': ['CLAUDE.md'],
+          modes: ['truncate'],
+          rationale: 'Truncating redirect onto a protected artefact.',
+        },
+        {
+          id: 'rm-rf-destructive',
+          pattern: 'rm -rf',
+          severity: 'block',
+          'path-allowlist': ['/tmp/'],
+          rationale: 'Deletes files that may belong to another session.',
+        },
+      ],
+    };
+    const dir = await mkProjectTracked({ policy });
+    const filler = Array.from({ length: 32 }, (_, i) => `-c 'echo f${i}'`).join(' ');
+    const command = `bash ${filler} -c 'echo x > CLAUDE.md'; rm -rf src/`;
+
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+
+    // DENY wins — the aggregated notice is dropped, not flushed as an allow.
+    // expectDeny pins the key set to exactly ['hookSpecificOutput','systemMessage'],
+    // so a regression to a warn-only ['systemMessage'] envelope fails here.
+    expectDeny(result, 'rm-rf-destructive');
+    // Proof the cap actually tripped (the notice WAS queued, then discarded by
+    // the block) — otherwise this would pass even if the Deckel never fired.
+    expect(result.stderr).toContain('unresolved redirect target');
   });
 });
 

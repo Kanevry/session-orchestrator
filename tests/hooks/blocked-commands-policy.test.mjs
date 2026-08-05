@@ -19,7 +19,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
+import { expectDeny, expectAllow, expectWarn } from '../_helpers/hook-decision.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -269,8 +269,8 @@ describe('hook allows rm -rf on safe paths (exit 0, empty stdout)', { timeout: 2
 // Section 4 — Warn severity: git stash with non-empty stash
 // ---------------------------------------------------------------------------
 
-describe('warn severity: git stash (exit 0, ⚠ on stderr)', { timeout: 20000 }, () => {
-  it('exits 0 and writes ⚠ to stderr when git stash is used with non-empty stash', async () => {
+describe('warn severity: git stash (exit 0, ⚠ on visible channel)', { timeout: 20000 }, () => {
+  it('exits 0 and surfaces ⚠ on the visible systemMessage channel when git stash is used with non-empty stash', async () => {
     const dir = await mkTempProject();
 
     // Create a stash entry so stash is non-empty
@@ -289,7 +289,10 @@ describe('warn severity: git stash (exit 0, ⚠ on stderr)', { timeout: 20000 },
     await $`git -C ${dir} stash`.catch(() => {});
 
     const result = await runGuard({ projectDir: dir, command: 'git stash' });
-    expectAllow(result);
+    // #995: warn-severity outcomes now surface on the visible systemMessage
+    // channel (emitWarn), not only stderr which exit-0 discards. stderr keeps
+    // the ⚠ for debug/CI parity.
+    expectWarn(result);
     expect(result.stderr).toContain('⚠');
   });
 });

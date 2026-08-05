@@ -30,12 +30,25 @@
  *    began routing around. The banner therefore names the CONSEQUENCE ("guard
  *    INACTIVE" / "running against HEAD, not your working tree"), not just a
  *    file path.
- * 2. **`git show HEAD:<path>` fallback — for `command-blocker.mjs` ONLY.** That
- *    module is dependency-free (its single import is `node:path`) and hence
- *    `data:`-URL loadable. Deliberately NOT generalised to the guard's other 6
- *    repo imports: those were never audited for RELATIVE imports, which a
- *    `data:` URL cannot resolve — that would need its own recursive resolver.
- *    For those modules part 1 (banner) stands alone.
+ * 2. **`git show HEAD:<path>` fallback — for dependency-free modules ONLY.** A
+ *    module whose every import is a `node:*` builtin is `data:`-URL loadable, so
+ *    its committed source can be re-imported from HEAD. Deliberately NOT
+ *    generalised to modules with RELATIVE imports, which a `data:` URL cannot
+ *    resolve — that would need its own recursive resolver. Opt-in per module via
+ *    `headFallback: true`, gated by {@link HEAD_FALLBACK_ALLOWLIST}; for every
+ *    other module part 1 (banner) stands alone.
+ *
+ * ## Generalised across all four deny-capable hooks (#993)
+ *
+ * This started life hard-wired to `pre-bash-destructive-guard` +
+ * `command-blocker.mjs` (the banner text, the required-export list, and the
+ * repo-relative path were all module constants). {@link armGuard} lifts every
+ * one of those into a PARAMETER — `hookName`, per-spec `requires`, per-spec
+ * `headFallback`, and the `consequence` prose — so `enforce-scope`,
+ * `enforce-commands` and `sessions-ledger-guard` bind their own repo
+ * dependencies through the same loader without re-freezing this hook's name into
+ * a banner literal. `hookName` is MANDATORY on both public exports: a default
+ * would silently reintroduce exactly the drift #993 removes.
  *
  * **The coupling is mandatory: the fallback must never fire silently.** A
  * successful HEAD fallback banners too ("running against HEAD, not the working
@@ -98,6 +111,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 /** TTL for the session-id-less marker fallback, mirroring `run-node.sh` (6h). */
@@ -110,33 +124,30 @@ const MARKER_VERSION = 1;
 /** Bucket width for the boot-epoch field (seconds), and its accepted drift. */
 const BOOT_BUCKET_S = 10;
 
-/** Repo-relative path of the one module that gets the HEAD fallback. */
-const COMMAND_BLOCKER_REL = 'scripts/lib/command-blocker.mjs';
-
 /**
- * The FULL export set `pre-bash-destructive-guard.mjs` needs from
- * `command-blocker.mjs` — the single source of truth for the shape check.
+ * The ONLY module basenames a `git show HEAD:` fallback is sound for.
  *
- * It lives here, and ONLY here, on purpose. The hook no longer destructures the
- * module (it holds the namespace object and calls through it), so there is no
- * second list to drift out of sync: a seventh export is added once, right here,
- * and both the working-tree and the HEAD copy are validated against it.
+ * The fallback re-imports committed source through a `data:` URL (see
+ * {@link importFromSource}), and a `data:` URL has NO base against which a
+ * RELATIVE import specifier could resolve. So the fallback is correct only for a
+ * module whose every import is a `node:*` builtin (or which imports nothing at
+ * all). This set is that dependency-free allowlist; a `headFallback: true` on a
+ * module NOT in it (e.g. `hardening.mjs` / `platform.mjs`, which carry relative
+ * imports) would silently produce an unloadable `data:` module — so
+ * {@link armGuard} rejects it as a hard CONFIG error rather than arming a guard
+ * whose fallback can never fire.
  *
- * Why the check must cover all of them: it used to assert 2 of the 6, so a HEAD
- * copy OLDER than the working tree — the normal case when a newly added export
- * is the very thing that broke, i.e. the #982/#983/#988 history — passed as
- * "DEGRADED, enforcement IS still armed" and then allowed every command with an
- * `⚠ internal error — <fn> is not a function` line. A fallback that cannot
- * enforce must banner as a TOTAL failure, never as "still armed".
+ * Keyed on BASENAME deliberately: it is the `git show HEAD:<relPath>` leaf, and
+ * a dependency-free file keeps that property wherever in the tree it sits. To
+ * add a module, verify its import list is `node:*`-only first.
  */
-const COMMAND_BLOCKER_EXPORTS = [
-  'tokenizeCommand',
-  'commandMatchesBlocked',
-  'extractRedirectTargets',
-  'redirectRuleMatches',
-  'resolveSegmentVerb',
-  'splitChainSegments',
-];
+const HEAD_FALLBACK_ALLOWLIST = new Set([
+  'command-blocker.mjs',
+  'io.mjs',
+  'path-utils.mjs',
+  'common.mjs',
+  'plugin-root.mjs',
+]);
 
 /**
  * Resolve the once-per-session banner key.
@@ -358,73 +369,182 @@ function importFromSource(source) {
 }
 
 /**
- * Assert a loaded `command-blocker.mjs` namespace carries the COMPLETE API the
- * guard calls through. A partial namespace is not a degraded guard — it is a
- * guard that throws on the first command and fails open with an `internal
- * error` line, so it must be treated as a load failure here, at the one place
- * that can still fall back or banner.
+ * Derive a module's repo-relative POSIX path from its import `specifier`,
+ * relative to `repoRoot`. This is what `git show HEAD:<relPath>` consumes and
+ * what the banners name — it REPLACES the former hard-wired `COMMAND_BLOCKER_REL`
+ * constant, so a second `headFallback` module needs no new constant.
+ *
+ * Accepts a `file:` URL (the shape `pathToFileURL(...).href` produces) or an
+ * absolute path; a bare relative specifier is returned verbatim (it cannot be
+ * resolved against `repoRoot` without guessing the importing module's dir, and
+ * `headFallback` callers always pass an absolute `file:` URL).
+ *
+ * @param {string} specifier
+ * @param {string} repoRoot
+ * @returns {string} repo-relative POSIX path
+ */
+function deriveRelPath(specifier, repoRoot) {
+  let absPath;
+  if (typeof specifier === 'string' && specifier.startsWith('file:')) {
+    absPath = fileURLToPath(specifier);
+  } else if (typeof specifier === 'string' && path.isAbsolute(specifier)) {
+    absPath = specifier;
+  } else {
+    return specifier;
+  }
+  return path.relative(repoRoot, absPath).split(path.sep).join('/');
+}
+
+/**
+ * Assert a loaded module namespace exports every name in `requires` as a
+ * function. A partial namespace is not a degraded guard — it is a guard that
+ * throws on the first call and fails open with an `internal error` line, so it
+ * must surface here, at the one place that can still fall back or banner.
+ *
+ * `requires` is passed PER MODULE by the call site — it replaces the former
+ * module-wide `COMMAND_BLOCKER_EXPORTS`, which was both hard-wired to one module
+ * and already INCOMPLETE (it listed 6 of the 8 exports command-blocker.mjs
+ * actually ships). When a spec entry omits `requires`, the shape check is
+ * skipped by construction: correct for a module (io.mjs, events.mjs, …) whose
+ * missing export surfaces as a plain TypeError at its single call site, with no
+ * half-armed fallback to guard against.
+ *
+ * Why the check must cover ALL required names: it used to assert 2 of 6, so a
+ * HEAD copy OLDER than the working tree — the normal case when a newly added
+ * export is the very thing that broke (#982/#983/#988 history) — passed as
+ * "DEGRADED, enforcement IS still armed" and then allowed every command with an
+ * `⚠ internal error — <fn> is not a function` line.
  *
  * @param {object} mod
  * @param {string} origin - human label for the banner ("working-tree copy" | "HEAD copy")
+ * @param {string[]} requires - export names that must be functions
+ * @param {string} relPath - repo-relative path, for the error message
  * @throws {Error} naming every missing export.
  */
-function assertBlockerShape(mod, origin) {
-  const missing = COMMAND_BLOCKER_EXPORTS.filter((name) => typeof mod?.[name] !== 'function');
+function assertShape(mod, origin, requires, relPath) {
+  const missing = requires.filter((name) => typeof mod?.[name] !== 'function');
   if (missing.length > 0) {
     throw new Error(
-      `${origin} of ${COMMAND_BLOCKER_REL} is missing required export(s): ${missing.join(', ')}`
+      `${origin} of ${relPath} is missing required export(s): ${missing.join(', ')}`
     );
   }
 }
 
 /**
- * Load `command-blocker.mjs`, falling back to its HEAD version, never silently.
+ * Arm a deny-capable hook's repo dependencies, making every load failure VISIBLE
+ * and — for the dependency-free modules that opt in — recoverable from HEAD.
  *
- * @param {{specifier: string, repoRoot: string, projectDir: string}} opts
- *   `specifier` is the import URL/path used in normal operation; `repoRoot` is
- *   where `git show` runs; `projectDir` keys the banner marker.
- * @returns {Promise<{module: object, degraded: 'head'|null}>}
- * @throws the ORIGINAL working-tree error when the HEAD fallback also fails, so
- *   the caller's catch can banner "guard INACTIVE" with the real cause.
+ * The generalised successor to the former `loadCommandBlocker` (#993): the hook
+ * name, the required-export set, and which modules get a HEAD fallback are ALL
+ * parameters now, so `enforce-scope`, `enforce-commands` and
+ * `sessions-ledger-guard` share this one loader without each re-hard-wiring
+ * `pre-bash-destructive-guard` into a banner literal.
+ *
+ * ## The frozen contract (A2/A3 build on this — #993)
+ *
+ * @param {Record<string, {specifier: string, headFallback?: boolean, requires?: string[]}>} specMap
+ *   One entry per module the hook binds, keyed by a stable LABEL the caller reads
+ *   back from the returned `modules`. `specifier` is the normal-operation import
+ *   URL (an absolute `file:` URL for `headFallback` entries — a relative one
+ *   cannot be resolved from this module). `headFallback: true` opts a
+ *   DEPENDENCY-FREE module into the `git show HEAD:` recovery (legal only for a
+ *   {@link HEAD_FALLBACK_ALLOWLIST} basename — a hard error otherwise).
+ *   `requires` lists the export names that must be functions; omit it to skip the
+ *   shape check for that module.
+ * @param {{hookName: string, repoRoot: string, projectDir: string, consequence?: {degraded?: string[], inactive?: string[]}}} opts
+ *   `hookName` is MANDATORY — no default, because a default would re-freeze the
+ *   #993 drift. `repoRoot` is where `git show` runs; `projectDir` keys the
+ *   once-per-session degradation banner; `consequence.degraded` is spliced,
+ *   verbatim, into the DEGRADED banner.
+ * @returns {Promise<{modules: Record<string, object>, degraded: string[]}>}
+ *   `modules` maps each label to its namespace; `degraded` lists the labels that
+ *   loaded from HEAD (empty in the healthy path).
+ * @throws the ORIGINAL working-tree error (with `.headFallbackError` attached
+ *   when a HEAD fallback also failed) so the caller's catch can banner GUARD
+ *   INACTIVE with the real cause.
  */
-export async function loadCommandBlocker({ specifier, repoRoot, projectDir }) {
-  try {
-    const module = await import(specifier);
-    // The shape check runs on BOTH paths. A working-tree copy that parses but
-    // lost an export is the same defect class as a stale HEAD copy: without
-    // this it would arm "successfully" and then fail open per command.
-    assertBlockerShape(module, 'working-tree copy');
-    return { module, degraded: null };
-  } catch (workingTreeError) {
-    let mod;
-    try {
-      mod = await importFromSource(readFromHead(repoRoot, COMMAND_BLOCKER_REL));
-      // A HEAD copy that parses but lost part of the API is NOT a usable
-      // fallback — treat it as a total failure rather than half-arming.
-      assertBlockerShape(mod, 'HEAD copy');
-    } catch (headError) {
-      workingTreeError.headFallbackError = headError;
-      throw workingTreeError;
+export async function armGuard(specMap, { hookName, repoRoot, projectDir, consequence } = {}) {
+  if (typeof hookName !== 'string' || hookName.length === 0) {
+    throw new Error(
+      'armGuard: hookName is required and has no default — a default would reintroduce the exact #993 drift this refactor removes.'
+    );
+  }
+
+  // Insertion order, EXCEPT headFallback entries move LAST: the cheap plain
+  // imports fail first, so a broken dep-free module never pays for a pointless
+  // `git show` on a headFallback module that would have loaded fine.
+  const entries = Object.entries(specMap);
+  entries.sort(([, a], [, b]) => (a.headFallback ? 1 : 0) - (b.headFallback ? 1 : 0));
+
+  const modules = {};
+  const degraded = [];
+
+  for (const [label, spec] of entries) {
+    const { specifier, headFallback = false, requires } = spec;
+    const relPath = deriveRelPath(specifier, repoRoot);
+
+    if (!headFallback) {
+      // No fallback: a missing export or parse error is a plain throw the caller
+      // banners as GUARD INACTIVE. No `git show`, no half-arming to guard.
+      const module = await import(specifier);
+      if (Array.isArray(requires)) assertShape(module, 'working-tree copy', requires, relPath);
+      modules[label] = module;
+      continue;
     }
 
-    emitGuardBannerOnce({
-      projectDir,
-      kind: 'head-fallback',
-      message: [
-        '',
-        '⚠️  pre-bash-destructive-guard: DEGRADED — running against HEAD, not your working tree.',
-        `    ${COMMAND_BLOCKER_REL} failed to load from the working tree:`,
-        `      ${String(workingTreeError?.message || workingTreeError).split('\n')[0]}`,
-        '    Consequence: destructive-command enforcement IS still armed, but it is evaluating the',
-        '    COMMITTED (HEAD) command lexer — any uncommitted change to that file is NOT in effect.',
-        `    Fix: repair ${COMMAND_BLOCKER_REL} (conflict markers? partial edit?) and re-run.`,
-        '    See: issue #992.',
-        '',
-      ].join('\n'),
-    });
+    // headFallback is sound ONLY for a dependency-free (node:*-only) module — a
+    // data: URL cannot resolve the relative imports of e.g. hardening.mjs, so a
+    // headFallback:true there would produce a silently-unloadable fallback. Fail
+    // LOUD on the misconfiguration instead of arming a guard that can never
+    // recover.
+    if (!HEAD_FALLBACK_ALLOWLIST.has(path.posix.basename(relPath))) {
+      throw new Error(
+        `armGuard: headFallback:true is only sound for a dependency-free module ` +
+          `(a data: URL cannot resolve relative imports); '${relPath}' is not on the allowlist ` +
+          `[${[...HEAD_FALLBACK_ALLOWLIST].join(', ')}].`
+      );
+    }
 
-    return { module: mod, degraded: 'head' };
+    try {
+      const module = await import(specifier);
+      // The shape check runs on BOTH paths. A working-tree copy that parses but
+      // lost an export is the same defect class as a stale HEAD copy: without
+      // this it would arm "successfully" and then fail open per command.
+      if (Array.isArray(requires)) assertShape(module, 'working-tree copy', requires, relPath);
+      modules[label] = module;
+    } catch (workingTreeError) {
+      let headMod;
+      try {
+        headMod = await importFromSource(readFromHead(repoRoot, relPath));
+        // A HEAD copy that parses but lost part of the API is NOT a usable
+        // fallback — treat it as a total failure rather than half-arming.
+        if (Array.isArray(requires)) assertShape(headMod, 'HEAD copy', requires, relPath);
+      } catch (headError) {
+        workingTreeError.headFallbackError = headError;
+        throw workingTreeError;
+      }
+
+      emitGuardBannerOnce({
+        projectDir,
+        kind: 'head-fallback',
+        message: [
+          '',
+          `⚠️  ${hookName}: DEGRADED — running against HEAD, not your working tree.`,
+          `    ${relPath} failed to load from the working tree:`,
+          `      ${String(workingTreeError?.message || workingTreeError).split('\n')[0]}`,
+          ...(consequence?.degraded ?? []),
+          `    Fix: repair ${relPath} (conflict markers? partial edit?) and re-run.`,
+          '    See: issue #992.',
+          '',
+        ].join('\n'),
+      });
+
+      modules[label] = headMod;
+      degraded.push(label);
+    }
   }
+
+  return { modules, degraded };
 }
 
 /**
@@ -439,12 +559,20 @@ export async function loadCommandBlocker({ specifier, repoRoot, projectDir }) {
  * anyway — every call after the first is equally unprotected, so every call
  * has equal right to say so. Repetition is the point.
  *
- * `projectDir` is retained for signature symmetry with the degraded banner and
- * for future scoping; it deliberately does not gate anything.
+ * `hookName` is MANDATORY and has no default (see {@link armGuard}) — a default
+ * would silently reintroduce the #993 drift, naming one hook in every hook's
+ * banner. `consequence.inactive` is spliced verbatim, so each hook states the
+ * concrete commands its outage stops blocking. `projectDir` is accepted for
+ * signature symmetry with the degraded banner; it deliberately gates nothing.
  *
- * @param {{projectDir?: string, error: unknown}} opts
+ * @param {{hookName: string, projectDir?: string, error: unknown, consequence?: {inactive?: string[]}}} opts
  */
-export function emitGuardInactiveBanner({ error }) {
+export function emitGuardInactiveBanner({ hookName, error, consequence } = {}) {
+  if (typeof hookName !== 'string' || hookName.length === 0) {
+    throw new Error(
+      'emitGuardInactiveBanner: hookName is required and has no default (see armGuard — a default would reintroduce the #993 drift).'
+    );
+  }
   const primary = String(error?.message || error).split('\n')[0];
   const secondary = error?.headFallbackError
     ? String(error.headFallbackError.message || error.headFallbackError).split('\n')[0]
@@ -453,12 +581,10 @@ export function emitGuardInactiveBanner({ error }) {
   writeBanner(
     [
       '',
-      '🚨 pre-bash-destructive-guard: GUARD INACTIVE — this session is NOT protected.',
+      `🚨 ${hookName}: GUARD INACTIVE — this session is NOT protected.`,
       `    Module load failed: ${primary}`,
       ...(secondary ? [`    HEAD fallback also failed: ${secondary}`] : []),
-      '    Consequence: destructive Bash commands (git reset --hard, rm -rf, git push --force,',
-      '    git stash, redirect-truncate of protected artefacts) are NOT being blocked. This is a',
-      '    BROKEN GUARD, not a policy decision — do not route around it, repair it.',
+      ...(consequence?.inactive ?? []),
       '    Fix: repair the failing module under scripts/lib/, then re-run.',
       '    See: issue #992, .claude/rules/parallel-sessions.md (PSA-003).',
       '',

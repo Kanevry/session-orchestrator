@@ -48,20 +48,110 @@
 
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 // #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
 if (!shouldRunHook('enforce-scope')) process.exit(0);
 
-import { readStdin, emitAllow, emitDeny, emitWarn } from '../scripts/lib/io.mjs';
-import { isPathInside, relativeFromRoot } from '../scripts/lib/path-utils.mjs';
-import { resolveProjectDir } from '../scripts/lib/platform.mjs';
-import {
-  findScopeFile,
-  pathMatchesPattern,
-  suggestForScopeViolation,
-} from '../scripts/lib/hardening.mjs';
-import { readJson } from '../scripts/lib/common.mjs';
+// ---------------------------------------------------------------------------
+// #993 — late-bound repo dependencies
+//
+// These used to be STATIC imports. A SyntaxError in any of them failed at ESM
+// LINK time, before the first statement here ran: node exited 1 with 0 bytes on
+// stdout, and the `main().catch(...)` handler at the bottom of this file was
+// structurally unreachable. Under the exit-0 PreToolUse protocol (#906) that
+// crash is, on the only decision-bearing channel, INDISTINGUISHABLE from an
+// explicit `emitAllow()` — the guard failed open and SILENTLY. This is the
+// sibling defect #992 fixed for pre-bash-destructive-guard; #993 generalises the
+// same repair here.
+//
+// Binding them late (dynamic `import()` inside `bootstrap()`, below) turns that
+// link-time crash into a catchable runtime error, which is what makes the
+// GUARD INACTIVE banner in `_lib/guard-source-loader.mjs` reachable at all.
+//
+// BANNER-ONLY (#993 D1): this hook consumes ZERO command-blocker symbols, so no
+// module here opts into the `git show HEAD:` fallback — every load failure
+// degrades straight to GUARD INACTIVE, never DEGRADED.
+//
+// `profile-gate.mjs` and `node:*` builtins stay static — they cannot be the
+// broken repo module.
+// ---------------------------------------------------------------------------
+/** @type {typeof import('../scripts/lib/io.mjs').readStdin} */ let readStdin;
+/** @type {typeof import('../scripts/lib/io.mjs').emitAllow} */ let emitAllow;
+/** @type {typeof import('../scripts/lib/io.mjs').emitDeny} */ let emitDeny;
+/** @type {typeof import('../scripts/lib/io.mjs').emitWarn} */ let emitWarn;
+let isPathInside;
+let relativeFromRoot;
+let resolveProjectDir;
+let findScopeFile;
+let pathMatchesPattern;
+let suggestForScopeViolation;
+let readJson;
+
+const PLUGIN_ROOT = path.resolve(import.meta.dirname, '..');
+
+/** This hook's name — threaded into the guard banner (#993: no hard-wired literal). */
+const HOOK_NAME = 'enforce-scope';
+
+/**
+ * The consequence block spliced VERBATIM into the GUARD INACTIVE banner (#993),
+ * naming the enforcement this hook's outage stops applying. No `degraded` block:
+ * this hook has no headFallback module, so it can never DEGRADE — only go INACTIVE.
+ */
+const GUARD_CONSEQUENCE = {
+  inactive: [
+    '    Consequence: Edit/Write/MultiEdit scope enforcement is OFF — writes',
+    '    outside the wave allowedPaths (and outside the project root) are NOT',
+    '    being blocked. This is a BROKEN GUARD, not a policy decision — do not',
+    '    route around it, repair it.',
+  ],
+};
+
+/**
+ * Project dir for banner keying, resolved WITHOUT `platform.mjs` — that module
+ * is one of the ones that may have failed to load.
+ *
+ * @returns {string}
+ */
+function bannerProjectDir() {
+  return process.env.CLAUDE_PROJECT_DIR || process.cwd();
+}
+
+/**
+ * Bind every repo dependency late, making a load failure VISIBLE (GUARD INACTIVE
+ * banner) instead of a silent exit-1 / 0-byte disarm. Throws on any load failure;
+ * the entry-point catch banners. No entry opts into headFallback — this hook is
+ * banner-only (#993 D1).
+ *
+ * @returns {Promise<void>}
+ */
+async function bootstrap() {
+  const lib = (...seg) => pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', ...seg)).href;
+
+  const { armGuard } = await import('./_lib/guard-source-loader.mjs');
+  const { modules } = await armGuard(
+    {
+      io: { specifier: lib('io.mjs') },
+      pathUtils: { specifier: lib('path-utils.mjs') },
+      platform: { specifier: lib('platform.mjs') },
+      hardening: { specifier: lib('hardening.mjs') },
+      common: { specifier: lib('common.mjs') },
+    },
+    {
+      hookName: HOOK_NAME,
+      repoRoot: PLUGIN_ROOT,
+      projectDir: bannerProjectDir(),
+      consequence: GUARD_CONSEQUENCE,
+    }
+  );
+
+  ({ readStdin, emitAllow, emitDeny, emitWarn } = modules.io);
+  ({ isPathInside, relativeFromRoot } = modules.pathUtils);
+  ({ resolveProjectDir } = modules.platform);
+  ({ findScopeFile, pathMatchesPattern, suggestForScopeViolation } = modules.hardening);
+  ({ readJson } = modules.common);
+}
 
 async function main() {
   // SECURITY-REQ-01: null-guard empty stdin — treat as allow (no input = not a real hook call)
@@ -262,6 +352,40 @@ function matchesAbsoluteAllowlist(resolvedPath, allowedPaths) {
   if (abs.length === 0) return false;
   const normalizedAbs = resolvedPath.split(path.sep).join('/');
   return abs.some((pat) => pathMatchesPattern(normalizedAbs, pat.split(path.sep).join('/')));
+}
+
+// ---------------------------------------------------------------------------
+// Entry point (#993)
+//
+// TWO distinct failure classes, two distinct handlers — do NOT merge them:
+//
+//   1. LOAD failure (`bootstrap()` throws): the guard never armed. Under the
+//      exit-0 protocol a bare exit-1 crash with 0 bytes of stdout is, on the
+//      only decision-bearing channel, indistinguishable from an allow. Now it
+//      exits 0 (still fail-OPEN — a broken module must not brick the session,
+//      and emitDeny itself may be the module that failed to load) but SAYS SO:
+//      GUARD INACTIVE. Banner-only — no headFallback module here (#993 D1).
+//   2. RUNTIME failure inside `main()`: pre-existing behaviour, unchanged. The
+//      guard armed and then tripped over a specific path; that fails CLOSED via
+//      emitDeny (SECURITY-REQ-01). The two paths MUST stay separate.
+// ---------------------------------------------------------------------------
+try {
+  await bootstrap();
+} catch (loadError) {
+  try {
+    const { emitGuardInactiveBanner } = await import('./_lib/guard-source-loader.mjs');
+    // hookName is threaded explicitly (#993 — no hard-wired literal in the loader).
+    emitGuardInactiveBanner({ hookName: HOOK_NAME, error: loadError, consequence: GUARD_CONSEQUENCE });
+  } catch {
+    // Last resort: even the banner helper failed to load. Emit unconditionally —
+    // repeated noise beats a silent disarm.
+    process.stderr.write(
+      '🚨 enforce-scope: GUARD INACTIVE — module load failed ' +
+        `(${String(loadError?.message || loadError).split('\n')[0]}). ` +
+        'Edit/Write/MultiEdit scope enforcement is OFF. See issue #993.\n'
+    );
+  }
+  process.exit(0); // fail-open, but no longer fail-silent
 }
 
 // SECURITY-REQ-01 (fail-closed): any unhandled rejection → structured deny, never bare exit 1

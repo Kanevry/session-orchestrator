@@ -810,8 +810,8 @@ export const WRAPPER_UNWRAP = new Map([
  *   the answer to the question the caller actually has ("is this operand a
  *   write target?"), which used to be re-derived from a second table
  *   (`WRAPPER_FILE_FLAGS` in hooks/pre-bash-sessions-ledger-guard.mjs). That
- *   copy is now REDUNDANT and can be replaced by `wa.writesFile` (#991
- *   follow-up) — the knowledge lives here, next to the grammar it belongs to.
+ *   copy was replaced by `wa.writesFile` in #996.1 — the knowledge lives here,
+ *   next to the grammar it belongs to.
  *   `/usr/bin/time -o <ledger> npm test` truncates `<ledger>` while the verb is
  *   `npm`; extractRedirectTargets surfaces exactly these entries so the
  *   redirect denylist sees them too.
@@ -1181,6 +1181,16 @@ export function extractRedirectTargets(command) {
  * duplicated locally because this module is hook-hot-path pure (no imports
  * beyond node built-ins, no I/O at import time; see header invariant).
  *
+ * CASE-INSENSITIVE (#994 R2): the returned RegExp carries the `i` flag
+ * UNCONDITIONALLY — no platform detection. Detection is unsafe in both
+ * directions (macOS can run case-sensitive APFS; Linux can mount
+ * case-insensitive volumes via ext4 casefold / ciopfs / CIFS), and a correct
+ * per-path answer would need filesystem I/O this module forbids (header
+ * invariant). The cost is asymmetric: a MISS truncates CLAUDE.md
+ * unrecoverably, whereas an over-block is a visible deny with two escapes
+ * (`>>`, the Write tool). So `> claude.md` / `> Claude.md` — the same inode as
+ * `CLAUDE.md` on a case-insensitive volume — deny like the canonical spelling.
+ *
  * @param {string} pattern
  * @returns {RegExp}
  */
@@ -1208,26 +1218,40 @@ function redirectGlobToRegExp(pattern) {
       i++;
     }
   }
-  return new RegExp(`^${re}$`);
+  return new RegExp(`^${re}$`, 'i');
 }
 
 /**
- * Collapse the macOS `/private` alias prefix: `/private/tmp` and `/private/var`
- * name the SAME directories as `/tmp` and `/var` (the short forms are symlinks
- * into `/private`). Without this, one location has two spellings that compare
- * unequal — a repo checked out under `/tmp/...` (CI runners, worktrees) would
- * not recognise its own root in a command that spells it `/private/tmp/...`.
+ * Collapse the macOS same-inode path aliases so one location has one spelling.
+ *
+ * Two independent alias classes, applied in order:
+ *   1. `/System/Volumes/Data/...` — the firmlink onto the Data volume: on APFS
+ *      `/System/Volumes/Data/repo` and `/repo` are the SAME inode. Stripped
+ *      FIRST so a `/System/Volumes/Data/private/tmp/...` spelling then also runs
+ *      through the `/private` strip below.
+ *   2. `/private/{tmp,var,etc}/...` — the short forms `/tmp`, `/var`, `/etc` are
+ *      symlinks into `/private`. Without this, a repo checked out under
+ *      `/tmp/...` (CI runners, worktrees) would not recognise its own root in a
+ *      command that spells it `/private/tmp/...`.
+ *
+ * A strip that would empty the path (`/System/Volumes/Data` itself) is guarded
+ * with `|| '/'` so the result stays an absolute path.
  *
  * Deliberately STATIC: no `realpathSync` on user input. Resolving an
  * attacker-supplied path at guard time is its own risk class, and this module
- * is I/O-free by header invariant. Only the two known macOS aliases collapse;
- * every other path is returned byte-identical.
+ * is I/O-free by header invariant. Only the known aliases collapse; every other
+ * path is returned byte-identical.
  *
  * @param {string} p — an absolute, already-normalized path
  * @returns {string}
  */
-function stripPrivateAlias(p) {
-  return /^\/private\/(?:tmp|var)(?:\/|$)/.test(p) ? p.slice('/private'.length) : p;
+function stripPathAliases(p) {
+  const dataStripped =
+    (/^\/System\/Volumes\/Data(?:\/|$)/.test(p) ? p.slice('/System/Volumes/Data'.length) : p) ||
+    '/';
+  return /^\/private\/(?:tmp|var|etc)(?:\/|$)/.test(dataStripped)
+    ? dataStripped.slice('/private'.length) || '/'
+    : dataStripped;
 }
 
 /**
@@ -1259,8 +1283,53 @@ function expandLeadingHome(target, home) {
 }
 
 /**
+ * Relativize an ABSOLUTE target against an absolute repoRoot to the repo-relative
+ * POSIX form the denylist globs use, or `null` when the target names the root
+ * itself or lies outside it.
+ *
+ * Both paths are alias-collapsed (`stripPathAliases`) and case-folded before the
+ * containment comparison (#994 R3): a case-insensitive volume makes `/REPO` and
+ * `/repo` the same directory, so the comparison that decides in-vs-out must fold
+ * too — otherwise an absolute spelling in the wrong case escapes the root and is
+ * silently allowed. Folding uses `toLocaleLowerCase('en-US')` explicitly (same
+ * rationale as scripts/lib/path-utils.mjs:46 — avoids the Turkish-İ divergence a
+ * locale-default `toLowerCase` carries). The returned path is therefore
+ * lowercased; it is matched against the denylist regexes, which carry the `i`
+ * flag (#994 R2), so the fold and the match agree.
+ *
+ * Shared by BOTH branches of `repoRelativeRedirectTarget` (absolute + relative)
+ * so the two can never drift again (#994 R1 structural fix).
+ *
+ * @param {string} absTarget — absolute, resolved target path
+ * @param {string} repoRoot — absolute repo root
+ * @returns {string|null}
+ */
+function relativizeAgainstRoot(absTarget, repoRoot) {
+  const fold = (p) => p.toLocaleLowerCase('en-US');
+  const rel = path.relative(
+    fold(stripPathAliases(path.normalize(repoRoot))),
+    fold(stripPathAliases(path.normalize(absTarget))),
+  );
+  // '' = the root itself (a directory, not a file target); '..'-prefixed or
+  // absolute = outside the repo, which the repo-relative denylist never covers.
+  if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    return null;
+  }
+  return path.posix.normalize(rel).replace(/^(\.\/)+/, '');
+}
+
+/**
  * Reduce a raw redirect target to the repo-relative POSIX form the denylist
  * globs are written in, or `null` when it cannot name a file inside the repo.
+ *
+ * A RELATIVE target (#994 R1) is interpreted as REPO-ROOT-relative, not
+ * shell-cwd-relative: after lexical normalization, a target that stays inside
+ * the root (no leading `..`) is already the repo-relative form and returned
+ * as-is; a target that climbs out (`../repo/CLAUDE.md`, `./a/../../repo/…`) is
+ * resolved against `repoRoot` and re-relativized through the SAME
+ * `relativizeAgainstRoot` the absolute branch uses. Without a usable `repoRoot`
+ * the pre-#994 lexical form is returned verbatim — byte-identical for
+ * optionless callers.
  *
  * @param {string} raw — resolved target text (quotes already stripped)
  * @param {string|null} repoRoot — absolute repo root, or null (no resolution)
@@ -1271,21 +1340,20 @@ function repoRelativeRedirectTarget(raw, repoRoot, home) {
   const expanded = expandLeadingHome(raw, home);
 
   if (!path.isAbsolute(expanded)) {
-    return path.posix.normalize(expanded).replace(/^(\.\/)+/, '');
+    const lexical = path.posix.normalize(expanded).replace(/^(\.\/)+/, '');
+    // Post-normalization, a leading `..` is the ONLY way a relative target
+    // leaves the root; anything else is already the repo-relative form (this
+    // also preserves the `~other/...` another-account spelling untouched).
+    if (!lexical.startsWith('../')) return lexical;
+    // A relative target that climbs out — resolve it against repoRoot. Without a
+    // usable root, return the pre-#994 lexical form (byte-identical contract).
+    if (!repoRoot || !path.isAbsolute(repoRoot)) return lexical;
+    return relativizeAgainstRoot(path.resolve(repoRoot, expanded), repoRoot);
   }
   // Absolute target: only judgeable against a known repo root. Without one the
   // pre-#988 behaviour stands (no match) rather than a guess.
   if (!repoRoot || !path.isAbsolute(repoRoot)) return null;
-  const rel = path.relative(
-    stripPrivateAlias(path.normalize(repoRoot)),
-    stripPrivateAlias(path.normalize(expanded)),
-  );
-  // '' = the root itself (a directory, not a file target); '..'-prefixed or
-  // absolute = outside the repo, which the repo-relative denylist never covers.
-  if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
-    return null;
-  }
-  return path.posix.normalize(rel).replace(/^(\.\/)+/, '');
+  return relativizeAgainstRoot(expanded, repoRoot);
 }
 
 /**
@@ -1304,12 +1372,22 @@ function repoRelativeRedirectTarget(raw, repoRoot, home) {
  * so `> /abs/path/to/repo/CLAUDE.md` and `> ~/repo/CLAUDE.md` matched NOTHING
  * and were silently allowed (probe-measured `rule abs: false`, `rule tilde:
  * false` against `rule rel: true`). Pass `{ repoRoot }` and such a target is
- * tilde-expanded, `/private`-alias-collapsed and made repo-relative before the
- * globs run; a target outside the repo yields no match. WITHOUT `repoRoot`
- * (the default) an absolute target still never matches — identical to the
- * pre-#988 contract, so existing callers keep their exact behaviour. This
- * function stays I/O-free: `~` resolves from `process.env.HOME` (overridable
- * via `home`), never via a filesystem lookup.
+ * tilde-expanded, alias-collapsed and made repo-relative before the globs run;
+ * a target outside the repo yields no match. WITHOUT `repoRoot` (the default)
+ * an absolute target still never matches — identical to the pre-#988 contract,
+ * so existing callers keep their exact behaviour. This function stays I/O-free:
+ * `~` resolves from `process.env.HOME` (overridable via `home`), never via a
+ * filesystem lookup.
+ *
+ * Relative spellings and case (#994). A RELATIVE target is interpreted as
+ * REPO-ROOT-relative, NOT shell-cwd-relative: one that climbs out with `..`
+ * (`> ../repo/CLAUDE.md`) is resolved against `repoRoot` and re-relativized, so
+ * it is caught when it lands back inside the root and allowed when it does not
+ * (without `repoRoot`, such a target keeps its pre-#994 lexical form). The
+ * denylist globs and the absolute-containment comparison are BOTH
+ * case-insensitive, because a case-insensitive volume makes `> claude.md` the
+ * same inode as `CLAUDE.md`; the alias-collapse also covers `/System/Volumes/Data`
+ * and `/private/etc` alongside `/private/{tmp,var}`.
  *
  * Deliberate boundary (#641 FP class): `unresolved: true` entries (variable
  * indirection, command substitution) are NEVER matched — blocking on a guess

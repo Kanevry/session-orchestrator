@@ -18,7 +18,8 @@ import os from 'node:os';
 
 import { extractBashWriteTargets } from '../../scripts/lib/scope-gate.mjs';
 
-import { expectDeny, expectAllow, expectWarn } from '../_helpers/hook-decision.mjs';
+import { expectDeny, expectAllow, expectWarn, expectGuardInactive } from '../_helpers/hook-decision.mjs';
+import { brokenModuleBoot } from '../_helpers/broken-module-boot.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -33,9 +34,9 @@ const HOOK = path.resolve(import.meta.dirname, '../../hooks/enforce-commands.mjs
 /**
  * Spawn the hook, pipe stdin JSON, collect stdout/stderr, resolve with exit code.
  */
-async function runHook({ projectDir, stdin }) {
+async function runHook({ projectDir, stdin, execArgv = [] }) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [HOOK], {
+    const child = spawn(process.execPath, [...execArgv, HOOK], {
       env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -610,5 +611,46 @@ describe('bash-write-guard — gate wiring', { timeout: 15000 }, () => {
     });
     expectAllow(result);
     expect(result.stderr).not.toContain(BWG_MARKER);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #993 — module-load failure must be VISIBLE, not a silent fail-open
+//
+// Baseline defect (measured before the late-binding fix): a SyntaxError in a
+// scripts/lib module this hook STATICALLY imported failed at ESM LINK time,
+// before main() ran. The main().catch() handler was structurally unreachable —
+// node exited 1 with 0 bytes on stdout. Under the exit-0 PreToolUse protocol
+// (#906) that is INDISTINGUISHABLE from an allow on the only decision-bearing
+// channel: the command guard was silently disarmed.
+//
+// This hook late-binds `command-blocker.mjs` (and `hardening.mjs`, which
+// transitively re-exports from it). Breaking command-blocker's working-tree copy
+// therefore fails `hardening` FIRST — it is armed before the headFallback
+// `blocker` entry and has no fallback of its own — so the failure degrades
+// straight to GUARD INACTIVE, git-independently. The banner rides stderr; the
+// decision channel stays empty (fail-open, so a broken module cannot brick the
+// session).
+//
+// NOT expectAllow: that would go green after the fix even if the guard were OFF,
+// because an allow is ALSO exit 0 + empty stdout. Only the stderr GUARD INACTIVE
+// banner distinguishes a VISIBLE fail-open from the silent one this fixes.
+// ---------------------------------------------------------------------------
+
+describe('#993 — load-failure visibility (GUARD INACTIVE)', { timeout: 30000 }, () => {
+  it('banners "enforce-commands: GUARD INACTIVE" on a broken command-blocker import — never a silent exit 1 / 0-byte disarm', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      blockedCommands: ['rm -rf'],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /'),
+      execArgv: brokenModuleBoot({ moduleBasename: 'command-blocker.mjs' }),
+    });
+    // Fail-open + GUARD INACTIVE marker (hook-agnostic half) AND the hook-specific
+    // prefix (#993 non-hard-wiring proof — a mis-wired hookName would banner the
+    // wrong hook's name here and this assertion would catch it).
+    expectGuardInactive(result, { hookName: 'enforce-commands' });
   });
 });

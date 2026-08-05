@@ -33,7 +33,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-import { expectDeny, expectAllow, expectWarn } from '../_helpers/hook-decision.mjs';
+import { expectDeny, expectAllow, expectWarn, expectGuardInactive } from '../_helpers/hook-decision.mjs';
+import { brokenModuleBoot } from '../_helpers/broken-module-boot.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -52,9 +53,9 @@ const HOOK = path.resolve(import.meta.dirname, '../../hooks/enforce-scope.mjs');
 /**
  * Spawn the hook, pipe stdin JSON, collect stdout/stderr, resolve with exit code.
  */
-async function runHook({ projectDir, stdin }) {
+async function runHook({ projectDir, stdin, execArgv = [] }) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [HOOK], {
+    const child = spawn(process.execPath, [...execArgv, HOOK], {
       env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -881,4 +882,46 @@ describe('absolute out-of-repo allowlist — #792', { timeout: 15000 }, () => {
       expectDeny(result, { reasonContains: 'path outside project root' });
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// #993 — module-load failure must be VISIBLE, not a silent fail-open
+//
+// Baseline defect (measured before the late-binding fix): a SyntaxError in a
+// scripts/lib module this hook STATICALLY imported failed at ESM LINK time,
+// before main() ran. The main().catch() handler was structurally unreachable —
+// node exited 1 with 0 bytes on stdout. Under the exit-0 PreToolUse protocol
+// (#906) that is INDISTINGUISHABLE from an allow on the only decision-bearing
+// channel: the scope guard was silently disarmed, and any Edit/Write went
+// through.
+//
+// This hook is BANNER-ONLY (#993 D1): it consumes ZERO command-blocker symbols,
+// so no module opts into the `git show HEAD:` fallback. Breaking `hardening.mjs`
+// (bound with no fallback) therefore degrades straight to GUARD INACTIVE — never
+// DEGRADED — git-independently. The banner rides stderr; the decision channel
+// stays empty (fail-open, so a broken module cannot brick the session).
+//
+// NOT expectAllow: that would go green after the fix even if the guard were OFF,
+// because an allow is ALSO exit 0 + empty stdout. Only the stderr GUARD INACTIVE
+// banner distinguishes a VISIBLE fail-open from the silent one this fixes.
+// ---------------------------------------------------------------------------
+
+describe('#993 — load-failure visibility (GUARD INACTIVE)', { timeout: 30000 }, () => {
+  it('banners "enforce-scope: GUARD INACTIVE" on a broken hardening import — never a silent exit 1 / 0-byte disarm', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      // An out-of-scope Edit that would be DENIED by a healthy guard — so a silent
+      // fail-open here is the exact regression under test.
+      stdin: editPayload(path.join(dir, 'tests', 'unit.test.ts')),
+      execArgv: brokenModuleBoot({ moduleBasename: 'hardening.mjs' }),
+    });
+    // Fail-open + GUARD INACTIVE marker (hook-agnostic half) AND the hook-specific
+    // prefix (#993 non-hard-wiring proof — a mis-wired hookName would banner the
+    // wrong hook's name here and this assertion would catch it).
+    expectGuardInactive(result, { hookName: 'enforce-scope' });
+  });
 });

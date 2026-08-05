@@ -210,6 +210,52 @@ describe('extractBashWriteTargets — quote desync (#970)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// extractBashWriteTargets — wrapper-aware verb resolution (#996.2)
+//
+// BUG CAUGHT: the pre-#996.2 second pass detected the command head via a lone
+// `expectCommand` flag that consumed the FIRST word of the segment. When that
+// first word was a transparent wrapper (sudo / env / timeout / nice / command /
+// /usr/bin/time), the wrapper was read as the head, mode was cleared, and the
+// REAL verb (tee/sed/dd) landed in argument position where it was never checked.
+// D4 measured 10 of 10 wrapper forms losing their write target — a detection
+// loss in the warn-only (#800) bash-write-guard, the same fail-open class #991
+// closed in the ledger guard. The fix reuses splitChainSegments +
+// resolveSegmentVerb from command-blocker.mjs (no new grammar): the verb is
+// resolved through the shared wrapper table and returned basename-normalized, so
+// `/usr/bin/tee` and every wrapper form now resolve their write target.
+// ---------------------------------------------------------------------------
+
+describe('extractBashWriteTargets — wrapper-aware verb resolution (#996.2)', () => {
+  it.each([
+    // The 10 wrapper write-forms D4 measured returning [] against the live module.
+    ['sudo prefix on tee', 'sudo tee src/x.ts', ['src/x.ts']],
+    ['env VAR= prefix on tee', 'env FOO=1 tee src/x.ts', ['src/x.ts']],
+    ['timeout DURATION positional on tee', 'timeout 5 tee src/x.ts', ['src/x.ts']],
+    // A wrapper-WRITTEN file: `time -o FILE` truncates FILE while the verb is npm
+    // — no redirect operator, no tee/sed/dd head. Harvested via wrapperArgs.writesFile.
+    ['time -o wrapper-written report file', '/usr/bin/time -o src/report.txt npm test', ['src/report.txt']],
+    ['sudo prefix on sed -i', 'sudo sed -i s/a/b/ src/x.ts', ['src/x.ts']],
+    ['nice -n VALUE on tee', 'nice -n 10 tee src/x.ts', ['src/x.ts']],
+    ['command builtin prefix on tee', 'command tee src/x.ts', ['src/x.ts']],
+    ['sudo -u USER on tee, append flag skipped', 'sudo -u root tee -a src/x.ts', ['src/x.ts']],
+    ['absolute /usr/bin/tee resolves via basename', '/usr/bin/tee src/x.ts', ['src/x.ts']],
+    ['sudo prefix on dd of=', 'sudo dd if=/dev/zero of=src/x.ts', ['src/x.ts']],
+  ])('detects the wrapped write target: %s', (_n, command, expected) => {
+    expect(extractBashWriteTargets(command)).toEqual(expected);
+  });
+
+  it.each([
+    // Controls: the un-wrapped verbs and the redirect channel were already
+    // correct pre-#996.2 and MUST stay correct — the fix must not regress them.
+    ['bare tee (no wrapper)', 'tee src/x.ts', ['src/x.ts']],
+    ['bare sed -i (no wrapper)', 'sed -i s/a/b/ src/x.ts', ['src/x.ts']],
+    ['redirect channel is unaffected by the wrapper (`>` never lost the target)', 'sudo echo x > src/out.txt', ['src/out.txt']],
+  ])('control — still correct: %s', (_n, command, expected) => {
+    expect(extractBashWriteTargets(command)).toEqual(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // expandTestSiblings (#970 Task 2)
 //
 // BUG CAUGHT (cross-repo, established): an allowedPaths entry listing a

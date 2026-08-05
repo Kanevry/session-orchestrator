@@ -14,7 +14,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { tokenizeCommand } from './command-blocker.mjs';
+import { tokenizeCommand, splitChainSegments, resolveSegmentVerb } from './command-blocker.mjs';
 
 /**
  * Find the wave-scope.json file for the given project root.
@@ -573,6 +573,25 @@ export function assertTestSiblingCoverage(fileScope, allowedPaths, opts = {}) {
  *     emits no token at all — an improvement: `tee out.txt <<EOF` used to report
  *     the literal `EOF` as a second write target.)
  *
+ * ## Segment-first, wrapper-aware verb resolution (#996.2)
+ *
+ * The interpretation is SEGMENT-first: the token stream is split on shell chain
+ * operators / newlines by {@link splitChainSegments} BEFORE it is interpreted,
+ * and each segment's real command verb is resolved through the shared
+ * {@link resolveSegmentVerb} wrapper table. A lone `expectCommand` flag used to
+ * read the FIRST word of a segment as the command head, so a transparent wrapper
+ * (`sudo`, `env FOO=1`, `timeout 5`, `nice -n 10`, `command`, `/usr/bin/time`)
+ * consumed the head slot and the REAL verb (`tee`/`sed`/`dd`) landed in argument
+ * position where it was never matched — measured `sudo tee src/x.ts` → `[]`, a
+ * DETECTION LOSS. This is the same fail-open class #991 closed in the ledger
+ * guard, in a warn-only (#800) consumer. `resolveSegmentVerb` unwraps the
+ * wrappers and returns a BASENAME-normalized verb, so an absolute `/usr/bin/tee`
+ * resolves to `tee` for free. It ALSO reports wrapper-written file operands
+ * (`writesFile: true`, the #992 discriminator) — `/usr/bin/time -o FILE npm test`
+ * truncates FILE while the verb is `npm`, a write with no redirect operator and
+ * no tee/sed/dd head; those are harvested exactly as {@link extractRedirectTargets}
+ * does.
+ *
  * Hook-safe: pure, deterministic, no I/O. Never throws — a non-string / empty
  * input returns `[]`.
  *
@@ -581,8 +600,6 @@ export function assertTestSiblingCoverage(fileScope, allowedPaths, opts = {}) {
  */
 export function extractBashWriteTargets(command) {
   if (typeof command !== 'string' || command.length === 0) return [];
-
-  const tokens = classifyShellTokens(tokenizeCommand(command));
 
   const out = [];
   const seen = new Set();
@@ -594,21 +611,92 @@ export function extractBashWriteTargets(command) {
     out.push(v);
   };
 
-  // Second pass: interpret the token stream. `mode` tracks a command-head that
-  // owns following args (tee/sed/dd); `pendingRedirect` marks that the NEXT word
-  // token is a redirect target.
-  let mode = null; // null | 'tee' | 'sed' | 'dd'
-  let pendingRedirect = false;
-  // A here-doc was opened: `tokenizeCommand` will emit its BODY as an ordinary
-  // quoted word token, and a single-word body (`hello`) would otherwise be read
-  // as a `tee`/`sed`/`dd` file argument. Explicit `>` redirect targets stay
-  // accepted — those carry their own operator and cannot be body text.
-  let heredocOpen = false;
-  let expectCommand = true; // next word is the command head of this segment
-  let sedArgs = []; // { value } collected for a `sed` head
-  let sedInPlace = false;
+  // Segment-first (#996.2): split on shell chain operators / newlines BEFORE
+  // interpreting, then resolve each segment's REAL verb through the shared
+  // wrapper table. `out`/`seen`/`add` stay outside the loop so de-duplication
+  // and first-seen ordering hold across segments (`echo a > x; echo b >> x`).
+  for (const segment of splitChainSegments(tokenizeCommand(command))) {
+    const { verb, index, wrapperArgs } = resolveSegmentVerb(segment);
+    const tokens = classifyShellTokens(segment);
 
-  const flushSed = () => {
+    // A wrapper can WRITE a file through its OWN option, with no redirect and no
+    // tee/sed/dd verb: `/usr/bin/time -o src/report.txt npm test` truncates
+    // src/report.txt while the resolved verb is `npm`. `resolveSegmentVerb` marks
+    // exactly those operands `writesFile: true` (the #992 discriminator that
+    // keeps `nice -n 10` / `sudo -u root` operands OUT). Harvest them exactly as
+    // collectRedirectTargets does — the write is otherwise invisible to this pass.
+    for (const wa of wrapperArgs) {
+      if (wa.writesFile === true && typeof wa.value === 'string') add(wa.value);
+    }
+
+    // `mode` tracks a command-head that owns following args (tee/sed/dd). It is
+    // set ONCE per segment from the resolved verb, which `resolveSegmentVerb`
+    // returns basename-normalized — so an absolute `/usr/bin/tee` resolves to
+    // `tee` for free. `pendingRedirect` marks that the NEXT word is a redirect
+    // target; `heredocOpen` that a here-doc BODY word (DATA) follows.
+    const mode = verb === 'tee' || verb === 'sed' || verb === 'dd' ? verb : null;
+    let pendingRedirect = false;
+    let heredocOpen = false;
+    const sedArgs = []; // classified word tokens collected for a `sed -i` head
+    let sedInPlace = false;
+
+    // THE ONE CARE POINT of the #996.2 refactor: the first `index + 1` WORD
+    // tokens of the classified stream are the wrapper chain + the verb itself
+    // (`resolveSegmentVerb.index` is the verb's raw-token position), never file
+    // arguments. `peelSubshellParens` emits AT MOST one `word` per raw token, so
+    // counting `word` tokens is 1:1 with the raw word tokens — skip that many.
+    const headWordsToSkip = index + 1;
+    let wordsSeen = 0;
+
+    for (const tk of tokens) {
+      if (tk.type === 'redirect') {
+        pendingRedirect = true;
+        continue;
+      }
+      if (tk.type === 'heredoc') {
+        // here-doc: the delimiter emits no token; the BODY arrives later as data
+        pendingRedirect = false;
+        heredocOpen = true;
+        continue;
+      }
+      if (tk.type === 'in') {
+        // input redirect / here-string — not a write target
+        pendingRedirect = false;
+        continue;
+      }
+      if (tk.type === 'sep') {
+        // Within a segment the ONLY seps are peeled subshell parens — chain
+        // operators were already consumed by splitChainSegments. Reset only the
+        // pending redirect so `> >(cat)` stays inert (without it the peeled `cat`
+        // reads as the redirect target); mode/heredoc reset live at segment end.
+        pendingRedirect = false;
+        continue;
+      }
+      // word token
+      if (pendingRedirect) {
+        add(tk.value);
+        pendingRedirect = false;
+        continue;
+      }
+      if (wordsSeen < headWordsToSkip) {
+        wordsSeen++; // wrapper chain + verb head — not a file argument
+        continue;
+      }
+      // subsequent argument words, interpreted per active command-head mode
+      if (heredocOpen) continue; // DATA, not a file argument
+      if (mode === 'tee') {
+        if (!isShellFlag(tk.value)) add(tk.value);
+      } else if (mode === 'sed') {
+        if (/^-i/.test(tk.value)) sedInPlace = true;
+        sedArgs.push(tk);
+      } else if (mode === 'dd') {
+        if (tk.value.startsWith('of=')) add(tk.value.slice(3));
+      }
+    }
+
+    // Segment end: flush a pending `sed -i` file argument (last non-flag arg).
+    // Only reached once per segment now that each segment carries a single verb,
+    // so the former sep-branch / defensive flushes are unnecessary.
     if (mode === 'sed' && sedInPlace) {
       for (let i = sedArgs.length - 1; i >= 0; i--) {
         if (!isShellFlag(sedArgs[i].value)) {
@@ -617,61 +705,7 @@ export function extractBashWriteTargets(command) {
         }
       }
     }
-    sedArgs = [];
-    sedInPlace = false;
-  };
-
-  for (const tk of tokens) {
-    if (tk.type === 'redirect') {
-      pendingRedirect = true;
-      continue;
-    }
-    if (tk.type === 'heredoc') {
-      // here-doc: the delimiter emits no token; the BODY arrives later as data
-      pendingRedirect = false;
-      heredocOpen = true;
-      continue;
-    }
-    if (tk.type === 'in') {
-      // input redirect / here-string — not a write target
-      pendingRedirect = false;
-      continue;
-    }
-    if (tk.type === 'sep') {
-      flushSed();
-      mode = null;
-      pendingRedirect = false;
-      heredocOpen = false;
-      expectCommand = true;
-      continue;
-    }
-    // word token
-    if (pendingRedirect) {
-      add(tk.value);
-      pendingRedirect = false;
-      continue;
-    }
-    if (expectCommand) {
-      expectCommand = false;
-      flushSed(); // flush any prior sed segment defensively
-      if (tk.value === 'tee') { mode = 'tee'; continue; }
-      if (tk.value === 'sed') { mode = 'sed'; continue; }
-      if (tk.value === 'dd') { mode = 'dd'; continue; }
-      mode = null;
-      continue;
-    }
-    // subsequent argument words, interpreted per active command-head mode
-    if (heredocOpen) continue; // DATA, not a file argument
-    if (mode === 'tee') {
-      if (!isShellFlag(tk.value)) add(tk.value);
-    } else if (mode === 'sed') {
-      if (/^-i/.test(tk.value)) sedInPlace = true;
-      sedArgs.push(tk);
-    } else if (mode === 'dd') {
-      if (tk.value.startsWith('of=')) add(tk.value.slice(3));
-    }
   }
-  flushSed();
 
   return out;
 }

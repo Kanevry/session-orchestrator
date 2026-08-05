@@ -123,7 +123,12 @@
  * "If file exists and the -a flag is not specified, the file will be
  * overwritten"), while the verb is whatever `time` goes on to run. The target
  * is therefore invisible in both `verb` and `args`, which is why
- * `/usr/bin/time -o <ledger> npm test` was allowed and now denies. The bash
+ * `/usr/bin/time -o <ledger> npm test` was allowed and now denies.
+ * `resolveSegmentVerb` itself supplies the file-vs-option semantics: each
+ * write-destination operand is flagged `writesFile: true` from its per-wrapper
+ * `fileArgFlags` table (#996.1), so this guard keys on that flag directly and no
+ * longer keeps a local `<wrapper>:<flag>` pair list that had to track the lexer's
+ * grammar by hand. The bash
  * KEYWORD `time` is unaffected: it rejects the flag outright
  * (`bash -c 'time -o x echo hi'` → "-o: command not found"), so only
  * `/usr/bin/time`, `command time` and `env time` can carry it at all.
@@ -181,6 +186,15 @@
  * through. Under the #906 exit-0 protocol, "fail-open" is literally exit 0 with
  * no stdout envelope — the harness reads no decision and proceeds.
  *
+ * A LOAD failure is a distinct class since #993: the repo dependencies (`io.mjs`,
+ * `command-blocker.mjs`) are bound LATE (dynamic `import()` in `bootstrap()`), so
+ * a link-time SyntaxError in either becomes a catchable runtime error that
+ * banners GUARD INACTIVE on stderr instead of the pre-#993 exit-1 / 0-byte crash
+ * that disarmed the guard invisibly under the exit-0 protocol. The
+ * `command-blocker` half additionally recovers its COMMITTED source via
+ * `git show HEAD:` (banner: DEGRADED, guard still armed against HEAD) — the whole
+ * mechanism lives in `_lib/guard-source-loader.mjs` (`armGuard`).
+ *
  * ## Override
  *
  *   SO_DISABLED_HOOKS=pre-bash-sessions-ledger-guard   (session-level)
@@ -191,23 +205,125 @@
  * failure this hook exists to replace.
  */
 
-import { readStdin, emitAllow, emitDeny } from '../scripts/lib/io.mjs';
-// Single direct import from the source module (#991), matching the precedent in
-// hooks/pre-bash-destructive-guard.mjs: the hardening.mjs barrel re-exports
-// tokenizeCommand from this very module (same instance either way) but
-// deliberately does NOT re-export the #982/#983 primitives, so importing the
-// lexer from the barrel and the wrapper resolver from the source would give
-// this hook two dependency edges to one module. The barrel is unchanged.
-import {
-  tokenizeCommand,
-  resolveSegmentVerb,
-  splitChainSegments,
-} from '../scripts/lib/command-blocker.mjs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 // #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
 if (!shouldRunHook('pre-bash-sessions-ledger-guard')) process.exit(0);
+
+// ---------------------------------------------------------------------------
+// #993 — late-bound repo dependencies
+//
+// `io.mjs` (readStdin/emitAllow/emitDeny) and `command-blocker.mjs`
+// (tokenizeCommand/resolveSegmentVerb/splitChainSegments) used to be STATIC
+// imports. A SyntaxError in either failed at ESM LINK time, before the first
+// statement here ran: node exited 1 with 0 bytes on stdout, and the
+// `main().catch(...)` handler at the bottom of this file was structurally
+// unreachable. Under the exit-0 PreToolUse protocol (#906) that crash is, on the
+// only decision-bearing channel, INDISTINGUISHABLE from an explicit
+// `emitAllow()` — the guard failed open and silently.
+//
+// This hook is fail-open BY DESIGN (a nudge, not a boundary — see the module
+// docblock), so a silent disarm is a smaller loss here than in the
+// destructive-guard. It is still a loss: the #958 corruption class stops being
+// caught with no sign it stopped. Binding these late (dynamic `import()` inside
+// `bootstrap()`) turns the link-time crash into a catchable runtime error, which
+// is what makes the GUARD INACTIVE banner in `_lib/guard-source-loader.mjs`
+// reachable at all.
+//
+// `command-blocker.mjs` is held as a NAMESPACE object (`blocker.*`) rather than
+// three destructured bindings on purpose: the required-export list then exists in
+// exactly one place — the `requires` array on the `blocker` spec passed to
+// `armGuard` — which validates BOTH the working-tree copy and the HEAD copy
+// against it, so a partial namespace banners GUARD INACTIVE instead of arming a
+// guard that fails open per command.
+//
+// `profile-gate.mjs` stays static on purpose — it has ZERO imports of its own and
+// gates whether this hook runs at all.
+// ---------------------------------------------------------------------------
+/** @type {typeof import('../scripts/lib/io.mjs').readStdin} */ let readStdin;
+/** @type {typeof import('../scripts/lib/io.mjs').emitAllow} */ let emitAllow;
+/** @type {typeof import('../scripts/lib/io.mjs').emitDeny} */ let emitDeny;
+/**
+ * The whole `command-blocker.mjs` namespace (#991: one direct import path, not
+ * via the hardening.mjs barrel, which deliberately does NOT re-export the
+ * #982/#983 primitives). Held as ONE object rather than destructured so the
+ * required-export set lives only on the `blocker` spec's `requires` array (#993).
+ *
+ * @type {Record<string, Function>|null}
+ */
+let blocker = null;
+
+const PLUGIN_ROOT = path.resolve(import.meta.dirname, '..');
+
+/** This hook's name — threaded into the guard banners (#993: no hard-wired literal). */
+const HOOK_NAME = 'pre-bash-sessions-ledger-guard';
+
+/**
+ * Consequence prose spliced VERBATIM into the DEGRADED and GUARD INACTIVE banners
+ * (#993). This hook is fail-open by design, so the `inactive` text says so plainly
+ * rather than borrowing the destructive-guard's "do not route around it" framing.
+ */
+const GUARD_CONSEQUENCE = {
+  degraded: [
+    '    Consequence: ledger-write enforcement IS still armed, but it is evaluating the',
+    '    COMMITTED (HEAD) command lexer — any uncommitted change to that file is NOT in effect.',
+  ],
+  inactive: [
+    '    Consequence: a direct shell write into .orchestrator/metrics/sessions.jsonl',
+    '    (>, >>, tee, dd of=, cp/mv destination) is NOT being blocked. This hook is a',
+    '    fail-open nudge, not a security boundary — but repair it so the #958 corruption',
+    '    class stays caught.',
+  ],
+};
+
+/**
+ * Project dir for banner keying, resolved WITHOUT any repo module — those are the
+ * ones that may have failed to load.
+ *
+ * @returns {string}
+ */
+function bannerProjectDir() {
+  return process.env.CLAUDE_PROJECT_DIR || process.cwd();
+}
+
+/**
+ * Bind every repo dependency. Throws on any load failure; the caller banners.
+ *
+ * `io` gets NO HEAD fallback (a missing export surfaces as a plain TypeError at
+ * its single call site — no half-armed guard to protect against). `blocker` opts
+ * into the `git show HEAD:` recovery (it is dependency-free — its only import is
+ * `node:path`) and carries the COMPLETE required-export set, so a partial
+ * namespace banners GUARD INACTIVE rather than arming a guard that fails open per
+ * command.
+ *
+ * @returns {Promise<void>}
+ */
+async function bootstrap() {
+  const lib = (...seg) => pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', ...seg)).href;
+
+  const { armGuard } = await import('./_lib/guard-source-loader.mjs');
+  const { modules } = await armGuard(
+    {
+      io: { specifier: lib('io.mjs') },
+      blocker: {
+        specifier: lib('command-blocker.mjs'),
+        headFallback: true,
+        requires: ['tokenizeCommand', 'resolveSegmentVerb', 'splitChainSegments'],
+      },
+    },
+    {
+      hookName: HOOK_NAME,
+      repoRoot: PLUGIN_ROOT,
+      projectDir: bannerProjectDir(),
+      consequence: GUARD_CONSEQUENCE,
+    }
+  );
+
+  ({ readStdin, emitAllow, emitDeny } = modules.io);
+  blocker = modules.blocker;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -229,19 +345,6 @@ const TARGET_ECHO_MAX = 200;
 
 /** Verbs whose LAST non-flag argument is a write destination. */
 const DEST_LAST_VERBS = new Set(['cp', 'mv']);
-
-/**
- * Wrapper flags from {@link resolveSegmentVerb}'s `wrapperArgs` whose operand is
- * a FILE the wrapper itself writes, keyed `<wrapper>:<flag>`.
- *
- * Deliberately an explicit pair list rather than "any argFlag operand": most
- * value-taking wrapper flags name something that is NOT a path — `sudo -u` a
- * user, `nice -n` a niceness, `timeout -k` a duration, `env -u` a variable, and
- * `stdbuf -o` a BUFFERING MODE (`0`, `L`, `4096`), which shares its spelling
- * with `time -o` and would be the obvious false positive of a blanket rule.
- * Only `time -o`/`--output` opens a file for writing.
- */
-const WRAPPER_FILE_FLAGS = new Set(['time:-o', 'time:--output']);
 
 /**
  * How deep to follow a wrapper's command-string payload (`env -S '…'`).
@@ -496,14 +599,21 @@ function scanCommand(command) {
  * @returns {string|null} the offending target, or null
  */
 function findWriteVerbTarget(command, depth = 0) {
-  for (const segment of splitChainSegments(tokenizeCommand(command))) {
-    const { verb, index, payloads, wrapperArgs } = resolveSegmentVerb(segment);
+  for (const segment of blocker.splitChainSegments(blocker.tokenizeCommand(command))) {
+    const { verb, index, payloads, wrapperArgs } = blocker.resolveSegmentVerb(segment);
 
     // A wrapper can write a file WITHOUT being the verb: `/usr/bin/time -o F`
     // truncates F while the verb is whatever time runs. Checked before the verb
-    // dispatch because `time -o <ledger>` alone resolves to verb null.
+    // dispatch because `time -o <ledger>` alone resolves to verb null. The
+    // file-vs-option distinction is the LEXER's now (#996.1): resolveSegmentVerb
+    // marks a write-destination operand `writesFile: true` from its per-wrapper
+    // `fileArgFlags` table (command-blocker.mjs — the writesFile contract, the
+    // `resolveSegmentVerb` return docblock), so a local `<wrapper>:<flag>` pair
+    // list here is gone. The rationale it encoded — `stdbuf -o` is a BUFFERING
+    // MODE, not a file, and `time -o` is the only wrapper flag that opens one —
+    // lives beside that table (command-blocker.mjs, the WRAPPER_UNWRAP docblock).
     for (const wa of wrapperArgs) {
-      if (!WRAPPER_FILE_FLAGS.has(`${wa.wrapper}:${wa.flag}`)) continue;
+      if (wa.writesFile !== true) continue;
       if (typeof wa.value === 'string' && refersToLedger(wa.value)) return wa.value;
     }
 
@@ -615,6 +725,37 @@ async function main() {
       `See: GitLab #958, skills/session-end/session-metrics-write.md`,
     ].join('\n'),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Entry point (#993)
+//
+// TWO distinct failure classes, two distinct handlers — do not merge them:
+//   1. LOAD failure (`bootstrap()` throws): the guard never armed, nothing was
+//      evaluated. This used to be a bare exit-1 crash with 0 bytes of stdout —
+//      indistinguishable from an allow, and therefore invisible. Now it exits 0
+//      (still fail-open, so a broken module cannot brick the session) but SAYS SO
+//      via the GUARD INACTIVE banner, once loud on stderr.
+//   2. RUNTIME failure inside `main()`: pre-existing fail-open behaviour,
+//      unchanged (this hook is fail-open by design — see the module docblock).
+// ---------------------------------------------------------------------------
+try {
+  await bootstrap();
+} catch (loadError) {
+  try {
+    const { emitGuardInactiveBanner } = await import('./_lib/guard-source-loader.mjs');
+    // hookName is threaded explicitly (#993 — no hard-wired literal in the loader).
+    emitGuardInactiveBanner({ hookName: HOOK_NAME, error: loadError, consequence: GUARD_CONSEQUENCE });
+  } catch {
+    // Last resort: even the banner helper failed to load. Emit unconditionally —
+    // repeated noise beats a silent disarm.
+    process.stderr.write(
+      '🚨 pre-bash-sessions-ledger-guard: GUARD INACTIVE — module load failed ' +
+        `(${String(loadError?.message || loadError).split('\n')[0]}). ` +
+        'Direct shell writes to the sessions ledger are NOT being blocked. See issue #992.\n'
+    );
+  }
+  process.exit(0); // fail-open, but no longer fail-silent
 }
 
 // Top-level error handler — fail-OPEN (see the module docblock). Never let a
