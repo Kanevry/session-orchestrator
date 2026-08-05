@@ -1,10 +1,17 @@
 /**
  * Unit tests for scripts/lib/vault-mirror/utils.mjs
  * Focus: subjectToSlug, isValidSlug, uuidPrefix8, toDate,
- *        truncateAtWord, yamlQuoteIfNeeded, parseFrontmatter
+ *        truncateAtWord, yamlQuoteIfNeeded, parseFrontmatter,
+ *        resolveSourceSessionLink
+ *
+ * Shape: one it.each table per pure function ({input, expected} rows).
+ * The yamlQuoteIfNeeded round-trip rows (js-yaml parse-back) were merged in
+ * from the former tests/unit/vault-mirror-utils.test.mjs — they assert the
+ * quoted output is VALID YAML, which a string-shape assertion cannot.
  */
 
 import { describe, it, expect } from 'vitest';
+import { load as parseYaml } from 'js-yaml';
 import {
   subjectToSlug,
   isValidSlug,
@@ -19,348 +26,198 @@ import {
 // ── subjectToSlug ─────────────────────────────────────────────────────────────
 
 describe('subjectToSlug', () => {
-  it('lowercases input', () => {
-    expect(subjectToSlug('FooBar')).toBe('foobar');
-  });
-
-  it('collapses slash path to last segment', () => {
-    expect(subjectToSlug('libs/node/cross-repo')).toBe('cross-repo');
-  });
-
-  it('collapses multiple leading slash segments', () => {
-    expect(subjectToSlug('a/b/c/my-slug')).toBe('my-slug');
-  });
-
-  it('replaces dots with hyphens', () => {
-    expect(subjectToSlug('use.strict.mode')).toBe('use-strict-mode');
-  });
-
-  it('replaces underscores with hyphens', () => {
-    expect(subjectToSlug('snake_case_thing')).toBe('snake-case-thing');
-  });
-
-  it('strips non-alphanumeric non-hyphen chars (spaces)', () => {
-    expect(subjectToSlug('hello world')).toBe('helloworld');
-  });
-
-  it('strips bracket characters', () => {
-    expect(subjectToSlug('[object')).toBe('object');
-  });
-
-  it('collapses consecutive hyphens into one', () => {
-    expect(subjectToSlug('foo--bar')).toBe('foo-bar');
-  });
-
-  it('trims leading hyphens', () => {
-    expect(subjectToSlug('-leading-hyphen')).toBe('leading-hyphen');
-  });
-
-  it('trims trailing hyphens', () => {
-    expect(subjectToSlug('trailing-hyphen-')).toBe('trailing-hyphen');
-  });
-
-  it('returns empty string for all-special input', () => {
-    expect(subjectToSlug('!!!@@###')).toBe('');
-  });
-
-  it('handles a plain alphanumeric string unchanged', () => {
-    expect(subjectToSlug('foobar123')).toBe('foobar123');
-  });
-
-  it('applies slash-collapse before other transforms', () => {
-    // "a/FOO_BAR" → last segment "FOO_BAR" → lowercase + underscore→hyphen → "foo-bar"
-    expect(subjectToSlug('a/FOO_BAR')).toBe('foo-bar');
+  it.each([
+    { why: 'lowercases input', input: 'FooBar', expected: 'foobar' },
+    { why: 'collapses slash path to last segment', input: 'libs/node/cross-repo', expected: 'cross-repo' },
+    { why: 'collapses multiple leading slash segments', input: 'a/b/c/my-slug', expected: 'my-slug' },
+    { why: 'replaces dots with hyphens', input: 'use.strict.mode', expected: 'use-strict-mode' },
+    { why: 'replaces underscores with hyphens', input: 'snake_case_thing', expected: 'snake-case-thing' },
+    { why: 'strips non-alphanumeric non-hyphen chars (spaces)', input: 'hello world', expected: 'helloworld' },
+    { why: 'strips bracket characters', input: '[object', expected: 'object' },
+    { why: 'collapses consecutive hyphens into one', input: 'foo--bar', expected: 'foo-bar' },
+    { why: 'trims leading hyphens', input: '-leading-hyphen', expected: 'leading-hyphen' },
+    { why: 'trims trailing hyphens', input: 'trailing-hyphen-', expected: 'trailing-hyphen' },
+    { why: 'returns empty string for all-special input', input: '!!!@@###', expected: '' },
+    { why: 'handles a plain alphanumeric string unchanged', input: 'foobar123', expected: 'foobar123' },
+    // slash-collapse must run BEFORE lowercase + underscore→hyphen
+    { why: 'applies slash-collapse before other transforms', input: 'a/FOO_BAR', expected: 'foo-bar' },
+  ])('$why: $input', ({ input, expected }) => {
+    expect(subjectToSlug(input)).toBe(expected);
   });
 });
 
 // ── isValidSlug ───────────────────────────────────────────────────────────────
 
 describe('isValidSlug', () => {
-  it('accepts a simple kebab slug', () => {
-    expect(isValidSlug('my-slug')).toBe(true);
-  });
-
-  it('accepts a single word', () => {
-    expect(isValidSlug('slug')).toBe(true);
-  });
-
-  it('accepts alphanumeric with hyphens', () => {
-    expect(isValidSlug('s69-compose-pids')).toBe(true);
-  });
-
-  it('rejects empty string', () => {
-    expect(isValidSlug('')).toBe(false);
-  });
-
-  it('rejects a string with leading hyphen', () => {
-    expect(isValidSlug('-bad-slug')).toBe(false);
-  });
-
-  it('rejects a string with trailing hyphen', () => {
-    expect(isValidSlug('bad-slug-')).toBe(false);
-  });
-
-  it('rejects uppercase characters', () => {
-    expect(isValidSlug('BadSlug')).toBe(false);
-  });
-
-  it('rejects spaces', () => {
-    expect(isValidSlug('bad slug')).toBe(false);
-  });
-
-  // ── issue #718: RegExp implicit ToString-coercion trap ─────────────────────
-  // Without the `typeof s === 'string'` guard, `slugRegex.test(undefined)`
-  // coerces its argument to the literal string "undefined", which matches the
-  // kebab-slug pattern — so isValidSlug(undefined) returned `true` pre-fix.
-
-  it('rejects undefined (RegExp ToString-coercion trap)', () => {
-    expect(isValidSlug(undefined)).toBe(false);
-  });
-
-  it('rejects null (RegExp ToString-coercion trap)', () => {
-    expect(isValidSlug(null)).toBe(false);
-  });
-
-  it('rejects a number input, even one that would stringify to a slug-shaped value', () => {
-    expect(isValidSlug(123)).toBe(false);
-  });
-
-  it('accepts the literal STRING "undefined" (a genuine string is still validated normally)', () => {
-    expect(isValidSlug('undefined')).toBe(true);
+  it.each([
+    { why: 'accepts a simple kebab slug', input: 'my-slug', expected: true },
+    { why: 'accepts a single word', input: 'slug', expected: true },
+    { why: 'accepts alphanumeric with hyphens', input: 's69-compose-pids', expected: true },
+    { why: 'rejects empty string', input: '', expected: false },
+    { why: 'rejects a leading hyphen', input: '-bad-slug', expected: false },
+    { why: 'rejects a trailing hyphen', input: 'bad-slug-', expected: false },
+    { why: 'rejects uppercase characters', input: 'BadSlug', expected: false },
+    { why: 'rejects spaces', input: 'bad slug', expected: false },
+    // issue #718: without the `typeof s === 'string'` guard, slugRegex.test(undefined)
+    // coerces to the literal string "undefined", which MATCHES the kebab pattern —
+    // so isValidSlug(undefined) returned true pre-fix. Same trap for null/number.
+    { why: 'rejects undefined (RegExp ToString-coercion trap)', input: undefined, expected: false },
+    { why: 'rejects null (RegExp ToString-coercion trap)', input: null, expected: false },
+    { why: 'rejects a number input that would stringify slug-shaped', input: 123, expected: false },
+    // ...but a genuine string "undefined" is still validated normally.
+    { why: 'accepts the literal STRING "undefined"', input: 'undefined', expected: true },
+  ])('$why', ({ input, expected }) => {
+    expect(isValidSlug(input)).toBe(expected);
   });
 });
 
 // ── uuidPrefix8 ───────────────────────────────────────────────────────────────
 
 describe('uuidPrefix8', () => {
-  it('extracts first 8 hex chars from a UUID, stripping hyphens', () => {
-    expect(uuidPrefix8('a1b2c3d4-0001-4000-8000-000000000001')).toBe('a1b2c3d4');
-  });
-
-  it('works for UUID starting with all zeros', () => {
-    expect(uuidPrefix8('00000000-0001-4000-8000-abcdef123456')).toBe('00000000');
-  });
-
-  it('strips hyphens before slicing so result is exactly 8 hex chars', () => {
-    // "11223344-..." → stripped → "11223344..." → first 8 = "11223344"
-    expect(uuidPrefix8('11223344-5566-7788-9900-aabbccddeeff')).toBe('11223344');
+  it.each([
+    { why: 'extracts first 8 hex chars, stripping hyphens', input: 'a1b2c3d4-0001-4000-8000-000000000001', expected: 'a1b2c3d4' },
+    { why: 'works for a UUID starting with all zeros', input: '00000000-0001-4000-8000-abcdef123456', expected: '00000000' },
+    { why: 'strips hyphens before slicing so the result is 8 hex chars', input: '11223344-5566-7788-9900-aabbccddeeff', expected: '11223344' },
+  ])('$why', ({ input, expected }) => {
+    expect(uuidPrefix8(input)).toBe(expected);
   });
 });
 
 // ── toDate ────────────────────────────────────────────────────────────────────
 
 describe('toDate', () => {
-  it('extracts YYYY-MM-DD from an ISO datetime string', () => {
-    expect(toDate('2026-04-13T10:00:00Z')).toBe('2026-04-13');
-  });
-
-  it('returns just the date when input is already a date string', () => {
-    expect(toDate('2026-05-08')).toBe('2026-05-08');
-  });
-
-  it('returns empty string for null input', () => {
-    expect(toDate(null)).toBe('');
-  });
-
-  it('returns empty string for undefined input', () => {
-    expect(toDate(undefined)).toBe('');
-  });
-
-  it('returns empty string for empty string input', () => {
-    expect(toDate('')).toBe('');
+  it.each([
+    { why: 'extracts YYYY-MM-DD from an ISO datetime string', input: '2026-04-13T10:00:00Z', expected: '2026-04-13' },
+    { why: 'returns the date unchanged when already a date string', input: '2026-05-08', expected: '2026-05-08' },
+    { why: 'returns empty string for null input', input: null, expected: '' },
+    { why: 'returns empty string for undefined input', input: undefined, expected: '' },
+    { why: 'returns empty string for empty string input', input: '', expected: '' },
+  ])('$why', ({ input, expected }) => {
+    expect(toDate(input)).toBe(expected);
   });
 });
 
 // ── truncateAtWord ────────────────────────────────────────────────────────────
 
 describe('truncateAtWord', () => {
-  it('returns the original string when it fits within maxLen', () => {
-    expect(truncateAtWord('short string', 20)).toBe('short string');
-  });
-
-  it('truncates at a word boundary when a space is found before maxLen', () => {
-    expect(truncateAtWord('this is a long string that exceeds the limit', 20)).toBe('this is a long');
-  });
-
-  it('hard-truncates at maxLen when no space exists before the limit', () => {
-    expect(truncateAtWord('averylongwordwithoutspaces', 10)).toBe('averylongw');
-  });
-
-  it('returns exact maxLen string when it fits exactly', () => {
-    expect(truncateAtWord('exactly', 7)).toBe('exactly');
-  });
-
-  it('truncates to last word before boundary when space is found', () => {
-    // "hello world end" with maxLen=14 → slice(0,14)="hello world en" → lastSpace=10 (at ' end') → "hello world"
-    expect(truncateAtWord('hello world end', 14)).toBe('hello world');
+  it.each([
+    { why: 'returns the original string when it fits within maxLen', input: 'short string', maxLen: 20, expected: 'short string' },
+    { why: 'truncates at a word boundary when a space precedes maxLen', input: 'this is a long string that exceeds the limit', maxLen: 20, expected: 'this is a long' },
+    { why: 'hard-truncates at maxLen when no space exists before the limit', input: 'averylongwordwithoutspaces', maxLen: 10, expected: 'averylongw' },
+    { why: 'returns the exact string when it is exactly maxLen', input: 'exactly', maxLen: 7, expected: 'exactly' },
+    // slice(0,14)="hello world en" → lastSpace=11 → "hello world"
+    { why: 'truncates back to the last whole word before the boundary', input: 'hello world end', maxLen: 14, expected: 'hello world' },
+  ])('$why', ({ input, maxLen, expected }) => {
+    expect(truncateAtWord(input, maxLen)).toBe(expected);
   });
 });
 
 // ── yamlQuoteIfNeeded ─────────────────────────────────────────────────────────
 
 describe('yamlQuoteIfNeeded', () => {
-  it('returns simple value unquoted', () => {
-    expect(yamlQuoteIfNeeded('simple-value')).toBe('simple-value');
+  it.each([
+    { why: 'returns a simple value unquoted', input: 'simple-value', expected: 'simple-value' },
+    { why: 'returns an alphanumeric slug unchanged', input: 'plain-slug-123', expected: 'plain-slug-123' },
+    // a space alone is NOT a quoting trigger
+    { why: 'returns a spaced plain value unquoted', input: 'plain title', expected: 'plain title' },
+    { why: 'quotes a value containing a colon', input: 'Session 2026: deep', expected: '"Session 2026: deep"' },
+    { why: 'quotes a value containing a hash', input: 'issue #42', expected: '"issue #42"' },
+    { why: 'quotes a value starting with a hyphen', input: '-start-with-hyphen', expected: '"-start-with-hyphen"' },
+    { why: 'quotes and escapes a value starting with a double-quote', input: '"already quoted"', expected: '"\\"already quoted\\""' },
+    { why: 'escapes double-quotes embedded mid-value', input: 'she said "hi": done', expected: '"she said \\"hi\\": done"' },
+    { why: 'escapes backslashes inside quoted values', input: 'path\\to\\file:x', expected: '"path\\\\to\\\\file:x"' },
+    // A bare backslash with NO colon/hash/leading-hyphen must still trigger quoting —
+    // the colon-bearing row above would stay green even if `\` were not a trigger.
+    { why: 'triggers quoting on a bare backslash alone', input: String.raw`a\b`, expected: String.raw`"a\\b"` },
+  ])('$why', ({ input, expected }) => {
+    expect(yamlQuoteIfNeeded(input)).toBe(expected);
   });
 
-  it('quotes value containing a colon', () => {
-    expect(yamlQuoteIfNeeded('Session 2026: deep')).toBe('"Session 2026: deep"');
-  });
-
-  it('quotes value containing a hash', () => {
-    expect(yamlQuoteIfNeeded('issue #42')).toBe('"issue #42"');
-  });
-
-  it('quotes value starting with a hyphen', () => {
-    expect(yamlQuoteIfNeeded('-start-with-hyphen')).toBe('"-start-with-hyphen"');
-  });
-
-  it('quotes value starting with a double-quote', () => {
-    expect(yamlQuoteIfNeeded('"already quoted"')).toBe('"\\"already quoted\\""');
-  });
-
-  it('escapes backslashes inside quoted values', () => {
-    const out = yamlQuoteIfNeeded('path\\to\\file:x');
-    expect(out).toBe('"path\\\\to\\\\file:x"');
-  });
-
-  it('returns alphanumeric slug unchanged', () => {
-    expect(yamlQuoteIfNeeded('plain-slug-123')).toBe('plain-slug-123');
+  // Round-trip through a REAL YAML parser: proves the escaped output is valid
+  // YAML and decodes back to the original bytes. A string-shape assertion alone
+  // cannot catch "well-formed-looking but YAML-invalid" escapes (the `\y`
+  // PostgreSQL-regex regression: pre-fix output `"... \y ..."` was rejected by YAML).
+  it.each([
+    { why: 'PostgreSQL POSIX regex title with \\y and \\b', input: String.raw`PostgreSQL POSIX regex (~,~*) uses \y for word boundary, not \b` },
+    { why: 'value containing both backslashes and double quotes', input: String.raw`mixed: \n and "quoted"` },
+    { why: 'bare backslash value', input: String.raw`a\b` },
+  ])('round-trips through js-yaml: $why', ({ input }) => {
+    const quoted = yamlQuoteIfNeeded(input);
+    expect(parseYaml(`title: ${quoted}\n`).title).toBe(input);
   });
 });
 
 // ── parseFrontmatter ──────────────────────────────────────────────────────────
 
 describe('parseFrontmatter', () => {
-  it('parses a valid frontmatter block into key-value pairs', () => {
-    const content = '---\ntitle: Hello\nstatus: draft\n---\n\nBody text.';
-    expect(parseFrontmatter(content)).toEqual({ title: 'Hello', status: 'draft' });
-  });
-
-  it('returns null when content does not start with ---', () => {
-    expect(parseFrontmatter('title: Hello\n')).toBeNull();
-  });
-
-  it('returns null when there is no closing ---', () => {
-    expect(parseFrontmatter('---\ntitle: Hello\n')).toBeNull();
-  });
-
-  it('strips surrounding double-quotes from values', () => {
-    const content = '---\nid: "my-id"\n---\n';
-    const fm = parseFrontmatter(content);
-    expect(fm).not.toBeNull();
-    expect(fm.id).toBe('my-id');
-  });
-
-  it('strips surrounding single-quotes from values', () => {
-    const content = "---\nname: 'value'\n---\n";
-    const fm = parseFrontmatter(content);
-    expect(fm).not.toBeNull();
-    expect(fm.name).toBe('value');
-  });
-
-  it('skips lines without a colon', () => {
-    const content = '---\ntitle: Hello\nnocolon\nstatus: ok\n---\n';
-    const fm = parseFrontmatter(content);
-    expect(fm).not.toBeNull();
-    expect(Object.keys(fm)).toEqual(['title', 'status']);
-  });
-
-  it('returns the _generator field when present', () => {
-    const content = '---\nid: test\n_generator: session-orchestrator-vault-mirror@1\n---\n';
-    const fm = parseFrontmatter(content);
-    expect(fm).not.toBeNull();
-    expect(fm['_generator']).toBe('session-orchestrator-vault-mirror@1');
+  it.each([
+    {
+      why: 'parses a valid frontmatter block into key-value pairs',
+      content: '---\ntitle: Hello\nstatus: draft\n---\n\nBody text.',
+      expected: { title: 'Hello', status: 'draft' },
+    },
+    {
+      why: 'returns null when content does not start with ---',
+      content: 'title: Hello\n',
+      expected: null,
+    },
+    {
+      why: 'returns null when there is no closing ---',
+      content: '---\ntitle: Hello\n',
+      expected: null,
+    },
+    {
+      why: 'strips surrounding double-quotes from values',
+      content: '---\nid: "my-id"\n---\n',
+      expected: { id: 'my-id' },
+    },
+    {
+      why: 'strips surrounding single-quotes from values',
+      content: "---\nname: 'value'\n---\n",
+      expected: { name: 'value' },
+    },
+    {
+      why: 'skips lines without a colon (no phantom key)',
+      content: '---\ntitle: Hello\nnocolon\nstatus: ok\n---\n',
+      expected: { title: 'Hello', status: 'ok' },
+    },
+    {
+      why: 'returns the _generator field when present',
+      content: '---\nid: test\n_generator: session-orchestrator-vault-mirror@1\n---\n',
+      expected: { id: 'test', _generator: 'session-orchestrator-vault-mirror@1' },
+    },
+  ])('$why', ({ content, expected }) => {
+    expect(parseFrontmatter(content)).toEqual(expected);
   });
 });
 
 // ── resolveSourceSessionLink (#704) ──────────────────────────────────────────
 
 describe('resolveSourceSessionLink', () => {
-  // ── Reject cases — isLink: false with sentinel target ────────────────────
+  it.each([
+    // ── Reject cases — isLink: false with sentinel target ────────────────────
+    { why: 'empty string → sentinel target "unknown"', input: '', opts: undefined, expected: { isLink: false, target: 'unknown' } },
+    { why: 'null → sentinel target "unknown"', input: null, opts: undefined, expected: { isLink: false, target: 'unknown' } },
+    { why: 'undefined → sentinel target "unknown"', input: undefined, opts: undefined, expected: { isLink: false, target: 'unknown' } },
+    { why: 'literal string "unknown" → not a link', input: 'unknown', opts: undefined, expected: { isLink: false, target: 'unknown' } },
+    { why: 'provenance tag containing @ is never a link', input: 'agent-proposed@wave-1', opts: undefined, expected: { isLink: false, target: 'agent-proposed@wave-1' } },
 
-  it('returns isLink: false with target "unknown" for empty string input', () => {
-    expect(resolveSourceSessionLink('')).toEqual({ isLink: false, target: 'unknown' });
-  });
+    // ── Existence path — the noteExists predicate is authoritative and can
+    //    validate legacy HHmm ids that do NOT match SEMANTIC_ID_RE ────────────
+    { why: 'noteExists()===true makes a legacy HHmm id a link', input: 'main-2026-04-23-1255', opts: { noteExists: () => true }, expected: { isLink: true, target: 'main-2026-04-23-1255' } },
+    { why: 'noteExists()===false leaves the same id plain text', input: 'main-2026-04-23-1255', opts: { noteExists: () => false }, expected: { isLink: false, target: 'main-2026-04-23-1255' } },
 
-  it('returns isLink: false with target "unknown" for null input', () => {
-    expect(resolveSourceSessionLink(null)).toEqual({ isLink: false, target: 'unknown' });
-  });
+    // ── Format fallback (no predicate — strict SEMANTIC_ID_RE) ───────────────
+    { why: 'semantic id branch-date-mode-counter is a link', input: 'main-2026-06-11-deep-1', opts: undefined, expected: { isLink: true, target: 'main-2026-06-11-deep-1' } },
+    { why: 'mode-only id lacking the -<n> counter is not a link', input: 'develop-2026-04-09-evolve', opts: undefined, expected: { isLink: false, target: 'develop-2026-04-09-evolve' } },
+    // '1255' starts with a digit, so SEMANTIC_ID_RE's [a-z-]+ mode slot does not
+    // match — this is WHY the noteExists predicate exists for legacy ids.
+    { why: 'legacy HHmm id without a predicate is not a link', input: 'main-2026-04-23-1255', opts: undefined, expected: { isLink: false, target: 'main-2026-04-23-1255' } },
 
-  it('returns isLink: false with target "unknown" for undefined input', () => {
-    expect(resolveSourceSessionLink(undefined)).toEqual({ isLink: false, target: 'unknown' });
-  });
-
-  it('returns isLink: false with target "unknown" for the literal string "unknown"', () => {
-    expect(resolveSourceSessionLink('unknown')).toEqual({ isLink: false, target: 'unknown' });
-  });
-
-  it('returns isLink: false for provenance tag containing @ (agent-proposed@wave-1)', () => {
-    expect(resolveSourceSessionLink('agent-proposed@wave-1')).toEqual({
-      isLink: false,
-      target: 'agent-proposed@wave-1',
-    });
-  });
-
-  // ── Existence path (noteExists predicate — authoritative) ─────────────────
-
-  it('existence path: returns isLink: true when noteExists predicate returns true', () => {
-    // The predicate is authoritative: it can validate legacy HHmm ids that do not
-    // match SEMANTIC_ID_RE (e.g. 'main-2026-04-23-1255'). When the vault note exists,
-    // isLink is true regardless of format.
-    expect(resolveSourceSessionLink('main-2026-04-23-1255', { noteExists: () => true })).toEqual({
-      isLink: true,
-      target: 'main-2026-04-23-1255',
-    });
-  });
-
-  it('existence path: returns isLink: false when noteExists predicate returns false', () => {
-    // Same HHmm id, but vault note does not exist → plain text, no wikilink.
-    expect(resolveSourceSessionLink('main-2026-04-23-1255', { noteExists: () => false })).toEqual({
-      isLink: false,
-      target: 'main-2026-04-23-1255',
-    });
-  });
-
-  // ── Format fallback (no predicate — strict SEMANTIC_ID_RE / UUID-v4) ──────
-
-  it('format fallback: returns isLink: true for semantic session ID main-2026-06-11-deep-1', () => {
-    // Matches SEMANTIC_ID_RE: branch=main, date=2026-06-11, mode=deep, n=1
-    expect(resolveSourceSessionLink('main-2026-06-11-deep-1')).toEqual({
-      isLink: true,
-      target: 'main-2026-06-11-deep-1',
-    });
-  });
-
-  it('format fallback: returns isLink: false for mode-only id lacking counter (develop-2026-04-09-evolve)', () => {
-    // 'develop-2026-04-09-evolve' has no trailing -<n> counter → does not match SEMANTIC_ID_RE
-    expect(resolveSourceSessionLink('develop-2026-04-09-evolve')).toEqual({
-      isLink: false,
-      target: 'develop-2026-04-09-evolve',
-    });
-  });
-
-  it('format fallback: returns isLink: false for legacy HHmm id (main-2026-04-23-1255) without predicate', () => {
-    // 'main-2026-04-23-1255': SEMANTIC_ID_RE requires a [a-z-]+ mode between date and counter,
-    // but '1255' starts with a digit — no match. This documents why the noteExists
-    // existence predicate is required when the vault note may exist for legacy ids.
-    expect(resolveSourceSessionLink('main-2026-04-23-1255')).toEqual({
-      isLink: false,
-      target: 'main-2026-04-23-1255',
-    });
-  });
-
-  // ── target field contract ─────────────────────────────────────────────────
-
-  it('target field is the raw input value when isLink is false, not the slugified version', () => {
-    // resolveSourceSessionLink uses subjectToSlug('[object') = 'object' for the slug,
-    // but the target must be the RAW value '[object', not 'object'.
-    const result = resolveSourceSessionLink('[object');
-    expect(result.isLink).toBe(false);
-    expect(result.target).toBe('[object');
-  });
-
-  it('target field is "unknown" for empty string (never an empty string or a bracketed value)', () => {
-    expect(resolveSourceSessionLink('').target).toBe('unknown');
+    // ── target field contract: RAW input, never the slugified form ───────────
+    // subjectToSlug('[object') === 'object', so a slug-leaking impl would return 'object'.
+    { why: 'target is the RAW value, not the slugified one', input: '[object', opts: undefined, expected: { isLink: false, target: '[object' } },
+  ])('$why', ({ input, opts, expected }) => {
+    expect(resolveSourceSessionLink(input, opts)).toEqual(expected);
   });
 });

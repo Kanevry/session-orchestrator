@@ -173,6 +173,7 @@ async function bootstrap() {
           'commandMatchesBlocked',
           'extractRedirectTargets',
           'redirectRuleMatches',
+          'redirectSpanEnd',
           'resolveSegmentVerb',
           'splitChainSegments',
         ],
@@ -327,29 +328,6 @@ async function isGitStashNonEmpty(projectDir) {
 }
 
 /**
- * Given a redirect token at `segment[i]`, return the index of the LAST token
- * belonging to that redirect (the operand word, when one exists). Redirect
- * operators and their operands name IO targets, not command arguments —
- * `rm -rf /tmp/ok > out.log` must not collect `>` or `out.log` as rm targets
- * (#983 FP fix). `dup` (`2>&1`) carries no operand word.
- *
- * @param {Array<{ text: string, quoted: boolean, redirect?: object }>} segment
- * @param {number} i — index of the redirect token
- * @returns {number}
- */
-function redirectSpanEnd(segment, i) {
-  const tok = segment[i];
-  // `dup` (2>&1) carries its target inline; `heredoc` consumes its delimiter in
-  // the lexer (the body arrives as a separate QUOTED token) — neither owns an
-  // operand word, and claiming one would swallow the next real token.
-  const hasOperandWord = tok.redirect.mode !== 'dup' && tok.redirect.mode !== 'heredoc';
-  if (hasOperandWord && i + 1 < segment.length && !segment[i + 1].redirect) {
-    return i + 1;
-  }
-  return i;
-}
-
-/**
  * Parse ALL non-flag path arguments from every `rm` invocation in a command.
  *
  * Hardened over the previous single-target parser (#641): handles `-r -f`,
@@ -398,7 +376,7 @@ function parseRmTargets(command) {
     for (let i = index + 1; i < segment.length; i++) {
       const tok = segment[i];
       if (tok.redirect) {
-        const end = redirectSpanEnd(segment, i);
+        const end = blocker.redirectSpanEnd(segment, i);
         const mode = tok.redirect.mode;
         if ((mode === 'truncate' || mode === 'append') && end > i) {
           const operand = segment[end];
@@ -472,7 +450,7 @@ function commandHasRecursiveForceRm(command) {
     let seenDashDash = false;
     for (let i = index + 1; i < segment.length; i++) {
       const t = segment[i];
-      if (t.redirect) { i = redirectSpanEnd(segment, i); continue; }
+      if (t.redirect) { i = blocker.redirectSpanEnd(segment, i); continue; }
       if (!seenDashDash && t.text === '--') { seenDashDash = true; continue; }
       if (!seenDashDash && !t.quoted && t.text.startsWith('-') && t.text !== '-') {
         if (t.text === '--recursive') recursive = true;

@@ -3,33 +3,31 @@
  *
  * Tests for scripts/lib/validate/check-owner-leakage.mjs (#471, epic #462).
  *
- * The check is a CLI script (not an importable module), so tests exercise it
- * via spawnSync(process.execPath, [SCRIPT, fixtureRoot]) against tmpdir fixtures.
+ * The check is a CLI script (not an importable module), so the end-to-end cases
+ * exercise it via spawnSync(process.execPath, [SCRIPT, fixtureRoot]) against
+ * tmpdir fixtures. The canonicalization helpers ARE exported (#661) and are
+ * exercised in-process.
  *
- * Every case asserts BOTH result.status AND presence/absence of `  FAIL:` lines
- * (status-only is the silent-pass class per test-quality.md).
+ * Shape (consolidated, issue #985 Tier B): the checkpoint fixtures live in
+ * tables (SCAN_CASES / CP11_CASES / DETECTED / CLEAN). Each CLI row asserts a
+ * NORMALIZED verdict — `{ status, fails, checkpoints }`, where `checkpoints` is
+ * parsed out of the `  FAIL: <path>:<line> — <CPn> …` report lines — against a
+ * hardcoded literal. That is strictly stronger than the per-case
+ * `expect(stdout).toContain('  FAIL:')` pairs it replaces:
+ *   - a wrong-but-nonzero violation count now fails (was: any FAIL passed);
+ *   - the ATTRIBUTED checkpoint is pinned, so a CP1 hit can no longer satisfy a
+ *     row that means to exercise CP8/CP10/CP11 (substring `toContain('P8')` /
+ *     `toContain('P10')` also matched CP-labels they were not aimed at).
  *
- * Cases:
- *   Positive-1:  path leak (/Users/bernhardg/...)          → status 1, FAIL
- *   Positive-2:  gitlab host (gitlab.gotzendorfer.at)      → status 1, FAIL
- *   Positive-3:  private slug (buchhaltgenie)              → status 1, FAIL
- *   Positive-4:  @goetzendorfer/ scope import              → status 1, FAIL
- *   Positive-5:  events.gotzendorfer.at string-literal
- *                NOT in doc-comment form                   → status 1, FAIL
- *   Negative-1:  clean fixture                             → status 0, PASS, 0 FAIL
- *   Exclusion-1: SECURITY.md security@gotzendorfer.at      → status 0
- *   Exclusion-2: README.md homepage URL                    → status 0
- *   Exclusion-3: manifest author block                     → status 0
- *   Exclusion-4: events test doc-comment line              → status 0
- *   Exclusion-bypass: real leak inside excluded file
- *                (SECURITY.md with /Users/bernhardg/)      → status 1, FAIL
- *   Edge:        empty / no-git repo                       → status 0
+ * Kept as individual it() by design: the report-format contract, the
+ * SELF_EXCLUSIONS path cases, and the Finding-2 regex-quote blanking cases
+ * (line-scoped semantics a table would flatten into unreadability).
  */
 
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, mkdtempSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 // #661: the scanner now exports its canonicalization helpers; the script is
@@ -46,43 +44,64 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'lib', 'validate', 'check-owner-leakage.mjs');
 
+const CP1_LABEL = 'CP1 (personal home path — canonicalized)';
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Run the check CLI synchronously against a given root.
- * @param {string} root
- * @returns {import('node:child_process').SpawnSyncReturns<string>}
- */
-function runCheck(root) {
-  return spawnSync(process.execPath, [SCRIPT, root], {
-    encoding: 'utf8',
-    timeout: 20_000,
-  });
-}
-
-/**
- * Create a tmpdir with a git-init'd repo (no real git needed — just needs
- * ls-files to work) OR an empty dir for the no-git edge case.
- * @param {(root: string) => void} setupFn - write files into root
+ * Create a tmpdir repo containing `files` ({ relPath: content }).
+ * git-init'd by default so `git ls-files` enumerates the fixture.
+ * @param {Record<string,string>} files
  * @param {{initGit?: boolean}} [opts]
  * @returns {string} tmpdir path
  */
-function makeTmpRepo(setupFn, { initGit = true } = {}) {
+function makeTmpRepo(files, { initGit = true } = {}) {
   const root = mkdtempSync(join(os.tmpdir(), 'owner-leakage-test-'));
   if (initGit) {
-    // Minimal git init so `git ls-files` works
     spawnSync('git', ['init', '-b', 'main'], { cwd: root, encoding: 'utf8' });
     spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: root, encoding: 'utf8' });
     spawnSync('git', ['config', 'user.name', 'Test'], { cwd: root, encoding: 'utf8' });
   }
-  setupFn(root);
+  for (const [relPath, content] of Object.entries(files)) {
+    const abs = join(root, relPath);
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, content);
+  }
   if (initGit) {
     // Stage all files so git ls-files can enumerate them
     spawnSync('git', ['add', '-A'], { cwd: root, encoding: 'utf8' });
   }
   return root;
+}
+
+/**
+ * Write a host-local confidential-names JSON list OUTSIDE any scanned root and
+ * return its path (CP11 resolves it via SO_CONFIDENTIAL_NAMES_FILE).
+ * @param {string[]} names
+ */
+function writeNamesFile(names) {
+  const namesDir = mkdtempSync(join(os.tmpdir(), 'owner-leakage-names-'));
+  const namesFile = join(namesDir, 'confidential-names.json');
+  writeFileSync(namesFile, JSON.stringify(names));
+  return namesFile;
+}
+
+/**
+ * Run the check CLI synchronously against a given root.
+ * `names` semantics: undefined → inherit the ambient env; null → explicitly
+ * unset SO_CONFIDENTIAL_NAMES_FILE (unconfigured-default case); array → inject
+ * a real host-local names file.
+ * @param {string} root
+ * @param {string[]|null} [names]
+ */
+function runCheck(root, names) {
+  const env =
+    names === undefined
+      ? process.env
+      : { ...process.env, SO_CONFIDENTIAL_NAMES_FILE: names === null ? '' : writeNamesFile(names) };
+  return spawnSync(process.execPath, [SCRIPT, root], { encoding: 'utf8', timeout: 20_000, env });
 }
 
 /** Count occurrences of substring in string */
@@ -93,331 +112,354 @@ function countOccurrences(str, sub) {
   return count;
 }
 
-// ---------------------------------------------------------------------------
-// Positive-1: personal home path (/Users/bernhardx/...)
-// ---------------------------------------------------------------------------
+/** The report lines: `  FAIL: <relPath>:<lineNum> — <CPn (label)>: <content>` */
+function failLines(result) {
+  return result.stdout.split('\n').filter((l) => l.startsWith('  FAIL:'));
+}
 
-describe('Positive-1: personal home path leak', () => {
-  it('exits 1 when a tracked file contains a /Users/bernhardg/ path', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'leak.md'), '# test\nPath: /Users/bernhardg/secret/config.txt\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
+/**
+ * Normalize a CLI run into a comparable verdict. `checkpoints` is the DISTINCT,
+ * report-order list of CP ids actually attributed — parsed from the label field,
+ * so 'CP1' can never satisfy an expectation of 'CP10'/'CP11'.
+ */
+function summarizeScan(result) {
+  const ids = failLines(result).map((l) => (l.match(/ — (CP\d+)/) || [])[1]);
+  return {
+    status: result.status,
+    fails: ids.length,
+    checkpoints: [...new Set(ids)],
+  };
+}
 
-  it('FAIL line mentions the file name', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'leak.md'), 'run: /Users/bernhardg./Projects/foo/bar.mjs\n');
-    });
-    const result = runCheck(root);
-    expect(result.stdout).toContain('  FAIL:');
-    expect(result.stdout).toContain('leak.md');
-  });
+/**
+ * CP11 verdict: adds the two privacy invariants — the redaction sentinel must be
+ * present, and NO forbidden token (confidential name or suffix residue) may reach
+ * stdout, because this scanner runs in a PUBLIC GitHub-Actions mirror.
+ */
+function summarizeRedaction(result, forbidden) {
+  return {
+    ...summarizeScan(result),
+    redacted: result.stdout.includes('[REDACTED]'),
+    echoed: forbidden.filter((token) => result.stdout.includes(token)),
+  };
+}
 
-  // --- Issue #631 regressions: bare trailing-dot home path (no slash after) ---
+// ===========================================================================
+// CLI scan verdicts — one row per checkpoint fixture.
+// ===========================================================================
 
-  it('exits 1 on bare /Users/bernhardg. at end-of-line (issue #631 blindspot)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'leak.md'), 'home: /Users/bernhardg.\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
+const SCAN_CASES = [
+  // --- CP1: personal home path, slash form + #631 trailing/bare blindspots ---
+  {
+    name: 'CP1: plain /Users/<owner>/ path in a tracked .md',
+    files: { 'leak.md': '# test\nPath: /Users/bernhardg/secret/config.txt\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1: bare trailing-dot home path at end-of-line (#631)',
+    files: { 'leak.md': 'home: /Users/bernhardg.\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1: trailing-dot home path before " && ls" (#631)',
+    files: { 'leak.sh': 'cd /Users/bernhardg. && ls\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1: home=/Users/bernhardg. followed by a newline (#631)',
+    files: { 'leak.txt': 'home=/Users/bernhardg.\nnext line\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1: slash forms /Users/bernhardg./ and /…/Projects/x — one FAIL per line',
+    files: { 'leak.md': 'a: /Users/bernhardg./\nb: /Users/bernhardg./Projects/x\n' },
+    expected: { status: 1, fails: 2, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1: bare /Users/bernhardg (no dot) at end-of-line — \\b arm of the regex',
+    // Mutation guard: the OLD regex /\/Users\/bernhardg[a-z.]*\// required a slash
+    // after the username, so this bare EOL form would NOT match → #631 class.
+    files: { 'leak.txt': 'USER_HOME=/Users/bernhardg\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1: /Users/bernhardg. inside a JSON string value',
+    files: { 'config.json': '{"home": "/Users/bernhardg."}\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1: env-assignment form BERNHARD_HOME=/Users/bernhardg. in a .sh file',
+    files: { 'setup.sh': '#!/bin/sh\nBERNHARD_HOME=/Users/bernhardg.\nexport BERNHARD_HOME\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1: two home paths on ONE line report a single per-line violation',
+    files: { 'multi.sh': 'cp /Users/bernhardg./src /Users/bernhardg./dst\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1: legacy full username /Users/bernhardgoetzendorfer/ (#605 drift class)',
+    // Mutation: removing [a-z.]* from the username token makes this row fail.
+    files: { 'legacy.md': 'Path: /Users/bernhardgoetzendorfer/projects/\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1: hyphen-suffixed /Users/bernhardg-backup/ (owner prefix + non-word boundary)',
+    files: { 'a.md': 'path: /Users/bernhardg-backup/x\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1: dash-encoded Claude-Code projects-dir form (#634)',
+    files: { 'doc.md': 'See .claude/projects/-Users-bernhardg--Projects-x/memory/foo.md for details\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1 e2e: url-percent-encoded home path (#661 novel encoding)',
+    files: { 'leak.md': 'config path: %2FUsers%2Fbernhardg%2Fsecret\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1 e2e: backslash-separated home path (Windows-style spelling)',
+    files: { 'leak.txt': String.raw`p=\Users\bernhardg\config` + '\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1 e2e: homoglyph-slash home path (unicode evasion)',
+    files: { 'leak.md': 'p=∕Users∕bernhardg∕secret\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1 e2e: html-entity-encoded home path',
+    files: { 'leak.md': 'p=&#47;Users&#47;bernhardg\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1 e2e: capitalized username /Users/Bernhardg. (#661 Finding 1)',
+    files: { 'leak.md': 'home: /Users/Bernhardg./Projects/secret\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1 e2e: zero-width space spliced into the username (#661 Finding 3)',
+    files: { 'leak.md': 'p: /Users/bern\u200bhardg/secret\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1 e2e: percent-encoded LETTERS of the path (#661 Finding 4)',
+    files: { 'leak.md': 'p: /%55sers/%62ernhardg/secret\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1 e2e: home-path leak inside .env.example (dotfile-allowlist reachability)',
+    // Mutation caught: reverting isTextFile() to extension-first (extname of
+    // '.env.example' is '.example') skips the file entirely → status 0.
+    files: { '.env.example': 'OWNER_HOME=/Users/bernhardg.\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
 
-  it('exits 1 on /Users/bernhardg. before " && ls" (issue #631 blindspot)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'leak.sh'), 'cd /Users/bernhardg. && ls\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
+  // --- CP1 false-positive guards (near-miss usernames stay clean) ---
+  {
+    name: 'CLEAN: near-miss prefixes /Users/bernhardo-other/ and /Users/bernhardgXfoo',
+    files: { 'clean.md': 'a: /Users/bernhardo-other/\nb: /Users/bernhardgXfoo\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: 'CLEAN: lowercase /users/bernhardg. (CP1 host stays case-SENSITIVE)',
+    files: { 'notes.md': 'see /users/bernhardg. for config\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: 'CLEAN: digit continuation /Users/bernhardg9/ (different user)',
+    files: { 'a.md': 'path: /Users/bernhardg9/proj\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: 'CLEAN: underscore continuation /Users/bernhardg_home (different user)',
+    files: { 'a.md': 'path: /Users/bernhardg_home\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: 'CLEAN: dash-encoded path of a DIFFERENT user (alice)',
+    files: { 'doc.md': 'See -Users-alice--Projects-x/memory/foo.md\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: 'CLEAN: ordinary hyphenated prose (dash→slash canonicalization stays honest)',
+    files: { 'clean.md': 'See multi-story autopilot and cross-repo audit notes.\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: 'CLEAN: leak string only in a .png file (outside the TEXT_EXTS allowlist)',
+    files: { 'image.png': '/Users/bernhardg./secret\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: 'CLEAN: .env.example without a leak (still scanned, no false positive)',
+    files: { '.env.example': 'API_URL=https://api.example.com\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
 
-  it('exits 1 on home=/Users/bernhardg. followed by a newline (issue #631 blindspot)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'leak.txt'), 'home=/Users/bernhardg.\nnext line\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
+  // --- CP2 / CP3 / CP4 / CP6 / CP7: hosts, domains, scopes, private slugs ---
+  {
+    name: 'CP2: private GitLab host (also trips the CP7 catch-all)',
+    files: { 'config.md': 'host: gitlab.gotzendorfer.at\n' },
+    expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
+  },
+  {
+    name: 'CP3: events domain as a string-literal (NOT the excluded doc-comment form)',
+    files: { 'config.mjs': "const EVENTS_URL = 'https://events.gotzendorfer.at/hook';\n" },
+    expected: { status: 1, fails: 2, checkpoints: ['CP3', 'CP7'] },
+  },
+  {
+    name: 'CP3: events domain inside a JSON value',
+    files: { 'settings.json': '{"webhookUrl": "https://events.gotzendorfer.at/webhook"}\n' },
+    expected: { status: 1, fails: 2, checkpoints: ['CP3', 'CP7'] },
+  },
+  {
+    name: 'CP4: @goetzendorfer/ package-scope import',
+    files: { 'index.mjs': "import { createFactory } from '@goetzendorfer/testing-utils';\n" },
+    expected: { status: 1, fails: 1, checkpoints: ['CP4'] },
+  },
+  {
+    name: 'CP6: private project slug "buchhaltgenie"',
+    files: { 'notes.md': 'See repo buchhaltgenie for details.\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP6'] },
+  },
+  {
+    name: 'CP6: private project slug "AngebotsChecker" (case-insensitive)',
+    files: { 'test.mjs': '// target: AngebotsChecker\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP6'] },
+  },
+  {
+    name: 'CP6: carved-out slug "mail-assistant" STILL fails the tracked-file scan (#59 split proof)',
+    files: { 'notes.md': 'Deploy notes for mail-assistant service.\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP6'] },
+  },
+  {
+    name: 'CP6: carved-out slug "launchpad-ai-factory" STILL fails the tracked-file scan (#59)',
+    files: { 'notes.md': 'See launchpad-ai-factory for the epic.\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP6'] },
+  },
+  {
+    name: 'CLEAN: a slug that was never in PRIVATE_SLUGS is not flagged (fake-regression control)',
+    files: { 'bogus-membership-check.md': 'Reference to totally-bogus-slug-never-in-private-slugs-xyz here.\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
 
-  it('still exits 1 on /Users/bernhardg./ and /Users/bernhardg./Projects/x (no regression)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(
-        join(r, 'leak.md'),
-        'a: /Users/bernhardg./\nb: /Users/bernhardg./Projects/x\n',
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
+  // --- CP8: RFC1918 private IPs ---
+  {
+    name: 'CP8: 10.x.x.x private IP',
+    files: { 'infra.md': '# Infra\nThe service runs at 10.1.2.3 internally.\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP8'] },
+  },
+  {
+    name: 'CP8: 192.168.x.x and 172.16-31.x.x private IPs in two files',
+    files: { 'a.md': 'gateway 192.168.1.1\n', 'b.md': 'host 172.20.0.5\n' },
+    expected: { status: 1, fails: 2, checkpoints: ['CP8'] },
+  },
+  {
+    name: 'CLEAN: placeholder .x forms and TEST-NET 192.0.2.x (SSRF docs stay clean)',
+    files: {
+      'ssrf.md': 'Blocks private ranges (10.x, 172.16-31.x, 192.168.x, 127.x). Example 192.0.2.1 (TEST-NET).\n',
+    },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: 'CLEAN: 172.15 / 172.32 sit outside the private 16-31 range',
+    files: { 'public.md': 'public 172.15.0.1 and 172.32.0.1\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: 'CLEAN: the IP-redaction fixture file is CP8-allowlisted',
+    files: { 'tests/scripts/export-hw-learnings.test.mjs': "const s = 'Server at 10.0.0.1 responded';\n" },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
 
-  it('exits 0 on near-miss prefixes /Users/bernhardo-other/ and /Users/bernhardgXfoo (false-positive guard)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(
-        join(r, 'clean.md'),
-        'a: /Users/bernhardo-other/\nb: /Users/bernhardgXfoo\n',
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-});
+  // --- CP10: personal-name segment in a Projects path (#653) ---
+  {
+    name: 'CP10: ~/Projects/Bernhard/vault (trailing-slash base case)',
+    files: { 'config.yaml': 'vault-dir: ~/Projects/Bernhard/vault\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP10'] },
+  },
+  {
+    name: 'CP10: BARE ~/Projects/Bernhard at end-of-line (Finding-1 regression guard)',
+    // Mutation guard: the OLD mandatory-trailing-slash form would NOT match here.
+    files: { 'notes.md': 'plan-baseline-path: ~/Projects/Bernhard\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP10'] },
+  },
+  {
+    name: 'CP10: absolute /Users/<other-user>/Projects/Bernhard/x (Finding-3 defense-in-depth)',
+    files: { 'ci.sh': 'cp /Users/someone/Projects/Bernhard/data ./out\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP10'] },
+  },
+  {
+    name: 'CP10: absolute /home/<user>/Projects/Bernhard (Linux home, no trailing slash)',
+    files: { 'ci.yml': 'workdir: /home/ci/Projects/Bernhard\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP10'] },
+  },
+  {
+    name: 'CP10: the same legacy path at a NON-allowlisted file still fails (allowlist is path-scoped)',
+    files: { 'somewhere-else.mjs': "const LEGACY = '~/Projects/Bernhard/vault';\n" },
+    expected: { status: 1, fails: 1, checkpoints: ['CP10'] },
+  },
+  {
+    name: 'CLEAN: ~/Projects/Bernhard inside a CP10_ALLOWLIST migration source',
+    files: {
+      'scripts/migrate-vault-paths.mjs': "const LEGACY = '~/Projects/Bernhard/vault';\nexport default LEGACY;\n",
+    },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: 'CLEAN: ~/Projects/vault (no personal name)',
+    files: { 'clean.yaml': 'vault-dir: ~/Projects/vault\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: 'CLEAN: ~/Projects/Bernhardt/ (name merely BEGINS with a denylisted name)',
+    files: { 'clean.md': 'path: ~/Projects/Bernhardt/app\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: 'CLEAN: ~/Projects/MyApp/ (legit capitalized project dir)',
+    files: { 'clean.md': 'cd ~/Projects/MyApp/src\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
 
-// ---------------------------------------------------------------------------
-// Positive-2: private GitLab host
-// ---------------------------------------------------------------------------
-
-describe('Positive-2: private GitLab host', () => {
-  it('exits 1 when a tracked file contains gitlab.gotzendorfer.at', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'config.md'), 'host: gitlab.gotzendorfer.at\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Positive-3: private slug
-// ---------------------------------------------------------------------------
-
-describe('Positive-3: private project slug', () => {
-  it('exits 1 when a tracked file contains the slug "buchhaltgenie"', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'notes.md'), 'See repo buchhaltgenie for details.\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
-
-  it('exits 1 for other private slugs (AngebotsChecker)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'test.mjs'), '// target: AngebotsChecker\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Positive-4: @goetzendorfer/ scope import
-// ---------------------------------------------------------------------------
-
-describe('Positive-4: @goetzendorfer/ package scope', () => {
-  it('exits 1 when a tracked file imports from @goetzendorfer/', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(
-        join(r, 'index.mjs'),
-        "import { createFactory } from '@goetzendorfer/testing-utils';\n",
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Positive-5: events.gotzendorfer.at NOT in doc-comment form
-// ---------------------------------------------------------------------------
-
-describe('Positive-5: events.gotzendorfer.at string-literal (not doc-comment)', () => {
-  it('exits 1 when events.gotzendorfer.at appears as a string-literal (not JSDoc)', () => {
-    const root = makeTmpRepo((r) => {
-      // A real string constant — NOT the excluded doc-comment form
-      writeFileSync(
-        join(r, 'config.mjs'),
-        "const EVENTS_URL = 'https://events.gotzendorfer.at/hook';\n",
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
-
-  it('exits 1 even when the events reference is in a JSON value', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(
-        join(r, 'settings.json'),
-        '{"webhookUrl": "https://events.gotzendorfer.at/webhook"}\n',
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Positive-6: full RFC1918 private dotted-quad (P8)
-// ---------------------------------------------------------------------------
-
-describe('Positive-6: RFC1918 private IP leak (P8)', () => {
-  it('exits 1 when a tracked file contains a 10.x.x.x private IP', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'infra.md'), '# Infra\nThe service runs at 10.1.2.3 internally.\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-    expect(result.stdout).toContain('P8');
-  });
-
-  it('exits 1 for 192.168.x.x and 172.16-31.x.x private IPs', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'a.md'), 'gateway 192.168.1.1\n');
-      writeFileSync(join(r, 'b.md'), 'host 172.20.0.5\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(countOccurrences(result.stdout, 'P8')).toBeGreaterThanOrEqual(2);
-  });
-
-  it('does NOT flag placeholder .x forms or TEST-NET (192.0.2.x) — SSRF docs stay clean', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(
-        join(r, 'ssrf.md'),
-        'Blocks private ranges (10.x, 172.16-31.x, 192.168.x, 127.x). Example 192.0.2.1 (TEST-NET).\n',
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-
-  it('does NOT flag 172.15/172.32 (outside the private 16-31 range)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'public.md'), 'public 172.15.0.1 and 172.32.0.1\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-
-  it('exempts the IP-redaction test file (P8_ALLOWLIST) from P8', () => {
-    const root = makeTmpRepo((r) => {
-      mkdirSync(join(r, 'tests', 'scripts'), { recursive: true });
-      writeFileSync(
-        join(r, 'tests', 'scripts', 'export-hw-learnings.test.mjs'),
-        "const s = 'Server at 10.0.0.1 responded';\n",
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Negative-1: clean fixture
-// ---------------------------------------------------------------------------
-
-describe('Negative-1: clean fixture', () => {
-  it('exits 0 when no tracked files contain any forbidden pattern', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'README.md'), '# Clean Plugin\n\nNo private data here.\n');
-      writeFileSync(join(r, 'index.mjs'), '// clean file\nexport default {};\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain('  PASS:');
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Exclusion-1: SECURITY.md with security@gotzendorfer.at only
-// ---------------------------------------------------------------------------
-
-describe('Exclusion-1: sanctioned email in SECURITY.md', () => {
-  it('exits 0 when SECURITY.md contains only security@gotzendorfer.at (no other token)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(
-        join(r, 'SECURITY.md'),
-        '# Security\n\n**Email:** security@gotzendorfer.at\n',
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-
-  it('exits 0 when SECURITY.md contains only office@gotzendorfer.at (no other token)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(
-        join(r, 'SECURITY.md'),
-        'Contact: office@gotzendorfer.at for issues.\n',
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Exclusion-2: README.md homepage URL
-// ---------------------------------------------------------------------------
-
-describe('Exclusion-2: homepage URL in README.md', () => {
-  it('exits 0 when README.md contains https://gotzendorfer.at homepage URL', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(
-        join(r, 'README.md'),
-        '- [Homepage](https://gotzendorfer.at/en/session-orchestrator)\n',
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Exclusion-3: manifest author block
-// ---------------------------------------------------------------------------
-
-describe('Exclusion-3: manifest author block in .claude-plugin/plugin.json', () => {
-  it('exits 0 when .claude-plugin/plugin.json has author email + url (sanctioned URLs/emails)', () => {
-    const root = makeTmpRepo((r) => {
-      mkdirSync(join(r, '.claude-plugin'), { recursive: true });
-      const manifest = {
-        name: 'test-plugin',
-        author: {
-          email: 'office@gotzendorfer.at',
-          url: 'https://gotzendorfer.at',
-        },
-        homepage: 'https://gotzendorfer.at/en/session-orchestrator',
-      };
-      writeFileSync(join(r, '.claude-plugin', 'plugin.json'), JSON.stringify(manifest, null, 2) + '\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Exclusion-4: events-default-url.test.mjs doc-comment line
-// ---------------------------------------------------------------------------
-
-describe('Exclusion-4: events doc-comment line in tests/lib/events-default-url.test.mjs', () => {
-  it('exits 0 when the exact JSDoc contract line references events.gotzendorfer.at', () => {
-    const root = makeTmpRepo((r) => {
-      mkdirSync(join(r, 'tests', 'lib'), { recursive: true });
-      // Write ONLY the excluded doc-comment form — no other string-literal occurrences
-      writeFileSync(
-        join(r, 'tests', 'lib', 'events-default-url.test.mjs'),
+  // --- Sanctioned exclusions (public-facing owner references) ---
+  {
+    name: 'CLEAN: SECURITY.md with only security@gotzendorfer.at',
+    files: { 'SECURITY.md': '# Security\n\n**Email:** security@gotzendorfer.at\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: 'CLEAN: SECURITY.md with only office@gotzendorfer.at',
+    files: { 'SECURITY.md': 'Contact: office@gotzendorfer.at for issues.\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: 'CLEAN: README.md homepage URL',
+    files: { 'README.md': '- [Homepage](https://gotzendorfer.at/en/session-orchestrator)\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: 'CLEAN: .claude-plugin/plugin.json author email + url block',
+    files: {
+      '.claude-plugin/plugin.json':
+        JSON.stringify(
+          {
+            name: 'test-plugin',
+            author: { email: 'office@gotzendorfer.at', url: 'https://gotzendorfer.at' },
+            homepage: 'https://gotzendorfer.at/en/session-orchestrator',
+          },
+          null,
+          2,
+        ) + '\n',
+    },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: 'CLEAN: the exact events doc-comment contract line in events-default-url.test.mjs',
+    files: {
+      'tests/lib/events-default-url.test.mjs':
         [
           '/**',
           ' * Contract:',
@@ -426,430 +468,115 @@ describe('Exclusion-4: events doc-comment line in tests/lib/events-default-url.t
           "import { describe, it } from 'vitest';",
           "describe('placeholder', () => { it('runs', () => {}); });",
         ].join('\n') + '\n',
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-});
+    },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
 
-// ---------------------------------------------------------------------------
-// Exclusion-bypass: real leak INSIDE an "excluded" file bypasses exclusion
-// ---------------------------------------------------------------------------
-
-describe('Exclusion-bypass: real leak inside a normally-excluded file', () => {
-  it('exits 1 when SECURITY.md has /Users/bernhardg/ path (not covered by email exclusion)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(
-        join(r, 'SECURITY.md'),
-        '**Email:** security@gotzendorfer.at\nSee: /Users/bernhardg/secret.key\n',
-      );
-    });
-    const result = runCheck(root);
-    // The /Users/bernhardg/ line is not covered by any exclusion → FAIL
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
-
-  it('exits 1 when events-default-url.test.mjs has a real string-literal (not doc-comment form)', () => {
-    const root = makeTmpRepo((r) => {
-      mkdirSync(join(r, 'tests', 'lib'), { recursive: true });
-      writeFileSync(
-        join(r, 'tests', 'lib', 'events-default-url.test.mjs'),
+  // --- Exclusion bypass: an exclusion covers a LINE FORM, never a whole file ---
+  {
+    name: 'BYPASS: SECURITY.md with a real /Users/ home path still FAILs (email exclusion does not cover it)',
+    files: { 'SECURITY.md': '**Email:** security@gotzendorfer.at\nSee: /Users/bernhardg/secret.key\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'BYPASS: events-default-url.test.mjs with a REAL string literal still FAILs',
+    files: {
+      'tests/lib/events-default-url.test.mjs':
         [
           '/**',
           ' *   - No literal `events.gotzendorfer.at` URL appears anywhere.',
           ' */',
-          "// This is a real string literal (NOT the excluded doc-comment form):",
+          '// This is a real string literal (NOT the excluded doc-comment form):',
           "const HARDCODED = 'https://events.gotzendorfer.at/hook';",
         ].join('\n') + '\n',
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
+    },
+    expected: { status: 1, fails: 2, checkpoints: ['CP3', 'CP7'] },
+  },
+
+  // --- Edge: empty repo / no-git dir ---
+  {
+    name: 'EDGE: empty git repo (no tracked files)',
+    files: {},
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: 'EDGE: non-git dir with a clean text file',
+    files: { 'clean.md': '# Hello world\n' },
+    initGit: false,
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+];
+
+describe('check-owner-leakage CLI — checkpoint scan verdicts', () => {
+  it.each(SCAN_CASES)('$name', ({ files, initGit = true, expected }) => {
+    const root = makeTmpRepo(files, { initGit });
+    expect(summarizeScan(runCheck(root))).toEqual(expected);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Exclusion-5: persona content-lint test file (self-exclusion)
+// Report-format contract — the two report shapes the table normalizes away.
 // ---------------------------------------------------------------------------
-//
-// tests/templates/personas/content-lint.test.mjs asserts that persona template
-// files do NOT contain leakage strings. Its assertion literals must therefore
-// CONTAIN those strings (e.g. `expect(c).not.toContain('@gotzendorfer.at')`).
-// The scanner would flag those literals as leaks, so the file is in
-// SELF_EXCLUSIONS — same pattern as the scanner's own source + test files.
+
+describe('check-owner-leakage CLI — report format', () => {
+  it('emits a PASS line (not silence) when nothing is found', () => {
+    const root = makeTmpRepo({
+      'README.md': '# Clean Plugin\n\nNo private data here.\n',
+      'index.mjs': '// clean file\nexport default {};\n',
+    });
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('  PASS:');
+    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+  });
+
+  it('names the offending file and line number in the FAIL line', () => {
+    const root = makeTmpRepo({ 'leak.md': '# doc\nrun: /Users/bernhardg./Projects/foo/bar.mjs\n' });
+    const result = runCheck(root);
+    expect(failLines(result)[0]).toContain(`leak.md:2 — ${CP1_LABEL}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SELF_EXCLUSIONS — detection-fixture files whose assertion literals MUST
+// contain leak strings. Kept as individual it()s: the contract is about a
+// specific tracked PATH, and the pairing with the path-scoped negative below is
+// what proves the exclusion is not a blanket content exemption.
 // Regression guard for pipeline #4365 / housekeeping-2 2026-05-19.
-
-describe('Exclusion-5: persona content-lint detection-fixture file', () => {
-  it('exits 0 when leakage strings appear inside tests/templates/personas/content-lint.test.mjs', () => {
-    const root = makeTmpRepo((r) => {
-      // Mirror the real layout exactly — exclusion is matched by relative path
-      mkdirSync(join(r, 'tests', 'templates', 'personas'), { recursive: true });
-      writeFileSync(
-        join(r, 'tests', 'templates', 'personas', 'content-lint.test.mjs'),
-        [
-          "import { describe, it, expect } from 'vitest';",
-          "describe('owner-leakage guard', () => {",
-          "  it('does not contain personal email @gotzendorfer.at', () => {",
-          "    expect(content).not.toContain('@gotzendorfer.at');",
-          "  });",
-          "  it('does not contain private repo name buchhaltgenie', () => {",
-          "    expect(content).not.toContain('buchhaltgenie');",
-          "  });",
-          "});",
-          "",
-        ].join('\n'),
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(result.stdout).not.toContain('  FAIL:');
-  });
-
-  it('still flags the same leak strings at a different path (exclusion is path-scoped)', () => {
-    const root = makeTmpRepo((r) => {
-      // Same content, different path — must NOT be excluded
-      writeFileSync(
-        join(r, 'somewhere-else.test.mjs'),
-        "expect(content).not.toContain('@gotzendorfer.at');\n",
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// P3 depth: additional scanner edge-cases (Wave-3 additions)
 // ---------------------------------------------------------------------------
 
-describe('P3 depth: scanner edge-cases', () => {
-  // --- bare /Users/bernhardg without trailing dot (zero [a-z.]* chars + \b) ---
-  it('exits 1 on bare /Users/bernhardg (no dot) at end-of-line', () => {
-    // Regex: /\/Users\/bernhardg[a-z.]*(\/|\b)/ — zero chars after g, then \b fires at EOL.
-    // Mutation guard: restoring the OLD regex /\/Users\/bernhardg[a-z.]*\// would
-    // require a slash after the username, so bare /Users/bernhardg at EOL would NOT
-    // match and this test would fail → catches the #631 regression class.
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'leak.txt'), 'USER_HOME=/Users/bernhardg\n');
-    });
+describe('SELF_EXCLUSIONS: detection-fixture files are exempt by PATH', () => {
+  // tests/husky/pre-commit-owner-leakage.test.mjs plants real leak literals to
+  // prove the pre-commit hook blocks them; the scanner would otherwise flag its
+  // own fixtures. Any SELF_EXCLUSIONS member works as the subject here — this
+  // one is deliberately NOT the persona content-lint entry, whose membership is
+  // in flux.
+  const SELF_EXCLUDED_PATH = 'tests/husky/pre-commit-owner-leakage.test.mjs';
+  const FIXTURE_BODY = [
+    "import { describe, it, expect } from 'vitest';",
+    "describe('owner-leakage guard', () => {",
+    "  it('blocks a personal home path', () => {",
+    "    expect(hookOutput).toContain('/Users/bernhardg./Projects/x');",
+    '  });',
+    "  it('blocks a private repo name buchhaltgenie', () => {",
+    "    expect(content).not.toContain('buchhaltgenie');",
+    '  });',
+    '});',
+    '',
+  ].join('\n');
+
+  it('exits 0 when leak literals appear inside a SELF_EXCLUSIONS file', () => {
+    const root = makeTmpRepo({ [SELF_EXCLUDED_PATH]: FIXTURE_BODY });
     const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
+    expect(summarizeScan(result)).toEqual({ status: 0, fails: 0, checkpoints: [] });
   });
 
-  // --- /Users/bernhardg. inside JSON quotes ---
-  it('exits 1 on /Users/bernhardg. inside a JSON string value', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(
-        join(r, 'config.json'),
-        '{"home": "/Users/bernhardg."}\n',
-      );
-    });
+  it('still flags the SAME literals at a different path (exclusion is path-scoped)', () => {
+    // 3 violations: the home-path line (CP1) + BOTH lines naming the private
+    // slug (CP6) — the it()-title line and the assertion line.
+    const root = makeTmpRepo({ 'somewhere-else.test.mjs': FIXTURE_BODY });
     const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
-
-  // --- env-assignment form mid-file ---
-  it('exits 1 on BERNHARD_HOME=/Users/bernhardg. env-assignment form in a scanned .sh file', () => {
-    // Tests that mid-line env-assignment syntax (VAR=/Users/bernhardg.) is caught.
-    // Uses a .sh extension which IS in TEXT_EXTS; .env.example has extname ".example"
-    // which is NOT in TEXT_EXTS and therefore NOT scanned (pinned by the .png test below).
-    const root = makeTmpRepo((r) => {
-      writeFileSync(
-        join(r, 'setup.sh'),
-        '#!/bin/sh\nBERNHARD_HOME=/Users/bernhardg.\nexport BERNHARD_HOME\n',
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
-
-  // --- case-sensitivity: lowercase /users/bernhardg. must NOT match ---
-  it('exits 0 on lowercase /users/bernhardg. (P1 is case-sensitive — /Users only)', () => {
-    // P1 = /\/Users\/bernhardg.../ — no i flag; lowercase /users/ is not an owner path.
-    // Pins the case-sensitivity contract so a future `gi` flag change triggers a test failure.
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'notes.md'), 'see /users/bernhardg. for config\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-
-  // --- multiple P1 hits on one line: violations array records one per match site ---
-  it('reports at least one FAIL when a single line has two /Users/bernhardg. paths', () => {
-    // The scanner loops lines and records one violation per pattern per line.
-    // This test pins that multiple hits on one line produce at least one FAIL entry.
-    const root = makeTmpRepo((r) => {
-      writeFileSync(
-        join(r, 'multi.sh'),
-        'cp /Users/bernhardg./src /Users/bernhardg./dst\n',
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    // At least one FAIL: line must appear — the exact count is impl-specific (1 per line).
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBeGreaterThanOrEqual(1);
-  });
-
-  // --- /Users/bernhardgoetzendorfer/ (old all-lowercase username form) must still match ---
-  it('exits 1 on /Users/bernhardgoetzendorfer/ (old full-username form, #605 drift class)', () => {
-    // Critical regression guard: Candidate F regex must still catch the original
-    // long-form username via the [a-z.]* suffix + trailing slash.
-    // Mutation: removing [a-z.]* from P1 would make this test fail.
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'legacy.md'), 'Path: /Users/bernhardgoetzendorfer/projects/\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
-
-  // --- binary/non-TEXT_EXTS file (e.g. .png) is NOT scanned even if it has text content ---
-  it('exits 0 when a leak string lives only in a .png file (outside TEXT_EXTS allowlist)', () => {
-    // TEXT_EXTS = {.md, .mjs, .js, .ts, .json, .yml, .yaml, .sh, .txt}
-    // .png is not in the list → the file is skipped → no FAIL even if it contains the pattern.
-    // Pins the enumeration-contract: only whitelisted extensions are scanned.
-    const root = makeTmpRepo((r) => {
-      // .png extension but plain text content containing a P1 hit
-      writeFileSync(join(r, 'image.png'), '/Users/bernhardg./secret\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Edge: empty dir / no-git repo
-// ---------------------------------------------------------------------------
-
-describe('Edge: empty dir or no-git repo', () => {
-  it('exits 0 against an empty dir (no tracked files, git init without commits)', () => {
-    const root = makeTmpRepo(() => {
-      // No files — git repo exists but nothing tracked
-    });
-    const result = runCheck(root);
-    // No files to scan → either 0 violations (status 0) or PASS
-    expect(result.status).toBe(0);
-  });
-
-  it('exits 0 against a non-git dir with no text files matching forbidden patterns', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'clean.md'), '# Hello world\n');
-    }, { initGit: false });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// W5 fold-in (W3-P3 finding): .env.example DOTFILE_ALLOWLIST reachability —
-// extname('.env.example') is '.example' (truthy), so the pre-fix extension-first
-// isTextFile() never reached the dotfile allowlist and silently skipped the file.
-// Mutation caught: reverting isTextFile() to extension-first makes this exit 0.
-// ---------------------------------------------------------------------------
-
-describe('fold-in: .env.example is scanned (dotfile-allowlist reachability)', () => {
-  it('exits 1 on a home-path leak inside .env.example', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, '.env.example'), 'OWNER_HOME=/Users/bernhardg.\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(1);
-  });
-
-  it('exits 0 on a clean .env.example (still scanned, no false positive)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, '.env.example'), 'API_URL=https://api.example.com\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// W5 fold-in (#634 + W4 qa-strategist boundary pins):
-// P9 dash-encoded home path + Candidate-F word-boundary intent documentation.
-// ---------------------------------------------------------------------------
-
-describe('fold-in: P9 dash-encoded home path (#634)', () => {
-  it('exits 1 on the Claude-Code projects-dir encoded form', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(
-        join(r, 'doc.md'),
-        'See .claude/projects/-Users-bernhardg--Projects-x/memory/foo.md for details\n',
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(1);
-    // #661: the dash-form is now caught by the canonical CP1 rule (it collapses
-    // to /Users/bernhardg…), not a dedicated P9 regex. The label reflects that.
-    expect(result.stdout).toContain('CP1 (personal home path — canonicalized)');
-  });
-
-  it('exits 0 on a dash-encoded path of a different user', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'doc.md'), 'See -Users-alice--Projects-x/memory/foo.md\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-});
-
-describe('fold-in: Candidate-F word-boundary intent pins (W4 qa)', () => {
-  it('does NOT match digit-continuation /Users/bernhardg9/ (different user, out-of-scope near-miss)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'a.md'), 'path: /Users/bernhardg9/proj\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-
-  it('does NOT match underscore-continuation /Users/bernhardg_home (different user)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'a.md'), 'path: /Users/bernhardg_home\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-
-  it('DOES match hyphen-suffixed /Users/bernhardg-backup/ (owner prefix + non-word boundary = leak)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'a.md'), 'path: /Users/bernhardg-backup/x\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// P10: personal-name segment in a Projects path (#653)
-//
-// Finding-1 (HIGH): the original P10 `~/Projects/<Name>/` form REQUIRED a
-// trailing slash, so a bare `~/Projects/Bernhard` (end-of-line, before `&&`)
-// slipped through — the exact blindspot P1 was already patched for.
-// Finding-3 (defense-in-depth): the original P10 matched only the ~/-prefixed
-// form, so an absolute-home leak (`/Users/alice/Projects/Bernhard/vault` or
-// `/home/ci/Projects/Bernhard`) slipped both P1 and P10.
-//
-// These tests assert real scanner behavior (status + FAIL/P10 marker), not the
-// regex in isolation — per .claude/rules/testing.md (no test-the-mock).
-// ---------------------------------------------------------------------------
-
-describe('P10: ~/Projects/<PersonalName> leak (#653)', () => {
-  it('exits 1 on ~/Projects/Bernhard/vault (trailing-slash form, base case)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'config.yaml'), 'vault-dir: ~/Projects/Bernhard/vault\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-    expect(result.stdout).toContain('P10');
-  });
-
-  it('exits 1 on a BARE ~/Projects/Bernhard at end-of-line (Finding-1 regression guard)', () => {
-    // Mutation guard: restoring the OLD `~/Projects/Bernhard/` form (mandatory
-    // trailing slash) would NOT match this bare end-of-line ref → this test fails.
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'notes.md'), 'plan-baseline-path: ~/Projects/Bernhard\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-    expect(result.stdout).toContain('P10');
-  });
-
-  it('exits 1 on absolute /Users/<user>/Projects/Bernhard/x (Finding-3 defense-in-depth)', () => {
-    // A non-owner home (alice) — slips both P1 (bernhardg-anchored) and the old
-    // tilde-only P10. The absolute-home alternation catches it.
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'ci.sh'), 'cp /Users/someone/Projects/Bernhard/data ./out\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-    expect(result.stdout).toContain('P10');
-  });
-
-  it('exits 1 on absolute /home/<user>/Projects/Bernhard (Linux home, no trailing slash)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'ci.yml'), 'workdir: /home/ci/Projects/Bernhard\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-    expect(result.stdout).toContain('P10');
-  });
-
-  it('exits 0 when ~/Projects/Bernhard lives inside a P10_ALLOWLIST file (allowlist works)', () => {
-    // scripts/migrate-vault-paths.mjs is a one-shot-migration source whose whole
-    // job is to reference the legacy ~/Projects/Bernhard path — it is allowlisted.
-    const root = makeTmpRepo((r) => {
-      mkdirSync(join(r, 'scripts'), { recursive: true });
-      writeFileSync(
-        join(r, 'scripts', 'migrate-vault-paths.mjs'),
-        "const LEGACY = '~/Projects/Bernhard/vault';\nexport default LEGACY;\n",
-      );
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-
-  it('still flags ~/Projects/Bernhard at a non-allowlisted path (allowlist is path-scoped)', () => {
-    const root = makeTmpRepo((r) => {
-      // Same content as the allowlist fixture, different path → must NOT be excluded
-      writeFileSync(join(r, 'somewhere-else.mjs'), "const LEGACY = '~/Projects/Bernhard/vault';\n");
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-    expect(result.stdout).toContain('P10');
-  });
-
-  it('exits 0 on ~/Projects/vault (no personal name — false-positive guard)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'clean.yaml'), 'vault-dir: ~/Projects/vault\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-
-  it('exits 0 on ~/Projects/Bernhardt/ (name starts with denylisted name but continues — false-positive guard)', () => {
-    // The 't' continuation means no word boundary after "Bernhard" and no slash
-    // immediately after it → no match. Proves the denylist does not over-match
-    // names that merely begin with a denylisted name.
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'clean.md'), 'path: ~/Projects/Bernhardt/app\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-
-  it('exits 0 on ~/Projects/MyApp/ (legit capitalized project dir — false-positive guard)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'clean.md'), 'cd ~/Projects/MyApp/src\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+    expect(summarizeScan(result)).toEqual({ status: 1, fails: 3, checkpoints: ['CP1', 'CP6'] });
   });
 });
 
@@ -858,34 +585,24 @@ describe('P10: ~/Projects/<PersonalName> leak (#653)', () => {
 //
 // The one-encoding-at-a-time regex treadmill (P1 slash-form #631, P9
 // dash-encoded #634, …) is replaced by a single canonicalization step. These
-// tests pin two contracts:
-//   A. matchOwnerPath() / canonicalizeLine() unit behavior — every historical
-//      evasion variant AND a panel of NOVEL encodings all canonicalize to the
-//      same /Users/bernhardg… form and are DETECTED; the lookalike negatives
-//      and the case-sensitivity contract are NOT flagged.
-//   B. End-to-end: a synthesized novel encoding planted in a tracked file is
-//      caught by the CLI (acceptance criterion: "new encodings cannot silently
-//      pass").
-//
-// Per .claude/rules/testing.md: expected booleans are hardcoded literals (not
-// computed), each test has ≥1 meaningful assertion, behavior is tested (the
-// detector's verdict) not implementation, and both happy + error/edge cases
-// are covered.
+// rows pin that every historical evasion variant AND a panel of NOVEL encodings
+// canonicalize to the same /Users/bernhardg… form and are DETECTED, while the
+// lookalike negatives and the case-sensitivity contract are NOT flagged.
+// Expected values are hardcoded literals (the CP1 label / null).
 // ===========================================================================
 
-describe('#661 corpus A: matchOwnerPath — historical + novel encodings DETECTED', () => {
-  // Each row: [label, input line]. Every one MUST be detected as a leak.
-  // Hardcoded expectation: matchOwnerPath() returns a non-null label string.
+describe('#661 corpus: matchOwnerPath — historical + novel encodings DETECTED', () => {
   const DETECTED = [
-    ['P1 plain slash-form', '/Users/bernhardg/secret/config.txt'],
-    ['P1 trailing-dot', 'home: /Users/bernhardg.'],
-    ['P1 bare no-dot at EOL (#631)', 'USER_HOME=/Users/bernhardg'],
-    ['P1 before " && ls" (#631)', 'cd /Users/bernhardg. && ls'],
-    ['P1 inside JSON quotes', '{"home": "/Users/bernhardg."}'],
-    ['P1 hyphen-suffixed', 'path: /Users/bernhardg-backup/x'],
-    ['P1 full legacy username', 'Path: /Users/bernhardgoetzendorfer/projects/'],
-    ['P9 dash-encoded projects-dir (#634)', 'See -Users-bernhardg--Projects-x/memory/foo.md'],
-    ['P9 dash-encoded bare', 'dir=-Users-bernhardg'],
+    ['CP1 plain slash-form', '/Users/bernhardg/secret/config.txt'],
+    ['CP1 trailing-dot', 'home: /Users/bernhardg.'],
+    ['CP1 bare no-dot at EOL (#631)', 'USER_HOME=/Users/bernhardg'],
+    ['CP1 before " && ls" (#631)', 'cd /Users/bernhardg. && ls'],
+    ['CP1 inside JSON quotes', '{"home": "/Users/bernhardg."}'],
+    ['CP1 hyphen-suffixed', 'path: /Users/bernhardg-backup/x'],
+    ['CP1 full legacy username', 'Path: /Users/bernhardgoetzendorfer/projects/'],
+    ['CP1 full legacy username, bare trailing slash', '/Users/bernhardgoetzendorfer/'],
+    ['dash-encoded projects-dir (#634)', 'See -Users-bernhardg--Projects-x/memory/foo.md'],
+    ['dash-encoded bare', 'dir=-Users-bernhardg'],
     ['NOVEL url-percent encoded', 'p=%2FUsers%2Fbernhardg%2Fsecret'],
     ['NOVEL url-percent uppercase hex', 'p=%2fUsers%2fbernhardg'],
     ['NOVEL double-percent encoded', 'p=%252FUsers%252Fbernhardg'],
@@ -895,189 +612,73 @@ describe('#661 corpus A: matchOwnerPath — historical + novel encodings DETECTE
     ['NOVEL html numeric entity (&#47;)', 'p=&#47;Users&#47;bernhardg'],
     ['NOVEL html hex entity (&#x2F;)', 'p=&#x2F;Users&#x2F;bernhardg'],
     ['NOVEL html named entity (&sol;)', 'p=&sol;Users&sol;bernhardg'],
+    // Finding 1 (HIGH): username matched case-INSENSITIVELY (real path on APFS).
+    ['Finding 1: capitalized username', '/Users/Bernhardg./Projects/secret'],
+    ['Finding 1: lowercase control', '/Users/bernhardg/secret'],
+    // Finding 3 (MED): zero-width / format chars spliced into the username.
+    ['Finding 3: zero-width space in username', '/Users/bern\u200bhardg/secret'],
+    ['Finding 3: soft-hyphen in username', '/Users/bern\u00adhardg/secret'],
+    ['Finding 3: tab in username', '/Users/bern\thardg/secret'],
+    // Findings 4+5 (LOW): decoders cover LETTERS, and loop to a FIXPOINT.
+    ['Finding 4: percent-encoded letters', '/%55sers/%62ernhardg/secret'],
+    ['Finding 4: decimal entity for a letter', '/&#85;sers/bernhardg/secret'],
+    ['Finding 4: hex entity for a letter', '/&#x55;sers/bernhardg/secret'],
+    ['Finding 5: NESTED double-percent letter encoding (%2555 → %55 → U)', '/%2555sers/%2562ernhardg/secret'],
   ];
 
-  for (const [label, line] of DETECTED) {
-    it(`DETECTS: ${label}`, () => {
-      // Hardcoded literal expectation — a leak must be reported (truthy label).
-      expect(matchOwnerPath(line)).toBe('CP1 (personal home path — canonicalized)');
-    });
-  }
+  it.each(DETECTED)('DETECTS: %s', (_label, line) => {
+    expect(matchOwnerPath(line)).toBe(CP1_LABEL);
+  });
 });
 
-describe('#661 corpus A: matchOwnerPath — benign + lookalike NOT flagged', () => {
-  // Each MUST be clean. Hardcoded expectation: matchOwnerPath() returns null.
+describe('#661 corpus: matchOwnerPath — benign + lookalike NOT flagged', () => {
   const CLEAN = [
     ['near-miss diverges before g (bernhardo)', '/Users/bernhardo-other/'],
     ['near-miss uppercase continuation (bernhardgXfoo)', '/Users/bernhardgXfoo'],
     ['near-miss digit continuation (bernhardg9)', '/Users/bernhardg9/proj'],
     ['near-miss underscore continuation (bernhardg_home)', '/Users/bernhardg_home'],
     ['case-sensitivity contract: lowercase /users', 'see /users/bernhardg. for config'],
+    ['case-sensitivity contract: lowercase /users with path', '/users/bernhardg/x'],
     ['other-user dash-encoded (alice)', '-Users-alice--Projects-x/memory/foo.md'],
     ['self-doc: quotes old P1 regex', 'P1 regex `/\\/Users\\/bernhardg[a-z.]*(\\/|\\b)/` is tight'],
     ['self-doc: quotes P9 dash regex', 'added P9 `/-Users-bernhardg[a-z.]*-/`'],
     ['benign capitalized project dir', '~/Projects/MyApp/src'],
     ['benign clean url', 'API_URL=https://api.example.com'],
+    ['benign unrelated percent escape (%20)', 'cache%20dir is fine'],
     ['empty string', ''],
   ];
 
-  for (const [label, line] of CLEAN) {
-    it(`CLEAN: ${label}`, () => {
-      // Hardcoded literal expectation — no leak reported.
-      expect(matchOwnerPath(line)).toBe(null);
-    });
-  }
+  it.each(CLEAN)('CLEAN: %s', (_label, line) => {
+    expect(matchOwnerPath(line)).toBe(null);
+  });
 });
 
-describe('#661 corpus A: canonicalizeLine — separator normalization (case preserved)', () => {
-  it('collapses url-percent slashes to /Users/bernhardg (capital U preserved)', () => {
-    expect(canonicalizeLine('%2FUsers%2Fbernhardg')).toContain('/Users/bernhardg');
+describe('#661 corpus: canonicalizeLine — separator normalization (case preserved)', () => {
+  const NORMALIZES = [
+    ['url-percent slashes', '%2FUsers%2Fbernhardg', '/Users/bernhardg'],
+    ['backslash separators', String.raw`\Users\bernhardg`, '/Users/bernhardg'],
+    ['dash-encoded projects-dir', '-Users-bernhardg--Projects-x', '/Users/bernhardg'],
+    ['homoglyph division-slash (∕)', '∕Users∕bernhardg', '/Users/bernhardg'],
+    ['html numeric entity &#47;', '&#47;Users&#47;bernhardg', '/Users/bernhardg'],
+    // Case-sensitivity contract: uppercase continuation survives so the
+    // lowercase-only [a-z.]* username token stops at it.
+    ['uppercase username continuation is preserved', '/Users/bernhardgXfoo', 'bernhardgX'],
+  ];
+
+  it.each(NORMALIZES)('canonicalizes %s', (_label, input, expectedSubstring) => {
+    expect(canonicalizeLine(input)).toContain(expectedSubstring);
   });
 
-  it('collapses backslash separators to forward slashes', () => {
-    expect(canonicalizeLine(String.raw`\Users\bernhardg`)).toContain('/Users/bernhardg');
-  });
-
-  it('collapses dash-encoded projects-dir to /Users/bernhardg', () => {
-    expect(canonicalizeLine('-Users-bernhardg--Projects-x')).toContain('/Users/bernhardg');
-  });
-
-  it('collapses homoglyph division-slash (∕) to ASCII /', () => {
-    expect(canonicalizeLine('∕Users∕bernhardg')).toContain('/Users/bernhardg');
-  });
-
-  it('decodes html numeric entity &#47; to /', () => {
-    expect(canonicalizeLine('&#47;Users&#47;bernhardg')).toContain('/Users/bernhardg');
-  });
-
-  it('PRESERVES letter case (lowercase /users stays lowercase)', () => {
-    // Case-sensitivity contract: a lowercased path must not be upper-cased into
-    // a false /Users match. Hardcoded: the output must NOT contain capital-U form.
+  it('PRESERVES letter case — a lowercase /users path is never upper-cased into a false hit', () => {
     expect(canonicalizeLine('/users/bernhardg.')).not.toContain('/Users/bernhardg');
   });
-
-  it('PRESERVES uppercase username continuation (bernhardgX stays X)', () => {
-    // /Users/bernhardgXfoo must keep the capital X so [a-z.]* stops at it.
-    expect(canonicalizeLine('/Users/bernhardgXfoo')).toContain('bernhardgX');
-  });
 });
 
-describe('#661 corpus B: end-to-end — novel encoding planted in a tracked file is caught', () => {
-  it('exits 1 on a url-percent-encoded home path in a tracked .md file', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'leak.md'), 'config path: %2FUsers%2Fbernhardg%2Fsecret\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-    expect(result.stdout).toContain('CP1 (personal home path — canonicalized)');
-  });
-
-  it('exits 1 on a backslash-separated home path (Windows-style spelling)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'leak.txt'), String.raw`p=\Users\bernhardg\config` + '\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
-
-  it('exits 1 on a homoglyph-slash home path (unicode evasion)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'leak.md'), 'p=∕Users∕bernhardg∕secret\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
-
-  it('exits 1 on an html-entity-encoded home path', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'leak.md'), 'p=&#47;Users&#47;bernhardg\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
-
-  it('exits 0 on a benign file that merely contains hyphenated words (no false-positive)', () => {
-    // The dash→slash canonicalization is over-broad by design; this pins that it
-    // does NOT manufacture a /Users/bernhardg hit out of ordinary hyphenated prose.
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'clean.md'), 'See multi-story autopilot and cross-repo audit notes.\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-});
-
-// ===========================================================================
-// #661 security follow-up — HIGH/MED false-negative fixes (security-reviewer)
-//
-// Finding 1 (HIGH): capitalized username `/Users/Bernhardg.` evaded — the
-//   username segment was matched case-SENSITIVELY. On case-insensitive APFS it
-//   is a real operator path. Now matched case-INSENSITIVELY via a per-letter
-//   token, while the HOST stays case-sensitive (`/Users`, not `/users`) and the
-//   CONTINUATION class stays lowercase-only (so an uppercase-letter continuation
-//   marks a DIFFERENT user and is NOT flagged).
-// Finding 2 (MED): a real path on a line that also QUOTED the scanner regex was
-//   suppressed wholesale. Now only the quoted regex TOKEN is blanked; the real
-//   path on the same line is re-scanned and caught.
-// Finding 3 (MED): zero-width / format chars spliced into the username
-//   (`/Users/bern<U+200B>hardg`) evaded. Now stripped from the canonical form.
-// Findings 4+5 (LOW): percent/entity/unicode-escape decoders now decode the
-//   LETTERS of `Users`/`bernhardg` (not only separators), and the decode
-//   pipeline loops to a FIXPOINT so a nested encoding (`%2555` → `%55` → `U`)
-//   is caught.
-//
-// Per .claude/rules/testing.md: hardcoded literal expecteds, behavior-focused
-// (the detector's verdict via matchOwnerPath / the CLI), ≥1 meaningful
-// assertion, both DETECTED and CLEAN (boundary) cases pinned.
-// ===========================================================================
-
-describe('#661 follow-up: Finding 1 — case-insensitive username, narrow boundaries', () => {
-  // The four operator-verified boundary cases, pinned as explicit assertions.
-  it('DETECTS capitalized username /Users/Bernhardg./Projects/secret (Finding 1 fix)', () => {
-    expect(matchOwnerPath('/Users/Bernhardg./Projects/secret')).toBe(
-      'CP1 (personal home path — canonicalized)',
-    );
-  });
-
-  it('DETECTS lowercase control /Users/bernhardg/secret (no regression)', () => {
-    expect(matchOwnerPath('/Users/bernhardg/secret')).toBe(
-      'CP1 (personal home path — canonicalized)',
-    );
-  });
-
-  it('CLEAN on lowercase host /users/bernhardg/x (host stays case-SENSITIVE)', () => {
-    // Mutation guard: adding the /i flag (instead of a per-letter username token)
-    // would loosen the host anchor and make this match → this test fails.
-    expect(matchOwnerPath('/users/bernhardg/x')).toBe(null);
-  });
-
-  it('CLEAN on uppercase continuation /Users/bernhardgXfoo (different user)', () => {
-    // The continuation class [a-z.]* must stay lowercase-only so an uppercase
-    // letter continuing the segment (= different user) stops the match.
-    expect(matchOwnerPath('/Users/bernhardgXfoo')).toBe(null);
-  });
-
-  it('DETECTS legacy lowercase continuation /Users/bernhardgoetzendorfer/ (no regression)', () => {
-    expect(matchOwnerPath('/Users/bernhardgoetzendorfer/')).toBe(
-      'CP1 (personal home path — canonicalized)',
-    );
-  });
-
-  it('exits 1 end-to-end on a capitalized-username leak in a tracked file', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'leak.md'), 'home: /Users/Bernhardg./Projects/secret\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-    expect(result.stdout).toContain('CP1 (personal home path — canonicalized)');
-  });
-});
+// ---------------------------------------------------------------------------
+// #661 Finding 2 (MED) — regex-quote blanking is TOKEN-scoped, not line-scoped.
+// Kept as individual it()s: the whole point is that ONE line carries both a
+// quoted regex and (sometimes) a real path, which a fixture table flattens.
+// ---------------------------------------------------------------------------
 
 describe('#661 follow-up: Finding 2 — regex-quote blanks only the token, not the line', () => {
   it('DETECTS a real path on a line that ALSO quotes the scanner regex (residue re-scan)', () => {
@@ -1087,7 +688,7 @@ describe('#661 follow-up: Finding 2 — regex-quote blanks only the token, not t
     // is caught.
     expect(
       matchOwnerPath('Real: /Users/bernhardg/Projects/secret (see regex /Users/bernhardg[a-z.]*)'),
-    ).toBe('CP1 (personal home path — canonicalized)');
+    ).toBe(CP1_LABEL);
   });
 
   it('CLEAN on a line that ONLY quotes the old P1 regex (self-doc, no real path)', () => {
@@ -1099,245 +700,102 @@ describe('#661 follow-up: Finding 2 — regex-quote blanks only the token, not t
   });
 
   it('exits 1 end-to-end when a real leak shares a line with a quoted regex', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(
-        join(r, 'doc.md'),
-        'Real: /Users/bernhardg/Projects/secret (see regex /Users/bernhardg[a-z.]*)\n',
-      );
+    const root = makeTmpRepo({
+      'doc.md': 'Real: /Users/bernhardg/Projects/secret (see regex /Users/bernhardg[a-z.]*)\n',
     });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
+    expect(summarizeScan(runCheck(root))).toEqual({ status: 1, fails: 1, checkpoints: ['CP1'] });
   });
 });
 
-describe('#661 follow-up: Finding 3 — zero-width / format chars stripped', () => {
-  it('DETECTS a zero-width space spliced into the username (/Users/bern\\u200bhardg)', () => {
-    // The \u200b escape produces the same ZWSP code point a real evasion would
-    // splice in — kept as an escape (not a literal glyph) to keep source ASCII.
-    expect(matchOwnerPath('/Users/bern\u200bhardg/secret')).toBe(
-      'CP1 (personal home path — canonicalized)',
-    );
-  });
-
-  it('DETECTS a soft-hyphen spliced into the username (/Users/bern\\u00adhardg)', () => {
-    expect(matchOwnerPath('/Users/bern\u00adhardg/secret')).toBe(
-      'CP1 (personal home path — canonicalized)',
-    );
-  });
-
-  it('DETECTS a tab spliced into the username (/Users/bern\\thardg)', () => {
-    expect(matchOwnerPath('/Users/bern\thardg/secret')).toBe(
-      'CP1 (personal home path — canonicalized)',
-    );
-  });
-
-  it('exits 1 end-to-end on a zero-width-spliced home path in a tracked file', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'leak.md'), 'p: /Users/bern\u200bhardg/secret\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
-});
-
-describe('#661 follow-up: Findings 4+5 — letter-decoding + fixpoint loop', () => {
-  it('DETECTS percent-encoded LETTERS of the path (/%55sers/%62ernhardg — Finding 4)', () => {
-    expect(matchOwnerPath('/%55sers/%62ernhardg/secret')).toBe(
-      'CP1 (personal home path — canonicalized)',
-    );
-  });
-
-  it('DETECTS a decimal HTML entity for a LETTER (/&#85;sers/bernhardg — Finding 4)', () => {
-    expect(matchOwnerPath('/&#85;sers/bernhardg/secret')).toBe(
-      'CP1 (personal home path — canonicalized)',
-    );
-  });
-
-  it('DETECTS a hex HTML entity for a LETTER (/&#x55;sers/bernhardg — Finding 4)', () => {
-    expect(matchOwnerPath('/&#x55;sers/bernhardg/secret')).toBe(
-      'CP1 (personal home path — canonicalized)',
-    );
-  });
-
-  it('DETECTS a NESTED double-percent letter encoding (%2555 → %55 → U — Finding 5 fixpoint)', () => {
-    expect(matchOwnerPath('/%2555sers/%2562ernhardg/secret')).toBe(
-      'CP1 (personal home path — canonicalized)',
-    );
-  });
-
-  it('exits 1 end-to-end on a percent-letter-encoded home path in a tracked file', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'leak.md'), 'p: /%55sers/%62ernhardg/secret\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-  });
-
-  it('CLEAN on ordinary text with an unrelated percent escape (no false-positive)', () => {
-    // %20 → space; this must NOT manufacture a /Users/bernhardg hit.
-    expect(matchOwnerPath('cache%20dir is fine')).toBe(null);
-  });
-});
-
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // CP11: host-local confidential customer/repo names (#728a)
 //
 // The names list is HOST-LOCAL and never committed; the CLI resolves it via
 // resolveHostPath('confidential-names-file', …), whose highest-precedence tier
-// is the env-var SO_CONFIDENTIAL_NAMES_FILE. Tests inject a real temp names JSON
+// is the env-var SO_CONFIDENTIAL_NAMES_FILE. Rows inject a real temp names JSON
 // via that env-var, written OUTSIDE the scanned root so the names file itself is
 // never a scan subject. Fixture names are invented ('zenithcorp') — never a real
 // confidential name (confidentiality invariant).
 //
-// LOAD-BEARING assertion: a CP11 hit must REDACT the matched name from stdout,
-// because the checker runs in a PUBLIC GitHub-Actions mirror — the confidential
-// name must NOT appear in the CI log even when the guard fires.
-// ---------------------------------------------------------------------------
+// LOAD-BEARING: `echoed: []` — a CP11 hit must REDACT every configured name (and
+// every suffix residue) from stdout, because the checker runs in a PUBLIC
+// GitHub-Actions mirror; the name must NOT appear in the CI log even when the
+// guard fires.
+// ===========================================================================
+
+const CP11_CASES = [
+  {
+    name: 'CP11: a configured confidential name FAILs and is redacted from the report',
+    files: { 'notes.md': '# Client work\nContract signed with zenithcorp GmbH.\n' },
+    names: ['zenithcorp'],
+    forbidden: ['zenithcorp'],
+    expected: { status: 1, fails: 1, checkpoints: ['CP11'], redacted: true, echoed: [] },
+  },
+  {
+    name: 'CP11: matches case-insensitively and redacts EVERY occurrence on the line',
+    files: { 'notes.md': 'ZenithCorp and zenithcorp are the same client.\n' },
+    names: ['zenithcorp'],
+    forbidden: ['ZenithCorp', 'zenithcorp'],
+    expected: { status: 1, fails: 1, checkpoints: ['CP11'], redacted: true, echoed: [] },
+  },
+  {
+    name: 'CP11: a line naming TWO different configured names redacts BOTH',
+    // Redacting only the FIRST matching pattern (and breaking) would echo the
+    // SECOND NDA name verbatim to the public log — a worse leak than the guard.
+    files: { 'notes.md': 'zenithcorp and apexglobal are both clients.\n' },
+    names: ['zenithcorp', 'apexglobal'],
+    forbidden: ['zenithcorp', 'apexglobal'],
+    expected: { status: 1, fails: 1, checkpoints: ['CP11'], redacted: true, echoed: [] },
+  },
+  {
+    name: 'CP11 Fix 1: a name riding in on a CP8 hit is scrubbed at the print choke-point',
+    // Pre-fix RED: the CP8 FAIL line printed the confidential name verbatim.
+    files: { 'infra.md': 'zenithcorp server runs at 10.1.2.3 internally\n' },
+    names: ['zenithcorp'],
+    forbidden: ['zenithcorp'],
+    expected: { status: 1, fails: 2, checkpoints: ['CP8', 'CP11'], redacted: true, echoed: [] },
+  },
+  {
+    name: 'CP11 Fix 2 ORDER A [short,long]: prefix name leaves no suffix residue',
+    files: { 'notes.md': 'The acme-corp-secret-project launches soon.\n' },
+    names: ['acme', 'acme-corp-secret-project'],
+    forbidden: ['acme-corp-secret-project', '-corp-secret-project'],
+    expected: { status: 1, fails: 1, checkpoints: ['CP11'], redacted: true, echoed: [] },
+  },
+  {
+    name: 'CP11 Fix 2 ORDER B [long,short]: same input, list order reversed, still fully redacted',
+    files: { 'notes.md': 'The acme-corp-secret-project launches soon.\n' },
+    names: ['acme-corp-secret-project', 'acme'],
+    forbidden: ['acme-corp-secret-project', '-corp-secret-project'],
+    expected: { status: 1, fails: 1, checkpoints: ['CP11'], redacted: true, echoed: [] },
+  },
+  {
+    name: 'CP11: a tracked file with no configured name PASSes',
+    files: { 'notes.md': 'We onboarded a new client this week.\n' },
+    names: ['zenithcorp'],
+    forbidden: [],
+    expected: { status: 0, fails: 0, checkpoints: [], redacted: false, echoed: [] },
+  },
+  {
+    name: 'CP11 is INACTIVE with an empty configured list',
+    files: { 'notes.md': 'Mentions zenithcorp explicitly.\n' },
+    names: [],
+    forbidden: [],
+    expected: { status: 0, fails: 0, checkpoints: [], redacted: false, echoed: [] },
+  },
+  {
+    name: 'CP11 is INACTIVE when no confidential-names file is configured (default on every host/CI)',
+    files: { 'notes.md': 'A synthetic token zenithcorp-unconfigured appears here.\n' },
+    names: null,
+    forbidden: [],
+    expected: { status: 0, fails: 0, checkpoints: [], redacted: false, echoed: [] },
+  },
+];
 
 describe('CP11: confidential-name leak (host-local list)', () => {
-  /**
-   * Run the check CLI with a host-local confidential-names file injected via env.
-   * The names file is written to a sibling tmpdir, never inside `root`.
-   * @param {string} root - scanned repo root
-   * @param {string[]} names - confidential names to write into the JSON list
-   */
-  function runCheckWithNames(root, names) {
-    const namesDir = mkdtempSync(join(os.tmpdir(), 'owner-leakage-names-'));
-    const namesFile = join(namesDir, 'confidential-names.json');
-    writeFileSync(namesFile, JSON.stringify(names));
-    return spawnSync(process.execPath, [SCRIPT, root], {
-      encoding: 'utf8',
-      timeout: 20_000,
-      env: { ...process.env, SO_CONFIDENTIAL_NAMES_FILE: namesFile },
-    });
-  }
-
-  it('exits 1 and FAILs when a tracked file contains a configured confidential name', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'notes.md'), '# Client work\nWe onboarded zenithcorp last week.\n');
-    });
-    const result = runCheckWithNames(root, ['zenithcorp']);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('  FAIL:');
-    expect(result.stdout).toContain('CP11');
-  });
-
-  it('REDACTS the matched name from the FAIL output (load-bearing privacy invariant)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'notes.md'), 'Contract signed with zenithcorp GmbH.\n');
-    });
-    const result = runCheckWithNames(root, ['zenithcorp']);
-    expect(result.status).toBe(1);
-    // The redaction sentinel is present …
-    expect(result.stdout).toContain('[REDACTED]');
-    // … and the confidential name itself NEVER reaches stdout.
-    expect(result.stdout).not.toContain('zenithcorp');
-  });
-
-  it('matches case-insensitively and redacts every occurrence on the line', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'notes.md'), 'ZenithCorp and zenithcorp are the same client.\n');
-    });
-    const result = runCheckWithNames(root, ['zenithcorp']);
-    expect(result.status).toBe(1);
-    expect(result.stdout).not.toContain('ZenithCorp');
-    expect(result.stdout).not.toContain('zenithcorp');
-    expect(result.stdout).toContain('[REDACTED]');
-  });
-
-  it('redacts ALL configured names on a line naming two DIFFERENT ones (multi-name leak)', () => {
-    // CRITICAL CP11 privacy invariant: a line mentioning TWO distinct confidential
-    // names must have BOTH redacted before its lineContent reaches the PUBLIC
-    // GitHub-Actions log. Redacting only the FIRST matching pattern (and breaking)
-    // echoes the SECOND NDA name verbatim to stdout — a worse leak than the one
-    // being guarded. Both names must be absent; [REDACTED] must be present.
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'notes.md'), 'zenithcorp and apexglobal are both clients.\n');
-    });
-    const result = runCheckWithNames(root, ['zenithcorp', 'apexglobal']);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('CP11');
-    expect(result.stdout).toContain('[REDACTED]');
-    // NEITHER confidential name may reach stdout — the bug leaks at least one.
-    expect(result.stdout).not.toContain('zenithcorp');
-    expect(result.stdout).not.toContain('apexglobal');
-  });
-
-  it('PASSES a tracked file that contains no configured confidential name', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'notes.md'), 'We onboarded a new client this week.\n');
-    });
-    const result = runCheckWithNames(root, ['zenithcorp']);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
-  });
-
-  // Fix 1 (architect): choke-point redaction — a confidential name that rides in on
-  // a CP1–CP10 hit (here CP8, an RFC1918 IP) must be scrubbed from THAT violation's
-  // lineContent too. Pre-fix RED: the CP8 FAIL line printed the name verbatim.
-  it('redacts a confidential name that co-occurs with a CP8 (RFC1918 IP) hit — choke-point (Fix 1)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'infra.md'), 'zenithcorp server runs at 10.1.2.3 internally\n');
-    });
-    const result = runCheckWithNames(root, ['zenithcorp']);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('P8');
-    expect(result.stdout).not.toContain('zenithcorp');
-    expect(result.stdout).toContain('[REDACTED]');
-  });
-
-  // Fix 2 (security, PoC-confirmed): order-independent redaction — a name that is a
-  // PREFIX of another must not leak a suffix residue, in EITHER list order.
-  it('order-independent redaction, ORDER A [short,long] — no suffix residue (Fix 2)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'notes.md'), 'The acme-corp-secret-project launches soon.\n');
-    });
-    const result = runCheckWithNames(root, ['acme', 'acme-corp-secret-project']);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('CP11');
-    expect(result.stdout).toContain('[REDACTED]');
-    expect(result.stdout).not.toContain('acme-corp-secret-project');
-    expect(result.stdout).not.toContain('-corp-secret-project');
-  });
-
-  it('order-independent redaction, ORDER B [long,short] — same input fully redacts (Fix 2)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'notes.md'), 'The acme-corp-secret-project launches soon.\n');
-    });
-    const result = runCheckWithNames(root, ['acme-corp-secret-project', 'acme']);
-    expect(result.status).toBe(1);
-    expect(result.stdout).toContain('[REDACTED]');
-    expect(result.stdout).not.toContain('acme-corp-secret-project');
-    expect(result.stdout).not.toContain('-corp-secret-project');
-  });
-
-  it('is INACTIVE when the list is empty (configured but zero names)', () => {
-    const root = makeTmpRepo((r) => {
-      // A would-be confidential token — but the empty list means CP11 never fires.
-      writeFileSync(join(r, 'notes.md'), 'Mentions zenithcorp explicitly.\n');
-    });
-    const result = runCheckWithNames(root, []);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, 'CP11')).toBe(0);
-  });
-
-  it('is INACTIVE when no confidential-names file is configured (unconfigured default)', () => {
-    // No SO_CONFIDENTIAL_NAMES_FILE override → env tier explicitly unset → owner.yaml
-    // is unconfigured for this brand-new key on every host/CI this test runs on →
-    // CP11 inactive. The invented token below is never a real confidential name.
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'notes.md'), 'A synthetic token zenithcorp-unconfigured appears here.\n');
-    });
-    const result = spawnSync(process.execPath, [SCRIPT, root], {
-      encoding: 'utf8',
-      timeout: 20_000,
-      env: { ...process.env, SO_CONFIDENTIAL_NAMES_FILE: '' },
-    });
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, 'CP11')).toBe(0);
+  it.each(CP11_CASES)('$name', ({ files, names, forbidden, expected }) => {
+    const root = makeTmpRepo(files);
+    expect(summarizeRedaction(runCheck(root, names), forbidden)).toEqual(expected);
   });
 });
 
@@ -1346,111 +804,54 @@ describe('CP11: confidential-name leak (host-local list)', () => {
 //
 // The SPLIT (owner decision 2026-07-18): five slugs are cleared for use as an
 // IN-PROCESS vault-namespace segment (isOwnerLeakySegment returns null) while
-// STILL being blocked from leaking into TRACKED public-mirror files (runScan /
-// the CLI still exits 1). isOwnerLeakySegment returns null when clean, or the
-// pattern id string ('CP1'|'CP6'|'CP10') when leaky — asserted on that shape.
+// STILL being blocked from leaking into TRACKED public-mirror files (the CLI
+// still exits 1 — pinned by the CP6 rows in SCAN_CASES above).
+// isOwnerLeakySegment returns null when clean, or the pattern id string
+// ('CP1'|'CP6'|'CP10') when leaky — asserted on that shape.
 // ---------------------------------------------------------------------------
+
 describe('VAULT_CLEAR_SLUGS carve-out — isOwnerLeakySegment (in-process guard)', () => {
-  it('carved-out slug "buchhaltgenie" is NOT owner-leaky in-process (returns null)', () => {
-    expect(isOwnerLeakySegment('buchhaltgenie')).toBe(null);
+  const SEGMENTS = [
+    ['carved-out slug', 'buchhaltgenie', null],
+    ['carved-out slug, mixed case', 'BuchhaltGenie', null],
+    ['carved-out slug, upper case', 'MAIL-ASSISTANT', null],
+    ['carved-out slug, camel case', 'AngebotsChecker', null],
+    // The carve-out did NOT blanket-disable CP6 — retained slugs still bite.
+    ['retained slug', 'aiat-pmo-module', 'CP6'],
+    ['retained slug, mixed case', 'Codex-Hackathon', 'CP6'],
+  ];
+
+  it.each(SEGMENTS)('%s "%s" → %s', (_label, segment, expected) => {
+    expect(isOwnerLeakySegment(segment)).toBe(expected);
   });
 
-  it('retained slug "aiat-pmo-module" IS still owner-leaky in-process (returns "CP6")', () => {
-    // Proves the in-process CP6 guard still bites for the non-carved slugs — the
-    // carve-out did not blanket-disable CP6.
-    expect(isOwnerLeakySegment('aiat-pmo-module')).toBe('CP6');
-    expect(isOwnerLeakySegment('Codex-Hackathon')).toBe('CP6');
-  });
-
-  it('carve-out is case-insensitive (BuchhaltGenie / MAIL-ASSISTANT → null)', () => {
-    expect(isOwnerLeakySegment('BuchhaltGenie')).toBe(null);
-    expect(isOwnerLeakySegment('MAIL-ASSISTANT')).toBe(null);
-    expect(isOwnerLeakySegment('AngebotsChecker')).toBe(null);
-  });
-
-  it('all five VAULT_CLEAR_SLUGS members are cleared in-process', () => {
-    // VAULT_CLEAR_SLUGS values are lowercased; each must be non-leaky in-process.
-    for (const slug of VAULT_CLEAR_SLUGS) {
-      expect(isOwnerLeakySegment(slug)).toBe(null);
-    }
-    expect(VAULT_CLEAR_SLUGS.size).toBe(5);
-  });
-});
-
-describe('VAULT_CLEAR_SLUGS carve-out — tracked-file scanner UNCHANGED (#59 split proof)', () => {
-  it('a carved-out slug ("mail-assistant") in a TRACKED file STILL fails the CLI scan (exit 1)', () => {
-    // The load-bearing proof that the carve-out did NOT leak into runScan: the
-    // public-mirror guard must still block every one of the 7 PRIVATE_SLUGS.
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'notes.md'), 'Deploy notes for mail-assistant service.\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(countOccurrences(result.stdout, 'CP6')).toBeGreaterThan(0);
-  });
-
-  it('another carved-out slug ("launchpad-ai-factory") in a TRACKED file STILL fails the CLI scan (exit 1)', () => {
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'notes.md'), 'See launchpad-ai-factory for the epic.\n');
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(1);
-    expect(countOccurrences(result.stdout, 'CP6')).toBeGreaterThan(0);
+  it('every VAULT_CLEAR_SLUGS member is cleared in-process, and the set has 5 members', () => {
+    const leaky = [...VAULT_CLEAR_SLUGS].filter((slug) => isOwnerLeakySegment(slug) !== null);
+    expect(leaky).toEqual([]);
+    expect(VAULT_CLEAR_SLUGS.size).toBe(5); // integrity-anchor: closed, audit-reviewed carve-out list (#59)
   });
 });
 
 // ---------------------------------------------------------------------------
 // Subset invariant: VAULT_CLEAR_SLUGS ⊆ PRIVATE_SLUGS
 //
-// PRIVATE_SLUGS itself is not exported from the scanner module (it is the
-// CLOSED, audit-reviewed source list — see the module's own "list is CLOSED"
-// comment), so this invariant is checked WITHOUT importing it: the
-// tracked-file CLI scan's CP6 rule is built DIRECTLY from PRIVATE_SLUGS
-// (`CP6_PATTERNS = PRIVATE_SLUGS.map(...)`), so "does the CLI flag this slug
-// as CP6 when planted in a tracked file" is ground truth for "is this slug a
-// member of PRIVATE_SLUGS" — the same CLI harness every other test in this
-// file already relies on.
+// PRIVATE_SLUGS is not exported (it is the CLOSED, audit-reviewed source list),
+// so the invariant is checked through the CLI: CP6_PATTERNS is built DIRECTLY
+// from PRIVATE_SLUGS, so "does the tracked-file scan flag this slug as CP6" is
+// ground truth for "is this slug a member of PRIVATE_SLUGS".
 //
-// Why this matters: `isOwnerLeakySegment(slug) === null` (asserted elsewhere
-// in the "carved-out slug is NOT owner-leaky in-process" tests) is
-// TAUTOLOGICAL for a typo'd/dead VAULT_CLEAR_SLUGS entry — ANY string that
-// was never in PRIVATE_SLUGS ALSO returns null from isOwnerLeakySegment, so a
-// bogus carve-out entry (e.g. "buchhaltgeni" instead of "buchhaltgenie")
-// would silently pass review with zero test failure. This test instead
-// asserts the actual SUBSET RELATIONSHIP the carve-out promises (#59): every
-// VAULT_CLEAR_SLUGS member must be a REAL PRIVATE_SLUGS entry, i.e. the
-// tracked-file scanner must still catch it as CP6. No slug value is
-// hardcoded here — the loop drives entirely off the exported VAULT_CLEAR_SLUGS
-// set, so the test survives future legitimate edits to either list.
+// Why this matters: `isOwnerLeakySegment(slug) === null` is TAUTOLOGICAL for a
+// typo'd/dead VAULT_CLEAR_SLUGS entry — ANY string never in PRIVATE_SLUGS also
+// returns null, so a bogus carve-out entry ('buchhaltgeni') would pass review
+// with zero test failure. The fake-regression control for this loop is the
+// 'a slug that was never in PRIVATE_SLUGS is not flagged' row in SCAN_CASES:
+// it pins that a non-member scans CLEAN, so the rows below have teeth.
+// No slug value is hardcoded — the table drives off the exported set.
 // ---------------------------------------------------------------------------
 
 describe('Subset invariant: VAULT_CLEAR_SLUGS ⊆ PRIVATE_SLUGS (#59)', () => {
-  it('every VAULT_CLEAR_SLUGS entry is a real PRIVATE_SLUGS member — CP6 still catches it in a tracked file', () => {
-    for (const slug of VAULT_CLEAR_SLUGS) {
-      const root = makeTmpRepo((r) => {
-        writeFileSync(join(r, 'membership-check.md'), `Reference to ${slug} here.\n`);
-      });
-      const result = runCheck(root);
-      expect(result.status).toBe(1);
-      expect(result.stdout).toContain('CP6');
-    }
-  });
-
-  // Fake-regression demonstration (per PSA-006 / testing.md negative-assertion
-  // discipline): a slug that was NEVER added to PRIVATE_SLUGS is NOT caught by
-  // CP6 — proving that if a typo'd/dead entry were ever (accidentally) added to
-  // the real VAULT_CLEAR_SLUGS export, the primary loop above would fail at
-  // that exact slug (status !== 1 / no 'CP6' in stdout) instead of passing
-  // tautologically. This is the same invariant-check logic as the primary
-  // assertion, run against a synthetic value known to be OUTSIDE PRIVATE_SLUGS,
-  // rather than a permanent mutation of VAULT_CLEAR_SLUGS itself.
-  it('fake-regression control: a bogus slug NOT in PRIVATE_SLUGS is NOT flagged — the invariant check has teeth', () => {
-    const bogusSlug = 'totally-bogus-slug-never-in-private-slugs-xyz';
-    const root = makeTmpRepo((r) => {
-      writeFileSync(join(r, 'bogus-membership-check.md'), `Reference to ${bogusSlug} here.\n`);
-    });
-    const result = runCheck(root);
-    expect(result.status).toBe(0);
-    expect(countOccurrences(result.stdout, 'CP6')).toBe(0);
+  it.each([...VAULT_CLEAR_SLUGS])('carve-out member "%s" is a real PRIVATE_SLUGS entry (CP6 catches it)', (slug) => {
+    const root = makeTmpRepo({ 'membership-check.md': `Reference to ${slug} here.\n` });
+    expect(summarizeScan(runCheck(root))).toEqual({ status: 1, fails: 1, checkpoints: ['CP6'] });
   });
 });

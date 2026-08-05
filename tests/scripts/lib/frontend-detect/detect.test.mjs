@@ -20,16 +20,14 @@ function rulesFired(content, file = 'x.css') {
 }
 
 describe('frontend-detect registry invariants', () => {
-  it('every rule has the required contract fields', () => {
-    for (const r of RULES) {
-      expect(typeof r.id, `id for ${r.id}`).toBe('string');
-      expect(['high', 'medium', 'low']).toContain(r.severity);
-      expect(['ai-slop', 'quality']).toContain(r.category);
-      expect(['low', 'medium', 'high']).toContain(r.fpRisk);
-      expect(typeof r.ruleRef, `ruleRef for ${r.id}`).toBe('string');
-      expect(r.ruleRef.length).toBeGreaterThan(0);
-      expect(typeof r.scan).toBe('function');
-    }
+  it.each(RULES.map((r) => [r.id, r]))('rule %s carries the required contract fields', (_id, r) => {
+    expect(typeof r.id).toBe('string');
+    expect(['high', 'medium', 'low']).toContain(r.severity);
+    expect(['ai-slop', 'quality']).toContain(r.category);
+    expect(['low', 'medium', 'high']).toContain(r.fpRisk);
+    expect(typeof r.ruleRef).toBe('string');
+    expect(r.ruleRef.length).toBeGreaterThan(0);
+    expect(typeof r.scan).toBe('function');
   });
 
   it('rule ids are unique', () => {
@@ -48,154 +46,83 @@ describe('frontend-detect registry invariants', () => {
   });
 });
 
-describe('gradient-text', () => {
-  it('FLAGS background-clip:text combined with a gradient', () => {
-    const css = `.title {
+// Per-rule FLAG / CLEAN fixture pairs — the load-bearing contract from the
+// docblock above, as two tables. Every rule id MUST appear in BOTH tables:
+// FLAG rows are real tells the rule must catch, CLEAN rows are plausible shapes
+// it must NOT flag. (`rulesFired` defaults the filename to x.css; rows that need
+// a JSX/TSX-only tell pass their own.)
+
+describe('per-rule FLAG fixtures — the rule must fire', () => {
+  it.each([
+    {
+      rule: 'gradient-text',
+      why: 'background-clip:text combined with a gradient',
+      content: `.title {
       background: linear-gradient(90deg, #ff0080, #ffcc00);
       -webkit-background-clip: text;
       color: transparent;
-    }`;
-    expect(rulesFired(css)).toContain('gradient-text');
+    }`,
+    },
+    {
+      rule: 'gradient-text',
+      why: 'the Tailwind bg-clip-text utility',
+      content: '<h1 class="bg-clip-text text-transparent bg-gradient-to-r">Hi</h1>',
+      file: 'a.tsx',
+    },
+    { rule: 'side-stripe-border', why: 'border-left: 4px solid <color>', content: '.alert { border-left: 4px solid #f59e0b; }' },
+    { rule: 'side-stripe-border', why: 'Tailwind border-l-4', content: '<div class="border-l-4 border-amber-500">', file: 'a.tsx' },
+    { rule: 'overused-font', why: 'Inter as the primary font', content: 'body { font-family: Inter, sans-serif; }' },
+    { rule: 'overused-font', why: 'quoted "Roboto" primary', content: 'h1 { font-family: "Roboto", Arial, sans-serif; }' },
+    { rule: 'bounce-easing', why: 'the keyword "bounce"', content: '.x { animation: bounce 1s; }' },
+    { rule: 'bounce-easing', why: 'an overshoot cubic-bezier (y > 1)', content: '.x { transition: transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1); }' },
+    { rule: 'ai-purple-gradient', why: 'a purple to blue gradient', content: '.hero { background: linear-gradient(135deg, #8b5cf6, #3b82f6); }' },
+    { rule: 'ai-purple-gradient', why: 'a two-purple gradient by name', content: '.hero { background: linear-gradient(90deg, violet, purple); }' },
+    { rule: 'pure-black-ink', why: 'color:#000', content: 'body { color: #000; }' },
+    { rule: 'pure-black-ink', why: 'color: black', content: 'body { color: black; }' },
+    { rule: 'arbitrary-z-index', why: 'z-index: 9999', content: '.toast { z-index: 9999; }' },
+    { rule: 'layout-property-transition', why: 'transition: width', content: '.x { transition: width 200ms ease; }' },
+  ])('$rule FLAGS $why', ({ rule, content, file }) => {
+    expect(rulesFired(content, file)).toContain(rule);
   });
+});
 
-  it('FLAGS the Tailwind bg-clip-text utility', () => {
-    expect(rulesFired('<h1 class="bg-clip-text text-transparent bg-gradient-to-r">Hi</h1>', 'a.tsx')).toContain(
+describe('per-rule CLEAN fixtures — the rule must NOT fire (false-positive guard)', () => {
+  it.each([
+    { rule: 'gradient-text', why: 'a gradient background without clip:text', content: '.hero { background: linear-gradient(90deg, #ff0080, #ffcc00); }' },
+    { rule: 'gradient-text', why: 'background-clip:border-box (the normal value)', content: '.box { background-clip: border-box; background: linear-gradient(0deg,#111,#222); }' },
+    { rule: 'side-stripe-border', why: 'a 1px side border (legitimate hairline)', content: '.cell { border-left: 1px solid #eee; }' },
+    { rule: 'side-stripe-border', why: 'a full 2px border (border:, not border-left:)', content: '.btn { border: 2px solid #000; }' },
+    { rule: 'side-stripe-border', why: 'a transparent side border (spacing trick)', content: '.x { border-left: 4px solid transparent; }' },
+    { rule: 'overused-font', why: 'Arial used only as a fallback', content: 'body { font-family: "Söhne", Arial, sans-serif; }' },
+    { rule: 'bounce-easing', why: 'a standard ease-out cubic-bezier', content: '.x { transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1); }' },
+    { rule: 'ai-purple-gradient', why: 'a single-color (non-purple) gradient', content: '.hero { background: linear-gradient(90deg, #f97316, #fb923c); }' },
+    { rule: 'ai-purple-gradient', why: 'a single purple stop (could be brand)', content: '.hero { background: linear-gradient(90deg, purple, #fff); }' },
+    { rule: 'pure-black-ink', why: 'a tinted near-black ink', content: 'body { color: oklch(20% 0.02 260); }' },
+    { rule: 'pure-black-ink', why: 'a black BACKGROUND (rule targets text only)', content: 'body { background: #000; }' },
+    { rule: 'arbitrary-z-index', why: 'a small explicit z-index', content: '.dropdown { z-index: 30; }' },
+    { rule: 'arbitrary-z-index', why: 'a semantic z-index variable', content: '.modal { z-index: var(--z-modal); }' },
+    { rule: 'layout-property-transition', why: 'transition: opacity/transform', content: '.x { transition: opacity 200ms ease, transform 200ms ease; }' },
+  ])('$rule does NOT flag $why', ({ rule, content, file }) => {
+    expect(rulesFired(content, file)).not.toContain(rule);
+  });
+});
+
+// Every registered rule id must own at least one FLAG and one CLEAN fixture
+// above — this guard is what stops a newly registered rule from shipping
+// with no fixture pair at all (the docblock contract, mechanically enforced).
+describe('fixture-coverage contract', () => {
+  it('every registered rule id appears in the fixture tables', () => {
+    const covered = new Set([
       'gradient-text',
-    );
-  });
-
-  it('does NOT flag a gradient background without clip:text', () => {
-    const css = `.hero { background: linear-gradient(90deg, #ff0080, #ffcc00); }`;
-    expect(rulesFired(css)).not.toContain('gradient-text');
-  });
-
-  it('does NOT flag background-clip:border-box (the normal value)', () => {
-    const css = `.box { background-clip: border-box; background: linear-gradient(0deg,#111,#222); }`;
-    expect(rulesFired(css)).not.toContain('gradient-text');
-  });
-});
-
-describe('side-stripe-border', () => {
-  it('FLAGS border-left: 4px solid <color>', () => {
-    expect(rulesFired('.alert { border-left: 4px solid #f59e0b; }')).toContain('side-stripe-border');
-  });
-
-  it('FLAGS Tailwind border-l-4', () => {
-    expect(rulesFired('<div class="border-l-4 border-amber-500">', 'a.tsx')).toContain('side-stripe-border');
-  });
-
-  it('does NOT flag a 1px side border (legitimate hairline)', () => {
-    expect(rulesFired('.cell { border-left: 1px solid #eee; }')).not.toContain('side-stripe-border');
-  });
-
-  it('does NOT flag a full 2px border (border:, not border-left:)', () => {
-    expect(rulesFired('.btn { border: 2px solid #000; }')).not.toContain('side-stripe-border');
-  });
-
-  it('does NOT flag a transparent side border (spacing trick)', () => {
-    expect(rulesFired('.x { border-left: 4px solid transparent; }')).not.toContain('side-stripe-border');
-  });
-});
-
-describe('overused-font', () => {
-  it('FLAGS Inter as the primary font', () => {
-    expect(rulesFired('body { font-family: Inter, sans-serif; }')).toContain('overused-font');
-  });
-
-  it('FLAGS quoted "Roboto" primary', () => {
-    expect(rulesFired('h1 { font-family: "Roboto", Arial, sans-serif; }')).toContain('overused-font');
-  });
-
-  it('does NOT flag Arial used only as a fallback', () => {
-    expect(rulesFired('body { font-family: "Söhne", Arial, sans-serif; }')).not.toContain('overused-font');
-  });
-});
-
-describe('bounce-easing', () => {
-  it('FLAGS the keyword "bounce"', () => {
-    expect(rulesFired('.x { animation: bounce 1s; }')).toContain('bounce-easing');
-  });
-
-  it('FLAGS an overshoot cubic-bezier (y > 1)', () => {
-    expect(rulesFired('.x { transition: transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1); }')).toContain(
+      'side-stripe-border',
+      'overused-font',
       'bounce-easing',
-    );
-  });
-
-  it('does NOT flag a standard ease-out cubic-bezier', () => {
-    expect(rulesFired('.x { transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1); }')).not.toContain(
-      'bounce-easing',
-    );
-  });
-});
-
-describe('ai-purple-gradient', () => {
-  it('FLAGS a purple→blue gradient', () => {
-    expect(rulesFired('.hero { background: linear-gradient(135deg, #8b5cf6, #3b82f6); }')).toContain(
       'ai-purple-gradient',
-    );
-  });
-
-  it('FLAGS a two-purple gradient by name', () => {
-    expect(rulesFired('.hero { background: linear-gradient(90deg, violet, purple); }')).toContain(
-      'ai-purple-gradient',
-    );
-  });
-
-  it('does NOT flag a single-color (non-purple) gradient', () => {
-    expect(rulesFired('.hero { background: linear-gradient(90deg, #f97316, #fb923c); }')).not.toContain(
-      'ai-purple-gradient',
-    );
-  });
-
-  it('does NOT flag a single purple stop (could be brand)', () => {
-    expect(rulesFired('.hero { background: linear-gradient(90deg, purple, #fff); }')).not.toContain(
-      'ai-purple-gradient',
-    );
-  });
-});
-
-describe('pure-black-ink', () => {
-  it('FLAGS color:#000', () => {
-    expect(rulesFired('body { color: #000; }')).toContain('pure-black-ink');
-  });
-
-  it('FLAGS color: black', () => {
-    expect(rulesFired('body { color: black; }')).toContain('pure-black-ink');
-  });
-
-  it('does NOT flag a tinted near-black ink', () => {
-    expect(rulesFired('body { color: oklch(20% 0.02 260); }')).not.toContain('pure-black-ink');
-  });
-
-  it('does NOT flag a black BACKGROUND (rule targets text only)', () => {
-    expect(rulesFired('body { background: #000; }')).not.toContain('pure-black-ink');
-  });
-});
-
-describe('arbitrary-z-index', () => {
-  it('FLAGS z-index: 9999', () => {
-    expect(rulesFired('.toast { z-index: 9999; }')).toContain('arbitrary-z-index');
-  });
-
-  it('does NOT flag a small explicit z-index', () => {
-    expect(rulesFired('.dropdown { z-index: 30; }')).not.toContain('arbitrary-z-index');
-  });
-
-  it('does NOT flag a semantic z-index variable', () => {
-    expect(rulesFired('.modal { z-index: var(--z-modal); }')).not.toContain('arbitrary-z-index');
-  });
-});
-
-describe('layout-property-transition', () => {
-  it('FLAGS transition: width', () => {
-    expect(rulesFired('.x { transition: width 200ms ease; }')).toContain('layout-property-transition');
-  });
-
-  it('does NOT flag transition: opacity/transform', () => {
-    expect(rulesFired('.x { transition: opacity 200ms ease, transform 200ms ease; }')).not.toContain(
+      'pure-black-ink',
+      'arbitrary-z-index',
       'layout-property-transition',
-    );
+    ]);
+    expect(RULE_IDS.filter((id) => !covered.has(id))).toEqual([]);
   });
 });
 
@@ -238,11 +165,12 @@ describe('summarize', () => {
 });
 
 describe('detectFiles — extension gating', () => {
-  it('SCANNABLE_EXTS covers the common frontend file types', () => {
-    for (const ext of ['.css', '.html', '.jsx', '.tsx', '.vue', '.svelte', '.astro']) {
+  it.each(['.css', '.html', '.jsx', '.tsx', '.vue', '.svelte', '.astro'])(
+    'SCANNABLE_EXTS covers %s',
+    (ext) => {
       expect(SCANNABLE_EXTS.has(ext)).toBe(true);
-    }
-  });
+    },
+  );
 
   it('skips a non-existent / non-scannable path without throwing', () => {
     expect(() => detectFiles(['/nonexistent/file.css', '/x/readme.md'])).not.toThrow();

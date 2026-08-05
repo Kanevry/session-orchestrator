@@ -3,9 +3,20 @@
  *
  * Integration tests for scripts/lib/validate/check-agents.mjs.
  * Spawns the script as a child process and verifies exit codes + output shape.
+ *
+ * Shape (consolidated, issue #985 Tier B): every per-rule fixture case is a row
+ * in the RULE_CASES table below. Each row spawns the checker ONCE and asserts a
+ * normalized verdict `{ status, missing, echoed }` against a hardcoded literal —
+ * strictly stronger than the previous per-rule pairs, which spawned the same
+ * fixture twice (once for the exit code, once for the message) and could not
+ * catch a checker that emitted the right message with the wrong exit code.
+ *
+ * The Check-9 color-collision cases (#443) were folded in from the former
+ * tests/unit/check-agents.test.mjs, which is deleted — it exercised the same
+ * script with the same fixture class and the same assertion target.
  */
 
-import { describe, it, expect, afterEach, beforeAll } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,16 +33,44 @@ function run(pluginRoot) {
   return spawnSync('node', [SCRIPT, pluginRoot], { encoding: 'utf8', timeout: 15_000 });
 }
 
-function makeFixture() {
+function makeFixture(agents) {
   const dir = mkdtempSync(path.join(tmpdir(), 'check-agents-'));
   mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
   mkdirSync(path.join(dir, 'agents'), { recursive: true });
   writeFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'test-plugin', version: '1.0.0' }));
+  for (const [filename, content] of Object.entries(agents)) {
+    writeFileSync(path.join(dir, 'agents', filename), content);
+  }
   return dir;
 }
 
-function writeAgent(dir, filename, content) {
-  writeFileSync(path.join(dir, 'agents', filename), content);
+/**
+ * Normalize a checker run into a comparable verdict.
+ * `missing`  — expected stdout needles that were NOT emitted.
+ * `echoed`   — forbidden stdout needles that WERE emitted.
+ * Both are empty arrays in the healthy case, so every row's expected value is a
+ * hardcoded literal and no branching happens inside the test body.
+ */
+function verdict(r, { expectStdout = [], forbidStdout = [] } = {}) {
+  return {
+    status: r.status,
+    missing: expectStdout.filter((n) => !r.stdout.includes(n)),
+    echoed: forbidStdout.filter((n) => r.stdout.includes(n)),
+  };
+}
+
+/** Frontmatter body for a well-formed agent, parameterized by the fields under test. */
+function agentMd({ name, description = 'Some description inline here', model = 'inherit', color = 'blue', tools }) {
+  return [
+    '---',
+    `name: ${name}`,
+    `description: ${description}`,
+    `model: ${model}`,
+    `color: ${color}`,
+    ...(tools === undefined ? [] : [`tools: ${tools}`]),
+    '---',
+    '',
+  ].join('\n');
 }
 
 const VALID_AGENT = `---
@@ -49,28 +88,225 @@ tools: Read, Edit, Write
   the coordinator handles ALL VCS operations.
 `;
 
+const MISSING_NAME_AGENT = `---
+description: Some description inline here
+model: inherit
+color: blue
+---
+`;
+
+const BLOCK_SCALAR_AGENT = `---
+name: bad-desc
+description: >
+  This is a block scalar description
+  that spans multiple lines.
+model: inherit
+color: blue
+---
+`;
+
+const NO_COLLISION_PASS = '  PASS: no color collisions among dispatchable agents';
+
+// ---------------------------------------------------------------------------
+// Per-rule fixture table — one spawn per row, verdict asserted as a literal.
+// ---------------------------------------------------------------------------
+
+const RULE_CASES = [
+  // --- required fields ---
+  {
+    name: 'missing `name` frontmatter field FAILs',
+    agents: { 'bad-agent.md': MISSING_NAME_AGENT },
+    expected: { status: 1, missing: [], echoed: [] },
+    expectStdout: ['  FAIL: bad-agent.md: missing frontmatter fields: name'],
+  },
+  {
+    name: 'fully valid agent PASSes',
+    agents: { 'good-agent.md': VALID_AGENT },
+    expected: { status: 0, missing: [], echoed: [] },
+    expectStdout: ['  PASS: good-agent.md: all required frontmatter fields present'],
+  },
+
+  // --- tools field (string form is covered by VALID_AGENT above) ---
+  {
+    name: 'tools as a JSON array of strings is accepted (Anthropic canonical form)',
+    agents: { 'array-tools.md': agentMd({ name: 'array-tools', tools: '["Read", "Edit", "Grep"]' }) },
+    expected: { status: 0, missing: [], echoed: [] },
+  },
+  {
+    name: 'tools array with a non-string element FAILs',
+    agents: { 'bad-array-tools.md': agentMd({ name: 'bad-array-tools', tools: '["Read", 42, "Grep"]' }) },
+    expected: { status: 1, missing: [], echoed: [] },
+    expectStdout: ['tools array must contain only string elements'],
+  },
+  {
+    name: 'tools as malformed JSON (trailing comma) FAILs',
+    agents: { 'malformed-tools.md': agentMd({ name: 'malformed-tools', tools: '["Read", "Edit",]' }) },
+    expected: { status: 1, missing: [], echoed: [] },
+    expectStdout: ['malformed JSON array'],
+  },
+
+  // --- description ---
+  {
+    name: 'description as a YAML block scalar (>) FAILs',
+    agents: { 'bad-desc.md': BLOCK_SCALAR_AGENT },
+    expected: { status: 1, missing: [], echoed: [] },
+    expectStdout: ['  FAIL: bad-desc.md: description must be an inline string, not a YAML block scalar'],
+  },
+
+  // --- model: aliases, full IDs, and rejected shapes (#768) ---
+  {
+    name: 'model gpt-4 (foreign vendor) FAILs with the allowed-values message',
+    agents: { 'bad-model.md': agentMd({ name: 'bad-model', model: 'gpt-4' }) },
+    expected: { status: 1, missing: [], echoed: [] },
+    expectStdout: [
+      "FAIL: bad-model.md: model must be inherit|sonnet|opus|haiku|fable or a full model ID like 'claude-opus-4-7' or 'claude-sonnet-5' (got: 'gpt-4')",
+    ],
+  },
+  {
+    name: 'model claude-opus-4-7 (three-part full ID) is accepted',
+    agents: { 'full-id.md': agentMd({ name: 'full-id', model: 'claude-opus-4-7' }) },
+    expected: { status: 0, missing: [], echoed: [] },
+  },
+  {
+    name: 'model claude-sonnet-4-6 (three-part full ID) is accepted',
+    agents: { 'sonnet-id.md': agentMd({ name: 'sonnet-id', model: 'claude-sonnet-4-6' }) },
+    expected: { status: 0, missing: [], echoed: [] },
+  },
+  {
+    name: 'model claude-haiku-4-5-20251001 (dated full ID) is accepted',
+    agents: { 'dated-id.md': agentMd({ name: 'dated-id', model: 'claude-haiku-4-5-20251001' }) },
+    expected: { status: 0, missing: [], echoed: [] },
+  },
+  {
+    name: 'model claude-sonnet-5 (two-part ID, #768) is accepted',
+    agents: { 'sonnet-5-id.md': agentMd({ name: 'sonnet-5-id', model: 'claude-sonnet-5' }) },
+    expected: { status: 0, missing: [], echoed: [] },
+  },
+  {
+    name: 'model claude-fable-5 (fable family, #768) is accepted',
+    agents: { 'fable-5-id.md': agentMd({ name: 'fable-5-id', model: 'claude-fable-5' }) },
+    expected: { status: 0, missing: [], echoed: [] },
+  },
+  {
+    name: 'model claude-opus-4-8 (three-part ID) is accepted',
+    agents: { 'opus-4-8-id.md': agentMd({ name: 'opus-4-8-id', model: 'claude-opus-4-8' }) },
+    expected: { status: 0, missing: [], echoed: [] },
+  },
+  {
+    name: 'model claude-fable (no numeric group) FAILs',
+    agents: { 'bad-fable.md': agentMd({ name: 'bad-fable', model: 'claude-fable' }) },
+    expected: { status: 1, missing: [], echoed: [] },
+  },
+  {
+    name: 'model claude-5-fable (family token out of position) FAILs',
+    agents: { 'bad-order.md': agentMd({ name: 'bad-order', model: 'claude-5-fable' }) },
+    expected: { status: 1, missing: [], echoed: [] },
+  },
+
+  // --- color palette ---
+  {
+    name: 'color turquoise (outside the canonical palette) FAILs with the allowed-values message',
+    agents: { 'bad-color.md': agentMd({ name: 'bad-color', color: 'turquoise' }) },
+    expected: { status: 1, missing: [], echoed: [] },
+    expectStdout: [
+      "FAIL: bad-color.md: color must be one of blue|cyan|green|yellow|magenta|red|purple|orange|pink (got: 'turquoise')",
+    ],
+  },
+  {
+    name: 'color purple is accepted',
+    agents: { 'purple-agent.md': agentMd({ name: 'purple-agent', color: 'purple' }) },
+    expected: { status: 0, missing: [], echoed: [] },
+  },
+  {
+    name: 'color orange is accepted',
+    agents: { 'orange-agent.md': agentMd({ name: 'orange-agent', color: 'orange' }) },
+    expected: { status: 0, missing: [], echoed: [] },
+  },
+  {
+    name: 'color pink is accepted',
+    agents: { 'pink-agent.md': agentMd({ name: 'pink-agent', color: 'pink' }) },
+    expected: { status: 0, missing: [], echoed: [] },
+  },
+
+  // --- Check 9: color-collision aggregation (#443, folded in from tests/unit/) ---
+  {
+    name: 'Check 9: two dispatchable agents sharing a color WARN (exit 0, not FAIL)',
+    agents: {
+      'alpha.md': agentMd({
+        name: 'alpha',
+        description: 'Use this agent to do alpha work inline. <example>Context: user: "alpha" assistant: "done"</example>',
+        color: 'green',
+      }),
+      'beta.md': agentMd({
+        name: 'beta',
+        description: 'Use this agent to do beta work inline. <example>Context: user: "beta" assistant: "done"</example>',
+        color: 'green',
+      }),
+    },
+    expected: { status: 0, missing: [], echoed: [] },
+    expectStdout: ['WARN: color collision: green shared by dispatchable agents alpha.md, beta.md'],
+    forbidStdout: [NO_COLLISION_PASS],
+  },
+  {
+    name: 'Check 9: a dispatchable sharing a color with a non-dispatchable reference doc does NOT warn',
+    agents: {
+      'gamma.md': agentMd({
+        name: 'gamma',
+        description: 'Use this agent to do gamma work inline. <example>Context: user: "gamma" assistant: "done"</example>',
+        color: 'cyan',
+      }),
+      'ref-doc.md': agentMd({
+        name: 'ref-doc',
+        description:
+          'Reference documentation (NOT a dispatchable agent) for a coordinator-direct flow. <example>Context: user: "ref" assistant: "noted"</example>',
+        color: 'cyan',
+      }),
+    },
+    expected: { status: 0, missing: [], echoed: [] },
+    expectStdout: [NO_COLLISION_PASS],
+    forbidStdout: ['WARN: color collision'],
+  },
+  {
+    name: 'Check 9: two dispatchable agents with DISTINCT colors emit the PASS line',
+    agents: {
+      'one.md': agentMd({
+        name: 'one',
+        description: 'Use this agent for one thing inline. <example>Context: user: "one" assistant: "done"</example>',
+        color: 'green',
+      }),
+      'two.md': agentMd({
+        name: 'two',
+        description: 'Use this agent for two things inline. <example>Context: user: "two" assistant: "done"</example>',
+        color: 'blue',
+      }),
+    },
+    expected: { status: 0, missing: [], echoed: [] },
+    expectStdout: [NO_COLLISION_PASS],
+    forbidStdout: ['WARN: color collision'],
+  },
+];
+
+describe('check-agents.mjs — per-rule fixture verdicts', () => {
+  let dir;
+  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+
+  it.each(RULE_CASES)('$name', ({ agents, expected, expectStdout, forbidStdout }) => {
+    dir = makeFixture(agents);
+    expect(verdict(run(dir), { expectStdout, forbidStdout })).toEqual(expected);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Smoke — current repo
 // ---------------------------------------------------------------------------
 
 describe('check-agents.mjs — smoke against current repo', () => {
-  // Spawn once per describe — all three it()s use identical args (PLUGIN_REPO).
-  let r;
-  beforeAll(() => {
-    r = run(PLUGIN_REPO);
-  });
-
-  it('exits 0 against the current plugin repo', () => {
-    expect(r.status).toBe(0);
-  });
-
-  it('emits at least 7 PASS lines (one per agent .md file)', () => {
+  it('exits 0 with 0 failed checks and one PASS line per agent file', () => {
+    const r = run(PLUGIN_REPO);
     const passLines = r.stdout.split('\n').filter((l) => l.startsWith('  PASS:'));
-    expect(passLines.length).toBeGreaterThanOrEqual(7);
-  });
-
-  it('reports 0 failed checks', () => {
     const match = r.stdout.match(/Results:\s+\d+\s+passed,\s+(\d+)\s+failed/);
+    expect(r.status).toBe(0);
+    expect(passLines.length).toBeGreaterThanOrEqual(7);
     expect(match).not.toBeNull();
     expect(parseInt(match[1], 10)).toBe(0);
   });
@@ -124,400 +360,9 @@ describe('check-agents.mjs — model-regex SSOT drift guard (#768)', () => {
 // ---------------------------------------------------------------------------
 
 describe('check-agents.mjs — missing argument', () => {
-  it('exits 1 when no plugin-root arg is supplied', () => {
+  it('exits 1 with the usage message on stderr when no plugin-root arg is supplied', () => {
     const r = spawnSync('node', [SCRIPT], { encoding: 'utf8', timeout: 15_000 });
     expect(r.status).toBe(1);
-  });
-
-  it('writes usage message to stderr when no arg is supplied', () => {
-    const r = spawnSync('node', [SCRIPT], { encoding: 'utf8', timeout: 15_000 });
     expect(r.stderr).toContain('Usage: check-agents.mjs <plugin-root>');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Agent missing required 'name' field
-// ---------------------------------------------------------------------------
-
-describe('check-agents.mjs — agent missing name field', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when an agent .md is missing the name frontmatter field', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'bad-agent.md', `---
-description: Some description inline here
-model: inherit
-color: blue
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(1);
-  });
-
-  it('emits FAIL line listing the missing name field', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'bad-agent.md', `---
-description: Some description inline here
-model: inherit
-color: blue
----
-`);
-    const r = run(dir);
-    expect(r.stdout).toContain('  FAIL: bad-agent.md: missing frontmatter fields: name');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Agent with tools as JSON array (accepted — Anthropic canonical)
-// Source: https://code.claude.com/docs/en/sub-agents and plugins/plugin-dev/agents/*.md
-// which all use array form. Both string and array form must validate.
-// ---------------------------------------------------------------------------
-
-describe('check-agents.mjs — tools as JSON array (accepted)', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 0 when agent tools field is a valid JSON array of strings', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'array-tools.md', `---
-name: array-tools
-description: Some description inline here
-model: inherit
-color: blue
-tools: ["Read", "Edit", "Grep"]
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(0);
-  });
-
-  it('exits 1 when JSON array contains a non-string element', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'bad-array-tools.md', `---
-name: bad-array-tools
-description: Some description inline here
-model: inherit
-color: blue
-tools: ["Read", 42, "Grep"]
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(1);
-    expect(r.stdout).toContain('tools array must contain only string elements');
-  });
-
-  it('exits 1 when tools value is malformed JSON (trailing comma)', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'malformed-tools.md', `---
-name: malformed-tools
-description: Some description inline here
-model: inherit
-color: blue
-tools: ["Read", "Edit",]
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(1);
-    expect(r.stdout).toContain('malformed JSON array');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Agent with description as YAML block scalar (forbidden)
-// ---------------------------------------------------------------------------
-
-describe('check-agents.mjs — description as block scalar', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when agent description is a YAML block scalar (> style)', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'bad-desc.md', `---
-name: bad-desc
-description: >
-  This is a block scalar description
-  that spans multiple lines.
-model: inherit
-color: blue
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(1);
-  });
-
-  it('emits FAIL line mentioning block scalar when description uses > syntax', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'bad-desc.md', `---
-name: bad-desc
-description: >
-  This is a block scalar description
-  that spans multiple lines.
-model: inherit
-color: blue
----
-`);
-    const r = run(dir);
-    expect(r.stdout).toContain('  FAIL: bad-desc.md: description must be an inline string, not a YAML block scalar');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Agent with invalid model value
-// ---------------------------------------------------------------------------
-
-describe('check-agents.mjs — invalid model value', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when agent model field has an invalid value', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'bad-model.md', `---
-name: bad-model
-description: Some description inline here
-model: gpt-4
-color: blue
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(1);
-  });
-
-  it('emits FAIL line mentioning allowed model values', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'bad-model.md', `---
-name: bad-model
-description: Some description inline here
-model: gpt-4
-color: blue
----
-`);
-    const r = run(dir);
-    expect(r.stdout).toContain("FAIL: bad-model.md: model must be inherit|sonnet|opus|haiku|fable or a full model ID like 'claude-opus-4-7' or 'claude-sonnet-5' (got: 'gpt-4')");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Agent with model as full model ID (accepted — canonical doc)
-// Source: https://code.claude.com/docs/en/sub-agents § Supported frontmatter fields:
-//   "Use a full model ID such as `claude-opus-4-7` or `claude-sonnet-4-6`."
-// ---------------------------------------------------------------------------
-
-describe('check-agents.mjs — model as full model ID (accepted)', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 0 when agent model is a full claude-opus-4-7 ID', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'full-id.md', `---
-name: full-id
-description: Some description inline here
-model: claude-opus-4-7
-color: blue
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(0);
-  });
-
-  it('exits 0 when agent model is a full claude-sonnet-4-6 ID', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'sonnet-id.md', `---
-name: sonnet-id
-description: Some description inline here
-model: claude-sonnet-4-6
-color: blue
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(0);
-  });
-
-  it('exits 0 when agent model is a dated full ID like claude-haiku-4-5-20251001', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'dated-id.md', `---
-name: dated-id
-description: Some description inline here
-model: claude-haiku-4-5-20251001
-color: blue
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(0);
-  });
-
-  // --- Claude-5-shaped two-part IDs + fable family (#768) ---
-  it('exits 0 when agent model is a two-part claude-sonnet-5 ID', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'sonnet-5-id.md', `---
-name: sonnet-5-id
-description: Some description inline here
-model: claude-sonnet-5
-color: blue
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(0);
-  });
-
-  it('exits 0 when agent model is a two-part claude-fable-5 ID', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'fable-5-id.md', `---
-name: fable-5-id
-description: Some description inline here
-model: claude-fable-5
-color: blue
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(0);
-  });
-
-  it('exits 0 when agent model is a three-part claude-opus-4-8 ID', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'opus-4-8-id.md', `---
-name: opus-4-8-id
-description: Some description inline here
-model: claude-opus-4-8
-color: blue
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(0);
-  });
-
-  it('exits 1 when model is claude-fable with no numeric group', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'bad-fable.md', `---
-name: bad-fable
-description: Some description inline here
-model: claude-fable
-color: blue
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(1);
-  });
-
-  it('exits 1 when model is claude-5-fable (family token out of position)', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'bad-order.md', `---
-name: bad-order
-description: Some description inline here
-model: claude-5-fable
-color: blue
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Agent with invalid color value
-// ---------------------------------------------------------------------------
-
-describe('check-agents.mjs — invalid color value', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when agent color field is not in the canonical palette', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'bad-color.md', `---
-name: bad-color
-description: Some description inline here
-model: inherit
-color: turquoise
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(1);
-  });
-
-  it('emits FAIL line mentioning allowed color values', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'bad-color.md', `---
-name: bad-color
-description: Some description inline here
-model: inherit
-color: turquoise
----
-`);
-    const r = run(dir);
-    expect(r.stdout).toContain("FAIL: bad-color.md: color must be one of blue|cyan|green|yellow|magenta|red|purple|orange|pink (got: 'turquoise')");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Agent with canonical-palette colors (purple/orange/pink) — all accepted
-// Source: https://code.claude.com/docs/en/sub-agents § color values:
-//   "Accepts `red`, `blue`, `green`, `yellow`, `purple`, `orange`, `pink`, or `cyan`"
-// Plus `magenta` from plugin-dev SKILL.md for backward-compat with our existing agents.
-// ---------------------------------------------------------------------------
-
-describe('check-agents.mjs — canonical color palette (purple/orange/pink accepted)', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 0 when agent color is purple', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'purple-agent.md', `---
-name: purple-agent
-description: Some description inline here
-model: inherit
-color: purple
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(0);
-  });
-
-  it('exits 0 when agent color is orange', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'orange-agent.md', `---
-name: orange-agent
-description: Some description inline here
-model: inherit
-color: orange
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(0);
-  });
-
-  it('exits 0 when agent color is pink', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'pink-agent.md', `---
-name: pink-agent
-description: Some description inline here
-model: inherit
-color: pink
----
-`);
-    const r = run(dir);
-    expect(r.status).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Valid agent passes all checks
-// ---------------------------------------------------------------------------
-
-describe('check-agents.mjs — valid agent fixture', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 0 when agent has all valid required fields', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'good-agent.md', VALID_AGENT);
-    const r = run(dir);
-    expect(r.status).toBe(0);
-  });
-
-  it('emits PASS line for the valid agent file', () => {
-    dir = makeFixture();
-    writeAgent(dir, 'good-agent.md', VALID_AGENT);
-    const r = run(dir);
-    expect(r.stdout).toContain('  PASS: good-agent.md: all required frontmatter fields present');
   });
 });

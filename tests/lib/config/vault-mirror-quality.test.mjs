@@ -7,8 +7,10 @@
  * Returns shape: `{ quality: { "min-narrative-chars": int, "min-confidence": float } }`.
  * Tolerant: malformed values silently fall back to defaults.
  *
- * Mirrors the style of tests/lib/config/vault-staleness.test.mjs and
- * tests/lib/config/events-rotation.test.mjs.
+ * Shape: one it.each table of {name, lines, expected}. Every row asserts the FULL
+ * returned object, so a row that only meant to pin one key also pins that the
+ * sibling key kept its default — the pair-of-tests-per-key shape this replaced
+ * asserted one key each and could not catch cross-key contamination.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -21,145 +23,77 @@ const DEFAULTS = {
   },
 };
 
+const q = (chars, conf) => ({ quality: { 'min-narrative-chars': chars, 'min-confidence': conf } });
+
 describe('_parseVaultMirrorQuality', () => {
-  describe('defaults (block absent or empty)', () => {
-    it('returns all defaults when vault-mirror block is absent', () => {
-      const content = 'persistence: true\nenforcement: warn\n';
-      expect(_parseVaultMirrorQuality(content)).toEqual(DEFAULTS);
-    });
+  it.each([
+    // --- defaults (block absent, empty, or unrelated) ---
+    {
+      name: 'returns all defaults when vault-mirror block is absent',
+      lines: ['persistence: true', 'enforcement: warn', ''],
+      expected: DEFAULTS,
+    },
+    {
+      name: 'returns all defaults when block is present but empty (heading-only)',
+      lines: ['vault-mirror:', '', 'next-section:', ''],
+      expected: DEFAULTS,
+    },
+    {
+      name: 'returns all defaults when block contains only unrelated keys',
+      lines: ['vault-mirror:', '  other-key: value', ''],
+      expected: DEFAULTS,
+    },
 
-    it('returns all defaults when block is present but empty (heading-only)', () => {
-      const content = 'vault-mirror:\n\nnext-section:\n';
-      expect(_parseVaultMirrorQuality(content)).toEqual(DEFAULTS);
-    });
+    // --- single-key overrides (each row also pins the sibling default) ---
+    {
+      name: 'min-confidence: 0.7 overrides its default and leaves min-narrative-chars at 400',
+      lines: ['vault-mirror:', '  quality:', '    min-confidence: 0.7', ''],
+      expected: q(400, 0.7),
+    },
+    {
+      name: 'min-narrative-chars: 999 overrides its default and leaves min-confidence at 0.5',
+      lines: ['vault-mirror:', '  quality:', '    min-narrative-chars: 999', ''],
+      expected: q(999, 0.5),
+    },
 
-    it('returns all defaults when block contains only unrelated keys', () => {
-      const content = 'vault-mirror:\n  other-key: value\n';
-      expect(_parseVaultMirrorQuality(content)).toEqual(DEFAULTS);
-    });
-  });
+    // --- malformed values fall back to defaults ---
+    {
+      name: 'falls back to default min-narrative-chars when value is non-numeric ("abc")',
+      lines: ['vault-mirror:', '  quality:', '    min-narrative-chars: abc', ''],
+      expected: DEFAULTS,
+    },
+    {
+      name: 'falls back to default min-confidence when value is non-numeric ("xyz")',
+      lines: ['vault-mirror:', '  quality:', '    min-confidence: xyz', ''],
+      expected: DEFAULTS,
+    },
 
-  describe('quality.min-confidence override', () => {
-    it('parses min-confidence: 0.7 and overrides default', () => {
-      const content = [
-        'vault-mirror:',
-        '  quality:',
-        '    min-confidence: 0.7',
-        '',
-      ].join('\n');
-      const result = _parseVaultMirrorQuality(content);
-      expect(result.quality['min-confidence']).toBe(0.7);
-    });
+    // --- min-confidence bounds [0.0, 1.0] ---
+    {
+      name: 'falls back to default 0.5 when min-confidence is negative (-0.1)',
+      lines: ['vault-mirror:', '  quality:', '    min-confidence: -0.1', ''],
+      expected: DEFAULTS,
+    },
+    {
+      name: 'falls back to default 0.5 when min-confidence exceeds 1.0 (2.0)',
+      lines: ['vault-mirror:', '  quality:', '    min-confidence: 2.0', ''],
+      expected: DEFAULTS,
+    },
+    {
+      name: 'accepts the boundary value 0.0',
+      lines: ['vault-mirror:', '  quality:', '    min-confidence: 0.0', ''],
+      expected: q(400, 0.0),
+    },
+    {
+      name: 'accepts the boundary value 1.0',
+      lines: ['vault-mirror:', '  quality:', '    min-confidence: 1.0', ''],
+      expected: q(400, 1.0),
+    },
 
-    it('keeps default min-narrative-chars when only min-confidence is given', () => {
-      const content = [
-        'vault-mirror:',
-        '  quality:',
-        '    min-confidence: 0.7',
-        '',
-      ].join('\n');
-      const result = _parseVaultMirrorQuality(content);
-      expect(result.quality['min-narrative-chars']).toBe(400);
-    });
-  });
-
-  describe('quality.min-narrative-chars override', () => {
-    it('parses min-narrative-chars: 999 and overrides default', () => {
-      const content = [
-        'vault-mirror:',
-        '  quality:',
-        '    min-narrative-chars: 999',
-        '',
-      ].join('\n');
-      const result = _parseVaultMirrorQuality(content);
-      expect(result.quality['min-narrative-chars']).toBe(999);
-    });
-
-    it('keeps default min-confidence when only min-narrative-chars is given', () => {
-      const content = [
-        'vault-mirror:',
-        '  quality:',
-        '    min-narrative-chars: 999',
-        '',
-      ].join('\n');
-      const result = _parseVaultMirrorQuality(content);
-      expect(result.quality['min-confidence']).toBe(0.5);
-    });
-  });
-
-  describe('malformed values fall back to defaults', () => {
-    it('falls back to default min-narrative-chars when value is non-numeric ("abc")', () => {
-      const content = [
-        'vault-mirror:',
-        '  quality:',
-        '    min-narrative-chars: abc',
-        '',
-      ].join('\n');
-      const result = _parseVaultMirrorQuality(content);
-      expect(result.quality['min-narrative-chars']).toBe(400);
-    });
-
-    it('falls back to default min-confidence when value is non-numeric ("xyz")', () => {
-      const content = [
-        'vault-mirror:',
-        '  quality:',
-        '    min-confidence: xyz',
-        '',
-      ].join('\n');
-      const result = _parseVaultMirrorQuality(content);
-      expect(result.quality['min-confidence']).toBe(0.5);
-    });
-  });
-
-  describe('min-confidence bounds [0.0, 1.0]', () => {
-    it('falls back to default 0.5 when min-confidence is negative (-0.1)', () => {
-      const content = [
-        'vault-mirror:',
-        '  quality:',
-        '    min-confidence: -0.1',
-        '',
-      ].join('\n');
-      const result = _parseVaultMirrorQuality(content);
-      expect(result.quality['min-confidence']).toBe(0.5);
-    });
-
-    it('falls back to default 0.5 when min-confidence exceeds 1.0 (2.0)', () => {
-      const content = [
-        'vault-mirror:',
-        '  quality:',
-        '    min-confidence: 2.0',
-        '',
-      ].join('\n');
-      const result = _parseVaultMirrorQuality(content);
-      expect(result.quality['min-confidence']).toBe(0.5);
-    });
-
-    it('accepts the boundary value 0.0', () => {
-      const content = [
-        'vault-mirror:',
-        '  quality:',
-        '    min-confidence: 0.0',
-        '',
-      ].join('\n');
-      const result = _parseVaultMirrorQuality(content);
-      expect(result.quality['min-confidence']).toBe(0.0);
-    });
-
-    it('accepts the boundary value 1.0', () => {
-      const content = [
-        'vault-mirror:',
-        '  quality:',
-        '    min-confidence: 1.0',
-        '',
-      ].join('\n');
-      const result = _parseVaultMirrorQuality(content);
-      expect(result.quality['min-confidence']).toBe(1.0);
-    });
-  });
-
-  describe('block boundary detection', () => {
-    it('stops parsing at the next top-level key', () => {
-      const content = [
+    // --- block boundary detection ---
+    {
+      name: 'stops parsing at the next top-level key (first block wins)',
+      lines: [
         'vault-mirror:',
         '  quality:',
         '    min-confidence: 0.9',
@@ -167,52 +101,37 @@ describe('_parseVaultMirrorQuality', () => {
         '  quality:',
         '    min-confidence: 0.1',
         '',
-      ].join('\n');
-      const result = _parseVaultMirrorQuality(content);
-      // The first block's quality wins; second block is outside vault-mirror.
-      expect(result.quality['min-confidence']).toBe(0.9);
-    });
-  });
+      ],
+      expected: q(400, 0.9),
+    },
 
-  describe('inline comment stripping', () => {
-    it('strips inline YAML comments from min-confidence', () => {
-      const content = [
-        'vault-mirror:',
-        '  quality:',
-        '    min-confidence: 0.5  # default',
-        '',
-      ].join('\n');
-      const result = _parseVaultMirrorQuality(content);
-      expect(result.quality['min-confidence']).toBe(0.5);
-    });
+    // --- inline comment stripping ---
+    // NB: the value must differ from the default, or a parser that dropped the
+    // whole line would still produce the expected number (assert-nothing).
+    {
+      name: 'strips inline YAML comments from min-confidence',
+      lines: ['vault-mirror:', '  quality:', '    min-confidence: 0.9  # raised', ''],
+      expected: q(400, 0.9),
+    },
+    {
+      name: 'strips inline YAML comments from min-narrative-chars',
+      lines: ['vault-mirror:', '  quality:', '    min-narrative-chars: 600  # raised', ''],
+      expected: q(600, 0.5),
+    },
 
-    it('strips inline YAML comments from min-narrative-chars', () => {
-      const content = [
-        'vault-mirror:',
-        '  quality:',
-        '    min-narrative-chars: 600  # raised',
-        '',
-      ].join('\n');
-      const result = _parseVaultMirrorQuality(content);
-      expect(result.quality['min-narrative-chars']).toBe(600);
-    });
-  });
-
-  describe('full block', () => {
-    it('parses both fields together', () => {
-      const content = [
+    // --- full block ---
+    {
+      name: 'parses both fields together',
+      lines: [
         'vault-mirror:',
         '  quality:',
         '    min-narrative-chars: 500',
         '    min-confidence: 0.8',
         '',
-      ].join('\n');
-      expect(_parseVaultMirrorQuality(content)).toEqual({
-        quality: {
-          'min-narrative-chars': 500,
-          'min-confidence': 0.8,
-        },
-      });
-    });
+      ],
+      expected: q(500, 0.8),
+    },
+  ])('$name', ({ lines, expected }) => {
+    expect(_parseVaultMirrorQuality(lines.join('\n'))).toEqual(expected);
   });
 });

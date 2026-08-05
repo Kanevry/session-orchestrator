@@ -781,8 +781,6 @@ const textFiles = allFiles.filter(isTextFile);
 //   - .orchestrator/audits/** never scanned (A.2/A.4-5)
 //   - This guard's own source file (pattern-doc-comments define the scanner — not leaks).
 //   - This guard's own test file (string-literal fixtures exercise the detector — not leaks).
-//   - Persona content-lint tests (assert template files don't contain leakage strings;
-//     the assertion literals themselves match the scanner regex — fixtures, not leaks).
 // Self-exclusions are the design-time fix for the latent bug exposed when scanner
 // fixture files transition from untracked → tracked in the same commit that tightens
 // detection (commit a68e94f for the original two; commit 95c8237 deep-3 W4 added the
@@ -791,7 +789,9 @@ const textFiles = allFiles.filter(isTextFile);
 const SELF_EXCLUSIONS = new Set([
   'scripts/lib/validate/check-owner-leakage.mjs',
   'tests/lib/validate/check-owner-leakage.test.mjs',
-  'tests/templates/personas/content-lint.test.mjs',
+  // content-lint.test.mjs entry removed with the file itself (#985 Tier A,
+  // 2026-08-05) — a dangling exclusion would pre-authorize any future file
+  // at that path to bypass this scanner.
   'tests/husky/pre-commit-owner-leakage.test.mjs',
   // #634: encoding-contract fixtures (`-Users-bernhardg-` expected-value literals
   // are load-bearing for the resolveMemoryDir() assertions; P9 would self-flag them)

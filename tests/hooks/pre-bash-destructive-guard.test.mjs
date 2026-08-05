@@ -706,6 +706,43 @@ describe('#965 rm redirect targets are not operands', { timeout: 30000 }, () => 
 });
 
 // ---------------------------------------------------------------------------
+// #999 / #1003 — a TERMINATED here-doc's closing newline separates segments.
+//
+// Before the #999 fix, `cat <<EOF … EOF\nrm -rf /tmp/ok` stayed ONE segment
+// whose verb was `cat`, so parseRmTargets never ran, the allowlisted /tmp/ok
+// yielded NO targets, and the benign command failed CLOSED (denied).
+// Segmentation itself is pinned at unit level (tests/lib/command-blocker.test.mjs);
+// what NO test pinned is the spawned hook's VERDICT — i.e. the
+// "segmentation-correct, integration-broken" class where the hook's own
+// call chain never reaches the rm-verb segment despite correct segments.
+// A dedicated describe (not a row inside the #965 table) so a regression names
+// itself instead of being misattributed to the redirect-operand work.
+// ---------------------------------------------------------------------------
+
+describe('#999 here-doc terminator separates segments (spawn-level verdict)', { timeout: 15000 }, () => {
+  it('allows an allowlisted rm on the line AFTER a terminated here-doc', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('cat <<EOF\nbody\nEOF\nrm -rf /tmp/ok'),
+    });
+    expectAllow(result);
+  });
+
+  // Direction guard: the separator must not become an escape hatch — a "fix"
+  // that dropped the post-terminator segment entirely would pass the allow
+  // case above and fail here.
+  it('still denies a NON-allowlisted rm after a terminated here-doc', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('cat <<EOF\nbody\nEOF\nrm -rf /etc'),
+    });
+    expectDeny(result);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #641 — gap closures: rm flag-form variants must block
 // ---------------------------------------------------------------------------
 
@@ -968,6 +1005,12 @@ describe('#983 redirect-truncate-protected — deny/allow by target', { timeout:
     ['echo x > out.log — truncate onto a non-denylisted target', 'echo x > out.log'],
     ['echo x >> CLAUDE.md — append mode stays allowed by design (modes: [truncate])', 'echo x >> CLAUDE.md'],
     ["bash -c 'echo a > b' — the interim pattern-matcher FP", "bash -c 'echo a > b'"],
+    // Direction guard for the #988 absolute/`~` denies below: repo-root
+    // resolution must not promote every CLAUDE.md on the machine into a
+    // denylist hit. This is the only SPAWN-level falsifier for the
+    // wrong-repoRoot-ARGUMENT class — the lib-level row stays green under that
+    // regression because it is handed repoRoot explicitly.
+    ['a foreign CLAUDE.md outside this repo is not ours (repoRoot boundary)', 'echo x > /etc/CLAUDE.md'],
   ])('allows `%s`', async (_label, command) => {
     const dir = await mkProjectTracked();
     const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
@@ -1006,14 +1049,6 @@ describe('#983 redirect-truncate-protected — deny/allow by target', { timeout:
       env: { HOME: dir },
     });
     expectDeny(result, 'redirect-truncate-protected');
-  });
-
-  it('still allows an absolute CLAUDE.md OUTSIDE the project root', async () => {
-    // Direction guard: repo-root resolution must not promote every CLAUDE.md
-    // on the machine into a denylist hit.
-    const dir = await mkProjectTracked();
-    const result = await runHook({ projectDir: dir, stdin: bashPayload('echo x > /etc/CLAUDE.md') });
-    expectAllow(result);
   });
 
   // #988 T2 — the recursion-cap markers carry `mode: null` by construction, so
@@ -1580,9 +1615,33 @@ describe('#995 — aggregated allow-with-notice never fail-opens', { timeout: 15
  * implementation the tests below stop reproducing the attack and must be
  * re-measured — which is the honest failure direction for an attack pin.
  */
+function markerScopeOf(projectDir) {
+  return crypto.createHash('sha256').update(projectDir).digest('hex').slice(0, 12);
+}
+
 function attackerMarkerPath(projectDir, kind, key) {
-  const digest = crypto.createHash('sha256').update(projectDir).digest('hex').slice(0, 12);
-  return path.join(os.tmpdir(), `session-orchestrator-guard-${kind}-${digest}-${key}`);
+  return path.join(
+    os.tmpdir(),
+    `session-orchestrator-guard-${kind}-${markerScopeOf(projectDir)}-${key}`
+  );
+}
+
+/**
+ * Reproduce the loader's banner KEY (`resolveBannerKey` in
+ * hooks/_lib/guard-source-loader.mjs): `<sanitised-session-id sliced to 48>-p<ppid>`.
+ *
+ * The `-p<pid>` half is #998.3: one `session.lock` per working copy means the id
+ * alone re-shares a marker between two parallel sessions. Keying it here matters
+ * for the same reason it matters there — a plant at the PRE-#998.3 (id-only)
+ * path lands where the loader never looks, which makes the attack pins below
+ * green-but-VACUOUS: they would pass unchanged even if existence-based
+ * suppression were reinstated.
+ *
+ * `process.pid`, not `process.ppid`: `runHook` spawns the hook DIRECTLY from
+ * this vitest worker, so the worker's own pid IS the spawned hook's ppid.
+ */
+function attackerBannerKey(sessionId) {
+  return `${sessionId.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 48)}-p${process.pid}`;
 }
 
 describe('#992 hardening — banner-marker forgeability', { timeout: 30000 }, () => {
@@ -1601,17 +1660,17 @@ describe('#992 hardening — banner-marker forgeability', { timeout: 30000 }, ()
       path.join(dir, '.orchestrator', 'session.lock'),
       JSON.stringify({ session_id: sessionId })
     );
-    const marker = attackerMarkerPath(dir, kind, sessionId);
+    const marker = attackerMarkerPath(dir, kind, attackerBannerKey(sessionId));
     plantedMarkers.push(marker);
     await fs.writeFile(marker, ''); // the measured attack: an empty `touch`
-    return dir;
+    return { dir, marker };
   }
 
   it('a pre-created marker does NOT silence the GUARD INACTIVE banner', async () => {
     // Bug this catches (measured, both steps individually ALLOWed): with the
     // marker planted, the total-failure path emitted 0 bytes of stderr while
     // stdout stayed empty — i.e. an indistinguishable-from-allow silent disarm.
-    const dir = await plantMarker('inactive');
+    const { dir } = await plantMarker('inactive');
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload('git reset --hard'),
@@ -1638,14 +1697,37 @@ describe('#992 hardening — banner-marker forgeability', { timeout: 30000 }, ()
     // Bug this catches: the same pre-creation attack against the head-fallback
     // banner. Existence is no longer the predicate — the marker must carry the
     // loader's own scoped payload, which an empty file cannot forge.
-    const dir = await plantMarker('head-fallback');
-    const result = await runHook({
+    const { dir, marker } = await plantMarker('head-fallback');
+    const first = await runHook({
       projectDir: dir,
       stdin: bashPayload('rm -rf /'),
       execArgv: brokenBlockerBoot(),
     });
-    expectDeny(result, 'rm-rf-destructive');
-    expect(result.stderr).toContain('DEGRADED');
+    expectDeny(first, 'rm-rf-destructive');
+    expect(first.stderr).toContain('DEGRADED');
+
+    // Proof the plant landed on the path the loader ACTUALLY derives — without
+    // it this whole test is vacuous (it would pass unchanged with existence-based
+    // suppression restored, because the plant would sit somewhere unread).
+    // `writeMarker` opens O_EXCL, so a pre-planted file blocks the write and the
+    // banner repeats on EVERY call. Under a stale key derivation the first call
+    // instead writes its own valid marker at the real path and this second call
+    // is silent — see the sibling `emits the degradation banner ONCE per session`
+    // test for that no-plant baseline.
+    const second = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -rf /'),
+      execArgv: brokenBlockerBoot(),
+    });
+    expect(second.stderr).toContain('DEGRADED');
+
+    // The same claim from the filesystem side: exactly ONE head-fallback marker
+    // exists for this project scope, and it is the untouched empty plant. A
+    // second file here means the loader derived a path we never planted.
+    const prefix = `session-orchestrator-guard-head-fallback-${markerScopeOf(dir)}-`;
+    const found = (await fs.readdir(os.tmpdir())).filter((n) => n.startsWith(prefix));
+    expect(found).toEqual([path.basename(marker)]);
+    expect(readFileSync(marker, 'utf8')).toBe('');
   });
 
   it.skipIf(!HAS_GIT || process.platform === 'win32')(

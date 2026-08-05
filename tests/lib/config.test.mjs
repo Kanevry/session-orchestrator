@@ -6,7 +6,12 @@
  *    integer override syntax, vault-integration nested object
  *  - getConfigValue: existing key, missing key
  *  - readConfigFile: finds CLAUDE.md, throws when neither file exists
- *  - Parity: parseSessionConfig result matches bash scripts/parse-config.sh JSON output
+ *  - Parity: parseSessionConfig result matches scripts/parse-config.mjs JSON output
+ *
+ * Shape: the fixture-driven key/default assertions are it.each {key, expected}
+ * tables over a fixture parsed ONCE per fixture (parseSessionConfig is pure —
+ * content string in, fresh object out — so a shared parse cannot leak state).
+ * Every expected value is a hardcoded literal.
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -34,227 +39,104 @@ function readFixture(name) {
   return readFileSync(join(FIXTURES, name), 'utf8');
 }
 
+const MINIMAL = parseSessionConfig(readFixture('config-minimal.md'));
+const FULL = parseSessionConfig(readFixture('config-full.md'));
+const NO_BLOCK = parseSessionConfig(readFixture('config-no-block.md'));
+
 // ---------------------------------------------------------------------------
 // parseSessionConfig
 // ---------------------------------------------------------------------------
 
 describe('parseSessionConfig', () => {
-  describe('minimal config', () => {
-    it('returns persistence: true from explicit value', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config.persistence).toBe(true);
+  describe('minimal config — explicit values and defaults', () => {
+    it.each([
+      { key: 'persistence', expected: true },
+      { key: 'agents-per-wave', expected: 6 },
+      { key: 'waves', expected: 5 },
+      { key: 'enforcement', expected: 'warn' },
+      { key: 'isolation', expected: 'auto' },
+      { key: 'test-command', expected: 'npm test' },
+      { key: 'typecheck-command', expected: 'npm run typecheck' },
+      { key: 'lint-command', expected: 'npm run lint' },
+      { key: 'recent-commits', expected: 20 },
+      // optional string fields absent from the fixture must be null, not undefined
+      { key: 'vcs', expected: null },
+      { key: 'gitlab-host', expected: null },
+      { key: 'mirror', expected: null },
+      { key: 'cross-repos', expected: null },
+      { key: 'discovery-probes', expected: ['all'] },
+      { key: 'discovery-exclude-paths', expected: [] },
+      { key: 'max-turns', expected: 'auto' },
+      { key: 'learning-decay-rate', expected: 0.05 },
+      { key: 'ecosystem-health', expected: false },
+      { key: 'issue-limit', expected: 50 },
+      { key: 'plan-default-visibility', expected: 'internal' },
+      { key: 'plan-prd-location', expected: 'docs/prd/' },
+      { key: 'plan-retro-location', expected: 'docs/retro/' },
+      { key: 'grounding-check', expected: true },
+      { key: 'allow-destructive-ops', expected: false },
+      { key: 'resource-awareness', expected: true },
+      { key: 'enable-host-banner', expected: true },
+      {
+        key: 'resource-thresholds',
+        expected: {
+          'ram-free-min-gb': 4,
+          'ram-free-critical-gb': 2,
+          'cpu-load-max-pct': 80,
+          'concurrent-sessions-warn': 5,
+          'ssh-no-docker': true,
+        },
+      },
+      { key: 'custom-phases', expected: [] }, // #637
+      { key: 'evolve.extra-sources', expected: [] }, // #638
+    ])('$key resolves to the documented value', ({ key, expected }) => {
+      expect(MINIMAL[key]).toEqual(expected);
     });
 
-    it('applies default agents-per-wave of 6', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['agents-per-wave']).toBe(6);
-    });
-
-    it('applies default waves of 5', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config.waves).toBe(5);
-    });
-
-    it('applies default enforcement of warn', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config.enforcement).toBe('warn');
-    });
-
-    it('applies default isolation of auto', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config.isolation).toBe('auto');
-    });
-
-    it('applies default test-command to npm test', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['test-command']).toBe('npm test');
-    });
-
-    it('applies default typecheck-command to npm run typecheck', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['typecheck-command']).toBe('npm run typecheck');
-    });
-
-    it('applies default lint-command to npm run lint', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['lint-command']).toBe('npm run lint');
-    });
-
-    it('applies default recent-commits of 20', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['recent-commits']).toBe(20);
-    });
-
-    it('applies null to optional string fields not present', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config.vcs).toBeNull();
-      expect(config['gitlab-host']).toBeNull();
-      expect(config.mirror).toBeNull();
-      expect(config['cross-repos']).toBeNull();
-    });
-
-    it('returns all expected top-level keys', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      const expectedKeys = [
-        'agents-per-wave', 'waves', 'recent-commits', 'special', 'vcs',
-        'gitlab-host', 'mirror', 'cross-repos', 'pencil', 'ecosystem-health',
-        'health-endpoints', 'issue-limit', 'stale-branch-days', 'stale-issue-days',
-        'test-command', 'typecheck-command', 'lint-command', 'ssot-files',
-        'ssot-freshness-days', 'plugin-freshness-days', 'discovery-on-close',
-        'discovery-probes', 'discovery-exclude-paths', 'discovery-severity-threshold',
-        'discovery-confidence-threshold', 'persistence', 'memory-cleanup-threshold',
-        'learning-expiry-days', 'learnings-surface-top-n', 'learning-decay-rate',
-        'enforcement', 'isolation', 'max-turns', 'baseline-ref', 'baseline-project-id',
-        'plan-baseline-path', 'plan-default-visibility', 'plan-prd-location',
-        'plan-retro-location', 'agent-mapping', 'enforcement-gates', 'reasoning-output',
-        'grounding-injection-max-files', 'grounding-check', 'allow-destructive-ops',
-        'resource-awareness', 'enable-host-banner', 'resource-thresholds',
-        'worktree-exclude', 'vault-integration', 'vault-sync', 'drift-check',
-        'heavy-repo', 'worktree-cleanup', 'issue-budget',
-      ];
-      for (const key of expectedKeys) {
-        expect(config, `expected key '${key}' to be present`).toHaveProperty(key);
-      }
-    });
-  });
-
-  describe('default values', () => {
-    it('defaults discovery-probes to [all]', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['discovery-probes']).toEqual(['all']);
-    });
-
-    it('defaults discovery-exclude-paths to []', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['discovery-exclude-paths']).toEqual([]);
-    });
-
-    it('defaults max-turns to auto', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['max-turns']).toBe('auto');
-    });
-
-    it('defaults learning-decay-rate to 0.05', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['learning-decay-rate']).toBe(0.05);
-    });
-
-    it('defaults ecosystem-health to false', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['ecosystem-health']).toBe(false);
-    });
-
-    it('defaults issue-limit to 50', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['issue-limit']).toBe(50);
-    });
-
-    it('defaults plan-default-visibility to internal', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['plan-default-visibility']).toBe('internal');
-    });
-
-    it('defaults plan-prd-location to docs/prd/', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['plan-prd-location']).toBe('docs/prd/');
-    });
-
-    it('defaults plan-retro-location to docs/retro/', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['plan-retro-location']).toBe('docs/retro/');
-    });
-
-    it('defaults grounding-check to true', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['grounding-check']).toBe(true);
-    });
-
-    it('defaults allow-destructive-ops to false', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['allow-destructive-ops']).toBe(false);
-    });
-
-    it('defaults resource-awareness to true', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['resource-awareness']).toBe(true);
-    });
-
-    it('defaults enable-host-banner to true', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['enable-host-banner']).toBe(true);
-    });
-
-    it('defaults resource-thresholds to canonical values', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['resource-thresholds']).toEqual({
-        'ram-free-min-gb': 4,
-        'ram-free-critical-gb': 2,
-        'cpu-load-max-pct': 80,
-        'concurrent-sessions-warn': 5,
-        'ssh-no-docker': true,
-      });
-    });
-
-    it('defaults custom-phases to [] (#637)', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['custom-phases']).toEqual([]);
-    });
-
-    it('defaults evolve.extra-sources to [] (#638)', () => {
-      const config = parseSessionConfig(readFixture('config-minimal.md'));
-      expect(config['evolve.extra-sources']).toEqual([]);
+    it.each([
+      'agents-per-wave', 'waves', 'recent-commits', 'special', 'vcs',
+      'gitlab-host', 'mirror', 'cross-repos', 'pencil', 'ecosystem-health',
+      'health-endpoints', 'issue-limit', 'stale-branch-days', 'stale-issue-days',
+      'test-command', 'typecheck-command', 'lint-command', 'ssot-files',
+      'ssot-freshness-days', 'plugin-freshness-days', 'discovery-on-close',
+      'discovery-probes', 'discovery-exclude-paths', 'discovery-severity-threshold',
+      'discovery-confidence-threshold', 'persistence', 'memory-cleanup-threshold',
+      'learning-expiry-days', 'learnings-surface-top-n', 'learning-decay-rate',
+      'enforcement', 'isolation', 'max-turns', 'baseline-ref', 'baseline-project-id',
+      'plan-baseline-path', 'plan-default-visibility', 'plan-prd-location',
+      'plan-retro-location', 'agent-mapping', 'enforcement-gates', 'reasoning-output',
+      'grounding-injection-max-files', 'grounding-check', 'allow-destructive-ops',
+      'resource-awareness', 'enable-host-banner', 'resource-thresholds',
+      'worktree-exclude', 'vault-integration', 'vault-sync', 'drift-check',
+      'heavy-repo', 'worktree-cleanup', 'issue-budget',
+    ])('always emits the top-level key %s', (key) => {
+      expect(MINIMAL).toHaveProperty(key);
     });
   });
 
   describe('full config (CLAUDE.md fixture)', () => {
-    it('parses test-command verbatim with embedded quotes', () => {
-      const config = parseSessionConfig(readFixture('config-full.md'));
-      expect(config['test-command']).toBe(
-        'for f in scripts/test/test-*.sh; do bash "$f" || exit 1; done'
-      );
-    });
-
-    it('parses typecheck-command: false as string "false"', () => {
-      const config = parseSessionConfig(readFixture('config-full.md'));
-      // "false" is the string value from the config (not filtered to null)
-      // parse-config.sh treats it as a string via json_string which returns "false"
-      expect(config['typecheck-command']).toBe('false');
-    });
-
-    it('parses lint-command: false as string "false"', () => {
-      const config = parseSessionConfig(readFixture('config-full.md'));
-      expect(config['lint-command']).toBe('false');
-    });
-
-    it('parses stale-branch-days: 7', () => {
-      const config = parseSessionConfig(readFixture('config-full.md'));
-      expect(config['stale-branch-days']).toBe(7);
-    });
-
-    it('parses plugin-freshness-days: 30', () => {
-      const config = parseSessionConfig(readFixture('config-full.md'));
-      expect(config['plugin-freshness-days']).toBe(30);
-    });
-
-    it('parses recent-commits: 20', () => {
-      const config = parseSessionConfig(readFixture('config-full.md'));
-      expect(config['recent-commits']).toBe(20);
-    });
-
-    it('parses enforcement: warn', () => {
-      const config = parseSessionConfig(readFixture('config-full.md'));
-      expect(config.enforcement).toBe('warn');
+    it.each([
+      // verbatim shell command with embedded quotes must survive parsing
+      { key: 'test-command', expected: 'for f in scripts/test/test-*.sh; do bash "$f" || exit 1; done' },
+      // `false` stays the STRING "false" (json_string semantics), never boolean/null
+      { key: 'typecheck-command', expected: 'false' },
+      { key: 'lint-command', expected: 'false' },
+      { key: 'stale-branch-days', expected: 7 },
+      { key: 'plugin-freshness-days', expected: 30 },
+      { key: 'recent-commits', expected: 20 },
+      { key: 'enforcement', expected: 'warn' },
+    ])('parses $key', ({ key, expected }) => {
+      expect(FULL[key]).toEqual(expected);
     });
   });
 
-  describe('parity with parse-config.sh', () => {
+  describe('parity with parse-config.mjs', () => {
     it.skipIf(process.platform === 'win32')(
       'produces JSON matching node parse-config.mjs output on CLAUDE.md (sorted keys)',
       () => {
         const claudeMdPath = join(WORKTREE_ROOT, 'CLAUDE.md');
         const claudeMdContent = readFileSync(claudeMdPath, 'utf8');
 
-        // Run node parse-config.mjs
         const result = spawnSync(
           'node',
           [join(WORKTREE_ROOT, 'scripts/parse-config.mjs'), claudeMdPath],
@@ -277,7 +159,6 @@ describe('parseSessionConfig', () => {
         const mjsSorted = JSON.stringify(mjsConfig, sortedKeys);
 
         if (bashSorted !== mjsSorted) {
-          // Find mismatched keys for a useful failure message
           const diffs = [];
           for (const k of sortedKeys) {
             const bashVal = JSON.stringify(bashJson[k]);
@@ -297,36 +178,22 @@ describe('parseSessionConfig', () => {
   });
 
   describe('CRLF-tolerant', () => {
+    // Fixture-integrity anchor: if the fixture ever gets normalised to LF, the
+    // rows below would pass while testing nothing about CRLF handling.
     it('raw fixture bytes contain \\r\\n', () => {
       const raw = readFileSync(join(FIXTURES, 'config-crlf.md'));
       expect(raw.includes(Buffer.from('\r\n'))).toBe(true);
     });
 
-    it('produces same persistence value as LF version', () => {
-      const crlfContent = readFileSync(join(FIXTURES, 'config-crlf.md'), 'utf8');
-      const lfContent = readFixture('config-minimal.md');
-      const crlfConfig = parseSessionConfig(crlfContent);
-      const lfConfig = parseSessionConfig(lfContent);
-      expect(crlfConfig.persistence).toBe(lfConfig.persistence);
-      expect(crlfConfig.persistence).toBe(true);
-    });
+    const CRLF = parseSessionConfig(readFileSync(join(FIXTURES, 'config-crlf.md'), 'utf8'));
 
-    it('produces same agents-per-wave default as LF version', () => {
-      const crlfContent = readFileSync(join(FIXTURES, 'config-crlf.md'), 'utf8');
-      const lfContent = readFixture('config-minimal.md');
-      const crlfConfig = parseSessionConfig(crlfContent);
-      const lfConfig = parseSessionConfig(lfContent);
-      expect(crlfConfig['agents-per-wave']).toBe(lfConfig['agents-per-wave']);
-      expect(crlfConfig['agents-per-wave']).toBe(6);
-    });
-
-    it('produces same enforcement default as LF version', () => {
-      const crlfContent = readFileSync(join(FIXTURES, 'config-crlf.md'), 'utf8');
-      const lfContent = readFixture('config-minimal.md');
-      const crlfConfig = parseSessionConfig(crlfContent);
-      const lfConfig = parseSessionConfig(lfContent);
-      expect(crlfConfig.enforcement).toBe(lfConfig.enforcement);
-      expect(crlfConfig.enforcement).toBe('warn');
+    it.each([
+      { key: 'persistence', expected: true },
+      { key: 'agents-per-wave', expected: 6 },
+      { key: 'enforcement', expected: 'warn' },
+    ])('CRLF input yields the same $key as the LF fixture', ({ key, expected }) => {
+      expect(CRLF[key]).toEqual(expected);
+      expect(MINIMAL[key]).toEqual(expected);
     });
   });
 
@@ -335,68 +202,41 @@ describe('parseSessionConfig', () => {
       expect(() => parseSessionConfig(readFixture('config-no-block.md'))).not.toThrow();
     });
 
-    it('returns agents-per-wave default of 6', () => {
-      const config = parseSessionConfig(readFixture('config-no-block.md'));
-      expect(config['agents-per-wave']).toBe(6);
-    });
-
-    it('returns enforcement default of warn', () => {
-      const config = parseSessionConfig(readFixture('config-no-block.md'));
-      expect(config.enforcement).toBe('warn');
-    });
-
-    it('returns persistence default of true', () => {
-      const config = parseSessionConfig(readFixture('config-no-block.md'));
-      expect(config.persistence).toBe(true);
-    });
-
-    it('returns max-turns default of auto', () => {
-      const config = parseSessionConfig(readFixture('config-no-block.md'));
-      expect(config['max-turns']).toBe('auto');
+    it.each([
+      { key: 'agents-per-wave', expected: 6 },
+      { key: 'enforcement', expected: 'warn' },
+      { key: 'persistence', expected: true },
+      { key: 'max-turns', expected: 'auto' },
+    ])('falls back to the $key default', ({ key, expected }) => {
+      expect(NO_BLOCK[key]).toEqual(expected);
     });
   });
 
   describe('invalid enum throws', () => {
-    it('throws for enforcement: loose', () => {
-      expect(() => parseSessionConfig(readFixture('config-invalid-enum.md'))).toThrow();
-    });
-
-    it('error message mentions "enforcement"', () => {
-      expect(() => parseSessionConfig(readFixture('config-invalid-enum.md'))).toThrow(
-        /enforcement/
-      );
-    });
-
-    it('error message mentions allowed values', () => {
-      expect(() => parseSessionConfig(readFixture('config-invalid-enum.md'))).toThrow(
-        /strict|warn|off/
-      );
+    it.each([
+      { why: 'names the offending key', matcher: /enforcement/ },
+      { why: 'lists the allowed values', matcher: /strict|warn|off/ },
+    ])('throws for enforcement: loose and $why', ({ matcher }) => {
+      expect(() => parseSessionConfig(readFixture('config-invalid-enum.md'))).toThrow(matcher);
     });
   });
 
   describe('integer override syntax', () => {
-    it('parses agents-per-wave: 6 (deep: 18) into object with default and deep', () => {
-      const content = `## Session Config\n\nagents-per-wave: 6 (deep: 18)\n`;
-      const config = parseSessionConfig(content);
-      expect(config['agents-per-wave']).toEqual({ default: 6, deep: 18 });
-    });
-
-    it('sets default property to 6', () => {
-      const content = `## Session Config\n\nagents-per-wave: 6 (deep: 18)\n`;
-      const config = parseSessionConfig(content);
-      expect(config['agents-per-wave'].default).toBe(6);
-    });
-
-    it('sets deep property to 18', () => {
-      const content = `## Session Config\n\nagents-per-wave: 6 (deep: 18)\n`;
-      const config = parseSessionConfig(content);
-      expect(config['agents-per-wave'].deep).toBe(18);
-    });
-
-    it('parses multiple overrides in one field', () => {
-      const content = `## Session Config\n\nwaves: 5 (deep: 10, fast: 3)\n`;
-      const config = parseSessionConfig(content);
-      expect(config.waves).toEqual({ default: 5, deep: 10, fast: 3 });
+    it.each([
+      {
+        why: 'agents-per-wave: 6 (deep: 18)',
+        content: '## Session Config\n\nagents-per-wave: 6 (deep: 18)\n',
+        key: 'agents-per-wave',
+        expected: { default: 6, deep: 18 },
+      },
+      {
+        why: 'multiple overrides in one field',
+        content: '## Session Config\n\nwaves: 5 (deep: 10, fast: 3)\n',
+        key: 'waves',
+        expected: { default: 5, deep: 10, fast: 3 },
+      },
+    ])('parses $why into a {default, ...overrides} object', ({ content, key, expected }) => {
+      expect(parseSessionConfig(content)[key]).toEqual(expected);
     });
   });
 });
@@ -406,47 +246,17 @@ describe('parseSessionConfig', () => {
 // ---------------------------------------------------------------------------
 
 describe('getConfigValue', () => {
-  it('returns the config value for an existing key', () => {
-    const config = parseSessionConfig(readFixture('config-minimal.md'));
-    const result = getConfigValue(config, 'agents-per-wave', 99);
-    expect(result).toBe(6);
-  });
-
-  it('ignores the defaultValue when key exists', () => {
-    const config = parseSessionConfig(readFixture('config-minimal.md'));
-    // enforcement is 'warn', not the defaultValue we pass
-    const result = getConfigValue(config, 'enforcement', 'strict');
-    expect(result).toBe('warn');
-  });
-
-  it('returns defaultValue for a missing key', () => {
-    const config = {};
-    const result = getConfigValue(config, 'nonexistent-key', 'fallback');
-    expect(result).toBe('fallback');
-  });
-
-  it('returns defaultValue when key value is null', () => {
-    const config = parseSessionConfig(readFixture('config-minimal.md'));
-    // vcs is null in minimal config
-    const result = getConfigValue(config, 'vcs', 'default-vcs');
-    expect(result).toBe('default-vcs');
-  });
-
-  it('returns null as defaultValue when no defaultValue given and key is missing', () => {
-    const result = getConfigValue({}, 'missing');
-    expect(result).toBeNull();
-  });
-
-  it('returns boolean true correctly', () => {
-    const config = parseSessionConfig(readFixture('config-minimal.md'));
-    const result = getConfigValue(config, 'persistence', false);
-    expect(result).toBe(true);
-  });
-
-  it('returns array values correctly', () => {
-    const config = parseSessionConfig(readFixture('config-minimal.md'));
-    const result = getConfigValue(config, 'discovery-probes', null);
-    expect(result).toEqual(['all']);
+  it.each([
+    { why: 'returns the config value for an existing key', config: MINIMAL, key: 'agents-per-wave', fallback: 99, expected: 6 },
+    { why: 'ignores the defaultValue when the key exists', config: MINIMAL, key: 'enforcement', fallback: 'strict', expected: 'warn' },
+    { why: 'returns the defaultValue for a missing key', config: {}, key: 'nonexistent-key', fallback: 'fallback', expected: 'fallback' },
+    // vcs is null in the minimal fixture — null must be treated as absent
+    { why: 'returns the defaultValue when the key value is null', config: MINIMAL, key: 'vcs', fallback: 'default-vcs', expected: 'default-vcs' },
+    { why: 'returns null when no defaultValue is given and the key is missing', config: {}, key: 'missing', fallback: undefined, expected: null },
+    { why: 'returns boolean true correctly', config: MINIMAL, key: 'persistence', fallback: false, expected: true },
+    { why: 'returns array values correctly', config: MINIMAL, key: 'discovery-probes', fallback: null, expected: ['all'] },
+  ])('$why', ({ config, key, fallback, expected }) => {
+    expect(getConfigValue(config, key, fallback)).toEqual(expected);
   });
 });
 
@@ -455,66 +265,43 @@ describe('getConfigValue', () => {
 // ---------------------------------------------------------------------------
 
 describe('readConfigFile', () => {
-  it('finds and returns CLAUDE.md content from the project root', async () => {
-    const content = await readConfigFile(WORKTREE_ROOT);
-    expect(typeof content).toBe('string');
-    expect(content.length).toBeGreaterThan(0);
-  });
-
-  it('returned content contains ## Session Config header', async () => {
+  it('returns CLAUDE.md content from the project root, parseable by parseSessionConfig', async () => {
     const content = await readConfigFile(WORKTREE_ROOT);
     expect(content).toContain('## Session Config');
-  });
-
-  it('returned content is parseable by parseSessionConfig', async () => {
-    const content = await readConfigFile(WORKTREE_ROOT);
     const config = parseSessionConfig(content);
-    // Must produce a valid object with key fields. The live CLAUDE.md Session
-    // Config uses the deep-override syntax `agents-per-wave: 6 (deep: 18)`
-    // (lean-root session-config-parity fix, 2026-05-19), which parseSessionConfig
-    // correctly resolves to the {default, deep} object form — not the scalar 6.
+    // The live CLAUDE.md Session Config uses the deep-override syntax
+    // `agents-per-wave: 6 (deep: 18)` (lean-root session-config-parity fix,
+    // 2026-05-19), which resolves to the {default, deep} object — not scalar 6.
     expect(config['agents-per-wave']).toEqual({ default: 6, deep: 18 });
     expect(config.enforcement).toBe('warn');
   });
 
-  it('prefers AGENTS.md when SO_PLATFORM is pi', async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'config-test-pi-'));
+  it.each([
+    { platform: 'pi', expected: 'waves: 9' }, // AGENTS.md wins on Pi/Codex
+    { platform: 'claude', expected: 'waves: 3' }, // CLAUDE.md precedence elsewhere
+  ])('SO_PLATFORM=$platform selects the file containing "$expected"', async ({ platform, expected }) => {
+    const tmpDir = mkdtempSync(join(tmpdir(), `config-test-${platform}-`));
     try {
       writeFileSync(join(tmpDir, 'CLAUDE.md'), '# Claude\n\n## Session Config\n\nwaves: 3\n', 'utf8');
       writeFileSync(join(tmpDir, 'AGENTS.md'), '# Agents\n\n## Session Config\n\nwaves: 9\n', 'utf8');
-      vi.stubEnv('SO_PLATFORM', 'pi');
+      vi.stubEnv('SO_PLATFORM', platform);
 
       const content = await readConfigFile(tmpDir);
-      expect(content).toContain('waves: 9');
+      expect(content).toContain(expected);
     } finally {
       vi.unstubAllEnvs();
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
-  it('keeps CLAUDE.md precedence for non-Codex/Pi platforms', async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'config-test-claude-'));
+  it('throws naming both candidate files and the projectRoot when neither exists', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'config-test-'));
     try {
-      writeFileSync(join(tmpDir, 'CLAUDE.md'), '# Claude\n\n## Session Config\n\nwaves: 3\n', 'utf8');
-      writeFileSync(join(tmpDir, 'AGENTS.md'), '# Agents\n\n## Session Config\n\nwaves: 9\n', 'utf8');
-      vi.stubEnv('SO_PLATFORM', 'claude');
-
-      const content = await readConfigFile(tmpDir);
-      expect(content).toContain('waves: 3');
+      await expect(readConfigFile(tmpDir)).rejects.toThrow(/CLAUDE\.md|AGENTS\.md/);
+      await expect(readConfigFile(tmpDir)).rejects.toThrow(tmpDir);
     } finally {
-      vi.unstubAllEnvs();
       rmSync(tmpDir, { recursive: true, force: true });
     }
-  });
-
-  it('throws when neither CLAUDE.md nor AGENTS.md exists in the given directory', async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'config-test-'));
-    await expect(readConfigFile(tmpDir)).rejects.toThrow(/CLAUDE\.md|AGENTS\.md/);
-  });
-
-  it('error from missing files mentions the projectRoot path', async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'config-test-'));
-    await expect(readConfigFile(tmpDir)).rejects.toThrow(tmpDir);
   });
 });
 
@@ -541,8 +328,12 @@ describe('readConfigFile leaf back-compat (#664)', () => {
 
   it('leaf import throws the same way when neither file exists', async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'config-leaf-test-'));
-    await expect(readConfigFileFromLeaf(tmpDir)).rejects.toThrow(/CLAUDE\.md|AGENTS\.md/);
-    await expect(readConfigFileFromLeaf(tmpDir)).rejects.toThrow(tmpDir);
+    try {
+      await expect(readConfigFileFromLeaf(tmpDir)).rejects.toThrow(/CLAUDE\.md|AGENTS\.md/);
+      await expect(readConfigFileFromLeaf(tmpDir)).rejects.toThrow(tmpDir);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it('leaf import honours SO_PLATFORM=pi AGENTS.md precedence', async () => {
@@ -560,37 +351,27 @@ describe('readConfigFile leaf back-compat (#664)', () => {
     }
   });
 });
+
 // ---------------------------------------------------------------------------
 // _coerceCollisionRisk (issue #194)
 // ---------------------------------------------------------------------------
 
 describe('_coerceCollisionRisk', () => {
-  it('returns default when value is null', () => {
-    expect(_coerceCollisionRisk(null)).toBe('low');
+  it.each([
+    { why: 'null falls back to the built-in default', input: null, fallback: undefined, expected: 'low' },
+    { why: 'undefined falls back to the built-in default', input: undefined, fallback: undefined, expected: 'low' },
+    { why: 'a supplied custom default is honoured', input: null, fallback: 'medium', expected: 'medium' },
+    { why: 'accepts low', input: 'low', fallback: undefined, expected: 'low' },
+    { why: 'accepts medium', input: 'medium', fallback: undefined, expected: 'medium' },
+    { why: 'accepts high', input: 'high', fallback: undefined, expected: 'high' },
+  ])('$why', ({ input, fallback, expected }) => {
+    expect(_coerceCollisionRisk(input, fallback)).toBe(expected);
   });
 
-  it('returns default when value is undefined', () => {
-    expect(_coerceCollisionRisk(undefined)).toBe('low');
-  });
-
-  it('returns custom default when supplied', () => {
-    expect(_coerceCollisionRisk(null, 'medium')).toBe('medium');
-  });
-
-  it('accepts low', () => {
-    expect(_coerceCollisionRisk('low')).toBe('low');
-  });
-
-  it('accepts medium', () => {
-    expect(_coerceCollisionRisk('medium')).toBe('medium');
-  });
-
-  it('accepts high', () => {
-    expect(_coerceCollisionRisk('high')).toBe('high');
-  });
-
-  it('throws TypeError for invalid value', () => {
-    expect(() => _coerceCollisionRisk('extreme')).toThrow(TypeError);
-    expect(() => _coerceCollisionRisk('extreme')).toThrow('low|medium|high');
+  it.each([
+    { why: 'is a TypeError', matcher: TypeError },
+    { why: 'lists the allowed values', matcher: 'low|medium|high' },
+  ])('rejecting an invalid value: the throw $why', ({ matcher }) => {
+    expect(() => _coerceCollisionRisk('extreme')).toThrow(matcher);
   });
 });
