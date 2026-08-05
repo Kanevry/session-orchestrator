@@ -1093,6 +1093,42 @@ const MAX_PAYLOAD_DEPTH = 3;
 const MAX_PAYLOAD_EVALUATIONS = 32;
 
 /**
+ * Build the DE-DUPLICATED payload set for a segment: the UNION of the primary
+ * reading's payloads and the ambiguous alt reading's payloads (#1000).
+ *
+ * The dual-parse union MUST be de-duped BEFORE budget accounting so an ambiguous
+ * segment is charged against the shared MAX_PAYLOAD_EVALUATIONS budget ONCE per
+ * DISTINCT payload — never the (primary + alt) sum (HIGH-1 remediation (a)). The
+ * pre-#1000 zero-charge for a non-interpreter primary verb is preserved
+ * naturally: when the alt reading adds no new distinct payload the set stays
+ * empty and no budget is consumed.
+ *
+ * Both matchSegments AND collectRedirectTargets consume this single helper so the
+ * union is applied IDENTICALLY on the match surface and the redirect surface. A
+ * redirect-recursion that walked parse A only was a denylist bypass
+ * (`env -Q x bash -c 'echo pwned > CLAUDE.md'` resolved to non-interpreter `x` in
+ * parse A, so its redirect target was never collected — HIGH-2).
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} segment
+ * @param {{ verb: string|null, index: number, payloads: string[],
+ *           alt?: { verb: string|null, index: number, payloads: string[] } }} resolved
+ * @returns {string[]} distinct payload strings (insertion-ordered)
+ */
+function dedupedSegmentPayloads(segment, resolved) {
+  const payloadSet = new Set(resolved.payloads);
+  if (resolved.verb && DASH_C_SHELLS.has(resolved.verb)) {
+    for (const p of dashCPayloads(segment, resolved.index)) payloadSet.add(p);
+  }
+  if (resolved.alt) {
+    for (const p of resolved.alt.payloads) payloadSet.add(p);
+    if (resolved.alt.verb && DASH_C_SHELLS.has(resolved.alt.verb)) {
+      for (const p of dashCPayloads(segment, resolved.alt.index)) payloadSet.add(p);
+    }
+  }
+  return [...payloadSet];
+}
+
+/**
  * Match a blocked-pattern regex against tokenized chain segments — the shared
  * core of commandMatchesBlocked, recursion-capable for `-c` payloads (#982).
  *
@@ -1130,21 +1166,24 @@ function matchSegments(segments, re, depth, budget) {
     }
 
     // 3) `-c`/`env -S` payload recursion (depth-capped, budgeted). The payload
-    //    set is the UNION over both readings, de-duplicated so an ambiguous
-    //    segment cannot double-charge the shared evaluation budget.
+    //    set is the de-duplicated UNION over both readings (dedupedSegmentPayloads)
+    //    so an ambiguous segment cannot double-charge the shared evaluation budget.
     if (depth < MAX_PAYLOAD_DEPTH) {
-      const payloadSet = new Set(resolved.payloads);
-      if (resolved.verb && DASH_C_SHELLS.has(resolved.verb)) {
-        for (const p of dashCPayloads(segment, resolved.index)) payloadSet.add(p);
-      }
-      if (resolved.alt) {
-        for (const p of resolved.alt.payloads) payloadSet.add(p);
-        if (resolved.alt.verb && DASH_C_SHELLS.has(resolved.alt.verb)) {
-          for (const p of dashCPayloads(segment, resolved.alt.index)) payloadSet.add(p);
-        }
-      }
-      for (const payload of payloadSet) {
-        if (budget.remaining <= 0) break;
+      for (const payload of dedupedSegmentPayloads(segment, resolved)) {
+        // FAIL-VISIBLE cut-off (HIGH-1 remediation (b)). A silent `break` here
+        // was fail-OPEN: an attacker prepends 32 inert `env -Q x sh -c 'echo N'`
+        // filler segments — each charging one alt-reading payload against the
+        // shared 32-eval budget (#1000) — then the real deny-capable payload
+        // (`env -S 'rm -rf /'`) arrives with budget exhausted and the old `break`
+        // returned false → ALLOW (coordinator-measured deny-loss vs 1be450a).
+        // This matcher returns a boolean with no unresolved channel, so an
+        // UNJUDGED deny-capable payload is treated as a MATCH (fail-closed),
+        // mirroring collectRedirectTargets' budget-exhausted marker (#988 T2).
+        // A realistic benign command never approaches the budget (depth-capped
+        // at 3); only pathological width reaches exhaustion, and denying a
+        // command that also carries a blocked pattern in the raw string is the
+        // safe direction.
+        if (budget.remaining <= 0) return true;
         budget.remaining -= 1;
         const subTokens = tokenizeCommand(
           normalizeShellWhitespaceExpansions(payload, { expandSingleQuoted: true }),
@@ -1238,10 +1277,15 @@ function collectRedirectTargets(segments, out, depth, budget) {
       out.push({ target: wa.value, mode: 'truncate', fd: null });
     }
 
-    const payloads = [...resolved.payloads];
-    if (resolved.verb && DASH_C_SHELLS.has(resolved.verb)) {
-      payloads.push(...dashCPayloads(segment, resolved.index));
-    }
+    // Both readings of an ambiguous unknown flag contribute payloads (#1000),
+    // UNIONED and de-duped (HIGH-2). Walking parse A only let
+    // `env -Q x bash -c 'echo pwned > CLAUDE.md'` — which resolves to the
+    // non-interpreter `x` in parse A — bypass the redirect denylist entirely
+    // (coordinator-measured: `bash -c '… > CLAUDE.md'` DENY, `env -Q x bash -c
+    // '… > CLAUDE.md'` ALLOW). The same helper matchSegments uses guarantees the
+    // deduped-before-charging rule holds on this surface too, so the redirect
+    // recursion cannot be starved any differently than the match recursion.
+    const payloads = dedupedSegmentPayloads(segment, resolved);
     if (payloads.length === 0) continue;
 
     // A cap that drops payloads SILENTLY is a bypass, not a cap: 33 filler

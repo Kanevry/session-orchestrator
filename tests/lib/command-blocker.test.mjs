@@ -661,3 +661,68 @@ describe('redirectSpanEnd — one operand-span rule for all modes (#1002)', () =
     expect(redirectSpanEnd(tokenizeCommand(command), i)).toBe(expected);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1000 dual-parse hardening REGRESSIONS — budget starvation + redirect union
+// ---------------------------------------------------------------------------
+
+describe('commandMatchesBlocked — budget-starvation deny-loss (HIGH-1)', () => {
+  // The #1000 union added the alt reading's payloads to the SHARED 32-eval
+  // budget: `env -Q x sh -c 'echo N'` resolves to the non-interpreter `x` in
+  // parse A (zero payloads pre-#1000) but its parse-B `sh -c` reading now
+  // charges ONE. An attacker prepends exactly 32 such inert fillers to exhaust
+  // the budget, so the real deny-capable `env -S 'rm -rf …'` arrives after the
+  // cut-off. Before the fix the exhausted cut-off was a silent `break` → the
+  // matcher returned false → ALLOW. The fix makes it fail-VISIBLE: an unjudged
+  // deny-capable payload is treated as a match. Falsification: restore the
+  // `break` and this assertion flips to false (allow) — the self-inflicted
+  // deny-loss the coordinator measured against 1be450a.
+  it('denies a real payload starved behind 32 inert budget-filler segments', () => {
+    const fillers = Array.from({ length: 32 }, () => "env -Q x sh -c 'echo hi'").join(' ; ');
+    const attack = `${fillers} ; env -S 'rm -rf /tmp/victim'`;
+    expect(commandMatchesBlocked(attack, 'rm -rf')).toBe(true);
+  });
+
+  // No-over-block guard. A realistic benign command is depth-bounded (payload
+  // recursion caps at 3) and never approaches the 32-eval budget, so the
+  // fail-visible cut-off never fires. This one carries the blocked string as
+  // INERT data under a non-interpreter verb (fast-path passes, then each
+  // segment is judged) plus a handful of benign `sh -c` payloads — well under
+  // budget — and MUST still be allowed. If the fix over-reached (e.g. denied on
+  // any pending payload rather than only on true exhaustion) this flips to true.
+  it('still allows a benign under-budget command that mentions the pattern inertly', () => {
+    const benign = "echo 'rm -rf placeholder' ; sh -c 'echo a' ; sh -c 'echo b' ; sh -c 'echo c'";
+    expect(commandMatchesBlocked(benign, 'rm -rf')).toBe(false);
+  });
+
+  // A long benign command with NO blocked pattern is short-circuited by the
+  // fast path and never enters the budgeted recursion — length alone is never a
+  // reason to deny.
+  it('allows a long benign command with no blocked pattern regardless of width', () => {
+    const wide = Array.from({ length: 40 }, (_, i) => `sh -c 'echo ${i}'`).join(' ; ');
+    expect(commandMatchesBlocked(wide, 'rm -rf')).toBe(false);
+  });
+});
+
+describe('extractRedirectTargets — redirect union walks both readings (HIGH-2)', () => {
+  // The payload recursion in collectRedirectTargets walked parse A only, so
+  // `env -Q x bash -c 'echo pwned > CLAUDE.md'` — which resolves to the
+  // non-interpreter `x` in parse A — never re-tokenized the `bash -c` payload
+  // and the `> CLAUDE.md` truncate target came back as []. That is a redirect
+  // denylist bypass onto protected artefacts (the policy file itself).
+  // Falsification: revert the union back to `resolved.payloads` only and this
+  // returns [] (bypass).
+  it('recovers a redirect target hidden behind an ambiguous wrapper flag', () => {
+    expect(extractRedirectTargets("env -Q x bash -c 'echo pwned > CLAUDE.md'")).toEqual([
+      { target: 'CLAUDE.md', mode: 'truncate', fd: null },
+    ]);
+  });
+
+  // Direction guard: the pre-existing wrapperArgs union (parse B recovers the
+  // `time -o` operand) must not regress when the payload union is added.
+  it('keeps a wrapperArgs write target that only the value-taking reading sees', () => {
+    expect(extractRedirectTargets('env -Q x /usr/bin/time -o report.txt npm test')).toEqual([
+      { target: 'report.txt', mode: 'truncate', fd: null },
+    ]);
+  });
+});

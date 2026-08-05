@@ -150,6 +150,37 @@ const HEAD_FALLBACK_ALLOWLIST = new Set([
 ]);
 
 /**
+ * The ONLY environment keys `git show HEAD:<path>` may inherit (see
+ * {@link readFromHead}).
+ *
+ * An ALLOWLIST, deliberately — the predecessor was a denylist that named the
+ * git repository-/object-/config-discovery vars one by one, and a denylist is
+ * unsound by construction: it silently re-opens on every git release that adds a
+ * new config channel, and it had already MISSED three independent ones —
+ * `GIT_CONFIG_PARAMETERS` (a command-line config channel with NO
+ * `GIT_CONFIG_COUNT` gate: `GIT_CONFIG_PARAMETERS="'user.name=X'" git config
+ * user.name` prints `X`), `GIT_CEILING_DIRECTORIES` (can force the shell-out to
+ * fail), and the whole `GIT_TRACE*` family (writes to an attacker-named path as
+ * the invoking user). An allowlist omits every unlisted key — present and
+ * future — so no future git config channel can ride in.
+ *
+ * Kept, and only these: `PATH` (execFileSync resolves the `git` binary through
+ * it), `HOME` (git's own config-discovery root — the USER's `~/.gitconfig`, not
+ * an attacker-set channel), and the locale/tmp/tz vars git honours for messages
+ * and temp files. `git show HEAD:<blob>` on a pipe needs nothing else: no pager
+ * (not a tty), no default smudge/textconv filter, and aliases cannot shadow the
+ * `show` builtin.
+ */
+const GIT_ENV_ALLOWLIST = Object.freeze([
+  'PATH',
+  'HOME',
+  'LANG',
+  'LC_ALL',
+  'TMPDIR',
+  'TZ',
+]);
+
+/**
  * Resolve the once-per-session banner key.
  *
  * At ESM link-time failure stdin has NOT been read yet, so the payload's
@@ -377,12 +408,19 @@ function emitGuardBannerOnce({ projectDir, kind, message }) {
  * trust-sensitive shell-out rather than at {@link armGuard} entry, because this
  * is the only place whose output becomes code.
  *
- * The listed keys are set to `undefined`, which Node OMITS when building the
- * child env — a DELETION, never an empty-string assignment (`GIT_DIR=` is itself
- * a discovery override, so `''` would re-open the hole it closes).
- * `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*` need no enumeration: they are inert
- * without `GIT_CONFIG_COUNT`, which is scrubbed. `PATH`/`HOME`/`TMPDIR` are kept
- * deliberately — git must still be findable and runnable.
+ * ## Allowlist, not denylist (LOW-4)
+ *
+ * The child env is BUILT from {@link GIT_ENV_ALLOWLIST} rather than
+ * `process.env` with a hand-maintained set of deletions. `execFileSync`'s `env`
+ * REPLACES the child environment wholesale (it does not merge into
+ * `process.env`), so every key not on the allowlist is omitted — including
+ * every git config/discovery channel the old denylist did not enumerate. The
+ * denylist had already MISSED `GIT_CONFIG_PARAMETERS` (an independent
+ * command-line config channel with no `GIT_CONFIG_COUNT` gate),
+ * `GIT_CEILING_DIRECTORIES`, and the `GIT_TRACE*` family; an allowlist closes
+ * those and any channel a future git release adds, which is the only form that
+ * survives such a release. See {@link GIT_ENV_ALLOWLIST} for the kept keys and
+ * why each is safe.
  *
  * @param {string} repoRoot
  * @param {string} relPath - POSIX, repo-relative.
@@ -390,23 +428,15 @@ function emitGuardBannerOnce({ projectDir, kind, message }) {
  * @throws when git is absent, the dir is not a repo, or the path is not at HEAD.
  */
 function readFromHead(repoRoot, relPath) {
+  const env = {};
+  for (const key of GIT_ENV_ALLOWLIST) {
+    if (process.env[key] !== undefined) env[key] = process.env[key];
+  }
   return execFileSync('git', ['-C', repoRoot, 'show', `HEAD:${relPath}`], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
     maxBuffer: 8 * 1024 * 1024,
-    env: {
-      ...process.env,
-      GIT_DIR: undefined,
-      GIT_WORK_TREE: undefined,
-      GIT_OBJECT_DIRECTORY: undefined,
-      GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined,
-      GIT_COMMON_DIR: undefined,
-      GIT_INDEX_FILE: undefined,
-      GIT_NAMESPACE: undefined,
-      GIT_CONFIG_GLOBAL: undefined,
-      GIT_CONFIG_SYSTEM: undefined,
-      GIT_CONFIG_COUNT: undefined,
-    },
+    env,
   });
 }
 

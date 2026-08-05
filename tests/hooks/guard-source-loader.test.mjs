@@ -354,6 +354,35 @@ describe('#998.1 — git env scrub in readFromHead', () => {
     expect(result.degraded).toEqual(['m']);
     expect(result.modules.m.origin()).toBe('REAL');
   });
+
+  it.skipIf(!GIT_AVAILABLE)('an inherited GIT_CONFIG_PARAMETERS does not reach the git child (LOW-4 allowlist)', async () => {
+    // Bug this catches: the old DENYLIST scrub named the enumerated config
+    // channel (GIT_CONFIG_COUNT) but NOT GIT_CONFIG_PARAMETERS, an independent
+    // command-line config channel with no COUNT gate. The allowlist child env
+    // omits it entirely. Probe: a MALFORMED value ("garbage" has no section) —
+    // if it reached the child, `git show` aborts with exit 128 ("unable to
+    // parse command-line config"), the HEAD fallback then throws and armGuard
+    // rejects (no degraded result). The allowlist drops it, so `git show`
+    // succeeds and the REAL HEAD source loads. Falsify: revert readFromHead to
+    // inherit process.env → this rejects instead of returning REAL.
+    const { realDir } = await makeRealAndForeignRepos(REL);
+
+    const { result } = await withEnv({ GIT_CONFIG_PARAMETERS: "'garbage'" }, () =>
+      armGuardQuietly(
+        {
+          m: {
+            specifier: pathToFileURL(path.join(realDir, REL)).href,
+            headFallback: true,
+            requires: ['origin'],
+          },
+        },
+        { hookName: 'x', repoRoot: realDir, projectDir: realDir }
+      )
+    );
+
+    expect(result.degraded).toEqual(['m']);
+    expect(result.modules.m.origin()).toBe('REAL');
+  });
 });
 
 // ---------------------------------------------------------------------------

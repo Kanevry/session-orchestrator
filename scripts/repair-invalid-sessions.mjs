@@ -9,15 +9,23 @@
  *
  *   node scripts/repair-invalid-sessions.mjs [--dry-run|--apply] [--json]
  *                                            [--file PATH] [--repo-root PATH]
- *                                            [--no-backup]
  *
  * SAFETY: `--dry-run` is the DEFAULT — nothing is written unless `--apply` is
- * passed. Under `--apply` the original is copied to `<file>.bak-<stamp>` BEFORE
- * the swap, the new content is written to `<file>.tmp-<pid>` and renamed over
- * the target (atomic), and the result is then re-verified against BOTH
+ * passed. Under `--apply` the original is ALWAYS copied to `<file>.bak-<stamp>`
+ * BEFORE the swap (the backup is mandatory — there is no opt-out, because this
+ * is a write path to a protected ledger and the `.bak` is its only forensic
+ * trail; MED-3), the new content is written to `<file>.tmp-<pid>` and renamed
+ * over the target (atomic), and the result is then re-verified against BOTH
  * `validateSession` and `checkSessionsIntegrity`. A failed verification restores
  * the backup byte-identically and exits 3 — the ledger is never left in a state
  * worse than the one this CLI found.
+ *
+ * TARGET CONSTRAINT (MED-3): `--file` MUST resolve inside
+ * `<repo-root>/.orchestrator/metrics/`. Any target outside it — including a
+ * `..` traversal or a symlinked parent that escapes the dir — is refused with
+ * exit 1 BEFORE any read or write. This CLI is a write path to a protected
+ * ledger that the pre-bash-sessions-ledger-guard does not see (it resolves to
+ * verb `node`), so the target it may touch is bounded here.
  *
  * Exit codes (`.claude/rules/cli-design.md`):
  *   0 — completed (dry-run or apply); the ledger is clean or unchanged
@@ -26,6 +34,7 @@
  *   3 — post-verification failed; the backup was restored and nothing was kept
  */
 
+import fs from 'node:fs';
 import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,16 +45,58 @@ import { SO_PROJECT_DIR } from './lib/platform.mjs';
 const USAGE =
   'Usage: node scripts/repair-invalid-sessions.mjs [--dry-run|--apply] [--json]\n' +
   '                                                [--file PATH] [--repo-root PATH]\n' +
-  '                                                [--no-backup]\n' +
   '  --dry-run     preview only (DEFAULT — nothing is written)\n' +
-  '  --apply       rewrite the ledger in place (backup + atomic rename)\n' +
+  '  --apply       rewrite the ledger in place (mandatory backup + atomic rename)\n' +
   '  --json        emit the summary as JSON to stdout\n' +
   '  --file        ledger path (default: <repo-root>/' +
   CANONICAL_LEDGER_REL +
-  ')\n' +
+  ');\n' +
+  '                must resolve inside <repo-root>/.orchestrator/metrics/\n' +
   '  --repo-root   project root (default: resolved SO_PROJECT_DIR)\n' +
-  '  --no-backup   skip the .bak-<stamp> copy under --apply (not recommended)\n' +
   'Exit codes: 0 completed, 1 arg error, 2 system error, 3 post-verification failed\n';
+
+/**
+ * Resolve `--file` and REFUSE any target outside
+ * `<repoRoot>/.orchestrator/metrics/` (MED-3). Symlinks are resolved on the
+ * metrics dir and on the target's PARENT (the file itself may not exist yet),
+ * so a symlinked parent cannot escape the dir; `path.resolve` collapses any
+ * `..` traversal before the prefix check.
+ *
+ * @param {string} file - the requested target (default or `--file` value).
+ * @param {string} repoRoot
+ * @returns {{ok: true, file: string}|{ok: false, metricsDir: string, resolved: string}}
+ */
+function resolveLedgerTarget(file, repoRoot) {
+  const metricsDir = path.resolve(repoRoot, '.orchestrator', 'metrics');
+  // `absFile` (normalized, `..` collapsed) is what the repair uses — NOT the
+  // symlink-resolved form, so the canonical-path equality in `verifyWritten`
+  // (which compares against a non-realpath'd repoRoot) still recognises it.
+  const absFile = path.resolve(file);
+
+  // The CONTAINMENT decision resolves symlinks on both the metrics dir and the
+  // target's PARENT (the file itself may not exist yet), so a symlinked parent
+  // cannot smuggle a path that textually sits under metrics but physically
+  // escapes it (`metrics/link -> /etc`, then `--file metrics/link/passwd`).
+  let realMetricsDir = metricsDir;
+  try {
+    realMetricsDir = fs.realpathSync(metricsDir);
+  } catch {
+    /* not created yet — fall back to the normalized path */
+  }
+  let realParent = path.dirname(absFile);
+  try {
+    realParent = fs.realpathSync(path.dirname(absFile));
+  } catch {
+    /* parent may not exist yet — fall back to the normalized parent */
+  }
+  const realFile = path.join(realParent, path.basename(absFile));
+
+  const prefix = realMetricsDir.endsWith(path.sep) ? realMetricsDir : realMetricsDir + path.sep;
+  if (!realFile.startsWith(prefix)) {
+    return { ok: false, metricsDir: realMetricsDir, resolved: realFile };
+  }
+  return { ok: true, file: absFile };
+}
 
 /**
  * Human-readable summary — mirrors `scripts/backfill-abandoned-sessions.mjs`
@@ -99,7 +150,6 @@ async function main() {
         json: { type: 'boolean', default: false },
         file: { type: 'string' },
         'repo-root': { type: 'string' },
-        'no-backup': { type: 'boolean', default: false },
         help: { type: 'boolean', short: 'h', default: false },
       },
       allowPositionals: false,
@@ -119,11 +169,24 @@ async function main() {
   // --apply is an explicit opt-in; absent it (or with --dry-run) we never write.
   const apply = values.apply === true && values['dry-run'] !== true;
   const repoRoot = values['repo-root'] || SO_PROJECT_DIR;
-  const file = values.file || path.join(repoRoot, CANONICAL_LEDGER_REL);
+  const requestedFile = values.file || path.join(repoRoot, CANONICAL_LEDGER_REL);
+
+  // MED-3: bound the target to <repoRoot>/.orchestrator/metrics/ BEFORE any I/O.
+  const target = resolveLedgerTarget(requestedFile, repoRoot);
+  if (!target.ok) {
+    process.stderr.write(
+      `repair-invalid-sessions: --file must resolve inside ${target.metricsDir}${path.sep} ` +
+        `(got ${target.resolved})\n${USAGE}`
+    );
+    process.exit(1);
+  }
+  const file = target.file;
 
   let summary;
   try {
-    summary = repairLedger({ file, repoRoot, apply, backup: values['no-backup'] !== true });
+    // The backup is mandatory (MED-3): this is a write path to a protected
+    // ledger and the `.bak` is its only forensic trail — there is no opt-out.
+    summary = repairLedger({ file, repoRoot, apply, backup: true });
   } catch (err) {
     process.stderr.write(`repair-invalid-sessions: ${err?.message ?? String(err)}\n`);
     process.exit(2);

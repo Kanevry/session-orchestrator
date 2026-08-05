@@ -121,13 +121,13 @@ describe('--apply', () => {
     run(['--repo-root', repoRoot, '--apply']);
     const afterRun1 = readFileSync(ledger, 'utf8');
 
-    const res = run(['--repo-root', repoRoot, '--json', '--apply', '--no-backup']);
+    const res = run(['--repo-root', repoRoot, '--json', '--apply']);
 
     expect(res.code).toBe(0);
     const summary = JSON.parse(res.stdout);
     expect(summary.invalid_before).toBe(0);
     expect(summary.repaired).toBe(0);
-    expect(summary.backup_path).toBeNull();
+    expect(summary.backup_path).not.toBeNull(); // backup is mandatory (MED-3)
     expect(readFileSync(ledger, 'utf8')).toBe(afterRun1);
   });
 
@@ -141,12 +141,62 @@ describe('--apply', () => {
     expect(after.filter((id) => id === 'main-2026-05-11-deep-1')).toHaveLength(3);
   });
 
-  it('--no-backup skips the .bak copy', () => {
-    const res = run(['--repo-root', repoRoot, '--json', '--apply', '--no-backup']);
+  it('always writes a .bak under --apply and rejects the removed --no-backup flag (MED-3)', () => {
+    // Bug caught: forensic-trail erasure on a protected ledger. The backup is
+    // now mandatory under --apply and --no-backup is no longer a known flag.
+    const applied = run(['--repo-root', repoRoot, '--json', '--apply']);
+    expect(applied.code).toBe(0);
+    expect(JSON.parse(applied.stdout).backup_path).not.toBeNull();
+    expect(metricsDirEntries().filter((f) => f.includes('.bak-'))).toHaveLength(1);
+
+    const rejected = run(['--repo-root', repoRoot, '--apply', '--no-backup']);
+    expect(rejected.code).toBe(1);
+    expect(rejected.stderr).toContain('Usage:');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MED-3: --file is bounded to <repo-root>/.orchestrator/metrics/
+//
+// The CLI is a write path to a protected ledger that the
+// pre-bash-sessions-ledger-guard cannot see (it resolves to verb `node`), so
+// an unconstrained --file is an arbitrary-target / traversal vector. These pin
+// the containment guard: refusal (exit 1) BEFORE any read or write.
+// ---------------------------------------------------------------------------
+
+describe('MED-3 — --file is bounded to .orchestrator/metrics/', () => {
+  it('refuses a --file outside .orchestrator/metrics/ (exit 1, ledger untouched)', () => {
+    const outside = path.join(tmp, 'evil.jsonl');
+    writeFileSync(outside, 'x', 'utf8'); // even an existing, readable file is refused
+    const res = run(['--repo-root', repoRoot, '--apply', '--file', outside]);
+
+    expect(res.code).toBe(1);
+    expect(res.stderr).toContain('must resolve inside');
+    // Nothing was read or written: both the real ledger and the outside target
+    // are byte-identical, and no backup/tmp residue appeared.
+    expect(readFileSync(ledger, 'utf8')).toBe(GOLDEN_RAW);
+    expect(readFileSync(outside, 'utf8')).toBe('x');
+    expect(metricsDirEntries()).toEqual(['sessions.jsonl']);
+  });
+
+  it('refuses a --file that escapes the metrics dir via .. traversal (exit 1)', () => {
+    // Falsify target: path.resolve collapses the .. segments to <tmp>/pwned.jsonl,
+    // which is outside the metrics dir → refused before any I/O.
+    const traversal = path.join(repoRoot, '.orchestrator', 'metrics', '..', '..', '..', 'pwned.jsonl');
+    const res = run(['--repo-root', repoRoot, '--apply', '--file', traversal]);
+
+    expect(res.code).toBe(1);
+    expect(res.stderr).toContain('must resolve inside');
+    expect(readFileSync(ledger, 'utf8')).toBe(GOLDEN_RAW);
+  });
+
+  it('accepts an in-bounds --file pointing at the canonical ledger', () => {
+    const res = run(['--repo-root', repoRoot, '--json', '--file', ledger]);
 
     expect(res.code).toBe(0);
-    expect(JSON.parse(res.stdout).backup_path).toBeNull();
-    expect(metricsDirEntries().filter((f) => f.includes('.bak-'))).toEqual([]);
+    const summary = JSON.parse(res.stdout);
+    expect(summary.mode).toBe('dry-run');
+    expect(summary.repaired).toBe(FIXTURE_INVALID);
   });
 });
 
@@ -163,7 +213,10 @@ describe('exit-code contract', () => {
   });
 
   it('exits 2 when the ledger cannot be read', () => {
-    const res = run(['--file', path.join(tmp, 'does-not-exist.jsonl'), '--repo-root', repoRoot]);
+    // In-bounds (inside .orchestrator/metrics/) but absent → a read error, not a
+    // containment refusal: the exit-2 case must survive the MED-3 --file guard.
+    const missing = path.join(repoRoot, '.orchestrator', 'metrics', 'does-not-exist.jsonl');
+    const res = run(['--file', missing, '--repo-root', repoRoot]);
     expect(res.code).toBe(2);
     expect(res.stderr).toContain('repair-invalid-sessions:');
   });
