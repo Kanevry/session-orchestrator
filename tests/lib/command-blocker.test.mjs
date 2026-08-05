@@ -518,6 +518,32 @@ describe('commandMatchesBlocked — here-doc re-opened the #965 bypass (#970 HIG
   });
 });
 
+describe('splitChainSegments — newline after a here-doc terminator is a separator (#999)', () => {
+  // FP regression. `readHeredocBody` returns `end` PAST the terminator's closing
+  // newline, so the lexer resumed one char too late and that newline never
+  // reached the separator branch: `cat <<EOF\nbody\nEOF\nrm -rf /tmp/ok` stayed
+  // ONE segment under the verb `cat`. The rm-rf rule still MATCHED the glued
+  // text, but parseRmTargets (hooks/pre-bash-destructive-guard.mjs) iterates
+  // segments and collects targets only from a segment whose verb resolves to
+  // `rm` — the cat-verb segment yielded none, so the allowlisted /tmp/ok target
+  // failed CLOSED and an allowed command was DENIED.
+  it('isolates the post-terminator command into its own rm-verb segment (was glued into `cat`)', () => {
+    const segments = splitChainSegments(
+      tokenizeCommand('cat <<EOF\nbody\nEOF\nrm -rf /tmp/ok'),
+    );
+    // Two segments: the here-doc `cat` and the standalone `rm`. Before the fix
+    // this was a single `cat`-verb segment with the rm tokens glued on.
+    expect(segments).toHaveLength(2);
+    expect(resolveSegmentVerb(segments[0]).verb).toBe('cat');
+
+    const rmSegment = segments[1];
+    expect(resolveSegmentVerb(rmSegment).verb).toBe('rm');
+    // The allowlistable target is now reachable to a per-segment rm parser that
+    // gates on `verb === 'rm'`, so /tmp/ok can be allowlisted instead of denied.
+    expect(rmSegment.map((t) => t.text)).toEqual(['rm', '-rf', '/tmp/ok']);
+  });
+});
+
 describe('commandMatchesBlocked — wrapper prefixes hid the interpreter (#970 HIGH-2)', () => {
   // The here-doc design's safety argument is that a body fed to an interpreter
   // still matches, because `bash` is in SHELL_EXEC_INTERPRETERS. That holds only

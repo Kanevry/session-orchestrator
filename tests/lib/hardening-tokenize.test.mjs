@@ -1,7 +1,7 @@
 /**
  * tests/lib/hardening-tokenize.test.mjs
  *
- * Direct unit tests for tokenizeCommand (scripts/lib/hardening.mjs).
+ * Direct unit tests for tokenizeCommand (scripts/lib/command-blocker.mjs).
  *
  * tokenizeCommand is the quote-aware lexer that EVERY destructive-guard decision
  * depends on: the quoted-payload guard, parseRmTargets, and
@@ -18,10 +18,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { tokenizeCommand } from '../../scripts/lib/hardening.mjs';
-// The barrel deliberately re-exports only the three public lexer/matcher
-// entries; splitChainSegments (#982/#983) lives on the source module.
-import { splitChainSegments } from '../../scripts/lib/command-blocker.mjs';
+// Import from the source module directly: the hardening.mjs barrel is dropping
+// its tokenizeCommand re-export (#996.3), and command-blocker.mjs is the module
+// that defines the lexer, so both entries resolve from the same source here.
+import { tokenizeCommand, splitChainSegments } from '../../scripts/lib/command-blocker.mjs';
 
 describe('tokenizeCommand — unquoted whitespace splitting', () => {
   it('splits an unquoted command into one token per whitespace-delimited word', () => {
@@ -221,6 +221,10 @@ describe('tokenizeCommand — here-doc bodies (#965)', () => {
       { text: '>', quoted: false, redirect: { fd: null, mode: 'truncate' } },
       { text: '/tmp/n', quoted: false },
       { text: "it's fine", quoted: true },
+      // The newline that closes the terminator line is a command separator
+      // (#999): it must reach the separator branch, not be swallowed with the
+      // here-doc body.
+      { text: ';', quoted: false, operator: 'newline' },
       { text: 'rm', quoted: false },
       { text: '-rf', quoted: false },
       { text: 'src/', quoted: false },
@@ -232,6 +236,8 @@ describe('tokenizeCommand — here-doc bodies (#965)', () => {
       { text: 'cat', quoted: false },
       { text: '<<-', quoted: false, redirect: { fd: null, mode: 'heredoc' } },
       { text: 'body', quoted: true },
+      // Post-terminator newline is a separator (#999), not swallowed data.
+      { text: ';', quoted: false, operator: 'newline' },
       { text: 'ls', quoted: false },
     ]);
   });
@@ -308,6 +314,8 @@ describe('tokenizeCommand — here-doc operator position and terminator (#970)',
       { text: 'cat', quoted: false },
       { text: '<<', quoted: false, redirect: { fd: null, mode: 'heredoc' } },
       { text: 'body', quoted: true },
+      // Post-terminator newline is a separator (#999), not swallowed data.
+      { text: ';', quoted: false, operator: 'newline' },
       { text: 'ls', quoted: false },
     ]);
   });

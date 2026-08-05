@@ -3,18 +3,21 @@
  *
  * The original 691-line module bundled THREE structurally-independent concerns.
  * They now live in dedicated modules (Epic A4 split); this file is a pure
- * re-export barrel that preserves the original import surface (all 11 symbols)
+ * re-export barrel that preserves the surviving import surface (9 symbols)
  * so existing importers keep working UNCHANGED:
- *   - hooks/enforce-commands.mjs, hooks/enforce-scope.mjs,
- *     hooks/post-edit-validate.mjs, hooks/pre-bash-destructive-guard.mjs,
+ *   - hooks/enforce-commands.mjs, hooks/enforce-scope.mjs (both bind the barrel
+ *     via armGuard), hooks/post-bash-write-verify.mjs, hooks/post-edit-validate.mjs,
  *     hooks/pre-bash-memory-propose-audit.mjs, hooks/wave-scope-commit-guard.mjs
- *   - scripts/lib/io.mjs, scripts/lib/pre-dispatch-check.mjs,
- *     scripts/lib/worktree-freshness.mjs
+ *   - scripts/lib/pre-dispatch-check.mjs, scripts/lib/worktree-freshness.mjs
  *
  * Concern split:
  *   A) Env / runtime checks                → ./env-check.mjs
  *   B) Scope / pattern primitives          → ./scope-gate.mjs
- *   C) Command-blocking tokenizer + matcher → ./command-blocker.mjs
+ *   C) Command-blocking tokenizer + matcher → ./command-blocker.mjs. The
+ *      command-blocker primitives (tokenizeCommand, commandMatchesBlocked,
+ *      suggestForCommandBlock) were re-exported through this barrel until #996.3;
+ *      consumers now import them DIRECTLY from ./command-blocker.mjs, so this
+ *      barrel no longer touches concern C.
  *
  * The new modules MUST NOT import from this barrel (would cycle).
  *
@@ -38,6 +41,3 @@ export {
   extractBashWriteTargets,
   suggestForScopeViolation,
 } from './scope-gate.mjs';
-
-// C) Command-blocking tokenizer + matcher
-export { tokenizeCommand, commandMatchesBlocked, suggestForCommandBlock } from './command-blocker.mjs';

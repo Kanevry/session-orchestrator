@@ -450,13 +450,27 @@ export function tokenizeCommand(command) {
     if (ch === '\n' && pendingHeredocs.length > 0) {
       flush();
       let j = i + 1;
+      let lastTerm = false;
       while (pendingHeredocs.length > 0) {
         const { delim, stripTabs } = pendingHeredocs.shift();
         const { body, end, terminated } = readHeredocBody(command, j, delim, stripTabs);
-        if (!terminated) { pendingHeredocs.length = 0; break; }
+        // The reset is load-bearing: a first here-doc may terminate (lastTerm
+        // true) while a SECOND one on the same line does not — leaving lastTerm
+        // set would rewind onto the unterminated body's first char instead of a
+        // real newline (#999).
+        if (!terminated) { lastTerm = false; pendingHeredocs.length = 0; break; }
+        lastTerm = true;
         if (body.length > 0) tokens.push({ text: body, quoted: true });
         j = end;
       }
+      // `readHeredocBody` returns `end` pointing PAST the newline that closes the
+      // terminator line, so `j` sits at the first char of the NEXT command and
+      // the separating newline is swallowed. Rewind onto it (when there is one —
+      // a terminator at input-end has none) so the newline reaches the separator
+      // branch below and `cat <<EOF\nbody\nEOF\nrm -rf /tmp/ok` splits into two
+      // segments. Without this the trailing command glued into the here-doc
+      // verb's segment and an allowlisted rm target failed closed (#999 FP).
+      if (lastTerm && command[j - 1] === '\n') j -= 1;
       i = j - 1;
       continue;
     }

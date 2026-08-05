@@ -2,7 +2,10 @@
  * tests/lib/hardening.test.mjs
  *
  * Vitest unit tests for scripts/lib/hardening.mjs (issue #135).
- * Covers all 10 exports with behavioral assertions.
+ * Covers the barrel's 8 surviving exports with behavioral assertions. The two
+ * command-blocker primitives (commandMatchesBlocked, suggestForCommandBlock)
+ * are no longer re-exported by the barrel as of #996.3 — they are imported
+ * directly from scripts/lib/command-blocker.mjs below and exercised here.
  *
  * Security note: the F-01 shell-operator bypass regression block encodes
  * attack strings fixed in commit 6cfd081 (HIGH finding, CWE-77/184).
@@ -20,10 +23,9 @@ import {
   getEnforcementLevel,
   gateEnabled,
   pathMatchesPattern,
-  commandMatchesBlocked,
   suggestForScopeViolation,
-  suggestForCommandBlock,
 } from '@lib/hardening.mjs';
+import { commandMatchesBlocked, suggestForCommandBlock } from '@lib/command-blocker.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
