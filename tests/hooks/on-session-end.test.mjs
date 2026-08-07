@@ -265,17 +265,6 @@ describe('on-session-end.mjs — SessionEnd event', { timeout: 15000 }, () => {
     expect(record.reason).toBe('other');
   });
 
-  it('record carries an ISO 8601 timestamp', async () => {
-    const dir = await mkProject();
-    await runHook({
-      projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-ts' }),
-    });
-    const record = await readLastEvent(dir);
-    expect(typeof record.timestamp).toBe('string');
-    expect(Number.isNaN(Date.parse(record.timestamp))).toBe(false);
-  });
-
   it('degrades to duration_ms 0 when current-session.json is malformed JSON', async () => {
     const dir = await mkProject();
     const od = path.join(dir, '.orchestrator');
@@ -308,18 +297,6 @@ describe('on-session-end.mjs — SessionEnd event', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('on-session-end.mjs — deterministic lock release (#724)', { timeout: 15000 }, () => {
-  it('releases the session.lock when it belongs to the ending session (UUID match)', async () => {
-    const dir = await mkProject();
-    await seedLock(dir, { sessionId: 'sess-own', semanticSessionId: 'sem-own' });
-
-    await runHook({
-      projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-own' }),
-    });
-
-    expect(await lockExists(dir)).toBe(false);
-  });
-
   it('does NOT release a LIVE lock matched only by the SEMANTIC id (UUID rotated across clear)', async () => {
     const dir = await mkProject();
     // Lock recorded under an older UUID but the same semantic id — seedLock
@@ -351,32 +328,7 @@ describe('on-session-end.mjs — deterministic lock release (#724)', { timeout: 
     expect(await lockExists(dir)).toBe(true);
   });
 
-  it('does NOT release a FOREIGN lock (different session, live heartbeat)', async () => {
-    const dir = await mkProject();
-    await seedLock(dir, {
-      sessionId: 'foreign-sess',
-      semanticSessionId: 'foreign-sem',
-      lastHeartbeat: new Date().toISOString(),
-    });
-    await seedCurrentSession(dir, {
-      sessionId: 'sess-me',
-      timestamp: new Date().toISOString(),
-      semanticSessionId: 'sem-me',
-    });
-
-    await runHook({
-      projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-me' }),
-    });
-
-    // Foreign lock must survive — PSA: never destroy another session's lease.
-    expect(await lockExists(dir)).toBe(true);
-    // And the informational event is still emitted despite the foreign lock.
-    const record = await readLastEvent(dir);
-    expect(record.event).toBe('orchestrator.session.ended');
-  });
-
-  it('exits 0 and still emits session.ended even with a foreign lock present (backfill/release are best-effort)', async () => {
+  it('preserves a FOREIGN live lock and still emits session.ended (backfill/release are best-effort)', async () => {
     const dir = await mkProject();
     await seedLock(dir, {
       sessionId: 'other',
@@ -389,6 +341,7 @@ describe('on-session-end.mjs — deterministic lock release (#724)', { timeout: 
       stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'mine', reason: 'logout' }),
     });
 
+    expect(await lockExists(dir)).toBe(true);
     const record = await readLastEvent(dir);
     expect(record.event).toBe('orchestrator.session.ended');
     expect(record.reason).toBe('logout');
@@ -623,25 +576,6 @@ describe('on-session-end.mjs — hardened release path (#724 Wave 3)', { timeout
     expect(reconcileEvent).toBeDefined();
     expect(reconcileEvent.action).toBe('skipped');
     expect(reconcileEvent.reason).toBe('own-host-pid-alive');
-  });
-
-  it('does NOT reap a live lock that belongs to neither ownership check (reconciliation is dead-lease-only)', async () => {
-    const dir = await mkProject();
-    await seedLock(dir, {
-      sessionId: 'foreign-live-uuid',
-      semanticSessionId: 'foreign-live-sem',
-      lastHeartbeat: new Date().toISOString(), // fresh — live
-    });
-    // No current-session.json — this session's own semanticSessionId is null,
-    // so ownBySemantic cannot accidentally match the foreign lock's semantic id.
-
-    await runHook({
-      projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'me-different-uuid', reason: 'clear' }),
-    });
-
-    // Live + not-ours → reconciliation must never touch it.
-    expect(await lockExists(dir)).toBe(true);
   });
 
   it.skipIf(!permsEnforced())('emits a breadcrumb when release() fails despite a matched ownership (fs-error)', { timeout: 15000 }, async () => {

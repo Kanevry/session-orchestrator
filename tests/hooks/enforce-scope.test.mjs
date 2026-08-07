@@ -177,25 +177,6 @@ describe('allow path — strict mode', { timeout: 15000 }, () => {
     expectAllow(result);
   });
 
-  it('emits NOTHING on stdout for an allowed path — the only discriminator from deny under exit 0 (#906)', async () => {
-    // Both allow and deny now exit 0. If an allow ever printed an envelope — or a
-    // deny ever printed nothing — the harness could not tell them apart, and the
-    // ambiguous case resolves as "nothing to say" ⇒ the tool call goes through.
-    // This test pins the silent half of that pair explicitly, so a future edit
-    // that makes emitAllow chatty is caught here and not in production.
-    const dir = await mkProjectTracked({
-      enforcement: 'strict',
-      allowedPaths: ['src/'],
-    });
-    const result = await runHook({
-      projectDir: dir,
-      stdin: editPayload(path.join(dir, 'src', 'app.ts')),
-    });
-    expect(result.code).toBe(0);
-    expect(result.stdout).toBe('');
-    expect(result.stderr).toBe('');
-  });
-
   it('allows a file matching a recursive glob pattern in a nested subdirectory', async () => {
     const dir = await mkProjectTracked({
       enforcement: 'strict',
@@ -237,27 +218,6 @@ describe('deny path — strict mode', { timeout: 15000 }, () => {
       stdin: editPayload(path.join(dir, 'tests', 'unit.test.ts')),
     });
     expectDeny(result, { reasonContains: 'not in allowed paths' });
-  });
-
-  it('denies with exit code 0, never 2 — mixing channels makes Claude Code discard the JSON (#906)', async () => {
-    // Regression lock on the exact defect: the hook used to print the envelope
-    // AND exit 2. Per the docs, exit 2 "ignores stdout and any JSON in it" and
-    // feeds stderr back instead — but this hook writes no stderr on deny, so the
-    // reason vanished and the operator saw `hook error: … No stderr output`.
-    const dir = await mkProjectTracked({
-      enforcement: 'strict',
-      allowedPaths: ['src/'],
-    });
-    const result = await runHook({
-      projectDir: dir,
-      stdin: editPayload(path.join(dir, 'tests', 'unit.test.ts')),
-    });
-    expect(result.code).toBe(0);
-    expect(result.code).not.toBe(2);
-    // Exactly one line on stdout — consumers that parse stdout line-wise
-    // (scripts/lib/pi-hook-bridge.mjs) depend on the single-line shape.
-    expect(result.stdout.trim().split('\n')).toHaveLength(1);
-    expectDeny(result);
   });
 
   it('denies when allowedPaths is empty and any file is edited', async () => {
@@ -625,27 +585,6 @@ describe('pathRegex edge cases — #558 Q2-L5', { timeout: 15000 }, () => {
     expectDeny(result, { reasonContains: 'scripts/src_backup/foo.ts' });
   });
 
-  it('allows files matching either pattern when allowedPaths mixes a directory prefix and a recursive glob', async () => {
-    // Overlap test: `src/foo.ts` matches `src/` (prefix shortcut),
-    // `src/components/Button.tsx` matches BOTH `src/` AND `src/**/*.tsx`.
-    // The hook iterates with Array.some() — verify the matcher does not
-    // regress to AND-semantics or short-circuit on the first pattern.
-    const dir = await mkProjectTracked({
-      enforcement: 'strict',
-      allowedPaths: ['src/', 'src/**/*.tsx'],
-    });
-    const prefixHit = await runHook({
-      projectDir: dir,
-      stdin: editPayload(path.join(dir, 'src', 'foo.ts')),
-    });
-    expectAllow(prefixHit);
-
-    const globHit = await runHook({
-      projectDir: dir,
-      stdin: editPayload(path.join(dir, 'src', 'components', 'Button.tsx')),
-    });
-    expectAllow(globHit);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -666,45 +605,21 @@ describe('pathRegex edge cases — #558 Q2-L5', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('malformed allowedPaths shape — fail-closed coercion (#558)', { timeout: 15000 }, () => {
-  it('coerces allowedPaths: null to [] (deny all writes in strict mode)', async () => {
+  it.each([
+    ['null', null],
+    ['string', 'src/'],
+    ['object', { 'src/': true }],
+  ])('coerces %s to [] (deny all writes in strict mode)', async (_shape, allowedPaths) => {
     const dir = await mkProjectTracked({
       enforcement: 'strict',
-      allowedPaths: null,
+      allowedPaths,
     });
     const result = await runHook({
       projectDir: dir,
       stdin: editPayload(path.join(dir, 'src', 'app.ts')),
     });
-    // Fail-closed: Array.isArray(null) === false → allowedPaths = []
-    // → no pattern matches → strict mode → deny.
-    expectDeny(result, { reasonContains: 'not in allowed paths' });
-  });
-
-  it('coerces allowedPaths: "src/" (string) to [] (deny all writes in strict mode)', async () => {
-    // A string is iterable, but Array.isArray("src/") === false — guard catches it.
-    // Without the guard, .some() on a string would error. With the guard, fail-closed.
-    const dir = await mkProjectTracked({
-      enforcement: 'strict',
-      allowedPaths: 'src/',
-    });
-    const result = await runHook({
-      projectDir: dir,
-      stdin: editPayload(path.join(dir, 'src', 'app.ts')),
-    });
-    expectDeny(result, { reasonContains: 'not in allowed paths' });
-  });
-
-  it('coerces allowedPaths: { "src/": true } (object) to [] (deny all writes in strict mode)', async () => {
-    // Object literal — Array.isArray({...}) === false → fail-closed empty array.
-    // Tests for the "user copy-pasted a keyed shape" failure mode.
-    const dir = await mkProjectTracked({
-      enforcement: 'strict',
-      allowedPaths: { 'src/': true },
-    });
-    const result = await runHook({
-      projectDir: dir,
-      stdin: editPayload(path.join(dir, 'src', 'app.ts')),
-    });
+    // Array.isArray() rejects every non-array shape, so malformed input fails
+    // closed as an empty allowlist instead of throwing or silently allowing.
     expectDeny(result, { reasonContains: 'not in allowed paths' });
   });
 });

@@ -333,7 +333,7 @@ describe('bootstrapLock — failure paths (best-effort contract)', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('bootstrapLock — foreign-active conflict signal (#590)', () => {
-  it('returns null on the foreign-active bail path (return contract unchanged)', async () => {
+  it('writes conflict_with_session_id equal to the foreign session_id while preserving the null return contract', async () => {
     const result = await bootstrapLock({
       repoRoot: sandbox,
       sessionId: 'main-2026-05-27-deep-6',
@@ -344,18 +344,6 @@ describe('bootstrapLock — foreign-active conflict signal (#590)', () => {
       _emitEventImpl: noopEmit,
     });
     expect(result).toBeNull();
-  });
-
-  it('writes conflict_with_session_id equal to the foreign session_id', async () => {
-    await bootstrapLock({
-      repoRoot: sandbox,
-      sessionId: 'main-2026-05-27-deep-6',
-      semanticSessionId: 'main-2026-05-27-deep-6',
-      mode: 'deep',
-      _acquireImpl: makeForeignActiveAcquire('foreign-xyz'),
-      _forceAcquireImpl: vi.fn(),
-      _emitEventImpl: noopEmit,
-    });
 
     const session = readCurrentSession();
     expect(session).not.toBeNull();
@@ -551,32 +539,16 @@ describe('bootstrapLock — foreign-active conflict signal (#590)', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('bootstrapLock — input validation', () => {
-  it('returns null when repoRoot is missing', async () => {
-    const result = await bootstrapLock({
-      sessionId: 'x',
-      mode: 'deep',
-      _acquireImpl: makeAcquireStub(),
-      _forceAcquireImpl: vi.fn(),
-      _emitEventImpl: noopEmit,
-    });
-    expect(result).toBeNull();
-  });
-
-  it('returns null when sessionId is missing', async () => {
-    const result = await bootstrapLock({
-      repoRoot: sandbox,
-      mode: 'deep',
-      _acquireImpl: makeAcquireStub(),
-      _forceAcquireImpl: vi.fn(),
-      _emitEventImpl: noopEmit,
-    });
-    expect(result).toBeNull();
-  });
-
-  it('returns null when mode is missing', async () => {
+  it.each([
+    ['repoRoot', { repoRoot: undefined }],
+    ['sessionId', { sessionId: undefined }],
+    ['mode', { mode: undefined }],
+  ])('returns null when %s is missing', async (_missing, missingField) => {
     const result = await bootstrapLock({
       repoRoot: sandbox,
       sessionId: 'x',
+      mode: 'deep',
+      ...missingField,
       _acquireImpl: makeAcquireStub(),
       _forceAcquireImpl: vi.fn(),
       _emitEventImpl: noopEmit,

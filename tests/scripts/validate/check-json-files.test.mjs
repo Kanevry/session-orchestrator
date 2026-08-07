@@ -2,10 +2,13 @@
  * tests/scripts/validate/check-json-files.test.mjs
  *
  * Integration tests for scripts/lib/validate/check-json-files.mjs.
- * Spawns the script as a child process and verifies exit codes + output shape.
+ *
+ * Issue #985 consolidation: each JSON fixture is spawned once and asserts the
+ * exit status together with the output that identifies the JSON verdict. The
+ * former status/message pairs duplicated the same child-process setup.
  */
 
-import { describe, it, expect, afterEach, beforeAll } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -19,97 +22,85 @@ const SCRIPT = path.resolve(
 const PLUGIN_REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
 function run(pluginRoot) {
-  return spawnSync('node', [SCRIPT, pluginRoot], { encoding: 'utf8', timeout: 15_000 });
+  return spawnSync(process.execPath, [SCRIPT, pluginRoot], {
+    encoding: 'utf8',
+    timeout: 15_000,
+  });
 }
 
-function makeFixture() {
+function makeFixture({ hooks = undefined } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'check-json-files-'));
   mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
+  writeFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({}));
+  if (hooks !== undefined) {
+    mkdirSync(path.join(dir, 'hooks'), { recursive: true });
+    writeFileSync(path.join(dir, 'hooks', 'hooks.json'), hooks);
+  }
   return dir;
 }
 
-// ---------------------------------------------------------------------------
-// Smoke — current repo
-// ---------------------------------------------------------------------------
+/**
+ * Normalize a CLI run into a hardcoded, table-friendly verdict.
+ * The output needle is the observable JSON branch, not merely a no-crash
+ * assertion.
+ */
+function verdict(result, { stdout = [], stderr = [] } = {}) {
+  return {
+    status: result.status,
+    missingStdout: stdout.filter((needle) => !result.stdout.includes(needle)),
+    missingStderr: stderr.filter((needle) => !result.stderr.includes(needle)),
+  };
+}
 
-describe('check-json-files.mjs — smoke against current repo', () => {
-  // Spawn once per describe — all three it()s use identical args (PLUGIN_REPO).
-  let r;
-  beforeAll(() => {
-    r = run(PLUGIN_REPO);
-  });
+const JSON_FILE_CASES = [
+  {
+    name: 'fails when auto-discovered hooks.json is invalid JSON',
+    fixture: { hooks: '{ not valid json }' },
+    stdout: ['FAIL: hooks file is not valid JSON: ./hooks/hooks.json'],
+    expected: { status: 1, missingStdout: [], missingStderr: [] },
+  },
+  {
+    name: 'passes with an explicit skip when no conventional hooks.json exists',
+    fixture: {},
+    stdout: ['PASS: hooks is not a JSON file or not specified (skipped)', '0 failed'],
+    expected: { status: 0, missingStdout: [], missingStderr: [] },
+  },
+];
 
-  it('exits 0 against the current plugin repo', () => {
-    expect(r.status).toBe(0);
-  });
-
-  it('emits 2 PASS lines (hooks + mcpServers)', () => {
-    expect(r.stdout).toContain('  PASS: hooks file is valid JSON');
-    expect(r.stdout).toContain('  PASS: mcpServers file is valid JSON');
-  });
-
-  it('reports "Results: 2 passed, 0 failed"', () => {
-    expect(r.stdout).toContain('Results: 2 passed, 0 failed');
+describe('check-json-files.mjs — current repo smoke', () => {
+  it('reports valid hooks and mcpServers JSON with zero failed checks', () => {
+    expect(
+      verdict(run(PLUGIN_REPO), {
+        stdout: [
+          'PASS: hooks file is valid JSON',
+          'PASS: mcpServers file is valid JSON',
+          'Results:',
+          '0 failed',
+        ],
+      }),
+    ).toEqual({ status: 0, missingStdout: [], missingStderr: [] });
   });
 });
 
-// ---------------------------------------------------------------------------
-// Missing plugin-root argument
-// ---------------------------------------------------------------------------
-
-describe('check-json-files.mjs — missing argument', () => {
-  it('exits 1 when no plugin-root arg is supplied', () => {
-    const r = spawnSync('node', [SCRIPT], { encoding: 'utf8', timeout: 15_000 });
-    expect(r.status).toBe(1);
-  });
-
-  it('writes usage message to stderr when no arg is supplied', () => {
-    const r = spawnSync('node', [SCRIPT], { encoding: 'utf8', timeout: 15_000 });
-    expect(r.stderr).toContain('Usage: check-json-files.mjs <plugin-root>');
+describe('check-json-files.mjs — missing plugin-root argument', () => {
+  it('exits 1 and writes the usage contract to stderr', () => {
+    expect(
+      verdict(spawnSync(process.execPath, [SCRIPT], { encoding: 'utf8', timeout: 15_000 }), {
+        stderr: ['Usage: check-json-files.mjs <plugin-root>'],
+      }),
+    ).toEqual({ status: 1, missingStdout: [], missingStderr: [] });
   });
 });
 
-// ---------------------------------------------------------------------------
-// Invalid JSON in hooks file (auto-discovered path)
-// ---------------------------------------------------------------------------
-
-describe('check-json-files.mjs — invalid hooks JSON', () => {
+describe('check-json-files.mjs — hooks JSON cases', () => {
   let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when auto-discovered hooks.json contains invalid JSON', () => {
-    dir = makeFixture();
-    writeFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({}));
-    mkdirSync(path.join(dir, 'hooks'), { recursive: true });
-    writeFileSync(path.join(dir, 'hooks', 'hooks.json'), '{ not valid json }');
-    const r = run(dir);
-    expect(r.status).toBe(1);
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
   });
 
-  it('emits FAIL line when hooks.json is not valid JSON', () => {
-    dir = makeFixture();
-    writeFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({}));
-    mkdirSync(path.join(dir, 'hooks'), { recursive: true });
-    writeFileSync(path.join(dir, 'hooks', 'hooks.json'), '{ not valid json }');
-    const r = run(dir);
-    expect(r.stdout).toContain('  FAIL: hooks file is not valid JSON');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// No hooks file present → skip (PASS)
-// ---------------------------------------------------------------------------
-
-describe('check-json-files.mjs — no hooks file at conventional location', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 0 and emits PASS skip when no hooks.json at conventional location', () => {
-    dir = makeFixture();
-    writeFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), JSON.stringify({}));
-    // No hooks/ directory or hooks.json created
-    const r = run(dir);
-    expect(r.status).toBe(0);
-    expect(r.stdout).toContain('  PASS: hooks is not a JSON file or not specified (skipped)');
+  it.each(JSON_FILE_CASES)('$name', ({ fixture, stdout, expected }) => {
+    dir = makeFixture(fixture);
+    expect(verdict(run(dir), { stdout })).toEqual(expected);
   });
 });

@@ -1,197 +1,45 @@
 import { describe, it, expect } from 'vitest';
 import * as stateMdBarrel from '@lib/state-md.mjs';
+import * as bodySections from '@lib/state-md/body-sections.mjs';
 import {
   parseStateMd,
   serializeStateMd,
-  touchUpdatedField,
-  readCurrentTask,
   parseRecommendations,
   updateFrontmatterFields,
-  appendDeviation,
-  markExpressPathComplete,
-  appendWhatNotToRetry,
-  readWhatNotToRetry,
-  appendWhatNotToRetryOnDisk,
-  readOpenQuestions,
-  appendOpenQuestion,
-  markOpenQuestionAnswered,
-  appendOpenQuestionOnDisk,
-  markOpenQuestionAnsweredOnDisk,
-  MAX_OPEN_QUESTIONS_STORED,
 } from '@lib/state-md.mjs';
 
-const SAMPLE = `---
-schema-version: 1
-session-type: deep
-branch: feat/example
-issues: [182, 183, 184]
-started_at: 2026-04-19T17:05:00+02:00
-status: active
-current-wave: 2
-total-waves: 5
-updated: 2026-04-19T17:30:00Z
-session: feat-example-2026-04-19-1705
----
-
-## Current Wave
-
-Wave 2 — Impl-Core
-
-## Wave History
-
-### Wave 1 — Discovery
-- Agent X: done
-`;
-
-describe('barrel re-exports (#623 What Not To Retry)', () => {
-  it('re-exports appendWhatNotToRetry, readWhatNotToRetry, appendWhatNotToRetryOnDisk', () => {
-    expect(typeof appendWhatNotToRetry).toBe('function');
-    expect(typeof readWhatNotToRetry).toBe('function');
-    expect(typeof appendWhatNotToRetryOnDisk).toBe('function');
-  });
-
-  it('the three What-Not-To-Retry symbols are present on the barrel namespace', () => {
-    expect(stateMdBarrel).toHaveProperty('appendWhatNotToRetry');
-    expect(stateMdBarrel).toHaveProperty('readWhatNotToRetry');
-    expect(stateMdBarrel).toHaveProperty('appendWhatNotToRetryOnDisk');
-  });
-});
-
-describe('barrel re-exports (Open Questions — Close Handover-Alignment-Gate, PRD 2026-07-07)', () => {
-  it('re-exports readOpenQuestions, appendOpenQuestion, markOpenQuestionAnswered, appendOpenQuestionOnDisk, markOpenQuestionAnsweredOnDisk, MAX_OPEN_QUESTIONS_STORED', () => {
-    expect(typeof readOpenQuestions).toBe('function');
-    expect(typeof appendOpenQuestion).toBe('function');
-    expect(typeof markOpenQuestionAnswered).toBe('function');
-    expect(typeof appendOpenQuestionOnDisk).toBe('function');
-    expect(typeof markOpenQuestionAnsweredOnDisk).toBe('function');
-    expect(MAX_OPEN_QUESTIONS_STORED).toBe(20);
-  });
-
-  it('all six Open-Questions symbols are present on the barrel namespace', () => {
-    expect(stateMdBarrel).toHaveProperty('readOpenQuestions');
-    expect(stateMdBarrel).toHaveProperty('appendOpenQuestion');
-    expect(stateMdBarrel).toHaveProperty('markOpenQuestionAnswered');
-    expect(stateMdBarrel).toHaveProperty('appendOpenQuestionOnDisk');
-    expect(stateMdBarrel).toHaveProperty('markOpenQuestionAnsweredOnDisk');
-    expect(stateMdBarrel).toHaveProperty('MAX_OPEN_QUESTIONS_STORED');
-  });
-});
-
-describe('parseStateMd', () => {
-  it('parses a valid STATE.md', () => {
-    const result = parseStateMd(SAMPLE);
-    expect(result).not.toBeNull();
-    expect(result.frontmatter['schema-version']).toBe(1);
-    expect(result.frontmatter['session-type']).toBe('deep');
-    expect(result.frontmatter.issues).toEqual([182, 183, 184]);
-    expect(result.frontmatter.status).toBe('active');
-    expect(result.frontmatter['current-wave']).toBe(2);
-    expect(result.frontmatter.updated).toBe('2026-04-19T17:30:00Z');
-    expect(result.body).toContain('## Current Wave');
-  });
-
-  it('returns null for non-string input', () => {
-    expect(parseStateMd(null)).toBeNull();
-    expect(parseStateMd(42)).toBeNull();
-    expect(parseStateMd(undefined)).toBeNull();
-  });
-
-  it('returns null when frontmatter block is missing', () => {
-    expect(parseStateMd('# No frontmatter here')).toBeNull();
-  });
-
-  it('handles booleans and nulls', () => {
-    const result = parseStateMd(`---
-persistence: true
-cross-repos: null
-enforcement: warn
----
-
-body
-`);
-    expect(result.frontmatter.persistence).toBe(true);
-    expect(result.frontmatter['cross-repos']).toBeNull();
-    expect(result.frontmatter.enforcement).toBe('warn');
-  });
-
-  it('parses integer arrays', () => {
-    const result = parseStateMd(`---
-issues: [1, 2, 3]
-empty: []
----
-
-body`);
-    expect(result.frontmatter.issues).toEqual([1, 2, 3]);
-    expect(result.frontmatter.empty).toEqual([]);
-  });
-});
-
-describe('serializeStateMd', () => {
-  it('round-trips a parsed STATE.md', () => {
-    const parsed = parseStateMd(SAMPLE);
-    const serialized = serializeStateMd(parsed);
-    const reparsed = parseStateMd(serialized);
-    expect(reparsed.frontmatter).toEqual(parsed.frontmatter);
-    expect(reparsed.body.trim()).toBe(parsed.body.trim());
-  });
-
-  it('emits valid YAML frontmatter delimiters', () => {
-    const out = serializeStateMd({
-      frontmatter: { a: 1, b: 'two' },
-      body: 'body text',
+describe('barrel re-exports', () => {
+  it('re-exports body-section helpers as the leaf bindings', () => {
+    expect({
+      readCurrentTask: stateMdBarrel.readCurrentTask,
+      appendDeviation: stateMdBarrel.appendDeviation,
+      markExpressPathComplete: stateMdBarrel.markExpressPathComplete,
+      appendWhatNotToRetry: stateMdBarrel.appendWhatNotToRetry,
+      readWhatNotToRetry: stateMdBarrel.readWhatNotToRetry,
+      appendWhatNotToRetryOnDisk: stateMdBarrel.appendWhatNotToRetryOnDisk,
+      readOpenQuestions: stateMdBarrel.readOpenQuestions,
+      appendOpenQuestion: stateMdBarrel.appendOpenQuestion,
+      markOpenQuestionAnswered: stateMdBarrel.markOpenQuestionAnswered,
+      appendOpenQuestionOnDisk: stateMdBarrel.appendOpenQuestionOnDisk,
+      markOpenQuestionAnsweredOnDisk: stateMdBarrel.markOpenQuestionAnsweredOnDisk,
+      MAX_OPEN_QUESTIONS_STORED: stateMdBarrel.MAX_OPEN_QUESTIONS_STORED,
+    }).toEqual({
+      readCurrentTask: bodySections.readCurrentTask,
+      appendDeviation: bodySections.appendDeviation,
+      markExpressPathComplete: bodySections.markExpressPathComplete,
+      appendWhatNotToRetry: bodySections.appendWhatNotToRetry,
+      readWhatNotToRetry: bodySections.readWhatNotToRetry,
+      appendWhatNotToRetryOnDisk: bodySections.appendWhatNotToRetryOnDisk,
+      readOpenQuestions: bodySections.readOpenQuestions,
+      appendOpenQuestion: bodySections.appendOpenQuestion,
+      markOpenQuestionAnswered: bodySections.markOpenQuestionAnswered,
+      appendOpenQuestionOnDisk: bodySections.appendOpenQuestionOnDisk,
+      markOpenQuestionAnsweredOnDisk: bodySections.markOpenQuestionAnsweredOnDisk,
+      MAX_OPEN_QUESTIONS_STORED: bodySections.MAX_OPEN_QUESTIONS_STORED,
     });
-    expect(out.startsWith('---\n')).toBe(true);
-    expect(out).toContain('\n---\n');
   });
 });
 
-describe('touchUpdatedField', () => {
-  it('sets updated to the given timestamp', () => {
-    const out = touchUpdatedField(SAMPLE, '2026-04-20T10:00:00Z');
-    const reparsed = parseStateMd(out);
-    expect(reparsed.frontmatter.updated).toBe('2026-04-20T10:00:00Z');
-  });
-
-  it('adds updated when missing', () => {
-    const sansUpdated = SAMPLE.replace(/updated:.*\n/, '');
-    const out = touchUpdatedField(sansUpdated, '2026-04-20T10:00:00Z');
-    expect(out).toContain('updated: 2026-04-20T10:00:00Z');
-  });
-
-  it('returns input unchanged when no frontmatter', () => {
-    const input = '# no frontmatter';
-    expect(touchUpdatedField(input, '2026-01-01T00:00:00Z')).toBe(input);
-  });
-});
-
-describe('readCurrentTask', () => {
-  it('extracts wave number and description', () => {
-    const task = readCurrentTask(SAMPLE);
-    expect(task).toEqual({ waveNumber: 2, description: 'Wave 2 — Impl-Core' });
-  });
-
-  it('returns null when Current Wave section is absent', () => {
-    const noSection = SAMPLE.replace(/## Current Wave[\s\S]*?(?=## )/, '');
-    expect(readCurrentTask(noSection)).toBeNull();
-  });
-
-  it('returns null when STATE.md has no frontmatter', () => {
-    expect(readCurrentTask('# plain markdown')).toBeNull();
-  });
-
-  it('handles descriptions without Wave prefix', () => {
-    const contents = `---
-status: idle
----
-
-## Current Wave
-
-(idle — no active session)
-`;
-    const task = readCurrentTask(contents);
-    expect(task).toEqual({ waveNumber: null, description: '(idle — no active session)' });
-  });
-});
 
 describe('recommendations v1.1', () => {
   const FULL = `---
@@ -311,148 +159,5 @@ body
     expect(parsed.frontmatter['recommended-mode']).toBeUndefined();
     expect(parsed.frontmatter['completion-rate']).toBe(0.85);
     expect(parsed.frontmatter.status).toBe('completed');
-  });
-
-  it('updateFrontmatterFields is a no-op on contents without frontmatter', () => {
-    const input = '# just a markdown file\n';
-    expect(updateFrontmatterFields(input, { foo: 'bar' })).toBe(input);
-  });
-});
-
-describe('appendDeviation', () => {
-  const WITH_DEVIATIONS = `---
-schema-version: 1
-status: active
-updated: 2026-05-01T10:00:00Z
----
-
-## Current Wave
-
-Wave 1 — Discovery
-
-## Deviations
-
-- [2026-05-01T09:00:00Z] First deviation
-- [2026-05-01T09:30:00Z] Second deviation
-
-## Wave History
-`;
-
-  const WITH_PLACEHOLDER = `---
-schema-version: 1
-status: active
-updated: 2026-05-01T10:00:00Z
----
-
-## Current Wave
-
-Wave 1
-
-## Deviations
-
-(none yet)
-
-## Wave History
-`;
-
-  const NO_DEVIATIONS = `---
-schema-version: 1
-status: active
-updated: 2026-05-01T10:00:00Z
----
-
-## Current Wave
-
-Wave 1
-`;
-
-  it('appends to existing Deviations section with bullets', () => {
-    const out = appendDeviation(
-      WITH_DEVIATIONS,
-      '2026-05-01T11:00:00Z',
-      'Third deviation',
-    );
-    expect(out).toContain('- [2026-05-01T09:00:00Z] First deviation');
-    expect(out).toContain('- [2026-05-01T09:30:00Z] Second deviation');
-    expect(out).toContain('- [2026-05-01T11:00:00Z] Third deviation');
-    // New bullet should appear after the existing ones, before next heading.
-    const newIdx = out.indexOf('- [2026-05-01T11:00:00Z]');
-    const secondIdx = out.indexOf('- [2026-05-01T09:30:00Z]');
-    const waveHistoryIdx = out.indexOf('## Wave History');
-    expect(newIdx).toBeGreaterThan(secondIdx);
-    expect(newIdx).toBeLessThan(waveHistoryIdx);
-  });
-
-  it('replaces (none yet) placeholder when only that line in section', () => {
-    const out = appendDeviation(
-      WITH_PLACEHOLDER,
-      '2026-05-01T11:00:00Z',
-      'First real deviation',
-    );
-    expect(out).not.toContain('(none yet)');
-    expect(out).toContain('- [2026-05-01T11:00:00Z] First real deviation');
-  });
-
-  it('creates Deviations section when missing', () => {
-    const out = appendDeviation(
-      NO_DEVIATIONS,
-      '2026-05-01T11:00:00Z',
-      'Brand new deviation',
-    );
-    expect(out).toContain('## Deviations');
-    expect(out).toContain('- [2026-05-01T11:00:00Z] Brand new deviation');
-    // Section should appear after Current Wave content.
-    const currentWaveIdx = out.indexOf('## Current Wave');
-    const deviationsIdx = out.indexOf('## Deviations');
-    expect(deviationsIdx).toBeGreaterThan(currentWaveIdx);
-  });
-
-  it('returns input unchanged on unparseable input', () => {
-    const input = '# no frontmatter';
-    expect(appendDeviation(input, '2026-05-01T11:00:00Z', 'x')).toBe(input);
-  });
-});
-
-describe('markExpressPathComplete', () => {
-  const ACTIVE_STATE = `---
-schema-version: 1
-session-type: housekeeping
-status: active
-updated: 2026-05-01T10:00:00Z
----
-
-## Current Wave
-
-Wave 1 — Express Path
-
-## Deviations
-
-- [2026-05-01T09:00:00Z] Initial scope adjustment
-`;
-
-  it('round-trips status:completed + Express path deviation + updated field', () => {
-    const out = markExpressPathComplete(ACTIVE_STATE, {
-      taskCount: 3,
-      sessionType: 'housekeeping',
-      expressPathEnabled: true,
-      timestamp: '2026-05-01T12:00:00Z',
-    });
-    const parsed = parseStateMd(out);
-    expect(parsed.frontmatter.status).toBe('completed');
-    expect(parsed.frontmatter.updated).toBe('2026-05-01T12:00:00Z');
-    expect(out).toContain(
-      '- [2026-05-01T12:00:00Z] Express path: 3 tasks executed coord-direct (express-path.enabled: true, session-type: housekeeping, scope: 3 issues)',
-    );
-    // Pre-existing deviation must still be present.
-    expect(out).toContain('- [2026-05-01T09:00:00Z] Initial scope adjustment');
-  });
-
-  it('returns input unchanged on unparseable input', () => {
-    const input = 'plain markdown, no frontmatter';
-    const out = markExpressPathComplete(input, {
-      taskCount: 1,
-      timestamp: '2026-05-01T12:00:00Z',
-    });
-    expect(out).toBe(input);
   });
 });

@@ -12,6 +12,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { expectAllow } from '../_helpers/hook-decision.mjs';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, mkdirSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -90,7 +91,7 @@ describe('pre-bash-staging-fence — gate ladder G1-G6', { timeout: 15000 }, () 
       env: { SO_WAVE_AGENT: '1' },
       projectDir,
     });
-    expect(result.status).toBe(0);
+    expectAllow(result);
     expect(fenceFiles(projectDir)).toHaveLength(0);
   });
 
@@ -101,62 +102,24 @@ describe('pre-bash-staging-fence — gate ladder G1-G6', { timeout: 15000 }, () 
       env: { SO_WAVE_AGENT: '1' },
       projectDir,
     });
-    expect(result.status).toBe(0);
+    expectAllow(result);
     expect(fenceFiles(projectDir)).toHaveLength(0);
   });
 
-  // G3 — regex positive match: `git add foo.ts`
-  it('G3 match: "git add foo.ts" exits 0 and writes a fence file', () => {
+  it.each([
+    'git add foo.ts',
+    'git add -A',
+    'git add --all',
+    'git add -- foo.ts',
+    'cd subdir && git add foo.ts',
+    'GIT_COMMITTER_NAME=foo git add .',
+  ])('G3 match: %s writes a fence file', (command) => {
     const result = runHook({
-      command: 'git add foo.ts',
+      command,
       env: { SO_WAVE_AGENT: '1' },
       projectDir,
     });
-    expect(result.status).toBe(0);
-    expect(fenceFiles(projectDir)).toHaveLength(1);
-  });
-
-  // G3 — regex positive match: `git add -A` (stage all)
-  it('G3 match: "git add -A" exits 0 and writes a fence file', () => {
-    const result = runHook({
-      command: 'git add -A',
-      env: { SO_WAVE_AGENT: '1' },
-      projectDir,
-    });
-    expect(result.status).toBe(0);
-    expect(fenceFiles(projectDir)).toHaveLength(1);
-  });
-
-  // G3 — regex positive match: `git add --all`
-  it('G3 match: "git add --all" exits 0 and writes a fence file', () => {
-    const result = runHook({
-      command: 'git add --all',
-      env: { SO_WAVE_AGENT: '1' },
-      projectDir,
-    });
-    expect(result.status).toBe(0);
-    expect(fenceFiles(projectDir)).toHaveLength(1);
-  });
-
-  // G3 — regex positive match: `git add -- foo.ts` (explicit double-dash)
-  it('G3 match: "git add -- foo.ts" exits 0 and writes a fence file', () => {
-    const result = runHook({
-      command: 'git add -- foo.ts',
-      env: { SO_WAVE_AGENT: '1' },
-      projectDir,
-    });
-    expect(result.status).toBe(0);
-    expect(fenceFiles(projectDir)).toHaveLength(1);
-  });
-
-  // G3 — regex positive match: chained command with git add
-  it('G3 match: chained "cd subdir && git add foo.ts" exits 0 and writes a fence file', () => {
-    const result = runHook({
-      command: 'cd subdir && git add foo.ts',
-      env: { SO_WAVE_AGENT: '1' },
-      projectDir,
-    });
-    expect(result.status).toBe(0);
+    expectAllow(result);
     expect(fenceFiles(projectDir)).toHaveLength(1);
   });
 
@@ -167,18 +130,7 @@ describe('pre-bash-staging-fence — gate ladder G1-G6', { timeout: 15000 }, () 
       env: { SO_WAVE_AGENT: '1' },
       projectDir,
     });
-    expect(result.status).toBe(0);
-    expect(fenceFiles(projectDir)).toHaveLength(0);
-  });
-
-  // G3 — regex negative match: `git adapter`
-  it('G3 non-match: "git adapter" exits 0 and writes NO fence file', () => {
-    const result = runHook({
-      command: 'git adapter --dry-run',
-      env: { SO_WAVE_AGENT: '1' },
-      projectDir,
-    });
-    expect(result.status).toBe(0);
+    expectAllow(result);
     expect(fenceFiles(projectDir)).toHaveLength(0);
   });
 
@@ -189,7 +141,7 @@ describe('pre-bash-staging-fence — gate ladder G1-G6', { timeout: 15000 }, () 
       env: { SO_WAVE_AGENT: '' }, // unset / empty = not a wave-agent
       projectDir,
     });
-    expect(result.status).toBe(0);
+    expectAllow(result);
     expect(fenceFiles(projectDir)).toHaveLength(0);
   });
 
@@ -200,7 +152,7 @@ describe('pre-bash-staging-fence — gate ladder G1-G6', { timeout: 15000 }, () 
       env: { SO_WAVE_AGENT: '1' },
       projectDir,
     });
-    expect(result.status).toBe(0);
+    expectAllow(result);
     const files = fenceFiles(projectDir);
     expect(files).toHaveLength(1);
 
@@ -227,36 +179,16 @@ describe('pre-bash-staging-fence — gate ladder G1-G6', { timeout: 15000 }, () 
     expect(fenceFiles(projectDir)).toHaveLength(2);
   });
 
-  // Bypass — SO_DISABLED_HOOKS=pre-bash-staging-fence → exits 0, no fence.
-  it('bypass: SO_DISABLED_HOOKS=pre-bash-staging-fence exits 0 and writes no fence file', () => {
+  it.each([
+    { name: 'SO_DISABLED_HOOKS', env: { SO_DISABLED_HOOKS: 'pre-bash-staging-fence' } },
+    { name: 'SO_HOOK_PROFILE=off', env: { SO_HOOK_PROFILE: 'off' } },
+  ])('bypass: $name writes no fence file', ({ env }) => {
     const result = runHook({
       command: 'git add foo.ts',
-      env: { SO_WAVE_AGENT: '1', SO_DISABLED_HOOKS: 'pre-bash-staging-fence' },
+      env: { SO_WAVE_AGENT: '1', ...env },
       projectDir,
     });
-    expect(result.status).toBe(0);
+    expectAllow(result);
     expect(fenceFiles(projectDir)).toHaveLength(0);
-  });
-
-  // Bypass — SO_HOOK_PROFILE=off → exits 0, no fence.
-  it('bypass: SO_HOOK_PROFILE=off exits 0 and writes no fence file', () => {
-    const result = runHook({
-      command: 'git add foo.ts',
-      env: { SO_WAVE_AGENT: '1', SO_HOOK_PROFILE: 'off' },
-      projectDir,
-    });
-    expect(result.status).toBe(0);
-    expect(fenceFiles(projectDir)).toHaveLength(0);
-  });
-
-  // G3 match — env-var prefix before git add (e.g. GIT_COMMITTER_NAME=foo git add .)
-  it('G3 match: env-var prefix "GIT_COMMITTER_NAME=foo git add ." writes a fence file', () => {
-    const result = runHook({
-      command: 'GIT_COMMITTER_NAME=foo git add .',
-      env: { SO_WAVE_AGENT: '1' },
-      projectDir,
-    });
-    expect(result.status).toBe(0);
-    expect(fenceFiles(projectDir)).toHaveLength(1);
   });
 });

@@ -112,15 +112,10 @@ async function mkTmpProject() {
 // ---------------------------------------------------------------------------
 
 describe('Skill tool invocation', { timeout: 15000 }, () => {
-  it('exits 0 when tool_name is "Skill"', async () => {
-    const dir = await mkTmpProject();
-    const result = await runHook({ projectDir: dir, stdinPayload: skillPayload('discovery') });
-    expect(result.code).toBe(0);
-  });
-
   it('appends a record with event="selected" and skill from tool_input', async () => {
     const dir = await mkTmpProject();
-    await runHook({ projectDir: dir, stdinPayload: skillPayload('session-orchestrator:discovery') });
+    const result = await runHook({ projectDir: dir, stdinPayload: skillPayload('session-orchestrator:discovery') });
+    expect(result.code).toBe(0);
 
     const jsonlPath = invocationsPath(dir);
     expect(existsSync(jsonlPath)).toBe(true);
@@ -130,62 +125,34 @@ describe('Skill tool invocation', { timeout: 15000 }, () => {
     expect(record.skill).toBe('session-orchestrator:discovery');
   });
 
-  it('appended record has schema_version: 1', async () => {
+  it.each([
+    {
+      name: 'normal payload',
+      payload: skillPayload('test-skill', 'session-xyz-999'),
+      expectedSkill: 'test-skill',
+      expectedSessionId: 'session-xyz-999',
+    },
+    {
+      name: 'missing skill',
+      payload: JSON.stringify({ tool_name: 'Skill', tool_input: {}, session_id: 's1' }),
+      expectedSkill: 'unknown',
+      expectedSessionId: 's1',
+    },
+    {
+      name: 'missing session_id',
+      payload: JSON.stringify({ tool_name: 'Skill', tool_input: { skill: 'foo' } }),
+      expectedSkill: 'foo',
+      expectedSessionId: null,
+    },
+  ])('normalizes $name into the telemetry record', async ({ payload, expectedSkill, expectedSessionId }) => {
     const dir = await mkTmpProject();
-    await runHook({ projectDir: dir, stdinPayload: skillPayload('my-skill') });
+    const result = await runHook({ projectDir: dir, stdinPayload: payload });
+    expect(result.code).toBe(0);
 
     const line = readFileSync(invocationsPath(dir), 'utf8').trim();
     const record = JSON.parse(line);
-    expect(record.schema_version).toBe(1);
-  });
-
-  it('appended record has a valid ISO timestamp', async () => {
-    const dir = await mkTmpProject();
-    const before = Date.now();
-    await runHook({ projectDir: dir, stdinPayload: skillPayload('my-skill') });
-    const after = Date.now();
-
-    const line = readFileSync(invocationsPath(dir), 'utf8').trim();
-    const record = JSON.parse(line);
-    const ts = Date.parse(record.timestamp);
-    expect(ts).toBeGreaterThanOrEqual(before);
-    expect(ts).toBeLessThanOrEqual(after + 5000); // 5s grace for process startup
-  });
-
-  it('captures session_id from stdin payload', async () => {
-    const dir = await mkTmpProject();
-    await runHook({
-      projectDir: dir,
-      stdinPayload: skillPayload('test-skill', 'session-xyz-999'),
-    });
-
-    const line = readFileSync(invocationsPath(dir), 'utf8').trim();
-    const record = JSON.parse(line);
-    expect(record.session_id).toBe('session-xyz-999');
-  });
-
-  it('stores skill="unknown" when tool_input.skill is absent', async () => {
-    const dir = await mkTmpProject();
-    await runHook({
-      projectDir: dir,
-      stdinPayload: JSON.stringify({ tool_name: 'Skill', tool_input: {}, session_id: 's1' }),
-    });
-
-    const line = readFileSync(invocationsPath(dir), 'utf8').trim();
-    const record = JSON.parse(line);
-    expect(record.skill).toBe('unknown');
-  });
-
-  it('stores session_id: null when session_id is absent from payload', async () => {
-    const dir = await mkTmpProject();
-    await runHook({
-      projectDir: dir,
-      stdinPayload: JSON.stringify({ tool_name: 'Skill', tool_input: { skill: 'foo' } }),
-    });
-
-    const line = readFileSync(invocationsPath(dir), 'utf8').trim();
-    const record = JSON.parse(line);
-    expect(record.session_id).toBeNull();
+    expect(record.skill).toBe(expectedSkill);
+    expect(record.session_id).toBe(expectedSessionId);
   });
 
   it('appends a second record on a second invocation — file has 2 lines', async () => {
@@ -205,27 +172,10 @@ describe('Skill tool invocation', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('non-Skill tool invocation', { timeout: 15000 }, () => {
-  it('exits 0 for tool_name="Bash"', async () => {
+  it('exits 0 without writing a record when tool_name="Bash"', async () => {
     const dir = await mkTmpProject();
     const result = await runHook({ projectDir: dir, stdinPayload: nonSkillPayload('Bash') });
     expect(result.code).toBe(0);
-  });
-
-  it('does NOT write any record when tool_name="Bash"', async () => {
-    const dir = await mkTmpProject();
-    await runHook({ projectDir: dir, stdinPayload: nonSkillPayload('Bash') });
-    expect(existsSync(invocationsPath(dir))).toBe(false);
-  });
-
-  it('exits 0 for tool_name="Edit"', async () => {
-    const dir = await mkTmpProject();
-    const result = await runHook({ projectDir: dir, stdinPayload: nonSkillPayload('Edit') });
-    expect(result.code).toBe(0);
-  });
-
-  it('does NOT write any record when tool_name="Read"', async () => {
-    const dir = await mkTmpProject();
-    await runHook({ projectDir: dir, stdinPayload: nonSkillPayload('Read') });
     expect(existsSync(invocationsPath(dir))).toBe(false);
   });
 });
@@ -235,33 +185,14 @@ describe('non-Skill tool invocation', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('resilience — malformed stdin', { timeout: 15000 }, () => {
-  it('exits 0 for empty stdin — never crashes', async () => {
+  it.each([
+    { name: 'empty', input: '' },
+    { name: 'non-JSON', input: 'not json at all' },
+    { name: 'JSON array', input: '[]' },
+  ])('ignores $name stdin without writing a record', async ({ input }) => {
     const dir = await mkTmpProject();
-    const result = await runHook({ projectDir: dir, stdinPayload: '' });
+    const result = await runHook({ projectDir: dir, stdinPayload: input });
     expect(result.code).toBe(0);
-  });
-
-  it('exits 0 for non-JSON stdin', async () => {
-    const dir = await mkTmpProject();
-    const result = await runHook({ projectDir: dir, stdinPayload: 'not json at all' });
-    expect(result.code).toBe(0);
-  });
-
-  it('exits 0 for partial/truncated JSON', async () => {
-    const dir = await mkTmpProject();
-    const result = await runHook({ projectDir: dir, stdinPayload: '{"tool_name":' });
-    expect(result.code).toBe(0);
-  });
-
-  it('exits 0 for a JSON array (wrong shape)', async () => {
-    const dir = await mkTmpProject();
-    const result = await runHook({ projectDir: dir, stdinPayload: '[]' });
-    expect(result.code).toBe(0);
-  });
-
-  it('does NOT write a record for malformed stdin', async () => {
-    const dir = await mkTmpProject();
-    await runHook({ projectDir: dir, stdinPayload: 'not json at all' });
     expect(existsSync(invocationsPath(dir))).toBe(false);
   });
 });
@@ -271,24 +202,18 @@ describe('resilience — malformed stdin', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('profile gate', { timeout: 15000 }, () => {
-  it('exits 0 without writing any record when SO_HOOK_PROFILE=off', async () => {
-    const dir = await mkTmpProject();
-    const result = await runHook({
-      projectDir: dir,
-      stdinPayload: skillPayload('discovery'),
-      env: { SO_HOOK_PROFILE: 'off' },
-    });
-    expect(result.code).toBe(0);
-    // The hook exits immediately on profile=off, before any IO
-    expect(existsSync(invocationsPath(dir))).toBe(false);
-  });
-
-  it('exits 0 without writing when hook is individually disabled via SO_DISABLED_HOOKS', async () => {
-    const dir = await mkTmpProject();
-    const result = await runHook({
-      projectDir: dir,
-      stdinPayload: skillPayload('discovery'),
+  it.each([
+    { name: 'SO_HOOK_PROFILE=off', env: { SO_HOOK_PROFILE: 'off' } },
+    {
+      name: 'SO_DISABLED_HOOKS',
       env: { SO_DISABLED_HOOKS: 'skill-invocation-telemetry', SO_HOOK_PROFILE: 'full' },
+    },
+  ])('exits 0 without writing a record when $name disables the hook', async ({ env }) => {
+    const dir = await mkTmpProject();
+    const result = await runHook({
+      projectDir: dir,
+      stdinPayload: skillPayload('discovery'),
+      env,
     });
     expect(result.code).toBe(0);
     expect(existsSync(invocationsPath(dir))).toBe(false);

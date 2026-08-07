@@ -157,30 +157,22 @@ async function mkProjectTracked() {
 }
 
 // ---------------------------------------------------------------------------
-// Exit code — always 0
+// Missing project directory — graceful fallback
 // ---------------------------------------------------------------------------
 
-describe('exit code', { timeout: 15000 }, () => {
-  it('exits 0 on a normal run', async () => {
-    const dir = await mkProjectTracked();
-    const result = await runHook({ projectDir: dir });
-    expect(result.code).toBe(0);
-  });
+describe('missing project directory', { timeout: 15000 }, () => {
+  it('still writes a session-start event when the project directory does not exist', async () => {
+    const dir = path.join(os.tmpdir(), 'nonexistent-so-dir-' + Date.now());
+    tmpDirs.push(dir);
+    await runHook({ projectDir: dir });
 
-  it('exits 0 when the project directory does not exist (graceful fallback)', async () => {
-    const result = await runHook({
-      projectDir: path.join(os.tmpdir(), 'nonexistent-so-dir-' + Date.now()),
+    const events = await readEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      event: 'orchestrator.session.started',
+      project: path.basename(dir),
+      branch: 'unknown',
     });
-    expect(result.code).toBe(0);
-  });
-
-  it('exits 0 when CLANK_EVENT_SECRET is absent', async () => {
-    const dir = await mkProjectTracked();
-    const result = await runHook({
-      projectDir: dir,
-      env: { CLANK_EVENT_SECRET: '' },
-    });
-    expect(result.code).toBe(0);
   });
 });
 
@@ -189,72 +181,23 @@ describe('exit code', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('normal run — event written to JSONL', { timeout: 15000 }, () => {
-  it('creates the events.jsonl file', async () => {
+  it('writes one complete session-start event record', async () => {
     const dir = await mkProjectTracked();
     await runHook({ projectDir: dir });
-    const filePath = path.join(dir, EVENTS_RELPATH);
-    await expect(fs.access(filePath)).resolves.toBeUndefined();
-  });
 
-  it('writes exactly one JSONL line', async () => {
-    const dir = await mkProjectTracked();
-    await runHook({ projectDir: dir });
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
-  });
-
-  it('event.event equals "orchestrator.session.started"', async () => {
-    const dir = await mkProjectTracked();
-    await runHook({ projectDir: dir });
-    const [evt] = await readEvents(dir);
-    expect(evt.event).toBe('orchestrator.session.started');
-  });
-
-  it('event.timestamp is an ISO 8601 UTC timestamp', async () => {
-    const dir = await mkProjectTracked();
-    await runHook({ projectDir: dir });
-    const [evt] = await readEvents(dir);
+    const [evt] = events;
+    expect(evt).toMatchObject({
+      event: 'orchestrator.session.started',
+      project: path.basename(dir),
+    });
     expect(evt.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z$/);
-  });
-
-  it('event.project matches the directory basename', async () => {
-    const dir = await mkProjectTracked();
-    const expectedName = path.basename(dir);
-    await runHook({ projectDir: dir });
-    const [evt] = await readEvents(dir);
-    expect(evt.project).toBe(expectedName);
-  });
-
-  it('event.branch is a non-empty string', async () => {
-    const dir = await mkProjectTracked();
-    await runHook({ projectDir: dir });
-    const [evt] = await readEvents(dir);
     expect(typeof evt.branch).toBe('string');
     expect(evt.branch.length).toBeGreaterThan(0);
-  });
-
-  it('event.platform field is present', async () => {
-    const dir = await mkProjectTracked();
-    await runHook({ projectDir: dir });
-    const [evt] = await readEvents(dir);
     expect(evt).toHaveProperty('platform');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// CLANK_EVENT_SECRET absent — no network calls attempted
-// ---------------------------------------------------------------------------
-
-describe('CLANK_EVENT_SECRET absent — no webhook', { timeout: 15000 }, () => {
-  it('exits 0 and writes event even without CLANK_EVENT_SECRET', async () => {
-    const dir = await mkProjectTracked();
-    const result = await runHook({
-      projectDir: dir,
-      env: { CLANK_EVENT_SECRET: '' },
-    });
-    expect(result.code).toBe(0);
-    const events = await readEvents(dir);
-    expect(events).toHaveLength(1);
+    expect(typeof evt.session_id).toBe('string');
+    expect(evt.session_id.length).toBeGreaterThan(0);
   });
 });
 
@@ -266,7 +209,6 @@ describe('host banner (v3.1.0 #164)', { timeout: 15000 }, () => {
   it('emits a systemMessage JSON line with host banner when no config present (default enabled)', async () => {
     const dir = await mkProjectTracked();
     const result = await runHook({ projectDir: dir });
-    expect(result.code).toBe(0);
     const systemLines = result.stdout
       .split('\n')
       .filter((l) => l.trim().startsWith('{'))
@@ -286,7 +228,6 @@ describe('host banner (v3.1.0 #164)', { timeout: 15000 }, () => {
       'utf8',
     );
     const result = await runHook({ projectDir: dir });
-    expect(result.code).toBe(0);
     expect(result.stdout).not.toMatch(/systemMessage/);
   });
 
@@ -305,25 +246,18 @@ describe('host banner (v3.1.0 #164)', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('project-dir resolution', { timeout: 15000 }, () => {
-  it('uses CLAUDE_PROJECT_DIR to resolve the events file location', async () => {
-    const dir = await mkProjectTracked();
-    await runHook({ projectDir: dir });
-    const expectedPath = path.join(dir, EVENTS_RELPATH);
-    await expect(fs.access(expectedPath)).resolves.toBeUndefined();
-  });
-
-  it('event.project is "unknown" or fallback when no git repo is present', async () => {
-    // Non-git directory — git commands will fail gracefully.
+  it('writes the fallback project and branch values when no git repo is present', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-session-start-nogit-'));
     tmpDirs.push(dir);
-    const result = await runHook({ projectDir: dir });
-    expect(result.code).toBe(0);
-    const filePath = path.join(dir, EVENTS_RELPATH);
-    const fileExists = await fs.access(filePath).then(() => true).catch(() => false);
-    if (fileExists) {
-      const events = await readEvents(dir);
-      expect(events[0].event).toBe('orchestrator.session.started');
-    }
+    await runHook({ projectDir: dir });
+
+    const events = await readEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      event: 'orchestrator.session.started',
+      project: path.basename(dir),
+      branch: 'unknown',
+    });
   });
 });
 
@@ -343,41 +277,32 @@ describe('register-failed observability breadcrumb', { timeout: 15000 }, () => {
     try {
       const result = await runHook({ projectDir: dir, registryDir: badRegistryDir });
       expect(result.code).toBe(0);
+      expect((await readEvents(dir))[0].event).toBe('orchestrator.session.started');
     } finally {
       await fs.chmod(badRegistryDir, 0o755);
       await fs.rm(badRegistryDir, { recursive: true, force: true });
     }
   });
 
-  it('appends a register-failed entry to sweep.log when registerSelf throws', async () => {
+  it.skipIf(isRoot)('appends a register-failed entry to sweep.log when registerSelf throws', async () => {
     if (process.platform === 'win32') return; // chmod not meaningful on Windows
     const dir = await mkProjectTracked();
     const badRegistryDir = path.join(os.tmpdir(), 'hook-session-start-log-' + Date.now());
-    await fs.mkdir(badRegistryDir, { recursive: true });
-    await fs.chmod(badRegistryDir, 0o555);
+    const activeDir = path.join(badRegistryDir, 'active');
+    await fs.mkdir(activeDir, { recursive: true });
+    await fs.chmod(activeDir, 0o555);
     try {
       await runHook({ projectDir: dir, registryDir: badRegistryDir });
-      // The log may not be writable either if the dir is 0o555, but the hook
-      // must not crash. Just verify exit code 0 was already asserted above.
-      // Restore and then check sweep.log if it was written.
-      await fs.chmod(badRegistryDir, 0o755);
-      const logPath = path.join(badRegistryDir, 'sweep.log');
-      const exists = await fs.access(logPath).then(() => true).catch(() => false);
-      // skipIf root: under root the 0o555 dir does not block registerSelf, so it
-      // succeeds and emits no register-failed breadcrumb. The hook-must-not-crash
-      // + exit-0 contract above still runs under root; only this perm-dependent
-      // breadcrumb assertion is gated. (CI runs as root.)
-      if (exists && !isRoot) {
-        const raw = await fs.readFile(logPath, 'utf8');
-        const entries = raw.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
-        const failed = entries.find((e) => e.event === 'register-failed');
-        expect(failed).toBeDefined();
-        expect(typeof failed.session_id).toBe('string');
-        expect(typeof failed.error).toBe('string');
-        expect(failed.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
-      }
+      await fs.chmod(activeDir, 0o755);
+      const raw = await fs.readFile(path.join(badRegistryDir, 'sweep.log'), 'utf8');
+      const entries = raw.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      const failed = entries.find((e) => e.event === 'register-failed');
+      expect(failed).toMatchObject({ event: 'register-failed' });
+      expect(typeof failed.session_id).toBe('string');
+      expect(typeof failed.error).toBe('string');
+      expect(failed.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     } finally {
-      try { await fs.chmod(badRegistryDir, 0o755); } catch { /* ignore */ }
+      try { await fs.chmod(activeDir, 0o755); } catch { /* ignore */ }
       await fs.rm(badRegistryDir, { recursive: true, force: true });
     }
   });
@@ -420,12 +345,12 @@ describe('multi-session registry (#168)', { timeout: 15000 }, () => {
     await runHook({ projectDir: dir });
     const entries = await readRegistry();
     expect(entries).toHaveLength(1);
-    expect(entries[0].pid).toBe(entries[0].pid); // sanity
     expect(entries[0].session_id).toMatch(
       /^([a-f0-9-]{36}|[a-z0-9._/-]+-\d{4}-\d{2}-\d{2}-[a-z-]+-\d+)$/,
     );
     expect(entries[0].repo_name).toBe(path.basename(dir));
     expect(entries[0].status).toBe('active');
+    expect((await readEvents(dir))[0].session_id).toBe(entries[0].session_id);
   });
 
   it('uses the stdin session_id when provided', async () => {
@@ -553,14 +478,6 @@ describe('multi-session registry (#168)', { timeout: 15000 }, () => {
     await runHook({ projectDir: dir });
     const remaining = await fs.readdir(activeDir);
     expect(remaining.includes('zombie.json')).toBe(false);
-  });
-
-  it('emits a session_id field on the event', async () => {
-    const dir = await mkProjectTracked();
-    await runHook({ projectDir: dir });
-    const [evt] = await readEvents(dir);
-    expect(typeof evt.session_id).toBe('string');
-    expect(evt.session_id.length).toBeGreaterThan(0);
   });
 });
 
@@ -731,11 +648,10 @@ describe('mechanical session.lock writer (#584 + #587)', { timeout: 15000 }, () 
   it('T1: hook with stdin UUID writes session.lock containing BOTH UUID session_id AND semantic semantic_session_id', async () => {
     const dir = await mkProjectTracked();
     const stdinUuid = '550e8400-e29b-41d4-a716-446655440000';
-    const result = await runHook({
+    await runHook({
       projectDir: dir,
       stdin: JSON.stringify({ session_id: stdinUuid, mode: 'deep' }),
     });
-    expect(result.code).toBe(0);
 
     const lock = await readSessionLock(dir);
     // session_id should be the UUID provided via stdin
@@ -751,8 +667,7 @@ describe('mechanical session.lock writer (#584 + #587)', { timeout: 15000 }, () 
 
   it('T2: hook without stdin writes session.lock with semantic session_id and matching semantic_session_id', async () => {
     const dir = await mkProjectTracked();
-    const result = await runHook({ projectDir: dir });
-    expect(result.code).toBe(0);
+    await runHook({ projectDir: dir });
 
     const lock = await readSessionLock(dir);
     // session_id should be semantic (no stdin → semantic-id generation path)
@@ -800,7 +715,7 @@ describe('mechanical session.lock writer (#584 + #587)', { timeout: 15000 }, () 
     expect(lock.mode).toBe('feature');
   });
 
-  it('T5: last_heartbeat is within 1s of started_at immediately after hook completes', async () => {
+  it('T5: writes a fresh heartbeat and the default four-hour TTL', async () => {
     const dir = await mkProjectTracked();
     await runHook({ projectDir: dir });
 
@@ -815,6 +730,7 @@ describe('mechanical session.lock writer (#584 + #587)', { timeout: 15000 }, () 
     // them identically). Allow up to 1s drift in case a future change
     // updates last_heartbeat separately.
     expect(Math.abs(heartbeatMs - startedMs)).toBeLessThanOrEqual(1000);
+    expect(lock.ttl_hours).toBe(4);
   });
 
   it('T6: PID in lock is the writer process PID (forensics only — NOT used for liveness)', async () => {
@@ -841,13 +757,6 @@ describe('mechanical session.lock writer (#584 + #587)', { timeout: 15000 }, () 
     expect(typeof acquired.semantic_session_id).toBe('string');
     expect(typeof acquired.mode).toBe('string');
     expect(typeof acquired.ttl_hours).toBe('number');
-  });
-
-  it('lock TTL defaults to 4 hours', async () => {
-    const dir = await mkProjectTracked();
-    await runHook({ projectDir: dir });
-    const lock = await readSessionLock(dir);
-    expect(lock.ttl_hours).toBe(4);
   });
 });
 
@@ -904,7 +813,6 @@ describe('mechanical peer-detection banner (Epic #583 W3-P3)', { timeout: 15000 
     // runs in the per-test fresh-git fixture, not in the test runner's
     // session-orchestrator worktree.
     const result = await runHook({ projectDir: dir, useCwd: true });
-    expect(result.code).toBe(0);
 
     const messages = parseSystemMessages(result.stdout);
     const mechanical = messages.find((m) =>
@@ -922,7 +830,6 @@ describe('mechanical peer-detection banner (Epic #583 W3-P3)', { timeout: 15000 
     // writes. useCwd: true scopes `git worktree list` to the fresh-git
     // fixture so the test runner's outer worktree set is not visible.
     const result = await runHook({ projectDir: dir, useCwd: true });
-    expect(result.code).toBe(0);
 
     const messages = parseSystemMessages(result.stdout);
     const mechanical = messages.find((m) =>
@@ -956,36 +863,18 @@ describe('own-repo lock reaper splice (#724)', { timeout: 15000 }, () => {
     await fs.writeFile(path.join(dir, LOCK_RELPATH), JSON.stringify(lock, null, 2) + '\n', 'utf8');
   }
 
-  it('stays non-blocking (exit 0) and still emits its event when a stale orphan lock pre-exists', async () => {
-    const dir = await mkProjectTracked();
-    await seedStaleLock(dir, 'ghost-orphan');
-
-    const result = await runHook({ projectDir: dir, useCwd: true });
-    // The reaper splice must never break the informational-only hook.
-    expect(result.code).toBe(0);
-
-    const events = await readEvents(dir);
-    expect(events.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('reconciles the orphan so the stale foreign session id is no longer the live lock', async () => {
+  it('reaps a stale orphan lock without blocking the new session', async () => {
     const dir = await mkProjectTracked();
     await seedStaleLock(dir, 'ghost-orphan');
 
     const result = await runHook({ projectDir: dir, useCwd: true });
     expect(result.code).toBe(0);
+    expect((await readEvents(dir)).length).toBeGreaterThanOrEqual(1);
 
-    // After start, the lock is either archived (absent) or replaced by our own
-    // fresh lock — in both cases the stale 'ghost-orphan' id must not survive as
-    // the live lease.
-    let lockRaw = null;
-    try {
-      lockRaw = await fs.readFile(path.join(dir, LOCK_RELPATH), 'utf8');
-    } catch { /* absent → reaped, acceptable */ }
-    if (lockRaw !== null) {
-      const lock = JSON.parse(lockRaw);
-      expect(lock.session_id).not.toBe('ghost-orphan');
-    }
+    const lockRaw = await fs
+      .readFile(path.join(dir, LOCK_RELPATH), 'utf8')
+      .catch(() => '');
+    expect(lockRaw).not.toContain('ghost-orphan');
   });
 });
 
@@ -1025,8 +914,7 @@ describe('close-through backfill at SessionStart (#926)', { timeout: 15000 }, ()
     const dir = await mkProjectTracked();
     await seedAbandonedSession(dir);
 
-    const result = await runHook({ projectDir: dir, useCwd: true });
-    expect(result.code).toBe(0);
+    await runHook({ projectDir: dir, useCwd: true });
 
     const records = await readSessionsJsonl(dir);
     const recovered = records.find((r) => r.session_id === 'main-2026-01-01-session-9');
@@ -1040,8 +928,7 @@ describe('close-through backfill at SessionStart (#926)', { timeout: 15000 }, ()
     const dir = await mkProjectTracked();
     await seedAbandonedSession(dir);
 
-    const result = await runHook({ projectDir: dir, useCwd: true, stdin: JSON.stringify({ session_id: 'ffffffff-2222-4222-8222-222222222222' }) });
-    expect(result.code).toBe(0);
+    await runHook({ projectDir: dir, useCwd: true, stdin: JSON.stringify({ session_id: 'ffffffff-2222-4222-8222-222222222222' }) });
 
     const records = await readSessionsJsonl(dir);
     // Only the genuinely-dead predecessor may be recorded.
@@ -1072,6 +959,6 @@ describe('close-through backfill at SessionStart (#926)', { timeout: 15000 }, ()
 
     expect(result.code).toBe(0);
     const events = await readEvents(dir);
-    expect(events.length).toBeGreaterThanOrEqual(1);
+    expect(events).toHaveLength(2);
   });
 });

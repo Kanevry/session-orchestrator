@@ -203,31 +203,11 @@ describe('tool filter — non-Edit/Write/MultiEdit', { timeout: 10000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('file extension filter — non-TS/JS file', { timeout: 10000 }, () => {
-  it('exits 0 without stderr output for .md file', async () => {
+  it.each(['.md', '.sh', '.json'])('exits 0 without stderr output for %s file', async (extension) => {
     const dir = await mkProjectTracked();
     const result = await runHook({
       projectDir: dir,
-      stdin: editPayload(path.join(dir, 'README.md')),
-    });
-    expect(result.code).toBe(0);
-    expect(result.stderr.trim()).toBe('');
-  });
-
-  it('exits 0 without stderr output for .sh file', async () => {
-    const dir = await mkProjectTracked();
-    const result = await runHook({
-      projectDir: dir,
-      stdin: editPayload(path.join(dir, 'deploy.sh')),
-    });
-    expect(result.code).toBe(0);
-    expect(result.stderr.trim()).toBe('');
-  });
-
-  it('exits 0 without stderr output for .json file', async () => {
-    const dir = await mkProjectTracked();
-    const result = await runHook({
-      projectDir: dir,
-      stdin: editPayload(path.join(dir, 'config.json')),
+      stdin: editPayload(path.join(dir, `ignored${extension}`)),
     });
     expect(result.code).toBe(0);
     expect(result.stderr.trim()).toBe('');
@@ -387,7 +367,8 @@ describe('typecheck timeout — never blocks', { timeout: 15000 }, () => {
     expect(lines.length).toBeGreaterThanOrEqual(1);
     const parsed = JSON.parse(lines[0]);
     expect(parsed.check).toBe('typecheck');
-    expect(['pass', 'fail']).toContain(parsed.status);
+    expect(parsed.status).toBe('fail');
+    expect(parsed.reason).toBe('typecheck timed out after 2s');
     expect(typeof parsed.duration_ms).toBe('number');
   });
 });
@@ -419,11 +400,14 @@ describe('JSONL shape — relative file path', { timeout: 15000 }, () => {
 });
 
 // ---------------------------------------------------------------------------
-// Case 11: Write tool also triggers (not just Edit)
+// Case 11: every edit-shaped tool triggers typecheck
 // ---------------------------------------------------------------------------
 
-describe('Write tool triggers typecheck', { timeout: 15000 }, () => {
-  it('emits JSONL on stderr when tool_name is Write', async () => {
+describe('edit-shaped tools trigger typecheck', { timeout: 15000 }, () => {
+  it.each([
+    ['Write', 'new-file.ts'],
+    ['MultiEdit', 'edited-file.ts'],
+  ])('emits JSONL on stderr when tool_name is %s', async (tool, fileName) => {
     const dir = await mkProjectTracked();
     const scriptPath = await mkTypecheckScript(dir, 0);
 
@@ -432,33 +416,7 @@ describe('Write tool triggers typecheck', { timeout: 15000 }, () => {
 
     const result = await runHook({
       projectDir: dir,
-      stdin: editPayload(path.join(dir, 'src', 'new-file.ts'), 'Write'),
-    });
-
-    expect(result.code).toBe(0);
-    const lines = result.stderr.split('\n').filter(l => l.trim());
-    expect(lines.length).toBeGreaterThanOrEqual(1);
-    const parsed = JSON.parse(lines[0]);
-    expect(parsed.check).toBe('typecheck');
-    expect(parsed.status).toBe('pass');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Case 11b: MultiEdit tool also triggers
-// ---------------------------------------------------------------------------
-
-describe('MultiEdit tool triggers typecheck', { timeout: 15000 }, () => {
-  it('emits JSONL on stderr when tool_name is MultiEdit', async () => {
-    const dir = await mkProjectTracked();
-    const scriptPath = await mkTypecheckScript(dir, 0);
-
-    const claudeMd = `# Test\n\n## Session Config\ntypecheck-command: ${process.execPath} ${scriptPath}\n`;
-    await fs.writeFile(path.join(dir, 'CLAUDE.md'), claudeMd);
-
-    const result = await runHook({
-      projectDir: dir,
-      stdin: editPayload(path.join(dir, 'src', 'edited-file.ts'), 'MultiEdit'),
+      stdin: editPayload(path.join(dir, 'src', fileName), tool),
     });
 
     expect(result.code).toBe(0);

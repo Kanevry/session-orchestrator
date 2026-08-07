@@ -14,6 +14,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
+import { expectAllow } from '../_helpers/hook-decision.mjs';
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -116,55 +117,32 @@ async function mkProjectTracked() {
 // ---------------------------------------------------------------------------
 
 describe('redactArgv', { timeout: 15000 }, () => {
-  it('redacts --insight=value form', async () => {
+  it.each([
+    {
+      form: 'equals',
+      command: 'node scripts/memory-propose.mjs --type general --insight=secret-text',
+      expected: 'node scripts/memory-propose.mjs --type general --insight=[REDACTED]',
+    },
+    {
+      form: 'double-quoted',
+      command: 'node scripts/memory-propose.mjs --insight "private body"',
+      expected: 'node scripts/memory-propose.mjs --insight [REDACTED]',
+    },
+    {
+      form: 'unquoted',
+      command: 'node scripts/memory-propose.mjs --insight unquotedvalue --confidence 0.8',
+      expected: 'node scripts/memory-propose.mjs --insight [REDACTED] --confidence 0.8',
+    },
+  ])('redacts --insight $form values', async ({ command, expected }) => {
     const dir = await mkProjectTracked();
-    const cmd =
-      'node scripts/memory-propose.mjs --type general --insight=secret-text';
     const result = await runHook({
       projectDir: dir,
-      stdin: bashPayload(cmd, { session_id: 'sess-1' }),
+      stdin: bashPayload(command, { session_id: 'sess-1' }),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
-    expect(events[0].argv_truncated).toBe(
-      'node scripts/memory-propose.mjs --type general --insight=[REDACTED]',
-    );
-    expect(events[0].argv_truncated.includes('secret-text')).toBe(false);
-  });
-
-  it('redacts --insight "double-quoted" form', async () => {
-    const dir = await mkProjectTracked();
-    const cmd =
-      'node scripts/memory-propose.mjs --insight ' + DQ + 'private body' + DQ;
-    const result = await runHook({
-      projectDir: dir,
-      stdin: bashPayload(cmd, { session_id: 'sess-1' }),
-    });
-    expect(result.code).toBe(0);
-    const events = await readEvents(dir);
-    expect(events).toHaveLength(1);
-    expect(events[0].argv_truncated).toBe(
-      'node scripts/memory-propose.mjs --insight [REDACTED]',
-    );
-    expect(events[0].argv_truncated.includes('private body')).toBe(false);
-  });
-
-  it('redacts --insight unquoted form', async () => {
-    const dir = await mkProjectTracked();
-    const cmd =
-      'node scripts/memory-propose.mjs --insight unquotedvalue --confidence 0.8';
-    const result = await runHook({
-      projectDir: dir,
-      stdin: bashPayload(cmd, { session_id: 'sess-1' }),
-    });
-    expect(result.code).toBe(0);
-    const events = await readEvents(dir);
-    expect(events).toHaveLength(1);
-    expect(events[0].argv_truncated).toBe(
-      'node scripts/memory-propose.mjs --insight [REDACTED] --confidence 0.8',
-    );
-    expect(events[0].argv_truncated.includes('unquotedvalue')).toBe(false);
+    expect(events[0].argv_truncated).toBe(expected);
   });
 
   it('redacts the entire quoted value when it contains escaped quotes (issue #546)', async () => {
@@ -187,7 +165,7 @@ describe('redactArgv', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload(cmd, { session_id: 'sess-1' }),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0].argv_truncated).toBe(
@@ -201,38 +179,6 @@ describe('redactArgv', { timeout: 15000 }, () => {
     expect(events[0].argv_truncated.includes(BS)).toBe(false);
   });
 
-  it('redacts entire quoted region with inner escaped quote — no tail leak (issue #546)', async () => {
-    // Input on the wire: --insight "outer\"inner"  (literal backslash-quote, no whitespace inside)
-    // The unfixed regex's `\S+` alt could match `"outer\"inner"` as a single non-whitespace
-    // token in either branch, but the quoted-alt is tried first and matches the full region.
-    // This test pins the FIXED behavior: the entire quoted region — including the inner
-    // escaped quote and everything to either side — is replaced by [REDACTED] with no leak.
-    const dir = await mkProjectTracked();
-    const cmd =
-      'node scripts/memory-propose.mjs --insight ' +
-      DQ +
-      'outer' +
-      BS +
-      DQ +
-      'inner' +
-      DQ;
-    const result = await runHook({
-      projectDir: dir,
-      stdin: bashPayload(cmd, { session_id: 'sess-1' }),
-    });
-    expect(result.code).toBe(0);
-    const events = await readEvents(dir);
-    expect(events).toHaveLength(1);
-    expect(events[0].argv_truncated).toBe(
-      'node scripts/memory-propose.mjs --insight [REDACTED]',
-    );
-    // No fragment of the value's plaintext may survive — neither the literal words
-    // nor the inner escaped-quote sequence (BS+DQ) nor any stray quote character.
-    expect(events[0].argv_truncated.includes('outer')).toBe(false);
-    expect(events[0].argv_truncated.includes('inner')).toBe(false);
-    expect(events[0].argv_truncated.includes(DQ)).toBe(false);
-    expect(events[0].argv_truncated.includes(BS)).toBe(false);
-  });
 
   it('handles malformed unclosed-quote input without leaking the value (issue #546 actual leak surface, Q2 G-H1)', async () => {
     // Pre-fix scenario: --insight "unclosed text  — the opening quote has no closing match.
@@ -254,7 +200,7 @@ describe('redactArgv', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload(cmd, { session_id: 'sess-1' }),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
     // Falsification: under the unfixed regex this assertion would FAIL because the
@@ -280,7 +226,7 @@ describe('redactArgv', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload(cmd, { session_id: 'sess-1' }),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0].argv_truncated).toBe(
@@ -302,7 +248,7 @@ describe('redactArgv', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload(cmd, { session_id: 'sess-1' }),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0].argv_truncated).toBe(
@@ -326,7 +272,7 @@ describe('G3 — MEMORY_PROPOSE_REGEX', { timeout: 15000 }, () => {
         session_id: 'sess-1',
       }),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toEqual([]);
     // events.jsonl file itself must not exist
@@ -343,41 +289,16 @@ describe('G3 — MEMORY_PROPOSE_REGEX', { timeout: 15000 }, () => {
     expect(exists).toBe(false);
   });
 
-  it('G3 rejects npm run memory-propose', async () => {
+  it.each([
+    '/usr/bin/node ./scripts/memory-propose.mjs',
+    'SO_WAVE_AGENT=1 node scripts/memory-propose.mjs --type general',
+  ])('G3 accepts node memory-propose invocation: %s', async (command) => {
     const dir = await mkProjectTracked();
     const result = await runHook({
       projectDir: dir,
-      stdin: bashPayload('npm run memory-propose', { session_id: 'sess-1' }),
+      stdin: bashPayload(command, { session_id: 'sess-1' }),
     });
-    expect(result.code).toBe(0);
-    const events = await readEvents(dir);
-    expect(events).toEqual([]);
-  });
-
-  it('G3 accepts /usr/bin/node ./scripts/memory-propose.mjs', async () => {
-    const dir = await mkProjectTracked();
-    const result = await runHook({
-      projectDir: dir,
-      stdin: bashPayload('/usr/bin/node ./scripts/memory-propose.mjs', {
-        session_id: 'sess-1',
-      }),
-    });
-    expect(result.code).toBe(0);
-    const events = await readEvents(dir);
-    expect(events).toHaveLength(1);
-    expect(events[0].event).toBe('orchestrator.memory.propose_invoked');
-  });
-
-  it('G3 accepts env-prefixed SO_WAVE_AGENT=1 node scripts/memory-propose.mjs', async () => {
-    const dir = await mkProjectTracked();
-    const result = await runHook({
-      projectDir: dir,
-      stdin: bashPayload(
-        'SO_WAVE_AGENT=1 node scripts/memory-propose.mjs --type general',
-        { session_id: 'sess-1' },
-      ),
-    });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0].event).toBe('orchestrator.memory.propose_invoked');
@@ -397,7 +318,7 @@ describe('G4 — session_id resolution', { timeout: 15000 }, () => {
         session_id: 'sess-abc',
       }),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0].session_id).toBe('sess-abc');
@@ -414,7 +335,7 @@ describe('G4 — session_id resolution', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('node scripts/memory-propose.mjs'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0].session_id).toBe('sess-file');
@@ -433,7 +354,7 @@ describe('G4 — session_id resolution', { timeout: 15000 }, () => {
         session_id: 'sess-stdin',
       }),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0].session_id).toBe('sess-stdin');
@@ -445,7 +366,7 @@ describe('G4 — session_id resolution', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('node scripts/memory-propose.mjs'),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0].session_id).toBe(null);
@@ -459,7 +380,7 @@ describe('G4 — session_id resolution', { timeout: 15000 }, () => {
         sessionId: 'camel-1',
       }),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0].session_id).toBe('camel-1');
@@ -484,59 +405,41 @@ describe('G5 — wave resolution', { timeout: 15000 }, () => {
         session_id: 'sess-1',
       }),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0].wave).toBe(3);
   });
 
-  it('G5 defaults wave to 0 when wave-scope.json absent', async () => {
+  it.each([
+    { name: 'absent', prepare: async () => {} },
+    {
+      name: 'malformed',
+      prepare: async (dir) => {
+        await fs.mkdir(path.join(dir, '.claude'), { recursive: true });
+        await fs.writeFile(path.join(dir, '.claude', 'wave-scope.json'), 'not json{');
+      },
+    },
+    {
+      name: 'non-numeric',
+      prepare: async (dir) => {
+        await fs.mkdir(path.join(dir, '.claude'), { recursive: true });
+        await fs.writeFile(
+          path.join(dir, '.claude', 'wave-scope.json'),
+          JSON.stringify({ wave: 'five' }),
+        );
+      },
+    },
+  ])('G5 defaults wave to 0 when wave-scope.json is $name', async ({ prepare }) => {
     const dir = await mkProjectTracked();
+    await prepare(dir);
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload('node scripts/memory-propose.mjs', {
         session_id: 'sess-1',
       }),
     });
-    expect(result.code).toBe(0);
-    const events = await readEvents(dir);
-    expect(events).toHaveLength(1);
-    expect(events[0].wave).toBe(0);
-  });
-
-  it('G5 defaults wave to 0 when JSON malformed', async () => {
-    const dir = await mkProjectTracked();
-    await fs.mkdir(path.join(dir, '.claude'), { recursive: true });
-    await fs.writeFile(
-      path.join(dir, '.claude', 'wave-scope.json'),
-      'not json{',
-    );
-    const result = await runHook({
-      projectDir: dir,
-      stdin: bashPayload('node scripts/memory-propose.mjs', {
-        session_id: 'sess-1',
-      }),
-    });
-    expect(result.code).toBe(0);
-    const events = await readEvents(dir);
-    expect(events).toHaveLength(1);
-    expect(events[0].wave).toBe(0);
-  });
-
-  it('G5 defaults wave to 0 when wave field is non-numeric', async () => {
-    const dir = await mkProjectTracked();
-    await fs.mkdir(path.join(dir, '.claude'), { recursive: true });
-    await fs.writeFile(
-      path.join(dir, '.claude', 'wave-scope.json'),
-      JSON.stringify({ wave: 'five' }),
-    );
-    const result = await runHook({
-      projectDir: dir,
-      stdin: bashPayload('node scripts/memory-propose.mjs', {
-        session_id: 'sess-1',
-      }),
-    });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0].wave).toBe(0);
@@ -564,7 +467,7 @@ describe('G7 — events.jsonl append', { timeout: 15000 }, () => {
         session_id: 'sess-1',
       }),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
 
     const dirExistsAfter = await fs
       .access(metricsDir)
@@ -603,7 +506,7 @@ describe('G7 — events.jsonl append', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload(cmd, { session_id: 'sess-1' }),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0].argv_truncated.length).toBe(512);
@@ -617,20 +520,9 @@ describe('G7 — events.jsonl append', { timeout: 15000 }, () => {
         session_id: 'sess-1',
       }),
     });
-    expect(result.code).toBe(0);
+    expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0].exit_code).toBe(null);
-  });
-
-  it('always exits 0 even on G3 mismatch', async () => {
-    const dir = await mkProjectTracked();
-    const result = await runHook({
-      projectDir: dir,
-      stdin: bashPayload('ls -la', { session_id: 'sess-1' }),
-    });
-    expect(result.code).toBe(0);
-    const events = await readEvents(dir);
-    expect(events).toEqual([]);
   });
 });

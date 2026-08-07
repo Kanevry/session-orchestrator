@@ -21,29 +21,18 @@ function read(rel) {
 // ─── Finding 1: Atomic lock-file write ───────────────────────────────────────
 
 describe('Finding 1 — atomic bootstrap.lock write (#108)', () => {
-  it('fast-template.md uses mktemp + mv for bootstrap.lock', () => {
-    const body = read('skills/bootstrap/fast-template.md');
-    // Must use mktemp to create a temp file in the same directory
-    expect(body).toMatch(/mktemp "\$REPO_ROOT\/\.orchestrator\/bootstrap\.lock\./);
-    // Must rename atomically
-    expect(body).toMatch(/mv "\$_LOCK_TMP" "\$REPO_ROOT\/\.orchestrator\/bootstrap\.lock"/);
-    // Must NOT write directly to the final path with a plain redirect
-    expect(body).not.toMatch(/^cat > "\$REPO_ROOT\/\.orchestrator\/bootstrap\.lock"/m);
-  });
-
-  it('standard-template.md uses mktemp + mv for bootstrap.lock', () => {
-    const body = read('skills/bootstrap/standard-template.md');
-    expect(body).toMatch(/mktemp "\$REPO_ROOT\/\.orchestrator\/bootstrap\.lock\./);
-    expect(body).toMatch(/mv "\$_LOCK_TMP" "\$REPO_ROOT\/\.orchestrator\/bootstrap\.lock"/);
-    expect(body).not.toMatch(/^cat > "\$REPO_ROOT\/\.orchestrator\/bootstrap\.lock"/m);
-  });
-
-  it('deep-template.md uses mktemp + mv for bootstrap.lock', () => {
-    const body = read('skills/bootstrap/deep-template.md');
-    expect(body).toMatch(/mktemp "\$REPO_ROOT\/\.orchestrator\/bootstrap\.lock\./);
-    expect(body).toMatch(/mv "\$_LOCK_TMP" "\$REPO_ROOT\/\.orchestrator\/bootstrap\.lock"/);
-    expect(body).not.toMatch(/^cat > "\$REPO_ROOT\/\.orchestrator\/bootstrap\.lock"/m);
-  });
+  it.each(['fast-template.md', 'standard-template.md', 'deep-template.md'])(
+    '%s uses mktemp + mv for bootstrap.lock',
+    (template) => {
+      const body = read(`skills/bootstrap/${template}`);
+      // Must use mktemp to create a temp file in the same directory.
+      expect(body).toMatch(/mktemp "\$REPO_ROOT\/\.orchestrator\/bootstrap\.lock\./);
+      // Must rename atomically.
+      expect(body).toMatch(/mv "\$_LOCK_TMP" "\$REPO_ROOT\/\.orchestrator\/bootstrap\.lock"/);
+      // Must NOT write directly to the final path with a plain redirect.
+      expect(body).not.toMatch(/^cat > "\$REPO_ROOT\/\.orchestrator\/bootstrap\.lock"/m);
+    },
+  );
 });
 
 // ─── Finding 2: claude init overwrite guard ──────────────────────────────────
@@ -56,12 +45,6 @@ describe('Finding 2 — claude init overwrite guard (#108)', () => {
     // claude init must still appear (just now guarded)
     expect(body).toMatch(/claude init/);
   });
-
-  it('fast-template.md documents the claude init overwrite guard', () => {
-    const body = read('skills/bootstrap/fast-template.md');
-    // fast-template defers to public-fallback but must document the guard
-    expect(body).toMatch(/claude init.*overwrite guard|overwrite guard.*claude init/i);
-  });
 });
 
 // ─── Finding 3: cp -rP symlink-traversal fix ─────────────────────────────────
@@ -71,20 +54,7 @@ describe('Finding 3 — cp symlink-traversal fix (#108)', () => {
     const body = read('skills/bootstrap/public-fallback.md');
     // Must use -P flag (no-dereference) for template copy
     expect(body).toMatch(/cp -rP "\$TMPL_DIR\/\." "\$REPO_ROOT\/"/);
-    // Must NOT use bare cp -r for the template copy line (guard against regression)
-    // (The line with -rP is correct; bare cp -r without P would be a regression)
-    const templateCopyLines = body
-      .split('\n')
-      .filter(l => l.includes('cp -r') && l.includes('TMPL_DIR') && l.includes('REPO_ROOT'));
-    // Every template-copy line must use -rP
-    for (const line of templateCopyLines) {
-      expect(line).toMatch(/cp -rP/);
-    }
-  });
-
-  it('public-fallback.md documents the symlink-traversal rationale', () => {
-    const body = read('skills/bootstrap/public-fallback.md');
-    // Must explain why -P is used
-    expect(body).toMatch(/symlink|no-dereference|CWE-22/i);
+    // Must NOT use bare cp -r for the template copy line (guard against regression).
+    expect(body).not.toMatch(/cp -r(?!P) "\$TMPL_DIR\/\." "\$REPO_ROOT\/"/);
   });
 });

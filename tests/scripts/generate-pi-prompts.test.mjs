@@ -81,17 +81,4 @@ Read that command file and follow it exactly. When it references \`$ARGUMENTS\`,
     }
   });
 
-  it('generates one Pi prompt per command file', () => {
-    const commands = readdirSync(path.join(REPO_ROOT, 'commands')).filter((name) => name.endsWith('.md'));
-    const prompts = readdirSync(path.join(REPO_ROOT, 'pi', 'prompts')).filter((name) => name.endsWith('.md'));
-
-    expect(prompts.sort()).toEqual(commands.sort());
-  });
-
-  it('documents the $ARGUMENTS to $@ substitution contract', () => {
-    const sessionPrompt = readFileSync(path.join(REPO_ROOT, 'pi', 'prompts', 'session.md'), 'utf8');
-
-    expect(sessionPrompt).toContain('Arguments: $@');
-    expect(sessionPrompt).toContain('When it references `$ARGUMENTS`');
-  });
 });

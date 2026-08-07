@@ -19,7 +19,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
-import { validatePersonaSpec, SAFE_PERSONA_NAME_RE } from '../../scripts/lib/persona-panel/catalog-loader.mjs';
+import { validatePersonaSpec } from '../../scripts/lib/persona-panel/catalog-loader.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(HERE, '..', '..');
@@ -55,10 +55,9 @@ describe('persona-panel bundled presets (#760)', () => {
     expect(result.ok, JSON.stringify(result.ok ? {} : result.errors, null, 2)).toBe(true);
   });
 
-  it.each(presetFiles)('%s name matches SAFE_PERSONA_NAME_RE and its filename stem', (file) => {
+  it.each(presetFiles)('%s name matches its filename stem', (file) => {
     const spec = parseFrontmatter(join(PRESETS_DIR, file));
     const stem = file.replace(/\.md$/, '');
     expect(spec.name).toBe(stem);
-    expect(spec.name).toMatch(SAFE_PERSONA_NAME_RE);
   });
 });

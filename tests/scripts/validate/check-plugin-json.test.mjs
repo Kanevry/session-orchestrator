@@ -2,10 +2,14 @@
  * tests/scripts/validate/check-plugin-json.test.mjs
  *
  * Integration tests for scripts/lib/validate/check-plugin-json.mjs.
- * Spawns the script as a child process and verifies exit codes + output shape.
+ *
+ * Issue #985 consolidation: each fixture is spawned once and its exit status
+ * is asserted together with the diagnostic that identifies the validator
+ * verdict. The old suite spawned the same fixture separately for status,
+ * message, and summary assertions.
  */
 
-import { describe, it, expect, afterEach, beforeAll } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -19,192 +23,101 @@ const SCRIPT = path.resolve(
 const PLUGIN_REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
 function run(pluginRoot) {
-  return spawnSync('node', [SCRIPT, pluginRoot], { encoding: 'utf8', timeout: 15_000 });
+  return spawnSync(process.execPath, [SCRIPT, pluginRoot], {
+    encoding: 'utf8',
+    timeout: 15_000,
+  });
 }
 
-function makeFixture() {
+function makeFixture(pluginJson) {
   const dir = mkdtempSync(path.join(tmpdir(), 'check-plugin-json-'));
   mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
+  if (pluginJson !== undefined) {
+    writeFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), pluginJson);
+  }
   return dir;
 }
 
-// ---------------------------------------------------------------------------
-// Smoke — current repo
-// ---------------------------------------------------------------------------
+/**
+ * Normalize a CLI run into a hardcoded, table-friendly verdict.
+ * `missingStdout` and `missingStderr` make a test fail when the validator
+ * returns the right status but loses its identifying diagnostic.
+ */
+function verdict(result, { stdout = [], stderr = [] } = {}) {
+  return {
+    status: result.status,
+    missingStdout: stdout.filter((needle) => !result.stdout.includes(needle)),
+    missingStderr: stderr.filter((needle) => !result.stderr.includes(needle)),
+  };
+}
 
-describe('check-plugin-json.mjs — smoke against current repo', () => {
-  // Spawn once per describe — all three it()s use identical args (PLUGIN_REPO).
-  let r;
-  beforeAll(() => {
-    r = run(PLUGIN_REPO);
-  });
+const PLUGIN_JSON_CASES = [
+  {
+    name: 'fails with a summary when plugin.json is absent',
+    pluginJson: undefined,
+    stdout: ['FAIL: plugin.json not found', 'Results:'],
+    expected: { status: 1, missingStdout: [], missingStderr: [] },
+  },
+  {
+    name: 'fails when plugin.json is invalid JSON',
+    pluginJson: '{ not valid json }',
+    stdout: ['FAIL: plugin.json is not valid JSON'],
+    expected: { status: 1, missingStdout: [], missingStderr: [] },
+  },
+  {
+    name: 'fails when the required name field is missing',
+    pluginJson: JSON.stringify({ version: '1.0.0', description: 'no name' }),
+    stdout: ["FAIL: required field 'name' is missing"],
+    expected: { status: 1, missingStdout: [], missingStderr: [] },
+  },
+  {
+    name: 'fails when name is not kebab-case',
+    pluginJson: JSON.stringify({ name: 'Foo_Bar', version: '1.0.0' }),
+    stdout: ['FAIL: name is not kebab-case: Foo_Bar'],
+    expected: { status: 1, missingStdout: [], missingStderr: [] },
+  },
+  {
+    name: 'fails when version does not match semver',
+    pluginJson: JSON.stringify({ name: 'my-plugin', version: 'abc' }),
+    stdout: ['FAIL: version does not match semver: abc'],
+    expected: { status: 1, missingStdout: [], missingStderr: [] },
+  },
+];
 
-  it('exits 0 against the current plugin repo', () => {
-    expect(r.status).toBe(0);
-  });
-
-  it('reports "Results: N passed, 0 failed" on stdout', () => {
-    const match = r.stdout.match(/Results:\s+(\d+)\s+passed,\s+(\d+)\s+failed/);
-    expect(match).not.toBeNull();
-    expect(parseInt(match[2], 10)).toBe(0);
-  });
-
-  it('emits PASS for plugin.json exists and valid JSON', () => {
-    expect(r.stdout).toContain('  PASS: plugin.json exists');
-    expect(r.stdout).toContain('  PASS: plugin.json is valid JSON');
+describe('check-plugin-json.mjs — current repo smoke', () => {
+  it('reports the plugin.json checks and zero failed checks', () => {
+    expect(
+      verdict(run(PLUGIN_REPO), {
+        stdout: [
+          'PASS: plugin.json exists',
+          'PASS: plugin.json is valid JSON',
+          'Results:',
+          '0 failed',
+        ],
+      }),
+    ).toEqual({ status: 0, missingStdout: [], missingStderr: [] });
   });
 });
 
-// ---------------------------------------------------------------------------
-// Missing plugin-root argument
-// ---------------------------------------------------------------------------
-
-describe('check-plugin-json.mjs — missing argument', () => {
-  it('exits 1 when no plugin-root arg is supplied', () => {
-    const r = spawnSync('node', [SCRIPT], { encoding: 'utf8', timeout: 15_000 });
-    expect(r.status).toBe(1);
-  });
-
-  it('writes usage message to stderr when no arg is supplied', () => {
-    const r = spawnSync('node', [SCRIPT], { encoding: 'utf8', timeout: 15_000 });
-    expect(r.stderr).toContain('Usage: check-plugin-json.mjs <plugin-root>');
+describe('check-plugin-json.mjs — missing plugin-root argument', () => {
+  it('exits 1 and writes the usage contract to stderr', () => {
+    expect(
+      verdict(spawnSync(process.execPath, [SCRIPT], { encoding: 'utf8', timeout: 15_000 }), {
+        stderr: ['Usage: check-plugin-json.mjs <plugin-root>'],
+      }),
+    ).toEqual({ status: 1, missingStdout: [], missingStderr: [] });
   });
 });
 
-// ---------------------------------------------------------------------------
-// Missing plugin.json
-// ---------------------------------------------------------------------------
-
-describe('check-plugin-json.mjs — missing plugin.json', () => {
+describe('check-plugin-json.mjs — plugin.json verdict cases', () => {
   let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when plugin.json is absent', () => {
-    dir = makeFixture(); // .claude-plugin dir exists but no plugin.json inside
-    const r = run(dir);
-    expect(r.status).toBe(1);
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
   });
 
-  it('emits FAIL line mentioning "plugin.json not found"', () => {
-    dir = makeFixture();
-    const r = run(dir);
-    expect(r.stdout).toContain('  FAIL: plugin.json not found');
-  });
-
-  it('still emits a Results: summary line when plugin.json is absent', () => {
-    dir = makeFixture();
-    const r = run(dir);
-    expect(r.stdout).toContain('Results:');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Invalid JSON
-// ---------------------------------------------------------------------------
-
-describe('check-plugin-json.mjs — invalid JSON', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when plugin.json contains invalid JSON', () => {
-    dir = makeFixture();
-    writeFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), '{ not valid json }');
-    const r = run(dir);
-    expect(r.status).toBe(1);
-  });
-
-  it('emits FAIL line mentioning "not valid JSON"', () => {
-    dir = makeFixture();
-    writeFileSync(path.join(dir, '.claude-plugin', 'plugin.json'), '{ not valid json }');
-    const r = run(dir);
-    expect(r.stdout).toContain('  FAIL: plugin.json is not valid JSON');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Missing required 'name' field
-// ---------------------------------------------------------------------------
-
-describe('check-plugin-json.mjs — missing name field', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when name field is absent', () => {
-    dir = makeFixture();
-    writeFileSync(
-      path.join(dir, '.claude-plugin', 'plugin.json'),
-      JSON.stringify({ version: '1.0.0', description: 'no name' }),
-    );
-    const r = run(dir);
-    expect(r.status).toBe(1);
-  });
-
-  it('emits FAIL line mentioning missing name field', () => {
-    dir = makeFixture();
-    writeFileSync(
-      path.join(dir, '.claude-plugin', 'plugin.json'),
-      JSON.stringify({ version: '1.0.0', description: 'no name' }),
-    );
-    const r = run(dir);
-    expect(r.stdout).toContain("  FAIL: required field 'name' is missing");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Invalid kebab-case name
-// ---------------------------------------------------------------------------
-
-describe('check-plugin-json.mjs — invalid kebab-case name', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when name is not kebab-case (Foo_Bar)', () => {
-    dir = makeFixture();
-    writeFileSync(
-      path.join(dir, '.claude-plugin', 'plugin.json'),
-      JSON.stringify({ name: 'Foo_Bar', version: '1.0.0' }),
-    );
-    const r = run(dir);
-    expect(r.status).toBe(1);
-  });
-
-  it('emits FAIL line mentioning kebab-case when name is invalid', () => {
-    dir = makeFixture();
-    writeFileSync(
-      path.join(dir, '.claude-plugin', 'plugin.json'),
-      JSON.stringify({ name: 'Foo_Bar', version: '1.0.0' }),
-    );
-    const r = run(dir);
-    expect(r.stdout).toContain('kebab-case');
-    expect(r.stdout).toContain('  FAIL:');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Invalid semver version
-// ---------------------------------------------------------------------------
-
-describe('check-plugin-json.mjs — invalid version semver', () => {
-  let dir;
-  afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
-
-  it('exits 1 when version does not match semver', () => {
-    dir = makeFixture();
-    writeFileSync(
-      path.join(dir, '.claude-plugin', 'plugin.json'),
-      JSON.stringify({ name: 'my-plugin', version: 'abc' }),
-    );
-    const r = run(dir);
-    expect(r.status).toBe(1);
-  });
-
-  it('emits FAIL line mentioning semver when version is invalid', () => {
-    dir = makeFixture();
-    writeFileSync(
-      path.join(dir, '.claude-plugin', 'plugin.json'),
-      JSON.stringify({ name: 'my-plugin', version: 'abc' }),
-    );
-    const r = run(dir);
-    expect(r.stdout).toContain('  FAIL: version does not match semver: abc');
+  it.each(PLUGIN_JSON_CASES)('$name', ({ pluginJson, stdout, expected }) => {
+    dir = makeFixture(pluginJson);
+    expect(verdict(run(dir), { stdout })).toEqual(expected);
   });
 });

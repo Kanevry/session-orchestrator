@@ -9,18 +9,17 @@
  *
  * Covered:
  *   post-tool-batch-wave-signal.mjs
- *     - emits hookSpecificOutput on wave-complete signal
- *     - stdout is empty (no additionalContext) for non-wave-complete signals
- *     - exits 0 with empty stdin (no wave-signal)
+ *     - emits the complete hookSpecificOutput envelope on wave-complete
+ *     - emits no stdout for non-wave-complete and empty-object payloads
+ *     - preserves distinct wave-lifecycle event and boundary contracts
  *
  *   post-tool-failure-corrective-context.mjs
- *     - emits hookSpecificOutput.additionalContext on tool failure
- *     - additionalContext is capped at 500 chars
- *     - newlines in error are stripped from additionalContext (SEC-016)
- *     - hookEventName is PostToolUseFailure
+ *     - emits the complete hookSpecificOutput.additionalContext envelope
+ *     - caps context at 500 chars and strips control characters (SEC-016)
+ *     - preserves the unknown-tool fallback for empty/missing-tool payloads
  *
  *   post-edit-validate.mjs
- *     - exits 0 for non-TS files (smoke test — hook never blocks)
+ *     - includes remediation in failed typecheck JSONL output
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -81,73 +80,47 @@ function readEvents() {
 // ---------------------------------------------------------------------------
 
 describe('post-tool-batch-wave-signal.mjs additionalContext (#428 adjusted)', () => {
-  it('exits 0 on wave-complete signal', () => {
+  it('emits the complete PostToolBatch additionalContext envelope on wave-complete', () => {
     const result = runHook('hooks/post-tool-batch-wave-signal.mjs', {
       wave_signal: 'wave-complete',
       wave_number: 3,
       next_wave_role: 'quality-reviewer',
       batch_id: 'b-001',
       batch_size: 7,
-      completed_at: '2026-05-17T10:00:00.000Z',
+      batch_completed_at: '2026-05-17T10:00:00.000Z',
     });
-    expect(result.status).toBe(0);
+
+    expect({
+      status: result.status,
+      stdout: JSON.parse(result.stdout),
+    }).toEqual({
+      status: 0,
+      stdout: {
+        hookSpecificOutput: {
+          hookEventName: 'PostToolBatch',
+          additionalContext:
+            'Wave 3 complete. Next agent role: quality-reviewer. Batch b-001 (7 tools) resolved at 2026-05-17T10:00:00.000Z.',
+        },
+      },
+    });
   });
 
-  it('emits hookSpecificOutput.hookEventName = PostToolBatch on wave-complete signal', () => {
-    const result = runHook('hooks/post-tool-batch-wave-signal.mjs', {
-      wave_signal: 'wave-complete',
-      wave_number: 3,
-      next_wave_role: 'quality-reviewer',
-      batch_id: 'b-001',
-      batch_size: 7,
-      completed_at: '2026-05-17T10:00:00.000Z',
-    });
-    expect(result.status).toBe(0);
-    const parsed = JSON.parse(result.stdout);
-    expect(parsed.hookSpecificOutput.hookEventName).toBe('PostToolBatch');
-  });
+  it.each([
+    {
+      name: 'a non-wave-complete signal',
+      input: { batch_id: 'b-002', batch_size: 3 },
+    },
+    {
+      name: 'an empty-object payload',
+      input: {},
+    },
+  ])('produces no stdout and exits 0 for $name', ({ input }) => {
+    const result = runHook('hooks/post-tool-batch-wave-signal.mjs', input);
 
-  it('emits additionalContext containing wave number on wave-complete signal', () => {
-    const result = runHook('hooks/post-tool-batch-wave-signal.mjs', {
-      wave_signal: 'wave-complete',
-      wave_number: 3,
-      next_wave_role: 'quality-reviewer',
-      batch_id: 'b-001',
-      batch_size: 7,
-      completed_at: '2026-05-17T10:00:00.000Z',
+    expect({ status: result.status, stdout: result.stdout.trim() }).toEqual({
+      status: 0,
+      stdout: '',
     });
-    expect(result.status).toBe(0);
-    const parsed = JSON.parse(result.stdout);
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('Wave 3');
-  });
-
-  it('emits additionalContext containing next agent role on wave-complete signal', () => {
-    const result = runHook('hooks/post-tool-batch-wave-signal.mjs', {
-      wave_signal: 'wave-complete',
-      wave_number: 5,
-      next_wave_role: 'test-writer',
-      batch_id: 'b-007',
-      batch_size: 4,
-      completed_at: '2026-05-17T12:00:00.000Z',
-    });
-    expect(result.status).toBe(0);
-    const parsed = JSON.parse(result.stdout);
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('test-writer');
-  });
-
-  it('produces no stdout output when wave_signal is not wave-complete', () => {
-    const result = runHook('hooks/post-tool-batch-wave-signal.mjs', {
-      batch_id: 'b-002',
-      batch_size: 3,
-    });
-    expect(result.status).toBe(0);
-    // Non-wave-complete payloads must not emit any hookSpecificOutput
-    expect(result.stdout.trim()).toBe('');
-  });
-
-  it('exits 0 with empty-object stdin (no wave-signal field)', () => {
-    const result = runHook('hooks/post-tool-batch-wave-signal.mjs', {});
-    expect(result.status).toBe(0);
   });
 });
 
@@ -156,7 +129,7 @@ describe('post-tool-batch-wave-signal.mjs additionalContext (#428 adjusted)', ()
 // ---------------------------------------------------------------------------
 
 describe('post-tool-batch-wave-signal.mjs wave-lifecycle events (#610)', () => {
-  it('emits orchestrator.wave.completed on wave-complete signal', () => {
+  it('emits orchestrator.wave.completed with metadata and an ISO timestamp', () => {
     const result = runHook('hooks/post-tool-batch-wave-signal.mjs', {
       wave_signal: 'wave-complete',
       wave_number: 3,
@@ -166,9 +139,14 @@ describe('post-tool-batch-wave-signal.mjs wave-lifecycle events (#610)', () => {
     });
     expect(result.status).toBe(0);
     const wave = readEvents().find((e) => e.event === 'orchestrator.wave.completed');
-    expect(wave).toBeDefined();
-    expect(wave.wave_number).toBe(3);
-    expect(wave.next_wave_role).toBe('quality-reviewer');
+    expect(wave).toEqual(
+      expect.objectContaining({
+        event: 'orchestrator.wave.completed',
+        wave_number: 3,
+        next_wave_role: 'quality-reviewer',
+      }),
+    );
+    expect(Number.isNaN(Date.parse(wave.timestamp))).toBe(false);
   });
 
   it('emits orchestrator.wave.started on wave-start signal', () => {
@@ -191,13 +169,6 @@ describe('post-tool-batch-wave-signal.mjs wave-lifecycle events (#610)', () => {
       (e) => typeof e.event === 'string' && e.event.startsWith('orchestrator.wave.'),
     );
     expect(waveEvents).toEqual([]);
-  });
-
-  it('wave.completed record carries a parseable ISO timestamp', () => {
-    runHook('hooks/post-tool-batch-wave-signal.mjs', { wave_signal: 'wave-complete', wave_number: 4 });
-    const wave = readEvents().find((e) => e.event === 'orchestrator.wave.completed');
-    expect(wave).toBeDefined();
-    expect(Number.isNaN(Date.parse(wave.timestamp))).toBe(false);
   });
 
   it('wave_number:0 is threaded and next_wave_role key is absent when omitted (#613)', () => {
@@ -226,157 +197,98 @@ describe('post-tool-batch-wave-signal.mjs wave-lifecycle events (#610)', () => {
 // ---------------------------------------------------------------------------
 
 describe('post-tool-failure-corrective-context.mjs additionalContext (#428 adjusted)', () => {
-  it('exits 0 on a Bash tool failure', () => {
+  it('emits the complete PostToolUseFailure additionalContext envelope', () => {
     const result = runHook('hooks/post-tool-failure-corrective-context.mjs', {
       tool_name: 'Bash',
       exit_code: 1,
       error: 'command not found: tsgo',
     });
-    expect(result.status).toBe(0);
-  });
 
-  it('emits hookSpecificOutput.hookEventName = PostToolUseFailure', () => {
-    const result = runHook('hooks/post-tool-failure-corrective-context.mjs', {
-      tool_name: 'Bash',
-      exit_code: 1,
-      error: 'command not found: tsgo',
+    expect({
+      status: result.status,
+      stdout: JSON.parse(result.stdout),
+    }).toEqual({
+      status: 0,
+      stdout: {
+        hookSpecificOutput: {
+          hookEventName: 'PostToolUseFailure',
+          additionalContext:
+            'Tool failure: Bash (exit 1). Error: command not found: tsgo Common cause: command or binary not on PATH. Try: verify the binary is installed and `which <cmd>` resolves it.',
+        },
+      },
     });
-    expect(result.status).toBe(0);
-    const parsed = JSON.parse(result.stdout);
-    expect(parsed.hookSpecificOutput.hookEventName).toBe('PostToolUseFailure');
   });
 
-  it('additionalContext contains the failing tool name', () => {
+  it('caps additionalContext at 500 characters when tool metadata is oversized', () => {
     const result = runHook('hooks/post-tool-failure-corrective-context.mjs', {
-      tool_name: 'Bash',
+      tool_name: 'T'.repeat(1000),
       exit_code: 1,
-      error: 'command not found: tsgo',
+      error: 'failed',
     });
-    expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout);
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('Bash');
+    expect(parsed.hookSpecificOutput.additionalContext).toHaveLength(500);
   });
 
-  it('additionalContext is capped at 500 characters', () => {
-    // Send a very long error to trigger the 500-char cap
-    const longError = 'x'.repeat(2000);
-    const result = runHook('hooks/post-tool-failure-corrective-context.mjs', {
-      tool_name: 'Bash',
-      exit_code: 1,
-      error: longError,
-    });
-    expect(result.status).toBe(0);
-    const parsed = JSON.parse(result.stdout);
-    expect(parsed.hookSpecificOutput.additionalContext.length).toBeLessThanOrEqual(500);
-  });
-
-  it('strips newlines from error field before surfacing to additionalContext (SEC-016)', () => {
-    // Actual newline characters in the error string must not appear in
-    // additionalContext — they could inject fake log lines.
-    const result = runHook('hooks/post-tool-failure-corrective-context.mjs', {
-      tool_name: 'Bash',
-      exit_code: 1,
+  it.each([
+    {
+      name: 'newlines',
       error: 'line one\nline two\nline three',
-    });
-    expect(result.status).toBe(0);
-    const parsed = JSON.parse(result.stdout);
-    expect(parsed.hookSpecificOutput.additionalContext).not.toContain('\n');
-  });
-
-  it('strips carriage returns from error field (SEC-016)', () => {
-    const result = runHook('hooks/post-tool-failure-corrective-context.mjs', {
-      tool_name: 'Bash',
-      exit_code: 1,
+      forbidden: '\n',
+    },
+    {
+      name: 'carriage returns',
       error: 'windows\r\nline\r\nending',
-    });
-    expect(result.status).toBe(0);
-    const parsed = JSON.parse(result.stdout);
-    expect(parsed.hookSpecificOutput.additionalContext).not.toContain('\r');
-  });
-
-  it('strips ANSI escape bytes (ESC = 0x1b) from error field (SEC-016)', () => {
-    // Defense-in-depth: ANSI escape codes from terminal tool output should not flow
-    // into Claude's additionalContext as raw bytes. Sealing the F2 false-positive
-    // finding — the hook's split('\x1b').join(' ') pattern strips ESC correctly.
+      forbidden: '\r',
+    },
+    {
+      name: 'ANSI escape bytes',
+      error: 'malicious [31mERROR[0m injection attempt',
+      forbidden: '',
+    },
+  ])('strips $name from error before surfacing additionalContext (SEC-016)', ({ error, forbidden }) => {
     const result = runHook('hooks/post-tool-failure-corrective-context.mjs', {
       tool_name: 'Bash',
       exit_code: 1,
-      error: 'malicious [31mERROR[0m injection attempt',
+      error,
     });
-    expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout);
-    expect(parsed.hookSpecificOutput.additionalContext).not.toContain('');
+    expect(parsed.hookSpecificOutput.additionalContext).not.toContain(forbidden);
   });
 
-  it('exits 0 with an empty-object payload (no tool_name)', () => {
-    const result = runHook('hooks/post-tool-failure-corrective-context.mjs', {});
-    expect(result.status).toBe(0);
-  });
+  it.each([
+    {
+      name: 'an empty-object payload',
+      input: {},
+      additionalContext:
+        'Tool failure: unknown tool. Common cause: tool invocation failed. Try: check the error details above and retry with corrected parameters.',
+    },
+    {
+      name: 'a payload without tool_name',
+      input: { exit_code: 1, error: 'something failed' },
+      additionalContext:
+        'Tool failure: unknown tool (exit 1). Error: something failed Common cause: tool invocation failed. Try: check the error details above and retry with corrected parameters.',
+    },
+  ])('emits the unknown-tool fallback for $name', ({ input, additionalContext }) => {
+    const result = runHook('hooks/post-tool-failure-corrective-context.mjs', input);
 
-  it('emits hookSpecificOutput even when tool_name is absent', () => {
-    // Hook must always emit — a missing tool_name falls back to "unknown tool"
-    const result = runHook('hooks/post-tool-failure-corrective-context.mjs', {
-      exit_code: 1,
-      error: 'something failed',
+    expect({
+      status: result.status,
+      hookSpecificOutput: JSON.parse(result.stdout).hookSpecificOutput,
+    }).toEqual({
+      status: 0,
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUseFailure',
+        additionalContext,
+      },
     });
-    expect(result.status).toBe(0);
-    const parsed = JSON.parse(result.stdout);
-    expect(parsed.hookSpecificOutput.hookEventName).toBe('PostToolUseFailure');
-    // Fallback label is "unknown tool"
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('unknown tool');
   });
 });
 
 // ---------------------------------------------------------------------------
-// post-edit-validate.mjs (smoke — exits 0 for non-TS files; never blocks)
+// post-edit-validate.mjs remediation contract
 // ---------------------------------------------------------------------------
 
-describe('post-edit-validate.mjs — never blocks (smoke)', () => {
-  it('exits 0 for a README.md file (non-TS extension filtered out)', () => {
-    const result = spawnSync(
-      process.execPath,
-      [path.join(PLUGIN_ROOT, 'hooks/post-edit-validate.mjs')],
-      {
-        input: JSON.stringify({
-          tool_name: 'Edit',
-          tool_input: { file_path: path.join(PLUGIN_ROOT, 'README.md') },
-        }),
-        encoding: 'utf8',
-        timeout: 10_000,
-        env: {
-          ...process.env,
-          CLAUDE_PROJECT_DIR: tmp,
-          SO_HOOK_PROFILE: 'full',
-          SO_DISABLED_HOOKS: '',
-        },
-      },
-    );
-    // A .md file is filtered by the TS_EXTS set — hook exits 0 silently
-    expect(result.status).toBe(0);
-    // Non-TS files produce no stderr output
-    expect(result.stderr.trim()).toBe('');
-  });
-
-  it('exits 0 for an empty stdin payload (G1 null-stdin guard)', () => {
-    const result = spawnSync(
-      process.execPath,
-      [path.join(PLUGIN_ROOT, 'hooks/post-edit-validate.mjs')],
-      {
-        input: '',
-        encoding: 'utf8',
-        timeout: 10_000,
-        env: {
-          ...process.env,
-          CLAUDE_PROJECT_DIR: tmp,
-          SO_HOOK_PROFILE: 'full',
-          SO_DISABLED_HOOKS: '',
-        },
-      },
-    );
-    expect(result.status).toBe(0);
-    expect(result.stderr.trim()).toBe('');
-  });
-
+describe('post-edit-validate.mjs remediation output', () => {
   it('includes remediation field in stderr JSONL when typecheck fails', async () => {
     // This test verifies that post-edit-validate emits the `remediation` field
     // defined in the emitResult() contract when status is 'fail'.

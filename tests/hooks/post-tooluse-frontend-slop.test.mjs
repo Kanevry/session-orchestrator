@@ -192,21 +192,14 @@ describe('post-tooluse-frontend-slop hook', () => {
     expect(out.hookSpecificOutput.additionalContext).toContain('gradient-text');
   });
 
-  it('(c) enabled + a NON-frontend file (.md) → exit 0, no detection, no event', () => {
+  it.each([
+    ['.md', 'NOTES.md'],
+    ['.py', 'script.py'],
+  ])('(c) enabled + a NON-frontend file (%s) → exit 0, no detection, no event', (_extension, fileName) => {
     writeClaudeMd(CLAUDE_MD_ENABLED);
-    // Even though the .md content contains the slop pattern, the extension gate
-    // skips it before the detector ever runs.
-    const file = writeFixture('NOTES.md', SLOP_CSS);
-
-    const result = runHook(editPayload('Edit', file));
-    expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe('');
-    expect(readEvents()).toEqual([]);
-  });
-
-  it('(c2) enabled + a .py file → exit 0, no detection (extension gate)', () => {
-    writeClaudeMd(CLAUDE_MD_ENABLED);
-    const file = writeFixture('script.py', SLOP_CSS);
+    // Even though the file contains the slop pattern, the extension gate skips
+    // it before the detector ever runs.
+    const file = writeFixture(fileName, SLOP_CSS);
 
     const result = runHook(editPayload('Edit', file));
     expect(result.status).toBe(0);
