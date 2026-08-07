@@ -265,6 +265,9 @@ What should be achieved and why.
 ### Context for next session
 [relevant context, file paths, decisions made]
 
+### Revisit-Trigger
+[the concrete condition or event that reopens this — e.g. "when <metric/state> passes <threshold>", "at the next <session type/release>". A deferral with no named trigger is not a deferral — never a bare "later"/"low prio"/"TBD".]
+
 ### Open Questions
 _(optional — include only when unanswered questions remain in STATE.md `## Open Questions` at close; omit this section entirely otherwise)_
 - [ ] [unanswered question 1] (source: W<N>/<agent>, prio: high|medium|low)
@@ -273,6 +276,8 @@ _(optional — include only when unanswered questions remain in STATE.md `## Ope
 ### Original Issue
 Relates to #ORIGINAL_IID
 ```
+
+`### Revisit-Trigger` is **mandatory** for the `/close` carryover template above: a carryover deferred without a concrete, checkable reopen condition is a rot risk — "later" reliably means "never". (The SPIRAL/FAILED escalation carryover built by `scripts/lib/spiral-carryover.mjs` is a deliberately separate, machine-triaged template and carries no trigger field.)
 
 ### Discovery Finding
 

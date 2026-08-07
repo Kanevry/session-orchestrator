@@ -1297,7 +1297,7 @@ No. The orchestrator never commits code until you run `/close`. During wave exec
 
 ### What happens to unfinished work?
 
-During `/close`, any work that was planned but not completed is documented. The orchestrator creates carryover issues on your VCS platform with the title prefix `[Carryover]`, including context on what was done and what remains. Nothing is silently dropped.
+During `/close`, any work that was planned but not completed is documented. The orchestrator creates carryover issues on your VCS platform with the title prefix `[Carryover]`, including context on what was done, what remains, and a mandatory Revisit-Trigger naming the condition that reopens the work. Nothing is silently dropped.
 
 ### Can I use this across multiple repos?
 

@@ -70,7 +70,7 @@ Compare the files the plan said would be touched against the files actually chan
 - Create a VCS issue for the remaining work with:
   - Title: `[Carryover] <original task description>`
   - Labels: `priority::<original>`, `status:ready`
-  - Description: what's done, what's left, context for next session
+  - Description: what's done, what's left, context for next session, Revisit-Trigger (mandatory — a concrete reopen condition; a deferral with no named trigger is not a deferral; see `skills/gitlab-ops/SKILL.md § Carryover Template`)
 - Link to original issue if applicable
 
 ### 1.3 Not Started Items
