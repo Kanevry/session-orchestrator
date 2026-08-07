@@ -42,7 +42,7 @@ import crypto from 'node:crypto';
 import { appendJsonl as defaultAppendJsonl } from './common.mjs';
 import { readLock as defaultReadLock, isLockLive as defaultIsLockLive, DEFAULT_TTL_HOURS } from './session-lock.mjs';
 import { validateSession as defaultValidateSession } from './session-schema/validator.mjs';
-import { serializeSessionLineChecked as defaultSerialize } from '../emit-session.mjs';
+import { serializeSessionLineChecked as defaultSerialize } from './session-schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -512,7 +512,7 @@ export async function backfillAbandonedSession({
       let validated;
       try {
         validated = validateSession(record);
-        serializeSessionLineChecked(validated);
+        serializeSessionLineChecked(record);
       } catch (err) {
         return { action: 'error', error: `validation: ${err?.message ?? String(err)}`, sessionId: recordId };
       }

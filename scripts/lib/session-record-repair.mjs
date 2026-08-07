@@ -46,7 +46,7 @@
  *
  * Cross-references:
  *  - `scripts/lib/session-schema/validator.mjs` — `validateSession` (the gate).
- *  - `scripts/emit-session.mjs` — `serializeSessionLineChecked` (round-trip proof).
+ *  - `scripts/lib/session-schema/serializer.mjs` — `serializeSessionLineChecked` (round-trip proof).
  *  - `scripts/lib/sessions-integrity-banner.mjs` — `checkSessionsIntegrity`.
  *  - `scripts/repair-invalid-sessions.mjs` — the CLI driver.
  */
@@ -55,7 +55,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { validateSession as defaultValidateSession } from './session-schema/validator.mjs';
-import { serializeSessionLineChecked as defaultSerialize } from '../emit-session.mjs';
+import { serializeSessionLineChecked as defaultSerialize } from './session-schema.mjs';
 import { checkSessionsIntegrity as defaultCheckIntegrity } from './sessions-integrity-banner.mjs';
 
 // ---------------------------------------------------------------------------

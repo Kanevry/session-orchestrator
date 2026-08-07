@@ -27,6 +27,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { appendJsonl } from './lib/common.mjs';
+import { serializeSessionLineChecked } from './lib/session-schema/serializer.mjs';
 import {
   validateSession,
   ValidationError,
@@ -35,45 +36,7 @@ import {
   aliasLegacyEndedAt,
 } from './lib/session-schema.mjs';
 
-/**
- * Serialize `validated` to a single JSONL line and prove it round-trips:
- * the line MUST be JSON-parseable AND the parsed-back object MUST still pass
- * `validateSession`. This is the pre-write self-validation seam (#662) that
- * mirrors the `appendLearning` guard — it catches non-serializable values
- * (`undefined`, `NaN`, `Infinity`, `BigInt`, circular refs) that
- * `JSON.stringify` silently drops or that produce a line which won't parse
- * back to the same schema-valid shape.
- *
- * Throws ValidationError (consumed by the caller as a validation failure,
- * exit 1). Does not write — the caller appends only after this returns.
- *
- * @param {object} validated — already validated session entry
- * @returns {string} the verified JSONL line (newline-terminated)
- * @throws {ValidationError} when the serialized line does not round-trip
- */
-export function serializeSessionLineChecked(validated) {
-  let line;
-  try {
-    line = JSON.stringify(validated);
-  } catch (err) {
-    throw new ValidationError(`session is not JSON-serializable: ${err.message}`);
-  }
-  if (typeof line !== 'string' || line.length === 0) {
-    throw new ValidationError('session serialized to an empty line');
-  }
-  let reparsed;
-  try {
-    reparsed = JSON.parse(line);
-  } catch (err) {
-    throw new ValidationError(
-      `serialized session line does not parse back as JSON: ${err.message}`
-    );
-  }
-  // Re-validate the round-tripped shape — catches required fields that were
-  // present as `undefined`/`NaN` before stringify but vanished after.
-  validateSession(reparsed);
-  return line + '\n';
-}
+export { serializeSessionLineChecked };
 
 function parseArgs(argv) {
   const args = { file: '.orchestrator/metrics/sessions.jsonl', entry: null };
@@ -167,7 +130,7 @@ async function main() {
   // sessions.jsonl and only surface on the NEXT session's read. Treated as a
   // validation failure (exit 1); file is left untouched.
   try {
-    serializeSessionLineChecked(validated);
+    serializeSessionLineChecked(repaired);
   } catch (err) {
     if (err instanceof ValidationError) {
       process.stderr.write(

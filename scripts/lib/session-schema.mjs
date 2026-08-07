@@ -66,6 +66,7 @@
 
 export { CURRENT_SESSION_SCHEMA_VERSION, SESSION_KEY_ALIASES } from './session-schema/constants.mjs';
 export { ValidationError, validateSession } from './session-schema/validator.mjs';
+export { serializeSessionLineChecked } from './session-schema/serializer.mjs';
 export { normalizeSession } from './session-schema/normalizer.mjs';
 export { clampTimestampsMonotonic } from './session-schema/timestamps.mjs';
 export { aliasLegacyEndedAt } from './session-schema/aliases.mjs';

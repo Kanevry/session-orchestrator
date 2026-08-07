@@ -38,23 +38,11 @@ const VALID = () => ({
 // ---------------------------------------------------------------------------
 
 describe('ValidationError', () => {
-  it('is an instanceof Error', () => {
-    const err = new ValidationError('boom');
-    expect(err).toBeInstanceOf(Error);
-  });
-
-  it('is an instanceof ValidationError', () => {
-    const err = new ValidationError('boom');
-    expect(err).toBeInstanceOf(ValidationError);
-  });
-
-  it('has name: ValidationError', () => {
-    const err = new ValidationError('boom');
-    expect(err.name).toBe('ValidationError');
-  });
-
-  it('exposes the message passed to constructor', () => {
+  it('inherits Error and preserves its public error shape', () => {
     const err = new ValidationError('my message');
+    expect(err).toBeInstanceOf(Error);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect(err.name).toBe('ValidationError');
     expect(err.message).toBe('my message');
   });
 });
@@ -117,17 +105,9 @@ describe('validateSession — happy path', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateSession — non-object input', () => {
-  it('throws on null', () => {
-    expect(() => validateSession(null)).toThrow(ValidationError);
-    expect(() => validateSession(null)).toThrow(/session must be an object/);
-  });
-
-  it('throws on string', () => {
-    expect(() => validateSession('nope')).toThrow(/session must be an object/);
-  });
-
-  it('throws on array', () => {
-    expect(() => validateSession([])).toThrow(/session must be an object/);
+  it.each([[null], ['nope'], [[]]])('throws ValidationError for input %j', (input) => {
+    expect(() => validateSession(input)).toThrow(ValidationError);
+    expect(() => validateSession(input)).toThrow(/session must be an object/);
   });
 });
 
@@ -136,56 +116,18 @@ describe('validateSession — non-object input', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateSession — schema_version', () => {
-  it('throws on schema_version: 99 (out of accepted set per #576)', () => {
-    expect(() => validateSession({ ...VALID(), schema_version: 99 })).toThrow(
-      /schema_version must be one of \[0 \(legacy\), 1, 2, 3\]/
-    );
+  it.each([0, 1, 2, 3])('accepts schema_version: %s for readable historical records', (schemaVersion) => {
+    expect(() => validateSession({ ...VALID(), schema_version: schemaVersion })).not.toThrow();
   });
 
-  it('accepts schema_version: 1 (pre-#372 writes, still readable)', () => {
-    expect(() => validateSession({ ...VALID(), schema_version: 1 })).not.toThrow();
-  });
-
-  it('accepts schema_version: 0 (legacy)', () => {
-    expect(() => validateSession({ ...VALID(), schema_version: 0 })).not.toThrow();
-  });
-
-  it('accepts schema_version: 2 (current, bumped via #372)', () => {
-    expect(() => validateSession({ ...VALID(), schema_version: 2 })).not.toThrow();
-  });
-
-  it('accepts schema_version: 3 (ADR-364 follow-ups)', () => {
-    expect(() => validateSession({ ...VALID(), schema_version: 3 })).not.toThrow();
-  });
-
-  it('throws on schema_version: -1 (negative)', () => {
-    expect(() => validateSession({ ...VALID(), schema_version: -1 })).toThrow(
-      /schema_version must be one of \[0 \(legacy\), 1, 2, 3\]/
-    );
-  });
-
-  it('throws on schema_version: 4 (next-version not yet accepted)', () => {
-    expect(() => validateSession({ ...VALID(), schema_version: 4 })).toThrow(
-      /schema_version must be one of/
-    );
-  });
-
-  it('throws on schema_version: "1" (string, not number)', () => {
-    expect(() => validateSession({ ...VALID(), schema_version: '1' })).toThrow();
-  });
-
-  it('throws on schema_version: 1.5 (non-integer)', () => {
-    expect(() => validateSession({ ...VALID(), schema_version: 1.5 })).toThrow();
-  });
-
-  it('error message lists all accepted versions [0, 1, 2, 3] and echoes the bad value', () => {
-    try {
-      validateSession({ ...VALID(), schema_version: 999 });
-      throw new Error('expected validateSession to throw but it did not');
-    } catch (err) {
-      expect(err.message).toContain('[0 (legacy), 1, 2, 3]');
-      expect(err.message).toContain('999');
-    }
+  it.each([
+    [-1, /schema_version must be one of \[0 \(legacy\), 1, 2, 3\].*got: -1/],
+    [4, /schema_version must be one of \[0 \(legacy\), 1, 2, 3\].*got: 4/],
+    ['1', /schema_version must be one of \[0 \(legacy\), 1, 2, 3\].*got: 1/],
+    [1.5, /schema_version must be one of \[0 \(legacy\), 1, 2, 3\].*got: 1\.5/],
+    [999, /schema_version must be one of \[0 \(legacy\), 1, 2, 3\].*got: 999/],
+  ])('rejects schema_version %j outside the accepted set', (schemaVersion, expectedMessage) => {
+    expect(() => validateSession({ ...VALID(), schema_version: schemaVersion })).toThrow(expectedMessage);
   });
 });
 
@@ -195,20 +137,20 @@ describe('validateSession — schema_version', () => {
 
 describe('validateSession — required fields', () => {
   it.each([
-    'session_id',
-    'session_type',
-    'started_at',
-    'completed_at',
-    'total_waves',
-    'waves',
-    'agent_summary',
-    'total_agents',
-    'total_files_changed',
-  ])('throws ValidationError when %s is missing', (field) => {
+    ['session_id', /session_id/],
+    ['session_type', /session_type/],
+    ['started_at', /started_at/],
+    ['completed_at', /completed_at/],
+    ['total_waves', /total_waves/],
+    ['waves', /waves/],
+    ['agent_summary', /agent_summary/],
+    ['total_agents', /total_agents/],
+    ['total_files_changed', /total_files_changed/],
+  ])('throws ValidationError when %s is missing', (field, expectedMessage) => {
     const e = { ...VALID() };
     delete e[field];
     expect(() => validateSession(e)).toThrow(ValidationError);
-    expect(() => validateSession(e)).toThrow(new RegExp(field));
+    expect(() => validateSession(e)).toThrow(expectedMessage);
   });
 });
 
@@ -217,14 +159,10 @@ describe('validateSession — required fields', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateSession — session_id', () => {
-  it('throws when session_id is an empty string', () => {
-    expect(() => validateSession({ ...VALID(), session_id: '' })).toThrow(
+  it.each([[''], [42]])('rejects session_id value %j', (sessionId) => {
+    expect(() => validateSession({ ...VALID(), session_id: sessionId })).toThrow(
       /session_id must be a non-empty string/
     );
-  });
-
-  it('throws when session_id is a number', () => {
-    expect(() => validateSession({ ...VALID(), session_id: 42 })).toThrow(/session_id/);
   });
 });
 
@@ -239,10 +177,8 @@ describe('validateSession — session_type', () => {
     );
   });
 
-  it('accepts feature, deep, housekeeping', () => {
-    for (const t of ['feature', 'deep', 'housekeeping']) {
-      expect(() => validateSession({ ...VALID(), session_type: t })).not.toThrow();
-    }
+  it.each(['feature', 'deep', 'housekeeping'])('accepts session_type: %s', (sessionType) => {
+    expect(() => validateSession({ ...VALID(), session_type: sessionType })).not.toThrow();
   });
 });
 
@@ -265,16 +201,11 @@ describe('validateSession — timestamps', () => {
     expect(() => validateSession({ ...VALID(), started_at: ts, completed_at: ts })).not.toThrow();
   });
 
-  it('throws on malformed started_at', () => {
-    expect(() => validateSession({ ...VALID(), started_at: 'not-a-date' })).toThrow(
-      /started_at is not a parsable timestamp/
-    );
-  });
-
-  it('throws on malformed completed_at', () => {
-    expect(() => validateSession({ ...VALID(), completed_at: 'nope' })).toThrow(
-      /completed_at is not a parsable timestamp/
-    );
+  it.each([
+    ['started_at', 'not-a-date', /started_at is not a parsable timestamp/],
+    ['completed_at', 'nope', /completed_at is not a parsable timestamp/],
+  ])('rejects malformed %s timestamps', (field, value, expectedMessage) => {
+    expect(() => validateSession({ ...VALID(), [field]: value })).toThrow(expectedMessage);
   });
 });
 
@@ -358,32 +289,14 @@ describe('validateSession — agent_summary', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateSession — optional fields', () => {
-  it('throws when effectiveness is not an object (string)', () => {
-    expect(() => validateSession({ ...VALID(), effectiveness: 'bad' })).toThrow(
-      /effectiveness must be an object or null/
-    );
-  });
-
-  it('throws when duration_seconds is negative', () => {
-    expect(() => validateSession({ ...VALID(), duration_seconds: -5 })).toThrow(
-      /duration_seconds must be a non-negative number/
-    );
-  });
-
-  it('throws when issues_closed contains a non-number element', () => {
-    expect(() => validateSession({ ...VALID(), issues_closed: [1, 'x'] })).toThrow(
-      /issues_closed must be an array of numbers/
-    );
-  });
-
-  it('throws when issues_created is not an array', () => {
-    expect(() => validateSession({ ...VALID(), issues_created: 42 })).toThrow(/issues_created/);
-  });
-
-  it('throws when platform is a number', () => {
-    expect(() => validateSession({ ...VALID(), platform: 42 })).toThrow(
-      /platform must be a string or null/
-    );
+  it.each([
+    ['effectiveness', 'bad', /effectiveness must be an object or null/],
+    ['duration_seconds', -5, /duration_seconds must be a non-negative number/],
+    ['issues_closed', [1, 'x'], /issues_closed must be an array of numbers/],
+    ['issues_created', 42, /issues_created must be an array of numbers/],
+    ['platform', 42, /platform must be a string or null/],
+  ])('rejects invalid %s', (field, value, expectedMessage) => {
+    expect(() => validateSession({ ...VALID(), [field]: value })).toThrow(expectedMessage);
   });
 });
 
@@ -416,14 +329,8 @@ describe('ADR-364 optional additive fields', () => {
     expect(() => validateSession(VALID())).not.toThrow();
   });
 
-  it('throws when agent_identity is an empty string', () => {
-    expect(() => validateSession({ ...VALID(), agent_identity: '' })).toThrow(
-      /agent_identity must be a non-empty string or null/
-    );
-  });
-
-  it('throws when agent_identity is a number (wrong type)', () => {
-    expect(() => validateSession({ ...VALID(), agent_identity: 42 })).toThrow(
+  it.each([[''], [42]])('rejects agent_identity value %j', (value) => {
+    expect(() => validateSession({ ...VALID(), agent_identity: value })).toThrow(
       /agent_identity must be a non-empty string or null/
     );
   });
@@ -434,60 +341,31 @@ describe('ADR-364 optional additive fields', () => {
     );
   });
 
-  it('throws when lease_ttl_seconds is negative', () => {
-    expect(() => validateSession({ ...VALID(), lease_ttl_seconds: -1 })).toThrow(
+  it.each([[-1], ['abc']])('rejects lease_ttl_seconds value %j', (value) => {
+    expect(() => validateSession({ ...VALID(), lease_ttl_seconds: value })).toThrow(
       /lease_ttl_seconds must be a non-negative finite number or null/
     );
   });
 
-  it('throws when lease_ttl_seconds is a non-number string', () => {
-    expect(() => validateSession({ ...VALID(), lease_ttl_seconds: 'abc' })).toThrow(
-      /lease_ttl_seconds must be a non-negative finite number or null/
-    );
-  });
-
-  it('throws when expected_cost_tier is not in the allowed enum', () => {
-    expect(() => validateSession({ ...VALID(), expected_cost_tier: 'enterprise' })).toThrow(
+  it.each([['enterprise'], [5]])('rejects expected_cost_tier value %j', (value) => {
+    expect(() => validateSession({ ...VALID(), expected_cost_tier: value })).toThrow(
       /expected_cost_tier must be one of quick\|standard\|deep or null/
     );
   });
 
-  it('throws when expected_cost_tier is a number (wrong type)', () => {
-    expect(() => validateSession({ ...VALID(), expected_cost_tier: 5 })).toThrow(
-      /expected_cost_tier must be one of quick\|standard\|deep or null/
-    );
+  it.each([
+    'agent_identity',
+    'worktree_path',
+    'parent_run_id',
+    'lease_acquired_at',
+    'lease_ttl_seconds',
+    'expected_cost_tier',
+  ])('tolerates explicit null for %s', (field) => {
+    expect(() => validateSession({ ...VALID(), [field]: null })).not.toThrow();
   });
 
-  it('explicit null for agent_identity is tolerated (treated as not provided)', () => {
-    expect(() => validateSession({ ...VALID(), agent_identity: null })).not.toThrow();
-  });
-
-  it('explicit null for worktree_path is tolerated', () => {
-    expect(() => validateSession({ ...VALID(), worktree_path: null })).not.toThrow();
-  });
-
-  it('explicit null for parent_run_id is tolerated', () => {
-    expect(() => validateSession({ ...VALID(), parent_run_id: null })).not.toThrow();
-  });
-
-  it('explicit null for lease_acquired_at is tolerated', () => {
-    expect(() => validateSession({ ...VALID(), lease_acquired_at: null })).not.toThrow();
-  });
-
-  it('explicit null for lease_ttl_seconds is tolerated', () => {
-    expect(() => validateSession({ ...VALID(), lease_ttl_seconds: null })).not.toThrow();
-  });
-
-  it('explicit null for expected_cost_tier is tolerated', () => {
-    expect(() => validateSession({ ...VALID(), expected_cost_tier: null })).not.toThrow();
-  });
-
-  it('accepts expected_cost_tier: quick', () => {
-    expect(() => validateSession({ ...VALID(), expected_cost_tier: 'quick' })).not.toThrow();
-  });
-
-  it('accepts expected_cost_tier: deep', () => {
-    expect(() => validateSession({ ...VALID(), expected_cost_tier: 'deep' })).not.toThrow();
+  it.each(['quick', 'deep'])('accepts expected_cost_tier: %s', (tier) => {
+    expect(() => validateSession({ ...VALID(), expected_cost_tier: tier })).not.toThrow();
   });
 
   it('accepts lease_ttl_seconds: 0 (boundary — zero is valid)', () => {
@@ -514,28 +392,13 @@ describe('#773 open-question telemetry fields', () => {
     expect(v.open_questions_deferred).toBe(0);
   });
 
-  it('throws when open_questions_asked is negative (-1)', () => {
-    expect(() => validateSession({ ...VALID(), open_questions_asked: -1 })).toThrow(
-      /open_questions_asked must be a non-negative integer/
-    );
-  });
-
-  it('throws when open_questions_answered is a non-integer (1.5)', () => {
-    expect(() => validateSession({ ...VALID(), open_questions_answered: 1.5 })).toThrow(
-      /open_questions_answered must be a non-negative integer/
-    );
-  });
-
-  it('throws when open_questions_answered is a numeric string ("2", wrong type)', () => {
-    expect(() => validateSession({ ...VALID(), open_questions_answered: '2' })).toThrow(
-      /open_questions_answered must be a non-negative integer/
-    );
-  });
-
-  it('throws when open_questions_deferred is negative (proves the third field is wired into the loop)', () => {
-    expect(() => validateSession({ ...VALID(), open_questions_deferred: -3 })).toThrow(
-      /open_questions_deferred must be a non-negative integer/
-    );
+  it.each([
+    ['open_questions_asked', -1, /open_questions_asked must be a non-negative integer/],
+    ['open_questions_answered', 1.5, /open_questions_answered must be a non-negative integer/],
+    ['open_questions_answered', '2', /open_questions_answered must be a non-negative integer/],
+    ['open_questions_deferred', -3, /open_questions_deferred must be a non-negative integer/],
+  ])('rejects invalid %s telemetry value %j', (field, value, expectedMessage) => {
+    expect(() => validateSession({ ...VALID(), [field]: value })).toThrow(expectedMessage);
   });
 
   it('explicit null is tolerated for all three fields (not-measured sentinel)', () => {
