@@ -83,6 +83,11 @@ describe('validate-plugin.mjs — current repo plugin', () => {
     expect(r.stdout).toContain('PASS: plugin.json is valid JSON');
   });
 
+  it('runs the guard requires parity gate and propagates its measured pass', () => {
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/PASS: \d+ headFallback contract\(s\) have exact requires parity \(\d+ required export\(s\)/);
+  });
+
   it('output includes PASS lines for agent frontmatter', () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('PASS:');

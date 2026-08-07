@@ -179,7 +179,7 @@ Seven hooks call `emitDeny` (`grep -rln "emitDeny" hooks/`). Four bind through
 | `pre-bash-destructive-guard.mjs` | `armGuard` | `command-blocker.mjs` — 7 exports: `tokenizeCommand`, `commandMatchesBlocked`, `extractRedirectTargets`, `redirectRuleMatches`, `redirectSpanEnd`, `resolveSegmentVerb`, `splitChainSegments` | healthy · DEGRADED · INACTIVE |
 | `pre-bash-sessions-ledger-guard.mjs` | `armGuard` | `command-blocker.mjs` — 3 exports: `tokenizeCommand`, `resolveSegmentVerb`, `splitChainSegments` | healthy · DEGRADED · INACTIVE |
 | `enforce-commands.mjs` | `armGuard` | `command-blocker.mjs` — 2 exports: `commandMatchesBlocked`, `suggestForCommandBlock` | healthy · DEGRADED (shape-check door only, see below) · INACTIVE |
-| `enforce-scope.mjs` | `armGuard` | none (all five entries carry relative imports) | healthy · INACTIVE only |
+| `enforce-scope.mjs` | `armGuard` | none (`headFallback` on 0/5 entries; 3 modules dependency-free, 2 carry relative imports) | healthy · INACTIVE only |
 | `config-protection.mjs` | static `import` | — | healthy · silent disarm (pre-#992 exposure) |
 | `pre-bash-issue-budget.mjs` | static `import` | — | healthy · silent disarm (pre-#992 exposure) |
 | `pre-bash-templates-first.mjs` | static `import` | — | healthy · silent disarm (pre-#992 exposure) |
@@ -285,7 +285,10 @@ is the only component that finds the interpreter at all; blinding it cannot fail
 closed. The adopted design is instead a **dual parse**: evaluate both readings and
 block if either matches (`resolveSegmentVerb` runs `resolveCore` twice and returns
 an `alt` key only when an unknown flag was skipped *and* the two readings differ,
-keeping the unambiguous return shape byte-identical to pre-#1000).
+keeping the unambiguous return shape byte-identical to pre-#1000). Match recursion
+and redirect recursion both traverse the de-duplicated union of payloads from the
+primary and alternate resolved readings; the shared `dedupedSegmentPayloads`
+helper charges the recursion budget once per distinct payload.
 
 ## Verified against (2026-08-05, this working tree)
 
@@ -308,6 +311,7 @@ keeping the unambiguous return shape byte-identical to pre-#1000).
 | headFallback entries arm LAST | `guard-source-loader.mjs#armGuard` `entries.sort(...)` |
 | `git show` 4.2 ms vs 61 ms allow path | `guard-source-loader.mjs` module header ("Measured cost") |
 | #1000 fail-closed measurement + dual parse | issue #1000 (verbatim block) · `scripts/lib/command-blocker.mjs#resolveSegmentVerb`, `#resolveCore` |
+| de-duplicated primary/alternate payload union for match and redirect recursion | `scripts/lib/command-blocker.mjs#dedupedSegmentPayloads`, consumed by `matchSegments` and `collectRedirectTargets` |
 
 ## References
 

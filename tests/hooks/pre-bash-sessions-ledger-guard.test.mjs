@@ -50,6 +50,26 @@ function runHook({ toolName = 'Bash', command = '', env = {}, execArgv = [] } = 
   });
 }
 
+/**
+ * Install a data-URL bootstrap that replaces only the hook's spawnSync binding.
+ * The real default `node:child_process` object keeps guard-source-loader's
+ * execFileSync intact; syncBuiltinESMExports updates the hook's named import.
+ * This follows the existing data-URL bootstrap pattern without replacing the
+ * whole builtin module.
+ *
+ * @param {string} spawnSource - JavaScript function expression for spawnSync
+ * @returns {string[]}
+ */
+function childProcessBoot(spawnSource) {
+  const bootstrap = [
+    "import childProcess from 'node:child_process';",
+    "import { syncBuiltinESMExports } from 'node:module';",
+    `childProcess.spawnSync = ${spawnSource};`,
+    'syncBuiltinESMExports();',
+  ].join('\n');
+  return ['--import', `data:text/javascript;base64,${Buffer.from(bootstrap, 'utf8').toString('base64')}`];
+}
+
 describe('pre-bash-sessions-ledger-guard', () => {
   describe('denies a direct write to the ledger', () => {
     it('blocks the #958 shape — a hand-composed record appended with >>', () => {
@@ -385,5 +405,156 @@ describe('#1001 — DEGRADED surfaces on stdout, not stderr alone', { timeout: 3
     });
     const warn = expectWarn(result, 'DEGRADED');
     expect(warn.systemMessage).toContain('pre-bash-sessions-ledger-guard');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1005 — internal repair apply mutation bypass
+//
+// `repair-invalid-sessions.mjs` mutates the sessions ledger from inside Node,
+// so the direct-write matcher sees no redirect or write verb. The matrix keeps
+// the bug contract tight: only an effective apply invocation is denied, while
+// the CLI's dry-run/boolean parsing and target semantics stay outside the hook.
+// ---------------------------------------------------------------------------
+const decisionAssertions = { allow: expectAllow, deny: expectDeny };
+
+describe('#1005 — repair apply is ledger-guarded', () => {
+  it.each([
+    ['default target', 'node scripts/repair-invalid-sessions.mjs --apply', 'deny', 'repair-invalid-sessions.mjs --apply'],
+    [
+      'boolean Node runtime option before the script',
+      'node --no-warnings scripts/repair-invalid-sessions.mjs --apply',
+      'deny',
+      'repair-invalid-sessions.mjs --apply',
+    ],
+    [
+      'Node 24 track-heap-objects boolean option before the script',
+      'node --track-heap-objects scripts/repair-invalid-sessions.mjs --apply',
+      'deny',
+      'repair-invalid-sessions.mjs --apply',
+    ],
+    [
+      'Node 24 experimental-worker-inspection boolean option before the script',
+      'node --experimental-worker-inspection scripts/repair-invalid-sessions.mjs --apply',
+      'deny',
+      'repair-invalid-sessions.mjs --apply',
+    ],
+    [
+      'Node 24 network-family-autoselection boolean option before the script',
+      'node --enable-network-family-autoselection scripts/repair-invalid-sessions.mjs --apply',
+      'deny',
+      'repair-invalid-sessions.mjs --apply',
+    ],
+    [
+      'recognized value-taking Node runtime option before the script',
+      'node --require /tmp/preload.mjs scripts/repair-invalid-sessions.mjs --apply',
+      'deny',
+      'repair-invalid-sessions.mjs --apply',
+    ],
+    [
+      'Node option terminator selects the script operand',
+      'node -- scripts/repair-invalid-sessions.mjs --apply',
+      'deny',
+      'repair-invalid-sessions.mjs --apply',
+    ],
+    [
+      'eval value containing the repair basename is not a script operand',
+      'node --eval "scripts/repair-invalid-sessions.mjs" --apply',
+      'allow',
+    ],
+    [
+      'print value containing the repair basename is not a script operand',
+      'node --print scripts/repair-invalid-sessions.mjs --apply',
+      'allow',
+    ],
+    [
+      'check mode does not execute the repair script',
+      'node --check scripts/repair-invalid-sessions.mjs --apply',
+      'allow',
+    ],
+    [
+      'repair basename only in a Node option value',
+      'node --require scripts/repair-invalid-sessions.mjs other-script.mjs --apply',
+      'allow',
+    ],
+    [
+      '--file target',
+      'node scripts/repair-invalid-sessions.mjs --apply --file .orchestrator/metrics/sessions.jsonl',
+      'deny',
+      'repair-invalid-sessions.mjs --apply',
+    ],
+    [
+      'absolute node path and script path',
+      '/usr/bin/node /opt/tools/repair-invalid-sessions.mjs --apply',
+      'deny',
+      'repair-invalid-sessions.mjs --apply',
+    ],
+    ['env-wrapped node', 'env node scripts/repair-invalid-sessions.mjs --apply', 'deny', 'repair-invalid-sessions.mjs --apply'],
+    [
+      'alternate value-taking wrapper reading',
+      'env -Q x node scripts/repair-invalid-sessions.mjs --apply',
+      'deny',
+      'repair-invalid-sessions.mjs --apply',
+    ],
+    [
+      'alternate reading with dry-run override',
+      'env -Q x node scripts/repair-invalid-sessions.mjs --apply --dry-run',
+      'allow',
+    ],
+    [
+      'sudo-wrapped node',
+      'sudo -u root node scripts/repair-invalid-sessions.mjs --apply',
+      'deny',
+      'repair-invalid-sessions.mjs --apply',
+    ],
+    ['no flags', 'node scripts/repair-invalid-sessions.mjs', 'allow'],
+    ['dry-run', 'node scripts/repair-invalid-sessions.mjs --dry-run', 'allow'],
+    ['apply with dry-run override', 'node scripts/repair-invalid-sessions.mjs --apply --dry-run', 'allow'],
+    ['apply=false', 'node scripts/repair-invalid-sessions.mjs --apply=false', 'allow'],
+    [
+      'quoted inert mention',
+      'echo "node scripts/repair-invalid-sessions.mjs --apply"',
+      'allow',
+    ],
+    ['unrelated script', 'node scripts/other-script.mjs --apply', 'allow'],
+    [
+      'repair basename only in a later argument',
+      'node scripts/other-script.mjs --note repair-invalid-sessions.mjs --apply',
+      'allow',
+    ],
+  ])('%s', (_label, command, decision, reason) => {
+    decisionAssertions[decision](runHook({ command }), reason);
+  });
+});
+
+describe('#1005 — unavailable Node grammar denies repair apply', () => {
+  it.each([
+    [
+      'spawn error',
+      "() => ({ error: new Error('injected spawn failure'), status: null, stdout: '' })",
+      'spawn-failed',
+    ],
+    [
+      'empty help output',
+      "() => ({ status: 0, stdout: '' })",
+      'malformed-help',
+    ],
+    [
+      'malformed help output',
+      "() => ({ status: 0, stdout: 'not node help' })",
+      'malformed-help',
+    ],
+  ])('denies visibly on %s instead of allowing', (_label, childProcessSource, reason) => {
+    // Bug: treating an unavailable runtime grammar as an empty Map makes this
+    // valid Node 24 option stop resolution and silently allow the repair apply.
+    const denial = expectDeny(
+      runHook({
+        command: 'node --track-heap-objects scripts/repair-invalid-sessions.mjs --apply',
+        execArgv: childProcessBoot(childProcessSource),
+      }),
+      'repair-invalid-sessions.mjs --apply',
+    );
+    expect(denial.hookSpecificOutput.permissionDecisionReason).toContain(`Node option grammar unavailable: ${reason}`);
+    expect(denial.hookSpecificOutput.permissionDecisionReason).toContain('denied fail-closed');
   });
 });

@@ -205,6 +205,7 @@
  * failure this hook exists to replace.
  */
 
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -346,6 +347,10 @@ async function bootstrap() {
 /** The ledger's filename. A write target matches on basename equality. */
 const LEDGER_BASENAME = 'sessions.jsonl';
 
+/** The repair CLI whose effective apply mode mutates the sessions ledger internally. */
+const REPAIR_SCRIPT_BASENAME = 'repair-invalid-sessions.mjs';
+const REPAIR_APPLY_MARKER = `${REPAIR_SCRIPT_BASENAME} --apply`;
+
 /**
  * How much of the offending target may appear in the deny reason.
  *
@@ -397,6 +402,147 @@ function refersToLedger(target) {
   // backslash-spelled path is not read as one long filename.
   const normalized = target.replace(/\\/g, '/');
   return path.posix.basename(normalized) === LEDGER_BASENAME;
+}
+
+/**
+ * Does this token name the repair CLI by its immediate script operand basename?
+ *
+ * @param {string} target
+ * @returns {boolean}
+ */
+function refersToRepairScript(target) {
+  if (typeof target !== 'string' || target.length === 0) return false;
+  const normalized = target.replace(/\\/g, '/');
+  return path.posix.basename(normalized) === REPAIR_SCRIPT_BASENAME;
+}
+
+/**
+ * Node's own `--help` output is the source of truth for the runtime-option
+ * grammar. A hand-maintained option set is necessarily stale as Node adds
+ * runtime flags (for example, Node 24's `--experimental-worker-inspection`).
+ *
+ * The parser only records option names and whether the help specification says
+ * the option takes a value. Optional inline values such as `--inspect[=...]`
+ * deliberately do not consume the next token: Node treats a separated token as
+ * the script in that form. Aliases inherit the value-taking shape of the whole
+ * help row (`--loader, --experimental-loader=...`).
+ *
+ * @returns {{ available: true, grammar: Map<string, { takesNextValue: boolean }> } |
+ *   { available: false, reason: string }}
+ */
+function loadNodeOptionGrammar() {
+  const result = spawnSync(process.execPath, ['--help'], {
+    encoding: 'utf8',
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0 || typeof result.stdout !== 'string') {
+    return { available: false, reason: 'spawn-failed' };
+  }
+  if (!/^Usage: node \[options\]/m.test(result.stdout)) {
+    return { available: false, reason: 'malformed-help' };
+  }
+
+  const grammar = new Map();
+  for (const line of result.stdout.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('-')) continue;
+
+    const specification = trimmed.split(/\s{2,}/, 1)[0];
+    const aliases = specification.split(',').map((alias) => alias.trim());
+    const names = aliases
+      .map((alias) => /^(-{1,2}[A-Za-z0-9][A-Za-z0-9-]*)/.exec(alias)?.[1])
+      .filter((name) => typeof name === 'string');
+    if (names.length === 0) continue;
+
+    const takesNextValue = aliases.some((alias) => {
+      const equals = alias.indexOf('=');
+      const optionalValue = alias.indexOf('[');
+      return equals >= 0 && (optionalValue < 0 || equals < optionalValue);
+    });
+    for (const name of names) grammar.set(name, { takesNextValue });
+  }
+
+  // These stable Node help entries make a truncated or otherwise incomplete
+  // output unavailable rather than an empty grammar that silently allows.
+  if (!grammar.has('--version') || !grammar.has('--eval')) {
+    return { available: false, reason: 'malformed-help' };
+  }
+  return { available: true, grammar };
+}
+
+/** Parsed lazily so ordinary non-Node Bash commands do not spawn a child process. */
+let nodeOptionGrammar;
+
+/**
+ * Return Node's runtime-option grammar, loading it only when a Node command
+ * actually presents an option token for resolution.
+ *
+ * @returns {{ available: true, grammar: Map<string, { takesNextValue: boolean }> } |
+ *   { available: false, reason: string }}
+ */
+function getNodeOptionGrammar() {
+  if (!nodeOptionGrammar) nodeOptionGrammar = loadNodeOptionGrammar();
+  return nodeOptionGrammar;
+}
+
+/** Node modes in which a later token is not an executing script operand. */
+const NODE_EVAL_OPTIONS = new Set(['-e', '--eval', '-p', '--print']);
+const NODE_CHECK_OPTIONS = new Set(['-c', '--check']);
+
+/**
+ * Return the option name without an inline `=value` suffix.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function nodeOptionName(text) {
+  const equals = text.indexOf('=');
+  return equals > 0 ? text.slice(0, equals) : text;
+}
+
+/**
+ * Resolve Node's actual script operand from tokens immediately following `node`.
+ *
+ * Values consumed by the runtime's own help-derived options are never candidates
+ * for the script. Eval/print/check modes have no executing script operand for
+ * this guard's contract, so their following tokens cannot activate the repair
+ * mutation rule. Unknown options stop resolution rather than causing a later
+ * argument to be searched.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} args
+ * @returns {{ scriptIndex: number }|{ unavailable: true, reason: string }|null}
+ */
+function resolveNodeScriptOperand(args) {
+  for (let i = 0; i < args.length;) {
+    const text = args[i].text;
+    const name = nodeOptionName(text);
+
+    if (text === '--') return i + 1 < args.length ? { scriptIndex: i + 1 } : null;
+
+    if (NODE_EVAL_OPTIONS.has(name)) return null;
+    if ((text.startsWith('-e') || text.startsWith('-p')) && !text.startsWith('--') && text.length > 2) {
+      return null;
+    }
+    if (NODE_CHECK_OPTIONS.has(name)) return null;
+
+    if (!text.startsWith('-')) return { scriptIndex: i };
+
+    const grammarState = getNodeOptionGrammar();
+    if (!grammarState.available) return { unavailable: true, reason: grammarState.reason };
+
+    const option = grammarState.grammar.get(name);
+    if (option?.takesNextValue) {
+      i += text.includes('=') ? 1 : 2;
+      continue;
+    }
+    if (option) {
+      i++;
+      continue;
+    }
+
+    return null;
+  }
+  return null;
 }
 
 /**
@@ -681,6 +827,39 @@ function findWriteVerbTarget(command, depth = 0, marks = []) {
       // other's (the lib docblock's positional-walk caveat).
       const args = segment.slice(index + 1);
 
+      // The repair CLI mutates the ledger from inside Node, so there is no
+      // redirect target for the structural matcher to see. Match only its
+      // effective apply contract at the resolved token seam: `node`, the
+      // actual script operand after Node runtime options, a later exact
+      // `--apply`, and no later exact `--dry-run`. The CLI remains the owner of
+      // target semantics.
+      if (verb === 'node') {
+        const script = resolveNodeScriptOperand(args);
+        const hasRepairMention = args.some((arg) => refersToRepairScript(arg.text));
+        const hasApply = args.some((arg) => arg.text === '--apply');
+        const hasDryRun = args.some((arg) => arg.text === '--dry-run');
+
+        if (script?.unavailable) {
+          // The runtime-derived grammar is an enforcement dependency. If it is
+          // unavailable, an ambiguous repair invocation must be visible and
+          // denied rather than falling through to the hook's normal allow path.
+          if (hasRepairMention && hasApply && !hasDryRun) {
+            return `${REPAIR_APPLY_MARKER} (Node option grammar unavailable: ${script.reason}; denied fail-closed)`;
+          }
+        } else {
+          const scriptToken = script && args[script.scriptIndex];
+          const laterArgs = script ? args.slice(script.scriptIndex + 1) : [];
+          if (
+            scriptToken &&
+            refersToRepairScript(scriptToken.text) &&
+            laterArgs.some((arg) => arg.text === '--apply') &&
+            !laterArgs.some((arg) => arg.text === '--dry-run')
+          ) {
+            return REPAIR_APPLY_MARKER;
+          }
+        }
+      }
+
       if (verb === 'tee') {
         for (const arg of args) {
           if (!arg.quoted && arg.text.startsWith('-')) continue;
@@ -725,8 +904,9 @@ function findWriteVerbTarget(command, depth = 0, marks = []) {
  */
 function findLedgerWrite(command, depth = 0, marks = []) {
   if (typeof command !== 'string' || command.length === 0) return null;
-  // Cheap pre-filter: no mention of the filename at all → nothing to analyse.
-  if (!command.includes(LEDGER_BASENAME)) return null;
+  // Cheap pre-filter: commands naming neither the ledger nor the internal repair
+  // CLI cannot reach either deny path.
+  if (!command.includes(LEDGER_BASENAME) && !command.includes(REPAIR_SCRIPT_BASENAME)) return null;
 
   const scan = scanCommand(command);
   for (const target of scan.targets) {
