@@ -154,13 +154,6 @@ config-protection:
   enabled: true
   mode: warn
 allow-config-weakening: false
-compact-nudge:
-  enabled: false
-  after: [discovery, impl]
-  mode: warn
-goal-integration:
-  enabled: false
-  seams: [session-end-backlog, inter-wave-fixloop]
 custom-phases:
   - name: archive-closed-prds
     when: both

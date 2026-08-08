@@ -1638,46 +1638,6 @@ Leave disabled (default) when:
 - `skills/wave-executor/wave-loop.md` § 3b — the wave-executor hook contract.
 - `agents/schemas/persona-panel-sidecar.schema.json` — sidecar JSON Schema enforced before write.
 
-## Compact Nudge (#620)
-
-Advisory-only checkpoint surfaced at inter-wave boundaries in the wave-executor loop. Never auto-compacts — `/compact` is a user slash-command, and the coordinator/operator decides when to invoke it. When the gate conditions are met, the wave-executor appends ONE advisory bullet to the wave progress update suggesting a `/compact` before the next wave.
-
-All fields live under a top-level `compact-nudge` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
-
-```yaml
-compact-nudge:
-  enabled: false                       # opt-in advisory /compact nudge at inter-wave checkpoints (never auto-compacts)
-  after: [discovery, impl]             # wave boundaries that may fire the nudge — subset of {discovery, impl, failed-wave}
-  mode: warn                           # warn (surface one bullet in the wave progress update) | off (silent no-op)
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `compact-nudge.enabled` | boolean | `false` | Master toggle. When `false` (or the block is absent), the nudge never fires — zero behaviour change. |
-| `compact-nudge.after` | list of `"discovery"` \| `"impl"` \| `"failed-wave"` | `[discovery, impl]` | Wave boundaries that may fire the nudge. `discovery`/`impl` are wave ROLES, matched against the just-completed wave's role string. `failed-wave` is not a role — it keys off the wave's failure OUTCOME (any wave that did not pass its quality gate), so it can fire after a wave of any role. |
-| `compact-nudge.mode` | `warn` \| `off` | `warn` | `warn` emits the advisory bullet in the wave progress update. `off` is a silent no-op even when `enabled: true`. |
-
-**Used by:** `skills/wave-executor/wave-loop.md` § 3c "Strategic Compact-Nudge". Issue #620. See `.claude/rules/loop-and-monitor.md` for the broader `/loop` vs `/goal` vs Monitor routing this nudge composes with.
-
-## Goal Integration (#636)
-
-Opt-in advisory continuation anchor that surfaces a suggested `/goal` command at named seams — the inter-wave fix-loop (`inter-wave-fixloop`) and the session-end backlog drain (`session-end-backlog`). Never auto-invokes `/goal`, never blocks forward progress; `/goal` remains a user slash-command the operator chooses to run. Per ADR-0010, `/goal` provides CONTINUATION, never JUDGMENT — the suggested condition always references freshly-run deterministic gate output and embeds a bound (e.g. "or stop after N attempts"); the exit-code result of the underlying gate stays the authority.
-
-All fields live under a top-level `goal-integration` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
-
-```yaml
-goal-integration:
-  enabled: false                       # opt-in advisory; default off — zero behaviour change when absent
-  seams: [session-end-backlog, inter-wave-fixloop]   # subset of {session-end-backlog, inter-wave-fixloop}; one goal per session — pick ONE seam at a time
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `goal-integration.enabled` | boolean | `false` | Master toggle. When `false` (or the block is absent), no `/goal` suggestion is ever surfaced — zero behaviour change. |
-| `goal-integration.seams` | list of `"session-end-backlog"` \| `"inter-wave-fixloop"` | `[session-end-backlog, inter-wave-fixloop]` | Which seam(s) may surface the advisory `/goal` suggestion. Only ONE `/goal` can be active per session — if both seams are listed, the operator picks a single seam to actually invoke; the two cannot hold simultaneous active goals. |
-
-**Used by:** `skills/wave-executor/wave-loop.md` § "/goal Continuation Anchor" (inter-wave-fixloop seam), `skills/session-end/SKILL.md` § 1.3a "Optional /goal Backlog-Drain" (session-end-backlog seam). Lever 5 / issue #636. See `.claude/rules/loop-and-monitor.md` § LM-008 for the full continuation-vs-judgment contract.
-
 ## Skill Evolution (#646)
 
 Opt-in configuration for the Skill Self-Evolution Foundation (Epic #643, Sub-issue #646). Controls whether `/evolve` surfaces skill health signals for operator review only (`advisory`) or additionally applies deterministic repairs to local config artifacts behind an evidence gate (`autonomous-gated`). The default is `off` — no behavior change for repos that omit this block.

@@ -91,8 +91,8 @@ Anthropic's "designing loops" framing describes four generic loop shapes. This t
 
 | Article loop type | Repo primitive | Deployment state |
 |---|---|---|
-| **Turn-based loop** | wave-executor inter-wave loop + `/goal` (LM-008) | wave-executor always-on; `/goal` opt-in via `goal-integration.enabled` (Session Config) |
-| **Goal-based loop** | `/goal` (LM-008) | opt-in — `goal-integration.enabled` + `goal-integration.seams` (Session Config) |
+| **Turn-based loop** | wave-executor inter-wave loop + `/goal` (LM-008) | wave-executor always-on; `/goal` operator-invoked ad hoc, no persistent config |
+| **Goal-based loop** | `/goal` (LM-008) | operator-invoked ad hoc, no persistent config |
 | **Time-based loop** | `/loop` (LM-003) + Routines / `/schedule` (LM-004 / LM-004a) | `/loop` — `.claude/loop.md` present at repo root; Routines — off by design, "teach it, don't run it" (see LM-004 posture) |
 | **Proactive / event loop** | Monitor (LM-002) + Channels (LM-002a) | Monitor — ad hoc, no persistent config; Channels — research preview, `--channels` opt-in per session |
 
