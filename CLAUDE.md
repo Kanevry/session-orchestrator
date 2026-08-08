@@ -122,6 +122,10 @@ state-md-lock:
 handover-gate:
   enabled: true
   max-open-questions: 3
+issue-budget:
+  max-per-session: 12
+  mode: strict
+  overflow: collect-issue
 broken-window-budget:
   enabled: false
   due-days: 7
