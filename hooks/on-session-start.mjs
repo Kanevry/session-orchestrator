@@ -458,12 +458,15 @@ async function main() {
   let bannerData = null;
   if (await isHostBannerEnabled(projectRoot)) {
     bannerData = await emitHostBanner(projectRoot);
-    // Always-on nudge: user decisions must go through AskUserQuestion, not inline
-    // markdown lists. The coordinator chat stream is dense and prose questions
-    // are reliably missed. Full rationale + exceptions in .claude/rules/ask-via-tool.md.
+    // Always-on nudge: a user decision has three legitimate forms and AUQ-001
+    // routes between them in order — operator verb first (nothing is blocked
+    // while the operator picks his moment), then derive-and-report from Session
+    // Config / STATE.md / git, and only then the tool. The banner carries the
+    // ORDER, not an absolute; full routing + exceptions in
+    // .claude/rules/ask-via-tool.md.
     try {
       console.log(JSON.stringify({
-        systemMessage: '🎯 User decisions → AskUserQuestion tool. Inline choice lists = bug (.claude/rules/ask-via-tool.md).',
+        systemMessage: '🎯 Decide: operator verb (/go) > derive+report > AUQ if blocking (.claude/rules/ask-via-tool.md).',
       }));
     } catch { /* best effort */ }
   }
