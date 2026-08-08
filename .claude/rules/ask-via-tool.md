@@ -5,64 +5,52 @@ review-date: 2026-10-23
 
 # Ask Via Tool (Always-on)
 
-Whenever the coordinator (you — the top-level session agent) needs a user decision, a preference, a routing choice, or confirmation, present it via the **`AskUserQuestion` tool**. Inline markdown-list "choose 1/2/3" questions in chat prose are **not acceptable** in the established session flow — the user reliably misses them because the chat stream is dense and the questions are visually indistinguishable from narration.
+A user decision has three legitimate forms. Pick the form first — asking is one of them, not the default.
 
-## AUQ-001: Use the Tool, Not Prose
+## AUQ-001: Route Before You Ask
 
-- **Every user decision goes through `AskUserQuestion`.** No exceptions for "simple" yes/no or "obvious" three-option picks. The tool renders a structured picker with keyboard navigation; prose questions scroll by invisibly.
-- **The tool is a deferred tool** in the Claude Code harness. You must call `ToolSearch` with `"select:AskUserQuestion"` once per session to load its schema before the first call. Do this eagerly — don't skip the question to avoid the schema fetch.
-- **If you catch yourself typing "Which option?", "Welche Richtung?", "1)…2)…3)…", or a numbered markdown list of choices followed by a question mark, stop.** Delete the prose, call `AskUserQuestion` instead.
+Choose exactly one, in this order:
 
-## AUQ-002: Anti-Patterns (Never Do This)
+1. **Operator verb — preferred.** Name the finding, name the verb (`/go`, `/close`, `/details`), stop. Use it whenever nothing is blocked while you wait: the operator acts at a moment he picks, uninterrupted. An AUQ here buys nothing and costs an interrupt — 40% of interrupted tasks are never resumed (Parnin & Rugaber 2011), and a prompt that needs no thought trains reflex confirmation (93% of Claude Code permission prompts are accepted unread).
+2. **Derive and report.** The answer is in Session Config, STATE.md, git, or the filesystem. Read it, act, report in one line: `vcs: gitlab → using glab`. Never ask what you can read.
+3. **AUQ.** Only when the session cannot proceed without the answer AND it is not derivable. Then it is the tool, never a prose list.
 
-```
-✗ "Three options:
-   1. Track 1 + Track 2 (Recommended)
-   2. Track 1 only
-   3. Downgrade to housekeeping
-   Welche Richtung?"
-```
+There is no rule that every decision must be an AUQ. Routing comes first.
 
-This is a bug. It compiles cleanly in your head but the user will skim past it. Every time this pattern appears in chat prose, treat it as if you forgot to call a required tool.
+## AUQ-002: Decidability Gate
 
-Other disallowed forms:
-- "Proceed? (y/n)" — use `AskUserQuestion` with two options.
-- "Let me know if you want A or B." — use `AskUserQuestion`.
-- "I'll do X unless you say otherwise." — if the decision matters, ask; if it doesn't, just do it.
+Before any AUQ: can the operator decide from what already stands in the chat, without opening a file? If not — lift the missing facts into the option descriptions, or do not ask.
 
-## AUQ-003: Correct Pattern
+## AUQ-003: Options Carry Reason, Cost, Consequence
 
 ```
-AskUserQuestion({
-  questions: [{
-    question: "…?",
-    header: "…",
-    options: [
-      { label: "X (Recommended)", description: "Why." },
-      { label: "Y", description: "When Y applies." }
-    ],
-    multiSelect: false
-  }]
-})
+AskUserQuestion({ questions: [{
+  question: "…?", header: "…",
+  options: [
+    { label: "X (Recommended)", description: "Why + cost + what it commits to." },
+    { label: "Y", description: "When Y applies + its cost." }
+  ], multiSelect: false }]})
 ```
 
-Option 1 is always the recommendation, labelled `(Recommended)`. Each option carries a one-line `description` explaining the trade-off. Two to four options per question, one to four questions per call.
+Option 1 is the recommendation, labelled `(Recommended)`. 2–4 options, 1–4 questions per call. A description that only restates its label is a rule break.
 
-## AUQ-004: Exceptions (Narrow)
+- ✓ "Blocker for W3; ~20 min; freezes plan scope until it lands."
+- ✗ "Fix the bug now."
 
-These are the acceptable uses of inline prose questions — narrow and exhaustive:
+Same standard as `skills/grill/SKILL.md` § AUQ format rules. Deferred tool: call `ToolSearch` with `select:AskUserQuestion` once per session before the first call.
 
-1. **Subagents.** `AskUserQuestion` is not available inside dispatched `Agent()` calls. Subagents must bubble the decision back to the coordinator, which then asks the user. Never paper over this by putting a prose question in a subagent.
-2. **Harness without the tool (Codex CLI / Cursor IDE).** `AskUserQuestion` is a Claude Code tool; on Codex CLI or Cursor IDE it does not exist. There, render the same options as a **numbered Markdown list** with "(Recommended)" on option 1 and ask the user to reply with the choice number (per `skills/session-start/presentation-format.md`) — this is the sanctioned fallback the skill bodies already use, NOT a licence to skip the tool on a harness that has it.
-3. **Clarifying a single free-text field** where options don't make sense ("What should the issue title say?"). Even then, prefer offering 2–4 candidate titles via `AskUserQuestion` before falling back to prose.
-4. **Error-recovery narration** where the next step is fully determined and you're informing, not asking ("Restored coordinator cwd; continuing Wave 3."). Statements, not questions.
+## AUQ-004: Exceptions (Narrow, Exhaustive)
 
-If you think you have a further exception beyond these four, you don't. On any harness that HAS the tool, use the tool.
+1. **Subagents.** `AskUserQuestion` does not exist inside dispatched `Agent()` calls. Bubble the decision to the coordinator; never put a prose question in a subagent.
+2. **Harness without the tool (Codex CLI / Cursor IDE).** Render the same options as a numbered Markdown list, `(Recommended)` on option 1, reply-by-number (per `skills/session-start/presentation-format.md`). Not a licence to skip the tool where it exists.
+3. **Single free-text field** ("What should the issue title say?") — still prefer 2–4 candidate titles via the tool first.
+4. **Narration**, where the next step is determined and you are informing, not asking. Statements, not questions.
 
-## AUQ-005: Why This Is Strict
+## AUQ-005: Anti-Patterns
 
-- The Claude Code chat stream is monospace-dense and scrolls. Prose questions are visually camouflaged by the surrounding narration, especially after long thinking blocks or tool output.
-- `AskUserQuestion` renders a distinct, focus-grabbing UI element the user cannot miss and can answer with one keystroke.
-- In parallel-session and deep-session flows the user relies on tool-rendered prompts as the synchronization point with the coordinator. A missed prose question stalls the session silently.
-
-Treat this rule with the same weight as PSA-003 (destructive-action safeguards): the default is the tool, and skipping it requires an explicit named exception above.
+- A numbered choice list in prose ending in "Welche Richtung?" — the operator skims past it; treat it as a forgotten tool call.
+- "Proceed? (y/n)" / "Let me know if you want A or B" — either an operator verb (AUQ-001.1) or the tool.
+- An AUQ whose answer sits in Session Config, STATE.md, or the filesystem (AUQ-001.2).
+- `(Recommended)` with no reason, cost, or consequence (AUQ-003).
+- An AUQ that blocks nothing — the operator was going to type `/go` anyway (AUQ-001.1).
+- Options the operator can only judge by reading the code they describe (AUQ-002).
