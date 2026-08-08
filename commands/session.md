@@ -5,9 +5,13 @@ argument-hint: "[housekeeping|feature|deep]"
 
 # Session Start
 
-You are beginning a new development session. The user has invoked `/session` with type: **$ARGUMENTS** (if empty, auto-detect from the project's `## Session Config` block or default to `feature`).
+You are beginning a new development session. The user has invoked `/session` with type: **$ARGUMENTS** (if empty, default to **`deep`**).
 
-**Argument validation:** Valid session types are `housekeeping`, `feature`, and `deep`. If `$ARGUMENTS` is not empty and does not match any valid type, inform the user: "Invalid session type '$ARGUMENTS'. Valid types: housekeeping, feature, deep." Then auto-detect from the project's `## Session Config` block or default to `feature`.
+**Default rationale (measured, not assumed):** `deep` is the default because it is what operators actually run — 77.3 % of 489 recorded sessions across 5 repos, and 115 of 228 (50.4 %) in this repo's own `.orchestrator/metrics/sessions.jsonl`. The former `feature` default made the majority case the one that had to be typed out every time. A `deep` default costs a downgrade keystroke in the minority case; a `feature` default cost an upgrade keystroke in the majority case.
+
+**Argument validation:** Valid session types are `housekeeping`, `feature`, and `deep`. An explicit `$ARGUMENTS` value ALWAYS wins over the default — `/session housekeeping` and `/session feature` behave exactly as before. If `$ARGUMENTS` is not empty and does not match any valid type, inform the user: "Invalid session type '$ARGUMENTS'. Valid types: housekeeping, feature, deep." Then fall back to `deep`.
+
+> **Not read from Session Config.** There is deliberately no `session-type:` (or equivalent) key in the `## Session Config` block — `scripts/lib/config.mjs` `parseSessionConfig()` does not emit one, so any such key in a repo's CLAUDE.md (or its Codex CLI equivalent AGENTS.md) is inert prose. The `session-type:` scalar that IS live lives in STATE.md frontmatter (read by `scripts/print-applicable-rules.mjs` for rule mode-gating) and is written per session, not configured per repo. Do not reintroduce a Session Config key here without wiring it into the parser first.
 
 ## Resume Support
 

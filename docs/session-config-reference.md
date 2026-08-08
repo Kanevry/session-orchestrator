@@ -74,7 +74,7 @@ Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `agents-per-wave` | integer or integer with overrides | `6` | Maximum parallel subagents per wave. Supports session-type overrides: `6 (deep: 18)` outputs `{"default": 6, "deep": 18}`. Plain integers remain plain. |
+| `agents-per-wave` | integer or integer with overrides | `6` | Maximum parallel subagents per wave. Supports session-type overrides: `6 (deep: 18)` outputs `{"default": 6, "deep": 18}`. Plain integers remain plain. The override key names a session type but does **not** create one: there is no `session-type:` Session Config key — `parseSessionConfig()` emits none, so writing one into a repo's `## Session Config` block is inert prose. The session type comes from the `/session` argument (default `deep`, see `commands/session.md`) and is persisted to STATE.md frontmatter as `session-type:`, which is the only live read (`scripts/print-applicable-rules.mjs` rule mode-gating). |
 | `agent-mapping` | object | null | Optional mapping of role keys to agent names for explicit agent binding. Keys: `impl`, `test`, `db`, `ui`, `security`, `compliance`, `docs`, `perf`. Example: `{ impl: code-editor, test: test-specialist }`. Overrides auto-discovery when present. |
 | `waves` | integer | `5` | Number of execution waves for feature and deep sessions. |
 | `recent-commits` | integer | `20` | Number of recent commits to display during session start git analysis. |
