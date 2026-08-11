@@ -122,6 +122,10 @@ state-md-lock:
 handover-gate:
   enabled: true
   max-open-questions: 3
+issue-budget:
+  max-per-session: 12
+  mode: strict
+  overflow: collect-issue
 broken-window-budget:
   enabled: false
   due-days: 7
@@ -150,13 +154,6 @@ config-protection:
   enabled: true
   mode: warn
 allow-config-weakening: false
-compact-nudge:
-  enabled: false
-  after: [discovery, impl]
-  mode: warn
-goal-integration:
-  enabled: false
-  seams: [session-end-backlog, inter-wave-fixloop]
 custom-phases:
   - name: archive-closed-prds
     when: both

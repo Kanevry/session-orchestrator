@@ -5,6 +5,18 @@
  * config loaded via `owner-yaml.mjs` (D1). Pure at the `resolveSoul` level;
  * `loadAndResolveSoul` performs disk I/O.
  *
+ * ── NO RUNTIME CALLER — read this before assuming a soul.md is resolved ──────
+ *
+ * Nothing in `scripts/`, `hooks/`, or any skill body calls either export. Skill
+ * bodies instruct the coordinator to read soul.md DIRECTLY, so whatever is in
+ * the file on disk is what the coordinator sees — an unsubstituted `{{slot}}`
+ * reaches the model verbatim and instructs nothing. `skills/session-start/soul.md`
+ * is therefore authored pre-resolved: it carries no slots, and the operator's
+ * `efficiency.output-level` selects one of its literal `### output-level: <value>`
+ * blocks (see that file's § Output Levels; the skill body performs the lookup).
+ * Slots that remain in other soul.md files are inert for the same reason.
+ * Do not add a slot to a soul.md expecting substitution — wire a caller first.
+ *
  * ── Slot syntax ──────────────────────────────────────────────────────────────
  *
  *   {{owner.language}}          → 'de' | 'en'

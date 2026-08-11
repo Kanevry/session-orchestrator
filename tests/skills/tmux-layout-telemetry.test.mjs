@@ -9,28 +9,33 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, mkdirSync, writeFileSync, existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { emit, withTelemetry } from '../../scripts/lib/tmux-layout/telemetry.mjs';
+import { readTmuxEvents, computeStats } from '../../scripts/lib/tmux-layout/telemetry-stats.mjs';
+
+/**
+ * The REAL repo root — resolved from this module's own location so the test is
+ * portable (no hardcoded home path). Every emit() below must be steered away
+ * from the ledger underneath it.
+ */
+const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const PROD_LEDGER = join(REPO_ROOT, '.orchestrator', 'metrics', 'events.jsonl');
 
 let tmpDir;
-let origCwd;
 
 beforeEach(() => {
+  // No process.chdir(): cwd stays the repo root on purpose. That IS the
+  // contamination condition — telemetry must land in the injected repoRoot
+  // regardless of where the process happens to be standing.
   tmpDir = mkdtempSync(join(tmpdir(), 'tmux-layout-telemetry-'));
-  origCwd = process.cwd();
-  process.chdir(tmpDir);
 });
 
 afterEach(() => {
-  process.chdir(origCwd);
   rmSync(tmpDir, { recursive: true, force: true });
 });
-
-// Dynamic imports inside the test functions so each test gets a fresh module
-// evaluation relative to the new cwd. We import at the top level here — the
-// module caches process.cwd() at call time, NOT at import time (EVENTS_PATH is
-// relative, resolved during appendFileSync). Module-level imports are fine.
-import { emit, withTelemetry } from '../../scripts/lib/tmux-layout/telemetry.mjs';
-import { readTmuxEvents, computeStats } from '../../scripts/lib/tmux-layout/telemetry-stats.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -50,8 +55,32 @@ function readEventsFile() {
 // ---------------------------------------------------------------------------
 
 describe('emit()', () => {
+  // The bug this catches: a telemetry write lands in the PRODUCTION ledger
+  // instead of the passed root. EVENTS_PATH used to be the relative string
+  // '.orchestrator/metrics/events.jsonl', resolved against process.cwd() at
+  // append time — so every emit from a process standing in the repo root
+  // (the whole test suite, incl. the spawned tmux-layout CLI) appended to the
+  // real .orchestrator/metrics/events.jsonl.
+  it('appends to the injected repoRoot and never to the real repo ledger', () => {
+    const marker = randomUUID();
+    const prodBefore = existsSync(PROD_LEDGER) ? readFileSync(PROD_LEDGER, 'utf-8') : '';
+
+    emit('tmux-layout.invoked', { layout: 'default', marker }, { repoRoot: tmpDir });
+
+    // 1. The write landed under the injected root.
+    const records = readEventsFile();
+    expect(records.map((r) => r.marker)).toContain(marker);
+
+    // 2. It did NOT land in the production ledger. Marker-based rather than a
+    //    size/line diff, so a concurrent session appending to the real ledger
+    //    cannot make this flaky.
+    const prodAfter = existsSync(PROD_LEDGER) ? readFileSync(PROD_LEDGER, 'utf-8') : '';
+    expect(prodBefore.includes(marker)).toBe(false);
+    expect(prodAfter.includes(marker)).toBe(false);
+  });
+
   it('writes a JSON line to .orchestrator/metrics/events.jsonl with correct fields', () => {
-    emit('tmux-layout.invoked', { layout: 'default' });
+    emit('tmux-layout.invoked', { layout: 'default' }, { repoRoot: tmpDir });
 
     const records = readEventsFile();
     expect(records).toHaveLength(1);
@@ -74,7 +103,7 @@ describe('emit()', () => {
 
     let threw = false;
     try {
-      emit('tmux-layout.invoked', { layout: 'default' });
+      emit('tmux-layout.invoked', { layout: 'default' }, { repoRoot: tmpDir });
     } catch {
       threw = true;
     } finally {
@@ -93,7 +122,7 @@ describe('emit()', () => {
 describe('withTelemetry()', () => {
   it('emits tmux-layout.invoked then tmux-layout.completed for a successful fn', async () => {
     const fn = async () => ({ ok: true, panes: 4, error: undefined });
-    const wrapped = withTelemetry('default', fn);
+    const wrapped = withTelemetry('default', fn, { repoRoot: tmpDir });
 
     await wrapped();
 
@@ -114,7 +143,7 @@ describe('withTelemetry()', () => {
 
   it('emits tmux-layout.degraded when fn returns ok:false', async () => {
     const fn = async () => ({ ok: false, error: 'tmux missing' });
-    const wrapped = withTelemetry('default', fn);
+    const wrapped = withTelemetry('default', fn, { repoRoot: tmpDir });
 
     await wrapped();
 
@@ -128,7 +157,7 @@ describe('withTelemetry()', () => {
 
   it('emits tmux-layout.degraded and re-throws when fn throws', async () => {
     const fn = async () => { throw new Error('boom'); };
-    const wrapped = withTelemetry('default', fn);
+    const wrapped = withTelemetry('default', fn, { repoRoot: tmpDir });
 
     await expect(wrapped()).rejects.toThrow('boom');
 

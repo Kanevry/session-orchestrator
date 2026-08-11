@@ -255,6 +255,13 @@ if (runCheck('check-unicode-safety.mjs') !== 0) checkFailed = 1;
 process.stdout.write('\n');
 if (runCheck('check-dead-bridge.mjs') !== 0) checkFailed = 1;
 
+// WARN-only (v1): the unwired-config-key census reports but never fails the
+// build — see the rationale in the check's header (a blocking gate on today's
+// inventory would be red from day one and get disabled). Exit code is
+// deliberately ignored; only a tool error (2) would be worth escalating later.
+process.stdout.write('\n');
+runCheck('check-unwired-features.mjs');
+
 // ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------

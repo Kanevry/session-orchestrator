@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveSoul, loadAndResolveSoul } from '@lib/soul-resolve.mjs';
-import { getDefaults } from '@lib/owner-yaml.mjs';
+import { getDefaults, validateOwnerSections } from '@lib/owner-yaml.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -141,5 +142,89 @@ describe('loadAndResolveSoul', () => {
     expect(source).toBe('defaults');
     expect(resolved).not.toMatch(/\{\{owner\.language\}\}/);
     expect(resolved).toContain('Plan Skill');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// soul.md files the coordinator reads RAW
+//
+// No runtime caller resolves slots (see soul-resolve.mjs header), so the bytes
+// on disk are the instruction. These guard the two failure modes that made the
+// output-level dial inert for ~15 months — checked per file, because a suite
+// that pins only session-start stays green while three sibling souls still ship
+// a literal "{{efficiency.output-level}}" to the model.
+// ---------------------------------------------------------------------------
+
+/** Every soul whose skill body instructs the coordinator to read it verbatim. */
+const RAW_SOULS = Object.freeze({
+  'session-start': SOUL_SESSION_START,
+  plan: SOUL_PLAN,
+  brainstorm: join(new URL('.', import.meta.url).pathname, '../../skills/brainstorm/soul.md'),
+  grill: join(new URL('.', import.meta.url).pathname, '../../skills/grill/soul.md'),
+});
+
+/**
+ * Output-level values the schema ACCEPTS, derived from product behaviour rather
+ * than from a source-text regex: feed the exported validator a value it must
+ * reject and read the enum back out of the error it raises.
+ *
+ * @returns {string[]}
+ */
+function schemaAcceptedOutputLevels() {
+  const { sections } = validateOwnerSections({
+    ...getDefaults(),
+    efficiency: { 'output-level': '__definitely-not-a-level__', preamble: 'minimal' },
+  });
+  const message = (sections.efficiency?.errors ?? []).find((e) =>
+    e.startsWith('efficiency.output-level must be one of'),
+  );
+  const match = message?.match(/must be one of (.+), got:/);
+  // Fail loudly rather than silently returning [] — an empty enum would make the
+  // parity assertion below vacuous in one direction.
+  expect(match, `could not derive the output-level enum from: ${message}`).toBeTruthy();
+  return match[1].split(',').map((s) => s.trim());
+}
+
+/** Level blocks declared in soul.md, keyed by the enum value in the heading. */
+function declaredLevelBlocks(soul) {
+  const headings = [...soul.matchAll(/^### output-level: (\S+)[ \t]*$/gm)];
+  return headings.map((h, i) => {
+    const start = h.index + h[0].length;
+    const end = i + 1 < headings.length ? headings[i + 1].index : soul.length;
+    return { level: h[1], body: soul.slice(start, end) };
+  });
+}
+
+describe.each(Object.entries(RAW_SOULS))('%s/soul.md — output-level dial', (skill, soulPath) => {
+  const soul = () => readFileSync(soulPath, 'utf8');
+
+  it('leaves no unsubstituted {{slot}} in the bytes the coordinator reads', () => {
+    // Bug: the coordinator reads soul.md directly, so a literal
+    // "{{efficiency.output-level}}" reaches the model as an instruction that
+    // means nothing. Nothing resolves it — there is no runtime caller.
+    expect(soul()).not.toMatch(/\{\{/);
+  });
+
+  it('declares exactly one block per schema-accepted output-level, and none for a rejected one', () => {
+    // Bug: an operator sets efficiency.output-level to a value the schema
+    // accepts but soul.md never mentions — the setting selects nothing and has
+    // no observable effect. Fails closed in both directions (missing block AND
+    // orphan block for a value the schema would reject).
+    const declared = declaredLevelBlocks(soul()).map((b) => b.level);
+    expect([...declared].sort()).toEqual([...schemaAcceptedOutputLevels()].sort());
+  });
+
+  it('gives every level a numeric budget and a named escalation, not an exhortation', () => {
+    // Bug: a level defined as "be shorter" is unobservable — nothing can be
+    // over or under it, so the dial reads as advice and gets ignored. Each
+    // block must carry a countable ceiling and a named way to get detail back.
+    for (const { level, body } of declaredLevelBlocks(soul())) {
+      const budget = body.match(/^- Budget: (.+)$/m);
+      expect(budget, `${skill}: level "${level}" declares no "- Budget:" line`).toBeTruthy();
+      expect(budget[1], `${skill}: level "${level}" budget carries no number`).toMatch(/\d/);
+      expect(body, `${skill}: level "${level}" declares no "- Escalation:" line`).toMatch(
+        /^- Escalation: \S+/m,
+      );
+    }
   });
 });
