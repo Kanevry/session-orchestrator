@@ -211,6 +211,34 @@ For each extracted pattern, check if a learning with same `type` + `subject` alr
 - **If exists:** propose confidence update (+0.15 if confirmed by new evidence, -0.2 if contradicted)
 - **If new:** propose as new learning with confidence 0.5
 
+This match is **exact string equality on `type` + `subject`** — it is blind to two records that say the same thing in different words, and it cannot detect a contradiction at all. The `-0.2 if contradicted` branch above has therefore had no producer since it was written. Step 3.3b is that producer.
+
+### Step 3.3b: Relation Judgment (#1016)
+
+> **Cadence: once per candidate.** Step 3.2b's zero-patterns check and Step 3.4's single AUQ are once-per-run; Step 3.5's write is once-per-run. This step is the only per-candidate one in Phase 3 — the pool build happens once, the judgment runs for each pattern that seeds a pool.
+
+> **Runs in `/evolve`, never in a wave.** The pool build is O(N²) over the candidate + corpus union (~13 ms at N=100 records; the viability boundary is ~N=2000). `/evolve` is operator-invoked and off the dispatch hot path — that is the whole reason this lives here and not in `skills/wave-executor/`. Do not invoke it from a wave prompt, an inter-wave checkpoint, or a hook.
+
+Skip this step entirely when `.orchestrator/metrics/learnings.jsonl` is absent or holds fewer than 2 entries — with no corpus there is no relation to judge.
+
+1. **Pool.** Call `buildCandidatePools(records, { now })` from `scripts/lib/learnings/candidates.mjs`, passing the union of this run's extracted candidates and the on-disk corpus. It returns `{pools, duplicates, stats}`: `duplicates` are the exact-`learning_key` groups (already certain — no judgment needed), and each `pools[]` entry is `{seed, candidates}` where `candidates[].record` is a bounded, per-seed, non-transitive neighbour set. No clustering, no transitive closure: a neighbour of a neighbour is not a neighbour.
+
+2. **Judge, per candidate that seeds a pool.** `buildJudgmentInput({candidate, neighbours})` then `judgeCandidate(input, { judge })`, both from `scripts/lib/learnings/judgment.mjs`. `buildJudgmentInput` returns `null` for a candidate with no usable `id` — skip that candidate, do not judge it. `judge` is the injected verdict provider: on Claude Code the coordinator reads the `input` envelope and returns the JSON object its `output_contract` field describes. There is no subagent type for this — do not dispatch one (#614: a read-only agent that must write its own sidecar never fires).
+
+3. **Apply, through the one choke point.** `applyVerdict(verdict, effects)` is the only place a judgment may become an effect. In `/evolve` every effect handler is a *proposal recorder*, never a writer: `refine` / `supersede` / `merge` record a proposed change, and `proposeContradiction` records a contradiction pair. `applyVerdict` resolves all four handlers before invoking any of them, so an unwired handler refuses the whole batch rather than applying the decisions that happened to come first.
+
+4. **Fail closed.** `verdict.ok === false` (any of the eight failure modes — unparseable, partial, phantom_id, self_reference, empty, timeout, enum_violation, duplicate_target) means **no relation was read**, not "no relation exists". The candidate keeps its Step 3.3 exact-match verdict and nothing about it is surfaced as a relation. Never fall back to a default decision, never repair-retry a malformed verdict, and never render an unreadable judgment to the operator — surfacing a relation IS the claim, so a voided judgment must not reach the AUQ at all.
+
+5. **Route into the existing gate.** Every surviving decision becomes an OPTION in Step 3.4's AskUserQuestion, never an action:
+   - `contradict` → a contradiction pair, presented as its own category beside "duplicate". If the operator selects it, it feeds the `-0.2 if contradicted` branch in Step 3.3 above, applied by Step 3.5(3) — which deliberately does NOT reset `expires_at`.
+   - `supersede` / `merge` → an omit-the-loser (or replace-both-with-one) proposal. If selected, the operator's next generation simply omits those ids and Step 3.5(5) archives them — never a hand-delete. The merged record must carry both sources' provenance in its own `evidence`.
+   - `refine` → an edit proposal against the existing record's `insight` / `evidence`.
+   - `skip` / `abstain` → nothing is surfaced.
+
+**The brandmauer holds here, unchanged (#693 FA2/FA3).** The judgment computes; it never writes. Every `.claude/rules/` write and every `learnings.jsonl` write stays behind the operator's Step 3.4 selection and Step 3.5's `--prune` invocation.
+
+**Named ceiling (revisit trigger).** A `supersede` or `merge` executed through Step 3.5(5) is tagged `_archive_reason: "superseded"` with a `_superseded_by` tombstone **only when the two records share `type` + non-empty `subject`** — that is `pruneLearnings()`'s own consolidation pass. A cross-wording pair (the exact case this step exists to find) does not share a subject, so its loser is archived `pruned` instead: still in the corpus, still resolvable by id, but the archive record does not name its replacement. Revisit when the CLI grows per-record drop routing, or when an archive audit needs to answer "what replaced this?" for cross-wording merges.
+
 ### Step 3.4: Present Findings via AskUserQuestion
 
 Present extracted patterns to the user for confirmation. Use AskUserQuestion with `multiSelect: true`:
@@ -273,32 +301,33 @@ For confirmed learnings, use atomic rewrite strategy:
 
    Write the full next-generation entry set (existing entries **with** the step-2/3 confidence
    updates, **plus** the step-4 new learnings) as JSONL to a temp sidecar **via the Write tool**
-   (not a shell `>` redirect — the destructive-command guard blocks it), then invoke:
+   (not a shell `>` redirect — the destructive-command guard blocks it), then invoke the
+   `--prune` subcommand of the sweep CLI:
 
    ```bash
    NEXT=".orchestrator/metrics/.learnings-next.jsonl"   # written by the step above
-   STORE=".orchestrator/metrics/learnings.jsonl"
-   ARCHIVE=".orchestrator/metrics/learnings-archive.jsonl"
-
-   NEXT="$NEXT" STORE="$STORE" ARCHIVE="$ARCHIVE" node --input-type=module -e '
-   import { readLearnings } from "./scripts/lib/learnings/io.mjs";
-   import { pruneLearnings } from "./scripts/lib/learnings/expiry-sweep.mjs";
-   const { entries, malformed } = await readLearnings(process.env.NEXT);
-   if (malformed.length > 0) {
-     console.error(`evolve: refusing to write — ${malformed.length} malformed line(s) in ${process.env.NEXT}`);
-     process.exit(1);
-   }
-   const r = await pruneLearnings({
-     filePath: process.env.STORE,
-     archivePath: process.env.ARCHIVE,
-     entries,
-     dryRun: false,
-   });
-   console.log(JSON.stringify(r));
-   ' && rm -f "$NEXT"
+   node scripts/sweep-expired-learnings.mjs --prune --apply --json --entries "$NEXT" && rm -f "$NEXT"
    ```
 
-   `pruneLearnings()` performs steps 6 + 7 + 8 mechanically and archives **every** record that
+   `--file` / `--archive` default to the canonical store + archive paths — pass them only when
+   operating on a non-default pair. The command prints ONE JSON line; capture it as `$PRUNE` and
+   report its `{scanned, kept, archived, byReason}` in the final summary. Preview first with
+   `--prune --dry-run --json` (same counts, zero writes) whenever the next generation was
+   hand-assembled.
+
+   > **This step is `/evolve`'s only store-write path.** Until #1017 the invocation lived here as
+   > an inline `node --input-type=module -e` block, which is a mechanism hiding inside prose: no
+   > `--help`, no exit-code contract, no test. Do not re-inline it, and do not hand-roll a
+   > `jq | ... > learnings.jsonl` pass — that bypasses every #721 safety net.
+
+   **Exit codes are the no-op rule.** `0` = applied (or a clean no-op). `1` = input error: the
+   sidecar is absent or carries a malformed line — the store and the archive were **not touched**;
+   re-write the sidecar and re-run. `2` = the prune itself failed inside the lib. On any non-zero
+   exit, surface the error and stop — never retry with a shell rewrite, and never delete `$NEXT`
+   (the `&&` above already withholds the `rm`, so the assembled generation survives for a retry).
+
+   `pruneLearnings()` — the function the subcommand calls — performs steps 6 + 7 + 8 mechanically
+   and archives **every** record that
    leaves the store, tagged with `_archived_at` + an `_archive_reason` from the closed enum
    `expired | pruned | superseded | merged`:
 
@@ -454,7 +483,8 @@ Use the same archive-safe pipeline as Phase 3, Step 3.5 — **never** a hand-rol
      `_archive_reason: "pruned"`, so a `learning-id` referenced by a rendered rule stays resolvable.
    - **Extend:** reset expires_at to current date + `learning-expiry-days`
 3. Steps 3–5 of the old prose (prune / consolidate / rewrite) are `pruneLearnings()` — run the
-   **exact** Step 3.5(5) invocation, passing the post-operation entry set as `entries`. It prunes
+   **exact** Step 3.5(5) invocation, writing the post-operation entry set to the `--entries`
+   sidecar. It prunes
    (`expires_at` < now → `expired`; `confidence <= 0.0` → `pruned`), consolidates duplicates
    (same `type` + non-empty `subject`, highest confidence wins, loser archived `superseded` with
    `_superseded_by`; null-subject entries preserved individually per #284), and rewrites through

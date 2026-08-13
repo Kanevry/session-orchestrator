@@ -37,6 +37,33 @@ The proposals queue is populated mid-session by wave-executor agents calling `no
 
 3. If `queue.length === 0`: log `memory-proposals: queue empty (stats: ${JSON.stringify(stats)})` and continue.
 
+3b. **Relation judgment (#1016)** — enrich each queued proposal with its relation to the existing corpus, BEFORE step 4 renders its label. Without this, the operator approves a proposal without being told that the corpus already holds it, or holds its opposite.
+
+   > **Cadence contrast — read this before the step above and the step below.** Step 2's `collectProposals` and step 3's short-circuit run ONCE per session-end; step 4 batches ONCE per 4 items. **This step runs once per queued proposal.** The pool build is one call; the judgment is per candidate.
+
+   > **Cost, and where it may run.** The pool build is O(N²) over `queue.length + corpus.length` (~13 ms at N=100 records; viability boundary ~N=2000). Session-end and `/evolve` are the only two sanctioned call sites. Never from a wave dispatch, an inter-wave checkpoint, or a hook.
+
+   Skip when `.orchestrator/metrics/learnings.jsonl` is absent or holds fewer than 2 entries — with no corpus there is no relation to judge. Otherwise:
+
+   ```javascript
+   import { buildCandidatePools } from '${PLUGIN_ROOT}/scripts/lib/learnings/candidates.mjs';
+   import { buildJudgmentInput, judgeCandidate, applyVerdict }
+     from '${PLUGIN_ROOT}/scripts/lib/learnings/judgment.mjs';
+
+   const { entries: corpus } = await readLearnings('.orchestrator/metrics/learnings.jsonl');
+   const { pools } = buildCandidatePools([...queue, ...corpus], { now: new Date() });
+   ```
+
+   `pools[]` is `{seed, candidates}` per seed — a bounded, per-seed, non-transitive neighbour set (a neighbour of a neighbour is not a neighbour; there is no clustering pass). For each pool whose `seed` is a QUEUE item (corpus-seeded pools are not this phase's business):
+
+   1. `buildJudgmentInput({ candidate: pool.seed, neighbours: pool.candidates.map((c) => c.record) })`. It returns `null` for a proposal with no usable `id` — leave that item's label bare and move on.
+   2. `judgeCandidate(input, { judge })`. `judge` is the injected verdict provider: the coordinator reads the `input` envelope and returns the JSON object its `output_contract` field describes. There is no subagent type for this — do not dispatch one (#614: a read-only agent that must write its own sidecar never fires; here the COORDINATOR is the judge and the coordinator holds the result).
+   3. `applyVerdict(verdict, effects)` — the single choke point where a judgment may become an effect. In this phase every handler (`refine`, `supersede`, `merge`, `proposeContradiction`) records the relation onto the queue item so step 4 can render it. **None of them writes to disk here**; the only write this phase performs is step 6's `promoteAndClear()`, on the operator's selection.
+
+   **Fail closed — a voided judgment never reaches the operator.** `verdict.ok === false` (any of the eight failure modes: `unparseable`, `partial`, `phantom_id`, `self_reference`, `empty`, `timeout`, `enum_violation`, `duplicate_target`) means no relation was READ, not that none exists. `applyVerdict` refuses the whole batch — including `proposeContradiction`, the AUQ renderer, because rendering a relation from an unreadable judgment IS the claim. The item then falls through to step 4 with its ordinary bare label, exactly as before #1016. Never substitute a default decision, never repair-retry, never surface the failure mode as if it were a verdict. A judge error is logged (`memory-proposals: judgment voided for <id> (${verdict.failureMode})`) and never blocks the close.
+
+   **Label enrichment (step 4 input).** A proposal carrying a relation renders as `[<type-12>] | <subject-40> | conf=X.XX | <decision> <n>` (e.g. `contradict 1`, `merge 2`) with the judgment's `rationale` leading the option description. A proposal with no relation — `skip`, `abstain`, no pool, or a voided verdict — renders exactly as it does today. The operator's selection remains the only gate; the judgment supplies the relation, never the decision.
+
 4. **AUQ pagination logic**: partition the queue into FIFO batches of 4 inline:
 
    - Empty queue → silent skip (no AUQ rendered).
@@ -81,11 +108,13 @@ The proposals queue is populated mid-session by wave-executor agents calling `no
 
 - Spec: issue #501 — memory-proposals (F2.1); no standalone PRD file
 - Modules: `scripts/lib/memory-proposals/{schema,store,collector,sink}.mjs`
+- Relation judgment (step 3b, #1016): `scripts/lib/learnings/candidates.mjs` (`buildCandidatePools`) · `scripts/lib/learnings/judgment.mjs` (`buildJudgmentInput`, `judgeCandidate`, `applyVerdict`, `JUDGMENT_DECISIONS`, `FAILURE_MODES`)
 - CLI: `scripts/memory-propose.mjs` (agents call this)
 - Hook: `hooks/pre-bash-memory-propose-audit.mjs` (audit trail)
 - Coordinator AUQ spec: `agents/memory-proposal-collector.md` (reference doc)
 - Sibling phases: 3.6.5 Auto-Dream (#502), 3.6.6 Skill-Applied Judge (#645 L3), 3.6.7 Auto-Dialectic (#506)
-- Issue: #501
+- Sibling call site of the same judgment pair: `skills/evolve/SKILL.md` § Step 3.3b (the `/evolve` producer for the `-0.2 if contradicted` branch)
+- Issues: #501 (this phase), #1016 (step 3b)
 
 ### 3.6.4 Expired-Learnings Sweep (Advisory — Epic #723 B4)
 
