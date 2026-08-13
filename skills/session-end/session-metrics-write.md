@@ -39,6 +39,8 @@
 
    **Semantics:** `null` totals mean "no token data was captured for this session" — this is NOT the same as zero cost. Do NOT coerce null to 0 when displaying or summing across sessions.
 
+   **Provenance (#949):** the rollup sums ONLY records carrying `subagent_transcript_found: true` — the flag the producer sets when it read the subagent's own transcript. Pre-#949 records carry the PARENT transcript's running totals and are excluded, so a session made up entirely of them now reports `null` rather than a fabricated sum (73 historical sessions, 96,148,781 phantom tokens, measured 2026-08-11). Two consequences for readers: totals already written into `sessions.jsonl` before 2026-08-11 were produced by the unfiltered recipe and are a series break, not a trend; and `matched_records` counts start records and phantom stops alike, so it is NOT the denominator for a coverage ratio — use `subagents_with_tokens` against the session's real agent count.
+
    Example (coordinator pseudo-code — adapt to your shell/JS context):
 
    ```js

@@ -416,3 +416,124 @@ describe('check-rules — mixed valid and invalid auto-generated rules', () => {
     expect(r.stdout).toContain('Results: 1 passed, 1 failed');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Case 12: MALFORMED FRONTMATTER (#1015) — was a silent `continue`, now a FAIL.
+//
+// The blind spot this closes: rule-loader.mjs catches the SAME
+// `parseGlobsFrontmatter` throw (~:500-507), falls back to
+// `globs=null, meta={}, parseError=true`, and then (~:519-530) pushes the entry
+// with `alwaysOn: true`. Empty meta means applyGates() has nothing to gate on,
+// so the file ALSO clears tier/host-class/mode/expiry gating by design. Net
+// effect: the one file this validator declined to audit was precisely the file
+// the loader loads always-on, everywhere, with no expiry — and it is the
+// landing state of a frontmatter injection whose payload is colon-less.
+//
+// PAYLOAD NOTE — the injected key is `tier: always`, deliberately NOT
+// `expires-at:`/`globs:`: the renderer emits those two LATER in the same block,
+// so an injected copy is overwritten and the fixture would go green with no
+// guard at all. `tier` is never emitted, so it SURVIVES and discriminates.
+// ---------------------------------------------------------------------------
+
+/** Parse the validator's stdout into its finding arrays (never a file-wide grep). */
+function findings(stdout) {
+  const lines = stdout.split('\n');
+  return {
+    fail: lines.filter((l) => l.includes('FAIL:')),
+    pass: lines.filter((l) => l.includes('PASS:')),
+    warn: lines.filter((l) => l.includes('WARN:')),
+  };
+}
+
+describe('check-rules — malformed frontmatter is a FAIL, not a skip (#1015)', () => {
+  it('exits 1 and names the file when an auto-generated rule has unparseable frontmatter', () => {
+    const { root, rulesDir } = makeFixture();
+    // A colon-less injected line — the exact shape rule-loader.mjs turns into
+    // an always-on, gate-clearing rule. FALSIFICATION: with the previous
+    // `catch { continue }` this fixture produced 0 FAILs and exit 0.
+    writeRule(
+      rulesDir,
+      'unparseable-generated.md',
+      [
+        '---',
+        'auto-generated: true',
+        'description: benign start',
+        'INJECTED LINE WITH NO COLON',
+        'tier: always',
+        'globs:',
+        '  - "src/**"',
+        'learning-key: anti-pattern/x',
+        'expires-at: 2099-01-01',
+        '---',
+        '# body',
+        '',
+      ].join('\n'),
+    );
+
+    const r = run(root);
+
+    expect(r.status).toBe(1);
+    const { fail, pass } = findings(r.stdout);
+    expect(fail).toHaveLength(1);
+    expect(fail[0]).toContain('unparseable-generated.md');
+    expect(fail[0]).toContain('does not parse');
+    expect(pass.filter((l) => l.includes('unparseable-generated.md'))).toEqual([]);
+  });
+
+  it('fails cohort-independently — a HANDWRITTEN rule with unparseable frontmatter also FAILs', () => {
+    // The handwritten branch is WARN-only, but the parse failure happens BEFORE
+    // the cohort split and is not a cohort finding: an unparseable handwritten
+    // rule loads always-on with empty meta exactly like an auto-generated one.
+    const { root, rulesDir } = makeFixture();
+    writeRule(
+      rulesDir,
+      'unparseable-handwritten.md',
+      ['---', 'description: a handwritten rule', 'NO COLON HERE', 'tier: always', '---', '# body', ''].join('\n'),
+    );
+
+    const r = run(root);
+
+    expect(r.status).toBe(1);
+    const { fail } = findings(r.stdout);
+    expect(fail).toHaveLength(1);
+    expect(fail[0]).toContain('unparseable-handwritten.md');
+  });
+
+  it('isolates per file — a sound sibling still PASSes while the unparseable one FAILs', () => {
+    const { root, rulesDir } = makeFixture();
+    writeRule(
+      rulesDir,
+      'aaaa-sound.md',
+      '---\nauto-generated: true\nglobs: ["src/**"]\nlearning-key: anti-pattern/ok\nexpires-at: 2099-01-01\n---\n# Sound\n',
+    );
+    writeRule(
+      rulesDir,
+      'zzzz-unparseable.md',
+      ['---', 'auto-generated: true', 'NO COLON HERE', '---', '# body', ''].join('\n'),
+    );
+
+    const r = run(root);
+
+    expect(r.status).toBe(1);
+    const { fail, pass } = findings(r.stdout);
+    expect(fail).toHaveLength(1);
+    expect(fail[0]).toContain('zzzz-unparseable.md');
+    expect(pass.filter((l) => l.includes('aaaa-sound.md'))).toHaveLength(1);
+  });
+
+  it('does not fire on a rule that has no frontmatter block at all (parses to globs:null)', () => {
+    // Boundary: "no frontmatter" is NOT "malformed frontmatter" —
+    // parseGlobsFrontmatter returns { globs: null, meta: {} } without throwing.
+    // Such a file is a handwritten always-on rule, which stays WARN-only.
+    // Guards against the FAIL being widened into a hard gate on every
+    // frontmatter-less doc, which would break the handwritten cohort's
+    // deliberate warn-mode posture (#880).
+    const { root, rulesDir } = makeFixture();
+    writeRule(rulesDir, 'no-frontmatter.md', '# Just a heading\n\nSome prose.\n');
+
+    const r = run(root);
+
+    expect(r.status).toBe(0);
+    expect(findings(r.stdout).fail).toEqual([]);
+  });
+});

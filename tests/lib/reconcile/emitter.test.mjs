@@ -15,6 +15,9 @@
 import { describe, it, expect } from 'vitest';
 
 import { toActivationMetadata } from '../../../scripts/lib/reconcile/emitter.mjs';
+// Imported READ-ONLY, to prove the emitter's key survives the renderer's
+// machine-value assert (or, for a hostile type, is rejected by it).
+import { renderRule } from '../../../scripts/lib/reconcile/renderer.mjs';
 
 /**
  * File-wide frozen clock for every expiry assertion.
@@ -215,6 +218,180 @@ describe('toActivationMetadata — glob-metacharacter file_paths entries are ski
     });
     const meta = toActivationMetadata(learning, {});
     expect(meta.globs).toEqual(['scripts/lib/autopilot/**']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1015 — frontmatter-injection field-shape gates.
+//
+// These assert REJECTION, never escaping: neutralising agent text is the
+// renderer's single responsibility, and escaping here as well would
+// double-escape the output (a defect invisible to a file-level diff, since each
+// file still reads as locally correct). Skipping/throwing is idempotent, so it
+// composes with the renderer's sanitiser instead of duplicating it.
+// ---------------------------------------------------------------------------
+
+describe('toActivationMetadata — host_class shape gate (#1015)', () => {
+  // `host_class` is the highest-escalation field the emitter copies: the
+  // renderer serialises it as an UNQUOTED `host-class: <value>` line, so a
+  // newline injects sibling TOP-LEVEL frontmatter keys. `validateLearning`
+  // (learnings/schema.mjs) only asserts "string or null" — any string,
+  // newlines included — so nothing upstream stops this.
+  //
+  // NOTE ON THE PAYLOAD: `tier: always` is used deliberately, NOT
+  // `expires-at:`/`globs:`. The renderer emits `expires-at`/`globs` LATER in
+  // the same frontmatter block, so an injected copy of either is overwritten
+  // and the attack goes green even with no guard at all. `tier` is never
+  // emitted by the renderer, so an injected `tier` SURVIVES — it is the
+  // payload that actually discriminates. Do not "simplify" it back.
+  it('throws when host_class carries a newline (top-level key injection)', () => {
+    const learning = fragileLearning({ host_class: 'macos-arm64-m4pro\ntier: always' });
+    // FALSIFICATION: without HOST_CLASS_RE this returns metadata whose
+    // hostClass still carries the newline, and the renderer serialises the
+    // injected `tier: always` as a real, load-bearing frontmatter key.
+    expect(() => toActivationMetadata(learning, { now: FROZEN_NOW })).toThrow(/host_class/);
+  });
+
+  it('throws when host_class carries a CR (\\r line break)', () => {
+    const learning = fragileLearning({ host_class: 'macos-arm64-m4pro\rtier: always' });
+    expect(() => toActivationMetadata(learning, { now: FROZEN_NOW })).toThrow(/host_class/);
+  });
+
+  it('throws when host_class carries a colon (in-line key/value split)', () => {
+    const learning = fragileLearning({ host_class: 'macos: always' });
+    expect(() => toActivationMetadata(learning, { now: FROZEN_NOW })).toThrow(/host_class/);
+  });
+
+  it('throws when host_class carries a quote character', () => {
+    const learning = fragileLearning({ host_class: 'macos"arm64' });
+    expect(() => toActivationMetadata(learning, { now: FROZEN_NOW })).toThrow(/host_class/);
+  });
+
+  it('throws when host_class starts with "-" (a YAML sequence marker)', () => {
+    const learning = fragileLearning({ host_class: '- injected' });
+    expect(() => toActivationMetadata(learning, { now: FROZEN_NOW })).toThrow(/host_class/);
+  });
+
+  it('throws when host_class exceeds the 64-char ceiling', () => {
+    const learning = fragileLearning({ host_class: 'a'.repeat(65) });
+    expect(() => toActivationMetadata(learning, { now: FROZEN_NOW })).toThrow(/host_class/);
+  });
+
+  it('throws even when globs would otherwise supply the activation axis', () => {
+    // The record HAS a usable file_paths glob, so the never-always-on
+    // brandmauer would not fire. A malformed host_class is a corruption /
+    // injection signal in its own right: refuse the whole record rather than
+    // quietly emit the rest of the rule from it.
+    const learning = fragileLearning({
+      file_paths: ['scripts/lib/autopilot/worktree-pipeline.mjs'],
+      host_class: 'macos-arm64-m4pro\ntier: always',
+    });
+    expect(() => toActivationMetadata(learning, { now: FROZEN_NOW })).toThrow(/host_class/);
+  });
+
+  // Over-tight-regex guard: every value classifyHost() in
+  // scripts/lib/host-identity.mjs can actually produce must still pass. A gate
+  // that rejects the real corpus would silently stop ALL host-scoped rule
+  // proposals — a regression with no error message anywhere.
+  it.each([
+    'macos-arm64-m4pro',
+    'macos-arm64-apple',
+    'macos-x86_64',
+    'linux-arm64',
+    'linux-x86_64',
+    'windows-arm64',
+    'windows-x86_64',
+    'freebsd-riscv64', // the `${osName}-${arch}` fallback branch
+  ])('accepts the real classifyHost() value %s', (hostClass) => {
+    const learning = fragileLearning({ file_paths: [], host_class: hostClass });
+    const meta = toActivationMetadata(learning, { now: FROZEN_NOW });
+    expect(meta.hostClass).toBe(hostClass);
+  });
+});
+
+describe('toActivationMetadata — file_paths frontmatter-structure gate (#1015)', () => {
+  // The renderer emits each glob as `  - "<value>"`. A control char breaks out
+  // of the block sequence into new top-level keys; a quote breaks out of the
+  // quoted scalar. Both entries are SKIPPED, exactly like a glob metacharacter.
+  it('skips a file_paths entry carrying a newline but keeps a clean sibling', () => {
+    const learning = fragileLearning({
+      file_paths: ['scripts/evil.mjs\ntier: always', 'scripts/lib/autopilot/worktree-pipeline.mjs'],
+    });
+    const meta = toActivationMetadata(learning, { now: FROZEN_NOW });
+    expect(meta.globs).toEqual(['scripts/lib/autopilot/**']);
+  });
+
+  it('skips a file_paths entry carrying a double quote', () => {
+    const learning = fragileLearning({
+      file_paths: ['scripts/a".mjs', 'scripts/lib/autopilot/worktree-pipeline.mjs'],
+    });
+    const meta = toActivationMetadata(learning, { now: FROZEN_NOW });
+    expect(meta.globs).toEqual(['scripts/lib/autopilot/**']);
+  });
+
+  it('throws the never-always-on invariant when the newline entry is the ONLY path', () => {
+    // FALSIFICATION: emitting the poisoned entry verbatim would produce a
+    // non-empty globs array, so this would NOT throw — and the poisoned glob
+    // would reach the renderer.
+    const learning = fragileLearning({ file_paths: ['scripts/evil.mjs\ntier: always'] });
+    expect(() => toActivationMetadata(learning, { now: FROZEN_NOW })).toThrow(
+      /never-always-on|activation axis/,
+    );
+  });
+
+  it('is stateless across calls (the control-char test regex is not /g)', () => {
+    // A /g regex carries lastIndex across .test() calls, so the SAME poisoned
+    // input would alternate skipped/kept. Two identical calls must agree.
+    const learning = fragileLearning({
+      file_paths: ['scripts/evil.mjs\ntier: always', 'scripts/lib/autopilot/worktree-pipeline.mjs'],
+    });
+    const first = toActivationMetadata(learning, { now: FROZEN_NOW });
+    const second = toActivationMetadata(learning, { now: FROZEN_NOW });
+    expect(second.globs).toEqual(first.globs);
+    expect(second.globs).toEqual(['scripts/lib/autopilot/**']);
+  });
+});
+
+describe('toActivationMetadata — learningKey type half is VERBATIM, never slugged', () => {
+  it('leaves every currently-reachable (allow-listed) type byte-identical', () => {
+    // True under both the old rule (kebab is the identity for every literal in
+    // eligibility.mjs's CONVERT_TYPES allow-list) and the current one — which is
+    // exactly why the divergence below stayed invisible.
+    const meta = toActivationMetadata(fragileLearning(), { now: FROZEN_NOW });
+    expect(meta.learningKey).toBe('fragile-pattern/zx-imports');
+  });
+
+  it('does not slug the type half, so every reader derives the same key', () => {
+    // This line used to kebab the type half. No READER does — not the engine's
+    // rejection path, not validate/check-learning-provenance, not
+    // learnings/candidates, not claude-md-drift-check. Slugging it here forks
+    // the key space for the first type whose kebab is not the identity, and
+    // makes the type half unrecoverable for `backfill-learnings-from-vault.mjs`,
+    // which reads `learning_key.split('/')[0]` back out AS the type.
+    const learning = fragileLearning({ type: 'Config_Pattern' });
+    const meta = toActivationMetadata(learning, { now: FROZEN_NOW });
+    expect(meta.learningKey).toBe('Config_Pattern/zx-imports');
+  });
+
+  it('leaves a newline-bearing type for the renderer to REJECT, not to silently repair', () => {
+    // The kebab that used to sit here was justified as injection insurance: the
+    // key becomes an unquoted `learning-key:` frontmatter line, so 'anti\ntier:
+    // always' would inject a sibling `tier: always` key. That hazard is real and
+    // is now closed downstream and LOUDLY — `renderer.mjs` asserts
+    // LEARNING_KEY_RE (/^[a-z0-9/-]+$/) before rendering. Silently repairing it
+    // here instead would re-key the record behind every reader's back.
+    const learning = fragileLearning({ type: 'anti\ntier: always' });
+    const meta = toActivationMetadata(learning, { now: FROZEN_NOW });
+    expect(meta.learningKey).toBe('anti\ntier: always/zx-imports');
+    // The safety claim, proven rather than asserted: nothing renders.
+    expect(() => renderRule(learning, meta)).toThrow(/learning-key/);
+  });
+
+  it('refuses to emit a key for a learning that has no derivable identity', () => {
+    const learning = fragileLearning({ subject: '!!!', title: undefined });
+    expect(() => toActivationMetadata(learning, { now: FROZEN_NOW })).toThrow(
+      /unkeyable learning/,
+    );
   });
 });
 

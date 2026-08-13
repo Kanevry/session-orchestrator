@@ -29,6 +29,11 @@
  *        defaults through to vault-mirror's quality args (parser ↔ consumer
  *        contract).
  *
+ *   #24  candidates.mjs (buildCandidatePools) → judgment.mjs
+ *        (buildJudgmentInput): the pool's `candidates[].record` unwrapping that
+ *        both /evolve and session-end perform lives ONLY in prose. Composed
+ *        here so the two halves cannot drift apart silently (#1016).
+ *
  * All filesystem ops happen in os.tmpdir()-rooted directories.
  * No real ~/Projects paths are touched.
  */
@@ -51,6 +56,8 @@ import { fileURLToPath } from 'node:url';
 import { detectColdStart, consumeMarker, MS_PER_HOUR } from '@lib/cold-start-detector.mjs';
 import { _parseColdStart } from '@lib/config/cold-start.mjs';
 import { parseSessionConfig } from '@lib/config.mjs';
+import { buildCandidatePools } from '@lib/learnings/candidates.mjs';
+import { buildJudgmentInput } from '@lib/learnings/judgment.mjs';
 import { collectProposals } from '@lib/memory-proposals/collector.mjs';
 
 // ---------------------------------------------------------------------------
@@ -458,5 +465,111 @@ describe('#23 — auto-dream parser → collectProposals queue', () => {
     expect(queue).toHaveLength(1);
     expect(queue[0].subject).toBe('above-threshold');
     expect(queue[0].confidence).toBe(0.7);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #24 — buildCandidatePools → buildJudgmentInput (the prose-only seam, #1016)
+// ---------------------------------------------------------------------------
+
+/**
+ * Golden-record shape (field set + ordering copied from a live
+ * .orchestrator/metrics/learnings.jsonl entry, 2026-08-13 harvest, then
+ * re-subjected). The live file is deliberately NOT read — records expire, so an
+ * assertion against it would drift with the wall clock. The clock is frozen.
+ */
+function learningRecord(overrides = {}) {
+  return {
+    id: '00000000-0000-4000-8000-000000000000',
+    created_at: '2026-07-01T06:38:13.040Z',
+    type: 'recurring-issue',
+    subject: 'placeholder-subject',
+    insight: 'Placeholder insight text.',
+    evidence: 'Placeholder evidence text.',
+    confidence: 0.7499999999999999,
+    schema_version: 1,
+    source_session: 'main-2026-07-03-session-1',
+    scope: 'local',
+    expires_at: '2026-12-01T06:38:13.040Z',
+    host_class: null,
+    anonymized: false,
+    ...overrides,
+  };
+}
+
+describe('#24 — buildCandidatePools → buildJudgmentInput', () => {
+  // TV-001 — the bug: the `.record` unwrapping between the pool and the judge
+  // exists ONLY in prose (skills/evolve/SKILL.md § 3.3b step 2,
+  // skills/session-end/phase-3-6-tail.md step 3b.1). Hand a pool's candidate
+  // WRAPPERS straight to buildJudgmentInput — or rename `.record` — and every
+  // neighbour is dropped by the id gate in judgment.mjs, `neighbours` becomes
+  // [], the fingerprint is empty, and the batch voids. #1016 then delivers
+  // nothing, fail-closed and completely invisible: no throw, no warning, no
+  // counter a human reads.
+  //
+  // Nothing else catches it: candidates.test.mjs asserts the wrapper shape,
+  // judgment.test.mjs hand-builds FLAT records, and both stay green under the
+  // mismatch — each is correct about its own half.
+  it('carries exactly the pool-selected neighbour ids into the judgment input', () => {
+    const NOW = Date.parse('2026-08-01T00:00:00.000Z');
+
+    const seed = learningRecord({
+      id: '11111111-1111-4111-8111-111111111111',
+      type: 'anti-pattern',
+      subject: 'stdout truncation drops the permission decision envelope',
+      insight:
+        'Node stdout is asynchronous on a pipe, so process exit discards the permission decision envelope past the kernel pipe buffer; the truncated envelope then reads as no decision and the guarded command is allowed, which no exit code assertion can discriminate.',
+      file_paths: ['hooks/pre-bash-destructive-guard.mjs'],
+    });
+    const nearest = learningRecord({
+      id: '22222222-2222-4222-8222-222222222222',
+      created_at: '2026-07-02T06:38:13.040Z',
+      type: 'proven-pattern',
+      subject: 'exit protocol migration inverts the failure direction of a guard',
+      insight:
+        'Under the stdout envelope protocol a truncated or absent envelope reads as no decision and the guarded process proceeds, so every deny path needs re-verification.',
+      file_paths: ['hooks/pre-bash-templates-first.mjs'],
+    });
+    const second = learningRecord({
+      id: '33333333-3333-4333-8333-333333333333',
+      created_at: '2026-07-03T06:38:13.040Z',
+      subject: 'a bare exit code assertion cannot discriminate allow from deny',
+      insight:
+        'Under the exit 0 decision protocol allow and deny share an exit code, so a test asserting only the exit code passes in both directions and never sees a flipped decision envelope.',
+    });
+    const unrelated = learningRecord({
+      id: '44444444-4444-4444-8444-444444444444',
+      type: 'fragile-file',
+      subject: 'zebra quilt orbit meadow',
+      insight: 'Vanish trumpet mandolin fjord lantern harbour puzzle.',
+    });
+
+    // STEP 1 — the pool half, exactly as /evolve builds it.
+    const { pools } = buildCandidatePools([seed, nearest, second, unrelated], { now: NOW });
+    const pool = pools.find((p) => p.seed.id === '11111111-1111-4111-8111-111111111111');
+    expect(pool.candidates.map((c) => c.record.id)).toEqual([
+      '22222222-2222-4222-8222-222222222222',
+      '33333333-3333-4333-8333-333333333333',
+    ]);
+
+    // STEP 2 — the documented seam, verbatim from the two SKILL bodies.
+    const input = buildJudgmentInput({
+      candidate: pool.seed,
+      neighbours: pool.candidates.map((c) => c.record),
+    });
+
+    // STEP 3 — every id the pool selected reaches the judge, in the pool's
+    // ranking, and the unrelated record does not. `corpus_fingerprint.ids` is
+    // the set the verdict's id gate is checked against, so an empty one is the
+    // silent void this test exists to make loud.
+    expect(input.neighbours.map((n) => n.id)).toEqual([
+      '22222222-2222-4222-8222-222222222222',
+      '33333333-3333-4333-8333-333333333333',
+    ]);
+    expect(input.corpus_fingerprint.ids).toEqual([
+      '22222222-2222-4222-8222-222222222222',
+      '33333333-3333-4333-8333-333333333333',
+    ]);
+    expect(input.corpus_fingerprint.count).toBe(pool.candidates.length);
   });
 });

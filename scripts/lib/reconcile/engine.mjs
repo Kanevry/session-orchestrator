@@ -91,6 +91,7 @@
 import { readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
+import { learningKeyOf } from '../learnings/kebab.mjs';
 import { migrateLegacyLearning, normalizeLearning } from '../learnings/schema.mjs';
 import { filterEligible } from './eligibility.mjs';
 import { toActivationMetadata } from './emitter.mjs';
@@ -180,26 +181,19 @@ function defaultLoadLearnings(repoRoot) {
 
 /**
  * Best-effort logical key for a REJECTED learning (rejections never run the
- * emitter, so there is no metadata.learningKey). Mirrors the emitter's key
- * shape `${type}/${kebab(subject||title)}` when both halves are present; falls
- * back to `null` when the type or subject/title is unusable. Never throws.
+ * emitter, so there is no `metadata.learningKey`). Delegates to the shared
+ * `learningKeyOf` — it must NOT merely "mirror" the emitter's shape, it has to
+ * BE it: this key is written to `reconcile-candidates.jsonl` and folded into
+ * `makeCandidateId`, so a learning that succeeds one run and is rejected the
+ * next would otherwise appear in the sidecar under two identities and defeat
+ * `isProcessed`/`mergeCandidates` dedupe. Returns `null` for an unkeyable
+ * record. Never throws.
  *
  * @param {unknown} learning
  * @returns {string|null}
  */
 function rejectedLearningKey(learning) {
-  if (learning === null || typeof learning !== 'object' || Array.isArray(learning)) return null;
-  const rec = /** @type {Record<string, unknown>} */ (learning);
-  const type = typeof rec.type === 'string' && rec.type !== '' ? rec.type : '';
-  const subjectOrTitle =
-    (typeof rec.title === 'string' && rec.title !== '' ? rec.title : '') ||
-    (typeof rec.subject === 'string' && rec.subject !== '' ? rec.subject : '');
-  if (type === '' || subjectOrTitle === '') return null;
-  const kebab = subjectOrTitle
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return `${type}/${kebab}`;
+  return learningKeyOf(learning);
 }
 
 /**

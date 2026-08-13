@@ -219,7 +219,7 @@ describe('_parseDispatcherAutonomy — block boundary', () => {
 
 describe('_parseDispatcherAutonomy — never throws on garbage', () => {
   it('returns defaults on binary-ish / control-character garbage with no block', () => {
-    const content = ' �\x1b[31m garbage \t\n random :::: bytes';
+    const content = String.fromCharCode(0, 1) + '�\x1b[31m garbage \t\n random :::: bytes';
     expect(_parseDispatcherAutonomy(content)).toEqual(DEFAULTS);
   });
 

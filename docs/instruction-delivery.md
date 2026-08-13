@@ -415,6 +415,337 @@ appears.
 
 ---
 
+## 7. The learnings index is not a second delivery path (GitLab #1014)
+
+> Measured **2026-08-13** at commit `c87102b`, branch `feat/memory-pipeline-1015-1014-1016`.
+> `.claude/rules/` and `CLAUDE.md` were **clean at HEAD** for every measurement below
+> (`git status --porcelain -- .claude/rules CLAUDE.md` → 0 lines); the dirty paths in the
+> working tree were sibling agents' `scripts/` and `tests/` files, none of which this
+> section measures.
+
+§5 recommends against building a second delivery path, because injecting a scoped rule
+block alongside undiminished native loading costs **+72%**. Issue #1014 then shipped an
+injected block. This section exists to answer the obvious question — *is the learnings
+index the thing §5 forbids?* — with numbers rather than with an assurance.
+
+**It is not, by a factor of 92.** The forbidden path re-sends 122,875 bytes the agent is
+already receiving. The index sends **1,405–1,727 bytes the agent receives nowhere else**:
+**+0.79% to +0.97%** of the re-measured baseline.
+
+> **⚠ Amendment, 2026-08-13 — every byte figure in §7 below is PRE-FRAMING.**
+>
+> §7 was measured at `c87102b`. A review panel then found that this block shipped
+> agent-authored text with none of the neutralisation `<APPLICABLE-RULES>` had received in
+> the same session — no fence, no wrapper-forgery rejection, no invisible-character
+> stripping. The fix added a content-derived block fence and a framing preamble, at a
+> **constant +320 B** independent of entry count.
+>
+> Re-measured by the coordinator after the fix (2 scopes, `wc -c` on the real CLI):
+> `scripts/lib/reconcile/**` → **2,047 B** (was 1,727); `docs/**` → **1,234 B** (was 914).
+>
+> | | §7 as measured | after framing |
+> |---|---:|---:|
+> | band | 912–1,727 B | **1,234–2,047 B** |
+> | share of the 178,096 B baseline | +0.51% – +0.97% | **+0.69% – +1.15%** |
+> | ceiling (entry caps lifted) | 2,221 B / +1.25% | **2,541 B / +1.43%** |
+>
+> The 92× argument is unaffected — the comparison is against +122,875 B, and +320 B does not
+> move it. `LEARNINGS_INDEX_MAX_CHARS = 2000` is likewise untouched: the framing sits outside
+> the capped body, as the header and retrieval pointer already did.
+>
+> The per-scope table in §7.2 and the figures in §7.4 are left at their measured values rather
+> than overwritten, so each keeps the SHA it was taken at. Read them as pre-framing.
+
+### 7.1 The baseline, re-measured — and it did not drift
+
+The wave-1 baseline was captured at `0fbea29`. Re-measuring at `c87102b` (3 commits later,
+`git rev-list --count 0fbea29..HEAD` → `3`) gives a **byte-identical** rule corpus:
+
+```console
+$ find .claude/rules -name '*.md' | wc -l
+29
+$ find .claude/rules -name '*.md' -exec cat {} + | wc -c
+165097
+$ wc -c CLAUDE.md
+9666
+$ wc -c ~/.claude/CLAUDE.md
+1220
+$ sed -n '266,286p' skills/wave-executor/SKILL.md | wc -c   # the fenced memory.propose block
+2113
+```
+
+| Component | Bytes @ `0fbea29` | Bytes @ `c87102b` | Drift | Fires |
+|---|---:|---:|---:|---|
+| `.claude/rules/**` (29 files) | 165,097 | 165,097 | 0 | every agent, native project-instruction loading |
+| `CLAUDE.md` / `AGENTS.md` (root) | 9,666 | 9,666 | 0 | every agent |
+| `~/.claude/CLAUDE.md` (user-level) | 1,220 | 1,220 | 0 | every agent on this host, outside repo control |
+| `memory.propose` boilerplate | 2,112 | **2,113** | +1 | every Impl-Core / Impl-Polish / Quality agent |
+| **TOTAL** | **178,095** | **178,096** | **+1** | per Impl-wave agent, before task text |
+
+The corpus figures are reproducible from the git object store rather than from the working
+tree, which is what makes the zero-drift claim checkable:
+
+```console
+$ git ls-tree -r --name-only 0fbea29 -- .claude/rules | grep '\.md$' \
+    | while read f; do git cat-file blob "0fbea29:$f"; done | wc -c
+165097
+```
+
+The single byte is the boilerplate's trailing newline: the block is lines 266–286 of
+`skills/wave-executor/SKILL.md`, and wave 1 evidently measured it without the final `\n`.
+Recording it rather than rounding it away is the point — a figure that reproduces to ±1
+byte across two SHAs is a measurement; one that "matches" is an assertion.
+
+**The rules corpus did not change this session.** The 100-record learnings corpus did. Those
+are different corpora, and only the second one is what §7 adds.
+
+### 7.2 What the index actually costs, per scope
+
+Four **disjoint** agent file scopes, each naming real tracked files
+(`git ls-files --error-unmatch` → TRACKED for all eight paths):
+
+```console
+$ echo '["hooks/pre-bash-destructive-guard.mjs","hooks/on-session-start.mjs"]' > /tmp/scope-hooks.json
+$ node scripts/print-learnings-index.mjs --file-scope /tmp/scope-hooks.json --no-event | wc -c
+1405
+$ node scripts/print-learnings-index.mjs --file-scope /tmp/scope-hooks.json --no-event --json   # count + scopeMatched
+```
+
+| Agent file scope | Bytes | Entries | Scoped | Global fill | % of 178,096 |
+|---|---:|---:|---:|---:|---:|
+| `hooks/**` (2 files) | 1,405 | 7 | 3 | 4 | +0.789% |
+| `scripts/lib/reconcile/**` (2 files) | 1,727 | 9 | 5 | 4 | +0.970% |
+| `tests/**` (2 files) | 912 | 4 | 0 | 4 | +0.512% |
+| `docs/**` (2 files — this agent's own scope) | 914 | 4 | 0 | 4 | +0.513% |
+| *control:* `tests/**` naming two paths the corpus does carry | 1,240 | 6 | 2 | 4 | +0.696% |
+
+The corpus behind these numbers, measured rather than quoted:
+
+```console
+$ wc -l < .orchestrator/metrics/learnings.jsonl
+100
+$ node -e '…JSON.parse each line; count Array.isArray(r.file_paths) && r.file_paths.length>0…'
+total=100 with_file_paths=17 pct=17.0%
+```
+
+**17 of 100 records carry `file_paths`.** That fraction, not the CLI, is what governs the
+scoped column — and the `tests/**` row is the honest demonstration. It returned **0 scoped
+matches** even though the corpus holds 6 `tests/` path entries, because those 6 name
+different files (`tests/lib/session-registry.test.mjs`,
+`tests/scripts/gates/gate-helpers.test.mjs`, …) than the two a plausible agent declared.
+The control row re-runs the same scope against two paths the corpus *does* carry and
+recovers 2 scoped matches. Matching is exact-path; the 0 is correct behaviour, not a defect.
+
+The practical reading: **at 17% `file_paths` coverage, a majority of scopes will fall back
+entirely to the global fill.** The index degrades to "top 4 general learnings" rather than
+to nothing, which is the right failure mode, but it is not yet per-agent for most agents.
+The lever is `--file-paths` adoption at proposal time, not the selector.
+
+### 7.3 The delta, and the comparison that settles the question
+
+Absolute: **+912 to +1,727 bytes**, ceiling **+2,221** (§7.4). As a share of the
+re-measured 178,096-byte baseline: **+0.51% to +0.97%**, ceiling **+1.25%**.
+
+| Path | Added bytes | As % of baseline |
+|---|---:|---:|
+| §5's forbidden path — scoped rule block alongside native delivery | +122,875 | **+72.3%** |
+| §7's learnings index — measured worst case of four scopes | +1,727 | **+0.97%** |
+
+**92×.** Two structural facts produce that gap, and each is checkable:
+
+1. **It rides a channel the repo already writes itself.** The index is prepended to the
+   dispatch prompt — the same channel that already carries the task text and the 2,113-byte
+   `memory.propose` boilerplate. It does not add a delivery mechanism; it adds a block to a
+   prompt the coordinator was already composing. §5's +72% is entirely the cost of
+   *duplicating* a channel that keeps delivering regardless.
+2. **Learnings have no native delivery to duplicate.** `.orchestrator/metrics/learnings.jsonl`
+   is not a `.md` file under `.claude/rules/`, and neither `CLAUDE.md` nor its Codex-CLI
+   alias `AGENTS.md` imports it (`grep -c "^@" CLAUDE.md` → `0`, unchanged from §1). Nothing
+   in the 178,096-byte baseline carries this content. The index is the *first* delivery of
+   it, not the second.
+
+#### 7.3.1 …except for 13 records, and the index does not exclude them
+
+Fact 2 is true of the corpus but not of every record in it. `/reconcile` converts qualifying
+learnings into `.claude/rules/*.md` files — which **are** natively delivered. Those rules
+carry their source in provenance, so the overlap is measurable:
+
+```console
+$ grep -rlha "learning-id:" .claude/rules/*.md | wc -l
+13
+$ grep -rha "^- learning-id:" .claude/rules/*.md | sed 's/.*`\(.*\)`.*/\1/' > /tmp/rule-lids.txt
+$ # then: for each scope, intersect the index's learning ids with /tmp/rule-lids.txt
+hooks:   entries=7 already_a_rule=1
+scripts: entries=9 already_a_rule=0
+tests:   entries=4 already_a_rule=0
+docs:    entries=4 already_a_rule=1
+```
+
+**13 of 100 learnings have already become natively-delivered rules, and the selector does
+not filter them out.** In two of four scopes, one indexed entry was content the agent was
+already receiving in full — a genuine, if small, second delivery of that record. The
+duplicated unit is one ~150-byte index line against a multi-KB rule file, so the waste is
+bounded and far below the measurement noise of §7.1; it does not change the +0.97% figure
+or the 92× conclusion. But it is a real instance of the exact pattern §5 forbids, found by
+looking for it, and it is cheap to close: the selector has each record's id and the rule
+files carry theirs. **Filed as a follow-up rather than fixed here — this section's file
+scope is documentation, and the fix is a change to `scripts/lib/learnings/select.mjs`.**
+
+### 7.4 The 2,000-character cap is slack; the entry-count caps bind
+
+`LEARNINGS_INDEX_MAX_CHARS = 2000` (`scripts/lib/learnings/select.mjs:89`) is a hard cap on
+the rendered **body**. Under the shipped defaults it is never reached:
+
+```console
+$ node scripts/print-learnings-index.mjs --file-scope /tmp/scope-hooks.json --no-event | wc -c
+1405
+$ node scripts/print-learnings-index.mjs --file-scope /tmp/scope-hooks.json --no-event \
+    --max-scoped 100 --max-global 100 | wc -c
+2221
+$ node scripts/print-learnings-index.mjs --file-scope /tmp/scope-hooks.json --no-event \
+    --max-scoped 100 --max-global 100 --max-chars 100000 | wc -c
+15588
+```
+
+| Constraint | Result | Binds? |
+|---|---:|---|
+| default caps (8 scoped / 4 global / 2,000 chars) | 1,405–1,727 B | entry caps bind |
+| entry caps lifted, char cap at 2,000 | 2,221 B | **char cap binds** |
+| both lifted (whole corpus as an index) | 15,588 B | nothing binds |
+
+The binding constraint under defaults is **`--max-global 4`**, not the char cap. The
+telemetry's `truncated: true` says so precisely: it is set at `select.mjs:389` by
+`scoped.length > maxScoped || global.length > maxGlobal` — an **entry-count** overflow, not
+a character overflow. Reading `truncated: true` on a 1,405-byte block as "the 2,000 cap bit"
+would be wrong.
+
+Slack, stated plainly: **816 bytes of body headroom on the `hooks` scope, 494 on `scripts`**
+(the rendered block carries a 221-byte header outside the capped body, which is why the
+lifted-caps run reports 2,221 rather than 2,000). The cap is a backstop against a corpus
+that grows an order of magnitude — at 100 records it never fires. The number that would
+make it fire is 15,588: the whole corpus rendered as an index is **7.8×** the cap, so the
+cap is doing real work as a ceiling even while slack today.
+
+### 7.5 The per-agent claim, verified empirically
+
+Not read off the code — run, on two disjoint scopes, comparing the emitted subjects:
+
+```console
+$ # hooks scope
+## Learnings Index (selected for your file scope)
+
+7 entries (3 matched your declared file scope, 4 general). One line each — this is an INDEX, not the corpus.
+Full text of any line: `grep -F '"subject":"<subject>"' .orchestrator/metrics/learnings.jsonl`
+
+- anti-pattern/an inline @returns-never warn helper at a rule-loop warn site flips a later block to ALLOW: …
+- anti-pattern/policy rule with a new type field must ship with its consuming hook branch in the same change: …
+- anti-pattern/release() proof gate hinges on proof !== undefined — every call site must spread-guard: …
+[4 more]
+
+$ # scripts scope
+## Learnings Index (selected for your file scope)
+
+9 entries (5 matched your declared file scope, 4 general). One line each — this is an INDEX, not the corpus.
+Full text of any line: `grep -F '"subject":"<subject>"' .orchestrator/metrics/learnings.jsonl`
+
+- anti-pattern/A hardcoded expected value that coincides with a clamp/floor for one day is a green that proves nothing: …
+- proven-pattern/security-floor policy loaders must merge, not first-hit-resolve: …
+- recurring-issue/Eine Session ohne durchgelaufenes /close hinterlaesst unpushed Commits …
+[6 more]
+```
+
+Set-compared rather than eyeballed:
+
+```console
+$ # intersect the two --json subject lists
+hooks entries: 7 | scripts entries: 9
+intersection: 2 | hooks-only: 5 | scripts-only: 7 | Jaccard: 0.143
+```
+
+**Two disjoint scopes share 2 of 14 distinct entries (Jaccard 0.143).** Both shared entries
+are global fill; the scoped selections are fully disjoint. The block is genuinely
+per-agent, not a constant wearing a scope's name — which is the claim §3.1 could *not* make
+about glob-scoped rules, where the "scoped" saving turned out to be a constant 40,254 bytes
+of tier filtering.
+
+### 7.6 The telemetry answers "did the injector ever run?"
+
+§1 could establish that `rule-loader.mjs` does not run at delivery time only by grepping for
+the absence of a caller. That is an argument from silence, and §1.2 records how it failed:
+a census keyed on the payload missed the prose call site entirely. The index does not
+require that argument — it emits an event:
+
+```console
+$ grep -ac 'orchestrator.learnings.index.injected' .orchestrator/metrics/events.jsonl
+1
+$ node scripts/print-learnings-index.mjs --file-scope /tmp/scope-hooks.json > /dev/null
+$ grep -ac 'orchestrator.learnings.index.injected' .orchestrator/metrics/events.jsonl
+2
+$ grep -a 'orchestrator.learnings.index.injected' .orchestrator/metrics/events.jsonl | tail -1
+{
+ "timestamp": "2026-08-13T05:53:29.824Z",
+ "event": "orchestrator.learnings.index.injected",
+ "count": 7,
+ "scope_matched": 3,
+ "global_count": 4,
+ "candidates": 94,
+ "truncated": true,
+ "bytes": 1405,
+ "scope_source": "file-scope"
+}
+```
+
+The counter moves 1 → 2 on one invocation, and the record's `bytes: 1405` is independently
+equal to this section's `wc -c`. "Did it run, on what scope, and how big was it" is now a
+`grep` over `events.jsonl` instead of an inference. `candidates: 94` also shows the pool is
+the 94 *active* records of the 100 on disk — 6 are filtered before ranking.
+
+### 7.7 What is NOT established — explicitly unbelegt
+
+Four gaps. Each would move the denominator, and none is closed by anything above.
+
+- **Whether this Claude Code build loads a root `AGENTS.md`.** One exists on disk —
+  `ls -la AGENTS.md` → 14,661 bytes, **untracked** (`git ls-files AGENTS.md | wc -l` → `0`).
+  The coordinator of this session confirmed from its own context window that it is *not*
+  delivered to the coordinator. **Whether a dispatched subagent receives it is unverified**,
+  and this agent cannot settle it: a subagent introspecting its own context is the
+  self-report §1.1 already flagged as corroborating-not-load-bearing. If subagents do
+  receive it, the baseline is 192,757 rather than 178,096 and the index's share *falls* to
+  +0.73%. Tracked as issue **#973**.
+- **Whether the `<APPLICABLE-RULES>` block fires in practice.** `wave-loop.md` makes the
+  pre-dispatch injection a SHOULD, not a gate. In **this** session it was deliberately
+  skipped and logged as a deviation, so the 178,096 figure **excludes it**. If it fires, the
+  denominator grows by up to the 122,875 bytes §3 measured for a live wave scope and the
+  index's share falls correspondingly — to roughly +0.57%. Every percentage in §7.3 is
+  therefore a *conservative* upper bound on the index's share: the honest reading is
+  "≤1% under the smallest defensible denominator".
+- **Whether 17% `file_paths` coverage is representative.** It is the coverage of a 100-record
+  corpus, 11 of whose records were recovered from a data-loss incident. Whether the recovered
+  records are systematically poorer in `file_paths` than organically-proposed ones was not
+  measured, and it would bias the scoped column if so.
+- **Whether the §7.3.1 rule/learning overlap grows.** Measured once, at 13/100, on four
+  scopes. `/reconcile` promotes learnings into rules continuously, so this ratio rises by
+  construction. Nothing currently measures it on a schedule.
+
+### 7.8 Correction to §1.3
+
+§1.3 records a second delivery source outside this repo — the parent workspace's
+`.claude/rules/parallel-sessions.md`, 5,623 bytes — and concludes the real delivered corpus
+is 175,584 rather than 169,961. **That file no longer exists on this host:**
+
+```console
+$ ls -la "$(dirname "$PWD")"/.claude/rules/
+ls: /Users/…/Projects/.claude/rules/: No such file or directory
+```
+
+§7's baseline therefore does not carry a parent-workspace term. This is a host-local
+observation about one machine at one date, not proof the mechanism is gone — the directory
+could be recreated at any time, and §1.3's structural point (that
+`print-applicable-rules.mjs` reads only `<repoRoot>/.claude/rules` and cannot see such a
+file) stands unchanged.
+
+---
+
 ## Reproducing this document
 
 ```bash
@@ -434,6 +765,23 @@ node scripts/print-applicable-rules.mjs --wave-scope /tmp/scope.json | wc -c   #
 
 # blast radius
 git grep -l "\.claude/rules/" | wc -l
+
+# §7 — baseline re-measure, reproducible from the object store at any SHA
+git ls-tree -r --name-only <sha> -- .claude/rules | grep '\.md$' \
+  | while read f; do git cat-file blob "<sha>:$f"; done | wc -c
+sed -n '266,286p' skills/wave-executor/SKILL.md | wc -c   # memory.propose boilerplate
+
+# §7 — the learnings index for one agent scope (never writes; --no-event suppresses telemetry)
+echo '["hooks/on-session-start.mjs"]' > /tmp/scope.json
+node scripts/print-learnings-index.mjs --file-scope /tmp/scope.json --no-event | wc -c
+node scripts/print-learnings-index.mjs --file-scope /tmp/scope.json --no-event --json
+
+# §7.4 — which cap binds
+node scripts/print-learnings-index.mjs --file-scope /tmp/scope.json --no-event \
+  --max-scoped 100 --max-global 100 --max-chars 100000 | wc -c
+
+# §7.6 — did the injector run?
+grep -ac 'orchestrator.learnings.index.injected' .orchestrator/metrics/events.jsonl
 ```
 
 ## See also
@@ -442,3 +790,5 @@ git grep -l "\.claude/rules/" | wc -l
 - `scripts/print-applicable-rules.mjs` — the CLI bridge; reads only `<repoRoot>/.claude/rules`
 - `scripts/lib/instruction-budget-guard.mjs` — the existing measurement + ceiling instrument
 - `docs/rule-authoring.md` — frontmatter contract (and the stale claim at line 8)
+- `scripts/print-learnings-index.mjs` — §7's per-agent index CLI; emits `orchestrator.learnings.index.injected`
+- `scripts/lib/learnings/select.mjs` — the selector; `LEARNINGS_INDEX_MAX_CHARS = 2000` at line 89, `truncated` at line 389

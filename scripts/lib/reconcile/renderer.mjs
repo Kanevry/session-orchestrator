@@ -23,24 +23,43 @@
  * `confidence`, `expires-at`. Glob values are always double-quoted (the loader
  * strips surrounding quotes), which keeps `*`/`[`/`{` safe.
  *
+ * ── Untrusted-input containment (issue #1015) ────────────────────────────────
+ * Every field this renderer interpolates is AGENT-AUTHORED, and the file it
+ * produces becomes a project instruction delivered to every agent in every
+ * session — permanently, with no revocation. {@link renderRule} therefore
+ * applies `sanitize.mjs` at the render point, in two modes:
+ *   - MACHINE values (`description`, `globs[]`, `host-class`, `learning-key`,
+ *     `confidence`, `expires-at`, `id`, `source_session`) are ASSERTED and the
+ *     record REJECTED (throw) on any violation — never silently repaired.
+ *   - PROSE (`title`/`subject`, `insight`, `evidence`) is stripped of
+ *     unambiguous non-content, hard-capped in bytes, and FRAMED in the
+ *     `untrusted-content` envelope that states it is data, not instruction.
+ * The guard lives HERE and not only in the emitter for the same reason the
+ * brandmauer is re-checked below: `renderRule` is exported and callable with
+ * hand-built metadata, so the emitter's guards do not bind on it.
+ *
  * @module reconcile/renderer
  */
 
 import { createHash } from 'node:crypto';
 
-/**
- * Slugify a string into a stable kebab-case token: lowercases, collapses every
- * run of non-`[a-z0-9]` chars into a single `-`, and trims leading/trailing `-`.
- *
- * @param {string} s
- * @returns {string}
- */
-function kebab(s) {
-  return String(s)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
+import { kebab } from '../learnings/kebab.mjs';
+import {
+  EVIDENCE_ITEM_MAX_BYTES,
+  EVIDENCE_MAX_BYTES,
+  EXPIRES_AT_RE,
+  HOST_CLASS_RE,
+  INSIGHT_MAX_BYTES,
+  LEARNING_KEY_RE,
+  PROVENANCE_TOKEN_RE,
+  TITLE_MAX_BYTES,
+  UNTRUSTED_BEGIN,
+  UNTRUSTED_END,
+  assertMachineToken,
+  assertSafeDescription,
+  assertSafeGlob,
+  sanitizeProse,
+} from './sanitize.mjs';
 
 /**
  * Short, stable SHA-1 prefix (first 7 hex chars) of an input string.
@@ -93,20 +112,47 @@ export function deriveSlug(learning) {
  * Array → one `- ` bullet per item; string → as-is; absent/empty →
  * `(no evidence recorded)`.
  *
+ * Untrusted (#1015): every item passes through {@link sanitizeProse} with a
+ * per-bullet byte cap, and the whole region is bounded by
+ * {@link EVIDENCE_MAX_BYTES}. Items that would cross the region budget are
+ * dropped with a machine-emitted note — visibly, never silently. Because
+ * `EVIDENCE_ITEM_MAX_BYTES < EVIDENCE_MAX_BYTES` by construction, at least the
+ * first item always fits.
+ *
  * @param {unknown} evidence
  * @returns {string}
+ * @throws {Error} when an item carries a delivery-wrapper forgery literal
  */
 function renderEvidence(evidence) {
-  if (Array.isArray(evidence)) {
-    const lines = evidence
-      .filter((e) => e !== null && e !== undefined && String(e) !== '')
-      .map((e) => `- ${String(e)}`);
-    return lines.length > 0 ? lines.join('\n') : '(no evidence recorded)';
+  const isArray = Array.isArray(evidence);
+  const items = isArray
+    ? evidence.filter((e) => e !== null && e !== undefined && String(e) !== '')
+    : typeof evidence === 'string' && evidence !== ''
+      ? [evidence]
+      : [];
+
+  if (items.length === 0) return '(no evidence recorded)';
+
+  /** @type {string[]} */
+  const lines = [];
+  let usedBytes = 0;
+  for (const item of items) {
+    const safe = sanitizeProse(item, { field: 'evidence', maxBytes: EVIDENCE_ITEM_MAX_BYTES });
+    const line = isArray ? `- ${safe}` : safe;
+    const width = Buffer.byteLength(line, 'utf8');
+    if (lines.length > 0 && usedBytes + width > EVIDENCE_MAX_BYTES) break;
+    lines.push(line);
+    usedBytes += width;
   }
-  if (typeof evidence === 'string' && evidence !== '') {
-    return evidence;
+
+  const omitted = items.length - lines.length;
+  if (omitted > 0) {
+    lines.push(
+      `- […${omitted} further evidence item(s) omitted by the reconciliation engine: ${EVIDENCE_MAX_BYTES}-byte region cap]`,
+    );
   }
-  return '(no evidence recorded)';
+
+  return lines.join('\n');
 }
 
 /**
@@ -120,6 +166,14 @@ function renderEvidence(evidence) {
  * @returns {{ slug: string, path: string, content: string }}
  * @throws {Error} when `metadata.globs` is empty AND `metadata.hostClass` is
  *   falsy — the never-always-on invariant (defends the emitter's guard).
+ * @throws {Error} (`reconcile-sanitize: rejecting record — …`) when a machine
+ *   value is malformed (a `description` with a control char, a dangerous
+ *   invisible, a wrapper-forgery literal or over its byte budget; a `globs[]`
+ *   element with a quote/control char/invisible; a non-token
+ *   `host-class`/`learning-key`/`id`/`source_session`; a non-finite
+ *   `confidence`; a non-`YYYY-MM-DD` `expires-at`) or when prose forges the
+ *   delivery wrapper's framing — issue #1015. The record is REJECTED, never
+ *   repaired.
  */
 export function renderRule(learning, metadata) {
   if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)) {
@@ -139,18 +193,59 @@ export function renderRule(learning, metadata) {
     );
   }
 
+  // ── Machine-value gate (#1015) — assert, never repair ─────────────────────
+  // Each of these is serialised into a frontmatter scalar (or, for the last
+  // two, into an inline-code span). A violation REJECTS the whole record: the
+  // engine catches the throw and records an audited `emit/render error: …`
+  // rejection, so a hostile record costs one rejected proposal, never a rule
+  // file. Repairing instead of rejecting would invent information — see
+  // `sanitize.mjs` for the per-field reasoning.
+  // `description` is the ONE agent-authored value emitted outside the untrusted
+  // envelope (a frontmatter scalar cannot carry the envelope's HTML comment —
+  // the loader would read the comment AS the description). It therefore gets
+  // equivalent neutralisation instead of framing: no frontmatter escape, no
+  // smuggled invisibles, no delivery-wrapper forgery, bounded length. See
+  // `sanitize.mjs` § assertSafeDescription.
+  assertSafeDescription(metadata.description);
+  for (const glob of globs) assertSafeGlob(glob);
+  if (hostClass !== undefined) {
+    assertMachineToken(hostClass, { field: 'host-class', pattern: HOST_CLASS_RE });
+  }
+  assertMachineToken(metadata.learningKey, { field: 'learning-key', pattern: LEARNING_KEY_RE });
+  if (!Number.isFinite(metadata.confidence)) {
+    // A non-finite confidence is SILENTLY DROPPED by the loader's `Number(...)`
+    // coercion, so the rule would load with no confidence at all rather than
+    // fail loudly.
+    throw new Error(
+      `reconcile-sanitize: rejecting record — confidence must be a finite number (got ${JSON.stringify(metadata.confidence)})`,
+    );
+  }
+  assertMachineToken(metadata.expiresAt, { field: 'expires-at', pattern: EXPIRES_AT_RE });
+
   const slug = deriveSlug(learning);
   const path = `.claude/rules/${slug}.md`;
 
-  const humanTitle =
+  // Prose sources. `deriveSlug` is safe by construction (its `kebab` collapses
+  // every non-`[a-z0-9]` run, so no title can steer the output path), but the
+  // rendered H1 carries the raw value — `title` outranks `subject` and has no
+  // schema constraint at all, so it is capped and framed like any other prose.
+  const rawTitle =
     (typeof learning.title === 'string' && learning.title !== '' ? learning.title : '') ||
     (typeof learning.subject === 'string' && learning.subject !== '' ? learning.subject : '') ||
     metadata.learningKey ||
     slug;
+  const safeTitle = sanitizeProse(rawTitle, { field: 'title', maxBytes: TITLE_MAX_BYTES })
+    // The H1 is a single line: a newline in the title would end the heading and
+    // let the remainder render as top-level markdown of the attacker's choosing.
+    .replace(/[\t\n]+/g, ' ')
+    .trim();
+  // A title made only of stripped invisibles sanitises to '' — fall back to the
+  // slug so the H1 is never empty.
+  const humanTitle = safeTitle !== '' ? safeTitle : slug;
 
   const insight =
     typeof learning.insight === 'string' && learning.insight !== ''
-      ? learning.insight
+      ? sanitizeProse(learning.insight, { field: 'insight', maxBytes: INSIGHT_MAX_BYTES })
       : '(no insight recorded)';
 
   // ── Frontmatter (fixed key order; loader-parseable) ──────────────────────
@@ -182,17 +277,38 @@ export function renderRule(learning, metadata) {
   fm.push('---');
 
   // ── Body (free markdown; does not affect frontmatter parsing) ────────────
-  const learningId = learning.id ? String(learning.id) : 'n/a';
-  const sourceSession = learning.source_session ? String(learning.source_session) : 'n/a';
+  // Both provenance values are rendered INSIDE an inline-code span below, which
+  // an interior backtick would close — so they are asserted as machine tokens
+  // rather than escaped. The 'n/a' fallbacks are machine-emitted, not asserted.
+  const learningId = learning.id
+    ? assertMachineToken(String(learning.id), {
+        field: 'learning-id',
+        pattern: PROVENANCE_TOKEN_RE,
+      })
+    : 'n/a';
+  const sourceSession = learning.source_session
+    ? assertMachineToken(String(learning.source_session), {
+        field: 'source-session',
+        pattern: PROVENANCE_TOKEN_RE,
+      })
+    : 'n/a';
 
+  // The untrusted region (H1 + insight + Evidence) is FRAMED: the envelope
+  // states, in machine-generated text the record cannot forge, that everything
+  // inside is agent-authored data rather than an instruction to the reading
+  // agent. Provenance stays OUTSIDE the envelope — it is machine-derived and
+  // asserted above.
   const body = [
     '',
+    UNTRUSTED_BEGIN,
     `# Auto-generated rule: ${humanTitle}`,
     '',
     insight,
     '',
     '## Evidence',
     renderEvidence(learning.evidence),
+    '',
+    UNTRUSTED_END,
     '',
     '<!-- provenance (auto-generated by the reconciliation engine — do not hand-edit) -->',
     '## Provenance',
