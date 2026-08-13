@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.20.0] - 2026-08-13
+
+Memory-pipeline line. The learning store had been accumulating for 233 sessions and delivering
+to nobody: 100 learnings, and not one read path into a dispatched agent. Closing that gap
+surfaced two defects underneath it — agent-authored text reaching every agent's project
+instructions unfiltered, and a prune path that deleted learnings into neither the store nor
+the archive. The headline is not a feature; it is that the review panel then found the same
+class **inside the fix**: this line hardened one delivery channel and shipped a second,
+unhardened one alongside it.
+
+### Added
+
+- **Learnings reach wave agents (#1014)** — a per-agent index in the dispatch prompt, selected
+  from the agent's own declared file scope. Two-tier with **split** caps (scope-matched, then
+  top-scored fill), because only 17 of 100 learnings carry `file_paths` and a single shared cap
+  lets the global tier crowd out the per-agent guarantee that is the acceptance criterion.
+  Rides the channel the coordinator already composes — `docs/instruction-delivery.md` §5
+  measured a *separate* injection path at **+72.3%**; this one costs **+0.69% to +1.15%** of a
+  178,096-byte baseline. Factor 92. `LEARNINGS_INDEX_MAX_CHARS = 2000` is derived (1.12% of the
+  measured baseline, 0.92× the median rule file), not chosen. Delivery is observable rather than
+  assumed: `orchestrator.learnings.index.injected` carries entry count, scope-matched split and
+  byte size, so "did the injector run?" is a grep instead of an inference.
+- **Semantic dedup + contradiction detection (#1016)** — IDF-Dice top-K candidate pool
+  (K=8, FLOOR=0.085), per-seed, bounded, deliberately **non-transitive**: even at K=3 the
+  similarity graph collapses into a 99-of-100 giant component, so a clustering pass returns
+  "the corpus". `type` neither filters nor boosts — both strongest ground-truth links are
+  cross-type, and a type gate drops connectivity 6/6 → 4/6 while still retaining 26% of pairs.
+  A German stoplist is mandatory, not cosmetic: without it the top-scoring pair in the whole
+  corpus is two records sharing function words. The judgment layer is fail-closed and atomic
+  (one malformed decision voids the batch, never the valid subset), and enforces structurally
+  that **rendering an AUQ from an unreadable judgment is itself a write** — the AUQ renderer
+  sits in the same effect map as the archive writer, behind one gate.
+- **`scripts/print-learnings-index.mjs`**, **`scripts/backfill-learnings-from-vault.mjs`**,
+  **`scripts/lib/validate/check-learning-provenance.mjs`**, and a `--prune` mode on
+  `sweep-expired-learnings.mjs`. Five new leaf modules under `scripts/lib/learnings/`
+  (`affinity`, `select`, `candidates`, `judgment`, `kebab`).
+
+### Fixed
+
+- **Agent-authored text is neutralised at the render point (#1015)** — the reconcile renderer
+  interpolated it verbatim into `.claude/rules/<slug>.md`, a file Claude Code then delivers to
+  every agent in every session as a project instruction, with no revocation: the frontmatter
+  gates are not a containment boundary for the body. Machine values now **reject** (a repaired
+  `learning-key` breaks idempotency; a dropped `globs[]` element can leave `globs: []`, which
+  the loader excludes everywhere — silently dead beats loudly rejected); prose is framed and
+  capped without a meaning filter, because a blocklist is the guard that looks green and does
+  not bite. Two premises in the issue text did not survive verification and are corrected in
+  the issue: `description` was already defended against newlines, and the frontmatter parser is
+  hand-rolled — so the newline is the *only* escape and a YAML-shaped sanitiser would have been
+  both wrong and destructive (14 `description` lines in the corpus carry a second colon).
+- **The learning store is durable again (#1017)** — `/evolve` pruned by rewriting the store with
+  **no archive append**; 11 of 13 provenance pointers in generated rules resolved to nothing, in
+  neither store nor archive nor any backup. Both callers now share one `archiveThenRewrite()`
+  (KEEP-probe, archive **before** rewrite so a crash leaves the record in both places and never
+  in neither, `.bak` snapshot), and `pruneLearnings()` archives any record the caller's next
+  generation omits — reconciled by `id`, or by content fingerprint when a record carries no
+  usable one. **11 of 11 lost records were recovered** from the vault mirror with per-field
+  origin labelling; dangling pointers **11 → 0**.
+- **Rule-block delivery boundaries were unrecoverable without any adversarial input** — rule
+  `content` is byte-identical to disk *including* its YAML fence, so joining rules on `---`
+  produced 56 separator-shaped lines for 18 rules. Replaced with per-rule fence tags carrying a
+  content-derived token and the source path (information an agent previously could not get at
+  all). An existing test had pinned the broken contract.
+- **`learning_key` was derived five ways** on a *stored* contract, with the writer kebabbing the
+  `type` half and all four readers not. One shared derivation now; proven byte-identical across
+  107 records, all 13 stamped keys reproduced.
+- **Two tracked `.mjs` files carried NUL bytes** and were therefore skipped **silently** by every
+  grep-based audit — exit 1, no output, which reads exactly like a clean result.
+
+### Notes
+
+- The review panel (security, qa, architect, independently) returned **FIX_REQUIRED** with four
+  HIGH blockers; all four were closed in one fix cycle, which found three further holes of the
+  same class. Every new guard is proven by fake regression, not by a green test.
+- `CANDIDATE_FLOOR` is deliberately **unchanged** despite its justification no longer
+  reproducing: this line's own backfill moved every IDF weight, and the wave-1 ground-truth
+  labels were never persisted. A constant whose evidence has evaporated is not re-guessed from
+  the evaporated evidence (#1021).
+- Follow-ups: #1018, #1019, #1020, #1021 — each with a named revisit trigger.
+
 ## [3.19.0] - 2026-08-04
 
 Guard-hardening and release-mechanics line. Headline: the destructive-command guard closed

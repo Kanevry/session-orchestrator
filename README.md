@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.19.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.20.0-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
 [![Tests](https://img.shields.io/badge/tests-12%2C000%2B-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
 
@@ -127,17 +127,17 @@ The system is markdown-driven config plus a thin Node runtime — skills, comman
 - **Cross-session learning is opt-in and inspectable.** Every session writes a record; after 5+ sessions `/evolve analyze` extracts confidence-scored patterns you can read and prune. Nothing is hidden.
 - **VCS dual support, no lock-in.** Auto-detects GitLab or GitHub from your remote and drives the full lifecycle for both.
 
-## Recent highlights (v3.19.0)
+## Recent highlights (v3.20.0)
 
-Every release is additive and backward-compatible. Highlights of the v3.19.0 line:
+Every release is additive and backward-compatible. Highlights of the v3.20.0 line:
 
-- **Destructive-command guard, hardened in depth** — wrapper unwrapping (`sudo`/`doas`/`env`/`nohup`/`timeout`/`nice`/`stdbuf`, with depth-capped `-c` payload recursion) closes six measured bypasses (#982); the blocked-commands policy becomes a floor ∪ overlay model that can only escalate, never weaken (#972); shell redirects gain a target denylist — an `&>` redirect into a protected instruction file was a silent allow-with-truncation before (#983); and the denylist now resolves absolute paths, not just repo-relative ones.
-- **Session identity with proof** — the session lock persists an owner proof at genesis, so an ending session can no longer release a living foreign lock, and the abandoned-session backfiller no longer deletes the very alarm it exists to raise (#987, #926, #914).
-- **Supply chain** — two high-severity transitive vulnerabilities that `npm audit fix` could not reach are closed via package overrides.
-- **Release as one dispatch** — `scripts/release.mjs` (#978, local half): a single surfaces table drives version rewrite and preflight (12 version literals across 10 files, CHANGELOG gate, tag/registry collision, drift sweep over all tracked files, CI-green-on-HEAD, leakage gate), and the git tag is created only AFTER a verified npm publish. Found two real gaps on its first run: v3.18.0 had been tagged but never published to npm, and the hidden `.codex-plugin` manifest was invisible to a plain ripgrep census.
-- **session-orchestrator.com redesigned** — terminal hero, wave pipeline, leaderboard shell.
+- **Learnings finally reach the agents doing the work (#1014)** — 233 sessions of accumulated memory had exactly zero read paths into a dispatched agent. Now a per-agent index, selected from that agent's declared file scope, riding the dispatch prompt the coordinator already writes. Measured at **+0.69%–1.15%** of the prompt an agent already receives, against **+72.3%** for the separate-injection path the delivery doc forbids — factor 92. The character cap is derived from that measurement, not chosen, and delivery emits an event so "did it run?" is a grep rather than an inference.
+- **Agent-authored text no longer reaches every agent unfiltered (#1015)** — the reconcile renderer wrote it verbatim into `.claude/rules/`, which Claude Code hands to every agent in every session, with no revocation. Machine values now reject, prose is framed and capped. Two premises in the issue itself did not survive verification and were corrected rather than implemented.
+- **The learning store is durable again (#1017)** — `/evolve` pruned by rewriting with no archive append; **11 of 13 provenance pointers in generated rules resolved to nothing**. One shared archive-then-rewrite path, and **11 of 11 lost records recovered** from the vault mirror. Dangling pointers 11 → 0.
+- **Semantic dedup + contradiction detection (#1016)** — a bounded, deliberately non-transitive candidate pool and a fail-closed judgment layer in which rendering an approval prompt from an unreadable verdict counts, structurally, as a write.
+- **The review panel found the same class inside the fix** — three independent reviewers returned FIX_REQUIRED: this line had hardened one delivery channel and shipped a second, unhardened one beside it. Closed in one cycle, which surfaced three further holes of the same shape. Every new guard is proven by fake regression, not by a green test.
 
-Previous line (v3.18.0): panel-follow-ups and consolidation — bash-write-verify self-silencing vectors closed (#938), credential stripping at the source (#907), instruction-corpus diet 471→~440 directives, mutation-sweep-backed test consolidation.
+Previous line (v3.19.0): guard hardening and release mechanics — six wrapper bypasses closed (#982), blocked-commands floor ∪ overlay (#972), session-lock ownership proof, and release as one dispatch (#978).
 
 Full version history: [CHANGELOG.md](CHANGELOG.md).
 
