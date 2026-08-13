@@ -321,7 +321,8 @@ For confirmed learnings, use atomic rewrite strategy:
    > `jq | ... > learnings.jsonl` pass — that bypasses every #721 safety net.
 
    **Exit codes are the no-op rule.** `0` = applied (or a clean no-op). `1` = input error: the
-   sidecar is absent or carries a malformed line — the store and the archive were **not touched**;
+   sidecar is absent, carries a malformed line, or holds no records — the store and the archive
+   were **not touched**;
    re-write the sidecar and re-run. `2` = the prune itself failed inside the lib. On any non-zero
    exit, surface the error and stop — never retry with a shell rewrite, and never delete `$NEXT`
    (the `&&` above already withholds the `rm`, so the assembled generation survives for a retry).
@@ -479,7 +480,8 @@ Use the same archive-safe pipeline as Phase 3, Step 3.5 — **never** a hand-rol
    - **Boost:** +0.15 confidence (cap 1.0), reset expires_at to +`learning-expiry-days`
    - **Reduce:** -0.2 confidence
    - **Delete:** omit the selected entries from the next generation — do NOT delete them by hand.
-     `pruneLearnings()` detects every id that left the store and archives it with
+     `pruneLearnings()` detects every **record** that left the store — reconciled by `id`, or by a
+     content fingerprint when a record carries no usable `id` — and archives it with
      `_archive_reason: "pruned"`, so a `learning-id` referenced by a rendered rule stays resolvable.
    - **Extend:** reset expires_at to current date + `learning-expiry-days`
 3. Steps 3–5 of the old prose (prune / consolidate / rewrite) are `pruneLearnings()` — run the

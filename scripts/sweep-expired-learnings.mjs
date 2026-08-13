@@ -34,15 +34,17 @@
  *   --grace-days N    Days past expiry before archiving (default: 14).
  *                      SWEEP ONLY — `--prune` has no grace window by design.
  *   --entries PATH    JSONL sidecar holding the caller's next store generation.
- *                      PRUNE ONLY. Omitted ⇒ a pure prune+consolidate pass over
- *                      the on-disk store.
+ *                      PRUNE ONLY. Must exist, parse cleanly, and hold at least
+ *                      one record — absent/malformed/empty all exit 1 untouched.
+ *                      Omitted ⇒ a pure prune+consolidate pass over the on-disk
+ *                      store.
  *   --file PATH       Learnings store (default: .orchestrator/metrics/learnings.jsonl)
  *   --archive PATH    Archive sidecar (default: .orchestrator/metrics/learnings-archive.jsonl)
  *
  * Exit codes:
  *   0  Success (including no-op when nothing is archive-eligible)
  *   1  Usage/input error (bad flag/value, flag used in the wrong mode, or an
- *      absent/malformed `--entries` sidecar)
+ *      absent/malformed/empty `--entries` sidecar)
  *   2  Sweep/prune error (I/O or validation failure inside the lib)
  */
 
@@ -69,7 +71,8 @@ Options:
   --apply           Perform the archive append + store rewrite
   --json            Emit a single machine-parseable JSON summary line
   --grace-days N    Days past expiry before archiving (default: ${DEFAULT_GRACE_DAYS}); sweep only
-  --entries PATH    JSONL sidecar with the next store generation; prune only
+  --entries PATH    JSONL sidecar with the next store generation; prune only.
+                    Must exist, parse cleanly, and hold >= 1 record
   --file PATH       Learnings store (default: ${DEFAULT_FILE})
   --archive PATH    Archive sidecar (default: ${DEFAULT_ARCHIVE})
 
@@ -178,15 +181,34 @@ async function runSweep(args) {
 /**
  * Resolve the `--entries` sidecar into the caller's next store generation.
  *
- * Fails closed on BOTH an absent file and a malformed line. The absent-file
- * check is load-bearing and cannot be delegated to `readLearnings()`, which
- * returns `{entries: [], malformed: []}` for a missing path — an empty next
- * generation makes `pruneLearnings()` treat the ENTIRE store as caller-dropped,
- * so one mistyped path would archive every active learning. A path the operator
- * named and the filesystem does not have is an input error, not an empty set.
+ * Fails closed on THREE input conditions, all of which yield the same lethal
+ * value — an empty next generation, which makes `pruneLearnings()` treat the
+ * ENTIRE store as caller-dropped:
+ *
+ *   1. **absent file** — `readLearnings()` returns `{entries: [], malformed: []}`
+ *      for a missing path, so one mistyped path would archive every active
+ *      learning. A path the operator named and the filesystem does not have is
+ *      an input error, not an empty set.
+ *   2. **malformed line** — a half-written sidecar reads as a SHORTER next
+ *      generation, pruning every record the truncated tail omitted.
+ *   3. **parses to zero records** — a 0-byte or blank-line-only file. Guard (1)
+ *      closes ABSENCE, which is a different condition: an empty file EXISTS, so
+ *      it sails past `existsSync` and parses to a legitimate-looking empty
+ *      generation. Measured on a 3-record fixture before this guard: a 0-byte
+ *      `--entries` archived all 3 and exited 0.
+ *
+ * Condition 3 is REJECTED rather than obeyed because at a file boundary an
+ * empty parse is indistinguishable from a truncated write, a failed producer,
+ * or a typo that landed on an unrelated empty file — and no caller expresses
+ * "archive the whole corpus" through this flag: `/evolve`'s next generation
+ * always carries the survivors. The cost of rejecting a genuinely-intended
+ * empty generation is one re-run; the cost of obeying a corrupt one is the
+ * active store. Note this guard is deliberately NOT in `pruneLearnings()`: an
+ * explicit `entries: []` written in CODE is a statement, and the lib keeps it
+ * expressible. Only the FILE is ambiguous, so only the file is guarded.
  *
  * @param {string} entriesPath
- * @returns {Promise<object[]>} the validated next generation
+ * @returns {Promise<object[]>} the validated, non-empty next generation
  */
 async function loadEntriesSidecar(entriesPath) {
   if (!existsSync(entriesPath)) {
@@ -204,6 +226,13 @@ async function loadEntriesSidecar(entriesPath) {
   if (read.malformed.length > 0) {
     usageError(
       `refusing to prune — ${read.malformed.length} malformed line(s) in ${entriesPath}`
+    );
+  }
+  if (read.entries.length === 0) {
+    usageError(
+      `--entries sidecar holds no records: ${entriesPath} (refusing to prune — an empty ` +
+        `next generation would archive every record in the store; omit --entries for a ` +
+        `pure prune+consolidate pass)`
     );
   }
   return read.entries;

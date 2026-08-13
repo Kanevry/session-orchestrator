@@ -56,7 +56,7 @@ import {
   UNTRUSTED_BEGIN,
   UNTRUSTED_END,
   assertMachineToken,
-  assertNoControlChars,
+  assertSafeDescription,
   assertSafeGlob,
   sanitizeProse,
 } from './sanitize.mjs';
@@ -167,11 +167,13 @@ function renderEvidence(evidence) {
  * @throws {Error} when `metadata.globs` is empty AND `metadata.hostClass` is
  *   falsy — the never-always-on invariant (defends the emitter's guard).
  * @throws {Error} (`reconcile-sanitize: rejecting record — …`) when a machine
- *   value is malformed (`description` control chars, a `globs[]` element with a
- *   quote/control char, a non-token `host-class`/`learning-key`/`id`/
- *   `source_session`, a non-finite `confidence`, a non-`YYYY-MM-DD`
- *   `expires-at`) or when prose forges the delivery wrapper's framing — issue
- *   #1015. The record is REJECTED, never repaired.
+ *   value is malformed (a `description` with a control char, a dangerous
+ *   invisible, a wrapper-forgery literal or over its byte budget; a `globs[]`
+ *   element with a quote/control char/invisible; a non-token
+ *   `host-class`/`learning-key`/`id`/`source_session`; a non-finite
+ *   `confidence`; a non-`YYYY-MM-DD` `expires-at`) or when prose forges the
+ *   delivery wrapper's framing — issue #1015. The record is REJECTED, never
+ *   repaired.
  */
 export function renderRule(learning, metadata) {
   if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)) {
@@ -198,7 +200,13 @@ export function renderRule(learning, metadata) {
   // rejection, so a hostile record costs one rejected proposal, never a rule
   // file. Repairing instead of rejecting would invent information — see
   // `sanitize.mjs` for the per-field reasoning.
-  assertNoControlChars(metadata.description, 'description');
+  // `description` is the ONE agent-authored value emitted outside the untrusted
+  // envelope (a frontmatter scalar cannot carry the envelope's HTML comment —
+  // the loader would read the comment AS the description). It therefore gets
+  // equivalent neutralisation instead of framing: no frontmatter escape, no
+  // smuggled invisibles, no delivery-wrapper forgery, bounded length. See
+  // `sanitize.mjs` § assertSafeDescription.
+  assertSafeDescription(metadata.description);
   for (const glob of globs) assertSafeGlob(glob);
   if (hostClass !== undefined) {
     assertMachineToken(hostClass, { field: 'host-class', pattern: HOST_CLASS_RE });

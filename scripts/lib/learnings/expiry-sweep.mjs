@@ -79,6 +79,53 @@ const MS_PER_DAY = 86_400_000;
 const DEFAULT_GRACE_DAYS = 14;
 
 /**
+ * Canonical, key-order-independent JSON for a record — the identity of LAST
+ * RESORT, used only when a record carries no usable `id`.
+ *
+ * `JSON.stringify` is not sufficient here: two reads of the same record can
+ * differ in key ORDER (the store and the `--entries` sidecar are separate
+ * files, written by separate passes), and an order-sensitive fingerprint would
+ * read those as two different records.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`)
+      .join(',')}}`;
+  }
+  // `undefined` has no JSON form — normalize it to the same token as null so a
+  // present-but-undefined key cannot make a record unfingerprintable.
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
+ * Reconciliation identity for {@link pruneLearnings} step (3): the `id` when
+ * the record carries a usable one, else a content fingerprint.
+ *
+ * The fallback is load-bearing, not a nicety. `id` IS a required schema field,
+ * but `validateLearning` only checks key PRESENCE — `id: ''`, `id: null` and
+ * `id: undefined` all pass it, and `readLearnings()` never rejects anything —
+ * so an id-less record can and does reach disk. Such a record can never appear
+ * in `keep` (which is built from `next` alone), so leaving it unreconciled
+ * meant the store rewrite dropped it with no archive line: gone from BOTH
+ * places, which is the exact #1017 data loss this module exists to prevent.
+ *
+ * @param {object} entry
+ * @returns {string}
+ */
+function reconcileKey(entry) {
+  const id = entry?.id;
+  return typeof id === 'string' && id.length > 0
+    ? `id${KEY_SEP}${id}`
+    : `sig${KEY_SEP}${stableStringify(entry)}`;
+}
+
+/**
  * Closed vocabulary for `_archive_reason` (#1017). Every record that leaves
  * the active store carries exactly one of these, so the archive answers WHY a
  * `learning-id` stopped resolving — not merely THAT it did.
@@ -312,11 +359,18 @@ export async function sweepExpiredLearnings({
  *      subject: the highest-confidence record wins, the losers are archived
  *      `superseded` with `_superseded_by: <winner id>`. Null/empty-subject
  *      records are NEVER collapsed (issue #284) — each is keyed by its `id`.
- *   3. **caller drop** — an `id` present on disk but absent from `entries`
+ *   3. **caller drop** — a record present on disk but absent from `entries`
  *      (the caller's next store generation). This is the mechanical guarantee
  *      that makes the prose-driven caller safe by construction: whatever an
  *      LLM-authored next generation omits is tombstoned automatically rather
- *      than silently deleted.
+ *      than silently deleted. Reconciliation is by `id`, falling back to a
+ *      content fingerprint for a record with no usable one, and it COUNTS
+ *      rather than tests membership — see {@link reconcileKey}. Deliberate
+ *      ceiling: an id-less record the caller MUTATED (rather than dropped)
+ *      fingerprints as a drop, so it is tombstoned while the mutated copy
+ *      stays in the store — a duplicate archive line, never a loss. Revisit if
+ *      a caller ever needs to mutate id-less records in bulk; the fix is to
+ *      stamp an `id` at the read funnel, not to loosen this loop.
  *
  * **No `graceDays` here, by design.** The grace window exists for two reasons
  * (see the module header): TTL edge-noise, and "a window for /evolve's
@@ -421,17 +475,33 @@ export async function pruneLearnings({
     });
   }
 
-  // (3) caller drops — on disk but absent from the next generation. Identity is
-  // the `id` field (required by the schema); a record without one cannot be
-  // reconciled against `next` and is left to the caller.
-  const nextIds = new Set(
-    next.map((e) => e?.id).filter((id) => typeof id === 'string' && id.length > 0)
-  );
+  // (3) caller drops — on disk but absent from the next generation.
+  //
+  // Identity is {@link reconcileKey}: the `id` when the record has a usable
+  // one, else a content fingerprint. NOTHING is skipped here — a record this
+  // loop passes over is a record the store rewrite deletes without a tombstone,
+  // because `keep` is built from `next` alone (loops 1-2) and an on-disk record
+  // absent from `next` has no other way in. This loop IS the rescue; an early
+  // `continue` in it is a silent delete, not a no-op.
+  //
+  // COUNTS, not membership: `next` may legitimately carry fewer copies of a key
+  // than the store does (identical id-less records; a duplicate `id` on disk
+  // reconciled against one entry in `next`). Set-membership would skip every
+  // copy while `keep` holds only one — dropping the surplus with no archive
+  // line, the same hole one level down. A multiset archives exactly the surplus.
+  const nextKeyCounts = new Map();
+  for (const entry of next) {
+    const key = reconcileKey(entry);
+    nextKeyCounts.set(key, (nextKeyCounts.get(key) ?? 0) + 1);
+  }
   let dropped = 0;
   for (const entry of current) {
-    const id = entry?.id;
-    if (typeof id !== 'string' || id.length === 0) continue;
-    if (nextIds.has(id)) continue;
+    const key = reconcileKey(entry);
+    const remaining = nextKeyCounts.get(key) ?? 0;
+    if (remaining > 0) {
+      nextKeyCounts.set(key, remaining - 1);
+      continue;
+    }
     archiveBatch.push({ entry, verdict: resolveDrop(entry) });
     dropped += 1;
   }

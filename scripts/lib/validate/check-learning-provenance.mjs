@@ -36,7 +36,8 @@
  *
  * ## Two axes, because an id is not the only pointer
  *
- * The id is the record's UUID; the key (`${type}/${kebab(title||subject)}`) is
+ * The id is the record's UUID; the key (`${type}/${kebab(title||subject)}`,
+ * derived by the shared `learnings/kebab.mjs::learningKeyOf`) is
  * its LOGICAL identity, stable across a re-write that mints a new UUID. Checking
  * both separates two findings with very different remedies:
  *
@@ -127,7 +128,12 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readLearnings } from '../learnings/io.mjs';
-import { kebab } from '../learnings/kebab.mjs';
+// THE shared key derivation. This check resolves a rule's STAMPED
+// `learning-key` against keys it derives from the store, so it is the one place
+// where writer-vs-reader disagreement shows up as a false `dangling-learning-key`
+// finding — it must derive the key with the emitter's function, not a copy of
+// the emitter's formula.
+import { learningKeyOf } from '../learnings/kebab.mjs';
 
 /** Directory holding the rule corpus, relative to the plugin root. */
 const RULES_REL = path.join('.claude', 'rules');
@@ -186,24 +192,6 @@ const LEARNING_KEY_RE = /^[-*][ \t]+learning-key:[ \t]*(.+)$/m;
 function displayPath(pluginRoot, absolutePath) {
   const rel = path.relative(pluginRoot, absolutePath);
   return rel === '' || rel.startsWith('..') || path.isAbsolute(rel) ? absolutePath : rel;
-}
-
-/**
- * Logical key of a learning record: `${type}/${kebab(title||subject)}`, the
- * shape `reconcile/emitter.mjs` stamps into the rule's `learning-key` field.
- * Returns null when either half is unusable, so an unkeyable record simply does
- * not participate in key resolution.
- *
- * @param {Record<string, unknown>} record
- * @returns {string|null}
- */
-function learningKeyOf(record) {
-  const type = typeof record.type === 'string' ? record.type : '';
-  const subjectOrTitle =
-    (typeof record.title === 'string' && record.title !== '' ? record.title : '') ||
-    (typeof record.subject === 'string' && record.subject !== '' ? record.subject : '');
-  if (type === '' || subjectOrTitle === '') return null;
-  return `${type}/${kebab(subjectOrTitle)}`;
 }
 
 /**
@@ -267,7 +255,7 @@ async function indexStore(absolutePath) {
   const { entries, malformed } = read;
   for (const entry of entries) {
     if (entry && typeof entry.id === 'string' && entry.id !== '') ids.add(entry.id);
-    const key = entry && typeof entry === 'object' ? learningKeyOf(entry) : null;
+    const key = learningKeyOf(entry); // total: a shape-foreign entry yields null
     if (key !== null) keys.add(key);
   }
   return { present, records: entries.length, malformed: malformed.length, ids, keys };

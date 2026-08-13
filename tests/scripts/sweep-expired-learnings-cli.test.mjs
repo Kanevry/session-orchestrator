@@ -15,6 +15,11 @@
  * (reason routing, tombstones, the closed enum) belong to
  * `tests/lib/learnings-expiry-sweep.test.mjs` and are NOT re-tested here.
  *
+ * The final block is different in kind: it EXTRACTS the invocation from
+ * skills/evolve/SKILL.md § 3.5(5) and executes it verbatim against a fixture
+ * repo, because that command string — not any flag list spelled out here — is
+ * /evolve's only store-write path.
+ *
  * Each test creates its own tempdir; never touches the real
  * .orchestrator/metrics/learnings.jsonl.
  */
@@ -22,7 +27,16 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { writeFileSync, readFileSync, rmSync, mkdtempSync, existsSync, readdirSync } from 'node:fs';
+import {
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  mkdirSync,
+  mkdtempSync,
+  existsSync,
+  readdirSync,
+  symlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -324,6 +338,43 @@ describe('sweep-expired-learnings.mjs — --prune --entries fail-closed guards',
   });
 });
 
+describe('sweep-expired-learnings.mjs — --prune --entries empty-sidecar guard', () => {
+  // TV-001 — the bug: the not-found guard above closes ABSENCE, not EMPTINESS.
+  // A 0-byte (or blank-line-only) sidecar EXISTS, so it sails past existsSync
+  // and parses to `{entries: [], malformed: []}` — a legitimate-looking empty
+  // next generation that makes pruneLearnings treat the ENTIRE store as
+  // caller-dropped. Measured before the guard on a 3-record fixture: archived=3,
+  // store emptied, exit 0. Remove the `read.entries.length === 0` check in
+  // loadEntriesSidecar and both cases below go RED (exit 0, hash changed).
+  it.each([
+    ['0-byte', ''],
+    ['blank-lines-only', '\n\n\n'],
+  ])('exits 1 and touches nothing when the --entries sidecar is %s', (_label, body) => {
+    writeJsonl(learningsPath, [
+      liveLearning({ id: 'survivor-a', subject: 'a' }),
+      liveLearning({ id: 'survivor-b', subject: 'b' }),
+    ]);
+    const before = sha256(learningsPath);
+    const nextPath = path.join(workdir, 'next.jsonl');
+    writeFileSync(nextPath, body, 'utf8');
+
+    const result = runSweep([
+      '--prune', '--apply',
+      '--file', learningsPath,
+      '--archive', archivePath,
+      '--entries', nextPath,
+    ]);
+
+    // Disk facts first — a run that WROTE would still print plausible counts.
+    expect(sha256(learningsPath)).toBe(before);
+    expect(existsSync(archivePath)).toBe(false);
+    expect(readdirSync(workdir).filter((f) => f.includes('.bak-'))).toHaveLength(0);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('--entries sidecar holds no records');
+  });
+});
+
 describe('sweep-expired-learnings.mjs — --prune --apply', () => {
   // TV-001 — the bug: a CLI that parses --apply/--entries but never threads them
   // into pruneLearnings() reports success while the store is untouched (or,
@@ -449,5 +500,126 @@ describe('sweep-expired-learnings.mjs — --prune and the expiry sweep do not in
 
     expect(readJsonl(learningsPath)).toEqual([]);
     expect(readJsonl(archivePath).map((e) => e.id)).toEqual(['within-grace']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The invocation /evolve actually runs — extracted from the SKILL body and
+// EXECUTED, never quoted.
+// ---------------------------------------------------------------------------
+
+/**
+ * Every fenced block of a Markdown document whose body mentions `needle`.
+ *
+ * Fences are matched leading-whitespace-tolerantly because this one is nested
+ * inside a numbered list. The body is returned VERBATIM (indentation included —
+ * bash ignores leading whitespace) so nothing about the executed string is this
+ * test's invention.
+ */
+function fencedBlocksMentioning(markdown, needle) {
+  const blocks = [];
+  let body = null;
+  for (const line of markdown.split('\n')) {
+    if (/^\s*```/.test(line)) {
+      if (body === null) body = [];
+      else {
+        blocks.push(body.join('\n'));
+        body = null;
+      }
+      continue;
+    }
+    if (body !== null) body.push(line);
+  }
+  return blocks.filter((b) => b.includes(needle));
+}
+
+describe('skills/evolve/SKILL.md § 3.5(5) — the named invocation, executed', () => {
+  // TV-001 — the bug: /evolve's ONLY store-write path is a command string in a
+  // SKILL body, and every test above spells its own flags out and passes
+  // explicit --file/--archive. So the CLI's contract can move while the tests
+  // move WITH it and the prose is left behind, unexecuted.
+  //
+  // Measured on a patched COPY of the CLI (production untouched), same probe:
+  //   · `--entries` renamed        → exit 1, store untouched, sidecar survives
+  //   · DEFAULT_FILE moved one dir → exit 0, ONE JSON line, sidecar deleted by
+  //     the `&&` — and the real store still holds BOTH records. The write lands
+  //     nowhere and the assembled next generation is gone. Silent, exit 0, and
+  //     invisible to all 16 tests above, none of which uses the defaults.
+  //
+  // A test asserting the SENTENCE exists in the Markdown is banned (TV-002c:
+  // it pins prose, not behaviour). So the block is extracted and RUN, against a
+  // throwaway repo-shaped fixture: same shape as
+  // tests/husky/pre-commit-nul-byte-guard.test.mjs, which executes a
+  // marker-delimited block out of the hook it guards.
+  it('runs verbatim against a fixture repo: exit 0, one JSON line, store rewritten, sidecar consumed', () => {
+    const skillPath = path.resolve(process.cwd(), 'skills/evolve/SKILL.md');
+    const blocks = fencedBlocksMentioning(
+      readFileSync(skillPath, 'utf8'),
+      'sweep-expired-learnings.mjs',
+    );
+    // Uniqueness invariant, not a growth pin: two copies of this command in one
+    // SKILL body means one of them is unexecuted and free to rot.
+    expect(blocks).toHaveLength(1);
+    const block = blocks[0];
+
+    // The block resolves `node scripts/...` and the DEFAULT --file/--archive
+    // paths relative to the cwd, so a symlinked scripts/ + a tmp
+    // .orchestrator/metrics/ is the whole fixture. The real store is never in
+    // reach: cwd is the tmpdir.
+    const metrics = path.join(workdir, '.orchestrator', 'metrics');
+    mkdirSync(metrics, { recursive: true });
+    symlinkSync(path.resolve(process.cwd(), 'scripts'), path.join(workdir, 'scripts'), 'dir');
+
+    const keep = liveLearning({ id: 'keep-me', subject: 'kept' });
+    const drop = liveLearning({ id: 'drop-me', subject: 'dropped' });
+    writeJsonl(path.join(metrics, 'learnings.jsonl'), [keep, drop]);
+    // The sidecar path is the block's own `NEXT` value — if the prose renames
+    // it, the run fails closed on the absent-sidecar guard and this test goes
+    // red rather than silently pruning against a different file.
+    const sidecar = path.join(metrics, '.learnings-next.jsonl');
+    writeJsonl(sidecar, [keep]);
+
+    let run;
+    try {
+      run = {
+        stdout: execFileSync('bash', ['-c', block], {
+          cwd: workdir,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }),
+        stderr: '',
+        status: 0,
+      };
+    } catch (err) {
+      run = {
+        stdout: err.stdout?.toString?.() ?? '',
+        stderr: err.stderr?.toString?.() ?? '',
+        status: typeof err.status === 'number' ? err.status : 1,
+      };
+    }
+
+    // Exit code AND a stdout discriminator: the prose promises ONE JSON line
+    // with these four keys, and /evolve reports them to the operator.
+    expect({ status: run.status, stderr: run.stderr }).toEqual({ status: 0, stderr: '' });
+    const lines = run.stdout.split('\n').filter((l) => l.trim().length > 0);
+    expect(lines).toHaveLength(1);
+    const summary = JSON.parse(lines[0]);
+    expect(summary).toMatchObject({
+      file: '.orchestrator/metrics/learnings.jsonl',
+      entries_from: '.orchestrator/metrics/.learnings-next.jsonl',
+      scanned: 2,
+      kept: 1,
+      archived: 1,
+      byReason: { pruned: 1 },
+      dryRun: false,
+    });
+
+    // Disk facts — the counts above would look just as plausible from a no-op.
+    expect(readJsonl(path.join(metrics, 'learnings.jsonl')).map((e) => e.id)).toEqual(['keep-me']);
+    const archived = readJsonl(path.join(metrics, 'learnings-archive.jsonl'));
+    expect(archived.map((e) => [e.id, e._archive_reason])).toEqual([['drop-me', 'pruned']]);
+    // The `&& rm -f "$NEXT"` half: the sidecar is consumed only on success, so
+    // its absence proves the whole chain ran, not just the node call.
+    expect(existsSync(sidecar)).toBe(false);
   });
 });

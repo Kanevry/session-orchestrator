@@ -15,6 +15,9 @@
 import { describe, it, expect } from 'vitest';
 
 import { toActivationMetadata } from '../../../scripts/lib/reconcile/emitter.mjs';
+// Imported READ-ONLY, to prove the emitter's key survives the renderer's
+// machine-value assert (or, for a hostile type, is rejected by it).
+import { renderRule } from '../../../scripts/lib/reconcile/renderer.mjs';
 
 /**
  * File-wide frozen clock for every expiry assertion.
@@ -349,23 +352,46 @@ describe('toActivationMetadata — file_paths frontmatter-structure gate (#1015)
   });
 });
 
-describe('toActivationMetadata — learningKey type half is kebab-cased (#1015 latent hazard)', () => {
+describe('toActivationMetadata — learningKey type half is VERBATIM, never slugged', () => {
   it('leaves every currently-reachable (allow-listed) type byte-identical', () => {
-    // kebab() is the identity for every literal in eligibility.mjs's
-    // CONVERT_TYPES allow-list, so this defensive call changes no live key.
+    // True under both the old rule (kebab is the identity for every literal in
+    // eligibility.mjs's CONVERT_TYPES allow-list) and the current one — which is
+    // exactly why the divergence below stayed invisible.
     const meta = toActivationMetadata(fragileLearning(), { now: FROZEN_NOW });
     expect(meta.learningKey).toBe('fragile-pattern/zx-imports');
   });
 
-  it('neutralises a newline in the type half (insurance if the allow-list widens)', () => {
-    // The type gate lives in eligibility.mjs, not here — widening
-    // CONVERT_TYPES to a pattern or a passthrough would make this line a live
-    // frontmatter-injection point. FALSIFICATION: interpolating `learning.type`
-    // raw yields 'anti\ntier: always/zx-imports', which the renderer writes as
-    // an unquoted `learning-key:` line, injecting `tier: always`.
+  it('does not slug the type half, so every reader derives the same key', () => {
+    // This line used to kebab the type half. No READER does — not the engine's
+    // rejection path, not validate/check-learning-provenance, not
+    // learnings/candidates, not claude-md-drift-check. Slugging it here forks
+    // the key space for the first type whose kebab is not the identity, and
+    // makes the type half unrecoverable for `backfill-learnings-from-vault.mjs`,
+    // which reads `learning_key.split('/')[0]` back out AS the type.
+    const learning = fragileLearning({ type: 'Config_Pattern' });
+    const meta = toActivationMetadata(learning, { now: FROZEN_NOW });
+    expect(meta.learningKey).toBe('Config_Pattern/zx-imports');
+  });
+
+  it('leaves a newline-bearing type for the renderer to REJECT, not to silently repair', () => {
+    // The kebab that used to sit here was justified as injection insurance: the
+    // key becomes an unquoted `learning-key:` frontmatter line, so 'anti\ntier:
+    // always' would inject a sibling `tier: always` key. That hazard is real and
+    // is now closed downstream and LOUDLY — `renderer.mjs` asserts
+    // LEARNING_KEY_RE (/^[a-z0-9/-]+$/) before rendering. Silently repairing it
+    // here instead would re-key the record behind every reader's back.
     const learning = fragileLearning({ type: 'anti\ntier: always' });
     const meta = toActivationMetadata(learning, { now: FROZEN_NOW });
-    expect(meta.learningKey).toBe('anti-tier-always/zx-imports');
+    expect(meta.learningKey).toBe('anti\ntier: always/zx-imports');
+    // The safety claim, proven rather than asserted: nothing renders.
+    expect(() => renderRule(learning, meta)).toThrow(/learning-key/);
+  });
+
+  it('refuses to emit a key for a learning that has no derivable identity', () => {
+    const learning = fragileLearning({ subject: '!!!', title: undefined });
+    expect(() => toActivationMetadata(learning, { now: FROZEN_NOW })).toThrow(
+      /unkeyable learning/,
+    );
   });
 });
 

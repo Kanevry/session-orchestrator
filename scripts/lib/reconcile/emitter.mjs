@@ -30,7 +30,7 @@
 
 import { dirname } from 'node:path';
 
-import { kebab } from '../learnings/kebab.mjs';
+import { learningKeyOf } from '../learnings/kebab.mjs';
 import { deriveExpiresAt } from '../learnings/schema.mjs';
 
 const DAY_MS = 86400 * 1000;
@@ -263,6 +263,9 @@ function computeExpiresAt(learning, ruleExpiryDays, now, minRuleDays) {
  * }}
  * @throws {Error} when no activation axis can be produced (empty globs AND no
  *   hostClass) — the never-always-on invariant.
+ * @throws {Error} when the learning has no derivable `learning_key` (no usable
+ *   `type`, or no `title`/`subject` that slugs to a non-empty token) — a rule
+ *   whose key resolves to no learning is worse than no rule.
  */
 export function toActivationMetadata(learning, { ruleExpiryDays, now, minRuleDays } = {}) {
   if (learning === null || typeof learning !== 'object' || Array.isArray(learning)) {
@@ -300,16 +303,30 @@ export function toActivationMetadata(learning, { ruleExpiryDays, now, minRuleDay
     );
   }
 
-  const subjectOrTitle = learning.title || learning.subject || '';
-  // `learningKey` becomes an unquoted `learning-key:` frontmatter line. The
-  // subject half was already kebab'd; the TYPE half was not. Today that is safe
-  // only because `eligibility.mjs`'s inverted CONVERT_TYPES allow-list admits a
-  // fixed set of kebab-safe literals, for which `kebab()` is the identity — so
-  // this call changes no currently-reachable key. It is cheap insurance against
-  // the latent hazard the #1015 census flagged: widening that allow-list to a
-  // pattern or a passthrough would otherwise turn this line into a live
-  // frontmatter-injection point with nothing behind it.
-  const learningKey = `${kebab(learning.type)}/${kebab(subjectOrTitle)}`;
+  // THE key. Derived through the shared `learningKeyOf` so the writer and every
+  // reader (engine's rejection path, validate/check-learning-provenance,
+  // learnings/candidates dedupe, claude-md-drift-check) compute one identity
+  // from one rule. This line previously kebab'd the TYPE half, which no reader
+  // does: harmless while every live type is kebab-identical, and silently
+  // divergent in both directions the moment one is not — the writer stamps one
+  // key into `.claude/rules/*.md` + `reconcile-candidates.jsonl` while every
+  // reader computes another, so dedupe stops matching with nothing failing.
+  //
+  // The injection hazard that motivated the kebab is closed downstream and
+  // LOUDLY: the key becomes an unquoted `learning-key:` frontmatter scalar, and
+  // `renderer.mjs` asserts `LEARNING_KEY_RE` (`/^[a-z0-9/-]+$/`) on it before
+  // rendering. A type carrying a newline/colon/quote is therefore rejected with
+  // an auditable reason instead of being silently re-keyed here — the same
+  // reject-don't-degrade posture as the `host_class` guard above.
+  const learningKey = learningKeyOf(learning);
+  if (learningKey === null) {
+    throw new Error(
+      'emitter: unkeyable learning (no usable type, or no title/subject that slugs to a non-empty token) — ' +
+        'refusing to emit; `learning_key` is the dedupe identity, and a record without one would either ' +
+        'stamp a rule no reader can resolve back to a learning or collide with every other unkeyable record ' +
+        'of its type.',
+    );
+  }
 
   const confidence = typeof learning.confidence === 'number' ? learning.confidence : 0;
 

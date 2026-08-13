@@ -479,6 +479,129 @@ describe('pruneLearnings — caller-dropped ids are tombstoned', () => {
   });
 });
 
+describe('pruneLearnings — records the caller cannot be reconciled BY ID are still rescued', () => {
+  // The reconciliation identity for these records is `subject`, not `id` — the
+  // whole point is that `id` is unusable. `subject` is unique per fixture here
+  // and survives the round-trip verbatim, so the store ∪ archive UNION over
+  // subjects is the same "every record still resolves" assertion the id-set
+  // union makes elsewhere. Never a count: consolidation legitimately turns two
+  // records into one, so a plausible count survives a real loss.
+  function subjectsIn(filePathArg) {
+    return readJsonl(filePathArg).map((e) => e.subject);
+  }
+
+  it('a record with an EMPTY id that the next generation omits is archived, not deleted', async () => {
+    // TV-001 — the bug: step (3) skipped any record without a usable `id`
+    // (`if (typeof id !== 'string' || id.length === 0) continue;`). `keep` is
+    // built from `next` alone, so such a record was in neither bucket and the
+    // store rewrite deleted it with no archive line — surviving only in the
+    // `.bak-<ISO>` snapshot until keep-3 rotation evicted it. Restore that
+    // `continue` and this goes RED: the union loses `orphan-no-id`.
+    const keepMe = learning({ id: 'keep-me', subject: 'kept' });
+    const idless = learning({ id: '', subject: 'orphan-no-id' });
+    for (const e of [keepMe, idless]) {
+      e.expires_at = new Date(Date.now() + 30 * DAY_MS).toISOString();
+    }
+    writeJsonl(filePath, [keepMe, idless]);
+
+    const result = await pruneLearnings({
+      filePath,
+      archivePath,
+      entries: [keepMe], // caller's next generation omits the id-less record
+      dryRun: false,
+    });
+
+    expect(result.byReason).toEqual({ pruned: 1 });
+    expect(subjectsIn(filePath)).toEqual(['kept']);
+
+    const resolvable = new Set([...subjectsIn(filePath), ...subjectsIn(archivePath)]);
+    expect([...resolvable].sort()).toEqual(['kept', 'orphan-no-id']);
+    expect(readJsonl(archivePath)[0]._archive_reason).toBe('pruned');
+  });
+
+  it('an id-less record the next generation KEEPS is not tombstoned, on this run or the next', async () => {
+    // TV-001 — the bug this pins is the NAIVE fix for the one above: archiving
+    // every id-less record unconditionally. That record is also in `keep`, so
+    // it would live in the store AND gain one fresh archive line on every prune
+    // — unbounded archive growth on the DEFAULT (`--entries`-less) invocation,
+    // the same "duplicates the archive append every time" failure the KEEP
+    // probe exists to prevent. Drop the fingerprint fallback from reconcileKey
+    // and this goes RED with archived: 1 on run 1 and 2 lines after run 2.
+    const idless = learning({ id: '', subject: 'stays-put' });
+    idless.expires_at = new Date(Date.now() + 30 * DAY_MS).toISOString();
+    writeJsonl(filePath, [idless]);
+
+    const first = await pruneLearnings({ filePath, archivePath, dryRun: false });
+    expect(first.archived).toBe(0);
+    expect(existsSync(archivePath)).toBe(false);
+
+    const second = await pruneLearnings({ filePath, archivePath, dryRun: false });
+    expect(second.archived).toBe(0);
+    expect(subjectsIn(filePath)).toEqual(['stays-put']);
+    expect(existsSync(archivePath)).toBe(false);
+  });
+
+  it('a surplus copy of a DUPLICATE id is archived, not silently dropped by the rewrite', async () => {
+    // TV-001 — the bug, one level down from the id-less hole: step (3) tested
+    // SET MEMBERSHIP of `id`. Two on-disk records sharing an id against ONE
+    // entry in `next` meant both were skipped while `keep` held a single copy —
+    // the surplus was deleted with no archive line. Swap the multiset back to
+    // `new Set(...)` + `nextIds.has(id)` and this goes RED: `surplus-copy`
+    // resolves in neither file.
+    const winner = learning({ id: 'same-id', subject: 'winner-copy' });
+    const surplus = learning({ id: 'same-id', subject: 'surplus-copy' });
+    for (const e of [winner, surplus]) {
+      e.expires_at = new Date(Date.now() + 30 * DAY_MS).toISOString();
+    }
+    writeJsonl(filePath, [winner, surplus]);
+
+    const result = await pruneLearnings({
+      filePath,
+      archivePath,
+      entries: [winner],
+      dryRun: false,
+    });
+
+    expect(result.byReason).toEqual({ pruned: 1 });
+    const resolvable = new Set([...subjectsIn(filePath), ...subjectsIn(archivePath)]);
+    expect([...resolvable].sort()).toEqual(['surplus-copy', 'winner-copy']);
+  });
+
+  it('an archive-write failure leaves every on-disk record — id-less included — still resolvable', async () => {
+    // Crash-safety invariant for the PRUNE path (the sweep path has its own
+    // copy above). Stated positively: when the pipeline dies partway, every
+    // record must remain in AT LEAST ONE of {store, archive}, never in NEITHER.
+    // unwritablePath() fails the archive append for every uid, root included.
+    // Swap the append/rewrite order in archiveThenRewrite and this goes RED —
+    // the store is already rewritten to `keep` when the archive write dies, so
+    // both dropped records resolve nowhere.
+    if (process.platform === 'win32') return;
+    const keepMe = learning({ id: 'keep-me', subject: 'kept' });
+    const dropMe = learning({ id: 'drop-me', subject: 'dropped-with-id' });
+    const idless = learning({ id: '', subject: 'dropped-no-id' });
+    for (const e of [keepMe, dropMe, idless]) {
+      e.expires_at = new Date(Date.now() + 30 * DAY_MS).toISOString();
+    }
+    writeJsonl(filePath, [keepMe, dropMe, idless]);
+
+    await expect(
+      pruneLearnings({
+        filePath,
+        archivePath: unwritablePath('prune-archive'),
+        entries: [keepMe],
+        dryRun: false,
+      })
+    ).rejects.toThrow();
+
+    const resolvable = new Set([
+      ...subjectsIn(filePath),
+      ...subjectsIn(unwritablePath('prune-archive')),
+    ]);
+    expect([...resolvable].sort()).toEqual(['dropped-no-id', 'dropped-with-id', 'kept']);
+    expect(readdirSync(tmp).filter((f) => f.startsWith('learnings.jsonl.bak-'))).toHaveLength(0);
+  });
+});
+
 describe('pruneLearnings — consolidation tombstones the loser', () => {
   it('a duplicate (type, subject) loser is archived "superseded" pointing at the winner id', async () => {
     const lower = learning({ id: 'dup-low', subject: 'same-subject', confidence: 0.4 });

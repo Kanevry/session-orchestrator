@@ -394,6 +394,10 @@ export function reconstructRecord({ rule, note, now = new Date().toISOString() }
   }
 
   // type — from the mirror note body; cross-checked against the learning-key prefix.
+  // Reading the prefix AS the type is only sound because the key's type half is
+  // verbatim, never slugged (`learnings/kebab.mjs::learningKeyOf` decision 1) —
+  // the subject half below is the lossy one, which is why it can only ever be
+  // labelled `derived:learning-key-slug`.
   const keyType = rule.learningKey ? rule.learningKey.split('/')[0] : null;
   if (note.type) {
     rec.type = note.type;

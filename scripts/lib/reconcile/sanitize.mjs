@@ -1,5 +1,6 @@
 /**
- * sanitize.mjs — Untrusted-text containment for reconciler-rendered rules (#1015).
+ * sanitize.mjs — Untrusted-text containment for agent-authored text that is
+ * DELIVERED INTO AN AGENT PROMPT (#1015).
  *
  * A rendered `.claude/rules/<slug>.md` is not an ordinary artifact: Claude Code
  * delivers rule files to EVERY agent in EVERY session as a project instruction,
@@ -8,6 +9,15 @@
  * values. The blast radius starts the moment the writer renames the temp file
  * into place, and there is no revocation. This module is the containment layer
  * the renderer applies at the render point.
+ *
+ * It is deliberately the containment SSOT for EVERY prompt-delivery channel in
+ * the repo, not only the reconciler's: `scripts/lib/learnings/select.mjs` renders
+ * the per-agent learnings index out of the SAME agent-authored corpus and
+ * delivers it into the SAME dispatch prompt, so it imports the primitives here
+ * rather than growing a second copy of them. A second copy is how the index
+ * channel shipped unhardened beside the hardened rules channel in the first
+ * place — {@link WRAPPER_FORGERY_LITERALS} and {@link deriveFenceToken} live here
+ * precisely so a new channel inherits the census and the framing for free.
  *
  * -- Two strategies, one dividing line ---------------------------------------
  * The line is NOT "how dangerous is this field" — it is *can a correct value be
@@ -54,7 +64,12 @@
  * @module reconcile/sanitize
  */
 
-import { stripDangerousInvisibles } from '../validate/check-unicode-safety.mjs';
+import { createHash } from 'node:crypto';
+
+import {
+  isDangerousInvisibleCodePoint,
+  stripDangerousInvisibles,
+} from '../validate/check-unicode-safety.mjs';
 
 // ---------------------------------------------------------------------------
 // Byte budgets (literal constants — no `0 = unlimited` sentinel, matching the
@@ -78,6 +93,19 @@ export const EVIDENCE_MAX_BYTES = 5_000;
 
 /** Hard cap on the H1 title (derived from `title`/`subject`, which carry NO schema length constraint). */
 export const TITLE_MAX_BYTES = 256;
+
+/**
+ * Hard cap on the frontmatter `description:` scalar — a REJECT bound, not a
+ * truncation: `description` is a machine value here (see the dividing line
+ * above), so an over-long one is refused rather than repaired.
+ *
+ * 512 B sits comfortably above the only production producer's own limit
+ * (`emitter.mjs` `DESCRIPTION_MAX = 120` CHARS, i.e. ≤480 B even at 4 bytes per
+ * char), so no emitter-built description can ever hit it. It binds on the path
+ * the emitter's cap does not: `renderRule` is exported and callable with
+ * hand-built metadata.
+ */
+export const DESCRIPTION_MAX_BYTES = 512;
 
 // ---------------------------------------------------------------------------
 // Provenance envelope.
@@ -107,25 +135,35 @@ const ENVELOPE_TOKEN_RE = /untrusted-content:(?:start|end)/gi;
 const ENVELOPE_TOKEN_REDACTION = '[redacted-envelope-marker]';
 
 // ---------------------------------------------------------------------------
-// Wrapper-forgery literals (REJECT — the only two content literals that do).
+// Wrapper-forgery literals (REJECT — the only content literals that do).
 //
-// `scripts/print-applicable-rules.mjs` delivers rules to an agent as
-//   `## Applicable Rules (scoped to this wave)\n\n<rule>\n\n---\n\n<rule>…`
-// captured into an `<APPLICABLE-RULES>` block (skills/wave-executor/wave-loop.md).
-// Either literal below forges that wrapper/block boundary inside the delivered
-// prompt — the reading agent can no longer tell where the harness's own framing
-// ends and the untrusted record begins.
+// TWO delivery channels prepend agent-authored text to the SAME dispatch prompt
+// (skills/wave-executor/wave-loop.md):
+//   - `scripts/print-applicable-rules.mjs` → an `<APPLICABLE-RULES>` block headed
+//     `## Applicable Rules (scoped to this wave)`;
+//   - `scripts/print-learnings-index.mjs` → a `<LEARNINGS-INDEX>` block headed
+//     `## Learnings Index (selected for your file scope)`.
+// Any literal below forges one of those wrapper/block boundaries inside the
+// delivered prompt — after which the reading agent can no longer tell where the
+// harness's own framing ends and the untrusted record begins. The list covers
+// BOTH channels' literals regardless of which channel is doing the sanitising:
+// the two blocks land in one prompt, so a learning that forges the RULES wrapper
+// is exactly as dangerous as one that forges its own.
 //
-// Census (2026-08-12, `grep -rac` over all 29 files in `.claude/rules/`, HEAD):
-// 0 occurrences of EITHER literal. Rejecting on them therefore costs nothing.
-// Matched case-INSENSITIVELY: a lowercased forgery reads identically to an LLM,
-// and the zero-occurrence census holds for both cases.
+// Census (2026-08-13, HEAD 5d59e62 — `grep -racF` per literal): 0 occurrences of
+// any of the four across all 29 files in `.claude/rules/` AND across the 100
+// records of `.orchestrator/metrics/learnings.jsonl`. Rejecting on them
+// therefore costs nothing. Matched case-INSENSITIVELY: a lowercased forgery
+// reads identically to an LLM, and the zero-occurrence census holds for both
+// cases.
 // ---------------------------------------------------------------------------
 
 /** @type {readonly string[]} */
 export const WRAPPER_FORGERY_LITERALS = Object.freeze([
   '</APPLICABLE-RULES>',
   '## Applicable Rules (scoped',
+  '</LEARNINGS-INDEX>',
+  '## Learnings Index (selected',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -160,6 +198,42 @@ const CONTROL_RE = /\p{Cc}/u;
 // rule body); CR, ANSI escapes (U+001B — which would inject terminal escapes
 // into any operator who `cat`s the file) and the rest are dropped.
 const CONTROL_GLOBAL_RE = /\p{Cc}/gu;
+
+/**
+ * The first dangerous-invisible code point in `text`, or `null`.
+ *
+ * `\p{Cc}` above is the Unicode **Control** category — C0, DEL, C1 — and that is
+ * ALL it is. The smuggling code points are category **Cf** (format) and are
+ * therefore invisible to it: the Unicode Tag block (U+E0000–U+E007F, the ASCII-
+ * smuggling channel an LLM reads and a human reviewer cannot see), the bidi
+ * embed/override/isolate ranges, the zero-width set, U+00AD, U+FEFF. A machine
+ * value asserted with `\p{Cc}` alone therefore passed a Tag-block payload
+ * straight into a delivered frontmatter scalar.
+ *
+ * The judgement is `check-unicode-safety.mjs`'s own code-point table, IMPORTED —
+ * the repo-wide validator, `sanitizeProse`'s strip, and this reject test are
+ * then one table by construction and cannot drift into disagreeing about what
+ * "invisible" means.
+ *
+ * @param {string} text
+ * @returns {number|null} the offending code point, or null when clean
+ */
+function firstDangerousInvisible(text) {
+  for (const ch of text) {
+    const cp = ch.codePointAt(0);
+    if (isDangerousInvisibleCodePoint(cp)) return cp;
+  }
+  return null;
+}
+
+/**
+ * Format a code point as `U+XXXX` for a rejection message.
+ * @param {number} cp
+ * @returns {string}
+ */
+function formatCodePoint(cp) {
+  return `U+${cp.toString(16).toUpperCase().padStart(4, '0')}`;
+}
 
 /**
  * Build the rejection error for a machine value. Message prefix is stable
@@ -198,7 +272,9 @@ export function assertMachineToken(value, { field, pattern }) {
 }
 
 /**
- * Assert that a single-line frontmatter value carries no control character.
+ * Assert that a single-line frontmatter value carries neither a control
+ * character nor a dangerous invisible.
+ *
  * A newline is the ONE escape the hand-rolled loader parser has: it starts a new
  * top-level key, so an unguarded value can inject `alwaysApply: true` /
  * `expires-at: 2099-01-01` and turn a narrowly-scoped expiring rule into a
@@ -206,10 +282,16 @@ export function assertMachineToken(value, { field, pattern }) {
  * the expiry sweep, because each guards the EMITTER's values, not the
  * SERIALISED ones.
  *
+ * The invisible half guards a different consumer: the value is delivered to a
+ * READING AGENT, and a Tag-block payload is text to the model while being
+ * nothing at all to the operator reviewing the file. See
+ * {@link firstDangerousInvisible} for why `\p{Cc}` alone never caught it.
+ *
  * @param {unknown} value
  * @param {string} field
  * @returns {string} the value, unchanged, when it passes
- * @throws {Error} when the value is not a string or contains a control character
+ * @throws {Error} when the value is not a string, contains a control character,
+ *   or contains a dangerous invisible
  */
 export function assertNoControlChars(value, field) {
   if (typeof value !== 'string') {
@@ -218,7 +300,53 @@ export function assertNoControlChars(value, field) {
   if (CONTROL_RE.test(value)) {
     throw rejection(field, 'must not contain control characters (frontmatter escape)', value);
   }
+  const invisible = firstDangerousInvisible(value);
+  if (invisible !== null) {
+    throw rejection(
+      field,
+      `must not contain the dangerous invisible ${formatCodePoint(invisible)} (invisible to a reviewer, text to a model)`,
+      value,
+    );
+  }
   return value;
+}
+
+/**
+ * Assert that the frontmatter `description:` scalar is safe to deliver.
+ *
+ * `description` is the ONE agent-authored value the renderer emits OUTSIDE the
+ * {@link UNTRUSTED_BEGIN}/{@link UNTRUSTED_END} envelope, and it cannot be moved
+ * inside it: the envelope is an HTML-comment pair in the markdown BODY, while
+ * `description:` is a frontmatter scalar read by a hand-rolled line parser
+ * (`rule-loader.mjs`) that would take the comment itself as the description's
+ * value. So it gets EQUIVALENT NEUTRALISATION instead of framing — the three
+ * properties the envelope would otherwise have bought:
+ *
+ *   1. no frontmatter escape and no smuggled invisibles (the assert above);
+ *   2. no delivery-wrapper forgery (an unframed value that closes the
+ *      `<APPLICABLE-RULES>` or `<LEARNINGS-INDEX>` wrapper is precisely the
+ *      escape the envelope exists to make impossible);
+ *   3. a bounded injection budget ({@link DESCRIPTION_MAX_BYTES}).
+ *
+ * REJECTS rather than repairs, like every other machine value here.
+ *
+ * @param {unknown} value
+ * @returns {string} the description, unchanged, when it passes
+ * @throws {Error} on a non-string, a control char, a dangerous invisible, a
+ *   wrapper-forgery literal, or an over-budget length
+ */
+export function assertSafeDescription(value) {
+  const text = assertNoControlChars(value, 'description');
+  assertNoWrapperForgery(text, 'description');
+  const bytes = Buffer.byteLength(text, 'utf8');
+  if (bytes > DESCRIPTION_MAX_BYTES) {
+    throw rejection(
+      'description',
+      `must not exceed ${DESCRIPTION_MAX_BYTES} bytes (got ${bytes})`,
+      text,
+    );
+  }
+  return text;
 }
 
 /**
@@ -246,6 +374,17 @@ export function assertSafeGlob(glob) {
     throw rejection(
       'globs[]',
       'must not contain control characters (ends the sequence block)',
+      glob,
+    );
+  }
+  const invisible = firstDangerousInvisible(glob);
+  if (invisible !== null) {
+    // Same Cf gap as the description scalar: a glob line is delivered verbatim
+    // in the frontmatter an agent reads, and an invisible inside it also makes
+    // the pattern un-matchable against any real path while LOOKING correct.
+    throw rejection(
+      'globs[]',
+      `must not contain the dangerous invisible ${formatCodePoint(invisible)}`,
       glob,
     );
   }
@@ -345,4 +484,35 @@ export function sanitizeProse(text, { field, maxBytes }) {
 
   const { text: capped, truncated, bytes } = truncateToBytes(framed, maxBytes);
   return truncated ? `${capped}${truncationNote(bytes, maxBytes)}` : capped;
+}
+
+/**
+ * Derive a fence token from the payload it is about to fence.
+ *
+ * The delivery-side half of containment: a block of untrusted text is only
+ * recoverable by its consumer if no part of that text can spell the block's own
+ * closing tag. Hashing the payload and RE-DERIVING until the token is provably
+ * absent from it makes that guarantee STRUCTURAL rather than probabilistic — the
+ * returned token is checked against the exact bytes it will fence.
+ *
+ * Content-derived rather than random on purpose: identical input yields
+ * byte-identical output (so a CLI built on this stays reproducible and
+ * diffable), and `.claude/rules/security.md` SEC-015 forbids `Math.random()`
+ * for a security-relevant value anyway. Each iteration is a fresh 32-bit draw
+ * against a fixed payload, so termination is immediate in practice; the cap
+ * exists only so a pathological input cannot spin, and its fallback (the full
+ * 64-hex digest, which no realistic payload contains) still satisfies the
+ * guarantee.
+ *
+ * @param {string} payload - the exact text this token must fence
+ * @returns {string} a hex token provably absent from `payload`
+ */
+export function deriveFenceToken(payload) {
+  const text = String(payload);
+  const digest = (salt) => createHash('sha256').update(`${salt}\n${text}`).digest('hex');
+  for (let salt = 0; salt < 64; salt++) {
+    const token = digest(salt).slice(0, 8);
+    if (!text.includes(token)) return token;
+  }
+  return digest(64);
 }
