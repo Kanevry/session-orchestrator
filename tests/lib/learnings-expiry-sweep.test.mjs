@@ -1,12 +1,15 @@
 /**
  * tests/lib/learnings-expiry-sweep.test.mjs
  *
- * Vitest suite for scripts/lib/learnings/expiry-sweep.mjs (Epic #723 B4).
+ * Vitest suite for scripts/lib/learnings/expiry-sweep.mjs (Epic #723 B4 +
+ * issue #1017).
  *
  * Covers: grace-window partitioning (kept vs archived), archive tagging
  * (_archived_at / _archive_reason), dry-run no-op, backup-on-apply (proves
  * rewriteLearnings' #721 safety net fires), append-only archive semantics
- * across repeated sweeps, and the missing-store zeroed result.
+ * across repeated sweeps, the missing-store zeroed result, and — for the
+ * decision-driven `pruneLearnings` sibling (#1017) — reason routing, caller-drop
+ * tombstoning, consolidation `_superseded_by`, and the fail-closed reason enum.
  *
  * All timestamps are relative to Date.now() at test-run time — no absolute
  * date fixtures (avoids future TTL-expiry time bombs).
@@ -16,7 +19,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { sweepExpiredLearnings } from '@lib/learnings/expiry-sweep.mjs';
+import {
+  ARCHIVE_REASONS,
+  pruneLearnings,
+  sweepExpiredLearnings,
+} from '@lib/learnings/expiry-sweep.mjs';
 import { unwritablePath } from '../_helpers/unwritable-path.mjs';
 
 const DAY_MS = 86_400_000;
@@ -245,6 +252,36 @@ describe('sweepExpiredLearnings — archive is append-only', () => {
 // ---------------------------------------------------------------------------
 
 describe('sweepExpiredLearnings — invalid KEEP record safety', () => {
+  it('two consecutive --apply runs with an invalid KEEP record never accumulate archive copies', async () => {
+    // Guard for the failure mode the dryRun:true KEEP probe exists to prevent:
+    // without the probe, run 1 appends `archive-me` to the archive and THEN
+    // blows up in the real rewrite, leaving the store unpruned — so run 2
+    // appends the SAME record a second time, forever, on every retry.
+    // Asserted on the parsed archive multiset (not a count, not toContain):
+    // with the probe it stays empty; delete the probe and it reads
+    // ['archive-me'] after run 1 and ['archive-me', 'archive-me'] after run 2.
+    const invalidKeep = learning({
+      id: 'invalid-keep',
+      confidence: 5, // fails validateLearning, survives readLearnings -> KEEP bucket
+      expires_at: new Date(Date.now() + 30 * DAY_MS).toISOString(),
+    });
+    const archiveMe = learning({
+      id: 'archive-me',
+      expires_at: new Date(Date.now() - 30 * DAY_MS).toISOString(),
+    });
+    writeJsonl(filePath, [invalidKeep, archiveMe]);
+    const before = readFileSync(filePath, 'utf8');
+
+    for (const run of [1, 2]) {
+      await expect(
+        sweepExpiredLearnings({ filePath, archivePath, dryRun: false }),
+        `run ${run}`
+      ).rejects.toThrow(/confidence/);
+      expect(readJsonl(archivePath).map((e) => e.id)).toEqual([]);
+      expect(readFileSync(filePath, 'utf8')).toBe(before);
+    }
+  });
+
   it('an invalid-but-parseable KEEP record throws BEFORE the archive append or store rewrite', async () => {
     // Passes JSON.parse + readLearnings/normalizeLearning (which never throws
     // on a bad record) but fails validateLearning's confidence range check.
@@ -295,5 +332,233 @@ describe('sweepExpiredLearnings — invalid KEEP record safety', () => {
     expect(readFileSync(filePath, 'utf8')).toBe(before);
     const backups = readdirSync(tmp).filter((f) => f.startsWith('learnings.jsonl.bak-'));
     expect(backups).toHaveLength(0);
+
+    // Ordering invariant, stated positively (#1017): a failure at the archive
+    // step must leave the record in AT LEAST ONE of {store, archive} — never in
+    // NEITHER. Asserted on the union of parsed id SETS, not on record counts: a
+    // count survives a merge that replaces two records with one, an id set does
+    // not. Swap the append/rewrite order in expiry-sweep.mjs and this goes RED
+    // (the store is already pruned when the archive write fails -> empty union).
+    const survivingIds = new Set([
+      ...readJsonl(filePath).map((e) => e.id),
+      ...readJsonl(archivePath).map((e) => e.id),
+    ]);
+    expect(survivingIds.has('archive-me')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pruneLearnings — decision-driven sibling (#1017)
+// ---------------------------------------------------------------------------
+
+function idsIn(filePathArg) {
+  return readJsonl(filePathArg).map((e) => e.id);
+}
+
+describe('pruneLearnings — expired/zero-confidence records are archived, never deleted', () => {
+  it('an expired record leaves the store into the archive tagged _archive_reason: expired', async () => {
+    // The #1017 defect verbatim: /evolve pruned `expires_at < now` by rewriting
+    // the store with `>` and no archive append, so 11 of 13 rendered
+    // learning-id provenance pointers resolved to nothing. Delete the archive
+    // append (or route this through a bare rewriteLearnings) and this goes RED.
+    const expired = learning({
+      id: 'expired-one',
+      expires_at: new Date(Date.now() - 1 * DAY_MS).toISOString(),
+    });
+    const live = learning({
+      id: 'live-one',
+      subject: 'other',
+      expires_at: new Date(Date.now() + 30 * DAY_MS).toISOString(),
+    });
+    writeJsonl(filePath, [expired, live]);
+
+    const result = await pruneLearnings({ filePath, archivePath, dryRun: false });
+
+    expect(result.kept).toBe(1);
+    expect(result.archived).toBe(1);
+    expect(result.byReason).toEqual({ expired: 1 });
+    expect(idsIn(filePath)).toEqual(['live-one']);
+
+    const archived = readJsonl(archivePath);
+    expect(archived.map((e) => e.id)).toEqual(['expired-one']);
+    expect(archived[0]._archive_reason).toBe('expired');
+    expect(Number.isFinite(Date.parse(archived[0]._archived_at))).toBe(true);
+  });
+
+  it('a decayed record (confidence <= 0) is archived as "pruned", not dropped', async () => {
+    const decayed = learning({
+      id: 'decayed-one',
+      confidence: 0,
+      expires_at: new Date(Date.now() + 30 * DAY_MS).toISOString(),
+    });
+    writeJsonl(filePath, [decayed]);
+
+    const result = await pruneLearnings({ filePath, archivePath, dryRun: false });
+
+    expect(result.byReason).toEqual({ pruned: 1 });
+    expect(idsIn(filePath)).toEqual([]);
+    expect(readJsonl(archivePath).map((e) => [e.id, e._archive_reason])).toEqual([
+      ['decayed-one', 'pruned'],
+    ]);
+  });
+
+  it('dryRun mutates nothing and takes no backup', async () => {
+    const expired = learning({
+      id: 'expired-one',
+      expires_at: new Date(Date.now() - 1 * DAY_MS).toISOString(),
+    });
+    writeJsonl(filePath, [expired]);
+    const before = readFileSync(filePath, 'utf8');
+
+    const result = await pruneLearnings({ filePath, archivePath, dryRun: true });
+
+    expect(result).toEqual({
+      scanned: 1,
+      kept: 0,
+      archived: 1,
+      byReason: { expired: 1 },
+      dryRun: true,
+      archivePath,
+    });
+    expect(readFileSync(filePath, 'utf8')).toBe(before);
+    expect(existsSync(archivePath)).toBe(false);
+    expect(readdirSync(tmp).filter((f) => f.startsWith('learnings.jsonl.bak-'))).toHaveLength(0);
+  });
+});
+
+describe('pruneLearnings — caller-dropped ids are tombstoned', () => {
+  it('an id present on disk but absent from the next generation is archived, not lost', async () => {
+    // The mechanical guarantee that makes the prose-driven caller safe: whatever
+    // an LLM-authored next store generation omits gets a tombstone instead of
+    // vanishing. Every id present before the call must still resolve in
+    // store ∪ archive afterwards — asserted on id SETS, not counts.
+    const keepMe = learning({ id: 'keep-me', subject: 'a' });
+    const dropMe = learning({ id: 'drop-me', subject: 'b' });
+    for (const e of [keepMe, dropMe]) {
+      e.expires_at = new Date(Date.now() + 30 * DAY_MS).toISOString();
+    }
+    writeJsonl(filePath, [keepMe, dropMe]);
+
+    const result = await pruneLearnings({
+      filePath,
+      archivePath,
+      entries: [keepMe], // caller silently dropped `drop-me`
+      dryRun: false,
+    });
+
+    expect(result.byReason).toEqual({ pruned: 1 });
+    expect(idsIn(filePath)).toEqual(['keep-me']);
+
+    const resolvable = new Set([...idsIn(filePath), ...idsIn(archivePath)]);
+    expect([...resolvable].sort()).toEqual(['drop-me', 'keep-me']);
+    expect(readJsonl(archivePath)[0]._archive_reason).toBe('pruned');
+  });
+
+  it('a dropReason function routes a merge to _archive_reason: merged + _merged_into', async () => {
+    const source = learning({ id: 'source-1', subject: 'a' });
+    const target = learning({ id: 'target-1', subject: 'b' });
+    for (const e of [source, target]) {
+      e.expires_at = new Date(Date.now() + 30 * DAY_MS).toISOString();
+    }
+    writeJsonl(filePath, [source, target]);
+
+    const result = await pruneLearnings({
+      filePath,
+      archivePath,
+      entries: [target],
+      dropReason: () => ({ reason: 'merged', mergedInto: 'target-1' }),
+      dryRun: false,
+    });
+
+    expect(result.byReason).toEqual({ merged: 1 });
+    const archived = readJsonl(archivePath);
+    expect(archived).toHaveLength(1);
+    expect(archived[0].id).toBe('source-1');
+    expect(archived[0]._archive_reason).toBe('merged');
+    expect(archived[0]._merged_into).toBe('target-1');
+  });
+});
+
+describe('pruneLearnings — consolidation tombstones the loser', () => {
+  it('a duplicate (type, subject) loser is archived "superseded" pointing at the winner id', async () => {
+    const lower = learning({ id: 'dup-low', subject: 'same-subject', confidence: 0.4 });
+    const higher = learning({ id: 'dup-high', subject: 'same-subject', confidence: 0.9 });
+    for (const e of [lower, higher]) {
+      e.expires_at = new Date(Date.now() + 30 * DAY_MS).toISOString();
+    }
+    writeJsonl(filePath, [lower, higher]);
+
+    const result = await pruneLearnings({ filePath, archivePath, dryRun: false });
+
+    expect(result.byReason).toEqual({ superseded: 1 });
+    expect(idsIn(filePath)).toEqual(['dup-high']);
+
+    const archived = readJsonl(archivePath);
+    expect(archived.map((e) => e.id)).toEqual(['dup-low']);
+    expect(archived[0]._archive_reason).toBe('superseded');
+    expect(archived[0]._superseded_by).toBe('dup-high');
+  });
+
+  it('null/empty-subject duplicates are NEVER collapsed (#284)', async () => {
+    const a = learning({ id: 'empty-a', subject: '', confidence: 0.4 });
+    const b = learning({ id: 'empty-b', subject: '', confidence: 0.9 });
+    for (const e of [a, b]) {
+      e.expires_at = new Date(Date.now() + 30 * DAY_MS).toISOString();
+    }
+    writeJsonl(filePath, [a, b]);
+
+    const result = await pruneLearnings({ filePath, archivePath, dryRun: false });
+
+    expect(result.archived).toBe(0);
+    expect(idsIn(filePath)).toEqual(['empty-a', 'empty-b']);
+    expect(existsSync(archivePath)).toBe(false);
+  });
+});
+
+describe('pruneLearnings — archive-reason enum is fail-closed', () => {
+  it('an unknown reason throws with the store and archive untouched', async () => {
+    const dropMe = learning({
+      id: 'drop-me',
+      expires_at: new Date(Date.now() + 30 * DAY_MS).toISOString(),
+    });
+    writeJsonl(filePath, [dropMe]);
+    const before = readFileSync(filePath, 'utf8');
+
+    await expect(
+      pruneLearnings({
+        filePath,
+        archivePath,
+        entries: [],
+        dropReason: 'deleted', // not in ARCHIVE_REASONS
+        dryRun: false,
+      })
+    ).rejects.toThrow(/archive reason must be one of/);
+
+    expect(readFileSync(filePath, 'utf8')).toBe(before);
+    expect(existsSync(archivePath)).toBe(false);
+  });
+
+  it('a "merged" verdict without _merged_into throws — no pointer-less tombstones', async () => {
+    const dropMe = learning({
+      id: 'drop-me',
+      expires_at: new Date(Date.now() + 30 * DAY_MS).toISOString(),
+    });
+    writeJsonl(filePath, [dropMe]);
+
+    await expect(
+      pruneLearnings({
+        filePath,
+        archivePath,
+        entries: [],
+        dropReason: 'merged',
+        dryRun: false,
+      })
+    ).rejects.toThrow(/requires a non-empty _merged_into pointer/);
+
+    expect(existsSync(archivePath)).toBe(false);
+  });
+
+  it('ARCHIVE_REASONS is the closed four-value vocabulary', async () => {
+    expect([...ARCHIVE_REASONS]).toEqual(['expired', 'pruned', 'superseded', 'merged']);
   });
 });

@@ -262,6 +262,14 @@ if (runCheck('check-dead-bridge.mjs') !== 0) checkFailed = 1;
 process.stdout.write('\n');
 runCheck('check-unwired-features.mjs');
 
+// WARN-only (#1017), same rationale as the census above: 11 of 13 provenance
+// pointers in .claude/rules/ dangle at the time this check landed, so a blocking
+// gate would be red on arrival. The exit code is deliberately ignored; a tool
+// error still surfaces because that path prints FAIL: lines, which runCheck
+// tallies into totalFail.
+process.stdout.write('\n');
+runCheck('check-learning-provenance.mjs');
+
 // ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------

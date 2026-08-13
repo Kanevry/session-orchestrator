@@ -244,7 +244,7 @@ If user selects "Skip all" or selects nothing, abort gracefully: "No learnings s
 
 For confirmed learnings, use atomic rewrite strategy:
 
-1. Read ALL existing lines from `.orchestrator/metrics/learnings.jsonl` (if exists) into memory. If not found, check `<state-dir>/metrics/learnings.jsonl` as a legacy fallback. If legacy data is found, it will be migrated to the v2 path on write (step 8).
+1. Read ALL existing lines from `.orchestrator/metrics/learnings.jsonl` (if exists) into memory. If not found, check `<state-dir>/metrics/learnings.jsonl` as a legacy fallback. If legacy data is found, it will be migrated to the v2 path on write (step 5).
 2. Apply confidence updates for confirmed existing learnings:
    - Increment confidence by +0.15
    - Cap at 1.0
@@ -262,14 +262,67 @@ For confirmed learnings, use atomic rewrite strategy:
    - `created_at`: current ISO 8601 date
    - `expires_at`: preserve the candidate's derived expiry when supplied; otherwise derive from `LEARNING_TTL_DAYS[type]` via `deriveExpiresAt()` (falling back to the schema default) rather than hard-coding a 30-day horizon
    - `file_paths` (optional): repo-relative path(s) scoping the learning to specific files/directories. Required for a learning to ever become `/reconcile`-eligible (issue #900; see `docs/rule-authoring.md` § "Learning Type-Taxonomy, TTL & Provenance Standard"). For a `fragile-file` candidate, `file_paths: [subject]` is mechanically derivable — `subject` already IS the file path.
-5. **Verify write**: Read back the first line of the written file to confirm valid JSON. If read-back fails or is not valid JSON, report error to user.
-6. **Prune:** remove entries where `expires_at` < current date OR `confidence` <= 0.0
-7. **Consolidate duplicates (NULL-SUBJECT SAFE):** if same `type` + `subject` appears more than once
-   AND `subject` is a non-empty string, keep the entry with highest confidence.
-   Entries with null/empty/missing `subject` are NEVER collapsed — each is keyed by its unique `id`
-   and always preserved. (Fix for issue #284: empty-subject dedupe collapse.)
-8. Write entire result back to `.orchestrator/metrics/learnings.jsonl` with `>` (atomic rewrite, NOT append `>>`)
-9. **Vault mirror (conditional):** Check `$CONFIG."vault-integration".enabled` via jq. If the field is missing or `false`, skip this step entirely — skill behavior is unchanged.
+5. **Write the next generation through the archive-safe pipeline — NEVER a `>` redirect (#1017).**
+
+   Steps 6–8 (prune, consolidate, rewrite) are **not prose you execute by hand**. They are
+   `pruneLearnings()` in `scripts/lib/learnings/expiry-sweep.mjs`, the same module (and the same
+   crash-safe ordering, KEEP-batch probe, and `.bak-<ISO>` snapshot) the expiry sweep uses. Until
+   #1017, this step said "write entire result back with `>`" — with no archive append at all, which
+   deleted 11 of 13 `learning-id` provenance targets referenced by rendered `.claude/rules/*.md`.
+   Do not hand-roll a `jq | ... > learnings.jsonl` pass; it bypasses every #721 safety net.
+
+   Write the full next-generation entry set (existing entries **with** the step-2/3 confidence
+   updates, **plus** the step-4 new learnings) as JSONL to a temp sidecar **via the Write tool**
+   (not a shell `>` redirect — the destructive-command guard blocks it), then invoke:
+
+   ```bash
+   NEXT=".orchestrator/metrics/.learnings-next.jsonl"   # written by the step above
+   STORE=".orchestrator/metrics/learnings.jsonl"
+   ARCHIVE=".orchestrator/metrics/learnings-archive.jsonl"
+
+   NEXT="$NEXT" STORE="$STORE" ARCHIVE="$ARCHIVE" node --input-type=module -e '
+   import { readLearnings } from "./scripts/lib/learnings/io.mjs";
+   import { pruneLearnings } from "./scripts/lib/learnings/expiry-sweep.mjs";
+   const { entries, malformed } = await readLearnings(process.env.NEXT);
+   if (malformed.length > 0) {
+     console.error(`evolve: refusing to write — ${malformed.length} malformed line(s) in ${process.env.NEXT}`);
+     process.exit(1);
+   }
+   const r = await pruneLearnings({
+     filePath: process.env.STORE,
+     archivePath: process.env.ARCHIVE,
+     entries,
+     dryRun: false,
+   });
+   console.log(JSON.stringify(r));
+   ' && rm -f "$NEXT"
+   ```
+
+   `pruneLearnings()` performs steps 6 + 7 + 8 mechanically and archives **every** record that
+   leaves the store, tagged with `_archived_at` + an `_archive_reason` from the closed enum
+   `expired | pruned | superseded | merged`:
+
+   - **6. Prune** — `expires_at` < now → `expired`; `confidence <= 0.0` → `pruned`.
+   - **7. Consolidate duplicates (NULL-SUBJECT SAFE)** — same `type` + non-empty `subject`: the
+     highest-confidence entry wins; each loser is archived `superseded` with a
+     `_superseded_by: <winning id>` tombstone. Entries with null/empty/missing `subject` are NEVER
+     collapsed — each is keyed by its unique `id` and always preserved (issue #284).
+   - **8. Rewrite** — via `rewriteLearnings()`: full schema validation, a `.bak-<ISO>` snapshot
+     (keep-3 rotation), then an atomic tmp+rename. Any id you drop from the temp sidecar without
+     an explicit reason is archived `pruned` automatically — the store can no longer lose a record
+     silently, whatever the next generation omits.
+
+   No `graceDays` here, deliberately: `/evolve` re-stamps `expires_at` on every reinforced learning
+   in steps 2–3 of THIS run, strictly before the prune, so an entry still expired at prune time is
+   one the analyzer just declined to reinforce. (The sweep's 14-day grace exists to protect entries
+   from being archived *before* that reinforcement pass runs — a hazard that cannot occur here.)
+
+   Report the returned `{scanned, kept, archived, byReason}` alongside the counts in the final
+   summary line. On a non-zero exit, do NOT retry with a shell rewrite — surface the error. The
+   old "read back the first line to confirm valid JSON" check is redundant here: `rewriteLearnings()`
+   round-trip-validates EVERY line before any byte reaches disk (#662), and the `malformed` guard
+   above rejects an unparseable sidecar before the store is touched at all.
+6. **Vault mirror (conditional):** Check `$CONFIG."vault-integration".enabled` via jq. If the field is missing or `false`, skip this step entirely — skill behavior is unchanged.
 
    If `enabled` is `true`:
 
@@ -390,20 +443,24 @@ If user selects "Boost confidence", "Reduce confidence", "Delete specific learni
 
 ### Step 4.4: Apply Changes
 
-Use the same atomic rewrite strategy as Phase 3, Step 3.5:
+Use the same archive-safe pipeline as Phase 3, Step 3.5 — **never** a hand-rolled `>` rewrite (#1017):
 
 1. Read all lines from `learnings.jsonl`
 2. Apply the selected operation to selected learnings:
    - **Boost:** +0.15 confidence (cap 1.0), reset expires_at to +`learning-expiry-days`
    - **Reduce:** -0.2 confidence
-   - **Delete:** remove selected entries
+   - **Delete:** omit the selected entries from the next generation — do NOT delete them by hand.
+     `pruneLearnings()` detects every id that left the store and archives it with
+     `_archive_reason: "pruned"`, so a `learning-id` referenced by a rendered rule stays resolvable.
    - **Extend:** reset expires_at to current date + `learning-expiry-days`
-3. Prune entries where `expires_at` < current date OR `confidence` <= 0.0
-4. Consolidate duplicates (same `type` + non-empty `subject`): keep highest confidence.
-   Null-subject entries are preserved individually (keyed by `id`). See SKILL.md #284 fix note.
-5. Write entire result back with `>` (atomic rewrite)
+3. Steps 3–5 of the old prose (prune / consolidate / rewrite) are `pruneLearnings()` — run the
+   **exact** Step 3.5(5) invocation, passing the post-operation entry set as `entries`. It prunes
+   (`expires_at` < now → `expired`; `confidence <= 0.0` → `pruned`), consolidates duplicates
+   (same `type` + non-empty `subject`, highest confidence wins, loser archived `superseded` with
+   `_superseded_by`; null-subject entries preserved individually per #284), and rewrites through
+   `rewriteLearnings()` with its `.bak-<ISO>` snapshot.
 
-Report: "Updated N learnings. Total active: K."
+Report: "Updated N learnings. Total active: K. Archived: A (<byReason>)."
 
 ---
 
@@ -534,13 +591,22 @@ Cross-reference: PRD #506 AC1-AC4 + EARS gates. Vault Integration: dialectic doe
 - **ALWAYS** use uuid-v4 for new learning IDs (generate via `uuidgen` or equivalent bash command)
 - **ALWAYS** preserve a candidate-supplied `expires_at`; otherwise derive it from `LEARNING_TTL_DAYS[type]` via `deriveExpiresAt()` rather than hard-coding `learning-expiry-days`
 - **ALWAYS** present findings to user before writing — no silent writes
-- **ALWAYS** use atomic rewrite (read all, modify, write all with `>`) — never append with `>>`
+- **ALWAYS** route store writes through `pruneLearnings()` / `rewriteLearnings()` — never a shell
+  `>` rewrite and never an append `>>`. Those helpers own the schema validation, the `.bak-<ISO>`
+  snapshot, and the atomic tmp+rename; a hand-rolled redirect owns none of them (#721, #1017)
+- **ALWAYS** let a removed entry land in `learnings-archive.jsonl` — a record may leave the STORE,
+  but it may never leave the CORPUS. Rendered `.claude/rules/*.md` cite `learning-id` as provenance;
+  a hard delete turns that citation into a dangling pointer (#1017 measured 11 of 13 dead)
 - **ALWAYS** cap confidence at 1.0 — never exceed
 
 ## Anti-Patterns
 
 - **DO NOT** write learnings without user confirmation — always present via AskUserQuestion first (on Codex CLI where AskUserQuestion is unavailable, present as a numbered Markdown list)
-- **DO NOT** append to `learnings.jsonl` — always use atomic rewrite (read all, modify, write all)
+- **DO NOT** append to `learnings.jsonl` with `>>`, and **DO NOT** rewrite it with `>` — call
+  `pruneLearnings()` (Step 3.5(5)); a shell redirect bypasses validation, backup, and the archive
+- **DO NOT** hard-delete a learning. Every record that leaves the store is archived with an
+  `_archive_reason` (`expired` | `pruned` | `superseded` | `merged`) and, for the last two, a
+  `_superseded_by` / `_merged_into` tombstone naming its replacement
 - **DO NOT** create duplicate learnings — always check type + subject match first
 - **DO NOT** set confidence above 1.0 or forget to cap it
 - **DO NOT** fabricate patterns — only extract from actual session data with verifiable evidence
