@@ -312,12 +312,39 @@ describe('check-learning-provenance — dangling provenance census', () => {
     // grow (`testing.md` § Dynamic Artifact Counts).
     const result = await inspectLearningProvenance(REPO_ROOT);
     expect(result.toolError).toBe(false);
-    expect(result.stores.live.present).toBe(true);
+
+    // The live store is GITIGNORED (`.gitignore:37 .orchestrator/metrics/*.jsonl`),
+    // so it exists on a developer machine and NOT on a fresh CI clone. Pinning
+    // `.present` to true made this test pass locally and fail on CI — a test that
+    // depended on untracked state. Assert the contract that holds either way, and
+    // branch on the absence case rather than assuming it away: with no store to
+    // resolve against, the collector must report ZERO dangling pointers rather
+    // than declaring every provenance block dead.
+    // The rule corpus is tracked, so these hold on any checkout.
     expect(result.summary.rulesScanned).toBeGreaterThanOrEqual(10);
     expect(result.summary.rulesWithProvenance).toBeGreaterThanOrEqual(1);
     expect(result.summary.rulesWithProvenance).toBeLessThanOrEqual(result.summary.rulesScanned);
-    expect(result.summary.resolved + result.summary.dangling + result.summary.superseded).toBe(
-      result.summary.rulesWithProvenance,
-    );
+
+    // The stores are NOT. `.gitignore:37` ignores `.orchestrator/metrics/*.jsonl`,
+    // so they exist on a developer machine and are absent on a fresh CI clone.
+    // The earlier form pinned `stores.live.present` to true and asserted the sum
+    // invariant unconditionally — both pass locally and fail on CI, because they
+    // encoded untracked state as a fact. Branch on it instead: each side is a real
+    // contract, and the absent side is the one worth guarding.
+    expect(typeof result.stores.live.present).toBe('boolean');
+    if (result.stores.live.present || result.stores.archive.present) {
+      // A pointer resolves, dangles, or is superseded — exactly one, no leaks.
+      expect(result.summary.resolved + result.summary.dangling + result.summary.superseded).toBe(
+        result.summary.rulesWithProvenance,
+      );
+    } else {
+      // With nothing to resolve against, the collector must stay silent rather
+      // than declare every provenance block dead. A tool that reported 13 dangling
+      // here would turn an absent store into a fake integrity alarm on every fresh
+      // clone — which is precisely the false-positive this branch pins.
+      expect(result.summary.dangling).toBe(0);
+      expect(result.summary.resolved).toBe(0);
+      expect(result.summary.superseded).toBe(0);
+    }
   });
 });
