@@ -263,6 +263,7 @@ For each agent in this wave:
       - Which files to read/modify (exact paths)
       - Acceptance criteria (how to verify done)
       - Relevant patterns — injected automatically as the <APPLICABLE-RULES> block (see Pre-Dispatch: Glob-Scoped Rule Injection below)
+      - Relevant past learnings — injected automatically as the <LEARNINGS-INDEX> block, computed PER AGENT from its file scope (see Pre-Dispatch: Learnings-Index Injection below)
       - Any repo-state fact carried from an earlier wave: in the ASSERTED/UNVERIFIED form, never as a bare value (see Pre-Dispatch: Fact-Staleness Annotation above)
       - VCS issue reference if applicable
       - What NOT to touch (other agents' files)
@@ -419,6 +420,40 @@ After `wave-scope.json` is written for this wave and before assembling the `Agen
 When `$RULES_BLOCK` is empty (no `.claude/rules/`, no matching rules, or any CLI failure), dispatch the agent unchanged. Because the block is computed once per wave, the same `$RULES_BLOCK` is reused for every agent dispatched in this wave — narrow waves (e.g. only `scripts/**` or only `tests/**` files) receive a smaller rule set, which is the #336 token-reduction payoff.
 
 This replaces the older prose slot "Relevant patterns from `<state-dir>/rules/`" in the `Agent()` template above: the `<APPLICABLE-RULES>` block IS that injection, now mechanically scoped to the wave instead of left to the coordinator's judgement.
+
+#### Pre-Dispatch: Learnings-Index Injection (#1014)
+
+> **Read this first — it is computed PER AGENT, unlike the block directly above.** The rule injection you just read states "Per-wave scoping (not per-agent): the rule set is computed ONCE per wave". This step is the opposite: **run the CLI once for EACH agent**, because per-agent differentiation IS the acceptance criterion — an agent scoped to `scripts/lib/learnings/**` must receive different entries than its sibling scoped to `skills/**`. Model it on **Pre-Dispatch Grounding Injection (#85)** above, not on its immediate neighbour. Computing it once and reusing it across the wave silently reduces this feature to a worse version of the coordinator banner that already exists.
+
+89 learnings have accumulated across 233 sessions, and a dispatched wave agent receives **zero** of them: the only read paths are a coordinator banner, an autopilot call, and a nudge banner — none reaches an agent prompt. This step closes that loop by prepending a compact, relevance-ranked INDEX of learnings to each agent's prompt.
+
+**Why this does not repeat the #931b mistake.** `docs/instruction-delivery.md` measured that adding a SECOND delivery path alongside Claude Code's native project-instruction loading costs **+72%** (292,836 B vs 169,961 B) — which is why the rule block above carries a "measure before you inject" warning. That warning does **not** transfer here, and not as a matter of argument: learnings have no native delivery path to duplicate. `learnings.jsonl` lives under `.orchestrator/metrics/`, is not a project-instruction file, is not `@`-imported from CLAUDE.md, and reaches nothing agent-facing today. This is the FIRST path, and it rides the dispatch-prompt channel this repo already owns and writes itself — no new mechanism is introduced. It is also bounded by a code constant (`LEARNINGS_INDEX_MAX_CHARS = 2000`, ~1.1% of the measured 178,095 B per-agent prompt baseline) with no `0 = unlimited` sentinel, so it cannot grow into the corpus it indexes.
+
+**An INDEX, not a corpus.** One line per learning plus a retrieval pointer; an agent that needs a full entry greps it by subject. Measured: 12 entries in this form = 1,469 B.
+
+**Gate:** runs when `.orchestrator/metrics/learnings.jsonl` exists. When it does not — or when nothing clears the confidence floor, or the corpus is unreadable — the CLI prints nothing and exits 0. Same best-effort convention as every injector above (Grounding `:307`, Frontmatter-Guard `:386`, Path-Cousin-Guard `:208`): silent no-op on any failure, **never blocks dispatch**. Any non-zero exit means "inject nothing, continue".
+
+**Zero new coordinator obligations.** The per-agent file scope this needs is the SAME `$AGENT_FILESCOPE_JSON` temp file the Pre-Dispatch Scope-Union Assertion (#796, see `## Scope Manifest` § 3) already requires you to write for every agent in every `Agent()` batch. Reuse that file — do not write a second one.
+
+**Invocation:** once per agent, immediately after that agent's `$AGENT_FILESCOPE_JSON` is written, capture stdout as `$LEARNINGS_INDEX`:
+
+    LEARNINGS_INDEX="$(node "$PLUGIN_ROOT/scripts/print-learnings-index.mjs" \
+      --file-scope "$AGENT_FILESCOPE_JSON" \
+      --task-text "<the agent's task title / one-line description>" 2>/dev/null)"
+
+`--task-text` is optional and feeds the token axis of the affinity primitive; omitting it yields path-only ranking. **Resolution ladder** (mirrors Grounding Injection `:309`): the agent's own `--file-scope` → the wave-level `allowedPaths` from `.claude/wave-scope.json` (automatic fallback when the agent has no declared "Files:" scope) → empty scope, in which case only the general tier is selected. Caps are `--max-scoped` (default 8) and `--max-global` (default 4) — **split, never shared**, so the general tier can never crowd out the per-agent signal.
+
+**Prompt assembly:** when `$LEARNINGS_INDEX` is non-empty, prepend it to THAT agent's prompt:
+
+    <LEARNINGS-INDEX>
+    $LEARNINGS_INDEX
+    </LEARNINGS-INDEX>
+
+    <original prompt>
+
+When it is empty (no corpus, no qualifying entries, or any CLI failure), dispatch that agent unchanged — the prompt is then byte-identical to the legacy one.
+
+**Instrumentation (why this one is measurable and its neighbours are not).** The rule injection above is a SHOULD and emits no signal either way, so "did the coordinator actually inject?" has been unanswerable after the fact — a gap the #1014 discovery wave had to leave open. This CLI emits `orchestrator.learnings.index.injected` to `.orchestrator/metrics/events.jsonl` (via `scripts/emit-event.mjs`, the canonical `emitEvent()` path — the same route `scripts/compute-grounding-injection.sh` uses for `orchestrator.grounding.injected`), carrying `count`, `scope_matched`, `global_count`, `candidates`, `truncated`, `bytes`, and `scope_source`. The before/after measurement is therefore a fact in the event log, not a matter of prose compliance. Emission is best-effort and suppressible with `--no-event`; a failed emit never blocks dispatch.
 
 #### Structured Reasoning (STATE:/PLAN:) — opt-in via `reasoning-output: true` (#79)
 
