@@ -91,6 +91,7 @@
 import { readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
+import { kebab } from '../learnings/kebab.mjs';
 import { migrateLegacyLearning, normalizeLearning } from '../learnings/schema.mjs';
 import { filterEligible } from './eligibility.mjs';
 import { toActivationMetadata } from './emitter.mjs';
@@ -195,11 +196,7 @@ function rejectedLearningKey(learning) {
     (typeof rec.title === 'string' && rec.title !== '' ? rec.title : '') ||
     (typeof rec.subject === 'string' && rec.subject !== '' ? rec.subject : '');
   if (type === '' || subjectOrTitle === '') return null;
-  const kebab = subjectOrTitle
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return `${type}/${kebab}`;
+  return `${type}/${kebab(subjectOrTitle)}`;
 }
 
 /**

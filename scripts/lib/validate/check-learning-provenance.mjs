@@ -127,6 +127,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readLearnings } from '../learnings/io.mjs';
+import { kebab } from '../learnings/kebab.mjs';
 
 /** Directory holding the rule corpus, relative to the plugin root. */
 const RULES_REL = path.join('.claude', 'rules');
@@ -185,23 +186,6 @@ const LEARNING_KEY_RE = /^[-*][ \t]+learning-key:[ \t]*(.+)$/m;
 function displayPath(pluginRoot, absolutePath) {
   const rel = path.relative(pluginRoot, absolutePath);
   return rel === '' || rel.startsWith('..') || path.isAbsolute(rel) ? absolutePath : rel;
-}
-
-/**
- * Slugify into the stable kebab token the reconcile layer uses for learning
- * keys. Duplicated (third copy: `reconcile/renderer.mjs` `kebab()` and
- * `reconcile/engine.mjs` `rejectedLearningKey()`) because neither is exported
- * and both live in modules outside this change's file scope — consolidating the
- * three into one shared helper is a follow-up, not a silent divergence.
- *
- * @param {string} value
- * @returns {string}
- */
-function kebab(value) {
-  return String(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
 }
 
 /**

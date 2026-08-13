@@ -25,9 +25,9 @@ import {
   parseRuleProvenance,
   parseVaultNote,
   vaultSlugFor,
-  kebabKey,
   locateNote,
 } from '../../scripts/backfill-learnings-from-vault.mjs';
+import { kebab } from '../../scripts/lib/learnings/kebab.mjs';
 import { renderRule } from '../../scripts/lib/reconcile/renderer.mjs';
 import { generateLearningNote } from '../../scripts/lib/vault-mirror/render-learnings.mjs';
 import { unwritablePath } from '../_helpers/unwritable-path.mjs';
@@ -92,7 +92,7 @@ function makeFixture(specs, { storeSeed = [] } = {}) {
 
   for (const spec of specs) {
     const l = spec.learning;
-    const key = `${l.type}/${kebabKey(l.subject)}`;
+    const key = `${l.type}/${kebab(l.subject)}`;
     const { content: ruleText, slug } = renderRule(l, {
       globs: spec.globs ?? ['tests/**', 'scripts/**'],
       description: l.insight.slice(0, 60),
@@ -445,7 +445,7 @@ describe('pure helpers', () => {
   // hyphenating — the #725 D1 collapse defect).
   it('vaultSlugFor mirrors the vault-mirror slug derivation', () => {
     expect(vaultSlugFor('POSIX tr|cmp is the only portable detector')).toBe('posix-trcmp-is-the-only-portable-detector');
-    expect(kebabKey('POSIX tr|cmp is the only portable detector')).toBe('posix-tr-cmp-is-the-only-portable-detector');
+    expect(kebab('POSIX tr|cmp is the only portable detector')).toBe('posix-tr-cmp-is-the-only-portable-detector');
   });
 
   // Bug: a note that is not a learning note (a daily note, a session note)

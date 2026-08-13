@@ -43,6 +43,7 @@
 
 import { createHash } from 'node:crypto';
 
+import { kebab } from '../learnings/kebab.mjs';
 import {
   EVIDENCE_ITEM_MAX_BYTES,
   EVIDENCE_MAX_BYTES,
@@ -59,20 +60,6 @@ import {
   assertSafeGlob,
   sanitizeProse,
 } from './sanitize.mjs';
-
-/**
- * Slugify a string into a stable kebab-case token: lowercases, collapses every
- * run of non-`[a-z0-9]` chars into a single `-`, and trims leading/trailing `-`.
- *
- * @param {string} s
- * @returns {string}
- */
-function kebab(s) {
-  return String(s)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
 
 /**
  * Short, stable SHA-1 prefix (first 7 hex chars) of an input string.

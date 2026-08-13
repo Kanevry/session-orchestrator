@@ -58,7 +58,7 @@
  * Exit codes: 0 completed (dry-run or apply) · 1 usage/config error · 2 system error.
  * Output: report on stdout, diagnostics on stderr.
  *
- * Exports (for tests): main, parseRuleProvenance, kebabKey, vaultSlugFor,
+ * Exports (for tests): main, parseRuleProvenance, vaultSlugFor,
  *   parseVaultNote, indexVaultNotes, locateNote, reconstructRecord.
  */
 
@@ -69,6 +69,7 @@ import { pathToFileURL } from 'node:url';
 import { findProjectRoot, resolveInstructionFile, expandTilde } from './lib/common.mjs';
 import { parseSessionConfig } from './lib/config.mjs';
 import { subjectToSlug, parseFrontmatter } from './lib/vault-mirror/utils.mjs';
+import { kebab } from './lib/learnings/kebab.mjs';
 import { validateLearning } from './lib/learnings/schema.mjs';
 import { appendLearning } from './lib/learnings/io.mjs';
 
@@ -83,21 +84,6 @@ const MIRROR_EVIDENCE_SENTINEL = '(none recorded)';
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Kebab-normalize a prose subject exactly the way the reconcile engine's
- * learning-key builder does (`engine.mjs::rejectedLearningKey`), so a rule H1
- * can be checked against the `learning-key` it was generated alongside.
- *
- * @param {string} s
- * @returns {string}
- */
-export function kebabKey(s) {
-  return String(s)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
 
 /**
  * Derive the vault note slug for a v1 learning subject, mirroring
@@ -429,7 +415,7 @@ export function reconstructRecord({ rule, note, now = new Date().toISOString() }
   const subjectCheck = crossCheck(
     'subject',
     keySubjectSlug,
-    rule.subject ? kebabKey(rule.subject) : null
+    rule.subject ? kebab(rule.subject) : null
   );
   if (rule.subject && subjectCheck === 'match') {
     rec.subject = rule.subject;
@@ -438,7 +424,7 @@ export function reconstructRecord({ rule, note, now = new Date().toISOString() }
     rec.subject = rule.subject;
     fidelity.subject = 'rule-provenance (H1, NOT confirmed against learning-key — may be a title alias)';
     if (subjectCheck === 'DIFFER') {
-      conflicts.push(`subject: kebab(H1)=${kebabKey(rule.subject)} != learning-key subject=${keySubjectSlug}`);
+      conflicts.push(`subject: kebab(H1)=${kebab(rule.subject)} != learning-key subject=${keySubjectSlug}`);
     }
   } else if (keySubjectSlug) {
     rec.subject = keySubjectSlug;

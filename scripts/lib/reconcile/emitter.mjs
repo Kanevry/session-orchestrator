@@ -30,6 +30,7 @@
 
 import { dirname } from 'node:path';
 
+import { kebab } from '../learnings/kebab.mjs';
 import { deriveExpiresAt } from '../learnings/schema.mjs';
 
 const DAY_MS = 86400 * 1000;
@@ -102,21 +103,6 @@ const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F]/g;
 // control char here would be a NUL-class corruption; see
 // .claude/rules/proven-pattern-nul-byte-corruption...).
 const CONTROL_CHARS_TEST_RE = new RegExp(CONTROL_CHARS_RE.source);
-
-/**
- * Slugify a string into a stable kebab-case token.
- * Lowercases, collapses every run of non-`[a-z0-9]` chars into a single `-`,
- * and trims leading/trailing `-`. UUID subjects produce ugly-but-stable keys.
- *
- * @param {string} s
- * @returns {string}
- */
-function kebab(s) {
-  return String(s)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
 
 // Glob metacharacters (issue #900-follow-up, Q3-MED). A top-level
 // (dirname==='.') file_paths entry is emitted AS THE GLOB ITSELF below — so a
