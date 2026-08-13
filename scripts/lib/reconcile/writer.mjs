@@ -9,7 +9,9 @@
  * Responsibilities:
  *  - Acquire a per-write file lock (`.orchestrator/rules.lock`) to serialise
  *    concurrent writers — mirrors PSA-005 (withStateMdLock) pattern.
- *  - For each approved proposal: path-safety guard → mkdirSync → atomic tmp+rename write.
+ *  - For each approved proposal: path-safety guard → STRUCTURAL content gate
+ *    (#1015, see {@link frontmatterRefusalReason}) → mkdirSync → atomic
+ *    tmp+rename write.
  *  - For each rejected proposal: JSONL-append to `.orchestrator/reconcile.rejected.log`.
  *  - Never throws — all failures are collected into errors[] and returned.
  *
@@ -44,6 +46,7 @@ import path from 'node:path';
 
 import { withFileLock } from '../file-lock.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
+import { parseGlobsFrontmatter } from '../rule-loader.mjs';
 
 // ---------------------------------------------------------------------------
 // Path constants (relative to repoRoot)
@@ -92,6 +95,89 @@ function writeTextAtomic(destPath, content) {
   const tmpPath = `${destPath}.${suffix}.tmp`;
   writeFileSync(tmpPath, content, 'utf8');
   renameSync(tmpPath, destPath);
+}
+
+/**
+ * STRUCTURAL content gate (#1015) — the last chokepoint before disk.
+ *
+ * Every other defence in this module is PATH-oriented (`validatePathInsideProject`,
+ * the `.claude/rules/` confinement assertion, the parent-symlink realpath check,
+ * the file lock). Not one of them inspects a single byte of `content`, so a rule
+ * document whose frontmatter was corrupted upstream — by an injected newline in
+ * an agent-authored field, or by truncation — reached disk unexamined.
+ *
+ * This gate re-parses the rendered document with the REAL loader parser and
+ * refuses the write when the document could not be audited or would load
+ * always-on. It is deliberately STRUCTURAL, not content-semantic: it never
+ * inspects or rewrites what the text SAYS, only whether the document still
+ * serialises to the frontmatter contract it claims. Neutralising agent text is
+ * the renderer's single responsibility; this gate does not duplicate it.
+ *
+ * Two proven injection outcomes it catches (both verified against the real
+ * parser + `rule-loader.mjs`):
+ *  - an injected `\n---` closes the frontmatter early → `globs` becomes null and
+ *    `learning-key`/`expires-at` are gone → `rule-loader.mjs` (~:519-530) pushes
+ *    the entry with `alwaysOn: true` and no expiry;
+ *  - an injected newline followed by a colon-less line → `parseGlobsFrontmatter`
+ *    THROWS → `rule-loader.mjs` (~:500-507) falls back to
+ *    `globs=null, meta={}, parseError=true` → always-on again, and with empty
+ *    meta it passes every gate by design.
+ *
+ * Scope note: the checks below fire only for a document that DECLARES
+ * `auto-generated: true` (plus the parse check, which applies to every
+ * document). The module's contract stays general — a caller may still write a
+ * document with no frontmatter — but every document the reconcile pipeline
+ * actually produces carries `auto-generated: true` on its first frontmatter
+ * line, so the machine-authored path is fully covered.
+ *
+ * Mirrors `scripts/lib/validate/check-rules.mjs`, which enforces the same
+ * invariants as a CI gate. Two enforcement points, one invariant: CI catches
+ * what is already on disk, this catches it before it lands.
+ *
+ * @param {string} content - the full rendered markdown document.
+ * @returns {string|null} a refusal reason, or `null` when the document is sound.
+ */
+function frontmatterRefusalReason(content) {
+  let parsed;
+  try {
+    parsed = parseGlobsFrontmatter(content);
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    return `frontmatter does not parse (${msg}) — rule-loader.mjs treats a parse error as ALWAYS-ON with empty meta, so this file would load in every context and pass every gate`;
+  }
+
+  const { globs, meta } = parsed;
+
+  // Not a machine-authored auto-generated rule → the never-always-on invariant
+  // does not bind (see the scope note above).
+  if (meta['auto-generated'] !== true) return null;
+
+  const problems = [];
+
+  const hasEmptyGlobs = Array.isArray(globs) && globs.length === 0;
+  const hasGlobs = Array.isArray(globs) && globs.length > 0;
+  const hasHostClass = Object.prototype.hasOwnProperty.call(meta, 'host-class');
+
+  if (hasEmptyGlobs) {
+    // NOT the "no axis" case and NOT always-on — the opposite: rule-loader.mjs
+    // excludes on `globs.length === 0` unconditionally, AFTER gating, so the
+    // rule never loads in ANY context even alongside a host-class: key.
+    problems.push('empty globs array (globs: []) — the rule would match nothing and never load in ANY context');
+  } else if (!hasGlobs && !hasHostClass) {
+    problems.push('no activation axis (globs absent AND host-class absent) — the rule would load always-on');
+  }
+  if (!Object.prototype.hasOwnProperty.call(meta, 'learning-key')) {
+    problems.push('missing required frontmatter key: learning-key');
+  }
+  if (!Object.prototype.hasOwnProperty.call(meta, 'expires-at')) {
+    problems.push('missing required frontmatter key: expires-at');
+  }
+  if (meta.alwaysApply === true) {
+    problems.push('alwaysApply: true on an auto-generated rule — the renderer only ever emits false');
+  }
+
+  if (problems.length === 0) return null;
+  return `auto-generated rule fails the never-always-on invariant: ${problems.join('; ')}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +305,14 @@ export async function writeApprovedRules({ approved, rejected = [], repoRoot, se
         // Guard: content must be a string
         if (typeof item.content !== 'string') {
           errors.push(`approved item "${item.path}" has non-string content — skipped`);
+          continue;
+        }
+
+        // Structural content gate (#1015) — runs BEFORE any mkdir/tmp-file
+        // creation, so a refused write leaves no `.tmp` residue behind.
+        const refusal = frontmatterRefusalReason(item.content);
+        if (refusal !== null) {
+          errors.push(`content-structure: "${item.path}" — ${refusal} — skipped`);
           continue;
         }
 

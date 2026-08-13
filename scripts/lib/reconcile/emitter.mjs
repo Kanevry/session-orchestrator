@@ -44,11 +44,64 @@ const DESCRIPTION_MAX = 120;
 // shortens a healthy future one.
 const MIN_RULE_DAYS_DEFAULT = 7;
 
+// ── #1015: field-shape gates (VALIDATION, never transformation) ──────────────
+// This emitter REJECTS agent-authored values whose SHAPE cannot be serialised
+// into frontmatter safely. It deliberately does NOT escape or neutralise
+// content: neutralisation of agent text happens exactly once, in the renderer's
+// render path. Escaping here as well would double-escape the output — a defect
+// invisible to a file-level diff, because each file still looks locally correct.
+// Rejection is idempotent, so it composes safely with the renderer's sanitiser.
+
+/**
+ * Accepted shape for `learning.host_class`.
+ *
+ * `host-class` is by far the highest-escalation field this emitter copies: the
+ * renderer serialises it UNQUOTED as `host-class: <value>`, so a newline in it
+ * injects sibling TOP-LEVEL frontmatter keys. An injected `alwaysApply: true`
+ * plus `expires-at: 2099-01-01` converts a scoped, expiring auto-generated rule
+ * into a permanent always-on one — defeating BOTH the never-always-on
+ * brandmauer below AND the expiry sweep, because each of those inspects the
+ * emitter's in-memory values rather than the serialised document.
+ *
+ * `validateLearning` (scripts/lib/learnings/schema.mjs) only asserts "string or
+ * null" for this field — ANY string, newlines included — and
+ * `validateProposalRecord` performs no unknown-key rejection, so every key on a
+ * proposal record is spread verbatim into the learning
+ * (scripts/lib/memory-proposals/sink.mjs). That is the mechanism that makes an
+ * attacker-shaped `host_class` reachable at all; this gate is where it stops.
+ *
+ * The pattern admits every value `classifyHost()` in scripts/lib/host-identity.mjs
+ * can produce (`macos-arm64-m4pro`, `linux-x86_64`, `windows-arm64`,
+ * `<osName>-<arch>`) with generous headroom, and rejects everything that could
+ * alter frontmatter structure: control chars, whitespace, `:`, `#`, quotes, and
+ * a leading `-` (a YAML sequence marker). The 64-char ceiling bounds the emitted
+ * line; the longest real value today is 17 chars, so the ceiling is inert in
+ * practice. Revisit if a future host taxonomy needs richer tokens.
+ */
+const HOST_CLASS_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+// Characters that make a `file_paths[]` entry unsafe to serialise as a glob.
+// The renderer emits each glob as `  - "<value>"`, so a control char (a newline
+// above all) breaks out of the block sequence into new top-level frontmatter
+// keys, and a quote character breaks out of the quoted scalar. Entries carrying
+// either are SKIPPED — the same defense-in-depth posture as the
+// glob-metacharacter guard below, and for the same reason: this emitter also
+// processes learnings.jsonl records that predate the #900 argv/schema guards.
+const UNSAFE_PATH_QUOTE_RE = /["']/;
+
 // Control chars: C0 range (U+0000–U+001F, includes \n \r \t) plus DEL (U+007F).
 // A newline in frontmatter would corrupt the YAML parse — stripping these is
 // critical. Written with \u escapes so the source stays pure ASCII.
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F]/g;
+
+// Non-global twin of CONTROL_CHARS_RE for stateless `.test()` calls. A /g regex
+// carries `lastIndex` across calls, so testing with CONTROL_CHARS_RE directly
+// would alternate true/false on identical input. Derived from the same `.source`
+// so the two can never drift — and so this line stays pure ASCII (a literal
+// control char here would be a NUL-class corruption; see
+// .claude/rules/proven-pattern-nul-byte-corruption...).
+const CONTROL_CHARS_TEST_RE = new RegExp(CONTROL_CHARS_RE.source);
 
 /**
  * Slugify a string into a stable kebab-case token.
@@ -83,8 +136,11 @@ const GLOB_METACHAR_RE = /[*?[\]{}]/;
  * the file sits at the repo top level (`dirname` === '.'), emit the bare
  * basename pattern instead of `./**` (e.g. `"foo.mjs"`). Entries containing a
  * glob metacharacter (`* ? [ ] { }`) are skipped entirely — see
- * {@link GLOB_METACHAR_RE}. Results are deduped, order-preserving on first
- * occurrence.
+ * {@link GLOB_METACHAR_RE} — as are entries carrying a control char or a quote
+ * character, which would break out of the renderer's `  - "<glob>"` sequence
+ * item into new top-level frontmatter keys (#1015; see
+ * {@link CONTROL_CHARS_TEST_RE} / {@link UNSAFE_PATH_QUOTE_RE}). Results are
+ * deduped, order-preserving on first occurrence.
  *
  * @param {string[]} filePaths
  * @returns {string[]}
@@ -95,6 +151,9 @@ function globsFromFilePaths(filePaths) {
   for (const raw of filePaths) {
     if (typeof raw !== 'string' || raw === '') continue;
     if (GLOB_METACHAR_RE.test(raw)) continue;
+    // #1015: frontmatter-structure guard. Skipping (never escaping) keeps this
+    // idempotent and non-overlapping with the renderer's sanitiser.
+    if (CONTROL_CHARS_TEST_RE.test(raw) || UNSAFE_PATH_QUOTE_RE.test(raw)) continue;
     const normalized = raw.replace(/\\/g, '/');
     const dir = dirname(normalized);
     const pattern = dir === '.' ? normalized : `${dir}/**`;
@@ -227,10 +286,25 @@ export function toActivationMetadata(learning, { ruleExpiryDays, now, minRuleDay
   const filePaths = Array.isArray(learning.file_paths) ? learning.file_paths : [];
   const globs = globsFromFilePaths(filePaths);
 
-  const hostClass =
-    typeof learning.host_class === 'string' && learning.host_class !== ''
-      ? learning.host_class
-      : undefined;
+  // #1015: `host_class` is copied straight into an UNQUOTED `host-class:`
+  // frontmatter line by the renderer, so its SHAPE is load-bearing. Reject a
+  // malformed value loudly rather than degrade to "no host axis" — a
+  // structurally-invalid host_class is a corruption/injection signal, and
+  // silently emitting the rest of the rule from the same record would hide it.
+  // The engine wraps each learning in its own try/catch, so this throw degrades
+  // to ONE recorded rejection with an auditable reason, never a crashed run.
+  let hostClass;
+  if (typeof learning.host_class === 'string' && learning.host_class !== '') {
+    if (!HOST_CLASS_RE.test(learning.host_class)) {
+      throw new Error(
+        `emitter: host_class has an unsafe shape (${JSON.stringify(learning.host_class)}) — refusing to emit; ` +
+          'the renderer serialises it as an unquoted `host-class:` line, so a newline / colon / quote there ' +
+          'injects sibling top-level frontmatter keys (e.g. alwaysApply: true + a far-future expires-at), ' +
+          `defeating the never-always-on brandmauer and the expiry sweep. Expected ${HOST_CLASS_RE.source}.`,
+      );
+    }
+    hostClass = learning.host_class;
+  }
 
   // The brandmauer: an auto-generated rule must carry ≥1 activation axis. If we
   // could derive neither a glob nor a host-class, refuse — never emit always-on.
@@ -241,7 +315,15 @@ export function toActivationMetadata(learning, { ruleExpiryDays, now, minRuleDay
   }
 
   const subjectOrTitle = learning.title || learning.subject || '';
-  const learningKey = `${learning.type}/${kebab(subjectOrTitle)}`;
+  // `learningKey` becomes an unquoted `learning-key:` frontmatter line. The
+  // subject half was already kebab'd; the TYPE half was not. Today that is safe
+  // only because `eligibility.mjs`'s inverted CONVERT_TYPES allow-list admits a
+  // fixed set of kebab-safe literals, for which `kebab()` is the identity — so
+  // this call changes no currently-reachable key. It is cheap insurance against
+  // the latent hazard the #1015 census flagged: widening that allow-list to a
+  // pattern or a passthrough would otherwise turn this line into a live
+  // frontmatter-injection point with nothing behind it.
+  const learningKey = `${kebab(learning.type)}/${kebab(subjectOrTitle)}`;
 
   const confidence = typeof learning.confidence === 'number' ? learning.confidence : 0;
 

@@ -13,11 +13,12 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { writeApprovedRules } from '../../../scripts/lib/reconcile/writer.mjs';
+import { parseGlobsFrontmatter } from '../../../scripts/lib/rule-loader.mjs';
 
 let tmpDir;
 
@@ -236,6 +237,195 @@ describe('writeApprovedRules — path traversal (MANDATORY security test)', () =
     expect(result.written).toBe(0);
     expect(result.errors.length).toBeGreaterThanOrEqual(1);
     expect(existsSync(join(tmpDir, '.claude', 'settings.json'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// STRUCTURAL CONTENT GATE (#1015) — the last chokepoint before disk.
+//
+// Every pre-existing defence in writer.mjs is PATH-oriented; not one byte of
+// `content` was inspected before this gate. These fixtures are written as
+// LITERAL documents rather than rendered, so they pin the writer's own contract
+// and stay independent of the renderer's (separately-owned) sanitiser.
+//
+// PAYLOAD NOTE — the injected key is `tier: always`, deliberately NOT
+// `expires-at:` or `globs:`. The renderer emits `expires-at`/`globs` LATER in
+// the same frontmatter block, so an injected copy of either is overwritten and
+// the attack reads GREEN even with no guard at all. `tier` is never emitted by
+// the renderer, so an injected `tier` SURVIVES — it is the payload that
+// actually discriminates. Do not "simplify" it back to expires-at.
+// ---------------------------------------------------------------------------
+
+/** A well-formed auto-generated rule document (the renderer's real shape). */
+function soundRuleDoc() {
+  return [
+    '---',
+    'auto-generated: true',
+    'alwaysApply: false',
+    'description: a benign description',
+    'globs:',
+    '  - "scripts/lib/x/**"',
+    'learning-key: fragile-pattern/x',
+    'confidence: 0.8',
+    'expires-at: 2099-09-30',
+    '---',
+    '',
+    '# Auto-generated rule: x',
+    '',
+  ].join('\n');
+}
+
+/** Case B — an injected `\n---` closes the frontmatter early. */
+function caseBDoc() {
+  return [
+    '---',
+    'auto-generated: true',
+    'alwaysApply: false',
+    'description: benign start',
+    'tier: always',
+    '---', // ← injected: everything below is body text, not frontmatter
+    'globs:',
+    '  - "scripts/lib/x/**"',
+    'learning-key: fragile-pattern/x',
+    'expires-at: 2099-09-30',
+    '---',
+    '',
+    '# body',
+    '',
+  ].join('\n');
+}
+
+/** Case E — an injected colon-less line makes the frontmatter unparseable. */
+function caseEDoc() {
+  return [
+    '---',
+    'auto-generated: true',
+    'alwaysApply: false',
+    'description: benign start',
+    'INJECTED LINE WITH NO COLON', // ← parseGlobsFrontmatter throws here
+    'tier: always',
+    'globs:',
+    '  - "scripts/lib/x/**"',
+    'learning-key: fragile-pattern/x',
+    'expires-at: 2099-09-30',
+    '---',
+    '',
+    '# body',
+    '',
+  ].join('\n');
+}
+
+/** Every entry currently in .claude/rules/ of the fixture repo. */
+function rulesDirEntries() {
+  return readdirSync(join(tmpDir, '.claude', 'rules'));
+}
+
+describe('writeApprovedRules — structural content gate (#1015)', () => {
+  it('writes a structurally sound auto-generated rule (the gate does not over-block)', async () => {
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'sound', path: '.claude/rules/sound.md', content: soundRuleDoc() }],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.written).toBe(1);
+    expect(result.errors).toEqual([]);
+
+    // Assert on the PARSED frontmatter, not a file-wide substring search: a
+    // file-wide toContain matches text anywhere in the document (including the
+    // body or a comment) and so passes for states the frontmatter never reaches.
+    const written = readFileSync(join(tmpDir, '.claude', 'rules', 'sound.md'), 'utf8');
+    const { globs, meta } = parseGlobsFrontmatter(written);
+    expect(globs).toEqual(['scripts/lib/x/**']);
+    expect(meta['learning-key']).toBe('fragile-pattern/x');
+    expect(meta['expires-at']).toBe('2099-09-30');
+    expect(meta.tier).toBeUndefined();
+  });
+
+  it('refuses Case B — an injected \\n--- truncates the frontmatter into an always-on rule', async () => {
+    // Verified against the real parser: globs → null, learning-key and
+    // expires-at gone, `auto-generated: true` and the injected `tier: always`
+    // survive. rule-loader.mjs then loads it with alwaysOn: true and no expiry.
+    // FALSIFICATION: without the gate this returns written:1 and the file lands.
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'case-b', path: '.claude/rules/case-b.md', content: caseBDoc() }],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.written).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toMatch(/content-structure/);
+    expect(existsSync(join(tmpDir, '.claude', 'rules', 'case-b.md'))).toBe(false);
+  });
+
+  it('refuses Case E — an injected colon-less line makes the frontmatter unparseable', async () => {
+    // This is the shape the CI validator used to SKIP: rule-loader.mjs catches
+    // the same throw and falls back to globs=null/meta={}/parseError=true, i.e.
+    // always-on AND clearing every gate. Unparseable means unsafe, not unknown.
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'case-e', path: '.claude/rules/case-e.md', content: caseEDoc() }],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.written).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toMatch(/does not parse/);
+    expect(existsSync(join(tmpDir, '.claude', 'rules', 'case-e.md'))).toBe(false);
+  });
+
+  it('refuses an auto-generated doc carrying alwaysApply: true', async () => {
+    const content = soundRuleDoc().replace('alwaysApply: false', 'alwaysApply: true');
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'always', path: '.claude/rules/always.md', content }],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.written).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(existsSync(join(tmpDir, '.claude', 'rules', 'always.md'))).toBe(false);
+  });
+
+  it('refuses an auto-generated doc with an empty globs array and no host-class', async () => {
+    const content = soundRuleDoc().replace('globs:\n  - "scripts/lib/x/**"', 'globs: []');
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'empty-globs', path: '.claude/rules/empty-globs.md', content }],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.written).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(existsSync(join(tmpDir, '.claude', 'rules', 'empty-globs.md'))).toBe(false);
+  });
+
+  it('leaves NO .tmp residue behind when a write is refused (crash-safety)', async () => {
+    // The gate runs BEFORE mkdir/tmp-file creation, so a refusal must not leak
+    // a half-written `<target>.XXXXXXXX.tmp`. A surviving tmp file would be a
+    // partially-visible rule fragment sitting inside .claude/rules/.
+    const result = await writeApprovedRules({
+      approved: [
+        { slug: 'case-b', path: '.claude/rules/case-b.md', content: caseBDoc() },
+        { slug: 'case-e', path: '.claude/rules/case-e.md', content: caseEDoc() },
+      ],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.written).toBe(0);
+    expect(result.errors).toHaveLength(2);
+    // Assert on the directory listing (a parsed unit), not on a single path.
+    expect(rulesDirEntries()).toEqual([]);
+  });
+
+  it('isolates per item — one sound doc lands while a poisoned sibling is refused', async () => {
+    const result = await writeApprovedRules({
+      approved: [
+        { slug: 'case-b', path: '.claude/rules/case-b.md', content: caseBDoc() },
+        { slug: 'sound', path: '.claude/rules/sound.md', content: soundRuleDoc() },
+      ],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.written).toBe(1);
+    expect(result.errors).toHaveLength(1);
+    expect(rulesDirEntries()).toEqual(['sound.md']);
   });
 });
 
