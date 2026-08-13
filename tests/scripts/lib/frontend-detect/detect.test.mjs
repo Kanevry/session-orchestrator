@@ -143,7 +143,7 @@ describe('detectContent — output shape + config', () => {
 
   it('a single rule that throws does not crash the whole scan', () => {
     // Sanity: feeding adversarial input never throws.
-    const weird = ' '.repeat(50) + 'cubic-bezier(' + 'x'.repeat(10);
+    const weird = String.fromCharCode(0).repeat(50) + 'cubic-bezier(' + 'x'.repeat(10);
     expect(() => detectContent(weird, 'x.css')).not.toThrow();
   });
 });

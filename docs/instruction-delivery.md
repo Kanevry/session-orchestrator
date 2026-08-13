@@ -432,6 +432,30 @@ index the thing §5 forbids?* — with numbers rather than with an assurance.
 already receiving. The index sends **1,405–1,727 bytes the agent receives nowhere else**:
 **+0.79% to +0.97%** of the re-measured baseline.
 
+> **⚠ Amendment, 2026-08-13 — every byte figure in §7 below is PRE-FRAMING.**
+>
+> §7 was measured at `c87102b`. A review panel then found that this block shipped
+> agent-authored text with none of the neutralisation `<APPLICABLE-RULES>` had received in
+> the same session — no fence, no wrapper-forgery rejection, no invisible-character
+> stripping. The fix added a content-derived block fence and a framing preamble, at a
+> **constant +320 B** independent of entry count.
+>
+> Re-measured by the coordinator after the fix (2 scopes, `wc -c` on the real CLI):
+> `scripts/lib/reconcile/**` → **2,047 B** (was 1,727); `docs/**` → **1,234 B** (was 914).
+>
+> | | §7 as measured | after framing |
+> |---|---:|---:|
+> | band | 912–1,727 B | **1,234–2,047 B** |
+> | share of the 178,096 B baseline | +0.51% – +0.97% | **+0.69% – +1.15%** |
+> | ceiling (entry caps lifted) | 2,221 B / +1.25% | **2,541 B / +1.43%** |
+>
+> The 92× argument is unaffected — the comparison is against +122,875 B, and +320 B does not
+> move it. `LEARNINGS_INDEX_MAX_CHARS = 2000` is likewise untouched: the framing sits outside
+> the capped body, as the header and retrieval pointer already did.
+>
+> The per-scope table in §7.2 and the figures in §7.4 are left at their measured values rather
+> than overwritten, so each keeps the SHA it was taken at. Read them as pre-framing.
+
 ### 7.1 The baseline, re-measured — and it did not drift
 
 The wave-1 baseline was captured at `0fbea29`. Re-measuring at `c87102b` (3 commits later,

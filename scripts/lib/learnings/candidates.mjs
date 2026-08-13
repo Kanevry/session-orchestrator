@@ -15,7 +15,7 @@
  *     here decides, merges, rewrites, or deletes a learning.
  *   - **Not a clustering pass.** No transitive closure, no union-find, no
  *     connected components — see accepted failure mode 2 below. Measured: even
- *     at K=3 the directed pool graph collapses into a 99-of-100 giant component,
+ *     at K=3 the pool graph collapses into an 81-of-94 (86%) giant component,
  *     so "cluster the corpus" returns *the corpus*.
  *   - **Not a ranker of quality.** `confidence` is carried through as metadata
  *     and never scored on. Recency decay lives in `surface.mjs::effectiveScore`;
@@ -33,9 +33,19 @@
  *
  * ## The algorithm (measured, not preferred)
  *
- * A wave-1 discovery pass measured the live corpus (100 records, 2026-08-13) and
- * fixed every threshold below against ground truth. They are measured knees. Do
- * not re-tune them from taste; re-measure or leave them alone.
+ * A wave-1 discovery pass fixed every threshold below against a hand-labelled
+ * ground-truth set. They are measured knees. Do not re-tune them from taste;
+ * re-measure or leave them alone.
+ *
+ * **Measurement provenance (PSA-006).** Every corpus figure below is a SNAPSHOT,
+ * not a standing fact — the corpus grows each session and records expire out of
+ * it, which moves counts, IDF weights and therefore individual pair scores. All
+ * figures marked `[m]` were re-measured **2026-08-13 @5d59e62** against
+ * `.orchestrator/metrics/learnings.jsonl`: **100 records, 6 expired, 94 in the
+ * scored pool, 4,371 pairs.** Figures marked `[gt]` derive from the wave-1
+ * ground-truth LABELS, which were never persisted to the repo — they are the
+ * original measurement, are NOT reproducible from the tree, and must be
+ * re-derived (not re-cited) if a threshold is ever revisited.
  *
  * **Stage 0 — corpus prep (once per run).**
  *   1. Read through the existing funnel (`io.mjs::readLearnings` →
@@ -55,15 +65,22 @@
  * **Stage 1 — tokenisation.** `subject ∪ insight`, lowercased, split on every
  * non-`[a-z0-9]` run, length > 2, minus {@link STOPWORDS}.
  *
- *   - `evidence` is deliberately EXCLUDED: 63.4% of the vocabulary is already
- *     hapax and `evidence` is dense with dates and one-off identifiers. (It may
- *     also legally be an array — `schema.mjs` documents this and does not
- *     coerce it.)
- *   - The **German half of the stoplist is mandatory, not optional.** 7 of 89
- *     measured records are German, and the single highest-scoring pair in the
- *     entire corpus (0.356 — above every ground-truth pair) was a German↔German
- *     pair driven purely by shared function words. Without it, the score
- *     measures *language*, not content.
+ *   - `evidence` is deliberately EXCLUDED: 64.4% of the vocabulary is already
+ *     hapax `[m]` and `evidence` is dense with dates and one-off identifiers.
+ *     (It may also legally be an array — `schema.mjs` documents this and does
+ *     not coerce it.)
+ *   - The **German half of the stoplist is mandatory, not optional.** 7 of 100
+ *     records are German `[m]`, and the highest-scoring pair in the entire
+ *     corpus is a German↔German pair whose score is inflated by shared function
+ *     words: 0.3523 with the German stoplist DISABLED vs 0.2584 with it enabled
+ *     `[m]` — a 27% reduction attributable to function words alone. Without the
+ *     stoplist the score measures *language*, not content.
+ *
+ *     Scope note (re-measurement 2026-08-13): the stoplist SUPPRESSES that
+ *     inflation but no longer DEMOTES the pair — it ranks first either way. The
+ *     original text read "driven purely by shared function words"; at 0.2584
+ *     post-stoplist, "purely" overstates what is measurable today. The
+ *     mandatory-stoplist conclusion is unaffected.
  *
  * **Stage 2 — IDF-weighted Dice over all unordered pairs.**
  * ```
@@ -72,57 +89,79 @@
  * score     = base + pathBoost(i,j)
  * ```
  * IDF-Dice rather than plain Jaccard because plain Jaccard has no usable tail
- * here: 78 pairs ≥0.10 vs 11, and with 47-token mean sets and 63.4% hapax its
- * p99 is 0.0789.
+ * here: 74 pairs ≥0.10 vs 9 `[m]`, and with 47.4-token mean sets and 64.4%
+ * hapax its p99 is 0.0805 `[m]`.
  *
  * `type` is **neither a filter nor a boost** — the counter-intuitive measured
- * result. Both strongest ground-truth links are CROSS-type (0.2127 and 0.1735),
- * and a type-equality gate drops ground-truth connectivity from 6/6 to 4/6 while
- * still retaining 26% of all pairs. It rides along as metadata only.
+ * result. Both strongest ground-truth links are CROSS-type (0.2127 and 0.1735
+ * `[gt]`), and a type-equality gate drops ground-truth connectivity from 6/6 to
+ * 4/6 `[gt]` while still retaining 27.9% of all pairs `[m]`. It rides along as
+ * metadata only.
  *
  * **Stage 3 — per-seed pool.** `top-K by score, j ≠ i, score ≥ FLOOR`, with
  * K = {@link CANDIDATE_TOP_K} and FLOOR = {@link CANDIDATE_FLOOR}.
  *
  * ## Why each number
  *
- *   - **FLOOR 0.085** — the last threshold at which the ground-truth arc stays
- *     connected. At 0.090 the `EXIT0~TOCONTAIN` bridge (0.0882) snaps and the
- *     arc splits. Retains 172/4950 = 3.47% of pairs.
+ *   - **FLOOR 0.085** — chosen as the last threshold at which the ground-truth
+ *     arc stays connected: at 0.090 the `EXIT0~TOCONTAIN` bridge (0.0882 `[gt]`)
+ *     snaps and the arc splits. Retains 152/4,371 = 3.48% of pairs `[m]`
+ *     (originally 172/4,950 = 3.47% — the RATIO is stable, both terms are not).
+ *
+ *     ⚠ **This justification did not reproduce on 2026-08-13 @5d59e62.** The
+ *     0.0882 bridge score is not recoverable from today's corpus, and the pair
+ *     that best matches the `EXIT0~TOCONTAIN` label by subject now scores
+ *     0.0849 — *below* the 0.085 floor it is cited to justify. Expected in
+ *     direction (11 recovered + 6 expired records moved every IDF weight), but
+ *     it means the floor currently rests on an unverifiable premise. The
+ *     constant is deliberately left UNCHANGED: re-deriving it needs the
+ *     ground-truth labels, which were never persisted. Do not re-tune from this
+ *     note — re-label, then re-measure.
  *   - **K 8** — every ground-truth pair that matters ranks ≤4 for at least one
- *     endpoint; 8 is 2× headroom.
+ *     endpoint `[gt]`; 8 is 2× headroom.
  *   - **path boost 0.050** — strictly BELOW the floor, so a zero-token pair can
  *     never enter a pool on paths alone. Hard invariant, pinned by a test.
- *   - **dir boost 0.025** — a 2-level directory prefix is 11.5× less selective
- *     than an exact path overlap (138 vs 12 pairs), so it gets strictly less
- *     weight.
+ *     Arithmetic, not measured: it cannot go stale.
+ *   - **dir boost 0.025** — a 2-level directory prefix is an order of magnitude
+ *     less selective than an exact path overlap (13.0×: 65 dir-only vs 5 exact
+ *     pairs `[m]`; 11.5× when first measured), so it gets strictly less weight.
+ *     The ordering is what the constant encodes; the exact multiple drifts with
+ *     `file_paths` coverage.
  *
  * ## Accepted failure modes — each with its ceiling and revisit trigger
  *
- *   1. **80.9% of records carry no usable `file_paths`**, so the boost is
- *      identically 0 for them. CEILING: the boost may only ever RAISE a score,
- *      never gate one — `PATH_BOOST_EXACT < CANDIDATE_FLOOR` is the mechanical
- *      form of that ceiling. REVISIT when `file_paths` coverage crosses 50%.
+ *   1. **~82% of the scored pool carries no usable `file_paths`** (81.9% of the
+ *      94 active records; 83.0% of all 100 `[m]`), so the boost is identically 0
+ *      for them. CEILING: the boost may only ever RAISE a score, never gate one
+ *      — `PATH_BOOST_EXACT < CANDIDATE_FLOOR` is the mechanical form of that
+ *      ceiling. REVISIT when `file_paths` coverage crosses 50%.
  *   2. **Non-transitivity is by design** — the ground-truth arc is recoverable
  *      only by chaining pools. CEILING: a consumer may walk at most
  *      {@link MAX_POOL_HOPS} hops from a seed; beyond that the reachable set
  *      approaches the giant component. REVISIT only with a fresh component-size
  *      measurement, never on intuition.
- *   3. **Clique recall is 33% (5 of 15) and will not improve by lowering the
- *      floor.** CEILING: never set `floor` below 0.060 — at 0.060 you retain
- *      11.21% of pairs to gain exactly ONE more ground-truth pair, with
- *      connectivity unchanged. REVISIT if recall itself becomes the acceptance
- *      criterion, in which case the fix is a better signal, not a lower floor.
+ *   3. **Clique recall is 33% (5 of 15) `[gt]` and will not improve by lowering
+ *      the floor.** CEILING: never set `floor` below 0.060 — at 0.060 you retain
+ *      11.85% of pairs `[m]` to gain exactly ONE more ground-truth pair `[gt]`,
+ *      with connectivity unchanged. REVISIT if recall itself becomes the
+ *      acceptance criterion, in which case the fix is a better signal, not a
+ *      lower floor.
  *   4. **Two languages only (en/de).** A third language enters unstoplisted and
  *      the function-word collision of failure mode 3's German case returns.
  *      REVISIT when a non-en/de record lands in the corpus.
  *
  * ## Cost
  *
- * Measured at N=100: 13.1 ms for the full pairwise pass, 2.65 µs/pair. O(N²) is
- * the correct choice — the viability boundary is ~N=2000, which at the observed
- * ~2.3 learnings/session growth rate is years away and is additionally capped by
- * the per-type TTL policy (`LEARNING_TTL_DAYS`). CEILING: do NOT build an
- * inverted index below that boundary; REVISIT at N≈2000.
+ * Single-digit milliseconds for the full pairwise pass at the current corpus
+ * size — 7.7 ms / 1.77 µs per pair at N=94 `[m]`, against 13.1 ms / 2.65 µs at
+ * N=100 when first measured. Wall-clock is HARDWARE-dependent and the two runs
+ * are not comparable across machines; the order of magnitude is the durable
+ * claim, not the figure. O(N²) is the correct choice — the viability boundary is
+ * ~N=2000, which at the observed ~2.3 learnings per learning-producing session
+ * (100 records over 43 distinct `source_session` values `[m]`) is years away and
+ * is additionally capped by the per-type TTL policy (`LEARNING_TTL_DAYS`).
+ * CEILING: do NOT build an inverted index below that boundary; REVISIT at
+ * N≈2000.
  *
  * ## Contract
  *
@@ -156,9 +195,12 @@ import { normalizeDialects } from './schema.mjs';
 // ---------------------------------------------------------------------------
 
 /**
- * Minimum pair score for pool membership. The last threshold at which the
- * ground-truth arc stays connected (the 0.0882 `EXIT0~TOCONTAIN` bridge sits
- * just above it). Retains 3.47% of all pairs.
+ * Minimum pair score for pool membership. Chosen as the last threshold at which
+ * the ground-truth arc stays connected (the 0.0882 `EXIT0~TOCONTAIN` bridge sat
+ * just above it). Retains 3.48% of all pairs (152/4,371, measured 2026-08-13
+ * @5d59e62). See the module header § Why each number for the ⚠ note: the 0.0882
+ * bridge no longer reproduces, so this threshold's original justification is
+ * currently unverifiable. Left unchanged deliberately.
  */
 export const CANDIDATE_FLOOR = 0.085;
 
@@ -172,7 +214,7 @@ export const CANDIDATE_TOP_K = 8;
  */
 export const PATH_BOOST_EXACT = 0.05;
 
-/** Boost for a shared 2-level directory prefix — 11.5× less selective, so half the weight. */
+/** Boost for a shared 2-level directory prefix — an order of magnitude less selective (13.0× at 2026-08-13 @5d59e62), so half the weight. */
 export const PATH_BOOST_DIR = 0.025;
 
 /** How many leading directory segments define the directory-prefix boost. */
@@ -181,7 +223,8 @@ export const DIR_PREFIX_SEGMENTS = 2;
 /**
  * Documented ceiling for consumers (accepted failure mode 2): a pool graph walk
  * may chain at most this many hops from a seed. Beyond 2 the reachable set
- * approaches the measured 99-of-100 giant component, i.e. "the corpus".
+ * approaches the giant component (81 of 94 scored records at K=3, measured
+ * 2026-08-13 @5d59e62), i.e. "the corpus".
  */
 export const MAX_POOL_HOPS = 2;
 
