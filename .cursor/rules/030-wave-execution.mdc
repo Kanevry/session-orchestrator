@@ -73,17 +73,19 @@ Role-specific scope rules:
 - **Quality Phase 1 (Simplification)**: production files changed this session only (no test files)
 - **Quality Phase 2 (Tests)**: test file patterns only (`**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`)
 
-**Test-sibling expansion (#970):** a scope entry naming a production file but not its test sibling makes the task's own regression test unwritable — the guard then enforces exactly the inconsistency the quality gate exists to catch. Before writing `allowedPaths`, expand the union through the shared helper — do not hand-derive the paths:
+**`allowedPaths` is COMPUTED, never hand-transcribed (#1020).** Hand-transcribing the union produced 5 scope divergences in one session. Three steps, in this order:
 
-```js
-import { expandTestSiblings } from '$CURSOR_RULES_DIR/../scripts/lib/scope-gate.mjs';
-// Pass this wave's role verbatim — the helper GATES on it.
-const allowedPaths = expandTestSiblings(unionScopes, { role });
-```
+1. Write each task's file scope verbatim as a JSON array of strings to `.cursor/filescopes/wave-<N>/<task-id>.json` — that path IS `$TASK_FILESCOPE_JSON`, reused verbatim by the subset assertion below; never a `$TMPDIR` temp file, which no later step can address. Expect a `bash-write-verify … OUTSIDE the wave's allowedPaths` notice here: `.cursor/filescopes/` is control state like `.cursor/wave-scope.json`, and this step runs before the union exists. Your OWN planned direct edits go into `coordinator.json` in the same directory and take part in both steps below (2 of those 5 divergences were coordinator-direct edits, for which no task scope file exists by construction).
+2. Build the sidecar — an ARRAY of `{id, files}` records, never an object map, so a duplicated id stays visible — and assert disjointness **before** the union, or the union launders a double assignment into the artefact meant to prevent it: `node "$CURSOR_RULES_DIR/../scripts/validate-wave-scope.mjs" --assert-disjoint "$WAVE_SCOPES_SIDECAR" < .cursor/wave-scope.json`. Exit 1 = two tasks were handed the same file; fix the plan, never widen the union.
+3. `--union <sidecar>` is a QUERY MODE that still needs a schema-valid manifest on stdin: write the skeleton with `"allowedPaths": []`, run `node "$CURSOR_RULES_DIR/../scripts/validate-wave-scope.mjs" --union "$WAVE_SCOPES_SIDECAR" < .cursor/wave-scope.json`, and insert the printed array as `allowedPaths`. It prints that array **instead of** the manifest echo — one JSON document per run. It already applies test-sibling expansion, so do not run the helper by hand as well.
 
-It emits a **glob** from the production basename (`foo.mjs` → `tests/**/foo*.test.mjs`), skips absolute entries, and is a strict no-op on Discovery's `[]`. **Which roles it fires for is decided inside the helper** — `TEST_SIBLING_EXPANSION_ROLES` in `scripts/lib/scope-gate.mjs` (currently Impl-Core / Impl-Polish; Quality Phase 1 is off, Phase 2 inert). Pass the role; do not pre-filter by role here. An absent or unrecognised role does **not** expand (fail-closed). Expand before the overlap check and before the file is written, in one pass. Full rule, the measured hit-rate and its ~15% residual, and the per-repo configurability: `skills/wave-executor/wave-loop.md` § Scope Manifest #3.
+After the final wave, delete `.cursor/wave-scope.json` **and** `.cursor/filescopes/`.
 
-Validate with: `node "$CURSOR_RULES_DIR/../scripts/validate-wave-scope.mjs" < .cursor/wave-scope.json` — fix JSON if it exits 1. Before each task batch, also assert the task's file scope against the manifest, carrying the mechanical half of the rule above (gated on the manifest's `role`, so it self-skips where expansion does not fire):
+**Test-sibling expansion (#970):** a scope entry naming a production file but not its test sibling makes the task's own regression test unwritable — the guard then enforces exactly the inconsistency the quality gate exists to catch. Step 3 above expands it for you via `expandTestSiblings(unionFileScopes(scopes), { role })`; do not hand-derive the paths.
+
+It emits a **glob** from the production basename (`foo.mjs` → `tests/**/foo*.test.mjs`), skips absolute entries, and is a strict no-op on Discovery's `[]`. **Which roles it fires for is decided inside the helper** — `TEST_SIBLING_EXPANSION_ROLES` in `scripts/lib/scope-gate.mjs` (currently Impl-Core / Impl-Polish; Quality Phase 1 is off, Phase 2 inert). Pass the role; do not pre-filter by role here. An absent or unrecognised role does **not** expand (fail-closed). The disjointness check (step 2) runs on the declared scopes, before the union expands anything; expansion happens before the file is written, in one pass. Full rule, the measured hit-rate and its ~15% residual, and the per-repo configurability: `skills/wave-executor/wave-loop.md` § Scope Manifest #3.
+
+Validate with: `node "$CURSOR_RULES_DIR/../scripts/validate-wave-scope.mjs" < .cursor/wave-scope.json` — fix JSON if it exits 1. Before each task batch, also assert the task's file scope — `$TASK_FILESCOPE_JSON`, i.e. the step-1 file itself — against the manifest, carrying the mechanical half of the rule above (gated on the manifest's `role`, so it self-skips where expansion does not fire). This assertion is unchanged by #1020 and keeps running: it checks scope ⊆ union, a different property than disjointness — a file claimed twice is a subset twice over, so a double assignment is structurally invisible to it.
 
 ```bash
 node "$CURSOR_RULES_DIR/../scripts/validate-wave-scope.mjs" \

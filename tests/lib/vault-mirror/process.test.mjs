@@ -5,6 +5,8 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import YAML from 'js-yaml';
 
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual('node:fs');
@@ -1576,5 +1578,179 @@ describe('processSession #909: status:abandoned is filtered before rendering', (
     expect(lines[0].action).toBe('created');
     expect(writeFileSyncSpy).toHaveBeenCalledOnce();
     expect(writeFileSyncSpy.mock.calls[0][1]).toContain('status: verified');
+  });
+});
+
+// ── #974: env-secret values are masked before anything is written ─────────────
+//
+// The vault is the only mirror sink whose output lands in a TRACKED and PUSHED
+// artifact (auto-commit.mjs runs `git add` + `commit` in the vault repo), and the
+// records it carries are agent-authored free text that routinely quotes command
+// lines and error output. A leak here cannot be fixed by deleting a file.
+//
+// Every test below names the bug it catches; the needle is generated at RUNTIME
+// (never a literal in this file) so no credential-shaped string is committed.
+
+describe('processLearning/processSession #974: env-secret masking', () => {
+  let existsSyncSpy;
+  let writeFileSyncSpy;
+  /** Runtime-generated needle — lowercase kebab, so an UNMASKED value would
+   *  survive subjectToSlug() verbatim and reach the committed filename. */
+  let needle;
+
+  beforeEach(() => {
+    needle = `so-test-needle-${randomUUID()}`;
+    vi.stubEnv('SO_TEST_MASK_TOKEN', needle);
+    existsSyncSpy = vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+    writeFileSyncSpy = vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
+    vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    vi.doUnmock('node:child_process');
+  });
+
+  async function loadProcess() {
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+    });
+    return import('@lib/vault-mirror/process.mjs'); // git mock → repoNs 'r'
+  }
+
+  const LEARNING = {
+    id: 'a1b2c3d4-0001-4000-8000-000000000974',
+    type: 'gotcha',
+    subject: 'explicit-contracts',
+    insight: 'Prefer explicit contracts',
+    evidence: 'Three modules broke',
+    confidence: 0.9,
+    source_session: 'session-2026-08-14',
+    created_at: '2026-08-14T10:00:00Z',
+  };
+
+  const SESSION = {
+    session_id: 'main-2026-08-14-session-1',
+    session_type: 'feature',
+    started_at: '2026-08-14T08:00:00Z',
+    completed_at: '2026-08-14T10:00:00Z',
+    duration_seconds: 7200,
+    waves: 1,
+    agents_dispatched: 2,
+    effectiveness: { planned_issues: 1, completed_issues: 1, carryover: 0, completion_rate: 1.0 },
+  };
+
+  // BUG CAUGHT: an agent pastes a shell line carrying a live token into
+  // `insight`; the mirror writes it verbatim into a note that auto-commit.mjs
+  // git-adds and pushes to a foreign repo, where it is not deletable.
+  it('a secret env VALUE quoted in the insight never reaches the written note', async () => {
+    const { processLearning } = await loadProcess();
+    let written = '';
+    writeFileSyncSpy.mockImplementation((_p, content) => { written = content; });
+
+    const { lines } = await captureStdout(() =>
+      processLearning(
+        { ...LEARNING, insight: `The run died on GITLAB_TOKEN=${needle} in the env` },
+        1,
+        { vaultDir: '/vault', dryRun: false, kind: 'learning' },
+      ),
+    );
+
+    expect(lines[0].action).toBe('created');
+    expect(writeFileSyncSpy).toHaveBeenCalledOnce();
+    expect(written).not.toContain(needle);
+    expect(written).toContain('The run died on GITLAB_TOKEN=[REDACTED] in the env');
+  });
+
+  // BUG CAUGHT: the FILENAME is committed too. A masker wired at the write (or
+  // at the renderer's output) leaves the slug — derived from `subject` — carrying
+  // the raw value, so the secret is published as a tracked path and in the
+  // emitted action line.
+  it('a secret in the subject never reaches the committed filename or the action line', async () => {
+    const { processLearning } = await loadProcess();
+
+    const { lines } = await captureStdout(() =>
+      processLearning(
+        { ...LEARNING, subject: `probe ${needle} case` },
+        1,
+        { vaultDir: '/vault', dryRun: false, kind: 'learning' },
+      ),
+    );
+
+    const writtenPath = writeFileSyncSpy.mock.calls[0][0];
+    expect(writtenPath).not.toContain(needle);
+    expect(writtenPath).toBe('/vault/40-learnings/r/probe-redacted-case.md');
+    expect(lines[0].id).toBe('probe-redacted-case');
+  });
+
+  // BUG CAUGHT: masking AFTER the render injects a bare `title: [REDACTED] …`,
+  // because yamlQuoteIfNeeded() already made its quoting decision on the raw
+  // text. YAML then reads the value as a flow SEQUENCE (or fails outright), and
+  // the note is rejected by the vault-sync frontmatter schema at the session-end
+  // hard gate. Masking the input keeps the title a quoted string.
+  it('frontmatter stays valid YAML when the secret opens the title', async () => {
+    const { processLearning } = await loadProcess();
+    let written = '';
+    writeFileSyncSpy.mockImplementation((_p, content) => { written = content; });
+
+    await captureStdout(() =>
+      processLearning(
+        { ...LEARNING, insight: `${needle} was printed by the failing hook` },
+        1,
+        { vaultDir: '/vault', dryRun: false, kind: 'learning' },
+      ),
+    );
+
+    const fmBlock = written.slice(4, written.indexOf('\n---', 3));
+    const fm = YAML.load(fmBlock);
+    expect(typeof fm.title).toBe('string');
+    expect(fm.title).toBe('[REDACTED] was printed by the failing hook');
+    expect(written).not.toContain(needle);
+  });
+
+  // BUG CAUGHT: the wiring perturbs notes that contain no secret at all —
+  // over-masking, or a JSON round-trip / key-reorder artefact introduced by the
+  // entry walk. The baseline is produced by calling the renderer DIRECTLY (an
+  // independent text, not a JSON.stringify of the same object), and compared
+  // byte for byte.
+  it('a record without any secret is byte-identical to the unmasked renderer output', async () => {
+    const { processLearning } = await loadProcess();
+    const { generateLearningNote } = await import('@lib/vault-mirror/render-learnings.mjs');
+    let written = '';
+    writeFileSyncSpy.mockImplementation((_p, content) => { written = content; });
+
+    await captureStdout(() =>
+      processLearning(LEARNING, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning' }),
+    );
+
+    // Needles ARE configured (see beforeEach) — this pins pass-through, not a
+    // zero-needle fast path.
+    expect(written).toBe(generateLearningNote(LEARNING, 'explicit-contracts', { repoNs: 'r' }));
+    expect(existsSyncSpy).toHaveBeenCalled();
+  });
+
+  // BUG CAUGHT: only ONE of the two entry points is wired. processSession has
+  // its own free-text field (`notes`) and its own render path; a fix applied to
+  // learnings alone ships a second, unhardened channel beside the hardened one.
+  it('a secret in the session notes never reaches the written session note', async () => {
+    const { processSession } = await loadProcess();
+    let written = '';
+    writeFileSyncSpy.mockImplementation((_p, content) => { written = content; });
+
+    const { lines } = await captureStdout(() =>
+      processSession(
+        { ...SESSION, notes: `curl -H "PRIVATE-TOKEN: ${needle}" failed. ${'n'.repeat(500)}` },
+        1,
+        { vaultDir: '/vault', dryRun: false, kind: 'session' },
+      ),
+    );
+
+    expect(lines[0].action).toBe('created');
+    expect(writeFileSyncSpy).toHaveBeenCalledOnce();
+    expect(written).not.toContain(needle);
+    expect(written).toContain('curl -H "PRIVATE-TOKEN: [REDACTED]" failed.');
   });
 });

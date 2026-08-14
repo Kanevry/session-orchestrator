@@ -9,6 +9,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 
 import { join, resolve, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { createSecretValueMasker } from '../secret-masker.mjs';
 import { subjectToSlug, isValidSlug, uuidPrefix8, toDate, parseFrontmatter } from './utils.mjs';
 import { isRealSession } from '../session-schema/filters.mjs';
 import { resolveRepoNamespace } from './namespace.mjs';
@@ -211,6 +212,83 @@ export function emitAction({ action, path, kind, id, vaultDir, meta }) {
   process.stdout.write(JSON.stringify(payload) + '\n');
 }
 
+// ── Secret masking (#974) — THE choke-point ───────────────────────────────────
+
+/**
+ * Lazily-built, process-wide masker. `createSecretValueMasker` scans the whole
+ * env and compiles one RegExp per needle, so it is built ONCE (on the first
+ * record) and reused for every record afterwards — never per entry.
+ *
+ * Lazy rather than module-load-eager so that importing this module for
+ * `deriveRepo`/`emitAction` alone costs nothing, and so the env is read at the
+ * moment the mirror actually runs.
+ *
+ * @type {{ mask: (text: string) => string, needleCount: number } | null}
+ */
+let _secretMasker = null;
+
+/**
+ * Mask every env-derived secret VALUE occurring anywhere in a mirror record,
+ * BEFORE any of it becomes a filename, a stdout line, or vault Markdown.
+ *
+ * WHY THIS IS THE CHOKE-POINT — and why it is on the INPUT, not the output.
+ * The vault is the only mirror sink whose output lands in a TRACKED, PUSHED
+ * artifact (`auto-commit.mjs` runs `git add` + `commit` in the vault repo), so a
+ * leak here is not deletable — it would need a history rewrite in a foreign repo
+ * that neither this repo's `.gitleaks.toml` nor `check-owner-leakage.mjs` guards.
+ * The records carry agent-authored free text (`insight`, `evidence`, `notes`,
+ * `text`) that routinely quotes command lines and error output, which is exactly
+ * the class shape-regexes cannot catch: the VALUE is in the prose, with no
+ * `FOO_TOKEN=` key beside it.
+ *
+ * Masking the ENTRY rather than the rendered Markdown is deliberate, for four
+ * reasons — a post-render mask would be wrong on all four:
+ *   1. The FILENAME. `slug` / `session_id` derive from `subject` / `session_id`,
+ *      and the file path is itself committed. A post-render mask never touches
+ *      the path, so a secret in a subject would be published as a filename.
+ *   2. STDOUT. `emitAction` prints the derived `id` and `path`; masking the input
+ *      keeps the action stream clean too.
+ *   3. YAML VALIDITY. The renderers decide quoting with `yamlQuoteIfNeeded`
+ *      BEFORE emitting `title:`. Masking first lets that decision see the `[`
+ *      of the marker and quote the scalar; masking afterwards would inject a bare
+ *      `title: [REDACTED]` — a YAML flow sequence, which fails the vault-sync
+ *      frontmatter schema at the session-end hard gate.
+ *   4. IDEMPOTENCY. `learningContentMatches` compares the on-disk note against a
+ *      freshly rendered candidate. Masking the input keeps both sides masked, so
+ *      an already-mirrored record still resolves to `skipped-noop`; masking only
+ *      on write would make every affected note re-render (and re-commit) forever.
+ *
+ * FRONTMATTER AND BODY ARE TREATED IDENTICALLY. A credential is exactly as
+ * published in `title:` as it is under `## Insight` — both live in the same
+ * committed file — so there is no case for exempting the structured half. The
+ * schema risk that exemption would otherwise be arguing for is removed by
+ * reason 3 above rather than by leaving a field unmasked.
+ *
+ * Fail-soft by construction: with zero needles the entry is returned by
+ * reference (byte-identical downstream), and `mask` itself passes non-strings
+ * through — the masker must never be the reason a mirror run dies.
+ *
+ * @template T
+ * @param {T} entry — a normalized learning/session record (plain JSON shape)
+ * @returns {T} the same record with every string value masked
+ */
+function maskEntrySecrets(entry) {
+  if (_secretMasker === null) _secretMasker = createSecretValueMasker(process.env);
+  const { mask, needleCount } = _secretMasker;
+  if (needleCount === 0) return entry;
+  const walk = (value) => {
+    if (typeof value === 'string') return mask(value);
+    if (Array.isArray(value)) return value.map(walk);
+    if (value && typeof value === 'object') {
+      const out = {};
+      for (const [k, v] of Object.entries(value)) out[k] = walk(v);
+      return out;
+    }
+    return value;
+  };
+  return walk(entry);
+}
+
 // ── Core processing ───────────────────────────────────────────────────────────
 
 export async function processLearning(rawEntry, _lineNum, ctx) {
@@ -225,7 +303,9 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
   // #635: map producer alias fields (summary/detail, description/rationale,
   // title/body, name, narrative, content) onto the canonical v1 shape BEFORE
   // schema detection and slug/id derivation. Canonical entries pass through.
-  const entry = normalizeLearningEntry(rawEntry);
+  // #974: the ONE masking site for learnings — before slug/filename derivation,
+  // before the render, before any write. See maskEntrySecrets above.
+  const entry = maskEntrySecrets(normalizeLearningEntry(rawEntry));
   const schema = detectLearningSchema(entry);
   const entryId = entry.id;
 
@@ -438,7 +518,8 @@ export async function processSession(rawEntry, _lineNum, ctx) {
   // #635: map producer alias fields (ended_at, mode, total_waves/waves_completed
   // without a `waves` field) onto the canonical shapes BEFORE schema detection.
   // Canonical v1/v2/v3 entries pass through untouched.
-  const entry = normalizeSessionEntry(rawEntry);
+  // #974: the ONE masking site for sessions — same contract as processLearning.
+  const entry = maskEntrySecrets(normalizeSessionEntry(rawEntry));
   const { session_id: rawSessionId } = entry;
   const schema = detectSessionSchema(entry);
   const generator =

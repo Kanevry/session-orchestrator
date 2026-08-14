@@ -15,6 +15,7 @@ Thumbs.db
 # Claude Code runtime state (session orchestrator)
 .claude/STATE.md
 .claude/wave-scope.json
+.claude/filescopes/
 .claude/metrics/
 .claude/worktrees/
 .claude/*.lock
@@ -22,11 +23,13 @@ Thumbs.db
 # Codex CLI runtime state (session orchestrator)
 .codex/STATE.md
 .codex/wave-scope.json
+.codex/filescopes/
 .codex/hooks.json
 
 # Cursor IDE runtime state (session orchestrator)
 .cursor/STATE.md
 .cursor/wave-scope.json
+.cursor/filescopes/
 
 # Transient Codex/Cursor root instruction-file mirror — canonical is CLAUDE.md
 # ("pick one, never both"; see skills/_shared/instruction-file-resolution.md).
@@ -58,6 +61,9 @@ coverage/
 .orchestrator/STATE.md
 # Issue #330: distributed session-lock
 .orchestrator/session.lock
+# Issue #1020: per-dispatch scope ledger written by hooks/pre-task-scope-disjoint.mjs
+.orchestrator/wave-dispatch-scopes.json
+.orchestrator/wave-dispatch-scopes.lock
 
 # Auto-dream + auto-dialectic sidecars — never commit LLM-derived consolidation proposals (#502, #506)
 .orchestrator/pending-dream.md

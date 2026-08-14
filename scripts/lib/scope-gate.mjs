@@ -917,3 +917,300 @@ export function suggestForScopeViolation(relPath, allowedCsv) {
     `If '${relPath}' belongs to this wave, add its directory to the plan's wave scope and restart.`
   );
 }
+
+/**
+ * Merge many agents' declared file scopes into ONE deduplicated, order-stable
+ * list — the mechanical form of "allowedPaths is the UNION of all agent file
+ * scopes" (#1020, wave-loop.md § Scope Manifest #3).
+ *
+ * Motivation: today the coordinator writes `wave-scope.json` `allowedPaths` from
+ * one hand-kept list and the agent briefs from a SECOND, separately formulated
+ * list. Nothing couples them; they diverged five times in one session (#1020).
+ * Deriving the union FROM the per-agent declarations makes that divergence
+ * structurally impossible instead of discipline-dependent.
+ *
+ * Accepts BOTH input shapes, because the two call sites differ:
+ *   - `[['a.mjs','b.mjs'], ['c.mjs']]`                 — bare scope arrays
+ *   - `[{id:'W1-D1', files:['a.mjs']}, {id:'W1-D2', …}]` — the CLI/plan record
+ *     shape, which is also {@link findScopeCollisions}' input (one source object
+ *     feeding both consumers is the whole point of #1020).
+ *
+ * Order is INSERTION order (first-seen wins), never sorted: the union is written
+ * into a manifest that a human reads next to the plan, and a stable order keeps
+ * its diff readable across re-unions (#796 rewrites it mid-wave).
+ *
+ * Fail-closed & no-throw (module convention): a non-array input returns `[]`;
+ * non-array / non-object members and non-string, empty entries are skipped.
+ * Pure, sync, no I/O — hook-safe per the module header.
+ *
+ * @param {Array<string[]|{id?: string, files?: string[]}>} scopes
+ * @returns {string[]} deduplicated union in first-seen order
+ */
+export function unionFileScopes(scopes) {
+  if (!Array.isArray(scopes)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const scope of scopes) {
+    let files = null;
+    if (Array.isArray(scope)) files = scope;
+    else if (scope !== null && typeof scope === 'object' && Array.isArray(scope.files)) {
+      files = scope.files;
+    }
+    if (files === null) continue;
+    for (const entry of files) {
+      if (typeof entry !== 'string' || entry.length === 0) continue;
+      if (seen.has(entry)) continue;
+      seen.add(entry);
+      out.push(entry);
+    }
+  }
+  return out;
+}
+
+/**
+ * Is this scope entry RECURSIVE — does it grant everything below a directory?
+ * `**` is the explicit form; a trailing `/` is the implicit one, because
+ * {@link pathMatchesPattern} matches a `dir/` prefix with `startsWith`, i.e. at
+ * ANY depth. Both must count, or `tests/` vs `tests/lib/*.mjs` reads as disjoint.
+ * @param {string} entry
+ * @returns {boolean}
+ */
+function isRecursiveScopeEntry(entry) {
+  return entry.includes('**') || entry.endsWith('/');
+}
+
+/**
+ * Literal SUFFIX of a glob entry — the text after its last `*` metachar
+ * (`src/**\/*.mjs` → `.mjs`, `src/**` → `''`). Returns `null` for an entry with
+ * no `*` at all (a `dir/` prefix), where the concept does not apply: such an
+ * entry constrains only the head of a path, never its tail.
+ * @param {string} entry
+ * @returns {string|null}
+ */
+function literalScopeSuffix(entry) {
+  const star = entry.lastIndexOf('*');
+  return star === -1 ? null : entry.slice(star + 1);
+}
+
+/**
+ * Normalize the `agentScopes` input of {@link findScopeCollisions} into
+ * `{id, declaredId, files}` records. Never throws; malformed members are
+ * repaired rather than dropped.
+ *
+ * A member with NO usable `id` keeps its files in the check under a synthetic
+ * `<unnamed#i>` id (i = its index). Dropping it instead would be a FALSE
+ * NEGATIVE — the whole point of this function is that an unreviewed scope is
+ * exactly the one that collides.
+ *
+ * @param {Array<{id?: string, files?: string[]}>} agentScopes
+ * @returns {Array<{id: string, declaredId: string|null, files: string[]}>}
+ */
+function normalizeAgentScopes(agentScopes) {
+  const out = [];
+  for (let i = 0; i < agentScopes.length; i++) {
+    const raw = agentScopes[i];
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const declaredId = typeof raw.id === 'string' && raw.id.length > 0 ? raw.id : null;
+    const files = Array.isArray(raw.files)
+      ? raw.files.filter((f) => typeof f === 'string' && f.length > 0)
+      : [];
+    out.push({ id: declaredId ?? `<unnamed#${i}>`, declaredId, files });
+  }
+  return out;
+}
+
+/**
+ * Classify a SINGLE cross-agent entry pair, in the binding three-stage order.
+ * Returns the collision `kind`, or `null` when the two entries are disjoint.
+ *
+ * Stage order is not cosmetic — see {@link findScopeCollisions} for why the two
+ * exact stages must run BEFORE the approximate one.
+ *
+ * @param {string} x — an entry from agent A
+ * @param {string} y — an entry from agent B
+ * @param {(glob: string) => Set<string>} expand — memoized KNOWN-set expander
+ * @returns {'concrete'|'glob-expanded'|'glob-prefix'|null}
+ */
+function classifyEntryCollision(x, y, expand) {
+  // Stage 1 — exact string equality. The commonest real case (#1020 Vorfall 3),
+  // and the ONLY stage that works for a file that does not exist yet.
+  if (x === y) return 'concrete';
+
+  const xIsGlob = isGlobScopeEntry(x);
+  const yIsGlob = isGlobScopeEntry(y);
+
+  // Stage 2 — concrete vs glob. `pathMatchesPattern` is DIRECTED (arg 1 is a
+  // literal path, arg 2 becomes the regex); used in that one correct direction
+  // it is exact and needs no filesystem witness.
+  if (!xIsGlob && yIsGlob) return pathMatchesPattern(x, y) ? 'concrete' : null;
+  if (xIsGlob && !yIsGlob) return pathMatchesPattern(y, x) ? 'concrete' : null;
+  if (!xIsGlob && !yIsGlob) return null; // two distinct concrete paths: disjoint
+
+  // Stage 3a — glob ∩ glob, decided by a shared WITNESS from the KNOWN set.
+  const xHits = expand(x);
+  for (const witness of expand(y)) {
+    if (xHits.has(witness)) return 'glob-expanded';
+  }
+
+  // Stage 3b — prefix fallback, for the intersection that exists only in files
+  // NOT YET on disk (the KNOWN set cannot witness those).
+  const xPrefix = literalScopePrefix(x);
+  const yPrefix = literalScopePrefix(y);
+  if (!(xPrefix.startsWith(yPrefix) || yPrefix.startsWith(xPrefix))) return null;
+  if (!(isRecursiveScopeEntry(x) || isRecursiveScopeEntry(y))) return null;
+  // Suffix compatibility is a NECESSARY condition, so filtering on it adds no
+  // false negative: a string ending in both `sx` and `sy` forces the shorter to
+  // be a suffix of the longer. It removes the obvious false positive
+  // `scripts/**\/*.ts` vs `scripts/**\/*.mjs`, which share a prefix and are both
+  // recursive yet can never match the same path.
+  const xSuffix = literalScopeSuffix(x);
+  const ySuffix = literalScopeSuffix(y);
+  if (
+    xSuffix !== null &&
+    ySuffix !== null &&
+    !(xSuffix.endsWith(ySuffix) || ySuffix.endsWith(xSuffix))
+  ) {
+    return null;
+  }
+  return 'glob-prefix';
+}
+
+/**
+ * Detect files claimed by TWO agents of the SAME wave, BEFORE dispatch (#1020).
+ *
+ * ## The bug this closes
+ * `tests/scripts/sweep-expired-learnings-cli.test.mjs` was handed to two agents
+ * of one wave (#1020 Vorfall 3). Nothing caught it up front: the pre-dispatch
+ * assertion {@link assertFileScopeSubset} checks each agent against the union
+ * (a SUBSET relation, which two overlapping agents both satisfy), and the
+ * commit-time `wave-scope-commit-guard` only sees the union as well. It surfaced
+ * afterwards, from an agent's own PSA-002 report. Per
+ * `.claude/rules/parallel-sessions.md` § Decision Tree a file inside two
+ * declared scopes of one dispatch round is never a benign sibling signal — it is
+ * a deconfliction gap, and that round ended well by luck, not construction.
+ *
+ * ## The three stages, and why the order is binding
+ *  1. **Exact string equality** → `concrete`. Covers the commonest real case AND
+ *     every file that does not exist yet (no filesystem witness required).
+ *  2. **Concrete vs glob** via {@link pathMatchesPattern} → `concrete`. Exact and
+ *     I/O-free, because the matcher is used in its one correct direction.
+ *  3. **Glob vs glob** — expand both against
+ *     `KNOWN = opts.knownFiles ∪ {every concrete entry of every agent}`;
+ *     a non-empty intersection is `glob-expanded`. As a fallback for files not
+ *     yet on disk, a literal-prefix containment plus at least one recursive
+ *     entry is `glob-prefix`.
+ *
+ * Stage 3 must come LAST because {@link pathMatchesPattern} is DIRECTED and
+ * therefore useless for glob∩glob: it compiles argument 2 into a regex and tests
+ * argument 1 as a literal string. Measured:
+ * `pathMatchesPattern('scripts/**\/*.mjs', 'scripts/lib/*.mjs') === false`, even
+ * though both match `scripts/lib/x.mjs`. {@link assertFileScopeSubset} documents
+ * that boundary at its own glob branch and OVER-approximates coverage, which is
+ * the safe direction for a subset check. For a COLLISION check the sign flips:
+ * the same over-approximation becomes a FALSE NEGATIVE — a missed collision,
+ * i.e. exactly the incident. Hence stages 1 and 2 decide first, and stage 3 is
+ * reached only for pairs neither of them can settle.
+ *
+ * ## Duplicate ids are a SEPARATE finding, not a collision
+ * Two records carrying the same `id` are a malformed plan, not two agents
+ * fighting over a file; reporting them as a self-collision (`a === b`) would be
+ * noise. They are listed in `duplicateIds` and such pairs are skipped in the
+ * pairwise scan. `duplicateIds` is always present (empty when clean) so
+ * consumers need no conditional-key handling.
+ *
+ * ## `knownFiles` is INJECTED, never discovered
+ * The module header's hook-safe invariant (pure, sync, no I/O, no process spawn)
+ * is binding: `hooks/enforce-scope.mjs` reaches this module on a hot path, and
+ * under the exit-0/stdout-JSON protocol a throw here reads as "no decision" =
+ * ALLOW. So `git ls-files` belongs to the CLI layer and its result arrives as a
+ * parameter. An absent/invalid `knownFiles` is not an error — stage 3a simply
+ * has fewer witnesses and stage 3b carries the load.
+ *
+ * Fail-closed & no-throw: a non-array `agentScopes` returns
+ * `{ ok: false, collisions: [], duplicateIds: [] }` ("cannot assert → treat as
+ * failure", the same convention as {@link assertFileScopeSubset}).
+ *
+ * Output ordering is deterministic: agent pairs in input order, then kinds in
+ * stage order (`concrete` → `glob-expanded` → `glob-prefix`); `evidence` holds
+ * the involved entries of that kind, deduplicated in first-seen order.
+ *
+ * @param {Array<{id?: string, files?: string[]}>} agentScopes — one wave's agents
+ * @param {{knownFiles?: string[]}} [opts] — existing repo files (injected)
+ * @returns {{ok: boolean,
+ *            collisions: Array<{a: string, b: string, evidence: string[],
+ *                               kind: 'concrete'|'glob-expanded'|'glob-prefix'}>,
+ *            duplicateIds: string[]}}
+ */
+export function findScopeCollisions(agentScopes, opts = {}) {
+  if (!Array.isArray(agentScopes)) return { ok: false, collisions: [], duplicateIds: [] };
+  const options = opts !== null && typeof opts === 'object' ? opts : {};
+  const agents = normalizeAgentScopes(agentScopes);
+
+  // Duplicate DECLARED ids (synthetic `<unnamed#i>` ids are unique by index).
+  const seenIds = new Set();
+  const dupIds = new Set(); // Set preserves insertion order → stable report
+  for (const agent of agents) {
+    if (agent.declaredId === null) continue;
+    if (seenIds.has(agent.declaredId)) dupIds.add(agent.declaredId);
+    else seenIds.add(agent.declaredId);
+  }
+  const duplicateIds = [...dupIds];
+
+  // KNOWN = injected repo files ∪ every concrete entry of every agent. The
+  // second half matters: a file the wave is about to CREATE is not in
+  // `git ls-files`, but if one agent names it concretely it can still witness
+  // another agent's glob.
+  const known = [];
+  const knownSeen = new Set();
+  const addKnown = (f) => {
+    if (typeof f !== 'string' || f.length === 0 || knownSeen.has(f)) return;
+    knownSeen.add(f);
+    known.push(f);
+  };
+  if (Array.isArray(options.knownFiles)) options.knownFiles.forEach(addKnown);
+  for (const agent of agents) {
+    for (const entry of agent.files) if (!isGlobScopeEntry(entry)) addKnown(entry);
+  }
+
+  const expansions = new Map();
+  const expand = (glob) => {
+    let hits = expansions.get(glob);
+    if (hits === undefined) {
+      hits = new Set(known.filter((f) => pathMatchesPattern(f, glob)));
+      expansions.set(glob, hits);
+    }
+    return hits;
+  };
+
+  const KIND_ORDER = ['concrete', 'glob-expanded', 'glob-prefix'];
+  const collisions = [];
+  for (let i = 0; i < agents.length; i++) {
+    for (let j = i + 1; j < agents.length; j++) {
+      const a = agents[i];
+      const b = agents[j];
+      if (a.id === b.id) continue; // duplicate-id record: reported separately
+      const buckets = new Map();
+      for (const x of a.files) {
+        for (const y of b.files) {
+          const kind = classifyEntryCollision(x, y, expand);
+          if (kind === null) continue;
+          let evidence = buckets.get(kind);
+          if (evidence === undefined) {
+            evidence = new Set();
+            buckets.set(kind, evidence);
+          }
+          evidence.add(x);
+          evidence.add(y);
+        }
+      }
+      for (const kind of KIND_ORDER) {
+        const evidence = buckets.get(kind);
+        if (evidence !== undefined) {
+          collisions.push({ a: a.id, b: b.id, evidence: [...evidence], kind });
+        }
+      }
+    }
+  }
+
+  return { ok: collisions.length === 0 && duplicateIds.length === 0, collisions, duplicateIds };
+}

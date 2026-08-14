@@ -9,6 +9,8 @@
  *   node scripts/validate-wave-scope.mjs <path-to-wave-scope.json>
  *   cat wave-scope.json | node scripts/validate-wave-scope.mjs
  *   node scripts/validate-wave-scope.mjs --assert-subset <agent-filescope.json> < wave-scope.json
+ *   node scripts/validate-wave-scope.mjs --assert-disjoint <agent-scopes.json> < wave-scope.json
+ *   node scripts/validate-wave-scope.mjs --union <agent-scopes.json> < wave-scope.json
  *
  * Flags:
  *   --assert-subset <path>  After schema validation passes, read the agent
@@ -26,21 +28,63 @@
  *                           the caller may pass the flag unconditionally on
  *                           every pre-dispatch check. A skip is announced on
  *                           stderr as a WARN.
+ *   --assert-disjoint <p>   #1020. Read the wave's per-agent scope SIDECAR and
+ *                           assert no file is claimed by two agents of the same
+ *                           wave. Fails (exit 1) with one message per collision.
+ *                           `knownFiles` for the glob∩glob stage comes from
+ *                           `git ls-files` — spawned HERE, in the CLI layer,
+ *                           because scripts/lib/scope-gate.mjs is hook-safe and
+ *                           must not spawn a process (see its module header).
+ *   --union <path>          #1020. QUERY MODE. Read the same sidecar, compute
+ *                           `expandTestSiblings(unionFileScopes(scopes), {role})`
+ *                           using the MANIFEST'S OWN `role`, and print the
+ *                           resulting allowedPaths array as JSON on stdout.
+ *                           Mechanical replacement for the "Collect all file
+ *                           paths … Deduplicate entries" prose in
+ *                           skills/wave-executor/wave-loop.md § Scope Manifest #3.
+ *
+ * ## SIDECAR FORMAT (both #1020 flags) — an ARRAY, never an object map
+ *   [{ "id": "W2-C1", "files": ["scripts/a.mjs"] }, { "id": "W2-C4", "files": [...] }]
+ * An object keyed by agent id would swallow a DUPLICATE agent id silently, and a
+ * duplicated id is a real copy-paste failure mode (it hides one agent's scope
+ * from every per-agent check). The array form keeps both records, and
+ * `findScopeCollisions` reports the duplicate as its own finding.
+ *
+ * ## STDOUT CONTRACT (why --union suppresses the manifest echo)
+ * Without `--union` this script writes EXACTLY ONE thing to stdout: the input
+ * manifest, echoed back verbatim. Callers rely on that — `JSON.parse(stdout)`.
+ * `--union` is the first mode that has something else to say, so it is a pure
+ * QUERY MODE: it REPLACES the echo rather than adding to it, and stdout carries
+ * only the computed allowedPaths array. Mixing both on stdout would break every
+ * `JSON.parse(stdout)` caller; writing the union to a second sink would need a
+ * file argument the caller must then read back. One JSON document per run, and
+ * the flag decides which one.
  *
  * Exit codes:
- *   0 — valid (validated JSON echoed to stdout)
- *   1 — invalid input / validation failure (error messages written to stderr)
- *   2 — I/O error (file not found, unreadable stdin, unreadable --assert-subset file)
+ *   0 — valid (validated JSON echoed to stdout; with --union: the union array)
+ *   1 — invalid input / validation failure (error messages written to stderr).
+ *       A scope COLLISION is a validation finding, exactly like the #796 subset
+ *       and #970 test-sibling violations — the collision-vs-subset distinction
+ *       lives in the MESSAGE, not in a new exit code.
+ *   2 — I/O error (file not found, unreadable stdin, unreadable sidecar file)
  */
 
 import path from 'node:path';
 import { readFileSync, existsSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { warn } from './lib/common.mjs';
 import {
   assertFileScopeSubset,
   assertTestSiblingCoverage,
   testSiblingExpansionApplies,
   TEST_SIBLING_EXPANSION_ROLES,
+  findScopeCollisions,
+  unionFileScopes,
+  // Aliased: `expandTestSiblings` is ALSO the name of the pre-existing
+  // boolean parameter threaded through validate()/assertSubsetOrDie for the
+  // #970 flag. Aliasing the import avoids shadowing that parameter rather than
+  // renaming it — the #970 call path stays byte-identical.
+  expandTestSiblings as expandScopeTestSiblings,
 } from './lib/scope-gate.mjs';
 
 /**
@@ -55,20 +99,52 @@ function die(msg, code = 1) {
 }
 
 /**
+ * Read the value operand of a value-taking flag, REFUSING one that is itself a
+ * flag. Used by the #1020 flags only.
+ *
+ * `--assert-subset` (#796) consumes `argv[i + 1]` BLIND, so
+ * `--assert-subset --assert-disjoint x.json` reads `--assert-disjoint` as its
+ * path value. That behaviour is deliberately left untouched — its no-value
+ * message is pinned byte-for-byte by
+ * tests/scripts/validate-wave-scope.test.mjs — but the flags added here do not
+ * inherit it: a swallowed flag is silent (the mode never runs, and the caller
+ * believes it did), whereas this refusal is loud and one line long.
+ *
+ * @param {string[]} argv
+ * @param {number} i - index of the FLAG token
+ * @param {string} flag - the flag name, for the error message
+ * @returns {string}
+ */
+function flagValue(argv, i, flag) {
+  const value = argv[i + 1];
+  if (value === undefined || value.startsWith('--')) {
+    die(`${flag} requires a file-path argument`, 1);
+  }
+  return value;
+}
+
+/**
  * Parse CLI flags out of argv, leaving positional args behind.
  *
- * Recognised: `--assert-subset <path>` (#796) and `--expand-test-siblings`
- * (#970). Everything else is treated as a positional argument (the
- * wave-scope.json file path), preserving legacy behaviour where argv[2] is the
- * input file.
+ * Recognised: `--assert-subset <path>` (#796), `--expand-test-siblings` (#970),
+ * `--assert-disjoint <path>` and `--union <path>` (#1020). Everything else is
+ * treated as a positional argument (the wave-scope.json file path), preserving
+ * legacy behaviour where argv[2] is the input file.
+ *
+ * The #1020 branches sit BEFORE the positional fallback, as their own `else if`
+ * arms: routed through the fallback instead, `--assert-disjoint` would be read
+ * as a wave-scope.json path and the mode would never run.
  *
  * @param {string[]} argv - full process.argv
- * @returns {{ assertSubset: string|null, expandTestSiblings: boolean, positionals: string[] }}
+ * @returns {{ assertSubset: string|null, expandTestSiblings: boolean,
+ *             assertDisjoint: string|null, union: string|null, positionals: string[] }}
  */
 function parseArgs(argv) {
   const positionals = [];
   let assertSubset = null;
   let expandTestSiblings = false;
+  let assertDisjoint = null;
+  let union = null;
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--expand-test-siblings') {
@@ -79,11 +155,17 @@ function parseArgs(argv) {
         die('--assert-subset requires a file-path argument', 1);
       }
       i++; // consume the value
+    } else if (a === '--assert-disjoint') {
+      assertDisjoint = flagValue(argv, i, '--assert-disjoint');
+      i++; // consume the value
+    } else if (a === '--union') {
+      union = flagValue(argv, i, '--union');
+      i++; // consume the value
     } else {
       positionals.push(a);
     }
   }
-  return { assertSubset, expandTestSiblings, positionals };
+  return { assertSubset, expandTestSiblings, assertDisjoint, union, positionals };
 }
 
 /**
@@ -415,12 +497,156 @@ function assertSubsetOrDie(obj, fileScopePath, expandTestSiblings = false) {
 }
 
 /**
+ * Read + shape-check the per-agent scope SIDECAR shared by `--assert-disjoint`
+ * and `--union` (#1020). Exits on any defect; returns the records on success.
+ *
+ * Exit codes mirror {@link assertSubsetOrDie} exactly: 2 for I/O (missing, not a
+ * regular file, unreadable), 1 for every content defect.
+ *
+ * ## Why the shape check is STRICTER than the library's tolerance
+ * `findScopeCollisions` / `unionFileScopes` are fail-closed and never throw:
+ * they SKIP a member that is not an object, and treat a missing `files` as `[]`.
+ * That is right for a hook-hot-path primitive and wrong for a CLI. A sidecar
+ * that spells the key `file:` instead of `files:` would then contribute nothing
+ * and both modes would report success on a scope that silently vanished — a
+ * path the operator NAMED and the tool did not honour. The absent-input guard
+ * belongs in the CLI layer (recorded learning, conf 0.80: a tolerant reader
+ * cannot carry a CLI's absent-input guard), so `files` is REQUIRED here.
+ *
+ * `id` is deliberately NOT required: scope-gate's `normalizeAgentScopes` runs a
+ * record with no usable id as `<unnamed#i>` rather than dropping it, precisely
+ * because an unreviewed scope is the one that collides. Requiring it here would
+ * reject exactly the input that contract was written to keep.
+ *
+ * @param {string} sidecarPath
+ * @param {string} flag - the flag name, for error messages
+ * @returns {Array<{id?: string, files: string[]}>}
+ */
+function readAgentScopesOrDie(sidecarPath, flag) {
+  if (!existsSync(sidecarPath) || !statSync(sidecarPath).isFile()) {
+    die(`Cannot read ${flag} file: ${sidecarPath}`, 2);
+  }
+  let raw;
+  try {
+    raw = readFileSync(sidecarPath, 'utf8');
+  } catch (err) {
+    die(`Cannot read ${flag} file ${sidecarPath}: ${err.message}`, 2);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    die(`${flag} file is not valid JSON: ${sidecarPath}`, 1);
+  }
+  if (!Array.isArray(parsed)) {
+    const t = parsed === null ? 'null' : typeof parsed;
+    die(
+      `${flag} file must be a JSON array of {id, files} records, got type: ${t} — an object map would silently swallow a duplicate agent id`,
+      1,
+    );
+  }
+  for (let i = 0; i < parsed.length; i++) {
+    const rec = parsed[i];
+    if (rec === null || typeof rec !== 'object' || Array.isArray(rec)) {
+      die(`${flag} file entry #${i} must be an object with a "files" array`, 1);
+    }
+    if (!Array.isArray(rec.files) || !rec.files.every((f) => typeof f === 'string')) {
+      die(`${flag} file entry #${i} ("${rec.id ?? '<unnamed>'}") must have a "files" string array`, 1);
+    }
+  }
+  return parsed;
+}
+
+/**
+ * The repo's tracked files, for {@link findScopeCollisions}' glob∩glob witness
+ * stage. Spawned HERE and injected as a parameter because
+ * `scripts/lib/scope-gate.mjs` is hook-safe (pure, sync, no I/O, no spawn) and
+ * `hooks/enforce-scope.mjs` reaches it on a hot path.
+ *
+ * An unavailable git (not a repo, git missing, huge output) is NOT an error:
+ * the library documents `knownFiles` as optional — stage 3a simply has fewer
+ * witnesses and the prefix fallback of stage 3b carries the load. Silent by
+ * design: a WARN here would print on the success path of a mode whose contract
+ * is "quiet when clean".
+ *
+ * @returns {string[]}
+ */
+function knownRepoFiles() {
+  const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 };
+  try {
+    const root = execFileSync('git', ['rev-parse', '--show-toplevel'], opts).trim();
+    if (!root) return [];
+    // -z: NUL-separated. Without it git QUOTES paths containing non-ASCII or
+    // special characters, and a quoted path would never match a scope entry.
+    return execFileSync('git', ['ls-files', '-z'], { ...opts, cwd: root })
+      .split('\0')
+      .filter((f) => f.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Assert that no file is claimed by two agents of the SAME wave (#1020).
+ * Exits 1 with one message per collision (plus one per duplicate agent id);
+ * returns silently when the wave is clean.
+ *
+ * @param {string} sidecarPath
+ */
+function assertDisjointOrDie(sidecarPath) {
+  const agentScopes = readAgentScopesOrDie(sidecarPath, '--assert-disjoint');
+  const { ok, collisions, duplicateIds } = findScopeCollisions(agentScopes, {
+    knownFiles: knownRepoFiles(),
+  });
+  if (ok) return;
+
+  // Duplicate ids FIRST: they are a malformed plan, and a reader who fixes them
+  // may well change which collisions remain.
+  for (const id of duplicateIds) {
+    process.stderr.write(
+      `ERROR: duplicate agent id in ${sidecarPath}: "${id}" — ids must be unique per wave; a copy-paste duplicate hides one agent's scope from every per-agent check\n`,
+    );
+  }
+  for (const c of collisions) {
+    process.stderr.write(
+      `ERROR: wave scope collision (${c.kind}): agents "${c.a}" and "${c.b}" both claim [${c.evidence.join(', ')}]\n`,
+    );
+  }
+  process.stderr.write(
+    `ERROR: ${collisions.length} scope collision(s), ${duplicateIds.length} duplicate id(s) — every file must belong to exactly ONE agent per wave (#1020; .claude/rules/parallel-sessions.md § Decision Tree)\n`,
+  );
+  process.exit(1);
+}
+
+/**
+ * QUERY MODE (#1020): print `expandTestSiblings(unionFileScopes(scopes), {role})`
+ * as JSON on stdout, using the MANIFEST'S own role. Replaces the manifest echo —
+ * see the STDOUT CONTRACT note in the file header.
+ *
+ * @param {Record<string, unknown>} obj - the already schema-validated wave-scope object
+ * @param {string} sidecarPath
+ */
+function emitUnion(obj, sidecarPath) {
+  const agentScopes = readAgentScopesOrDie(sidecarPath, '--union');
+  const allowedPaths = expandScopeTestSiblings(unionFileScopes(agentScopes), { role: obj.role });
+  process.stdout.write(`${JSON.stringify(allowedPaths, null, 2)}\n`);
+}
+
+/**
  * Main validation entry point. Reads input, validates, exits with appropriate code.
  * @param {string} input - raw JSON string
  * @param {string|null} [assertSubsetPath] - optional agent fileScope file for the #796 subset assertion
  * @param {boolean} [expandTestSiblings] - opt-in #970 test-sibling coverage assertion
+ * @param {string|null} [assertDisjointPath] - optional per-agent scope sidecar for the #1020 collision check
+ * @param {string|null} [unionPath] - optional per-agent scope sidecar for the #1020 union query mode
  */
-function validate(input, assertSubsetPath = null, expandTestSiblings = false) {
+function validate(
+  input,
+  assertSubsetPath = null,
+  expandTestSiblings = false,
+  assertDisjointPath = null,
+  unionPath = null,
+) {
   const obj = parseJson(input);
   const errors = [];
   const warnings = [];
@@ -446,9 +672,26 @@ function validate(input, assertSubsetPath = null, expandTestSiblings = false) {
     assertSubsetOrDie(obj, assertSubsetPath, expandTestSiblings);
   }
 
+  // #1020 — collision check runs AFTER the #796/#970 assertions, for the same
+  // reason #970 runs after #796 (see assertSubsetOrDie): a manifest that
+  // violates BOTH the subset relation and disjointness must keep the older,
+  // byte-pinned subset message. Only ever ADDS a failure mode.
+  if (assertDisjointPath) {
+    assertDisjointOrDie(assertDisjointPath);
+  }
+
+  // #1020 QUERY MODE — replaces the echo below; see the STDOUT CONTRACT note in
+  // the file header. Last, so every assertion above still gates it.
+  if (unionPath) {
+    emitUnion(obj, unionPath);
+    return;
+  }
+
   // Echo validated JSON to stdout (trailing newline normalised)
   process.stdout.write(input.endsWith('\n') ? input : input + '\n');
 }
 
-const { assertSubset, expandTestSiblings, positionals } = parseArgs(process.argv);
-validate(readInput(positionals[0]), assertSubset, expandTestSiblings);
+const { assertSubset, expandTestSiblings, assertDisjoint, union, positionals } = parseArgs(
+  process.argv,
+);
+validate(readInput(positionals[0]), assertSubset, expandTestSiblings, assertDisjoint, union);

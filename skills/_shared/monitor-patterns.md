@@ -36,11 +36,11 @@ the GitHub mirror's main-branch SHA so the operator can confirm parity.
 ```bash
 prev=""
 while true; do
-  s=$(glab ci status --pipeline-id LATEST --output json 2>/dev/null || echo '[]')
-  cur=$(jq -r '.[] | select(.status!="running" and .status!="pending") | "\(.name): \(.status)"' <<<"$s" 2>/dev/null | sort)
+  s=$(glab ci status -R <OWNER>/<REPO> --output json 2>/dev/null || echo '{"jobs":[]}')
+  cur=$(jq -r '.jobs[] | select(.status!="running" and .status!="pending") | "\(.name): \(.status)"' <<<"$s" 2>/dev/null | sort)
   comm -13 <(echo "$prev") <(echo "$cur")
   prev=$cur
-  jq -e 'all(.status=="success" or .status=="failed" or .status=="canceled" or .status=="skipped")' <<<"$s" >/dev/null 2>&1 && {
+  jq -e '(.jobs|length) > 0 and (.jobs | all(.status=="success" or .status=="failed" or .status=="canceled" or .status=="skipped"))' <<<"$s" >/dev/null 2>&1 && {
     sha=$(gh api repos/Kanevry/session-orchestrator/commits/main --jq '.sha' 2>/dev/null || echo "(mirror unreachable)")
     echo "GitHub mirror main: $sha"
     break
@@ -55,8 +55,28 @@ done
 SHA — silence at the end means glab JSON parsing failed (the `||` fallbacks
 prevent the whole loop from dying).
 
+**Probed 2026-08-14 (glab 1.91.0), three corrections — #1022.** The snippet
+above was silence-is-not-success in its own right until that date, and each
+half failed into the next one's fallback:
+
+- `--pipeline-id LATEST` is not a glab flag on any `ci` subcommand
+  (`ERROR Unknown flag`, exit 1), so `$s` was always the `||` fallback. There is
+  no replacement — the argument-less form already selects the current branch's
+  pipeline. Avoid `--branch=<name>` here: it pins a snapshot taken when the
+  monitor was armed.
+- The payload is an OBJECT (`{"jobs":[…],"pipeline":{…}}`), so `.[]` raised
+  `Cannot index array with string "status"` (jq exit 5) on every real response.
+  The accessor is `.jobs[]`.
+- `all(…)` over the empty fallback returns **true**, so the loop broke and
+  printed the mirror SHA on its FIRST iteration whenever glab hiccuped — a
+  transient network error read as "pipeline finished". The `(.jobs|length) > 0`
+  guard is what makes the fallback non-terminal; verified by running the
+  terminal test against `{"jobs":[]}` (exit 1 = keep watching) versus the old
+  form against `[]` (exit 0 = break).
+
 **GitHub-mirror equivalent.** When the pipeline is GitHub-Actions-native (PR
-checks rather than a GitLab pipeline), use `gh pr checks <pr> --watch --fail-fast`
+checks rather than a GitLab pipeline), use
+`gh pr checks -R <OWNER>/<REPO> <pr> --watch --fail-fast`
 as the `command` source — it streams each check transition and exits non-zero on
 the first failure, so the terminal state is never silent.
 

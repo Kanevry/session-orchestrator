@@ -60,7 +60,8 @@
 | SessionEnd | `""` | `hooks/on-session-end.mjs` |
 | PreToolUse | `Skill` | `hooks/skill-invocation-telemetry.mjs` |
 | PreToolUse | `Edit\|Write\|MultiEdit` | `hooks/enforce-scope.mjs` + `hooks/config-protection.mjs` |
-| PreToolUse | `Bash` | `hooks/pre-bash-destructive-guard.mjs` + `hooks/pre-bash-staging-fence.mjs` + `hooks/pre-bash-memory-propose-audit.mjs` + `hooks/pre-bash-templates-first.mjs` + `hooks/enforce-commands.mjs` |
+| PreToolUse | `Bash` | `hooks/pre-bash-destructive-guard.mjs` + `hooks/pre-bash-staging-fence.mjs` + `hooks/pre-bash-memory-propose-audit.mjs` + `hooks/pre-bash-sessions-ledger-guard.mjs` + `hooks/pre-bash-templates-first.mjs` + `hooks/pre-bash-issue-budget.mjs` + `hooks/enforce-commands.mjs` |
+| PreToolUse | `Agent` | `hooks/pre-task-scope-disjoint.mjs` |
 | PostToolUse | `Edit\|Write` | `hooks/post-edit-validate.mjs` |
 | PostToolUse | `Edit\|Write\|MultiEdit` | `hooks/post-tooluse-frontend-slop.mjs` |
 | PostToolUse | `*` | `hooks/loop-guard.mjs` |

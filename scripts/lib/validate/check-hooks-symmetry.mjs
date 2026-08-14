@@ -79,6 +79,12 @@ const DOCUMENTED_ASYMMETRIES = {
       // no-op, not enforcement (#919-P2 class) — "pretending the payloads are
       // compatible would create false enforcement".
       PreToolUse: [
+        // pre-task-scope-disjoint (#1020): NOT ported by construction. The hook
+        // matches the `Agent` dispatch tool, which this platform does not have —
+        // Cursor IDE and Pi v1 have no parallel agent dispatch at all
+        // (skills/session-plan/SKILL.md Platform Note), and Codex has no payload
+        // adapter for it. A matcher that can never fire is not enforcement.
+        'pre-task-scope-disjoint.mjs',
         'skill-invocation-telemetry.mjs',
         'enforce-scope.mjs',
         'config-protection.mjs',
@@ -121,6 +127,12 @@ const DOCUMENTED_ASYMMETRIES = {
       // surface, and the operator's 2026-07-31 rule is that a gap gets
       // registered rather than faked. #958 tracks the port-or-justify.
       PreToolUse: [
+        // pre-task-scope-disjoint (#1020): NOT ported by construction. The hook
+        // matches the `Agent` dispatch tool, which this platform does not have —
+        // Cursor IDE and Pi v1 have no parallel agent dispatch at all
+        // (skills/session-plan/SKILL.md Platform Note), and Codex has no payload
+        // adapter for it. A matcher that can never fire is not enforcement.
+        'pre-task-scope-disjoint.mjs',
         'skill-invocation-telemetry.mjs',
         'pre-bash-sessions-ledger-guard.mjs', // #958
         'pre-bash-templates-first.mjs', // #946
@@ -143,6 +155,12 @@ const DOCUMENTED_ASYMMETRIES = {
       // mapped at all; the other eight PreToolUse handlers have no Cursor
       // mapping whatsoever.
       PreToolUse: [
+        // pre-task-scope-disjoint (#1020): NOT ported by construction. The hook
+        // matches the `Agent` dispatch tool, which this platform does not have —
+        // Cursor IDE and Pi v1 have no parallel agent dispatch at all
+        // (skills/session-plan/SKILL.md Platform Note), and Codex has no payload
+        // adapter for it. A matcher that can never fire is not enforcement.
+        'pre-task-scope-disjoint.mjs',
         'skill-invocation-telemetry.mjs',    // #919
         'enforce-scope.mjs',                 // #919
         'config-protection.mjs',             // #919

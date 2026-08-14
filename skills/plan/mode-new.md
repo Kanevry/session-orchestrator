@@ -151,7 +151,7 @@ glab repo view $GROUP/$PROJECT_NAME
 If visibility is not `internal` (the default):
 
 ```bash
-glab repo edit --visibility private   # or --visibility public
+glab repo edit -R "$GROUP/$PROJECT_NAME" --visibility private   # or --visibility public
 ```
 
 For public/OSS, also configure GitHub mirror if applicable.
@@ -274,11 +274,11 @@ Use AskUserQuestion to present the full issue structure:
 
 ```bash
 # Create epic
-glab issue create --title "$EPIC_TITLE" --description "$EPIC_DESC" \
+glab issue create -R "$GROUP/$PROJECT_NAME" --title "$EPIC_TITLE" --description "$EPIC_DESC" \
   --label "type:epic,priority::$PRIORITY" --milestone "$MILESTONE"
 
 # Create sub-issues
-glab issue create --title "$ISSUE_TITLE" --description "$ISSUE_DESC" \
+glab issue create -R "$GROUP/$PROJECT_NAME" --title "$ISSUE_TITLE" --description "$ISSUE_DESC" \
   --label "type:feature,priority::$PRIORITY,status:ready,area:$AREA,appetite:$APPETITE"
 ```
 

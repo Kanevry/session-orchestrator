@@ -55,9 +55,9 @@ Grep pattern: <claimed_addition>
 git show <commit_hash> -- <relevant_files>
 
 # "Closes #N" -> verify acceptance criteria from issue #N are met
-gh issue view <N> --json body -q '.body'
+gh issue view -R <OWNER>/<REPO> <N> --json body -q '.body'
 # or
-glab issue view <N>
+glab issue view -R <OWNER>/<REPO> <N>
 
 # Step 3: Cross-reference claims against actual changes
 git diff <commit_hash>~1..<commit_hash>
@@ -83,10 +83,10 @@ Evidence: <what was found or not found>
 
 ```bash
 # GitLab: list open issues sorted by last update
-glab issue list --per-page 100 | head -50
+glab issue list -R <OWNER>/<REPO> --per-page 100 | head -50
 
 # GitHub: list open issues sorted by last update
-gh issue list --limit 100 --json number,title,labels,updatedAt,assignees --jq '.[] | select(.updatedAt < "<30_days_ago_iso>")'
+gh issue list -R <OWNER>/<REPO> --limit 100 --json number,title,labels,updatedAt,assignees --jq '.[] | select(.updatedAt < "<30_days_ago_iso>")'
 
 # Flag:
 # - Issues with no activity in stale-issue-days (default: 30 days)
@@ -131,7 +131,7 @@ for issue in issues:
 "
 
 # GitHub: fetch issue bodies and parse cross-references
-gh issue list --limit 100 --json number,body --jq '.[] | {number, body}' | python3 -c "
+gh issue list -R <OWNER>/<REPO> --limit 100 --json number,body --jq '.[] | {number, body}' | python3 -c "
 import json, sys, re
 for line in sys.stdin:
     issue = json.loads(line)

@@ -57,9 +57,9 @@ Never hardcode project IDs. Resolve them at runtime — and re-resolve live each
 
 ```bash
 # GitLab — get numeric project ID
-glab repo view --output json | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])"
+glab repo view -R <OWNER>/<REPO> --output json | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])"
 
-# GitHub — get owner/name identifier
+# GitHub — get owner/name identifier (gh repo takes the repo POSITIONALLY; it rejects -R)
 gh repo view --json nameWithOwner -q '.nameWithOwner'
 ```
 
@@ -153,33 +153,35 @@ GitHub has no native issue-blocking relation at all — the body-ordering-note f
 
 ## Common CLI Commands
 
+**Directive — consult this only for a command NOT listed below; every example here already complies.** Each repo-scoped `glab`/`gh` invocation carries `-R <OWNER>/<REPO>` (`glab` also accepts `GROUP/SUBGROUP/REPO` or a full remote URL — `resolveRepoSpec()` in `scripts/lib/vcs-repo-spec.mjs` produces the right spec per platform); without the flag the target is whatever the ambient cwd remote happens to be, which is the wrong project in a sibling worktree, an `/autopilot` child, or a fork. Exactly four exceptions, each probed against the binaries: `glab api`/`gh api` (no `--repo` exists — pin the host with `--hostname` from `resolveRepoHost()` instead), `gh repo <*>` (rejects `-R`; takes the repository positionally), a `glab repo` call that already names the repository positionally, and — conditionally, not subcommand-wide — `gh pr checks|view|diff|ready|merge|comment`, where `-R` is legal ONLY alongside the `<number>|<url>|<branch>` positional: `gh pr checks -R <OWNER>/<REPO> <BRANCH>` carries the flag, while a positional-less `gh pr checks -R <OWNER>/<REPO> --watch` exits 1 with `argument required when using the` `--repo` `flag` — so name the PR or drop the flag, and never derive this from `--help`, which lists `-R` under INHERITED FLAGS with no such qualifier.
+
 ### GitLab (glab)
 
 ```bash
 # Issues
-glab issue list --per-page 50                              # All open issues
-glab issue list --label "status:ready" --per-page 10       # Ready to work on
-glab issue list --label "priority::high" --per-page 10     # High priority
-glab issue list --closed --per-page 10                      # Recently closed
-glab issue view <IID>                                       # View issue details
-glab issue view <IID> --comments                            # With comments
-glab issue create --title "title" --label "priority::high,status:ready"
-glab issue update <IID> --label "status:in-progress"        # WARNING: --label REPLACES the full set — see caveat below
-glab issue close <IID>                                       # then VERIFY: glab issue view <IID> must show state=closed
-glab issue note <IID> -m "Comment text"                    # Add comment
+glab issue list -R <OWNER>/<REPO> --per-page 50                            # All open issues
+glab issue list -R <OWNER>/<REPO> --label "status:ready" --per-page 10     # Ready to work on
+glab issue list -R <OWNER>/<REPO> --label "priority::high" --per-page 10   # High priority
+glab issue list -R <OWNER>/<REPO> --closed --per-page 10                   # Recently closed
+glab issue view -R <OWNER>/<REPO> <IID>                                    # View issue details
+glab issue view -R <OWNER>/<REPO> <IID> --comments                         # With comments
+glab issue create -R <OWNER>/<REPO> --title "title" --label "priority::high,status:ready"
+glab issue update -R <OWNER>/<REPO> <IID> --label "status:in-progress"     # WARNING: --label REPLACES the full set — see caveat below
+glab issue close -R <OWNER>/<REPO> <IID>                                   # then VERIFY: re-read the issue; it must show state=closed
+glab issue note -R <OWNER>/<REPO> <IID> -m "Comment text"                  # Add comment
 
 # MRs
-glab mr list                                                # Open MRs
-glab mr create --fill --draft                               # Create draft MR
-glab mr merge <MR_IID>                                     # Merge MR
+glab mr list -R <OWNER>/<REPO>                                             # Open MRs
+glab mr create -R <OWNER>/<REPO> --fill --draft                            # Create draft MR
+glab mr merge -R <OWNER>/<REPO> <MR_IID>                                   # Merge MR
 
 # Pipelines
-glab pipeline list --per-page 5                            # Recent pipelines
-glab pipeline status <ID>                                  # Pipeline details
+glab pipeline list -R <OWNER>/<REPO> --per-page 5                          # Recent pipelines
+glab pipeline status -R <OWNER>/<REPO> <ID>                                # Pipeline details
 
-# API (reads host from git remote automatically)
-glab api "projects/$(glab repo view --output json | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")/issues?state=opened&per_page=50"
-glab api "projects/$(glab repo view --output json | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")/milestones?state=active"
+# API (no --repo exists here — the endpoint path IS the target; pin the host with --hostname)
+glab api "projects/$(glab repo view -R <OWNER>/<REPO> --output json | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")/issues?state=opened&per_page=50"
+glab api "projects/$(glab repo view -R <OWNER>/<REPO> --output json | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")/milestones?state=active"
 ```
 
 **Label update caveat (PUT-replaces, not additive):** `glab issue update --label` (and the underlying GitLab labels API) PUT-REPLACES the entire label set — it does not add to the existing set. To change a single label you must pass the FULL desired label list, or use the dedicated add/remove operations, which are themselves unreliable across `glab` versions. Preferred safe pattern: use `--label` (adds) together with `--unlabel` (removes) on `glab issue update` when your installed `glab` version supports both; otherwise read the current labels first, compute the full new set, and PUT once. The same PUT-replace semantics apply to `glab mr update --label`.
@@ -194,27 +196,27 @@ glab api "projects/$(glab repo view --output json | python3 -c "import json,sys;
 
 ```bash
 # Issues
-gh issue list --limit 50                                   # All open issues
-gh issue list --label "status:ready" --limit 10            # Ready to work on
-gh issue list --label "priority::high" --limit 10          # High priority
-gh issue list --state closed --limit 10                    # Recently closed
-gh issue view <NUMBER>                                      # View issue details
-gh issue view <NUMBER> --comments                           # With comments
-gh issue create --title "title" --label "priority::high,status:ready"
-gh issue edit <NUMBER> --add-label "status:in-progress"
-gh issue close <NUMBER>
-gh issue comment <NUMBER> --body "Comment text"            # Add comment
+gh issue list -R <OWNER>/<REPO> --limit 50                                 # All open issues
+gh issue list -R <OWNER>/<REPO> --label "status:ready" --limit 10          # Ready to work on
+gh issue list -R <OWNER>/<REPO> --label "priority::high" --limit 10        # High priority
+gh issue list -R <OWNER>/<REPO> --state closed --limit 10                  # Recently closed
+gh issue view -R <OWNER>/<REPO> <NUMBER>                                   # View issue details
+gh issue view -R <OWNER>/<REPO> <NUMBER> --comments                        # With comments
+gh issue create -R <OWNER>/<REPO> --title "title" --label "priority::high,status:ready"
+gh issue edit -R <OWNER>/<REPO> <NUMBER> --add-label "status:in-progress"
+gh issue close -R <OWNER>/<REPO> <NUMBER>
+gh issue comment -R <OWNER>/<REPO> <NUMBER> --body "Comment text"          # Add comment
 
 # PRs
-gh pr list --state open                                    # Open PRs
-gh pr create --fill --draft                                 # Create draft PR
-gh pr merge <NUMBER>                                       # Merge PR
+gh pr list -R <OWNER>/<REPO> --state open                                  # Open PRs
+gh pr create -R <OWNER>/<REPO> --fill --draft                              # Create draft PR
+gh pr merge -R <OWNER>/<REPO> <NUMBER>                                     # Merge PR
 
 # Workflows (CI equivalent)
-gh run list --limit 5                                      # Recent workflow runs
-gh run view <RUN_ID>                                       # Run details
+gh run list -R <OWNER>/<REPO> --limit 5                                    # Recent workflow runs
+gh run view -R <OWNER>/<REPO> <RUN_ID>                                     # Run details
 
-# API
+# API (no --repo exists here — the endpoint path IS the target; pin the host with --hostname)
 gh api "repos/{owner}/{repo}/issues?state=open&per_page=50"
 gh api "repos/{owner}/{repo}/milestones?state=open"
 ```
@@ -367,8 +369,8 @@ Read .gitlab/merge_request_templates/Default.md
 Read .github/PULL_REQUEST_TEMPLATE.md
 
 # 2. Then create — hook now passes
-glab mr create --title "..." --description "..."
-gh pr create --title "..." --body "..."
+glab mr create -R <OWNER>/<REPO> --title "..." --description "..."
+gh pr create -R <OWNER>/<REPO> --title "..." --body "..."
 ```
 
 ### Cross-References

@@ -180,6 +180,7 @@ Seven hooks call `emitDeny` (`grep -rln "emitDeny" hooks/`). Four bind through
 | `pre-bash-sessions-ledger-guard.mjs` | `armGuard` | `command-blocker.mjs` — 3 exports: `tokenizeCommand`, `resolveSegmentVerb`, `splitChainSegments` | healthy · DEGRADED · INACTIVE |
 | `enforce-commands.mjs` | `armGuard` | `command-blocker.mjs` — 2 exports: `commandMatchesBlocked`, `suggestForCommandBlock` | healthy · DEGRADED (shape-check door only, see below) · INACTIVE |
 | `enforce-scope.mjs` | `armGuard` | none (`headFallback` on 0/5 entries; 3 modules dependency-free, 2 carry relative imports) | healthy · INACTIVE only |
+| `pre-task-scope-disjoint.mjs` (#1020) | `armGuard` | none | healthy · INACTIVE only |
 | `config-protection.mjs` | static `import` | — | healthy · silent disarm (pre-#992 exposure) |
 | `pre-bash-issue-budget.mjs` | static `import` | — | healthy · silent disarm (pre-#992 exposure) |
 | `pre-bash-templates-first.mjs` | static `import` | — | healthy · silent disarm (pre-#992 exposure) |
@@ -305,7 +306,7 @@ helper charges the recursion budget once per distinct payload.
 | INACTIVE banner unthrottled, DEGRADED throttled | `guard-source-loader.mjs#emitGuardInactiveBanner` doc vs `#emitGuardBannerOnce` |
 | `emitWarn` is `@returns {never}` / `process.exit(0)` | `scripts/lib/io.mjs#emitWarn` |
 | aggregate-and-flush, deny drops notices | `flushNotices` in `pre-bash-destructive-guard.mjs`, `enforce-commands.mjs`, `pre-bash-sessions-ledger-guard.mjs` (#1001) |
-| 7 deny-capable hooks; 4 armGuard; 3 static | `grep -rln "emitDeny" hooks/` (7) · `grep -rln "armGuard" hooks/` (4 + loader) · top-level `import` in the other 3 |
+| 8 deny-capable hooks; 5 armGuard; 3 static | `grep -rln "emitDeny" hooks/` (8) · `grep -rln "armGuard" hooks/` (5 + loader) · top-level `import` in the other 3 |
 | per-hook `requires` sets | `bootstrap()` in each of the three headFallback hooks |
 | hardening → scope-gate → command-blocker | `scripts/lib/scope-gate.mjs:17`; `scripts/lib/hardening.mjs` re-exports |
 | headFallback entries arm LAST | `guard-source-loader.mjs#armGuard` `entries.sort(...)` |

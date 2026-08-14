@@ -38,6 +38,10 @@ These are the non-obvious, mistake-causing facts that must load every session. E
   Clean worktree → auto-remove with WARN. Dirty (uncommitted/untracked/unpushed) → AUQ `[Behalten/Löschen/Manuell]`.
   The Phase 4a cleanup runs AFTER Phase 4 commit+push, not before — this respects #490 durableCommit ordering so sessions.jsonl + STATE.md are persisted to origin BEFORE worktree-removal.
   PSA-003 compliance enforced. Implementation: `skills/session-end/SKILL.md § Phase 4a`. <!-- consistency:exempt:runtime-only -->
+- **`allowedPaths` is COMPUTED, and the per-agent scope files are not temp files (#1020).** The union comes from `validate-wave-scope.mjs --union` over `<state-dir>/filescopes/wave-<N>/<agent-id>.json`; hand-maintaining it produces exactly the divergence `--assert-disjoint` (which must run BEFORE the union) exists to catch.
+  Those per-agent files are an addressable, wave-keyed location — never a `$TMPDIR` copy. A temp copy degrades the whole chain to signal-free ALLOW: no `FILE-SCOPE` block reaches the prompt, so `hooks/pre-task-scope-disjoint.mjs` extracts nothing and permits the dispatch.
+  The coordinator declares its OWN direct edits as `coordinator.json` in the same directory — 2 of the 5 recorded divergences were coordinator-direct edits, which no agent scope file covers by construction.
+  Mechanism, error-class matrix and named limits: [`docs/scope-collision-guard.md`](docs/scope-collision-guard.md). <!-- consistency:exempt:runtime-only -->
 
 ## Session Config
 

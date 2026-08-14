@@ -284,7 +284,8 @@ if (opts['file-scope']) {
   const doc = readJsonOrNull(opts['file-scope'], true, '--file-scope');
   // The agent's "Files:" scope is written as a bare JSON array (#796
   // $AGENT_FILESCOPE_JSON); tolerate an {allowedPaths:[...]} wrapper too so the
-  // same temp file can be reused for either flag without a reshape step.
+  // same file can be reused for either flag without a reshape step. That file is
+  // `<state-dir>/filescopes/wave-<N>/<agent-id>.json` (#1020), never a $TMPDIR copy.
   scopePaths = cleanPaths(Array.isArray(doc) ? doc : doc?.allowedPaths);
   if (scopePaths.length > 0) scopeSource = 'file-scope';
 }

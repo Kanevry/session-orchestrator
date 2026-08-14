@@ -95,6 +95,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-task-scope-disjoint.mjs\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [

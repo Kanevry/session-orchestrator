@@ -79,7 +79,7 @@ Used for a single finding from a single probe.
 **CLI Example:**
 ```bash
 # GitHub
-gh issue create \
+gh issue create -R <OWNER>/<REPO> \
   --title "[Discovery] <finding_title>" \
   --label "type:discovery,priority::<level>,area:<area>,status:ready" \
   --body "$(cat <<'EOF'
@@ -88,7 +88,7 @@ EOF
 )"
 
 # GitLab
-glab issue create \
+glab issue create -R <OWNER>/<REPO> \
   --title "[Discovery] <finding_title>" \
   --label "type:discovery,priority::<level>,area:<area>,status:ready" \
   --description "$(cat <<'EOF'
@@ -159,7 +159,7 @@ Used when multiple related findings from the same probe or category are grouped 
 **CLI Example:**
 ```bash
 # GitHub
-gh issue create \
+gh issue create -R <OWNER>/<REPO> \
   --title "[Discovery] <category> audit: <summary>" \
   --label "type:discovery,priority::<level>,area:<area>,status:ready" \
   --body "$(cat <<'EOF'
@@ -168,7 +168,7 @@ EOF
 )"
 
 # GitLab
-glab issue create \
+glab issue create -R <OWNER>/<REPO> \
   --title "[Discovery] <category> audit: <summary>" \
   --label "type:discovery,priority::<level>,area:<area>,status:ready" \
   --description "$(cat <<'EOF'

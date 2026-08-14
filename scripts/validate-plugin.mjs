@@ -270,6 +270,19 @@ runCheck('check-unwired-features.mjs');
 process.stdout.write('\n');
 runCheck('check-learning-provenance.mjs');
 
+// WARN-only (#971), same rationale as the two censuses above: a `gh`/`glab` call
+// without `--repo`/`-R` resolves its target project from the ambient cwd remote —
+// silently the wrong project in a sibling worktree, an /autopilot child, or a repo
+// whose origin is a fork — and a gate that blocks on a backlog no single pass can
+// drain gets switched off rather than obeyed. What WARN buys is that each newly
+// added bare call site shows up in every validator run while the sweep drains the
+// rest. No headcount is quoted here on purpose: the live number moves with every
+// commit, and only the check's own `--json` summary can state it as of a SHA. The
+// exit code is deliberately ignored; a tool error still surfaces because that path
+// prints FAIL: lines, which runCheck tallies into totalFail.
+process.stdout.write('\n');
+runCheck('check-vcs-repo-flag.mjs');
+
 // ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------

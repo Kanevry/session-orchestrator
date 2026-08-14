@@ -511,6 +511,29 @@ function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// DELIBERATE DUPLICATE — do not replace the function below with an import from
+// `scripts/lib/redact-spans.mjs`. This scanner is a documented STANDALONE
+// SINGLE-FILE vendoring target (`.claude/rules/security.md` § "Owner-Privacy
+// Pre-Commit Hook": consumer repos copy exactly this ONE file into their tree as
+// a pre-commit stage). A static import resolves in-tree but throws
+// ERR_MODULE_NOT_FOUND in every vendored copy — under the husky stage that means
+// empty stdout + exit 1 on a CLEAN tree, i.e. every commit blocked. Not
+// hypothetical: `tests/husky/pre-commit-owner-leakage.test.mjs` cpSync()s this
+// single file into a tmp repo, and the static-import variant turned all three of
+// its cases red (#974).
+//
+// The dynamic-import degrade used by getConfidentialNamePatterns() is NOT
+// available here. That helper degrades to `[]` — CP11 goes inert, CP1–CP10 keep
+// running, nothing leaks. A failed REDACTION has the opposite failure direction:
+// it prints confidential names verbatim into a PUBLIC GitHub-Actions log, which
+// is precisely the exposure this function exists to prevent (Fix 1 below). The
+// redaction sink must be unconditionally present, so it lives inline.
+//
+// `scripts/lib/redact-spans.mjs` is the shared primitive for IN-TREE consumers
+// (e.g. `scripts/lib/secret-masker.mjs`); this copy serves the vendored path.
+// The two are pinned byte-for-byte against each other by the drift guard in
+// `tests/lib/redact-spans.test.mjs` — change one and that suite goes red until
+// both agree again.
 /**
  * Redact every confidential-name span from `line`, ORDER-INDEPENDENTLY (Fix 1 + Fix 2).
  *
