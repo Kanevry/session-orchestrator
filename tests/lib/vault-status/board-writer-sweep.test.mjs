@@ -45,6 +45,7 @@ import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  boardKey,
   buildSweepRepos,
   sweepBoard,
   mirrorBoard,
@@ -238,7 +239,7 @@ describe('sweepBoard happy path', () => {
   it('renders a foreign repo with a dead lease as force-closed (headline #716 case)', async () => {
     const { hostDir, vaultDir, sandbox } = scaffold();
     const deadLock = buildLockBody({ sessionId: 'dead-sess', ttlHours: 4, heartbeatAgeHours: 5, now: FIXED_NOW });
-    makeCandidateRepo(hostDir, 'foreign-dead-repo', deadLock);
+    const deadRepoRoot = makeCandidateRepo(hostDir, 'foreign-dead-repo', deadLock);
     const thisRepoRoot = makeThisRepo(sandbox, 'this-repo', {
       vaultDir,
       lock: buildLockBody({ sessionId: 'this-sess', heartbeatAgeHours: 0, now: FIXED_NOW }),
@@ -257,6 +258,7 @@ describe('sweepBoard happy path', () => {
     const deadRow = rows.find((r) => r.repo === 'foreign-dead-repo');
     expect(deadRow).toEqual({
       repo: 'foreign-dead-repo',
+      key: boardKey(deadRepoRoot),
       status: 'force-closed',
       session: 'dead-sess',
       branch: null,
@@ -268,7 +270,7 @@ describe('sweepBoard happy path', () => {
   it('renders a foreign repo with a live lease as in-progress', async () => {
     const { hostDir, vaultDir, sandbox } = scaffold();
     const liveLock = buildLockBody({ sessionId: 'live-sess', ttlHours: 4, heartbeatAgeHours: 0, now: FIXED_NOW });
-    makeCandidateRepo(hostDir, 'foreign-live-repo', liveLock);
+    const liveRepoRoot = makeCandidateRepo(hostDir, 'foreign-live-repo', liveLock);
     const thisRepoRoot = makeThisRepo(sandbox, 'this-repo', {
       vaultDir,
       lock: buildLockBody({ sessionId: 'this-sess', heartbeatAgeHours: 0, now: FIXED_NOW }),
@@ -280,6 +282,7 @@ describe('sweepBoard happy path', () => {
     const liveRow = rows.find((r) => r.repo === 'foreign-live-repo');
     expect(liveRow).toEqual({
       repo: 'foreign-live-repo',
+      key: boardKey(liveRepoRoot),
       status: 'in-progress',
       session: 'live-sess',
       branch: null,
@@ -301,6 +304,7 @@ describe('sweepBoard happy path', () => {
     const thisRow = rows.find((r) => r.repo === 'this-repo');
     expect(thisRow).toEqual({
       repo: 'this-repo',
+      key: boardKey(thisRepoRoot),
       status: 'in-progress',
       session: 'this-sess',
       branch: null,
@@ -355,7 +359,7 @@ describe('sweepBoard — two-level <org>/<repo> topology (#832)', () => {
     const deadLock = buildLockBody({
       sessionId: 'deep-dead-sess', ttlHours: 4, heartbeatAgeHours: 5, now: FIXED_NOW,
     });
-    makeCandidateRepo(orgDir, 'deep-dead-repo', deadLock);
+    const deepRepoRoot = makeCandidateRepo(orgDir, 'deep-dead-repo', deadLock);
 
     const thisRepoRoot = makeThisRepo(sandbox, 'this-repo', {
       vaultDir,
@@ -375,6 +379,7 @@ describe('sweepBoard — two-level <org>/<repo> topology (#832)', () => {
     const deepRow = rows.find((r) => r.repo === 'deep-dead-repo');
     expect(deepRow).toEqual({
       repo: 'deep-dead-repo',
+      key: boardKey(deepRepoRoot),
       status: 'force-closed',
       session: 'deep-dead-sess',
       branch: null,
@@ -415,6 +420,51 @@ describe('sweepBoard — two-level <org>/<repo> topology (#832)', () => {
     expect(byRepo['shallow-live-repo']?.status).toBe('in-progress');
     expect(byRepo['nested-live-repo']?.status).toBe('in-progress');
   });
+
+  it('two same-basename repos under different orgs survive a REAL host sweep as two rows (#871, the collision #832 created)', async () => {
+    // End-to-end counterpart of the mirrorBoard unit proof: this goes through
+    // enumerateCandidates, so it pins the collision at the layer where it was
+    // actually measured — two repos of the same name under two org dirs, both
+    // enumerable only because of the depth-2 walk.
+    const { hostDir, vaultDir, sandbox } = scaffold();
+
+    const orgA = join(hostDir, 'org-a');
+    const orgB = join(hostDir, 'org-b');
+    mkdirSync(orgA, { recursive: true });
+    mkdirSync(orgB, { recursive: true });
+
+    const repoA = makeCandidateRepo(orgA, 'collider', buildLockBody({
+      sessionId: 'collider-a-sess', ttlHours: 4, heartbeatAgeHours: 0, now: FIXED_NOW,
+    }));
+    const repoB = makeCandidateRepo(orgB, 'collider', buildLockBody({
+      sessionId: 'collider-b-sess', ttlHours: 4, heartbeatAgeHours: 5, now: FIXED_NOW,
+    }));
+
+    const thisRepoRoot = makeThisRepo(sandbox, 'this-repo', {
+      vaultDir,
+      lock: buildLockBody({ sessionId: 'this-sess', heartbeatAgeHours: 0, now: FIXED_NOW }),
+    });
+
+    const result = await sweepBoard({
+      repoRoot: thisRepoRoot,
+      startDir: hostDir,
+      now: FIXED_NOW,
+      deps: NO_CROSS_REPO_DEPS,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+
+    expect(result.action).toBe('written');
+    const colliders = readBoardRows(vaultDir).filter((r) => r.repo === 'collider');
+
+    // Pre-#871: exactly ONE row — one of the two sessions silently vanished
+    // from the board.
+    expect(colliders).toHaveLength(2);
+    const byKey = Object.fromEntries(colliders.map((r) => [r.key, r]));
+    expect(byKey[boardKey(repoA)].session).toBe('collider-a-sess');
+    expect(byKey[boardKey(repoA)].status).toBe('in-progress');
+    expect(byKey[boardKey(repoB)].session).toBe('collider-b-sess');
+    expect(byKey[boardKey(repoB)].status).toBe('force-closed');
+  });
 });
 
 // ===========================================================================
@@ -454,6 +504,10 @@ describe('sweepBoard idempotent merge — frei exclusion', () => {
     const freiRow = rows.find((r) => r.repo === 'frei-repo');
     expect(freiRow).toEqual({
       repo: 'frei-repo',
+      // Excluded from re-derivation, so nothing supplies a path — the prior
+      // row is copied forward verbatim, key and all (here: none, because the
+      // seed row was rendered without one).
+      key: null,
       status: 'closed',
       session: 'old-sess',
       branch: 'old-branch',
@@ -503,6 +557,9 @@ describe('sweepBoard enumeration-failure fallback', () => {
     expect(rows).toEqual([
       {
         repo: 'this-repo',
+        // The degraded single-repo path still derives a real row, so it still
+        // carries the #871 key — the fallback is not a second, key-less format.
+        key: boardKey(thisRepoRoot),
         status: 'in-progress',
         session: 'this-sess',
         branch: null,

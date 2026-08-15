@@ -12,7 +12,7 @@
 
 import { execFile as _execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { resolveRepoSpec, resolveRepoHost } from './vcs-repo-spec.mjs';
+import { resolveRepoSpec, resolveRepoHost, redactUrlCredentials } from './vcs-repo-spec.mjs';
 
 const execFileAsync = promisify(_execFile);
 
@@ -308,9 +308,25 @@ async function checkGitlab(repoRoot, now, deps = {}) {
 /**
  * GitHub CI status check (v1 — red/green only; lastGreen not implemented).
  *
- * #872: pins the `gh repo view` lookup to `deps.repoSpec` via `-R` when
- * resolved (host-pinning — `gh repo view` otherwise falls back to the
- * ambient `GH_HOST`).
+ * #872/#1022: pins the `gh repo view` lookup to `deps.repoSpec` when resolved
+ * (host-pinning — `gh repo view` otherwise falls back to the ambient
+ * `GH_HOST`). The spec is passed POSITIONALLY, not via `-R`: `gh repo view`
+ * takes `[<repository>]` as a positional argument and has no `-R`/`--repo`
+ * flag at all, so `-R` made gh exit 1 with `unknown shorthand flag: 'R'` —
+ * an error `checkCiStatus`'s outer catch swallowed to `null`, leaving the
+ * Phase 4 banner silently dead on EVERY GitHub repo (#1022). The
+ * `[HOST/]OWNER/REPO` shape `resolveRepoSpec({ vcs: 'github' })` returns is
+ * exactly the positional's documented input format.
+ *
+ * The asymmetry with `getGlabProjectId` is real and deliberate: `glab repo
+ * view` DOES accept `-R`, and `gh api`/`glab api` accept neither `-R` nor a
+ * positional — only `--hostname`. Do not unify these three call sites.
+ *
+ * `nameWithOwner` is NOT derivable from `deps.repoSpec`, so this lookup
+ * cannot be dropped: the spec carries a HOST prefix the `repos/<owner>/<repo>`
+ * API path must not contain, it is `undefined` whenever no remote resolves
+ * (cross-family guard, unsafe-argv guard), and `normalizeGithubSpec` falls
+ * back to the raw URL on an unrecognised remote shape.
  *
  * @param {string} repoRoot
  * @param {{ execFile?: Function, timeoutMs?: number, repoSpec?: string, repoHost?: string }} deps
@@ -318,8 +334,9 @@ async function checkGitlab(repoRoot, now, deps = {}) {
  */
 async function checkGithub(repoRoot, deps = {}) {
   // Resolve owner/repo from gh to keep the API path generic.
-  const repoViewArgs = ['repo', 'view', '--json', 'nameWithOwner'];
-  if (deps.repoSpec) repoViewArgs.push('-R', deps.repoSpec);
+  const repoViewArgs = ['repo', 'view'];
+  if (deps.repoSpec) repoViewArgs.push(deps.repoSpec);
+  repoViewArgs.push('--json', 'nameWithOwner');
   const repoViewResult = await execWithTimeout(
     'gh',
     repoViewArgs,
@@ -482,7 +499,30 @@ export async function checkCiStatus(opts = {}, deps = {}) {
       return null;
     }
 
-    // Unexpected errors → also silent null to keep the banner non-blocking.
+    // Everything else means the CLI was PRESENT but the invocation failed —
+    // non-zero exit, rejected flag, unparseable output. Returning a bare null
+    // here makes that state indistinguishable from "CLI not installed", which
+    // is exactly how #1022 (`gh repo view -R` → `unknown shorthand flag: 'R'`)
+    // stayed invisible on every GitHub repo. THIS module keeps the two-state
+    // contract (null ⇒ silent no-op) for backwards compatibility with the
+    // Phase-4 callers already written against it, so leave a stderr trace
+    // instead: non-blocking, but the next defect of this class is no longer
+    // silent. Credentials redacted defense-in-depth (#907) — the message can
+    // quote the failed argv, which carries the repo spec.
+    //
+    // DIRECTION FOR NEW BANNERS — do not copy this shape. The
+    // absence-preserving form is `scripts/lib/mirror-issues-banner.mjs`: a
+    // THIRD return state `{ severity, message, degraded }` whose `degraded`
+    // is a member of the closed `DEGRADED_REASONS` enum exported there, so
+    // "could not read" stays distinguishable from "read, and clean". This
+    // module is the UNMIGRATED side of that contract — the `status:'unknown'`
+    // returns above cover some in-band failures, but this outer catch still
+    // collapses onto `null`, which a caller reads as all-clear. Same verdict,
+    // stated caller-side, in `skills/session-start/SKILL.md` § Phase 4 (the
+    // mirror-issues paragraph): "Do not reproduce it."
+    console.warn(
+      `WARN ci-status-banner: CI status check failed, banner suppressed — ${redactUrlCredentials(msg)}`,
+    );
     return null;
   }
 }

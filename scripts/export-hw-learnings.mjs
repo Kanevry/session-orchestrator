@@ -22,6 +22,8 @@
  *
  * ## Anonymization pipeline (enforced; no opt-out)
  *
+ * - Mask env-derived secret VALUES first (#1025, value-based — orthogonal to the
+ *   form-based rules below; see the note above `maskSecretValues`)
  * - Strip all absolute paths (macOS, Linux system paths, Windows)
  * - Redact IPv4 addresses
  * - Redact GitHub/GitLab URLs containing org/repo paths
@@ -55,6 +57,7 @@ import {
 } from './lib/learnings.mjs';
 import { findProjectRoot, resolveInstructionFile, expandTilde } from './lib/common.mjs';
 import { parseSessionConfig } from './lib/config.mjs';
+import { createSecretValueMasker } from './lib/secret-masker.mjs';
 
 // Vault-relative default write target (Epic #774 — docs Public-Split removed
 // the prior in-repo generated telemetry doc in favor of the private Meta-Vault).
@@ -135,6 +138,58 @@ const SIGNED_OFF_RE = /Signed-off-by:[^\n]+/g;
 // those never appear with a .local/.lan/.home suffix.
 const HOSTNAME_RE = /\b[A-Za-z0-9]+(?:[-.][A-Za-z0-9]+)*\.(?:local|lan|home|internal|corp)\b/g;
 
+// ---------------------------------------------------------------------------
+// Value-based secret masking (#1025) — the SECOND half of the pipeline
+// ---------------------------------------------------------------------------
+//
+// `anonymizeString` below is FORM-based: eight regexes over the SHAPE of a
+// string. `createSecretValueMasker` is VALUE-based: it looks for the literal
+// values of secret-NAMED env vars. The two are orthogonal and BOTH are needed —
+// measured on four probe secrets:
+//
+//   AWS secret key (with slashes)   FORM: secret survives   VALUE: [REDACTED]
+//   DB password (short, symbols)    FORM: secret survives   VALUE: [REDACTED]
+//   GitLab PAT (token shape)        FORM: <redacted-token>  VALUE: [REDACTED]
+//   all-letter passphrase           FORM: secret survives   VALUE: [REDACTED]
+//
+// The AWS key is the sharpest case: `/` is outside TOKEN_RE's character class,
+// so the key breaks into runs of 13/7/18 characters — every one of them BELOW
+// the 20-character floor, hence not a single match. Conversely the form catches
+// tokens of FOREIGN hosts that were never in `process.env`, which the value
+// masker cannot see. Neither subsumes the other.
+//
+// ORDER IS LOAD-BEARING: mask FIRST, anonymize SECOND. `[REDACTED]` is 8
+// characters with no digit, so it passes through `anonymizeString` untouched
+// (TOKEN_RE requires ≥20 chars AND a digit). The reverse order blinds the
+// masker: a value that `anonymizeString` has already rewritten to
+// `<redacted-token>` is no longer findable as a literal, so a secret that only
+// the VALUE filter would catch — because the form leaves a residue rather than
+// the whole span — can no longer be matched.
+
+/**
+ * Lazily-built, process-wide masker. `createSecretValueMasker` scans the whole
+ * env and compiles one RegExp per needle, so it is built ONCE per process and
+ * reused for every entry — never rebuilt per record.
+ *
+ * @type {{ mask: (text: string) => string, needleCount: number } | null}
+ */
+let _secretMasker = null;
+
+/**
+ * Mask env-derived secret VALUES in a free-form string.
+ *
+ * Fail-soft: non-strings pass through by reference, and a zero-needle env makes
+ * `mask` the identity — the masker must never be the reason an export dies.
+ *
+ * @param {string} s
+ * @returns {string}
+ */
+function maskSecretValues(s) {
+  if (typeof s !== 'string') return s;
+  if (_secretMasker === null) _secretMasker = createSecretValueMasker(process.env);
+  return _secretMasker.mask(s);
+}
+
 /**
  * Scrub a free-form string of PII / host-identifying content.
  * Order matters: author/signoff patterns first (they contain emails), then
@@ -185,8 +240,12 @@ export function anonymizeLearning(entry) {
   const e = normalizeLearning(entry);
   const out = {
     ...e,
-    insight: anonymizeString(e.insight),
-    evidence: anonymizeString(e.evidence),
+    // #1025: value-mask BEFORE form-anonymize — see the ORDER IS LOAD-BEARING
+    // note above `maskSecretValues`. This is the choke-point for BOTH write
+    // paths (promoteHwLearnings and exportHwLearnings both route through here);
+    // wiring at exportHwLearnings alone would leave the promote path unhardened.
+    insight: anonymizeString(maskSecretValues(e.insight)),
+    evidence: anonymizeString(maskSecretValues(e.evidence)),
     // Stamp after redaction so callers that write back through validateLearning
     // do not hit the scope=public contract check.
     anonymized: true,

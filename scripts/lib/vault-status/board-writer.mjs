@@ -12,6 +12,7 @@
  *
  * Exports:
  *   GENERATOR_MARKER  — frontmatter sentinel that identifies generator-owned files
+ *   boardKey          — repoRoot → stable path-derived row identity (issue #871)
  *   resolveBoardPath  — vaultDir → `<vaultDir>/01-projects/_active-sessions.md`
  *   collectRows       — per-repo status derivation (readLock + readRegistry)
  *   renderBoard       — pure render: rows[] → full markdown (frontmatter + table)
@@ -47,6 +48,7 @@ import { parseFrontmatter } from '../vault-mirror/utils.mjs';
 import { readConfigFile, parseSessionConfig } from '../config.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
 import { enumerateCandidates } from '../dispatcher/enumerate.mjs';
+import { atomicWriteWithBackup } from '../io.mjs';
 
 /** Frontmatter sentinel that identifies generator-owned board files. */
 export const GENERATOR_MARKER = 'session-orchestrator-active-sessions@1';
@@ -77,6 +79,95 @@ const STATUS_FREI = 'frei';
  * @returns {string}
  */
 const foldKey = (s) => String(s ?? '').toLowerCase();
+
+/**
+ * Rendered length of the path-derived board key (issue #871).
+ *
+ * BV-004 ceiling: 8 hex chars = 4.29e9 slots. At host scale (the reference host
+ * enumerates ~45 repos at the depth-2 default) the birthday collision
+ * probability is ~2.3e-7 — far below the failure modes this key REPLACES. It is
+ * a prefix, not a truncated identity: the full `repoPathHash` still drives
+ * registry matching. REVISIT TRIGGER — if a host ever enumerates >10 000 repos
+ * (p(collision) ≈ 1.2e-2 there), widen to 12 and accept that legacy 8-char rows
+ * migrate on their next sweep exactly like the 6-column rows do today.
+ */
+const KEY_LENGTH = 8;
+
+/**
+ * Whether the host filesystem is case-insensitive-preserving (issue #719).
+ *
+ * The board key is derived from a PATH, so on APFS/NTFS `…/Some-Repo` and
+ * `…/some-repo` are the same physical directory but two different strings — and
+ * would hash to two different keys, re-introducing the duplicate rows #719 fixed
+ * at the name layer. Folding the path before hashing keeps that guarantee.
+ * Deliberately NOT applied to {@link repoPathHash}'s registry-matching use: that
+ * hash must stay byte-identical to what `session-registry.mjs` writes.
+ */
+const CASE_INSENSITIVE_FS = process.platform === 'darwin' || process.platform === 'win32';
+
+/**
+ * Derive the stable, path-based board identity for a repo (issue #871).
+ *
+ * Board rows were keyed by `repoName` (`path.basename(repoRoot)`) until #871.
+ * Two repos with the same directory name under different parents — e.g.
+ * `<org-a>/<name>` and `<org-b>/<name>`, both enumerable since the depth-2 walk
+ * of #832 — folded onto ONE row, and whichever was written second silently
+ * overwrote the other's status. A display name is not an identity.
+ *
+ * @param {string} repoRoot — absolute (or resolvable) repo path.
+ * @returns {string|null} `KEY_LENGTH`-char hex prefix, or null for an unusable path.
+ */
+export function boardKey(repoRoot) {
+  if (typeof repoRoot !== 'string' || repoRoot.length === 0) return null;
+  try {
+    const resolved = path.resolve(repoRoot);
+    return repoPathHash(CASE_INSENSITIVE_FS ? resolved.toLowerCase() : resolved).slice(0, KEY_LENGTH);
+  } catch {
+    return null;
+  }
+}
+
+// ── Merge slots (dual-key: path-derived key, legacy display name) ───────────────
+
+/**
+ * Merge-slot id for a row that carries a path-derived {@link boardKey}.
+ * @param {string} key
+ * @returns {string}
+ */
+const hashSlot = (key) => `h:${key}`;
+
+/**
+ * Merge-slot id for a LEGACY (key-less, 6-column) row, folded by display name.
+ *
+ * This is the migration bridge, not a second identity scheme: a legacy row has
+ * no path in it — {@link parseBoardRows} cannot recover one — so its only
+ * available handle is the rendered repo name. A freshly-derived row ADOPTS the
+ * matching legacy slot (see {@link mirrorBoard}), which converts the row to a
+ * keyed one in a single board write.
+ *
+ * PRECONDITION on "no `n:` slot exists" — the end state is reached per repo
+ * ONLY once that repo has been re-derived at least once, and nothing in this
+ * module forces that. A repo that stays `frei` is skipped by
+ * {@link buildSweepRepos}, the TTL pass rewrites only `status`, and no code
+ * path removes a row (`merged` starts as a copy of ALL prior rows; the single
+ * `.delete()` in {@link mirrorBoard} is the adoption, not pruning). So a repo
+ * that leaves one legacy row behind and is then permanently free — or removed
+ * from the host — keeps its `n:` slot indefinitely. Pruning is deliberately NOT
+ * implemented here: deleting rows for repos this host can no longer see is a
+ * policy decision over an operator-owned file, not a merge detail.
+ *
+ * BV-004 DELETION TRIGGER (do not delete on vibes, measure): drop `nameSlot`,
+ * the `cells.length === 6` branch in {@link parseBoardRows}, and the
+ * `priorStatusByRepo` fallback in {@link collectRows} once a host-wide sweep
+ * reports ZERO key-less rows for 30 consecutive days —
+ * `parseBoardRows(readFileSync(resolveBoardPath(vaultDir), 'utf8'))
+ *   .filter((r) => r.key === null).length === 0`. Until that holds, the branch
+ * is load-bearing for exactly the boards it still describes.
+ *
+ * @param {string} repo
+ * @returns {string}
+ */
+const nameSlot = (repo) => `n:${foldKey(repo)}`;
 
 // ── Path helpers ────────────────────────────────────────────────────────────────
 
@@ -168,15 +259,29 @@ function cell(value) {
  * @param {Date} [opts.now] — clock seam (defaults to new Date()).
  * @param {Array<object>} [opts.registry] — pre-read registry (test seam); defaults
  *   to a fresh {@link readRegistry} call.
+ * @param {Map<string, string>} [opts.priorStatusByKey] — {@link boardKey} → prior
+ *   board status. The PRIMARY prior-status lookup since #871; consulted before
+ *   the name-based map below.
  * @param {Map<string, string>} [opts.priorStatusByRepo] — {@link foldKey}-folded
  *   (case-insensitive) repoName → prior board status, used to derive `closed`
  *   when a once-active repo now has no lock. Callers MUST fold the key with
  *   {@link foldKey} before inserting (issue #719) — this function folds its
- *   own lookup key to match.
- * @returns {Promise<Array<{ repo: string, status: string, session: string|null,
- *   branch: string|null, mode: string|null, heartbeat: string|null }>>}
+ *   own lookup key to match. Since #871 this map is the LEGACY fallback and
+ *   callers MUST populate it from key-less (6-column) prior rows ONLY: two
+ *   different repos sharing a basename would otherwise bleed one's terminal
+ *   status onto the other, which is the very collision #871 fixes.
+ *   Consulted only when the folded name has exactly ONE claimant in `repos`
+ *   (#1022) — see the ambiguity gate in the body. LIMIT, stated rather than
+ *   implied: the census sees only THIS batch, so a lone claimant can still
+ *   inherit a legacy row that in truth belonged to a same-named sibling absent
+ *   from the batch. That residual is unfixable from a key-less row (it carries
+ *   no path) and is bounded to a single migration hop — the row becomes keyed
+ *   on that write, and from then on only the authoritative key map applies.
+ * @returns {Promise<Array<{ repo: string, key: string|null, status: string,
+ *   session: string|null, branch: string|null, mode: string|null,
+ *   heartbeat: string|null }>>}
  */
-export async function collectRows({ repos, now = new Date(), registry, priorStatusByRepo } = {}) {
+export async function collectRows({ repos, now = new Date(), registry, priorStatusByRepo, priorStatusByKey } = {}) {
   if (!Array.isArray(repos)) {
     throw new TypeError('collectRows: opts.repos must be an array');
   }
@@ -184,20 +289,51 @@ export async function collectRows({ repos, now = new Date(), registry, priorStat
   const nowMs = now instanceof Date ? now.getTime() : Date.now();
   const registryEntries = Array.isArray(registry) ? registry : await readRegistry();
   const priorStatus = priorStatusByRepo instanceof Map ? priorStatusByRepo : new Map();
+  const priorStatusKeyed = priorStatusByKey instanceof Map ? priorStatusByKey : new Map();
 
   const rows = [];
 
+  // Normalise the descriptors ONCE. The display name + path key computed here
+  // are the same values the derivation loop below uses, so the ambiguity census
+  // cannot drift from the lookup it gates (a second, independent derivation of
+  // `repoName` would silently mis-census).
+  const descriptors = [];
   for (const repo of repos) {
     if (!repo || typeof repo.repoRoot !== 'string' || repo.repoRoot.length === 0) {
       // Skip malformed repo descriptors rather than throwing — one bad entry
       // must not abort the whole board render.
       continue;
     }
-
     const repoName = typeof repo.repoName === 'string' && repo.repoName.length > 0
       ? repo.repoName
       : path.basename(path.resolve(repo.repoRoot));
+    // Path-derived identity (#871). Independent of `repoName`, so two repos
+    // sharing a basename get two distinct rows instead of overwriting each other.
+    descriptors.push({ repo, repoName, key: boardKey(repo.repoRoot) });
+  }
 
+  // Ambiguity census for the LEGACY name fallback (#1022).
+  //
+  // A key-less prior row carries no path — {@link parseBoardRows} cannot
+  // recover one — so its only handle is a display name. When TWO distinct repos
+  // in this batch answer to that name, the row provably describes at most one
+  // of them and there is no evidence which. Counting the claimants here lets
+  // the derivation below withhold the fallback from all of them instead of
+  // stamping the terminal status onto every claimant.
+  const claimantsByName = new Map();
+  for (const d of descriptors) {
+    const folded = foldKey(d.repoName);
+    let claimants = claimantsByName.get(folded);
+    if (!claimants) {
+      claimants = new Set();
+      claimantsByName.set(folded, claimants);
+    }
+    // Identity, not object: the same repo listed twice is ONE claimant. Fall
+    // back to the raw path when `boardKey` could not derive one.
+    claimants.add(d.key ?? `path:${d.repo.repoRoot}`);
+  }
+
+  for (const { repo, repoName, key } of descriptors) {
     const lock = readLock({ repoRoot: repo.repoRoot });
 
     // Match the registry entry for this repo by path hash (branch lives here only).
@@ -241,9 +377,33 @@ export async function collectRows({ repos, now = new Date(), registry, priorStat
       status = STATUS_FORCE_CLOSED;
     } else {
       // No live lock. Derive status from the prior board state + registry freshness.
-      // Key is folded (issue #719) so `Some-Repo` and `some-repo` resolve
-      // to the same prior-status entry on case-insensitive-preserving filesystems.
-      const prior = priorStatus.get(foldKey(repoName));
+      //
+      // Dual lookup (#871): the path-derived key is authoritative; the folded
+      // NAME map is only the legacy bridge for prior rows written before the
+      // 7-column format (they carry no key, so the name is all there is). The
+      // name map holds legacy rows ONLY — see the caller contract on
+      // `priorStatusByRepo` — otherwise a same-basename sibling repo would
+      // inherit this repo's terminal status. Folded (issue #719) so `Some-Repo`
+      // and `some-repo` still resolve to the same legacy entry.
+      //
+      // AMBIGUITY GATE (#1022): the legacy fallback is withheld entirely when
+      // more than one repo in this batch claims the name. On the MIGRATION run
+      // — every operator's board is still 6-column, so NO repo has a keyed
+      // prior yet — both same-basename repos would otherwise inherit the one
+      // legacy row's terminal status, each writing it under its own key. From
+      // the next run on that wrong status is keyed and therefore STICKY (a
+      // terminal status is never reset without a live lock), so a repo that
+      // never had a session would stand `closed` on the board permanently.
+      // Awarding the row to the FIRST claimant instead is not a repair: the
+      // batch order comes from `enumerateCandidates`' unsorted `readdirSync`
+      // walk, which would make a permanent status depend on directory-entry
+      // order — and it would still be a coin flip between two repos, one of
+      // which never owned that status. Withholding costs at most one migration
+      // hop: each claimant is re-derived from its own lock/registry this run
+      // and is keyed from here on.
+      const nameIsAmbiguous = (claimantsByName.get(foldKey(repoName))?.size ?? 0) > 1;
+      const prior = (key !== null ? priorStatusKeyed.get(key) : undefined)
+        ?? (nameIsAmbiguous ? undefined : priorStatus.get(foldKey(repoName)));
       if (prior === STATUS_CLOSED || prior === STATUS_FORCE_CLOSED) {
         // Terminal prior state is STICKY absent a live lock. A still-fresh registry
         // entry must NOT resurrect a cleanly-closed (or force-closed) repo to
@@ -266,6 +426,7 @@ export async function collectRows({ repos, now = new Date(), registry, priorStat
 
     rows.push({
       repo: repoName,
+      key,
       status,
       session: status === STATUS_FREI ? null : session,
       branch: status === STATUS_FREI ? null : branch,
@@ -282,10 +443,19 @@ export async function collectRows({ repos, now = new Date(), registry, priorStat
 /**
  * Render the board markdown from the rows array.
  *
- * Rows are sorted alphabetically by repo name for stable, diff-friendly output.
+ * Rows are sorted alphabetically by repo name, then by {@link boardKey}, for
+ * stable diff-friendly output. The key tiebreak is load-bearing since #871: two
+ * repos sharing a basename now render as two ADJACENT rows, and without it their
+ * relative order would depend on Map insertion order (i.e. on enumeration order),
+ * making the file churn between otherwise-identical writes.
  *
- * @param {Array<{ repo: string, status: string, session?: string|null,
- *   branch?: string|null, mode?: string|null, heartbeat?: string|null }>} rows
+ * Column 7 (`Key`) carries the path-derived identity so the next
+ * {@link parseBoardRows} can recover it — the six original columns contain no
+ * path, which is exactly why the pre-#871 board could not be re-keyed in place.
+ *
+ * @param {Array<{ repo: string, key?: string|null, status: string,
+ *   session?: string|null, branch?: string|null, mode?: string|null,
+ *   heartbeat?: string|null }>} rows
  * @param {{ now: Date, createdIso?: string, updatedPlaceholder?: string }} opts
  * @returns {string} full markdown (frontmatter + table)
  */
@@ -297,9 +467,11 @@ export function renderBoard(rows, opts = {}) {
   const updatedValue = updatedPlaceholder ?? nowIso;
   const createdValue = createdIso ?? nowIso;
 
-  const sortedRows = [...(Array.isArray(rows) ? rows : [])].sort((a, b) =>
-    String(a?.repo ?? '').localeCompare(String(b?.repo ?? '')),
-  );
+  const sortedRows = [...(Array.isArray(rows) ? rows : [])].sort((a, b) => {
+    const byRepo = String(a?.repo ?? '').localeCompare(String(b?.repo ?? ''));
+    if (byRepo !== 0) return byRepo;
+    return String(a?.key ?? '').localeCompare(String(b?.key ?? ''));
+  });
 
   const lines = [];
 
@@ -320,12 +492,13 @@ export function renderBoard(rows, opts = {}) {
   lines.push('');
 
   // Board table
-  lines.push('| Repo | Status | Session | Branch | Mode | Last heartbeat |');
-  lines.push('|---|---|---|---|---|---|');
+  lines.push('| Repo | Status | Session | Branch | Mode | Last heartbeat | Key |');
+  lines.push('|---|---|---|---|---|---|---|');
   for (const row of sortedRows) {
     lines.push(
       `| ${cell(row?.repo)} | ${cell(row?.status)} | ${cell(row?.session)} | ` +
-      `${cell(row?.branch)} | ${cell(row?.mode)} | ${cell(fmtHeartbeat(row?.heartbeat))} |`,
+      `${cell(row?.branch)} | ${cell(row?.mode)} | ${cell(fmtHeartbeat(row?.heartbeat))} | ` +
+      `${cell(row?.key)} |`,
     );
   }
   lines.push('');
@@ -352,12 +525,19 @@ export function normalizeUpdated(content) {
  * (status carry-over + row preservation for repos not in the current update).
  *
  * Tolerant by design: skips the header + separator rows, ignores any line that
- * is not a 6-column table row, and maps the literal '—' placeholder back to
- * null. Unescapes the `\|` pipe-escaping applied by {@link renderBoard}.
+ * is not a 6- or 7-column table row, and maps the literal '—' placeholder back
+ * to null. Unescapes the `\|` pipe-escaping applied by {@link renderBoard}.
+ *
+ * SIX **or** seven columns (#871): the pre-#871 board rendered 6. A hard
+ * `length !== 7` filter would silently DROP every row on an operator's existing
+ * board on the first run after upgrade — the board would appear to reset. A
+ * 6-column row parses as a LEGACY row with `key: null`; {@link mirrorBoard}
+ * adopts it into a keyed row the next time that repo is actually derived.
  *
  * @param {string} content — full board markdown
- * @returns {Array<{ repo: string, status: string, session: string|null,
- *   branch: string|null, mode: string|null, heartbeat: string|null }>}
+ * @returns {Array<{ repo: string, key: string|null, status: string,
+ *   session: string|null, branch: string|null, mode: string|null,
+ *   heartbeat: string|null }>}
  */
 export function parseBoardRows(content) {
   const rows = [];
@@ -370,7 +550,7 @@ export function parseBoardRows(content) {
       .split(/(?<!\\)\|/)
       .slice(1, -1)
       .map((c) => c.trim());
-    if (cells.length !== 6) continue;
+    if (cells.length !== 6 && cells.length !== 7) continue;
     // Skip the header row and the |---|---| separator row.
     if (cells[0] === 'Repo' || /^-+$/.test(cells[0])) continue;
     const unesc = (v) => (v === '—' ? null : v.replace(/\\\|/g, '|'));
@@ -378,6 +558,7 @@ export function parseBoardRows(content) {
     if (repo === null) continue;
     rows.push({
       repo,
+      key: cells.length === 7 ? unesc(cells[6]) : null,
       status: cells[1],
       session: unesc(cells[2]),
       branch: unesc(cells[3]),
@@ -400,15 +581,24 @@ export function parseBoardRows(content) {
  *        - !fm || !fm._generator                  → skipped-handwritten
  *        - fm._generator !== GENERATOR_MARKER      → skipped-handwritten
  *        - normalizeUpdated(existing) === new      → skipped-noop
- *   4. else → mkdirSync(recursive) + writeFileSync → written.
+ *   4. else → {@link atomicWriteWithBackup} (mkdir -p + tmp + rename) → written.
+ *      A failed write returns `skipped-write-failed` rather than throwing: a
+ *      board update is best-effort telemetry and must never abort a session
+ *      phase (mirrors {@link sweepBoard}'s degrade-don't-throw contract).
  *
  * @param {{
  *   outputPath: string,
  *   content: string,
  *   dryRun?: boolean,
- *   fs?: { readFileSync?: Function, writeFileSync?: Function, mkdirSync?: Function, existsSync?: Function },
- * }} opts
- * @returns {{ action: 'written'|'skipped-handwritten'|'skipped-noop'|'dry-run', path: string }}
+ *   fs?: { readFileSync?: Function, writeFileSync?: Function, mkdirSync?: Function,
+ *          existsSync?: Function, renameSync?: Function, copyFileSync?: Function },
+ * }} opts — an injected `fs` MUST provide `renameSync` alongside `writeFileSync`
+ *   since #734c; a stub that mocks the write but not the rename would otherwise
+ *   have the real `renameSync` look for a tmp file the stub never created.
+ *   `copyFileSync` is pass-through only (forwarded to {@link atomicWriteWithBackup},
+ *   never called here) and stays optional while this call site pins `backup: false`.
+ * @returns {{ action: 'written'|'skipped-handwritten'|'skipped-noop'|'dry-run'
+ *   |'skipped-write-failed', path: string, error?: string }}
  */
 export function writeBoard(opts) {
   const { outputPath, content, dryRun = false, fs: injectedFs } = opts;
@@ -455,9 +645,39 @@ export function writeBoard(opts) {
     }
   }
 
-  // 4. Write.
-  fsMkdir(path.dirname(outputPath), { recursive: true });
-  fsWriteFile(outputPath, content, 'utf8');
+  // 4. Write — atomically (issue #734c).
+  //
+  // The board is a file the operator reads WHILE sessions write it. A plain
+  // writeFileSync truncates in place, so a crash (or a reader arriving between
+  // truncate and flush) can surface a half-board. tmp+rename removes that
+  // window; the tmp file is a sibling, so the rename stays same-filesystem.
+  //
+  // `backup: false` on purpose: the board is 100% re-derivable from the per-repo
+  // locks plus the host registry (that is what `sweepBoard` does on every
+  // session-start), so a `.bak-<ISO>` sidecar would buy nothing — and it would
+  // drop generator litter into the operator's `01-projects/` vault directory,
+  // which is precisely the surface the `_overview.md` refusal above protects.
+  //
+  // `copyFileSync` is forwarded even though `backup: false` makes it inert
+  // today: {@link atomicWriteWithBackup} falls back to the REAL `node:fs` per
+  // MISSING method, so a 4-of-5 adapter would silently route the backup copy
+  // to the real filesystem the moment anyone flips `backup` — a test that
+  // believes itself hermetic would drop `.bak-<ISO>` files into the repo.
+  // Forwarding the fifth method keeps the adapter total over io.mjs's
+  // injectable surface.
+  const result = atomicWriteWithBackup(outputPath, content, {
+    tmpPrefix: '.active-sessions',
+    fs: {
+      mkdirSync: fsMkdir,
+      writeFileSync: fsWriteFile,
+      existsSync: fsExists,
+      renameSync: injectedFs?.renameSync,
+      copyFileSync: injectedFs?.copyFileSync,
+    },
+  });
+  if (!result.ok) {
+    return { action: 'skipped-write-failed', path: outputPath, error: result.error };
+  }
   return { action: 'written', path: outputPath };
 }
 
@@ -591,8 +811,9 @@ export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new D
   const fsReadFile = fs?.readFileSync ?? readFileSync;
   const fsExists = fs?.existsSync ?? existsSync;
   let createdIso;
-  const priorStatusByRepo = new Map();
-  const preservedRows = new Map(); // foldKey(repoName) → prior row (for merge)
+  const priorStatusByRepo = new Map();   // LEGACY rows only — see collectRows contract
+  const priorStatusByKey = new Map();    // boardKey → status (authoritative since #871)
+  const preservedRows = new Map(); // merge slot (see hashSlot/nameSlot) → prior row
   if (fsExists(outputPath)) {
     let existing;
     try {
@@ -605,7 +826,13 @@ export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new D
       if (fm && fm['_generator'] === GENERATOR_MARKER) {
         if (fm['created']) createdIso = fm['created'];
         for (const prior of parseBoardRows(existing)) {
-          const key = foldKey(prior.repo);
+          // Dual-key slotting (#871): a keyed row owns its own hash slot; a
+          // legacy (6-column) row falls back to its folded display name. Two
+          // keyed rows can only collide when they resolve to the SAME path, so
+          // the heartbeat-preference resolution below is now reached almost
+          // exclusively by legacy rows — which is precisely the case it was
+          // written for (#719).
+          const key = prior.key ? hashSlot(prior.key) : nameSlot(prior.repo);
           const collidingPrior = preservedRows.get(key);
           if (collidingPrior) {
             // Collision WITHIN parseBoardRows output — two prior rows fold to
@@ -622,14 +849,22 @@ export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new D
               continue;
             }
           }
-          priorStatusByRepo.set(key, prior.status);
+          if (prior.key) {
+            priorStatusByKey.set(prior.key, prior.status);
+          } else {
+            // LEGACY rows only. Seeding this map from keyed rows too would let
+            // repo B (never seen, same basename) inherit repo A's terminal
+            // status through the name fallback in collectRows — reintroducing
+            // the identity collision #871 exists to remove, one layer down.
+            priorStatusByRepo.set(foldKey(prior.repo), prior.status);
+          }
           preservedRows.set(key, prior);
         }
       }
     }
   }
 
-  const rows = await collectRows({ repos: repoList, now, priorStatusByRepo });
+  const rows = await collectRows({ repos: repoList, now, priorStatusByRepo, priorStatusByKey });
 
   // TTL-staleness re-derivation for PRESERVED rows (issue #829 Finding 2).
   // Without this pass, a preserved `in-progress` row (a repo NOT in this
@@ -662,14 +897,28 @@ export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new D
   }
 
   // Idempotent merge: keep prior (TTL-rederived) rows for repos NOT in this
-  // update, then upsert the freshly-derived rows over them so repeated
-  // writes stay stable. Both the seed (`staleRederivedRows`) and the upsert
-  // key below are folded via {@link foldKey} (issue #719) — a
-  // freshly-derived row ALWAYS wins over a preserved row sharing its folded
-  // key, which is what collapses a live `Some-Repo` row over a stale
-  // preserved `some-repo` row on the next board write.
+  // update, then upsert the freshly-derived rows over them so repeated writes
+  // stay stable. A freshly-derived row ALWAYS wins over a preserved row in the
+  // same slot — that is what collapses a live row over a stale preserved one.
+  //
+  // Dual-key upsert (#871). A naive switch from the folded name to the path
+  // key would make the two key spaces DISJOINT: the fresh row would never
+  // overwrite the legacy row, the legacy row would become immortal (the sweep
+  // skips `frei` candidates and the TTL pass only rewrites `status`, never
+  // removes a row), and the board would grow a permanent duplicate per repo.
+  // So a fresh row first claims its hash slot; if that slot is new, it ADOPTS
+  // the legacy name slot for the same folded name — one board write converts
+  // the row, and the migration is complete for that repo.
   const merged = new Map(staleRederivedRows);
-  for (const row of rows) merged.set(foldKey(row.repo), row);
+  for (const row of rows) {
+    const slot = row.key ? hashSlot(row.key) : nameSlot(row.repo);
+    if (row.key && !merged.has(slot)) {
+      // First keyed write for this repo — take over its legacy row rather than
+      // rendering a second one beside it.
+      merged.delete(nameSlot(row.repo));
+    }
+    merged.set(slot, row);
+  }
 
   const content = renderBoard([...merged.values()], { now, createdIso });
 
@@ -748,8 +997,9 @@ export function buildSweepRepos(candidates, { thisRepoRoot } = {}) {
  *       timeout is applied: a sync call cannot be preempted in-process, so a
  *       timeout would only convert a slow sweep into a thrown error, not a
  *       faster one.
- *   (d) Merge key is `repoName` (`path.basename`), case-insensitively folded via
- *       {@link foldKey} (issue #719) — two rows differing only by case (e.g.
+ *   (d) Merge key is the path-derived {@link boardKey} (issue #871), with a
+ *       one-shot fallback to the case-insensitively folded `repoName` for LEGACY
+ *       6-column rows (issue #719) — two rows differing only by case (e.g.
  *       `some-repo` vs `Some-Repo`, the same physical directory on a
  *       case-insensitive-preserving filesystem like APFS) now collapse to ONE
  *       board row instead of rendering as duplicates. The survivor is whichever
@@ -757,19 +1007,13 @@ export function buildSweepRepos(candidates, { thisRepoRoot } = {}) {
  *       `collectRows` output) always wins over a preserved stale row; among two
  *       PRESERVED rows colliding on the folded key, the more-recent `heartbeat`
  *       wins (see the collision-resolution loop inside {@link mirrorBoard}).
- *       Two GENUINELY different, differently-rooted repos that happen to share
- *       a basename (case-insensitively) still collapse to one row — that
- *       remains a known limitation, inherited from {@link collectRows}/
- *       {@link mirrorBoard}; not addressed here.
- *
- *       This limitation got materially WORSE with the depth-2 walk (#832):
- *       under the old depth-1 scan, `<org-a>/<name>` and `<org-b>/<name>` were
- *       both un-enumerable, so they could not collide. Both are now enumerated
- *       and fold to a single row. Two such basename collisions were measured on
- *       the reference host immediately after the change (same repo name under
- *       two different org directories). Fixing this requires re-keying rows on
- *       something path-derived rather than `path.basename` — deliberately out
- *       of scope for #832 and tracked as a follow-up.
+ *       Two GENUINELY different, differently-rooted repos sharing a basename
+ *       no longer collapse (#871, the follow-up #832 named): the merge key is
+ *       the path-derived {@link boardKey}, so `<org-a>/<name>` and
+ *       `<org-b>/<name>` render as two rows. The depth-2 walk (#832) is what
+ *       made both enumerable and turned the old basename key into silent
+ *       cross-repo status loss — two such collisions were measured on the
+ *       reference host immediately after that change.
  *
  * Best-effort contract: `sweepBoard` itself never throws for an enumeration
  * failure — `enumerateCandidates` is wrapped in try/catch; on ANY failure the

@@ -7,7 +7,9 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import yaml from 'js-yaml';
 import { ALLOWED_MODEL_ALIASES, MODEL_ID_RE } from '../agent-frontmatter.mjs';
+import { extractInitialFrontmatter } from './frontmatter-block.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -57,10 +59,45 @@ function fail(msg) {
 /**
  * Extract YAML frontmatter content (between first --- and second ---).
  * Returns null if no valid frontmatter block found.
+ *
+ * Delegates to the shared extractor. This file carried a THIRD verbatim copy of
+ * that regex until now (check-skills.mjs and check-commands.mjs held the other
+ * two, which is why the extraction was lifted into frontmatter-block.mjs). Only
+ * the block-finding is shared — the field RULES stay per-gate and disagree on
+ * purpose; see the header of frontmatter-block.mjs.
+ *
+ * Checks 7-10 only need "text, or nothing"; Check 6 reads the shared
+ * diagnostic directly for a precise message.
  */
 function extractFrontmatter(content) {
-  const m = content.match(/^---\n([\s\S]*?)\n---/);
-  return m ? m[1] : null;
+  const extracted = extractInitialFrontmatter(content);
+  return extracted.ok ? extracted.yamlText : null;
+}
+
+/**
+ * Parse a frontmatter block with a real YAML parser (CORE_SCHEMA, matching
+ * check-commands.mjs and check-skills.mjs).
+ *
+ * @param {string} yamlText - the block's inner text, no fences
+ * @returns {{ ok: true, data: unknown } | { ok: false, message: string }}
+ *   On failure, `message` is a caller-printable reason with a frontmatter-local
+ *   line/column when js-yaml supplies one.
+ */
+function parseFrontmatterYaml(yamlText) {
+  let data;
+  try {
+    data = yaml.load(yamlText, { schema: yaml.CORE_SCHEMA });
+  } catch (error) {
+    const reason = error?.reason ?? error?.message ?? String(error);
+    const location = error?.mark
+      ? ` at frontmatter line ${error.mark.line + 1}, column ${error.mark.column + 1}`
+      : '';
+    return { ok: false, message: `invalid YAML frontmatter: ${reason}${location}` };
+  }
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    return { ok: false, message: 'YAML frontmatter must be a non-null mapping/object' };
+  }
+  return { ok: true, data };
 }
 
 /**
@@ -146,17 +183,48 @@ const mdFiles = readdirSync(agentsDir).filter(isAgentDefFile);
 if (mdFiles.length === 0) {
   fail('agents directory is empty (no .md files)');
 } else {
+  let parseable = 0;
+
   for (const agentFile of mdFiles) {
     const agentName = agentFile;
     const filePath = join(agentsDir, agentFile);
     const content = readFileSync(filePath, 'utf8');
 
-    const frontmatter = extractFrontmatter(content);
+    const extracted = extractInitialFrontmatter(content);
 
-    if (!frontmatter) {
-      fail(`${agentName}: missing YAML frontmatter`);
+    if (!extracted.ok) {
+      fail(`${agentName}: ${extracted.diagnostic}`);
       continue;
     }
+    const frontmatter = extracted.yamlText;
+
+    // ------------------------------------------------------------------
+    // The block is valid YAML.
+    //
+    // Every rule below reads the block with LINE REGEXES (getField/hasField),
+    // which model Claude Code's own lenient loader. That leniency is exactly
+    // how 14 of 16 agent definitions sat unparseable in the tree unnoticed: an
+    // unquoted single-line `description:` containing a `: ` (e.g.
+    // `<example>Context: /plan ...`) is not YAML, and a regex looking only for
+    // `^description:` sees nothing wrong. A ` #` inside such a value is worse
+    // still — it opens a YAML comment, so the block PARSES while silently
+    // truncating the description at that point.
+    //
+    // A parse failure is reported alone (no fall-through to the field rules):
+    // the block is broken at the root, and six regex verdicts stacked on top
+    // of it are cascade noise that buries the one defect worth fixing. Same
+    // posture as check-skills.mjs R8.
+    //
+    // ORTHOGONAL to the `description` block-scalar ban further down: this rule
+    // demands the block BE YAML; that one forbids one particular valid YAML
+    // form the agent loader cannot read. Neither implies the other.
+    // ------------------------------------------------------------------
+    const parsedFm = parseFrontmatterYaml(frontmatter);
+    if (!parsedFm.ok) {
+      fail(`${agentName}: ${parsedFm.message}`);
+      continue;
+    }
+    parseable++;
 
     // ------------------------------------------------------------------
     // Required fields check
@@ -235,6 +303,10 @@ if (mdFiles.length === 0) {
         }
       }
     }
+  }
+
+  if (parseable === mdFiles.length) {
+    pass(`all ${mdFiles.length} agent frontmatter blocks parse as YAML mappings`);
   }
 }
 

@@ -23,6 +23,13 @@
  * block therefore rides the dispatch-prompt channel the repo already owns and
  * writes itself — it adds no new delivery mechanism.
  *
+ * With ONE exception, closed in #1019: a learning that `/reconcile` has already
+ * turned into a `.claude/rules/*.md` file DOES have a native path, and shipping
+ * it here too is the same duplication in miniature. `--rules-dir` (default
+ * `.claude/rules`) feeds that set to the selector, which drops those records
+ * before its Top-N cut so the freed slot goes to a learning the agent has no
+ * other way to see. A repo with no rules directory is unaffected, byte for byte.
+ *
  * ## An INDEX, not a corpus
  *
  * One line per learning plus a retrieval pointer. The agent that needs the full
@@ -65,7 +72,8 @@
  *                `<learnings-<token>>` … `</learnings-<token>>` fence. Empty
  *                selection → NO output at all (exit 0) so the caller prepends
  *                nothing.
- *   - --json   → `{ count, scopeMatched, rejected, learnings: [...] }`
+ *   - --json   → `{ count, scopeMatched, rejected, deliveredFiltered,
+ *                   learnings: [...] }`
  *
  * Exit codes (per .claude/rules/cli-design.md):
  *   0 — success, INCLUDING EPIPE (a truncating reader — `| head`, `| grep -q` —
@@ -144,6 +152,10 @@ Options:
   --max-chars <n>       Hard cap on the rendered index body (default: ${LEARNINGS_INDEX_MAX_CHARS}).
   --pool-size <n>       Active entries pulled before ranking (default: ${CANDIDATE_POOL_SIZE}).
   --learnings <path>    Learnings JSONL (default: .orchestrator/metrics/learnings.jsonl).
+  --rules-dir <path>    Natively-delivered rule corpus (default: .claude/rules).
+                        Learnings already delivered as a rule file there are
+                        excluded from the index (#1019). A path that does not
+                        exist means "this repo delivers no rules" -> no filtering.
   --no-event            Suppress the orchestrator.learnings.index.injected event.
   --json                Emit { count, scopeMatched, learnings:[...] } instead of
                         the Markdown block.
@@ -194,6 +206,7 @@ try {
       'max-chars': { type: 'string' },
       'pool-size': { type: 'string' },
       learnings: { type: 'string' },
+      'rules-dir': { type: 'string' },
       'no-event': { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
     },
@@ -236,6 +249,13 @@ const learningsPath = opts.learnings
   ? opts.learnings
   : join(repoRoot, '.orchestrator', 'metrics', 'learnings.jsonl');
 const eventsPath = join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
+// #1019 — the natively-delivered rule corpus. Every `.claude/rules/*.md` reaches
+// a dispatched agent in FULL through Claude Code's own project-instruction
+// loading (`docs/instruction-delivery.md` §1: the `globs:`/`tier:` frontmatter is
+// inert because `rule-loader.mjs` does not run on that path), so a learning that
+// already became a rule must not also spend a slot in this index. An absent
+// directory yields an empty set and the index is byte-identical to before.
+const rulesDir = opts['rules-dir'] ? opts['rules-dir'] : join(repoRoot, '.claude', 'rules');
 
 // ---------------------------------------------------------------------------
 // Scope resolution ladder: --file-scope -> --wave-scope allowedPaths -> empty
@@ -316,7 +336,7 @@ try {
   selection = await selectLearningsFromFile(
     learningsPath,
     { file_paths: scopePaths, text: taskText },
-    { maxScoped, maxGlobal, maxChars, poolSize },
+    { maxScoped, maxGlobal, maxChars, poolSize, rulesDir },
   );
 } catch (err) {
   // `selectLearningsFromFile` is contractually total (contract point 1), so this
@@ -420,6 +440,11 @@ function emitInjectedEvent(bytes) {
       // Non-zero means the untrusted-text guard dropped a record. Carried in the
       // event so a drop is observable after the fact rather than silent.
       rejected: selection.rejected,
+      // #1019 — records skipped because `.claude/rules/*.md` already delivers
+      // them natively. Same reason as `rejected`: without the count, a filter
+      // that stopped biting looks exactly like a corpus with no rule-derived
+      // learnings in it.
+      delivered_filtered: selection.deliveredFiltered,
       bytes,
       scope_source: scopeSource,
     });
@@ -452,6 +477,7 @@ if (opts.json) {
     count: selected.length,
     scopeMatched,
     rejected: selection.rejected,
+    deliveredFiltered: selection.deliveredFiltered,
     learnings: selected.map((e) => ({
       id: e.id,
       type: e.type,

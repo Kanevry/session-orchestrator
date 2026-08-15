@@ -247,7 +247,11 @@ describe('setMissionStatus', () => {
   it('updates the body and leaves frontmatter untouched when no entry has that id', () => {
     const out = setMissionStatus(STATE_BOTH_SURFACES, 'm-9', 'completed');
     expect(readMissionStatus(out, 'm-9')).toBe('completed');
-    // UPDATE-ONLY: never invents an entry that would fail validateMissionStatusEntry
+    // UPDATE-ONLY: never invents a frontmatter entry, because setMissionStatus
+    // does not know the mandatory `task`/`wave` fields — it only carries an id
+    // and a status. (This line cited validateMissionStatusEntry until 2026-08-15;
+    // that validator had zero production callers and was deleted, so the reason
+    // is spelled out here instead of pointed at.)
     expect(parseMissionStatus(parseStateMd(out).frontmatter)).toEqual([
       { id: 'm-1', task: 'foo', wave: 1, status: 'brainstormed' },
       { id: 'm-2', task: 'bar', wave: 2, status: 'validated' },

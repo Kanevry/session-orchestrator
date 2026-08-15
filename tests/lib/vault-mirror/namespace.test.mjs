@@ -12,9 +12,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import {
   resolveRepoNamespace,
   _setNamespaceMapPath,
@@ -274,5 +275,40 @@ describe('resolveRepoNamespace — pseudonym mapping', () => {
     _setNamespaceMapPath(writeMap({ bernhardg: 'bernhardg' }));
     expect(resolveRepoNamespace({ vaultName: 'bernhardg' })).toBe('redacted-repo');
     expect(writes.some((w) => /owner-leaky/.test(w))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #734b — the namespace.mjs ↔ process.mjs import cycle stays broken
+// ---------------------------------------------------------------------------
+
+describe('module topology (#734b) — no cycle back into the mirroring pipeline', () => {
+  const NAMESPACE_SRC = fileURLToPath(
+    new URL('../../../scripts/lib/vault-mirror/namespace.mjs', import.meta.url),
+  );
+
+  it('does not import ./process.mjs — that edge is the cycle', () => {
+    // A structural invariant, not a style pin: the reverse edge already exists
+    // (process.mjs imports resolveRepoNamespace), so re-adding this one closes
+    // the loop again. Three consumers — vault-repo-backfill.mjs,
+    // vault-relocation-rules.mjs, scripts/vault-mirror.mjs — import ONLY the
+    // pure string function from here and would silently start dragging the
+    // whole render/secret-masker graph behind it.
+    const src = readFileSync(NAMESPACE_SRC, 'utf8');
+    const importedSpecifiers = [...src.matchAll(/^import\s[^;]*?from\s+'([^']+)'/gm)]
+      .map((m) => m[1]);
+
+    expect(importedSpecifiers).not.toContain('./process.mjs');
+    // Falsification guard: the regex really does see this file's imports, so a
+    // rename that breaks the match cannot make the assertion above vacuous.
+    expect(importedSpecifiers).toContain('./utils.mjs');
+  });
+
+  it('deriveRepo re-exported from process.mjs is the SAME binding as the one defined here', async () => {
+    // One definition, one module-level cache. Two copies would mean two
+    // `git remote get-url origin` spawns and two divergent caches.
+    const own = await import('@lib/vault-mirror/namespace.mjs');
+    const reexported = await import('@lib/vault-mirror/process.mjs');
+    expect(reexported.deriveRepo).toBe(own.deriveRepo);
   });
 });

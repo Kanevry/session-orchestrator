@@ -161,6 +161,14 @@ function lockAgeHours(lock) {
  * effective heartbeat, so TTL freshness still rescues recent locks even when
  * the writer process is dead (the D2/D5 production case).
  *
+ * RETAINED, not forgotten (#595, re-verified 2026-08-15): zero v1 files exist
+ * on this host, but this normalisation is MIRRORED in
+ * `scripts/lib/harness-audit/categories/category4.mjs` `lockIsLive()` and
+ * pinned by `tests/lib/lock-ttl-parity.test.mjs`. Removing it here alone
+ * breaks that parity by construction — see
+ * `skills/_shared/state-ownership.md` § Schema v1 Sunset for the full
+ * co-change set the removal needs.
+ *
  * @param {string} raw
  * @returns {object|null}
  */
@@ -229,6 +237,12 @@ function buildLock({ sessionId, mode, ttlHours, semanticSessionId }) {
  * still alive.
  *
  * Liveness rule: a lock is live when (now - last_heartbeat) < ttl_hours.
+ *
+ * The `started_at` fallback below is RETAINED, not forgotten (#595,
+ * re-verified 2026-08-15): it is mirrored verbatim in
+ * `scripts/lib/harness-audit/categories/category4.mjs` `lockIsLive()` and
+ * pinned by `tests/lib/lock-ttl-parity.test.mjs`. See
+ * `skills/_shared/state-ownership.md` § Schema v1 Sunset.
  *
  * @param {{ last_heartbeat: string, started_at: string, ttl_hours?: number }} lock
  * @param {number} [nowMs]
@@ -863,13 +877,18 @@ export function loadOwnerProof({ repoRoot } = {}) {
  * (see `buildLockOwnerProof()` / `isLockOwnedByProof()`) to require a SECOND
  * identity factor beyond `session_id` before deleting — this is what makes
  * a same-day semantic-id collision safe to release against. When `proof` is
- * omitted (the default), behaviour is BYTE-IDENTICAL to before this change:
- * only the `session_id` match gates the delete. This keeps the ONE other
- * external caller (`scripts/lib/autopilot/worktree-pipeline.mjs`, which does
- * not pass `proof`) working unchanged — it stays on the weaker,
- * session_id-only path.
+ * ABSENT (omitted, `undefined`, or `null`), behaviour is BYTE-IDENTICAL to
+ * before this change: only the `session_id` match gates the delete.
  *
- * @param {{ sessionId: string, repoRoot?: string, proof?: { pid: number, host: string, startedAt: string } }} args
+ * `null` is treated as absent DELIBERATELY (#989): the two producers of a
+ * proof — `loadOwnerProof()` and `buildLockOwnerProof()` — both return `null`
+ * to mean "cannot prove ownership". Gating on `proof !== undefined` forced
+ * every call site to spread-guard (`...(proof ? { proof } : {})`) or brick
+ * release with a permanent `proof-mismatch`; treating both absent spellings
+ * alike moves that contract inside the API where it belongs. A caller that
+ * wants fail-closed-on-unprovable must branch itself before calling.
+ *
+ * @param {{ sessionId: string, repoRoot?: string, proof?: { pid: number, host: string, startedAt: string }|null }} args
  * @returns {{ ok: true, deleted: boolean, reason?: string, verified?: boolean }}
  */
 export function release({ sessionId, repoRoot, proof } = {}) {
@@ -886,11 +905,16 @@ export function release({ sessionId, repoRoot, proof } = {}) {
     }
 
     // Proof-gated release (additive, #906-class fix): when the caller supplies
-    // `proof`, the session_id match above is NOT sufficient by itself —
+    // a proof, the session_id match above is NOT sufficient by itself —
     // session_id collisions are the documented root cause behind this check.
-    // Omitting `proof` leaves this branch dead code, preserving the exact
-    // pre-existing behaviour for callers that don't pass it.
-    if (proof !== undefined && !isLockOwnedByProof(existing, proof)) {
+    // Absent-proof handling (#989): an absent proof — omitted, `undefined`, or
+    // the `null` that loadOwnerProof()/buildLockOwnerProof() return for
+    // "cannot prove" — leaves this branch dead code and preserves the exact
+    // pre-existing session_id-only behaviour. No call-site spread-guard needed.
+    // Spelled out rather than as `proof != null` because the repo's `eqeqeq`
+    // lint rule admits no null-loose exception.
+    const proofSupplied = proof !== undefined && proof !== null;
+    if (proofSupplied && !isLockOwnedByProof(existing, proof)) {
       return { ok: true, deleted: false, reason: 'proof-mismatch' };
     }
 

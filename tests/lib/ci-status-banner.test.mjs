@@ -1,5 +1,24 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { checkCiStatus as checkCiStatusReal, DEFAULT_TIMEOUT_MS } from '@lib/ci-status-banner.mjs';
+
+// ── stderr WARN capture (#1022 follow-up) ────────────────────────────────────
+//
+// `checkCiStatus` returns `null` for BOTH "no CI to report" and "the CLI was
+// present but the invocation failed" — the return contract is shared with 13
+// sibling banners and cannot distinguish them. The only observable difference
+// is a `console.warn` line, which is therefore the single visibility mechanism
+// for the whole #1022 defect class ("CLI installed, call rejected"). Spying it
+// file-wide both silences the pre-existing failure-path tests and makes the
+// warn assertable; `mockImplementation` keeps the real console quiet.
+let warnSpy;
+
+beforeEach(() => {
+  warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  warnSpy.mockRestore();
+});
 
 // ── #872 host-pinning DI default ────────────────────────────────────────────
 //
@@ -46,9 +65,16 @@ function makeExecFileMock(responses) {
 
     for (const entry of responses) {
       const cmdMatch = entry.cmd === cmd;
+      // FULL-argv equality, not a prefix match (#1022). A prefix matcher keys
+      // on `entry.args` being a PREFIX of the real argv, so it stays green for
+      // any suffix the production code appends — including a flag the CLI
+      // rejects. That is what let `gh repo view … -R <spec>` be both mocked
+      // and asserted here while the real binary exited 1 on it. An entry that
+      // omits `args` still matches on `cmd` alone (used for error stubs).
       const argsMatch =
         !entry.args ||
         (Array.isArray(entry.args) &&
+          entry.args.length === args.length &&
           entry.args.every((a, i) => a === args[i]));
       if (cmdMatch && argsMatch) {
         if (entry.error) {
@@ -286,6 +312,11 @@ describe('checkCiStatus — glab not in PATH', () => {
     );
 
     expect(result).toBeNull();
+    // A missing CLI is a normal, expected state on a machine without glab —
+    // it must stay SILENT. If the WARN below fires here, every session-start
+    // on a CLI-less machine prints a meaningless warning and the signal that
+    // the WARN exists to carry (#1022: CLI present, call rejected) drowns.
+    expect(warnSpy.mock.calls).toHaveLength(0);
   });
 });
 
@@ -642,15 +673,15 @@ describe('checkCiStatus — #872 GitLab host-pinning', () => {
 
 // ── Test 16: #872 host-pinning — GitHub (-R on repo view, --hostname on api) ──
 
-describe('checkCiStatus — #872 GitHub host-pinning', () => {
-  it('pins `gh repo view` with -R <spec> and `gh api` calls with --hostname <host>', async () => {
+describe('checkCiStatus — #872/#1022 GitHub host-pinning', () => {
+  it('pins `gh repo view` with a POSITIONAL <spec> (never -R) and `gh api` with --hostname <host>', async () => {
     const spec = 'github.example.com/owner/repo';
     const host = 'github.example.com';
     const checkRuns = [{ name: 'test', conclusion: 'success' }];
 
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITHUB_ORIGIN),
-      { cmd: 'gh', args: ['repo', 'view', '--json', 'nameWithOwner', '-R', spec], stdout: GH_REPO_VIEW },
+      { cmd: 'gh', args: ['repo', 'view', spec, '--json', 'nameWithOwner'], stdout: GH_REPO_VIEW },
       {
         cmd: 'gh',
         args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs', '--hostname', host],
@@ -666,16 +697,107 @@ describe('checkCiStatus — #872 GitHub host-pinning', () => {
     expect(result).not.toBeNull();
     expect(result.status).toBe('green');
 
+    // #1022: assert the FULL argv, not `toContain('-R')`. `gh repo view` has
+    // no -R/--repo flag — it exits 1 with "unknown shorthand flag: 'R'", which
+    // checkCiStatus swallows to null, killing the banner on every GitHub repo.
+    // A containment assert cannot see a wrong flag or a wrong argument order;
+    // only the exact argv pins the shape the real binary accepts.
     const [, repoViewArgs] = mockExecFile.mock.calls.find(
       ([cmd, args]) => cmd === 'gh' && args.includes('view'),
     );
-    expect(repoViewArgs).toContain('-R');
-    expect(repoViewArgs).not.toContain('--hostname');
+    expect(repoViewArgs).toEqual(['repo', 'view', spec, '--json', 'nameWithOwner']);
 
     const [, checkRunsArgs] = mockExecFile.mock.calls.find(
       ([cmd, args]) => cmd === 'gh' && args.includes('api'),
     );
-    expect(checkRunsArgs).toContain('--hostname');
-    expect(checkRunsArgs).not.toContain('-R');
+    expect(checkRunsArgs).toEqual([
+      'api',
+      'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs',
+      '--hostname',
+      host,
+    ]);
+  });
+});
+
+// ── Test 17: #1022 the stderr WARN is the only trace a rejected call leaves ───
+//
+// The argv pin above guards against THIS flag defect. The WARN is the catcher
+// for the NEXT one: it is the sole difference between "CLI ran, call rejected"
+// and "nothing to report", both of which return null. Untested, it is itself a
+// silent-failure candidate — the exact shape of the bug it exists to surface.
+
+describe('checkCiStatus — #1022 rejected-invocation WARN', () => {
+  it('warns once and returns null when the CLI ran but rejected the invocation', async () => {
+    // Golden shape of a Node execFile rejection: `Command failed: <argv>` plus
+    // the child's stderr appended, `code` = the child's exit status.
+    const rejectedFlag = new Error(
+      "Command failed: gh repo view -R Kanevry/session-orchestrator --json nameWithOwner\n" +
+        "unknown shorthand flag: 'R' in -R Kanevry/session-orchestrator\n",
+    );
+    rejectedFlag.code = 1;
+    rejectedFlag.stderr = "unknown shorthand flag: 'R' in -R Kanevry/session-orchestrator\n";
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITHUB_ORIGIN),
+      { cmd: 'gh', error: rejectedFlag },
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    // The return contract is shared with 13 sibling banners — null stays null.
+    expect(result).toBeNull();
+    // …so the WARN carries the whole signal. Exactly one, with the child's own
+    // error text verbatim: an operator cannot act on "something failed".
+    expect(warnSpy.mock.calls).toEqual([
+      [
+        'WARN ci-status-banner: CI status check failed, banner suppressed — ' +
+          'Command failed: gh repo view -R Kanevry/session-orchestrator --json nameWithOwner\n' +
+          "unknown shorthand flag: 'R' in -R Kanevry/session-orchestrator\n",
+      ],
+    ]);
+  });
+
+  it('redacts URL-embedded credentials out of the warned error text', async () => {
+    // `resolveRepoSpec` hands the raw remote URL to `glab -R`, and a Node
+    // execFile rejection quotes the full argv back in `err.message`. On a repo
+    // whose remote carries HTTPS credentials, that message is a live secret —
+    // and this WARN prints it to stderr, where session-start transcripts and
+    // CI logs keep it. This is a leak path, not a formatting preference.
+    const credentialedSpec =
+      'https://ci-bot:glpat-xxxxxxxxxxxx@gitlab.example.com/org/session-orchestrator.git';
+    const rejected = new Error(
+      'Command failed: glab repo view --output json -R ' + credentialedSpec + '\nexit status 1\n',
+    );
+    rejected.code = 1;
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      { cmd: 'glab', error: rejected },
+    ]);
+
+    const result = await checkCiStatusReal(
+      { repoRoot: '/fake/repo', now: NOW },
+      {
+        execFile: mockExecFile,
+        resolveRepoSpec: () => credentialedSpec,
+        resolveRepoHost: () => 'gitlab.example.com',
+      },
+    );
+
+    expect(result).toBeNull();
+    expect(warnSpy.mock.calls).toEqual([
+      [
+        'WARN ci-status-banner: CI status check failed, banner suppressed — ' +
+          'Command failed: glab repo view --output json -R ' +
+          'https://***@gitlab.example.com/org/session-orchestrator.git\nexit status 1\n',
+      ],
+    ]);
+    // Stated as the security invariant too, independent of the exact wording
+    // of the surrounding sentence: neither half of the credential survives.
+    expect(warnSpy.mock.calls[0][0]).not.toContain('ci-bot');
+    expect(warnSpy.mock.calls[0][0]).not.toContain('glpat-');
   });
 });

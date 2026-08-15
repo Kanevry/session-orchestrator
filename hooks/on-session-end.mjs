@@ -275,16 +275,17 @@ async function main() {
       if (releaseEligible) {
         // Defense-in-depth (#987): when a persisted proof exists, hand it to
         // release() so the delete is double-gated (session_id match AND
-        // proof match) at the fs layer too. TRAP — release()'s proof gate
-        // triggers on `proof !== undefined`, so a null proof MUST be
-        // spread-guarded out: passing `proof: null` would fail
-        // isLockOwnedByProof() unconditionally and refuse EVERY release.
+        // proof match) at the fs layer too. `proof` is `null` whenever
+        // loadOwnerProof() could not prove ownership (pre-#987 sessions,
+        // failed proof write) — release() gates on `proof != null` (#989) and
+        // degrades to the session_id-only path for that case, so passing it
+        // through unguarded is correct.
         // A 'proof-mismatch' result flows into the existing release_failed
         // breadcrumb below (releaseResult.reason surfaces verbatim).
         const releaseResult = release({
           sessionId: lock.session_id,
           repoRoot: projectRoot,
-          ...(proof ? { proof } : {}),
+          proof,
         });
         // release() has a no-throw contract (always returns a structured
         // result). A matched ownership that still fails to delete — an

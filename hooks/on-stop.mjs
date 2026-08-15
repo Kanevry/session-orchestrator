@@ -8,7 +8,10 @@
  *
  * Part of v3.0.0 Windows-native migration. Issue #141.
  *
- * Exit codes: 0 always (informational hooks must never block).
+ * Exit codes: 0 always (informational hooks must never block) — including when
+ * node_modules is absent: zx is imported lazily and a missing package degrades
+ * to one rate-limited stderr line instead of an ERR_MODULE_NOT_FOUND stack on
+ * every turn end (GH Kanevry/session-orchestrator#63).
  *
  * JSONL format (`.orchestrator/metrics/events.jsonl`) — emitted via the canonical
  * `emitEvent()` so the JSONL record and the optional Clank webhook always carry the
@@ -18,8 +21,7 @@
  */
 
 import path from 'node:path';
-import { promises as fs } from 'node:fs';
-import { $ } from 'zx';
+import { promises as fs, statSync, writeFileSync } from 'node:fs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 // #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
@@ -88,16 +90,86 @@ function discriminate(input) {
 }
 
 // ---------------------------------------------------------------------------
+// dependency degradation (GH Kanevry/session-orchestrator#63)
+// ---------------------------------------------------------------------------
+//
+// zx is loaded LAZILY. A static `import { $ } from 'zx'` fails at MODULE LOAD
+// time when node_modules is absent (interrupted install, EPERM sandbox, half-
+// synced plugin cache), so the harness prints a 10-frame ERR_MODULE_NOT_FOUND
+// stack on EVERY turn end with no hint that `npm install` is the fix. This
+// mirrors the missing-`node` degradation in hooks/run-node.sh (§5): one
+// actionable stderr line per 6h window, then carry on with reduced features.
+
+/** Rate-limit window for the dependencies-missing warning — mirrors run-node.sh's 6h TTL. */
+const DEP_WARN_TTL_MS = 6 * 60 * 60 * 1000;
+
+/** Plugin root (the directory that owns package.json / node_modules). */
+const PLUGIN_ROOT = path.resolve(import.meta.dirname, '..');
+
+/**
+ * Marker path for the dependencies-missing warning. Deliberately a DIFFERENT
+ * name from run-node.sh's `session-orchestrator-node-missing-*`: sharing one
+ * marker would let a missing-node warning mask a missing-deps warning (and
+ * vice versa), leaving the operator with half a diagnostic.
+ * @returns {string}
+ */
+function depWarnMarkerPath() {
+  // `||` alone falls back only on falsy values — a whitespace-only TMPDIR is
+  // truthy and would yield a garbage path (see .claude/rules/development.md).
+  const tmpDir = (process.env.TMPDIR || '').trim() || '/tmp';
+  const user = (process.env.USER || '').trim() || 'uid';
+  return path.join(tmpDir, `session-orchestrator-deps-missing-${user}`);
+}
+
+/**
+ * Print ONE actionable stderr line telling the operator to run `npm install`,
+ * at most once per DEP_WARN_TTL_MS. Marker mtime is the clock, exactly like
+ * run-node.sh's `find -mmin +360` check. Best-effort throughout: a marker we
+ * cannot stat is treated as expired (warn), a marker we cannot write means the
+ * next invocation warns again — noisier, never silent-broken.
+ */
+function warnDependenciesMissingOnce() {
+  const marker = depWarnMarkerPath();
+  try {
+    if (Date.now() - statSync(marker).mtimeMs < DEP_WARN_TTL_MS) return;
+  } catch { /* missing / unreadable marker → treat as expired */ }
+  try { writeFileSync(marker, ''); } catch { /* best-effort */ }
+  process.stderr.write(
+    `session-orchestrator: dependencies missing — run 'npm install' in ${PLUGIN_ROOT}. `
+    + 'Hook features degraded (this warning is rate-limited to once per 6h).\n',
+  );
+}
+
+/**
+ * Load zx's `$` lazily. Returns null when the package is not installed (after
+ * emitting the rate-limited advisory). Any OTHER import failure is re-thrown —
+ * a corrupt zx install is not a missing-dependency problem and must not be
+ * mislabelled as one.
+ * @returns {Promise<Function|null>}
+ */
+async function loadZx() {
+  try {
+    return (await import('zx')).$;
+  } catch (err) {
+    if (err?.code !== 'ERR_MODULE_NOT_FOUND') throw err;
+    warnDependenciesMissingOnce();
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // git helpers
 // ---------------------------------------------------------------------------
 
 /**
  * Returns { commit, branch } from the git repo at projectRoot, or null values
- * if git is unavailable or the directory is not a git repo.
+ * if git is unavailable, zx is not installed, or the directory is not a git repo.
  * @param {string} projectRoot — working directory for git commands
  * @returns {Promise<{commit:string|null, branch:string|null}>}
  */
 async function gitInfo(projectRoot) {
+  const $ = await loadZx();
+  if ($ === null) return { commit: null, branch: null };
   $.verbose = false;
   $.quiet = true;
   const opts = projectRoot ? { cwd: projectRoot } : {};

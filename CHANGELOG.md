@@ -7,6 +7,129 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Mechanics-over-prose line, second half. The session set out to repair one unparseable YAML
+block and found the class instead: **a fact maintained in two places, and a guard that is
+green without biting.** It hit the same class seven times. The second half is the harder
+one, because a green check reads exactly like a working check — and the headline number is
+not the repair count but where the repairs were hiding: **12 of 46 `SKILL.md`** and **14 of
+16 `agents/*.md`** carried frontmatter that is not YAML, and every frontmatter checker in
+the tree had reported them clean for as long as they had existed.
+
+### Added
+
+- **`scripts/lib/validate/check-skills.mjs` — a real parser over all 46 `SKILL.md`**,
+  registered in `validate-plugin.mjs`. The sibling `check-agents.mjs` validated frontmatter
+  with line-oriented regexes, which is precisely how the 12 broken blocks stayed invisible:
+  an unquoted `description:` containing a `: ` (`"Iron Law: NO FIXES"`) is not YAML, but a
+  regex looking for `^description:` sees nothing wrong, and Claude Code's own loader is
+  lenient enough that the defect never surfaced at runtime. A `js-yaml` `CORE_SCHEMA` parse
+  is now rule R8 and the five field rules hang off it — none of them can be evaluated on a
+  block that does not parse. Deliberately **not** implemented: a block-scalar ban (see
+  below), and length ceilings on `name`/`description`, because no spec vendored in this repo
+  states one and an invented requirement is worse than none.
+- **`scripts/lib/validate/frontmatter-block.mjs` — shared extraction, deliberately unshared
+  rules.** The extractor stood verbatim in two checkers, so the next change to the block
+  format would have landed in one copy and one gate would have started accepting what the
+  other rejects — with no test able to see it, because each gate tested its own copy. The
+  module owns the byte range and nothing else, and its header records why the three checkers
+  must stay **contradictory**: `check-agents.mjs` bans `description: >` because the agent
+  loader cannot read a folded scalar, while `check-skills.mjs` must tolerate it — for
+  `SKILL.md` the folded form is the only shape that makes the `: ` collision structurally
+  impossible, 35 of 46 files now use it, and porting the agent ban here would red 35 of 46
+  and forbid the very fix that made the gate green. The divergence is the requirement, not
+  drift.
+- **`scripts/lib/mirror-issues-banner.mjs` — the GitHub-mirror blind spot**, wired into
+  `skills/session-start/SKILL.md` Phase 4. VCS auto-detection picks exactly one platform, so
+  in a GitLab-origin repo with a public GitHub mirror no code path ever read the mirror's
+  issues: everything filed by an external reporter was structurally invisible to every
+  session. The probe asks the other side, hard-pinned to `github` (auto-detecting here would
+  reproduce the defect it exists to compensate for) and **self-disabling** — no `github`
+  remote resolves to `undefined` → `null` → no spawn, no network call. No new Session Config
+  key by design: the spec comes from `git remote`, and a key would be a second SSOT drifting
+  against it. The return is three-valued, not two — `null` means *never asked* or *asked and
+  clean*; a `degraded` field with a closed enum means *the query failed and the state is
+  unknown*. Collapsing that third state into `null` is what makes a dead probe
+  indistinguishable from a healthy repo, which is the next section's first entry.
+- **`atomicWriteWithBackup()` in `scripts/lib/io.mjs`** — the tmp-write/rename/`.bak-<ISO>`
+  primitive that `writeJsonAtomicSync` now delegates to, ending a second copy of the same
+  sequence (#734).
+- **`check-unwired-features` signal S3 `orphaned-prose-module`** — a config key is not the
+  only thing prose can promise; a document can also assert that a module does a job nothing
+  calls. S3 fires only where the claim is in the **passive voice with a bare filename and no
+  exported symbol**: "…*are validated* against `foo.mjs`" asserts that something happens by
+  itself, whereas "dispatch via `runWavePool()`" addresses a reader who will do it. The
+  broader check — every export with no non-test importer — was measured and rejected: 1366
+  exports, 779 unimported, 93.2% false positives naive and still 81.2% after four exclusion
+  rules. A gate that prints 282 lines is switched off in week two, which is this file's own
+  disease one level up. Measured 2026-08-14, the cascade narrowed 452 production modules to
+  **2**; one of those is deleted below, so the live report now stands at 1. Read a near-empty
+  report as designed, not broken — S3 is a relapse guard, not a cleanup tool.
+- **[ADR-0012](docs/adr/0012-pseudonym-map-privacy.md)** — host-local pseudonym map for
+  owner-leaky repo namespaces. An ADR rather than a code comment precisely because every
+  element reads like removable defensiveness at its call site while being load-bearing for a
+  property no test can observe directly: a green suite is fully compatible with the leak.
+
+### Fixed
+
+- **`gh repo view -R` broke the GitHub CI banner for every external user of this plugin
+  (#1022).** `gh repo view` takes the repository as a **positional** argument and has no
+  `-R`/`--repo` flag at all, so the host-pinning added in #872 made `gh` exit 1 with
+  `unknown shorthand flag: 'R'` — an error `checkCiStatus`'s outer catch swallowed to
+  `null`, leaving the session-start Phase 4 banner silently dead on every GitHub repo. Fixed
+  positionally, and the swallow narrowed: a CLI that is *present* but fails now reports
+  `degraded` instead of `null`. The asymmetry across the three neighbouring call sites is
+  real and must not be unified — `glab repo view` **does** take `-R`, and `gh api`/`glab
+  api` take neither `-R` nor a positional, only `--hostname`.
+- **`hooks/on-stop.mjs` printed a 10-frame stack trace at every turn end when `node_modules`
+  was absent** (interrupted install, EPERM sandbox, half-synced plugin cache): a static
+  `import { $ } from 'zx'` fails at module-load time, with no hint that `npm install` is the
+  fix. `zx` is now imported lazily and the failure degrades to one rate-limited stderr line
+  per 6h window, mirroring the missing-`node` degradation in `hooks/run-node.sh`.
+  (GH Kanevry/session-orchestrator#63.)
+- **A board row inherited one legacy entry's terminal status to every same-named repo,
+  permanently (#871).** `_active-sessions.md` rows were keyed by `path.basename(repoRoot)`,
+  so two repos with the same directory name under different parents were one row — and both
+  are enumerable, since the dispatcher walks to depth 2. Rows are now keyed by a path-derived
+  hash, case-folded on APFS/NTFS so `…/Some-Repo` and `…/some-repo` do not split back into
+  the duplicate rows #719 had already fixed at the name layer. The key length carries a named
+  ceiling and a revisit trigger, not an intention to revisit.
+- **Two vault write channels published unmasked secrets (#974/#1025)** —
+  `scripts/lib/vault-status/narrative-mirror.mjs` and `scripts/lib/vault-mirror/process.mjs`,
+  both writing tracked, pushed artefacts. The masker's needle set is a function of the
+  caller's env, which is not a defect but does mean two runs over the same records mask
+  differently: a consumer comparing a written artefact against a fresh candidate must treat
+  an already-redacted span as a **wildcard** (`matchesModuloRedaction`), or a later
+  partially-populated run rewrites the raw value it had already redacted. The tempting fix —
+  persist the needle set — is rejected: it puts a plaintext secrets file on disk to defend
+  against secrets on disk. Masking runs **after** `extractNarrative`, never before, because
+  masking the raw string first lets `[REDACTED]` land inside the structure and silently
+  delete a whole table from the mirrored file.
+- **`agents/*.md` frontmatter is parsed, not pattern-matched.** `check-agents.mjs` gained the
+  same `js-yaml` `CORE_SCHEMA` rule, reported alone with no fall-through to the field rules —
+  a field rule evaluated on an unparseable block is a guess. Its existing block-scalar ban
+  stays: that rule forbids one particular *valid* YAML form, which is a different question
+  from whether the block is YAML at all.
+- **Deleted `scripts/lib/mission-status-schema.mjs`** — 4 exports, zero production callers,
+  while three prose locations promised its application. Found by S3 above, on the day S3 was
+  written.
+
+### Notes
+
+- The sharpest instances of the class are the ones where the check was green. A hand-rolled
+  `getDescription` regex in `tests/lib/validate/skill-description-quality.test.mjs`
+  terminated on the first folded line, measuring **97 characters where the real YAML value is
+  329** (`session-start`; `autopilot` 107 vs 555, `bootstrap` 98 vs 341) — which made its own
+  `>= 250` assertion **vacuous** for every skill already using the block-scalar form. It
+  surfaced only because repairing the 12 unparseable blocks moved files across the threshold.
+  `yaml.load` is now the single reader.
+- **Found and deliberately not fixed here**, because both sit outside this line's scope and
+  both are the same shape as the bugs above: `agents/eval-judge.md` is **valid** YAML and
+  loses **96%** of its description — 1180 raw characters, 51 visible to a parser — because
+  ` #803` opens a YAML comment at column 51, so no parse rule can catch it. And
+  `skills/discovery/probes-arch.md:39` calls
+  `npx madge --circular --extensions ts,tsx,js,jsx src/` in an all-`.mjs` repo that has no
+  `src/` directory: it processes zero files and reports success.
+
 ## [3.20.0] - 2026-08-13
 
 Memory-pipeline line. The learning store had been accumulating for 233 sessions and delivering

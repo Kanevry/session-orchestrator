@@ -254,6 +254,14 @@ for (let i = 0; i < args.length; i++) {
 //   ?     — any single character except `/`
 //   literal path separators and characters otherwise
 // Operates on POSIX-style forward-slash relative paths.
+// `**` compiles to a SEGMENT-ANCHORED alternative, not a free `(?:.*?)` (#1013).
+// The free form ended anywhere, including mid-segment, so every `**/` pattern
+// silently grew a suffix-match: `**/README.md` matched `MYREADME.md`, and
+// `**/archive/**` matched `90-archive/...`. This matcher answers "is this path
+// EXCLUDED from validation", so an over-approximation is not a harmless
+// widening — it is a false negative: the file is never checked and the
+// validator still reports 0 errors. Anchoring narrows exclusion, i.e. it can
+// only ever add files to the checked set.
 function globToRegExp(glob) {
   // Normalise input
   const g = glob.replace(/\\/g, '/');
@@ -262,12 +270,18 @@ function globToRegExp(glob) {
     const c = g[i];
     if (c === '*') {
       if (g[i + 1] === '*') {
-        // `**` — match across path segments
-        // Also swallow a following `/` so that `**/foo` matches `foo` at root.
-        const nextSlash = g[i + 2] === '/';
-        re += '(?:.*?)';
-        if (nextSlash) i += 2;
-        else i += 1;
+        if (g[i + 2] === '/') {
+          // `**/` — zero or more WHOLE path segments. Zero repetitions is what
+          // makes `**/foo` match `foo` at the vault root, and it is why the
+          // trailing `/` is swallowed here rather than emitted literally.
+          re += '(?:[^/]+/)*';
+          i += 2;
+        } else {
+          // Trailing or standalone `**` (e.g. `a/**`) — everything below the
+          // preceding literal, segment boundaries included.
+          re += '.*';
+          i += 1;
+        }
       } else {
         re += '[^/]*';
       }
@@ -658,6 +672,21 @@ const errors = [];
 const warnings = [];
 let filesChecked = 0;
 let filesSkippedNoFrontmatter = 0;
+// The paths behind the count (#1013). A bare count made "0 errors" ambiguous:
+// it meant "everything CHECKED is valid", never "everything is valid", and the
+// operator had no way to see WHICH files were never checked. The list is
+// emitted only by the branches that actually ran the validation pass — so an
+// ABSENT `files_skipped_no_frontmatter_paths` means "never inspected" (mode=off,
+// no vault) while an EMPTY one means "inspected, nothing skipped". Same
+// absence-preserving contract as `scripts/lib/reconcile-nudge-banner.mjs`
+// (`skippedCandidates`), which distinguishes never-checked from checked-clean.
+const filesSkippedNoFrontmatterPaths = [];
+// Ceiling: 50 paths keeps the envelope bounded on a vault that has never been
+// backfilled (real measurement 2026-08-15: 2 of 8574 files in the live vault).
+// `paths.length < files_skipped_no_frontmatter` is itself the truncation
+// signal, so no extra flag is needed. Revisit if a consuming vault routinely
+// reports more than 50 — then the right fix is a backfill, not a bigger cap.
+const SKIPPED_PATHS_CAP = 50;
 let excludedCount = 0;
 let archivedSkippedCount = 0;
 
@@ -686,6 +715,9 @@ for (const rec of records) {
 
   if (!fm.hasFrontmatter) {
     filesSkippedNoFrontmatter++;
+    if (filesSkippedNoFrontmatterPaths.length < SKIPPED_PATHS_CAP) {
+      filesSkippedNoFrontmatterPaths.push(rel);
+    }
     continue;
   }
 
@@ -737,6 +769,19 @@ for (const rec of records) {
 
 const hasErrors = errors.length > 0;
 
+// Silence is not success: a skipped file contributes to neither `errors` nor
+// `files_checked`, so a bare "0 errors" line would let an unvalidated file pass
+// unremarked at the session-end hard gate (#1013). Surface the count on stderr
+// too — stdout stays pure JSON per the caller contract.
+if (filesSkippedNoFrontmatter > 0) {
+  const shown = filesSkippedNoFrontmatterPaths.slice(0, 5).join(', ');
+  const more = filesSkippedNoFrontmatter - Math.min(5, filesSkippedNoFrontmatterPaths.length);
+  process.stderr.write(
+    `WARN: ${filesSkippedNoFrontmatter} file(s) NOT validated — no frontmatter: ` +
+      `${shown}${more > 0 ? ` (+${more} more)` : ''}\n`,
+  );
+}
+
 // ── mode=baseline ─────────────────────────────────────────────────────────
 // Serialize current errors + warnings as a snapshot, then exit 0.
 if (mode === 'baseline') {
@@ -774,6 +819,7 @@ if (mode === 'diff') {
       excluded_count: excludedCount,
       archived_skipped_count: archivedSkippedCount,
       files_skipped_no_frontmatter: filesSkippedNoFrontmatter,
+      files_skipped_no_frontmatter_paths: filesSkippedNoFrontmatterPaths,
       errors,
       warnings,
     });
@@ -794,6 +840,7 @@ if (mode === 'diff') {
       excluded_count: excludedCount,
       archived_skipped_count: archivedSkippedCount,
       files_skipped_no_frontmatter: filesSkippedNoFrontmatter,
+      files_skipped_no_frontmatter_paths: filesSkippedNoFrontmatterPaths,
       errors,
       warnings,
     });
@@ -816,6 +863,7 @@ if (mode === 'diff') {
     excluded_count: excludedCount,
     archived_skipped_count: archivedSkippedCount,
     files_skipped_no_frontmatter: filesSkippedNoFrontmatter,
+    files_skipped_no_frontmatter_paths: filesSkippedNoFrontmatterPaths,
   });
 
   process.stderr.write(
@@ -839,6 +887,7 @@ emit({
   excluded_count: excludedCount,
   archived_skipped_count: archivedSkippedCount,
   files_skipped_no_frontmatter: filesSkippedNoFrontmatter,
+  files_skipped_no_frontmatter_paths: filesSkippedNoFrontmatterPaths,
   errors,
   warnings,
 });

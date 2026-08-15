@@ -6,8 +6,12 @@
  * YAML frontmatter on read and before write.
  *
  * Design notes:
- *   - Follows the `mission-status-schema.mjs` convention (pure regex/checks)
- *     rather than `skills/vault-sync/validator.mjs` (zod). The repo root has
+ *   - Pure regex/checks rather than `skills/vault-sync/validator.mjs` (zod).
+ *     (This line used to cite `scripts/lib/mission-status-schema.mjs` as the
+ *     exemplar for that convention; that module was deleted on 2026-08-15 for
+ *     having zero production callers while three prose sites promised it ran.
+ *     The convention below stands on its own reason, stated next.)
+ *     The repo root has
  *     no `zod` dependency — only `skills/vault-sync/` does, scoped to that
  *     skill's own `node_modules`. Keeping this validator dependency-free lets
  *     callers from anywhere under `scripts/lib/` use it without extra setup.

@@ -50,6 +50,65 @@
  * through the parser layer to become a value. Measured 2026-08-08: 84 of 89
  * top-level keys satisfy it, so the 5 that do not are signal, not noise.
  *
+ * ## S3 `orphaned-prose-module` — the same disease, one level out
+ *
+ * A config key is not the only thing prose can promise. A DOCUMENT can also
+ * assert that a module does a job that nothing calls. S3 reports a module under
+ * `scripts/`/`hooks/` that satisfies ALL of:
+ *
+ *   1. its basename is named in tracked, non-historical prose,
+ *   2. NO other production module references that basename on a non-comment line,
+ *   3. it is not a CLI entrypoint (no shebang, no main-guard),
+ *   4. it exports at least one named symbol, and
+ *   5. the prose naming it names NONE of those exported symbols.
+ *
+ * Condition 5 is the discriminator, and it is a claim about GRAMMAR. "dispatch
+ * via `runWavePool()`" names a symbol: it is an INSTRUCTION addressed to a reader
+ * who will execute it, which is legitimate prose-wiring. "transitions **are
+ * validated** against `foo.mjs`" names only the file, in the passive voice: it
+ * ASSERTS that something happens by itself. Nobody is addressed, so nobody does
+ * it. Passive + bare filename + zero symbols is the signature of a dead promise.
+ *
+ * ### Why this is a narrow rule and not an export census
+ *
+ * The obvious broader check — "report every export with no non-test importer" —
+ * was measured on 2026-08-14 and is NOT buildable: 1366 exports, 779 without a
+ * non-test importer, a false-positive rate of 93.2% naive and still 81.2% after
+ * four exclusion rules. A gate that prints 282 lines gets switched off in week
+ * two, which is this file's own disease one level up. S3 trades that recall for
+ * precision: it only fires where prose made a CLAIM, so every hit has a document
+ * to correct.
+ *
+ * ### Honest limitation: the population is tiny, by construction
+ *
+ * The measured cascade on 2026-08-14 was 452 production modules → 329 named in
+ * prose → 95 with no production reference → 57 non-entrypoint → 56 with a named
+ * export → **2**. Do not read a near-empty report as a broken check: S3 is a
+ * RELAPSE GUARD, not a cleanup tool. Its value is catching the NEXT false
+ * promise on the day it is written, not finding mass today.
+ *
+ * ### Two false-positive classes this rule was calibrated against
+ *
+ * Both were live hits in the first draft, and both are now excluded by
+ * construction — reintroducing either would be a regression:
+ *
+ *  - **Dynamic-import consumers.** `scripts/lib/skill-health/join.mjs` looks
+ *    orphaned to any `from '…join.mjs'` regex: `harness-audit/categories/
+ *    category9.mjs` resolves it via `new URL('../../skill-health/join.mjs',
+ *    import.meta.url)` and imports the resulting VARIABLE inside a generated
+ *    child-process source string. Condition 2 therefore counts any non-comment
+ *    mention of the basename as a reference, not just a static import specifier.
+ *  - **Re-export shims.** `scripts/lib/autopilot-telemetry.mjs` is
+ *    `export * from './autopilot/telemetry.mjs'` — zero NAMED exports, so
+ *    condition 5 ("prose names none of its exports") is vacuously true and the
+ *    module is reported for having no symbols to name. Condition 4 excludes it.
+ *
+ * `CHANGELOG.md` is excluded from the prose corpus for the same reason: it is an
+ * append-only record of what a PAST release shipped, so it names the symbols of
+ * code that may since have died. Counting it silenced a true positive
+ * (`soul-resolve.mjs`, whose only live claim is in `.claude/rules/owner-persona.md`
+ * but whose symbols appear in a 2026-06 changelog entry).
+ *
  * ## Consumer scope, and why "prose-only" is a finding rather than an error
  *
  * Read sites are counted in `scripts/**` and `hooks/**` (`.mjs`/`.js`/`.cjs`),
@@ -129,6 +188,29 @@ const CODE_EXTENSIONS = Object.freeze(['.mjs', '.js', '.cjs']);
 /** Directory names excluded from the consumer scan at any depth. */
 const EXCLUDED_DIRS = Object.freeze(['node_modules', '.git', 'tests', 'test', '__tests__']);
 
+/** Extension carrying prose claims (signal S3). */
+const PROSE_EXTENSIONS = Object.freeze(['.md']);
+
+/**
+ * Additionally excluded from the S3 PROSE corpus. `.orchestrator/` is generated
+ * telemetry and audit output — machine-written, so it asserts nothing.
+ */
+const PROSE_EXCLUDED_DIRS = Object.freeze([...EXCLUDED_DIRS, '.orchestrator']);
+
+/**
+ * Prose files excluded by basename.
+ *
+ * `CHANGELOG.md` is a HISTORICAL record: it describes what a past release
+ * shipped, so it keeps naming symbols of code that has since been deleted. See
+ * the header for the true positive this masked.
+ *
+ * `STATE.md` is per-session MUTABLE state, not documentation. A module named in
+ * a wave plan is not a durable promise, and counting it would make this check's
+ * output depend on whichever session happens to be open — a repo-wide census
+ * must not change because a task description mentioned a filename.
+ */
+const PROSE_EXCLUDED_FILES = Object.freeze(['CHANGELOG.md', 'STATE.md']);
+
 /**
  * This file excludes ITSELF from the consumer corpus. Load-bearing: every
  * `ALLOWLIST` key is a string literal here, so without the exclusion each
@@ -179,27 +261,29 @@ const ALLOWLIST = Object.freeze({
 /**
  * @typedef {{
  *   kind: 'unwired-config-key' | 'parser-orphan-config-key' | 'allowlist-missing-reason'
- *       | 'allowlist-stale' | 'tool-error',
+ *       | 'allowlist-stale' | 'orphaned-prose-module' | 'tool-error',
  *   key: string,
  *   message: string,
  * }} Finding
  */
 
 /**
- * Recursively collect code files, skipping symlinks and excluded directories.
+ * Recursively collect files, skipping symlinks and excluded directories.
  *
  * @param {string} directory absolute directory path
  * @param {string[]} [acc]
- * @returns {string[]} absolute file paths, sorted
+ * @param {readonly string[]} [extensions] extensions to keep
+ * @param {readonly string[]} [excludedDirs] directory names pruned at any depth
+ * @returns {string[]} absolute file paths
  */
-function walkCode(directory, acc = []) {
+function walkCode(directory, acc = [], extensions = CODE_EXTENSIONS, excludedDirs = EXCLUDED_DIRS) {
   if (!existsSync(directory)) return acc;
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     if (entry.isSymbolicLink()) continue;
-    if (EXCLUDED_DIRS.includes(entry.name)) continue;
+    if (excludedDirs.includes(entry.name)) continue;
     const fullPath = path.join(directory, entry.name);
-    if (entry.isDirectory()) walkCode(fullPath, acc);
-    else if (entry.isFile() && CODE_EXTENSIONS.includes(path.extname(entry.name))) acc.push(fullPath);
+    if (entry.isDirectory()) walkCode(fullPath, acc, extensions, excludedDirs);
+    else if (entry.isFile() && extensions.includes(path.extname(entry.name))) acc.push(fullPath);
   }
   return acc;
 }
@@ -384,12 +468,126 @@ export function countReadSites(declared, corpus) {
 }
 
 /**
+ * Extract the NAMED symbols a module exports.
+ *
+ * Deliberately named-only: `export * from './x.mjs'` yields nothing, which is
+ * what marks a re-export shim as unjudgeable by S3 (see header, FP class 2).
+ *
+ * @param {string} body module source
+ * @returns {string[]} exported symbol names
+ */
+export function collectExportedSymbols(body) {
+  /** @type {Set<string>} */
+  const names = new Set();
+  const declaration = /^export\s+(?:async\s+)?(?:function\*?|class|const|let|var)\s+([A-Za-z0-9_$]+)/gm;
+  for (const match of body.matchAll(declaration)) names.add(match[1]);
+  for (const match of body.matchAll(/^export\s*\{([^}]*)\}/gm)) {
+    for (const clause of match[1].split(',')) {
+      const name = clause.trim().split(/\s+as\s+/).pop()?.trim();
+      if (name && /^[A-Za-z0-9_$]+$/.test(name)) names.add(name);
+    }
+  }
+  return [...names];
+}
+
+/**
+ * Whether a module is a CLI entrypoint rather than a library.
+ *
+ * An entrypoint is invoked by path (npm script, hook wiring, CI job), so having
+ * no importer is its normal state and says nothing about being wired.
+ *
+ * @param {string} body module source
+ * @returns {boolean}
+ */
+export function isCliEntrypoint(body) {
+  return (
+    body.startsWith('#!') ||
+    /import\.meta\.url\s*===|require\.main\s*===\s*module|process\.argv\[1\]/.test(body)
+  );
+}
+
+/**
+ * Signal S3 — modules a document promises but nothing calls.
+ *
+ * See the header for the five conditions, the grammar discriminator, and the two
+ * false-positive classes this is calibrated against. Condition 2 counts ANY
+ * non-comment mention of the basename as a reference (not just a static import
+ * specifier) because a real consumer can reach a module through
+ * `new URL(…, import.meta.url)` + dynamic `import()`.
+ *
+ * @param {string} pluginRoot absolute plugin root
+ * @returns {{findings: Finding[], scanned: {modules: number, prose: number}}}
+ */
+export function collectOrphanedProseModules(pluginRoot) {
+  /** @type {Finding[]} */
+  const findings = [];
+
+  const modules = CONSUMER_DIRS.flatMap((dir) => walkCode(path.join(pluginRoot, dir)))
+    .sort()
+    .map((absolute) => {
+      const body = readFileSync(absolute, 'utf8');
+      return {
+        relative: path.relative(pluginRoot, absolute),
+        base: path.basename(absolute),
+        body,
+        lines: body.split('\n'),
+      };
+    });
+
+  const prose = walkCode(pluginRoot, [], PROSE_EXTENSIONS, PROSE_EXCLUDED_DIRS)
+    .filter((absolute) => !PROSE_EXCLUDED_FILES.includes(path.basename(absolute)))
+    .sort()
+    .map((absolute) => ({
+      relative: path.relative(pluginRoot, absolute),
+      body: readFileSync(absolute, 'utf8'),
+    }));
+
+  for (const module of modules) {
+    // (1) named by a live document
+    const claims = prose.filter((doc) => doc.body.includes(module.base));
+    if (claims.length === 0) continue;
+
+    // (2) no production module references it outside a comment
+    const referenced = modules.some(
+      (other) =>
+        other.relative !== module.relative &&
+        other.lines.some((line) => line.includes(module.base) && !isCommentLine(line)),
+    );
+    if (referenced) continue;
+
+    // (3) not invoked by path
+    if (isCliEntrypoint(module.body)) continue;
+
+    // (4) has symbols the prose could have named
+    const symbols = collectExportedSymbols(module.body);
+    if (symbols.length === 0) continue;
+
+    // (5) the prose names none of them → nobody is addressed, so nobody acts
+    const naming = claims.filter((doc) => symbols.some((symbol) => tokenMatcher(symbol).test(doc.body)));
+    if (naming.length > 0) continue;
+
+    findings.push({
+      kind: 'orphaned-prose-module',
+      key: module.relative,
+      message:
+        `named in ${claims.map((doc) => doc.relative).join(' + ')} but no .mjs under ` +
+        `${CONSUMER_DIRS.join('/ or ')}/ references it, and that prose names none of its ` +
+        `export(s) (${symbols.join(', ')}) — the document promises behaviour nothing performs; ` +
+        'wire it, delete it, or reword the prose to describe what actually happens',
+    });
+  }
+
+  return { findings, scanned: { modules: modules.length, prose: prose.length } };
+}
+
+/**
  * Run the full census.
  *
  * @param {string} pluginRoot absolute plugin root
  * @returns {{
  *   ok: boolean,
- *   summary: {declaredKeys: number, consumerFiles: number, unwired: number, allowlisted: number},
+ *   summary: {declaredKeys: number, consumerFiles: number, unwired: number, allowlisted: number,
+ *             orphanedModules: number},
  *   sourcesScanned: string[],
  *   findings: Finding[],
  *   toolError: boolean,
@@ -400,7 +598,7 @@ export function inspectUnwiredFeatures(pluginRoot) {
   const findings = [];
   const result = {
     ok: false,
-    summary: { declaredKeys: 0, consumerFiles: 0, unwired: 0, allowlisted: 0 },
+    summary: { declaredKeys: 0, consumerFiles: 0, unwired: 0, allowlisted: 0, orphanedModules: 0 },
     /** @type {string[]} */
     sourcesScanned: [],
     findings,
@@ -413,6 +611,8 @@ export function inspectUnwiredFeatures(pluginRoot) {
   let corpus;
   /** @type {string} */
   let parserBody;
+  /** @type {ReturnType<typeof collectOrphanedProseModules>} */
+  let orphans;
   try {
     declared = collectDeclaredKeys(pluginRoot);
     corpus = CONSUMER_DIRS.flatMap((dir) => walkCode(path.join(pluginRoot, dir)))
@@ -429,6 +629,7 @@ export function inspectUnwiredFeatures(pluginRoot) {
     })
       .map((absolute) => readFileSync(absolute, 'utf8'))
       .join('\n');
+    orphans = collectOrphanedProseModules(pluginRoot);
   } catch (error) {
     result.toolError = true;
     findings.push({
@@ -501,6 +702,12 @@ export function inspectUnwiredFeatures(pluginRoot) {
     });
   }
 
+  // S3 — prose promises a module nothing calls. Reported alongside the config
+  // census because it is the same defect class one level out: a claim with no
+  // mechanism behind it.
+  result.summary.orphanedModules = orphans.findings.length;
+  findings.push(...orphans.findings);
+
   result.ok = !result.toolError && findings.length === 0;
   return result;
 }
@@ -525,13 +732,14 @@ export function runCheckUnwiredFeatures(pluginRoot) {
     return 2;
   }
 
-  const { declaredKeys, consumerFiles, unwired, allowlisted } = inspection.summary;
+  const { declaredKeys, consumerFiles, unwired, allowlisted, orphanedModules } = inspection.summary;
   for (const item of inspection.findings) {
     console.log(`  WARN: [${item.kind}] ${item.key} — ${item.message}`);
   }
   console.log(
     `  PASS: censused ${declaredKeys} declared key(s) from ${inspection.sourcesScanned.join(' + ') || '(no source)'} ` +
-      `against ${consumerFiles} consumer file(s) — ${unwired} unwired, ${allowlisted} allowlisted`,
+      `against ${consumerFiles} consumer file(s) — ${unwired} unwired, ${allowlisted} allowlisted, ` +
+      `${orphanedModules} prose-orphaned module(s)`,
   );
   console.log('');
   console.log('Results: 1 passed, 0 failed');

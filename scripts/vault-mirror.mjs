@@ -55,7 +55,8 @@ import { createInterface } from 'node:readline';
 import { createReadStream } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-import { processLearning, processSession } from './lib/vault-mirror/process.mjs';
+import { processLearning, processSession, getMaskerStats } from './lib/vault-mirror/process.mjs';
+import { emitEvent } from './lib/events.mjs';
 import { autoCommitVaultMirror } from './lib/vault-mirror/auto-commit.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 import { resolveRepoNamespace } from './lib/vault-mirror/namespace.mjs';
@@ -401,6 +402,30 @@ async function main() {
       process.stderr.write(`vault-mirror: filesystem error on line ${lineNum}: ${err.message}\n`);
       process.exit(2);
     }
+  }
+
+  // ── Masking telemetry (#1025) ───────────────────────────────────────────────
+  //
+  // Emitted UNCONDITIONALLY, exactly once per channel run, and HERE — at the end
+  // of the run rather than at the lazy build site inside process.mjs. The build
+  // site is only reached once a record is actually processed, so a run over an
+  // empty/fully-skipped source would emit nothing and "the masker never ran" would
+  // be indistinguishable from "this channel has no masker wired". Placed BEFORE
+  // the --strict-schema abort so a failing run still reports its masking posture.
+  //
+  // Counts only — never a needle, never a prefix of one, never masked text.
+  // Best-effort: a telemetry write must never be the reason a mirror run fails.
+  try {
+    const maskerStats = getMaskerStats();
+    await emitEvent('orchestrator.secret_masker.applied', {
+      channel: 'vault-mirror',
+      needle_count: maskerStats.needleCount,
+      records: maskerStats.records,
+      hits: maskerStats.hits,
+      dry_run: dryRun,
+    });
+  } catch {
+    // Silent no-op — see the note above.
   }
 
   // --strict-schema: abort with exit 1 when any entry was skipped-invalid.

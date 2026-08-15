@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { writeApprovedRules } from '../../../scripts/lib/reconcile/writer.mjs';
+import { renderRule } from '../../../scripts/lib/reconcile/renderer.mjs';
 import { parseGlobsFrontmatter } from '../../../scripts/lib/rule-loader.mjs';
 
 let tmpDir;
@@ -426,6 +427,112 @@ describe('writeApprovedRules — structural content gate (#1015)', () => {
     expect(result.written).toBe(1);
     expect(result.errors).toHaveLength(1);
     expect(rulesDirEntries()).toEqual(['sound.md']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1018 L2 — the invariants bind without an `auto-generated` marker
+// ---------------------------------------------------------------------------
+
+describe('writeApprovedRules — invariants bind without auto-generated (#1018 L2)', () => {
+  it('refuses a doc declaring alwaysApply: true when it carries NO auto-generated key', async () => {
+    // THE BUG: before #1018 the alwaysApply check sat behind the
+    // `auto-generated: true` branch, so dropping that one key walked a
+    // self-declared always-on rule straight past the gate onto disk. A
+    // `writeApprovedRules` probe on exactly this input returned `written: 1`.
+    // A rule file that declares itself always-on must never be the way to
+    // bypass the checks that exist to stop a written rule being always-on.
+    const content = [
+      '---',
+      'alwaysApply: true',
+      'description: looks hand-authored, is not',
+      'globs:',
+      '  - "scripts/lib/x/**"',
+      'learning-key: fragile-pattern/x',
+      'expires-at: 2099-09-30',
+      '---',
+      '',
+      '# body',
+      '',
+    ].join('\n');
+
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'sneaky', path: '.claude/rules/sneaky.md', content }],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.written).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toMatch(/alwaysApply: true/);
+    expect(existsSync(join(tmpDir, '.claude', 'rules', 'sneaky.md'))).toBe(false);
+    expect(rulesDirEntries()).toEqual([]);
+  });
+
+  it('refuses a provenance-bearing doc with no activation axis even when auto-generated is absent', async () => {
+    // Marker-loss shape: `auto-generated: true` is the FIRST line the renderer
+    // emits, so a truncation that eats it can leave the provenance keys behind.
+    // Keying the invariant on the marker SET (learning-key / expires-at /
+    // auto-generated) rather than on `auto-generated` alone still catches it.
+    const content = [
+      '---',
+      'description: provenance without the marker',
+      'learning-key: fragile-pattern/x',
+      'expires-at: 2099-09-30',
+      '---',
+      '',
+      '# body',
+      '',
+    ].join('\n');
+
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'marker-loss', path: '.claude/rules/marker-loss.md', content }],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.written).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toMatch(/no activation axis/);
+    expect(rulesDirEntries()).toEqual([]);
+  });
+
+  it('still writes real renderRule output — the production /reconcile path is not blocked', async () => {
+    // The counter-check that makes the two refusals above meaningful: a gate
+    // that rejects its own production caller is an outage, not a gate. This
+    // exercises the REAL renderer rather than a hand-shaped fixture, so a
+    // future renderer change that trips the widened gate fails here.
+    const { path: rulePath, content } = renderRule(
+      {
+        id: 'writer-1018-l2',
+        subject: 'gate binds without the auto-generated marker',
+        insight: 'the invariants must not be bypassable by dropping one key',
+        evidence: 'probe returned written:1 for alwaysApply:true without auto-generated',
+        source_session: 'main-2026-08-14-session-1',
+      },
+      {
+        globs: ['scripts/lib/reconcile/**'],
+        description: 'reconcile writer gate',
+        learningKey: 'proven-pattern/writer-gate-binds-without-marker',
+        confidence: 0.9,
+        expiresAt: '2099-09-30',
+      },
+    );
+
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'prod-path', path: rulePath, content }],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.written).toBe(1);
+    expect(result.errors).toEqual([]);
+
+    // Assert on the PARSED frontmatter of what actually landed, not a
+    // file-wide substring search.
+    const onDisk = readFileSync(join(tmpDir, rulePath), 'utf8');
+    const { globs, meta } = parseGlobsFrontmatter(onDisk);
+    expect(globs).toEqual(['scripts/lib/reconcile/**']);
+    expect(meta.alwaysApply).toBe(false);
+    expect(meta['auto-generated']).toBe(true);
+    expect(meta['learning-key']).toBe('proven-pattern/writer-gate-binds-without-marker');
   });
 });
 

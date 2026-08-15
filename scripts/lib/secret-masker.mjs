@@ -11,6 +11,22 @@
  * separate concern (and a separate wave).
  *
  * ---------------------------------------------------------------------------
+ * THE NEEDLE SET IS A FUNCTION OF THE CALLER'S ENV — AND THAT IS NOT A DEFECT
+ * ---------------------------------------------------------------------------
+ * Two runs of the same consumer over the same records mask DIFFERENTLY when the
+ * env differs between them (#1025): with `FOO_TOKEN` set, its value becomes
+ * `[REDACTED]`; without it, the same text passes through verbatim. Consumers that
+ * compare a previously-written artifact against a freshly-rendered candidate must
+ * therefore treat an already-redacted span as a WILDCARD, or a later
+ * partially-populated run re-writes the raw value it had already redacted (see
+ * `matchesModuloRedaction` in `scripts/lib/vault-mirror/process.mjs`).
+ *
+ * The tempting fix — persist the needle set so a later run can mask without the
+ * env — is REJECTED: it breaks the purity contract in the paragraph above and
+ * puts a plaintext secrets file on disk to defend against secrets on disk. The
+ * env dependency stays; consumers compensate.
+ *
+ * ---------------------------------------------------------------------------
  * WHY THE FILTER ORDER IS ALLOWLIST → KEY-NAME → LENGTH, AND NOT LENGTH FIRST
  * ---------------------------------------------------------------------------
  * A "mask every env value longer than N characters" masker is the obvious

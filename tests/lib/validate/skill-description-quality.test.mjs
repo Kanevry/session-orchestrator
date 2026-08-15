@@ -6,16 +6,29 @@
  * (≥ 250 chars), all skills stay within the 1024-char platform limit, and
  * the majority of skills use a verb-first "Use..." opener.
  *
- * Parser note: YAML block-scalar descriptions (description: >\n  text...)
- * require special handling — the inline regex `^description:\s*(.+?)$`
- * matches the literal `>` before the block regex can fire. The getDescription
- * helper here handles both forms correctly by checking for the `>` sentinel
- * before dispatching to the block-scalar parser.
+ * Parser note (CORRECTED 2026-08-15). This file used to extract the description
+ * with a hand-rolled regex, and the header you are reading claimed that handled
+ * block scalars "correctly". It did not. The terminating lookahead
+ * `(?=^\S|^---|$)` was compiled with `/m`, where the `$` alternative matches at
+ * EVERY line end — so the match stopped after the FIRST folded line. Measured on
+ * files that were never edited: session-start 97 chars vs 329 of real YAML,
+ * autopilot 107 vs 555, bootstrap 98 vs 341. The `>= 250` assertion below was
+ * therefore VACUOUS for every skill already using the block-scalar form: it
+ * measured an opening line and passed.
+ *
+ * It surfaced only because repairing 12 unparseable frontmatter blocks moved
+ * four more skills into the same blind spot and finally pushed the truncated
+ * value under the floor. A green assertion is not evidence that it bites.
+ *
+ * The fix is the same lesson the repaired files teach: read structured data with
+ * a parser, never a regex. `yaml.load` is now the single reader, so both the
+ * inline and the block form resolve to the value the platform actually sees.
  */
 
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import yaml from 'js-yaml';
 
 const PLUGIN_ROOT = path.resolve(import.meta.dirname, '../../..');
 const SKILLS_DIR = path.join(PLUGIN_ROOT, 'skills');
@@ -32,23 +45,26 @@ function getFrontmatter(filePath) {
 
 function getDescription(filePath) {
   const fm = getFrontmatter(filePath);
+  if (!fm) return '';
 
-  // Block-scalar form: `description: >` or `description: |` followed by
-  // indented lines. Detect the sentinel first so the inline regex below
-  // doesn't swallow the `>` character as the description value.
-  const blockSentinel = fm.match(/^description:\s*[>|]\s*$/m);
-  if (blockSentinel) {
-    const blockMatch = fm.match(/^description:\s*[>|]\s*\n([\s\S]*?)(?=^\S|^---|$)/m);
-    if (blockMatch) {
-      return blockMatch[1].replace(/^[ \t]+/gm, '').replace(/\n+/g, ' ').trim();
-    }
+  // ONE reader for both the inline and the block-scalar form — see the header.
+  // CORE_SCHEMA matches scripts/lib/validate/check-commands.mjs and
+  // check-skills.mjs, so this test and the gates agree on what a frontmatter
+  // block means. A parse failure returns '' and lets the length assertions
+  // report it; check-skills.mjs owns the "is it parseable at all" verdict.
+  let doc;
+  try {
+    doc = yaml.load(fm, { schema: yaml.CORE_SCHEMA });
+  } catch {
+    return '';
   }
+  if (!doc || typeof doc !== 'object') return '';
 
-  // Inline form: `description: some text`
-  const inlineMatch = fm.match(/^description:\s*(.+?)$/m);
-  if (inlineMatch) return inlineMatch[1].trim();
-
-  return '';
+  const value = doc.description;
+  if (typeof value !== 'string') return '';
+  // Folded scalars keep a trailing newline; collapse the residue so the length
+  // measured here is the length a reader sees.
+  return value.replace(/\s+/g, ' ').trim();
 }
 
 function getSkillDirs() {

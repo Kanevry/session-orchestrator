@@ -275,7 +275,7 @@ mission-status:
 - `status`: always `brainstormed` at plan emission. Terminal values are updated at gate transitions by wave-executor: `brainstormed` → `validated` (user confirms via `/go`) → `in-dev` (agent dispatched) → `testing` (Quality wave) → `completed` (Quality gate green). session-end Phase 1.9 reads the current value to classify the item.
 
 **Transition gates (summary):**
-At plan time, all items start at `brainstormed`. When the user runs `/go` to approve the plan, wave-executor updates each item to `validated`. When an agent for a wave-plan item is dispatched, wave-executor updates that item to `in-dev`. When the Quality wave begins, items from prior waves move to `testing`. When the Quality gate passes, items finalize at `completed`. Rollback to `brainstormed` is permitted from any state. All transitions are validated against the schema in `scripts/lib/mission-status-schema.mjs`.
+At plan time, all items start at `brainstormed`. When the user runs `/go` to approve the plan, wave-executor updates each item to `validated`. When an agent for a wave-plan item is dispatched, wave-executor updates that item to `in-dev`. When the Quality wave begins, items from prior waves move to `testing`. When the Quality gate passes, items finalize at `completed`. Rollback to `brainstormed` is permitted from any state. This ordering is **coordinator convention, not a mechanical gate** — nothing validates a transition before it is written (see "Default and transitions" below).
 
 **Omission rule:** When the plan has 0 wave-plan items (e.g., pure express-path coord-direct with no sub-agent tasks), do NOT emit the `### Wave-Plan Mission Status (machine-readable)` block.
 
@@ -298,7 +298,7 @@ Every wave-plan item carries a `status` field drawn from a 5-value enum. The fie
 - **Default at plan creation:** `brainstormed` — all items start here.
 - **Transitions are coordinator-level orchestration** (not inside individual agent prompts). See `skills/wave-executor/SKILL.md` "Mission-Status Updates (#340)" for when each transition fires.
 - **Rollback:** any item may return to `brainstormed` from any state (e.g. if work is discarded or re-planned).
-- **Schema validation:** transitions are validated against `scripts/lib/mission-status-schema.mjs` before being written to STATE.md.
+- **No mechanical validation — by design.** The `status` values come from the 5-value enum in the table above, but nothing checks a transition before it is written. `setMissionStatus` (`scripts/lib/state-md/mission-status.mjs`) mirrors whatever string it is handed onto BOTH the body section and the frontmatter array, deliberately without an enum gate: gating it would reintroduce the exact body-says-X/frontmatter-says-Y divergence that sync exists to remove. An out-of-enum value therefore lands visibly on both surfaces instead of being silently rejected on one. Keeping the enum honest is the coordinator's job.
 
 #### Status field in wave-plan items
 

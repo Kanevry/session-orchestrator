@@ -1583,10 +1583,15 @@ describe('processSession #909: status:abandoned is filtered before rendering', (
 
 // ── #974: env-secret values are masked before anything is written ─────────────
 //
-// The vault is the only mirror sink whose output lands in a TRACKED and PUSHED
-// artifact (auto-commit.mjs runs `git add` + `commit` in the vault repo), and the
-// records it carries are agent-authored free text that routinely quotes command
-// lines and error output. A leak here cannot be fixed by deleting a file.
+// Everything this mirror writes lands in a TRACKED and PUSHED artifact
+// (auto-commit.mjs runs `git add` + `commit` in the vault repo), and the records
+// it carries are agent-authored free text that routinely quotes command lines and
+// error output. A leak here cannot be fixed by deleting a file.
+//
+// It is NOT the only such channel — an earlier revision of this comment said so
+// and was wrong. Measured 2026-08-15 at vault `83a868059`: 18 tracked
+// `_session-narrative.md` + 1 tracked `research/hardware-patterns.md` live in the
+// same pushed repo (see the corrected note in process.mjs § maskEntrySecrets).
 //
 // Every test below names the bug it catches; the needle is generated at RUNTIME
 // (never a literal in this file) so no credential-shaped string is committed.
@@ -1752,5 +1757,126 @@ describe('processLearning/processSession #974: env-secret masking', () => {
     expect(writeFileSyncSpy).toHaveBeenCalledOnce();
     expect(written).not.toContain(needle);
     expect(written).toContain('curl -H "PRIVATE-TOKEN: [REDACTED]" failed.');
+  });
+});
+
+// ── #1025: masking is env-derived, so idempotency must survive an env change ──
+//
+// The masker's needle set comes from `process.env`, which is NOT part of the
+// record. Two runs over the SAME record therefore mask differently when the env
+// differs between them — and the idempotency comparison sits directly downstream
+// of that asymmetry.
+
+describe('processLearning #1025: redaction-aware idempotency across an env change', () => {
+  let existsSyncSpy;
+  let readFileSyncSpy;
+  let writeFileSyncSpy;
+
+  beforeEach(() => {
+    existsSyncSpy = vi.spyOn(fs, 'existsSync');
+    readFileSyncSpy = vi.spyOn(fs, 'readFileSync');
+    writeFileSyncSpy = vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
+    vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    vi.doUnmock('node:child_process');
+  });
+
+  // resetModules is load-bearing TWICE here: it gives each run a FRESH masker
+  // singleton, so run 2 genuinely rebuilds its needle set from the (now
+  // secret-free) env instead of reusing run 1's.
+  async function loadProcess() {
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+    });
+    return import('@lib/vault-mirror/process.mjs'); // git mock → repoNs 'r'
+  }
+
+  const LEARNING = {
+    id: 'a1b2c3d4-0001-4000-8000-000000001025',
+    type: 'architectural',
+    subject: 'explicit-contracts',
+    insight: 'Prefer explicit contracts',
+    evidence: 'Three modules broke',
+    confidence: 0.9,
+    source_session: 'session-2026-08-14',
+    created_at: '2026-08-14T10:00:00Z',
+  };
+
+  // BUG CAUGHT (#1025 Probe A — a REPEATED leak, written by the run that was
+  // supposed to be a no-op): run 1 has the secret in env and correctly writes
+  // `[REDACTED]`. Run 2 does not, so it renders the RAW value; plain field
+  // equality then reports "content changed" and the mirror OVERWRITES the
+  // already-redacted note with the raw secret — publishing it a second time into
+  // a tracked, pushed artifact. The on-disk note here is a golden record: it is
+  // produced by run 1 through the real renderer, never hand-shaped.
+  it('a second run WITHOUT the secret in env re-writes neither the note nor the raw value', async () => {
+    const needle = `so-test-needle-${randomUUID()}`;
+    const entry = { ...LEARNING, insight: `The run died on GITLAB_TOKEN=${needle} in the env` };
+
+    // ── Run 1: secret present in env → note is created with [REDACTED] ────────
+    vi.stubEnv('SO_TEST_MASK_TOKEN', needle);
+    const { processLearning: run1 } = await loadProcess();
+    existsSyncSpy.mockReturnValue(false);
+    let onDisk = '';
+    writeFileSyncSpy.mockImplementation((_p, content) => { onDisk = content; });
+
+    const first = await captureStdout(() =>
+      run1(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning', force: false }),
+    );
+    expect(first.lines[0].action).toBe('created');
+    expect(onDisk).toContain('[REDACTED]');
+    expect(onDisk).not.toContain(needle);
+
+    // ── Run 2: same record, secret NO LONGER in env ───────────────────────────
+    vi.unstubAllEnvs();
+    const { processLearning: run2 } = await loadProcess();
+    writeFileSyncSpy.mockClear();
+    existsSyncSpy.mockReturnValue(true);
+    readFileSyncSpy.mockReturnValue(onDisk);
+
+    const second = await captureStdout(() =>
+      run2(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning', force: false }),
+    );
+
+    expect(second.lines[0].action).toBe('skipped-noop');
+    expect(writeFileSyncSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ── #1025 Q1: the wildcard predicate is a SHARED export (narrative-mirror.mjs
+// imports it), and `[REDACTED]` is ordinary prose in this repo — ADRs, rule
+// files and learnings all discuss the marker by name. Its presence is therefore
+// evidence a mask MAY have run, never proof one did, and the pattern it compiles
+// to must stay anchored to something.
+
+describe('matchesModuloRedaction (shared #1025 predicate)', () => {
+  async function load() {
+    return import('@lib/vault-mirror/process.mjs');
+  }
+
+  // BUG CAUGHT: a value whose ENTIRE content is the marker splits into two empty
+  // segments, so the join compiled to `^[\s\S]*?$` — a pattern matching EVERY
+  // string. That field then reports "unchanged" against any candidate forever:
+  // a permanent blind spot, reachable with no masker involved at all (agent prose
+  // that merely quotes the marker).
+  it('refuses to treat a marker-only value as a universal wildcard', async () => {
+    const { matchesModuloRedaction } = await load();
+    expect(matchesModuloRedaction('[REDACTED]', 'a completely unrelated value')).toBe(false);
+    expect(matchesModuloRedaction('[REDACTED][REDACTED]', 'anything at all')).toBe(false);
+  });
+
+  // A masked needle is >= MIN_MASKABLE_LENGTH (8) characters by construction, so
+  // a redacted span standing for ZERO characters is never a real redaction — it
+  // is only extra wildcard reach. `+?` keeps the true case and drops the empty one.
+  it('requires a redacted span to stand for at least one character', async () => {
+    const { matchesModuloRedaction } = await load();
+    expect(matchesModuloRedaction('token=[REDACTED] failed', 'token=hunter2hunter2 failed')).toBe(true);
+    expect(matchesModuloRedaction('token=[REDACTED] failed', 'token= failed')).toBe(false);
   });
 });

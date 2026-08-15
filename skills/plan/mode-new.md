@@ -38,7 +38,7 @@ Agent({ subagent_type: "Explore", description: "Check ecosystem for conflicts",
 3. **Target audience** — Options informed by market research agent. User selects or provides custom.
 4. **User-Story-Schicht** — "User-Story-Schicht für dieses Feature erzeugen?" Immer fragen (kein Audience-Heuristik-Gate). Drei Antwortoptionen: **Ja (Als/möchte/damit)** — klassische Persona-Story-Form; **Ja (job-story)** — job-story-Form ("When [situation], I want [motivation], so I can [outcome]"); **Nein** — byte-identisches Status-quo-Verhalten. Bei einer der beiden "Ja"-Optionen emittiert die PRD eine optionale ## User Stories Sektion (je Story ein ↳ AC-Pointer) in der gewählten Form; bei "Nein" wird die Sektion vollständig weggelassen.
 5. **Core problem being solved** — Open-ended. Claude suggests structure if answer is vague.
-6. **GitLab group** — Discover available groups dynamically. Run `ls $BASELINE_PATH/templates/` for project types, and check for a groups config in `$BASELINE_PATH/config/` or use `glab group list` to discover GitLab groups. Present findings via AskUserQuestion.
+6. **GitLab group** — Discover available groups dynamically. Run `ls $BASELINE_PATH/templates/` for project types, and check for a groups config in `$BASELINE_PATH/config/` or run `glab api "groups?per_page=100&min_access_level=10"` to discover GitLab groups — read each entry's `full_path` field. (`glab` has no `group` subcommand at all — invoking one exits 1 with `Unknown command "group"`.) Present findings via AskUserQuestion.
 
 ### Wave 2 — Technical Details (5 questions, dynamic per archetype)
 
@@ -129,6 +129,11 @@ Map gathered answers to script input choices:
 # 4. Map user's selected style name → numeric choice for STYLE_CHOICE (if applicable)
 # 5. Map user's selected group name → numeric choice for GROUP_CHOICE
 # Do NOT hardcode numeric mappings — they must be derived from the script.
+#
+# GROUP_CHOICE is a MENU INDEX, never a namespace. Keep the group's real
+# namespace in a separate variable — every later step addresses the project as
+# "<group-path>/<project>", and a numeric index there silently targets nothing.
+GROUP_PATH="$(...)"    # e.g., "products" — the full_path of the chosen group
 (
   echo "$TYPE_CHOICE"    # e.g., "1" for nextjs-saas
   echo "$STYLE_CHOICE"   # e.g., "1" for vega (only if nextjs-saas)
@@ -143,7 +148,7 @@ Map gathered answers to script input choices:
 Check exit code. Confirm repo exists:
 
 ```bash
-glab repo view $GROUP/$PROJECT_NAME
+glab repo view "$GROUP_PATH/$PROJECT_NAME"
 ```
 
 ### Step 3: Adjust visibility
@@ -151,8 +156,21 @@ glab repo view $GROUP/$PROJECT_NAME
 If visibility is not `internal` (the default):
 
 ```bash
-glab repo edit -R "$GROUP/$PROJECT_NAME" --visibility private   # or --visibility public
+# There is no `glab repo edit`, and `glab repo update` carries no --visibility
+# flag (its FLAGS are --archive/--defaultBranch/-d/--description). Go through the
+# API, addressing the project by its URL-encoded path — `projects/:id` resolves
+# from the CWD remote, which is the wrong project right after scaffolding.
+ENCODED="${GROUP_PATH}%2F${PROJECT_NAME}"
+glab api -X PUT "projects/${ENCODED}" -f visibility=private   # or visibility=public
+
+# Verify (this GET is the read-only proof the PUT landed). Note `glab api` has
+# no --jq flag — that is `gh api`'s. Pipe to jq instead.
+glab api "projects/${ENCODED}" | jq -r '.visibility'
 ```
+
+> The GET path above is verified against glab 1.91.0; the PUT is the documented
+> GitLab API shape but was **not** executed during authoring (write operations
+> were out of scope). Confirm with the GET before relying on it.
 
 For public/OSS, also configure GitHub mirror if applicable.
 
@@ -274,11 +292,11 @@ Use AskUserQuestion to present the full issue structure:
 
 ```bash
 # Create epic
-glab issue create -R "$GROUP/$PROJECT_NAME" --title "$EPIC_TITLE" --description "$EPIC_DESC" \
+glab issue create -R "$GROUP_PATH/$PROJECT_NAME" --title "$EPIC_TITLE" --description "$EPIC_DESC" \
   --label "type:epic,priority::$PRIORITY" --milestone "$MILESTONE"
 
 # Create sub-issues
-glab issue create -R "$GROUP/$PROJECT_NAME" --title "$ISSUE_TITLE" --description "$ISSUE_DESC" \
+glab issue create -R "$GROUP_PATH/$PROJECT_NAME" --title "$ISSUE_TITLE" --description "$ISSUE_DESC" \
   --label "type:feature,priority::$PRIORITY,status:ready,area:$AREA,appetite:$APPETITE"
 ```
 

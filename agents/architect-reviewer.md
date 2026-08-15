@@ -1,6 +1,6 @@
 ---
 name: architect-reviewer
-description: Use this agent for read-only architectural audits between waves. Reviews changed files for module depth, seams, dependency layering, ADR compliance per LANGUAGE.md vocabulary. <example>Context: After Impl-Core wave shipped 8 files. user: "Audit the W2 architecture before proceeding." assistant: "I'll dispatch architect-reviewer to check module depth, seams, and adapter quality before W3." <commentary>Architect-reviewer catches design smells (shallow modules, speculative seams) earlier than Quality-Lite, which only catches lint/typecheck.</commentary></example>
+description: 'Use this agent for read-only architectural audits between waves. Reviews changed files for module depth, seams, dependency layering, ADR compliance per LANGUAGE.md vocabulary. <example>Context: After Impl-Core wave shipped 8 files. user: "Audit the W2 architecture before proceeding." assistant: "I''ll dispatch architect-reviewer to check module depth, seams, and adapter quality before W3." <commentary>Architect-reviewer catches design smells (shallow modules, speculative seams) earlier than Quality-Lite, which only catches lint/typecheck.</commentary></example>'
 model: inherit
 color: blue
 tools: Read, Grep, Glob, Bash

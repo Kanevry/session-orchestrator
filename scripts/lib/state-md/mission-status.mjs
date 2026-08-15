@@ -24,8 +24,9 @@ import { updateFrontmatterFields, writeStateMd } from './frontmatter-mutators.mj
  * STATE.md files). Returns `[]` when the key is present but the value is an empty
  * array. Returns the array of entries when present and non-empty.
  *
- * Does NOT validate individual entry shapes — callers that need schema validation
- * should use `validateMissionStatusEntry` from mission-status-schema.mjs.
+ * Does NOT validate individual entry shapes, and no helper in this repo does:
+ * entry shape and the `status` enum are coordinator convention, deliberately not a
+ * mechanical gate (see `syncFrontmatterMissionStatus` below for why).
  *
  * @param {object} frontmatter
  * @returns {object[]|null}
@@ -55,9 +56,9 @@ export function parseMissionStatus(frontmatter) {
  * - Works on string input (pure — no file I/O). Returns the updated STATE.md contents.
  * - No-ops if `contents` has no parseable frontmatter (returns input unchanged).
  *
- * Individual entry objects must conform to the shape validated by
- * `validateMissionStatusEntry` in mission-status-schema.mjs, but this function does
- * NOT enforce that constraint — callers are responsible for pre-validation.
+ * Individual entry objects are expected to carry `{ id, task, wave, status }`, but
+ * this function does NOT enforce that shape and no validator in this repo does —
+ * callers own the invariant.
  *
  * @param {string} contents
  * @param {object[]|null|undefined} missionStatusArray
@@ -85,16 +86,24 @@ export function writeMissionStatus(contents, missionStatusArray) {
  * UPDATE-ONLY by design: when the key is absent, is not an array, or holds no entry
  * with a matching `id`, the frontmatter is returned unchanged. It is deliberately
  * neither created nor an error, because `setMissionStatus(contents, taskId, status)`
- * knows only `id` and `status` — it lacks the `task` and `wave` fields that
- * `validateMissionStatusEntry` (mission-status-schema.mjs) requires, so a synthesised
- * entry would be schema-invalid yet look authoritative to frontmatter consumers such
- * as `vault-status/narrative-mirror.mjs`. Throwing is likewise excluded by the
- * never-throw contract of `setMissionStatus`.
+ * knows only `id` and `status` — it lacks the `task` and `wave` fields a full entry
+ * carries, so a synthesised entry would be shape-invalid yet look authoritative to
+ * frontmatter consumers such as `vault-status/narrative-mirror.mjs`. Throwing is
+ * likewise excluded by the never-throw contract of `setMissionStatus`.
  *
  * `status` is mirrored verbatim without an enum check on purpose: gating it would
  * reintroduce the exact divergence (body says X, frontmatter says Y) this sync exists
- * to remove. An out-of-enum value now lands on BOTH surfaces, where the repo's own
- * validator can see it.
+ * to remove. An out-of-enum value therefore lands visibly on BOTH surfaces rather than
+ * being silently rejected on one.
+ *
+ * There is deliberately NO transition validator behind this. A `mission-status-schema.mjs`
+ * once existed (#340) offering `isValidMissionStatusTransition`; it was never wired and
+ * was removed, because the only guard form it enabled — read the current status, reject a
+ * disallowed transition — would reject legitimate live writes. Measured against a copy of
+ * this repo's own STATE.md carrying 24 items: 12 had no body entry yet (current status
+ * reads `null`, so every transition out of them is "invalid"), and the routine
+ * `in-dev` → `completed` write is not in the strict forward chain either — 18 of 24
+ * writes would have been refused. The enum is a vocabulary, not a state machine.
  *
  * @param {object} frontmatter
  * @param {string} taskId

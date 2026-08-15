@@ -1,6 +1,6 @@
 ---
 name: analyst
-description: Use this agent for read-only PRD-quality review. Checks acceptance-criteria specificity, scope drift detection, and completeness of /plan output. <example>Context: /plan feature produced a PRD. user: "Review the PRD before /go." assistant: "I'll dispatch analyst to check acceptance-criteria specificity and scope drift before wave execution." <commentary>Analyst catches vague acceptance criteria before they cause carryover at session end.</commentary></example>
+description: 'Use this agent for read-only PRD-quality review. Checks acceptance-criteria specificity, scope drift detection, and completeness of /plan output. <example>Context: /plan feature produced a PRD. user: "Review the PRD before /go." assistant: "I''ll dispatch analyst to check acceptance-criteria specificity and scope drift before wave execution." <commentary>Analyst catches vague acceptance criteria before they cause carryover at session end.</commentary></example>'
 model: inherit
 color: yellow
 tools: Read, Grep, Glob, Bash

@@ -143,7 +143,7 @@ Since the 2026-05-20 cutover, CI runs on the Hetzner Linux Docker autoscaler —
 
 What this is **NOT**: a test-quality bug. Do not retry, mark `.skip`, or widen the global timeout to "stabilise" — that masks real perf regressions where they should be loudest. (The `.skipIf(isRoot)` guard above is the opposite case — a documented, root-specific carve-out, not a stabilise-the-flake hack.)
 
-Cross-reference: learning id `mac-gitlab-runner-cpu-starvation-under-concurrent-claude-load` in `.orchestrator/metrics/learnings.jsonl` (confidence 0.9) — **SUPERSEDED by the Hetzner Linux autoscaler reality** (Mac-historical; the shared-host `pgrep claude` signal no longer applies on the ephemeral root container). Flagged for `/evolve` rotation; kept as a historical pointer until rotated. (Footnote: the original Mac cautionary tale was pipeline #3940, 2026-05-14 — 7 `testTimeout` fails under 14 co-resident Claude processes on the old shared GitLab Mac runner.)
+Historical note: the original cautionary tale was pipeline #3940, 2026-05-14 — 7 `testTimeout` fails under 14 co-resident Claude processes on the old **shared** GitLab Mac runner. That diagnosis is **superseded** by the Hetzner Linux autoscaler: its `pgrep claude` co-resident-process signal has no meaning on an ephemeral single-tenant container, so do not reach for it. The guidance that survives the migration is the mitigation ladder above, not the process count. (This paragraph carried a `learning id` cross-reference to `learnings.jsonl` until 2026-08-14; the record was no longer in the store — `grep -c` returned 0 — so the pointer was removed rather than left to read as live provenance. `check-learning-provenance.mjs` audits structured `## Provenance` blocks only and never saw it.)
 
 ## E2E Best Practices
 - Use data-testid attributes for stable selectors.
@@ -491,7 +491,7 @@ expect(exportCount).toBeLessThanOrEqual(500);
 - S55 commit `0a95cc6` (1st occurrence — generate-tool-registry skill count drift)
 - S68 #185 commit `6d9d6d2` (2nd — same test, refactored to floor/ceiling)
 - S73 (3rd — zod-schemas exports.test.ts + index.test.ts)
-- learning `count-drift-recurrence` in `.orchestrator/metrics/learnings.jsonl` (confidence 0.9)
+- A `count-drift-recurrence` learning in `.orchestrator/metrics/learnings.jsonl` was cited here until 2026-08-14, when `grep -c` on the store returned 0 — the record was gone. The pointer was removed rather than left reading as live provenance; the three occurrences above carry the evidence on their own. (`check-learning-provenance.mjs` audits structured `## Provenance` blocks only, so it never saw this one.)
 
 ### Lint-Enforceable Test Bans (recommendation)
 

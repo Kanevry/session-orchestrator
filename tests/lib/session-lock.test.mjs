@@ -954,6 +954,28 @@ describe('release', () => {
       expect(result.reason).toBe('proof-mismatch');
       expect(readLock({ repoRoot }).session_id).toBe('sess-proof-collision');
     });
+
+    // #989: the gate is `proof != null`, NOT `proof !== undefined`.
+    // Bug this catches: with the strict `!== undefined` gate, an explicit
+    // `proof: null` entered the proof branch, failed isLockOwnedByProof()
+    // unconditionally, and refused EVERY release with 'proof-mismatch' —
+    // leaking the lock. `null` is exactly what loadOwnerProof() and
+    // buildLockOwnerProof() return for "cannot prove ownership", so both
+    // call sites had to spread-guard the key away. Both explicit-absent
+    // spellings must now behave like omitting the parameter.
+    it.each([
+      ['null', null],
+      ['undefined', undefined],
+    ])('treats an explicit proof: %s as absent and releases on the session_id-only path', (_label, absentProof) => {
+      acquire({ sessionId: 'sess-proof-absent', mode: 'feature', repoRoot });
+
+      const result = release({ sessionId: 'sess-proof-absent', repoRoot, proof: absentProof });
+
+      expect(result.ok).toBe(true);
+      expect(result.deleted).toBe(true);
+      expect(result.reason).toBeUndefined();
+      expect(readLock({ repoRoot })).toBeNull();
+    });
   });
 });
 
@@ -980,6 +1002,7 @@ describe('checkStale', () => {
     const staleLock = {
       session_id: 'sess-stale',
       started_at: fiveHoursAgo,
+      last_heartbeat: fiveHoursAgo,
       mode: 'feature',
       pid: process.pid,
       host: hostname(),
@@ -1000,6 +1023,7 @@ describe('checkStale', () => {
     const crossHostLock = {
       session_id: 'sess-remote',
       started_at: new Date().toISOString(),
+      last_heartbeat: new Date().toISOString(),
       mode: 'deep',
       pid: process.pid,
       host: 'other-host-that-does-not-exist',
@@ -1021,6 +1045,7 @@ describe('checkStale', () => {
     const lockWithDeadPid = {
       session_id: 'sess-dead-pid',
       started_at: new Date().toISOString(),
+      last_heartbeat: new Date().toISOString(),
       mode: 'feature',
       pid: DEAD_PID,
       host: hostname(),
@@ -1373,6 +1398,12 @@ describe('Schema v2 — last_heartbeat + semantic_session_id (Epic #583, W2-I3)'
   });
 
   // L4: Old-schema lock (no last_heartbeat) is read with last_heartbeat == started_at.
+  //
+  // #595 (2026-08-15): this tolerance was evaluated for removal and RETAINED —
+  // the same normalisation is mirrored in
+  // scripts/lib/harness-audit/categories/category4.mjs `lockIsLive()` and
+  // pinned by tests/lib/lock-ttl-parity.test.mjs, so the SSOT cannot drop it
+  // alone. See skills/_shared/state-ownership.md § Schema v1 Sunset.
   it('L4: old-schema v1 lock (no last_heartbeat) is normalised with last_heartbeat = started_at', () => {
     // Write a v1 lock manually (no last_heartbeat field).
     const v1Lock = {

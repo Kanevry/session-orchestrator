@@ -16,6 +16,7 @@
  *   6. Discriminator via hook_event_name="SubagentStop" — writes subagent_stop record
  *   7. webhook fetch not called when CLANK_EVENT_SECRET is unset
  *   8. webhook fetch called when CLANK_EVENT_SECRET is set
+ *   9. missing node_modules degrades gracefully (GH Kanevry/session-orchestrator#63)
  */
 
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
@@ -794,5 +795,167 @@ describe('session lock heartbeat-refresh on Stop (Epic #583 W5-F1c)', { timeout:
     const afterRaw = await fs.readFile(path.join(dir, '.orchestrator', 'session.lock'), 'utf8');
     const afterHb = JSON.parse(afterRaw).last_heartbeat;
     expect(new Date(afterHb).getTime()).toBeGreaterThan(new Date(beforeHb).getTime());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 17. Missing dependencies degrade gracefully (GH Kanevry/session-orchestrator#63)
+// ---------------------------------------------------------------------------
+//
+// Reported by an external user: with node_modules absent (interrupted install,
+// EPERM sandbox, half-synced plugin cache) a STATIC `import { $ } from 'zx'`
+// killed the hook at module-load time — EXIT 1 plus a 10-frame
+// ERR_MODULE_NOT_FOUND stack on EVERY turn end, with no hint that the fix is
+// `npm install`. The hook's own contract is "exit 0 always"; a missing package
+// must not be louder than the missing-`node` case that hooks/run-node.sh
+// already degrades (one rate-limited stderr line, exit 0).
+//
+// The sandbox is a COPY of hooks/ + scripts/ + package.json in a tmp dir with
+// no node_modules anywhere up the tree — Node's resolver walks upward from the
+// module, so this is the only faithful way to reproduce the user's state.
+
+const DEPS_TEST_USER = 'deps-test-user';
+const DEPS_MARKER_NAME = `session-orchestrator-deps-missing-${DEPS_TEST_USER}`;
+
+/** Copy hooks/ + scripts/ + package.json into a tmp dir that has NO node_modules. */
+async function mkDepLessSandbox() {
+  const repoRoot = path.resolve(import.meta.dirname, '../..');
+  const root = await track(await fs.mkdtemp(path.join(os.tmpdir(), 'on-stop-nodeps-')));
+  for (const entry of ['hooks', 'scripts']) {
+    await fs.cp(path.join(repoRoot, entry), path.join(root, entry), { recursive: true });
+  }
+  await fs.cp(path.join(repoRoot, 'package.json'), path.join(root, 'package.json'));
+  const tmpDir = path.join(root, 'tmp');
+  await fs.mkdir(tmpDir, { recursive: true });
+  return { root, hook: path.join(root, 'hooks', 'on-stop.mjs'), tmpDir };
+}
+
+/** Spawn the SANDBOX copy of the hook (not the repo copy) and collect its output. */
+async function runSandboxHook({ sandbox, projectDir, stdin = '{}' }) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [sandbox.hook], {
+      cwd: sandbox.root,
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: projectDir,
+        // Keep the marker inside the sandbox — never touch the operator's real
+        // ${TMPDIR}/session-orchestrator-* markers.
+        TMPDIR: sandbox.tmpDir,
+        USER: DEPS_TEST_USER,
+        CLANK_EVENT_SECRET: undefined,
+        CLANK_EVENT_URL: undefined,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+    child.stdin.end(stdin);
+  });
+}
+
+describe('missing node_modules — graceful degradation (GH#63)', { timeout: 30000 }, () => {
+  it('exits 0 with ONE actionable line and no ERR_MODULE_NOT_FOUND stack', async () => {
+    const sandbox = await mkDepLessSandbox();
+    const projectDir = await track(await mkTmpDir());
+
+    const res = await runSandboxHook({
+      sandbox,
+      projectDir,
+      stdin: JSON.stringify({ session_id: 'nodeps-core' }),
+    });
+
+    expect(res.code).toBe(0);
+    // The bug's fingerprint — the raw loader error and its Node-internals frames.
+    expect(res.stderr).not.toContain('ERR_MODULE_NOT_FOUND');
+    expect(res.stderr).not.toContain('node:internal');
+    // Exactly one line, and it names the fix + where to run it.
+    expect(res.stderr.trim().split('\n')).toHaveLength(1);
+    expect(res.stderr).toContain("run 'npm install'");
+    expect(res.stderr).toContain(sandbox.root);
+    // Degraded, not dead: the hook still does its job (event + terminalSequence).
+    expect(await readLastEvent(projectDir)).toMatchObject({
+      event: 'orchestrator.session.stopped',
+      session_id: 'nodeps-core',
+    });
+    expect(typeof JSON.parse(res.stdout).terminalSequence).toBe('string');
+  });
+
+  it('warns once per 6h window and speaks again once the marker ages out', async () => {
+    const sandbox = await mkDepLessSandbox();
+    const projectDir = await track(await mkTmpDir());
+    const marker = path.join(sandbox.tmpDir, DEPS_MARKER_NAME);
+
+    const first = await runSandboxHook({ sandbox, projectDir });
+    expect(first.stderr).toContain("run 'npm install'");
+    await fs.access(marker); // throws (fails the test) if the marker was not written
+
+    const second = await runSandboxHook({ sandbox, projectDir });
+    expect(second.code).toBe(0);
+    expect(second.stderr).toBe('');
+
+    // Age the marker past the 6h TTL — the operator gets a fresh reminder.
+    const sevenHoursAgo = new Date(Date.now() - 7 * 60 * 60 * 1000);
+    await fs.utimes(marker, sevenHoursAgo, sevenHoursAgo);
+
+    const third = await runSandboxHook({ sandbox, projectDir });
+    expect(third.code).toBe(0);
+    expect(third.stderr).toContain("run 'npm install'");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 18. Repo-wide structural guard: no hook may STATICALLY import a third-party
+//     package (GH#63 recurrence class).
+// ---------------------------------------------------------------------------
+//
+// The runtime test above proves on-stop.mjs degrades. This guard is the cheap
+// repo-wide invariant: any hook that grows a static bare-specifier import
+// reintroduces the same load-time crash, in a file whose own tests would never
+// notice (the repo always has node_modules).
+//
+// Named ceiling (revisit trigger): this checks DIRECT imports of hooks/**/*.mjs
+// only. A third-party package pulled in transitively via scripts/lib/** is not
+// covered — revisit if a hook helper chain grows a bare dependency.
+
+/** Bare (non-relative, non-`node:`) specifiers statically imported by `source`. */
+function staticThirdPartyImports(source) {
+  const specs = [];
+  const patterns = [
+    /^[ \t]*(?:import|export)[\s{][^'"]*\bfrom\s*['"]([^'"]+)['"]/gm, // import … from 'x'
+    /^[ \t]*import\s*['"]([^'"]+)['"]/gm,                             // bare side-effect import
+  ];
+  for (const re of patterns) {
+    for (const m of source.matchAll(re)) {
+      const spec = m[1];
+      if (!spec.startsWith('.') && !spec.startsWith('node:')) specs.push(spec);
+    }
+  }
+  return specs;
+}
+
+describe('hooks static-import guard (GH#63 recurrence class)', () => {
+  it('no hooks/**/*.mjs statically imports a third-party package', async () => {
+    const hooksDir = path.resolve(import.meta.dirname, '../../hooks');
+    const entries = await fs.readdir(hooksDir, { recursive: true });
+    const offenders = {};
+    for (const rel of entries.filter((e) => e.endsWith('.mjs'))) {
+      const source = await fs.readFile(path.join(hooksDir, rel), 'utf8');
+      const specs = staticThirdPartyImports(source);
+      if (specs.length > 0) offenders[rel] = specs;
+    }
+    expect(offenders).toEqual({});
+  });
+
+  it('the detector itself flags a static zx import (fake-regression check)', () => {
+    expect(staticThirdPartyImports("import { $ } from 'zx';\n")).toEqual(['zx']);
+    expect(staticThirdPartyImports("import 'zx';\n")).toEqual(['zx']);
+    expect(staticThirdPartyImports(
+      "import path from 'node:path';\nimport { x } from './lib.mjs';\n",
+    )).toEqual([]);
+    // The dynamic form the fix uses must NOT be flagged.
+    expect(staticThirdPartyImports("const { $ } = await import('zx');\n")).toEqual([]);
   });
 });

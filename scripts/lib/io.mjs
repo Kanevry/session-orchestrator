@@ -17,7 +17,16 @@
  */
 
 import { writeFile, rename, mkdir } from 'node:fs/promises';
-import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, writeSync } from 'node:fs';
+import {
+  mkdirSync,
+  writeFileSync,
+  renameSync,
+  readFileSync,
+  existsSync,
+  writeSync,
+  copyFileSync,
+  unlinkSync,
+} from 'node:fs';
 import path, { dirname } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 
@@ -556,6 +565,26 @@ export async function writeJsonAtomic(filePath, value, opts = {}) {
  * used from any layer without violating the layering rule in
  * `scripts/lib/hardening.mjs`.
  *
+ * Implementation: this is the JSON-serializing façade over
+ * {@link atomicWriteWithBackup} (`backup: false`) — the two functions carried
+ * the identical `mkdir → tmp → write → rename → catch` body 60 lines apart,
+ * which is the very duplication `atomicWriteWithBackup` was introduced to end.
+ * Everything below the `JSON.stringify` is the delegate's; the wrapper exists
+ * for the serialization step and for NARROWING the envelope (see @returns).
+ *
+ * Two things are deliberately kept here rather than pushed into the delegate:
+ *
+ *  - **The stringify stays inside a try.** `JSON.stringify` throws on a cycle
+ *    (and on a BigInt). Hoisting it above the delegation call would turn that
+ *    into an escaping TypeError, and 4 of the 9 caller files (`loop-guard`,
+ *    `lock-bootstrap`, `file-lock`, `issue-budget`) invoke this without a
+ *    try/catch of their own. A serialization failure reports as `fs-error`
+ *    because that is what this helper has always returned for it.
+ *  - **The success envelope is narrowed back to `{ ok: true }`.** The delegate
+ *    also reports `path`/`bytes`/`backupPath`; `session-lock.mjs#writeOwnerProof`
+ *    propagates THIS object verbatim on failure (`if (!w.ok) return w`), so the
+ *    key set is part of a contract that reaches further than this file.
+ *
  * @param {string} filePath  Target path; parent dirs created with mkdir -p semantics.
  * @param {*} data           JSON-serializable value.
  * @param {object} [opts]
@@ -565,15 +594,172 @@ export async function writeJsonAtomic(filePath, value, opts = {}) {
  */
 export function writeJsonAtomicSync(filePath, data, opts = {}) {
   const { indent = 2, tmpPrefix = '.tmp' } = opts;
+
+  let body;
+  try {
+    body = JSON.stringify(data, null, indent) + '\n';
+  } catch (err) {
+    return { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
+  }
+
+  const res = atomicWriteWithBackup(filePath, body, { tmpPrefix });
+  return res.ok ? { ok: true } : res;
+}
+
+/**
+ * Content-agnostic sibling of {@link writeJsonAtomicSync}: atomically replace a
+ * file with an arbitrary string/Buffer body, optionally snapshotting the
+ * previous contents to a timestamped `.bak-<ISO>` sidecar first (issue #734).
+ *
+ * The repo carries the copy→tmp→rename idiom in ~25 hand-rolled places
+ * (`learnings/io.mjs#rewriteLearnings`, `session-record-repair.mjs`,
+ * `owner-interview.mjs`, `backfill-learnings.mjs`, …). Each spelling differs in
+ * small ways — some take the backup, some do not; some `mkdir -p`, some assume
+ * the directory exists — which is exactly how a crash-safety guarantee rots.
+ * This helper is the shared spelling; **validation policy stays with the
+ * callers** (this function never inspects `body`).
+ *
+ * Crash-safety: write `<dir>/<tmpPrefix>.<rand>`, then `renameSync` over the
+ * target. Same-filesystem rename is atomic on POSIX, so an observer sees either
+ * the previous contents or the new ones — never a half-written file. The tmp
+ * file is created as a SIBLING of the target on purpose: a tmp in `os.tmpdir()`
+ * may sit on a different filesystem, where `rename` degrades to a non-atomic
+ * copy (EXDEV).
+ *
+ * Backup (`backup: true`) copies the CURRENT file to `<filePath>.bak-<ISO>`
+ * before the rename, with `:`/`.` swapped for `-` so a lexical sort of the
+ * siblings is chronological (same convention as `learnings/io.mjs`). A
+ * first-time write has nothing to lose, so no backup is taken when the target
+ * does not exist. **Rotation is deliberately NOT done here** — how many
+ * snapshots a store is worth is a per-caller policy (`learnings/io.mjs` keeps
+ * 3; a re-derivable file wants 0), and a keep-N default baked into the
+ * primitive would silently unlink a caller's snapshots.
+ *
+ * Caller is responsible for path-confinement — this helper does NOT validate
+ * that `filePath` lives inside the project (mirrors {@link writeJsonAtomic} /
+ * {@link writeJsonAtomicSync}).
+ *
+ * On a FAILED write the tmp sibling is unlinked (best-effort) before the error
+ * envelope is returned. Without that, every failed write leaves a
+ * `<tmpPrefix>.<hex>` behind — the board writer's failure mode is a retry loop,
+ * so the litter accumulates in the operator's vault directory. The cleanup is
+ * attempted only when the write actually created the tmp file, and its own
+ * failure is swallowed: a leaked tmp is worse than a silent unlink miss, and
+ * neither may mask the original error.
+ *
+ * ── BV-004 ceiling + revisit trigger ────────────────────────────────────────
+ * TWO PRODUCTION CALL-SITES: `vault-status/board-writer.mjs#writeBoard`
+ * (`backup: false`) and {@link writeJsonAtomicSync}, which carries 12 further
+ * call-sites across 9 files behind it. That second one is the load-bearing
+ * evidence — the previous revision of this note recorded ONE call-site and
+ * concluded the signature was unproven, while the function with an identical
+ * body sat 60 lines above in this same file, unmigrated. The cheapest possible
+ * migration going unmade is not a neutral fact about a helper: it is the
+ * measurement that the helper is not paying for itself.
+ *
+ * What the second call-site does NOT prove: `writeJsonAtomicSync` passes
+ * `backup: false` and no `fs`, so the backup half and the injection seam still
+ * rest on tests plus one board-writer flag. REVISIT TRIGGER — when a sweep
+ * migrates the remaining hand-rolled sites, re-check before widening:
+ * (a) whether an `async` twin is needed rather than bolting a promise mode onto
+ * this one (three known sites are `fs/promises`), and (b) whether rotation
+ * belongs here after all (it does only if ≥2 migrated callers want the SAME
+ * keep-N). If NO caller ever passes `backup: true` in production, that half is
+ * still the part to shrink back.
+ *
+ * @param {string} filePath  Target path; parent dirs created with mkdir -p semantics.
+ * @param {string|Buffer} body  Bytes to write, verbatim. Never inspected.
+ * @param {object} [opts]
+ * @param {BufferEncoding} [opts.encoding='utf8']  Encoding for a string `body`.
+ * @param {boolean} [opts.backup=false]  Snapshot the existing file to `.bak-<ISO>` first.
+ * @param {string} [opts.tmpPrefix='.tmp']  Tmp-file prefix (callers pick their domain prefix).
+ * @param {Date} [opts.now]  Clock seam for the backup stamp (tests).
+ * @param {{ mkdirSync?: Function, writeFileSync?: Function, renameSync?: Function,
+ *   copyFileSync?: Function, existsSync?: Function, unlinkSync?: Function }} [opts.fs]
+ *   Injectable fs (tests). Omitted methods fall back to `node:fs` — EXCEPT on
+ *   the backup path, which fails closed (see below).
+ * @returns {{ ok: true, path: string, bytes: number, backupPath: string|null }
+ *   | { ok: false, reason: 'fs-error', error: string }}
+ */
+export function atomicWriteWithBackup(filePath, body, opts = {}) {
+  const {
+    encoding = 'utf8',
+    backup = false,
+    tmpPrefix = '.tmp',
+    now = new Date(),
+    fs: injectedFs,
+  } = opts;
+
+  const fsMkdir = injectedFs?.mkdirSync ?? mkdirSync;
+  const fsWriteFile = injectedFs?.writeFileSync ?? writeFileSync;
+  const fsRename = injectedFs?.renameSync ?? renameSync;
+  const fsCopyFile = injectedFs?.copyFileSync ?? copyFileSync;
+  const fsExists = injectedFs?.existsSync ?? existsSync;
+  const fsUnlink = injectedFs?.unlinkSync ?? unlinkSync;
+
+  // ── Partial-adapter fail-closed, backup path only ──────────────────────────
+  //
+  // Per-method fallback to the real `node:fs` is the right default for the
+  // three ALWAYS-used methods: `board-writer.mjs#writeBoard` passes an fs object
+  // on EVERY call, including production, where `renameSync`/`copyFileSync` are
+  // present-but-`undefined` because nothing was injected. "An injected object
+  // must be total" would therefore reject the only real caller — the shape is
+  // not evidence of a fake.
+  //
+  // The backup path is different in kind. It runs ONLY under `backup: true`, and
+  // there a missing method routes a real `copyFileSync`/`existsSync` at the real
+  // filesystem while the write goes to the fake: a suite that believes itself
+  // hermetic drops `.bak-<ISO>` files into the repo, and nothing says so. Both
+  // methods are guarded, not just `copyFileSync` — a missing `existsSync` probes
+  // the real target and silently decides the backup branch from it, which is the
+  // same escape one step earlier.
+  if (backup && injectedFs) {
+    for (const method of ['existsSync', 'copyFileSync']) {
+      if (typeof injectedFs[method] !== 'function') {
+        return {
+          ok: false,
+          reason: 'fs-error',
+          error: `partial fs adapter: ${method} required for backup`,
+        };
+      }
+    }
+  }
+
+  let tmpFile = null;
+  let tmpCreated = false;
+
   try {
     const dir = dirname(filePath);
-    mkdirSync(dir, { recursive: true });
-    const tmpSuffix = randomBytes(6).toString('hex');
-    const tmpFile = path.join(dir, `${tmpPrefix}.${tmpSuffix}`);
-    writeFileSync(tmpFile, JSON.stringify(data, null, indent) + '\n', { encoding: 'utf8' });
-    renameSync(tmpFile, filePath);
-    return { ok: true };
+    fsMkdir(dir, { recursive: true });
+
+    let backupPath = null;
+    if (backup && fsExists(filePath)) {
+      const stamp = (now instanceof Date ? now : new Date()).toISOString().replace(/[:.]/g, '-');
+      backupPath = `${filePath}.bak-${stamp}`;
+      fsCopyFile(filePath, backupPath);
+    }
+
+    tmpFile = path.join(dir, `${tmpPrefix}.${randomBytes(6).toString('hex')}`);
+    fsWriteFile(tmpFile, body, encoding);
+    tmpCreated = true;
+    fsRename(tmpFile, filePath);
+
+    return {
+      ok: true,
+      path: filePath,
+      bytes: Buffer.isBuffer(body) ? body.length : Buffer.byteLength(String(body), encoding),
+      backupPath,
+    };
   } catch (err) {
+    // Only when the write got far enough to create it. The name carries 12 hex
+    // chars of entropy, so this cannot collide with a caller's real file.
+    if (tmpCreated) {
+      try {
+        fsUnlink(tmpFile);
+      } catch {
+        // Best-effort: never let cleanup replace the error the caller needs.
+      }
+    }
     return { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
   }
 }

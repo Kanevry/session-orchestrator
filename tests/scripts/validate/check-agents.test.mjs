@@ -59,12 +59,32 @@ function verdict(r, { expectStdout = [], forbidStdout = [] } = {}) {
   };
 }
 
+/**
+ * YAML-quote a scalar unless the caller deliberately passed a block scalar.
+ *
+ * The callers below pass JS strings — their quotes are JavaScript's, not YAML's.
+ * Interpolating such a value raw produces `description: Use this … <example>Context: …`,
+ * an unquoted scalar with a `: ` inside, which is not a valid mapping entry. That
+ * was invisible until Check 6 gained a js-yaml parse rule on 2026-08-15; three
+ * Check-9 fixtures then failed for a defect in the harness, not in the code under
+ * test. Quoting here fixes all of them at the one place that owns YAML emission.
+ *
+ * A leading `>` or `|` is passed through untouched: the block-scalar fixture exists
+ * precisely to prove Check 11 still rejects that form, and quoting it would make
+ * that test assert nothing.
+ */
+function yamlScalar(value) {
+  const s = String(value);
+  if (/^\s*[>|]/.test(s)) return s;
+  return `'${s.replace(/'/g, "''")}'`;
+}
+
 /** Frontmatter body for a well-formed agent, parameterized by the fields under test. */
 function agentMd({ name, description = 'Some description inline here', model = 'inherit', color = 'blue', tools }) {
   return [
     '---',
     `name: ${name}`,
-    `description: ${description}`,
+    `description: ${yamlScalar(description)}`,
     `model: ${model}`,
     `color: ${color}`,
     ...(tools === undefined ? [] : [`tools: ${tools}`]),
@@ -73,9 +93,18 @@ function agentMd({ name, description = 'Some description inline here', model = '
   ].join('\n');
 }
 
+// The description is single-quoted, and that is load-bearing rather than
+// cosmetic: it carries `<example>Context: `, and an unquoted YAML scalar with a
+// `: ` inside is not a valid mapping entry. This fixture was unquoted until
+// 2026-08-15 and passed, because check-agents.mjs read the frontmatter with
+// line regexes and never asked whether it was YAML at all — the same blind spot
+// that let 14 of 16 real agents/*.md ship unparseable. Once Check 6 gained a
+// js-yaml parse rule, this fixture failed with the production defect's own
+// message. Quoting it is the fix; loosening the rule would have re-opened the
+// hole. Apostrophes inside a single-quoted scalar double (`''`).
 const VALID_AGENT = `---
 name: my-agent
-description: Use this agent when you need to do something. <example>Context: user: "do it" assistant: "done"</example>
+description: 'Use this agent when you need to do something. <example>Context: user: "do it" assistant: "done"</example>'
 model: inherit
 color: blue
 tools: Read, Edit, Write

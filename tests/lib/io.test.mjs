@@ -20,10 +20,24 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import {
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+  readFileSync,
+  readdirSync,
+  existsSync,
+  mkdirSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { emitSystemMessage, readJsonlLines, readJsonlFile } from '@lib/io.mjs';
+import {
+  emitSystemMessage,
+  readJsonlLines,
+  readJsonlFile,
+  atomicWriteWithBackup,
+  writeJsonAtomicSync,
+} from '@lib/io.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -522,5 +536,250 @@ describe('readJsonlLines / readJsonlFile', () => {
     const file = join(tmpDir, 'mixed.jsonl');
     writeFileSync(file, '{"n":1}\nGARBAGE\n{"n":2}\n', 'utf8');
     expect(readJsonlFile(file, { skipInvalid: true })).toEqual([{ n: 1 }, { n: 2 }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// atomicWriteWithBackup (issue #734c)
+// ---------------------------------------------------------------------------
+
+describe('atomicWriteWithBackup', () => {
+  let tmpDir;
+
+  afterEach(() => {
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = undefined;
+  });
+
+  it('creates the target (and its parent dirs) and leaves no tmp sibling behind', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-atomic-'));
+    const file = join(tmpDir, 'nested', 'deeper', 'board.md');
+
+    const result = atomicWriteWithBackup(file, 'hello\n');
+
+    expect(result).toEqual({ ok: true, path: file, bytes: 6, backupPath: null });
+    expect(readFileSync(file, 'utf8')).toBe('hello\n');
+    // The whole point of tmp+rename is that the tmp file is GONE afterwards —
+    // a leaked `.tmp.<hex>` sibling would accumulate on every write.
+    expect(readdirSync(join(tmpDir, 'nested', 'deeper'))).toEqual(['board.md']);
+  });
+
+  it('takes no backup on a first write, and a .bak-<stamp> snapshot on the next one', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-atomic-'));
+    const file = join(tmpDir, 'store.jsonl');
+
+    const first = atomicWriteWithBackup(file, 'v1\n', { backup: true });
+    // Nothing existed to lose — a backup here would just be an empty artefact.
+    expect(first.backupPath).toBeNull();
+
+    const second = atomicWriteWithBackup(file, 'v2\n', {
+      backup: true,
+      now: new Date('2026-08-14T10:20:30.400Z'),
+    });
+
+    expect(second.backupPath).toBe(`${file}.bak-2026-08-14T10-20-30-400Z`);
+    // The snapshot holds the PREVIOUS contents, the target holds the new ones.
+    expect(readFileSync(second.backupPath, 'utf8')).toBe('v1\n');
+    expect(readFileSync(file, 'utf8')).toBe('v2\n');
+  });
+
+  it('backup:false (the default) never writes a sidecar over an existing file', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-atomic-'));
+    const file = join(tmpDir, 'rederivable.md');
+    atomicWriteWithBackup(file, 'v1\n');
+
+    const result = atomicWriteWithBackup(file, 'v2\n');
+
+    expect(result.backupPath).toBeNull();
+    expect(readFileSync(file, 'utf8')).toBe('v2\n');
+    expect(readdirSync(tmpDir)).toEqual(['rederivable.md']);
+  });
+
+  it('returns a fs-error result instead of throwing, and leaves the existing file intact', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-atomic-'));
+    const file = join(tmpDir, 'survivor.md');
+    atomicWriteWithBackup(file, 'original\n');
+
+    // /dev/null/<sub> yields a fast, uniform ENOTDIR for every uid (root
+    // included) — see .claude/rules/testing.md § root-as-uid-0 hazards.
+    const result = atomicWriteWithBackup('/dev/null/nope/target.md', 'x');
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('fs-error');
+    expect(typeof result.error).toBe('string');
+    expect(existsSync('/dev/null/nope/target.md')).toBe(false);
+    // The unrelated existing file is untouched by the failed write.
+    expect(readFileSync(file, 'utf8')).toBe('original\n');
+  });
+
+  it('writes a Buffer body byte-for-byte and reports its byte length', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-atomic-'));
+    const file = join(tmpDir, 'bytes.bin');
+    const body = Buffer.from([0x00, 0xff, 0x41]);
+
+    const result = atomicWriteWithBackup(file, body);
+
+    expect(result.bytes).toBe(3);
+    expect(readFileSync(file)).toEqual(body);
+  });
+
+  // ── Partial-adapter fail-closed (MED-6) ──────────────────────────────────
+  //
+  // A 4-of-5 `fs` adapter used to fall back to the REAL `node:fs` per MISSING
+  // method. With `backup: true` that routed the snapshot copy into the real
+  // filesystem while the write went to the fake — a test that believed itself
+  // hermetic dropped `.bak-<ISO>` files into the repo.
+
+  /** A total 5-of-5 fake; each test deletes exactly the method under test. */
+  const totalFakeFs = (log) => ({
+    mkdirSync: () => {},
+    writeFileSync: (p, b) => log.push(['write', p, b]),
+    renameSync: () => {},
+    existsSync: () => true,
+    copyFileSync: (from, to) => log.push(['copy', from, to]),
+  });
+
+  it.each([['copyFileSync'], ['existsSync']])(
+    'fails closed when backup:true gets an fs adapter missing %s',
+    (missing) => {
+      tmpDir = mkdtempSync(join(tmpdir(), 'io-atomic-'));
+      const file = join(tmpDir, 'store.md');
+      writeFileSync(file, 'v1\n');
+
+      const log = [];
+      const partial = totalFakeFs(log);
+      delete partial[missing];
+
+      const result = atomicWriteWithBackup(file, 'v2\n', { backup: true, fs: partial });
+
+      expect(result).toEqual({
+        ok: false,
+        reason: 'fs-error',
+        error: `partial fs adapter: ${missing} required for backup`,
+      });
+      // The escape this guards: a real node:fs fallback dropping a sidecar next
+      // to the target. Exactly one entry means nothing leaked.
+      expect(readdirSync(tmpDir)).toEqual(['store.md']);
+      expect(log).toEqual([]);
+      expect(readFileSync(file, 'utf8')).toBe('v1\n');
+    },
+  );
+
+  it('does not fail closed for a partial adapter when backup is off', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-atomic-'));
+    const file = join(tmpDir, 'board.md');
+
+    // The shape `vault-status/board-writer.mjs#writeBoard` passes in PRODUCTION:
+    // real mkdir/write/exists, `renameSync`/`copyFileSync` present-but-undefined
+    // because nothing was injected. `backup: false` makes the backup methods
+    // unreachable, so the guard must not reject this.
+    const result = atomicWriteWithBackup(file, 'board\n', {
+      tmpPrefix: '.active-sessions',
+      fs: {
+        mkdirSync,
+        writeFileSync,
+        existsSync,
+        renameSync: undefined,
+        copyFileSync: undefined,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(readFileSync(file, 'utf8')).toBe('board\n');
+  });
+
+  it('removes the tmp sibling when the rename fails, instead of leaking one per failed write', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-atomic-'));
+    const file = join(tmpDir, 'board.md');
+
+    const result = atomicWriteWithBackup(file, 'v1\n', {
+      tmpPrefix: '.active-sessions',
+      fs: {
+        renameSync: () => {
+          throw new Error('EPERM');
+        },
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('fs-error');
+    expect(result.error).toBe('EPERM');
+    // The real mkdir + write ran, so a real tmp sibling WAS created. Without
+    // cleanup one accumulates on every failed write; the pre-existing
+    // `/dev/null/nope` error test cannot see this because it dies in mkdirSync,
+    // before any tmp file exists.
+    expect(readdirSync(tmpDir)).toEqual([]);
+    expect(existsSync(file)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// writeJsonAtomicSync — return-contract pins (MED-2 delegation)
+// ---------------------------------------------------------------------------
+//
+// 9 non-test files call this helper across 12 call-sites (measured at fd73548:
+// `rg -c 'writeJsonAtomicSync\(' scripts/ hooks/ --glob '!*test*'`). They read
+// `.ok` and `.error`; `session-lock.mjs#writeOwnerProof` propagates the failure
+// object VERBATIM (`if (!w.ok) return w`). These tests pin the envelope those
+// call-sites destructure — not the internals — so the helper stays free to
+// delegate its body to `atomicWriteWithBackup`.
+
+describe('writeJsonAtomicSync', () => {
+  let tmpDir;
+
+  afterEach(() => {
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = undefined;
+  });
+
+  it('returns exactly { ok: true } — no widened envelope reaches the call-sites', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-json-'));
+    const file = join(tmpDir, 'nested', 'session.lock');
+
+    const result = writeJsonAtomicSync(file, { a: 1 }, { tmpPrefix: '.session.lock.tmp' });
+
+    // toEqual pins the KEY SET, not just `.ok`: a delegation that returned the
+    // delegate's result verbatim would leak `path`/`bytes`/`backupPath` into the
+    // object `session-lock.mjs` hands back to ITS callers.
+    expect(result).toEqual({ ok: true });
+    expect(readFileSync(file, 'utf8')).toBe('{\n  "a": 1\n}\n');
+    expect(readdirSync(join(tmpDir, 'nested'))).toEqual(['session.lock']);
+  });
+
+  it('returns the fs-error envelope (never throws) when the value is not serializable', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-json-'));
+    const file = join(tmpDir, 'lock.json');
+    const circular = {};
+    circular.self = circular;
+
+    // JSON.stringify throws on a cycle. Today that throw is caught INSIDE the
+    // helper. Hoisting the stringify out of the try (the obvious way to write
+    // the delegation) turns it into an escaping TypeError — and 4 of the 9
+    // caller files (loop-guard, lock-bootstrap, file-lock, issue-budget) invoke
+    // this without a try/catch of their own.
+    const result = writeJsonAtomicSync(file, circular);
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('fs-error');
+    expect(typeof result.error).toBe('string');
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it('honours the indent override that file-lock.mjs forwards', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-json-'));
+    const file = join(tmpDir, 'lock.json');
+
+    expect(writeJsonAtomicSync(file, { a: 1 }, { indent: 0 })).toEqual({ ok: true });
+    expect(readFileSync(file, 'utf8')).toBe('{"a":1}\n');
+  });
+
+  it('propagates the fs-error envelope shape session-lock.mjs returns verbatim', () => {
+    // ENOTDIR for every uid, root included (.claude/rules/testing.md § root-as-uid-0).
+    const result = writeJsonAtomicSync('/dev/null/nope/lock.json', { a: 1 });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('fs-error');
+    expect(typeof result.error).toBe('string');
+    expect(Object.keys(result).sort()).toEqual(['error', 'ok', 'reason']);
   });
 });

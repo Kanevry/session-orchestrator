@@ -52,6 +52,35 @@
  *     #1015 hardened for `.claude/rules/`. The primitives are imported, never
  *     re-implemented: a second copy is how this channel shipped raw beside the
  *     hardened one in the first place.
+ *   - `extractProvenance()` from `../validate/check-learning-provenance.mjs` and
+ *     `learningKeyOf()` from `./kebab.mjs` — the already-delivered filter below.
+ *     Both readers already exist; a second provenance parser here would be the
+ *     "same fact in two copies" defect this repo keeps paying for.
+ *
+ * ## Already-delivered filter (#1019)
+ *
+ * `/reconcile` converts a learning into a `.claude/rules/*.md` file, and Claude
+ * Code delivers every such file to every dispatched agent NATIVELY, in full.
+ * Measured first-person 2026-08-15 @fd73548+wave-2: a wave subagent's context
+ * carried all 29 of `.claude/rules/*.md` — `alwaysApply: false` and `globs:`
+ * notwithstanding, because `rule-loader.mjs` (the only code that understands
+ * that frontmatter) does not run on the delivery path
+ * (`docs/instruction-delivery.md` §1/§1.1). So a rule-derived learning that also
+ * enters this index arrives TWICE, and the second copy costs a slot in a
+ * 2000-char budget — displacing a learning the agent would otherwise never see.
+ *
+ * The filter therefore runs BEFORE the split caps, not after: dropping a
+ * duplicate after the Top-N cut would remove the line without freeing its slot,
+ * which is the whole harm. Two axes, mirroring the provenance checker's own
+ * `dangling` / `superseded` split: the rule's `learning-id` (exact record) and
+ * its `learning-key` (logical identity, stable across a re-minted UUID — the
+ * state any id backfill lands in). 13 of 29 rules carry provenance and all 13
+ * resolve by id today, so the key axis is currently inert by measurement, not
+ * by design.
+ *
+ * SILENT NO-OP is a hard requirement: no rules directory, no `.md` files, or no
+ * provenance block anywhere ⇒ empty sets ⇒ byte-identical output. A repo without
+ * `/reconcile` must never see FEWER learnings because this filter exists.
  *
  * NOT used: `filterByScope()` from `./filters.mjs`. Despite the name it filters
  * the PRIVACY enum `['local','private','public']` (schema.mjs), not file scope.
@@ -96,12 +125,17 @@
  *   5. Expired and sub-floor entries are never selected.
  */
 
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { affinity } from './affinity.mjs';
 import {
   INSIGHT_MAX_BYTES,
   TITLE_MAX_BYTES,
   sanitizeProse,
 } from '../reconcile/sanitize.mjs';
+import { learningKeyOf } from './kebab.mjs';
+import { extractProvenance } from '../validate/check-learning-provenance.mjs';
 import { DECAY_DEFAULTS, effectiveScore, surfaceTopN } from './surface.mjs';
 
 // ---------------------------------------------------------------------------
@@ -178,9 +212,15 @@ export const DEFAULT_CONFIDENCE_FLOOR = 0.3;
  * @typedef {{entries: object[], selected: SelectedLearning[], lines: string[],
  *            text: string, chars: number, scopeMatched: number,
  *            globalCount: number, candidates: number, truncated: boolean,
- *            rejected: number}} Selection
+ *            rejected: number, deliveredFiltered: number}} Selection
  *   `rejected` counts records dropped by the untrusted-text guard — surfaced so
  *   a drop is observable in the injection event rather than silent.
+ *   `deliveredFiltered` counts records dropped because a `.claude/rules/*.md`
+ *   file already delivers them natively (#1019) — same reason, and it is the
+ *   only way to tell "the filter bit" from "the corpus has no such learning".
+ *
+ * @typedef {{ids: Set<string>, keys: Set<string>}} DeliveredProvenance
+ *   Learning ids and logical keys already delivered as `.claude/rules/*.md`.
  */
 
 // ---------------------------------------------------------------------------
@@ -212,6 +252,43 @@ function _isActive(entry, nowMs, confidenceFloor) {
     if (Number.isFinite(expiresMs) && expiresMs <= nowMs) return false;
   }
   return true;
+}
+
+/**
+ * Normalize a caller-supplied delivered-provenance option into two Sets, or
+ * `null` when there is nothing to filter against.
+ *
+ * `null` (not empty Sets) is the no-filter signal so the hot loop can skip the
+ * per-entry `learningKeyOf()` call entirely — and so the SILENT NO-OP guarantee
+ * is one explicit branch rather than an emergent property of empty membership.
+ *
+ * @param {unknown} v `{ids, keys}` with Sets or arrays; anything else ⇒ `null`
+ * @returns {DeliveredProvenance|null}
+ */
+function _resolveDelivered(v) {
+  if (!_isRecord(v)) return null;
+  const toSet = (x) => (x instanceof Set ? x : Array.isArray(x) ? new Set(x) : new Set());
+  const ids = toSet(v.ids);
+  const keys = toSet(v.keys);
+  return ids.size === 0 && keys.size === 0 ? null : { ids, keys };
+}
+
+/**
+ * True when this learning already reaches the agent as a natively-delivered
+ * `.claude/rules/*.md` file.
+ *
+ * Id first (exact record), then the logical key — a rule whose `learning-id`
+ * was re-minted by a backfill still delivers the same content, which is the
+ * `superseded-learning-id` state `check-learning-provenance.mjs` names.
+ *
+ * @param {object} entry
+ * @param {DeliveredProvenance} delivered
+ * @returns {boolean}
+ */
+function _isDelivered(entry, delivered) {
+  if (typeof entry.id === 'string' && entry.id !== '' && delivered.ids.has(entry.id)) return true;
+  const key = learningKeyOf(entry); // total: a shape-foreign entry yields null
+  return key !== null && delivered.keys.has(key);
 }
 
 /** Epoch ms from a Date | number | undefined clock option. */
@@ -274,7 +351,58 @@ export function emptySelection() {
     candidates: 0,
     truncated: false,
     rejected: 0,
+    deliveredFiltered: 0,
   };
+}
+
+/**
+ * Read the provenance pointers of every `.claude/rules/*.md` — the set of
+ * learnings the agent already receives natively (#1019).
+ *
+ * Reuses `extractProvenance()` rather than re-deriving the block format. Total
+ * by construction: an absent, unreadable or provenance-free directory yields
+ * empty sets, which {@link selectLearnings} reads as "no filter" (SILENT NO-OP).
+ *
+ * Read discipline mirrors `check-learning-provenance.mjs`: `readFileSync`, never
+ * a `grep` spawn — one NUL byte makes a text file invisible to a grep-based
+ * audit, and a silently-skipped rule file reads exactly like a rule with no
+ * provenance.
+ *
+ * Ceiling: one synchronous read per rule file, linear in the corpus (29 files /
+ * ~170 KB today). Revisit — cache per process or read async — if
+ * `.claude/rules/` passes a few hundred files.
+ *
+ * @param {string} rulesDir absolute path to the `.claude/rules` directory
+ * @returns {DeliveredProvenance}
+ */
+export function readDeliveredProvenance(rulesDir) {
+  /** @type {Set<string>} */
+  const ids = new Set();
+  /** @type {Set<string>} */
+  const keys = new Set();
+  if (typeof rulesDir !== 'string' || rulesDir.trim() === '') return { ids, keys };
+
+  /** @type {string[]} */
+  let names;
+  try {
+    names = readdirSync(rulesDir);
+  } catch {
+    return { ids, keys }; // no rules directory ⇒ nothing is natively delivered
+  }
+
+  for (const name of names) {
+    if (!name.endsWith('.md')) continue;
+    let body;
+    try {
+      body = readFileSync(join(rulesDir, name), 'utf8');
+    } catch {
+      continue; // one unreadable rule must not cost the whole census
+    }
+    const { id, key } = extractProvenance(body);
+    if (id) ids.add(id);
+    if (key) keys.add(key);
+  }
+  return { ids, keys };
 }
 
 /**
@@ -413,6 +541,9 @@ export function scoreLearning(entry, scope, opts = {}) {
  * @param {Date|number} [opts.now] — injectable clock
  * @param {object} [opts.decay] — #670 decay tuning, forwarded to effectiveScore
  * @param {object} [opts.affinityOpts] — forwarded to affinity()
+ * @param {DeliveredProvenance} [opts.delivered] — learnings already delivered
+ *   natively as `.claude/rules/*.md` (#1019); omitted/empty ⇒ no filtering, and
+ *   the selection is byte-identical to the pre-filter one
  * @returns {Selection}
  */
 export function selectLearnings(entries, scope, opts = {}) {
@@ -433,6 +564,7 @@ export function selectLearnings(entries, scope, opts = {}) {
         ? o.confidenceFloor
         : DEFAULT_CONFIDENCE_FLOOR;
     const nowMs = _resolveNowMs(o.now);
+    const delivered = _resolveDelivered(o.delivered);
     const scoreOpts = { now: nowMs, decay: o.decay, affinityOpts: o.affinityOpts };
 
     /** @type {SelectedLearning[]} */
@@ -441,11 +573,22 @@ export function selectLearnings(entries, scope, opts = {}) {
     const global = [];
     let candidates = 0;
     let rejected = 0;
+    let deliveredFiltered = 0;
 
     for (const entry of entries) {
       if (!_isRecord(entry)) continue;
       if (!_isActive(entry, nowMs, confidenceFloor)) continue;
       candidates++;
+
+      // #1019 — BEFORE the split caps below, never after. This entry already
+      // reaches the agent in full as a `.claude/rules/*.md` file; dropping it
+      // here frees its slot for a learning the agent would otherwise never see,
+      // whereas dropping it after the Top-N cut would only shorten the index.
+      // `candidates` still counts it: the pool it was drawn from is unchanged.
+      if (delivered !== null && _isDelivered(entry, delivered)) {
+        deliveredFiltered++;
+        continue;
+      }
 
       const s = scoreLearning(entry, scope, scoreOpts);
       // Fail CLOSED per entry: a record whose text forges the delivery wrapper
@@ -510,6 +653,7 @@ export function selectLearnings(entries, scope, opts = {}) {
       candidates,
       truncated,
       rejected,
+      deliveredFiltered,
     };
   } catch {
     // Contract point 1 — a ranking primitive on the dispatch hot path must
@@ -525,7 +669,11 @@ export function selectLearnings(entries, scope, opts = {}) {
  * @param {string} filePath — absolute path to learnings.jsonl
  * @param {AgentScope} scope
  * @param {object} [opts] — everything {@link selectLearnings} accepts, plus
- *   `poolSize` (how many active entries to pull before ranking).
+ *   `poolSize` (how many active entries to pull before ranking) and `rulesDir`
+ *   (absolute `.claude/rules` path; read via {@link readDeliveredProvenance} into
+ *   the `delivered` filter). `rulesDir` is EXPLICIT rather than derived from
+ *   `filePath`: guessing a repo root from a metrics path is the hand-maintained
+ *   fact this repo keeps getting wrong. Omit it and nothing is filtered.
  * @returns {Promise<Selection>} `emptySelection()` on a missing/unreadable file
  */
 export async function selectLearningsFromFile(filePath, scope, opts = {}) {
@@ -538,12 +686,18 @@ export async function selectLearningsFromFile(filePath, scope, opts = {}) {
         ? o.confidenceFloor
         : DEFAULT_CONFIDENCE_FLOOR;
 
+    const delivered = _isRecord(o.delivered)
+      ? o.delivered
+      : typeof o.rulesDir === 'string' && o.rulesDir.trim() !== ''
+        ? readDeliveredProvenance(o.rulesDir)
+        : undefined;
+
     const entries = await surfaceTopN(filePath, poolSize, {
       now: nowMs,
       confidenceFloor,
       decay: o.decay,
     });
-    return selectLearnings(entries, scope, { ...o, now: nowMs, confidenceFloor });
+    return selectLearnings(entries, scope, { ...o, now: nowMs, confidenceFloor, delivered });
   } catch {
     return emptySelection();
   }

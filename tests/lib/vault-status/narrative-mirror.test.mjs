@@ -14,7 +14,7 @@
  * Fixtures are INLINE deterministic strings reproducing the real STATE.md shapes.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -435,7 +435,15 @@ describe('mirrorNarrative', () => {
    * matching today's config shape (regression baseline for bb26964).
    */
   function scaffold({ repoDirName, vaultEnabled = true, withStateMd = true, vaultName } = {}) {
-    tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'narrative-mirror-'));
+    // `realpathSync` on the tmp ROOT is load-bearing on macOS, where os.tmpdir()
+    // is `/var/folders/…` — a symlink to `/private/var/folders/…`. mirrorNarrative
+    // runs `validatePathInsideProject` WITHOUT `canonicalizeRoot`, whose realpath
+    // phase is skipped (ENOENT) while the target file is absent but fires once it
+    // EXISTS: on a symlinked root the resolved `/private/var/…` then reads as
+    // outside the lexical `/var/…` vault root and every SECOND call returns
+    // `skipped-invalid-path`. A real vault dir is a canonical path, so canonicalizing
+    // here makes the fixture match production rather than papering over anything.
+    tmpBase = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'narrative-mirror-'));
     const repoRoot = path.join(tmpBase, repoDirName);
     const vaultDir = path.join(tmpBase, 'vault');
     fs.mkdirSync(path.join(repoRoot, '.claude'), { recursive: true });
@@ -714,6 +722,144 @@ describe('mirrorNarrative', () => {
 
       expect(result.action).toBe('written');
       expect(result.path).toBe(resolveNarrativePath(vaultDir, 'whitespace-vault-name-repo'));
+    });
+  });
+
+  // =========================================================================
+  // Secret masking (#1025) — the mirrored file is TRACKED AND PUSHED in the
+  // operator's vault repo, so a leaked credential there is not deletable
+  // without a history rewrite in a foreign repo.
+  //
+  // THE BUG THIS CATCHES, NAMED: a secret quoted in STATE.md prose reaching
+  // `_session-narrative.md` verbatim. The mission-status half is the sharper
+  // half — `missionStatus` is an ARRAY OF OBJECTS, not a string, so a
+  // field-by-field masker over the three string keys (waveHistory /
+  // deviations / whatNotToRetry) would publish the `task:` description
+  // untouched while every string-field assertion still passed green. Both
+  // sites are asserted with their full rendered line, not a bare file-wide
+  // substring, so each one bites on its own.
+  // =========================================================================
+
+  describe('secret masking (#1025)', () => {
+    const NEEDLE_KEY = 'SO_TEST_NARRATIVE_TOKEN'; // matches SECRET_KEY_RE via the `_TOKEN` suffix
+    const NEEDLE = 'narrative-needle-b7f31c9d4e0a'; // synthetic; >= MIN_MASKABLE_LENGTH (8)
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('masks an env-derived secret in BOTH a Deviations bullet AND a mission-status task', async () => {
+      vi.stubEnv(NEEDLE_KEY, NEEDLE);
+      const { repoRoot } = scaffold({ repoDirName: 'secret-narrative-repo' });
+
+      // The needle sits in TWO structurally different places: free-text body
+      // prose, and a frontmatter `mission-status` entry field that is parsed
+      // into an object before it is rendered into the rollup table.
+      fs.writeFileSync(
+        path.join(repoRoot, '.claude', 'STATE.md'),
+        [
+          '---',
+          'session-id: main-secret-1',
+          'mission-status:',
+          '  - id: m-1',
+          `    task: Rotate ${NEEDLE} before the next deploy`,
+          '    wave: W1',
+          '    status: completed',
+          '---',
+          '',
+          '## Deviations',
+          '',
+          `- Pasted ${NEEDLE} into the run log by mistake.`,
+          '',
+        ].join('\n'),
+      );
+
+      const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+      expect(result.action).toBe('written');
+
+      const written = fs.readFileSync(result.path, 'utf8');
+
+      // Site 1 — body prose.
+      expect(written).toContain('- Pasted [REDACTED] into the run log by mistake.');
+      // Site 2 — the mission-status rollup row (the field-by-field blind spot).
+      expect(written).toContain('| m-1 | Rotate [REDACTED] before the next deploy | W1 | completed |');
+      // Whole-file absence: correct scope here — the ENTIRE file is published.
+      expect(written).not.toContain(NEEDLE);
+    });
+
+    // BUG CAUGHT (#1025, HIGH): the run that was supposed to be a NO-OP publishes
+    // the raw secret. `writeNarrative`'s skip-noop was a plain byte compare, but
+    // the needle set comes from `process.env` — which is NOT part of STATE.md — so
+    // run 1 (env set) writes `[REDACTED]` and run 2 (env absent) renders the RAW
+    // value from the SAME unchanged source. The bytes differ, so the byte compare
+    // says "changed" and writes the plaintext into a file that is tracked and
+    // pushed in the operator's vault repo, where there is no `.husky/` and no
+    // active git hook to catch it — removable only by a history rewrite in a
+    // foreign repo. Reproduced exactly this way before the fix:
+    //   RUN1 env set    -> written      [REDACTED]=true  raw=false
+    //   RUN2 env absent -> written      [REDACTED]=false raw=TRUE
+    // The on-disk file compared in run 2 is a golden record: produced by run 1
+    // through the real renderer, never hand-shaped to match what the reader wants.
+    it('a second run WITHOUT the needle in env is skipped-noop and never re-publishes the raw value', async () => {
+      const { repoRoot } = scaffold({ repoDirName: 'secret-narrative-idempotency-repo' });
+      fs.writeFileSync(
+        path.join(repoRoot, '.claude', 'STATE.md'),
+        [
+          '---',
+          'session-id: main-secret-2',
+          'mission-status:',
+          '  - id: m-1',
+          `    task: Rotate ${NEEDLE} before the next deploy`,
+          '    wave: W1',
+          '    status: completed',
+          '---',
+          '',
+          '## Deviations',
+          '',
+          `- Pasted ${NEEDLE} into the run log by mistake.`,
+          '',
+        ].join('\n'),
+      );
+
+      // ── RUN 1: needle in env → the file is written MASKED. ──────────────────
+      vi.stubEnv(NEEDLE_KEY, NEEDLE);
+      const run1 = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+      expect(run1.action).toBe('written');
+      expect(fs.readFileSync(run1.path, 'utf8')).toContain('[REDACTED]');
+
+      // ── RUN 2: STATE.md untouched, needle NO LONGER in env → the freshly
+      //    rendered candidate carries the RAW value. Nothing about the source
+      //    changed, so the only correct outcome is a no-op. ────────────────────
+      vi.unstubAllEnvs();
+      const run2 = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+
+      expect(run2.action).toBe('skipped-noop');
+      const after = fs.readFileSync(run2.path, 'utf8');
+      expect(after).not.toContain(NEEDLE);
+      expect(after).toContain('- Pasted [REDACTED] into the run log by mistake.');
+      expect(after).toContain('| m-1 | Rotate [REDACTED] before the next deploy | W1 | completed |');
+    });
+
+    // The compensation must not swallow a REAL edit: with the env unchanged
+    // between runs, a genuine STATE.md change outside any redacted span still
+    // writes. Without this the fix would be indistinguishable from "never write
+    // again", which passes the test above for the wrong reason.
+    it('still writes when the source genuinely changes outside the redacted span', async () => {
+      const { repoRoot } = scaffold({ repoDirName: 'secret-narrative-realedit-repo' });
+      const stateMdPath = path.join(repoRoot, '.claude', 'STATE.md');
+      const stateMd = (deviation) =>
+        ['---', 'session-id: main-secret-3', '---', '', '## Deviations', '', deviation, ''].join('\n');
+
+      vi.stubEnv(NEEDLE_KEY, NEEDLE);
+      fs.writeFileSync(stateMdPath, stateMd(`- Pasted ${NEEDLE} once.`));
+      const run1 = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+      expect(run1.action).toBe('written');
+
+      fs.writeFileSync(stateMdPath, stateMd(`- Pasted ${NEEDLE} once, and then rotated it.`));
+      const run2 = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+
+      expect(run2.action).toBe('written');
+      expect(fs.readFileSync(run2.path, 'utf8')).toContain('- Pasted [REDACTED] once, and then rotated it.');
     });
   });
 });

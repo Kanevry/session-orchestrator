@@ -123,12 +123,37 @@ function writeTextAtomic(destPath, content) {
  *    `globs=null, meta={}, parseError=true` → always-on again, and with empty
  *    meta it passes every gate by design.
  *
- * Scope note: the checks below fire only for a document that DECLARES
- * `auto-generated: true` (plus the parse check, which applies to every
- * document). The module's contract stays general — a caller may still write a
- * document with no frontmatter — but every document the reconcile pipeline
- * actually produces carries `auto-generated: true` on its first frontmatter
- * line, so the machine-authored path is fully covered.
+ * Scope (#1018 L2) — three tiers, deliberately not one:
+ *
+ *  1. PARSE — every document. Unparseable means unsafe, not unknown.
+ *  2. `alwaysApply: true` — every document, regardless of any marker. A rule
+ *     file that DECLARES itself always-on is precisely the outcome this gate
+ *     exists to prevent, and declaring it must not be the way around the gate.
+ *     Before #1018 this check sat behind the `auto-generated: true` branch, so
+ *     a document with `alwaysApply: true` and no `auto-generated` key was
+ *     written to disk unexamined — measured, not inferred: a `writeApprovedRules`
+ *     probe returned `written: 1` for exactly that input.
+ *  3. The never-always-on invariant set (activation axis, non-empty globs,
+ *     `learning-key`, `expires-at`) — every document carrying ANY machine-
+ *     provenance marker (`auto-generated: true`, `learning-key`, or
+ *     `expires-at`). Keying on the marker SET rather than on `auto-generated`
+ *     alone means a document that loses its `auto-generated` line to truncation
+ *     but keeps its provenance keys is still held to the invariant.
+ *
+ * Why tier 3 is marker-scoped and not universal — measured against the live
+ * corpus, not assumed: applying the invariant set to EVERY document would
+ * refuse 16 of the 29 files currently in `.claude/rules/`. Those 16 are the
+ * hand-authored always-on rules (`development.md`, `security.md`,
+ * `parallel-sessions.md`, …), for which always-on is the intended, correct
+ * shape — they carry no frontmatter at all. A universal gate would therefore
+ * refuse the legitimate majority of the corpus to catch a machine-path defect.
+ * Marker-scoped refuses 0 of 29. The module's general contract survives: a
+ * caller may still write a document with no frontmatter.
+ *
+ * CEILING (BV-004): the marker set is a fixed three-key list, not a schema
+ * lookup. Revisit if the renderer gains a fourth provenance key, or if a second
+ * non-reconcile caller of `writeApprovedRules` appears — today there is exactly
+ * one production caller and it passes renderer output.
  *
  * Mirrors `scripts/lib/validate/check-rules.mjs`, which enforces the same
  * invariants as a CI gate. Two enforcement points, one invariant: CI catches
@@ -147,37 +172,51 @@ function frontmatterRefusalReason(content) {
   }
 
   const { globs, meta } = parsed;
-
-  // Not a machine-authored auto-generated rule → the never-always-on invariant
-  // does not bind (see the scope note above).
-  if (meta['auto-generated'] !== true) return null;
+  const hasKey = (key) => Object.prototype.hasOwnProperty.call(meta, key);
 
   const problems = [];
 
-  const hasEmptyGlobs = Array.isArray(globs) && globs.length === 0;
-  const hasGlobs = Array.isArray(globs) && globs.length > 0;
-  const hasHostClass = Object.prototype.hasOwnProperty.call(meta, 'host-class');
-
-  if (hasEmptyGlobs) {
-    // NOT the "no axis" case and NOT always-on — the opposite: rule-loader.mjs
-    // excludes on `globs.length === 0` unconditionally, AFTER gating, so the
-    // rule never loads in ANY context even alongside a host-class: key.
-    problems.push('empty globs array (globs: []) — the rule would match nothing and never load in ANY context');
-  } else if (!hasGlobs && !hasHostClass) {
-    problems.push('no activation axis (globs absent AND host-class absent) — the rule would load always-on');
-  }
-  if (!Object.prototype.hasOwnProperty.call(meta, 'learning-key')) {
-    problems.push('missing required frontmatter key: learning-key');
-  }
-  if (!Object.prototype.hasOwnProperty.call(meta, 'expires-at')) {
-    problems.push('missing required frontmatter key: expires-at');
-  }
+  // ── Tier 2: binds on EVERY document (see the scope note above) ────────────
+  // Not gated behind any marker: a document that declares itself always-on is
+  // the exact outcome this gate prevents, so the declaration cannot be the
+  // escape hatch. The renderer only ever emits `alwaysApply: false`.
   if (meta.alwaysApply === true) {
-    problems.push('alwaysApply: true on an auto-generated rule — the renderer only ever emits false');
+    problems.push(
+      'alwaysApply: true — a rule written through this writer must never declare itself always-on (the renderer only ever emits false)',
+    );
+  }
+
+  // ── Tier 3: binds on any machine-provenance-bearing document ──────────────
+  // Marker-scoped rather than universal so the hand-authored always-on corpus
+  // (16 of 29 live rule files) keeps writing; marker-scoped rather than
+  // `auto-generated`-only so a document that loses that line to truncation but
+  // keeps its provenance keys is still held to the invariant.
+  const isProvenanceBearing =
+    meta['auto-generated'] === true || hasKey('learning-key') || hasKey('expires-at');
+
+  if (isProvenanceBearing) {
+    const hasEmptyGlobs = Array.isArray(globs) && globs.length === 0;
+    const hasGlobs = Array.isArray(globs) && globs.length > 0;
+    const hasHostClass = hasKey('host-class');
+
+    if (hasEmptyGlobs) {
+      // NOT the "no axis" case and NOT always-on — the opposite: rule-loader.mjs
+      // excludes on `globs.length === 0` unconditionally, AFTER gating, so the
+      // rule never loads in ANY context even alongside a host-class: key.
+      problems.push('empty globs array (globs: []) — the rule would match nothing and never load in ANY context');
+    } else if (!hasGlobs && !hasHostClass) {
+      problems.push('no activation axis (globs absent AND host-class absent) — the rule would load always-on');
+    }
+    if (!hasKey('learning-key')) {
+      problems.push('missing required frontmatter key: learning-key');
+    }
+    if (!hasKey('expires-at')) {
+      problems.push('missing required frontmatter key: expires-at');
+    }
   }
 
   if (problems.length === 0) return null;
-  return `auto-generated rule fails the never-always-on invariant: ${problems.join('; ')}`;
+  return `rule fails the never-always-on invariant: ${problems.join('; ')}`;
 }
 
 // ---------------------------------------------------------------------------

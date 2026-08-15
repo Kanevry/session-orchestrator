@@ -37,8 +37,10 @@ import {
   yamlQuoteIfNeeded,
   subjectToSlug,
 } from '../vault-mirror/utils.mjs';
+import { matchesModuloRedaction } from '../vault-mirror/process.mjs';
 import { readConfigFile, parseSessionConfig } from '../config.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
+import { createSecretValueMasker } from '../secret-masker.mjs';
 
 /** Frontmatter sentinel that identifies generator-owned narrative files. */
 export const GENERATOR_MARKER = 'session-orchestrator-vault-status-narrative@1';
@@ -176,6 +178,80 @@ export function extractNarrative(stateMdContents) {
     whatNotToRetry: extractSectionBlock(body, SECTION_TITLES.whatNotToRetry),
     missionStatus,
   };
+}
+
+// ── Secret masking (#974 / #1025) ───────────────────────────────────────────────
+
+/**
+ * Mask every env-derived secret VALUE inside an extracted narrative, BEFORE any
+ * of it is rendered into the vault file.
+ *
+ * WHY THIS FILE NEEDS IT AT ALL. `mirrorNarrative` writes into
+ * `<vault>/01-projects/<slug>/_session-narrative.md`, and those files are TRACKED
+ * AND PUSHED in the operator's vault repo. Its content is STATE.md free text —
+ * Deviations, Wave History, mission-status task descriptions — i.e. agent-authored
+ * prose that routinely quotes command lines and error output. That is exactly the
+ * class a shape-regex cannot catch: the VALUE sits in the prose with no
+ * `FOO_TOKEN=` key beside it. A leak here is not fixable by deleting a line — it
+ * needs a history rewrite in a foreign repo, which neither this repo's
+ * `.gitleaks.toml` nor `check-owner-leakage.mjs` can reach (the vault has no
+ * `.husky/` and no active git hooks).
+ *
+ * WHY THE CALL SITE IS AFTER `extractNarrative`, NOT BEFORE IT. Masking the raw
+ * STATE.md string first would let `[REDACTED]` land inside the source
+ * FRONTMATTER, where `[…]` reads as a YAML flow sequence. `extractNarrative`
+ * parses that frontmatter to obtain `missionStatus`; on a parse error it falls
+ * back to `frontmatter = null`, so `missionStatus` becomes null and the Mission
+ * Status table SILENTLY disappears from the mirrored file. Masking the parsed
+ * narrative keeps the parse on clean input.
+ *
+ * WHICH OF THE FOUR `vault-mirror/process.mjs` REASONS CARRY HERE — measured, not
+ * assumed. Not (1) filename: the basename is the constant `_session-narrative.md`.
+ * Not (2) stdout: `mirrorNarrative` prints nothing. Not (3) YAML validity: every
+ * output frontmatter field derives from the slug, the date and the repo name —
+ * none reads from `narrative`. Only (4) IDEMPOTENCY carries, and it is decisive:
+ * `writeNarrative` compares byte-for-byte modulo `updated:`, so masking after
+ * that comparison would make every affected file re-render (and re-commit)
+ * forever.
+ *
+ * WHY A GENERIC WALK RATHER THAN FIELD-BY-FIELD. Three of the four narrative keys
+ * are strings, but `missionStatus` is an array of objects whose `id`/`task`/
+ * `wave`/`status` fields are rendered into the body by `renderMissionTable`. A
+ * field-by-field masker would publish a secret sitting in a `task:` description.
+ * The walk also stays correct when a future key is added to the narrative shape.
+ *
+ * NAMED CEILING (build-value BV-004): the masker is built once PER CALL rather
+ * than cached in a module-level singleton the way `vault-mirror/process.mjs` does.
+ * `mirrorNarrative` runs once per repo per session-end, not in a loop, so the
+ * O(env) construction is irrelevant — and a cached masker would silently go stale
+ * against a mutated `process.env`, making the result depend on which consumer
+ * happened to construct it first in the process. REVISIT TRIGGER: if this module
+ * ever gains a per-record or per-wave loop, hoist the masker to the loop head
+ * (still not to module scope).
+ *
+ * Fail-soft by construction: with zero needles the narrative is returned BY
+ * REFERENCE (byte-identical downstream), and `mask` passes non-strings through —
+ * masking must never be the reason a mirror run dies.
+ *
+ * @param {{ waveHistory: string, deviations: string, whatNotToRetry: string, missionStatus: object[]|null }} narrative
+ * @returns {{ waveHistory: string, deviations: string, whatNotToRetry: string, missionStatus: object[]|null }}
+ */
+function maskNarrative(narrative) {
+  const { mask, needleCount } = createSecretValueMasker(process.env);
+  if (needleCount === 0) return narrative;
+
+  const walk = (value) => {
+    if (typeof value === 'string') return mask(value);
+    if (Array.isArray(value)) return value.map(walk);
+    if (value && typeof value === 'object') {
+      const out = {};
+      for (const [k, v] of Object.entries(value)) out[k] = walk(v);
+      return out;
+    }
+    return value;
+  };
+
+  return walk(narrative);
 }
 
 // ── Pure render ────────────────────────────────────────────────────────────────
@@ -328,9 +404,27 @@ function normalizeUpdated(content) {
  *      a generator. Return { action: 'skipped-handwritten' }.
  *   2. skip-handwritten: existing file with no `_generator` or a FOREIGN `_generator`
  *      marker is hand-authored / owned by another generator → never overwrite.
- *   3. skip-noop: rendered content (modulo the `updated:` timestamp) byte-identical
- *      to the existing content → no write.
+ *   3. skip-noop: rendered content (modulo the `updated:` timestamp AND modulo any
+ *      `[REDACTED]` span already on disk) matches the existing content → no write.
  *   4. otherwise write (mkdir -p the parent dir first).
+ *
+ * WHY STEP 3 IS NOT A PLAIN BYTE COMPARE (#1025). Masking is env-derived and the
+ * env is not part of STATE.md, so the two sides of this comparison can be masked
+ * DIFFERENTLY: a file written while `FOO_TOKEN` was set carries `[REDACTED]`, and
+ * a later run with that var absent renders the RAW value. A byte compare then
+ * reports "changed" and this function PUBLISHES THE RAW SECRET into a file that is
+ * tracked and pushed in the operator's vault repo — where the vault has no
+ * `.husky/` and no active git hooks, so nothing catches it and only a history
+ * rewrite in a foreign repo removes it. Reproduced without touching the source
+ * between runs: run 1 (env set) → `skipped-noop`, run 2 (env absent) → `written`
+ * with the raw value on disk.
+ *
+ * `matchesModuloRedaction` is IMPORTED from `../vault-mirror/process.mjs`, not
+ * re-derived here: `secret-masker.mjs`'s header states this compensation as a
+ * contract binding on every consumer that diffs a written artifact against a fresh
+ * render, and a contract held at two addresses is a contract that drifts. This
+ * module already depends on `vault-mirror/utils.mjs`, and `vault-mirror` imports
+ * nothing from `vault-status`, so the direction adds no cycle.
  *
  * @param {{
  *   outputPath: string,
@@ -379,8 +473,16 @@ export function writeNarrative(opts) {
         return { action: 'skipped-handwritten', path: outputPath };
       }
 
-      // skip-noop: content identical modulo the `updated:` timestamp.
-      if (normalizeUpdated(existingContent) === normalizeUpdated(content)) {
+      // skip-noop: content identical modulo the `updated:` timestamp, or —
+      // #1025 — identical once every `[REDACTED]` span already on disk is read
+      // as a wildcard. See the guard-order note above for why the second arm is
+      // load-bearing rather than a nicety.
+      const existingNormalized = normalizeUpdated(existingContent);
+      const candidateNormalized = normalizeUpdated(content);
+      if (
+        existingNormalized === candidateNormalized ||
+        matchesModuloRedaction(existingNormalized, candidateNormalized)
+      ) {
         return { action: 'skipped-noop', path: outputPath };
       }
     }
@@ -466,6 +568,15 @@ function resolveLooseSlug(vaultDir, candidateSlug, fsSeam = {}) {
  * resolved vault path is validated to live inside the (home-expanded) vault root
  * before any write.
  *
+ * THIS FUNCTION WRITES TO THE OPERATOR'S REAL VAULT UNLESS YOU STOP IT. `vault-dir`
+ * resolves HOST-LOCALLY — `SO_VAULT_DIR` > `owner.yaml` `paths.vault-dir` >
+ * committed Session Config (`scripts/lib/config/host-paths.mjs`) — so the literal
+ * value in a CLAUDE.md you just wrote into a tmp dir LOSES to both overrides. A
+ * probe that passes a synthetic `repoRoot` and nothing else has already written
+ * into the live vault once (#1025 review). Any caller that must not touch the real
+ * vault passes `hostPaths: { env: {}, ownerConfig: undefined }` (see below),
+ * `dryRun: true`, or a fully injected `fs`; a tmp `repoRoot` alone is NOT enough.
+ *
  * @param {{
  *   repoRoot: string,
  *   repo: string,
@@ -543,7 +654,10 @@ export async function mirrorNarrative(opts) {
     return { action: 'skipped-no-statemd', path: outputPath };
   }
 
-  const narrative = extractNarrative(stateContents);
+  // #1025: the ONE masking site for the narrative mirror — after the frontmatter
+  // parse (so `[REDACTED]` can never break it) and before the render, the
+  // idempotency comparison and the write. See maskNarrative above.
+  const narrative = maskNarrative(extractNarrative(stateContents));
   const content = renderNarrative({ repo: repoName, narrative, now });
 
   return writeNarrative({ outputPath, content, dryRun, fs: injectedFs });

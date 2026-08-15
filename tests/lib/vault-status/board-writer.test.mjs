@@ -20,6 +20,7 @@ import { join } from 'node:path';
 
 import {
   GENERATOR_MARKER,
+  boardKey,
   resolveBoardPath,
   collectRows,
   renderBoard,
@@ -159,6 +160,11 @@ function makeThisRepoConfig(name, vaultDir) {
  * always re-sorts alphabetically, which would defeat tests that need to prove
  * a result is independent of file order — see the #719 heartbeat-preference
  * tests below).
+ *
+ * Emits the pre-#871 SIX-column format on purpose: these fixtures double as the
+ * legacy-board corpus, so every test built on them also exercises the
+ * 6-column-tolerant parse + one-shot adoption path. Pass `key` on a row to get
+ * the 7-column form instead.
  */
 function buildPriorBoardContent(rows, { now = FIXED_NOW } = {}) {
   const nowIso = now.toISOString();
@@ -178,17 +184,26 @@ function buildPriorBoardContent(rows, { now = FIXED_NOW } = {}) {
     '|---|---|---|---|---|---|',
     ...rows.map(
       (r) =>
-        `| ${r.repo} | ${r.status} | ${r.session ?? '—'} | ${r.branch ?? '—'} | ${r.mode ?? '—'} | ${r.heartbeat ?? '—'} |`,
+        `| ${r.repo} | ${r.status} | ${r.session ?? '—'} | ${r.branch ?? '—'} | ${r.mode ?? '—'} | ${r.heartbeat ?? '—'} |`
+        + (r.key ? ` ${r.key} |` : ''),
     ),
     '',
   ];
   return lines.join('\n');
 }
 
-/** In-memory fs stub for writeBoard/mirrorBoard. Seed with { path: content }. */
+/**
+ * In-memory fs stub for writeBoard/mirrorBoard. Seed with { path: content }.
+ *
+ * Carries `renameSync` since #734c: writeBoard now lands its bytes through
+ * `atomicWriteWithBackup` (tmp + rename), so a stub that mocked only
+ * `writeFileSync` would leave the REAL `renameSync` hunting for a tmp file the
+ * stub never created on disk. `landed` records the (tmpPath → finalPath) hops
+ * so a test can prove the rename actually happened rather than assuming it.
+ */
 function makeFsStub(seed = {}) {
   const store = new Map(Object.entries(seed));
-  const calls = { writeFileSync: [], mkdirSync: [], existsSync: [], readFileSync: [] };
+  const calls = { writeFileSync: [], mkdirSync: [], existsSync: [], readFileSync: [], renameSync: [] };
   return {
     store,
     calls,
@@ -212,6 +227,16 @@ function makeFsStub(seed = {}) {
       },
       mkdirSync(p) {
         calls.mkdirSync.push(p);
+      },
+      renameSync(from, to) {
+        calls.renameSync.push({ from, to });
+        if (!store.has(from)) {
+          const err = new Error(`ENOENT: ${from}`);
+          err.code = 'ENOENT';
+          throw err;
+        }
+        store.set(to, store.get(from));
+        store.delete(from);
       },
     },
   };
@@ -250,10 +275,10 @@ describe('renderBoard', () => {
     });
   });
 
-  it('renders a markdown table header', () => {
+  it('renders a markdown table header with the #871 Key column', () => {
     const out = renderBoard([{ repo: 'alpha', status: 'in-progress' }], { now: FIXED_NOW });
-    expect(out).toContain('| Repo | Status | Session | Branch | Mode | Last heartbeat |');
-    expect(out).toContain('|---|---|---|---|---|---|');
+    expect(out).toContain('| Repo | Status | Session | Branch | Mode | Last heartbeat | Key |');
+    expect(out).toContain('|---|---|---|---|---|---|---|');
   });
 
   it('sorts rows alphabetically by repo (b after a)', () => {
@@ -278,7 +303,16 @@ describe('renderBoard', () => {
     // The row exists...
     expect(out).toContain('| idle-repo | frei |');
     // ...and carries the '—' placeholder for every empty cell, no session id.
-    expect(out).toContain('| idle-repo | frei | — | — | — | — |');
+    // The 7th cell is the #871 key, absent here (no repoRoot behind this row).
+    expect(out).toContain('| idle-repo | frei | — | — | — | — | — |');
+  });
+
+  it('renders the path-derived key in the 7th column (#871)', () => {
+    const out = renderBoard(
+      [{ repo: 'keyed-repo', status: 'in-progress', key: 'abc12345' }],
+      { now: FIXED_NOW },
+    );
+    expect(out).toContain('| keyed-repo | in-progress | — | — | — | — | abc12345 |');
   });
 
   it('escapes a pipe in a cell so it cannot break the table', () => {
@@ -300,16 +334,26 @@ describe('renderBoard', () => {
 // ===========================================================================
 
 describe('writeBoard', () => {
-  it('fresh write (no existing file) returns written and calls writeFileSync', () => {
-    const { fs, calls } = makeFsStub();
+  it('fresh write (no existing file) lands the content atomically: written to a tmp sibling, renamed onto the target (#734c)', () => {
+    const { fs, calls, store } = makeFsStub();
     const outputPath = '/vault/01-projects/_active-sessions.md';
     const content = renderBoard([{ repo: 'a', status: 'frei' }], { now: FIXED_NOW });
 
     const result = writeBoard({ outputPath, content, fs });
 
     expect(result).toEqual({ action: 'written', path: outputPath });
+    // The bytes never go straight at the live board: exactly one write, to a
+    // tmp SIBLING (same dir → same filesystem → the rename is atomic), then one
+    // rename onto the target. A regression back to a direct writeFileSync would
+    // leave renameSync at length 0 and fail here.
     expect(calls.writeFileSync).toHaveLength(1);
-    expect(calls.writeFileSync[0]).toEqual({ path: outputPath, content });
+    expect(calls.writeFileSync[0].path).not.toBe(outputPath);
+    expect(calls.writeFileSync[0].path.startsWith('/vault/01-projects/.active-sessions.')).toBe(true);
+    expect(calls.writeFileSync[0].content).toBe(content);
+    expect(calls.renameSync).toEqual([{ from: calls.writeFileSync[0].path, to: outputPath }]);
+    // …and the tmp file does not survive the write.
+    expect(store.get(outputPath)).toBe(content);
+    expect(store.has(calls.writeFileSync[0].path)).toBe(false);
   });
 
   it('existing file WITHOUT _generator → skipped-handwritten, no write', () => {
@@ -592,10 +636,10 @@ describe('idempotent merge semantics', () => {
 // ===========================================================================
 
 describe('parseBoardRows', () => {
-  it('roundtrips renderBoard output, recovering repo + status per row', () => {
+  it('roundtrips renderBoard output, recovering repo + key + status per row', () => {
     const rows = [
-      { repo: 'alpha', status: 'in-progress', session: 's-a', branch: 'main', mode: 'deep', heartbeat: 'h-a' },
-      { repo: 'bravo', status: 'frei', session: null, branch: null, mode: null, heartbeat: null },
+      { repo: 'alpha', key: 'aaaa1111', status: 'in-progress', session: 's-a', branch: 'main', mode: 'deep', heartbeat: 'h-a' },
+      { repo: 'bravo', key: null, status: 'frei', session: null, branch: null, mode: null, heartbeat: null },
     ];
     const out = renderBoard(rows, { now: FIXED_NOW });
 
@@ -605,6 +649,7 @@ describe('parseBoardRows', () => {
     // renderBoard sorts; alpha first, bravo second.
     expect(parsed[0]).toEqual({
       repo: 'alpha',
+      key: 'aaaa1111',
       status: 'in-progress',
       session: 's-a',
       branch: 'main',
@@ -614,6 +659,31 @@ describe('parseBoardRows', () => {
     expect(parsed[1].repo).toBe('bravo');
     expect(parsed[1].status).toBe('frei');
     expect(parsed[1].session).toBeNull();
+    expect(parsed[1].key).toBeNull();
+  });
+
+  it('parses a LEGACY 6-column row (pre-#871 board) as key: null instead of dropping it', () => {
+    // The upgrade hazard this pins: a hard `cells.length !== 7` filter would
+    // silently discard every row on an operator's existing board, which looks
+    // like the board resetting itself on first run after the upgrade.
+    const legacy = buildPriorBoardContent([
+      { repo: 'legacy-repo', status: 'in-progress', session: 'old-sess', branch: 'main', mode: 'deep', heartbeat: 'old-hb' },
+    ]);
+    // Precondition: the fixture really is the 6-column form.
+    expect(legacy).toContain('| legacy-repo | in-progress | old-sess | main | deep | old-hb |');
+    expect(legacy).not.toContain('| Key |');
+
+    expect(parseBoardRows(legacy)).toEqual([
+      {
+        repo: 'legacy-repo',
+        key: null,
+        status: 'in-progress',
+        session: 'old-sess',
+        branch: 'main',
+        mode: 'deep',
+        heartbeat: 'old-hb',
+      },
+    ]);
   });
 
   it('does not emit spurious rows for the header or separator line', () => {
@@ -679,6 +749,9 @@ describe('mirrorBoard — case-insensitive key folding (issue #719)', () => {
     expect(matches).toHaveLength(1);
     expect(matches[0]).toEqual({
       repo: 'Some-Repo',
+      // The fresh row ADOPTED the legacy name slot and carries its own key now
+      // (#871 one-shot migration) — it did not render beside the legacy rows.
+      key: boardKey(freshRepoRoot),
       status: 'in-progress',
       session: 'fresh-sess',
       branch: null,
@@ -727,6 +800,10 @@ describe('mirrorBoard — case-insensitive key folding (issue #719)', () => {
       expect(matches).toHaveLength(1);
       expect(matches[0]).toEqual({
         repo: 'Some-Repo',
+        // Purely PRESERVED: no repo in this update derives it, so nothing can
+        // supply a path — the row stays legacy (key null) until its own repo
+        // is next swept. That is the migration contract, not a defect.
+        key: null,
         status: 'closed',
         session: 'newer-sess',
         branch: null,
@@ -834,6 +911,205 @@ describe('mirrorBoard — case-insensitive key folding (issue #719)', () => {
     const rows = parseBoardRows(readFileSync(boardPath, 'utf8'));
     const row = rows.find((r) => r.repo.toLowerCase() === 'some-repo');
     expect(row.status).toBe('closed');
+  });
+});
+
+// ===========================================================================
+// mirrorBoard — path-derived row identity (issue #871)
+// ===========================================================================
+
+describe('mirrorBoard — path-derived identity (#871)', () => {
+  it('two repos with the SAME basename under DIFFERENT parents render as TWO rows, each keeping its own status', async () => {
+    // THE bug #871 fixes. Keyed by `path.basename`, `<org-a>/name` and
+    // `<org-b>/name` fold onto one row and whichever is written second silently
+    // overwrites the other's status — a same-named sibling repo's session
+    // simply disappears from the board. Both are enumerable since the depth-2
+    // walk of #832, so this is reachable on the real host, not hypothetical.
+    const vaultDir = makeVaultDir();
+    const boardPath = resolveBoardPath(vaultDir);
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+
+    // Same directory NAME ('twin'), two different parents.
+    const orgA = join(sandbox, 'org-a');
+    const orgB = join(sandbox, 'org-b');
+    mkdirSync(orgA, { recursive: true });
+    mkdirSync(orgB, { recursive: true });
+
+    const liveLock = buildLockBody({ sessionId: 'twin-a-sess', mode: 'deep', heartbeatAgeHours: 0, now: FIXED_NOW });
+    const repoA = join(orgA, 'twin');
+    mkdirSync(join(repoA, '.orchestrator'), { recursive: true });
+    writeFileSync(join(repoA, '.orchestrator', 'session.lock'), JSON.stringify(liveLock, null, 2) + '\n', 'utf8');
+
+    const deadLock = buildLockBody({
+      sessionId: 'twin-b-sess', mode: 'feature', ttlHours: 4, heartbeatAgeHours: 5, now: FIXED_NOW,
+    });
+    const repoB = join(orgB, 'twin');
+    mkdirSync(join(repoB, '.orchestrator'), { recursive: true });
+    writeFileSync(join(repoB, '.orchestrator', 'session.lock'), JSON.stringify(deadLock, null, 2) + '\n', 'utf8');
+
+    const thisRepoRoot = makeThisRepoConfig('this-repo-twin', vaultDir);
+
+    const result = await mirrorBoard({
+      repoRoot: thisRepoRoot,
+      repos: [{ repoRoot: thisRepoRoot }, { repoRoot: repoA }, { repoRoot: repoB }],
+      now: FIXED_NOW,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+
+    expect(result.action).toBe('written');
+    const twins = parseBoardRows(readFileSync(boardPath, 'utf8')).filter((r) => r.repo === 'twin');
+
+    // Pre-#871 this was exactly ONE row (repoB's, having overwritten repoA's).
+    expect(twins).toHaveLength(2);
+    // Each row carries its OWN path key and its OWN derived status — no bleed.
+    const byKey = Object.fromEntries(twins.map((r) => [r.key, r]));
+    expect(byKey[boardKey(repoA)].status).toBe('in-progress');
+    expect(byKey[boardKey(repoA)].session).toBe('twin-a-sess');
+    expect(byKey[boardKey(repoB)].status).toBe('force-closed');
+    expect(byKey[boardKey(repoB)].session).toBe('twin-b-sess');
+    // Both keys are genuinely distinct (guards against boardKey degenerating
+    // to a constant, which would make the length-2 assertion above pass for
+    // the wrong reason).
+    expect(boardKey(repoA)).not.toBe(boardKey(repoB));
+  });
+
+  it('a never-before-seen repo does NOT inherit a same-basename sibling\'s terminal status through the legacy name fallback', async () => {
+    // The sticky-status half of the same identity bug: repo A closed cleanly
+    // and its row is keyed; repo B (same basename, different parent, no lock)
+    // must derive `frei`, not A's sticky `closed`.
+    const vaultDir = makeVaultDir();
+    const boardPath = resolveBoardPath(vaultDir);
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+
+    const orgA = join(sandbox, 'sticky-org-a');
+    mkdirSync(orgA, { recursive: true });
+    const repoA = join(orgA, 'twin2');
+    mkdirSync(repoA, { recursive: true });
+
+    // Seed a KEYED prior row for repo A in terminal state.
+    writeFileSync(
+      boardPath,
+      buildPriorBoardContent([
+        { repo: 'twin2', status: 'closed', session: 'a-sess', mode: 'deep', heartbeat: '2026-06-01T00:00:00.000Z', key: boardKey(repoA) },
+      ]),
+      'utf8',
+    );
+
+    const orgB = join(sandbox, 'sticky-org-b');
+    mkdirSync(orgB, { recursive: true });
+    const repoB = join(orgB, 'twin2'); // ghost: no .orchestrator, no lock
+
+    const thisRepoRoot = makeThisRepoConfig('this-repo-twin2', vaultDir);
+
+    const result = await mirrorBoard({
+      repoRoot: thisRepoRoot,
+      repos: [{ repoRoot: thisRepoRoot }, { repoRoot: repoB }],
+      now: FIXED_NOW,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+
+    expect(result.action).toBe('written');
+    const rows = parseBoardRows(readFileSync(boardPath, 'utf8'));
+    const rowB = rows.find((r) => r.key === boardKey(repoB));
+    expect(rowB.status).toBe('frei');
+    // A's row is untouched and still terminal.
+    expect(rows.find((r) => r.key === boardKey(repoA)).status).toBe('closed');
+  });
+
+  it('MIGRATION RUN: a KEY-LESS legacy row does not stamp its terminal status onto BOTH same-basename repos (#1022)', async () => {
+    // The third combination the two tests above leave open. They cover a KEYED
+    // prior (:976) and NO prior (:922); this is the one an operator actually
+    // hits first: on the first run after #871 every existing board is still
+    // 6-column, so the prior row carries NO key and nothing ties it to a path.
+    // Both same-basename repos therefore miss the keyed lookup, both fall
+    // through to the legacy NAME fallback, and both were written `closed` —
+    // each under its OWN key. From run 2 on that wrong status is keyed and
+    // therefore STICKY (a terminal status is never reset without a live lock),
+    // so the repo that never had a session stands `closed` on the board
+    // forever. Two such basename collisions were measured on the reference
+    // host after the depth-2 walk of #832 — see sweepBoard note (d).
+    const vaultDir = makeVaultDir();
+    const boardPath = resolveBoardPath(vaultDir);
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+
+    // Same basename, two different parents, NEITHER holding a lock.
+    const repoA = join(sandbox, 'mig-org-a', 'twin3');
+    const repoB = join(sandbox, 'mig-org-b', 'twin3');
+    mkdirSync(repoA, { recursive: true });
+    mkdirSync(repoB, { recursive: true });
+
+    // LEGACY board: 6 columns, no Key column (buildPriorBoardContent's default).
+    writeFileSync(
+      boardPath,
+      buildPriorBoardContent([
+        { repo: 'twin3', status: 'closed', session: 'legacy-sess', branch: 'main', mode: 'deep', heartbeat: '2026-06-18T11:00:00.000Z' },
+      ]),
+      'utf8',
+    );
+
+    const thisRepoRoot = makeThisRepoConfig('this-repo-twin3', vaultDir);
+
+    const result = await mirrorBoard({
+      repoRoot: thisRepoRoot,
+      repos: [{ repoRoot: thisRepoRoot }, { repoRoot: repoA }, { repoRoot: repoB }],
+      now: FIXED_NOW,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+
+    expect(result.action).toBe('written');
+    const twins = parseBoardRows(readFileSync(boardPath, 'utf8')).filter((r) => r.repo === 'twin3');
+    expect(twins).toHaveLength(2);
+    // Guards against boardKey degenerating to a constant, which would make the
+    // per-key assertions below pass for the wrong reason.
+    expect(boardKey(repoA)).not.toBe(boardKey(repoB));
+
+    // CLASS INVARIANT: one legacy row describes one repo, so it can license at
+    // most one inheritance. Pre-fix this was 2 — the assertion that goes red.
+    expect(twins.filter((r) => r.status === 'closed').length).toBeLessThanOrEqual(1);
+
+    // CHOSEN SEMANTICS: an AMBIGUOUS basename licenses NO inheritance at all.
+    // With two claimants and no path in the legacy row, "which one" is not
+    // derivable — awarding it to the first candidate would make a permanent,
+    // sticky status depend on readdir order.
+    const byKey = Object.fromEntries(twins.map((r) => [r.key, r]));
+    expect(byKey[boardKey(repoA)].status).toBe('frei');
+    expect(byKey[boardKey(repoB)].status).toBe('frei');
+  });
+
+  it('adopts a legacy 6-column row exactly once: run 1 converts it to a keyed row, run 2 is a noop (no duplicate)', async () => {
+    const vaultDir = makeVaultDir();
+    const boardPath = resolveBoardPath(vaultDir);
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+
+    const lock = buildLockBody({ sessionId: 'migrating-sess', mode: 'deep', heartbeatAgeHours: 0, now: FIXED_NOW });
+    const repoRoot = makeRepo('migrating-repo', lock);
+
+    // Legacy board: 6 columns, no key — what every operator's board looks like
+    // on the first run after this change.
+    writeFileSync(
+      boardPath,
+      buildPriorBoardContent([
+        { repo: 'migrating-repo', status: 'in-progress', session: 'stale-sess', branch: 'main', mode: 'deep', heartbeat: '2026-06-18T11:00:00.000Z' },
+      ]),
+      'utf8',
+    );
+
+    const thisRepoRoot = makeThisRepoConfig('this-repo-migrate', vaultDir);
+    const repos = [{ repoRoot: thisRepoRoot }, { repoRoot }];
+
+    const first = await mirrorBoard({ repoRoot: thisRepoRoot, repos, now: FIXED_NOW, hostPaths: HERMETIC_HOST_PATHS });
+    expect(first.action).toBe('written');
+
+    const afterFirst = parseBoardRows(readFileSync(boardPath, 'utf8')).filter((r) => r.repo === 'migrating-repo');
+    // Adopted, not duplicated: ONE row, now carrying the path key and the
+    // fresh lock's session (the whole point — a disjoint key space would leave
+    // the legacy row here forever beside a new keyed one).
+    expect(afterFirst).toHaveLength(1);
+    expect(afterFirst[0].key).toBe(boardKey(repoRoot));
+    expect(afterFirst[0].session).toBe('migrating-sess');
+
+    const second = await mirrorBoard({ repoRoot: thisRepoRoot, repos, now: FIXED_NOW, hostPaths: HERMETIC_HOST_PATHS });
+    expect(second.action).toBe('skipped-noop');
   });
 });
 
@@ -1114,7 +1390,7 @@ describe('mirrorBoard — TTL-staleness re-derivation on preserved rows (#829)',
     // second run still shows exactly one force-closed row, unchanged.
     const rows = parseBoardRows(afterSecond);
     expect(rows.filter((r) => r.repo === 'stale-idem-repo')).toEqual([
-      { repo: 'stale-idem-repo', status: 'force-closed', session: 'sess-idem', branch: 'main', mode: 'deep', heartbeat: staleHb },
+      { repo: 'stale-idem-repo', key: null, status: 'force-closed', session: 'sess-idem', branch: 'main', mode: 'deep', heartbeat: staleHb },
     ]);
   });
 });

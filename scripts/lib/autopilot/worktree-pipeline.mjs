@@ -315,14 +315,14 @@ export async function teardownWorktree(context, result, opts = {}) {
     try {
       // #987 defense-in-depth: pass the in-memory genesis proof (captured by
       // runStoryPipeline right after acquire — same process, no file I/O)
-      // so the delete is double-gated at the fs layer. Spread-guarded:
-      // release()'s proof gate triggers on `proof !== undefined`, so a
-      // null/absent proof MUST be omitted entirely or EVERY release would
-      // be refused with 'proof-mismatch'.
+      // so the delete is double-gated at the fs layer. `_lockOwnerProof` is
+      // null/undefined when the lock could not yield a full proof; release()
+      // gates on `proof != null` (#989) and degrades to the session_id-only
+      // path for that case, so no call-site guard is needed.
       releaseResult = release({
         sessionId: result._lockSessionId,
         repoRoot: result.worktreePath,
-        ...(result._lockOwnerProof ? { proof: result._lockOwnerProof } : {}),
+        proof: result._lockOwnerProof,
       });
     } catch (lockErr) {
       console.error(

@@ -204,6 +204,16 @@ if (runCheck('check-agents.mjs') !== 0) checkFailed = 1;
 process.stdout.write('\n');
 if (runCheck('check-commands.mjs') !== 0) checkFailed = 1;
 
+// FAIL-capable from day one: every rule this check enforces (frontmatter present,
+// parses as YAML, kebab-case name matching the directory, non-empty description)
+// was measured at 0 violations across all 46 SKILL.md files at the commit that
+// added it — so unlike the WARN-only censuses further down, it cannot be red on
+// arrival. It sits next to check-commands.mjs because it shares that check's
+// posture: a real js-yaml parse, not the line-regex approach of check-agents.mjs
+// that let 12 unparseable SKILL.md frontmatter blocks go unnoticed.
+process.stdout.write('\n');
+if (runCheck('check-skills.mjs') !== 0) checkFailed = 1;
+
 process.stdout.write('\n');
 if (runDriftCheck() !== 0) checkFailed = 1;
 
@@ -282,6 +292,17 @@ runCheck('check-learning-provenance.mjs');
 // prints FAIL: lines, which runCheck tallies into totalFail.
 process.stdout.write('\n');
 runCheck('check-vcs-repo-flag.mjs');
+
+// WARN-only (#1023): a `gh`/`glab` command cited in docs that no released CLI
+// ever had — `glab repo edit --visibility`, `glab group list` — costs an
+// operator a failed command and a re-derivation. The oracle is the CLI's own
+// `--help` COMMANDS section, never an exit code (`glab repo <anything> --help`
+// exits 0). WARN rather than FAIL because that oracle is the LOCALLY installed
+// binary: a version skew must not red an unrelated commit, and a missing binary
+// SKIPs. The exit code is deliberately ignored; a tool error still surfaces
+// because that path prints FAIL: lines, which runCheck tallies into totalFail.
+process.stdout.write('\n');
+runCheck('check-doc-cli-commands.mjs');
 
 // ---------------------------------------------------------------------------
 // Summary

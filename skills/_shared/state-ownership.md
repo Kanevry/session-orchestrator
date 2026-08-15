@@ -219,3 +219,20 @@ Net: `pid` (field notes above) stays forensic-only; `last_heartbeat` freshness i
 ### Schema v1 → v2 backward-compat
 
 Readers (e.g., `readLock()` in `session-lock.mjs`, `discoverActiveSessions()`) MUST tolerate absent `last_heartbeat` and `semantic_session_id` fields (v1 locks written before Epic #583). When `last_heartbeat` is absent, fall back to TTL-based expiry from `started_at`. When `semantic_session_id` is absent, treat as unknown.
+
+#### Schema v1 Sunset — evaluated 2026-08-15, tolerance RETAINED (#595)
+
+The 90-day sunset window from Epic #583 (target 2026-08-25) came due and the removal was evaluated against the live fleet. **Verdict: keep the three reader tolerances; the blocker is not v1 data, it is a second production copy of the rule.**
+
+**Precondition — zero v1 artefacts on disk (measured 2026-08-15, this host):**
+
+- `find ~/Projects ~/.claude ~/.config /tmp/claude-501 -name 'session.lock' -not -path '*/node_modules/*'` → **12 files, 12/12 carry a non-empty `last_heartbeat`** (0 v1).
+- `~/.config/session-orchestrator/sessions/active/*.json` → **3 entries, 3/3 carry the `mode` key** (0 v1).
+- The only co-installed older plugin build (`~/.claude/plugins/cache/session-orchestrator/session-orchestrator/3.13.0`) already writes `last_heartbeat` (`session-lock.mjs:195`) and `mode` (`session-registry.mjs:209`) — **no v1 writer remains on this host.**
+
+**Why the branches stay anyway:**
+
+1. **`parseLock()` / `isLockLive()` — the rule is duplicated.** `scripts/lib/harness-audit/categories/category4.mjs` `lockIsLive()` inlines the same `last_heartbeat ?? started_at` fallback, and `tests/lib/lock-ttl-parity.test.mjs` asserts the mirror and the SSOT return identical verdicts *for a v1 lock*. Dropping it in `session-lock.mjs` alone breaks that parity by construction. A measured removal attempt turned **18 tests red across 4 files** (`session-discovery` 9, `session-discovery-fallback` 6, `lock-ttl-parity` 1, `on-session-start` 2) — all outside the lock/registry module pair, all seeding v1-shaped fixtures.
+2. **`_validEntry()` optional `mode` — removal is a net safety LOSS.** Rejecting a mode-less registry entry drops a **live peer** from `readRegistry()`, making it invisible to the exclusivity matrix. An absent `mode` already degrades to the `parallel-ok` bucket, so strictening buys no detection and costs peer visibility — the wrong direction under `.claude/rules/development.md` § Guard & Threshold Design.
+
+**What a real sunset needs (co-change set, one atomic MR):** `scripts/lib/session-lock.mjs` + `scripts/lib/harness-audit/categories/category4.mjs` (the mirror) + fixture updates in `tests/lib/session-discovery.test.mjs`, `tests/lib/session-discovery-fallback.test.mjs`, `tests/lib/lock-ttl-parity.test.mjs`, `tests/hooks/on-session-start.test.mjs`. Deleting the *mirror* in favour of importing the SSOT is the durable fix — the duplication, not the v1 data, is what keeps this class alive. The registry item should be closed as won't-do per point 2.

@@ -20,7 +20,7 @@
  * Spawns `node skills/vault-sync/validator.mjs` subprocess.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -900,5 +900,97 @@ describe('vault-dir guard', () => {
     expect(result.status).toBe(0);
     // Must be parseable JSON
     JSON.parse(result.stdout);
+  });
+});
+
+// ── #1013 — glob segment anchoring + skipped-file visibility ─────────────────
+
+/** Builds a throwaway vault under $TMPDIR. `files` maps relPath -> content. */
+function makeTmpVault(prefix, files) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  mkdirSync(join(dir, '_meta'), { recursive: true });
+  for (const [rel, content] of Object.entries(files)) {
+    const abs = join(dir, rel);
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, content, 'utf8');
+  }
+  return dir;
+}
+
+/** Frontmatter that PARSES but fails the schema — so the file errors iff it is CHECKED. */
+const INVALID_FM = '---\nid: not_a_slug\n---\n\nbody\n';
+
+describe('exclude glob is segment-anchored (#1013)', () => {
+  // The bug: `**` compiled to `(?:.*?)`, which may end MID-segment. `**/README.md`
+  // therefore also matched `MYREADME.md`, and `**/archive/**` also matched
+  // `xarchive/...`. Both files were silently dropped from the checked set while
+  // the validator still reported "0 errors" — a false negative on a hard gate.
+  let vault;
+  beforeAll(() => {
+    vault = makeTmpVault('vault-glob-anchor-', {
+      // Genuinely matched by the globs under BOTH compilations — must stay excluded.
+      'README.md': INVALID_FM,
+      'docs/archive/note.md': INVALID_FM,
+      // Matched ONLY by the unanchored compilation — must now be CHECKED and error.
+      'MYREADME.md': INVALID_FM,
+      'xarchive/note.md': INVALID_FM,
+    });
+  });
+  afterAll(() => {
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it('mid-segment matches are no longer excluded: MYREADME.md / xarchive/ are checked and error', () => {
+    const result = runValidator(vault, [
+      '--exclude',
+      '**/README.md',
+      '--exclude',
+      '**/archive/**',
+    ]);
+    const parsed = JSON.parse(result.stdout);
+    // Unanchored compilation excluded all four (excluded_count 4, errors 0, exit 0).
+    expect(parsed.excluded_count).toBe(2);
+    expect(parsed.files_checked).toBe(2);
+    const errored = [...new Set(parsed.errors.map((e) => e.file))].sort();
+    expect(errored).toEqual(['MYREADME.md', 'xarchive/note.md']);
+    expect(parsed.status).toBe('invalid');
+    expect(result.status).toBe(1);
+  });
+});
+
+describe('skipped-without-frontmatter is visible in the envelope (#1013)', () => {
+  // The bug: files without frontmatter were counted but never named, so "0 errors"
+  // meant "everything CHECKED is valid" with no way to see what was not checked.
+  // The paths list is absence-preserving: absent = never inspected, [] = inspected
+  // and nothing skipped, [x] = inspected and x was skipped.
+  const VALID_FM =
+    '---\nid: valid-note\ntype: note\ncreated: 2026-01-01\nupdated: 2026-01-01\n---\n\nbody\n';
+  let vault;
+  let cleanVault;
+  beforeAll(() => {
+    vault = makeTmpVault('vault-skipped-paths-', {
+      'valid-note.md': VALID_FM,
+      'no-fm.md': 'No frontmatter at all.\n',
+    });
+    cleanVault = makeTmpVault('vault-skipped-none-', { 'valid-note.md': VALID_FM });
+  });
+  afterAll(() => {
+    rmSync(vault, { recursive: true, force: true });
+    rmSync(cleanVault, { recursive: true, force: true });
+  });
+
+  it('names the skipped files, and "0 skipped" stays distinguishable from "not counted"', () => {
+    const skipped = JSON.parse(runValidator(vault).stdout);
+    expect(skipped.files_skipped_no_frontmatter).toBe(1);
+    expect(skipped.files_skipped_no_frontmatter_paths).toEqual(['no-fm.md']);
+
+    // Inspected, nothing skipped → present and empty (NOT absent).
+    const clean = JSON.parse(runValidator(cleanVault).stdout);
+    expect(clean.files_skipped_no_frontmatter).toBe(0);
+    expect(clean.files_skipped_no_frontmatter_paths).toEqual([]);
+
+    // Never inspected → absent, so a fabricated clean 0 cannot be mistaken for a measurement.
+    const off = JSON.parse(runValidator(vault, ['--mode=off']).stdout);
+    expect(off.files_skipped_no_frontmatter_paths).toBeUndefined();
   });
 });

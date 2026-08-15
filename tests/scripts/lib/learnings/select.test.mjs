@@ -27,8 +27,10 @@ import {
   LEARNINGS_INDEX_MAX_CHARS,
   LEARNINGS_INDEX_MAX_LINE_CHARS,
   emptySelection,
+  readDeliveredProvenance,
   renderIndexLine,
   selectLearnings,
+  selectLearningsFromFile,
 } from '@lib/learnings/select.mjs';
 
 // ---------------------------------------------------------------------------
@@ -476,5 +478,147 @@ describe('untrusted-record rejection is fail-closed and counted', () => {
     expect(sel.lines).toHaveLength(1);
     expect(sel.entries.map((e) => e.subject)).toEqual(['benign-note']);
     expect(sel.text).not.toContain('LEARNINGS-INDEX');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1019 — learnings already delivered as .claude/rules/*.md
+// ---------------------------------------------------------------------------
+
+/**
+ * One rule file in the shape `scripts/lib/reconcile/renderer.mjs` emits.
+ * Written to disk rather than stubbed: the filter's whole point is that it
+ * reads the SAME provenance blocks `check-learning-provenance.mjs` audits, so a
+ * hand-shaped double would hide a block-format disagreement.
+ */
+function ruleFile({ id = null, key = null }) {
+  const lines = [
+    '# Auto-generated rule: some-subject',
+    '',
+    'Body prose the agent receives natively, in full.',
+    '',
+    '## Provenance',
+  ];
+  if (key !== null) lines.push(`- learning-key: \`${key}\``);
+  if (id !== null) lines.push(`- learning-id: \`${id}\``);
+  lines.push('- confidence: 0.85', '');
+  return lines.join('\n');
+}
+
+/** A temp dir seeded with the given rule files; caller removes it. */
+function rulesDirWith(files) {
+  const dir = mkdtempSync(join(tmpdir(), 'select-rules-'));
+  for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body, 'utf8');
+  return dir;
+}
+
+/** A temp learnings.jsonl holding `records`; caller removes the returned dir. */
+function corpusFile(records) {
+  const dir = mkdtempSync(join(tmpdir(), 'select-corpus-'));
+  const path = join(dir, 'learnings.jsonl');
+  writeFileSync(path, records.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+  return { dir, path };
+}
+
+/**
+ * The arrangement all three tests below share: one scoped slot, one global slot,
+ * and TWO scoped candidates competing for the single scoped slot. L_REGISTRY
+ * wins it (exact path match, higher score) and L_GATES is displaced — so
+ * removing L_REGISTRY must hand the slot to L_GATES, not shrink the index.
+ */
+const CROWDED = { ...OPTS, maxScoped: 1, maxGlobal: 1 };
+const REGISTRY_SUBJECT = 'session-registry-fresh-claim-files-must-be-age-gated';
+const DISPLACED_SUBJECT = 'quality-gate-wrapper-needs-large-output-buffer';
+
+describe('selectLearnings — already-delivered filter (#1019)', () => {
+  // BUG CAUGHT: the agent receives the SAME learning twice — once as a
+  // natively-delivered `.claude/rules/*.md` file (full text) and once as an
+  // index line — and the duplicate costs a slot in a 2000-char budget, so a
+  // learning the agent has no other way to see is displaced by one it already
+  // has. The second assertion is the load-bearing one: a filter applied AFTER
+  // the Top-N cut would also make the duplicate disappear, but would leave the
+  // freed slot empty and the displaced entry still unseen.
+  it('drops a rule-delivered learning and promotes the entry it displaced', () => {
+    const before = selectLearnings(CORPUS, SCOPE_REGISTRY, CROWDED);
+    expect(subjects(before)).toContain(REGISTRY_SUBJECT);
+    expect(subjects(before)).not.toContain(DISPLACED_SUBJECT);
+    expect(before.deliveredFiltered).toBe(0);
+
+    const after = selectLearnings(CORPUS, SCOPE_REGISTRY, {
+      ...CROWDED,
+      delivered: { ids: new Set([L_REGISTRY.id]), keys: new Set() },
+    });
+
+    expect(subjects(after)).not.toContain(REGISTRY_SUBJECT);
+    expect(subjects(after)).toContain(DISPLACED_SUBJECT);
+    expect(after.entries).toHaveLength(before.entries.length);
+    expect(after.deliveredFiltered).toBe(1);
+  });
+
+  // BUG CAUGHT: an id-only filter silently stops biting the moment a backfill
+  // re-mints a learning's UUID — the rule keeps delivering the same content
+  // under a stale id, and the duplicate quietly returns. That is exactly the
+  // `superseded-learning-id` state check-learning-provenance.mjs names, and it
+  // is the state ANY id backfill lands in. The rule file here carries the key
+  // only, and the record's id matches nothing.
+  it('matches on the logical key too, so a re-minted learning-id still filters', async () => {
+    const reminted = { ...L_REGISTRY, id: '99999999-9999-4999-8999-999999999999' };
+    const { dir: corpusDir, path } = corpusFile([reminted, L_GATES, L_HOOKS, L_NOPATHS_HIGH]);
+    const rulesDir = rulesDirWith({
+      'recurring-issue-session-registry.md': ruleFile({
+        key: `recurring-issue/${REGISTRY_SUBJECT}`,
+      }),
+    });
+    try {
+      const sel = await selectLearningsFromFile(path, SCOPE_REGISTRY, { ...CROWDED, rulesDir });
+
+      expect(subjects(sel)).not.toContain(REGISTRY_SUBJECT);
+      expect(subjects(sel)).toContain(DISPLACED_SUBJECT);
+      expect(sel.deliveredFiltered).toBe(1);
+    } finally {
+      rmSync(corpusDir, { recursive: true, force: true });
+      rmSync(rulesDir, { recursive: true, force: true });
+    }
+  });
+
+  // BUG CAUGHT: the filter costing a repo learnings it was never duplicating.
+  // A consumer repo that has never run /reconcile has no provenance blocks at
+  // all; if absence resolved to anything other than "filter nothing", this
+  // channel would deliver FEWER learnings than before the filter existed — a
+  // strictly worse outcome than the duplication it fixes. Byte-identity, not
+  // "roughly the same", because the caller prepends this text verbatim.
+  it('is a silent no-op when no rule file carries provenance', async () => {
+    const { dir: corpusDir, path } = corpusFile(CORPUS);
+    const rulesDir = rulesDirWith({
+      'hand-written.md': '# A hand-written rule\n\nNo provenance block at all.\n',
+      'notes.txt': `- learning-id: \`${L_REGISTRY.id}\`\n`, // not .md → not a rule
+    });
+    try {
+      const unfiltered = await selectLearningsFromFile(path, SCOPE_REGISTRY, CROWDED);
+      const provenanceFree = await selectLearningsFromFile(path, SCOPE_REGISTRY, {
+        ...CROWDED,
+        rulesDir,
+      });
+      const absentDir = await selectLearningsFromFile(path, SCOPE_REGISTRY, {
+        ...CROWDED,
+        rulesDir: join(rulesDir, 'no-such-directory'),
+      });
+
+      expect(subjects(unfiltered)).toContain(REGISTRY_SUBJECT);
+      expect(provenanceFree.text).toBe(unfiltered.text);
+      expect(absentDir.text).toBe(unfiltered.text);
+      expect(provenanceFree.deliveredFiltered).toBe(0);
+      expect(absentDir.deliveredFiltered).toBe(0);
+
+      // The reader itself, on the same two inputs.
+      expect(readDeliveredProvenance(rulesDir)).toEqual({ ids: new Set(), keys: new Set() });
+      expect(readDeliveredProvenance(join(rulesDir, 'no-such-directory'))).toEqual({
+        ids: new Set(),
+        keys: new Set(),
+      });
+    } finally {
+      rmSync(corpusDir, { recursive: true, force: true });
+      rmSync(rulesDir, { recursive: true, force: true });
+    }
   });
 });

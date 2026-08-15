@@ -9,10 +9,11 @@
  * paths, emails").
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import {
   anonymizeString,
   anonymizeLearning,
@@ -691,5 +692,54 @@ describe('resolveDefaultOutput', () => {
 
   it('returns null when no CLAUDE.md/AGENTS.md exists at repoRoot', () => {
     expect(resolveDefaultOutput({ repoRoot: tmp, hostPaths: HOST_PATHS })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1025 — value-based masking runs BEFORE form-based anonymization
+// ---------------------------------------------------------------------------
+//
+// `hardware-patterns.md` is a TRACKED file in the pushed vault repo (measured
+// 2026-08-15: `git -C <vault> ls-files 01-projects/session-orchestrator/research/
+// hardware-patterns.md` → 1), so a secret that survives this pipeline is not
+// deletable. The pipeline now has two orthogonal halves and their ORDER decides
+// whether the value half can bite at all.
+//
+// The needle is generated at RUNTIME — no credential-shaped literal is committed.
+
+describe('#1025 anonymizeLearning: secret masking precedes form anonymization', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  // BUG CAUGHT: the two halves wired in the WRONG order. `anonymizeString`
+  // rewrites a token-shaped run to `<redacted-token>` — a NEW string. A masker
+  // running afterwards searches for the literal env value, which no longer
+  // exists anywhere in the text, so it matches nothing and the whole value half
+  // of the pipeline is silently inert. Mask-first keeps the literal intact; the
+  // `[REDACTED]` marker it leaves is 8 chars with no digit and therefore passes
+  // back through `anonymizeString` untouched.
+  it('a token-shaped env secret yields [REDACTED], not the form-redaction residue', async () => {
+    // 45 chars, letters + digits, no `-` → matches TOKEN_RE (≥20, has letter,
+    // has digit), so BOTH halves of the pipeline can see it. That overlap is
+    // exactly what makes the assertion order-discriminating.
+    const needle = `sotestneedle${randomUUID().replace(/-/g, '')}1`;
+    vi.stubEnv('SO_TEST_HW_EXPORT_TOKEN', needle);
+    // The masker is a module-level lazy singleton built from process.env on
+    // first use — reset + re-import AFTER stubEnv, or an earlier test in this
+    // file has already frozen it against the unstubbed env.
+    vi.resetModules();
+    const { anonymizeLearning } = await import('../../scripts/export-hw-learnings.mjs');
+
+    const out = anonymizeLearning(
+      baseLearning({ insight: `run died on X_TOKEN=${needle} here`, evidence: `saw ${needle}` }),
+    );
+
+    expect(out.insight).not.toContain(needle);
+    expect(out.insight).toBe('run died on X_TOKEN=[REDACTED] here');
+    // The discriminator: with the halves swapped this reads `<redacted-token>`.
+    expect(out.insight).not.toContain('<redacted-token>');
+    expect(out.evidence).toBe('saw [REDACTED]');
   });
 });

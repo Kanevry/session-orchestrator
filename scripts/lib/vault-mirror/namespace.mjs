@@ -22,9 +22,26 @@
  *   - Redacts UNMAPPED owner-privacy leaks (CP1/CP6/CP10) to 'redacted-repo' +
  *     stderr WARN — identical to pre-#725 behaviour when no map is configured.
  *   - Falls back to 'unknown-repo' when slug derivation produces an empty string.
+ *
+ * Dependency direction (issue #734b): this module OWNS {@link deriveRepo}; it does
+ * NOT import from `./process.mjs`. Until #734b, `deriveRepo` lived in `process.mjs`
+ * while `process.mjs` imported `resolveRepoNamespace` from here — the repo's only
+ * import cycle (`namespace.mjs ↔ process.mjs`). The cycle was broken by moving the
+ * *identity* half down here (this module is the repo-identity resolver; `process.mjs`
+ * is the record-mirroring pipeline that CONSUMES an identity), and `process.mjs`
+ * re-exports `deriveRepo` from here so its public surface is unchanged.
+ *
+ * The direction is load-bearing beyond cycle-breaking: three modules
+ * (`vault-repo-backfill.mjs`, `vault-relocation-rules.mjs`, `scripts/vault-mirror.mjs`)
+ * import ONLY `resolveRepoNamespace` and previously dragged the entire `process.mjs`
+ * graph (secret-masker, render-learnings, render-sessions, session-schema/filters)
+ * in behind it. Keep this module leaf-ward: it may import `./utils.mjs`,
+ * `./pseudonym-map.mjs`, the leak-guard and host-paths — never the pipeline.
  */
 
-import { deriveRepo } from './process.mjs';
+import { execFileSync } from 'node:child_process';
+import { basename } from 'node:path';
+
 import { subjectToSlug } from './utils.mjs';
 import { isOwnerLeakySegment } from '../../lib/validate/check-owner-leakage.mjs';
 import { loadPseudonymMap } from './pseudonym-map.mjs';
@@ -66,6 +83,48 @@ function currentMapPath() {
     _lazyPath = '';
   }
   return _lazyPath;
+}
+
+// ── Repo identity (issue #343; moved here from process.mjs for #734b) ────────
+
+let _cachedRepo = null;
+
+/**
+ * Derive the canonical repo identifier for cross-repo vault aggregation (issue #343).
+ *
+ * Strategy: parse `git remote get-url origin` and extract the org/name pair
+ * (e.g. `git@github.com:Kanevry/session-orchestrator.git` → `Kanevry/session-orchestrator`).
+ * Falls back to `path.basename(process.cwd())` when not in a git repo or origin
+ * is unavailable. Cached per-process — repo identity does not change mid-run.
+ *
+ * NOTE — this is the RAW identifier and is NOT leak-guarded. Never write its
+ * output to the vault directly; route it through {@link resolveRepoNamespace}
+ * (which is what the `vaultName`-less path below does).
+ *
+ * Re-exported by `./process.mjs` for backwards compatibility — that was its home
+ * until the #734b cycle break, and the module-level cache means there must remain
+ * exactly ONE definition.
+ *
+ * @returns {string} e.g. 'Kanevry/session-orchestrator' or a bare directory name.
+ */
+export function deriveRepo() {
+  if (_cachedRepo !== null) return _cachedRepo;
+  try {
+    const url = execFileSync('git', ['remote', 'get-url', 'origin'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    // Match git@host:org/name(.git)? OR https://host/org/name(.git)?
+    const sshMatch = url.match(/[:/]([^:/]+\/[^/]+?)(?:\.git)?$/);
+    if (sshMatch && sshMatch[1]) {
+      _cachedRepo = sshMatch[1];
+      return _cachedRepo;
+    }
+  } catch {
+    // git unavailable or no origin configured — fall through
+  }
+  _cachedRepo = basename(process.cwd());
+  return _cachedRepo;
 }
 
 /**

@@ -46,9 +46,23 @@ function runMirror(args) {
   // every test here mirrors into a non-git mkdtempSync tmp dir, which would be
   // rejected by the guard (no git origin). The guard's own behaviour is covered
   // black-box in tests/scripts/vault-mirror-entry-point.test.mjs.
+  //
+  // CLAUDE_PROJECT_DIR is pinned to a throwaway dir because the CLI emits
+  // `orchestrator.secret_masker.applied` once per run, and emitEvent resolves its
+  // target ledger from that variable. Unpinned, this file's 13 spawns append to the
+  // OPERATOR'S REAL .orchestrator/metrics/events.jsonl — measured 136 synthetic
+  // records after two suite runs. The ledger is gitignored, so nothing tracked
+  // breaks; what breaks is every later reader of it (sessions-staleness compares
+  // its newest foreign event against the sessions ledger, and `/evolve` mines it).
+  // A test that silently writes into the substrate it is not testing is the same
+  // class as tests/lib/worktree.test.mjs self-poisoning (#984).
   return spawnSync('node', [MIRROR, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1' },
+    env: {
+      ...process.env,
+      VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1',
+      CLAUDE_PROJECT_DIR: mkdtempSync(join(tmpdir(), 'vault-mirror-events-')),
+    },
   });
 }
 

@@ -8,6 +8,8 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'js-yaml';
 
+import { extractInitialFrontmatter } from './frontmatter-block.mjs';
+
 const [, , pluginRoot] = process.argv;
 
 if (!pluginRoot) {
@@ -29,26 +31,6 @@ function pass(msg) {
 function fail(msg) {
   console.log(`  FAIL: ${msg}`);
   failed++;
-}
-
-/**
- * Extract the YAML block at the beginning of a command file.
- *
- * @param {string} content
- * @returns {{ ok: true, yamlText: string } | { ok: false, diagnostic: string }}
- */
-function extractInitialFrontmatter(content) {
-  const lines = content.split(/\r?\n/);
-  if (lines[0] !== '---') {
-    return { ok: false, diagnostic: 'missing YAML frontmatter opening delimiter' };
-  }
-
-  const closingDelimiter = lines.indexOf('---', 1);
-  if (closingDelimiter === -1) {
-    return { ok: false, diagnostic: 'missing YAML frontmatter closing delimiter' };
-  }
-
-  return { ok: true, yamlText: lines.slice(1, closingDelimiter).join('\n') };
 }
 
 /**

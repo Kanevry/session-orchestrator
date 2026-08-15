@@ -23,7 +23,8 @@
  * registry-sourced peer was bucketed as `mode='session'` → classifyMode threw
  * → fell back to `parallel-ok`, silently bypassing the exclusivity matrix
  * for cross-repo entries (D5 from Epic #583 audit). The field is optional
- * on read for back-compat with v1 entries (defaults to null).
+ * on read for back-compat with v1 entries (defaults to null) — retained
+ * deliberately, see `skills/_shared/state-ownership.md` § Schema v1 Sunset.
  */
 
 import os from 'node:os';
@@ -115,6 +116,13 @@ function _validEntry(obj) {
   // Schema v2 (Epic #583): `mode` is optional. When present it MUST be a string
   // (no number / object / array smuggling). When absent (v1 entry), it is
   // accepted — back-compat with pre-#583 registry files.
+  //
+  // RETAINED, not forgotten (#595, re-verified 2026-08-15): zero mode-less
+  // entries exist on this host, but rejecting one would make a LIVE peer
+  // invisible to the exclusivity matrix — a strict weakening of
+  // parallel-session detection for zero functional gain (an absent mode
+  // already degrades to the `parallel-ok` bucket). See
+  // `skills/_shared/state-ownership.md` § Schema v1 Sunset.
   if ('mode' in obj && obj.mode !== null && typeof obj.mode !== 'string') {
     return false;
   }

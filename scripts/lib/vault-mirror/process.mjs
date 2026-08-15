@@ -6,9 +6,8 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
-import { join, resolve, basename } from 'node:path';
+import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { createSecretValueMasker } from '../secret-masker.mjs';
 import { subjectToSlug, isValidSlug, uuidPrefix8, toDate, parseFrontmatter } from './utils.mjs';
 import { isRealSession } from '../session-schema/filters.mjs';
@@ -101,6 +100,80 @@ function extractLearningCanonicalFields(noteContent) {
 }
 
 /**
+ * The marker every redaction sink in this repo splices in (`redact-spans.mjs`).
+ * Declared here as a literal rather than imported: `redactSpans` does not export
+ * it, and this module needs it as a SEARCH token, not as a replacement.
+ */
+const REDACTION_MARKER = '[REDACTED]';
+
+/**
+ * Does the on-disk `existingVal` match `renderedVal` once every `[REDACTED]`
+ * span in it is treated as a wildcard? (#1025)
+ *
+ * WHY THIS EXISTS. Masking is env-derived and the env is not part of the record,
+ * so the two sides of the idempotency comparison can be masked DIFFERENTLY: a
+ * note written while `FOO_TOKEN` was set carries `[REDACTED]`, and a later run
+ * with that var absent renders the RAW value. Plain equality then reports
+ * "content changed" and the mirror WRITES THE RAW SECRET — the repeated leak
+ * measured in #1025 Probe A. Treating an on-disk redaction as "some value stood
+ * here" makes that second run a `skipped-noop` again.
+ *
+ * DIRECTION IS DELIBERATE — the wildcard is only ever read off the ON-DISK side.
+ * An on-disk `[REDACTED]` is evidence that a mask ran; an on-disk raw value is
+ * evidence of nothing, so the reverse (candidate redacted, disk raw) stays a
+ * mismatch. See the COLD-START FREEZE note in `maskEntrySecrets` for the residual
+ * that this asymmetry leaves open on purpose.
+ *
+ * NAMED CEILING: the wildcard is exactly as wide as the marker spans — every
+ * literal segment AROUND them must still match byte for byte. A genuine content
+ * edit that happens to sit entirely inside a redacted span is therefore read as a
+ * no-op. That is a bounded over-approximation on a field whose masked half is by
+ * definition unpublishable; the alternative (persisting the needle set to disk)
+ * would put a secrets file on disk to protect against secrets, which is worse.
+ *
+ * THE MARKER IS NOT AUTHENTICATED — and it cannot be. `[REDACTED]` is an ordinary
+ * string that this repo's own prose uses freely (ADRs, rule files, learnings), so
+ * its presence is evidence a mask MAY have run, never proof one did. Two cheap
+ * narrowings bound what that costs:
+ *   - A value consisting of NOTHING BUT markers (`[REDACTED]`, or two in a row)
+ *     leaves zero literal anchors, compiling to a pattern that matches every
+ *     string — a field permanently blind to every future edit. Rejected outright:
+ *     with no anchor there is no evidence of what stood there, so the safe read is
+ *     "not a redaction of this candidate".
+ *   - A marker span stands for at least ONE character (`+?`, not `*?`). A masked
+ *     needle is >= `MIN_MASKABLE_LENGTH` (8) characters by construction, so this
+ *     never rejects a real redaction and does reject the empty-span reading.
+ *
+ * REJECTED ALTERNATIVE — gating the wildcard on `needleCount > 0`. It reads as the
+ * obvious authentication ("no needles this run, so an on-disk marker cannot be
+ * ours") and it destroys the fix, because the leaking run is EXACTLY the run with
+ * zero needles: #1025 Probe A reproduced `written` + raw value on the second run
+ * precisely because the env no longer carried the secret. Gating there would
+ * disable the wildcard in the only case it exists for. The needle count of the
+ * CURRENT run says nothing about the env of the run that wrote the file.
+ *
+ * SHARED BY TWO VAULT SINKS — do not inline a second copy. `writeNarrative` in
+ * `scripts/lib/vault-status/narrative-mirror.mjs` imports this for its own
+ * skip-noop decision; both write into the same tracked, pushed vault repo, so the
+ * contract in `secret-masker.mjs`'s header must hold identically in both. (That
+ * module is the natural long-term home for this predicate — see the note there.)
+ *
+ * @param {string} existingVal — field value parsed out of the note on disk
+ * @param {string} renderedVal — same field from the freshly rendered candidate
+ * @returns {boolean}
+ */
+export function matchesModuloRedaction(existingVal, renderedVal) {
+  if (typeof existingVal !== 'string' || typeof renderedVal !== 'string') return false;
+  if (!existingVal.includes(REDACTION_MARKER)) return false;
+  const segments = existingVal.split(REDACTION_MARKER);
+  // Degenerate-wildcard guard: no literal anchor survives, so the pattern would
+  // match anything and freeze the field forever. See the header above.
+  if (segments.every((segment) => segment === '')) return false;
+  const pattern = segments.map((segment) => RegExp.escape(segment)).join('[\\s\\S]+?');
+  return new RegExp(`^${pattern}$`).test(renderedVal);
+}
+
+/**
  * Return true when the existing vault note content and the freshly-rendered
  * candidate share identical canonical fields (i.e. no meaningful update needed).
  *
@@ -124,8 +197,12 @@ function learningContentMatches(existingContent, renderedContent) {
   // For each field: if the existing value is absent (empty string), it cannot
   // signal a mismatch — it means the old note didn't track that field. Only
   // non-empty existing values are compared against the rendered candidate.
+  // #1025: a field whose only difference from the candidate is a `[REDACTED]`
+  // span counts as a match — see matchesModuloRedaction above.
   const fieldMatches = (existingVal, renderedVal) =>
-    existingVal === '' || existingVal === renderedVal;
+    existingVal === '' ||
+    existingVal === renderedVal ||
+    matchesModuloRedaction(existingVal, renderedVal);
   return (
     fieldMatches(existing.status, rendered.status) &&
     fieldMatches(existing.expires, rendered.expires) &&
@@ -137,35 +214,20 @@ function learningContentMatches(existingContent, renderedContent) {
 
 // ── repo derivation ───────────────────────────────────────────────────────────
 
-let _cachedRepo = null;
-
 /**
- * Derive the canonical repo identifier for cross-repo vault aggregation (issue #343).
+ * `deriveRepo` LIVES IN `./namespace.mjs` and is re-exported here (issue #734b).
  *
- * Strategy: parse `git remote get-url origin` and extract the org/name pair
- * (e.g. `git@github.com:Kanevry/session-orchestrator.git` → `Kanevry/session-orchestrator`).
- * Falls back to `path.basename(process.cwd())` when not in a git repo or origin
- * is unavailable. Cached per-process — repo identity does not change mid-run.
+ * Until #734b this module defined it while `namespace.mjs` imported it — and
+ * `namespace.mjs` was in turn imported here for `resolveRepoNamespace`, forming
+ * the repo's only import cycle. Moving the definition down to the leaf-ward
+ * identity module broke the cycle; this re-export keeps `process.mjs`'s public
+ * surface unchanged for the existing consumers that import it from here.
+ *
+ * Do NOT re-add a second definition: `deriveRepo` caches its result in a
+ * module-level variable, so a duplicate would produce two independent caches
+ * (and two `git remote get-url origin` spawns).
  */
-export function deriveRepo() {
-  if (_cachedRepo !== null) return _cachedRepo;
-  try {
-    const url = execFileSync('git', ['remote', 'get-url', 'origin'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    // Match git@host:org/name(.git)? OR https://host/org/name(.git)?
-    const sshMatch = url.match(/[:/]([^:/]+\/[^/]+?)(?:\.git)?$/);
-    if (sshMatch && sshMatch[1]) {
-      _cachedRepo = sshMatch[1];
-      return _cachedRepo;
-    }
-  } catch {
-    // git unavailable or no origin configured — fall through
-  }
-  _cachedRepo = basename(process.cwd());
-  return _cachedRepo;
-}
+export { deriveRepo } from './namespace.mjs';
 
 // ── Action output ─────────────────────────────────────────────────────────────
 
@@ -227,15 +289,59 @@ export function emitAction({ action, path, kind, id, vaultDir, meta }) {
  */
 let _secretMasker = null;
 
+/** Records handed to `maskEntrySecrets` this process. Counts only. */
+let _maskedRecords = 0;
+/** String values this process that masking actually CHANGED. Counts only. */
+let _maskHits = 0;
+
+/**
+ * Build (once) and return the process-wide masker.
+ * @returns {{ mask: (text: string) => string, needleCount: number }}
+ */
+function ensureMasker() {
+  if (_secretMasker === null) _secretMasker = createSecretValueMasker(process.env);
+  return _secretMasker;
+}
+
+/**
+ * Counts-only view of the masking that happened in this process (#1025).
+ *
+ * Exists so the CLI can emit `orchestrator.secret_masker.applied` at the END of a
+ * channel run without reaching into a module-private singleton. It FORCE-BUILDS
+ * the masker rather than reporting 0 for an unbuilt one: at 0 processed records
+ * the lazy build never fires, and a `needle_count: 0` from that path would be
+ * indistinguishable from "this channel has no masking wired at all" — the exact
+ * ambiguity the event was added to remove.
+ *
+ * NEVER returns a needle, a prefix of one, or any masked text — only cardinals.
+ *
+ * @returns {{ needleCount: number, records: number, hits: number }}
+ */
+export function getMaskerStats() {
+  return { needleCount: ensureMasker().needleCount, records: _maskedRecords, hits: _maskHits };
+}
+
 /**
  * Mask every env-derived secret VALUE occurring anywhere in a mirror record,
  * BEFORE any of it becomes a filename, a stdout line, or vault Markdown.
  *
  * WHY THIS IS THE CHOKE-POINT — and why it is on the INPUT, not the output.
- * The vault is the only mirror sink whose output lands in a TRACKED, PUSHED
- * artifact (`auto-commit.mjs` runs `git add` + `commit` in the vault repo), so a
- * leak here is not deletable — it would need a history rewrite in a foreign repo
- * that neither this repo's `.gitleaks.toml` nor `check-owner-leakage.mjs` guards.
+ * Everything this mirror writes lands in a TRACKED, PUSHED artifact
+ * (`auto-commit.mjs` runs `git add` + `commit` in the vault repo), so a leak here
+ * is not deletable — it would need a history rewrite in a foreign repo that
+ * neither this repo's `.gitleaks.toml` nor `check-owner-leakage.mjs` guards.
+ *
+ * THIS IS NOT THE ONLY SUCH CHANNEL — an earlier revision of this comment claimed
+ * it was, and that was wrong. Measured 2026-08-15 against the vault at
+ * `83a868059` (`git -C <vault> ls-files`): 18 tracked `_session-narrative.md`
+ * files (written by `scripts/lib/vault-status/narrative-mirror.mjs`) and 1 tracked
+ * `01-projects/session-orchestrator/research/hardware-patterns.md` (written by
+ * `scripts/export-hw-learnings.mjs`) live in the same pushed repo. All three
+ * channels carry agent-authored free text and all three need hardening
+ * independently — the value masker was wired into `export-hw-learnings.mjs` in
+ * #1025 for exactly this reason. Read "the vault is a tracked sink" as the
+ * property that makes masking necessary HERE, never as a census of the sinks.
+ *
  * The records carry agent-authored free text (`insight`, `evidence`, `notes`,
  * `text`) that routinely quotes command lines and error output, which is exactly
  * the class shape-regexes cannot catch: the VALUE is in the prose, with no
@@ -258,6 +364,46 @@ let _secretMasker = null;
  *      an already-mirrored record still resolves to `skipped-noop`; masking only
  *      on write would make every affected note re-render (and re-commit) forever.
  *
+ *      That symmetry holds only while the ENV is stable, and the env is not part
+ *      of the record — so idempotency here is env-DEPENDENT. Reproduced (#1025):
+ *      a run WITH the secret in env writes `[REDACTED]`; a second run WITHOUT it
+ *      renders the raw value, the two differ, and the note is `updated` — i.e.
+ *      the leak is written a second time, by the very run that was supposed to be
+ *      a no-op. `learningContentMatches` now treats an on-disk `[REDACTED]` span
+ *      as a wildcard (see that function) so this direction resolves to
+ *      `skipped-noop` again.
+ *
+ *      KNOWN RESIDUAL — and NOT the one an earlier revision of this note named.
+ *      That revision claimed a COLD-START FREEZE over the CANONICAL fields: first
+ *      run without the env writes the raw value, later runs render `[REDACTED]`,
+ *      and the note freezes. Measured, that direction HEALS: with no marker on the
+ *      on-disk side `matchesModuloRedaction` returns false at its first line, the
+ *      canonical fields differ, and the run writes the masked content. The
+ *      asymmetry is still deliberate (an on-disk redaction is evidence a mask ran;
+ *      an on-disk raw value is evidence of nothing) — it simply does not freeze
+ *      anything the field comparison can see.
+ *
+ *      What DOES freeze is the half the field comparison cannot see.
+ *      `learningContentMatches` compares exactly five canonical fields — `status`,
+ *      `expires`, `confidence`, `insight`, `source_session`. A raw secret sitting
+ *      in any OTHER field (`evidence` is the realistic one; it is agent-authored
+ *      free text and it is rendered into the note) leaves all five identical
+ *      between the raw on-disk note and the masked candidate. The comparison
+ *      reports a match, the run emits `skipped-noop`, and the plaintext stays in
+ *      the tracked, pushed file permanently — no later run rewrites it, because no
+ *      later run ever sees a difference.
+ *
+ *      THE ESCAPE HATCH EXISTS AND IS UNDOCUMENTED ELSEWHERE, which is the real
+ *      defect: `processLearning(entry, n, { ...ctx, force: true })` skips the
+ *      date/content comparison entirely and re-renders from the (masked) entry, so
+ *      a single forced re-mirror with the env populated heals every such note. It
+ *      covers the same-id and legacy-flat paths; the disambiguated-collision
+ *      branch below does not read `force` and is not healed by it.
+ *      Revisit-Trigger: widen the canonical field set (or diff the whole rendered
+ *      body) the first time a mirror run is observed leaving a raw needle in a
+ *      non-canonical field — a test written TODAY would only pin the leak as
+ *      expected behaviour.
+ *
  * FRONTMATTER AND BODY ARE TREATED IDENTICALLY. A credential is exactly as
  * published in `title:` as it is under `## Insight` — both live in the same
  * committed file — so there is no case for exempting the structured half. The
@@ -273,11 +419,17 @@ let _secretMasker = null;
  * @returns {T} the same record with every string value masked
  */
 function maskEntrySecrets(entry) {
-  if (_secretMasker === null) _secretMasker = createSecretValueMasker(process.env);
-  const { mask, needleCount } = _secretMasker;
+  const { mask, needleCount } = ensureMasker();
+  // Counted BEFORE the fast path: "records the choke-point saw" must not depend
+  // on whether the env happened to carry a needle.
+  _maskedRecords++;
   if (needleCount === 0) return entry;
   const walk = (value) => {
-    if (typeof value === 'string') return mask(value);
+    if (typeof value === 'string') {
+      const masked = mask(value);
+      if (masked !== value) _maskHits++;
+      return masked;
+    }
     if (Array.isArray(value)) return value.map(walk);
     if (value && typeof value === 'object') {
       const out = {};

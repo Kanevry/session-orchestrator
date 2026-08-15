@@ -18,7 +18,10 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { inspectUnwiredFeatures } from '@lib/validate/check-unwired-features.mjs';
+import {
+  inspectUnwiredFeatures,
+  collectOrphanedProseModules,
+} from '@lib/validate/check-unwired-features.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -175,5 +178,146 @@ describe('check-unwired-features — declared-but-unread census', () => {
     expect(result.summary.consumerFiles).toBeGreaterThan(100);
     expect(result.findings.filter((f) => f.kind === 'allowlist-missing-reason')).toEqual([]);
     expect(result.findings.filter((f) => f.kind === 'allowlist-stale')).toEqual([]);
+  });
+});
+
+/**
+ * Build a fixture repo holding ONE library module plus one prose document, and
+ * optionally a second module that references it.
+ *
+ * @param {{module?: string, prose?: string, proseName?: string, consumer?: string}} parts
+ * @returns {string} absolute fixture root (caller removes it)
+ */
+function makeModuleFixture(parts) {
+  const root = mkdtempSync(join(tmpdir(), 'orphan-module-'));
+  mkdirSync(join(root, 'scripts', 'lib'), { recursive: true });
+  mkdirSync(join(root, 'docs'), { recursive: true });
+
+  writeFileSync(
+    join(root, 'scripts', 'lib', 'orphan.mjs'),
+    parts.module ?? 'export function doTheThing() {\n  return 1;\n}\n',
+  );
+  writeFileSync(join(root, 'docs', parts.proseName ?? 'guide.md'), parts.prose ?? '');
+  if (parts.consumer) writeFileSync(join(root, 'scripts', 'lib', 'consumer.mjs'), parts.consumer);
+  return root;
+}
+
+/** @param {string} root @returns {string[]} reported module paths */
+const orphanKeys = (root) => collectOrphanedProseModules(root).findings.map((f) => f.key);
+
+describe('check-unwired-features — S3 orphaned-prose-module census', () => {
+  it('reports a module the prose only names by filename, and stops once the prose names a symbol', () => {
+    // Fake-regression: the SAME module and the SAME document, one word apart.
+    // Passive + bare filename = a promise nobody performs; naming the export
+    // makes it an instruction addressed to a reader.
+    const promise = makeModuleFixture({
+      prose: 'All transitions are validated against `scripts/lib/orphan.mjs` before writing.\n',
+    });
+    const instruction = makeModuleFixture({
+      prose: 'Validate each transition by calling `doTheThing()` from `scripts/lib/orphan.mjs`.\n',
+    });
+    try {
+      expect(orphanKeys(promise)).toContain(join('scripts', 'lib', 'orphan.mjs'));
+      expect(orphanKeys(instruction)).toEqual([]);
+    } finally {
+      rmSync(promise, { recursive: true, force: true });
+      rmSync(instruction, { recursive: true, force: true });
+    }
+  });
+
+  it('does not report a module reached by dynamic import through a URL variable', () => {
+    // FP class 1 (skill-health/join.mjs): a `from '…orphan.mjs'` regex sees no
+    // importer here, but category9-style code genuinely calls it. Any
+    // non-comment mention of the basename counts as a reference.
+    const root = makeModuleFixture({
+      prose: 'The join step is described in `scripts/lib/orphan.mjs`.\n',
+      consumer:
+        "const url = new URL('./orphan.mjs', import.meta.url).href;\n" +
+        'export const src = `const m = await import(${JSON.stringify(url)});`;\n',
+    });
+    try {
+      expect(orphanKeys(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still reports a module whose only mention in code is a JSDoc comment', () => {
+    // The mission-status-schema shape: three `* … orphan.mjs` JSDoc lines in the
+    // one module that plausibly would have called it. Prose is not a call, and
+    // neither is a comment.
+    const root = makeModuleFixture({
+      prose: 'Entries are validated against `scripts/lib/orphan.mjs`.\n',
+      consumer:
+        '/**\n * Callers needing validation should use the helper in orphan.mjs.\n */\n' +
+        'export function write(x) {\n  return x;\n}\n',
+    });
+    try {
+      expect(orphanKeys(root)).toContain(join('scripts', 'lib', 'orphan.mjs'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not report a re-export shim, which has no named export the prose could cite', () => {
+    // FP class 2 (autopilot-telemetry.mjs): `export *` yields zero named
+    // symbols, so "prose names none of its exports" is vacuously true.
+    const root = makeModuleFixture({
+      module: "export * from './autopilot/telemetry.mjs';\n",
+      prose: 'Telemetry lives in `scripts/lib/orphan.mjs`.\n',
+    });
+    try {
+      expect(orphanKeys(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not report a CLI entrypoint, which is invoked by path rather than imported', () => {
+    const root = makeModuleFixture({
+      module: '#!/usr/bin/env node\nexport function doTheThing() {\n  return 1;\n}\n',
+      prose: 'Run `scripts/lib/orphan.mjs` to refresh the cache.\n',
+    });
+    try {
+      expect(orphanKeys(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores CHANGELOG.md, so a symbol named only in release history does not excuse a dead module', () => {
+    // The soul-resolve.mjs shape: the live rule names only the path, while a
+    // months-old changelog entry names both exports. Counting history as a live
+    // claim silenced a true positive.
+    const root = makeModuleFixture({ prose: '', proseName: 'guide.md' });
+    try {
+      writeFileSync(
+        join(root, 'CHANGELOG.md'),
+        '- `scripts/lib/orphan.mjs` — pure `doTheThing()` resolver. 10 tests.\n',
+      );
+      writeFileSync(
+        join(root, 'docs', 'guide.md'),
+        'Slots are resolved in-memory each session by `scripts/lib/orphan.mjs`.\n',
+      );
+      expect(orphanKeys(root)).toContain(join('scripts', 'lib', 'orphan.mjs'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('exits 0 with an S3 finding present — WARN-only, so validate-plugin stays green', () => {
+    // validate-plugin tallies /^[ ]{2}FAIL:/gm module-wide: one FAIL line from a
+    // WARN-only check would redden the whole script.
+    const root = makeModuleFixture({
+      prose: 'All transitions are validated against `scripts/lib/orphan.mjs`.\n',
+    });
+    try {
+      const run = spawnSync('node', [SCRIPT, root], { encoding: 'utf8' });
+      expect(run.status).toBe(0);
+      expect(run.stdout).toContain('WARN: [orphaned-prose-module]');
+      expect(run.stdout).not.toMatch(/^ {2}FAIL:/m);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

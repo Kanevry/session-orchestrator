@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync, execSync } from 'node:child_process';
@@ -423,5 +423,88 @@ describe('vault-mirror canonical-vault guard (#600)', () => {
     expect(result.status).toBe(0);
     const action = JSON.parse(result.stdout.trim());
     expect(action.action).toBe('created');
+  });
+});
+
+// ── #1025: masking telemetry fires unconditionally, once per channel run ──────
+//
+// `needleCount` used to have exactly one consumer: a `=== 0` fast path inside
+// process.mjs. Whether the masker ran at all was unanswerable after the fact —
+// and "the masker ran and found nothing" is operationally very different from
+// "this channel has no masker wired".
+
+describe('vault-mirror secret-masker telemetry (#1025)', () => {
+  let dirs = [];
+
+  afterEach(() => {
+    for (const d of dirs) {
+      try {
+        rmSync(d, { recursive: true, force: true });
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+    dirs = [];
+  });
+
+  function tmp() {
+    const d = mkdtempSync(join(tmpdir(), 'vault-mirror-masker-test-'));
+    dirs.push(d);
+    return d;
+  }
+
+  // BUG CAUGHT: emitting at the LAZY-BUILD site inside maskEntrySecrets. That
+  // line is only reached once a record is actually processed, so a run over an
+  // empty source emits nothing at all — and silence there is indistinguishable
+  // from an unhardened channel. The hardest case is therefore records=0 AND
+  // needle_count=0: this test would go green at the wrong site only if the event
+  // still appeared, which it cannot.
+  //
+  // The env is CURATED, not inherited: `needle_count` is derived from the live
+  // env, so a stray secret-named var on the host would make the assertion
+  // flaky. None of the four keys below matches the key-name heuristic.
+  it('emits orchestrator.secret_masker.applied even with 0 records and 0 needles', () => {
+    const vaultDir = tmp();
+    const projectDir = tmp(); // pins events.jsonl away from the real repo telemetry
+    const sourceFile = join(tmp(), 'empty.jsonl');
+    writeFileSync(sourceFile, '', 'utf8');
+
+    const result = spawnSync('node', [
+      MIRROR,
+      '--vault-dir', vaultDir,
+      '--source', sourceFile,
+      '--kind', 'learning',
+      '--dry-run',
+    ], {
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        CLAUDE_PROJECT_DIR: projectDir,
+        VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1',
+      },
+    });
+
+    expect(result.status).toBe(0);
+
+    const eventsPath = join(projectDir, '.orchestrator', 'metrics', 'events.jsonl');
+    const records = readFileSync(eventsPath, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+    const masking = records.filter((r) => r.event === 'orchestrator.secret_masker.applied');
+
+    expect(masking).toHaveLength(1);
+    expect(masking[0]).toMatchObject({
+      channel: 'vault-mirror',
+      needle_count: 0,
+      records: 0,
+      hits: 0,
+      dry_run: true,
+    });
+    // Counts only — the payload must never carry text that could be a needle.
+    expect(Object.keys(masking[0]).sort()).toEqual(
+      ['channel', 'dry_run', 'event', 'hits', 'needle_count', 'records', 'timestamp'].sort(),
+    );
   });
 });
