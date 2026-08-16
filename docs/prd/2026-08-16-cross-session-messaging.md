@@ -3,6 +3,8 @@
 **Date:** 2026-08-16
 **Author:** Operator + Claude (AI-assisted planning)
 **Status:** Draft
+**Epic:** #1048 · **Sub-Issues:** #1049 (A5) · #1050 (A1+A2) · #1051 (A4) · #1052 (A3) · #1053 (B) · #1054 (C1) · #1055 (D) · #1056 (Spike RC)
+**Vorweg, ausserhalb der Batch:** #1047 (Registry-Defekt, war C2)
 **Appetite:** 2w (Medium Batch, Cooldown 3 Tage)
 **Parent Project:** session-orchestrator (standalone Feature)
 
