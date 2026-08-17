@@ -25,8 +25,14 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { appendJsonl } from './lib/common.mjs';
+import {
+  MEMORY_CLEANUP_EVENT,
+  deriveMemoryCleanupSignal,
+  stampMemoryCleanup,
+} from './lib/memory-cleanup-stamp.mjs';
 import { serializeSessionLineChecked } from './lib/session-schema/serializer.mjs';
 import {
   validateSession,
@@ -109,6 +115,42 @@ async function main() {
         `completed_at < started_at (delta=${deltaSec}s); clamped completed_at to started_at ` +
         `(original preserved as _original_completed_at=${repaired._original_completed_at})\n`
     );
+  }
+
+  // `memory_cleanup_at` derivation (#699 follow-up — Disziplin statt Mechanik).
+  // The flag used to be a boolean the coordinator-LLM remembered to pass at
+  // session-end; it was forgotten on 2026-08-14 and the cadence marker stalled
+  // 29 days behind the operator's own notes. It is now READ from the session's
+  // own `orchestrator.memory.cleanup_completed` events, sitting in the sibling
+  // events.jsonl of the target sessions.jsonl (same `.orchestrator/metrics/`
+  // directory in production, same tmp dir under test — no env plumbing).
+  //
+  // Precedence: an EXPLICIT `memory_cleanup_at` on the incoming record WINS and
+  // is never overwritten — an explicit stamp is a caller's positive assertion,
+  // while derivation only fills the gap left by silence.
+  const alreadyStamped =
+    typeof repaired.memory_cleanup_at === 'string' && repaired.memory_cleanup_at.length > 0;
+  if (!alreadyStamped) {
+    const eventsFile = join(dirname(args.file), 'events.jsonl');
+    const signal = deriveMemoryCleanupSignal({
+      eventsFile,
+      sessionId: repaired.session_id,
+      startedAt: repaired.started_at,
+      completedAt: repaired.completed_at,
+    });
+    if (signal.ranCleanup) {
+      const before = repaired;
+      repaired = stampMemoryCleanup(repaired, {
+        ranCleanup: true,
+        completedAt: repaired.completed_at,
+      });
+      if (repaired !== before) {
+        process.stderr.write(
+          `emit-session: derived memory_cleanup_at=${repaired.memory_cleanup_at} from ` +
+            `${signal.matches} ${MEMORY_CLEANUP_EVENT} event(s) (latest ${signal.at})\n`
+        );
+      }
+    }
   }
 
   let validated;

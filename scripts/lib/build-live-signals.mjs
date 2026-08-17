@@ -18,7 +18,7 @@ import { resolve } from 'node:path';
 import { parseStateMd, parseRecommendations } from './state-md.mjs';
 import { normalizeSession, tailRealSessions } from './session-schema.mjs';
 import { parseBootstrapLock } from './bootstrap-lock-freshness.mjs';
-import { scanBacklog } from './backlog-scan.mjs';
+import { scanBacklog, DEFAULT_BACKLOG_LIMIT } from './backlog-scan.mjs';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -36,7 +36,11 @@ import { scanBacklog } from './backlog-scan.mjs';
  * @param {string} [opts.sessionsPath]   — defaults to '.orchestrator/metrics/sessions.jsonl'
  * @param {string} [opts.lockPath]       — defaults to '.orchestrator/bootstrap.lock'
  * @param {Array}  [opts.learnings]      — pre-surfaced top-N learnings; defaults to []
- * @param {number} [opts.backlogLimit]   — passed to scanBacklog; defaults to 50
+ * @param {number} [opts.backlogLimit]   — passed to scanBacklog; defaults to
+ *   `DEFAULT_BACKLOG_LIMIT` from backlog-scan.mjs (never a local copy of that
+ *   number). A window smaller than the repo's open backlog makes
+ *   `backlog.criticalCount`/`highCount`/`staleCount` lower bounds —
+ *   `backlog.truncated` is the flag that says so.
  * @param {number} [opts.sessionTailN]   — defaults to 10 (last N sessions)
  * @param {Function} [opts._scanBacklog] — injectable seam for tests (defaults to scanBacklog)
  * @returns {Promise<import('./mode-selector.mjs').Signals>}
@@ -56,7 +60,7 @@ export async function buildLiveSignals(opts = {}) {
   const learnings = Array.isArray(opts.learnings) ? opts.learnings : [];
   const backlogLimit = typeof opts.backlogLimit === 'number' && opts.backlogLimit > 0
     ? opts.backlogLimit
-    : 50;
+    : DEFAULT_BACKLOG_LIMIT;
   const sessionTailN = typeof opts.sessionTailN === 'number' && opts.sessionTailN > 0
     ? opts.sessionTailN
     : 10;

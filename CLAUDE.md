@@ -43,7 +43,8 @@ These are the non-obvious, mistake-causing facts that must load every session. E
   The coordinator declares its OWN direct edits as `coordinator.json` in the same directory — 2 of the 5 recorded divergences were coordinator-direct edits, which no agent scope file covers by construction.
   Mechanism, error-class matrix and named limits: [`docs/scope-collision-guard.md`](docs/scope-collision-guard.md). <!-- consistency:exempt:runtime-only -->
 - **`vault-dir` resolves HOST-LOCALLY — a hand-run vault probe writes into the operator's REAL vault.** Precedence is `SO_VAULT_DIR` > `owner.yaml` `paths.vault-dir` > the committed `vault-integration.vault-dir` below (`scripts/lib/config/host-paths.mjs`); the literal value in this file LOSES against both.
-  So a throwaway invocation of a vault writer (`mirrorNarrative()`, `vault-mirror.mjs`, the board writer) with a synthetic `repoRoot` does **not** land in a sandbox — the fake repo path only fakes the SOURCE, never the DESTINATION. A reviewer in this repo walked into exactly that. Export `SO_VAULT_DIR=<tmpdir>` before ANY manual invocation of vault-writing code. <!-- consistency:exempt:runtime-only -->
+  So a throwaway invocation of a vault writer (`mirrorNarrative()`, `vault-mirror.mjs`, the board writer) with a synthetic `repoRoot` does **not** land in a sandbox — the fake repo path only fakes the SOURCE, never the DESTINATION. A reviewer in this repo walked into exactly that.
+  Export `SO_VAULT_DIR=<tmpdir>` before ANY manual invocation of vault-writing code. <!-- consistency:exempt:runtime-only -->
 
 ## Session Config
 

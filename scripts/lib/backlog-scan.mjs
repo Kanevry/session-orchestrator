@@ -10,6 +10,9 @@
  *  - Module-level cache keyed on (vcs, limit) — one VCS round-trip per session.
  *  - Graceful degradation: missing CLI / non-zero exit / parse failure → null.
  *    Never throws to the caller.
+ *  - No silent caps: the scan reads at most `limit` issues, so every count is a
+ *    LOWER BOUND when the window fills. `truncated` says so in the return value
+ *    and a WARNING says so on stderr — a bound that is applied is announced.
  *
  * Stale threshold: 30 days since `updated_at`.
  *
@@ -19,10 +22,24 @@
 
 import { spawnSync } from 'node:child_process';
 
+import { warn } from './common.mjs';
 import { normalizeLabel } from './label-scope.mjs';
 import { resolveRepoSpec } from './vcs-repo-spec.mjs';
 
 export const STALE_THRESHOLD_DAYS = 30;
+
+/**
+ * Default scan window, and the SINGLE source for that number — every caller
+ * either omits `limit` or imports this constant. A second hand-written copy is
+ * what made the old default wrong in three places at once.
+ *
+ * Ceiling: 100 is the largest single-request page BOTH CLIs serve reliably
+ * (the GitLab API clamps `per_page` at 100), so it is the widest exact window
+ * available without paginating. Above it the scan truncates — `truncated: true`
+ * plus a stderr WARNING announce that, and every count becomes a lower bound.
+ * Revisit with a `--page` loop if a repo's OPEN backlog routinely exceeds 100.
+ */
+export const DEFAULT_BACKLOG_LIMIT = 100;
 
 /** Module-level cache. Keyed by JSON.stringify({vcs, limit}). */
 const _cache = new Map();
@@ -91,6 +108,10 @@ function ageDays(iso, nowMs) {
  *  - `labels`: array of strings OR array of {name: string} objects
  *  - `updated_at` (glab) or `updatedAt` (gh): ISO-8601 timestamp
  *
+ * `total` is the number of records AGGREGATED, never the number of records that
+ * exist in the tracker — the caller decides the window, so only the caller
+ * (or `scanBacklog`'s `truncated` flag) can tell the two apart.
+ *
  * @param {Array<object>} issues
  * @param {number} nowMs — injected for tests
  * @returns {{criticalCount: number, highCount: number, staleCount: number, byLabel: Record<string, number>, total: number}}
@@ -146,6 +167,14 @@ export function summarizeIssues(issues, nowMs = Date.now()) {
  *
  * Never throws.
  *
+ * The scan reads at most `limit` records (default `DEFAULT_BACKLOG_LIMIT`), so
+ * every count is a LOWER BOUND once the window fills. `truncated` reports that:
+ * `true` means the CLI returned a full window, so records — and the critical /
+ * high / stale issues among them — may lie beyond it. It is deliberately
+ * conservative: a backlog of exactly `limit` issues reports `truncated: true`
+ * even though nothing was missed. Over-reporting "you may have missed some" is
+ * safe; under-reporting it is the bug this flag exists to prevent.
+ *
  * @param {{
  *   limit?: number,
  *   vcs?: 'github'|'gitlab'|null,
@@ -160,10 +189,11 @@ export function summarizeIssues(issues, nowMs = Date.now()) {
  *   get-url`); tests inject a stub instead of shelling out. `runJsonFn` is
  *   the injectable seam for the CLI runner — defaults to the real `runJson`
  *   (shells out to `glab`/`gh`).
- * @returns {Promise<null | {criticalCount: number, highCount: number, staleCount: number, byLabel: Record<string, number>, total: number, vcs: string, limit: number}>}
+ * @returns {Promise<null | {criticalCount: number, highCount: number, staleCount: number, byLabel: Record<string, number>, total: number, vcs: string, limit: number, truncated: boolean}>}
  */
 export async function scanBacklog(opts = {}) {
-  const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : 50;
+  const limit =
+    Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : DEFAULT_BACKLOG_LIMIT;
   // Distinguish "user did not pass vcs" (auto-detect) from "user explicitly passed
   // null" (degrade). 'vcs' in opts catches the explicit-null path so callers can
   // force the no-vcs branch in tests without monkey-patching detectVcs.
@@ -197,8 +227,25 @@ export async function scanBacklog(opts = {}) {
     return null;
   }
 
+  // A full window means records may lie beyond it, so every count is a lower
+  // bound. `>=` (not `> `) because the CLIs cap silently: the GitLab API clamps
+  // `per_page` at 100, so an over-fetch of `limit + 1` would come back capped
+  // and read as "not truncated" — under-approximating exactly the way the
+  // window itself did. A full window is the only signal that survives clamping.
+  const truncated = issues.length >= limit;
+
   const summary = summarizeIssues(issues, nowMs);
-  const result = { ...summary, vcs, limit };
+  const result = { ...summary, vcs, limit, truncated };
+
+  // Announce the bound (never a silent cap). Emitted once per cache key — a
+  // cache hit returns before this point, so a per-session scan warns once.
+  if (truncated) {
+    warn(
+      `backlog scan filled its ${limit}-issue window (${bin}): criticalCount/highCount/staleCount are LOWER BOUNDS. ` +
+        `Pass a larger limit for exact counts.`
+    );
+  }
+
   _cache.set(cacheKey, result);
   return result;
 }

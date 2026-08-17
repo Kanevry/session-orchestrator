@@ -228,9 +228,11 @@ let cachedProbeSnapshot = null;
  * @returns {Promise<{mode: string, confidence: number, rationale?: string, alternatives?: object[]}>}
  */
 async function modeSelector() {
+  // `backlogLimit` is intentionally NOT passed: the window default lives once,
+  // in backlog-scan.mjs (`DEFAULT_BACKLOG_LIMIT`). The hand-written 50 that
+  // stood here under-read this repo's own backlog and hid its critical issues.
   const signals = await buildLiveSignals({
     learnings: surfacedLearnings,
-    backlogLimit: 50,
   });
   return selectMode(signals);
 }
