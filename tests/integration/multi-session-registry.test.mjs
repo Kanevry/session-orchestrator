@@ -413,7 +413,9 @@ describe('two-session peer visibility', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('clean stop round-trip', { timeout: 15000 }, () => {
-  it('heartbeat file exists after session-start, is removed after stop with same session_id', async () => {
+  // #1047: Stop fires at TURN end, not session end. The entry must SURVIVE and its
+  // heartbeat must advance; deregistration moved to hooks/on-session-end.mjs.
+  it('heartbeat file survives stop and its last_heartbeat advances', async () => {
     const dir = await mkProject();
     const sessionId = 'test-session-clean-stop-42';
 
@@ -427,6 +429,15 @@ describe('clean stop round-trip', { timeout: 15000 }, () => {
     const heartbeatPath = path.join(activeDir, `${sessionId}.json`);
     await expect(fs.access(heartbeatPath)).resolves.toBeUndefined();
 
+    const before = JSON.parse(await fs.readFile(heartbeatPath, 'utf8'));
+    // Backdate so the refresh assertion cannot race a same-millisecond clock read.
+    const backdated = new Date(Date.now() - 60_000).toISOString();
+    await fs.writeFile(
+      heartbeatPath,
+      JSON.stringify({ ...before, last_heartbeat: backdated }),
+      'utf8',
+    );
+
     // Run stop with the same session_id
     const stopResult = await runStop({
       projectDir: dir,
@@ -435,9 +446,15 @@ describe('clean stop round-trip', { timeout: 15000 }, () => {
 
     expect(stopResult.code).toBe(0);
 
-    // Heartbeat file must be gone
+    // A — the entry survives the turn end (this is what #1047 fixed)
     const exists = await fs.access(heartbeatPath).then(() => true).catch(() => false);
-    expect(exists).toBe(false);
+    expect(exists).toBe(true);
+
+    const after = JSON.parse(await fs.readFile(heartbeatPath, 'utf8'));
+    // B — the heartbeat advanced past the backdated value
+    expect(Date.parse(after.last_heartbeat)).toBeGreaterThan(Date.parse(backdated));
+    // C — refresh in place, not a re-registration that would fabricate the session age
+    expect(after.started_at).toBe(before.started_at);
   });
 });
 
@@ -446,7 +463,8 @@ describe('clean stop round-trip', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('stop without stdin session_id — current-session.json fallback', { timeout: 15000 }, () => {
-  it('removes the heartbeat file when stop hook is given empty stdin (fallback via current-session.json)', async () => {
+  // #1047: the fallback resolves the session_id and REFRESHES the entry; it no longer deletes it.
+  it('refreshes the heartbeat file when stop hook is given empty stdin (fallback via current-session.json)', async () => {
     const dir = await mkProject();
 
     // Start a session (generates a uuid and writes current-session.json)
@@ -461,6 +479,14 @@ describe('stop without stdin session_id — current-session.json fallback', { ti
     const heartbeatPath = path.join(registryDir, 'active', `${session_id}.json`);
     await expect(fs.access(heartbeatPath)).resolves.toBeUndefined();
 
+    const before = JSON.parse(await fs.readFile(heartbeatPath, 'utf8'));
+    const backdated = new Date(Date.now() - 60_000).toISOString();
+    await fs.writeFile(
+      heartbeatPath,
+      JSON.stringify({ ...before, last_heartbeat: backdated }),
+      'utf8',
+    );
+
     // Run stop with empty stdin (no session_id in payload)
     const stopResult = await runStop({
       projectDir: dir,
@@ -469,9 +495,13 @@ describe('stop without stdin session_id — current-session.json fallback', { ti
 
     expect(stopResult.code).toBe(0);
 
-    // The fallback path reads current-session.json to find the session_id and deregisters
+    // The fallback path reads current-session.json to find the session_id and refreshes.
+    // Asserting the ADVANCE, not merely survival — survival alone would also hold if the
+    // fallback failed to resolve the id and the hook silently did nothing.
     const stillExists = await fs.access(heartbeatPath).then(() => true).catch(() => false);
-    expect(stillExists).toBe(false);
+    expect(stillExists).toBe(true);
+    const after = JSON.parse(await fs.readFile(heartbeatPath, 'utf8'));
+    expect(Date.parse(after.last_heartbeat)).toBeGreaterThan(Date.parse(backdated));
   });
 });
 
@@ -565,8 +595,13 @@ describe('zombie sweep on session-start', { timeout: 15000 }, () => {
 // 6. Deregister is idempotent across hooks
 // ---------------------------------------------------------------------------
 
-describe('deregister idempotency', { timeout: 15000 }, () => {
-  it('running stop twice with the same session_id both exit 0 and second run still appends a stop event', async () => {
+// #1047 renamed this block: Stop no longer deregisters, so "deregister idempotency" named a
+// behaviour that moved to hooks/on-session-end.mjs. What this block still legitimately pins is
+// that repeated turn-ends are safe — each exits 0 and each appends its own stop event. The
+// missing-entry path (heartbeat() returning null → `heartbeat-missing` breadcrumb) is covered
+// in tests/hooks/on-stop.test.mjs and is deliberately not duplicated here.
+describe('repeated turn-end (Stop) runs', { timeout: 15000 }, () => {
+  it('running stop twice with the same session_id both exit 0, each appends a stop event, and the entry keeps being refreshed', async () => {
     const dir = await mkProject();
     const sessionId = 'test-idempotent-stop-99';
 
@@ -576,7 +611,16 @@ describe('deregister idempotency', { timeout: 15000 }, () => {
       stdin: { session_id: sessionId },
     });
 
-    // First stop — removes the heartbeat file and writes event
+    const heartbeatPath = path.join(registryDir, 'active', `${sessionId}.json`);
+    const before = JSON.parse(await fs.readFile(heartbeatPath, 'utf8'));
+    const backdated = new Date(Date.now() - 60_000).toISOString();
+    await fs.writeFile(
+      heartbeatPath,
+      JSON.stringify({ ...before, last_heartbeat: backdated }),
+      'utf8',
+    );
+
+    // First stop — refreshes the heartbeat and writes an event
     const stopResult1 = await runStop({
       projectDir: dir,
       stdin: { hook_event_name: 'Stop', session_id: sessionId },
@@ -587,22 +631,26 @@ describe('deregister idempotency', { timeout: 15000 }, () => {
     const firstStopEvents = eventsAfterFirst.filter((e) => e.event === 'orchestrator.session.stopped');
     expect(firstStopEvents).toHaveLength(1);
 
-    // Second stop — heartbeat file already gone; hook must still exit 0
+    const afterFirst = JSON.parse(await fs.readFile(heartbeatPath, 'utf8'));
+    expect(Date.parse(afterFirst.last_heartbeat)).toBeGreaterThan(Date.parse(backdated));
+
+    // Second stop — entry is still present; hook must still exit 0
     const stopResult2 = await runStop({
       projectDir: dir,
       stdin: { hook_event_name: 'Stop', session_id: sessionId },
     });
     expect(stopResult2.code).toBe(0);
 
-    // Second run must append another stop event (idempotent on registry, not on events)
+    // Second run must append another stop event (not idempotent on events, by design)
     const eventsAfterSecond = await readEvents(dir);
     const allStopEvents = eventsAfterSecond.filter((e) => e.event === 'orchestrator.session.stopped');
     expect(allStopEvents).toHaveLength(2);
 
-    // Heartbeat file must still not exist (was never re-created by stop hook)
-    const heartbeatPath = path.join(registryDir, 'active', `${sessionId}.json`);
+    // The entry survives every turn end and never regains a fabricated started_at
     const exists = await fs.access(heartbeatPath).then(() => true).catch(() => false);
-    expect(exists).toBe(false);
+    expect(exists).toBe(true);
+    const afterSecond = JSON.parse(await fs.readFile(heartbeatPath, 'utf8'));
+    expect(afterSecond.started_at).toBe(before.started_at);
   });
 });
 

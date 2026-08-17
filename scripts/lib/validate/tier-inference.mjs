@@ -25,7 +25,36 @@ const WRITE_TOOLS = new Set(['Edit', 'Write']);
 
 // Tools that are acceptable in the read-only tier (Bash is fine — fine-grained
 // Bash control lives in hooks/pre-bash-destructive-guard.mjs, NOT here).
-const READ_ONLY_TOOLS = new Set(['Read', 'Grep', 'Glob', 'Bash', 'Skill']);
+//
+// SendMessage / ListAgents are pure agent-to-coordinator communication surfaces
+// with no filesystem write path, so they do not lift an agent out of read-only
+// (#1049, PRD § 2 A5). Without them here, every read-only agent that opts into
+// SendMessage silently infers `repo-write` and trips validateTierConsistency.
+const READ_ONLY_TOOLS = new Set([
+  'Read',
+  'Grep',
+  'Glob',
+  'Bash',
+  'Skill',
+  'SendMessage',
+  'ListAgents',
+]);
+
+/**
+ * Normalise one raw frontmatter tool entry to its lookup key.
+ *
+ * Single source of truth for the "Skill(...)" → "Skill" collapse: both
+ * inferTierFromTools and validateTierConsistency's detail text must agree on
+ * what a tool entry IS, or the error message names offenders the inference
+ * never objected to.
+ *
+ * @param {unknown} t - raw entry from the frontmatter tools array
+ * @returns {string} lookup key
+ */
+function normaliseTool(t) {
+  if (typeof t !== 'string') return String(t);
+  return t.startsWith('Skill(') ? 'Skill' : t.trim();
+}
 
 /**
  * Infer the sandbox tier from a parsed tools array.
@@ -47,10 +76,7 @@ export function inferTierFromTools(toolsArray) {
   }
 
   // Normalise "Skill(...)" → "Skill"
-  const normalised = toolsArray.map((t) => {
-    if (typeof t !== 'string') return String(t);
-    return t.startsWith('Skill(') ? 'Skill' : t.trim();
-  });
+  const normalised = toolsArray.map(normaliseTool);
 
   // Any write tool → repo-write
   for (const t of normalised) {
@@ -86,10 +112,22 @@ export function validateTierConsistency({ declared, inferred, tools }) {
 
   // 2. Read-only agent must not have write tools.
   if (declared === 'read-only' && inferred !== 'read-only') {
-    const writeToolsPresent = Array.isArray(tools)
-      ? tools.filter((t) => WRITE_TOOLS.has(t))
+    // Name EVERY tool responsible for the verdict, not only the write tools.
+    // inferTierFromTools falls through to `repo-write` for any UNRECOGNISED
+    // tool too, and filtering the detail text on WRITE_TOOLS alone reported
+    // "tools suggest repo-write" with no culprit named in exactly that case
+    // (#1049). Normalised via the same helper the inference uses, so a
+    // "Skill(...)" entry is never listed as an offender.
+    const offenders = Array.isArray(tools)
+      ? [
+          ...new Set(
+            tools
+              .map(normaliseTool)
+              .filter((t) => WRITE_TOOLS.has(t) || !READ_ONLY_TOOLS.has(t)),
+          ),
+        ]
       : [];
-    const detail = writeToolsPresent.length > 0 ? ` (tools include: ${writeToolsPresent.join(', ')})` : '';
+    const detail = offenders.length > 0 ? ` (tools include: ${offenders.join(', ')})` : '';
     return {
       ok: false,
       error: `agent declares sandbox-tier "read-only" but tools suggest "${inferred}"${detail}`,

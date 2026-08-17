@@ -39,6 +39,7 @@ import {
   isLockOwnedByProof,
   OWNER_PROOF_RELPATH,
 } from '../scripts/lib/session-lock.mjs';
+import { deregisterSelf, logSweepEvent } from '../scripts/lib/session-registry.mjs';
 import { attemptLockReconciliation } from './_lib/lock-reconcile.mjs';
 
 // ---------------------------------------------------------------------------
@@ -370,6 +371,51 @@ async function main() {
     // 'absent' — no lock file at all; nothing to release or reconcile
     // (mirrors the pre-existing `if (lock)` guard's false branch).
   } catch { /* best-effort — never block teardown */ }
+
+  // (c) #1047 — host-registry deregistration, the symmetric partner of
+  //     on-session-start.mjs's registerSelf(). This used to live in
+  //     hooks/on-stop.mjs, which fires at TURN end, so every assistant turn
+  //     deleted the entry of a still-live session; on-stop.mjs now refreshes
+  //     the entry (heartbeat) and teardown happens here, at the real end.
+  //
+  //     Keyed by `sessionId` ONLY, never by `semanticSessionId`: the registry
+  //     file is named after the id registerSelf() was called with, and in the
+  //     `generated-uuid-fallback-collision` path (on-session-start.mjs) the
+  //     semantic candidate names ANOTHER session's entry — deregistering by it
+  //     would delete a foreign live session. Ownership is therefore structural
+  //     here, not a check.
+  //
+  //     CONSEQUENCE, accepted deliberately — and the affected platform is
+  //     CODEX ALONE. Measured 2026-08-17 across the three bridge manifests:
+  //       hooks.json         SessionStart + SessionEnd        -> registers, deregisters
+  //       hooks-pi.json      session_start + session_shutdown -> registers, deregisters
+  //                          (session_shutdown maps to THIS file)
+  //       hooks-codex.json   SessionStart + Stop, no SessionEnd
+  //                          -> registers, never deregisters      <- the gap
+  //       hooks-cursor.json  afterFileEdit + beforeShellExecution only
+  //                          -> never registers, so nothing to leak
+  //     On Codex an entry therefore persists until sweepZombies() removes it at
+  //     the next SessionStart — up to the sweep threshold (`thresholdMin`,
+  //     default 60 min) after the session ended. That is the same path crash
+  //     and Ctrl-C already rely on for EVERY platform; no platform-detecting
+  //     second teardown branch exists by design.
+  //
+  //     Note where this is written: THIS file does not run on Codex, so the
+  //     consequence is also pointed at from hooks/on-stop.mjs, which does.
+  //
+  //     The `sessionId` guard is not decoration: deregisterSelf() throws
+  //     TypeError on a null/empty id, and "no id resolvable" is a normal
+  //     degraded state (no stdin id, no current-session.json), not a failure
+  //     worth a sweep.log breadcrumb.
+  if (sessionId) {
+    try {
+      await deregisterSelf(sessionId);
+    } catch (err) {
+      // Deregistration failed — observability breadcrumb to sweep.log, never a
+      // throw and never stderr: the hook must not block teardown.
+      logSweepEvent({ event: 'deregister-failed', session_id: sessionId, error: err?.message ?? String(err) });
+    }
+  }
 }
 
 // Exit 0 always — informational hook must never block session teardown.

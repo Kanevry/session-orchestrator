@@ -163,10 +163,15 @@ async function track(dir) {
   return dir;
 }
 
-async function writeHeartbeat(sessionId) {
+/**
+ * Seed one registry entry. `ageMinutes` backdates BOTH started_at and
+ * last_heartbeat so a refresh is observable as a strict increase rather than
+ * relying on sub-millisecond spawn timing.
+ */
+async function writeHeartbeat(sessionId, { ageMinutes = 0 } = {}) {
   const active = path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active');
   await fs.mkdir(active, { recursive: true });
-  const now = new Date().toISOString();
+  const stamp = new Date(Date.now() - ageMinutes * 60_000).toISOString();
   await fs.writeFile(
     path.join(active, `${sessionId}.json`),
     JSON.stringify({
@@ -174,8 +179,8 @@ async function writeHeartbeat(sessionId) {
       pid: process.pid,
       repo_name: 'demo',
       branch: 'main',
-      started_at: now,
-      last_heartbeat: now,
+      started_at: stamp,
+      last_heartbeat: stamp,
       status: 'active',
       current_wave: 0,
     }),
@@ -185,6 +190,18 @@ async function writeHeartbeat(sessionId) {
 async function registryFiles() {
   const active = path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active');
   return (await fs.readdir(active).catch(() => [])).filter((n) => n.endsWith('.json'));
+}
+
+/** Read one registry entry as an object. */
+async function readEntry(sessionId) {
+  const active = path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active');
+  return JSON.parse(await fs.readFile(path.join(active, `${sessionId}.json`), 'utf8'));
+}
+
+/** Read sweep.log as parsed JSONL records (empty array when absent). */
+async function readSweepLog(baseDir = process.env.SO_SESSION_REGISTRY_DIR) {
+  const raw = await fs.readFile(path.join(baseDir, 'sweep.log'), 'utf8').catch(() => '');
+  return raw.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
 }
 
 // ---------------------------------------------------------------------------
@@ -401,17 +418,25 @@ describe('issue #32 — legacy agent_name is ignored', { timeout: 15000 }, () =>
 });
 
 // ---------------------------------------------------------------------------
-// 11. Silent-failure observability — sweep.log breadcrumb on deregisterSelf failure
+// 11. Silent-failure observability — sweep.log breadcrumb on registry-refresh failure
+//
+// #1047 re-pointed these from `deregisterSelf` to `heartbeat`: the Stop hook no
+// longer removes the entry, it refreshes it. The behaviour under test is
+// unchanged and still valuable — an fs-layer failure inside the registry write
+// must produce a sweep.log breadcrumb, exit 0, and stay off stderr — so the
+// tests move to the new call site rather than being deleted. The read-only
+// registry dir now makes _writeJsonAtomic's tmp-file write fail (EACCES)
+// instead of unlink.
 // ---------------------------------------------------------------------------
 
-describe('deregister-failed observability breadcrumb', { timeout: 15000 }, () => {
-  it('hook still exits 0 when deregisterSelf throws (read-only registry)', async () => {
+describe('heartbeat-failed observability breadcrumb', { timeout: 15000 }, () => {
+  it('hook still exits 0 when the registry refresh throws (read-only registry)', async () => {
     if (process.platform === 'win32') return; // chmod not meaningful on Windows
     const dir = await track(await mkGitDir());
     const badRegistryDir = path.join(os.tmpdir(), 'on-stop-deregister-ro-' + Date.now());
     await fs.mkdir(badRegistryDir, { recursive: true });
-    // Pre-create the active/ dir and a heartbeat so deregisterSelf actually
-    // tries to unlink something; then lock down the directory so unlink fails.
+    // Pre-create the active/ dir and an entry so heartbeat() actually tries to
+    // rewrite something; then lock down the directory so the write fails.
     const activeDir = path.join(badRegistryDir, 'active');
     await fs.mkdir(activeDir, { recursive: true });
     const sessionId = 'fail-deregister-test';
@@ -433,10 +458,10 @@ describe('deregister-failed observability breadcrumb', { timeout: 15000 }, () =>
     }
   });
 
-  it.skipIf(isRoot)('appends a deregister-failed entry to sweep.log when deregisterSelf throws', async () => {
+  it.skipIf(isRoot)('appends a heartbeat-failed entry to sweep.log when the registry refresh throws', async () => {
     if (process.platform === 'win32') return;
     const dir = await track(await mkGitDir());
-    const badRegistryDir = path.join(os.tmpdir(), 'on-stop-deregister-log-' + Date.now());
+    const badRegistryDir = path.join(os.tmpdir(), 'on-stop-heartbeat-log-' + Date.now());
     await fs.mkdir(badRegistryDir, { recursive: true });
     const activeDir = path.join(badRegistryDir, 'active');
     await fs.mkdir(activeDir, { recursive: true });
@@ -453,11 +478,10 @@ describe('deregister-failed observability breadcrumb', { timeout: 15000 }, () =>
         env: { SO_SESSION_REGISTRY_DIR: badRegistryDir },
       });
       await fs.chmod(activeDir, 0o755);
-      const raw = await fs.readFile(path.join(badRegistryDir, 'sweep.log'), 'utf8');
-      const entries = raw.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
-      const failed = entries.find((e) => e.event === 'deregister-failed');
+      const entries = await readSweepLog(badRegistryDir);
+      const failed = entries.find((e) => e.event === 'heartbeat-failed');
       expect(failed).toMatchObject({
-        event: 'deregister-failed',
+        event: 'heartbeat-failed',
         session_id: sessionId,
       });
       expect(typeof failed.error).toBe('string');
@@ -468,10 +492,10 @@ describe('deregister-failed observability breadcrumb', { timeout: 15000 }, () =>
     }
   });
 
-  it('does not write to stderr on deregisterSelf failure', async () => {
+  it('does not write to stderr on registry-refresh failure', async () => {
     if (process.platform === 'win32') return;
     const dir = await track(await mkGitDir());
-    const badRegistryDir = path.join(os.tmpdir(), 'on-stop-deregister-stderr-' + Date.now());
+    const badRegistryDir = path.join(os.tmpdir(), 'on-stop-heartbeat-stderr-' + Date.now());
     await fs.mkdir(badRegistryDir, { recursive: true });
     const activeDir = path.join(badRegistryDir, 'active');
     await fs.mkdir(activeDir, { recursive: true });
@@ -496,26 +520,49 @@ describe('deregister-failed observability breadcrumb', { timeout: 15000 }, () =>
 });
 
 // ---------------------------------------------------------------------------
-// 13. Session registry deregister (v3.1.0 #169)
+// 13. Session registry heartbeat, NOT deregistration (#1047; was #169)
+//
+// The bug these tests exist to catch: A REGISTRY ENTRY DID NOT SURVIVE A SINGLE
+// ASSISTANT TURN. Stop fires at TURN end, so the original #169 wiring
+// (deregisterSelf here) deleted the entry of a still-live session on every
+// turn — measured as 1 surviving entry against 12 live sockets, with sweep.log
+// recording deletions of sessions aged 72/335/351/369 minutes.
+//
+// No lib-level test can go red on this: deregisterSelf() and heartbeat() are
+// each correct in isolation and their unit tests pass either way. The defect is
+// in the hook's WIRING, so the guard belongs here, at the spawned-hook level.
+//
+// The old section asserted the ENTRY IS GONE after a run. Those assertions
+// described the defect as the contract, so they are inverted here rather than
+// kept: survival + refresh-in-place is the contract now. The peer-isolation and
+// id-resolution coverage they carried is preserved.
 // ---------------------------------------------------------------------------
 
-describe('session registry deregister (#169)', { timeout: 15000 }, () => {
-  it('removes the active heartbeat file when session_id comes via stdin', async () => {
+describe('session registry heartbeat (#1047)', { timeout: 15000 }, () => {
+  it('keeps and refreshes the entry after one turn when session_id comes via stdin', async () => {
     const dir = await track(await mkGitDir());
-    await writeHeartbeat('stop-via-stdin');
-    expect(await registryFiles()).toContain('stop-via-stdin.json');
+    await writeHeartbeat('stop-via-stdin', { ageMinutes: 5 });
+    const before = await readEntry('stop-via-stdin');
 
     await runHook({
       projectDir: dir,
       stdin: JSON.stringify({ session_id: 'stop-via-stdin' }),
     });
 
-    expect(await registryFiles()).not.toContain('stop-via-stdin.json');
+    // (A) the entry still exists — RED under the pre-#1047 deregisterSelf wiring
+    expect(await registryFiles()).toContain('stop-via-stdin.json');
+    const after = await readEntry('stop-via-stdin');
+    // (B) last_heartbeat moved forward — distinguishes "wired the heartbeat"
+    //     from merely "deleted the delete"
+    expect(Date.parse(after.last_heartbeat)).toBeGreaterThan(Date.parse(before.last_heartbeat));
+    // (C) started_at is untouched — refresh in place, not re-registration
+    expect(after.started_at).toBe(before.started_at);
   });
 
-  it('falls back to .orchestrator/current-session.json when stdin has no session_id', async () => {
+  it('refreshes via the .orchestrator/current-session.json fallback when stdin has no session_id', async () => {
     const dir = await track(await mkGitDir());
-    await writeHeartbeat('stop-via-fallback');
+    await writeHeartbeat('stop-via-fallback', { ageMinutes: 5 });
+    const before = await readEntry('stop-via-fallback');
     await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
     await fs.writeFile(
       path.join(dir, '.orchestrator', 'current-session.json'),
@@ -524,7 +571,9 @@ describe('session registry deregister (#169)', { timeout: 15000 }, () => {
 
     await runHook({ projectDir: dir, stdin: '' });
 
-    expect(await registryFiles()).not.toContain('stop-via-fallback.json');
+    expect(await registryFiles()).toContain('stop-via-fallback.json');
+    const after = await readEntry('stop-via-fallback');
+    expect(Date.parse(after.last_heartbeat)).toBeGreaterThan(Date.parse(before.last_heartbeat));
   });
 
   it('is a no-op when no session_id is resolvable — never throws, exits 0', async () => {
@@ -537,37 +586,52 @@ describe('session registry deregister (#169)', { timeout: 15000 }, () => {
     expect(record.session_id).toBeUndefined();
   });
 
-  it('is idempotent — removing a missing heartbeat still exits 0', async () => {
+  it('leaves a sweep.log breadcrumb (not a silent no-op) when the entry is missing', async () => {
     const dir = await track(await mkGitDir());
-    // session_id provided but no heartbeat file exists.
+    // session_id provided but no entry exists — heartbeat() returns null.
+    // Without the breadcrumb this loss would be permanently invisible.
     const result = await runHook({
       projectDir: dir,
       stdin: JSON.stringify({ session_id: 'never-registered' }),
     });
     expect(result.code).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(await readEntry('never-registered').catch(() => null)).toBeNull();
+
+    const missing = (await readSweepLog()).find((e) => e.event === 'heartbeat-missing');
+    expect(missing).toMatchObject({
+      event: 'heartbeat-missing',
+      session_id: 'never-registered',
+    });
+
     const record = await readLastEvent(dir);
     expect(record.session_id).toBe('never-registered');
   });
 
-  it('does not touch unrelated peer heartbeats', async () => {
+  it('refreshes only its own entry, leaving peer heartbeats byte-identical', async () => {
     const dir = await track(await mkGitDir());
-    await writeHeartbeat('self');
-    await writeHeartbeat('peer-one');
-    await writeHeartbeat('peer-two');
+    await writeHeartbeat('self', { ageMinutes: 5 });
+    await writeHeartbeat('peer-one', { ageMinutes: 5 });
+    await writeHeartbeat('peer-two', { ageMinutes: 5 });
+    const peerOneBefore = await readEntry('peer-one');
 
     await runHook({
       projectDir: dir,
       stdin: JSON.stringify({ session_id: 'self' }),
     });
 
-    const remaining = await registryFiles();
-    expect(remaining.sort()).toEqual(['peer-one.json', 'peer-two.json']);
+    // All three survive — the pre-#1047 wiring removed 'self'.
+    expect((await registryFiles()).sort()).toEqual(['peer-one.json', 'peer-two.json', 'self.json']);
+    expect(await readEntry('peer-one')).toEqual(peerOneBefore);
+    const self = await readEntry('self');
+    expect(Date.parse(self.last_heartbeat)).toBeGreaterThan(Date.parse(peerOneBefore.last_heartbeat));
   });
 
   it('prefers stdin session_id over current-session.json fallback', async () => {
     const dir = await track(await mkGitDir());
-    await writeHeartbeat('stdin-wins');
-    await writeHeartbeat('fallback-loses');
+    await writeHeartbeat('stdin-wins', { ageMinutes: 5 });
+    await writeHeartbeat('fallback-loses', { ageMinutes: 5 });
+    const fallbackBefore = await readEntry('fallback-loses');
     await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
     await fs.writeFile(
       path.join(dir, '.orchestrator', 'current-session.json'),
@@ -579,9 +643,10 @@ describe('session registry deregister (#169)', { timeout: 15000 }, () => {
       stdin: JSON.stringify({ session_id: 'stdin-wins' }),
     });
 
-    const remaining = await registryFiles();
-    expect(remaining).toContain('fallback-loses.json');
-    expect(remaining).not.toContain('stdin-wins.json');
+    // Only the stdin id is refreshed; the fallback entry is untouched.
+    expect(await readEntry('fallback-loses')).toEqual(fallbackBefore);
+    const stdinWins = await readEntry('stdin-wins');
+    expect(Date.parse(stdinWins.last_heartbeat)).toBeGreaterThan(Date.parse(fallbackBefore.last_heartbeat));
   });
 });
 

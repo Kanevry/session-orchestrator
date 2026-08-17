@@ -9,7 +9,7 @@
  * Each test gets an isolated tmp project dir so parallel runs cannot interfere.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -934,5 +934,120 @@ describe('on-session-end.mjs — owner-proof-gated release of a live semantic-on
     expect(await lockExists(dir)).toBe(true);
     const events = await readAllEvents(dir);
     expect(events.some((e) => e.event === 'orchestrator.session.lock.released')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Host-registry deregistration (#1047)
+//
+// This is HALF B of the #1047 fix. Half A — the Stop hook refreshing the entry
+// instead of deleting it — is pinned in tests/hooks/on-stop.test.mjs, whose
+// comment states why only a spawned-hook test can catch that class: both
+// deregisterSelf() and heartbeat() are correct in isolation and their lib unit
+// tests pass either way, so the defect lives in the hook's WIRING.
+//
+// The same reasoning applies here and was NOT applied when half B landed:
+// deleting the deregistration block from hooks/on-session-end.mjs left the full
+// suite green at 13988/0 (measured 2026-08-17). These tests close that gap.
+// ---------------------------------------------------------------------------
+
+/** Seed a registry entry in the per-test SO_SESSION_REGISTRY_DIR. */
+async function seedRegistryEntry(registryDir, sessionId) {
+  const active = path.join(registryDir, 'active');
+  await fs.mkdir(active, { recursive: true });
+  const stamp = new Date().toISOString();
+  await fs.writeFile(
+    path.join(active, `${sessionId}.json`),
+    JSON.stringify({
+      session_id: sessionId,
+      pid: process.pid,
+      repo_name: 'demo',
+      branch: 'main',
+      started_at: stamp,
+      last_heartbeat: stamp,
+      status: 'active',
+      current_wave: 0,
+    }),
+  );
+  return path.join(active, `${sessionId}.json`);
+}
+
+async function exists(p) {
+  return fs.access(p).then(() => true).catch(() => false);
+}
+
+describe('on-session-end.mjs — host-registry deregistration (#1047)', { timeout: 15000 }, () => {
+  let registryDir;
+  let origRegistryDir;
+
+  beforeEach(async () => {
+    origRegistryDir = process.env.SO_SESSION_REGISTRY_DIR;
+    registryDir = await fs.mkdtemp(path.join(os.tmpdir(), 'on-session-end-registry-'));
+    tmpDirs.push(registryDir);
+    process.env.SO_SESSION_REGISTRY_DIR = registryDir;
+  });
+
+  afterEach(() => {
+    if (origRegistryDir === undefined) delete process.env.SO_SESSION_REGISTRY_DIR;
+    else process.env.SO_SESSION_REGISTRY_DIR = origRegistryDir;
+  });
+
+  it('removes the registry entry at session end', async () => {
+    const dir = await mkProject();
+    const sessionId = 'end-dereg-uuid-1';
+    const entryPath = await seedRegistryEntry(registryDir, sessionId);
+    expect(await exists(entryPath)).toBe(true);
+
+    const res = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: sessionId, reason: 'exit' }),
+    });
+
+    expect(res.code).toBe(0);
+    // The assertion that goes RED when the deregistration block is absent.
+    expect(await exists(entryPath)).toBe(false);
+  });
+
+  it('removes only its own entry, leaving a peer entry byte-identical', async () => {
+    const dir = await mkProject();
+    const mine = 'end-dereg-uuid-2';
+    const peer = 'end-dereg-peer-9';
+    const minePath = await seedRegistryEntry(registryDir, mine);
+    const peerPath = await seedRegistryEntry(registryDir, peer);
+    const peerBefore = await fs.readFile(peerPath, 'utf8');
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: mine, reason: 'exit' }),
+    });
+
+    expect(await exists(minePath)).toBe(false);
+    expect(await exists(peerPath)).toBe(true);
+    expect(await fs.readFile(peerPath, 'utf8')).toBe(peerBefore);
+  });
+
+  it('resolves the session id from current-session.json when stdin carries none', async () => {
+    const dir = await mkProject();
+    const sessionId = 'end-dereg-fallback-3';
+    await seedCurrentSession(dir, { sessionId, timestamp: new Date().toISOString() });
+    const entryPath = await seedRegistryEntry(registryDir, sessionId);
+
+    const res = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', reason: 'exit' }),
+    });
+
+    expect(res.code).toBe(0);
+    expect(await exists(entryPath)).toBe(false);
+  });
+
+  it('exits 0 and touches nothing when no entry exists for this session', async () => {
+    const dir = await mkProject();
+    const res = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'end-dereg-absent-4', reason: 'exit' }),
+    });
+    expect(res.code).toBe(0);
+    expect(res.stderr).toBe('');
   });
 });

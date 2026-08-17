@@ -228,6 +228,77 @@ describe('validateTierConsistency', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #1049 — SendMessage / ListAgents are read-only communication surfaces
+// ---------------------------------------------------------------------------
+
+describe('#1049 — SendMessage / ListAgents in READ_ONLY_TOOLS', () => {
+  // The exact shape the Epic #1048 A4 change produces: an existing read-only
+  // agent's allowlist gains SendMessage. Before #1049 this inferred repo-write
+  // and validateTierConsistency reported a contradiction for every such agent.
+  const SESSION_REVIEWER_PLUS_SENDMESSAGE = ['Read', 'Grep', 'Glob', 'Bash', 'SendMessage'];
+
+  it('infers read-only when a read-only allowlist gains SendMessage', () => {
+    expect(inferTierFromTools(SESSION_REVIEWER_PLUS_SENDMESSAGE)).toBe('read-only');
+  });
+
+  it('infers read-only when a read-only allowlist gains ListAgents', () => {
+    expect(inferTierFromTools(['Read', 'Grep', 'Glob', 'ListAgents'])).toBe('read-only');
+  });
+
+  it('infers read-only for both communication tools alongside a Skill(...) wildcard', () => {
+    expect(
+      inferTierFromTools([
+        'Read',
+        'Grep',
+        'Glob',
+        'Bash',
+        'Skill(session-orchestrator:*)',
+        'SendMessage',
+        'ListAgents',
+      ]),
+    ).toBe('read-only');
+  });
+
+  it('still infers repo-write when a write tool sits beside SendMessage', () => {
+    // The communication tools must not launder a write capability.
+    expect(inferTierFromTools(['Read', 'SendMessage', 'Edit'])).toBe('repo-write');
+  });
+
+  it('reports no tier contradiction for a read-only agent that opts into SendMessage', () => {
+    const inferred = inferTierFromTools(SESSION_REVIEWER_PLUS_SENDMESSAGE);
+    const result = validateTierConsistency({
+      declared: 'read-only',
+      inferred,
+      tools: SESSION_REVIEWER_PLUS_SENDMESSAGE,
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('names the unrecognised tool in the detail text, not just write tools', () => {
+    // Pre-#1049 the detail filtered WRITE_TOOLS only, so an unknown tool
+    // produced "tools suggest repo-write" with the culprit unnamed.
+    const result = validateTierConsistency({
+      declared: 'read-only',
+      inferred: 'repo-write',
+      tools: ['Read', 'Grep', 'SomeUnknownTool'],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('SomeUnknownTool');
+  });
+
+  it('does not list a Skill(...) wildcard as an offender in the detail text', () => {
+    const result = validateTierConsistency({
+      declared: 'read-only',
+      inferred: 'repo-write',
+      tools: ['Read', 'Skill(session-orchestrator:*)', 'Edit'],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('Edit');
+    expect(result.error).not.toContain('Skill');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Integration: check-agents Check 8 against all 11 production agents
 // ---------------------------------------------------------------------------
 

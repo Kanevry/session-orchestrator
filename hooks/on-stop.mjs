@@ -29,7 +29,7 @@ if (!shouldRunHook('on-stop')) process.exit(0);
 
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
-import { deregisterSelf, logSweepEvent } from '../scripts/lib/session-registry.mjs';
+import { heartbeat, logSweepEvent } from '../scripts/lib/session-registry.mjs';
 import { updateHeartbeat } from '../scripts/lib/session-lock.mjs';
 
 // ---------------------------------------------------------------------------
@@ -252,16 +252,59 @@ async function handleStop(input) {
 
   const sessionId = await resolveSessionId(input, projectRoot);
 
-  // v3.1.0 multi-session registry (#169) — best-effort deregister. Missing
-  // entry is fine (zombie sweep handles crashed sessions). Failures are logged
-  // to sweep.log for observability but never re-thrown (hook must remain silent).
+  // v3.1.0 multi-session registry (#169), corrected in #1047 — REFRESH the
+  // registry entry here; never remove it.
+  //
+  // Stop fires at TURN end, not session end (see the file docblock). The
+  // original #169 wiring called deregisterSelf() here, so every assistant turn
+  // deleted this session's registry entry while the session was still live:
+  // measured on this host as 1 surviving entry (dead PID) against 12 live
+  // sockets, with sweep.log recording deletions of sessions aged 72/335/351/369
+  // minutes. Epic #583 fixed exactly this class for `.orchestrator/session.lock`
+  // (release → updateHeartbeat, below); the host registry never got the same
+  // correction. Deregistration now lives in hooks/on-session-end.mjs, which
+  // fires at the real end of the session.
+  //
+  // CODEX CAVEAT — stated here because THIS file runs on Codex and the file
+  // that owns deregistration does not. `hooks-codex.json` wires SessionStart +
+  // Stop but no SessionEnd (the Codex contract rejects the event), so on that
+  // bridge a session registers and never deregisters: its entry persists until
+  // sweepZombies() reaps it at the next SessionStart, up to `thresholdMin`
+  // (default 60 min). Accepted deliberately — it is the same path crash and
+  // Ctrl-C already take on every platform, and it is safe precisely BECAUSE
+  // the heartbeat below now advances, so a live session never ages into the
+  // sweep. Do NOT add a platform-detecting deregister branch here; that is the
+  // two-teardown-paths shape Epic #583 removed from the lock.
+  // (pi is unaffected: hooks-pi.json maps session_shutdown to on-session-end.mjs.
+  //  Cursor is unaffected: it wires no SessionStart, so it never registers.)
+  //
+  // Failures are logged to sweep.log for observability but never re-thrown
+  // (hook must remain silent and non-blocking).
   if (sessionId) {
     try {
-      await deregisterSelf(sessionId);
+      // heartbeat() returns null when no entry exists — a SILENT no-op that
+      // would otherwise make the loss permanent for the rest of the session
+      // (e.g. after a zombie sweep, or a harness UUID rotation with no fresh
+      // SessionStart). We do NOT re-register here: this hook has no access to
+      // the entry's platform / mode / host_class, and a re-registration would
+      // reset started_at to now — fabricating a session age instead of
+      // reporting one. Emit an observability breadcrumb instead, so the miss
+      // is visible in sweep.log rather than invisible. One line per turn while
+      // the entry is absent; that volume IS the signal, and the next
+      // SessionStart's registerSelf() ends it.
+      const refreshed = await heartbeat(sessionId);
+      if (refreshed === null) {
+        logSweepEvent({
+          event: 'heartbeat-missing',
+          session_id: sessionId,
+          error: 'no registry entry to refresh at turn end',
+        });
+      }
     } catch (err) {
-      // Deregistration failed — emit an observability breadcrumb to sweep.log.
-      // Do NOT throw, do NOT write to stderr: the hook is informational-only.
-      logSweepEvent({ event: 'deregister-failed', session_id: sessionId, error: err?.message ?? String(err) });
+      // Refresh failed at the fs layer — emit an observability breadcrumb to
+      // sweep.log. Do NOT throw, do NOT write to stderr: the hook is
+      // informational-only.
+      logSweepEvent({ event: 'heartbeat-failed', session_id: sessionId, error: err?.message ?? String(err) });
     }
 
     // Epic #583 W5-F1c — refresh session.lock heartbeat on every turn-end.
