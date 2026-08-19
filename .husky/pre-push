@@ -165,6 +165,20 @@ else
     exit 1
   fi
 
+  # `git clone <path>` points the clone's `origin` at a FILESYSTEM PATH. CI's checkout
+  # points it at the real remote URL, and code that PARSES that URL therefore behaves
+  # differently in the two trees — which is the opposite of what this hook is for.
+  # Measured 2026-08-19 on the first real run: deriveRepo() (vault-mirror/namespace.mjs)
+  # matches an `org/name` shape, so it yields "session-orchestrator" in the working copy
+  # and on CI, but "unknown-repo" against a path-shaped origin — blocking a push over an
+  # artefact of the materialisation. Carry the real URL over so the clone is CI-faithful.
+  # Best-effort: a repo with no origin (fresh `git init`) simply keeps the path form,
+  # which is the same shape it already has in the working copy.
+  origin_url=$(git -C "$repo_root" remote get-url origin 2>/dev/null || true)
+  if [ -n "$origin_url" ]; then
+    git -C "$tree" remote set-url origin "$origin_url" 2>/dev/null || true
+  fi
+
   # A symlink is a FILE to git, so the `node_modules/` line in .gitignore does not
   # match it. Without this exclude the fresh clone reports a dirty tree and every
   # cleanliness assertion in the suite goes red on an artefact of this hook. The
