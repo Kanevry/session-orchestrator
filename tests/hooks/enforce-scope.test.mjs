@@ -840,3 +840,191 @@ describe('#993 — load-failure visibility (GUARD INACTIVE)', { timeout: 30000 }
     expectGuardInactive(result, { hookName: 'enforce-scope' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Empty allowedPaths — classified deny REASON (#1057)
+// ---------------------------------------------------------------------------
+//
+// The verdict for an empty allowlist is unchanged and is locked above by the
+// #256 NO-OP regression test: every one of these cases still DENIES. What is
+// under test here is the SECOND half of a deny — the instruction the operator
+// reads — which collapsed to one sentence ("update the session plan and restart
+// the wave") across five structurally different repository states. For three of
+// them that sentence is useless or actively wrong: restarting a wave does not
+// remove a manifest a CRASHED session left behind, and it does not repair a
+// truncated JSON file.
+//
+// Each test therefore asserts BOTH directions: the new sentence is present AND
+// the old generic one is absent. A contains-only assertion would pass if the
+// hook emitted every sentence at once, which is precisely the undiscriminating
+// state being fixed.
+// ---------------------------------------------------------------------------
+
+const HOUR_MS = 3_600_000;
+
+/**
+ * Project fixture carrying a SESSION CLOCK — the provenance half of the #1057
+ * staleness comparison.
+ *
+ * `sessionStartedAtMs` writes `.orchestrator/session.lock` `started_at` (one of
+ * the two clocks `sessionStartedAtMs()` reads; `current-session.json` is left
+ * absent on purpose, so the fixture pins exactly one readable clock).
+ * `manifestMtimeMs` back- or forward-dates `wave-scope.json` so a crashed
+ * session's leftover is reproducible without waiting for wall-clock time.
+ *
+ * Omitting BOTH reproduces the no-clock state, which must degrade to the generic
+ * text and never to an allow.
+ */
+async function mkProjectWithClock(scope, { sessionStartedAtMs = null, manifestMtimeMs = null } = {}) {
+  const dir = await mkProjectTracked(scope);
+  if (sessionStartedAtMs !== null) {
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'session.lock'),
+      JSON.stringify({ started_at: new Date(sessionStartedAtMs).toISOString() }),
+    );
+  }
+  if (manifestMtimeMs !== null) {
+    const stamp = new Date(manifestMtimeMs);
+    await fs.utimes(path.join(dir, '.claude', 'wave-scope.json'), stamp, stamp);
+  }
+  return dir;
+}
+
+/** The pre-#1057 generic sentence — the thing every classified branch must REPLACE. */
+const GENERIC_SENTENCE = 'update the session plan and restart the wave';
+
+describe('empty allowedPaths — classified deny reason (#1057)', { timeout: 15000 }, () => {
+  it('T1 sends a WRITABLE role to re-run --union, not to restart the wave', async () => {
+    // The bug: a wave whose union came out empty (the coordinator's --union step
+    // did not complete) printed the same sentence as a Discovery wave, sending
+    // the coordinator to restart a wave whose plan is fine.
+    const now = Date.now();
+    const dir = await mkProjectWithClock(
+      { wave: 2, role: 'Impl-Core', enforcement: 'strict', allowedPaths: [] },
+      { sessionStartedAtMs: now - HOUR_MS, manifestMtimeMs: now },
+    );
+    const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'README.md')) });
+    const env = expectDeny(result, [
+      'not in allowed paths',
+      "the wave's allowedPaths union is empty for role `Impl-Core`",
+      '`--union` step did not complete',
+      'do not hand-edit',
+    ]);
+    expect(env.hookSpecificOutput.permissionDecisionReason).not.toContain(GENERIC_SENTENCE);
+  });
+
+  it('T2 names a manifest older than session start as a crashed-session leftover, with rm -f', async () => {
+    // The bug: a leftover wave-scope.json blocks every write of the FOLLOWING
+    // session with no hint that it is a leftover — and "restart the wave", the
+    // only instruction on offer, cannot remove it.
+    const now = Date.now();
+    const dir = await mkProjectWithClock(
+      { wave: 2, role: 'Impl-Core', enforcement: 'strict', allowedPaths: [] },
+      { sessionStartedAtMs: now - HOUR_MS, manifestMtimeMs: now - 48 * HOUR_MS },
+    );
+    const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'README.md')) });
+    const env = expectDeny(result, [
+      'not in allowed paths',
+      'was written before this session started',
+      'likely a leftover from a crashed session',
+      'rm -f .claude/wave-scope.json',
+    ]);
+    const reason = env.hookSpecificOutput.permissionDecisionReason;
+    expect(reason).not.toContain(GENERIC_SENTENCE);
+    expect(reason).not.toContain('--union');
+  });
+
+  it('T3 does NOT call a manifest written after session start stale', async () => {
+    // The inverse guard for T2. Without it the staleness clock fires in every
+    // long deep session, whose manifest is hours old by construction — the exact
+    // failure mode a TTL-based age cap would have introduced deliberately.
+    const now = Date.now();
+    const dir = await mkProjectWithClock(
+      { wave: 2, role: 'Impl-Core', enforcement: 'strict', allowedPaths: [] },
+      { sessionStartedAtMs: now - 14 * HOUR_MS, manifestMtimeMs: now - 13 * HOUR_MS },
+    );
+    const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'README.md')) });
+    const env = expectDeny(result, ['not in allowed paths', "allowedPaths union is empty for role"]);
+    const reason = env.hookSpecificOutput.permissionDecisionReason;
+    expect(reason).not.toContain('leftover from a crashed session');
+    expect(reason).not.toContain('rm -f');
+  });
+
+  it('T4 falls back to the generic text — and still DENIES — when no session clock is readable', async () => {
+    // The absence/error fold. Neither clock file exists, so staleness is
+    // undecidable. It must degrade to "unknown" (the pre-#1057 sentence), never
+    // to a guess in either direction and never to an allow.
+    const dir = await mkProjectWithClock({
+      wave: 2,
+      role: 'Impl-Core',
+      enforcement: 'strict',
+      allowedPaths: [],
+    });
+    const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'README.md')) });
+    const env = expectDeny(result, ['not in allowed paths', GENERIC_SENTENCE]);
+    const reason = env.hookSpecificOutput.permissionDecisionReason;
+    expect(reason).not.toContain('leftover from a crashed session');
+    expect(reason).not.toContain('--union');
+    expect(reason).not.toContain('read-only');
+  });
+
+  it('T5 keeps the corrupt-manifest reason instead of blaming the coordinator', async () => {
+    // hooks/enforce-scope.mjs folds a JSON.parse failure onto `scope = {}`
+    // (#794 GAP-5), which also empties `role`. Without the parse flag the
+    // classifier would read that empty record as a writable wave with a broken
+    // union and print "re-run --union" for a file that never parsed.
+    const dir = await mkProjectRawScopeTracked('{ not valid');
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'session.lock'),
+      JSON.stringify({ started_at: new Date(Date.now() - HOUR_MS).toISOString() }),
+    );
+    const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'src', 'app.ts')) });
+    const env = expectDeny(result, [
+      'not in allowed paths',
+      'wave-scope.json is unreadable — failing closed',
+    ]);
+    const reason = env.hookSpecificOutput.permissionDecisionReason;
+    expect(reason).not.toContain('--union');
+    expect(reason).not.toContain(GENERIC_SENTENCE);
+  });
+
+  it.each([['discovery'], ['Discovery'], [' DISCOVERY ']])(
+    'T7 matches the read-only role trim- and case-insensitively (%s)',
+    async (role) => {
+      // The manifest ON DISK writes `"discovery"`; every prose source writes
+      // `Discovery`. A case-sensitive compare would classify the real Discovery
+      // wave as a writable role with a broken union and tell the coordinator to
+      // re-run --union on a wave that is behaving exactly as designed.
+      const now = Date.now();
+      const dir = await mkProjectWithClock(
+        { wave: 1, role, enforcement: 'strict', allowedPaths: [] },
+        { sessionStartedAtMs: now - HOUR_MS, manifestMtimeMs: now },
+      );
+      const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'README.md')) });
+      const env = expectDeny(result, [
+        'not in allowed paths',
+        'Discovery wave is read-only — no writes permitted',
+      ]);
+      const reason = env.hookSpecificOutput.permissionDecisionReason;
+      expect(reason).not.toContain('--union');
+      expect(reason).not.toContain(GENERIC_SENTENCE);
+    },
+  );
+
+  it('leaves a NON-empty allowedPaths deny byte-identical to the pre-#1057 wording', async () => {
+    // The classifier must be inert wherever allowedPaths grants anything: the
+    // "Allowed paths: [...]" branch is a different sentence and is untouched.
+    const dir = await mkProjectWithClock(
+      { wave: 2, role: 'Impl-Core', enforcement: 'strict', allowedPaths: ['src/'] },
+      { sessionStartedAtMs: Date.now() - HOUR_MS },
+    );
+    const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'README.md')) });
+    const env = expectDeny(result, ['not in allowed paths [src/]', 'Allowed paths: [src/]']);
+    const reason = env.hookSpecificOutput.permissionDecisionReason;
+    expect(reason).not.toContain('--union');
+    expect(reason).not.toContain('read-only');
+    expect(reason).not.toContain('leftover from a crashed session');
+  });
+});

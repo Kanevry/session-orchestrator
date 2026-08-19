@@ -20,6 +20,33 @@ vi.mock('node:child_process', async () => {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/**
+ * Golden-record `git remote -v` stdout for ONE remote (#1039).
+ *
+ * Every `execFileSync` double below goes through this function, because
+ * `deriveRepo()` no longer runs `git remote get-url origin` — since #1039 it
+ * resolves its identity through `listRemotes` (`scripts/lib/vcs-repo-spec.mjs`),
+ * a single `git -C <root> remote -v` spawn whose output is parsed as
+ * `<name>\t<url> (fetch|push)` lines.
+ *
+ * Returning a bare URL — what these doubles used to return — parses to ZERO
+ * remotes, so `deriveRepo()` degrades **silently** to `basename(process.cwd())`
+ * rather than failing loudly. Twelve of the doubles in this file and its sibling
+ * were in exactly that state: green, and asserting nothing about the identity
+ * they claimed to pin. Route every new double through here so the next protocol
+ * change touches one function instead of twenty-one call sites.
+ *
+ * Shape captured from real `git remote -v` output, 2026-08-19 (tab separator,
+ * one fetch + one push line per remote, trailing newline).
+ *
+ * @param {string} url - the remote's fetch/push URL.
+ * @param {string} [name] - the remote's name; `origin` unless a test needs otherwise.
+ * @returns {string}
+ */
+function remoteV(url, name = 'origin') {
+  return `${name}\t${url} (fetch)\n${name}\t${url} (push)\n`;
+}
+
 function captureStdout(fn) {
   const lines = [];
   const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
@@ -52,7 +79,7 @@ describe('deriveRepo', () => {
     vi.resetModules();
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
-      return { ...actual, execFileSync: vi.fn(() => 'git@github.com:org/repo.git\n') };
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@github.com:org/repo.git')) };
     });
     const { deriveRepo } = await import('@lib/vault-mirror/process.mjs');
     expect(deriveRepo()).toBe('org/repo');
@@ -62,7 +89,7 @@ describe('deriveRepo', () => {
     vi.resetModules();
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
-      return { ...actual, execFileSync: vi.fn(() => 'https://gitlab.example.com/Kanevry/session-orchestrator.git\n') };
+      return { ...actual, execFileSync: vi.fn(() => remoteV('https://gitlab.example.com/Kanevry/session-orchestrator.git')) };
     });
     const { deriveRepo } = await import('@lib/vault-mirror/process.mjs');
     expect(deriveRepo()).toBe('Kanevry/session-orchestrator');
@@ -84,7 +111,7 @@ describe('deriveRepo', () => {
 
   it('is cached: execFileSync called at most once across multiple calls', async () => {
     vi.resetModules();
-    const mockExec = vi.fn(() => 'git@github.com:cached/repo.git\n');
+    const mockExec = vi.fn(() => remoteV('git@github.com:cached/repo.git'));
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
       return { ...actual, execFileSync: mockExec };
@@ -108,7 +135,7 @@ describe('emitAction', () => {
     vi.resetModules();
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
-      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
     });
     const { emitAction } = await import('@lib/vault-mirror/process.mjs');
     const vaultDir = '/vault';
@@ -126,7 +153,7 @@ describe('emitAction', () => {
     vi.resetModules();
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
-      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
     });
     const { emitAction } = await import('@lib/vault-mirror/process.mjs');
     const vaultDir = '/vault';
@@ -166,7 +193,7 @@ describe('processLearning', () => {
     vi.resetModules();
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
-      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
     });
     const mod = await import('@lib/vault-mirror/process.mjs');
     return mod.processLearning;
@@ -425,7 +452,7 @@ describe('processSession', () => {
     vi.resetModules();
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
-      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
     });
     const mod = await import('@lib/vault-mirror/process.mjs');
     return mod.processSession;
@@ -626,7 +653,7 @@ describe('processSession #732: source-repo uses resolveRepoNamespace(), never ra
     // VERBATIM if the (pre-#732) frontmatter path ever fell back to it.
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
-      return { ...actual, execFileSync: vi.fn(() => 'git@x:raw-org/raw-origin-identifier.git\n') };
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:raw-org/raw-origin-identifier.git')) };
     });
     // Stub resolveRepoNamespace() to a sentinel that deliberately differs from
     // the raw origin above — proves process.mjs consumes the FUNCTION'S return
@@ -680,7 +707,7 @@ describe('quality gate', () => {
     vi.resetModules();
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
-      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
     });
     const mod = await import('@lib/vault-mirror/process.mjs');
     return mod.processLearning;
@@ -690,7 +717,7 @@ describe('quality gate', () => {
     vi.resetModules();
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
-      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
     });
     const mod = await import('@lib/vault-mirror/process.mjs');
     return mod.processSession;
@@ -995,7 +1022,7 @@ describe('processLearning #740: narrative-chars gate is sessions-only, never app
     vi.resetModules();
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
-      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
     });
     const mod = await import('@lib/vault-mirror/process.mjs');
     return mod.processLearning;
@@ -1055,7 +1082,7 @@ describe('processLearning slug-length cap (#635)', () => {
     vi.resetModules();
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
-      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
     });
     const { processLearning } = await import('@lib/vault-mirror/process.mjs');
 
@@ -1111,7 +1138,7 @@ describe('processSession slug-length cap (#635)', () => {
     vi.resetModules();
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
-      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
     });
     const { processSession } = await import('@lib/vault-mirror/process.mjs');
 
@@ -1178,7 +1205,7 @@ describe('processLearning #698 content-diff: detect-and-rewrite vs skipped-noop'
     vi.resetModules();
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
-      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
     });
     const mod = await import('@lib/vault-mirror/process.mjs');
     return mod.processLearning;
@@ -1397,7 +1424,7 @@ describe('processLearning #701.1 dual-probe date-advance fall-through', () => {
     vi.resetModules();
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
-      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
     });
     const mod = await import('@lib/vault-mirror/process.mjs');
     return mod.processLearning;
@@ -1509,7 +1536,7 @@ describe('processSession #909: status:abandoned is filtered before rendering', (
     vi.resetModules();
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
-      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
     });
     const mod = await import('@lib/vault-mirror/process.mjs');
     return mod.processSession;
@@ -1621,7 +1648,7 @@ describe('processLearning/processSession #974: env-secret masking', () => {
     vi.resetModules();
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
-      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
     });
     return import('@lib/vault-mirror/process.mjs'); // git mock → repoNs 'r'
   }
@@ -1792,7 +1819,7 @@ describe('processLearning #1025: redaction-aware idempotency across an env chang
     vi.resetModules();
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
-      return { ...actual, execFileSync: vi.fn(() => 'git@x:o/r.git\n') };
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
     });
     return import('@lib/vault-mirror/process.mjs'); // git mock → repoNs 'r'
   }

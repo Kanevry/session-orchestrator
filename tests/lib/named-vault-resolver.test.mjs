@@ -457,3 +457,244 @@ describe('resolveNamedVault — fallback', () => {
     expect(result.suffix).toBe('/custom/vault');
   });
 });
+
+// ---------------------------------------------------------------------------
+// resolveNamedVault — DEFAULT remote resolution (#1039)
+//
+// The tests above inject `gitRemote`, which answers the remote question BEFORE
+// the code under test runs — so none of them can observe WHICH remote the
+// default implementation picks, or what it does when the query fails. These
+// exercise the default path instead, injecting only `gitRun` (the same DI seam
+// the shared core in vcs-repo-spec.mjs uses).
+//
+// Stub protocol: verbatim `git remote -v` stdout — `<name>\t<url> (fetch|push)`,
+// TAB after the name, SPACE before the direction marker. Same shape as
+// tests/lib/vcs-repo-spec.test.mjs.
+// ---------------------------------------------------------------------------
+
+/** Render a `{name: url}` map as verbatim `git remote -v` stdout. */
+function remoteVOutput(remotes) {
+  return Object.entries(remotes)
+    .flatMap(([name, url]) => [`${name}\t${url} (fetch)\n`, `${name}\t${url} (push)\n`])
+    .join('');
+}
+
+/** `gitRun` stub answering with the given remote map (exit 0); records its argv. */
+function remotesRun(remotes) {
+  const calls = [];
+  const stdout = remoteVOutput(remotes);
+  const fn = (args) => {
+    calls.push(args);
+    return { ok: true, stdout, stderr: '' };
+  };
+  return { fn, calls };
+}
+
+/**
+ * Three vaults, one per namespace, so the CHOSEN vault discriminates which
+ * remote won. Without these losing entries any preference order would return
+ * the same answer and the assertions would be tautological.
+ */
+const NAMESPACED_VAULTS = [
+  {
+    name: 'primary',
+    suffix: '/agents/vault',
+    root: '~/vaults/primary',
+    match: { 'org-prefix': 'example-group' },
+  },
+  {
+    name: 'secondary',
+    suffix: '/agents/vault',
+    root: '~/vaults/secondary',
+    match: { 'org-prefix': 'secondary-org' },
+  },
+  {
+    name: 'mirror',
+    suffix: '/agents/vault',
+    root: '~/vaults/mirror',
+    match: { 'org-prefix': 'mirror-org' },
+  },
+];
+
+/** Repo-root IO for a repo at `/repo`. */
+const REPO_IO = { existsSync: (p) => p === '/repo/.git', realpathSync: (p) => p };
+
+describe('resolveNamedVault — default remote resolution (#1039)', () => {
+  it('resolves the walk-up match in a repo whose remotes are gitlab+github with NO origin', () => {
+    // Bug: the old default ran `git remote get-url origin` verbatim. In a repo
+    // without an `origin` that exits non-zero → '' → the walk-up is skipped and
+    // the result is source:'fallback' — the WRONG vault (or none), silently.
+    const { fn } = remotesRun({
+      github: 'git@github.com:mirror-org/some-repo.git',
+      gitlab: 'git@gitlab.example.com:secondary-org/some-repo.git',
+    });
+
+    const result = resolveNamedVault({
+      vaultName: null,
+      ownerConfig: { vaults: NAMESPACED_VAULTS },
+      cwd: '/repo',
+      ...REPO_IO,
+      gitRun: fn,
+      env: {},
+    });
+
+    expect(result).toEqual({
+      root: '~/vaults/secondary',
+      suffix: '/agents/vault',
+      name: 'secondary',
+      source: 'walkup',
+    });
+  });
+
+  it('keeps the origin namespace when origin sits BESIDE gitlab and github', () => {
+    // Bug: switching the vcs-less preference to gitlab-first (or github-first)
+    // silently RE-NAMESPACES this repo — every vault note already written under
+    // the origin namespace would move to the mirror's. The two losing remotes
+    // below each map to a DIFFERENT vault, so any reordering flips this result.
+    const { fn, calls } = remotesRun({
+      github: 'git@github.com:mirror-org/some-repo.git',
+      gitlab: 'git@gitlab.example.com:secondary-org/some-repo.git',
+      origin: 'git@gitlab.example.com:example-group/some-repo.git',
+    });
+
+    const result = resolveNamedVault({
+      vaultName: null,
+      ownerConfig: { vaults: NAMESPACED_VAULTS },
+      cwd: '/repo',
+      ...REPO_IO,
+      gitRun: fn,
+      env: {},
+    });
+
+    expect(result).toEqual({
+      root: '~/vaults/primary',
+      suffix: '/agents/vault',
+      name: 'primary',
+      source: 'walkup',
+    });
+    // Bug: querying `cwd` instead of the walked-up repo root reads a different
+    // repo's remotes whenever the session runs from a subdirectory.
+    expect(calls).toEqual([['-C', '/repo', 'remote', '-v']]);
+  });
+
+  it('separates "no remote configured" from "the query failed" BY VALUE', () => {
+    // Bug: both used to produce a bare source:'fallback'. One is a benign repo
+    // state, the other a broken measurement — indistinguishable to any caller,
+    // so a misresolved vault looked exactly like a correctly-defaulted one.
+    const base = {
+      vaultName: null,
+      ownerConfig: { vaults: NAMESPACED_VAULTS },
+      cwd: '/repo',
+      ...REPO_IO,
+      env: {},
+    };
+
+    const noRemotes = resolveNamedVault({ ...base, gitRun: () => ({ ok: true, stdout: '', stderr: '' }) });
+    let notARepo;
+    let gitMissing;
+    // captureStderr only to keep the suite output clean — the WARN itself is
+    // asserted in the next test.
+    captureStderr(() => {
+      notARepo = resolveNamedVault({
+        ...base,
+        gitRun: () => ({ ok: false, stdout: '', stderr: 'fatal: not a git repository', status: 128 }),
+      });
+      gitMissing = resolveNamedVault({
+        ...base,
+        gitRun: () => ({ ok: false, stdout: '', stderr: 'spawn git ENOENT', code: 'ENOENT' }),
+      });
+    });
+
+    expect(noRemotes.source).toBe('fallback');
+    expect(notARepo.source).toBe('fallback');
+    expect(noRemotes.remoteError).toBe('no-remotes');
+    expect(notARepo.remoteError).toBe('not-a-git-repo');
+    expect(gitMissing.remoteError).toBe('git-unavailable');
+    expect(noRemotes.remoteError).not.toBe(notARepo.remoteError);
+  });
+
+  it('WARNs on a query failure and stays SILENT on a benign absence', () => {
+    // Bug (both directions): a remote-less repo that WARNs on every resolution
+    // trains the operator to ignore the line; a broken git that says nothing
+    // leaves a wrong vault target undetectable.
+    const base = {
+      vaultName: null,
+      ownerConfig: { vaults: NAMESPACED_VAULTS },
+      cwd: '/repo',
+      ...REPO_IO,
+      env: {},
+    };
+
+    const quiet = captureStderr(() => {
+      resolveNamedVault({ ...base, gitRun: () => ({ ok: true, stdout: '', stderr: '' }) });
+    });
+    const loud = captureStderr(() => {
+      resolveNamedVault({
+        ...base,
+        gitRun: () => ({ ok: false, stdout: '', stderr: 'fatal: not a git repository', status: 128 }),
+      });
+    });
+
+    expect(quiet).toEqual([]);
+    expect(loud).toHaveLength(1);
+    expect(loud[0]).toContain('WARN named-vault-resolver');
+    expect(loud[0]).toContain('not-a-git-repo');
+    expect(loud[0]).toContain('/repo');
+  });
+
+  it('classifies a legacy one-arg gitRemote stub: "" is absence, a throw is failure', () => {
+    // Bug: tightening the out-parameter into a requirement would relabel every
+    // pre-#1039 injection's empty answer as a query failure — WARN noise plus a
+    // wrong triage signal on a repo that is merely remote-less.
+    const base = {
+      vaultName: null,
+      ownerConfig: { vaults: NAMESPACED_VAULTS },
+      cwd: '/repo',
+      ...REPO_IO,
+      env: {},
+    };
+
+    const empty = resolveNamedVault({ ...base, gitRemote: () => '' });
+    let thrown;
+    captureStderr(() => {
+      thrown = resolveNamedVault({
+        ...base,
+        gitRemote: () => {
+          throw new Error('git exploded');
+        },
+      });
+    });
+
+    expect(empty.remoteError).toBe('no-remotes');
+    expect(thrown.remoteError).toBe('git-error');
+    expect(thrown.source).toBe('fallback');
+  });
+
+  it('omits remoteError when the fallback was NOT reached via the remote query', () => {
+    // Bug: an always-present remoteError makes "the remote query failed" the
+    // default reading of every fallback — including the no-vaults-configured
+    // and no-repo-root cases, which never asked git anything.
+    const noVaults = resolveNamedVault({ vaultName: null, ownerConfig: undefined, env: {} });
+    const noRepoRoot = resolveNamedVault({
+      vaultName: null,
+      ownerConfig: { vaults: NAMESPACED_VAULTS },
+      cwd: '/no-git-here',
+      existsSync: () => false,
+      realpathSync: (p) => p,
+      env: {},
+    });
+    const noOrgMatch = resolveNamedVault({
+      vaultName: null,
+      ownerConfig: { vaults: NAMESPACED_VAULTS },
+      cwd: '/repo',
+      ...REPO_IO,
+      gitRun: remotesRun({ origin: 'git@gitlab.example.com:unrelated-org/some-repo.git' }).fn,
+      env: {},
+    });
+
+    expect(noVaults.remoteError).toBeUndefined();
+    expect(noRepoRoot.remoteError).toBeUndefined();
+    expect(noOrgMatch.remoteError).toBeUndefined();
+    expect(noOrgMatch.source).toBe('fallback');
+  });
+});

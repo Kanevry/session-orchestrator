@@ -1214,3 +1214,291 @@ export function findScopeCollisions(agentScopes, opts = {}) {
 
   return { ok: collisions.length === 0 && duplicateIds.length === 0, collisions, duplicateIds };
 }
+
+// ---------------------------------------------------------------------------
+// Empty-`allowedPaths` classification (#1057)
+// ---------------------------------------------------------------------------
+//
+// ## The bug this fixes — and the one it deliberately does NOT
+//
+// FIVE distinct repository states produce `allowedPaths.length === 0`, and the
+// DENY VERDICT IS CORRECT IN ALL FIVE. What collapses is the REASON: every one
+// of them printed the single sentence {@link suggestForScopeViolation} emits for
+// an empty allowlist — "update the session plan and restart the wave".
+//
+//   1. A Discovery wave, where `[]` is the deliberate read-only contract
+//      (`skills/session-plan/SKILL.md`, `wave-loop.md` § Scope Manifest #5, and
+//      the #256 NO-OP regression lock in tests/hooks/enforce-scope.test.mjs).
+//      There the sentence is CORRECT but misleading — nothing is broken.
+//   2. Corrupt JSON, which `hooks/enforce-scope.mjs` folds onto `scope = {}`
+//      (#794 GAP-5), and malformed `allowedPaths` shapes, which `Array.isArray`
+//      folds onto `[]` (#558). There the sentence is USELESS — the plan is fine,
+//      the file is not.
+//   3. A leftover manifest from a session that crashed before deleting it.
+//      There the sentence is ACTIVELY WRONG: restarting the wave does not remove
+//      a file the previous session left behind — `rm -f` does.
+//   4. A writable role whose union came out empty because the coordinator's
+//      `--union` step did not complete. There the operator must re-run `--union`,
+//      not restart.
+//
+// The classifier below is the discriminator. It changes NO verdict — see
+// {@link suggestForEmptyScope}, which only ever selects a different sentence.
+//
+// ## Named ceiling (BV-004)
+//
+//   - This buys a CORRECT INSTRUCTION, never an unlock. A writable wave with a
+//     broken union still denies every write; the operator is simply told which
+//     command repairs it.
+//   - It cannot see a union that is NON-EMPTY but WRONG. That is
+//     `--assert-subset`'s job and stays there.
+//   - `stale-manifest` degrades to `'unknown'` when no session clock is
+//     readable — never to an allow. Absence is preserved, never guessed.
+//   - There is NO age threshold and no TTL. The comparison is a PROVENANCE
+//     subtraction (manifest mtime vs. this session's start), so a legitimate
+//     14-hour deep session never ages into a blind spot. Deliberately NOT
+//     `IN_FLIGHT_TTL_MS` — see `hooks/post-bash-write-verify.mjs` § "Why the
+//     minimum, and why NOT a staleness cap" for the argument this inherits.
+//   - Revisit trigger: a second read-only wave role, or a manifest written by a
+//     process whose clock is not this repo's `.orchestrator/` pair.
+// ---------------------------------------------------------------------------
+
+/**
+ * The closed set of {@link classifyEmptyScope} verdicts. Shaped after
+ * `DEGRADED_REASONS` in `scripts/lib/mirror-issues-banner.mjs`: a frozen array
+ * so a consumer can enumerate the states rather than re-listing them in prose.
+ *
+ * `'unknown'` is a first-class member, not an error — it is what the classifier
+ * returns when the inputs do not DECIDE, and it maps to the pre-#1057 generic
+ * sentence. Absence-preserving by construction.
+ *
+ * @type {ReadonlyArray<'unreadable'|'read-only-role'|'stale-manifest'|'writer-defect'|'unknown'>}
+ */
+export const EMPTY_SCOPE_REASONS = Object.freeze([
+  'unreadable',
+  'read-only-role',
+  'stale-manifest',
+  'writer-defect',
+  'unknown',
+]);
+
+/**
+ * Wave roles for which an EMPTY `allowedPaths` is the intended contract rather
+ * than a defect. THE list — `skills/session-plan/SKILL.md` § Discovery and
+ * `skills/wave-executor/wave-loop.md` § Scope Manifest #5 describe it; they do
+ * not restate it.
+ *
+ * Canonical casing; comparison is trimmed + case-insensitive (see
+ * {@link isReadOnlyWaveRole}) for the same reason
+ * {@link TEST_SIBLING_EXPANSION_ROLES} is: the manifest on disk is written by
+ * LLM prose and by hand, and `"discovery"` vs `Discovery` must not silently
+ * change which sentence the operator reads.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const READ_ONLY_WAVE_ROLES = Object.freeze(['Discovery']);
+
+/** Lower-cased lookup for {@link isReadOnlyWaveRole}. @type {ReadonlyMap<string, string>} */
+const READ_ONLY_ROLE_KEYS = new Map(READ_ONLY_WAVE_ROLES.map((r) => [r.toLowerCase(), r]));
+
+/**
+ * Is this wave role one for which `allowedPaths: []` is BY DESIGN?
+ *
+ * Trimmed + case-insensitive; a non-string role is never read-only (fail-closed
+ * in the direction that produces a MORE alarming message, never a quieter one).
+ *
+ * @param {unknown} role
+ * @returns {boolean}
+ */
+export function isReadOnlyWaveRole(role) {
+  if (typeof role !== 'string') return false;
+  return READ_ONLY_ROLE_KEYS.has(role.trim().toLowerCase());
+}
+
+/**
+ * Classify WHY a wave manifest grants zero paths. Pure, sync, no I/O — every
+ * observation is passed in, exactly like {@link testSiblingExpansionApplies}.
+ * Never throws.
+ *
+ * Modelled on `readLockDetailed` (`scripts/lib/session-lock.mjs`): a small
+ * closed status union, where "cannot tell" is its own member instead of being
+ * folded into the most alarming one.
+ *
+ * ## Precedence (each rung is load-bearing)
+ *
+ *   1. `parseOk === false` → `'unreadable'`. FIRST, because a manifest that did
+ *      not parse has no trustworthy `role` either — reading `role` off `{}` and
+ *      reporting "writer defect" would blame the coordinator for a corrupt file.
+ *      Only an EXPLICIT `false` classifies; `undefined` means "caller did not
+ *      observe it" and falls through.
+ *   2. `role` ∈ {@link READ_ONLY_WAVE_ROLES} → `'read-only-role'`. Before the
+ *      clock comparison ON PURPOSE: for a Discovery wave the empty scope is the
+ *      contract whether the manifest is one second or one day old, so a stale
+ *      Discovery leftover reports the read-only sentence. The cost is named
+ *      rather than hidden — it is the one state where a leftover manifest is
+ *      described by its role instead of by its age.
+ *   3. `scopeMtimeMs < sessionStartMs` → `'stale-manifest'`. Requires BOTH
+ *      clocks to be finite numbers; either one absent ⇒ `'unknown'`, never a
+ *      guess in either direction.
+ *   4. A writable role with a manifest at least as new as this session ⇒
+ *      `'writer-defect'`.
+ *   5. Everything else ⇒ `'unknown'`.
+ *
+ * @param {{role?: unknown, parseOk?: unknown, scopeMtimeMs?: unknown, sessionStartMs?: unknown}} [input]
+ * @returns {'unreadable'|'read-only-role'|'stale-manifest'|'writer-defect'|'unknown'}
+ */
+export function classifyEmptyScope(input = {}) {
+  if (input === null || typeof input !== 'object') return 'unknown';
+
+  if (input.parseOk === false) return 'unreadable';
+  if (isReadOnlyWaveRole(input.role)) return 'read-only-role';
+
+  const mtime = typeof input.scopeMtimeMs === 'number' && Number.isFinite(input.scopeMtimeMs)
+    ? input.scopeMtimeMs
+    : null;
+  const started = typeof input.sessionStartMs === 'number' && Number.isFinite(input.sessionStartMs)
+    ? input.sessionStartMs
+    : null;
+  if (mtime === null || started === null) return 'unknown';
+
+  if (mtime < started) return 'stale-manifest';
+  return typeof input.role === 'string' && input.role.trim().length > 0
+    ? 'writer-defect'
+    : 'unknown';
+}
+
+/**
+ * The suggestion half of a scope-violation deny, when `allowedPaths` is EMPTY.
+ *
+ * A strict superset of {@link suggestForScopeViolation}'s empty-allowlist
+ * branch: `'unknown'` delegates to it verbatim, so the pre-#1057 sentence has
+ * exactly one copy and every other branch is an ADDITION. Pure, sync, never
+ * throws.
+ *
+ * @param {string} relPath — the project-relative path that was blocked
+ * @param {string} reason — a {@link EMPTY_SCOPE_REASONS} member; anything else
+ *   is treated as `'unknown'` (fail-safe toward the generic text)
+ * @param {{role?: unknown, scopePath?: unknown}} [opts]
+ *   `scopePath` is the manifest's location as the operator should type it
+ *   (project-relative is ideal); it appears inside the `rm -f` hint.
+ * @returns {string}
+ */
+export function suggestForEmptyScope(relPath, reason, opts = {}) {
+  const bag = opts !== null && typeof opts === 'object' ? opts : {};
+  const scopeHint = typeof bag.scopePath === 'string' && bag.scopePath.length > 0
+    ? bag.scopePath
+    : '<state-dir>/wave-scope.json';
+  const rawRole = typeof bag.role === 'string' ? bag.role.trim() : '';
+
+  switch (reason) {
+    case 'unreadable':
+      return (
+        `wave-scope.json is unreadable — failing closed. ` +
+        `The manifest exists but did not parse into a usable scope record, so NO path can be granted. ` +
+        `Inspect '${scopeHint}'; a truncated or half-written manifest is repaired by re-running the ` +
+        `coordinator's scope-manifest step, not by editing the plan.`
+      );
+
+    case 'read-only-role': {
+      // Canonical casing from the list, so ' DISCOVERY ' and 'discovery' both
+      // render the documented sentence.
+      const canonical = READ_ONLY_ROLE_KEYS.get(rawRole.toLowerCase()) ?? rawRole;
+      return (
+        `${canonical} wave is read-only — no writes permitted. ` +
+        `An empty allowedPaths is this role's deliberate contract (#256), not a misconfiguration: ` +
+        `report '${relPath}' as a finding instead of editing it.`
+      );
+    }
+
+    case 'stale-manifest':
+      return (
+        `'${scopeHint}' was written before this session started — likely a leftover from a crashed session. ` +
+        `Restarting the wave will NOT clear it; remove it with \`rm -f ${scopeHint}\` and let the ` +
+        `coordinator write a fresh manifest.`
+      );
+
+    case 'writer-defect':
+      return (
+        `the wave's allowedPaths union is empty for role \`${rawRole}\` — ` +
+        `the coordinator's \`--union\` step did not complete. Re-run it; do not hand-edit.`
+      );
+
+    default:
+      return suggestForScopeViolation(relPath, '');
+  }
+}
+
+/**
+ * Milliseconds since one of this session's clocks was written, or `null` when
+ * none is readable — the MINIMUM over `.orchestrator/current-session.json`
+ * `timestamp` and `.orchestrator/session.lock` `started_at`.
+ *
+ * MOVED here from `hooks/post-bash-write-verify.mjs` (#1057) so both consumers
+ * share ONE implementation: a lib module may be imported by a hook, but a hook
+ * must never be imported by another hook or by this lib (module header, #554
+ * A2). Behaviour is byte-identical to the original — including the `Math.min`
+ * choice and the dropping of NEGATIVE (future-dated) ages, both of which that
+ * hook's docblock argues at length under "Why the minimum, and why NOT a
+ * staleness cap". That argument is the reason this repo has no TTL here either.
+ *
+ * Sync fs reads at CALL time only (same shape as {@link getEnforcementLevel});
+ * no I/O at import time. Never throws — an unreadable or malformed clock is
+ * simply absent.
+ *
+ * @param {string} repoRoot
+ * @param {number} [now]
+ * @returns {number|null}
+ */
+export function sessionAgeMs(repoRoot, now = Date.now()) {
+  const dir = path.join(repoRoot, '.orchestrator');
+  const ages = [
+    clockAgeMs(path.join(dir, 'current-session.json'), 'timestamp', now),
+    clockAgeMs(path.join(dir, 'session.lock'), 'started_at', now),
+  ].filter((age) => age !== null);
+  return ages.length > 0 ? Math.min(...ages) : null;
+}
+
+/**
+ * Age in ms of one JSON clock file's ISO timestamp field, or `null` when the
+ * file is missing, unparseable, carries no parseable timestamp, or is dated in
+ * the FUTURE. Private helper of {@link sessionAgeMs}; moved verbatim with it.
+ *
+ * @param {string} file
+ * @param {string} field
+ * @param {number} now
+ * @returns {number|null}
+ */
+function clockAgeMs(file, field, now) {
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'));
+    const startedAt = Date.parse(parsed?.[field]);
+    if (!Number.isFinite(startedAt)) return null;
+    const age = now - startedAt;
+    return age >= 0 ? age : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Absolute epoch-ms at which this session started, or `null` when no clock is
+ * readable — the value {@link classifyEmptyScope} compares a manifest's mtime
+ * against.
+ *
+ * Derived from {@link sessionAgeMs} rather than re-reading the files, so there
+ * is ONE clock policy: `now - min(ages)` is the LATEST of the two recorded start
+ * times, which is exactly the freshness `Math.min` was chosen to express (a
+ * leftover `current-session.json` from a previous session is outvoted by a
+ * freshly-acquired `session.lock`). `now` is threaded through so both halves see
+ * the same instant.
+ *
+ * Never throws. No clock ⇒ `null` ⇒ the caller cannot decide staleness and must
+ * fall back to `'unknown'`.
+ *
+ * @param {string} repoRoot
+ * @param {number} [now]
+ * @returns {number|null}
+ */
+export function sessionStartedAtMs(repoRoot, now = Date.now()) {
+  const age = sessionAgeMs(repoRoot, now);
+  return age === null ? null : now - age;
+}

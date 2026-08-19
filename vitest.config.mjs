@@ -13,6 +13,14 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.mjs'],
+    // Strips git's repo-pointing environment once per worker. Those variables
+    // outrank BOTH `cwd:` and `-C <path>`, so without this a fixture git call
+    // writes into the INVOKING repository — measured on 2026-08-19, when it
+    // detached the real HEAD, added three commits and rewrote .git/config.
+    // The two call sites that caused it already passed a correct `cwd`, which
+    // is why the static census (check-test-git-config-target.mjs) cannot close
+    // this half and reports it as `gitDirInheritable` instead.
+    setupFiles: ['./tests/setup/scrub-git-env.mjs'],
     // skills/vault-sync/tests/schema-drift.test.mjs intentionally excluded:
     // it requires a sibling projects-baseline checkout (HAS_CANONICAL) and
     // ALL 5 tests skip in CI anyway. In vitest 2.1.9 + tinypool, discovering

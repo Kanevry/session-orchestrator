@@ -43,6 +43,7 @@ import {
   countPlannedFiles,
   filterPlannedFiles,
 } from '@lib/scope-baseline.mjs';
+import { resolveBaselineRange } from '@lib/vcs-repo-spec.mjs';
 import { parseStateMd, serializeStateMd } from '@lib/state-md.mjs';
 import { STATE_LOCK_PATH } from '@lib/locks/state-md-lock.mjs';
 import { unwritablePath } from '../_helpers/unwritable-path.mjs';
@@ -114,6 +115,32 @@ function writeFilesAndCommit(root, relPaths, message) {
   }
   execFileSync('git', ['add', '-A'], { cwd: root });
   execFileSync('git', ['commit', '-q', '-m', message], { cwd: root });
+}
+
+/**
+ * Configure remote `<name>` and plant `refs/remotes/<name>/<branch>` at `sha`
+ * WITHOUT any network access — the on-disk shape of a clone that has fetched
+ * but on which nobody ever ran `git remote set-head` (the CI shallow-clone
+ * shape). `git remote add` is what makes the remote visible to
+ * `git remote -v`, which is the primitive `resolveBaselineRange()` starts
+ * from; `update-ref` alone leaves a tracking ref that no remote owns.
+ */
+function seedRemoteTracking(root, name, branch, sha) {
+  execFileSync('git', ['remote', 'add', name, `git@${name}.example.com:group/project.git`], { cwd: root });
+  execFileSync('git', ['update-ref', `refs/remotes/${name}/${branch}`, sha], { cwd: root });
+}
+
+/** `git symbolic-ref --short <ref>`, or `''` when the ref is unset (exit 1). */
+function symbolicRefOrEmpty(root, ref) {
+  try {
+    return execFileSync('git', ['symbolic-ref', '--short', ref], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch {
+    return '';
+  }
 }
 
 /** Seeds README.md as an initial commit and returns its SHA. */
@@ -765,10 +792,10 @@ describe('computeDrift()', () => {
     expect(result).toEqual({ ok: true, skipped: true, reason: 'stale-baseline' });
   });
 
-  it('missing session-start-ref falls back to origin/main...HEAD (not a skip); refUsed reports the fallback', () => {
+  it('missing session-start-ref resolves origin/main...HEAD (not a skip); refUsed reports the resolved range', () => {
     const root = makeTmpRepo();
     const sha = initialCommit(root);
-    execFileSync('git', ['update-ref', 'refs/remotes/origin/main', sha], { cwd: root });
+    seedRemoteTracking(root, 'origin', 'main', sha);
     writeFilesAndCommit(root, ['src/feature.mjs', 'src/helper.mjs'], 'work');
     seedState(root, driftStateFixtureNoRef({ session: 'session-A', baselineSession: 'session-A', plannedFiles: 2 }));
 
@@ -795,6 +822,139 @@ describe('computeDrift()', () => {
     expect(() => computeDrift({ repoRoot: root })).not.toThrow();
     const result = computeDrift({ repoRoot: root });
     expect(result).toEqual({ ok: true, skipped: true, reason: 'unresolvable-ref' });
+  });
+});
+
+// ─── #1039: baseline-range resolution replaces the origin/main literal ─────
+
+/**
+ * Until #1039 the absent-`session-start-ref` branch of `computeDrift()` diffed
+ * against the LITERAL `'origin/main...HEAD'` — two hard-codings in one string:
+ * the remote NAME and the default BRANCH. In any repo missing either, that
+ * diff threw, the function skipped, and `skills/wave-executor/wave-loop.md`
+ * renders every `skipped === true` with no WARN at all. The tripwire was
+ * permanently inert AND silent about it.
+ *
+ * Every test below names the repo shape that was inert. All fixtures reach
+ * the absent-ref branch via `driftStateFixtureNoRef` — the field is declared
+ * OPTIONAL by `skills/_shared/state-ownership.md:28`, so this is a reachable
+ * production path, not a synthetic corner.
+ */
+describe('computeDrift() — baseline-range resolution (#1039)', () => {
+  it('a repo whose only remote is named gitlab resolves and MEASURES — the origin hard-code left every non-origin repo inert', () => {
+    const root = makeTmpRepo();
+    const sha = initialCommit(root);
+    seedRemoteTracking(root, 'gitlab', 'main', sha);
+    writeFilesAndCommit(root, ['src/feature.mjs', 'src/helper.mjs'], 'work');
+    seedState(root, driftStateFixtureNoRef({ session: 'session-A', baselineSession: 'session-A', plannedFiles: 2 }));
+
+    const result = computeDrift({ repoRoot: root });
+
+    expect(result.skipped).toBe(false);
+    expect(result.refUsed).toBe('gitlab/main...HEAD');
+    expect(result.actualFiles).toBe(2);
+    expect(result.filesRatio).toBe(1);
+  });
+
+  it('a master-default repo resolves and MEASURES — the main hard-code left every master repo inert', () => {
+    const root = makeTmpRepo();
+    const sha = initialCommit(root);
+    seedRemoteTracking(root, 'origin', 'master', sha);
+    writeFilesAndCommit(root, ['src/a.mjs', 'src/b.mjs', 'src/c.mjs'], 'work');
+    seedState(root, driftStateFixtureNoRef({ session: 'session-A', baselineSession: 'session-A', plannedFiles: 3 }));
+
+    const result = computeDrift({ repoRoot: root });
+
+    expect(result.skipped).toBe(false);
+    expect(result.refUsed).toBe('origin/master...HEAD');
+    expect(result.actualFiles).toBe(3);
+    expect(result.filesRatio).toBe(1);
+  });
+
+  it('the CI shallow-clone shape (no refs/remotes/<R>/HEAD, but <R>/main present) resolves via remote-default-branch', () => {
+    const root = makeTmpRepo();
+    const sha = initialCommit(root);
+    seedRemoteTracking(root, 'gitlab', 'main', sha);
+
+    // Precondition of the shape under test: stage 2 of the chain is genuinely
+    // unavailable — `refs/remotes/<R>/HEAD` only exists after an explicit
+    // `git remote set-head`, which a shallow CI clone never runs. Without
+    // this assertion the test below would still pass on a repo where stage 2
+    // resolved, and would prove nothing about stage 3.
+    expect(symbolicRefOrEmpty(root, 'refs/remotes/gitlab/HEAD')).toBe('');
+
+    const range = resolveBaselineRange({ repoRoot: root });
+    expect(range).toEqual({
+      ok: true,
+      range: 'gitlab/main...HEAD',
+      base: 'gitlab/main',
+      remote: 'gitlab',
+      via: 'remote-default-branch',
+    });
+
+    writeFilesAndCommit(root, ['src/one.mjs'], 'work');
+    seedState(root, driftStateFixtureNoRef({ session: 'session-A', baselineSession: 'session-A', plannedFiles: 1 }));
+    expect(computeDrift({ repoRoot: root }).refUsed).toBe('gitlab/main...HEAD');
+  });
+
+  it('ABSENCE and QUERY-FAILURE produce DIFFERENT skip reasons: no remotes → no-baseline-ref, not-a-git-repo → unresolvable-ref', () => {
+    // Absence: git answered, the answer is "this repo has no baseline ref".
+    const bare = makeTmpRepo();
+    initialCommit(bare);
+    seedState(bare, driftStateFixtureNoRef({ session: 'session-A', baselineSession: 'session-A', plannedFiles: 3 }));
+
+    // Query failure: git could not be asked at all (not a work tree).
+    const nonRepo = makeTmpDir();
+    seedState(nonRepo, driftStateFixtureNoRef({ session: 'session-A', baselineSession: 'session-A', plannedFiles: 3 }));
+
+    const absence = computeDrift({ repoRoot: bare });
+    const queryFailure = computeDrift({ repoRoot: nonRepo });
+
+    expect(absence).toEqual({ ok: true, skipped: true, reason: 'no-baseline-ref' });
+    expect(queryFailure).toEqual({ ok: true, skipped: true, reason: 'unresolvable-ref' });
+    // The whole point of the split — collapsing them back would pass every
+    // assertion above except this one.
+    expect(absence.reason).not.toBe(queryFailure.reason);
+  });
+
+  it('the session-start-ref path keeps its exact pre-#1039 return shape — bare ref in refUsed, no key added or renamed', () => {
+    const root = makeTmpRepo();
+    const sha = initialCommit(root);
+    writeFilesAndCommit(root, ['src/feature.mjs', 'src/helper.mjs'], 'work');
+    seedState(
+      root,
+      driftStateFixture({
+        session: 'session-A',
+        baselineSession: 'session-A',
+        sessionStartRef: sha,
+        plannedFiles: 2,
+      })
+    );
+
+    const result = computeDrift({ repoRoot: root });
+
+    // Exact key set — a new/renamed field on the measured path would break
+    // every live reader of this module, which runs in the current session.
+    expect(Object.keys(result).sort()).toEqual([
+      'actualFiles',
+      'breached',
+      'filesRatio',
+      'ok',
+      'plannedFiles',
+      'refUsed',
+      'skipped',
+      'threshold',
+    ]);
+    expect(result).toEqual({
+      ok: true,
+      skipped: false,
+      filesRatio: 1,
+      plannedFiles: 2,
+      actualFiles: 2,
+      breached: false,
+      threshold: 2,
+      refUsed: sha,
+    });
   });
 });
 

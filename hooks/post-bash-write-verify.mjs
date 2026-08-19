@@ -154,6 +154,13 @@ import { readFileSync, mkdirSync, writeFileSync, renameSync, realpathSync, statS
 import { readStdin, writeStdoutLineSync } from '../scripts/lib/io.mjs';
 import { resolveProjectDir } from '../scripts/lib/platform.mjs';
 import { findScopeFile, pathMatchesPattern } from '../scripts/lib/hardening.mjs';
+// #1057 — `sessionAgeMs` and its private `clockAgeMs` helper MOVED to the lib so
+// hooks/enforce-scope.mjs can read the same session clock without a hook->hook
+// import. Re-exported below, so this hook's public surface — and
+// tests/hooks/post-bash-write-verify.test.mjs, which imports the named export —
+// is unchanged. Two byte-identical copies of a clock is exactly the one-fact-two-
+// copies class this repo keeps paying for.
+import { sessionAgeMs } from '../scripts/lib/scope-gate.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -539,30 +546,6 @@ function readDirtyPaths(repoRoot) {
 }
 
 /**
- * Age in ms of one session clock: a JSON file carrying an ISO start timestamp.
- *
- * Never throws. Absent / unparseable / non-string / non-ISO ⇒ null. A NEGATIVE
- * age (timestamp in the future) is also null rather than a negative number —
- * see `sessionAgeMs` for why that matters once two clocks are combined.
- *
- * @param {string} file  absolute path to the JSON file
- * @param {string} field name of the ISO-timestamp property
- * @param {number} now
- * @returns {number|null}
- */
-function clockAgeMs(file, field, now) {
-  try {
-    const parsed = JSON.parse(readFileSync(file, 'utf8'));
-    const startedAt = Date.parse(parsed?.[field]);
-    if (!Number.isFinite(startedAt)) return null;
-    const age = now - startedAt;
-    return age >= 0 ? age : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Milliseconds since the current session started, or null when unknown — the
  * MINIMUM of two independently-written session clocks (#957 finding 2):
  *
@@ -634,14 +617,7 @@ function clockAgeMs(file, field, now) {
  * @param {number} [now]
  * @returns {number|null}
  */
-export function sessionAgeMs(repoRoot, now = Date.now()) {
-  const dir = path.join(repoRoot, '.orchestrator');
-  const ages = [
-    clockAgeMs(path.join(dir, 'current-session.json'), 'timestamp', now),
-    clockAgeMs(path.join(dir, 'session.lock'), 'started_at', now),
-  ].filter((age) => age !== null);
-  return ages.length > 0 ? Math.min(...ages) : null;
-}
+export { sessionAgeMs };
 
 /** @returns {object|null} */
 function readSnapshot(file) {

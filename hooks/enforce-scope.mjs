@@ -20,6 +20,12 @@
  *   G7  relative path matches an allowedPaths pattern
  *   G8  (all passed) → allow
  *
+ * Empty-allowedPaths reasoning (#1057): the VERDICT for an empty allowlist is
+ * unchanged (deny-all, the #256 contract), but the deny REASON is now classified
+ * — Discovery's read-only contract, an unreadable manifest, a crashed session's
+ * leftover, an incomplete `--union`, or undecidable. See
+ * `scripts/lib/scope-gate.mjs` § Empty-`allowedPaths` classification.
+ *
  * Exit codes:  0 = allow   2 = deny
  *
  * SECURITY notes (inline refs):
@@ -88,6 +94,10 @@ let findScopeFile;
 let pathMatchesPattern;
 let suggestForScopeViolation;
 let readJson;
+// #1057 — empty-`allowedPaths` classification + the session clock it needs.
+let classifyEmptyScope;
+let suggestForEmptyScope;
+let sessionStartedAtMs;
 
 const PLUGIN_ROOT = path.resolve(import.meta.dirname, '..');
 
@@ -137,6 +147,13 @@ async function bootstrap() {
       platform: { specifier: lib('platform.mjs') },
       hardening: { specifier: lib('hardening.mjs') },
       common: { specifier: lib('common.mjs') },
+      // #1057. Bound DIRECTLY rather than through the `hardening.mjs` barrel:
+      // that barrel re-exports an explicit, frozen symbol list shared by six
+      // hooks, and widening it for one hook's need would drag three symbols
+      // into five unrelated import surfaces. `hardening` already imports
+      // `scope-gate` transitively, so this adds no new failure mode — a broken
+      // scope-gate already banners GUARD INACTIVE through that edge.
+      scopeGate: { specifier: lib('scope-gate.mjs') },
     },
     {
       hookName: HOOK_NAME,
@@ -151,6 +168,7 @@ async function bootstrap() {
   ({ resolveProjectDir } = modules.platform);
   ({ findScopeFile, pathMatchesPattern, suggestForScopeViolation } = modules.hardening);
   ({ readJson } = modules.common);
+  ({ classifyEmptyScope, suggestForEmptyScope, sessionStartedAtMs } = modules.scopeGate);
 }
 
 async function main() {
@@ -183,15 +201,31 @@ async function main() {
   if (!scopePath) return emitAllow();
 
   // SECURITY-REQ-08: read scope file once; pass parsed object to all subsequent checks
+  //
+  // #1057: `parseOk` records WHETHER that read produced a usable scope RECORD.
+  // Both fold-to-`{}` / fold-to-`[]` paths (corrupt JSON #794 GAP-5, malformed
+  // shapes #558) already deny and CONTINUE to deny — the flag exists so the deny
+  // REASON can say "the manifest is broken" instead of "update the session plan
+  // and restart the wave", which is the one instruction that cannot help here.
   let scope;
+  let parseOk = true;
   try {
     scope = await readJson(scopePath);
+    if (scope === null || typeof scope !== 'object' || Array.isArray(scope)) {
+      parseOk = false;
+      scope = {};
+    }
   } catch {
+    parseOk = false;
     scope = {};
   }
 
   const enforcement = scope.enforcement ?? 'strict';
   const allowedPaths = Array.isArray(scope.allowedPaths) ? scope.allowedPaths : [];
+  // A PRESENT-but-non-array `allowedPaths` (#558: null / string / object) is a
+  // MALFORMED record, not an empty grant — same class as unparseable JSON, so it
+  // earns the same reason. Absent is different and stays `parseOk`.
+  if (scope.allowedPaths !== undefined && !Array.isArray(scope.allowedPaths)) parseOk = false;
   const gatesEnabled = scope.gates?.['path-guard'] !== false;
 
   // Gate 4: path-guard gate explicitly disabled
@@ -199,6 +233,48 @@ async function main() {
 
   // Gate 5: enforcement is turned off
   if (enforcement === 'off') return emitAllow();
+
+  // -------------------------------------------------------------------------
+  // #1057 — WHY is the allowlist empty?
+  //
+  // FIVE repo states produce `allowedPaths.length === 0` and the DENY IS RIGHT
+  // IN ALL FIVE; only the instruction differs (Discovery's read-only contract,
+  // a corrupt manifest, a crashed session's leftover, an incomplete `--union`,
+  // or genuinely undecidable). This block is therefore VERDICT-NEUTRAL: it
+  // selects a sentence, never a decision — `suggest()` below is the only
+  // consumer, and its `'unknown'` branch is byte-identical to the pre-#1057 text.
+  //
+  // Computed AFTER the early-exit gates (a disabled or `off` wave pays no
+  // fs.stat) and BEFORE the first deny site, so all three deny sites share one
+  // explanation instead of drifting apart.
+  // -------------------------------------------------------------------------
+  const emptyScopeReason =
+    allowedPaths.length === 0
+      ? classifyEmptyScope({
+          role: scope.role,
+          parseOk,
+          scopeMtimeMs: await mtimeMsOf(scopePath),
+          sessionStartMs: sessionStartedAtMs(projectRoot),
+        })
+      : null;
+  const scopeRelRaw = relativeFromRoot(projectRoot, scopePath);
+  const scopeHint = (scopeRelRaw ?? scopePath).split(path.sep).join('/');
+
+  /**
+   * The suggestion half of every deny below.
+   *
+   * With a NON-empty allowlist this is byte-identical to the pre-#1057 call.
+   * With an empty one it routes through the classifier — whose `'unknown'`
+   * branch delegates back to `suggestForScopeViolation(target, '')`, i.e. the
+   * same sentence as before. Strictly an addition.
+   *
+   * @param {string} target
+   * @returns {string}
+   */
+  const suggest = (target) =>
+    emptyScopeReason === null
+      ? suggestForScopeViolation(target, allowedPaths.join(', '))
+      : suggestForEmptyScope(target, emptyScopeReason, { role: scope.role, scopePath: scopeHint });
 
   // SECURITY-REQ-06: resolve relative file_path against projectRoot, not process.cwd()
   const absPathInput = path.isAbsolute(filePath)
@@ -264,7 +340,7 @@ async function main() {
   // Gate 6: path must be inside the project root
   if (!isPathInside(resolvedPath, projectRoot)) {
     const reason = `Scope violation: path outside project root`;
-    const suggestion = suggestForScopeViolation(filePath, allowedPaths.join(', '));
+    const suggestion = suggest(filePath);
     return enforcement === 'strict'
       ? emitDeny(reason, suggestion)
       : emitWarn(`${reason} — ${suggestion}`);
@@ -276,7 +352,7 @@ async function main() {
   // SECURITY-REQ-04: null return means outside root — deny rather than pass null to pathMatchesPattern
   if (relPath === null) {
     const reason = `Scope violation: '${filePath}' outside project root`;
-    const suggestion = suggestForScopeViolation(filePath, allowedPaths.join(', '));
+    const suggestion = suggest(filePath);
     return enforcement === 'strict'
       ? emitDeny(reason, suggestion)
       : emitWarn(`${reason} — ${suggestion}`);
@@ -297,7 +373,7 @@ async function main() {
 
   if (!matched) {
     const reason = `Scope violation: '${normalizedRel}' not in allowed paths [${allowedPaths.join(', ')}]`;
-    const suggestion = suggestForScopeViolation(normalizedRel, allowedPaths.join(', '));
+    const suggestion = suggest(normalizedRel);
     return enforcement === 'strict'
       ? emitDeny(reason, suggestion)
       : emitWarn(`${reason} — ${suggestion}`);
@@ -305,6 +381,30 @@ async function main() {
 
   // Gate 8 / all gates passed → allow
   return emitAllow();
+}
+
+/**
+ * `mtimeMs` of a file, or `null` when it cannot be stat'ed.
+ *
+ * The PROVENANCE half of the #1057 staleness comparison. It is fed into a
+ * SUBTRACTION against this session's start time — deliberately NOT compared to a
+ * TTL: an absolute age cap blinds the check in exactly the regime it exists for
+ * (a legitimate long deep session ages into the blind spot with nothing having
+ * gone wrong). Same argument `hooks/post-bash-write-verify.mjs` makes for
+ * `sessionAgeMs` under "Why the minimum, and why NOT a staleness cap".
+ *
+ * Never throws — an unstat-able manifest simply yields an undecidable clock, and
+ * {@link classifyEmptyScope} degrades to `'unknown'`, never to an allow.
+ *
+ * @param {string} file
+ * @returns {Promise<number|null>}
+ */
+async function mtimeMsOf(file) {
+  try {
+    return (await fs.stat(file)).mtimeMs;
+  } catch {
+    return null;
+  }
 }
 
 const COORDINATOR_CARVEOUT_PATHS = Object.freeze([

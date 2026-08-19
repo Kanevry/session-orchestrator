@@ -12,8 +12,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
@@ -275,6 +276,155 @@ describe('resolveRepoNamespace — pseudonym mapping', () => {
     _setNamespaceMapPath(writeMap({ bernhardg: 'bernhardg' }));
     expect(resolveRepoNamespace({ vaultName: 'bernhardg' })).toBe('redacted-repo');
     expect(writes.some((w) => /owner-leaky/.test(w))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1039 — deriveRepo resolves the PREFERRED remote, and its fallback says WHY
+//
+// These tests drive REAL git repositories in tmpdirs (no child_process mock),
+// because the bug class being pinned is precisely a wrong assumption about what
+// git prints: the pre-#1039 implementation read `git remote get-url origin` and
+// therefore (a) saw nothing in a repo whose remotes are named gitlab/github and
+// (b) mis-parsed the filesystem-path origin that `git clone <path>` records.
+// A mocked git cannot falsify either claim — only git can.
+// ---------------------------------------------------------------------------
+
+describe('deriveRepo (#1039) — preferred-remote resolution + distinguishable fallback', () => {
+  const ORIGINAL_CWD = process.cwd();
+
+  /** Create a tracked tmp dir; realpath so macOS /var → /private/var is stable. */
+  function makeDir(prefix) {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+    _tmpDirs.push(dir);
+    return dir;
+  }
+
+  function git(args, cwd) {
+    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  }
+
+  /** `git init` + one empty commit, so the repo is clonable. */
+  function initRepo(dir) {
+    git(['init', '-q', dir], tmpdir());
+    git(['-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init'], dir);
+    return dir;
+  }
+
+  /**
+   * Fresh module instance — the ONLY way to reset deriveRepo's module-level
+   * `_cachedRepo`, which is deliberately process-lifetime state.
+   */
+  async function freshNamespaceModule() {
+    vi.resetModules();
+    const mod = await import('@lib/vault-mirror/namespace.mjs');
+    mod._setNamespaceMapPath(null); // insulate from the host's real owner.yaml
+    return mod;
+  }
+
+  afterEach(() => {
+    process.chdir(ORIGINAL_CWD);
+  });
+
+  it('A1: a filesystem-path origin (git clone <path>/.) yields the repo name, not "unknown-repo"', async () => {
+    // The exact state the pre-push hook's clone produced on 2026-08-19:
+    // `git clone <src>/.` records origin verbatim as `/…/<repo>/.`, whose last
+    // segment is a bare dot. The old regex captured "<repo>/." → slug "" →
+    // 'unknown-repo', which turned the namespace assertion below red and
+    // blocked a real push.
+    const base = makeDir('ns-clone-');
+    const source = initRepo(join(base, 'widget-service'));
+    const clone = join(base, 'checkout');
+    git(['clone', '-q', `${source}/.`, clone], base);
+
+    // Golden record: this is what git itself wrote into the clone's config.
+    expect(git(['remote', 'get-url', 'origin'], clone).trim()).toBe(`${source}/.`);
+
+    process.chdir(clone);
+    const mod = await freshNamespaceModule();
+
+    expect(mod.deriveRepo()).toBe('widget-service');
+    expect(mod.resolveRepoNamespace({})).toBe('widget-service');
+    expect(mod.resolveRepoNamespace({})).not.toBe('unknown-repo');
+  });
+
+  it('A2: a repo with gitlab + github remotes and NO origin resolves to the repo identity', async () => {
+    // Pre-#1039 this fell through to basename(process.cwd()) — i.e. vault notes
+    // were namespaced under the CHECKOUT DIRECTORY, not the repo.
+    const repo = initRepo(join(makeDir('ns-noorigin-'), 'checkout-dir'));
+    git(['remote', 'add', 'gitlab', 'git@gitlab.example.com:acme-group/widget-service.git'], repo);
+    git(['remote', 'add', 'github', 'https://github.com/acme/widget-service.git'], repo);
+
+    process.chdir(repo);
+    const mod = await freshNamespaceModule();
+
+    expect(mod.deriveRepo()).toBe('acme-group/widget-service');
+    expect(mod.resolveRepoNamespace({})).toBe('widget-service');
+    expect(mod.resolveRepoNamespace({})).not.toBe(basename(repo));
+  });
+
+  it('A3a: a repo with NO remotes falls back to the directory name SILENTLY (absence is not a defect)', async () => {
+    const repo = initRepo(join(makeDir('ns-noremotes-'), 'lonely-repo'));
+
+    const writes = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((m) => {
+      writes.push(String(m));
+      return true;
+    });
+
+    process.chdir(repo);
+    const mod = await freshNamespaceModule();
+
+    expect(mod.deriveRepo()).toBe('lonely-repo');
+    expect(writes.filter((w) => w.includes('vault-mirror/namespace'))).toEqual([]);
+  });
+
+  it('A3b: OUTSIDE a git repo the same fallback WARNS and names the query failure', async () => {
+    // Same returned value as A3a, opposite cause. Before #1039 the two were
+    // indistinguishable, and the guessed identity was written to the vault
+    // without a word.
+    const dir = join(makeDir('ns-nogit-'), 'plain-dir');
+    mkdirSync(dir);
+
+    const writes = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((m) => {
+      writes.push(String(m));
+      return true;
+    });
+
+    process.chdir(dir);
+    const mod = await freshNamespaceModule();
+
+    expect(mod.deriveRepo()).toBe('plain-dir');
+    const warns = writes.filter((w) => w.includes('vault-mirror/namespace'));
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain('not-a-git-repo');
+  });
+
+  it('A4: the module-level cache still holds — three calls, ONE git spawn', async () => {
+    // Faithful double: the fixture is real `git remote -v` output (tab-separated
+    // name/url + " (fetch)"/" (push)" suffix), captured from git on 2026-08-19.
+    const remoteV = [
+      'origin\tgit@gitlab.example.com:acme-group/cached-repo.git (fetch)',
+      'origin\tgit@gitlab.example.com:acme-group/cached-repo.git (push)',
+      '',
+    ].join('\n');
+    const execMock = vi.fn(() => remoteV);
+
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return { ...actual, execFileSync: execMock };
+    });
+    try {
+      const mod = await import('@lib/vault-mirror/namespace.mjs');
+      expect(mod.deriveRepo()).toBe('acme-group/cached-repo');
+      expect(mod.deriveRepo()).toBe('acme-group/cached-repo');
+      expect(mod.deriveRepo()).toBe('acme-group/cached-repo');
+      expect(execMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.doUnmock('node:child_process');
+    }
   });
 });
 

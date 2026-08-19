@@ -14,6 +14,13 @@
  * node:child_process is mocked so github-mirror-sync tests never shell out to
  * real git — see .claude/rules/testing.md § Vitest Mocking Gotchas (vi.hoisted
  * for shared mock state; no vi.spyOn on ESM named exports).
+ *
+ * Since #1039 the remote list is read through `listRemotes` from
+ * `scripts/lib/vcs-repo-spec.mjs`, i.e. ONE `git -C <root> remote -v` spawn
+ * instead of the old bare `git remote`. The doubles below are golden records of
+ * what git actually emits for that command (tab-separated `<name>\t<url>
+ * (fetch|push)` lines) and of how `execFileSync` actually fails (an Error
+ * carrying `status: 128`, not `code`) — both captured from git on 2026-08-19.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -28,6 +35,7 @@ vi.mock('node:child_process', () => ({
 }));
 
 import { runCategory6 } from '@lib/harness-audit/categories/category6.mjs';
+import { isQueryFailure } from '@lib/vcs-repo-spec.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -54,6 +62,34 @@ function nLines(n) {
   return Array.from({ length: n }, (_, i) => `line ${i + 1}`).join('\n');
 }
 
+/**
+ * Golden-record `git remote -v` stdout for the given `[name, url]` pairs —
+ * one fetch line and one push line per remote, tab-separated.
+ */
+function remoteVOutput(entries) {
+  return `${entries
+    .flatMap(([name, url]) => [`${name}\t${url} (fetch)`, `${name}\t${url} (push)`])
+    .join('\n')}\n`;
+}
+
+/** True when this execFileSync call is listRemotes' `git -C <root> remote -v`. */
+function isRemoteListCall(args) {
+  return args[0] === '-C' && args[2] === 'remote' && args[3] === '-v';
+}
+
+/**
+ * Faithful execFileSync failure for a non-zero git exit: the thrown Error
+ * carries `status` (exit code) and `stderr`; `code` stays undefined (it is set
+ * only for spawn failures such as ENOENT). listRemotes classifies exit 128 as
+ * `not-a-git-repo` off exactly this shape.
+ */
+function gitExit128(message = 'fatal: not a git repository (or any of the parent directories): .git') {
+  const err = new Error(message);
+  err.status = 128;
+  err.stderr = message;
+  return err;
+}
+
 // ---------------------------------------------------------------------------
 // Suite
 // ---------------------------------------------------------------------------
@@ -63,12 +99,13 @@ describe('runCategory6', () => {
 
   beforeEach(() => {
     root = makeRoot();
-    // Default: simulate "not a git repository" for every git invocation.
-    // github-mirror-sync degrades to skip-as-pass in this state, matching
-    // the real fixture dirs below (none of which contain a .git directory).
+    // Default: simulate "not a git repository" for every git invocation —
+    // faithful to the real fixture dirs below (none of which contain a .git
+    // directory). Since #1039 github-mirror-sync FAILS in this state instead of
+    // skipping as pass: the audit could not measure, so it did not pass.
     execFileSyncMock.mockReset();
     execFileSyncMock.mockImplementation(() => {
-      throw new Error('fatal: not a git repository (or any of the parent directories): .git');
+      throw gitExit128();
     });
   });
 
@@ -81,6 +118,14 @@ describe('runCategory6', () => {
   // -------------------------------------------------------------------------
   it('returns 4 passing checks for a well-formed consumer repo CLAUDE.md', () => {
     writeFileSync(join(root, 'CLAUDE.md'), minimalClaudeMd());
+    // A well-formed repo is also a REAL git repo whose remotes can be listed —
+    // here one that simply has no github mirror. Leaving the default
+    // "not a git repository" double in place would make this an assertion about
+    // an unmeasurable audit, not about a well-formed repo.
+    execFileSyncMock.mockImplementation((cmd, args) => {
+      if (isRemoteListCall(args)) return remoteVOutput([['origin', 'git@gitlab.example.com:acme/widget.git']]);
+      throw new Error('unexpected git invocation in this test');
+    });
 
     const checks = runCategory6(root);
 
@@ -170,8 +215,52 @@ describe('runCategory6', () => {
   // github-mirror-sync — no .git dir at all (real filesystem, not mocked git)
   // -------------------------------------------------------------------------
   describe('github-mirror-sync', () => {
-    it('skips as pass with full points when the root is not a git repository', () => {
+    // B1 (#1039) — THE fail-open this check used to score 2/2 on. Outside a git
+    // repository (and on a host without git) the old bare `git remote` returned
+    // null, indistinguishable from "no github remote", and the audit awarded
+    // full points with the message "no github mirror remote configured". An
+    // audit that could not measure has not passed.
+    it('FAILS with zero points when the root is not a git repository (query failure ≠ absence)', () => {
       writeFileSync(join(root, 'CLAUDE.md'), minimalClaudeMd());
+
+      const checks = runCategory6(root);
+      const mirrorCheck = checks.find((c) => c.check_id === 'github-mirror-sync');
+
+      expect(mirrorCheck.status).toBe('fail');
+      expect(mirrorCheck.points).toBe(0);
+      expect(mirrorCheck.max_points).toBe(2);
+      expect(mirrorCheck.evidence.hasGithubRemote).toBe(null);
+      expect(mirrorCheck.evidence.remoteQuery).toBe('not-a-git-repo');
+      // The recorded reason must be a QUERY failure, never an absence reason —
+      // that distinction is the whole point of the discriminated result.
+      expect(isQueryFailure(mirrorCheck.evidence.remoteQuery)).toBe(true);
+      expect(mirrorCheck.message).toContain('git remote query failed (not-a-git-repo)');
+    });
+
+    it('FAILS with zero points when git is not on PATH (ENOENT is a query failure too)', () => {
+      writeFileSync(join(root, 'CLAUDE.md'), minimalClaudeMd());
+      execFileSyncMock.mockImplementation(() => {
+        const err = new Error('spawnSync git ENOENT');
+        err.code = 'ENOENT';
+        throw err;
+      });
+
+      const checks = runCategory6(root);
+      const mirrorCheck = checks.find((c) => c.check_id === 'github-mirror-sync');
+
+      expect(mirrorCheck.status).toBe('fail');
+      expect(mirrorCheck.points).toBe(0);
+      expect(mirrorCheck.evidence.remoteQuery).toBe('git-unavailable');
+    });
+
+    // B2 (#1039) — the legitimate ABSENCE must not be swept up by B1's fix: a
+    // real repo that simply has no github mirror still earns full points.
+    it('skips as pass with full points when no github remote is configured', () => {
+      writeFileSync(join(root, 'CLAUDE.md'), minimalClaudeMd());
+      execFileSyncMock.mockImplementation((cmd, args) => {
+        if (isRemoteListCall(args)) return remoteVOutput([['origin', 'git@gitlab.example.com:acme/widget.git']]);
+        throw new Error('unexpected git invocation in this test');
+      });
 
       const checks = runCategory6(root);
       const mirrorCheck = checks.find((c) => c.check_id === 'github-mirror-sync');
@@ -180,13 +269,14 @@ describe('runCategory6', () => {
       expect(mirrorCheck.points).toBe(2);
       expect(mirrorCheck.max_points).toBe(2);
       expect(mirrorCheck.evidence.hasGithubRemote).toBe(false);
+      expect(mirrorCheck.evidence.remoteCount).toBe(1);
       expect(mirrorCheck.message).toContain('no github mirror remote configured');
     });
 
-    it('skips as pass with full points when no github remote is configured', () => {
+    it('skips as pass with full points for a repo with NO remotes at all (empty list is an answer)', () => {
       writeFileSync(join(root, 'CLAUDE.md'), minimalClaudeMd());
       execFileSyncMock.mockImplementation((cmd, args) => {
-        if (args[0] === 'remote') return 'origin\n';
+        if (isRemoteListCall(args)) return '';
         throw new Error('unexpected git invocation in this test');
       });
 
@@ -196,12 +286,18 @@ describe('runCategory6', () => {
       expect(mirrorCheck.status).toBe('pass');
       expect(mirrorCheck.points).toBe(2);
       expect(mirrorCheck.evidence.hasGithubRemote).toBe(false);
+      expect(mirrorCheck.evidence.remoteCount).toBe(0);
     });
 
     it('skips as pass with full points when neither github/HEAD nor the local-branch fallback verifies', () => {
       writeFileSync(join(root, 'CLAUDE.md'), minimalClaudeMd());
       execFileSyncMock.mockImplementation((cmd, args) => {
-        if (args[0] === 'remote') return 'origin\ngithub\n';
+        if (isRemoteListCall(args)) {
+          return remoteVOutput([
+            ['origin', 'git@gitlab.example.com:acme/widget.git'],
+            ['github', 'https://github.com/acme/widget.git'],
+          ]);
+        }
         // Both the github/HEAD lookup and the local-branch fallback lookup
         // resolve a branch name (--abbrev-ref matches both), but neither
         // verifies against an existing github/<branch> tracking ref.
@@ -232,7 +328,12 @@ describe('runCategory6', () => {
     it('falls back to the local current branch when github/HEAD is unresolved, and reports partial credit', () => {
       writeFileSync(join(root, 'CLAUDE.md'), minimalClaudeMd());
       execFileSyncMock.mockImplementation((cmd, args) => {
-        if (args[0] === 'remote') return 'origin\ngithub\n';
+        if (isRemoteListCall(args)) {
+          return remoteVOutput([
+            ['origin', 'git@gitlab.example.com:acme/widget.git'],
+            ['github', 'https://github.com/acme/widget.git'],
+          ]);
+        }
         // Strategy 1 fails: github/HEAD is not set (unfetched symbolic ref).
         if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref' && args[2] === 'github/HEAD') {
           throw new Error("fatal: ambiguous argument 'github/HEAD': unknown revision or path not in the working tree.");
@@ -271,7 +372,12 @@ describe('runCategory6', () => {
     it('skips as pass when the ahead-count cannot be parsed as a number', () => {
       writeFileSync(join(root, 'CLAUDE.md'), minimalClaudeMd());
       execFileSyncMock.mockImplementation((cmd, args) => {
-        if (args[0] === 'remote') return 'origin\ngithub\n';
+        if (isRemoteListCall(args)) {
+          return remoteVOutput([
+            ['origin', 'git@gitlab.example.com:acme/widget.git'],
+            ['github', 'https://github.com/acme/widget.git'],
+          ]);
+        }
         if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'github/main\n';
         if (args[0] === 'rev-parse' && args[1] === '--verify') return '';
         if (args[0] === 'rev-list') return 'unknown\n';
@@ -291,7 +397,12 @@ describe('runCategory6', () => {
     it('passes with full points when HEAD is fully mirrored (0 ahead)', () => {
       writeFileSync(join(root, 'CLAUDE.md'), minimalClaudeMd());
       execFileSyncMock.mockImplementation((cmd, args) => {
-        if (args[0] === 'remote') return 'origin\ngithub\n';
+        if (isRemoteListCall(args)) {
+          return remoteVOutput([
+            ['origin', 'git@gitlab.example.com:acme/widget.git'],
+            ['github', 'https://github.com/acme/widget.git'],
+          ]);
+        }
         if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'github/main\n';
         if (args[0] === 'rev-parse' && args[1] === '--verify') return '';
         if (args[0] === 'rev-list') return '0\n';
@@ -311,7 +422,12 @@ describe('runCategory6', () => {
     it('reports partial credit when local commits are not yet pushed to the mirror', () => {
       writeFileSync(join(root, 'CLAUDE.md'), minimalClaudeMd());
       execFileSyncMock.mockImplementation((cmd, args) => {
-        if (args[0] === 'remote') return 'origin\ngithub\n';
+        if (isRemoteListCall(args)) {
+          return remoteVOutput([
+            ['origin', 'git@gitlab.example.com:acme/widget.git'],
+            ['github', 'https://github.com/acme/widget.git'],
+          ]);
+        }
         if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'github/main\n';
         if (args[0] === 'rev-parse' && args[1] === '--verify') return '';
         if (args[0] === 'rev-list') return '3\n';

@@ -80,6 +80,11 @@ import {
   TEST_SIBLING_EXPANSION_ROLES,
   findScopeCollisions,
   unionFileScopes,
+  // #1057 — the read-only-role predicate + THE list. Imported rather than
+  // re-listed so the validator and hooks/enforce-scope.mjs cannot disagree about
+  // which roles are allowed to grant zero paths.
+  isReadOnlyWaveRole,
+  READ_ONLY_WAVE_ROLES,
   // Aliased: `expandTestSiblings` is ALSO the name of the pre-existing
   // boolean parameter threaded through validate()/assertSubsetOrDie for the
   // #970 flag. Aliasing the import avoids shadowing that parameter rather than
@@ -340,6 +345,27 @@ function validateAllowedPaths(obj, errors, warnings) {
   if (!Array.isArray(ap)) {
     errors.push(`allowedPaths must be an array, got type: ${ap === null ? 'null' : typeof ap}`);
     return;
+  }
+  // #1057 — an empty union under a WRITABLE role. WARN, never error, and the
+  // distinction is measured rather than stylistic: `skills/wave-executor/wave-loop.md`
+  // § Scope Manifest deliberately feeds a skeleton with `"allowedPaths": []`
+  // through THIS validator in `--assert-disjoint` and `--union` mode, BEFORE the
+  // union exists to be written. An error would break the documented procedure
+  // that produces the very field it complains about.
+  //
+  // Named ceiling (BV-004): the warning therefore also fires on that legitimate
+  // skeleton run — one stderr line on a happy path, accepted because the
+  // alternative is a mode-conditional warning, i.e. a second place that has to
+  // enumerate the modes correctly. Revisit if a third empty-skeleton mode lands.
+  if (ap.length === 0 && typeof obj.role === 'string' && obj.role.trim().length > 0
+      && !isReadOnlyWaveRole(obj.role)) {
+    warnings.push(
+      `allowedPaths is empty for role "${obj.role}" — every write in this wave will be DENIED by ` +
+      `hooks/enforce-scope.mjs. Empty is intentional only for a read-only role ` +
+      `(${READ_ONLY_WAVE_ROLES.join(', ')}); for a writable role it usually means the coordinator's ` +
+      `--union step did not complete. Expected while validating the pre-union skeleton; otherwise ` +
+      `re-run --union and rewrite the manifest.`,
+    );
   }
   for (const entry of ap) {
     if (typeof entry !== 'string' || entry.length === 0) {

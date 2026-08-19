@@ -107,8 +107,25 @@ const GITHUB_ORIGIN = 'https://github.com/Kanevry/session-orchestrator.git';
 const GLAB_REPO_VIEW = JSON.stringify({ id: 42, name: 'session-orchestrator' });
 const GH_REPO_VIEW = JSON.stringify({ nameWithOwner: 'Kanevry/session-orchestrator' });
 
-function gitRemoteResponse(origin) {
-  return { cmd: 'git', args: ['remote', 'get-url', 'origin'], stdout: origin + '\n' };
+// `git remote -v` stub (#1039). The probe no longer asks for a remote BY NAME
+// (`remote get-url origin`), so the argv can no longer pin which remote is
+// selected — it enumerates all of them and the selection happens in
+// `detectVcsFamily`. Every assertion that used to ride on the old argv pin has
+// therefore moved onto the RESOLVED VALUE (`details.cliUsed`), with a losing
+// second remote present so the assertion cannot be satisfied by any arbitrary
+// resolver; see the "remote selection" describe block below.
+//
+// Accepts either a bare URL (shorthand for a single remote named `origin`,
+// which is what every pre-#1039 call site here means) or `[name, url]` pairs.
+// Emits git's real two-lines-per-remote `(fetch)`/`(push)` shape, tab-separated.
+function gitRemoteResponse(...entries) {
+  const remotes = entries.map((entry) =>
+    typeof entry === 'string' ? ['origin', entry] : entry,
+  );
+  const stdout = remotes
+    .map(([name, url]) => `${name}\t${url} (fetch)\n${name}\t${url} (push)\n`)
+    .join('');
+  return { cmd: 'git', args: ['remote', '-v'], stdout };
 }
 
 function gitRevParseResponse(sha) {
@@ -380,12 +397,16 @@ describe('checkCiStatus — GitHub red', () => {
 // ── Test 6: Non-VCS repo ──────────────────────────────────────────────────────
 
 describe('checkCiStatus — non-VCS repo', () => {
-  it('returns null when git remote get-url throws (no git origin)', async () => {
-    const gitError = new Error('fatal: No such remote');
+  it('returns null SILENTLY when git reports the path is not a work tree', async () => {
+    // Exit 128 is what `git remote -v` returns outside a work tree. Async
+    // execFile reports the child's exit status in `err.code` as a NUMBER
+    // (the spawn errno would be the STRING 'ENOENT') — the production
+    // classifier discriminates on exactly that type difference.
+    const gitError = new Error('fatal: not a git repository');
     gitError.code = 128;
 
     const mockExecFile = makeExecFileMock([
-      { cmd: 'git', args: ['remote', 'get-url', 'origin'], error: gitError },
+      { cmd: 'git', args: ['remote', '-v'], error: gitError },
     ]);
 
     const result = await checkCiStatus(
@@ -394,6 +415,11 @@ describe('checkCiStatus — non-VCS repo', () => {
     );
 
     expect(result).toBeNull();
+    // Running outside a repo is a legitimate, benign state — the same silence
+    // the glab-ENOENT test above demands. Warning here would print on every
+    // session-start in a non-repo directory and train the operator to skip the
+    // line that carries the `git-unavailable` / `git-error` signal.
+    expect(warnSpy.mock.calls).toHaveLength(0);
   });
 });
 
@@ -799,5 +825,193 @@ describe('checkCiStatus — #1022 rejected-invocation WARN', () => {
     // of the surrounding sentence: neither half of the credential survives.
     expect(warnSpy.mock.calls[0][0]).not.toContain('ci-bot');
     expect(warnSpy.mock.calls[0][0]).not.toContain('glpat-');
+  });
+});
+
+// ── Test 18: #1039 remote selection is no longer the literal `origin` ─────────
+//
+// Bug this catches: the probe ran `git remote get-url origin`. In a repo whose
+// remotes are named `gitlab`/`github` — a shape this very repo's sibling clones
+// use — that call fails, the caller swallowed the failure to `null`, and the
+// banner was STRUCTURALLY DARK: it could never report anything, not even a red
+// pipeline. Nothing in the pre-#1039 suite noticed, because every fixture
+// stubbed exactly one remote and named it `origin`.
+//
+// These three cases also carry the statement the old `args: ['remote',
+// 'get-url', 'origin']` matcher used to make. That pin is gone with the argv
+// (the probe now enumerates remotes and selects among them), so the statement
+// moved onto the RESOLVED VALUE — `details.cliUsed` — and every case below
+// plants a LOSING second remote of the other family. Without that loser the
+// value assertion would be tautological: with one remote configured, any
+// resolver whatsoever returns the same answer.
+
+describe('checkCiStatus — #1039 remote selection', () => {
+  const pipelines = [
+    { id: 101, sha: HEAD_SHA, status: 'success', created_at: '2026-05-10T10:00:00Z' },
+  ];
+
+  it('still produces a banner in a repo with `gitlab` + `github` remotes and NO `origin`', async () => {
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(['gitlab', GITLAB_ORIGIN], ['github', GITHUB_ORIGIN]),
+      gitRevParseResponse(HEAD_SHA),
+      glabRepoViewResponse,
+      glabPipelinesResponse(pipelines),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    // The whole point: NOT null. Pre-#1039 this returned null for every repo
+    // in this shape, silently, forever.
+    expect(result).not.toBeNull();
+    expect(result.status).toBe('green');
+    // `gitlab` beats `github` in the vcs-less preference order — the losing
+    // remote is real and present, so this cannot pass by accident.
+    expect(result.details.cliUsed).toBe('glab');
+  });
+
+  it('prefers `origin` (gitlab) over a losing `github` remote', async () => {
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(['origin', GITLAB_ORIGIN], ['github', GITHUB_ORIGIN]),
+      gitRevParseResponse(HEAD_SHA),
+      glabRepoViewResponse,
+      glabPipelinesResponse(pipelines),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    // This repo's own shape (GitLab primary + GitHub mirror). git lists
+    // remotes alphabetically, so `github` comes FIRST in the enumeration — a
+    // resolver that took the first classifiable remote would answer 'gh' here
+    // and re-namespace every downstream query onto the mirror.
+    expect(result.details.cliUsed).toBe('glab');
+  });
+
+  it('prefers `origin` (github) over a losing `gitlab` remote', async () => {
+    const checkRuns = [{ name: 'test', conclusion: 'success' }];
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(['origin', GITHUB_ORIGIN], ['gitlab', GITLAB_ORIGIN]),
+      ghRepoViewResponse,
+      ghCheckRunsResponse(checkRuns),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    // Mirror image of the case above: same preference rule, opposite answer.
+    // A resolver hard-wired to "gitlab unless proven otherwise" passes the
+    // previous test and fails this one.
+    expect(result.details.cliUsed).toBe('gh');
+  });
+});
+
+// ── Test 19: #1039 GitHub Enterprise is not GitLab ───────────────────────────
+
+describe('checkCiStatus — #1039 GitHub Enterprise host classification', () => {
+  it('classifies git@github.example.com:o/r.git as github, not gitlab', async () => {
+    // Bug this catches: the old test was `remoteUrl.includes('github.com')`.
+    // A GitHub Enterprise host contains no `github.com` substring, so every
+    // Enterprise repo fell through to the gitlab branch and the banner drove
+    // `glab` at a GitHub instance — a guaranteed failure, swallowed to null.
+    const checkRuns = [{ name: 'test', conclusion: 'success' }];
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse('git@github.example.com:Kanevry/session-orchestrator.git'),
+      ghRepoViewResponse,
+      ghCheckRunsResponse(checkRuns),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    expect(result).not.toBeNull();
+    expect(result.status).toBe('green');
+    expect(result.details.cliUsed).toBe('gh');
+    // No glab stub is registered, so a gitlab misclassification cannot pass
+    // quietly — it hits the mock's unexpected-call guard and returns null.
+  });
+});
+
+// ── Test 20: #1039 absence stays silent, query failure warns ─────────────────
+//
+// Bug this catches: this module's own comment forbids a fifth silent path
+// ("could not read" reported as "all clear"). Before #1039 the VCS probe had
+// exactly one: git missing from PATH, git erroring, and a repo with no remotes
+// all produced the same bare `null`. The WARN is the only observable difference
+// the shared two-state return contract leaves available.
+
+describe('checkCiStatus — #1039 VCS-detection failure taxonomy', () => {
+  it('stays SILENT when git answers cleanly that there are no remotes', async () => {
+    // Exit 0, empty stdout — a fresh `git init`. The question WAS answered.
+    const mockExecFile = makeExecFileMock([
+      { cmd: 'git', args: ['remote', '-v'], stdout: '' },
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    expect(result).toBeNull();
+    expect(warnSpy.mock.calls).toHaveLength(0);
+  });
+
+  it('WARNS with reason `git-unavailable` when git is not on PATH', async () => {
+    const enoent = new Error('spawn git ENOENT');
+    enoent.code = 'ENOENT'; // string errno — NOT an exit status
+
+    const mockExecFile = makeExecFileMock([
+      { cmd: 'git', args: ['remote', '-v'], error: enoent },
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    expect(result).toBeNull();
+    expect(warnSpy.mock.calls).toHaveLength(1);
+    const [message] = warnSpy.mock.calls[0];
+    // The reason token is what separates this from the silent absence paths.
+    expect(message).toContain('git-unavailable');
+    // The honesty clause — a suppressed banner is not a green one.
+    expect(message).toContain('not "green"');
+  });
+
+  it('WARNS with reason `git-error` on any other git failure, credentials redacted', async () => {
+    const failed = new Error('Command failed: git remote -v');
+    failed.code = 1;
+    // git's own stderr can quote a remote URL, and this WARN now forwards it —
+    // so the redactor has to run on that path too, not just on the CLI-side
+    // message the pre-existing #907 test covers.
+    failed.stderr =
+      "fatal: could not read Username for 'https://ci-bot:glpat-xxxxxxxxxxxx@gitlab.example.com'\n";
+
+    const mockExecFile = makeExecFileMock([
+      { cmd: 'git', args: ['remote', '-v'], error: failed },
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    expect(result).toBeNull();
+    expect(warnSpy.mock.calls).toHaveLength(1);
+    const [message] = warnSpy.mock.calls[0];
+    expect(message).toContain('git-error');
+    expect(message).toContain('gitlab.example.com');
+    expect(message).not.toContain('ci-bot');
+    expect(message).not.toContain('glpat-');
   });
 });

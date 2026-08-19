@@ -7,12 +7,21 @@
  * no-op condition (no VCS, CLI missing, timeout, parse failure).
  *
  * Supports GitLab (via glab) and GitHub (via gh).
- * VCS is auto-detected from git remote origin URL per gitlab-ops canonical logic.
+ * VCS is auto-detected from the repo's git remotes via
+ * `vcs-repo-spec.mjs`'s `detectVcsFamily` — NOT from a hard-coded `origin`
+ * lookup, which left the banner structurally dark in every repo whose remotes
+ * are named `gitlab`/`github` (#1039).
  */
 
 import { execFile as _execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { resolveRepoSpec, resolveRepoHost, redactUrlCredentials } from './vcs-repo-spec.mjs';
+import {
+  resolveRepoSpec,
+  resolveRepoHost,
+  redactUrlCredentials,
+  detectVcsFamily,
+  isQueryFailure,
+} from './vcs-repo-spec.mjs';
 
 const execFileAsync = promisify(_execFile);
 
@@ -38,24 +47,130 @@ async function execWithTimeout(cmd, args, opts = {}) {
 }
 
 /**
- * Detect VCS from git remote URL.
- * Returns 'github' | 'gitlab'. Throws if git is unavailable or no origin.
+ * The one failure this probe can produce that the frozen
+ * `REMOTE_RESOLUTION_REASONS` set has no member for: the async timeout race
+ * every subprocess here runs under has no counterpart in the SYNCHRONOUS
+ * `vcs-repo-spec.mjs` core (it uses `execFileSync`, which cannot time out).
+ *
+ * Deliberately NOT a query-failure for warning purposes — a timeout stays
+ * SILENT, matching how `checkCiStatus`'s outer catch has always treated one
+ * (`msg === 'timeout'` → silent `null`). Warning on a hung `git` but not on a
+ * hung `glab` would be an inconsistency inside a single banner, and a hang is
+ * not a fact an operator can act on the way "git is not installed" is.
+ */
+const PROBE_TIMEOUT = 'probe-timeout';
+
+/**
+ * The ONE `isQueryFailure` member this banner deliberately keeps silent.
+ *
+ * `vcs-repo-spec.mjs` classifies `not-a-git-repo` as a query failure, and that
+ * is correct IN ITS DOMAIN: a remote-resolution helper genuinely could not
+ * enumerate remotes. For THIS consumer the same fact is a benign absence —
+ * session-start Phase 4 asking a non-repo directory about its CI has a complete
+ * and unsurprising answer ("there is no CI here"), and an operator cannot act on
+ * being told their directory is not a git repo. Warning would print on every
+ * such session-start and train exactly the reflex that makes the
+ * `git-unavailable` / `git-error` lines worthless.
+ *
+ * Expressed as a SUBTRACTION from `isQueryFailure` rather than as a hard-coded
+ * warn-list, so a reason added to the frozen set upstream is warned by default
+ * (fail-toward-visible) instead of silently inheriting the benign path.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const SILENT_QUERY_FAILURES = new Set(['not-a-git-repo']);
+
+/**
+ * Classify a rejected ASYNC `execFile` into a `REMOTE_RESOLUTION_REASONS`
+ * member.
+ *
+ * This cannot reuse `vcs-repo-spec.mjs`'s own (unexported) `classifyGitFailure`
+ * because that one reads an `execFileSync` result, where the spawn errno lands
+ * in `err.code` and the child's exit status in `err.status`. Async `execFile`
+ * folds BOTH into `err.code`, discriminated only by TYPE: the string `'ENOENT'`
+ * when the binary is not on PATH, the number `128` when git ran and rejected
+ * the path as a work tree. Same taxonomy, different carrier.
+ *
+ * @param {unknown} err
+ * @returns {'git-unavailable'|'not-a-git-repo'|'git-error'}
+ */
+function classifyGitProbeFailure(err) {
+  const code = err && typeof err === 'object' ? /** @type {any} */ (err).code : undefined;
+  if (code === 'ENOENT') return 'git-unavailable';
+  // `git remote -v` exits 128 for "not a git repository" — and, unlike the
+  // `remote get-url origin` call this replaced, NOT for "no such remote":
+  // a repo with zero remotes exits 0 with empty stdout. That is exactly the
+  // split that makes `no-remotes` (benign absence) reportable at all.
+  if (code === 128) return 'not-a-git-repo';
+  return 'git-error';
+}
+
+/**
+ * Detect the repo's VCS family from its git remotes.
+ *
+ * **Never throws.** Returns a discriminated result carrying a reason from
+ * `vcs-repo-spec.mjs`'s frozen `REMOTE_RESOLUTION_REASONS` (plus
+ * {@link PROBE_TIMEOUT}), so the caller can separate "I could not ask"
+ * (`isQueryFailure` → WARN) from "I asked; this repo has no VCS remote"
+ * (benign, silent). This is the `mirror-issues-banner.mjs` shape — a third
+ * state beyond `value | null` — applied to the last unmigrated path in this
+ * module (#1039).
+ *
+ * What it replaces, and why both halves were defects:
+ *   1. `git remote get-url origin` — a hard-coded remote NAME. In a repo whose
+ *      remotes are `gitlab` + `github` (no `origin`) the call failed, the
+ *      caller swallowed it to `null`, and the banner was structurally dark:
+ *      it could never report, not even on a red pipeline.
+ *   2. `remoteUrl.includes('github.com') ? 'github' : 'gitlab'` — a substring
+ *      test that classifies GitHub Enterprise (`git@github.example.com:o/r`)
+ *      as gitlab and then drives `glab` at a GitHub instance.
+ * `detectVcsFamily` fixes both: preference-ordered remote selection, and
+ * host-prefix classification (`github.*` / `gitlab.*`) ahead of remote-name.
+ *
+ * The `git remote -v` spawn stays HERE rather than inside `detectVcsFamily`
+ * because this module owes every subprocess a timeout race — the shared core
+ * is synchronous by design. So the output is captured once and handed to the
+ * shared classifier through its `gitRun` seam: one spawn, one taxonomy, no
+ * second copy of the parsing or the credential strip.
  *
  * @param {string} repoRoot
  * @param {{ execFile?: Function, timeoutMs?: number }} deps
- * @returns {Promise<'github'|'gitlab'>}
+ * @returns {Promise<{ ok: true, vcs: 'github'|'gitlab' }
+ *   | { ok: false, reason: string, stderr?: string }>}
  */
 async function detectVcs(repoRoot, deps = {}) {
   // Use the smaller of 2000ms or the caller-supplied timeout so that a short
   // test-level timeout is still respected here.
   const gitTimeout = Math.min(2000, deps.timeoutMs ?? 2000);
-  const result = await execWithTimeout(
-    'git',
-    ['remote', 'get-url', 'origin'],
-    { cwd: repoRoot, timeoutMs: gitTimeout, execFile: deps.execFile },
-  );
-  const remoteUrl = result.stdout.trim();
-  return remoteUrl.includes('github.com') ? 'github' : 'gitlab';
+
+  let stdout;
+  try {
+    const result = await execWithTimeout(
+      'git',
+      ['remote', '-v'],
+      { cwd: repoRoot, timeoutMs: gitTimeout, execFile: deps.execFile },
+    );
+    stdout = String(result?.stdout ?? '');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err ?? '');
+    if (msg === 'timeout') return { ok: false, reason: PROBE_TIMEOUT };
+    const stderr = err && typeof err === 'object' ? String(/** @type {any} */ (err).stderr ?? '') : '';
+    return { ok: false, reason: classifyGitProbeFailure(err), stderr };
+  }
+
+  // Replay the captured output through the shared core's `gitRun` seam. The
+  // arg guard is insurance, not decoration: `detectVcsFamily` asks only for
+  // `remote -v` today, and if it ever grows a second query the guard turns a
+  // silently-wrong answer (built from the WRONG command's output) into a
+  // reported `git-error`.
+  const replayGitRun = (args) =>
+    Array.isArray(args) && args.at(-2) === 'remote' && args.at(-1) === '-v'
+      ? { ok: true, stdout, stderr: '', status: 0 }
+      : { ok: false, stdout: '', stderr: `unsupported git query in ci-status probe: ${String(args)}`, status: 1 };
+
+  const family = detectVcsFamily({ repoRoot, gitRun: replayGitRun });
+  if (!family.ok) return { ok: false, reason: family.reason, stderr: family.stderr };
+  return { ok: true, vcs: family.vcs };
 }
 
 /**
@@ -404,10 +519,16 @@ async function checkGithub(repoRoot, deps = {}) {
  * Checks CI status for the current HEAD commit.
  *
  * Returns `null` (silent no-op) when:
- *   - Not in a VCS repo (no git origin)
+ *   - The repo has no usable VCS remote (not a git repo, no remotes at all,
+ *     or >= 2 remotes with no preference match) — a benign, measured absence
  *   - Required CLI (glab / gh) not in PATH
  *   - Any CLI invocation times out
  *   - JSON parse failure on CLI output
+ *
+ * Also returns `null`, but with a `console.warn` trace, when the VCS-detection
+ * QUERY ITSELF failed (`git` not on PATH, `git remote -v` erroring) or when a
+ * present CLI rejected its invocation. `null` alone cannot express "could not
+ * read" — see the outer catch and Step 1 for why the warn channel carries it.
  *
  * @param {{
  *   repoRoot?: string,
@@ -458,12 +579,30 @@ export async function checkCiStatus(opts = {}, deps = {}) {
     // Step 1: detect VCS (or use forced value).
     let vcs = forcedVcs;
     if (!vcs) {
-      try {
-        vcs = await detectVcs(repoRoot, depsWithExec);
-      } catch {
-        // No git remote → not in a VCS repo → silent no-op.
+      const detected = await detectVcs(repoRoot, depsWithExec);
+      if (!detected.ok) {
+        // The two-state `null` return is fixed by 13 sibling banners, so the
+        // third state lives in the WARN channel: an ABSENCE (`no-remotes`,
+        // `no-matching-remote`, `unsafe-value`) is a real, benign answer and
+        // stays silent — warning there would train operators to ignore this
+        // line, which is the more expensive error. A QUERY FAILURE
+        // (`git-unavailable`, `git-error`) means the question could not be
+        // asked at all, and that is precisely the state that was
+        // indistinguishable from "nothing to report" before #1039.
+        // `not-a-git-repo` is the one query failure this banner reads as an
+        // absence — see {@link SILENT_QUERY_FAILURES}.
+        if (isQueryFailure(detected.reason) && !SILENT_QUERY_FAILURES.has(detected.reason)) {
+          const detail = detected.stderr
+            ? ` — ${redactUrlCredentials(detected.stderr).trim()}`
+            : '';
+          console.warn(
+            `WARN ci-status-banner: VCS detection failed (${detected.reason}), banner suppressed — ` +
+              `CI state is UNKNOWN, not "green".${detail}`,
+          );
+        }
         return null;
       }
+      vcs = detected.vcs;
     }
 
     // Step 1b (#872): resolve the -R/--hostname host-pinning spec ONCE per
@@ -514,12 +653,17 @@ export async function checkCiStatus(opts = {}, deps = {}) {
     // absence-preserving form is `scripts/lib/mirror-issues-banner.mjs`: a
     // THIRD return state `{ severity, message, degraded }` whose `degraded`
     // is a member of the closed `DEGRADED_REASONS` enum exported there, so
-    // "could not read" stays distinguishable from "read, and clean". This
-    // module is the UNMIGRATED side of that contract — the `status:'unknown'`
-    // returns above cover some in-band failures, but this outer catch still
-    // collapses onto `null`, which a caller reads as all-clear. Same verdict,
-    // stated caller-side, in `skills/session-start/SKILL.md` § Phase 4 (the
-    // mirror-issues paragraph): "Do not reproduce it."
+    // "could not read" stays distinguishable from "read, and clean".
+    //
+    // The REMOTE probe (`detectVcs`) has since been pulled onto that shape
+    // (#1039): it returns a reason from the frozen `REMOTE_RESOLUTION_REASONS`
+    // set and Step 1 branches on `isQueryFailure` — absence silent, query
+    // failure warned. This outer catch is what remains unmigrated: it still
+    // collapses every CLI-side failure onto `null`, which a caller reads as
+    // all-clear, and it cannot be widened without changing a return contract
+    // 13 sibling banners share. Same verdict, stated caller-side, in
+    // `skills/session-start/SKILL.md` § Phase 4 (the mirror-issues
+    // paragraph): "Do not reproduce it."
     console.warn(
       `WARN ci-status-banner: CI status check failed, banner suppressed — ${redactUrlCredentials(msg)}`,
     );

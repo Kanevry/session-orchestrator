@@ -124,6 +124,7 @@ import { execFileSync } from 'node:child_process';
 
 import { parseStateMd, serializeStateMd, resolveStateMdPath, writeStateMd } from './state-md.mjs';
 import { pathMatchesPattern } from './scope-gate.mjs';
+import { resolveBaselineRange, isQueryFailure } from './vcs-repo-spec.mjs';
 
 // ---------------------------------------------------------------------------
 // DRIFT_EXCLUDE_PATTERNS — the SINGLE filter source for both the denominator
@@ -472,23 +473,60 @@ export async function writeBaseline({ repoRoot, intent, ownerBoundary, plannedFi
  *
  * Skip precedence (first match wins, so `reason` is deterministic):
  *   `no-state-md` → `unreadable-state-md` → `no-baseline` →
- *   `stale-baseline` → `unresolvable-ref`
+ *   `stale-baseline` → (`no-baseline-ref` | `unresolvable-ref`)
  *
- * `session-start-ref` handling — MISSING vs UNRESOLVABLE are different:
- *   - Field absent from frontmatter → falls back to
- *     `git diff --name-only origin/main...HEAD` (the documented fallback,
- *     skills/session-end/plan-verification.md:37). This is NOT a skip —
- *     `refUsed` reports the fallback ref actually used.
- *   - Field present but the diff against it fails (rebase, force-push,
- *     deleted commit, …) → skip with `reason: 'unresolvable-ref'`.
+ * `session-start-ref` handling — THREE outcomes, deliberately distinct.
+ * `skills/_shared/state-ownership.md:28` declares the field OPTIONAL
+ * ("readers MUST tolerate their absence"), so the absent-field branch is a
+ * REACHABLE production path, not a defensive corner:
+ *
+ *   - **Field present**, diff against it succeeds → measured; `refUsed`
+ *     reports the bare ref verbatim (NOT a range — pre-existing contract,
+ *     unchanged).
+ *   - **Field absent** → the range is RESOLVED via `resolveBaselineRange()`
+ *     (scripts/lib/vcs-repo-spec.mjs): preferred remote `R` →
+ *     `refs/remotes/<R>/HEAD` → `refs/remotes/<R>/{main,master}` → local
+ *     `{main,master}`. NOT a skip — `refUsed` reports the range actually
+ *     resolved (`gitlab/main...HEAD`, `origin/master...HEAD`, …).
+ *     This REPLACES the hard-coded `'origin/main...HEAD'` literal the
+ *     function carried until #1039, which hard-coded BOTH the remote name
+ *     AND the default branch in one string. In any repo whose remote is not
+ *     named `origin`, or whose default branch is not `main`, that diff
+ *     always failed → the tripwire skipped → and
+ *     `skills/wave-executor/wave-loop.md` renders every `skipped === true`
+ *     with NO WARN. A guard that neither bit nor reported that it was not
+ *     biting.
+ *   - **Field absent AND nothing resolves** (fresh `git init`, no remotes,
+ *     no `main`/`master` anywhere) → skip with `reason: 'no-baseline-ref'`.
+ *     This is an ABSENCE — there is genuinely no session base to measure
+ *     against — and is deliberately NOT folded onto `unresolvable-ref`,
+ *     which means the QUERY failed (not a git repo, git not on PATH, a
+ *     present-but-dead `session-start-ref` after a rebase/force-push).
+ *     The split follows `isQueryFailure()` from the same module, the single
+ *     predicate that separates "I could not ask" from "I asked; the answer
+ *     is no". Folding them was the pre-#1039 behaviour and made an operator
+ *     unable to tell a broken checkout from a fresh repo.
+ *
+ * Named ceiling (BV-004) on the local-branch tail of the resolution chain:
+ * when the chain lands on a LOCAL `main`/`master` and HEAD is already that
+ * branch, `main...HEAD` has merge-base === HEAD and the diff is empty, so
+ * the ratio reads `0` instead of skipping. That is the honest floor of the
+ * available information (no remote-tracking ref exists to say where the
+ * session started) and it is harmless here because both a `0` ratio and a
+ * skip are silent under `wave-loop.md`'s WARN-on-breach rule. Revisit if
+ * this function ever gains a non-warn consumer that treats `skipped:false`
+ * as "measured successfully".
  *
  * @param {object} args
  * @param {string|undefined} args.repoRoot
  * @param {number} [args.threshold] — breach threshold, `>=` counts as
  *   breached (default `2.0`).
- * @returns {{ ok: true, skipped: true, reason: 'no-state-md'|'unreadable-state-md'|'no-baseline'|'stale-baseline'|'unresolvable-ref' }
+ * @returns {{ ok: true, skipped: true, reason: 'no-state-md'|'unreadable-state-md'|'no-baseline'|'stale-baseline'|'no-baseline-ref'|'unresolvable-ref' }
  *   | { ok: true, skipped: false, filesRatio: number, plannedFiles: number,
  *       actualFiles: number, breached: boolean, threshold: number, refUsed: string }}
+ *   Additive since #1039: `no-baseline-ref` is a NEW member of the skip-reason
+ *   union. No existing member was renamed or removed, and the measured-result
+ *   shape (all eight keys) is byte-identical to the pre-#1039 contract.
  */
 export function computeDrift({ repoRoot, threshold = 2.0 } = {}) {
   const parsedFm = readFrontmatterOrReason(repoRoot);
@@ -514,18 +552,40 @@ export function computeDrift({ repoRoot, threshold = 2.0 } = {}) {
     ? baseline.sessionStartRef
     : null;
 
-  const diffArgs = rawRef !== null
-    ? ['diff', '--name-only', `${rawRef}..HEAD`]
-    : ['diff', '--name-only', 'origin/main...HEAD'];
-  const refUsed = rawRef ?? 'origin/main...HEAD';
+  // Resolve the diff range. The `session-start-ref` branch keeps its exact
+  // pre-#1039 shape (two-dot `<ref>..HEAD`, `refUsed` = the bare ref); only
+  // the absent-field branch changed, from a hard-coded literal to a real
+  // resolution. See the JSDoc above for the three outcomes.
+  let diffRange;
+  let refUsed;
+  if (rawRef !== null) {
+    diffRange = `${rawRef}..HEAD`;
+    refUsed = rawRef;
+  } else {
+    const resolved = resolveBaselineRange({ repoRoot: cwd });
+    if (!resolved.ok) {
+      // `isQueryFailure()` is the frozen predicate that keeps the two causes
+      // apart: a broken/absent git ⇒ `unresolvable-ref` (degraded
+      // measurement), a repo that simply has no baseline ref ⇒
+      // `no-baseline-ref` (a real, benign repo state).
+      return {
+        ok: true,
+        skipped: true,
+        reason: isQueryFailure(resolved.reason) ? 'unresolvable-ref' : 'no-baseline-ref',
+      };
+    }
+    diffRange = resolved.range;
+    refUsed = resolved.range;
+  }
 
   let stdout;
   try {
-    stdout = execFileSync('git', diffArgs, { cwd, encoding: 'utf8' });
+    stdout = execFileSync('git', ['diff', '--name-only', diffRange], { cwd, encoding: 'utf8' });
   } catch {
-    // Ref present-but-unresolvable (rebase, force-push, deleted commit) OR
-    // the fallback diff itself failed (e.g. no origin/main) — both land in
-    // the same skip bucket; neither can produce a trustworthy numerator.
+    // The range resolved but the diff against it failed — a present-but-dead
+    // `session-start-ref` (rebase, force-push, deleted commit), or a
+    // resolved base that vanished between resolution and diff. Neither can
+    // produce a trustworthy numerator.
     return { ok: true, skipped: true, reason: 'unresolvable-ref' };
   }
 

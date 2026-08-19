@@ -17,14 +17,16 @@
  * Stale threshold: 30 days since `updated_at`.
  *
  * Dependencies:
- *  - VCS detection follows `skills/gitlab-ops/SKILL.md` (origin URL contains "github.com" → gh, else glab).
+ *  - VCS detection delegates to `vcs-repo-spec.mjs::detectVcsFamily` (#1039):
+ *    remote-host family classification over ALL remotes, not a hard-coded
+ *    `origin` lookup with a `url.includes('github.com')` test.
  */
 
 import { spawnSync } from 'node:child_process';
 
 import { warn } from './common.mjs';
 import { normalizeLabel } from './label-scope.mjs';
-import { resolveRepoSpec } from './vcs-repo-spec.mjs';
+import { detectVcsFamily, isQueryFailure, redactUrlCredentials, resolveRepoSpec } from './vcs-repo-spec.mjs';
 
 export const STALE_THRESHOLD_DAYS = 30;
 
@@ -45,21 +47,59 @@ export const DEFAULT_BACKLOG_LIMIT = 100;
 const _cache = new Map();
 
 /**
- * Detect the VCS for the current working directory by inspecting the origin URL.
+ * Detect the VCS family of a repo from its git remotes.
  * Returns 'github' | 'gitlab' | null. Never throws.
  *
+ * This probe cannot take `vcs` as a parameter and cannot use
+ * `resolveRepoSpec({vcs})`: it runs in order to DETERMINE `vcs`. So it uses the
+ * vcs-less projection {@link detectVcsFamily}, which classifies every remote by
+ * URL host (then by remote name) instead of pinning `origin`.
+ *
+ * Two #1039 defects this replaces:
+ *  1. `git remote get-url origin` returned non-zero on a repo whose remotes are
+ *     named `gitlab`/`github` (no `origin`) — a perfectly scannable backlog
+ *     read as "no VCS".
+ *  2. `url.includes('github.com')` classified GitHub Enterprise
+ *     (`git@github.example.com:o/r.git`) as gitlab, pointing `glab` at a GitHub
+ *     instance. `detectVcsFamily`'s host rule (`github.*`) covers it.
+ *
+ * `null` still means "no backlog signal" to the caller, but the two states it
+ * used to fold are now distinguishable on stderr: a QUERY FAILURE (git missing,
+ * not a git repo) emits exactly one WARNING, because a 40-issue backlog reading
+ * as empty is a degraded measurement the operator must see. An ABSENCE
+ * (`no-remotes`, `no-matching-remote`) stays SILENT — it is a legitimate repo
+ * state, and warning on it would train operators to ignore the warning that
+ * matters.
+ *
+ * @param {{ repoRoot?: string, gitRun?: (args: string[]) => { ok: boolean, stdout?: string, stderr?: string, status?: number, code?: string } }} [opts]
+ *   `gitRun` is the injectable git seam of `detectVcsFamily` (tests stub it
+ *   instead of shelling out); `repoRoot` defaults to `process.cwd()` there.
  * @returns {'github'|'gitlab'|null}
  */
-export function detectVcs() {
+export function detectVcs({ repoRoot, gitRun } = {}) {
+  let detected;
   try {
-    const r = spawnSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf8' });
-    if (r.status !== 0) return null;
-    const url = String(r.stdout || '').trim();
-    if (!url) return null;
-    return url.includes('github.com') ? 'github' : 'gitlab';
+    detected = detectVcsFamily({ repoRoot, gitRun });
   } catch {
     return null;
   }
+
+  if (detected.ok) return detected.vcs;
+
+  if (isQueryFailure(detected.reason)) {
+    // Redact before logging: git stderr can echo a remote URL carrying
+    // userinfo credentials (#907, CWE-214). First line only — a git fatal is
+    // one line, and the rest is noise in a session banner.
+    const detail = redactUrlCredentials(String(detected.stderr || ''))
+      .split('\n')[0]
+      .trim();
+    warn(
+      `backlog scan could not determine the VCS family (${detected.reason})` +
+        `${detail ? `: ${detail}` : ''} — backlog signal degraded to null (contributes 0 delta to mode selection).`
+    );
+  }
+
+  return null;
 }
 
 /**
@@ -161,7 +201,8 @@ export function summarizeIssues(issues, nowMs = Date.now()) {
  * (vcs, limit) pair never collide on a shared cache entry.
  *
  * Returns null on any of:
- *  - VCS cannot be detected (no git origin)
+ *  - VCS family cannot be detected ({@link detectVcs} — no remotes, or git
+ *    itself unavailable; the latter also emits one WARNING)
  *  - CLI binary missing (`glab` for gitlab, `gh` for github)
  *  - CLI exits non-zero or produces unparsable output
  *
@@ -194,15 +235,18 @@ export function summarizeIssues(issues, nowMs = Date.now()) {
 export async function scanBacklog(opts = {}) {
   const limit =
     Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : DEFAULT_BACKLOG_LIMIT;
+  const repoRoot = typeof opts.repoRoot === 'string' ? opts.repoRoot : process.cwd();
   // Distinguish "user did not pass vcs" (auto-detect) from "user explicitly passed
   // null" (degrade). 'vcs' in opts catches the explicit-null path so callers can
   // force the no-vcs branch in tests without monkey-patching detectVcs.
-  const vcs = 'vcs' in opts ? opts.vcs : detectVcs();
+  // `repoRoot` is passed through so detection and `-R` spec resolution below
+  // answer about the SAME repo — they used to disagree whenever a caller passed
+  // `repoRoot` (detection silently read `process.cwd()` instead).
+  const vcs = 'vcs' in opts ? opts.vcs : detectVcs({ repoRoot });
   const nowMs = typeof opts.nowMs === 'number' ? opts.nowMs : Date.now();
 
   if (vcs !== 'github' && vcs !== 'gitlab') return null;
 
-  const repoRoot = typeof opts.repoRoot === 'string' ? opts.repoRoot : process.cwd();
   const resolveRepoSpecFn =
     typeof opts.resolveRepoSpecFn === 'function' ? opts.resolveRepoSpecFn : resolveRepoSpec;
   const runJsonFn = typeof opts.runJsonFn === 'function' ? opts.runJsonFn : runJson;

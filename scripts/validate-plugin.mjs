@@ -312,6 +312,25 @@ runCheck('check-vcs-repo-flag.mjs');
 process.stdout.write('\n');
 runCheck('check-doc-cli-commands.mjs');
 
+// WARN-only: a state-mutating `git` call in tests/ that names no target resolves
+// its destination from the ambient cwd (or an inherited GIT_DIR) — the 2026-08-19
+// incident, where fixture commits, a fixture remote and a fixture identity landed
+// in the REAL .git and two commits reached both remotes with the wrong author.
+// WARN rather than FAIL is a MEASURED posture, not caution: the v1 rule reported
+// 11 findings against tests/ and all 11 were false positives (`git init <dir>`,
+// whose positional IS the target). After that refinement the live corpus reports
+// 0 findings — i.e. zero measured true positives to weigh against a textual
+// detector's residual false-positive surface (the variable argv arrays it cannot
+// judge; the live count is in its own PASS line, never restated here).
+// check-untracked-test-deps.mjs above earned FAIL-capability on a
+// measured 1 TP / 0 FP; this check has not, and a single FAIL: line here reds the
+// whole validator. Ratchet to FAIL once a live true positive has been observed
+// and the GIT_DIR-inheritance gap (reported as `gitDirInheritable`) is closed
+// centrally. The exit code is deliberately ignored; a tool error still surfaces
+// because that path prints FAIL: lines, which runCheck tallies into totalFail.
+process.stdout.write('\n');
+runCheck('check-test-git-config-target.mjs');
+
 // ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------

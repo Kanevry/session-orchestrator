@@ -1,0 +1,18 @@
+# .mailmap — canonical author identities.
+#
+# git log/shortlog/blame and GitHub's contributor attribution all honour this
+# file, so a wrong identity in an already-published commit is correctable WITHOUT
+# rewriting history. That matters here: both `main` branches are force-push
+# protected (GitLab "not allowed to force push to a protected branch", GitHub
+# GH006), so a rewrite would require lifting a control that exists for good reason.
+#
+# The mapping below covers commits 334ea2d and 1b8346d (2026-08-19). Their author
+# was set to a TEST FIXTURE identity because a coordinator diagnostic exported
+# GIT_DIR at the real repository while the test suite ran: makeRepo()-style helpers
+# in tests/ call `git config user.email/user.name` without an explicit target, so
+# the fixture identity landed in this repo's local .git/config. Content and review
+# of both commits are unaffected — only the author line was wrong.
+#
+# Keeping the mapping permanently is deliberate: it also neutralises any FUTURE
+# recurrence of the same fixture identity, which is cheaper than detecting it late.
+Bernhard Götzendorfer <208284447+Kanevry@users.noreply.github.com> Test <test@example.com>

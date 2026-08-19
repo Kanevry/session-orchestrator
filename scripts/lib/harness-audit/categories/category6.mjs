@@ -13,6 +13,7 @@ import { execFileSync } from 'node:child_process';
 
 import { safeRead, lineCount, pass, fail } from './helpers.mjs';
 import { resolveInstructionFile } from '../../common.mjs';
+import { listRemotes } from '../../vcs-repo-spec.mjs';
 
 export function runCategory6(root) {
   const checks = [];
@@ -114,9 +115,22 @@ export function runCategory6(root) {
   // repo's "github" remote (GitLab-primary / GitHub-mirror setups). A repo
   // with no github remote is not required to mirror anything, so that state
   // is skip-as-pass (full points) rather than a failure. Every git call is
-  // wrapped defensively — a missing remote, an unfetched tracking ref, a
-  // non-git root, or any other git-edge-case degrades to skip-as-pass so the
-  // audit never crashes or hard-fails on ambient repo state it can't inspect.
+  // wrapped defensively — an unfetched tracking ref or any other git-edge-case
+  // degrades to skip-as-pass so the audit never crashes or hard-fails on
+  // ambient repo state it can't inspect.
+  //
+  // ONE state is deliberately NOT skip-as-pass (#1039): a FAILED remote query.
+  // Until #1039 the remote list came from a bare `git remote` whose every
+  // failure mode collapsed to `null`, so a root that is not a git repository —
+  // or a host without git on PATH — scored 2 of 2 with the message "no github
+  // mirror remote configured". The audit rewarded its own blindness. The
+  // remote list now comes from `listRemotes`, whose contract separates ABSENCE
+  // (`ok:true, remotes:[]` — a legitimate repo state) from QUERY FAILURE
+  // (`ok:false`, every reason satisfying `isQueryFailure`). Absence keeps full
+  // points; a failed query is a `fail`, because a check that could not measure
+  // has not passed — and because the audit's own `checks_passed` counter
+  // (`scripts/harness-audit.mjs`) counts `status === 'pass'`, so recording an
+  // unmeasurable check as a pass inflates the number that summarises audit trust.
   //
   // Mirror-branch resolution tries two strategies, in order:
   //   1. `github/HEAD` symbolic ref — only populated by an explicit
@@ -142,14 +156,23 @@ export function runCategory6(root) {
       }
     };
 
-    const remotesOutput = runGit(['remote']);
-    const hasGithubRemote = remotesOutput !== null &&
-      remotesOutput.split('\n').map((l) => l.trim()).includes('github');
+    const remotes = listRemotes({ repoRoot: root });
+    const hasGithubRemote = remotes.ok && remotes.remotes.some((r) => r.name === 'github');
 
-    if (!hasGithubRemote) {
+    if (!remotes.ok) {
+      // `ok:false` from listRemotes ⟺ the query itself failed (its contract
+      // emits only isQueryFailure reasons: not-a-git-repo / git-unavailable /
+      // git-error). A repo with no remotes is `ok:true` with an empty list and
+      // takes the skip-as-pass branch below, exactly as before.
+      checks.push(fail({
+        checkId, maxPoints: 2, path: relPath,
+        evidence: { hasGithubRemote: null, remoteQuery: remotes.reason },
+        message: `git remote query failed (${remotes.reason}) — github mirror sync not measurable`,
+      }));
+    } else if (!hasGithubRemote) {
       checks.push(pass({
         checkId, points: 2, maxPoints: 2, path: relPath,
-        evidence: { hasGithubRemote: false },
+        evidence: { hasGithubRemote: false, remoteCount: remotes.remotes.length },
         message: 'no github mirror remote configured — skipped',
       }));
     } else {

@@ -16,6 +16,29 @@
  * IO is fully injectable (existsSync, realpathSync, env, gitRemote) so every
  * branch is unit-testable without touching disk or git.
  *
+ * ── Remote resolution (#1039) ────────────────────────────────────────────────
+ *
+ * The default `gitRemote` reads the repo's remote through the shared core in
+ * `vcs-repo-spec.mjs` ({@link resolvePreferredRemote}), VCS-LESS. Two properties
+ * of that call are load-bearing here and must not be "tidied":
+ *
+ *   1. **`vcs` is deliberately omitted.** This module needs a URL, not a
+ *      platform family, and the vcs-less preference order is `origin` first.
+ *      That order is what keeps the derived slug STABLE: in a repo carrying both
+ *      `origin` (→ `<group>/<repo>`) and `gitlab`/`github` mirrors under other
+ *      namespaces, a `gitlab`-first order would re-namespace — i.e. silently
+ *      RENAME — every vault note already written under the origin namespace.
+ *   2. **Absence and query-failure are kept apart.** The former
+ *      `git remote get-url origin` implementation returned `''` for *both* "no
+ *      remote configured" and "git blew up / this is not a repo", and a falsy
+ *      URL skips the walk-up entirely. The vault then resolved to the
+ *      single-vault fallback with no trace of why — one `source:'fallback'`
+ *      label covering a benign repo state and a broken measurement. The
+ *      fallback result now carries an optional `remoteError` (a
+ *      `REMOTE_RESOLUTION_REASONS` value) so the two are separable BY VALUE, and
+ *      only a query failure ({@link isQueryFailure}) WARNs — an absence is
+ *      normal and stays silent.
+ *
  * ── Exports ──────────────────────────────────────────────────────────────────
  *
  *   parseNamedVaults(ownerConfig)
@@ -28,7 +51,7 @@
 
 import { join, dirname } from 'node:path';
 import { existsSync as nodeExistsSync, realpathSync as nodeRealpathSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { resolvePreferredRemote, isQueryFailure } from './vcs-repo-spec.mjs';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -289,12 +312,31 @@ export function findRepoRoot(cwd = process.cwd(), { existsSync = nodeExistsSync,
  * `gitRemote(repoRoot)` is called ONLY in the walk-up path — injecting a
  * stub that throws proves the explicit path never calls it.
  *
+ * `gitRemote` keeps its `(repoRoot) => string` contract verbatim; the optional
+ * second argument is an OUT-parameter the default implementation uses to report
+ * WHY it returned `''`. A one-arg stub ignores it and classifies as
+ * `'no-remotes'` on `''` / `'git-error'` on a throw — so every pre-existing
+ * injection still works unchanged.
+ *
+ * `gitRun` is injected into the DEFAULT `gitRemote` only, and is ignored when
+ * `gitRemote` is supplied (the caller has replaced the thing that would use it).
+ * It exists so the default remote-resolution path — preference order, reason
+ * propagation — is testable at all; a `gitRemote` stub answers that question
+ * before the code under test runs and can only ever confirm itself.
+ *
+ * `remoteError` is present ONLY on a `source:'fallback'` result that was reached
+ * because the remote query produced nothing; it is absent when the fallback was
+ * reached for any other reason (no vaults configured, no repo root, the repo IS
+ * a vault, no org-prefix match). Additive — pre-#1039 readers see the identical
+ * four fields.
+ *
  * @param {{
  *   vaultName?: string|null,
  *   cwd?: string,
  *   ownerConfig?: object,
  *   env?: Record<string, string|undefined>,
- *   gitRemote?: (repoRoot: string) => string,
+ *   gitRemote?: (repoRoot: string, out?: {reason?: string}) => string,
+ *   gitRun?: (args: string[]) => {ok: boolean, stdout: string, stderr: string, status?: number, code?: string},
  *   existsSync?: Function,
  *   realpathSync?: Function,
  * }} [opts]
@@ -302,7 +344,8 @@ export function findRepoRoot(cwd = process.cwd(), { existsSync = nodeExistsSync,
  *   root: string|null,
  *   suffix: string,
  *   name: string|null,
- *   source: 'explicit'|'walkup'|'fallback'
+ *   source: 'explicit'|'walkup'|'fallback',
+ *   remoteError?: string
  * }}
  */
 export function resolveNamedVault({
@@ -310,11 +353,14 @@ export function resolveNamedVault({
   cwd = process.cwd(),
   ownerConfig,
   env = process.env,
-  gitRemote = _defaultGitRemote,
+  gitRemote,
+  gitRun,
   existsSync = nodeExistsSync,
   realpathSync = nodeRealpathSync,
 } = {}) {
   const vaults = parseNamedVaults(ownerConfig);
+  const readRemote =
+    typeof gitRemote === 'function' ? gitRemote : (root, out) => _defaultGitRemote(root, out, gitRun);
 
   // ── Path 1: explicit vault-name ──────────────────────────────────────────
   const trimmedName = typeof vaultName === 'string' ? vaultName.trim() : '';
@@ -330,18 +376,39 @@ export function resolveNamedVault({
   }
 
   // ── Path 2: walk-up org-prefix match ────────────────────────────────────
+  /** @type {string|undefined} — set ONLY when the remote query is why we fall through */
+  let remoteError;
+
   if (vaults.length > 0) {
     const repoRoot = findRepoRoot(cwd, { existsSync, realpathSync });
     if (repoRoot !== null) {
-      // Get the git remote for origin
+      // Resolve the repo's preferred remote (vcs-less → origin-first; see the
+      // module docblock for why that order must not move).
+      /** @type {{reason?: string, stderr?: string}} */
+      const remoteOut = {};
       let remoteUrl;
       try {
-        remoteUrl = gitRemote(repoRoot);
-      } catch {
+        remoteUrl = readRemote(repoRoot, remoteOut);
+      } catch (err) {
+        // A throwing gitRemote could not answer the question — that is a query
+        // failure, never "this repo has no remote".
         remoteUrl = '';
+        remoteOut.reason = 'git-error';
+        remoteOut.stderr = err instanceof Error ? err.message : String(err);
       }
 
-      if (remoteUrl) {
+      if (!remoteUrl) {
+        // Falsy URL: keep the REASON instead of collapsing it into a bare
+        // `source:'fallback'`. A one-arg stub that reported nothing means the
+        // benign "no remote configured" case.
+        remoteError = remoteOut.reason ?? 'no-remotes';
+        if (isQueryFailure(remoteError)) {
+          const detail = remoteOut.stderr ? `: ${String(remoteOut.stderr).trim()}` : '';
+          process.stderr.write(
+            `WARN named-vault-resolver: could not read the git remote of "${repoRoot}" (${remoteError})${detail}; falling back to the single-vault default\n`,
+          );
+        }
+      } else {
         // Derive org/repo from the remote URL (strip suffix/.git/scheme)
         const repoSlug = _deriveSlugFromRemote(remoteUrl);
 
@@ -366,11 +433,14 @@ export function resolveNamedVault({
   }
 
   // ── Path 3: single-vault fallback ────────────────────────────────────────
+  // `remoteError` is spread in only when set, so a fallback reached for any
+  // other reason keeps the exact pre-#1039 four-field shape.
   return {
     root: null,
     suffix: _resolveEnvSuffix(env) ?? DEFAULT_SUFFIX,
     name: null,
     source: 'fallback',
+    ...(remoteError === undefined ? {} : { remoteError }),
   };
 }
 
@@ -420,14 +490,33 @@ function _deriveSlugFromRemote(url) {
 }
 
 /**
- * Default gitRemote implementation: runs `git -C <repoRoot> remote get-url origin`.
+ * Default gitRemote implementation (#1039).
+ *
+ * Delegates to the shared {@link resolvePreferredRemote} core VCS-LESS, which
+ * makes this resolver work in the repos the old hard-coded
+ * `git remote get-url origin` was blind in — a repo whose remotes are named
+ * `gitlab`/`github`, a fork whose sole remote is `upstream`. The vcs-less
+ * preference order still tries `origin` FIRST, so the slug derived for a repo
+ * that has an `origin` is byte-identical to the pre-#1039 value.
+ *
+ * Return type stays `string` (the `gitRemote` DI contract depends on it). The
+ * failure reason travels through the optional `out` OUT-parameter instead:
+ * folding it into the return value would have meant changing that contract for
+ * every injected stub.
+ *
  * @param {string} repoRoot
- * @returns {string}
+ * @param {{reason?: string, stderr?: string}} [out] — populated with the
+ *   {@link REMOTE_RESOLUTION_REASONS} reason when the resolution failed
+ * @param {Function} [gitRun] — injectable git runner; `undefined` uses the real one
+ * @returns {string} the remote URL, or `''` when none resolved
  */
-function _defaultGitRemote(repoRoot) {
-  const res = spawnSync('git', ['-C', repoRoot, 'remote', 'get-url', 'origin'], {
-    encoding: 'utf8',
-  });
-  if (res.status !== 0) return '';
-  return res.stdout.trim();
+function _defaultGitRemote(repoRoot, out, gitRun) {
+  // `vcs` deliberately omitted — see the module docblock (origin-first order).
+  const resolved = resolvePreferredRemote({ repoRoot, gitRun });
+  if (resolved.ok) return resolved.url;
+  if (isPlainObject(out)) {
+    out.reason = resolved.reason;
+    if (resolved.stderr) out.stderr = resolved.stderr;
+  }
+  return '';
 }

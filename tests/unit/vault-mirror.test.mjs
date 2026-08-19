@@ -1476,6 +1476,29 @@ describe('generateSessionNoteV2 — frontmatter skip-emit + source-repo (#343, r
 
 import { vi } from 'vitest';
 
+/**
+ * Golden-record `git remote -v` stdout for ONE remote (#1039).
+ *
+ * `deriveRepo()` no longer runs `git remote get-url origin` — since #1039 it
+ * resolves its identity through `listRemotes` (`scripts/lib/vcs-repo-spec.mjs`),
+ * a single `git -C <root> remote -v` spawn whose output is parsed as
+ * `<name>\t<url> (fetch|push)` lines. A double returning a bare URL parses to
+ * ZERO remotes, so `deriveRepo()` degrades silently to `basename(process.cwd())`
+ * instead of failing loudly.
+ *
+ * Shape captured from real `git remote -v` output, 2026-08-19 (tab separator,
+ * one fetch + one push line per remote, trailing newline). The identical helper
+ * lives in `tests/lib/vault-mirror/process.test.mjs`, which owns the other 18
+ * doubles of this same spawn.
+ *
+ * @param {string} url - the remote's fetch/push URL.
+ * @param {string} [name] - the remote's name; `origin` unless a test needs otherwise.
+ * @returns {string}
+ */
+function remoteV(url, name = 'origin') {
+  return `${name}\t${url} (fetch)\n${name}\t${url} (push)\n`;
+}
+
 describe('deriveRepo (#343) — origin parsing + fallback + caching', () => {
   // Reset _cachedRepo in process.mjs between tests by re-importing the module
   // fresh under vi.resetModules(). Each test gets its own mock + cache state.
@@ -1485,7 +1508,7 @@ describe('deriveRepo (#343) — origin parsing + fallback + caching', () => {
       const actual = await vi.importActual('node:child_process');
       return {
         ...actual,
-        execFileSync: vi.fn(() => 'git@gitlab.example:org/name.git\n'),
+        execFileSync: vi.fn(() => remoteV('git@gitlab.example:org/name.git')),
       };
     });
     const { deriveRepo } = await import('@lib/vault-mirror/process.mjs');
@@ -1499,7 +1522,7 @@ describe('deriveRepo (#343) — origin parsing + fallback + caching', () => {
       const actual = await vi.importActual('node:child_process');
       return {
         ...actual,
-        execFileSync: vi.fn(() => 'https://github.com/Kanevry/session-orchestrator.git\n'),
+        execFileSync: vi.fn(() => remoteV('https://github.com/Kanevry/session-orchestrator.git')),
       };
     });
     const { deriveRepo } = await import('@lib/vault-mirror/process.mjs');
@@ -1526,7 +1549,7 @@ describe('deriveRepo (#343) — origin parsing + fallback + caching', () => {
 
   it('is cached: execFileSync invoked at most once across multiple deriveRepo() calls', async () => {
     vi.resetModules();
-    const mockExec = vi.fn(() => 'git@github.com:cached/repo.git\n');
+    const mockExec = vi.fn(() => remoteV('git@github.com:cached/repo.git'));
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual('node:child_process');
       return {

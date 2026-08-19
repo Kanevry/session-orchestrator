@@ -36,16 +36,17 @@
  * import ONLY `resolveRepoNamespace` and previously dragged the entire `process.mjs`
  * graph (secret-masker, render-learnings, render-sessions, session-schema/filters)
  * in behind it. Keep this module leaf-ward: it may import `./utils.mjs`,
- * `./pseudonym-map.mjs`, the leak-guard and host-paths — never the pipeline.
+ * `./pseudonym-map.mjs`, the leak-guard, host-paths and `../vcs-repo-spec.mjs`
+ * (itself a leaf — `node:child_process` only) — never the pipeline.
  */
 
-import { execFileSync } from 'node:child_process';
 import { basename } from 'node:path';
 
 import { subjectToSlug } from './utils.mjs';
 import { isOwnerLeakySegment } from '../../lib/validate/check-owner-leakage.mjs';
 import { loadPseudonymMap } from './pseudonym-map.mjs';
 import { loadHostPaths, resolveHostPath } from '../config/host-paths.mjs';
+import { isQueryFailure, resolvePreferredRemote } from '../vcs-repo-spec.mjs';
 
 // ── Lazy pseudonym-map path resolution (Epic #725 D5) ────────────────────────
 // The map path comes from env SO_NAMESPACE_MAP > owner.yaml paths.namespace-map-path
@@ -89,17 +90,100 @@ function currentMapPath() {
 
 let _cachedRepo = null;
 
+/** scp-like SSH remote: `git@host:org/name.git` (no `://`, an `@` before any `/`). */
+const SCP_LIKE_REMOTE_RE = /^[^@/\s]+@[^:/\s]+:(.+)$/;
+
+/** `scheme://[authority]/path` remote: https, ssh, git, file, … */
+const SCHEME_REMOTE_RE = /^([a-z][a-z0-9+.-]*):\/\/[^/]*\/(.+)$/i;
+
+/**
+ * Split a remote's path portion into meaningful segments: drop a trailing
+ * `.git` (with any trailing slashes), then discard empty and `.`/`..` segments.
+ *
+ * The `.`-dropping is the load-bearing part: `git clone <path>/.` records the
+ * origin VERBATIM as `/…/<repo>/.`, so the final segment of a filesystem remote
+ * is routinely a bare dot (measured golden record, 2026-08-19).
+ *
+ * @param {string} path
+ * @returns {string[]}
+ */
+function remotePathSegments(path) {
+  return path
+    .replace(/\.git\/*$/i, '')
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter((segment) => segment !== '' && segment !== '.' && segment !== '..');
+}
+
+/**
+ * Derive the RAW repo identifier from one git remote URL.
+ *
+ * - Hosted remote (scp-like SSH or a non-`file` scheme URL) → the last two path
+ *   segments, `org/name` — byte-identical to the pre-#1039 regex for every
+ *   hosted shape, so no existing vault namespace moves.
+ * - Filesystem remote (`git clone <path>`, `file://…`) → the repo DIRECTORY
+ *   name alone. A local clone has no owner segment, so `org/name` is not
+ *   derivable and inventing one from the parent directory would namespace vault
+ *   notes under an arbitrary path component.
+ *
+ * Returns `''` when nothing usable can be derived (caller falls back).
+ *
+ * @param {string} url
+ * @returns {string}
+ */
+function repoIdentifierFromRemoteUrl(url) {
+  const value = String(url ?? '').trim();
+  if (value === '') return '';
+
+  const scp = SCP_LIKE_REMOTE_RE.exec(value);
+  const asUrl = scp === null ? SCHEME_REMOTE_RE.exec(value) : null;
+  const isFileUrl = asUrl !== null && asUrl[1].toLowerCase() === 'file';
+
+  if (scp !== null || (asUrl !== null && !isFileUrl)) {
+    const segments = remotePathSegments(scp !== null ? scp[1] : asUrl[2]);
+    if (segments.length === 0) return '';
+    return segments.length >= 2
+      ? `${segments[segments.length - 2]}/${segments[segments.length - 1]}`
+      : segments[segments.length - 1];
+  }
+
+  const segments = remotePathSegments(isFileUrl ? asUrl[2] : value);
+  return segments.length === 0 ? '' : segments[segments.length - 1];
+}
+
 /**
  * Derive the canonical repo identifier for cross-repo vault aggregation (issue #343).
  *
- * Strategy: parse `git remote get-url origin` and extract the org/name pair
- * (e.g. `git@github.com:Kanevry/session-orchestrator.git` → `Kanevry/session-orchestrator`).
- * Falls back to `path.basename(process.cwd())` when not in a git repo or origin
- * is unavailable. Cached per-process — repo identity does not change mid-run.
+ * Strategy (#1039): ask the shared remote-resolution core for the repo's
+ * PREFERRED remote — `resolvePreferredRemote` without a `vcs`, i.e. the
+ * `origin` → `gitlab` → `github` order, plus its sole-remote fallback — then
+ * derive `org/name` (hosted) or the repo directory name (filesystem clone) from
+ * that remote's URL. The pre-#1039 implementation read the hard-coded literal
+ * `git remote get-url origin`, which produced two live defects:
+ *
+ *   1. A repo whose remotes are named `gitlab`/`github` (no `origin`) silently
+ *      namespaced its vault notes under the CHECKOUT DIRECTORY name.
+ *   2. A `git clone <path>` origin (`/…/<repo>/.` — what the pre-push hook's
+ *      clone records) parsed to `<repo>/.`, whose slug is empty, so
+ *      {@link resolveRepoNamespace} returned `'unknown-repo'`. Measured
+ *      2026-08-19; it turned a namespace assertion red and blocked a push.
+ *
+ * Fallback: `path.basename(process.cwd())`, as before — but the two reasons for
+ * reaching it are no longer indistinguishable. A QUERY FAILURE (not a git repo,
+ * git not on PATH, git errored — {@link isQueryFailure}) emits a stderr WARN,
+ * because the identity under which vault notes are written was GUESSED. A real
+ * ABSENCE (a repo with no remotes) stays silent: that is a legitimate repo state
+ * and the directory name is the best available identity, not a degraded one.
+ * An `ok` resolution whose URL yields no usable identifier also falls back
+ * silently — the query succeeded and the answer was simply unusable.
+ *
+ * Cached per-process — repo identity does not change mid-run, and the cache also
+ * keeps the WARN to at most one line per process.
  *
  * NOTE — this is the RAW identifier and is NOT leak-guarded. Never write its
  * output to the vault directly; route it through {@link resolveRepoNamespace}
- * (which is what the `vaultName`-less path below does).
+ * (which is what the `vaultName`-less path below does). The WARN above therefore
+ * deliberately does NOT print the derived value.
  *
  * Re-exported by `./process.mjs` for backwards compatibility — that was its home
  * until the #734b cycle break, and the module-level cache means there must remain
@@ -109,20 +193,22 @@ let _cachedRepo = null;
  */
 export function deriveRepo() {
   if (_cachedRepo !== null) return _cachedRepo;
-  try {
-    const url = execFileSync('git', ['remote', 'get-url', 'origin'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    // Match git@host:org/name(.git)? OR https://host/org/name(.git)?
-    const sshMatch = url.match(/[:/]([^:/]+\/[^/]+?)(?:\.git)?$/);
-    if (sshMatch && sshMatch[1]) {
-      _cachedRepo = sshMatch[1];
+
+  const resolved = resolvePreferredRemote({});
+  if (resolved.ok) {
+    const identifier = repoIdentifierFromRemoteUrl(resolved.url);
+    if (identifier !== '') {
+      _cachedRepo = identifier;
       return _cachedRepo;
     }
-  } catch {
-    // git unavailable or no origin configured — fall through
+  } else if (isQueryFailure(resolved.reason)) {
+    process.stderr.write(
+      `WARN vault-mirror/namespace: could not query git remotes (${resolved.reason}); ` +
+        'falling back to the checkout directory name — vault notes may be namespaced ' +
+        'under the directory rather than the repo identity\n',
+    );
   }
+
   _cachedRepo = basename(process.cwd());
   return _cachedRepo;
 }

@@ -778,10 +778,22 @@ describe('category 6: Config Hygiene', () => {
     expect(deadCheck.status).toBe('fail');
     expect(deadCheck.points).toBe(0);
 
-    // plugin-narrative-section passes as "consumer repo skip" (no session-start/SKILL.md either);
-    // github-mirror-sync skip-as-passes (no .git/github remote in the tmp fixture)
+    // Remaining two checks, out of 10 possible:
+    //   plugin-narrative-section  2/2 — passes as "consumer repo skip" (no session-start/SKILL.md)
+    //   github-mirror-sync        0/2 — the tmp fixture is a bare directory, NOT a git repo
+    //
+    // That 0 is the #1039 fix, not a regression: this total was 4 while
+    // github-mirror-sync scored full points here. It reached them by reading a
+    // bare `git remote` whose every failure mode collapsed to null, so "git
+    // could not be asked" was indistinguishable from "no github remote is
+    // configured" and the audit rewarded its own blindness — in a fixture where
+    // it had measured nothing at all. It now reads `listRemotes`, which
+    // separates ABSENCE (ok, empty list → still full points) from QUERY FAILURE
+    // (not-a-git-repo here → fail). An audit that could not measure has not
+    // passed. The absence half is pinned in
+    // tests/lib/harness-audit/categories/category6.test.mjs (B1/B2).
     const earned = totalPoints(checks);
-    expect(earned).toBe(4);
+    expect(earned).toBe(2);
   });
 
   it('fails no-dead-branch-refs when CLAUDE.md contains a dead branch pattern', () => {

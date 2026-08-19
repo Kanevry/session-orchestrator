@@ -493,3 +493,48 @@ describe('validate-wave-scope.mjs — --expand-test-siblings (#970)', () => {
     expect(r.stderr).not.toMatch(/does not grant the test sibling/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Empty allowedPaths under a writable role — WARN, never ERROR (#1057)
+// ---------------------------------------------------------------------------
+//
+// Measured before the change: `{"wave":1,"role":"Impl-Core","enforcement":
+// "strict","allowedPaths":[],"blockedCommands":[]}` exited 0 with NOTHING on
+// stderr — the state in which every write of the wave will be denied passed
+// validation silently.
+//
+// It must WARN, not error, and that is a measured constraint rather than a
+// preference: `skills/wave-executor/wave-loop.md` § Scope Manifest feeds a
+// skeleton with `"allowedPaths": []` through this very script in
+// `--assert-disjoint` and `--union` mode, BEFORE the union exists. An error
+// would break the documented procedure that produces the field it complains
+// about.
+// ---------------------------------------------------------------------------
+
+describe('validate-wave-scope.mjs — empty allowedPaths (#1057)', () => {
+  it('WARNS and exits 0 for a writable role, naming --union as the repair', () => {
+    const r = run(JSON.stringify({ ...VALID, role: 'Impl-Core', allowedPaths: [] }));
+    expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(/WARNING: allowedPaths is empty for role "Impl-Core"/);
+    expect(r.stderr).toContain('--union step did not complete');
+    // The load-bearing half: a WARNING, never an ERROR — an error here would
+    // break the pre-union skeleton procedure.
+    expect(r.stderr).not.toMatch(/ERROR/);
+    expect(JSON.parse(r.stdout)).toMatchObject({ allowedPaths: [] });
+  });
+
+  it.each([['Discovery'], ['discovery'], [' DISCOVERY ']])(
+    'stays SILENT for the read-only role %s — empty is that role\'s contract',
+    (role) => {
+      const r = run(JSON.stringify({ ...VALID, role, allowedPaths: [] }));
+      expect(r.status).toBe(0);
+      expect(r.stderr).toBe('');
+    },
+  );
+
+  it('stays silent when allowedPaths is non-empty', () => {
+    const r = run(JSON.stringify({ ...VALID, role: 'Impl-Core' }));
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
+  });
+});
