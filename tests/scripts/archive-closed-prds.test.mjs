@@ -153,15 +153,29 @@ function makeGlab() {
   return { fn, calls };
 }
 
-/** Fake git: ls-files → the fixture PRD list; remote get-url → fake URL; rm → ok. */
+/** Fake git: ls-files → the fixture PRD list; remote -v → fake remotes; rm → ok. */
 function makeGit(prdRelPaths) {
   const rmCalls = [];
   const fn = (args) => {
     if (args.includes('ls-files')) {
       return { ok: true, stdout: prdRelPaths.join('\n') + '\n', stderr: '' };
     }
-    if (args.includes('remote') && args.includes('get-url')) {
-      return { ok: true, stdout: 'https://example.test/group/repo.git\n', stderr: '' };
+    if (args.includes('remote') && args.includes('-v')) {
+      // `git remote -v` shape (#1039): the resolver makes ONE such call and
+      // parses `<name>\t<url> (fetch|push)`; it no longer runs one
+      // `git remote get-url <name>` per preference entry. `origin` carries a
+      // DIFFERENT url on purpose — the --apply assertion below pins the
+      // resolved `-R` value, so "the spec comes from the gitlab remote" stays
+      // a checked claim now that no remote name appears in the git argv.
+      return {
+        ok: true,
+        stdout:
+          'gitlab\thttps://example.test/group/repo.git (fetch)\n' +
+          'gitlab\thttps://example.test/group/repo.git (push)\n' +
+          'origin\thttps://example.test/group/origin-must-lose.git (fetch)\n' +
+          'origin\thttps://example.test/group/origin-must-lose.git (push)\n',
+        stderr: '',
+      };
     }
     if (args.includes('rm')) {
       rmCalls.push(args);
@@ -295,18 +309,40 @@ describe('epicState', () => {
 });
 
 describe('defaultGlabRepo', () => {
+  /**
+   * `git remote -v` stdout (#1039): ONE call, `<name>\t<url> (fetch|push)`
+   * lines. The preference order the two tests below pin used to be visible in
+   * the ARGV (`remote get-url gitlab`); it is now visible only in WHICH url
+   * comes back, so each case lists every competing remote and asserts the
+   * winner by value.
+   * @param {Array<[name: string, url: string]>} entries
+   */
+  const remoteV = (entries) => (args) =>
+    args.includes('remote') && args.includes('-v')
+      ? {
+          ok: true,
+          stdout: entries.map(([name, url]) => `${name}\t${url} (fetch)\n${name}\t${url} (push)\n`).join(''),
+          stderr: '',
+        }
+      : { ok: false, stdout: '', stderr: 'unexpected git args' };
+
   it('prefers the gitlab remote URL', () => {
-    const fn = (args) => {
-      if (args.includes('gitlab')) return { ok: true, stdout: 'https://host/g/repo.git\n', stderr: '' };
-      return { ok: false, stdout: '', stderr: 'no remote' };
-    };
+    // Both remotes present: `gitlab` must win over `origin`.
+    const fn = remoteV([
+      ['gitlab', 'https://host/g/repo.git'],
+      ['origin', 'https://host/g/origin-must-lose.git'],
+    ]);
     expect(defaultGlabRepo('/repo', fn)).toBe('https://host/g/repo.git');
   });
   it('falls back to origin, then undefined', () => {
-    const originOnly = (args) =>
-      args.includes('origin')
-        ? { ok: true, stdout: 'git@host:g/repo.git\n', stderr: '' }
-        : { ok: false, stdout: '', stderr: 'no remote' };
+    // No `gitlab` remote — `origin` wins over the unranked `upstream`. The
+    // second remote is load-bearing: with `origin` ALONE the sole-remote
+    // fallback would return it even if the preference list were broken, so
+    // the assertion would no longer test the fallback it names.
+    const originOnly = remoteV([
+      ['origin', 'git@host:g/repo.git'],
+      ['upstream', 'git@host:g/upstream-must-lose.git'],
+    ]);
     expect(defaultGlabRepo('/repo', originOnly)).toBe('git@host:g/repo.git');
     expect(defaultGlabRepo('/repo', () => ({ ok: false, stdout: '', stderr: 'x' }))).toBeUndefined();
   });

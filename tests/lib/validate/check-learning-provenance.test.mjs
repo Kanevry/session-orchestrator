@@ -310,7 +310,12 @@ describe('check-learning-provenance — dangling provenance census', () => {
     // Grounding pin: the collector must resolve this repo's real surfaces.
     // Floor/ceiling, never a pinned count — both the rule corpus and the store
     // grow (`testing.md` § Dynamic Artifact Counts).
-    const result = await inspectLearningProvenance(REPO_ROOT);
+    // check-untracked-test-deps:ignore — this test is the EXEMPLARY form of the class,
+    // not an instance of the defect: it branches on the store's absence (see the two
+    // comments below) instead of assuming it away, and asserts a contract that holds on
+    // a developer machine and on a fresh CI clone alike. The R2 rule sees the structural
+    // dependency; the accommodation directly beneath it is the reason it is safe.
+    const result = await inspectLearningProvenance(REPO_ROOT); // check-untracked-test-deps:ignore
     expect(result.toolError).toBe(false);
 
     // The live store is GITIGNORED (`.gitignore:37 .orchestrator/metrics/*.jsonl`),

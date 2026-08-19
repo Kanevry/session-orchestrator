@@ -70,6 +70,50 @@ function renderDuration(durationSeconds, durationMinutes) {
 }
 
 /**
+ * Coerce ONE wave-object count field to a renderable number (#1074).
+ *
+ * ── WHY A TYPE GUARD AND NOT A BARE `??` CHAIN ─────────────────────────────
+ *
+ * The wave-object count fields are POLYMORPHIC across producer generations.
+ * Census over the live ledger (253 records / 599 wave objects, 2026-08-19):
+ *
+ *   agent_count        number 359
+ *   agents             number 210, **ARRAY 14**   ← array-of-agent-descriptors
+ *   agents_dispatched  number  20
+ *   dispatched         number   5
+ *   files_changed      number 366, **ARRAY  1**   ← array-of-file-paths
+ *   files              number   5
+ *
+ * A naive `w.agent_count ?? w.agents` therefore interpolates an array of
+ * objects into a Markdown table cell — `[object Object],[object Object],…` for
+ * the 4 waves of `main-2026-04-27-2231`. That is STRICTLY WORSE than the `?` it
+ * replaces: `?` reads as "unknown", `[object Object]` reads as content. The
+ * array-of-paths half of the same defect is already in production —
+ * `main-2026-05-26-housekeeping-1` renders its whole file list into the Files
+ * cell today, via the plain `w.files_changed` read that predates this helper.
+ *
+ * An array IS a measurement (its length is the count), so it is converted, not
+ * dropped. Any OTHER shape returns `undefined` so the caller's `??` chain keeps
+ * walking to the next alias and ultimately to `MISSING_CELL` — an unrecognised
+ * shape must degrade to "unknown", never to a coerced string. `NaN` is out of
+ * reach here by construction: JSON cannot encode it, and every caller feeds
+ * this JSONL-parsed values.
+ *
+ * ABSENT IS NOT ZERO applies unchanged (see the banner above `MISSING_CELL`):
+ * this returns `0` for a measured `0` and `0` for an empty array, and only
+ * `undefined` for a field the producer never wrote. Callers MUST chain with
+ * `??`, never `||` — `agents_dispatched: 0` occurs 20× in the live ledger.
+ *
+ * @param {unknown} value — one raw wave-object field.
+ * @returns {number|undefined} the count, or `undefined` to continue the chain.
+ */
+function waveCount(value) {
+  if (typeof value === 'number') return value;
+  if (Array.isArray(value)) return value.length;
+  return undefined;
+}
+
+/**
  * ── RENDERABLE ⊋ SCHEMA-VALID (#964) ───────────────────────────────────────
  *
  * Each generator gates on its own required-field list. Before #964 all three
@@ -259,6 +303,29 @@ function fmLine(key, value) {
  * reachability is therefore zero; see the follow-up note in the #964 report
  * before treating it as dead code — deletion is a separate decision, and the
  * `normalizeSessionEntry` alias path can still synthesize a scalar `waves`.
+ *
+ * #1074 — THE v2 BRANCH WAS DEAD AT BIRTH, AND THE NUMBER IS PINNED. Re-measured
+ * 2026-08-19 over 253 records: **v1 253, v2 0, v3 0**, both raw and
+ * post-`normalizeSessionEntry`. This is not a coincidence of the current data —
+ * the v2 clause is UNSATISFIABLE by construction: it requires
+ * `total_agents === undefined`, while `total_agents` is in `REQUIRED_FIELDS`
+ * (scripts/lib/session-schema/constants.mjs) and enforced by
+ * `validateSession`, so every record the writer accepts carries it (measured:
+ * 253/253 define it). Commit 9cb6d9c added the branch 4h23m BEFORE the first
+ * record using the `agents` alias was written, and no historical tracked ledger
+ * state would have routed one either.
+ *
+ * The consequence is the reason `generateSessionNote`'s wave table no longer
+ * consults this function for its alias handling at all: version detection is
+ * the WRONG AXIS for per-wave producer-key drift, because the alias varies per
+ * wave object and no session-level field — `schema_version` included — predicts
+ * it. See the census in the `waveRows` comment there. This function still
+ * routes the three GENERATORS and is unchanged; do not "repair" the wave table
+ * by re-anchoring it here.
+ *
+ * The generators are intentionally NOT deleted (operator decision, deferred
+ * once already in #964). Pinning the number here is the point: the next reader
+ * inherits the measurement instead of re-running it.
  */
 export function detectSessionSchema(entry) {
   if (!entry) return 'v1';
@@ -368,11 +435,55 @@ export function generateSessionNote(entry, options = {}) {
   // validated, so all three are optional and were rendering as the literal
   // string `undefined`. Guarded with the same `?? '?'` the v2 generator's wave
   // rows already used — `??` so a measured `0` still renders `0`.
+  //
+  // ── #1074: PER-WAVE ALIASES, NOT PER-SESSION VERSION DETECTION ────────────
+  //
+  // #M1 stopped the cells reading `undefined`, but left them reading `?` for
+  // every record whose producer used a different key — and that is most of the
+  // ledger. Census over 253 records / 599 wave objects (2026-08-19):
+  //
+  //   Agents  `?` 240 cells in 55 records  (recoverable: agents 214, agents_dispatched 20, dispatched 5)
+  //   Files   `?` 232 cells in 52 records  (recoverable: files 5)
+  //   Quality `?` 386 cells in 88 records  (recoverable: quality_check 168, status 72, result 35, outcome 5)
+  //
+  // The version-detection route cannot fix this. `detectSessionSchema` keys on
+  // SESSION-level fields, but the alias in use varies PER WAVE OBJECT and no
+  // session-level field predicts it — not even `schema_version` (under
+  // `schema_version: 1` the ledger carries agent_count 75, agents 33, none 30,
+  // agents_dispatched 4, both 2, dispatched 1). The axis is empirically
+  // refuted, so the repair is a per-wave alias chain instead.
+  //
+  // v1-canonical names come FIRST in every chain, so a cell that rendered a
+  // value before renders the identical value now: this can only ever replace a
+  // `?`. Verified over all 599 wave objects — repaired 239 agents / 5 files /
+  // 280 quality, with ZERO existing agents or quality values changed. The one
+  // deliberate change is the Files cell of `main-2026-05-26-housekeeping-1`,
+  // which stops printing a raw file-path list and prints `3` (see `waveCount`).
+  //
+  // The Quality chain needs no `waveCount`: all five of its aliases are 100%
+  // strings across the ledger (quality 213, quality_check 168, status 72,
+  // result 35, outcome 5 — zero objects or arrays), so there is no
+  // `[object Object]` hazard to guard. Should a producer ever emit a structured
+  // quality verdict, the fixture-coverage test in render-sessions.test.mjs is
+  // what surfaces it — this comment is the ceiling, that test is the trigger.
+  //
+  // A wave with no count under ANY alias keeps rendering `?`, and must: the
+  // coord-direct wave of `main-2026-05-26-housekeeping-1` dispatched no agents
+  // and recorded no number, so its Agents cell is genuinely unknown. A chain
+  // that "repaired" that one too would be inventing a measurement.
   const waveRows = waves
-    .map(
-      (w) =>
-        `| ${w.wave} | ${w.role} | ${w.agent_count ?? MISSING_CELL} | ${w.files_changed ?? MISSING_CELL} | ${w.quality ?? MISSING_CELL} |`,
-    )
+    .map((w) => {
+      const agentsCell =
+        waveCount(w.agent_count) ??
+        waveCount(w.agents) ??
+        waveCount(w.agents_dispatched) ??
+        waveCount(w.dispatched) ??
+        MISSING_CELL;
+      const filesCell = waveCount(w.files_changed) ?? waveCount(w.files) ?? MISSING_CELL;
+      const qualityCell =
+        w.quality ?? w.quality_check ?? w.status ?? w.result ?? w.outcome ?? MISSING_CELL;
+      return `| ${w.wave} | ${w.role} | ${agentsCell} | ${filesCell} | ${qualityCell} |`;
+    })
     .join('\n');
 
   // Skip-emit guard: avoid `platform: undefined` literal coercion (issue #343).

@@ -73,10 +73,27 @@ describe('detectVcsCommand', () => {
   // gh REJECTS. Only the exact token list discriminates "right flag", "wrong
   // flag", and "flag on a subcommand that refuses it".
 
-  /** Stub `git remote get-url` for `resolveRepoSpec` — no real checkout touched. */
+  /**
+   * Stub `git remote -v` for `resolveRepoSpec` — no real checkout touched.
+   * Since #1039 the resolver makes ONE `git remote -v` call and parses
+   * `<name>\t<url> (fetch|push)` lines out of it, instead of one
+   * `git remote get-url <name>` call per preference entry.
+   *
+   * A losing `origin` rides along with a DIFFERENT url so the preference order
+   * stays observable through the new protocol: every assertion below pins the
+   * FULL argv including the spec VALUE, so a resolver that picked `origin`
+   * over `gitlab` turns them red instead of passing on a plausible spec.
+   */
   const gitRunReturning = (url) => (args) =>
-    args.includes('remote') && args.includes('get-url')
-      ? { ok: true, stdout: `${url}\n`, stderr: '' }
+    args.includes('remote') && args.includes('-v')
+      ? {
+          ok: true,
+          stdout:
+            `gitlab\t${url} (fetch)\ngitlab\t${url} (push)\n` +
+            'origin\thttps://origin.example.test/must/lose.git (fetch)\n' +
+            'origin\thttps://origin.example.test/must/lose.git (push)\n',
+          stderr: '',
+        }
       : { ok: false, stdout: '', stderr: 'no such remote' };
 
   /**

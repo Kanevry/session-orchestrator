@@ -65,6 +65,13 @@
  *      (a real string-literal events.gotzendorfer.at elsewhere in that file still FAILs)
  *   6. tests/scripts/export-hw-learnings.test.mjs — exempt from P8 ONLY: the RFC1918
  *      IPs there are the redaction subject of the anonymizeString suite, not leaks.
+ *   7. The public-site URL in the three PUBLISHED site pages (site/index.html,
+ *      site/impressum/index.html, site/datenschutz/index.html) — the domain is a
+ *      legally mandated publication (Impressum, §5 ECG) plus the JSON-LD
+ *      publisher/author identity and the rel="author" footer link. Like every
+ *      exclusion above it is LINE-SCOPED and reached only via isAllowlisted(), which
+ *      only CP3 and CP7 consult — CP1/CP2/CP4/CP5/CP6/CP8/CP10/CP11 still fail on
+ *      these files, on the very same line. (#1076)
  *
  * Exit codes:
  *   0 — all checks passed
@@ -645,7 +652,28 @@ async function getConfidentialNamePatterns() {
 // ---------------------------------------------------------------------------
 // Text-scan extension allowlist (spec A.2)
 // ---------------------------------------------------------------------------
-const TEXT_EXTS = new Set(['.md', '.mjs', '.js', '.ts', '.json', '.yml', '.yaml', '.sh', '.txt']);
+// '.html' (#1076): the site/ tree is PUBLICLY SHIPPED (vercel.json outputDirectory:
+// "site"), so it is the highest-consequence class to scan, yet it was ungated here and
+// therefore invisible to all eleven CP rules. Its addition also revives canonicalizeLine()'s
+// HTML-entity decoding, which was dead in practice — .html is the only file class with
+// native entities, and it was never scanned.
+// `.jsonl` closes a gap this very wave opened: the harvested golden-record fixture at
+// tests/lib/vault-mirror/fixtures/golden-sessions.jsonl is tracked production data that
+// `.json` does not match, so the scanner would have skipped it for good. Measured before
+// adding: all 7 tracked `.jsonl` files pass (1525 -> 1532 scanned, 0 findings).
+const TEXT_EXTS = new Set([
+  '.md',
+  '.mjs',
+  '.js',
+  '.ts',
+  '.json',
+  '.jsonl',
+  '.yml',
+  '.yaml',
+  '.sh',
+  '.txt',
+  '.html',
+]);
 
 // Dotfiles to include (checked by basename, BEFORE the extension gate —
 // extname('.env.example') is '.example' (truthy), so an extension-first check
@@ -746,16 +774,33 @@ function isAllowlisted(relPath, line) {
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
     '.codex-plugin/plugin.json',
+    // A.4 exclusion 7 (#1076): the three PUBLISHED static pages (vercel.json
+    // outputDirectory: "site"). Rule-based, never file-based — membership here only
+    // buys the line-form test below, and isAllowlisted() is consulted by CP3 and CP7
+    // ONLY. A SELF_EXCLUSIONS entry would instead have switched off all eleven rules
+    // for these files; that broad form is deliberately NOT used.
+    'site/index.html',
+    'site/impressum/index.html',
+    'site/datenschutz/index.html',
   ]);
   const inAllowlistedFile = ALLOWLISTED_URL_PATHS.has(norm);
 
   if (inAllowlistedFile) {
     // Check that the only gotzendorfer.at occurrences on this line are sanctioned URLs or emails
     const SANCTIONED_URL = /https?:\/\/gotzendorfer\.at\b/g;
+    // The published site uses the www. host throughout, which SANCTIONED_URL cannot
+    // match — it requires the bare domain IMMEDIATELY after the scheme. Without this
+    // second form the three site entries above would exclude NOTHING and the gate
+    // (including .husky/pre-commit) would be permanently red. The two forms are
+    // DISJOINT: the www. prefix is mandatory here and impossible there, so no line
+    // can be counted twice (README.md stays at 1 token / 1 sanctioned match).
+    const SANCTIONED_PUBLIC_SITE = /(?:https?:\/\/)?www\.gotzendorfer\.at\b/g;
     const allGotzOnLine = [...line.matchAll(/gotzendorfer\.at/g)];
     const sanctionedUrlMatches = [...line.matchAll(SANCTIONED_URL)];
+    const sanctionedSiteMatches = [...line.matchAll(SANCTIONED_PUBLIC_SITE)];
     const emailMatches = [...line.matchAll(SANCTIONED_EMAILS)];
-    const totalSanctioned = sanctionedUrlMatches.length + emailMatches.length;
+    const totalSanctioned =
+      sanctionedUrlMatches.length + sanctionedSiteMatches.length + emailMatches.length;
     if (allGotzOnLine.length > 0 && allGotzOnLine.length === totalSanctioned) {
       return true;
     }

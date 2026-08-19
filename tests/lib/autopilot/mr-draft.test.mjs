@@ -19,8 +19,9 @@ import { assertErrorShape } from '../../_helpers/assert-error-shape.mjs';
 // ---------------------------------------------------------------------------
 // #872 Gap-3 fixture — mock ONLY `execFileSync` (the sync git-remote layer
 // `vcs-repo-spec.mjs`'s default `resolveRepoSpec` shells out through) so the
-// production-default-wiring tests below can control `git remote get-url`
-// without ever touching a real repo. `execFile` (the async fn mr-draft.mjs
+// production-default-wiring tests below can control `git remote -v` (#1039;
+// pre-#1039 this layer was one `git remote get-url <name>` per preference
+// entry) without ever touching a real repo. `execFile` (the async fn mr-draft.mjs
 // itself uses) stays the REAL implementation — every test in this file
 // always supplies `opts.execFile` as a mock, so it is never invoked for real.
 // Uses top-level await + dynamic import (precedent:
@@ -47,7 +48,7 @@ const {
 //
 // checkExistingMR/maybeCreateDraftMR now resolve a `-R`/`--repo` spec via an
 // injectable `resolveRepoSpecFn` (default: the real `resolveRepoSpec`, which
-// shells out to `git remote get-url`). The tests below this shim block
+// shells out to `git remote -v`). The tests below this shim block
 // predate #872 and assert an EXACT/arrayContaining execFile call shape
 // without any `-R` — so these local wrappers inject a no-op resolver
 // (`() => undefined`, matching pre-#872 "no -R appended" behaviour) as the
@@ -1029,6 +1030,20 @@ describe('maybeCreateDraftMR — #872 host pinning (github)', () => {
 // to the mocked `execFileSync('git', ...)` call (see the file-top mock).
 // ---------------------------------------------------------------------------
 
+/**
+ * `git remote -v` stdout (#1039 remote-resolution protocol).
+ *
+ * `resolveRepoSpec` no longer runs one `git remote get-url <name>` spawn per
+ * preference entry — it runs a SINGLE `git remote -v` and picks from the parsed
+ * list — so the double below has to speak that shape or it resolves nothing.
+ * Emits both directions per remote, byte-shaped exactly as git prints them.
+ *
+ * @param {Array<[name: string, url: string]>} entries in git's own output
+ *   order (alphabetical by remote name).
+ */
+const remoteVStdout = (entries) =>
+  entries.map(([name, url]) => `${name}\t${url} (fetch)\n${name}\t${url} (push)\n`).join('');
+
 describe('checkExistingMR — default resolveRepoSpecFn wires the REAL module (Gap 3)', () => {
   // execFileSync is a vi.fn() created inside the vi.mock('node:child_process')
   // factory. Per .claude/rules/testing.md's Vitest Mocking Gotchas, mock
@@ -1040,23 +1055,33 @@ describe('checkExistingMR — default resolveRepoSpecFn wires the REAL module (G
     execFileSync.mockClear();
   });
 
-  it('derives the -R spec through the real resolveRepoSpec → git remote get-url chain when resolveRepoSpecFn is omitted', async () => {
+  it('derives the -R spec through the real resolveRepoSpec → git remote -v chain when resolveRepoSpecFn is omitted', async () => {
     const remoteUrl = 'https://gitlab.example.com/example-group/example-project.git';
+    // The SECOND remote, with a different URL, is what carries the old
+    // `arrayContaining([… 'gitlab'])` assertion's statement forward: `remote -v`
+    // names no remote in its argv, so "the probe asks for the GITLAB remote"
+    // can now only be pinned on the RESOLVED value — `origin` must lose.
+    const originUrl = 'https://gitlab.example.com/example-group/origin-must-lose.git';
     execFileSync.mockImplementation((cmd, args) => {
-      if (cmd === 'git' && args.at(-1) === 'gitlab') return `${remoteUrl}\n`;
-      const err = new Error('fatal: no such remote');
-      err.stderr = 'fatal: no such remote';
+      if (cmd === 'git' && args.includes('remote') && args.includes('-v')) {
+        return remoteVStdout([
+          ['gitlab', remoteUrl],
+          ['origin', originUrl],
+        ]);
+      }
+      const err = new Error('fatal: not a git repository');
+      err.stderr = 'fatal: not a git repository';
       throw err;
     });
 
     const mockExec = vi.fn().mockResolvedValue({ stdout: '[]', stderr: '' });
     await checkExistingMRReal({ vcs: 'glab', branchName: 'issue-1', execFile: mockExec });
 
-    // The real chain actually shelled out to `git remote get-url` — proof
-    // the default parameter is wired to the real module, not a no-op.
+    // The real chain actually shelled out to `git remote -v` — proof the
+    // default parameter is wired to the real module, not a no-op.
     expect(execFileSync).toHaveBeenCalledWith(
       'git',
-      expect.arrayContaining(['remote', 'get-url', 'gitlab']),
+      expect.arrayContaining(['remote', '-v']),
       expect.anything(),
     );
 
@@ -1066,9 +1091,21 @@ describe('checkExistingMR — default resolveRepoSpecFn wires the REAL module (G
   });
 
   it('appends no -R at all when the real chain finds no matching remote (graceful degradation, default resolver)', async () => {
-    execFileSync.mockImplementation(() => {
-      const err = new Error('fatal: no such remote');
-      err.stderr = 'fatal: no such remote';
+    execFileSync.mockImplementation((cmd, args) => {
+      if (cmd === 'git' && args.includes('remote') && args.includes('-v')) {
+        // TWO remotes, neither in the gitlab preference order (`gitlab`,
+        // `origin`) — the exact shape that makes the resolver report
+        // `no-matching-remote`, i.e. the state this test's NAME claims. A
+        // single odd-named remote would be picked up by the sole-remote
+        // fallback and a git-level throw would exercise the query-FAILURE
+        // branch instead; neither is "found no matching remote".
+        return remoteVStdout([
+          ['fork', 'https://gitlab.example.com/example-group/fork.git'],
+          ['upstream', 'https://gitlab.example.com/other-group/upstream.git'],
+        ]);
+      }
+      const err = new Error('fatal: not a git repository');
+      err.stderr = 'fatal: not a git repository';
       throw err;
     });
 
@@ -1089,10 +1126,19 @@ describe('maybeCreateDraftMR — default resolveRepoSpecFn wires the REAL module
 
   it('derives the -R spec through the real resolveRepoSpec chain and pins BOTH the list and create call when resolveRepoSpecFn is omitted', async () => {
     const remoteUrl = 'https://gitlab.example.com/example-group/example-project.git';
+    // See the sibling checkExistingMR Gap-3 test for why a second, losing
+    // remote is present: it is what still pins WHICH remote the -R spec came
+    // from now that `remote -v` carries no remote name in its argv.
+    const originUrl = 'https://gitlab.example.com/example-group/origin-must-lose.git';
     execFileSync.mockImplementation((cmd, args) => {
-      if (cmd === 'git' && args.at(-1) === 'gitlab') return `${remoteUrl}\n`;
-      const err = new Error('fatal: no such remote');
-      err.stderr = 'fatal: no such remote';
+      if (cmd === 'git' && args.includes('remote') && args.includes('-v')) {
+        return remoteVStdout([
+          ['gitlab', remoteUrl],
+          ['origin', originUrl],
+        ]);
+      }
+      const err = new Error('fatal: not a git repository');
+      err.stderr = 'fatal: not a git repository';
       throw err;
     });
 
@@ -1105,8 +1151,8 @@ describe('maybeCreateDraftMR — default resolveRepoSpecFn wires the REAL module
 
     expect(result.created).toBe(true);
 
-    // Exactly one real `git remote get-url gitlab` spawn — the resolve-once
-    // contract holds even through the production default.
+    // Exactly one real `git remote -v` spawn — the resolve-once contract holds
+    // even through the production default (list + create share one resolution).
     const gitCalls = execFileSync.mock.calls.filter(([cmd]) => cmd === 'git');
     expect(gitCalls).toHaveLength(1);
 

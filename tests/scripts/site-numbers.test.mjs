@@ -14,6 +14,14 @@
  *     at it. The real page is concurrently authored elsewhere, and a byte-copy of
  *     it would couple this suite to whether THAT file happens to be current —
  *     which is not the contract under test here.
+ *
+ *     ONE named exception, read-only: the tracked census snapshot
+ *     `site/_census.json`. Two tests open it — the public-schema pin (it is
+ *     SERVED, so a stray debug field would ship) and the proof that a
+ *     `--write --site <tmpdir>` run does not reach back into it. Neither looks at
+ *     a single number, so neither couples to whether the file is current; and the
+ *     second one would be untestable against a copy, because "the real file was
+ *     not touched" is the claim.
  *  2. The CLI runs against the REAL repo root (that is where the census lives and
  *     the only place `git rev-parse HEAD` answers), while the census BASIS is
  *     pinned separately against a synthetic directory tree with hardcoded
@@ -23,7 +31,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -37,10 +45,14 @@ import {
   countHookFiles,
   countTestFiles,
   countJsonlEntries,
+  headRef,
+  censusPath,
+  readCensusSnapshot,
   inspectHtml,
   rewrite,
   parseArgs,
   METRIC_IDS,
+  CENSUS_SCHEMA,
 } from '../../scripts/site-numbers.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -106,7 +118,11 @@ function writeSiteFixture(values, overrides = {}) {
 
 let current;
 beforeAll(() => {
-  const res = collect(REPO_ROOT);
+  // check-untracked-test-deps:ignore — the ledger read is real but no longer fatal:
+  // `sessions`/`learnings` fall back to the tracked `site/_census.json`, measured 31/31
+  // in a clone with no `.orchestrator/metrics/` at all (#1081). The R2 rule detects the
+  // structural dependency; this line records why its consequence is gone.
+  const res = collect(REPO_ROOT); // check-untracked-test-deps:ignore
   expect(res.missing).toEqual([]); // the real repo must be measurable, else every test below is meaningless
   current = res.values;
 });
@@ -436,5 +452,237 @@ describe('safe-value allowlist', () => {
       expect(r.rejected, JSON.stringify(v)).toBe(1);
       expect(r.html, JSON.stringify(v)).toBe(cell);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The census snapshot (site/_census.json)
+//
+// THE BUG THAT MOTIVATED ALL OF THIS: `beforeAll` above calls
+// `collect(REPO_ROOT)` and asserts `missing` is empty. Two of the thirteen
+// metrics read `.orchestrator/metrics/{sessions,learnings}.jsonl`, which
+// `.gitignore` keeps out of every clone. On a developer's machine the ledgers
+// exist and the assertion holds; in CI they do not and it throws — and a throw
+// in a top-level `beforeAll` takes the WHOLE FILE with it in vitest, so the
+// pipeline reported "23 tests | 23 skipped", not "1 failed". Five pipelines were
+// red on this. The fix is a tracked snapshot the three clone-absent metrics fall
+// back to; these tests pin the fallback's precedence, its narrowness, and the
+// fact that it never writes where it must not.
+// ---------------------------------------------------------------------------
+
+/** Two JSONL records; the count is deliberately not the snapshot's number. */
+const LEDGER = '{"a":1}\n{"b":2}\n{"c":3}\n';
+
+/**
+ * A synthetic repository complete enough for all thirteen metrics — the CLI's
+ * "wrong root" guard is unforgiving, so a partial tree only ever proves exit 2.
+ *
+ * @param {object} [o]
+ * @param {string[]} [o.omit]     surfaces to leave out ('skills', 'ledgers', …)
+ * @param {object|null} [o.snapshot]  `metrics` map written to site/_census.json
+ * @param {boolean} [o.page]      write site/index.html with a cell per metric
+ */
+function synthFullRepo({ omit = [], snapshot = null, page = false } = {}) {
+  const root = mkTmp('site-numbers-full-');
+  const has = (k) => !omit.includes(k);
+  const put = (rel, body) => {
+    const abs = join(root, ...rel);
+    mkdirSync(join(root, ...rel.slice(0, -1)), { recursive: true });
+    writeFileSync(abs, body, 'utf8');
+  };
+
+  put(['package.json'], JSON.stringify({ name: 'synth', version: '9.9.9' }));
+  if (has('skills')) put(['skills', 'alpha', 'SKILL.md'], '# a');
+  if (has('commands')) put(['commands', 'go.md'], 'x');
+  if (has('agents')) put(['agents', 'code-implementer.md'], 'x');
+  if (has('hooks')) put(['hooks', 'on-stop.mjs'], 'x');
+  if (has('tests')) put(['tests', 'a.test.mjs'], 'x');
+  if (has('rules')) put(['.claude', 'rules', 'development.md'], '# rules');
+  if (has('blocked')) put(['.orchestrator', 'policy', 'blocked-commands.json'], '[{"a":1},{"b":2}]');
+  if (has('ledgers')) {
+    put(['.orchestrator', 'metrics', 'sessions.jsonl'], LEDGER);
+    put(['.orchestrator', 'metrics', 'learnings.jsonl'], LEDGER);
+  }
+
+  mkdirSync(join(root, 'site'), { recursive: true });
+  if (snapshot) put(['site', '_census.json'], JSON.stringify({ $schema: CENSUS_SCHEMA, metrics: snapshot }));
+  if (page) {
+    put(
+      ['site', 'index.html'],
+      `<!doctype html><html><body>${METRIC_IDS.map(
+        (id) => `<span class="num" data-metric="${id}">PLACEHOLDER</span>`,
+      ).join('\n')}</body></html>`,
+    );
+  }
+  return root;
+}
+
+/** Every metric answered by the snapshot — used to prove the fallback is NOT blanket. */
+function fullSnapshot() {
+  return Object.fromEntries(METRIC_IDS.map((id) => [id, id === 'counted-sha' ? 'deadbee' : '999']));
+}
+
+describe('census snapshot — fallback for the metrics a clone does not carry', () => {
+  /**
+   * BUG CAUGHT: the live CI regression itself. Without this test the fix is
+   * unpinned — someone drops `snapshotFallback` from the table, every local run
+   * stays green because the ledgers are on disk here, and the next fresh clone
+   * takes the whole file down again with 23 skipped tests.
+   */
+  it('measures a clone-shaped tree (no ledgers) when the snapshot supplies them', () => {
+    const root = synthFullRepo({ omit: ['ledgers'], snapshot: fullSnapshot() });
+    const res = collect(root);
+
+    expect(res.missing).toEqual([]);
+    expect(res.values.sessions).toBe('999');
+    expect(res.values.learnings).toBe('999');
+    expect(res.fromSnapshot).toEqual(['sessions', 'learnings', 'counted-sha']);
+  });
+
+  /**
+   * BUG CAUGHT: an implementation that reads the snapshot FIRST, or memoises the
+   * live value into it. Either one freezes the page on the numbers of the last
+   * release while the repository moves on — which is the hand-maintained
+   * derived number this whole script exists to abolish, just stored in JSON.
+   */
+  it('prefers the live ledger over the snapshot when both exist', () => {
+    const root = synthFullRepo({ snapshot: fullSnapshot() });
+
+    // The ledger carries 3 records; the snapshot claims 999.
+    const res = collect(root);
+    expect(res.values.sessions).toBe('3');
+    expect(res.values.learnings).toBe('3');
+    expect(res.fromSnapshot).not.toContain('sessions');
+    expect(res.fromSnapshot).not.toContain('learnings');
+  });
+
+  /**
+   * BUG CAUGHT: a BLANKET fallback. With one, any directory holding a copied
+   * `site/_census.json` answers all thirteen metrics and exits 0 — the "wrong
+   * root" guard ("is this the repository root?") stops biting, and a census of
+   * a directory that is not this repository ships as if it had been measured.
+   * The ten tracked-input metrics must stay loud however complete the snapshot.
+   */
+  it('does not let the snapshot answer a metric whose input is tracked', () => {
+    const root = synthFullRepo({ omit: ['skills'], snapshot: fullSnapshot(), page: true });
+
+    const res = collect(root);
+    expect(res.missing).toEqual(['skills']);
+    expect(res.values.skills).toBeUndefined();
+
+    const cli = run(['--check', '--site', join(root, 'site')], { root });
+    expect(cli.code).toBe(2);
+    expect(cli.stderr).toContain('refusing to publish a partial census');
+    expect(cli.stderr).toContain('could not measure skills');
+  });
+
+  /**
+   * BUG CAUGHT: `counted-sha` is null in a tarball / `docker COPY` build (the
+   * tree without `.git`), which before the fallback made the whole census a hard
+   * exit 2 — a build that carries every file it needs, refusing to build.
+   */
+  it('survives a tree without .git as long as the snapshot carries the sha', () => {
+    const root = synthFullRepo({ snapshot: { 'counted-sha': 'deadbee' } });
+    expect(headRef(root)).toBeNull(); // precondition: no ancestor git repo, else this proves nothing
+
+    const res = collect(root);
+    expect(res.missing).toEqual([]);
+    expect(res.values['counted-sha']).toBe('deadbee');
+    expect(res.fromSnapshot).toEqual(['counted-sha']);
+  });
+});
+
+describe('census snapshot — writing it', () => {
+  /**
+   * BUG CAUGHT: deriving the snapshot from a SECOND `collect()`. The two
+   * measurements can disagree inside one run — `counted-at` flips at midnight
+   * and any ledger appended to between them shifts — which publishes a page and
+   * a receipt that contradict each other. The receipt is the page's evidence, so
+   * a contradiction is worse than either number being stale.
+   */
+  it('writes the snapshot from the same measurement as the HTML cells', () => {
+    const root = synthFullRepo({ snapshot: { 'counted-sha': 'deadbee' }, page: true });
+
+    const res = run(['--write'], { root });
+    expect(res.code).toBe(0);
+
+    const snap = readCensusSnapshot(root);
+    const html = readFileSync(join(root, 'site', 'index.html'), 'utf8');
+    expect(html).not.toContain('PLACEHOLDER');
+    for (const id of METRIC_IDS) {
+      expect(html, id).toContain(`data-metric="${id}">${snap[id]}</span>`);
+    }
+    expect(snap.sessions).toBe('3'); // the live ledger, not the fixture's snapshot
+    expect(snap['counted-sha']).toBe('deadbee'); // no .git here → the snapshot's own sha survives
+  });
+
+  /**
+   * BUG CAUGHT: a root-anchored write that ignores `--site`. Every fixture test
+   * in this file runs `--write --site <tmpdir>` against the REAL repo root
+   * (that is where the census lives), so a snapshot writer keyed on the root
+   * alone would rewrite the repository's own `site/_census.json` on every test
+   * run — dirtying the working tree from a test suite and tripping
+   * release.mjs's clean-tree preflight for reasons nobody would connect to
+   * vitest.
+   */
+  it('leaves the repository census untouched when --site points elsewhere', () => {
+    // check-untracked-test-deps:ignore — R2 is closure-based and cannot tell which export
+    // of a module reads what: `censusPath()` only joins a path to the TRACKED
+    // site/_census.json, but it ships in the same module whose closure names the ledger.
+    const real = censusPath(REPO_ROOT); // check-untracked-test-deps:ignore
+    expect(existsSync(real), `${real} is tracked and must exist`).toBe(true);
+    const before = readFileSync(real, 'utf8');
+    const beforeMtime = statSync(real).mtimeMs;
+
+    const site = writeSiteFixture(current, { sessions: '210' });
+    const res = run(['--write', '--site', site]);
+    expect(res.code).toBe(0);
+    expect(res.stdout).not.toContain('_census.json');
+
+    expect(readFileSync(real, 'utf8')).toBe(before);
+    expect(statSync(real).mtimeMs).toBe(beforeMtime);
+  });
+
+  /**
+   * BUG CAUGHT: a later "debug" field — the ledger path, the cwd, a hostname —
+   * added to the snapshot. `vercel.json` serves `site/` verbatim, so this file
+   * is PUBLIC: anything written into it ships to the internet without a second
+   * decision. The key set is asserted against METRIC_IDS rather than a count,
+   * per `.claude/rules/testing.md` (no exact-count pins on a growing set).
+   */
+  it('ships exactly the frozen metric ids and no filesystem paths', () => {
+    // check-untracked-test-deps:ignore — same closure-precision limit as above: this reads
+    // the TRACKED site/_census.json, not the ledger.
+    const raw = JSON.parse(readFileSync(censusPath(REPO_ROOT), 'utf8')); // check-untracked-test-deps:ignore
+
+    expect(Object.keys(raw)).toEqual(['$schema', 'metrics']);
+    expect(raw.$schema).toBe(CENSUS_SCHEMA);
+    expect(Object.keys(raw.metrics)).toEqual([...METRIC_IDS]);
+    for (const [id, v] of Object.entries(raw.metrics)) {
+      expect(typeof v, id).toBe('string');
+      expect(v, id).not.toMatch(/\//); // a path (or a URL) would betray the build host
+    }
+  });
+});
+
+describe('a known metric with no computed value', () => {
+  /**
+   * BUG CAUGHT: the quietest failure in the file. `inspectHtml` set
+   * `expected = null` for a KNOWN id absent from `values`, so `differs` was
+   * false; `rewrite` returned the cell byte-identical without counting it; and
+   * `main` printed "N metric cell(s) current" over a number nobody had measured.
+   * It was unreachable only because the exit-2 partial-census guard fired first
+   * — and that guard is exactly what the snapshot fallback softens. So the state
+   * must be a contract violation, not a silent skip.
+   */
+  it('is reported as a contract violation, not as a current cell', () => {
+    const html = '<span class="num" data-metric="sessions">210</span>';
+    const [span] = inspectHtml(html, { skills: '46' });
+
+    expect(span.known).toBe(true);
+    expect(span.unresolved).toBe(true);
+    expect(span.drift).toBe(false); // NOT drift — which is precisely why it needs its own flag
+    expect(span.stale).toBe(false);
+    expect(rewrite(html, { skills: '46' }).replaced).toBe(0); // and the stale number stays on the page
   });
 });

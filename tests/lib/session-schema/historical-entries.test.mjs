@@ -27,7 +27,14 @@ const path = '.orchestrator/metrics/sessions.jsonl';
 
 let lines;
 try {
-  lines = readFileSync(path, 'utf8').split('\n').filter(Boolean);
+  // DOCUMENTED ACCOMMODATION, not an oversight. The store is gitignored
+  // (`.gitignore:40 .orchestrator/metrics/*.jsonl`), so this read is a cwd-relative
+  // dependency on an untracked path — exactly the class the guard catches. It is
+  // exempt because the `catch` below degrades it to a vacuous pass
+  // (`it.skipIf(lines.length === 0)`) instead of a CI failure: the file knowingly
+  // delivers 0 coverage on a fresh clone and full coverage on a developer machine,
+  // which is the contract for a historical-corpus validator.
+  lines = readFileSync(path, 'utf8').split('\n').filter(Boolean); // check-untracked-test-deps:ignore
 } catch {
   lines = []; // CI may run without metrics; skip gracefully
 }

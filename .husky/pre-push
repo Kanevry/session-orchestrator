@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Husky v9+ — pre-push hook (#932)
+# Husky v9+ — pre-push hook (#932; tracked-tree rebuild)
 #
 # Wires scripts/run-quality-gate.mjs, which was fully implemented and tested
 # (tests/scripts/run-quality-gate.test.mjs) but connected to nothing:
@@ -15,9 +15,57 @@
 #   exit-code contract, pinned by tests, and immune to any change in the JSON
 #   payload's shape.
 #
-# The cost is real — the gate runs typecheck + the whole vitest suite + lint.
-# Two things keep that from turning into a reflex `--no-verify`:
-#   - a delete-only push changes no code and is skipped outright;
+# ---------------------------------------------------------------------------
+# Why the gate runs against a MATERIALISED TRACKED TREE, not the working tree
+# ---------------------------------------------------------------------------
+# The first version of this hook ran `npm run quality-gate` in place. That gates
+# the WORKING tree; CI gates the TRACKED tree. Everything that exists locally but
+# is not committed — an untracked helper a test imports, a gitignored data file a
+# test reads — is present for the local gate and absent for CI. The local gate is
+# then green on a tree CI cannot build, which is the single most expensive shape
+# of failure this repo has recorded (see
+# .claude/rules/anti-pattern-a-green-quality-gate-on-the-development-platform-... ).
+#
+# So: clone the tracked tree for the sha actually being pushed into a temp dir and
+# run the gate there. The tree is the one `git clone` gives CI, minus node_modules
+# (see the ceilings below).
+#
+# `git clone --no-hardlinks` and not `git archive`, measured rather than assumed:
+#   git archive HEAD | tar -x   ->  0.32 s, 1609 files, NO .git
+#   git clone --no-hardlinks    ->  1.04 s, 1609 files, full .git
+# `archive` is 0.7 s cheaper and unusable: without .git, 23 tests across 12 files
+# fail on `fatal: not a git repository` (measured 2026-08-19 on the full suite).
+# `--no-hardlinks` costs nothing over the hardlinking default (1.04 s vs 1.11 s)
+# and buys total object-store isolation from the real repo.
+#
+# ---------------------------------------------------------------------------
+# CEILINGS — what this deliberately does NOT catch (.claude/rules/build-value.md BV-004)
+# ---------------------------------------------------------------------------
+#   1. LOCKFILE / DEPENDENCY DRIFT. node_modules is SYMLINKED from the working
+#      copy, because `npm ci` in the temp tree would cost far more than the gate
+#      itself. So a dependency added to package.json but never installed, or an
+#      installed tree that has drifted from package-lock.json, stays invisible
+#      here — CI's fresh `npm ci` is the only thing that catches it.
+#      Revisit trigger: the first lockfile-drift red on CI that this hook let past.
+#   2. PLATFORM. This runs on the pusher's machine (macOS), CI runs Linux. It
+#      cannot see a Linux-only break: the unset-vs-trailing-slash $TMPDIR class
+#      and the ARG_MAX / spawnSync E2BIG class are both documented incidents in
+#      this repo. `env -u TMPDIR` locally is the partial substitute; the real
+#      answer stays "read the CI job".
+#      Revisit trigger: a second platform-only red after this hook shipped.
+#   3. ONE REF. A multi-ref push materialises only the FIRST content-bearing
+#      local_sha; the rest are announced as ungated on stderr. Gating N refs
+#      would cost N x ~60 s, which buys back the reflex bypass this hook spends
+#      its whole design budget avoiding.
+#      Revisit trigger: a real multi-ref push shipping a break in ref 2+.
+#   4. COST -> BYPASS PRESSURE. Materialisation adds ~1 s to a gate that already
+#      warns about ~2 min of silence. That is small in seconds and not small in
+#      temperament: every second added here raises the pull toward
+#      SKIP_QUALITY_GATE, which is why the bypass stays named and loud rather
+#      than being removed.
+#
+# Two things keep the cost from turning into a reflex `--no-verify`:
+#   - a delete-only push changes no code and is skipped BEFORE any clone happens;
 #   - SKIP_QUALITY_GATE=1 is a named, greppable, loudly-announced bypass.
 #     Prefer it over `git push --no-verify`, which disables EVERY hook silently,
 #     including any future one, and leaves no trace of what was skipped.
@@ -37,13 +85,22 @@ fi
 # git feeds one line per pushed ref on stdin:
 #   <local_ref> <local_sha> <remote_ref> <remote_sha>
 # An all-zero local sha means the ref is being DELETED. A push that only deletes
-# refs ships no code, so gating it is pure latency with no signal.
+# refs ships no code, so gating it is pure latency with no signal. This loop runs
+# BEFORE any materialisation: a delete-only push must not pay for a clone either.
 zero='0000000000000000000000000000000000000000'
 has_content=0
-while read -r _local_ref local_sha _remote_ref _remote_sha; do
+content_refs=0
+target_sha=''
+target_ref=''
+while read -r local_ref local_sha _remote_ref _remote_sha; do
   [ -z "$local_sha" ] && continue
   [ "$local_sha" = "$zero" ] && continue
   has_content=1
+  content_refs=$(( content_refs + 1 ))
+  if [ -z "$target_sha" ]; then
+    target_sha=$local_sha
+    target_ref=$local_ref
+  fi
 done
 
 if [ "$has_content" -eq 0 ]; then
@@ -51,14 +108,120 @@ if [ "$has_content" -eq 0 ]; then
   exit 0
 fi
 
-echo "pre-push: running the full quality gate (typecheck + tests + lint)." >&2
+# ---------------------------------------------------------------------------
+# Materialise the tracked tree
+# ---------------------------------------------------------------------------
+# `work` is the parent temp dir; the clone lands in $work/tree. The trap owns its
+# removal so a failing gate, a Ctrl-C, or a kill cannot leave ~1600 files behind
+# per push. cleanup() is idempotent (it blanks `work`), so the INT/TERM handlers
+# chaining into EXIT cannot double-remove.
+work=''
+cleanup() {
+  [ -n "$work" ] || return 0
+  case "$work" in
+    (/*) rm -rf "$work" ;;
+  esac
+  work=''
+}
+trap 'cleanup' EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+trap 'cleanup; exit 129' HUP
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || repo_root=''
+
+if [ -z "$repo_root" ]; then
+  # Unreachable during a real `git push` — git only runs this hook from inside a
+  # work tree. The path exists so a non-repo invocation (test fixtures, a vendored
+  # consumer driving the hook by hand) degrades to the previous working-tree
+  # behaviour LOUDLY rather than failing shut. A silent degrade here would be the
+  # worst of both worlds: a gate that proves nothing and says nothing.
+  echo "⚠ pre-push: not inside a git work tree — gating the WORKING TREE instead." >&2
+  echo "            This does NOT prove the tracked tree builds." >&2
+  run_dir=$(pwd)
+  tree_label='working tree'
+else
+  work=$(mktemp -d)
+  if [ -z "$work" ] || [ ! -d "$work" ]; then
+    echo "✗ pre-push: could not create a temp dir for the tracked-tree gate. Push blocked." >&2
+    echo "  Bypass (only after triaging): SKIP_QUALITY_GATE=1 git push" >&2
+    exit 1
+  fi
+  tree=$work/tree
+  short_sha=$(printf '%.12s' "$target_sha")
+
+  mat_start=$(date +%s)
+  if ! git clone --quiet --no-hardlinks "$repo_root" "$tree" 2>&1; then
+    # Fail CLOSED. A gate that could not be set up has verified nothing, which is
+    # the exact failure class this hook exists for.
+    echo "✗ pre-push: could not materialise the tracked tree from $repo_root. Push blocked." >&2
+    echo "  Bypass (only after triaging): SKIP_QUALITY_GATE=1 git push" >&2
+    exit 1
+  fi
+  if ! git -C "$tree" checkout --quiet --detach "$target_sha" 2>&1; then
+    echo "✗ pre-push: $short_sha ($target_ref) is not reachable in the cloned tree." >&2
+    echo "  Push blocked — the gate cannot verify a commit it cannot check out." >&2
+    echo "  Bypass (only after triaging): SKIP_QUALITY_GATE=1 git push" >&2
+    exit 1
+  fi
+
+  # A symlink is a FILE to git, so the `node_modules/` line in .gitignore does not
+  # match it. Without this exclude the fresh clone reports a dirty tree and every
+  # cleanliness assertion in the suite goes red on an artefact of this hook. The
+  # bare pattern matches at any depth, so it covers the nested link below too.
+  printf 'node_modules\n' >> "$tree/.git/info/exclude"
+
+  # CI parity, and it is TWO links, not one: .gitlab-ci.yml and
+  # .github/workflows/test.yml both run `npm ci` AND
+  # `(cd skills/vault-sync && npm install)`. Measured 2026-08-19 on the full
+  # suite: linking only the root gives `9 test files failed | 102 tests failed`
+  # against `1 file | 0 tests` with both links, the extra ones all on
+  # `Cannot find package 'zod' imported from skills/vault-sync/validator.mjs`.
+  # That is an artefact of this setup, not a defect in the tree being pushed.
+  link_node_modules() {
+    nm_src=$repo_root${1:+/$1}/node_modules
+    nm_dst=$tree${1:+/$1}/node_modules
+    [ -d "$nm_src" ] || return 0
+    [ -d "$tree${1:+/$1}" ] || return 0
+    [ -e "$nm_dst" ] && return 0
+    ln -s "$nm_src" "$nm_dst" 2>/dev/null || return 0
+  }
+  link_node_modules ''
+  link_node_modules 'skills/vault-sync'
+
+  mat_elapsed=$(( $(date +%s) - mat_start ))
+  run_dir=$tree
+  tree_label="tracked tree @ $short_sha"
+  echo "pre-push: materialised the tracked tree in ${mat_elapsed}s ($short_sha)." >&2
+  if [ "$content_refs" -gt 1 ]; then
+    echo "⚠ pre-push: $content_refs content-bearing refs pushed — only $target_ref is gated." >&2
+  fi
+fi
+
+echo "pre-push: running the full quality gate (typecheck + tests + lint)" >&2
+echo "          against the $tree_label — NOT your working copy." >&2
 echo "          Output is buffered by the gate, so expect ~2 min of silence." >&2
 echo "          Bypass with SKIP_QUALITY_GATE=1 (never silently with --no-verify)." >&2
 
 start=$(date +%s)
+# The subshell keeps the cd and the unsets local, so the EXIT trap above still
+# sees the parent's $work.
+#
+# The unsets are load-bearing, not hygiene. scripts/lib/common.mjs
+# findProjectRoot()/resolvePluginRoot() check CLAUDE_PROJECT_DIR (and the Codex /
+# pi equivalents) BEFORE walking up from cwd. Claude Code sets CLAUDE_PROJECT_DIR
+# to the real repo, so leaving it set makes the gate start in the temp tree and
+# resolve its files back to the working copy — green while proving nothing, the
+# precise way a rebuild like this goes quietly useless.
+#
 # `npm run --silent` keeps package.json as the single definition of the gate
 # command and drops npm's own ERR! banner; the child's exit code is forwarded.
-npm run --silent quality-gate
+(
+  cd "$run_dir" || exit 1
+  unset CLAUDE_PROJECT_DIR CODEX_PROJECT_DIR PI_PROJECT_DIR
+  unset CLAUDE_PLUGIN_ROOT CODEX_PLUGIN_ROOT PI_PLUGIN_ROOT
+  npm run --silent quality-gate
+)
 status=$?
 elapsed=$(( $(date +%s) - start ))
 
@@ -67,9 +230,12 @@ if [ "$status" -ne 0 ]; then
   # a gate that cannot run has not verified anything, which is the failure class
   # this hook exists for.
   echo "✗ pre-push: quality gate FAILED (exit $status) after ${elapsed}s. Push blocked." >&2
-  echo "  Re-run locally: npm run quality-gate" >&2
+  echo "  It ran against the $tree_label, so untracked and gitignored files were" >&2
+  echo "  INVISIBLE to it — that is the point, and it is the usual reason a failure" >&2
+  echo "  here does not reproduce with a bare \`npm run quality-gate\`." >&2
+  echo "  First thing to check:  git status --short" >&2
   echo "  Bypass (only after triaging): SKIP_QUALITY_GATE=1 git push" >&2
   exit 1
 fi
 
-echo "✓ pre-push: quality gate passed in ${elapsed}s." >&2
+echo "✓ pre-push: quality gate passed in ${elapsed}s against the $tree_label." >&2

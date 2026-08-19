@@ -3,6 +3,8 @@
  * Focus: detectSessionSchema, generateSessionNote, generateSessionNoteV2
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import {
   detectSessionSchema,
@@ -780,5 +782,258 @@ describe('absent-is-not-zero: duration and commits', () => {
     delete absent.commits;
     expect(generateSessionNoteV3(absent)).toContain('**Commits:** n/a');
     expect(generateSessionNoteV3(makeV3Entry({ commits: [] }))).toContain('**Commits:** 0');
+  });
+});
+
+// ── #1074 per-wave alias chain, against GOLDEN PRODUCTION RECORDS ─────────────
+//
+// ── WHY A HARVESTED FIXTURE AND NOT ANOTHER make*Entry() FACTORY ─────────────
+//
+// `.claude/rules/testing.md` § "Fixtures Mirror Production Data" requires
+// producer/consumer fixtures to be harvested from real records. The factories
+// above violate that, and `makeV2Entry()` is the textbook case the rule names:
+// it hand-builds a record WITHOUT `total_agents` purely so `detectSessionSchema`
+// routes it to v2 — but `total_agents` is in `REQUIRED_FIELDS` and enforced by
+// `validateSession`, so no production record can ever have that shape. Measured:
+// it matches 0 of 253 live records. That is the "unfaithful double" — a test
+// passing against invented data, which is exactly why the v2 renderer could be
+// dead on arrival for four months with a green suite.
+//
+// The fixture is also STRUCTURALLY NECESSARY here, not a stylistic preference:
+// `.orchestrator/metrics/*.jsonl` is gitignored (.gitignore:40), so the live
+// ledger never exists on CI. A committed golden corpus is the ONLY way a test
+// can see real producer shapes.
+//
+// Harvested 2026-08-19 from `.orchestrator/metrics/sessions.jsonl` (253 records)
+// with original key order preserved byte-for-byte; the only edit is truncating
+// three long `notes` strings. A redaction scan for `/Users/<name>`, e-mail
+// shapes and `glpat-|ghp_|gho_|sk-|AKIA` over all 253 source lines returned
+// ZERO matches, so nothing else needed stripping.
+
+const GOLDEN_SESSIONS = readFileSync(
+  fileURLToPath(new URL('./fixtures/golden-sessions.jsonl', import.meta.url)),
+  'utf8',
+)
+  .split('\n')
+  .filter((l) => l.trim())
+  .map((l) => JSON.parse(l));
+
+/** Fetch one golden record by session_id, failing loudly if the fixture drifts. */
+function golden(sessionId) {
+  const record = GOLDEN_SESSIONS.find((r) => r.session_id === sessionId);
+  if (!record) throw new Error(`golden-sessions.jsonl has no record '${sessionId}'`);
+  return record;
+}
+
+/** Parse the rendered wave table back into per-column cells. */
+function waveCells(markdown) {
+  return markdown
+    .split('\n')
+    .filter((line) => /^\| \d/.test(line))
+    .map((line) => {
+      const [, wave, role, agents, files, quality] = line.split('|').map((c) => c.trim());
+      return { wave, role, agents, files, quality };
+    });
+}
+
+describe('#1074 golden production records — the wave table reads real producer keys', () => {
+  /**
+   * Nameable bug (TV-001): `detectSessionSchema`'s v2 clause requires
+   * `total_agents === undefined`, but `total_agents` is in `REQUIRED_FIELDS`
+   * and enforced by `validateSession` — so the clause is UNSATISFIABLE and the
+   * v2 renderer has never run on a real record.
+   *
+   * This test documents the measured IS, not a SOLL. It catches a future
+   * "repair" that re-anchors wave-table alias handling on session-level version
+   * detection — the axis this issue proved empirically wrong, since the alias
+   * varies PER WAVE OBJECT and no session-level field (not even
+   * `schema_version`) predicts it.
+   */
+  it('every golden record routes to v1 — the v2/v3 branches are unreachable in production', () => {
+    const routes = GOLDEN_SESSIONS.map((r) => [r.session_id, detectSessionSchema(r)]);
+    expect(routes.every(([, v]) => v === 'v1')).toBe(true);
+    // …and normalization must not change that (it fills only an ABSENT `waves`).
+    expect(GOLDEN_SESSIONS.map((r) => detectSessionSchema(normalizeSessionEntry(r)))).toEqual(
+      GOLDEN_SESSIONS.map(() => 'v1'),
+    );
+  });
+
+  /**
+   * Nameable bug (TV-001) — THE BUG ITSELF. `main-2026-04-23-1255` carries its
+   * per-wave counts under `agents`, not `agent_count`, so all 5 of its waves
+   * rendered `| ? | ? | ? |` into a vault note a human reads. Ledger-wide this
+   * shape accounts for 240 unknown Agents cells across 55 records.
+   *
+   * This test would have been RED on 2026-04-23, the day the shape first
+   * appeared, and stayed red for every one of those 240 cells.
+   */
+  it('renders agent counts from the `agents` alias instead of "?" (240 cells, 55 records)', () => {
+    const md = generateSessionNote(golden('main-2026-04-23-1255'));
+    const cells = waveCells(md);
+
+    expect(cells.map((c) => c.agents)).toEqual(['2', '2', '3', '3', '0']);
+    expect(cells.every((c) => c.agents !== '?')).toBe(true);
+    // The `status` alias supplies the Quality column for the same record.
+    expect(cells.map((c) => c.quality)).toEqual(Array(5).fill('complete'));
+  });
+
+  /**
+   * Nameable bug (TV-001) — THE TRAP, and the reason the obvious one-line fix
+   * is WORSE than the bug. `agents` is polymorphic: 210 numbers and 14 ARRAYS
+   * of agent descriptors across the ledger. A naive `w.agent_count ?? w.agents`
+   * interpolates the array straight into a table cell, so all 4 waves of this
+   * record would read `[object Object],[object Object],[object Object]`.
+   *
+   * `?` reads as "unknown"; `[object Object]` reads as CONTENT. This test is
+   * prospective — it is green only because `waveCount()` converts an array to
+   * its length, and goes red the moment someone simplifies that away.
+   */
+  it('converts an ARRAY of agent descriptors to its length, never "[object Object]"', () => {
+    const md = generateSessionNote(golden('main-2026-04-27-2231'));
+
+    expect(md).not.toContain('[object Object]');
+    // Descriptor-array lengths: 1 coordinator / 3 implementers / 2 / 1.
+    expect(waveCells(md).map((c) => c.agents)).toEqual(['1', '3', '2', '1']);
+  });
+
+  /**
+   * Nameable bug (TV-001): the ABSENT-IS-NOT-ZERO banner inverted. Writing the
+   * chain with `||` instead of `??` turns every measured zero into `?`, i.e.
+   * the note claims "unknown" about a value that WAS measured. `agents_dispatched: 0`
+   * occurs 20× in the live ledger and all 5 waves of this record carry it, so
+   * a `||` regression is caught here rather than in the vault.
+   */
+  it('renders a measured 0 as 0, not "?" — the `??`-not-`||` guard', () => {
+    const dispatchedZero = waveCells(generateSessionNote(golden('main-2026-04-24-1452')));
+    expect(dispatchedZero.map((c) => c.agents)).toEqual(['0', '0', '0', '0', '0']);
+
+    // The fourth alias, `dispatched`, with a mix of measured 0 and a real count.
+    const fourthAlias = waveCells(generateSessionNote(golden('main-2026-04-25-1900')));
+    expect(fourthAlias.map((c) => c.agents)).toEqual(['0', '2', '0', '0', '0']);
+  });
+
+  /**
+   * Nameable bug (TV-001): a chain greedy enough to "repair" everything would
+   * INVENT a measurement. This record's single wave is `type: coord-direct`
+   * with no agent count under any alias — the value is genuinely unknown, and
+   * `?` is the only honest cell. Guards against a future fifth alias that
+   * fabricates a number here.
+   *
+   * The same row pins the second, ALREADY-PRODUCTIVE half of the defect: this
+   * record's `files_changed` is an ARRAY OF PATHS, which the pre-fix renderer
+   * printed verbatim into the Files cell
+   * (`.gitignore,.orchestrator/bootstrap.lock,…`). It must render the count.
+   */
+  it('keeps "?" where the value is genuinely unknown, and counts an array of file paths', () => {
+    const md = generateSessionNote(golden('main-2026-05-26-housekeeping-1'));
+    const [wave] = waveCells(md);
+
+    expect(wave.agents).toBe('?'); // no count under ANY alias — honestly unknown
+    expect(wave.files).toBe('3'); // was: `.gitignore,.orchestrator/bootstrap.lock,…`
+    expect(md).not.toContain('.orchestrator/bootstrap.lock');
+    expect(wave.quality).toBe('complete'); // recovered from the `status` alias
+  });
+
+  /**
+   * Byte-stability: a v1-canonical record must render EXACTLY as before. The
+   * alias chains put the v1 names first precisely so this holds — the change
+   * may only ever replace a `?`, never rewrite a value that already rendered.
+   */
+  it('leaves a v1-canonical record byte-identical (v1 names win every chain)', () => {
+    const md = generateSessionNote(golden('main-2026-04-07-1600'));
+    expect(md.split('\n').filter((l) => /^\| \d/.test(l))).toEqual([
+      '| 1 | Foundation | 2 | 4 | pass |',
+      '| 2 | Scripts | 2 | 12 | pass |',
+      '| 3 | Rules | 3 | 9 | pass |',
+      '| 4 | Documentation | 2 | 6 | pass |',
+      '| 5 | Quality | 2 | 2 | pass |',
+    ]);
+  });
+
+  /**
+   * The largest single population in the ledger — 109 of 253 records carry
+   * `waves: []` — and it had no test at all. An empty table body must render
+   * cleanly rather than emitting a stray row or the literal "undefined".
+   */
+  it('renders an empty wave array as an empty table body (109 of 253 records)', () => {
+    const md = generateSessionNote(golden('main-2026-04-19-1120'));
+    expect(waveCells(md)).toEqual([]);
+    expect(md).toContain('| Wave | Role | Agents | Files | Quality |');
+    expect(md).not.toMatch(/undefined|NaN|\[object Object\]/);
+  });
+});
+
+// ── #1074 the bug TYPE, not the bug instance ─────────────────────────────────
+
+describe('#1074 no wave cell renders "?" while a usable value sits in the record', () => {
+  /**
+   * Nameable bug (TV-001): every test above pins a KNOWN alias. This one pins
+   * the CLASS — a future producer emitting, say, `agents_total` or `gate_result`
+   * would silently render `?` again, and no per-alias test would notice.
+   *
+   * It is deliberately NOT a restatement of the alias chain (that would be
+   * tautological). It matches keys by NAME PATTERN and asserts the weaker,
+   * non-circular invariant: a cell may only be unknown when the wave object
+   * holds nothing plausibly-named that could have filled it.
+   */
+  const PATTERNS = {
+    agents: /agent|dispatch/i,
+    files: /file/i,
+    quality: /qualit|status|result|outcome|verdict|gate/i,
+  };
+
+  /** Report every wave object whose rendered `?` is contradicted by its own data. */
+  function unrenderedButPresent(records) {
+    const findings = [];
+    for (const record of records) {
+      if (!Array.isArray(record.waves)) continue;
+      const rendered = waveCells(generateSessionNote(record));
+      record.waves.forEach((wave, index) => {
+        const cells = rendered[index];
+        if (!cells) return;
+        for (const [column, pattern] of Object.entries(PATTERNS)) {
+          if (cells[column] !== '?') continue;
+          for (const [key, value] of Object.entries(wave)) {
+            if (!pattern.test(key)) continue;
+            const usable =
+              column === 'quality'
+                ? typeof value === 'string' && value !== ''
+                : typeof value === 'number' || Array.isArray(value);
+            if (usable) findings.push(`${record.session_id} wave ${wave.wave}: ${column} rendered "?" but ${key}=${JSON.stringify(value)}`);
+          }
+        }
+      });
+    }
+    return findings;
+  }
+
+  it('holds across every golden record (the CI-binding half)', () => {
+    expect(unrenderedButPresent(GOLDEN_SESSIONS)).toEqual([]);
+  });
+
+  /**
+   * The live ledger is gitignored (.gitignore:40) and therefore absent on CI —
+   * this half runs only on a host that has one. That is where it earns its
+   * keep: a NEW producer shape appears in the operator's ledger first, and this
+   * assertion goes red at the next local `npm test` instead of quietly writing
+   * another `?` into the vault. The golden half above is what binds on CI.
+   */
+  const ledgerPath = fileURLToPath(
+    new URL('../../../.orchestrator/metrics/sessions.jsonl', import.meta.url),
+  );
+  const ledgerExists = existsSync(ledgerPath);
+
+  it.skipIf(!ledgerExists)('holds across the live local ledger (host-only, gitignored)', () => {
+    const records = readFileSync(ledgerPath, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim())
+      .map((l) => JSON.parse(l))
+      // Only records the v1 renderer accepts; the rest never reach the table.
+      .filter((r) =>
+        RENDERABLE_SESSION_FIELDS_V1.every((f) => r[f] !== null && r[f] !== undefined),
+      );
+
+    expect(records.length).toBeGreaterThan(0);
+    expect(unrenderedButPresent(records)).toEqual([]);
   });
 });

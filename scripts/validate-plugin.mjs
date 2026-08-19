@@ -265,6 +265,14 @@ if (runCheck('check-unicode-safety.mjs') !== 0) checkFailed = 1;
 process.stdout.write('\n');
 if (runCheck('check-dead-bridge.mjs') !== 0) checkFailed = 1;
 
+// FAIL-capable, unlike the WARN-only censuses below: R2+R4 were measured at
+// 1 hit / 1 TP / 0 FP each against the full test corpus, so this check cannot be
+// red on arrival for anything but a real instance of the class. The alternatives
+// (R1 at 67 FP, R3 at 47 FP) are exactly the shape that gets demoted to WARN and
+// then ignored — see the rule table in the check's header.
+process.stdout.write('\n');
+if (runCheck('check-untracked-test-deps.mjs') !== 0) checkFailed = 1;
+
 // WARN-only (v1): the unwired-config-key census reports but never fails the
 // build — see the rationale in the check's header (a blocking gate on today's
 // inventory would be red from day one and get disabled). Exit code is

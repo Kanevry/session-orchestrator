@@ -538,7 +538,7 @@ async function main() {
     console.log(`Rewrote ${changed.length} surface file(s) to ${target}:`);
     for (const f of changed) console.log(`  ${f}`);
     console.log('  package-lock.json (via npm install --package-lock-only)');
-    console.log('  site census re-stamped (scripts/site-numbers.mjs --write)');
+    console.log('  site/index.html cells + site/_census.json re-stamped (scripts/site-numbers.mjs --write) — commit BOTH');
     console.log('\nEditorial TODOs (enforced by --check):');
     console.log(`  1. CHANGELOG.md — write the "## [${target}] - YYYY-MM-DD" entry, fold [Unreleased].`);
     console.log('  2. README.md — rewrite the "Recent highlights" section content.');

@@ -41,6 +41,19 @@
  * for values that bypass the source strip (e.g. a `--repo` override). See
  * `stripUrlCredentials` / `userinfoIsCredential`.
  *
+ * Remote-resolution core (#1039): since the `-R` spec is only ONE of several
+ * questions a caller asks about a repo's remotes, the file now carries a shared
+ * core below the frozen `-R`/`--hostname` exports — one primitive
+ * ({@link listRemotes}, a single `git remote -v` spawn) and three projections
+ * ({@link resolvePreferredRemote}, {@link detectVcsFamily},
+ * {@link resolveBaselineRange}). Every one of them returns a DISCRIMINATED
+ * result carrying a {@link REMOTE_RESOLUTION_REASONS} reason instead of a
+ * `T | null`, because `null` folds "no remote configured" onto "the query
+ * failed" — a fold that currently scores a fail-open 2/2 in
+ * `harness-audit/categories/category6.mjs`. `resolveRepoSpec` /
+ * `resolveRepoHost` keep their `string|undefined` contract verbatim and are now
+ * thin projections of that core.
+ *
  * Lifted out of `scripts/archive-closed-prds.mjs::defaultGlabRepo` (that
  * script's docblock described this exact problem months before #839 was
  * filed) into a shared `scripts/lib/` module so
@@ -158,12 +171,23 @@ export function redactUrlCredentials(text) {
 }
 
 /**
- * Default git-remote runner: `git -C <repoRoot> remote get-url <name>`.
- * Never throws — returns `{ ok:false, stdout:'', stderr }` on any failure
- * (missing remote, not a git repo, git not on PATH, ...).
+ * Default git runner: `git <gitArgs>`.
+ * Never throws — returns `{ ok:false, stdout:'', stderr, status, code }` on any
+ * failure (missing remote, not a git repo, git not on PATH, ...).
+ *
+ * `status` (process exit code) and `code` (spawn errno, e.g. `'ENOENT'`) were
+ * added for {@link listRemotes}'s failure taxonomy: git's own exit codes are
+ * the ONLY signal that distinguishes "this is not a git repository" (128) from
+ * "git is not installed" (spawn ENOENT) from "there are simply no remotes"
+ * (exit 0, empty stdout). Folding those three onto one falsy value is the
+ * defect class #1039 was filed against — see {@link REMOTE_RESOLUTION_REASONS}.
+ *
+ * Both fields are OPTIONAL in the `gitRun` DI contract: an injected test stub
+ * that returns only `{ ok, stdout, stderr }` still works, and its failures
+ * classify as the generic `'git-error'`.
  *
  * @param {string[]} gitArgs
- * @returns {{ ok: boolean, stdout: string, stderr: string }}
+ * @returns {GitRunResult}
  */
 function defaultGitRun(gitArgs) {
   try {
@@ -171,11 +195,17 @@ function defaultGitRun(gitArgs) {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    return { ok: true, stdout: String(stdout ?? ''), stderr: '' };
+    return { ok: true, stdout: String(stdout ?? ''), stderr: '', status: 0 };
   } catch (err) {
     const stderr =
       err && err.stderr ? String(err.stderr) : err && err.message ? String(err.message) : 'unknown error';
-    return { ok: false, stdout: '', stderr };
+    return {
+      ok: false,
+      stdout: '',
+      stderr,
+      status: err && typeof err.status === 'number' ? err.status : undefined,
+      code: err && typeof err.code === 'string' ? err.code : undefined,
+    };
   }
 }
 
@@ -261,26 +291,29 @@ function normalizeGithubSpec(url) {
  * see {@link stripUrlCredentials}. A credential-free URL is unchanged
  * (byte-identical), so #839/#872 behaviour is preserved.
  *
+ * Since #1039 this is a THIN projection of {@link resolvePreferredRemote} and
+ * performs no git call of its own. Two reasons the delegation is load-bearing:
+ *
+ *   1. **One credential-strip source (#907, CWE-214).** The userinfo strip now
+ *      lives in {@link listRemotes}, at the single point every remote URL in
+ *      this module enters from. A second code path *around* that source would
+ *      re-open the leak — which is exactly why this function must not read a
+ *      remote URL itself.
+ *   2. **One git call instead of N.** The former implementation ran one
+ *      `git remote get-url <name>` spawn PER preference entry, on the
+ *      session-start hot path. `listRemotes` runs `git remote -v` exactly once.
+ *
  * @param {{
  *   repoRoot?: string,
  *   vcs?: 'gitlab' | 'github',
- *   gitRun?: (args: string[]) => { ok: boolean, stdout: string, stderr: string }
+ *   gitRun?: GitRun
  * }} [opts]
  * @returns {string|undefined}
  */
 function resolveRawRemoteUrl({ repoRoot, vcs = 'gitlab', gitRun = defaultGitRun } = {}) {
   const vcsResolved = vcs === 'github' ? 'github' : 'gitlab';
-  const root = repoRoot ?? process.cwd();
-  const wrongFamilyHost = WRONG_FAMILY_HOST[vcsResolved];
-
-  for (const remote of REMOTE_PREFERENCE[vcsResolved]) {
-    const { ok, stdout } = gitRun(['-C', root, 'remote', 'get-url', remote]);
-    const url = ok ? stripUrlCredentials(stdout.trim()) : '';
-    if (!url) continue;
-    if (extractHost(url) === wrongFamilyHost) continue;
-    return url;
-  }
-  return undefined;
+  const resolved = resolvePreferredRemote({ repoRoot, vcs: vcsResolved, gitRun });
+  return resolved.ok ? resolved.url : undefined;
 }
 
 /**
@@ -306,10 +339,22 @@ function resolveRawRemoteUrl({ repoRoot, vcs = 'gitlab', gitRun = defaultGitRun 
  * argv-boundary guard ({@link isUnsafeForArgv}), which this function applies
  * to the FINAL spec value (post `normalizeGithubSpec`, when applicable).
  *
+ * **CHANGELOG-worthy behaviour change (#1039, operator-approved.)** This
+ * function inherits the SOLE-REMOTE FALLBACK from the shared core (see
+ * {@link resolvePreferredRemote}): a repo whose only remote is named something
+ * else (`upstream` in a fork, `gl` in a hand-configured clone) now resolves to
+ * that remote instead of returning `undefined`. The fallback fires EXCLUSIVELY
+ * where `undefined` was returned before — it can never redirect an
+ * already-resolving repo to a DIFFERENT target, because the preference order
+ * ({@link REMOTE_PREFERENCE}) is still consulted first and is byte-identical to
+ * the pre-#1039 list. The cross-family guard applies to the fallback candidate
+ * too, so a lone `github.com` remote under `vcs:'gitlab'` still yields
+ * `undefined` rather than a spec `glab` is guaranteed to reject.
+ *
  * @param {{
  *   repoRoot?: string,
  *   vcs?: 'gitlab' | 'github',
- *   gitRun?: (args: string[]) => { ok: boolean, stdout: string, stderr: string }
+ *   gitRun?: GitRun
  * }} [opts]
  * @returns {string|undefined}
  */
@@ -360,3 +405,439 @@ export function resolveRepoHost({ repoRoot, vcs, gitRun } = {}) {
 export function defaultGlabRepo(repoRoot, gitRunFn) {
   return resolveRepoSpec({ repoRoot, vcs: 'gitlab', gitRun: gitRunFn });
 }
+
+/* ------------------------------------------------------------------------ *
+ * #1039 — remote resolution core: one primitive, three projections.
+ *
+ * Four probes across the repo resolved their git remote as the hard-coded
+ * literal `origin` and were therefore BLIND in every repo whose remotes are
+ * named `gitlab`/`github` (this repo's own shape: `github` + `origin`). The
+ * shared core below replaces that literal.
+ *
+ * The contract's load-bearing decision is that a resolution result is NEVER
+ * `T | null`. `null` folds "no remote is configured" (a legitimate, benign
+ * repo state) onto "the query failed" (a broken tool or a non-repo), and that
+ * fold is LIVE in this codebase: `scripts/lib/harness-audit/categories/
+ * category6.mjs:145-155` awards 2 of 2 points with the message "no github
+ * mirror remote configured — skipped" when its `git remote` call returns
+ * `null` — which it also does outside a git repo, and when git is not on PATH.
+ * A fail-open scoring 100%.
+ *
+ * So every projection returns a DISCRIMINATED result carrying a reason from
+ * {@link REMOTE_RESOLUTION_REASONS}, and {@link isQueryFailure} is the single
+ * predicate that separates "I could not ask" from "I asked, the answer is no".
+ * ------------------------------------------------------------------------ */
+
+/**
+ * Every reason a remote resolution can fail, frozen so consumers can switch on
+ * it exhaustively. The list splits into two classes — the split, not the
+ * individual strings, is the point:
+ *
+ *   QUERY FAILURE (the question could not be asked; see {@link isQueryFailure})
+ *   - `not-a-git-repo`    git exited 128 — the path is not inside a work tree.
+ *   - `git-unavailable`   the spawn failed with ENOENT — git is not on PATH.
+ *   - `git-error`         any other non-zero exit, or an injected `gitRun`
+ *                         stub that reported failure without an exit code.
+ *
+ *   ABSENCE (the question was answered; the answer is "no remote for you")
+ *   - `no-remotes`        git exited 0 with an empty remote list — a fresh
+ *                         `git init`, or a clone-less work tree. BENIGN.
+ *   - `no-matching-remote` >= 2 remotes exist and none matches the requested
+ *                         preference order. Deliberately NOT a guess: picking
+ *                         arbitrarily here means querying the WRONG project
+ *                         successfully, which is worse than not querying.
+ *   - `unsafe-value`      the chosen remote's name or URL carries whitespace /
+ *                         a C0 control character and must not reach an argv
+ *                         position ({@link isUnsafeForArgv}).
+ *
+ * @type {readonly RemoteResolutionReason[]}
+ */
+export const REMOTE_RESOLUTION_REASONS = Object.freeze([
+  'not-a-git-repo',
+  'git-unavailable',
+  'git-error',
+  'no-remotes',
+  'no-matching-remote',
+  'unsafe-value',
+]);
+
+/** @type {ReadonlySet<string>} */
+const QUERY_FAILURE_REASONS = new Set(['not-a-git-repo', 'git-unavailable', 'git-error']);
+
+/**
+ * `true` when `reason` means the question could not be ASKED (broken tool, no
+ * repo), `false` when it means the question was answered in the negative (no
+ * remote configured, no match, unsafe value).
+ *
+ * Consumers MUST branch on this rather than on truthiness: a query failure is a
+ * degraded measurement and should be surfaced (WARN / skip-with-reason), while
+ * an absence is a real, reportable repo state. Treating them alike is the
+ * category6.mjs fail-open documented above.
+ *
+ * An unknown / absent reason returns `false` — fail-safe toward "this is a real
+ * answer", so a future reason added to {@link REMOTE_RESOLUTION_REASONS}
+ * without updating this predicate never silently masks a genuine finding as a
+ * tooling glitch.
+ *
+ * @param {RemoteResolutionReason|string|undefined} reason
+ * @returns {boolean}
+ */
+export function isQueryFailure(reason) {
+  return typeof reason === 'string' && QUERY_FAILURE_REASONS.has(reason);
+}
+
+/**
+ * Classify a failed {@link GitRunResult} into a query-failure reason.
+ *
+ * Named ceiling (BV-004): exit 128 is mapped to `not-a-git-repo` because that
+ * is what `git remote -v` returns for "not a git repository", and this module
+ * only ever runs read-only remote/ref plumbing where 128 has no other common
+ * cause. It is NOT a general git-exit-code taxonomy — revisit if a caller
+ * starts routing write commands (`git push`, `git fetch`) through `gitRun`,
+ * where 128 also covers auth and network fatals.
+ *
+ * @param {GitRunResult} res
+ * @returns {RemoteResolutionReason}
+ */
+function classifyGitFailure(res) {
+  if (res && res.code === 'ENOENT') return 'git-unavailable';
+  if (res && res.status === 128) return 'not-a-git-repo';
+  return 'git-error';
+}
+
+/**
+ * One `git remote -v` output line: `<name>\t<url> (fetch|push)`.
+ *
+ * `(.*?)` is lazy with an anchored tail, so a URL containing a space (a
+ * corrupted `.git/config`, the argv-boundary guard's realistic source) is
+ * captured whole rather than truncated at the space. A line that does not match
+ * this shape at all is DROPPED — see {@link listRemotes}.
+ */
+const REMOTE_V_LINE_RE = /^(\S+)\s+(.*?)\s+\((fetch|push)\)$/;
+
+/**
+ * THE PRIMITIVE. Enumerate the repo's git remotes in ONE `git remote -v` spawn.
+ *
+ * Contract:
+ *   - `{ ok: true, remotes: [{ name, url }] }` — the list, in git's own output
+ *     order (alphabetical by remote name). **`remotes: []` is a VALID `ok:true`
+ *     result** and means "this repo has no remotes", never "the query failed".
+ *     Conflating the two is the defect this whole module section exists for.
+ *   - `{ ok: false, reason, stderr }` — the query itself failed; `reason`
+ *     always satisfies {@link isQueryFailure}.
+ *
+ * Only FETCH URLs are reported, one entry per remote name (first fetch line
+ * wins). Push URLs are a separate `remote.<name>.pushurl` concept that no
+ * `-R`/`--repo`/baseline-range consumer in this repo wants.
+ *
+ * Credential safety (#907, CWE-214): every URL passes through
+ * {@link stripUrlCredentials} HERE, at the single point remote URLs enter this
+ * module. Every other function in the file — including `resolveRepoSpec` and
+ * `resolveRepoHost` — reads its URLs from this function's output, so there is
+ * exactly ONE strip source and no path around it.
+ *
+ * Unparseable lines are dropped silently rather than failing the call: git
+ * cannot emit them, so their only source is a corrupted config or an embedded
+ * newline, and in both cases the remaining well-formed remotes are still the
+ * best available answer. A repo whose EVERY line is unparseable therefore
+ * reports `no-remotes` (absence), which is correct — nothing usable was found,
+ * and git did answer.
+ *
+ * @param {{ repoRoot?: string, gitRun?: GitRun }} [opts]
+ * @returns {{ ok: true, remotes: GitRemote[] }
+ *   | { ok: false, reason: RemoteResolutionReason, stderr: string }}
+ */
+export function listRemotes({ repoRoot, gitRun = defaultGitRun } = {}) {
+  const root = repoRoot ?? process.cwd();
+  const res = gitRun(['-C', root, 'remote', '-v']) ?? { ok: false, stdout: '', stderr: '' };
+
+  if (!res.ok) {
+    return { ok: false, reason: classifyGitFailure(res), stderr: String(res.stderr ?? '') };
+  }
+
+  /** @type {GitRemote[]} */
+  const remotes = [];
+  const seen = new Set();
+
+  for (const rawLine of String(res.stdout ?? '').split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
+    const match = REMOTE_V_LINE_RE.exec(line);
+    if (match === null) continue;
+    const [, name, rawUrl, direction] = match;
+    if (direction !== 'fetch') continue;
+    if (seen.has(name)) continue;
+    const url = stripUrlCredentials(rawUrl).trim();
+    if (url === '') continue;
+    seen.add(name);
+    remotes.push({ name, url });
+  }
+
+  return { ok: true, remotes };
+}
+
+/**
+ * Remote-name preference order when NO `vcs` is supplied.
+ *
+ * **Operator decision (#1039) — deliberately DIFFERENT from
+ * {@link REMOTE_PREFERENCE}, do not "fix" the divergence.** The vcs-pinned
+ * lists put the platform-named remote first because the caller has already
+ * declared which platform it is talking to. The vcs-less order puts `origin`
+ * first because its callers (baseline ranges, family detection, vault-note
+ * namespacing) derive an IDENTITY from the answer, and identity must not move.
+ *
+ * Concretely, in THIS repo (`origin` → `…/infrastructure/session-orchestrator`,
+ * `github` → `…/Kanevry/session-orchestrator`), a `gitlab`-first order would
+ * re-namespace every existing vault note from `infrastructure/…` to
+ * `Kanevry/…`. Silent mass-rename of historical notes is not an improvement.
+ */
+const VCS_LESS_PREFERENCE = Object.freeze(['origin', 'gitlab', 'github']);
+
+/**
+ * Pick the one remote a repo-scoped command should target.
+ *
+ * Resolution, in order:
+ *   1. **Preference.** With `vcs` set: `REMOTE_PREFERENCE[vcs]`
+ *      (`['<vcs>', 'origin']`, byte-identical to the pre-#1039 list, because
+ *      13 production importers of `resolveRepoSpec` inherit their `-R` target
+ *      from it — a reordering would silently switch every one of them in a repo
+ *      that has both remotes). With `vcs` omitted: {@link VCS_LESS_PREFERENCE}.
+ *   2. **Cross-family guard** (only when `vcs` is set): a candidate whose host
+ *      is the OTHER platform's well-known public host is SKIPPED and resolution
+ *      continues with the next preference entry. Passing `github.com` to
+ *      `glab -R` is a guaranteed hard failure — strictly worse than resolving
+ *      nothing. Unchanged from #839.
+ *   3. **Sole-remote fallback.** Exactly one remote configured and no
+ *      preference hit → use it, `via:'sole-remote'`. This is what makes a fork
+ *      (`upstream`) or a hand-named clone (`gl`) resolvable at all. The
+ *      cross-family guard still applies to this candidate.
+ *   4. Otherwise `{ ok:false }` with `no-remotes` (nothing configured) or
+ *      `no-matching-remote` (>= 2 remotes, none matched). With two or more
+ *      candidates and no preference signal there is no non-arbitrary pick, and
+ *      guessing means successfully querying the WRONG project — the failure
+ *      mode is a silent wrong answer, not an error. The full `remotes` list
+ *      rides along so the caller can surface the ambiguity to the operator.
+ *
+ * The argv-boundary guard runs AFTER the candidate is chosen, and an unsafe
+ * candidate ENDS resolution with `unsafe-value` rather than falling through to
+ * the next preference entry — preserving pre-#1039 behaviour, where an unsafe
+ * value likewise produced `undefined` and no retry.
+ *
+ * @param {{ repoRoot?: string, vcs?: 'gitlab'|'github', gitRun?: GitRun }} [opts]
+ * @returns {{ ok: true, name: string, url: string, via: 'preference'|'sole-remote' }
+ *   | { ok: false, reason: RemoteResolutionReason, remotes?: GitRemote[], stderr?: string }}
+ */
+export function resolvePreferredRemote({ repoRoot, vcs, gitRun = defaultGitRun } = {}) {
+  const listed = listRemotes({ repoRoot, gitRun });
+  if (!listed.ok) return { ok: false, reason: listed.reason, stderr: listed.stderr };
+
+  const { remotes } = listed;
+  if (remotes.length === 0) return { ok: false, reason: 'no-remotes', remotes };
+
+  const vcsPinned = vcs === 'github' || vcs === 'gitlab' ? vcs : null;
+  const order = vcsPinned ? REMOTE_PREFERENCE[vcsPinned] : VCS_LESS_PREFERENCE;
+  const wrongFamilyHost = vcsPinned ? WRONG_FAMILY_HOST[vcsPinned] : null;
+  const isWrongFamily = (url) => wrongFamilyHost !== null && extractHost(url) === wrongFamilyHost;
+
+  /** @param {GitRemote} remote @param {'preference'|'sole-remote'} via */
+  const accept = (remote, via) =>
+    isUnsafeForArgv(remote.url) || isUnsafeForArgv(remote.name)
+      ? { ok: false, reason: /** @type {RemoteResolutionReason} */ ('unsafe-value'), remotes }
+      : { ok: true, name: remote.name, url: remote.url, via };
+
+  for (const name of order) {
+    const candidate = remotes.find((remote) => remote.name === name);
+    if (candidate === undefined) continue;
+    if (isWrongFamily(candidate.url)) continue;
+    return accept(candidate, 'preference');
+  }
+
+  if (remotes.length === 1 && !isWrongFamily(remotes[0].url)) {
+    return accept(remotes[0], 'sole-remote');
+  }
+
+  return { ok: false, reason: 'no-matching-remote', remotes };
+}
+
+/**
+ * Classify a single remote into a VCS family from its URL host, then its name.
+ *
+ * Host rule: `github.com` or any `github.*` host → github; `gitlab.com` or any
+ * `gitlab.*` host → gitlab. The `github.*` half is what keeps GitHub Enterprise
+ * (`github.example.com`) out of the gitlab bucket — a `url.includes('github.com')`
+ * test classifies it as gitlab and points `glab` at a GitHub instance.
+ *
+ * @param {GitRemote} remote
+ * @returns {{ family: 'gitlab'|'github', via: 'host-match'|'remote-name' }|null}
+ */
+function classifyRemoteFamily(remote) {
+  const host = extractHost(remote.url);
+  if (host !== null) {
+    if (host === 'github.com' || host.startsWith('github.')) return { family: 'github', via: 'host-match' };
+    if (host === 'gitlab.com' || host.startsWith('gitlab.')) return { family: 'gitlab', via: 'host-match' };
+  }
+  if (remote.name === 'github') return { family: 'github', via: 'remote-name' };
+  if (remote.name === 'gitlab') return { family: 'gitlab', via: 'remote-name' };
+  return null;
+}
+
+/**
+ * Decide which VCS family a repo belongs to, from its remotes — the projection
+ * that replaces "assume gitlab because the config says so".
+ *
+ * Precedence per remote: URL host, then remote name (see
+ * {@link classifyRemoteFamily}). Among classified remotes the representative is
+ * picked by {@link VCS_LESS_PREFERENCE}, then by git's own listing order — so
+ * in this repo (`github` → github.com, `origin` → gitlab.…) the answer is
+ * `gitlab` via `origin`, not `github` via the alphabetically-first remote.
+ *
+ * When NO remote classifies, `via:'default'` + `vcs:'gitlab'` preserves today's
+ * behaviour (every `resolveRepoSpec` caller already defaults to gitlab) —
+ * provided a representative remote can be named at all. When it cannot (>= 2
+ * unclassifiable remotes), the call fails with `no-matching-remote` rather than
+ * inventing one: naming the wrong remote is what #1039 is about.
+ *
+ * `ambiguous` is `true` when two or more remotes classify into DIFFERENT
+ * families — the ordinary GitLab-primary / GitHub-mirror shape. It is a signal
+ * for the caller to disclose the choice, not an error: `vcs` is still the
+ * preference-ordered answer, and `alternatives` names the remotes that would
+ * have said otherwise.
+ *
+ * @param {{ repoRoot?: string, gitRun?: GitRun }} [opts]
+ * @returns {{ ok: true, vcs: 'gitlab'|'github', name: string, url: string,
+ *             via: 'host-match'|'remote-name'|'default', ambiguous: boolean,
+ *             alternatives: string[] }
+ *   | { ok: false, reason: RemoteResolutionReason, remotes?: GitRemote[], stderr?: string }}
+ */
+export function detectVcsFamily({ repoRoot, gitRun = defaultGitRun } = {}) {
+  const listed = listRemotes({ repoRoot, gitRun });
+  if (!listed.ok) return { ok: false, reason: listed.reason, stderr: listed.stderr };
+
+  const { remotes } = listed;
+  if (remotes.length === 0) return { ok: false, reason: 'no-remotes', remotes };
+
+  const classified = remotes
+    .map((remote) => ({ remote, verdict: classifyRemoteFamily(remote) }))
+    .filter((entry) => entry.verdict !== null);
+
+  if (classified.length === 0) {
+    // No family signal anywhere. Fall back to today's implicit default
+    // (gitlab), but only if a representative remote can be NAMED — the
+    // preferred-remote resolution below refuses to guess among >= 2.
+    const preferred = resolvePreferredRemote({ repoRoot, gitRun });
+    if (!preferred.ok) return preferred;
+    return {
+      ok: true,
+      vcs: 'gitlab',
+      name: preferred.name,
+      url: preferred.url,
+      via: 'default',
+      ambiguous: false,
+      alternatives: [],
+    };
+  }
+
+  const chosen =
+    VCS_LESS_PREFERENCE.map((name) => classified.find((entry) => entry.remote.name === name)).find(
+      (entry) => entry !== undefined,
+    ) ?? classified[0];
+
+  const alternatives = classified
+    .filter((entry) => entry.verdict.family !== chosen.verdict.family)
+    .map((entry) => entry.remote.name);
+
+  return {
+    ok: true,
+    vcs: chosen.verdict.family,
+    name: chosen.remote.name,
+    url: chosen.remote.url,
+    via: chosen.verdict.via,
+    ambiguous: alternatives.length > 0,
+    alternatives,
+  };
+}
+
+/**
+ * Resolve the three-dot diff range a session-drift / scope measurement should
+ * run against — the projection that replaces the hard-coded literal
+ * `'origin/main...HEAD'` (live at `scripts/lib/scope-baseline.mjs:519`, which is
+ * silently inert in any repo whose remote is not named `origin` or whose default
+ * branch is not `main`).
+ *
+ * Chain, first hit wins:
+ *   1. {@link resolvePreferredRemote} (vcs-less) → the remote `R`.
+ *   2. `git symbolic-ref --short refs/remotes/<R>/HEAD` → `via:'remote-head'`.
+ *      Only populated by an explicit `git remote set-head -a`, so it is the
+ *      most authoritative and the least often present.
+ *   3. `git rev-parse --verify --quiet refs/remotes/<R>/main`, then `…/master`
+ *      → `via:'remote-default-branch'`. Covers the freshly-pushed repo where
+ *      nobody ever ran `set-head`.
+ *   4. `refs/heads/main`, then `refs/heads/master` → `via:'local-default-branch'`,
+ *      gated on `allowLocalFallback` (default `true`). A local branch is a
+ *      weaker baseline than a tracking ref — it does not know what the remote
+ *      has — so a caller that needs a remote-anchored measurement passes
+ *      `allowLocalFallback:false` and gets `no-tracking-ref` instead.
+ *   5. `{ ok:false, reason:'no-tracking-ref' }`, or `'unborn-head'` when the
+ *      repo has no commit at all (probed only on this path, so the happy path
+ *      costs nothing).
+ *
+ * **No root-commit fallback, by operator decision.** Diffing against the first
+ * commit of the repository yields a ratio over the ENTIRE history, which is not
+ * a session-drift measurement — it is a number that looks like one. An honest
+ * `no-tracking-ref` lets the caller skip with a reason.
+ *
+ * The range is always three-dot (`<base>...HEAD`, merge-base relative),
+ * identical to the semantics of the literal it replaces.
+ *
+ * @param {{ repoRoot?: string, gitRun?: GitRun, allowLocalFallback?: boolean }} [opts]
+ * @returns {{ ok: true, range: string, base: string, remote: string,
+ *             via: 'remote-head'|'remote-default-branch'|'local-default-branch' }
+ *   | { ok: false, reason: RemoteResolutionReason|'no-tracking-ref'|'unborn-head',
+ *       remotes?: GitRemote[], stderr?: string }}
+ */
+export function resolveBaselineRange({ repoRoot, gitRun = defaultGitRun, allowLocalFallback = true } = {}) {
+  const preferred = resolvePreferredRemote({ repoRoot, gitRun });
+  if (!preferred.ok) return preferred;
+
+  const root = repoRoot ?? process.cwd();
+  const remote = preferred.name;
+  const run = (args) => gitRun(['-C', root, ...args]) ?? { ok: false, stdout: '', stderr: '' };
+  const done = (base, via) => ({ ok: /** @type {true} */ (true), range: `${base}...HEAD`, base, remote, via });
+
+  const head = run(['symbolic-ref', '--short', `refs/remotes/${remote}/HEAD`]);
+  const headRef = head.ok ? head.stdout.trim() : '';
+  if (headRef !== '' && !isUnsafeForArgv(headRef)) return done(headRef, 'remote-head');
+
+  for (const branch of ['main', 'master']) {
+    const verified = run(['rev-parse', '--verify', '--quiet', `refs/remotes/${remote}/${branch}`]);
+    if (verified.ok && verified.stdout.trim() !== '') return done(`${remote}/${branch}`, 'remote-default-branch');
+  }
+
+  if (allowLocalFallback) {
+    for (const branch of ['main', 'master']) {
+      const verified = run(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+      if (verified.ok && verified.stdout.trim() !== '') return done(branch, 'local-default-branch');
+    }
+  }
+
+  const headCommit = run(['rev-parse', '--verify', '--quiet', 'HEAD']);
+  const unborn = !headCommit.ok || headCommit.stdout.trim() === '';
+  return { ok: false, reason: unborn ? 'unborn-head' : 'no-tracking-ref' };
+}
+
+/**
+ * @typedef {'not-a-git-repo'|'git-unavailable'|'git-error'|'no-remotes'|'no-matching-remote'|'unsafe-value'} RemoteResolutionReason
+ */
+
+/**
+ * @typedef {{ name: string, url: string }} GitRemote
+ */
+
+/**
+ * @typedef {{ ok: boolean, stdout: string, stderr: string, status?: number, code?: string }} GitRunResult
+ */
+
+/**
+ * Injectable git runner. `status`/`code` are OPTIONAL — a stub that omits them
+ * still works; its failures classify as the generic `git-error`.
+ * @typedef {(args: string[]) => GitRunResult} GitRun
+ */

@@ -45,7 +45,7 @@ const {
 //
 // Every exported creator/finder in spiral-carryover.mjs now resolves a
 // `-R`/`--repo` spec via an injectable `resolveRepoSpecFn` (default: the real
-// `resolveRepoSpec`, which shells out to `git remote get-url`). The tests
+// `resolveRepoSpec`, which shells out to `git remote -v`). The tests
 // below this shim block predate #839 and assert an EXACT execFileSync call
 // sequence for just the glab/gh calls — so these local wrappers inject a
 // no-op resolver (`() => undefined`, matching pre-#839 "no -R appended"
@@ -811,11 +811,22 @@ describe('createBrokenWindowIssue — #839 host pinning (gitlab)', () => {
 // ---------------------------------------------------------------------------
 
 describe('createSpiralCarryoverIssue — default resolveRepoSpecFn wires the REAL module (Gap 3)', () => {
-  it('derives the -R spec through the real resolveRepoSpec → git remote get-url chain when resolveRepoSpecFn is omitted', async () => {
+  it('derives the -R spec through the real resolveRepoSpec → git remote -v chain when resolveRepoSpecFn is omitted', async () => {
     const remoteUrl = 'https://gitlab.example.com/example-group/example-project.git';
+    // A second remote with a DIFFERENT URL keeps the "queries the GITLAB
+    // remote" half of this test alive: since #1039 the resolver runs ONE
+    // `git remote -v` and names no remote in its argv, so the preference order
+    // is now only observable in the resolved value — `origin` must lose.
+    const originUrl = 'https://gitlab.example.com/example-group/origin-must-lose.git';
     const createdUrl = 'https://gitlab.example.com/example-group/example-project/-/issues/99';
     execFileSync.mockImplementation((cmd, args) => {
-      if (cmd === 'git') return `${remoteUrl}\n`;
+      if (cmd === 'git' && args.includes('remote') && args.includes('-v')) {
+        // `git remote -v` stdout shape: `<name>\t<url> (fetch|push)`.
+        return (
+          `gitlab\t${remoteUrl} (fetch)\ngitlab\t${remoteUrl} (push)\n` +
+          `origin\t${originUrl} (fetch)\norigin\t${originUrl} (push)\n`
+        );
+      }
       if (cmd === 'glab') {
         if (args.includes('list')) return '[]';
         if (args.includes('create')) return `${createdUrl}\n`;
@@ -833,11 +844,14 @@ describe('createSpiralCarryoverIssue — default resolveRepoSpecFn wires the REA
 
     expect(res).toEqual({ created: true, issueId: 99, issueUrl: createdUrl });
 
-    // The real chain actually shelled out to `git remote get-url` — proof
-    // the default parameter is wired to the real module, not a no-op.
+    // The real chain actually shelled out to `git remote -v` — proof the
+    // default parameter is wired to the real module, not a no-op. The exact
+    // argv still pins the repo root the probe runs against (`-C <cwd>`); the
+    // remote NAME left this argv with #1039 and is pinned below instead, on
+    // the `-R` value the two glab calls carry.
     const gitCalls = execFileSync.mock.calls.filter(([cmd]) => cmd === 'git');
     expect(gitCalls).toHaveLength(1);
-    expect(gitCalls[0][1]).toEqual(['-C', process.cwd(), 'remote', 'get-url', 'gitlab']);
+    expect(gitCalls[0][1]).toEqual(['-C', process.cwd(), 'remote', '-v']);
 
     // Both the dedup `glab issue list` call and the `glab issue create` call
     // carry the -R spec resolved through that real chain.
@@ -854,9 +868,21 @@ describe('createSpiralCarryoverIssue — default resolveRepoSpecFn wires the REA
 
   it('appends no -R at all when the real chain finds no matching remote (graceful degradation, default resolver)', async () => {
     execFileSync.mockImplementation((cmd, args) => {
+      if (cmd === 'git' && args.includes('remote') && args.includes('-v')) {
+        // TWO remotes, neither of them in the gitlab preference order
+        // (`gitlab`, `origin`) — the shape that actually produces the
+        // `no-matching-remote` state this test's name claims. A single
+        // odd-named remote would be resolved by the sole-remote fallback; a
+        // git-level throw would be the query-FAILURE branch instead (covered
+        // by tests/lib/issue-close-strip-labels.test.mjs's "fails entirely").
+        return (
+          'fork\thttps://gitlab.example.com/example-group/fork.git (fetch)\n' +
+          'upstream\thttps://gitlab.example.com/other-group/upstream.git (fetch)\n'
+        );
+      }
       if (cmd === 'git') {
-        const err = new Error('fatal: no such remote');
-        err.stderr = 'fatal: no such remote';
+        const err = new Error('fatal: not a git repository');
+        err.stderr = 'fatal: not a git repository';
         throw err;
       }
       if (cmd === 'glab') {

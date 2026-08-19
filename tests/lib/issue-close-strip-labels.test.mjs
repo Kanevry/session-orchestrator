@@ -34,7 +34,7 @@ const { stripStatusLabels: stripStatusLabelsReal } = await import('@lib/issue-cl
 //
 // stripStatusLabels() now resolves a `-R`/`--repo` spec via an injectable
 // `resolveRepoSpecFn` (default: the real `resolveRepoSpec`, which shells out
-// to `git remote get-url`). Every pre-#839 test below is unaware of this and
+// to `git remote -v`). Every pre-#839 test below is unaware of this and
 // asserts an EXACT execFileSync call sequence (count + args) for just the
 // glab/gh calls — so this local wrapper injects a no-op resolver
 // (`() => undefined`, matching pre-#839 "no -R appended" behaviour) as the
@@ -313,7 +313,7 @@ describe('stripStatusLabels — error handling', () => {
 //
 // These tests exercise stripStatusLabelsReal directly (bypassing the no-op
 // shim above) so the REAL default resolveRepoSpecFn (`resolveRepoSpec`,
-// which shells out to `git remote get-url`) runs. execFileSync therefore
+// which shells out to `git remote -v`) runs. execFileSync therefore
 // receives BOTH `git` and `glab`/`gh` calls in this section — distinguished
 // by `cmd`, not by call order.
 // ---------------------------------------------------------------------------
@@ -336,11 +336,15 @@ describe('stripStatusLabels — #839 wrong-host regression (RED-before/GREEN-aft
     const glabViewJson = JSON.stringify({ iid: 839, labels: ['status:in-progress', 'priority:high'] });
 
     execFileSync.mockImplementation((cmd, args) => {
-      if (cmd === 'git') {
-        // Real `git remote get-url` — resolves this repo's actual remote,
+      if (cmd === 'git' && args.includes('remote') && args.includes('-v')) {
+        // Real `git remote -v` — resolves this repo's actual remote,
         // independent of the (wrong) ambient GITLAB_HOST. Fictional host/path
         // (never the operator's real GitLab instance — #494 owner-leakage).
-        return 'https://gitlab.example.com/example-group/example-project.git\n';
+        // Shape is the #1039 protocol: ONE `git remote -v` call whose stdout
+        // is `<name>\t<url> (fetch|push)` lines, not a bare url from one
+        // `git remote get-url <name>` call per preference entry.
+        const url = 'https://gitlab.example.com/example-group/example-project.git';
+        return `gitlab\t${url} (fetch)\ngitlab\t${url} (push)\n`;
       }
       if (cmd === 'glab') {
         // Simulate real glab: WITHOUT -R/--repo it fails, honoring the wrong

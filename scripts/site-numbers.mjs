@@ -33,10 +33,38 @@
  * for the four surface counts, and the per-metric `source` string (shipped in
  * `--json`) names the shell command that defines it. See METRIC_DEFS.
  *
+ * ## The census snapshot (`site/_census.json`)
+ *
+ * Three of the thirteen metrics read a source that a FRESH CLONE does not have:
+ * `.orchestrator/metrics/{sessions,learnings}.jsonl` are gitignored
+ * (`.gitignore` — local-only observability data) and `counted-sha` needs a
+ * `.git` directory that a tarball / `docker COPY` build does not carry. Those
+ * three therefore carry `snapshotFallback: true` and fall back to a TRACKED
+ * snapshot written by `--write`.
+ *
+ * Precedence is always LIVE FIRST, snapshot only when live returns `null` —
+ * uniformly, including `counted-sha`. A snapshot that outranked the live source
+ * would freeze the page on the last release's numbers, which is the same
+ * hand-maintained-derived-number failure this file exists to end.
+ *
+ * The fallback is per-metric opt-in and NEVER blanket: the other ten stay loud.
+ * A blanket fallback would make `collect()` blind to "wrong root" — any
+ * directory carrying a copied snapshot would answer all thirteen and exit 0,
+ * which is exactly what the "refusing to publish a partial census" guard below
+ * exists to prevent.
+ *
+ * The snapshot is PUBLICLY SERVED (`vercel.json` `outputDirectory: "site"`) —
+ * deliberately, it is the machine-readable receipt for the numbers on the page.
+ * Its schema is therefore frozen to exactly `METRIC_IDS` under `metrics`, plus a
+ * `$schema` tag: no paths, no hostnames, no cwd, no raw ledger lines. It is
+ * written ONLY when the site directory is the repo's own `site/` (see `main()`),
+ * so a `--write --site <tmpdir>` fixture run can never touch the real one.
+ *
  * ## Modes
  *
  *   --check  read-only; exit 1 on drift. The CI/build guard.
- *   --write  rewrite the span contents in place.
+ *   --write  rewrite the span contents in place, and refresh `site/_census.json`
+ *            from the same measurement (only when --site is the repo's `site/`).
  *
  * Exit codes (`.claude/rules/cli-design.md`):
  *   0 — no drift (--check) / files updated or already current (--write)
@@ -50,10 +78,24 @@ import { join, resolve, relative } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { writeStdoutLineSync } from './lib/io.mjs';
+import { writeStdoutLineSync, writeJsonAtomicSync } from './lib/io.mjs';
 
 /** Machine-readable schema tag for the --json envelope. */
 export const SCHEMA = 'site-numbers/1';
+
+/**
+ * The tracked census snapshot, relative to the repo root.
+ *
+ * Under `site/` and NOT `.orchestrator/metrics/` on purpose: `checkStaleArtifacts`
+ * in `scripts/lib/project-hygiene.mjs` counts EVERY file below `.orchestrator/`
+ * with an mtime older than 30 days as a prune candidate, with no tracked /
+ * untracked distinction (#979) — a tracked snapshot living there would be
+ * offered for deletion between releases, which is precisely when it matters.
+ */
+export const CENSUS_FILE = ['site', '_census.json'];
+
+/** Schema tag written into the snapshot; mirrors `site/leaderboard.json`'s shape. */
+export const CENSUS_SCHEMA = 'site-numbers/1 census snapshot';
 
 const USAGE =
   'Usage: site-numbers.mjs [<repo-root>] [--check|--write] [--json] [--site <dir>]';
@@ -297,6 +339,13 @@ export function isDirty(root) {
 /**
  * `provenance: true` marks a stamp about the PAST rather than a fact about the
  * present. See `collect()` for why those two are warn-only under --check.
+ *
+ * `snapshotFallback: true` marks a metric whose live source is absent from a
+ * fresh clone, and which may therefore fall back to `site/_census.json` when —
+ * and only when — the live read returns `null`. It is OPT-IN: an omitted field
+ * means "no fallback", i.e. this metric stays loud and a missing source is a
+ * tool error. Exactly three carry it; see the header for why a blanket fallback
+ * would be a defect rather than a convenience.
  */
 export const METRIC_DEFS = Object.freeze([
   {
@@ -343,6 +392,9 @@ export const METRIC_DEFS = Object.freeze([
   {
     id: 'sessions',
     provenance: false,
+    // Gitignored ledger (`.gitignore`: local-only observability data) — absent
+    // in every fresh clone, CI checkout and tarball build.
+    snapshotFallback: true,
     source: 'grep -c . .orchestrator/metrics/sessions.jsonl',
     compute: (root) => {
       const r = countJsonlEntries(join(root, '.orchestrator', 'metrics', 'sessions.jsonl'));
@@ -352,6 +404,8 @@ export const METRIC_DEFS = Object.freeze([
   {
     id: 'learnings',
     provenance: false,
+    // Same gitignored ledger family as `sessions`.
+    snapshotFallback: true,
     source: 'grep -c . .orchestrator/metrics/learnings.jsonl',
     compute: (root) => {
       const r = countJsonlEntries(join(root, '.orchestrator', 'metrics', 'learnings.jsonl'));
@@ -385,6 +439,12 @@ export const METRIC_DEFS = Object.freeze([
   {
     id: 'counted-sha',
     provenance: true,
+    // A tarball / `docker COPY` build carries the tree but not `.git`, so the
+    // live read is null there. The fallback restores the SHA the snapshot was
+    // stamped at — which is the honest answer for such a build, because that is
+    // when these numbers were last counted. No special precedence: a real `.git`
+    // still wins, like every other metric.
+    snapshotFallback: true,
     source: 'git rev-parse --short HEAD',
     compute: (root) => headRef(root),
   },
@@ -403,21 +463,122 @@ function fmtCount(n) {
 }
 
 /**
+ * What a value is allowed to contain before it is written into HTML — and, since
+ * the snapshot exists, before it is accepted OUT of `site/_census.json`.
+ *
+ * Eleven of the thirteen metrics are digits (`fmtCount`) or hex (`git
+ * rev-parse --short`) by construction, but `version` is whatever
+ * `package.json` says and `readPackageVersion` only checks that it is a
+ * non-empty string. The `/[<>]/` test in `rewrite()` guards the OLD cell
+ * content, never the NEW value — so nothing stopped a crafted version literal
+ * from closing the span and opening a tag. The precondition is write access to
+ * `package.json`, which in this repo's trust model already means full access,
+ * so this is defence in depth rather than a live hole; it is cheap, and it is
+ * the one place where the page's `script-src 'unsafe-inline'` would stop being
+ * theoretical.
+ */
+const SAFE_VALUE_RE = /^[\w.+-]+$/;
+
+/** Absolute path of the census snapshot for `root`. */
+export function censusPath(root) {
+  return join(root, ...CENSUS_FILE);
+}
+
+/**
+ * Read the tracked snapshot's `metrics` map, or `null` when it is absent,
+ * unparseable, or not shaped like a census.
+ *
+ * Deliberately forgiving about EXTRA keys and lenient about missing ones: the
+ * lookup is per-metric, so a snapshot written by an older version that knows
+ * eleven ids still serves those eleven, and the twelfth simply stays `missing`
+ * (a loud tool error) instead of poisoning the whole read.
+ *
+ * Values are filtered through `SAFE_VALUE_RE` — the same allowlist `rewrite()`
+ * applies before injecting a value into HTML. Rejecting here rather than at
+ * write time turns a corrupt snapshot into "this metric has no value" (exit 2,
+ * naming the metric) instead of "refusing to write this file" (exit 1, naming
+ * the version literal), which is the accurate diagnosis.
+ */
+export function readCensusSnapshot(root) {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(censusPath(root), 'utf8'));
+  } catch {
+    return null;
+  }
+  const metrics = parsed?.metrics;
+  if (metrics === null || typeof metrics !== 'object' || Array.isArray(metrics)) return null;
+  const out = {};
+  for (const id of METRIC_IDS) {
+    const v = metrics[id];
+    if (typeof v === 'string' && v.length > 0 && SAFE_VALUE_RE.test(v)) out[id] = v;
+  }
+  return out;
+}
+
+/**
+ * Write the snapshot for `root` from an already-computed `values` map.
+ *
+ * Takes `values` rather than re-running `collect()` on purpose: a second census
+ * inside the same run can disagree with the first one — `counted-at` flips at
+ * midnight, and any ledger appended to between the two reads shifts. The page
+ * and its receipt must be produced from ONE measurement.
+ *
+ * Only the frozen `METRIC_IDS` are emitted, in table order. The file is served
+ * publicly, so anything not on that list (paths, cwd, hostnames, raw records) is
+ * dropped by construction rather than by review.
+ *
+ * @returns {{ ok: true } | { ok: false, reason: string, error?: string }}
+ */
+export function writeCensusSnapshot(root, values) {
+  const metrics = {};
+  for (const id of METRIC_IDS) {
+    if (Object.hasOwn(values, id)) metrics[id] = String(values[id]);
+  }
+  return writeJsonAtomicSync(censusPath(root), { $schema: CENSUS_SCHEMA, metrics }, { tmpPrefix: '.tmp-census' });
+}
+
+/**
  * Compute every metric for `root`.
  *
- * @returns {{values: Record<string,string>, missing: string[], warnings: string[]}}
+ * @returns {{values: Record<string,string>, missing: string[], warnings: string[],
+ *            fromSnapshot: string[]}}
  *   `missing` lists metrics whose census input is absent — the caller MUST treat
  *   a non-empty `missing` as a tool error rather than writing a partial page.
+ *   `fromSnapshot` lists the metrics answered by `site/_census.json` because
+ *   their live source was absent.
  */
 export function collect(root) {
   const values = {};
   const missing = [];
   const warnings = [];
+  const fromSnapshot = [];
+  // Read at most once, and only if some metric actually needs it — the common
+  // case (a working copy) never touches the file at all.
+  let snapshot;
 
   for (const def of METRIC_DEFS) {
-    const v = def.compute(root);
+    // LIVE FIRST, always. The snapshot is a fallback, never a cache: reading it
+    // first (or memoising a live value into it) would freeze the page on the
+    // last release's numbers while the repository moved on.
+    let v = def.compute(root);
+    if ((v === null || v === undefined || v === '') && def.snapshotFallback === true) {
+      if (snapshot === undefined) snapshot = readCensusSnapshot(root);
+      const s = snapshot?.[def.id];
+      if (s !== undefined) {
+        v = s;
+        fromSnapshot.push(def.id);
+      }
+    }
     if (v === null || v === undefined || v === '') missing.push(def.id);
     else values[def.id] = String(v);
+  }
+
+  if (fromSnapshot.length > 0) {
+    warnings.push(
+      `${fromSnapshot.join(', ')} read from ${CENSUS_FILE.join('/')} — the live source is absent under ${root} ` +
+        '(expected in a fresh clone / tarball build; the snapshot is only as current as the last --write)',
+    );
   }
 
   for (const [name, file] of [
@@ -430,7 +591,7 @@ export function collect(root) {
     }
   }
 
-  return { values, missing, warnings };
+  return { values, missing, warnings, fromSnapshot };
 }
 
 // ---------------------------------------------------------------------------
@@ -461,8 +622,19 @@ function lineOf(html, index) {
 /**
  * Read every metric span out of one HTML document and judge it against `values`.
  *
+ * `unresolved` is the third contract violation, next to `!known` and `malformed`:
+ * a KNOWN metric id for which `values` carries nothing. It used to be the
+ * quietest defect in the file — `expected` fell to `null`, so `differs` was
+ * false, `rewrite()` handed the cell back byte-identical without counting it,
+ * and `--check` printed "N metric cell(s) current" over a number nobody had
+ * measured. It was unreachable through `main()` only because the exit-2
+ * partial-census guard fired first; now that three metrics may be answered from
+ * a snapshot instead, that guard is no longer the only thing standing between a
+ * gap in `values` and a green report. So it is named and counted here.
+ *
  * @returns {Array<{metric:string, actual:string, expected:string|null, line:number,
- *                  known:boolean, malformed:boolean, drift:boolean, stale:boolean}>}
+ *                  known:boolean, malformed:boolean, unresolved:boolean,
+ *                  drift:boolean, stale:boolean}>}
  */
 export function inspectHtml(html, values) {
   const out = [];
@@ -472,7 +644,8 @@ export function inspectHtml(html, values) {
     const def = METRIC_DEFS.find((d) => d.id === metric);
     const known = def !== undefined;
     const malformed = /[<>]/.test(actual);
-    const expected = known && Object.hasOwn(values, metric) ? values[metric] : null;
+    const resolved = known && Object.hasOwn(values, metric);
+    const expected = resolved ? values[metric] : null;
     const differs = known && !malformed && expected !== null && actual.trim() !== expected;
     out.push({
       metric,
@@ -481,6 +654,7 @@ export function inspectHtml(html, values) {
       line: lineOf(html, m.index),
       known,
       malformed,
+      unresolved: known && !resolved,
       // A provenance stamp that lags is NOT drift — see below.
       drift: differs && !(def && def.provenance),
       stale: differs && Boolean(def && def.provenance),
@@ -506,32 +680,22 @@ export function inspectHtml(html, values) {
 
 /**
  * Rewrite every KNOWN, well-formed metric span to its computed value.
+ * The value allowlist it enforces is `SAFE_VALUE_RE`, declared above the census
+ * functions because `readCensusSnapshot()` filters through the same one.
  *
- * @returns {{html:string, replaced:number, spans:number}}
+ * @returns {{html:string, replaced:number, spans:number, rejected:number}}
  */
-/**
- * What a computed value is allowed to contain before it is written into HTML.
- *
- * Eleven of the thirteen metrics are digits (`fmtCount`) or hex (`git
- * rev-parse --short`) by construction, but `version` is whatever
- * `package.json` says and `readPackageVersion` only checks that it is a
- * non-empty string. The pre-existing `/[<>]/` test below guards the OLD cell
- * content, never the NEW value — so nothing stopped a crafted version literal
- * from closing the span and opening a tag. The precondition is write access to
- * `package.json`, which in this repo's trust model already means full access,
- * so this is defence in depth rather than a live hole; it is cheap, and it is
- * the one place where the page's `script-src 'unsafe-inline'` would stop being
- * theoretical.
- */
-const SAFE_VALUE_RE = /^[\w.+-]+$/;
-
 export function rewrite(html, values) {
   let replaced = 0;
   let spans = 0;
   let rejected = 0;
   const next = html.replace(SPAN_RE, (whole, pre, q, metric, post, content) => {
     spans++;
-    if (!Object.hasOwn(values, metric)) return whole; // unknown → caller errors out
+    // No computed value for this id. TWO distinct cases reach here, and the
+    // caller errors out on BOTH: an id outside METRIC_DEFS (`known: false`) and
+    // a known id absent from `values` (`unresolved: true`). The second used to
+    // be undocumented here, which read as if it could not happen.
+    if (!Object.hasOwn(values, metric)) return whole;
     if (/[<>]/.test(content)) return whole; // malformed cell → caller errors out
     const value = values[metric];
     if (!SAFE_VALUE_RE.test(value)) {
@@ -599,7 +763,8 @@ function printHelp() {
   writeStdoutLineSync('Reads/writes <span data-metric="…">…</span> cells in every *.html under site/.');
   writeStdoutLineSync('');
   writeStdoutLineSync('  --check        (default) report drift, change nothing; exit 1 on drift');
-  writeStdoutLineSync('  --write        rewrite the cells in place');
+  writeStdoutLineSync(`  --write        rewrite the cells in place; also refreshes ${CENSUS_FILE.join('/')}`);
+  writeStdoutLineSync('                 (skipped when --site points outside the repo\'s own site/)');
   writeStdoutLineSync('  --json         machine-readable envelope on stdout');
   writeStdoutLineSync('  --site <dir>   site directory (default <repo-root>/site)');
   writeStdoutLineSync('  --version      print the package version');
@@ -648,7 +813,7 @@ export function main(argv = process.argv.slice(2), env = {}) {
     return 2;
   }
 
-  const { values, missing, warnings } = collect(root);
+  const { values, missing, warnings, fromSnapshot } = collect(root);
   if (missing.length > 0) {
     stderr(
       `Error: could not measure ${missing.join(', ')} under ${root} — ` +
@@ -688,11 +853,18 @@ export function main(argv = process.argv.slice(2), env = {}) {
     const stale = spans.filter((s) => s.stale);
     const unknown = spans.filter((s) => !s.known);
     const malformed = spans.filter((s) => s.known && s.malformed);
+    const unresolved = spans.filter((s) => s.unresolved);
     driftTotal += drift.length;
-    contractTotal += unknown.length + malformed.length;
+    contractTotal += unknown.length + malformed.length + unresolved.length;
 
     let written = 0;
-    if (args.write && unknown.length === 0 && malformed.length === 0 && spans.length > 0) {
+    if (
+      args.write &&
+      unknown.length === 0 &&
+      malformed.length === 0 &&
+      unresolved.length === 0 &&
+      spans.length > 0
+    ) {
       const res = rewrite(html, values);
       if (res.rejected > 0) {
         // A value that fails SAFE_VALUE_RE is a corrupt or hostile source, not
@@ -716,6 +888,7 @@ export function main(argv = process.argv.slice(2), env = {}) {
       stale: stale.map((s) => ({ metric: s.metric, line: s.line, actual: s.actual, expected: s.expected })),
       unknown: unknown.map((s) => ({ metric: s.metric, line: s.line })),
       malformed: malformed.map((s) => ({ metric: s.metric, line: s.line })),
+      unresolved: unresolved.map((s) => ({ metric: s.metric, line: s.line })),
       written,
     });
   }
@@ -739,12 +912,40 @@ export function main(argv = process.argv.slice(2), env = {}) {
     for (const m of f.malformed) {
       stderr(`Error: ${f.file}:${m.line}: data-metric "${m.metric}" cell contains markup, not a plain value`);
     }
+    for (const u of f.unresolved) {
+      stderr(
+        `Error: ${f.file}:${u.line}: data-metric "${u.metric}" is a known metric with no computed value — ` +
+          'the cell would keep its hand-maintained number while this run reported it as current',
+      );
+    }
   }
 
   // Under --write, remaining drift is not a failure — it was just written. Under
   // --check it is the whole point. A contract violation fails in either mode.
   const ok = !noSpans && contractTotal === 0 && rejectedTotal === 0 && (args.write || driftTotal === 0);
   const exitCode = ok ? 0 : 1;
+
+  // The census snapshot rides on the SAME `values` as the cells above — never a
+  // second collect(), which could disagree with the first across midnight or a
+  // concurrent ledger append (see writeCensusSnapshot).
+  //
+  // Root-anchored, and written only when the site directory IS the repo's own:
+  // `collect()` reads the snapshot from `<root>/site/` regardless of `--site`,
+  // so writing it on a `--site <tmpdir>` fixture run would reach back into the
+  // real `site/` from a test — dirtying the working copy and tripping the
+  // release preflight's clean-tree check. A fixture run is a read of the repo,
+  // never a write to it.
+  let censusWritten = false;
+  const writesCensus = args.write && resolve(siteDir) === resolve(join(root, 'site'));
+  if (writesCensus && ok) {
+    const res = writeCensusSnapshot(root, values);
+    if (res.ok) {
+      censusWritten = true;
+    } else {
+      stderr(`Error: could not write ${CENSUS_FILE.join('/')}: ${res.error ?? res.reason}`);
+      return 2;
+    }
+  }
 
   if (args.json) {
     stdout(
@@ -761,6 +962,8 @@ export function main(argv = process.argv.slice(2), env = {}) {
             value: values[d.id],
             source: d.source,
             provenance: d.provenance,
+            snapshotFallback: d.snapshotFallback === true,
+            fromSnapshot: fromSnapshot.includes(d.id),
           })),
           files: report,
           spanCount: spanTotal,
@@ -768,6 +971,8 @@ export function main(argv = process.argv.slice(2), env = {}) {
           contractViolations: contractTotal,
           written: writtenTotal,
           rejected: rejectedTotal,
+          fromSnapshot,
+          censusWritten,
           ok,
         },
         null,
@@ -777,7 +982,8 @@ export function main(argv = process.argv.slice(2), env = {}) {
   } else if (args.write) {
     stdout(
       `site-numbers: wrote ${writtenTotal} value(s) across ${files.length} file(s) in ${siteDir}` +
-        ` (${spanTotal} metric cells @ ${values['counted-sha']}${dirty ? '+dirty' : ''})`,
+        ` (${spanTotal} metric cells @ ${values['counted-sha']}${dirty ? '+dirty' : ''})` +
+        (censusWritten ? ` + ${CENSUS_FILE.join('/')}` : ''),
     );
   } else {
     for (const f of report) {

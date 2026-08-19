@@ -472,6 +472,40 @@ const SCAN_CASES = [
     expected: { status: 0, fails: 0, checkpoints: [] },
   },
 
+  {
+    // #1076 NEGATIVE PATH. Golden lines harvested verbatim from the three published
+    // pages (site/index.html:39/57/58/64/66/68/1050, site/impressum/index.html:2/220,
+    // site/datenschutz/index.html:2) — the exact 10 hits that adding '.html' to
+    // TEXT_EXTS surfaced. All 10 are the www. host, which the pre-existing
+    // SANCTIONED_URL form (bare domain right after the scheme) CANNOT match.
+    // Bug caught: an exclusion that does not actually exclude — i.e. adding the three
+    // paths to ALLOWLISTED_URL_PATHS without the SANCTIONED_PUBLIC_SITE form. That
+    // combination turns the gate (and .husky/pre-commit) permanently red.
+    // The impressum Website row carries TWO tokens on one line, so it also pins that
+    // the sanctioned form is counted per-occurrence, not once per line.
+    name: 'CLEAN: the published site pages — www. host in JSON-LD, rel="author" and the Impressum row',
+    files: {
+      'site/index.html':
+        [
+          '<script type="application/ld+json">{',
+          '  "publisher": { "@id": "https://www.gotzendorfer.at/#person" },',
+          '  "url": "https://www.gotzendorfer.at",',
+          '}</script>',
+          '<a href="https://www.gotzendorfer.at" rel="author">Maintainer</a>',
+        ].join('\n') + '\n',
+      'site/impressum/index.html':
+        [
+          '<!--',
+          '  https://www.gotzendorfer.at/impressum. Die Datenschutzerklaerung ist NICHT',
+          '-->',
+          '<div><dt>Website</dt><dd><a href="https://www.gotzendorfer.at">www.gotzendorfer.at</a></dd></div>',
+        ].join('\n') + '\n',
+      'site/datenschutz/index.html':
+        '<!--\n  https://www.gotzendorfer.at/impressum. Die Datenschutzerklaerung ist NICHT\n-->\n',
+    },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+
   // --- Exclusion bypass: an exclusion covers a LINE FORM, never a whole file ---
   {
     name: 'BYPASS: SECURITY.md with a real /Users/ home path still FAILs (email exclusion does not cover it)',
@@ -491,6 +525,47 @@ const SCAN_CASES = [
         ].join('\n') + '\n',
     },
     expected: { status: 1, fails: 2, checkpoints: ['CP3', 'CP7'] },
+  },
+
+  {
+    // #1076 BYPASS. The site exclusion is reached ONLY through isAllowlisted(), which
+    // just CP3 and CP7 consult — so CP1 must still fire on an allowlisted page, on the
+    // very line that carries the sanctioned URL. The home path is HTML-ENTITY encoded:
+    // canonicalizeLine() has decoded entities since #661, but '.html' was outside
+    // TEXT_EXTS, so that branch was unreachable for the only file class with native
+    // entities. Bug caught: an exclusion written against a FILE instead of a LINE FORM
+    // (e.g. a SELF_EXCLUSIONS entry), which would switch off all eleven CP rules here.
+    name: 'BYPASS: entity-encoded home path on the sanctioned-URL line of an allowlisted site page still FAILs',
+    files: {
+      'site/impressum/index.html':
+        [
+          '<div><dt>Website</dt><dd><a href="https://www.gotzendorfer.at">www.gotzendorfer.at</a></dd></div>',
+          '<!-- &#47;Users&#47;bernhardg&#47;Projects&#47;PLACEHOLDER <a href="https://www.gotzendorfer.at">x</a> -->',
+        ].join('\n') + '\n',
+    },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    // #1076 PATH SCOPE. Bug caught: the exclusion degrading into a blanket allowance
+    // for the www. domain anywhere in the tree.
+    name: 'BYPASS: the same www. link text in templates/static-html/index.html is NOT allowlisted',
+    files: {
+      'templates/static-html/index.html':
+        '<a href="https://www.gotzendorfer.at" rel="author">Maintainer</a>\n',
+    },
+    expected: { status: 1, fails: 1, checkpoints: ['CP7'] },
+  },
+  {
+    // #1076 PATH SCOPE, sharper arm: site/guide/index.html is a tracked sibling INSIDE
+    // site/ that carries zero domain hits today and is deliberately NOT allowlisted.
+    // Bug caught: implementing the exclusion as a `site/` PREFIX test rather than the
+    // three exact paths — which the templates/ row above would not detect.
+    name: 'BYPASS: site/guide/index.html is inside site/ but NOT allowlisted (exact paths, not a prefix)',
+    files: {
+      'site/guide/index.html':
+        '<a href="https://www.gotzendorfer.at" rel="author">Maintainer</a>\n',
+    },
+    expected: { status: 1, fails: 1, checkpoints: ['CP7'] },
   },
 
   // --- Edge: empty repo / no-git dir ---
