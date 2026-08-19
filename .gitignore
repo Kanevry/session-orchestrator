@@ -141,3 +141,6 @@ evals/instruction-ablation/results/
 # schema-drift-check still takes its exit-3 soft path (security review, LOW).
 .ci-markers/
 .orchestrator/metrics/context-overhead-*.json
+
+# Vercel CLI local link state (never committed)
+.vercel

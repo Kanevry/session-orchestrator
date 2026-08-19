@@ -430,6 +430,54 @@ function tagAndPush(repoRoot, target) {
   return { tag, pushed };
 }
 
+/**
+ * Poll the live site until it serves `expected`, or give up.
+ *
+ * WHY POLLING: the Vercel git integration builds asynchronously after the push
+ * to `github`, so a single immediate check would report a false negative on
+ * every release. WHY AT ALL: the live site silently fell a release behind twice
+ * in four weeks (#1043) — a deploy that reports success at the push and is
+ * never re-read afterwards cannot tell "deployed" from "did not deploy".
+ *
+ * Fail-closed by design: a network error, a non-200, an unparseable body and a
+ * genuine version mismatch are four DISTINCT reported outcomes, never collapsed
+ * onto one "not ok" — collapsing them is the defect class this replaces.
+ *
+ * @param {string} expected — the version literal the site must serve
+ * @param {{url?: string, attempts?: number, delayMs?: number, fetchImpl?: Function}} [opts]
+ * @returns {Promise<{ok: boolean, detail: string}>}
+ */
+export async function verifyLiveSite(expected, opts = {}) {
+  const url = opts.url ?? 'https://session-orchestrator.com/llms.txt';
+  const attempts = opts.attempts ?? 12;
+  const delayMs = opts.delayMs ?? 10_000;
+  const doFetch = opts.fetchImpl ?? globalThis.fetch;
+  let last = 'no attempt made';
+
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const res = await doFetch(url, { headers: { 'Cache-Control': 'no-cache' } });
+      if (!res.ok) {
+        last = `HTTP ${res.status} from ${url}`;
+      } else {
+        const body = await res.text();
+        const m = body.match(/^Version:\s*([0-9]+\.[0-9]+\.[0-9]+)/m);
+        if (!m) {
+          last = `no "Version: X.Y.Z" line in ${url} (${body.length} bytes) — the surface moved, fix the check`;
+        } else if (m[1] === expected) {
+          return { ok: true, detail: `attempt ${i}/${attempts}, ${url}` };
+        } else {
+          last = `live serves ${m[1]}, expected ${expected}`;
+        }
+      }
+    } catch (err) {
+      last = `fetch failed: ${err.message}`;
+    }
+    if (i < attempts) await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return { ok: false, detail: `${last} (gave up after ${attempts} attempts)` };
+}
+
 function printChecks(checks, asJson, version) {
   const ok = checks.every((c) => c.ok);
   if (asJson) {
@@ -477,9 +525,20 @@ async function main() {
     }
     const changed = applyVersion(repoRoot, target);
     mustRun('npm', ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: repoRoot });
+
+    // Re-stamp the site's measured census (#1043, second drift level). The
+    // version literals above are only half the problem: the "Measured in this
+    // repository" block was typed once on 2026-08-03 and 5 of its 8 figures
+    // were wrong twelve days later. Release time is the RIGHT moment and CI is
+    // the wrong one — `sessions` and `learnings` grow on every session, so a
+    // pipeline gate on them would be permanently red. The page discloses that
+    // by stamping the date and SHA it was counted at, which this refreshes too.
+    mustRun('node', ['scripts/site-numbers.mjs', '--write'], { cwd: repoRoot });
+
     console.log(`Rewrote ${changed.length} surface file(s) to ${target}:`);
     for (const f of changed) console.log(`  ${f}`);
     console.log('  package-lock.json (via npm install --package-lock-only)');
+    console.log('  site census re-stamped (scripts/site-numbers.mjs --write)');
     console.log('\nEditorial TODOs (enforced by --check):');
     console.log(`  1. CHANGELOG.md — write the "## [${target}] - YYYY-MM-DD" entry, fold [Unreleased].`);
     console.log('  2. README.md — rewrite the "Recent highlights" section content.');
@@ -498,10 +557,26 @@ async function main() {
     console.log(`  + ${PACKAGE_NAME}@${target} — registry verified.`);
     const { tag, pushed } = tagAndPush(repoRoot, target);
     console.log(`  tagged ${tag} (AFTER publish) and pushed main+tag to: ${pushed.join(', ')}.`);
+
+    // The push to `github` above triggers the Vercel git integration, which
+    // deploys site/ (see vercel.json `outputDirectory`). The deploy is async,
+    // so poll rather than assume. This replaces the old manual checklist line
+    // `cd site && vercel --prod` — a checklist line is not a mechanism, and it
+    // was skipped twice in four weeks (#1043), leaving the live site a full
+    // release behind while every other surface said otherwise.
+    const live = await verifyLiveSite(target);
+    if (!live.ok) {
+      console.error(`\nFAIL: live site did not reach ${target}.`);
+      console.error(`  ${live.detail}`);
+      console.error('  npm and the tags ARE published — only the site lag remains.');
+      console.error('  Check https://vercel.com/kanevrys-projects/session-orchestrator for the deploy.');
+      return 1;
+    }
+    console.log(`  site live at ${target} (${live.detail}).`);
+
     console.log('\nPost-release checklist (manual):');
-    console.log('  1. Site deploy: cd site && vercel --prod');
-    console.log('  2. Rotate/delete the npm token: https://www.npmjs.com/settings/<user>/tokens');
-    console.log('  3. pi.dev gallery indexes asynchronously — do not block on it.');
+    console.log('  1. Rotate/delete the npm token: https://www.npmjs.com/settings/<user>/tokens');
+    console.log('  2. pi.dev gallery indexes asynchronously — do not block on it.');
     return 0;
   }
 

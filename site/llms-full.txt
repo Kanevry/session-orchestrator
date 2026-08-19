@@ -37,9 +37,9 @@ Nothing is learned silently. Sessions append plain-text JSONL records (sessions,
 
 aiat-llm-eval v1: an open standard for honest LLM session evaluation. Pre-registered rubric, deterministic checks before any LLM judge, three-state verdicts with explicit abstention (cannot-determine instead of fake zeros), no global score (the validator rejects overall/total/mean fields), no superlatives in conforming reports, reproducibility as an executable proof (--verify). A session scoring itself is labelled a self-evaluation. Spec: docs/eval/aiat-llm-eval-v1.md in the repository.
 
-## Numbers (measured 2026-08-03 at HEAD d2de3ca)
+## Numbers (measured 2026-08-19 at HEAD 3981267)
 
-Version 3.20.0 · 46 skills · 25 commands · 15 typed sub-agents · 24 hook files (23 plugin-wired, 10 event types) · 14 destructive-command rules · 12,000+ tests (README badge; 556 test files) · 210 sessions and 95 learnings recorded in the plugin's own repository.
+Version 3.20.0 · 46 skills · 25 commands · 15 typed sub-agents · 25 hook files (24 plugin-wired, 10 event types) · 14 destructive-command rules · 14,023 tests (582 test files) · 252 sessions and 135 learnings recorded in the plugin's own repository.
 
 ## Install
 

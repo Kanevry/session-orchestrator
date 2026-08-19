@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guide — install session-orchestrator and run your first session</title>
+<meta name="description" content="Install session-orchestrator on Claude Code, Codex CLI, Cursor or Pi, run one session, and check that it actually did something. Includes the parts of the documentation that were wrong.">
+<link rel="canonical" href="https://session-orchestrator.com/guide/">
+<link rel="icon" href="/favicon.svg">
+<!-- Self-hosted, latin subset, OFL — see ../fonts/LICENSES.md.
+     No CDN: the privacy policy at /datenschutz asserts zero external requests,
+     and vercel.json ships a CSP with font-src 'self' that would block one. -->
+<link rel="preload" as="font" type="font/woff2" href="../fonts/archivo-var.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="../fonts/ibm-plex-mono-400.woff2" crossorigin>
+<style>
+@font-face {
+  font-family: 'Archivo';
+  src: url('../fonts/archivo-var.woff2') format('woff2');
+  font-weight: 100 900; font-style: normal; font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('../fonts/ibm-plex-mono-400.woff2') format('woff2');
+  font-weight: 400; font-style: normal; font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('../fonts/ibm-plex-mono-500.woff2') format('woff2');
+  font-weight: 500; font-style: normal; font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+</style>
+<style>
+/* ---------------------------------------------------------------
+   /guide — inherits the tokens of the start page.
+   Monochrome ground, three state colours, one 1px spine on the left.
+   Colour is a readout, never decoration:
+     --run   a step you perform
+     --hold  something that blocks, or was wrong
+     --pass  a state that is cleared
+   A guide is denser than a start page, so type steps down and the
+   column narrows to a reading measure.
+
+   Motion note: this file contains NO `opacity: 0` rule anywhere.
+   Every word is delivered visible; the only animation is the spine
+   filling as you scroll, which adds nothing and hides nothing.
+   ---------------------------------------------------------------*/
+:root{
+  --bg:#0a0b0c;
+  --bg-2:#101215;
+  --ink:#ececeb;
+  --ink-2:#9ea4a8;
+  --ink-3:#7b8286;
+  --line:#22262a;
+  --line-2:#343a3f;
+
+  --run:#e8a33d;
+  --hold:#f0705e;
+  --pass:#5fbf82;
+
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --disp:"Archivo",-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;
+
+  --rail-x:12px;
+  --pad-l:56px;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+body{
+  margin:0;background:var(--bg);color:var(--ink);
+  font-family:var(--disp);font-weight:300;
+  font-size:16px;line-height:1.6;
+  letter-spacing:-0.004em;
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3,p,ol,ul,dl,dd,figure{margin:0}
+a{color:inherit}
+::selection{background:var(--ink);color:var(--bg)}
+
+a:focus-visible,button:focus-visible,.skip:focus-visible{
+  outline:2px solid var(--ink);outline-offset:3px;border-radius:2px;
+}
+
+.sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+    clip-path:inset(50%);white-space:nowrap;border:0}
+.skip{position:absolute;left:-9999px;top:0;background:var(--ink);color:var(--bg);
+      padding:10px 16px;z-index:50;font-family:var(--mono);font-size:13px}
+.skip:focus{left:8px;top:8px}
+
+/* ---------- page column + the spine ---------- */
+.page{position:relative;max-width:1280px;margin:0 auto;padding:0 24px 0 var(--pad-l)}
+.rail{position:absolute;top:0;bottom:0;left:var(--rail-x);width:1px;background:var(--line);pointer-events:none}
+.rail-fill{position:absolute;inset:0;transform-origin:top center;
+  background:linear-gradient(180deg,var(--line-2) 0%,var(--ink-3) 55%,var(--line-2) 100%)}
+
+/* marker sitting on the spine.
+   --dot-x is the distance from the marker's own left edge back to the rail.
+   It is re-declared wherever the marker's container is indented (the two-column
+   guide body), because the dot has to land on the rail, not near it. */
+.mark{position:relative;--dot-x:calc(-1 * var(--pad-l) + var(--rail-x) - 3px);
+      font-family:var(--mono);font-size:11px;letter-spacing:.14em;
+      text-transform:uppercase;color:var(--ink-3);padding:0 0 22px}
+.mark::before{content:"";position:absolute;left:var(--dot-x);top:6px;
+  width:7px;height:7px;border-radius:50%;background:var(--ink-3);box-shadow:0 0 0 4px var(--bg)}
+/* hairline tying the node on the spine to its label. Sized by left+right, not
+   by arithmetic on --dot-x, so it stays correct at every indent. */
+.mark::after{content:"";position:absolute;top:9px;left:calc(var(--dot-x) + 11px);
+  right:100%;margin-right:5px;height:1px;background:var(--line)}
+
+/* ---------- header ---------- */
+.top{display:flex;flex-wrap:wrap;gap:8px 26px;align-items:baseline;
+     padding:22px 0 18px;border-bottom:1px solid var(--line)}
+.brand{font-family:var(--mono);font-size:13px;letter-spacing:.02em;color:var(--ink);text-decoration:none}
+.brand b{font-weight:500}
+.nav{display:flex;flex-wrap:wrap;gap:6px 20px;margin-left:auto;font-family:var(--mono);font-size:12.5px}
+.nav a{color:var(--ink-2);text-decoration:none;padding:2px 0;border-bottom:1px solid transparent}
+.nav a:hover{color:var(--ink);border-bottom-color:var(--line-2)}
+
+/* ---------- intro ---------- */
+.intro{padding:56px 0 8px}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.1em;color:var(--ink-2);
+         text-transform:uppercase;margin-bottom:30px}
+h1{
+  font-family:var(--disp);font-weight:200;
+  font-size:clamp(31px,4.7vw,64px);
+  line-height:1.02;letter-spacing:-0.03em;
+  max-width:19ch;
+}
+.lede{margin-top:30px;font-size:clamp(16px,1.24vw,18.5px);line-height:1.62;
+      color:var(--ink-2);max-width:60ch;font-weight:300}
+.lede em{font-style:normal;color:var(--ink)}
+.meta{margin-top:26px;font-family:var(--mono);font-size:12px;color:var(--ink-3);letter-spacing:.01em}
+
+/* ---------- two-column guide body ---------- */
+.guide{--toc-w:186px;--toc-gap:62px;
+  display:grid;grid-template-columns:minmax(0,var(--toc-w)) minmax(0,1fr);gap:0 var(--toc-gap);margin-top:58px}
+.guide > *{min-width:0}
+/* the body column is indented past the TOC, so its markers need the extra offset */
+.body .mark{--dot-x:calc(-1 * (var(--toc-w) + var(--toc-gap)) - var(--pad-l) + var(--rail-x) - 3px)}
+.toc{position:sticky;top:24px;align-self:start;padding-top:6px}
+.toc h2{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+        color:var(--ink-3);font-weight:400;margin-bottom:14px}
+.toc ol{list-style:none;padding:0;margin:0;font-family:var(--mono);font-size:12px;line-height:1.45}
+.toc li{margin-bottom:11px;display:flex;gap:9px;min-width:0}
+.toc .n{color:var(--ink-3);flex:none}
+.toc a{color:var(--ink-2);text-decoration:none;border-bottom:1px solid transparent;min-width:0}
+.toc a:hover{color:var(--ink);border-bottom-color:var(--line-2)}
+.toc a[aria-current="true"]{color:var(--ink)}
+
+/* ---------- sections ---------- */
+.sec{padding:0 0 76px;scroll-margin-top:24px;max-width:82ch}
+.sec:first-child{padding-top:0}
+h2.st{font-family:var(--disp);font-weight:200;font-size:clamp(26px,3.2vw,42px);
+   line-height:1.06;letter-spacing:-0.028em;max-width:22ch}
+h3{font-family:var(--disp);font-weight:300;font-size:clamp(18px,1.6vw,22px);
+   line-height:1.2;letter-spacing:-0.02em;margin-top:36px}
+p.sub{margin-top:16px;color:var(--ink-2);font-size:16.5px;max-width:62ch}
+.sec p{margin-top:16px;color:var(--ink-2);max-width:66ch}
+.sec p.tight{margin-top:9px}
+.sec strong{font-weight:500;color:var(--ink)}
+/* break-word, not anywhere: a path only splits when it cannot fit on a line of
+   its own, so `scripts/validate-plugin.mjs` stays whole in a wide column. */
+code{font-family:var(--mono);font-size:0.86em;color:var(--ink);
+     overflow-wrap:break-word}
+
+/* ---------- checklist / key-value rows ---------- */
+.rows{margin-top:26px;border-top:1px solid var(--line)}
+.row{display:grid;grid-template-columns:minmax(0,150px) minmax(0,1fr);gap:6px 24px;
+     padding:15px 0;border-bottom:1px solid var(--line)}
+.row > *{min-width:0}
+.row dt{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+        color:var(--ink-3);padding-top:3px}
+.row dd{margin:0;color:var(--ink-2);font-size:15.5px;line-height:1.55}
+.row dd b{font-weight:500;color:var(--ink)}
+
+/* ---------- numbered steps ---------- */
+.steps{list-style:none;padding:0;margin:30px 0 0;counter-reset:step}
+.steps > li{counter-increment:step;position:relative;padding:0 0 30px 42px;min-width:0}
+.steps > li::before{content:counter(step,decimal-leading-zero);position:absolute;left:0;top:2px;
+  font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--run)}
+.steps h3{margin-top:0;font-size:clamp(17px,1.4vw,20px);font-weight:300;color:var(--ink)}
+.steps p{margin-top:9px}
+
+/* ---------- code ---------- */
+.code-wrap{position:relative;margin-top:16px}
+pre.code{margin:0;border:1px solid var(--line);background:var(--bg-2);padding:14px 15px;
+  font-family:var(--mono);font-size:12.5px;line-height:1.75;color:var(--ink);
+  overflow-x:auto;font-weight:400;white-space:pre-wrap;overflow-wrap:anywhere}
+pre.code .sig{color:var(--ink-3)}
+pre.code .cmd{color:var(--ink);font-weight:500}
+pre.code .ok{color:var(--pass)}
+/* space for the copy button is reserved only once JS has actually inserted one,
+   so a no-JS page keeps the full line width. Without this the button sits on top
+   of the first line and hides the end of it. */
+pre.code.has-copy{padding-right:64px}
+.copy{position:absolute;top:7px;right:7px;background:var(--bg);color:var(--ink-3);
+  border:1px solid var(--line-2);font-family:var(--mono);font-size:10px;letter-spacing:.1em;
+  text-transform:uppercase;padding:5px 9px;cursor:pointer;line-height:1}
+.copy:hover{color:var(--ink);border-color:var(--ink-3)}
+.copy[data-done="1"]{color:var(--pass);border-color:var(--pass)}
+/* two classes, so it outranks `.sec p` — otherwise the caption tier renders at
+   body brightness and the hierarchy silently disappears. */
+.sec .cap{margin-top:9px;font-family:var(--mono);font-size:11px;color:var(--ink-3);
+     letter-spacing:.03em;line-height:1.6;max-width:66ch}
+
+/* ---------- flags: one border edge only, 1px ---------- */
+.flag{margin-top:24px;padding-left:16px;border-left:1px solid var(--hold);max-width:66ch}
+.flag > b{font-weight:500;color:var(--hold);font-family:var(--mono);font-size:10.5px;
+  letter-spacing:.12em;text-transform:uppercase;display:block;margin-bottom:8px}
+.flag p{margin-top:0;color:var(--ink-2);font-size:15.5px}
+.flag p + p{margin-top:12px}
+.flag--run{border-left-color:var(--run)}
+.flag--run > b{color:var(--run)}
+.flag--pass{border-left-color:var(--pass)}
+.flag--pass > b{color:var(--pass)}
+
+/* ---------- plain lists ---------- */
+.list{margin-top:16px;padding:0;list-style:none;max-width:66ch}
+.list li{position:relative;padding-left:20px;margin-top:11px;color:var(--ink-2);font-size:15.5px;line-height:1.58}
+.list li::before{content:"";position:absolute;left:2px;top:10px;width:7px;height:1px;background:var(--line-2)}
+.list li b{font-weight:500;color:var(--ink)}
+.list--warn li::before{background:var(--hold);width:5px;height:5px;top:8px;border-radius:50%}
+
+/* ---------- harness block ---------- */
+.harness{position:relative;padding:30px 0 4px;border-top:1px solid var(--line)}
+.harness:first-of-type{border-top:0;padding-top:14px}
+.h-name{font-family:var(--disp);font-weight:200;font-size:clamp(21px,2vw,28px);
+  letter-spacing:-0.024em;line-height:1.05}
+.sec .h-tag{margin-top:7px;font-family:var(--mono);font-size:10.5px;letter-spacing:.11em;
+  text-transform:uppercase;color:var(--ink-3)}
+
+/* ---------- deeper links ---------- */
+.links{margin-top:26px;border-top:1px solid var(--line)}
+.links a{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 20px;
+  padding:15px 0;border-bottom:1px solid var(--line);text-decoration:none;align-items:baseline}
+.links a > *{min-width:0}
+.links .t{color:var(--ink);font-size:16px}
+.links .d{color:var(--ink-3);font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-align:right}
+.links a:hover .t{color:#fff}
+.links a:hover .d{color:var(--ink-2)}
+
+/* ---------- footer ---------- */
+.foot{margin-top:30px;border-top:1px solid var(--line);padding:26px 0 52px;
+  display:flex;flex-wrap:wrap;gap:10px 24px;align-items:baseline;
+  font-family:var(--mono);font-size:12px;color:var(--ink-3)}
+.foot a{color:var(--ink-2);text-decoration:none;border-bottom:1px solid transparent}
+.foot a:hover{color:var(--ink);border-bottom-color:var(--line-2)}
+.foot .right{margin-left:auto}
+
+/* ---------- responsive ---------- */
+@media (max-width:1020px){
+  .guide{grid-template-columns:minmax(0,1fr);gap:0;margin-top:46px}
+  /* single column again — the body is no longer indented, so reset the dot offset */
+  .body .mark{--dot-x:calc(-1 * var(--pad-l) + var(--rail-x) - 3px)}
+  .toc{position:static;padding:22px 0 34px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin-bottom:44px}
+  .toc ol{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 26px;font-size:12.5px}
+  .toc li{margin-bottom:13px}
+}
+@media (max-width:900px){
+  :root{--pad-l:34px;--rail-x:9px}
+  .intro{padding:40px 0 4px}
+  .sec{padding-bottom:60px}
+  .row{grid-template-columns:minmax(0,1fr);gap:5px}
+  .row dt{padding-top:0}
+}
+@media (max-width:560px){
+  .toc ol{grid-template-columns:minmax(0,1fr)}
+  pre.code{font-size:11.5px}
+  .nav{margin-left:0;width:100%;gap:6px 16px}
+  .links a{grid-template-columns:minmax(0,1fr);gap:4px}
+  .links .d{text-align:left}
+  .steps > li{padding-left:32px}
+}
+
+/* ---------------------------------------------------------------
+   Motion. Exactly one animated property on the page, and it is
+   decorative in the strict sense: the spine gains a lighter fill as
+   you scroll. Nothing is hidden before it runs, so an unsupported,
+   disabled or reduced-motion browser loses nothing at all.
+   ---------------------------------------------------------------*/
+@media (prefers-reduced-motion: no-preference){
+  .rail-fill{transform:scaleY(0);animation:railGrow linear both;animation-timeline:scroll(root block)}
+  @keyframes railGrow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+}
+
+/* ---------- print ---------- */
+@media print{
+  html,body{background:#fff;color:#000}
+  .rail,.rail-fill,.copy,.skip,.toc{display:none}
+  .guide{display:block}
+  a{color:#000}
+  pre.code{border:1px solid #999;background:#f4f4f4;color:#000}
+  .flag{border-left:1px solid #666}
+  .flag > b{color:#000}
+  .sec{page-break-inside:auto;padding-bottom:24px}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<div class="page">
+  <div class="rail" aria-hidden="true"><span class="rail-fill"></span></div>
+
+  <header class="top">
+    <a class="brand" href="/">session&#8209;orchestrator <b>v3.20.0</b></a>
+    <nav class="nav" aria-label="Guide sections">
+      <a href="#install">Install</a>
+      <a href="#first-session">First session</a>
+      <a href="#blocked">When it blocks</a>
+      <a href="#wrong">When it is wrong</a>
+      <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="main">
+
+    <section class="intro">
+      <p class="mark">Guide</p>
+      <p class="eyebrow">Claude Code &middot; Codex CLI &middot; Cursor IDE &middot; Pi</p>
+      <h1>Install it, run one session, and check that it did what it says.</h1>
+      <p class="lede">Every issue an outside user has ever opened on this repository was an installation or an environment problem. <em>Not one was a feature request.</em> So this page leads with the parts that break, and it says plainly where our own documentation was wrong.</p>
+      <p class="meta">Node.js 24 or later &middot; MIT &middot; every command below re&#8209;checked against v3.20.0 on 2026&#8209;08&#8209;19</p>
+    </section>
+
+    <div class="guide">
+
+      <nav class="toc" aria-labelledby="toc-h">
+        <h2 id="toc-h">On this page</h2>
+        <ol>
+          <li><span class="n">01</span><a href="#before">Before you start</a></li>
+          <li><span class="n">02</span><a href="#install">Install</a></li>
+          <li><span class="n">03</span><a href="#first-session">Your first session</a></li>
+          <li><span class="n">04</span><a href="#config">The minimal config</a></li>
+          <li><span class="n">05</span><a href="#blocked">When it blocks you</a></li>
+          <li><span class="n">06</span><a href="#wrong">When something is wrong</a></li>
+          <li><span class="n">07</span><a href="#deeper">Where to go deeper</a></li>
+        </ol>
+      </nav>
+
+      <div class="body">
+
+        <!-- ============ 01 ============ -->
+        <section class="sec" id="before">
+          <p class="mark">01 &nbsp;/&nbsp; prerequisites</p>
+          <h2 class="st">Before you start</h2>
+          <p class="sub">Two things have to be there. A third one, which the old documentation asks for, does not.</p>
+
+          <dl class="rows">
+            <div class="row">
+              <dt>Node.js</dt>
+              <dd><b>Version 24 or later.</b> Check with <code>node --version</code>. The repository pins <code>24</code> in <code>.nvmrc</code> and <code>package.json</code> declares <code>engines.node: "&gt;=24.0.0"</code>. Version 3 is ES modules throughout, so an older runtime fails at import time rather than at a friendly error message.</dd>
+            </div>
+            <div class="row">
+              <dt>git</dt>
+              <dd>Any recent version. The session loop reads your history on every start &mdash; commits, branch, dirty files, recent issues &mdash; and that reading is most of what makes the first pass useful.</dd>
+            </div>
+            <div class="row">
+              <dt>jq</dt>
+              <dd><b>Not needed.</b> <code>docs/USER-GUIDE.md</code> still tells you the enforcement hooks require it. That sentence is left over from version 2. Nothing in <code>hooks/</code> shells out to <code>jq</code> today; the one script that still requires it is <code>scripts/validate-plugin.mjs</code>, which you only run if you work on the plugin itself.</dd>
+            </div>
+          </dl>
+
+          <h3>Which file your harness reads</h3>
+          <p>The configuration lives in your project&rsquo;s instruction file. Which file that is depends on the tool, and the contents are identical either way.</p>
+
+          <dl class="rows">
+            <div class="row">
+              <dt>CLAUDE.md</dt>
+              <dd>Claude Code, Cursor IDE</dd>
+            </div>
+            <div class="row">
+              <dt>AGENTS.md</dt>
+              <dd>Codex CLI, Pi</dd>
+            </div>
+          </dl>
+          <p class="tight">If you put the block in the file your harness does not read, it is simply not found &mdash; there is no error to tell you.</p>
+        </section>
+
+        <!-- ============ 02 ============ -->
+        <section class="sec" id="install">
+          <p class="mark">02 &nbsp;/&nbsp; install</p>
+          <h2 class="st">Install</h2>
+          <p class="sub">Same plugin, four paths. Pick the one for your tool and read its note &mdash; each path has exactly one thing that catches people.</p>
+
+          <div class="harness">
+            <p class="h-name">Claude Code</p>
+            <p class="h-tag">Marketplace &middot; then one manual step</p>
+            <div class="code-wrap">
+<pre class="code" data-copy>/plugin marketplace add Kanevry/session-orchestrator
+/plugin install session-orchestrator@kanevry</pre>
+            </div>
+            <p class="cap">Both lines run inside Claude Code, not in a shell.</p>
+
+            <p>Then install the Node dependencies once, in a shell, and restart Claude Code:</p>
+            <div class="code-wrap">
+<pre class="code" data-copy><span class="sig"># Claude Code has no `plugin dir` subcommand, so resolve the path from the cache.</span>
+SO_DIR="$(dirname "$(find ~/.claude/plugins/cache -path '*session-orchestrator*' -name package.json 2&gt;/dev/null | head -1)")"
+cd "$SO_DIR" &amp;&amp; npm install</pre>
+            </div>
+            <p class="cap">If <code>SO_DIR</code> comes back empty, the plugin was not installed from a marketplace &mdash; run <code>/plugin list</code> inside Claude Code first.</p>
+
+            <div class="flag">
+              <b>This step is required, and the command for it used to be broken</b>
+              <p>The hooks import <code>zx</code>. The plugin has eight runtime dependencies and a marketplace install does not fetch them, so without this step the hooks fail to load.</p>
+              <p>Until 2026&#8209;08&#8209;19 the documented one&#8209;liner began with <code>claude plugin dir</code> &mdash; a subcommand Claude Code does not have. It exits 1, the fallback path it then used does not exist, <code>cd</code> fails, <code>npm install</code> never runs, and every hook afterwards cannot find <code>zx</code>. Two of the four issues outsiders filed on this repository are that failure, reported as the symptom. The command above replaces it and was verified end to end.</p>
+            </div>
+          </div>
+
+          <div class="harness">
+            <p class="h-name">Codex CLI</p>
+            <p class="h-tag">Clone &middot; install &middot; run the installer</p>
+            <div class="code-wrap">
+<pre class="code" data-copy>git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
+cd ~/Projects/session-orchestrator &amp;&amp; npm install
+node scripts/codex-install.mjs</pre>
+            </div>
+            <p class="cap">Your project&rsquo;s config goes in <code>AGENTS.md</code>, not <code>CLAUDE.md</code>. Hook&#8209;level scope enforcement is not available on this platform; the rules still apply, but nothing mechanically holds an agent to them.</p>
+          </div>
+
+          <div class="harness">
+            <p class="h-name">Cursor IDE</p>
+            <p class="h-tag">Clone &middot; install &middot; point at your project</p>
+            <div class="code-wrap">
+<pre class="code" data-copy>git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
+cd ~/Projects/session-orchestrator &amp;&amp; npm install
+node scripts/cursor-install.mjs /absolute/path/to/your/project</pre>
+            </div>
+            <div class="flag">
+              <b>The path argument is mandatory</b>
+              <p>Leave it out and the installer reports success without having written anything into your project. Before you believe the message, look in the target repository for the files it should have created.</p>
+            </div>
+          </div>
+
+          <div class="harness">
+            <p class="h-name">Pi</p>
+            <p class="h-tag">The only path that resolves dependencies for you</p>
+            <div class="code-wrap">
+<pre class="code" data-copy>npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+pi install npm:session-orchestrator</pre>
+            </div>
+            <p class="cap">No separate <code>npm install</code> step afterwards. Config goes in <code>AGENTS.md</code>.</p>
+          </div>
+        </section>
+
+        <!-- ============ 03 ============ -->
+        <section class="sec" id="first-session">
+          <p class="mark">03 &nbsp;/&nbsp; first run</p>
+          <h2 class="st">Your first session</h2>
+          <p class="sub">Three commands carry the whole loop. The first one behaves differently the very first time, and that difference is worth knowing before you hit it.</p>
+
+          <ol class="steps">
+            <li>
+              <h3><code>/session feature</code> &mdash; research and agree the scope</h3>
+              <p>It reads the repository before it asks you anything: git state, open issues, CI status on the current commit, what the last session left behind. Then it reports what it found and proposes a plan &mdash; how many waves, how many agents, and how confident it is. You correct it here, in words. Nothing has been written yet.</p>
+            </li>
+            <li>
+              <h3><code>/go</code> &mdash; execute the plan in five typed passes</h3>
+              <p>Discovery reads. Impl&#8209;Core writes the feature. Impl&#8209;Polish fixes the edges. Quality writes tests and reviews. Finalization tidies up. Between each pass a typecheck, test and lint gate runs, and the agents cannot skip it &mdash; a hook enforces it, not a sentence in a prompt.</p>
+            </li>
+            <li>
+              <h3><code>/close</code> &mdash; verify, commit, and file what is left</h3>
+              <p>It walks the plan item by item and checks each one against the actual working tree, commits, and turns anything unfinished into a carryover issue instead of quietly dropping it.</p>
+            </li>
+          </ol>
+
+          <div class="flag">
+            <b>The first run in a fresh repository asks a lot &mdash; plan for it</b>
+            <p>Before any of the above happens, a bootstrap gate runs once. On a repository that has never used the plugin, expect <b>seven to ten questions</b> and <b>two to four minutes</b> before work begins.</p>
+            <p>Three places in our documentation say &ldquo;at most one question&rdquo;. That is the intent for the tier confirmation on its own; it is not what a cold repository does, and you should not be surprised by the difference.</p>
+          </div>
+
+          <p>What you are answering during those minutes:</p>
+          <ul class="list">
+            <li><b>Tier</b> &mdash; fast, standard or deep. It decides how much structure gets scaffolded. Fast is right for a spike.</li>
+            <li><b>Stack archetype</b> &mdash; only asked for standard or deep, and only when the repository is genuinely ambiguous.</li>
+            <li><b>Owner persona</b> &mdash; language, tone, how much output you want, how much preamble before an action. Stored once per machine in <code>~/.config/session-orchestrator/owner.yaml</code>, outside every repository, never committed.</li>
+            <li><b>Telemetry consent</b> &mdash; whether anonymized hardware patterns may be shared to improve resource defaults. Declining is a normal answer and changes nothing else.</li>
+            <li><b>Dispatcher autonomy</b> &mdash; a one&#8209;time, per&#8209;repository capture. The recommended answer is <code>off</code>, which is also the fail&#8209;closed default.</li>
+            <li><b>Your actual scope</b> &mdash; the question you came for.</li>
+          </ul>
+          <p>All of it is written down once. The lock file, the owner profile and the dispatcher block are each recorded, and every later session goes straight to the scope question.</p>
+        </section>
+
+        <!-- ============ 04 ============ -->
+        <section class="sec" id="config">
+          <p class="mark">04 &nbsp;/&nbsp; configuration</p>
+          <h2 class="st">The minimal config</h2>
+          <p class="sub">Seven fields in your instruction file. Everything else the plugin can do is opt&#8209;in and stays off until you ask for it.</p>
+
+          <div class="code-wrap">
+<pre class="code" data-copy>## Session Config
+
+test-command: npm test
+typecheck-command: npm run typecheck
+lint-command: npm run lint
+agents-per-wave: 6
+waves: 5
+persistence: true
+enforcement: warn</pre>
+          </div>
+          <p class="cap">Goes into <code>CLAUDE.md</code> (Claude Code, Cursor IDE) or <code>AGENTS.md</code> (Codex CLI, Pi). The heading matters &mdash; the parser looks for <code>## Session Config</code> literally.</p>
+
+          <p><code>enforcement</code> takes <code>strict</code>, <code>warn</code> or <code>off</code>. Start on <code>warn</code>: you see every scope violation without any of them stopping you, which is the fastest way to learn what your waves actually touch.</p>
+
+          <div class="flag">
+            <b>The README leaves out one half of this</b>
+            <p>The bootstrap gate checks for three things, not one: the instruction file, this Session Config block, and <code>.orchestrator/bootstrap.lock</code>. Paste only the block and the gate is still closed &mdash; your next <code>/session</code> will run the whole interview anyway and it will look as if the configuration was ignored.</p>
+            <p>Run <code>/bootstrap</code> and it writes both, in the right order.</p>
+          </div>
+        </section>
+
+        <!-- ============ 05 ============ -->
+        <section class="sec" id="blocked">
+          <p class="mark">05 &nbsp;/&nbsp; guards</p>
+          <h2 class="st">When it blocks you</h2>
+          <p class="sub">Two guards will refuse a command or an edit at some point. Both can be released on purpose. Neither is worth fighting, because in most cases the refusal is telling you the plan is wrong, not the tool.</p>
+
+          <h3>The destructive&#8209;command guard</h3>
+          <p>Fourteen rules in <code>.orchestrator/policy/blocked-commands.json</code> are checked before a shell command runs: <code>git reset</code> in all three forms, <code>git checkout --</code> discards, <code>git clean -f</code>, any <code>git stash</code>, destructive <code>rm -rf</code>, <code>git push --force</code> including <code>--force-with-lease</code>, SQL <code>DROP TABLE</code>, and truncating redirects onto protected files.</p>
+          <p>The reason it is that broad: several sessions can share one working copy, and a stash or a reset takes work from a neighbour who has no way to find it again.</p>
+          <div class="flag flag--run">
+            <b>Releasing it deliberately</b>
+            <p>Add <code>allow-destructive-ops: true</code> to your Session Config for the maintenance you actually intend, then take it out again. It is a per&#8209;session switch by design &mdash; leaving it in permanently removes the guard for every future session, including the ones you did not plan.</p>
+          </div>
+
+          <h3>Scope enforcement</h3>
+          <p>Every agent in a wave gets a declared set of paths it may write to, and <code>hooks/enforce-scope.mjs</code> denies an <code>Edit</code> or <code>Write</code> outside it. The set is computed and asserted non&#8209;overlapping before any agent starts, which is what keeps two parallel agents from landing on the same file.</p>
+          <p>When you hit a deny, the useful move is almost always to widen the paths the wave declares &mdash; not to lower <code>enforcement</code>. A denied edit usually means a file was missing from the plan, and that same omission is what would have collided later.</p>
+          <p>If you do need the whole thing quiet while you find your feet, <code>enforcement: off</code> exists. It removes the mechanism, not just the message.</p>
+        </section>
+
+        <!-- ============ 06 ============ -->
+        <section class="sec" id="wrong">
+          <p class="mark">06 &nbsp;/&nbsp; diagnosis</p>
+          <h2 class="st">When something is wrong &mdash; and how you would even notice</h2>
+          <p class="sub">The failure this tool actually has is quiet. Not a stack trace: an agent that never started and whose work a neighbour silently absorbed, or a run that is recorded as finished without having done anything.</p>
+          <p>You will not see it in the transcript, because the transcript reads fine either way. You see it in the record the session writes about itself. One line, after any session:</p>
+
+          <div class="code-wrap">
+<pre class="code" data-copy>tail -1 .orchestrator/metrics/sessions.jsonl | jq '{session_id, total_waves, total_agents, total_files_changed}'</pre>
+          </div>
+          <p class="cap">This is the one place <code>jq</code> is handy &mdash; for you, not for the plugin. Any JSON reader does the same job.</p>
+
+          <div class="flag flag--pass">
+            <b>What healthy looks like</b>
+            <p>Numbers that match what you just watched happen. If you ran three waves with six agents each and files changed on screen, the record says so. That is the whole test &mdash; there is no green checkmark to trust instead.</p>
+          </div>
+
+          <p>Warning signs, in order of how often they turn out to be real:</p>
+          <ul class="list list--warn">
+            <li><code>total_agents: 0</code> after a wave in which you plainly watched agents work.</li>
+            <li>A duration of <code>0m</code> for a session that took you half an hour.</li>
+            <li><code>undefined</code> anywhere in the record &mdash; a field that was never written, not a field that is empty.</li>
+            <li><code>-abandoned-</code> inside the session id although you closed cleanly with <code>/close</code>. That name is reconstructed after the fact for sessions that never closed themselves.</li>
+          </ul>
+          <p>None of these mean your code is broken. They mean the run did not do what the summary implies, and the honest response is to look at what actually changed on disk before you build on it.</p>
+
+          <h3>The three that outsiders actually hit</h3>
+          <p>All four issues ever filed here by people who are not the author fall into these. If you land on one, your case is already written up &mdash; read <a href="https://github.com/Kanevry/session-orchestrator/issues?q=is%3Aissue">the tracker</a> before opening a new issue.</p>
+          <ul class="list list--warn">
+            <li><b>Node is not on the hook&rsquo;s PATH.</b> Hooks run in the harness&rsquo;s environment, not your login shell. A version manager that only initialises in your interactive shell profile is not there when a hook runs, so the hook cannot find <code>node</code>. The symptom is that nothing enforces anything and nothing complains about it.</li>
+            <li><b>Missing <code>node_modules</code>.</b> The marketplace install path from section 02. Check it directly: <code>ls "$SO_DIR/node_modules/zx"</code>. If that path is absent, no hook on the plugin can load.</li>
+            <li><b>An installer that reported success without effect.</b> The Cursor path without its mandatory project argument is the known case. Verify in the target repository, not in the installer&rsquo;s output.</li>
+          </ul>
+        </section>
+
+        <!-- ============ 07 ============ -->
+        <section class="sec" id="deeper">
+          <p class="mark">07 &nbsp;/&nbsp; further</p>
+          <h2 class="st">Where to go deeper</h2>
+          <p class="sub">This page is the short path. Everything below is the long one, and all of it lives in the repository.</p>
+
+          <div class="links">
+            <a href="https://github.com/Kanevry/session-orchestrator#readme">
+              <span class="t">README</span>
+              <span class="d">Install, architecture, component inventory</span>
+            </a>
+            <a href="https://github.com/Kanevry/session-orchestrator/blob/main/CHANGELOG.md">
+              <span class="t">CHANGELOG</span>
+              <span class="d">What changed, per release</span>
+            </a>
+            <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/codex-setup.md">
+              <span class="t">Codex CLI setup</span>
+              <span class="d">docs/codex-setup.md</span>
+            </a>
+            <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/cursor-setup.md">
+              <span class="t">Cursor IDE setup</span>
+              <span class="d">docs/cursor-setup.md</span>
+            </a>
+            <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/pi-setup.md">
+              <span class="t">Pi setup</span>
+              <span class="d">docs/pi-setup.md</span>
+            </a>
+            <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/session-config-reference.md">
+              <span class="t">Session Config reference</span>
+              <span class="d">Every key, type and default</span>
+            </a>
+            <a href="https://github.com/Kanevry/session-orchestrator/issues">
+              <span class="t">Issues</span>
+              <span class="d">Ask, or report what broke</span>
+            </a>
+            <a href="https://www.npmjs.com/package/session-orchestrator">
+              <span class="t">npm</span>
+              <span class="d">session-orchestrator</span>
+            </a>
+          </div>
+        </section>
+
+      </div>
+    </div>
+  </main>
+
+  <footer class="foot">
+    <span>MIT</span>
+    <a href="/">Home</a>
+    <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
+    <a href="https://www.npmjs.com/package/session-orchestrator">npm</a>
+    <span class="right"><a href="/impressum/">Imprint</a></span>
+    <a href="/datenschutz/">Privacy</a>
+  </footer>
+</div>
+
+<script>
+/* Progressive enhancement only. Both features add UI that does not exist
+   without JS, so nothing on the page can be dead or unreachable. */
+(function () {
+  'use strict';
+
+  /* 1 — copy buttons on install commands */
+  if (navigator.clipboard && window.isSecureContext) {
+    document.querySelectorAll('pre.code[data-copy]').forEach(function (pre) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'copy';
+      btn.textContent = 'Copy';
+      btn.setAttribute('aria-label', 'Copy this command to the clipboard');
+      pre.classList.add('has-copy');
+      btn.addEventListener('click', function () {
+        navigator.clipboard.writeText(pre.textContent.trim()).then(function () {
+          btn.textContent = 'Copied';
+          btn.dataset.done = '1';
+          window.setTimeout(function () {
+            btn.textContent = 'Copy';
+            delete btn.dataset.done;
+          }, 1600);
+        }).catch(function () {
+          btn.textContent = 'Press Ctrl+C';
+        });
+      });
+      pre.parentNode.appendChild(btn);
+    });
+  }
+
+  /* 2 — mark the section you are reading in the table of contents */
+  if ('IntersectionObserver' in window) {
+    var links = {};
+    document.querySelectorAll('.toc a[href^="#"]').forEach(function (a) {
+      links[a.getAttribute('href').slice(1)] = a;
+    });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        var a = links[e.target.id];
+        if (!a) return;
+        if (e.isIntersecting) {
+          Object.keys(links).forEach(function (k) { links[k].removeAttribute('aria-current'); });
+          a.setAttribute('aria-current', 'true');
+        }
+      });
+    }, { rootMargin: '-10% 0px -70% 0px' });
+    document.querySelectorAll('.sec[id]').forEach(function (s) { io.observe(s); });
+  }
+})();
+</script>
+</body>
+</html>

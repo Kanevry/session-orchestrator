@@ -1,0 +1,316 @@
+<!-- ENTWURF — vom Operator gegenzulesen und freizugeben, bevor deployt wird. Quelle der Unternehmensdaten: gotzendorfer.at -->
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Impressum · Session Orchestrator</title>
+<meta name="description" content="Impressum nach § 5 ECG und § 25 MedienG für session-orchestrator.com. Betreiber: Bernhard Götzendorfer, Wien, Österreich.">
+<meta name="robots" content="index,follow">
+<meta name="color-scheme" content="dark">
+<link rel="canonical" href="https://session-orchestrator.com/impressum">
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="preload" as="font" type="font/woff2" href="../fonts/archivo-var.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="../fonts/ibm-plex-mono-400.woff2" crossorigin>
+
+<style>
+@font-face{font-family:'Archivo';src:url('../fonts/archivo-var.woff2') format('woff2');font-weight:100 900;font-style:normal;font-display:swap}
+@font-face{font-family:'IBM Plex Mono';src:url('../fonts/ibm-plex-mono-400.woff2') format('woff2');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:'IBM Plex Mono';src:url('../fonts/ibm-plex-mono-500.woff2') format('woff2');font-weight:500;font-style:normal;font-display:swap}
+/* ---------------------------------------------------------------
+   Legal pages. Same ground as the landing page: dark, quiet, one
+   1px spine down the left. Fonts are the site's own self-hosted
+   woff2 files — this page makes zero external requests, which is
+   exactly what the privacy page next door asserts.
+   ---------------------------------------------------------------*/
+
+:root{
+  color-scheme:dark;
+  --bg:#0a0b0c;
+  --bg-2:#101215;
+  --ink:#ececeb;
+  --ink-2:#9ea4a8;
+  --ink-3:#7b8286;
+  --line:#22262a;
+  --line-2:#343a3f;
+  --accent:#e8a33d;  /* matches --run on the home page; the site carries no cyan any more */
+  --disp:'Archivo',-apple-system,'system-ui','Helvetica Neue',Arial,sans-serif;
+  --body:'Archivo',-apple-system,'system-ui','Helvetica Neue',Arial,sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --rail-x:12px;
+  --pad-l:56px;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);
+     font-size:16px;line-height:1.65;font-weight:400;-webkit-font-smoothing:antialiased}
+h1,h2,h3,p,dl,dd,ul,ol{margin:0}
+a{color:var(--accent);text-decoration:none;text-underline-offset:3px}
+a:hover{text-decoration:underline}
+::selection{background:var(--ink);color:var(--bg)}
+a:focus-visible,.skip:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:2px}
+
+.skip{position:absolute;left:-9999px;top:0;background:var(--ink);color:var(--bg);
+      padding:10px 16px;z-index:50;font-family:var(--mono);font-size:13px}
+.skip:focus{left:8px;top:8px}
+
+.page{position:relative;max-width:980px;margin:0 auto;padding:0 24px 0 var(--pad-l)}
+.rail{position:absolute;top:0;bottom:0;left:var(--rail-x);width:1px;background:var(--line);pointer-events:none}
+
+/* ---------- header ---------- */
+.top{display:flex;flex-wrap:wrap;gap:8px 26px;align-items:baseline;
+     padding:22px 0 18px;border-bottom:1px solid var(--line)}
+.brand{font-family:var(--mono);font-size:13px;color:var(--ink);text-decoration:none}
+.brand b{font-weight:400;color:var(--ink)}
+.brand:hover{text-decoration:none;color:#fff}
+.nav{display:flex;flex-wrap:wrap;gap:6px 20px;margin-left:auto;font-family:var(--mono);font-size:12.5px}
+.nav a{color:var(--ink-2);text-decoration:none;padding:2px 0;border-bottom:1px solid transparent}
+.nav a:hover{color:var(--ink);border-bottom-color:var(--line-2);text-decoration:none}
+.nav a[aria-current]{color:var(--ink);border-bottom-color:var(--line-2)}
+
+/* ---------- masthead ---------- */
+.head{padding:56px 0 8px}
+.eyebrow{font-family:var(--mono);font-size:11.5px;letter-spacing:.12em;color:var(--ink-3);
+         text-transform:uppercase;margin-bottom:26px}
+h1{font-family:var(--disp);font-weight:500;font-size:clamp(34px,5.2vw,62px);
+   line-height:1.04;letter-spacing:-0.03em;max-width:18ch}
+.stand{margin-top:22px;font-family:var(--mono);font-size:11.5px;color:var(--ink-3);letter-spacing:.02em}
+.en{margin-top:26px;padding-left:14px;border-left:1px solid var(--line-2);
+    color:var(--ink-2);font-size:14.5px;line-height:1.6;max-width:64ch}
+.en b{font-weight:500;color:var(--ink-2)}
+
+/* ---------- table of contents ---------- */
+.toc{margin-top:38px;padding-top:22px;border-top:1px solid var(--line)}
+.toc-h{font-family:var(--mono);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;
+       color:var(--ink-3);margin-bottom:14px}
+.toc ol{list-style:none;padding:0;margin:0;column-width:230px;column-gap:34px}
+.toc li{margin:0 0 8px;font-family:var(--mono);font-size:12.5px;break-inside:avoid}
+.toc a{color:var(--ink-2)}
+.toc a:hover{color:var(--ink)}
+.toc .num{color:var(--ink-3);margin-right:10px}
+
+/* ---------- sections ---------- */
+.sec{padding:58px 0 0;scroll-margin-top:24px;position:relative}
+.mark{position:relative;font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;
+      text-transform:uppercase;color:var(--ink-3);margin-bottom:16px}
+.mark::before{content:"";position:absolute;left:calc(-1 * var(--pad-l) + var(--rail-x) - 3px);top:6px;
+  width:7px;height:7px;border-radius:50%;background:var(--ink-3);box-shadow:0 0 0 4px var(--bg)}
+h2{font-family:var(--disp);font-weight:500;font-size:clamp(24px,2.8vw,34px);
+   line-height:1.12;letter-spacing:-0.024em;max-width:24ch}
+h3{font-family:var(--body);font-weight:600;font-size:17px;line-height:1.35;
+   letter-spacing:-0.008em;margin-top:32px;color:var(--ink)}
+.prose{max-width:68ch}
+.prose p{margin-top:18px;color:var(--ink-2)}
+.prose p strong{color:var(--ink);font-weight:500}
+.prose ul{margin-top:16px;padding-left:0;list-style:none}
+.prose li{margin:0 0 12px;padding-left:18px;position:relative;color:var(--ink-2)}
+.prose li::before{content:"";position:absolute;left:0;top:11px;width:7px;height:1px;background:var(--line-2)}
+.prose li b{font-weight:500;color:var(--ink)}
+
+/* ---------- data rows ---------- */
+dl.data{margin-top:26px;max-width:72ch}
+dl.data > div{display:grid;grid-template-columns:minmax(0,210px) minmax(0,1fr);gap:6px 26px;
+  padding:13px 0;border-top:1px solid var(--line);align-items:baseline}
+dl.data > div:last-child{border-bottom:1px solid var(--line)}
+dl.data dt{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-3);line-height:1.5}
+dl.data dd{margin:0;color:var(--ink);font-size:15.5px;line-height:1.55}
+dl.data dd span.q{display:block;color:var(--ink-2);font-size:13.5px;margin-top:3px}
+
+.note{margin-top:18px;padding-left:14px;border-left:1px solid var(--line-2);
+      color:var(--ink-2);font-size:14.5px;line-height:1.6;max-width:66ch}
+.note b{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+        color:var(--ink-3);display:block;margin-bottom:6px;font-weight:400}
+
+/* ---------- footer ---------- */
+.foot{margin-top:86px;border-top:1px solid var(--line);padding:26px 0 56px;
+  display:flex;flex-wrap:wrap;gap:10px 24px;align-items:baseline;
+  font-family:var(--mono);font-size:12px;color:var(--ink-3)}
+.foot a{color:var(--ink-2);text-decoration:none;border-bottom:1px solid transparent}
+.foot a:hover{color:var(--ink);border-bottom-color:var(--line-2);text-decoration:none}
+.foot .right{margin-left:auto}
+
+@media (max-width:820px){
+  :root{--pad-l:34px;--rail-x:9px}
+  .head{padding:40px 0 4px}
+  .sec{padding:46px 0 0}
+  dl.data > div{grid-template-columns:minmax(0,1fr);gap:2px}
+  .toc ol{column-width:auto}
+}
+
+@media (max-width:560px){
+  .top{display:block;padding:18px 0 14px}
+  .nav{margin-left:0;margin-top:10px;gap:6px 18px}
+  h1{font-size:clamp(30px,8.6vw,40px)}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Zum Inhalt springen</a>
+
+<div class="page">
+  <div class="rail" aria-hidden="true"></div>
+
+  <header class="top">
+    <a class="brand" href="/"><b>session-orchestrator</b>.com</a>
+    <nav class="nav" aria-label="Rechtliches">
+      <a href="/">Start</a>
+      <a href="/impressum" aria-current="page">Impressum</a>
+      <a href="/datenschutz">Datenschutz</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <div class="head">
+      <p class="eyebrow">Rechtliches</p>
+      <h1>Impressum</h1>
+      <p class="stand">Angaben gemäß § 5 ECG und § 25 MedienG · Stand: 2026-08-19</p>
+      <p class="en"><b>Legal notice and privacy policy, in German as required by Austrian law.</b>
+        The site is operated from Vienna, Austria; the disclosures below follow the Austrian
+        E-Commerce Act and Media Act. A summary in English is available on request.</p>
+
+      <nav class="toc" aria-label="Inhaltsverzeichnis">
+        <p class="toc-h">Auf dieser Seite</p>
+        <ol>
+          <li><span class="num">01</span><a href="#unternehmen">Unternehmensangaben</a></li>
+          <li><span class="num">02</span><a href="#kontakt">Kontakt</a></li>
+          <li><span class="num">03</span><a href="#rechtliches">Rechtliche Informationen</a></li>
+          <li><span class="num">04</span><a href="#medien">Medieninhaber und Blattlinie</a></li>
+          <li><span class="num">05</span><a href="#ki">KI-Transparenz</a></li>
+          <li><span class="num">06</span><a href="#haftung">Haftung und Urheberrecht</a></li>
+          <li><span class="num">07</span><a href="#streit">Streitbeilegung</a></li>
+        </ol>
+      </nav>
+    </div>
+
+    <section class="sec" id="unternehmen" aria-labelledby="h-unternehmen">
+      <p class="mark">01 — Unternehmen</p>
+      <h2 id="h-unternehmen">Unternehmensangaben</h2>
+      <dl class="data">
+        <div><dt>Name</dt><dd>Bernhard Götzendorfer</dd></div>
+        <div><dt>Rechtsform</dt><dd>Einzelunternehmer</dd></div>
+        <div><dt>Tätigkeit</dt><dd>IT-Dienstleistungen, KI-Beratung und Softwareentwicklung</dd></div>
+        <div><dt>GISA-Zahl</dt><dd>38550959</dd></div>
+      </dl>
+    </section>
+
+    <section class="sec" id="kontakt" aria-labelledby="h-kontakt">
+      <p class="mark">02 — Kontakt</p>
+      <h2 id="h-kontakt">Kontakt</h2>
+      <dl class="data">
+        <div><dt>Anschrift</dt><dd>Rittingergasse 15/11<span class="q">1210 Wien, Österreich</span></dd></div>
+        <div><dt>Telefon</dt><dd><a href="tel:+436604301954">+43 660 4301954</a></dd></div>
+        <div><dt>E-Mail</dt><dd><a href="mailto:office@gotzendorfer.at">office@gotzendorfer.at</a></dd></div>
+        <div><dt>Website</dt><dd><a href="https://www.gotzendorfer.at">www.gotzendorfer.at</a></dd></div>
+      </dl>
+    </section>
+
+    <section class="sec" id="rechtliches" aria-labelledby="h-rechtliches">
+      <p class="mark">03 — Rechtliches</p>
+      <h2 id="h-rechtliches">Rechtliche Informationen</h2>
+      <dl class="data">
+        <div><dt>Firmenbucheintrag</dt><dd>nicht im Firmenbuch eingetragen</dd></div>
+        <div><dt>UID-Nummer</dt><dd>nicht vorhanden<span class="q">Kleinunternehmer gemäß § 6 Abs. 1 Z 27 UStG</span></dd></div>
+        <div><dt>Umsatzsteuer</dt><dd>Kleinunternehmer gemäß § 6 Abs. 1 Z 27 UStG — nicht umsatzsteuerpflichtig</dd></div>
+        <div><dt>Wirtschaftskammer</dt><dd>Wirtschaftskammer Wien, Fachgruppe UBIT<span class="q">Pflichtmitglied</span></dd></div>
+        <div><dt>Aufsichtsbehörde</dt><dd>Magistratisches Bezirksamt des XXI. Bezirkes<span class="q">1210 Wien</span></dd></div>
+        <div><dt>Rechtsvorschriften</dt><dd>Gewerbeordnung (GewO)<span class="q">abrufbar unter <a href="https://www.ris.bka.gv.at">www.ris.bka.gv.at</a></span></dd></div>
+        <div><dt>Berufsbezeichnung</dt><dd>Gewerbe der IT-Dienstleistung<span class="q">verliehen in Österreich</span></dd></div>
+      </dl>
+    </section>
+
+    <section class="sec" id="medien" aria-labelledby="h-medien">
+      <p class="mark">04 — Medieninhaber</p>
+      <h2 id="h-medien">Medieninhaber und Blattlinie</h2>
+      <div class="prose">
+        <dl class="data">
+          <div><dt>Medieninhaber</dt><dd>Bernhard Götzendorfer, Rittingergasse 15/11, 1210 Wien</dd></div>
+          <div><dt>Herausgeber</dt><dd>Bernhard Götzendorfer</dd></div>
+          <div><dt>Verantwortlich für den Inhalt</dt><dd>Bernhard Götzendorfer</dd></div>
+        </dl>
+        <p><strong>Grundlegende Richtung (§ 25 Abs. 4 MedienG):</strong> Diese Website informiert über
+          Session Orchestrator, ein quelloffenes Werkzeug für KI-gestützte Softwareentwicklung. Sie
+          beschreibt Funktionsweise, Installation und die im Projekt gemessenen Kennzahlen. Sie dient
+          der Darstellung des Projekts und des Betreibers und verfolgt keine parteipolitische oder
+          weltanschauliche Ausrichtung.</p>
+        <p>Die Software selbst steht unter der
+          <a href="https://github.com/Kanevry/session-orchestrator/blob/main/LICENSE">MIT-Lizenz</a>;
+          für ihre Nutzung gelten ausschließlich die dort genannten Bedingungen, insbesondere der
+          Gewährleistungsausschluss.</p>
+      </div>
+    </section>
+
+    <section class="sec" id="ki" aria-labelledby="h-ki">
+      <p class="mark">05 — KI-Transparenz</p>
+      <h2 id="h-ki">KI-Transparenz</h2>
+      <div class="prose">
+        <p>Die Texte und der Quellcode dieser Website wurden KI-gestützt erstellt: Sie sind im
+          offenen Repository des Projekts entstanden, in dem KI-Programmierassistenten mitschreiben.
+          Die betreffenden Commits tragen einen entsprechenden Mitautor-Vermerk und sind öffentlich
+          einsehbar. Die Auswahl, die Prüfung und die Freigabe der Inhalte erfolgen durch den
+          Betreiber; die redaktionelle Verantwortung liegt bei ihm.</p>
+        <p>Diese Website bindet <strong>keine Fotografien und keine KI-generierten Bildmotive</strong>
+          ein. Das Vorschaubild für soziale Netzwerke ist eine rein typografische Grafik. Die Website
+          ist selbst <strong>kein KI-System</strong>: Sie führt keinen Dialog, verarbeitet keine
+          Eingaben und trifft keine Entscheidungen. Ein Hinweis nach Art. 50 Abs. 1 KI-VO
+          (Interaktion mit einem KI-System) ist deshalb nicht einschlägig; dieser Abschnitt gibt die
+          Transparenz nach Art. 50 Abs. 4 KI-VO sinngemäß wieder.</p>
+        <p>Der Quelltext dieser Seite ist öffentlich einsehbar — jede Angabe hier lässt sich am
+          <a href="https://github.com/Kanevry/session-orchestrator">Repository</a> nachprüfen.</p>
+      </div>
+    </section>
+
+    <section class="sec" id="haftung" aria-labelledby="h-haftung">
+      <p class="mark">06 — Haftung</p>
+      <h2 id="h-haftung">Haftung und Urheberrecht</h2>
+      <div class="prose">
+        <h3>Haftung für Inhalte</h3>
+        <p>Die Inhalte dieser Seiten wurden mit größter Sorgfalt erstellt. Für die Richtigkeit,
+          Vollständigkeit und Aktualität der Inhalte kann jedoch keine Gewähr übernommen werden. Als
+          Diensteanbieter bin ich gemäß § 18 ECG für eigene Inhalte auf diesen Seiten verantwortlich.
+          Nach §§ 14–18 ECG bin ich jedoch nicht verpflichtet, übermittelte oder gespeicherte fremde
+          Informationen zu überwachen oder nach Umständen zu forschen, die auf eine rechtswidrige
+          Tätigkeit hinweisen.</p>
+
+        <h3>Haftung für Links</h3>
+        <p>Diese Website enthält Links zu externen Websites Dritter, auf deren Inhalte ich keinen
+          Einfluss habe. Deshalb kann ich für diese fremden Inhalte auch keine Gewähr übernehmen. Für
+          die Inhalte der verlinkten Seiten ist stets der jeweilige Anbieter oder Betreiber der Seiten
+          verantwortlich. Die verlinkten Seiten wurden zum Zeitpunkt der Verlinkung auf mögliche
+          Rechtsverstöße überprüft.</p>
+
+        <h3>Urheberrecht</h3>
+        <p>Die durch den Seitenbetreiber erstellten Inhalte und Werke auf diesen Seiten unterliegen
+          dem österreichischen Urheberrecht. Die Vervielfältigung, Bearbeitung, Verbreitung und jede
+          Art der Verwertung außerhalb der Grenzen des Urheberrechtes bedürfen der schriftlichen
+          Zustimmung des jeweiligen Autors bzw. Erstellers. Davon unberührt bleibt die Software des
+          Projekts, die unter der MIT-Lizenz steht.</p>
+      </div>
+    </section>
+
+    <section class="sec" id="streit" aria-labelledby="h-streit">
+      <p class="mark">07 — Streitbeilegung</p>
+      <h2 id="h-streit">Streitbeilegung</h2>
+      <div class="prose">
+        <p>Ich bin weder verpflichtet noch bereit, an einem Streitbeilegungsverfahren vor einer
+          Verbraucherschlichtungsstelle teilzunehmen.</p>
+        <p>Die EU-Online-Streitbeilegungs-Plattform (OS-Plattform) wurde von der Europäischen
+          Kommission zum 20. Juli 2025 eingestellt und steht nicht mehr zur Verfügung.</p>
+        <p class="note"><b>Datenverarbeitung</b>
+          Wie diese Website mit Daten umgeht — und wie wenig dabei anfällt — steht in der
+          <a href="/datenschutz">Datenschutzerklärung</a>.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>© 2026 Bernhard Götzendorfer</span>
+    <a href="/">Start</a>
+    <a href="/datenschutz">Datenschutz</a>
+    <a class="right" href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
+  </footer>
+</div>
+</body>
+</html>

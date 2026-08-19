@@ -23,6 +23,7 @@ import {
   applyVersion,
   checkChangelogEntry,
   checkLeakage,
+  verifyLiveSite,
 } from '../../scripts/release.mjs';
 
 // Fixture shapes are copied from the live repo files (golden-record rule in
@@ -188,5 +189,69 @@ describe('checkLeakage', () => {
       'npm notice 0.9kB hooks/hooks.json',
     ];
     expect(checkLeakage(lines)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// verifyLiveSite (#1043)
+//
+// The bug class these catch: the site fell a full release behind twice in four
+// weeks while every other surface reported success, because the deploy was a
+// checklist line nobody re-read. The replacement is only worth having if it
+// keeps its FOUR outcomes distinct — a later refactor that collapses them onto
+// a flat `{ok:false}` throws away the exact diagnosis the function exists for,
+// and would still pass a test that only asserted `ok`.
+// ---------------------------------------------------------------------------
+
+describe('verifyLiveSite', () => {
+  const opts = (fetchImpl) => ({ attempts: 1, delayMs: 0, fetchImpl, url: 'https://example.test/llms.txt' });
+  const body = (v) => `Session Orchestrator\nVersion: ${v} · npm: session-orchestrator\n`;
+  const ok200 = (text) => async () => ({ ok: true, status: 200, text: async () => text });
+
+  it('accepts when the live version equals the released one', async () => {
+    const r = await verifyLiveSite('3.20.0', opts(ok200(body('3.20.0'))));
+    expect(r.ok).toBe(true);
+  });
+
+  it('rejects a stale live version AND names both versions', async () => {
+    const r = await verifyLiveSite('3.20.0', opts(ok200(body('3.19.0'))));
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('3.19.0');
+    expect(r.detail).toContain('3.20.0');
+  });
+
+  it('distinguishes an unreachable host from a stale version', async () => {
+    const r = await verifyLiveSite('3.20.0', opts(async () => { throw new Error('ENOTFOUND'); }));
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('fetch failed');
+    expect(r.detail).not.toContain('live serves');
+  });
+
+  it('distinguishes a non-200 from a stale version', async () => {
+    const r = await verifyLiveSite('3.20.0', opts(async () => ({ ok: false, status: 503 })));
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('503');
+    expect(r.detail).not.toContain('live serves');
+  });
+
+  it('reports a moved surface as its own failure, not as a version mismatch', async () => {
+    // A 200 whose body no longer carries the version line means the CHECK is
+    // broken, not the deploy. Collapsing this onto "stale" would send the
+    // operator to look at Vercel while the real fix is in this file.
+    const r = await verifyLiveSite('3.20.0', opts(ok200('User-agent: *\nAllow: /\n')));
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('the surface moved');
+    expect(r.detail).not.toContain('live serves');
+  });
+
+  it('retries before giving up, so an async deploy is not a false negative', async () => {
+    let n = 0;
+    const flaky = async () => {
+      n += 1;
+      return { ok: true, status: 200, text: async () => body(n < 3 ? '3.19.0' : '3.20.0') };
+    };
+    const r = await verifyLiveSite('3.20.0', { attempts: 5, delayMs: 0, fetchImpl: flaky, url: 'https://example.test/llms.txt' });
+    expect(r.ok).toBe(true);
+    expect(n).toBe(3);
   });
 });

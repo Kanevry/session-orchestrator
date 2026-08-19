@@ -780,10 +780,41 @@ git push origin HEAD
 ```
 
 ### 4.4 GitHub Mirror (if configured in Session Config)
+
+Three states, three DISTINGUISHABLE outcomes. The predecessor of this block
+(`git remote get-url github 2>/dev/null && git push github HEAD 2>/dev/null || echo "GitHub mirror: not configured"`)
+collapsed a **failed push** into `GitHub mirror: not configured` and exited 0 — git's real
+error went to `/dev/null`, so a broken mirror was indistinguishable from an unconfigured one
+(`.claude/rules/bash-harness-pitfalls.md` — "Silence is not success"). That matters more once
+anything is wired to the mirror (e.g. a Vercel Git deploy): a silently-failing push means the
+downstream artifact never updates and nobody is told.
+
+Run it verbatim — `tests/skills/session-end/github-mirror-push.test.mjs` extracts the block
+between the markers and executes it, so no second copy of this command may exist.
+
 ```bash
-# Only attempt if 'mirror: github' is in Session Config AND remote exists
-git remote get-url github 2>/dev/null && git push github HEAD 2>/dev/null || echo "GitHub mirror: not configured"
+# --- github-mirror-push:begin ---
+# Only attempt if 'mirror: github' is in Session Config.
+# State 1: no 'github' remote      → informational, exit 0 (legitimate for consumer repos)
+# State 2: push succeeded          → confirmation WITH the pushed SHA, exit 0
+# State 3: push FAILED             → loud WARN on stderr WITH git's real output, exit 1
+if ! mirror_url=$(git remote get-url github 2>&1); then
+  echo "GitHub mirror: no 'github' remote configured — skipping (not an error)."
+  echo "  git said: ${mirror_url}" >&2
+elif push_out=$(git push github HEAD 2>&1); then
+  echo "GitHub mirror: pushed $(git rev-parse HEAD) -> ${mirror_url}"
+else
+  echo "WARN GitHub mirror PUSH FAILED: $(git rev-parse HEAD) is NOT on ${mirror_url}" >&2
+  echo "${push_out}" >&2
+  echo "WARN Mirror is stale — anything wired to it (site deploy) will not update." >&2
+  exit 1
+fi
+# --- github-mirror-push:end ---
 ```
+
+State 3 exits non-zero on purpose: it is the only machine-readable signal that the mirror is
+behind. Report it to the operator in the session summary; do not retry silently and do not
+swallow it with `|| true`.
 
 ## Phase 4a: Auto-Promoted Worktree Cleanup (#575 P3.2)
 

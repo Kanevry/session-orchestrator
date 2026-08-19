@@ -1,1506 +1,1054 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Session Orchestrator · Loop engineering for AI coding agents</title>
-<meta name="description" content="Turn ad-hoc sessions into a repeatable research, plan, wave-execute and close loop with verification gates. Runs on Claude Code, Codex CLI, Cursor and Pi.">
-<meta name="robots" content="index,follow">
-<meta name="color-scheme" content="dark">
+<title>Session Orchestrator — five typed passes, one gate between each</title>
+<meta name="description" content="An open-source plugin for coding agents. Work is split into five typed passes; write access is declared per wave and a verification gate runs between each.">
 <link rel="canonical" href="https://session-orchestrator.com/">
-<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Session Orchestrator">
-<meta property="og:title" content="Session Orchestrator · Loop engineering for AI coding agents">
-<meta property="og:description" content="A workflow layer on top of the coding agent you already have: research, plan, five typed waves, close. With verification gates that are enforced by hooks, not by asking the agent nicely.">
 <meta property="og:url" content="https://session-orchestrator.com/">
+<meta property="og:title" content="Session Orchestrator — five typed passes, one gate between each">
+<meta property="og:description" content="An open-source plugin for coding agents. Work is split into five typed passes; write access is declared per wave and a verification gate runs between each.">
 <meta property="og:image" content="https://session-orchestrator.com/og.png">
-<meta property="og:image:width" content="1280">
-<meta property="og:image:height" content="720">
-<meta property="og:image:alt" content="Dark terminal window showing one session-orchestrator run: slash-session feature, five wave dispatches with a gate between each, slash-close.">
+<meta property="og:image:alt" content="Session Orchestrator — five typed passes with a verification gate between each.">
 <meta property="og:locale" content="en">
-
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Session Orchestrator · Loop engineering for AI coding agents">
-<meta name="twitter:description" content="Research, plan, five typed waves, close. Verification gates enforced by hooks. Claude Code, Codex CLI, Cursor, Pi.">
+<meta name="twitter:title" content="Session Orchestrator — five typed passes, one gate between each">
+<meta name="twitter:description" content="An open-source plugin for coding agents. Write access is declared per wave and a verification gate runs between each.">
 <meta name="twitter:image" content="https://session-orchestrator.com/og.png">
-<meta name="twitter:image:alt" content="Dark terminal window showing one session-orchestrator run: slash-session feature, five wave dispatches with a gate between each, slash-close.">
 
-<link rel="preload" as="font" type="font/woff2" href="fonts/space-grotesk-700.woff2" crossorigin>
-<link rel="preload" as="font" type="font/woff2" href="fonts/inter-400.woff2" crossorigin>
-
+<!-- Entity consolidation (issue #1046): the site, the repository, the package
+     and the person who maintains them are one entity with stable @id anchors.
+     No rating, no review, no invented field — none of those would be true.
+     softwareVersion is deliberately absent: the version literal lives in the
+     markup under data-metric="version" and is written by one generator only. -->
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
   "@graph": [
     {
       "@type": "WebSite",
-      "name": "Session Orchestrator",
+      "@id": "https://session-orchestrator.com/#website",
       "url": "https://session-orchestrator.com/",
-      "inLanguage": "en"
+      "name": "Session Orchestrator",
+      "inLanguage": "en",
+      "publisher": { "@id": "https://www.gotzendorfer.at/#person" },
+      "about": { "@id": "https://session-orchestrator.com/#software" }
     },
     {
       "@type": "SoftwareApplication",
+      "@id": "https://session-orchestrator.com/#software",
       "name": "Session Orchestrator",
-      "description": "Loop engineering for AI coding agents. Turns ad-hoc sessions into a repeatable research, plan, wave-execute and close loop with verification gates between waves. Runs on Claude Code, Codex CLI, Cursor and Pi.",
       "url": "https://session-orchestrator.com/",
       "applicationCategory": "DeveloperApplication",
-      "operatingSystem": "macOS, Linux, Windows",
-      "softwareVersion": "3.20.0",
+      "operatingSystem": "macOS, Linux",
+      "description": "An open-source plugin for coding agents. Work is split into five typed passes; write access is declared per wave and a verification gate runs between each.",
       "license": "https://opensource.org/licenses/MIT",
-      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "EUR" }
+      "codeRepository": "https://github.com/Kanevry/session-orchestrator",
+      "downloadUrl": "https://www.npmjs.com/package/session-orchestrator",
+      "sameAs": [
+        "https://github.com/Kanevry/session-orchestrator",
+        "https://www.npmjs.com/package/session-orchestrator"
+      ],
+      "author": { "@id": "https://www.gotzendorfer.at/#person" },
+      "publisher": { "@id": "https://www.gotzendorfer.at/#person" },
+      "isAccessibleForFree": true,
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "EUR",
+        "availability": "https://schema.org/InStock"
+      },
+      "mainEntityOfPage": { "@id": "https://session-orchestrator.com/#website" }
+    },
+    {
+      "@type": "Person",
+      "@id": "https://www.gotzendorfer.at/#person",
+      "name": "Bernhard G\u00f6tzendorfer",
+      "url": "https://www.gotzendorfer.at",
+      "sameAs": [
+        "https://www.gotzendorfer.at",
+        "https://github.com/Kanevry"
+      ]
     }
   ]
 }
 </script>
-
+<!-- Self-hosted, latin subset, OFL — see fonts/LICENSES.md.
+     Zero external subresources: nothing on this page reaches a third party.
+     Preload is limited to the two faces the first screen actually paints. -->
+<link rel="preload" as="font" type="font/woff2" href="fonts/archivo-var.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="fonts/ibm-plex-mono-400.woff2" crossorigin>
 <style>
-/* ============================================================
-   FONTS. Self-hosted woff2, latin subset, font-display: swap.
-   No third-party font origin, so the site runs under a CSP that
-   does not have to allow one.
-   ============================================================ */
 @font-face {
-  font-family: 'Space Grotesk';
-  src: url('fonts/space-grotesk-500.woff2') format('woff2');
-  font-weight: 500; font-style: normal; font-display: swap;
+  font-family: 'Archivo';
+  src: url('fonts/archivo-var.woff2') format('woff2');
+  font-weight: 100 900; font-style: normal; font-display: swap;
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
-  font-family: 'Space Grotesk';
-  src: url('fonts/space-grotesk-700.woff2') format('woff2');
-  font-weight: 700; font-style: normal; font-display: swap;
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: 'Inter';
-  src: url('fonts/inter-400.woff2') format('woff2');
+  font-family: 'IBM Plex Mono';
+  src: url('fonts/ibm-plex-mono-400.woff2') format('woff2');
   font-weight: 400; font-style: normal; font-display: swap;
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 @font-face {
-  font-family: 'Inter';
-  src: url('fonts/inter-500.woff2') format('woff2');
+  font-family: 'IBM Plex Mono';
+  src: url('fonts/ibm-plex-mono-500.woff2') format('woff2');
   font-weight: 500; font-style: normal; font-display: swap;
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
-@font-face {
-  font-family: 'Inter';
-  src: url('fonts/inter-600.woff2') format('woff2');
-  font-weight: 600; font-style: normal; font-display: swap;
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: 'JetBrains Mono';
-  src: url('fonts/jetbrains-mono-400.woff2') format('woff2');
-  font-weight: 400; font-style: normal; font-display: swap;
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: 'JetBrains Mono';
-  src: url('fonts/jetbrains-mono-500.woff2') format('woff2');
-  font-weight: 500; font-style: normal; font-display: swap;
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
+/* ---------------------------------------------------------------
+   Fliessband. One continuous axis carries the whole page.
+   Monochrome ground + exactly three state colours:
+     --run   the work itself, in flight
+     --hold  something is holding the work back
+     --pass  cleared
+   No brand accent. Colour is a state readout, never decoration —
+   and no state is carried by colour ALONE: every state also has a
+   distinct shape (filled dot / open bracket / closed box) and a
+   distinct glyph, so the page survives being read without colour.
 
-/* ============================================================
-   TOKENS. The only block in this document that carries colour
-   literals. Grep contract for colour literals matches here only.
+   Nothing on this page is delivered hidden. There is not a single
+   opacity-hiding rule in this file and not a single entrance
+   animation on content. Motion advances one line and nothing else.
+   ---------------------------------------------------------------*/
+:root{
+  --bg:#0a0b0c;
+  --bg-2:#101215;
+  --ink:#ececeb;
+  --ink-2:#9ea4a8;
+  --ink-3:#7b8286;
+  --line:#22262a;
+  --line-2:#343a3f;
 
-   Measured contrast (against --so-bg / --so-surface):
-     ink            16.7 : 1  /  15.3 : 1
-     meta            7.6 : 1  /   7.0 : 1
-     accent-text    13.3 : 1  /  12.2 : 1
-     accent         10.7 : 1
-     accent-fg on accent fill   10.1 : 1
-     ok             10.0 : 1
-     danger          7.0 : 1
-     border-strong   3.42 : 1  (meets 3:1 for UI boundaries)
-   ============================================================ */
-:root {
-  color-scheme: dark;
+  --run:#e8a33d;
+  --hold:#f0705e;
+  --pass:#5fbf82;
 
-  /* Surfaces */
-  --so-bg:            #0B0F10;
-  --so-surface:       #14191B;
-  --so-surface-2:     #1A2023;  /* code inside a card, zebra rows */
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --disp:"Archivo",-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;
 
-  /* Text */
-  --so-ink:           #ECEFF0;
-  --so-meta:          #9BA4A8;
+  --rail-x:12px;
+  --pad-l:56px;
+  --sec:34px;
 
-  /* Structure */
-  --so-border:        #232A2C;        /* decorative hairline, never the only boundary of an interactive element */
-  --so-border-strong: #5A6A70;        /* boundary of interactive elements */
-
-  /* THE ONE ACCENT, variant 1: Signal Cyan at lightness 0.785, chroma 0.13, hue 195 */
-  --so-accent:        #22D3EE;
-  --so-accent-text:   #67E8F9;
-  --so-accent-fg:     #06181C;
-  --so-ring:          var(--so-accent);
-
-  /* State colours. Used only where a state is actually carried. */
-  --so-ok:            #52D196;
-  --so-danger:        #F87171;
-
-  /* The single sanctioned deep shadow (media breakout only) */
-  --so-shadow-deep:   0 34px 80px -28px rgba(0, 0, 0, 0.85);
-
-  /* Radius */
-  --so-radius:    0.5rem;
-  --so-radius-sm: 0.25rem;
-  --so-radius-lg: 0.75rem;
-  --so-radius-xl: 1rem;
-
-  /* Motion */
-  --so-dur-instant: 100ms;
-  --so-dur-fast:    150ms;
-  --so-dur-normal:  200ms;
-  --so-dur-medium:  300ms;
-  --so-dur-slow:    500ms;
-  --so-dur-entrance: 620ms;
-  --so-stagger-step: 90ms;
-  --so-ease-standard:   cubic-bezier(0.4, 0, 0.2, 1);
-  --so-ease-smooth:     cubic-bezier(0.16, 1, 0.3, 1);
-  --so-ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
-
-  /* Layout */
-  --so-narrow: 720px;
-  --so-wide:   1152px;
-  --so-pad-x:  1.5rem;
-  --so-pad-y:  5rem;
-
-  /* Type */
-  --so-font-display: 'Space Grotesk', Inter, system-ui, sans-serif;
-  --so-font-body:    'Inter', ui-sans-serif, system-ui, sans-serif;
-  --so-font-mono:    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* the band's one honest constant: 1 file of declared write scope = --unit */
+  --unit:15px;
+  --plot-h:270px;
+  --gate-w:96px;
+  --lbl-w:112px;
 }
 
-/* ---------- base ---------- */
-*, *::before, *::after { box-sizing: border-box; }
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--bg);color:var(--ink);
+  font-family:var(--disp);font-weight:300;
+  font-size:16px;line-height:1.55;
+  letter-spacing:-0.005em;
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3,p,dl,dd,figure,figcaption,blockquote,ul,ol{margin:0}
+ul,ol{padding:0;list-style:none}
+a{color:inherit}
+img,svg{max-width:100%}
+::selection{background:var(--ink);color:var(--bg)}
 
-html {
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
-  scroll-behavior: smooth;
+a:focus-visible,button:focus-visible,.skip:focus-visible,[tabindex]:focus-visible{
+  outline:2px solid var(--ink);outline-offset:3px;border-radius:2px;
 }
 
-body {
-  margin: 0;
-  background: var(--so-bg);
-  color: var(--so-ink);
-  font-family: var(--so-font-body);
-  font-size: 1rem;
-  line-height: 1.6;
-  font-weight: 400;
-  font-feature-settings: "kern", "liga", "calt";
-}
+.sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+    clip-path:inset(50%);white-space:nowrap;border:0}
+.skip{position:absolute;left:-9999px;top:0;background:var(--ink);color:var(--bg);
+      padding:10px 16px;z-index:50;font-family:var(--mono);font-size:13px}
+.skip:focus{left:8px;top:8px}
 
-[id] { scroll-margin-top: 5.5rem; }
+/* mono numerals line up in every column they appear in */
+.num,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums slashed-zero}
 
-h1, h2, h3 { margin: 0; font-family: var(--so-font-display); font-feature-settings: "kern","liga","calt","dlig"; }
-h1 { font-size: clamp(2.25rem, 1.4rem + 3.6vw, 3.75rem); line-height: 1.1; letter-spacing: -0.02em; font-weight: 700; }
-h2 { font-size: clamp(1.6rem, 1.15rem + 1.6vw, 1.978rem); line-height: 1.25; letter-spacing: -0.01em; font-weight: 700; }
-h3 { font-size: 1.125rem; line-height: 1.3; letter-spacing: -0.01em; font-weight: 600; font-family: var(--so-font-body); }
-p  { margin: 0 0 1rem; }
-ul, ol { margin: 0 0 1rem; padding-left: 1.15rem; }
-li { margin: 0 0 0.5rem; }
-strong { font-weight: 600; color: var(--so-ink); }
+/* ---------- page column + the spine ---------- */
+.page{position:relative;max-width:1280px;margin:0 auto;padding:0 24px 0 var(--pad-l)}
+.rail{position:absolute;top:0;bottom:0;left:var(--rail-x);width:1px;background:var(--line);pointer-events:none}
+.rail-fill{position:absolute;inset:0;transform-origin:top center;
+  background:linear-gradient(180deg,var(--line-2) 0%,var(--ink-3) 55%,var(--line-2) 100%)}
 
-a { color: var(--so-accent-text); text-decoration: none; text-underline-offset: 3px; }
-a:hover { text-decoration: underline; }
-
-code, kbd, samp, pre { font-family: var(--so-font-mono); font-size: 0.875rem; line-height: 1.6; }
-
-:focus-visible {
-  outline: 2px solid var(--so-ring);
-  outline-offset: 2px;
-  border-radius: var(--so-radius-sm);
-}
-
-::selection { background: var(--so-accent); color: var(--so-accent-fg); }
-
-.visually-hidden {
-  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
-}
-
-.skip-link {
-  position: absolute; left: 0.75rem; top: -100px; z-index: 100;
-  background: var(--so-accent); color: var(--so-accent-fg);
-  font-weight: 600; padding: 0.75rem 1rem; border-radius: var(--so-radius);
-  transition: top var(--so-dur-fast) var(--so-ease-standard);
-}
-.skip-link:focus { top: 0.75rem; text-decoration: none; }
-
-/* ---------- layout primitives ---------- */
-.wrap      { width: 100%; max-width: var(--so-wide);   margin-inline: auto; padding-inline: var(--so-pad-x); }
-.wrap-narrow { width: 100%; max-width: var(--so-narrow); margin-inline: auto; padding-inline: var(--so-pad-x); }
-.section   { padding-block: var(--so-pad-y); border-top: 1px solid var(--so-border); }
-.section-head { max-width: 65ch; margin-bottom: 2.5rem; }
-.section-head p { margin-bottom: 0; }
-.section-head > p:not(.eyebrow) { color: var(--so-meta); margin-top: 1rem; }
-.prose { max-width: 65ch; }
-.lead { font-size: 1.125rem; color: var(--so-meta); }
-
-/* ---------- idioms ---------- */
-.eyebrow {
-  font-family: var(--so-font-mono);
-  font-size: 0.75rem; line-height: 1.5; font-weight: 500;
-  text-transform: uppercase; letter-spacing: 0.05em;
-  color: var(--so-accent-text);
-  margin: 0 0 1rem;
-}
-.mono-num {
-  font-family: var(--so-font-mono);
-  font-variant-numeric: tabular-nums;
-  font-weight: 500;
-}
-.meta { color: var(--so-meta); }
-.small { font-size: 0.75rem; line-height: 1.5; letter-spacing: 0.01em; }
-.file {
-  font-family: var(--so-font-mono);
-  font-size: 0.8125rem;
-  color: var(--so-accent-text);
-  word-break: break-word;
-}
-
-/* ---------- buttons ---------- */
-.btn {
-  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
-  min-height: 44px; padding: 0.625rem 1.25rem;
-  border-radius: var(--so-radius);
-  font-family: var(--so-font-body); font-size: 0.9375rem; font-weight: 600;
-  border: 1px solid var(--so-border-strong);
-  color: var(--so-ink); background: transparent;
-  cursor: pointer;
-  transition: transform var(--so-dur-fast) var(--so-ease-standard),
-              border-color var(--so-dur-fast) var(--so-ease-standard),
-              background-color var(--so-dur-fast) var(--so-ease-standard);
-}
-.btn:hover { text-decoration: none; transform: translateY(-2px); border-color: var(--so-accent); }
-.btn-primary {
-  background: var(--so-accent); color: var(--so-accent-fg); border-color: var(--so-accent);
-}
-.btn-primary:hover { border-color: var(--so-accent-text); background: var(--so-accent-text); }
-.btn-sm { min-height: 44px; padding: 0.4rem 0.9rem; font-size: 0.875rem; }
-.btn svg { width: 1em; height: 1em; flex: none; }
+/* section marker sitting on the spine */
+.mark{position:relative;font-family:var(--mono);font-size:13px;letter-spacing:.13em;
+      text-transform:uppercase;color:var(--ink-3);padding:0 0 11px}
+.mark::before{content:"";position:absolute;left:calc(-1 * var(--pad-l) + var(--rail-x) - 3px);top:7px;
+  width:7px;height:7px;border-radius:50%;background:var(--ink-3);box-shadow:0 0 0 4px var(--bg)}
 
 /* ---------- header ---------- */
-.site-header {
-  position: sticky; top: 0; z-index: 50;
-  background: var(--so-bg);
-  border-bottom: 1px solid var(--so-border);
-}
-.site-header .wrap {
-  display: flex; align-items: center; gap: 1.5rem;
-  min-height: 4rem; flex-wrap: nowrap;
-}
-.site-header .wordmark { min-width: 0; }
-.wordmark {
-  display: inline-flex; align-items: center; gap: 0.55rem;
-  font-family: var(--so-font-display); font-weight: 700; font-size: 1rem;
-  letter-spacing: -0.015em; color: var(--so-ink);
-}
-.wordmark:hover { text-decoration: none; }
-.wordmark svg { width: 1.25rem; height: 1.25rem; color: var(--so-accent); }
-.nav { display: none; margin-left: auto; align-items: center; gap: 1.5rem; }
-.nav a {
-  color: var(--so-meta); font-size: 0.875rem; font-weight: 500;
-  min-height: 44px; display: inline-flex; align-items: center;
-  transition: color var(--so-dur-fast) var(--so-ease-standard);
-}
-.nav a:hover { color: var(--so-ink); text-decoration: none; }
-.header-cta { margin-left: auto; display: flex; align-items: center; gap: 0.75rem; flex: none; }
-@media (min-width: 900px) {
-  .nav { display: flex; }
-  .header-cta { margin-left: 0; }
-}
-/* Narrow viewports: the GitHub control collapses to an icon-only 44px target.
-   Its accessible name comes from aria-label, so meaning never depends on the label. */
-@media (max-width: 560px) {
-  .site-header .wrap { gap: 0.75rem; }
-  .wordmark { font-size: 0.9375rem; }
-  .gh-label { display: none; }
-  .btn-icon { padding-inline: 0.7rem; }
-}
+.top{display:flex;flex-wrap:wrap;gap:8px 26px;align-items:baseline;
+     padding:20px 0 16px;border-bottom:1px solid var(--line)}
+.brand{font-family:var(--mono);font-size:13px;letter-spacing:.02em;color:var(--ink);text-decoration:none}
+.brand b{font-weight:500}
+.nav{display:flex;flex-wrap:wrap;gap:6px 20px;margin-left:auto;font-family:var(--mono);font-size:13px}
+.nav a{color:var(--ink-2);text-decoration:none;padding:2px 0;border-bottom:1px solid transparent}
+.nav a:hover{color:var(--ink);border-bottom-color:var(--line-2)}
 
 /* ---------- hero ---------- */
-.hero { padding-block: 4rem 3.5rem; border-top: 0; }
-.hero h1 { max-width: 16ch; margin-bottom: 1.25rem; }
-.hero-sub { max-width: 58ch; font-size: 1.125rem; color: var(--so-meta); margin-bottom: 2rem; }
-.cta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
-.cta-note { color: var(--so-meta); font-size: 0.8125rem; margin: 1rem 0 0; }
-.cta-note .mono-num { color: var(--so-ink); }
+.hero{padding:24px 0 10px}
+.eyebrow{font-family:var(--mono);font-size:13px;letter-spacing:.09em;color:var(--ink-2);
+         text-transform:uppercase;margin-bottom:22px}
+h1{
+  font-family:var(--disp);font-weight:200;
+  font-size:clamp(33px,4.85vw,68px);
+  line-height:1.0;letter-spacing:-0.03em;
+  max-width:17ch;
+}
+.hero-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.02fr);gap:46px;margin-top:32px;align-items:start}
+.hero-grid>*{min-width:0}
+.lede{font-size:clamp(16px,1.32vw,19px);line-height:1.62;color:var(--ink-2);max-width:46ch;font-weight:300}
+.lede em{font-style:normal;color:var(--ink)}
+.cta{display:flex;flex-wrap:wrap;gap:12px;margin-top:24px}
+.btn{font-family:var(--mono);font-size:13px;text-decoration:none;padding:12px 20px;
+     border:1px solid transparent;display:inline-flex;align-items:center;justify-content:center;
+     min-height:44px;line-height:1.2}
+.btn-1{background:var(--ink);color:var(--bg);font-weight:500}
+.btn-1:hover{background:#fff}
+.btn-2{border-color:var(--line-2);color:var(--ink)}
+.btn-2:hover{border-color:var(--ink-3)}
+.meta{margin-top:22px;font-family:var(--mono);font-size:13px;color:var(--ink-3);letter-spacing:.01em}
 
-/* ---------- terminal (the single deep-shadow media breakout) ---------- */
-.term-shell { margin-top: 3rem; }
-.terminal {
-  background: var(--so-surface);
-  border: 1px solid var(--so-border-strong);
-  border-radius: var(--so-radius-lg);
-  box-shadow: var(--so-shadow-deep);
-  overflow: hidden;
-}
-@media (min-width: 1240px) {
-  .term-shell { margin-inline: -2.5rem; }
-}
-.term-bar {
-  display: flex; align-items: center; gap: 0.75rem;
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--so-border);
-  background: var(--so-surface);
-}
-.term-dots { display: flex; gap: 0.4rem; flex: none; }
-.term-dots i {
-  width: 0.6875rem; height: 0.6875rem; border-radius: 9999px;
-  border: 1px solid var(--so-border-strong);
-}
-.term-title {
-  font-family: var(--so-font-mono); font-size: 0.75rem; font-weight: 500;
-  color: var(--so-meta); letter-spacing: 0.02em;
-  margin-inline: auto; padding-right: 2.5rem;
-}
-.term-body {
-  background: var(--so-surface-2);
-  padding: 1.25rem 1rem 1.25rem;
-  font-family: var(--so-font-mono); font-size: 0.8125rem; line-height: 1.85;
-  overflow-x: auto;
-  min-height: 27rem;
-}
-@media (min-width: 720px) {
-  .term-body { font-size: 0.875rem; padding: 1.5rem; min-height: 26rem; }
-}
-.tl { white-space: pre; display: block; }
-.tl-gap { font-size: 0; line-height: 0.75rem; }
-.term-prompt { color: var(--so-accent); font-weight: 500; }
-.term-cmd { color: var(--so-ink); font-weight: 500; }
-.term-k { color: var(--so-meta); display: inline-block; min-width: 9.75rem; }
-.term-wave { color: var(--so-accent-text); font-weight: 500; display: inline-block; min-width: 3.5rem; }
-.term-role { color: var(--so-ink); display: inline-block; min-width: 9rem; }
-.term-v { color: var(--so-meta); }
-.term-ok { color: var(--so-ok); }
-.term-hl { color: var(--so-ink); font-weight: 500; }
+/* ---------- transcript ---------- */
+.tape{border:1px solid var(--line);background:var(--bg-2);min-width:0}
+.tape-bar{display:flex;gap:14px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--line);
+          font-family:var(--mono);font-size:13px;color:var(--ink-3);letter-spacing:.06em;text-transform:uppercase}
+.tape pre{margin:0;padding:14px 14px 17px;overflow-x:auto;min-width:0;scrollbar-width:thin;
+  font-family:var(--mono);font-size:13px;line-height:1.46;color:var(--ink-2);
+  letter-spacing:0;font-weight:400}
+.tape .cmd{color:var(--ink);font-weight:500}
+.tape .sig,.tape .k{color:var(--ink-3)}
+.pass{color:var(--pass)}
+.hold{color:var(--hold)}
+.run{color:var(--run)}
+.tape-cap{margin-top:13px;color:var(--ink-2);font-size:15px;line-height:1.55;max-width:64ch}
+.tape-cap b{font-weight:400;color:var(--ink)}
 
-.term-foot {
-  display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
-  padding: 0.5rem 0.75rem 0.5rem 1rem;
-  border-top: 1px solid var(--so-border);
-  background: var(--so-surface);
-}
-.term-status {
-  font-family: var(--so-font-mono); font-size: 0.75rem; color: var(--so-meta);
-  letter-spacing: 0.02em;
-}
-.term-toggle { margin-left: auto; }
-.term-toggle[hidden] { display: none; }
+/* ---------- shared section head ---------- */
+.sec{padding:var(--sec) 0 8px;scroll-margin-top:20px}
+h2{font-family:var(--disp);font-weight:200;font-size:clamp(27px,3.05vw,42px);
+   line-height:1.05;letter-spacing:-0.026em;max-width:22ch}
+h3{font-family:var(--disp);font-weight:300;font-size:19px;letter-spacing:-0.015em;line-height:1.25}
+/* quiet sections: same voice, lower volume. Only hero, install and the loop
+   are allowed to be loud — 27 equally loud cards mean nothing is loud. */
+.sec.q{padding-top:40px}
+.sec.q h2{font-size:clamp(23px,1.85vw,27px);max-width:34ch;letter-spacing:-0.018em}
+.sec.q .sub{margin-top:9px;font-size:15px}
+.sub{margin-top:10px;color:var(--ink-2);font-size:clamp(15px,1.15vw,17.5px);max-width:52ch}
 
-/* typing state, applied by script only, and only under no-preference */
-.terminal.is-typing .tl { visibility: hidden; }
-.terminal.is-typing .tl.is-on { visibility: visible; animation: term-in 180ms var(--so-ease-standard) both; }
-.terminal.is-typing .tl.is-caret .term-cmd::after {
-  content: "\2589"; color: var(--so-accent); margin-left: 0.05em;
-  animation: caret 1s steps(1, end) infinite;
-}
-@keyframes term-in { from { transform: translateY(2px); } to { transform: none; } }
-@keyframes caret  { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
-
-/* ---------- generic cards / grids ---------- */
-.grid { display: grid; gap: 1.5rem; }
-.grid-2 { grid-template-columns: minmax(0, 1fr); }
-.grid-3 { grid-template-columns: minmax(0, 1fr); }
-@media (min-width: 680px) {
-  .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (min-width: 1000px) {
-  .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-
-.card {
-  min-width: 0;
-  background: var(--so-surface);
-  border: 1px solid var(--so-border);
-  border-radius: var(--so-radius);
-  padding: 1.5rem;
-}
-.card h3 { margin-bottom: 0.5rem; }
-.card p { color: var(--so-meta); margin-bottom: 0.75rem; }
-.card > :last-child { margin-bottom: 0; }
-.card-lift {
-  transition: transform var(--so-dur-normal) var(--so-ease-standard),
-              border-color var(--so-dur-normal) var(--so-ease-standard);
-}
-.card-lift:hover { transform: translateY(-2px); border-color: var(--so-border-strong); }
-
-.stripe { border-left: 2px solid var(--so-accent); padding-left: 1.25rem; }
-
-.quote {
-  border-left: 2px solid var(--so-accent);
-  padding: 0.25rem 0 0.25rem 1.25rem;
-  margin: 0 0 1.5rem;
-  font-family: var(--so-font-display);
-  font-size: 1.125rem; line-height: 1.5; font-weight: 500; letter-spacing: -0.01em;
-  color: var(--so-ink);
-  max-width: 60ch;
-}
-.quote cite { display: block; margin-top: 0.5rem; font: 500 0.75rem/1.5 var(--so-font-mono); color: var(--so-meta); font-style: normal; letter-spacing: 0.02em; }
-
-.codeblock {
-  min-width: 0;
-  background: var(--so-surface-2);
-  border: 1px solid var(--so-border);
-  border-radius: var(--so-radius);
-  padding: 1rem 1.125rem;
-  overflow-x: auto;
-  color: var(--so-ink);
-}
-.codeblock .c { color: var(--so-meta); }
-.codeblock .k { color: var(--so-accent-text); }
-.codeblock pre { margin: 0; }
-
-/* ---------- ledger (name + file path, no prose) ---------- */
-.ledger {
-  list-style: none; margin: 1.5rem 0 0; padding: 0;
-  display: grid; gap: 1px;
-  grid-template-columns: minmax(0, 1fr);
-  background: var(--so-border);
-  border: 1px solid var(--so-border);
-  border-radius: var(--so-radius);
-  overflow: hidden;
-}
-@media (min-width: 720px) { .ledger { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.ledger li {
-  margin: 0; background: var(--so-surface);
-  padding: 0.85rem 1rem;
-  display: flex; flex-wrap: wrap; align-items: baseline;
-  gap: 0.15rem 1rem; justify-content: space-between;
-}
-.ledger .n { font-weight: 600; font-size: 0.9375rem; }
-
-/* ---------- loop stations ---------- */
-.loop-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
-.loop-step {
-  display: grid; gap: 0.25rem 1.5rem;
-  grid-template-columns: minmax(0, 1fr);
-  padding: 1.5rem 0;
-  border-top: 1px solid var(--so-border);
-  margin: 0;
-}
-.loop-step:first-child { border-top: 0; padding-top: 0; }
-@media (min-width: 860px) {
-  .loop-step { grid-template-columns: 13rem minmax(0, 1fr); }
-}
-.loop-idx {
-  font-family: var(--so-font-mono); font-size: 0.75rem; font-weight: 500;
-  letter-spacing: 0.05em; text-transform: uppercase; color: var(--so-accent-text);
-  margin-bottom: 0.35rem;
-}
-.loop-cmd {
-  font-family: var(--so-font-mono); font-size: 0.9375rem; font-weight: 500;
-  color: var(--so-ink);
-}
-.loop-plain { margin-bottom: 0.5rem; max-width: 62ch; }
-.loop-mech {
-  color: var(--so-meta); font-size: 0.9375rem; max-width: 62ch; margin-bottom: 0;
-}
-.loop-mech .m { color: var(--so-ink); font-weight: 500; }
-
-/* ---------- wave pipeline ---------- */
-.pipeline {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-items: stretch;
-  gap: 0;
-  margin-bottom: 2.5rem;
-}
-@media (min-width: 980px) {
-  .pipeline { grid-auto-flow: column; grid-template-columns: none; grid-auto-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr); }
-}
-.station {
-  min-width: 0;
-  border: 1px solid var(--so-border);
-  border-radius: var(--so-radius);
-  background: var(--so-surface);
-  padding: 1rem 1rem 1.125rem;
-  display: flex; flex-direction: column; gap: 0.35rem;
-}
-.station-id {
-  font-family: var(--so-font-mono); font-size: 0.75rem; font-weight: 500;
-  letter-spacing: 0.05em; color: var(--so-meta);
-}
-.station-name { font-weight: 600; font-size: 0.9375rem; letter-spacing: -0.01em; }
-.station-meta { font-family: var(--so-font-mono); font-size: 0.75rem; color: var(--so-meta); font-variant-numeric: tabular-nums; }
-.gate {
-  display: flex; align-items: center; justify-content: center; gap: 0.4rem;
-  padding: 0.75rem 0.5rem;
-  color: var(--so-accent);
-}
-.gate svg { width: 1.375rem; height: 1.375rem; flex: none; }
-.gate span {
-  font-family: var(--so-font-mono); font-size: 0.6875rem; text-transform: uppercase;
-  letter-spacing: 0.06em; color: var(--so-accent-text);
-}
-.gate.gate-full span { color: var(--so-accent-text); font-weight: 500; }
-@media (min-width: 980px) {
-  .gate { flex-direction: column; padding: 0 0.6rem; }
-  .gate span { writing-mode: horizontal-tb; }
-}
-
-/* ---------- tables ---------- */
-.table-scroll { overflow-x: auto; border: 1px solid var(--so-border); border-radius: var(--so-radius); }
-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; min-width: 40rem; }
-caption { text-align: left; color: var(--so-meta); font-size: 0.8125rem; padding: 0 0 0.75rem; }
-th, td { text-align: left; padding: 0.75rem 1rem; border-bottom: 1px solid var(--so-border); vertical-align: top; }
-thead th {
-  font-family: var(--so-font-mono); font-size: 0.6875rem; text-transform: uppercase;
-  letter-spacing: 0.06em; color: var(--so-meta); font-weight: 500; white-space: nowrap;
-}
-tbody tr:nth-child(even) { background: var(--so-surface-2); }
-tbody tr:last-child td { border-bottom: 0; }
-td .mono-num, td .file { white-space: nowrap; }
-.state-ok { color: var(--so-ok); font-weight: 500; }
-.state-off { color: var(--so-danger); font-weight: 500; }
-.state-partial { color: var(--so-meta); font-weight: 500; }
-
-/* compressed harness matrix, two lines */
-.matrix {
-  display: flex; flex-wrap: wrap; gap: 0.35rem 1.25rem;
-  font-family: var(--so-font-mono); font-size: 0.8125rem;
-  margin: 0.75rem 0 0; color: var(--so-meta);
-}
-.matrix > span { min-width: 0; }
-/* separator via pseudo-element: groups the pairs visually without adding read-out text */
-.matrix > span:not(:last-child)::after { content: "·"; color: var(--so-border-strong); margin-left: 1.25rem; }
-/* nowrap only where the container is guaranteed wide enough for the longest pair */
-@media (min-width: 600px) { .matrix > span { white-space: nowrap; } }
+/* ---------- 02 · the statement under the fold ---------- */
+.fold{padding:26px 0 2px}
+.fold .say{font-family:var(--disp);font-weight:200;
+  font-size:clamp(23px,2.75vw,38px);line-height:1.16;letter-spacing:-0.026em;max-width:26ch}
+.fold .say b{font-weight:300;color:var(--ink)}
+.fold .after{margin-top:20px;font-family:var(--disp);font-weight:300;font-size:16px;
+  line-height:1.6;color:var(--ink-2);max-width:56ch;letter-spacing:0}
 
 /* ---------- install ---------- */
-.install-note {
-  border: 1px solid var(--so-border);
-  border-left: 2px solid var(--so-accent);
-  border-radius: var(--so-radius);
-  background: var(--so-surface);
-  padding: 1rem 1.25rem;
-  margin-bottom: 2rem;
-}
-.install-note p { margin: 0; color: var(--so-meta); }
-.install-note .mono-num { color: var(--so-ink); }
+.harness{position:relative;padding:11px 0 2px;border-top:1px solid var(--line)}
+.harness:first-of-type{border-top:0}
+.harness::before{content:"";position:absolute;left:calc(-1 * var(--pad-l) + var(--rail-x) - 4px);top:18px;
+  width:9px;height:9px;border-radius:50%;background:var(--run);box-shadow:0 0 0 5px var(--bg)}
+.h-row{display:grid;grid-template-columns:minmax(0,210px) minmax(0,1fr);gap:24px;align-items:start}
+.h-row>*{min-width:0}
+.h-name{font-family:var(--disp);font-weight:200;font-size:clamp(21px,1.9vw,27px);
+  letter-spacing:-0.024em;line-height:1.05}
+.h-tag{margin-top:8px;font-family:var(--mono);font-size:13px;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--ink-3)}
+.cmd{position:relative;min-width:0}
+pre.code{margin:0;border:1px solid var(--line);background:var(--bg-2);padding:12px 14px;
+  font-family:var(--mono);font-size:13px;line-height:1.55;color:var(--ink);
+  overflow-x:auto;min-width:0;font-weight:400}
+pre.code.soft{white-space:pre-wrap;overflow-wrap:anywhere;overflow-x:visible}
+pre.code .sig{color:var(--ink-3)}
+.copy{position:absolute;top:7px;right:7px;background:var(--bg-2);color:var(--ink-3);
+  border:1px solid var(--line-2);font-family:var(--mono);font-size:13px;line-height:1;
+  padding:7px 9px;cursor:pointer;min-height:30px}
+.copy:hover{color:var(--ink);border-color:var(--ink-3)}
+.copy.is-done{color:var(--pass);border-color:var(--pass)}
+.note{margin-top:10px;font-size:15px;color:var(--ink-2);line-height:1.55;max-width:62ch}
+.note code,.rowfile{font-family:var(--mono);font-size:13px;color:var(--ink)}
 
-.harness { display: flex; flex-direction: column; min-width: 0; }
-.harness-head { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.35rem; }
-.harness-head h3 { margin: 0; }
-.badge {
-  font-family: var(--so-font-mono); font-size: 0.625rem; text-transform: uppercase;
-  letter-spacing: 0.06em; font-weight: 500;
-  color: var(--so-accent-text);
-  border: 1px solid var(--so-accent);
-  border-radius: 9999px; padding: 0.1rem 0.5rem;
-}
-.harness > p { margin-bottom: 1rem; }
-.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.75rem; min-width: 0; }
-.steps > li { min-width: 0; }
-.step-label {
-  font-family: var(--so-font-mono); font-size: 0.6875rem; text-transform: uppercase;
-  letter-spacing: 0.06em; color: var(--so-meta); display: block; margin-bottom: 0.35rem;
-}
-.cmd {
-  min-width: 0;
-  display: flex; align-items: stretch; gap: 0;
-  background: var(--so-surface-2);
-  border: 1px solid var(--so-border);
-  border-radius: var(--so-radius-sm);
-  overflow: hidden;
-}
-.cmd code {
-  flex: 1 1 auto; min-width: 0;
-  padding: 0.7rem 0.85rem;
-  overflow-x: auto; white-space: pre;
-  color: var(--so-ink);
-}
-.copy {
-  flex: none; width: 48px; height: 48px; align-self: center; margin-right: 0.25rem;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: transparent; border: 1px solid var(--so-border-strong);
-  border-radius: var(--so-radius-sm);
-  color: var(--so-meta); cursor: pointer;
-  transition: color var(--so-dur-fast) var(--so-ease-standard),
-              border-color var(--so-dur-fast) var(--so-ease-standard);
-}
-.copy:hover { color: var(--so-ink); border-color: var(--so-accent); }
-.copy svg { width: 1.05rem; height: 1.05rem; }
-.copy .icon-done { display: none; }
-.copy.is-done { color: var(--so-ok); border-color: var(--so-ok); }
-.copy.is-done .icon-copy { display: none; }
-.copy.is-done .icon-done { display: block; }
-.manual-step {
-  font-size: 0.8125rem; color: var(--so-meta);
-  border-left: 1px solid var(--so-border-strong); padding-left: 0.85rem;
-}
+/* the "holds / broken" form: an OPEN bracket — never colour alone */
+.flag{margin-top:10px;padding:10px 12px;border:1px solid var(--hold);border-right:0;
+  font-size:15px;line-height:1.5;color:var(--ink-2);max-width:66ch}
+.flag>b{font-weight:500;color:var(--hold);font-family:var(--mono);font-size:13px;
+  letter-spacing:.09em;text-transform:uppercase;display:block;margin-bottom:4px}
+.flag>b::before{content:"\2715  ";}
+.flag pre.code{margin-top:8px}
 
-/* ---------- leaderboard ---------- */
-.lb-note {
-  font-family: var(--so-font-mono); font-size: 0.75rem; letter-spacing: 0.02em;
-  color: var(--so-meta); margin: 0.75rem 0 0;
-}
-.lb-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; }
-.lb-chip {
-  display: inline-flex; align-items: baseline; gap: 0.3rem;
-  font-family: var(--so-font-mono); font-size: 0.75rem;
-  border: 1px solid var(--so-border-strong);
-  border-radius: 9999px; padding: 0.05rem 0.55rem;
-  white-space: nowrap;
-}
-.lb-chip .g { font-weight: 500; }
-.lb-ok   { color: var(--so-ok); }
-.lb-bad  { color: var(--so-danger); }
-.lb-none { color: var(--so-meta); }
+/* ---------- 04 · the band ---------- */
+.legend{display:flex;flex-wrap:wrap;gap:9px 26px;margin-top:14px;
+        font-family:var(--mono);font-size:13px;color:var(--ink-2);letter-spacing:.02em}
+.legend li{display:inline-flex;align-items:center;gap:9px}
+.gs{flex:none;width:19px;height:19px;display:inline-grid;place-items:center;
+    font-family:var(--mono);font-size:13px;line-height:1}
+.gs-pass{border:1px solid var(--pass);color:var(--pass)}
+.gs-hold{border:1px solid var(--hold);border-right:0;color:var(--hold)}
+.gs-run{border:0;color:var(--run);font-size:15px}
 
-/* ---------- proof band ---------- */
-.proof-grid {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px;
-  background: var(--so-border);
-  border: 1px solid var(--so-border);
-  border-radius: var(--so-radius);
-  overflow: hidden;
-}
-@media (min-width: 700px) { .proof-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
-.proof-cell { background: var(--so-surface); padding: 1.25rem 1rem; }
-.proof-n {
-  display: block;
-  font-family: var(--so-font-mono); font-variant-numeric: tabular-nums;
-  font-size: 1.484rem; line-height: 1.3; font-weight: 500; color: var(--so-ink);
-}
-.proof-l { display: block; margin-top: 0.25rem; font-size: 0.8125rem; color: var(--so-meta); }
+.band{margin:16px 0 0 calc(-1 * var(--pad-l) + var(--rail-x));position:relative}
+.band-head{display:flex;flex-wrap:wrap;gap:4px 20px;align-items:baseline;
+  font-family:var(--mono);font-size:13px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3);
+  padding-bottom:12px}
+.band-head .fig{color:var(--ink)}
+
+.plot{display:flex;align-items:flex-start;gap:0;position:relative}
+.plot>*{min-width:0}
+
+.yax{flex:0 0 62px;position:relative;height:var(--plot-h);
+  border-right:1px solid var(--line);margin-right:14px}
+.yax-ttl{position:absolute;left:-65px;top:50%;width:150px;margin-top:-9px;
+  transform:rotate(-90deg);text-align:center;
+  font-family:var(--mono);font-size:13px;letter-spacing:.11em;text-transform:uppercase;color:var(--ink-3)}
+.yt{position:absolute;right:9px;bottom:calc(var(--v) * var(--unit));
+  transform:translateY(50%);font-family:var(--mono);font-size:13px;color:var(--ink-3);
+  font-variant-numeric:tabular-nums}
+.yt::after{content:"";position:absolute;right:-9px;top:50%;width:6px;height:1px;background:var(--line-2)}
+.t0{--v:0}.t4{--v:4}.t8{--v:8}.t12{--v:12}
+
+.track{flex:1 1 auto;display:flex;align-items:flex-end;position:relative;
+  height:var(--plot-h);
+  border-bottom:1px solid var(--ink-3);
+  background-image:repeating-linear-gradient(to top,
+    transparent 0,transparent calc(4 * var(--unit) - 1px),
+    var(--line) calc(4 * var(--unit) - 1px),var(--line) calc(4 * var(--unit)));
+  background-size:100% calc(12 * var(--unit));
+  background-position:left bottom;background-repeat:no-repeat;
+  view-timeline-name:--band;view-timeline-axis:block}
+.track>*{min-width:0}
+.axis-fill{position:absolute;left:0;right:0;bottom:-7px;height:2px;background:var(--run);
+  transform-origin:left center}
+
+.st{flex:1 1 0;display:flex;flex-direction:column;justify-content:flex-end;
+  height:100%;padding:0 10px;position:relative}
+.st-head{position:absolute;left:10px;right:10px;top:0}
+.st-num{display:block;font-family:var(--mono);font-size:13px;letter-spacing:.13em;color:var(--ink-3)}
+.st-name{display:block;margin-top:3px;font-family:var(--disp);font-weight:200;
+  font-size:clamp(18px,1.7vw,26px);line-height:1.05;letter-spacing:-0.024em;color:var(--ink)}
+.st-col{display:flex;flex-direction:column;justify-content:flex-end;height:100%}
+.st-n{font-family:var(--mono);font-size:14px;color:var(--ink);letter-spacing:.02em;
+  margin-bottom:7px;font-variant-numeric:tabular-nums}
+.st-n span{color:var(--ink-3)}
+.st-bar{height:calc(var(--files) * var(--unit));border:1px solid var(--ink-2);background:var(--bg-2)}
+/* zero write scope is NOT a box of height zero. It is a line. */
+.st-bar.flat{height:3px;border:0;background:var(--ink);position:relative;z-index:2}
+.f0{--files:0}.f2{--files:2}.f5{--files:5}.f8{--files:8}.f12{--files:12}
+
+.gt{flex:0 0 var(--gate-w);display:flex;flex-direction:column;justify-content:flex-end;
+  height:100%;position:relative}
+.gt-head{position:absolute;left:0;right:0;top:0;text-align:center;
+  font-family:var(--mono);font-size:13px;letter-spacing:.13em;color:var(--ink-3)}
+.gt-col{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%}
+.gt-lines{display:flex;justify-content:center;gap:7px;width:100%;
+  height:calc(var(--plot-h) - 68px);margin-top:8px}
+.gt-lines i{width:1px;background:var(--pass)}
+.gt-label{position:absolute;left:2px;right:2px;top:100%;margin-top:16px;text-align:center;
+  font-family:var(--mono);font-size:13px;line-height:1.38;color:var(--ink-2);letter-spacing:.01em}
+.gt.full .gt-label{left:-9px;right:-9px;color:var(--ink);letter-spacing:.03em;text-transform:uppercase}
+.gt.full .gs-pass{box-shadow:0 0 0 3px var(--bg),0 0 0 4px var(--pass)}
+
+.band-cap{margin-top:58px;display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:20px 46px}
+.band-cap>*{min-width:0}
+.band-scale{font-family:var(--mono);font-size:13px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--ink-3);line-height:1.6}
+.band-point{font-size:16.5px;line-height:1.6;color:var(--ink-2);max-width:56ch}
+.band-point b{font-weight:400;color:var(--ink)}
+
+.closer{margin-top:18px;display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:0 56px;align-items:end}
+.closer>*{min-width:0}
+.pull{margin:0;font-family:var(--disp);font-weight:200;
+  font-size:clamp(20px,2.35vw,33px);line-height:1.18;letter-spacing:-0.024em;max-width:26ch}
+.pull b{font-weight:300;color:var(--ink)}
+.caption{padding-top:20px;border-top:1px solid var(--line);
+  color:var(--ink-2);font-size:15.5px;max-width:58ch;line-height:1.6}
+
+/* ---------- tables ---------- */
+table{width:100%;border-collapse:collapse;text-align:left;margin-top:16px}
+th{font-family:var(--mono);font-size:13px;letter-spacing:.11em;text-transform:uppercase;
+  color:var(--ink-3);border-bottom:1px solid var(--line-2);padding:0 18px 9px 0;vertical-align:bottom;font-weight:400}
+td{border-bottom:1px solid var(--line);padding:10px 18px 10px 0;vertical-align:top;
+  font-size:15px;color:var(--ink-2);line-height:1.5}
+td.w{color:var(--ink);font-family:var(--mono);font-size:14px;white-space:nowrap}
+td.n{font-family:var(--mono);font-size:15px;color:var(--ink);text-align:right;
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+td.g{font-family:var(--mono);font-size:13px;white-space:nowrap;color:var(--ink-2)}
+td.g .gs{margin-right:7px;vertical-align:-4px}
+tr:last-child td{border-bottom:1px solid var(--line-2)}
+
+/* ---------- 06 · enforced ---------- */
+.rows{margin-top:14px;border-top:1px solid var(--line-2)}
+.row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px 40px;
+  padding:10px 0;border-bottom:1px solid var(--line);align-items:baseline}
+.row>*{min-width:0}
+.row .claim{font-size:17px;line-height:1.45;color:var(--ink);font-weight:300}
+.row .file{font-family:var(--mono);font-size:13px;line-height:1.55;color:var(--ink-2);overflow-wrap:anywhere}
+.row .file em{font-style:normal;color:var(--ink-3)}
+
+/* ---------- 07/09 · quiet lists ---------- */
+.cols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 40px;margin-top:14px}
+.cols>*{min-width:0}
+.col{border-top:1px solid var(--line);padding:8px 0 0}
+.col h3{color:var(--ink)}
+.col p{margin-top:7px;font-size:15px;color:var(--ink-2);line-height:1.5}
+.col .rowfile{display:block;margin-top:8px;color:var(--ink-3)}
+
+.plain{margin-top:14px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 44px}
+.plain>*{min-width:0}
+.plain li{padding:10px 0;border-top:1px solid var(--line);font-size:15px;color:var(--ink-2);line-height:1.5}
+.plain b{font-weight:400;color:var(--ink)}
+
+.matrix{display:flex;flex-wrap:wrap;gap:11px 30px;margin-top:22px;padding-top:18px;border-top:1px solid var(--line-2);
+  font-family:var(--mono);font-size:13px;color:var(--ink-2)}
+.matrix li{display:inline-flex;align-items:center;gap:9px}
+
+/* ---------- 08 · measured ---------- */
+.reads{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:0 18px;margin-top:16px}
+.reads>*{min-width:0}
+.read{border-top:1px solid var(--line);padding:12px 0 14px}
+.read .n{font-family:var(--disp);font-weight:200;font-size:clamp(30px,2.7vw,38px);
+  line-height:1;letter-spacing:-0.035em;color:var(--ink);font-variant-numeric:tabular-nums}
+.read .n.v{font-size:clamp(23px,1.75vw,26px)}
+.read .l{margin-top:8px;font-family:var(--mono);font-size:13px;color:var(--ink-3);
+  letter-spacing:.07em;text-transform:uppercase;line-height:1.4}
+.foot-note{margin-top:14px;font-family:var(--mono);font-size:13px;color:var(--ink-3);line-height:1.6;max-width:74ch}
+
+/* ---------- 10 · closing ---------- */
+.end{margin-top:var(--sec);padding:20px 0 2px;border-top:1px solid var(--line-2)}
+.end h2{max-width:16ch}
+.end .sub{margin-bottom:0}
 
 /* ---------- footer ---------- */
-.site-footer { border-top: 1px solid var(--so-border); padding-block: 3rem 4rem; }
-.foot-cols { display: grid; gap: 2rem; grid-template-columns: 1fr; margin-bottom: 2.5rem; }
-@media (min-width: 760px) { .foot-cols { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr); } }
-.foot-h {
-  font-family: var(--so-font-mono); font-size: 0.6875rem; text-transform: uppercase;
-  letter-spacing: 0.06em; color: var(--so-meta); margin: 0 0 0.75rem;
+.foot{margin-top:22px;border-top:1px solid var(--line);padding:14px 0 24px;
+  display:flex;flex-wrap:wrap;gap:10px 24px;align-items:baseline;
+  font-family:var(--mono);font-size:13px;color:var(--ink-3)}
+.foot a{color:var(--ink-2);text-decoration:none;border-bottom:1px solid transparent}
+.foot a:hover{color:var(--ink);border-bottom-color:var(--line-2)}
+.foot .right{margin-left:auto}
+
+/* ---------- responsive ---------- */
+@media (max-width:1180px){
+  :root{--gate-w:88px;--unit:14px;--plot-h:254px}
+  .st-name{font-size:21px}
+  .st{padding:0 7px}
+  .st-head{left:7px;right:7px}
 }
-.foot-list { list-style: none; margin: 0; padding: 0; }
-.foot-list li { margin-bottom: 0.35rem; }
-.foot-list a { display: inline-flex; align-items: center; min-height: 44px; font-size: 0.9375rem; }
-.foot-legal { border-top: 1px solid var(--so-border); padding-top: 1.5rem; color: var(--so-meta); font-size: 0.8125rem; }
-.foot-legal p { margin-bottom: 0.5rem; max-width: 70ch; }
-.foot-legal p:last-child { margin-bottom: 0; }
+@media (max-width:1180px){
+  .reads{grid-template-columns:repeat(4,minmax(0,1fr));gap:0 22px}
+}
+@media (max-width:1080px){
+  .plain{grid-template-columns:minmax(0,1fr);gap:0}
+  .hero-grid{grid-template-columns:minmax(0,1fr);gap:40px}
+  h1{max-width:15ch}
+  .closer,.band-cap{grid-template-columns:minmax(0,1fr);gap:24px 0}
+  .cols{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .row{grid-template-columns:minmax(0,1fr);gap:6px}
+}
+@media (max-width:900px){
+  /* touch targets: 44px minimum for anything tappable */
+  .nav a{padding:13px 0}
+  .foot{gap:2px 24px}
+  .foot a,.foot span{padding:12px 0}
+  .copy{min-height:44px;padding:12px 14px}
+  .brand{padding:13px 0;display:inline-block}
+  :root{--pad-l:34px;--rail-x:9px;--sec:54px;--unit:13px;--lbl-w:104px}
+  .hero{padding:40px 0 30px}
+  .fold{padding:48px 0 4px}
 
-/* ============================================================
-   MOTION. Three types: (1) above-fold entrance, (2) scroll
-   reveal, (3) hover lift. Plus the one sanctioned functional
-   loop (terminal replay). opacity:0 appears only inside the
-   gates below, so no-support and reduced-motion render visible.
-   ============================================================ */
-@keyframes rise-lcp { from { transform: translateY(10px); } to { transform: none; } }
-@keyframes enter    { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
-@keyframes rise     { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+  /* the band turns from an elevation into a plan: length carries the same
+     scale that height carried, one unit still equals one file. */
+  .band{margin-left:calc(-1 * var(--pad-l) + var(--rail-x));margin-top:28px}
+  .plot{display:block}
+  .yax{flex:none;width:auto;height:auto;border-right:0;margin:0 0 6px 0;
+    padding:0 0 24px 0;position:relative}
+  .yax-ttl{position:static;transform:none;width:auto;margin:0;text-align:left;display:block}
+  .yt{right:auto;top:auto;bottom:2px;left:calc(var(--lbl-w) + var(--v) * var(--unit));
+    transform:none;position:absolute}
+  .yt::after{right:auto;top:auto;left:0;bottom:-6px;width:1px;height:5px;background:var(--line-2)}
+  .track{display:block;height:auto;padding-bottom:0;
+    border-bottom:0;border-left:1px solid var(--ink-3);
+    margin-left:var(--lbl-w)}
+  .axis-fill{left:-7px;right:auto;top:0;bottom:0;width:2px;height:auto;transform-origin:center top}
+  .st{display:flex;flex-direction:row;align-items:center;gap:12px;height:auto;padding:9px 0}
+  .st-head{position:static;flex:0 0 auto;width:calc(var(--lbl-w) - 12px);margin-left:calc(-1 * var(--lbl-w));
+    padding-right:10px;text-align:right}
+  .st-num{display:inline;font-size:13px}
+  .st-name{display:block;margin-top:1px;font-size:16px;line-height:1.15}
+  .st-col{flex:1 1 auto;flex-direction:row;justify-content:flex-start;
+    align-items:center;gap:11px;height:auto}
+  .st-n{order:2;margin:0;font-size:14px}
+  .st-bar{width:calc(var(--files) * var(--unit));height:17px;flex:none}
+  .st-bar.flat{width:2px;height:17px;background:var(--ink)}
+  .gt{flex:none;display:flex;flex-direction:row;align-items:center;gap:12px;
+    height:auto;padding:5px 0 5px 0}
+  .gt-head{position:static;flex:0 0 auto;width:calc(var(--lbl-w) - 12px);
+    margin-left:calc(-1 * var(--lbl-w));padding-right:10px;text-align:right}
+  .gt-col{flex:1 1 auto;flex-direction:row;justify-content:flex-start;
+    align-items:center;gap:11px;height:auto}
+  .gt-lines{flex:1 1 auto;flex-direction:column;gap:3px;width:auto;min-width:22px;height:auto;margin:0}
+  .gt-lines i{width:100%;height:1px}
+  .gt-label{position:static;flex:0 0 auto;max-width:52%;margin:0;text-align:right}
+  .band-cap{margin-top:26px}
 
-@media (prefers-reduced-motion: no-preference) {
-  /* (1) above-the-fold entrance. H1 is the LCP element: transform only, no delay. */
-  .rise-lcp { animation: rise-lcp var(--so-dur-entrance) var(--so-ease-emphasized) both; }
-  .enter {
-    animation: enter var(--so-dur-entrance) var(--so-ease-smooth) both;
-    animation-delay: var(--enter-delay, 0ms);
+  .h-row{grid-template-columns:minmax(0,1fr);gap:14px}
+  pre.code{white-space:pre-wrap;overflow-wrap:anywhere;overflow-x:visible}
+  .copy{position:static;display:inline-block;margin-top:8px}
+  .cols{grid-template-columns:minmax(0,1fr)}
+  .reads{grid-template-columns:repeat(2,minmax(0,1fr));gap:0 20px}
+  .closer{margin-top:38px}
+
+  /* the schedule table stacks and keeps its column names */
+  table thead{position:absolute;left:-9999px}
+  table tr{display:block;border-bottom:1px solid var(--line);padding:12px 0}
+  table tr:last-child{border-bottom:1px solid var(--line-2)}
+  table td{display:grid;grid-template-columns:96px minmax(0,1fr);gap:12px;border:0;padding:3px 0;
+    text-align:left;white-space:normal}
+  table td::before{content:attr(data-l);font-family:var(--mono);font-size:13px;letter-spacing:.09em;
+    text-transform:uppercase;color:var(--ink-3);line-height:1.5}
+  table td.n{text-align:left}
+}
+@media (max-width:520px){
+  .nav{margin-left:0;width:100%}
+  .btn{flex:1 1 auto;text-align:center}
+  .band-head{gap:2px 14px}
+}
+
+/* ---------------------------------------------------------------
+   Motion. Every element on this page is painted at full opacity in
+   the markup's own resting state: the band, the transcript, the
+   tables and the notes are complete in a cold screenshot, in print,
+   in a reader view, and with JavaScript switched off. The only two
+   animated things are 1px lines that advance — the spine on the
+   left, and the run-line under the band. Removing both loses no
+   information, which is the test a decoration has to pass.
+   ---------------------------------------------------------------*/
+@media (prefers-reduced-motion: no-preference){
+  .rail-fill{transform:scaleY(0);animation:railGrow linear both;animation-timeline:scroll(root block)}
+  @keyframes railGrow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+
+  @supports (animation-timeline: view()){
+    .axis-fill{transform:scaleX(0);animation:fillX linear both;
+      animation-timeline:--band;animation-range:cover 14% cover 86%}
+    @keyframes fillX{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+  }
+}
+@media (prefers-reduced-motion: no-preference) and (max-width:900px){
+  @supports (animation-timeline: view()){
+    .axis-fill{transform:scaleY(0);animation:fillY linear both;
+      animation-timeline:--band;animation-range:cover 6% cover 94%}
+    @keyframes fillY{from{transform:scaleY(0)}to{transform:scaleY(1)}}
   }
 }
 
-@supports (animation-timeline: view()) {
-  @media (prefers-reduced-motion: no-preference) {
-    /* (2) scroll reveal, CSS only */
-    .rise {
-      animation: rise var(--so-dur-entrance) var(--so-ease-smooth) both;
-      animation-timeline: view();
-      animation-range: entry 0% entry 55%;
-      animation-delay: var(--rise-delay, 0ms);
-    }
+/* ---------------------------------------------------------------
+   Print. The dark ground is a screen decision; on paper the sheet
+   inverts. No content is hidden here that is visible on screen —
+   only the two moving 1px lines are dropped, because paper has no
+   scroll for them to answer to.
+   ---------------------------------------------------------------*/
+@media print{
+  :root{
+    --bg:#fff;--bg-2:#fff;--ink:#111;--ink-2:#333;--ink-3:#555;
+    --line:#bbb;--line-2:#888;--run:#8a5a00;--hold:#a3301c;--pass:#1d6b39;
   }
-}
-
-/* Reduced-motion safety net. 0.01ms, never 0, so *end events still fire. */
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
+  body{background:#fff;color:#111;font-size:11pt}
+  .rail,.axis-fill,.copy,.skip,.nav{display:none}
+  .rail-fill{animation:none}
+  .page{max-width:none;padding-left:0}
+  .mark::before,.harness::before{display:none}
+  .band{margin-left:0}
+  .tape,pre.code{background:#fff;border-color:#bbb}
+  .sec,.fold,.hero{padding-top:22px}
+  .sec h2,.fold .say{break-after:avoid}
+  .plot,.st,.gt,tr,.row,.read,.col,.harness{break-inside:avoid}
+  a[href^="http"]::after{content:" (" attr(href) ")";font-size:8pt;color:#555}
 }
 </style>
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
 
-<a class="skip-link" href="#main">Skip to content</a>
+<div class="page">
+  <div class="rail" aria-hidden="true"><span class="rail-fill"></span></div>
 
-<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
-  <symbol id="i-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M12 3 21 8v8l-9 5-9-5V8z"/><path d="M7.5 12.2 10.6 15.3 16.5 9.2"/>
-  </symbol>
-  <symbol id="i-gate" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M12 2.4 21.6 12 12 21.6 2.4 12Z" stroke-width="1.15"/>
-    <path d="M8.2 12.1 10.9 14.9 15.9 9.4" stroke-width="1.5"/>
-  </symbol>
-  <symbol id="i-gate-full" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M12 2.4 21.6 12 12 21.6 2.4 12Z" stroke-width="1.15"/>
-    <path d="M12 5.6 18.4 12 12 18.4 5.6 12Z" stroke-width="1.15"/>
-    <path d="M9.4 12.1 11.3 14 14.7 10.3" stroke-width="1.5"/>
-  </symbol>
-  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-    <rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>
-  </symbol>
-  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M5 12.5 10 17.5 19 7"/>
-  </symbol>
-  <symbol id="i-github" viewBox="0 0 24 24" fill="currentColor">
-    <path d="M12 .5a12 12 0 0 0-3.79 23.4c.6.1.82-.26.82-.58v-2.2c-3.34.72-4.04-1.42-4.04-1.42-.55-1.4-1.34-1.77-1.34-1.77-1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.84 2.8 1.3 3.49 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.34-5.47-5.96 0-1.32.47-2.4 1.24-3.24-.13-.3-.54-1.53.11-3.18 0 0 1.01-.32 3.3 1.24a11.4 11.4 0 0 1 6.01 0c2.29-1.56 3.3-1.24 3.3-1.24.65 1.65.24 2.88.12 3.18.77.84 1.23 1.92 1.23 3.24 0 4.63-2.8 5.65-5.48 5.95.43.38.82 1.1.82 2.23v3.31c0 .32.21.7.82.58A12 12 0 0 0 12 .5Z"/>
-  </symbol>
-  <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="5" width="3.5" height="14" rx="1"/><rect x="13.5" y="5" width="3.5" height="14" rx="1"/></symbol>
-  <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></symbol>
-</svg>
-
-<header class="site-header">
-  <div class="wrap">
-    <a class="wordmark" href="#top">
-      <svg aria-hidden="true" focusable="false"><use href="#i-mark"/></svg>
-      Session Orchestrator
-    </a>
-    <nav class="nav" aria-label="Primary">
-      <a href="#loop">Loop</a>
-      <a href="#waves">Waves</a>
-      <a href="#guardrails">Guardrails</a>
-      <a href="#eval">Eval</a>
+  <header class="top">
+    <a class="brand" href="#main">session&#8209;orchestrator <b>v<span class="num" data-metric="version">3.20.0</span></b></a>
+    <nav class="nav" aria-label="Sections">
+      <a href="#install">Install</a>
+      <a href="#loop">The loop</a>
+      <a href="#enforced">Enforced</a>
+      <a href="#measured">Measured</a>
+      <a href="#limits">Limits</a>
+      <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
     </nav>
-    <div class="header-cta">
-      <a class="btn btn-sm btn-icon" href="https://github.com/Kanevry/session-orchestrator" aria-label="GitHub repository">
-        <svg aria-hidden="true" focusable="false"><use href="#i-github"/></svg>
-        <span class="gh-label">GitHub</span>
-      </a>
-      <a class="btn btn-sm btn-primary" href="#install">Install</a>
-    </div>
-  </div>
-</header>
+  </header>
 
-<main id="main">
+  <main id="main">
 
-  <!-- ============ HERO ============ -->
-  <section class="hero" id="top" aria-labelledby="hero-h">
-    <div class="wrap">
-      <p class="eyebrow enter" style="--enter-delay:0ms">Claude Code · Codex CLI · Cursor · Pi</p>
-      <h1 id="hero-h" class="rise-lcp">Loop engineering for AI coding agents</h1>
-      <p class="hero-sub enter" style="--enter-delay:90ms">
-        Research, plan, five typed waves, close. Verification gates enforced by hooks, not by asking the agent nicely.
-      </p>
-      <div class="cta-row enter" style="--enter-delay:180ms">
-        <a class="btn btn-primary" href="#install">Install in one line</a>
-        <a class="btn" href="https://github.com/Kanevry/session-orchestrator">
-          <svg aria-hidden="true" focusable="false"><use href="#i-github"/></svg>
-          Read the source
-        </a>
-      </div>
-      <p class="cta-note enter" style="--enter-delay:270ms">
-        <span class="mono-num">v3.20.0</span> · MIT · npm <span class="mono-num">session-orchestrator</span> · Node.js <span class="mono-num">&gt;= 24</span>
-      </p>
+    <!-- ============ 01 · HERO ============ -->
+    <section class="hero">
+      <p class="mark">01 &nbsp;/&nbsp; work enters</p>
+      <p class="eyebrow">Plugin for Claude Code, Codex CLI, Cursor and Pi</p>
+      <h1>Most coding agents start writing before they know what changed.</h1>
 
-      <div class="term-shell enter" style="--enter-delay:360ms">
-        <div class="terminal" id="terminal">
-          <div class="term-bar">
-            <div class="term-dots" aria-hidden="true"><i></i><i></i><i></i></div>
-            <div class="term-title">session-orchestrator</div>
+      <div class="hero-grid">
+        <div>
+          <p class="lede">Session Orchestrator puts a loop in front: <em>research the repo, agree the scope,</em> then five typed passes with a verification gate between each. Open source, one line to install.</p>
+          <div class="cta">
+            <a class="btn btn-1" href="#install">Install in one line</a>
+            <a class="btn btn-2" href="#loop">See how the loop works</a>
           </div>
+          <p class="meta">v<span class="num" data-metric="version">3.20.0</span> &middot; MIT &middot; npm session-orchestrator &middot; Node.js &gt;= 24</p>
+        </div>
 
-          <p class="visually-hidden">
-            Transcript of one session: slash-session feature, slash-go with five gated waves, slash-close.
-          </p>
+        <div>
+          <figure class="tape">
+            <figcaption class="tape-bar"><span>session tape</span><span class="sig">main-2026-08-19-1</span></figcaption>
+<pre tabindex="0" role="region" aria-label="Transcript of one session, scrollable"><code><span class="sig">$</span> <span class="cmd">/session feature</span>
+  <span class="k">lock           </span> <span class="pass">acquired</span> · main-2026-08-19-1
+  <span class="k">git            </span> 14 commits · 3 dirty files
+  <span class="k">issues         </span> 7 open · 918 premise verified: <span class="hold">GAP</span>
+  <span class="k">ci             </span> pipeline 7204 <span class="pass">green</span> on d2de3ca
+  <span class="k">not-to-retry   </span> 1 approach <span class="hold">force-read</span>
+  <span class="k">recommend      </span> feature · 5 waves · <span class="run">6 agents</span> · confidence 0.82
 
-          <div class="term-body" id="term-body" aria-hidden="true">
-            <span class="tl"><span class="term-prompt">$</span> <span class="term-cmd">/session feature</span></span>
-            <span class="tl"><span class="term-k">  lock</span><span class="term-v">acquired · main-2026-08-03-1</span></span>
-            <span class="tl"><span class="term-k">  git</span><span class="term-v">14 commits · 3 dirty files</span></span>
-            <span class="tl"><span class="term-k">  issues</span><span class="term-v">7 open · 918 premise verified: </span><span class="term-hl">GAP</span></span>
-            <span class="tl"><span class="term-k">  ci</span><span class="term-v">pipeline 7204 </span><span class="term-ok">green</span><span class="term-v"> on d2de3ca</span></span>
-            <span class="tl"><span class="term-k">  not-to-retry</span><span class="term-v">1 approach force-read</span></span>
-            <span class="tl"><span class="term-k">  recommend</span><span class="term-v">feature · 5 waves · 6 agents · confidence 0.82</span></span>
-            <span class="tl tl-gap"> </span>
-            <span class="tl"><span class="term-prompt">$</span> <span class="term-cmd">/go</span></span>
-            <span class="tl"><span class="term-wave">  W1</span><span class="term-role">Discovery</span><span class="term-v">3 agents · read-only</span></span>
-            <span class="tl"><span class="term-wave">  W2</span><span class="term-role">Impl-Core</span><span class="term-v">6 agents · 12 files · gate </span><span class="term-ok">pass</span></span>
-            <span class="tl"><span class="term-wave">  W3</span><span class="term-role">Impl-Polish</span><span class="term-v">4 agents ·  5 files · gate </span><span class="term-ok">pass</span></span>
-            <span class="tl"><span class="term-wave">  W4</span><span class="term-role">Quality</span><span class="term-v">6 agents · FULL GATE · 12,000+ tests </span><span class="term-ok">pass</span></span>
-            <span class="tl"><span class="term-wave">  W5</span><span class="term-role">Finalization</span><span class="term-v">2 agents · SSOT · final review</span></span>
-            <span class="tl tl-gap"> </span>
-            <span class="tl"><span class="term-prompt">$</span> <span class="term-cmd">/close</span></span>
-            <span class="tl"><span class="term-k">  plan verify</span><span class="term-v">9/9 items carry evidence</span></span>
-            <span class="tl"><span class="term-k">  full gate</span><span class="term-v">typecheck 0 · lint 0 · tests exit 0</span></span>
-            <span class="tl"><span class="term-k">  carryover</span><span class="term-v">1 filed · issue 919</span></span>
-            <span class="tl"><span class="term-k">  commit</span><span class="term-v">4 files staged individually · pushed · mirrored</span></span>
-            <span class="tl"><span class="term-ok">  session record written</span><span class="term-v"> → .orchestrator/metrics/sessions.jsonl</span></span>
-          </div>
+<span class="sig">$</span> <span class="cmd">/go</span>
+  <span class="k">W1</span>  Discovery      <span class="run">3 agents</span> · read-only
+  <span class="k">W2</span>  Impl-Core      <span class="run">6 agents</span> · 12 files · gate <span class="pass">pass</span>
+  <span class="k">W3</span>  Impl-Polish    <span class="run">4 agents</span> ·  5 files · gate <span class="pass">pass</span>
+  <span class="k">W4</span>  Quality        <span class="run">5 agents</span> ·  8 files · <span class="hold">FULL GATE</span> <span class="pass">pass</span>
+  <span class="k">W5</span>  Finalization   <span class="run">1 agent </span> ·  2 files · gate <span class="pass">pass</span>
 
-          <div class="term-foot">
-            <span class="term-status" id="term-status">static transcript</span>
-            <button type="button" class="btn btn-sm term-toggle" id="term-toggle" hidden aria-pressed="false">
-              <svg aria-hidden="true" focusable="false" id="term-toggle-icon"><use href="#i-pause"/></svg>
-              <span id="term-toggle-label">Pause replay</span>
-            </button>
-          </div>
+<span class="sig">$</span> <span class="cmd">/close</span>
+  <span class="k">verified       </span> <span class="pass">11 of 12</span> planned items
+  <span class="k">carryover      </span> <span class="hold">1 item -&gt; issue #1043</span>
+  <span class="k">committed      </span> 19 files · <span class="pass">pushed</span></code></pre>
+          </figure>
+          <p class="tape-cap"><b>Above: one whole session.</b> The tool reads the repository first, says out loud what it thinks it should touch, then works through it in five passes, and finishes by reporting what got done and what did not. The lines that begin with a dollar sign are the three things a person types.</p>
         </div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <!-- ============ WHY ============ -->
-  <section class="section" id="why" aria-labelledby="why-h">
-    <div class="wrap-narrow">
-      <p class="eyebrow rise">Why this exists</p>
-      <h2 id="why-h" class="rise" style="--rise-delay:90ms">Most agentic-coding tools jump straight into writing code.</h2>
-      <p class="lead rise prose" style="--rise-delay:180ms; margin:1.25rem 0 2rem">
-        This one puts a loop around it: research, agree on scope, then execute in typed waves with gates.
-      </p>
-      <p class="quote rise" style="--rise-delay:270ms">
-        Every session writes a record. Every unfinished item becomes a ticket. Every claim carries the command that
-        proves it.
-      </p>
-    </div>
-  </section>
+    <!-- ============ 02 · THE STATEMENT UNDER THE FOLD ============ -->
+    <section class="fold">
+      <p class="mark">02 &nbsp;/&nbsp; the boundary</p>
+      <p class="say">You cannot make a language model careful by asking it to be careful. <b>You can take the ability away.</b></p>
+      <p class="after">An agent that is never handed the git index cannot break commit discipline — not because it behaved, but because there was nothing there to break. Everything below is that one move, applied five times.</p>
+    </section>
 
-  <!-- ============ LOOP ============ -->
-  <section class="section" id="loop" aria-labelledby="loop-h">
-    <div class="wrap">
-      <div class="section-head">
-        <p class="eyebrow rise">The loop</p>
-        <h2 id="loop-h" class="rise" style="--rise-delay:90ms">Three commands, four stages</h2>
-        <p class="rise" style="--rise-delay:180ms">The whole surface is three slash commands.</p>
-      </div>
+    <!-- ============ 03 · INSTALL ============ -->
+    <section class="sec" id="install">
+      <p class="mark">03 &nbsp;/&nbsp; install</p>
+      <h2>Pick your harness</h2>
+      <p class="sub">Same plugin, four install paths.</p>
 
-      <div class="codeblock rise" style="--rise-delay:270ms; max-width:52rem; margin-bottom:3rem">
-<pre><code><span class="k">/session feature</span>    <span class="c"># research, agree on scope</span>
-<span class="k">/go</span>                 <span class="c"># five typed waves, gate between each</span>
-<span class="k">/close</span>              <span class="c"># verify, commit, file the rest</span></code></pre>
-      </div>
-
-      <ol class="loop-list">
-        <li class="loop-step rise">
+      <div class="harness">
+        <div class="h-row">
           <div>
-            <p class="loop-idx">Stage 1 · Research</p>
-            <p class="loop-cmd">/session</p>
+            <p class="h-name">Claude Code</p>
+            <p class="h-tag">plugin marketplace</p>
           </div>
           <div>
-            <p class="loop-plain">Take stock first: what changed, what is open, what broke last time.</p>
-            <p class="loop-mech"><span class="m">Under the hood:</span> session lock, CI banner, forced What Not To Retry read, mode recommendation with confidence.</p>
+            <div class="cmd">
+<pre class="code"><code>/plugin marketplace add Kanevry/session-orchestrator
+/plugin install session-orchestrator@kanevry</code></pre>
+            </div>
+            <p class="note">Then run <code>npm install</code> once inside the plugin cache and restart Claude Code.</p>
+            <!-- TODO: verified path pending, see session notes -->
+            <div class="flag">
+              <b>known broken</b>
+              The one-liner documented for this step does not work: <code>claude plugin dir</code> does not exist and exits 1. Use this until a verified path lands:
+              <div class="cmd">
+<pre class="code soft"><code>cd "$(dirname "$(find ~/.claude/plugins/cache -name package.json -path '*session-orchestrator*' | head -1)")" &amp;&amp; npm install</code></pre>
+              </div>
+            </div>
           </div>
-        </li>
-
-        <li class="loop-step rise" style="--rise-delay:90ms">
-          <div>
-            <p class="loop-idx">Stage 2 · Plan</p>
-            <p class="loop-cmd">wave decomposition</p>
-          </div>
-          <div>
-            <p class="loop-plain">Work is split into five passes, each with a brief: which task, which files, what done means.</p>
-            <p class="loop-mech"><span class="m">Under the hood:</span> file-scope deconfliction, so two agents never hold the same file.</p>
-          </div>
-        </li>
-
-        <li class="loop-step rise" style="--rise-delay:180ms">
-          <div>
-            <p class="loop-idx">Stage 3 · Wave-execute</p>
-            <p class="loop-cmd">/go</p>
-          </div>
-          <div>
-            <p class="loop-plain">Everyone reads before anyone writes. Core, then edges, then simplify and test, then wrap up.</p>
-            <p class="loop-mech"><span class="m">Under the hood:</span> a typecheck, test and lint gate between waves, then review, then STATE.md.</p>
-          </div>
-        </li>
-
-        <li class="loop-step rise" style="--rise-delay:270ms">
-          <div>
-            <p class="loop-idx">Stage 4 · Close</p>
-            <p class="loop-cmd">/close</p>
-          </div>
-          <div>
-            <p class="loop-plain">Nothing is done because someone said so. Every planned item is checked against evidence.</p>
-            <p class="loop-mech"><span class="m">Under the hood:</span> Full Gate, files staged individually, carryover tickets, learnings written down.</p>
-          </div>
-        </li>
-      </ol>
-    </div>
-  </section>
-
-  <!-- ============ WAVES ============ -->
-  <section class="section" id="waves" aria-labelledby="waves-h">
-    <div class="wrap">
-      <div class="section-head">
-        <p class="eyebrow rise">The five waves</p>
-        <h2 id="waves-h" class="rise" style="--rise-delay:90ms">Five typed passes with a gate between each</h2>
-        <p class="rise" style="--rise-delay:180ms">Write access is declared per wave. The Quality gate cannot be skipped.</p>
-      </div>
-
-      <div class="pipeline rise" role="group" aria-label="Wave pipeline with gates between waves">
-        <div class="station">
-          <span class="station-id">W1</span>
-          <span class="station-name">Discovery</span>
-          <span class="station-meta">read-only · allowedPaths []</span>
-        </div>
-        <div class="gate">
-          <svg aria-hidden="true" focusable="false"><use href="#i-gate"/></svg>
-          <span>scope</span>
-        </div>
-        <div class="station">
-          <span class="station-id">W2</span>
-          <span class="station-name">Impl-Core</span>
-          <span class="station-meta">core feature code</span>
-        </div>
-        <div class="gate">
-          <svg aria-hidden="true" focusable="false"><use href="#i-gate"/></svg>
-          <span>gate</span>
-        </div>
-        <div class="station">
-          <span class="station-id">W3</span>
-          <span class="station-name">Impl-Polish</span>
-          <span class="station-meta">fixes · edge cases</span>
-        </div>
-        <div class="gate">
-          <svg aria-hidden="true" focusable="false"><use href="#i-gate"/></svg>
-          <span>gate</span>
-        </div>
-        <div class="station">
-          <span class="station-id">W4</span>
-          <span class="station-name">Quality</span>
-          <span class="station-meta">simplify · tests · panel</span>
-        </div>
-        <div class="gate gate-full">
-          <svg aria-hidden="true" focusable="false"><use href="#i-gate-full"/></svg>
-          <span>full gate</span>
-        </div>
-        <div class="station">
-          <span class="station-id">W5</span>
-          <span class="station-name">Finalization</span>
-          <span class="station-meta">SSOT · issue cleanup</span>
         </div>
       </div>
 
-      <div class="table-scroll rise" style="--rise-delay:90ms; margin-bottom:2.5rem">
-        <table>
-          <caption>Roles, write access and exit gate.</caption>
-          <thead>
-            <tr><th scope="col">Wave</th><th scope="col">Role</th><th scope="col">Agents</th><th scope="col">Write access</th><th scope="col">Gate</th></tr>
-          </thead>
-          <tbody>
-            <tr>
-              <th scope="row" class="mono-num">1</th>
-              <td>Discovery</td>
-              <td>read-only explorers</td>
-              <td>none <span class="file">allowedPaths: []</span></td>
-              <td>validate findings</td>
-            </tr>
-            <tr>
-              <th scope="row" class="mono-num">2</th>
-              <td>Impl-Core</td>
-              <td>code-implementer, db-specialist, ui-developer</td>
-              <td>core feature code</td>
-              <td>incremental gate</td>
-            </tr>
-            <tr>
-              <th scope="row" class="mono-num">3</th>
-              <td>Impl-Polish</td>
-              <td>fix + integration agents</td>
-              <td>bug fixes, edge cases</td>
-              <td>incremental gate</td>
-            </tr>
-            <tr>
-              <th scope="row" class="mono-num">4</th>
-              <td>Quality</td>
-              <td>simplifiers, test-writer, read-only panel</td>
-              <td>tests, test globs only</td>
-              <td><span class="state-ok">FULL GATE</span>, un-skippable</td>
-            </tr>
-            <tr>
-              <th scope="row" class="mono-num">5</th>
-              <td>Finalization</td>
-              <td>1 to 2 agents</td>
-              <td>SSOT files, issue cleanup</td>
-              <td>final review</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div class="grid grid-3">
-        <div class="card card-lift rise">
-          <h3>Merge conflicts by construction</h3>
-          <p>File-scope deconfliction means two agents never write the same file.</p>
-        </div>
-        <div class="card card-lift rise" style="--rise-delay:90ms">
-          <h3>Context isolation</h3>
-          <p>Each agent holds its own task and nothing of the others.</p>
-        </div>
-        <div class="card card-lift rise" style="--rise-delay:180ms">
-          <h3>Review between waves</h3>
-          <p>A bad pattern is caught before it propagates. Only findings at confidence <span class="mono-num">&gt;= 80</span> reach you.</p>
+      <div class="harness">
+        <div class="h-row">
+          <div>
+            <p class="h-name">Codex CLI</p>
+            <p class="h-tag">clone + installer</p>
+          </div>
+          <div>
+            <div class="cmd">
+<pre class="code"><code>git clone https://github.com/Kanevry/session-orchestrator.git
+cd session-orchestrator &amp;&amp; npm install
+node scripts/codex-install.mjs</code></pre>
+            </div>
+            <p class="note">Reads <code>AGENTS.md</code> instead of <code>CLAUDE.md</code>.</p>
+            <div class="flag">
+              <b>no scope enforcement</b>
+              The file-scope hook does not run on this harness. The five passes and the quality gates work; the write boundary is a convention here, not a mechanism.
+            </div>
+          </div>
         </div>
       </div>
 
-      <blockquote class="quote rise" style="margin-top:2.5rem">
-        Quality runs a simplification pass on AI-generated code before tests are written. Otherwise the tests pin the
-        AI patterns in place.
-        <cite>wave 4 ordering, in-repo</cite>
-      </blockquote>
+      <div class="harness">
+        <div class="h-row">
+          <div>
+            <p class="h-name">Cursor IDE</p>
+            <p class="h-tag">clone + installer</p>
+          </div>
+          <div>
+            <div class="cmd">
+<pre class="code"><code>git clone https://github.com/Kanevry/session-orchestrator.git
+cd session-orchestrator &amp;&amp; npm install
+node scripts/cursor-install.mjs /absolute/path/to/your/project</code></pre>
+            </div>
+            <div class="flag">
+              <b>path required</b>
+              The project path is mandatory. Without it the installer reports success falsely.
+            </div>
+          </div>
+        </div>
+      </div>
 
-      <ul class="ledger rise">
-        <li><span class="n">Discovery claims quote their grep</span> <span class="file">.claude/rules/parallel-sessions.md · PSA-006</span></li>
-        <li><span class="n">A test names the bug it catches</span> <span class="file">.claude/rules/test-value.md</span></li>
+      <div class="harness">
+        <div class="h-row">
+          <div>
+            <p class="h-name">Pi</p>
+            <p class="h-tag">package manager</p>
+          </div>
+          <div>
+            <div class="cmd">
+<pre class="code"><code>npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+pi install npm:session-orchestrator</code></pre>
+            </div>
+            <p class="note">The only path that resolves dependencies on its own.</p>
+          </div>
+        </div>
+      </div>
+      <p class="sr" id="copy-live" role="status" aria-live="polite"></p>
+    </section>
+
+    <!-- ============ 04 · THE LOOP ============ -->
+    <section class="sec" id="loop">
+      <p class="mark">04 &nbsp;/&nbsp; five passes</p>
+      <h2>Five passes, one gate between each</h2>
+      <p class="sub">Write access is declared per wave. The Quality gate cannot be skipped.</p>
+
+      <ul class="legend">
+        <li><span class="gs gs-run" aria-hidden="true">&#9679;</span>the work, in flight</li>
+        <li><span class="gs gs-hold" aria-hidden="true">&#10005;</span>a gate holding the work back — open bracket, cross</li>
+        <li><span class="gs gs-pass" aria-hidden="true">&#10003;</span>a gate that came back clean — closed box, check</li>
       </ul>
-    </div>
-  </section>
 
-  <!-- ============ GUARDRAILS ============ -->
-  <section class="section" id="guardrails" aria-labelledby="guardrails-h">
-    <div class="wrap">
-      <div class="section-head">
-        <p class="eyebrow rise">Guardrails, not vibes</p>
-        <h2 id="guardrails-h" class="rise" style="--rise-delay:90ms">Every guardrail names the file that enforces it</h2>
-        <p class="rise" style="--rise-delay:180ms">Each one is a hook, a lock, a policy file or a gate you can read.</p>
-      </div>
+      <figure class="band">
+        <p class="band-head"><span class="fig">Fig. 1</span><span>wave loop &mdash; elevation of one session</span></p>
 
-      <div class="grid grid-3">
-        <div class="card card-lift rise">
-          <h3>Destructive-command guard</h3>
-          <p>14 rules stop git reset, git clean, rm -rf, force-push and SQL DROP before the shell sees them.</p>
-          <p class="file">hooks/pre-bash-destructive-guard.mjs<br>.orchestrator/policy/blocked-commands.json</p>
+        <div class="plot">
+          <div class="yax" aria-hidden="true">
+            <span class="yax-ttl">Files writable</span>
+            <span class="yt t12">12</span>
+            <span class="yt t8">8</span>
+            <span class="yt t4">4</span>
+            <span class="yt t0">0</span>
+          </div>
+
+          <div class="track">
+            <span class="axis-fill" aria-hidden="true"></span>
+
+            <div class="st f0">
+              <p class="st-head"><span class="st-num">W1</span><span class="st-name">Discovery</span></p>
+              <div class="st-col">
+                <p class="st-n">0 <span>files</span></p>
+                <div class="st-bar flat"></div>
+              </div>
+            </div>
+
+            <div class="gt">
+              <p class="gt-head">G1</p>
+              <div class="gt-col">
+                <span class="gs gs-pass" aria-hidden="true">&#10003;</span>
+                <span class="gt-lines" aria-hidden="true"><i></i><i></i></span>
+              </div>
+              <p class="gt-label"><span class="sr">Gate 1, cleared: </span>findings validated</p>
+            </div>
+
+            <div class="st f12">
+              <p class="st-head"><span class="st-num">W2</span><span class="st-name">Impl-Core</span></p>
+              <div class="st-col">
+                <p class="st-n">12 <span>files</span></p>
+                <div class="st-bar"></div>
+              </div>
+            </div>
+
+            <div class="gt">
+              <p class="gt-head">G2</p>
+              <div class="gt-col">
+                <span class="gs gs-pass" aria-hidden="true">&#10003;</span>
+                <span class="gt-lines" aria-hidden="true"><i></i><i></i></span>
+              </div>
+              <p class="gt-label"><span class="sr">Gate 2, cleared: </span>incremental gate</p>
+            </div>
+
+            <div class="st f5">
+              <p class="st-head"><span class="st-num">W3</span><span class="st-name">Impl-Polish</span></p>
+              <div class="st-col">
+                <p class="st-n">5 <span>files</span></p>
+                <div class="st-bar"></div>
+              </div>
+            </div>
+
+            <div class="gt">
+              <p class="gt-head">G3</p>
+              <div class="gt-col">
+                <span class="gs gs-pass" aria-hidden="true">&#10003;</span>
+                <span class="gt-lines" aria-hidden="true"><i></i><i></i></span>
+              </div>
+              <p class="gt-label"><span class="sr">Gate 3, cleared: </span>incremental gate</p>
+            </div>
+
+            <div class="st f8">
+              <p class="st-head"><span class="st-num">W4</span><span class="st-name">Quality</span></p>
+              <div class="st-col">
+                <p class="st-n">8 <span>files</span></p>
+                <div class="st-bar"></div>
+              </div>
+            </div>
+
+            <div class="gt full">
+              <p class="gt-head">G4</p>
+              <div class="gt-col">
+                <span class="gs gs-pass" aria-hidden="true">&#10003;</span>
+                <span class="gt-lines" aria-hidden="true"><i></i><i></i><i></i></span>
+              </div>
+              <p class="gt-label"><span class="sr">Gate 4, cleared: </span>Full gate<br>un-skippable</p>
+            </div>
+
+            <div class="st f2">
+              <p class="st-head"><span class="st-num">W5</span><span class="st-name">Finalization</span></p>
+              <div class="st-col">
+                <p class="st-n">2 <span>files</span></p>
+                <div class="st-bar"></div>
+              </div>
+            </div>
+
+            <div class="gt">
+              <p class="gt-head">G5</p>
+              <div class="gt-col">
+                <span class="gs gs-pass" aria-hidden="true">&#10003;</span>
+                <span class="gt-lines" aria-hidden="true"><i></i><i></i></span>
+              </div>
+              <p class="gt-label"><span class="sr">Gate 5, cleared: </span>final review</p>
+            </div>
+          </div>
         </div>
-        <div class="card card-lift rise" style="--rise-delay:90ms">
-          <h3>Scope enforcement</h3>
-          <p>A PreToolUse hook blocks writes outside the paths an agent declared.</p>
+
+        <figcaption class="band-cap">
+          <p class="band-point"><b>Discovery has no height because it may write nothing.</b> A pass with an empty write scope is not a box of height zero — it is a line on the baseline. Every other pass is exactly as tall as the number of files it was allowed to open, and no pass can grow taller than the scope it declared before it started.</p>
+          <p class="band-scale">Scale &mdash; one unit of height equals one file in the declared write scope of that pass. Same five rows as text in the schedule below.</p>
+        </figcaption>
+      </figure>
+
+      <div class="closer">
+        <p class="pull">The file scope is not a request — <b>the union is computed and asserted disjoint before any agent starts.</b></p>
+        <p class="caption">Five passes over the work — each with a different job — and between each one an automatic check that has to come back clean before the next pass is allowed to start.</p>
+      </div>
+    </section>
+
+    <!-- ============ 05 · THE SCHEDULE ============ -->
+    <section class="sec q" id="schedule">
+      <p class="mark">05 &nbsp;/&nbsp; schedule</p>
+      <h2>The same five rows, as text</h2>
+
+      <table>
+        <caption class="sr">Five passes: who runs them, what they may write, how many files, and the gate that follows</caption>
+        <thead>
+          <tr><th scope="col">Pass</th><th scope="col">Who runs it</th><th scope="col">May write</th><th scope="col">Files</th><th scope="col">Gate after</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="w" data-l="Pass">W1 Discovery</td>
+            <td data-l="Who runs it">read-only explorers</td>
+            <td data-l="May write">nothing</td>
+            <td class="n" data-l="Files">0</td>
+            <td class="g" data-l="Gate after"><span class="gs gs-pass" aria-hidden="true">&#10003;</span><span class="sr">cleared: </span>findings validated</td>
+          </tr>
+          <tr>
+            <td class="w" data-l="Pass">W2 Impl-Core</td>
+            <td data-l="Who runs it">code, db, ui implementers</td>
+            <td data-l="May write">core feature code</td>
+            <td class="n" data-l="Files">12</td>
+            <td class="g" data-l="Gate after"><span class="gs gs-pass" aria-hidden="true">&#10003;</span><span class="sr">cleared: </span>incremental gate</td>
+          </tr>
+          <tr>
+            <td class="w" data-l="Pass">W3 Impl-Polish</td>
+            <td data-l="Who runs it">fix + integration agents</td>
+            <td data-l="May write">bug fixes, edges</td>
+            <td class="n" data-l="Files">5</td>
+            <td class="g" data-l="Gate after"><span class="gs gs-pass" aria-hidden="true">&#10003;</span><span class="sr">cleared: </span>incremental gate</td>
+          </tr>
+          <tr>
+            <td class="w" data-l="Pass">W4 Quality</td>
+            <td data-l="Who runs it">simplifiers, test-writer, read-only panel</td>
+            <td data-l="May write">tests only</td>
+            <td class="n" data-l="Files">8</td>
+            <td class="g" data-l="Gate after"><span class="gs gs-pass" aria-hidden="true">&#10003;</span><span class="sr">cleared: </span>full gate, un-skippable</td>
+          </tr>
+          <tr>
+            <td class="w" data-l="Pass">W5 Finalization</td>
+            <td data-l="Who runs it">1 to 2 agents</td>
+            <td data-l="May write">SSOT, issue cleanup</td>
+            <td class="n" data-l="Files">2</td>
+            <td class="g" data-l="Gate after"><span class="gs gs-pass" aria-hidden="true">&#10003;</span><span class="sr">cleared: </span>final review</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="foot-note">File counts are the declared write scopes of the session in the tape above, not a fixed quota. A wave declares its scope before it runs; the numbers change per session, the rule does not.</p>
+    </section>
+
+    <!-- ============ 06 · ENFORCED ============ -->
+    <section class="sec q" id="enforced">
+      <p class="mark">06 &nbsp;/&nbsp; enforcement</p>
+      <h2>Every claim names the file that enforces it</h2>
+      <p class="sub">A sentence in a prompt is a wish. These five are code paths.</p>
+
+      <div class="rows">
+        <div class="row">
+          <p class="claim">The write scope of an agent is fixed before it starts.</p>
+          <p class="file">scripts/validate-wave-scope.mjs <em>--assert-disjoint</em></p>
+        </div>
+        <div class="row">
+          <p class="claim">A write outside that scope is refused, not warned about.</p>
           <p class="file">hooks/enforce-scope.mjs</p>
         </div>
-        <div class="card card-lift rise" style="--rise-delay:180ms">
-          <h3>Verification Iron Law</h3>
-          <p>No completion claims without fresh verification evidence. "Should work now" is a banned phrase.</p>
-          <p class="file">.claude/rules/verification-before-completion.md</p>
+        <div class="row">
+          <p class="claim">Destructive shell commands are blocked by policy, not by prompt.</p>
+          <p class="file">.orchestrator/policy/blocked-commands.json <em>&mdash; 14 rules</em></p>
         </div>
-        <div class="card card-lift rise">
-          <h3>Full Gate, un-skippable</h3>
-          <p>Typecheck at 0, tests at exit 0, lint, plus a debug-artifact scan.</p>
-          <p class="file">scripts/run-quality-gate.mjs</p>
+        <div class="row">
+          <p class="claim">A subagent can never touch the git index.</p>
+          <p class="file">.claude/rules/parallel-sessions.md <em>&mdash; PSA-007</em></p>
         </div>
-        <div class="card card-lift rise" style="--rise-delay:90ms">
-          <h3>Session lock + heartbeat</h3>
-          <p>A per-repo lease with an atomic claim, so a second session is detected, not guessed.</p>
-          <p class="file">scripts/lib/session-lock.mjs</p>
-        </div>
-        <div class="card card-lift rise" style="--rise-delay:180ms">
-          <h3>Subagent git ban</h3>
-          <p>Subagents never run git add, commit, stash or push. Edit inside scope is their only channel.</p>
-          <p class="file">.claude/rules/parallel-sessions.md · PSA-007</p>
+        <div class="row">
+          <p class="claim">Every planned item is checked against evidence at close.</p>
+          <p class="file">skills/session-end/SKILL.md</p>
         </div>
       </div>
+    </section>
 
-      <h3 class="rise" style="margin:3rem 0 0">Six more, same contract</h3>
-      <ul class="ledger rise" style="--rise-delay:90ms">
-        <li><span class="n">STATE.md write lock</span> <span class="file">scripts/lib/session-lock.mjs</span></li>
-        <li><span class="n">Echo-stub detection</span> <span class="file">scripts/lib/quality-gate.mjs</span></li>
-        <li><span class="n">Autopilot kill-switches (10)</span> <span class="file">skills/autopilot/SKILL.md</span></li>
-        <li><span class="n">Owner-privacy pre-commit scan</span> <span class="file">scripts/lib/validate/check-owner-leakage.mjs</span></li>
-        <li><span class="n">Supply-chain slopcheck</span> <span class="file">scripts/lib/slopcheck.mjs</span></li>
-        <li><span class="n">CI is the source of truth</span> <span class="file">scripts/lib/ci-status-banner.mjs</span></li>
-      </ul>
+    <!-- ============ 07 · WHAT SURVIVES ============ -->
+    <section class="sec q" id="survives">
+      <p class="mark">07 &nbsp;/&nbsp; after the session</p>
+      <h2>What survives the session</h2>
+      <p class="sub">Nothing is learned silently. Every write is confirmed by the operator, every artifact is plain text.</p>
 
-      <h3 class="rise" style="margin:3rem 0 0">Enforcement by harness</h3>
-      <p class="rise meta small" style="--rise-delay:90ms; margin:0.5rem 0 0">Hook enforcement depends on the harness. Quality gates are identical everywhere.</p>
-      <p class="matrix rise" style="--rise-delay:180ms">
-        <span>Claude Code <span class="state-ok">full</span></span>
-        <span>Cursor IDE <span class="state-partial">post-hoc</span></span>
-        <span>Pi <span class="state-partial">bridged</span></span>
-        <span>Codex CLI <span class="state-off">scope enforcement currently unavailable</span></span>
-      </p>
-    </div>
-  </section>
-
-  <!-- ============ SESSION TYPES ============ -->
-  <section class="section" id="sessions" aria-labelledby="sessions-h">
-    <div class="wrap">
-      <div class="section-head">
-        <p class="eyebrow rise">Session types</p>
-        <h2 id="sessions-h" class="rise" style="--rise-delay:90ms">Three sizes, one loop</h2>
-        <p class="rise" style="--rise-delay:180ms">The loop does not change, only how much machinery the work is worth.</p>
-      </div>
-
-      <div class="grid grid-3">
-        <div class="card card-lift rise stripe">
-          <h3>housekeeping</h3>
-          <p>Repo upkeep: drift check, stale branches, CI health.</p>
-          <p class="small meta" style="margin-bottom:0">Express path for up to 3 small tasks, no subagents.</p>
-        </div>
-        <div class="card card-lift rise stripe" style="--rise-delay:90ms">
-          <h3>feature</h3>
-          <p>One shaped piece of work, all five waves, 4 to 6 agents per wave.</p>
-          <p class="small meta" style="margin-bottom:0">Issue premises are verified first, so a stale ticket does not consume a wave.</p>
-        </div>
-        <div class="card card-lift rise stripe" style="--rise-delay:180ms">
-          <h3>deep</h3>
-          <p>Architecture refactors, audits, cross-cutting epics.</p>
-          <p class="small meta" style="margin-bottom:0">Up to 10 to 18 agents per wave, full review panel at Quality.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============ MEMORY ============ -->
-  <section class="section" id="memory" aria-labelledby="memory-h">
-    <div class="wrap">
-      <div class="section-head">
-        <p class="eyebrow rise">Memory</p>
-        <h2 id="memory-h" class="rise" style="--rise-delay:90ms">Nothing is learned silently</h2>
-        <p class="rise" style="--rise-delay:180ms">Every write is confirmed by the operator. Every artifact is plain text.</p>
-      </div>
-
-      <div class="grid grid-3">
-        <div class="card rise">
+      <div class="cols">
+        <div class="col">
           <h3>The record</h3>
-          <p>Learnings carry a confidence score and an expiry: <span class="mono-num">0.5</span> at the start,
-            <span class="mono-num">+0.15</span> on confirmation, <span class="mono-num">-0.2</span> on contradiction.</p>
-          <p class="file">.orchestrator/metrics/</p>
+          <p>Learnings carry a confidence score and an expiry: 0.5 at the start, +0.15 on confirmation, &minus;0.2 on contradiction.</p>
+          <span class="rowfile">.orchestrator/metrics/</span>
         </div>
-        <div class="card rise" style="--rise-delay:90ms">
-          <h3>Rules are proposed, not applied</h3>
-          <p>Reconcile proposes rules, the operator approves. An always-on rule is structurally impossible.</p>
-          <p class="file">skills/reconcile/SKILL.md</p>
+        <div class="col">
+          <h3>Rules are proposed, never applied</h3>
+          <p>Reconcile writes a proposal, the operator approves it. A rule that switches itself on is structurally impossible.</p>
+          <span class="rowfile">skills/reconcile/SKILL.md</span>
         </div>
-        <div class="card rise" style="--rise-delay:180ms">
+        <div class="col">
           <h3>What Not To Retry</h3>
-          <p>Failed approaches are force-read at the next session start, so a dead end is not re-explored.</p>
+          <p>A failed approach is force-read at the next session start, so a dead end is not walked into twice.</p>
+          <span class="rowfile">.orchestrator/metrics/</span>
+        </div>
+        <div class="col">
+          <h3>Across repositories</h3>
+          <p><span class="rowfile">/portfolio</span> reads issues, merge requests and stale signals across every registered repo. Read-only.</p>
+        </div>
+        <div class="col">
+          <h3>Which repo next</h3>
+          <p><span class="rowfile">/dispatcher</span> ranks the free repos on backlog, staleness and readiness, then claims the lease atomically.</p>
+        </div>
+        <div class="col">
+          <h3>A session that crashed</h3>
+          <p>Shows up as force-closed from any other repository's session start, instead of holding a lock nobody can see.</p>
         </div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <!-- ============ CROSS-REPO ============ -->
-  <section class="section" id="cross-repo" aria-labelledby="crossrepo-h">
-    <div class="wrap">
-      <div class="section-head">
-        <p class="eyebrow rise">Across repositories</p>
-        <h2 id="crossrepo-h" class="rise" style="--rise-delay:90ms">Built for one operator with many repos</h2>
-        <p class="rise" style="--rise-delay:180ms">Not team features. GitLab and GitHub both, auto-detected.</p>
+    <!-- ============ 08 · MEASURED ============ -->
+    <section class="sec q" id="measured">
+      <p class="mark">08 &nbsp;/&nbsp; readings</p>
+      <h2>Measured in this repository</h2>
+
+      <div class="reads">
+        <div class="read"><p class="n v">v<span class="num" data-metric="version">3.20.0</span></p><p class="l">current release</p></div>
+        <div class="read"><p class="n"><span class="num" data-metric="skills">47</span></p><p class="l">skills</p></div>
+        <div class="read"><p class="n"><span class="num" data-metric="commands">25</span></p><p class="l">slash commands</p></div>
+        <div class="read"><p class="n"><span class="num" data-metric="agents">15</span></p><p class="l">typed sub-agents</p></div>
+        <div class="read"><p class="n"><span class="num" data-metric="hooks">25</span></p><p class="l">hook files</p></div>
+        <div class="read"><p class="n"><span class="num" data-metric="tests">580</span></p><p class="l">test files</p></div>
+        <div class="read"><p class="n"><span class="num" data-metric="sessions">252</span></p><p class="l">sessions in this repo</p></div>
+        <div class="read"><p class="n"><span class="num" data-metric="learnings">135</span></p><p class="l">learnings in this repo</p></div>
       </div>
 
-      <div class="grid grid-3">
-        <div class="card card-lift rise">
-          <h3><span class="mono-num">/portfolio</span></h3>
-          <p>A read-only dashboard across every vault-registered repo: issues, merge requests, critical labels, stale signals.</p>
-        </div>
-        <div class="card card-lift rise" style="--rise-delay:90ms">
-          <h3><span class="mono-num">/dispatcher</span></h3>
-          <p>Ranks free repos on backlog, staleness and readiness, then claims the lease atomically.</p>
-        </div>
-        <div class="card card-lift rise" style="--rise-delay:180ms">
-          <h3>Active-sessions board</h3>
-          <p>A session that crashed in one repo shows up as force-closed from any other repo's session start.</p>
-        </div>
-      </div>
-    </div>
-  </section>
+      <p class="foot-note">Counted on <span class="num" data-metric="counted-at">2026-08-19</span> at commit <span class="num" data-metric="counted-sha">c20d4d2</span>. These are this repository's own records, not a fleet total.</p>
+    </section>
 
-  <!-- ============ INSTALL ============ -->
-  <section class="section" id="install" aria-labelledby="install-h">
-    <div class="wrap">
-      <div class="section-head">
-        <p class="eyebrow rise">Install</p>
-        <h2 id="install-h" class="rise" style="--rise-delay:90ms">Pick your harness</h2>
-        <p class="rise" style="--rise-delay:180ms">
-          Same plugin, four install paths. Copy the line, run it, then add one config block.
-        </p>
-      </div>
+    <!-- ============ 09 · WHAT THIS IS NOT ============ -->
+    <section class="sec q" id="limits">
+      <p class="mark">09 &nbsp;/&nbsp; limits</p>
+      <h2>What this is, and what it is not</h2>
 
-      <div class="install-note rise">
-        <p><strong>Prerequisite:</strong> Node.js <span class="mono-num">&gt;= 24</span>. Package
-        <span class="mono-num">session-orchestrator</span> on npm, <span class="mono-num">v3.20.0</span>, MIT.</p>
-      </div>
-
-      <div class="grid grid-2">
-
-        <div class="card harness rise">
-          <div class="harness-head">
-            <h3>Claude Code</h3>
-            <span class="badge">full enforcement</span>
-          </div>
-          <p>Plugin marketplace install. The post-install step below is the most common reason an install looks broken.</p>
-          <ol class="steps">
-            <li>
-              <span class="step-label">1 · add the marketplace</span>
-              <div class="cmd">
-                <code>/plugin marketplace add Kanevry/session-orchestrator</code>
-                <button type="button" class="copy" aria-label="Copy command: add the marketplace">
-                  <svg class="icon-copy" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg>
-                  <svg class="icon-done" aria-hidden="true" focusable="false"><use href="#i-check"/></svg>
-                </button>
-              </div>
-            </li>
-            <li>
-              <span class="step-label">2 · install the plugin</span>
-              <div class="cmd">
-                <code>/plugin install session-orchestrator@kanevry</code>
-                <button type="button" class="copy" aria-label="Copy command: install the plugin">
-                  <svg class="icon-copy" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg>
-                  <svg class="icon-done" aria-hidden="true" focusable="false"><use href="#i-check"/></svg>
-                </button>
-              </div>
-            </li>
-            <li>
-              <span class="step-label">3 · post-install, required</span>
-              <div class="cmd">
-                <code>cd "$(dirname "$(find ~/.claude/plugins/cache -path '*session-orchestrator*' -name package.json 2&gt;/dev/null | head -1)")" &amp;&amp; npm install</code>
-                <button type="button" class="copy" aria-label="Copy command: post-install dependencies">
-                  <svg class="icon-copy" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg>
-                  <svg class="icon-done" aria-hidden="true" focusable="false"><use href="#i-check"/></svg>
-                </button>
-              </div>
-            </li>
-            <li>
-              <span class="step-label">4 · finish</span>
-              <p class="manual-step" style="margin:0">Restart Claude Code. The plugin's hooks register at session start.</p>
-            </li>
-          </ol>
-        </div>
-
-        <div class="card harness rise" style="--rise-delay:90ms">
-          <div class="harness-head">
-            <h3>Codex CLI</h3>
-            <span class="badge">AGENTS.md</span>
-          </div>
-          <p>Clone and run the installer. Codex reads <span class="mono-num">AGENTS.md</span> where Claude Code reads <span class="mono-num">CLAUDE.md</span>.</p>
-          <ol class="steps">
-            <li>
-              <span class="step-label">1 · clone and install</span>
-              <div class="cmd">
-                <code>git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator &amp;&amp; cd ~/Projects/session-orchestrator &amp;&amp; npm install &amp;&amp; node scripts/codex-install.mjs</code>
-                <button type="button" class="copy" aria-label="Copy command: Codex CLI install">
-                  <svg class="icon-copy" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg>
-                  <svg class="icon-done" aria-hidden="true" focusable="false"><use href="#i-check"/></svg>
-                </button>
-              </div>
-            </li>
-            <li>
-              <p class="manual-step" style="margin:0">
-                Scope enforcement is currently unavailable on this harness. Quality gates run in full.
-              </p>
-            </li>
-          </ol>
-        </div>
-
-        <div class="card harness rise" style="--rise-delay:180ms">
-          <div class="harness-head">
-            <h3>Cursor IDE</h3>
-            <span class="badge">per project</span>
-          </div>
-          <p>Same clone, then point the installer at your project.</p>
-          <ol class="steps">
-            <li>
-              <span class="step-label">1 · clone and install</span>
-              <div class="cmd">
-                <code>git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator &amp;&amp; cd ~/Projects/session-orchestrator &amp;&amp; npm install</code>
-                <button type="button" class="copy" aria-label="Copy command: clone for Cursor">
-                  <svg class="icon-copy" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg>
-                  <svg class="icon-done" aria-hidden="true" focusable="false"><use href="#i-check"/></svg>
-                </button>
-              </div>
-            </li>
-            <li>
-              <span class="step-label">2 · wire a project</span>
-              <div class="cmd">
-                <code>node scripts/cursor-install.mjs /path/to/your/project</code>
-                <button type="button" class="copy" aria-label="Copy command: Cursor project install">
-                  <svg class="icon-copy" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg>
-                  <svg class="icon-done" aria-hidden="true" focusable="false"><use href="#i-check"/></svg>
-                </button>
-              </div>
-            </li>
-          </ol>
-        </div>
-
-        <div class="card harness rise" style="--rise-delay:270ms">
-          <div class="harness-head">
-            <h3>Pi</h3>
-            <span class="badge">one line</span>
-          </div>
-          <p>Installs straight from the npm package.</p>
-          <ol class="steps">
-            <li>
-              <span class="step-label">1 · install</span>
-              <div class="cmd">
-                <code>pi install npm:session-orchestrator</code>
-                <button type="button" class="copy" aria-label="Copy command: Pi install">
-                  <svg class="icon-copy" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg>
-                  <svg class="icon-done" aria-hidden="true" focusable="false"><use href="#i-check"/></svg>
-                </button>
-              </div>
-            </li>
-            <li>
-              <p class="manual-step" style="margin:0">Hook enforcement is bridged on this harness. Quality gates run in full.</p>
-            </li>
-          </ol>
-        </div>
-      </div>
-
-      <div class="card rise" style="margin-top:1.5rem">
-        <h3>Minimum configuration</h3>
-        <p>
-          One <span class="mono-num">## Session Config</span> block in <span class="mono-num">CLAUDE.md</span> or
-          <span class="mono-num">AGENTS.md</span>. Everything else is opt-in.
-        </p>
-        <div class="cmd" style="margin-top:0.5rem">
-<code>## Session Config
-
-test-command: npm test
-typecheck-command: npm run typecheck
-lint-command: npm run lint
-agents-per-wave: 6
-waves: 5
-persistence: true
-enforcement: warn</code>
-          <button type="button" class="copy" aria-label="Copy the minimum Session Config block">
-            <svg class="icon-copy" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg>
-            <svg class="icon-done" aria-hidden="true" focusable="false"><use href="#i-check"/></svg>
-          </button>
-        </div>
-      </div>
-
-      <p class="visually-hidden" id="copy-live" role="status" aria-live="polite"></p>
-    </div>
-  </section>
-
-  <!-- ============ EVAL ============ -->
-  <section class="section" id="eval" aria-labelledby="eval-h">
-    <div class="wrap">
-      <div class="section-head">
-        <p class="eyebrow rise">Eval standard · aiat-llm-eval/1.0</p>
-        <h2 id="eval-h" class="rise" style="--rise-delay:90ms">An open spec defined by what it refuses</h2>
-        <p class="rise" style="--rise-delay:180ms">Three refusals rather than a score.</p>
-      </div>
-
-      <div class="grid grid-3">
-        <div class="card card-lift rise stripe">
-          <h3>No global score</h3>
-          <p>The validator rejects <span class="mono-num">overall</span>, <span class="mono-num">total</span> and
-            <span class="mono-num">mean</span>. One number hides the dimension that went wrong.</p>
-        </div>
-        <div class="card card-lift rise stripe" style="--rise-delay:90ms">
-          <h3>Missing data abstains</h3>
-          <p>An absent measurement returns <span class="mono-num">cannot-determine</span>, never a zero.</p>
-        </div>
-        <div class="card card-lift rise stripe" style="--rise-delay:180ms">
-          <h3>No superlatives</h3>
-          <p>A conforming tool may not emit them.</p>
-        </div>
-      </div>
-
-      <div class="card rise" style="margin-top:1.5rem">
-        <h3 id="lb-h">Leaderboard</h3>
-        <div id="leaderboard" aria-live="polite" aria-labelledby="lb-h">
-          <p style="color:var(--so-meta); margin-bottom:0">
-            The record schema is ready. The site is deliberately not. A leaderboard published before the comparison
-            method is honest would be the exact failure the spec exists to prevent.
-          </p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============ PROOF ============ -->
-  <section class="section" id="proof" aria-labelledby="proof-h">
-    <div class="wrap">
-      <div class="section-head">
-        <p class="eyebrow rise">Measured</p>
-        <h2 id="proof-h" class="rise" style="--rise-delay:90ms">What is actually in the box</h2>
-        <p class="rise" style="--rise-delay:180ms">
-          Counted in this repository on 2026-08-03 at commit <span class="mono-num">d2de3ca</span>. Sessions and
-          learnings are this repository's own record, not a fleet total.
-        </p>
-      </div>
-
-      <div class="proof-grid rise">
-        <div class="proof-cell"><span class="proof-n">v3.20.0</span><span class="proof-l">current release</span></div>
-        <div class="proof-cell"><span class="proof-n">46</span><span class="proof-l">skills</span></div>
-        <div class="proof-cell"><span class="proof-n">25</span><span class="proof-l">slash commands</span></div>
-        <div class="proof-cell"><span class="proof-n">15</span><span class="proof-l">typed sub-agents</span></div>
-        <div class="proof-cell"><span class="proof-n">24</span><span class="proof-l">hook files, 10 event types</span></div>
-        <div class="proof-cell"><span class="proof-n">12,000+</span><span class="proof-l">tests, 556 test files</span></div>
-        <div class="proof-cell"><span class="proof-n">210</span><span class="proof-l">sessions in this repo</span></div>
-        <div class="proof-cell"><span class="proof-n">95</span><span class="proof-l">learnings in this repo</span></div>
-      </div>
-
-      <p class="small meta rise" style="--rise-delay:90ms; margin-top:1rem; max-width:70ch">
-        Also in the box: 29 rule files of which 13 are reconcile-generated, 14 destructive-command rules, and
-        10 autopilot kill-switches.
-      </p>
-    </div>
-  </section>
-
-  <!-- ============ HONESTY ============ -->
-  <section class="section" id="honesty" aria-labelledby="honesty-h">
-    <div class="wrap-narrow">
-      <p class="eyebrow rise">Honesty block</p>
-      <h2 id="honesty-h" class="rise" style="--rise-delay:90ms">What this is, and what it is not</h2>
-      <ul class="prose rise" style="--rise-delay:180ms; margin-top:1.5rem">
-        <li>Independent and community-maintained. Not affiliated with or endorsed by Anthropic, OpenAI, or Cursor.</li>
-        <li>Shipped as-is, with no SLA and best-effort maintenance.</li>
-        <li>Local by default. No account. Telemetry is strictly opt-in.</li>
+      <ul class="plain">
+        <li>Independent and community-maintained. <b>Not affiliated with or endorsed by Anthropic, OpenAI, or Cursor.</b></li>
+        <li>Shipped as-is, with no service level agreement and best-effort maintenance.</li>
+        <li>Local by default. No account, no server. Telemetry is strictly opt-in.</li>
         <li>macOS and Linux are first-class and covered by CI. Windows runs natively but is not CI-covered.</li>
-        <li>Hook-level enforcement varies by harness. The matrix in the Guardrails section is the current state, not a roadmap.</li>
+        <li>The eval standard refuses a global score, abstains with <b>cannot-determine</b> when a measurement is missing, and forbids superlatives. A leaderboard published before the comparison method is honest would be the exact failure the spec exists to prevent, so there is not one yet.</li>
+        <li>Hook-level enforcement is not the same on every harness. The list below is the current state, not a roadmap. The quality gates are identical everywhere.</li>
       </ul>
-    </div>
-  </section>
 
-</main>
+      <ul class="matrix">
+        <li><span class="gs gs-pass" aria-hidden="true">&#10003;</span>Claude Code &mdash; full</li>
+        <li><span class="gs gs-run" aria-hidden="true">&#9679;</span>Cursor IDE &mdash; post-hoc</li>
+        <li><span class="gs gs-run" aria-hidden="true">&#9679;</span>Pi &mdash; bridged</li>
+        <li><span class="gs gs-hold" aria-hidden="true">&#10005;</span>Codex CLI &mdash; scope enforcement currently unavailable</li>
+      </ul>
+    </section>
 
-<footer class="site-footer" aria-labelledby="footer-h">
-  <div class="wrap">
-    <h2 id="footer-h" class="visually-hidden">Site footer</h2>
-    <div class="foot-cols">
-      <div>
-        <a class="wordmark" href="#top" style="margin-bottom:0.75rem">
-          <svg aria-hidden="true" focusable="false"><use href="#i-mark"/></svg>
-          Session Orchestrator
-        </a>
-        <p class="meta" style="max-width:44ch">
-          Loop engineering for AI coding agents. Markdown skills on a thin Node runtime, with no black box.
-        </p>
+    <!-- ============ 10 · CLOSING ============ -->
+    <section class="end" id="start">
+      <p class="mark">10 &nbsp;/&nbsp; work leaves</p>
+      <h2>One line, then a session that reads first</h2>
+      <p class="sub">MIT, no account, and the first thing it does is tell you what it found before it touches anything.</p>
+      <div class="cta">
+        <a class="btn btn-1" href="#install">Install in one line</a>
+        <a class="btn btn-2" href="https://github.com/Kanevry/session-orchestrator">Read the source</a>
       </div>
-      <div>
-        <p class="foot-h">Project</p>
-        <ul class="foot-list">
-          <li><a href="https://github.com/Kanevry/session-orchestrator">GitHub repository</a></li>
-          <li><a href="https://github.com/Kanevry/session-orchestrator#readme">Documentation</a></li>
-          <li><a href="https://www.npmjs.com/package/session-orchestrator">npm package</a></li>
-        </ul>
-      </div>
-      <div>
-        <p class="foot-h">Standards</p>
-        <ul class="foot-list">
-          <li><a href="#eval">Eval standard 1.0</a></li>
-          <li><a href="#guardrails">Guardrail inventory</a></li>
-          <li><a href="https://github.com/Kanevry/session-orchestrator/blob/main/LICENSE">MIT licence</a></li>
-        </ul>
-      </div>
-    </div>
+    </section>
+  </main>
 
-    <div class="foot-legal">
-      <p>MIT licensed. Built in Austria. Independent and community-maintained, not affiliated with or endorsed by Anthropic, OpenAI, or Cursor.</p>
-      <p>
-        There are methodology courses at <a href="https://agenticbuilders.at">agenticbuilders.at</a>.
-        The plugin is free and MIT, and the courses are not a requirement for using it.
-      </p>
-    </div>
-  </div>
-</footer>
+  <footer class="foot">
+    <span>MIT</span>
+    <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
+    <a href="https://www.npmjs.com/package/session-orchestrator">npm</a>
+    <a href="/guide/">Guide</a>
+    <a href="https://www.gotzendorfer.at" rel="author">Maintainer</a>
+    <a href="/impressum/" class="right">Imprint</a>
+    <a href="/datenschutz/">Privacy</a>
+  </footer>
+</div>
 
 <script>
 (function () {
   'use strict';
 
-  /* ---------------- copy buttons ---------------- */
+  /* Copy buttons are CREATED here, not shipped in the markup: with
+     JavaScript off there is no button that silently does nothing.
+     Clipboard API first, execCommand fallback, and an aria-live line
+     so the result is announced rather than only coloured. */
   var live = document.getElementById('copy-live');
 
   function announce(msg) { if (live) { live.textContent = ''; live.textContent = msg; } }
@@ -1509,8 +1057,7 @@ enforcement: warn</code>
     var ta = document.createElement('textarea');
     ta.value = text;
     ta.setAttribute('readonly', '');
-    ta.style.position = 'fixed';
-    ta.style.top = '-1000px';
+    ta.className = 'sr';
     document.body.appendChild(ta);
     ta.select();
     var ok = false;
@@ -1522,18 +1069,26 @@ enforcement: warn</code>
   function flash(btn, ok) {
     if (ok) {
       btn.classList.add('is-done');
+      btn.textContent = 'copied';
       announce('Copied to clipboard.');
-      window.setTimeout(function () { btn.classList.remove('is-done'); }, 1800);
+      window.setTimeout(function () {
+        btn.classList.remove('is-done');
+        btn.textContent = 'copy';
+      }, 1800);
     } else {
-      announce('Copy failed. Select the command and copy it manually.');
+      announce('Copy failed. Select the command and copy it by hand.');
     }
   }
 
-  Array.prototype.forEach.call(document.querySelectorAll('.copy'), function (btn) {
+  Array.prototype.forEach.call(document.querySelectorAll('.cmd'), function (host) {
+    var codeEl = host.querySelector('code');
+    if (!codeEl) { return; }
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'copy';
+    btn.textContent = 'copy';
+    btn.setAttribute('aria-label', 'Copy this command to the clipboard');
     btn.addEventListener('click', function () {
-      var host = btn.closest('.cmd');
-      var codeEl = host && host.querySelector('code');
-      if (!codeEl) { return; }
       var text = codeEl.textContent;
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).then(
@@ -1544,230 +1099,9 @@ enforcement: warn</code>
         flash(btn, fallbackCopy(text));
       }
     });
+    host.appendChild(btn);
   });
-
-  /* ---------------- leaderboard ----------------
-     Same-origin fetch of ./leaderboard.json. The static fallback
-     paragraph is what the markup ships with, so no-JS and any
-     fetch failure both render it. A table replaces it only when
-     the file exists and actually carries entries.
-  ------------------------------------------------- */
-  var lbHost = document.getElementById('leaderboard');
-
-  function chip(name, result) {
-    var cls = result === 'pass' ? 'lb-ok' : result === 'fail' ? 'lb-bad' : 'lb-none';
-    var glyph = result === 'pass' ? '✓' : result === 'fail' ? '✕' : '–';
-    var word = result === 'pass' ? 'pass' : result === 'fail' ? 'fail' : 'cannot-determine';
-    var el = document.createElement('span');
-    el.className = 'lb-chip ' + cls;
-    var g = document.createElement('span');
-    g.className = 'g';
-    g.setAttribute('aria-hidden', 'true');
-    g.textContent = glyph;
-    el.appendChild(g);
-    el.appendChild(document.createTextNode(String(name)));
-    var sr = document.createElement('span');
-    sr.className = 'visually-hidden';
-    sr.textContent = ' ' + word;
-    el.appendChild(sr);
-    return el;
-  }
-
-  function dimsOf(entry) {
-    var d = entry && entry.dimensions;
-    if (!d) { return []; }
-    if (Array.isArray(d)) {
-      return d.map(function (x) { return [x && x.name, x && x.result]; });
-    }
-    return Object.keys(d).map(function (k) { return [k, d[k]]; });
-  }
-
-  function cell(row, text, mono) {
-    var td = document.createElement('td');
-    td.textContent = text == null ? '' : String(text);
-    if (mono) { td.className = 'mono-num'; }
-    row.appendChild(td);
-    return td;
-  }
-
-  function renderLeaderboard(entries) {
-    var scroll = document.createElement('div');
-    scroll.className = 'table-scroll';
-    var table = document.createElement('table');
-
-    var cap = document.createElement('caption');
-    cap.textContent = 'Recorded evaluations, newest first. Every row states its run count and whether it is a self-evaluation.';
-    table.appendChild(cap);
-
-    var thead = document.createElement('thead');
-    var hr = document.createElement('tr');
-    ['Date', 'Mode', 'Harness', 'Dimensions', 'Version', 'Basis'].forEach(function (h) {
-      var th = document.createElement('th');
-      th.setAttribute('scope', 'col');
-      th.textContent = h;
-      hr.appendChild(th);
-    });
-    thead.appendChild(hr);
-    table.appendChild(thead);
-
-    var tbody = document.createElement('tbody');
-    entries.forEach(function (e) {
-      var tr = document.createElement('tr');
-      cell(tr, e.date, true);
-      cell(tr, e.mode);
-      cell(tr, e.harness);
-
-      var td = document.createElement('td');
-      var wrapEl = document.createElement('div');
-      wrapEl.className = 'lb-chips';
-      dimsOf(e).forEach(function (pair) {
-        if (!pair[0]) { return; }
-        wrapEl.appendChild(chip(pair[0], pair[1]));
-      });
-      td.appendChild(wrapEl);
-      tr.appendChild(td);
-
-      cell(tr, e.version, true);
-
-      var basis = document.createElement('td');
-      basis.className = 'small meta';
-      basis.textContent = 'n=' + (e.n == null ? 1 : e.n) +
-        (e.self_evaluation === false ? '' : ' · self-evaluation');
-      tr.appendChild(basis);
-
-      tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    scroll.appendChild(table);
-
-    lbHost.textContent = '';
-    lbHost.appendChild(scroll);
-  }
-
-  if (lbHost && window.fetch) {
-    window.fetch('./leaderboard.json', { credentials: 'omit' })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (data) {
-        var entries = data && data.entries;
-        if (!Array.isArray(entries) || entries.length === 0) { return; }
-        renderLeaderboard(entries);
-      })
-      .catch(function () { /* fallback paragraph stays in place */ });
-  }
-
-  /* ---------------- terminal replay ----------------
-     The transcript is fully present in the DOM. This script only
-     replays it, and only when the user has not asked for reduced
-     motion. Without JS, or with reduced motion, the static end
-     state is what renders.
-  ------------------------------------------------- */
-  var term = document.getElementById('terminal');
-  var body = document.getElementById('term-body');
-  var status = document.getElementById('term-status');
-  var toggle = document.getElementById('term-toggle');
-  var toggleIcon = document.getElementById('term-toggle-icon');
-  var toggleLabel = document.getElementById('term-toggle-label');
-  if (!term || !body || !toggle) { return; }
-
-  var motionOk = window.matchMedia && window.matchMedia('(prefers-reduced-motion: no-preference)').matches;
-  if (!motionOk) { return; }
-
-  var lines = Array.prototype.slice.call(body.querySelectorAll('.tl'));
-  var cmdText = lines.map(function (l) {
-    var c = l.querySelector('.term-cmd');
-    return c ? c.textContent : null;
-  });
-
-  var timer = null;
-  var paused = false;
-  var onScreen = true;
-  var stopped = false;
-  var generation = 0;
-
-  function sleep(ms) {
-    return new Promise(function (resolve) {
-      timer = window.setTimeout(resolve, ms);
-    });
-  }
-
-  function waitWhilePaused(gen) {
-    return new Promise(function (resolve) {
-      (function poll() {
-        if (gen !== generation || stopped) { resolve(); return; }
-        if (!paused && onScreen) { resolve(); return; }
-        timer = window.setTimeout(poll, 160);
-      })();
-    });
-  }
-
-  function reset() {
-    lines.forEach(function (l, i) {
-      l.classList.remove('is-on', 'is-caret');
-      if (cmdText[i] !== null) { l.querySelector('.term-cmd').textContent = ''; }
-    });
-  }
-
-  function setStatus(text) { if (status) { status.textContent = text; } }
-
-  async function typeCommand(line, text, gen) {
-    var target = line.querySelector('.term-cmd');
-    line.classList.add('is-caret');
-    for (var i = 0; i < text.length; i++) {
-      if (gen !== generation || stopped) { return; }
-      await waitWhilePaused(gen);
-      if (gen !== generation || stopped) { return; }
-      target.textContent = text.slice(0, i + 1);
-      await sleep(38 + Math.round(Math.random() * 34));
-    }
-    await sleep(260);
-    line.classList.remove('is-caret');
-  }
-
-  async function run() {
-    var gen = ++generation;
-    while (gen === generation && !stopped) {
-      reset();
-      setStatus('replaying session');
-      await waitWhilePaused(gen);
-      for (var i = 0; i < lines.length; i++) {
-        if (gen !== generation || stopped) { return; }
-        await waitWhilePaused(gen);
-        if (gen !== generation || stopped) { return; }
-        var line = lines[i];
-        line.classList.add('is-on');
-        if (cmdText[i] !== null) {
-          await typeCommand(line, cmdText[i], gen);
-        } else {
-          await sleep(line.classList.contains('tl-gap') ? 90 : 110);
-        }
-      }
-      setStatus('session complete');
-      await sleep(5200);
-      await waitWhilePaused(gen);
-    }
-  }
-
-  toggle.hidden = false;
-  toggle.setAttribute('aria-pressed', 'false');
-
-  toggle.addEventListener('click', function () {
-    paused = !paused;
-    toggle.setAttribute('aria-pressed', paused ? 'true' : 'false');
-    toggleLabel.textContent = paused ? 'Resume replay' : 'Pause replay';
-    toggleIcon.firstElementChild.setAttribute('href', paused ? '#i-play' : '#i-pause');
-    setStatus(paused ? 'replay paused' : 'replaying session');
-  });
-
-  if ('IntersectionObserver' in window) {
-    new IntersectionObserver(function (entries) {
-      onScreen = entries[0].isIntersecting;
-    }, { threshold: 0.15 }).observe(term);
-  }
-
-  term.classList.add('is-typing');
-  run();
 })();
 </script>
-
 </body>
 </html>
