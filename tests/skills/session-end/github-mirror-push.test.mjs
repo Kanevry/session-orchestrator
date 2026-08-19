@@ -100,7 +100,7 @@ function runBlock(dir) {
   return { code: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
 }
 
-describe('session-end Phase 4.4 GitHub mirror push — the three states are distinguishable', () => {
+describe('session-end Phase 4.4 GitHub mirror push — the four states are distinguishable', () => {
   it('State 3 (remote configured, push FAILS): exits non-zero and never claims "not configured"', () => {
     const { dir } = makeRepo(join(root_unreachable(), 'does-not-exist.git'));
     const res = runBlock(dir);
@@ -173,3 +173,34 @@ function root_unreachable() {
   tmpDirs.push(d);
   return d;
 }
+
+// ---------------------------------------------------------------------------
+// State 0 — not a git repository at all.
+//
+// This state was MISSED in the first version of the fix and was found by an
+// adversarial reviewer, not by the author. Outside a repository,
+// `git remote get-url github` fails with "fatal: not a git repository", which
+// by exit code alone is indistinguishable from "no such remote". The block
+// therefore announced "no 'github' remote configured — skipping (not an
+// error)" and exited 0: a broken environment reported as a healthy one, in the
+// very fix written to close a fail-open.
+//
+// The bug this test catches: a future edit that drops the `git rev-parse
+// --git-dir` probe and restores the collapse. Nothing else would notice —
+// the three tests above all run INSIDE a repository and stay green.
+// ---------------------------------------------------------------------------
+
+describe('state 0 — not a git repository', () => {
+  it('fails closed and says why, instead of claiming no mirror is configured', () => {
+    const root = mkdtempSync(join(tmpdir(), 'so-mirror-norepo-'));
+    tmpDirs.push(root);
+    const res = runBlock(root);
+
+    expect(res.status, 'must not exit 0 — a broken environment is not a healthy one').not.toBe(0);
+    expect(res.stderr).toMatch(/not a git repository/i);
+    // The precise regression: the old wording must NOT appear. It is the
+    // sentence that made a missing repository look like a deliberate opt-out.
+    expect(res.stdout).not.toMatch(/no 'github' remote configured/);
+    expect(res.stdout).not.toMatch(/not an error/);
+  });
+});

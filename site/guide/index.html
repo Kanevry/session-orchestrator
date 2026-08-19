@@ -65,6 +65,11 @@
   --ink-3:#7b8286;
   --line:#22262a;
   --line-2:#343a3f;
+  /* Interactive borders only. WCAG 1.4.11 wants 3:1 for the boundary of a
+     control; --line-2 is 1.71:1 against the page and stays that way because it
+     also draws decorative hairlines, where 3:1 would be loud. Separate token,
+     separate job. 3.57:1 on --bg, 3.40:1 on --bg-2. */
+  --line-ui:#616a70;
 
   --run:#e8a33d;
   --hold:#f0705e;
@@ -208,7 +213,7 @@ pre.code .ok{color:var(--pass)}
    of the first line and hides the end of it. */
 pre.code.has-copy{padding-right:64px}
 .copy{position:absolute;top:7px;right:7px;background:var(--bg);color:var(--ink-3);
-  border:1px solid var(--line-2);font-family:var(--mono);font-size:10px;letter-spacing:.1em;
+  border:1px solid var(--line-ui);font-family:var(--mono);font-size:10px;letter-spacing:.1em;
   text-transform:uppercase;padding:5px 9px;cursor:pointer;line-height:1}
 .copy:hover{color:var(--ink);border-color:var(--ink-3)}
 .copy[data-done="1"]{color:var(--pass);border-color:var(--pass)}
@@ -327,7 +332,8 @@ pre.code.has-copy{padding-right:64px}
     </nav>
   </header>
 
-  <main id="main">
+  <main id="main" tabindex="-1">
+    <p class="sr" id="copy-live" role="status" aria-live="polite"></p>
 
     <section class="intro">
       <p class="mark">Guide</p>
@@ -641,25 +647,69 @@ enforcement: warn</pre>
 (function () {
   'use strict';
 
-  /* 1 — copy buttons on install commands */
+  /* 1 — copy buttons on install commands.
+     The outcome is announced through a live region, not only through the
+     button's own label. A screen-reader user who never sees the button change
+     from "Copy" to "Copied" would otherwise get NOTHING on success and — worse
+     — nothing on the failure path either, where the instruction to press
+     Ctrl+C is the only way forward. index.html has carried this since it was
+     written; this page did not, which is what an accessibility review found. */
+  var live = document.getElementById('copy-live');
+  function announce(msg) {
+    if (!live) return;
+    live.textContent = '';   // force a change even when the message repeats
+    live.textContent = msg;
+  }
+
   if (navigator.clipboard && window.isSecureContext) {
     document.querySelectorAll('pre.code[data-copy]').forEach(function (pre) {
       var btn = document.createElement('button');
+      /* data-copy is a BARE attribute — it carries no value, so the label has
+         to be derived. The first line alone is not enough: two blocks both
+         start with the same `git clone`, and two others start with a comment
+         or a config heading. Nearest preceding heading + first line that is
+         actually a command gives seven distinct, meaningful names. */
+      /* The nearest LABEL in DOCUMENT ORDER — headings plus .h-name, which is
+         what actually names each harness block (the four install paths sit
+         under one h2, so headings alone collapse them onto 'Install').
+         closest() finds the section h2 (Install) for all four harnesses and
+         collapses them onto one name; walking backwards finds the h3 that
+         actually labels each block. */
+      var title = '';
+      var heads = document.querySelectorAll('h1, h2, h3, h4, .h-name');
+      for (var i = 0; i < heads.length; i++) {
+        if (heads[i].compareDocumentPosition(pre) & Node.DOCUMENT_POSITION_FOLLOWING) {
+          title = heads[i].textContent.trim();
+        } else break;
+      }
+      var lines = (pre.textContent || '').trim().split('\n')
+        .map(function (l) { return l.trim(); })
+        .filter(function (l) { return l && l.charAt(0) !== '#'; });
+      var first = (lines[0] || '').replace(/\s+/g, ' ');
+      if (first.length > 40) first = first.slice(0, 39) + '…';
+      var what = title ? title + ' — ' + first : first;
+      if (!first) what = title || 'the command';
       btn.type = 'button';
       btn.className = 'copy';
       btn.textContent = 'Copy';
-      btn.setAttribute('aria-label', 'Copy this command to the clipboard');
+      /* Each button names WHICH command it copies. Twelve buttons sharing one
+         label ("Copy this command to the clipboard") are indistinguishable in
+         a screen reader's element list, which is the one place they are read
+         out of context. */
+      btn.setAttribute('aria-label', 'Copy command: ' + what);
       pre.classList.add('has-copy');
       btn.addEventListener('click', function () {
         navigator.clipboard.writeText(pre.textContent.trim()).then(function () {
           btn.textContent = 'Copied';
           btn.dataset.done = '1';
+          announce('Copied to clipboard: ' + what);
           window.setTimeout(function () {
             btn.textContent = 'Copy';
             delete btn.dataset.done;
           }, 1600);
         }).catch(function () {
           btn.textContent = 'Press Ctrl+C';
+          announce('Copy failed. Select the command and press Control C, or Command C on a Mac.');
         });
       });
       pre.parentNode.appendChild(btn);

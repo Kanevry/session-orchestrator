@@ -119,6 +119,11 @@
   --ink-3:#7b8286;
   --line:#22262a;
   --line-2:#343a3f;
+  /* Interactive borders only. WCAG 1.4.11 wants 3:1 for the boundary of a
+     control; --line-2 is 1.71:1 against the page and stays that way because it
+     also draws decorative hairlines, where 3:1 would be loud. Separate token,
+     separate job. 3.57:1 on --bg, 3.40:1 on --bg-2. */
+  --line-ui:#616a70;
 
   --run:#e8a33d;
   --hold:#f0705e;
@@ -207,7 +212,7 @@ h1{
      min-height:44px;line-height:1.2}
 .btn-1{background:var(--ink);color:var(--bg);font-weight:500}
 .btn-1:hover{background:#fff}
-.btn-2{border-color:var(--line-2);color:var(--ink)}
+.btn-2{border-color:var(--line-ui);color:var(--ink)}
 .btn-2:hover{border-color:var(--ink-3)}
 .meta{margin-top:22px;font-family:var(--mono);font-size:13px;color:var(--ink-3);letter-spacing:.01em}
 
@@ -264,7 +269,7 @@ pre.code{margin:0;border:1px solid var(--line);background:var(--bg-2);padding:12
 pre.code.soft{white-space:pre-wrap;overflow-wrap:anywhere;overflow-x:visible}
 pre.code .sig{color:var(--ink-3)}
 .copy{position:absolute;top:7px;right:7px;background:var(--bg-2);color:var(--ink-3);
-  border:1px solid var(--line-2);font-family:var(--mono);font-size:13px;line-height:1;
+  border:1px solid var(--line-ui);font-family:var(--mono);font-size:13px;line-height:1;
   padding:7px 9px;cursor:pointer;min-height:30px}
 .copy:hover{color:var(--ink);border-color:var(--ink-3)}
 .copy.is-done{color:var(--pass);border-color:var(--pass)}
@@ -544,14 +549,28 @@ tr:last-child td{border-bottom:1px solid var(--line-2)}
 
 /* ---------------------------------------------------------------
    Print. The dark ground is a screen decision; on paper the sheet
-   inverts. No content is hidden here that is visible on screen —
-   only the two moving 1px lines are dropped, because paper has no
-   scroll for them to answer to.
+   inverts.
+
+   FIVE things are dropped, not two — an earlier version of this
+   comment claimed "only the two moving 1px lines", and a reviewer
+   measured eight on-screen elements disappearing. Precisely:
+     .rail, .axis-fill  the two scroll-driven lines. Paper has no
+                        scroll for them to answer to.
+     .copy              a clipboard button on paper is furniture.
+     .skip              a skip link needs a focus ring to exist.
+     .nav               six in-page anchors. THIS is the one that
+                        removes readable content: on screen it is a
+                        list of link texts. The same destinations
+                        appear again in the footer, so nothing
+                        becomes unreachable — but the claim
+                        "no content is hidden" was false, and a
+                        comment that overstates its own guarantee is
+                        worse than no comment.
    ---------------------------------------------------------------*/
 @media print{
   :root{
     --bg:#fff;--bg-2:#fff;--ink:#111;--ink-2:#333;--ink-3:#555;
-    --line:#bbb;--line-2:#888;--run:#8a5a00;--hold:#a3301c;--pass:#1d6b39;
+    --line:#bbb;--line-2:#888;--line-ui:#666;--run:#8a5a00;--hold:#a3301c;--pass:#1d6b39;
   }
   body{background:#fff;color:#111;font-size:11pt}
   .rail,.axis-fill,.copy,.skip,.nav{display:none}
@@ -585,7 +604,7 @@ tr:last-child td{border-bottom:1px solid var(--line-2)}
     </nav>
   </header>
 
-  <main id="main">
+  <main id="main" tabindex="-1">
 
     <!-- ============ 01 · HERO ============ -->
     <section class="hero">

@@ -795,10 +795,21 @@ between the markers and executes it, so no second copy of this command may exist
 ```bash
 # --- github-mirror-push:begin ---
 # Only attempt if 'mirror: github' is in Session Config.
+# State 0: not a git repository at all → loud WARN, exit 1. This state was MISSED
+#          in the first version and is the reason it is listed first now: outside
+#          a repo, `git remote get-url` fails with "fatal: not a git repository",
+#          which is indistinguishable from "no such remote" by exit code alone.
+#          The block then announced "no 'github' remote configured — skipping
+#          (not an error)" and exited 0 — fail-open, in the very fix written to
+#          close a fail-open. Found by an adversarial reviewer, not by the author.
 # State 1: no 'github' remote      → informational, exit 0 (legitimate for consumer repos)
 # State 2: push succeeded          → confirmation WITH the pushed SHA, exit 0
 # State 3: push FAILED             → loud WARN on stderr WITH git's real output, exit 1
-if ! mirror_url=$(git remote get-url github 2>&1); then
+if ! git_dir=$(git rev-parse --git-dir 2>&1); then
+  echo "WARN GitHub mirror: not a git repository — cannot mirror anything." >&2
+  echo "  git said: ${git_dir}" >&2
+  exit 1
+elif ! mirror_url=$(git remote get-url github 2>&1); then
   echo "GitHub mirror: no 'github' remote configured — skipping (not an error)."
   echo "  git said: ${mirror_url}" >&2
 elif push_out=$(git push github HEAD 2>&1); then
