@@ -63,6 +63,9 @@ writeFileSync(process.env.PROBE_OUT, JSON.stringify({
   probeTxt: existsSync('probe.txt') ? readFileSync('probe.txt', 'utf8').trim() : null,
   claudeProjectDir: process.env.CLAUDE_PROJECT_DIR ?? null,
   claudePluginRoot: process.env.CLAUDE_PLUGIN_ROOT ?? null,
+  gitDir: process.env.GIT_DIR ?? null,
+  gitIndexFile: process.env.GIT_INDEX_FILE ?? null,
+  gitWorkTree: process.env.GIT_WORK_TREE ?? null,
 }));
 process.exit(Number(process.env.PROBE_EXIT ?? '0'));
 `;
@@ -270,6 +273,50 @@ describe('.husky/pre-push — gates the TRACKED tree, not the working tree', () 
 
     expect(res.stderr).toContain('gating the WORKING TREE');
     expect(probe.cwd).toBe(dir); // it really did run in place
+    expect(res.status).toBe(0);
+  });
+
+  it('does not operate on the ORIGINAL repo when git sets GIT_DIR', { timeout: 60_000 }, () => {
+    // bug_caught: git runs EVERY hook with GIT_DIR set, and GIT_DIR outranks both
+    // `-C <path>` and cwd. So the materialisation's own `git -C "$tree" checkout
+    // --detach` operated on the ORIGINAL repository instead of the clone, and the
+    // gate's suite — which creates throwaway git repos — committed into it.
+    // Observed live on this hook's second real run: the working copy's HEAD went
+    // detached and three fixture commits landed in the real .git. Recovery was
+    // metadata-only, but the class is data-loss, not inconvenience.
+    //
+    // This test is the A/B that the fix rests on. Without the scrub the assertions
+    // below flip: `probe.gitDir` carries the path, and `symbolic-ref HEAD` fails
+    // because the fixture is detached.
+    const { dir, sha } = makeRepo({ tracked: { 'probe.txt': 'TRACKED\n' } });
+    const branchBefore = execFileSync('git', ['-C', dir, 'symbolic-ref', 'HEAD'], {
+      encoding: 'utf8',
+    }).trim();
+
+    const { res, probe } = runHook({
+      cwd: dir,
+      stdin: contentLine(sha),
+      probeExit: 0,
+      env: { GIT_DIR: join(dir, '.git'), GIT_INDEX_FILE: join(dir, '.git', 'index') },
+    });
+
+    // 1. The gate child no longer inherits git's repo pointers.
+    expect(probe.gitDir).toBeNull();
+    expect(probe.gitIndexFile).toBeNull();
+    expect(probe.gitWorkTree).toBeNull();
+
+    // 2. It still ran in the materialised tree and read TRACKED bytes there.
+    expect(probe.cwd).not.toBe(dir);
+    expect(probe.probeTxt).toBe('TRACKED');
+
+    // 3. And the ORIGINAL repo is untouched — still on its branch, same commit.
+    //    `symbolic-ref` throws on a detached HEAD, which is precisely the damage.
+    expect(
+      execFileSync('git', ['-C', dir, 'symbolic-ref', 'HEAD'], { encoding: 'utf8' }).trim(),
+    ).toBe(branchBefore);
+    expect(execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()).toBe(
+      sha,
+    );
     expect(res.status).toBe(0);
   });
 });

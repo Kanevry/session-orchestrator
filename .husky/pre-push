@@ -82,6 +82,30 @@ if [ -n "$SKIP_QUALITY_GATE" ]; then
   exit 0
 fi
 
+# ---------------------------------------------------------------------------
+# Scrub git's own repo-pointing environment — BEFORE the first git call
+# ---------------------------------------------------------------------------
+# git runs every hook with GIT_DIR set (and, depending on the operation, several
+# siblings). Those variables OUTRANK the `-C <path>` flag and outrank cwd, so a
+# hook that materialises a second tree and then runs git "in" it is in fact still
+# operating on the ORIGINAL repository. This is not a theoretical hazard: on this
+# hook's second real run it detached the working copy's HEAD via the checkout
+# below, and the gate's own test suite — which creates throwaway git repos —
+# wrote three fixture commits into the real .git. Recovery was metadata-only
+# (`git symbolic-ref HEAD refs/heads/main` + `git restore --staged .`, 0 files
+# touched), but the failure mode is a data-loss class, not an inconvenience.
+#
+# Unsetting them is safe here: git invokes a pre-push hook with cwd at the top of
+# the work tree, so ordinary discovery finds the same repository the variables
+# named. This block must stay ABOVE every `git` invocation in this file — moving
+# a git call above it silently re-opens the hole.
+#
+# GIT_PREFIX/GIT_QUARANTINE_PATH do not redirect resolution but are stale context
+# for a foreign tree; dropped for the same reason.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
+unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+unset GIT_NAMESPACE GIT_PREFIX GIT_QUARANTINE_PATH
+
 # git feeds one line per pushed ref on stdin:
 #   <local_ref> <local_sha> <remote_ref> <remote_sha>
 # An all-zero local sha means the ref is being DELETED. A push that only deletes
