@@ -66,6 +66,7 @@ writeFileSync(process.env.PROBE_OUT, JSON.stringify({
   gitDir: process.env.GIT_DIR ?? null,
   gitIndexFile: process.env.GIT_INDEX_FILE ?? null,
   gitWorkTree: process.env.GIT_WORK_TREE ?? null,
+  gitConfigParameters: process.env.GIT_CONFIG_PARAMETERS ?? null,
 }));
 process.exit(Number(process.env.PROBE_EXIT ?? '0'));
 `;
@@ -297,13 +298,22 @@ describe('.husky/pre-push — gates the TRACKED tree, not the working tree', () 
       cwd: dir,
       stdin: contentLine(sha),
       probeExit: 0,
-      env: { GIT_DIR: join(dir, '.git'), GIT_INDEX_FILE: join(dir, '.git', 'index') },
+      env: {
+        GIT_DIR: join(dir, '.git'),
+        GIT_INDEX_FILE: '.git/index',
+        GIT_CONFIG_PARAMETERS: "'core.hooksPath'='.husky'",
+      },
     });
 
     // 1. The gate child no longer inherits git's repo pointers.
     expect(probe.gitDir).toBeNull();
     expect(probe.gitIndexFile).toBeNull();
     expect(probe.gitWorkTree).toBeNull();
+    // GIT_CONFIG_PARAMETERS is the one that measurably broke this hook: it carried
+    // `core.hooksPath=.husky` into the clone, where .husky/ exists, so every
+    // throwaway git repo the gate's suite creates fired the repository's real
+    // pre-commit hooks. Three pushes reported `test: fail, total: 0` because of it.
+    expect(probe.gitConfigParameters).toBeNull();
 
     // 2. It still ran in the materialised tree and read TRACKED bytes there.
     expect(probe.cwd).not.toBe(dir);

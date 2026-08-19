@@ -85,26 +85,33 @@ fi
 # ---------------------------------------------------------------------------
 # Scrub git's own repo-pointing environment — BEFORE the first git call
 # ---------------------------------------------------------------------------
-# git runs every hook with GIT_DIR set (and, depending on the operation, several
-# siblings). Those variables OUTRANK the `-C <path>` flag and outrank cwd, so a
-# hook that materialises a second tree and then runs git "in" it is in fact still
-# operating on the ORIGINAL repository. This is not a theoretical hazard: on this
-# hook's second real run it detached the working copy's HEAD via the checkout
-# below, and the gate's own test suite — which creates throwaway git repos —
-# wrote three fixture commits into the real .git. Recovery was metadata-only
-# (`git symbolic-ref HEAD refs/heads/main` + `git restore --staged .`, 0 files
-# touched), but the failure mode is a data-loss class, not an inconvenience.
+# git's own environment OUTRANKS both the `-C <path>` flag and cwd. A hook that
+# materialises a second tree and then runs git "in" it is therefore still talking
+# to the ORIGINAL repository for as long as any of these survive.
 #
-# Unsetting them is safe here: git invokes a pre-push hook with cwd at the top of
-# the work tree, so ordinary discovery finds the same repository the variables
-# named. This block must stay ABOVE every `git` invocation in this file — moving
-# a git call above it silently re-opens the hole.
+# MEASURED on git 2.x / macOS, 2026-08-19 — do not reason about this, it is
+# counter-intuitive in both directions:
+#   - GIT_DIR is NOT set for pre-push, pre-commit, commit-msg or post-commit.
+#     It is unset here as defence in depth (other git versions and other drivers
+#     do export it), NOT because this hook observes it.
+#   - GIT_INDEX_FILE IS set for the commit family, and its value is the RELATIVE
+#     `.git/index` — which re-resolves against whatever directory a child happens
+#     to run in. That is exactly the shape that goes wrong quietly.
+#   - GIT_CONFIG_PARAMETERS is set whenever ANY `-c key=value` was passed, and it
+#     propagates into every child. It is what actually broke this hook: a
+#     `git -c core.hooksPath=.husky push` carried that override into the
+#     materialised clone, where `.husky/` exists — so every throwaway git repo the
+#     gate's own suite creates fired the REPOSITORY's real pre-commit hooks.
+#     Result: `test: fail, total: 0` on three consecutive pushes, green the moment
+#     the flag was dropped.
 #
-# GIT_PREFIX/GIT_QUARANTINE_PATH do not redirect resolution but are stale context
-# for a foreign tree; dropped for the same reason.
+# Unsetting is safe: git invokes a pre-push hook with cwd at the top of the work
+# tree, so ordinary discovery finds the same repository these variables named.
+# This block must stay ABOVE every `git` invocation in this file — moving a git
+# call above it silently re-opens the hole.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
 unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
-unset GIT_NAMESPACE GIT_PREFIX GIT_QUARANTINE_PATH
+unset GIT_NAMESPACE GIT_PREFIX GIT_QUARANTINE_PATH GIT_CONFIG_PARAMETERS
 
 # git feeds one line per pushed ref on stdin:
 #   <local_ref> <local_sha> <remote_ref> <remote_sha>
