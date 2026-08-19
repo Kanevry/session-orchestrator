@@ -677,7 +677,7 @@ tr:last-child td{border-bottom:1px solid var(--line-2)}
             <p class="note">Then run <code>npm install</code> once inside the plugin cache and restart Claude Code.</p>
             <div class="flag">
               <b>known broken</b>
-              The one-liner documented for this step does not work: <code>claude plugin dir</code> does not exist and exits 1. Use this until a verified path lands:
+              The one-liner documented for this step until 2026&#8209;08&#8209;19 does not work: <code>claude plugin dir</code> is not a subcommand Claude Code has, so it exits 1 and the fallback path it then used does not exist. The replacement below resolves the path from the plugin cache instead, and was run end to end on a real install:
               <div class="cmd">
 <pre class="code soft"><code>cd "$(dirname "$(find ~/.claude/plugins/cache -name package.json -path '*session-orchestrator*' | head -1)")" &amp;&amp; npm install</code></pre>
               </div>
