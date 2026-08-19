@@ -1251,7 +1251,7 @@ td .mono-num, td .file { white-space: nowrap; }
             <li>
               <span class="step-label">3 · post-install, required</span>
               <div class="cmd">
-                <code>cd "$(claude plugin dir session-orchestrator 2&gt;/dev/null || echo ~/.claude/plugins/session-orchestrator)" &amp;&amp; npm install</code>
+                <code>cd "$(dirname "$(find ~/.claude/plugins/cache -path '*session-orchestrator*' -name package.json 2&gt;/dev/null | head -1)")" &amp;&amp; npm install</code>
                 <button type="button" class="copy" aria-label="Copy command: post-install dependencies">
                   <svg class="icon-copy" aria-hidden="true" focusable="false"><use href="#i-copy"/></svg>
                   <svg class="icon-done" aria-hidden="true" focusable="false"><use href="#i-check"/></svg>

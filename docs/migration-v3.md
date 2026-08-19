@@ -32,12 +32,15 @@ Optional but recommended:
 ### 3a. Claude Code
 
 ```bash
-# 1. Pull the latest plugin
-cd "$(claude plugin dir session-orchestrator 2>/dev/null || echo ~/.claude/plugins/session-orchestrator)"
-git pull
+# 1. Update the plugin — run this INSIDE Claude Code, not in a shell:
+#      /plugin update session-orchestrator@kanevry
+#    A marketplace-installed plugin lives in a managed cache, not in a git checkout,
+#    so `git pull` does not apply to it.
 
-# 2. Install Node dependencies
-npm install
+# 2. Install Node dependencies. Claude Code has no `plugin dir` subcommand,
+#    so resolve the install path from the cache:
+SO_DIR="$(dirname "$(find ~/.claude/plugins/cache -path '*session-orchestrator*' -name package.json 2>/dev/null | head -1)")"
+cd "$SO_DIR" && npm install
 
 # 3. Restart Claude Code so hooks.json is re-read
 ```

@@ -23,9 +23,13 @@ The same skills and commands run across all four, with platform-adapted hooks an
 For Claude Code, also install Node dependencies **once** (hooks import `zx`) and restart Claude Code:
 
 ```bash
-cd "$(claude plugin dir session-orchestrator 2>/dev/null || echo ~/.claude/plugins/session-orchestrator)"
-npm install
+# Claude Code has no `plugin dir` subcommand, so resolve the install path from the cache.
+SO_DIR="$(dirname "$(find ~/.claude/plugins/cache -path '*session-orchestrator*' -name package.json 2>/dev/null | head -1)")"
+cd "$SO_DIR" && npm install
 ```
+
+If `SO_DIR` comes back empty, the plugin is not installed from a marketplace — check
+`/plugin list` inside Claude Code first.
 
 Setup guides: [Codex](docs/codex-setup.md) · [Cursor IDE](docs/cursor-setup.md) · [Pi](docs/pi-setup.md). Per-IDE notes on `CLAUDE.md` vs `AGENTS.md`: [instruction-file-resolution](skills/_shared/instruction-file-resolution.md).
 

@@ -40,7 +40,9 @@ catalog rather than referencing the plugin copy in place.
 Install:
 ```bash
 mkdir -p .claude/personas
-cp "$(claude plugin dir session-orchestrator)/skills/persona-panel/presets/"*.md .claude/personas/
+# Claude Code has no `plugin dir` subcommand — resolve the install path from the cache.
+SO_DIR="$(dirname "$(find ~/.claude/plugins/cache -path '*session-orchestrator*' -name package.json 2>/dev/null | head -1)")"
+cp "$SO_DIR/skills/persona-panel/presets/"*.md .claude/personas/
 ```
 
 ## Phase 0: Bootstrap Gate

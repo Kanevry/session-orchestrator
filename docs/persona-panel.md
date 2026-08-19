@@ -33,7 +33,9 @@ mkdir -p .claude/personas
 Templates ship with the plugin at `templates/personas/`. Copy one as a starting point:
 
 ```bash
-cp "$(claude plugin dir session-orchestrator)/templates/personas/klima-physicist.v1.md" \
+# Claude Code has no `plugin dir` subcommand — resolve the install path from the cache.
+SO_DIR="$(dirname "$(find ~/.claude/plugins/cache -path '*session-orchestrator*' -name package.json 2>/dev/null | head -1)")"
+cp "$SO_DIR/templates/personas/klima-physicist.v1.md" \
    .claude/personas/klima-physicist.md
 ```
 
