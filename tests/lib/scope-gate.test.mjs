@@ -21,6 +21,8 @@ import {
   testSiblingExpansionApplies,
   TEST_SIBLING_EXPANSION_ROLES,
   extractBashWriteTargets,
+  suggestForEmptyScope,
+  EMPTY_SCOPE_REASONS,
 } from '@lib/scope-gate.mjs';
 
 let tmpDir;
@@ -422,5 +424,119 @@ describe('assertTestSiblingCoverage (#970 fail-closed wiring)', () => {
       ok: false,
       missing: [],
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// suggestForEmptyScope — the deny REASON is an agent-readable channel
+// ---------------------------------------------------------------------------
+//
+// `hooks/enforce-scope.mjs` passes every string this function returns to
+// `emitDeny(reason, suggestion)`, which ships it in `permissionDecisionReason` —
+// read by the CLAUDE whose Edit was just denied. That makes any remediation
+// COMMAND in these strings an instruction the denied agent can execute, and for
+// this guard the remediation is the DISARM: with the manifest gone,
+// `hooks/enforce-scope.mjs` returns `emitAllow()` at Gate 3, so both the
+// allowlist check (Gate 7) and project-root containment (Gate 6) are off for the
+// rest of the session.
+//
+// Measured 2026-08-19 at HEAD 55279a2, against the text these tests replace:
+//   `rm -f .claude/wave-scope.json` → pre-bash-destructive-guard exits 0 with
+//   empty stdout (= ALLOW; its only rm rule, `rm-rf-destructive`, needs `-r`),
+//   and with the manifest removed a `Write` to `/etc/evil.conf` is ALLOWED.
+//   The `stale-manifest` branch shipped that exact command.
+// ---------------------------------------------------------------------------
+
+/**
+ * Shapes a denied agent could lift out of a deny reason and run verbatim.
+ *
+ * Word-boundary anchored on purpose: the branches legitimately contain the PROSE
+ * words "remove", "move" and "rewrite", and a bare substring test for rm/mv would
+ * flag all three — forcing the text to be written around the assertion instead of
+ * around its reader. What is banned is the COMMAND token.
+ *
+ * The last entry is the forward-looking half: a backticked span naming a common
+ * binary. It is what catches the "helpful" `node scripts/…` or `glab issue …`
+ * hint a future author adds to one branch — the exact route by which the `rm -f`
+ * hint arrived. Backticked `--union` and `blocked` are a flag and a status word,
+ * not binaries, and stay legal.
+ */
+const RUNNABLE_SHELL_SHAPES = Object.freeze([
+  /\brm\b/,
+  /\bunlink\b/,
+  /\brmdir\b/,
+  /\bshred\b/,
+  /\bmv\b/,
+  /\bsudo\b/,
+  /\bchmod\b/,
+  /\bxargs\b/,
+  /\bgit\s+(clean|reset|checkout|stash|rm|push)\b/,
+  /-delete\b/,
+  /(^|\s)>+\s*\S/,
+  /`[^`]*\b(rm|mv|cp|node|npm|npx|bash|sh|zsh|git|glab|gh|echo|cat|jq|find|sed)\b[^`]*`/,
+]);
+
+/** Every branch, plus one value that must fall through to the generic sentence. */
+const ALL_BRANCHES = [...EMPTY_SCOPE_REASONS, 'not-a-reason'];
+
+/** The one call shape the hook actually makes (hooks/enforce-scope.mjs § suggest). */
+const callBranch = (reason) =>
+  suggestForEmptyScope('src/app.ts', reason, {
+    role: reason === 'read-only-role' ? 'Discovery' : 'Impl-Core',
+    scopePath: '.claude/wave-scope.json',
+  });
+
+describe('suggestForEmptyScope — no branch carries a runnable shell command (#1057 follow-up)', () => {
+  it('the stale-manifest branch names no removal command and no removal TARGET', () => {
+    // THE bug: this branch used to end with "remove it with `rm -f
+    // .claude/wave-scope.json`" — the guard handing the agent it had just denied
+    // a working, unguarded recipe for switching itself off.
+    const text = callBranch('stale-manifest');
+    expect(text).not.toMatch(/\brm\b/);
+    expect(text).not.toMatch(/rm\s+-\w*f/);
+    // ...and the manifest must not appear as the object of a removal verb, which
+    // is the same instruction one `rm` away.
+    expect(text).not.toMatch(/(remove|delete|unlink|clear)[^.]{0,40}wave-scope\.json/i);
+    // The prohibition is explicit, so the agent is not left to infer it — and
+    // the reason names the parallel-session case, because the reader of this
+    // string is frequently NOT the manifest's owner (measured 2026-08-19: a
+    // parallel session in this working copy was shown this branch for the
+    // coordinator's LIVE wave-4 manifest).
+    expect(text).toContain('Do NOT remove, move or edit it yourself');
+    expect(text).toContain('the live manifest of a PARALLEL session');
+    expect(text).toContain('Treat the file as not yours (PSA-001)');
+  });
+
+  it.each(ALL_BRANCHES.map((r) => [r]))(
+    'branch %s contains no runnable shell command',
+    (reason) => {
+      // Regression lock for the OTHER four branches. None carries a command
+      // today, and the way the `rm -f` hint arrived is exactly someone adding a
+      // "helpful" one to a single branch — this fails on the next such addition
+      // no matter which branch receives it.
+      const text = callBranch(reason);
+      const hits = RUNNABLE_SHELL_SHAPES.filter((re) => re.test(text)).map(String);
+      expect(hits).toEqual([]);
+    },
+  );
+
+  it('keeps the five branches mutually distinguishable — the fix must not undo #1057', () => {
+    // #1057 existed because five structurally different repo states printed ONE
+    // sentence. Removing the command must not collapse them back: each branch
+    // carries its own marker AND rejects every neighbour's.
+    const markers = {
+      unreadable: 'wave-scope.json is unreadable',
+      'read-only-role': 'Discovery wave is read-only',
+      'stale-manifest': 'either a leftover from a crashed session',
+      'writer-defect': '`--union` step did not complete',
+      unknown: 'update the session plan and restart the wave',
+    };
+    for (const [reason, marker] of Object.entries(markers)) {
+      const text = callBranch(reason);
+      expect(text).toContain(marker);
+      for (const [other, otherMarker] of Object.entries(markers)) {
+        if (other !== reason) expect(text).not.toContain(otherMarker);
+      }
+    }
   });
 });

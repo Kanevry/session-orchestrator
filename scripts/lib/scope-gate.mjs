@@ -1236,7 +1236,9 @@ export function findScopeCollisions(agentScopes, opts = {}) {
 //      the file is not.
 //   3. A leftover manifest from a session that crashed before deleting it.
 //      There the sentence is ACTIVELY WRONG: restarting the wave does not remove
-//      a file the previous session left behind — `rm -f` does.
+//      a file the previous session left behind — only the coordinator can clear
+//      it, and the branch says so WITHOUT handing over the command (see "The
+//      channel belongs to the AGENT" below, which is why).
 //   4. A writable role whose union came out empty because the coordinator's
 //      `--union` step did not complete. There the operator must re-run `--union`,
 //      not restart.
@@ -1244,11 +1246,71 @@ export function findScopeCollisions(agentScopes, opts = {}) {
 // The classifier below is the discriminator. It changes NO verdict — see
 // {@link suggestForEmptyScope}, which only ever selects a different sentence.
 //
+// ## The channel belongs to the AGENT — no branch may carry a runnable command
+//
+// Every string {@link suggestForEmptyScope} returns travels in
+// `permissionDecisionReason`, which the harness feeds to the CLAUDE whose Edit
+// was just denied. A remediation command placed there is an instruction the
+// DENIED AGENT can run — and for this guard the remediation IS the disarm:
+// removing `wave-scope.json` drops `hooks/enforce-scope.mjs` at Gate 3
+// (`if (!scopePath) return emitAllow()`), which takes out project-root
+// containment (Gate 6) as well as the allowlist check (Gate 7), for the rest of
+// the session. Measured 2026-08-19 against HEAD 55279a2: `rm -f <manifest>`
+// exits 0 with no envelope from `hooks/pre-bash-destructive-guard.mjs` (its
+// only rm rule is `rm-rf-destructive`, which needs `-r`), and with the manifest
+// gone a `Write` to `/etc` is ALLOWED. The first shape of this branch shipped
+// exactly that command, so the guard was handing the agent the key to itself.
+//
+// The rule this leaves behind: a branch may DIAGNOSE without limit and may name
+// the manifest as the SUBJECT of its diagnosis; it may never carry a runnable
+// command, and never present the manifest as a removal TARGET. Operator
+// remediation stays where the operator already looks —
+// `skills/session-end/SKILL.md` § 3.0 Defensive Cleanup and
+// `skills/wave-executor/wave-loop.md` steps 5/7 — not in a channel whose reader
+// is the denied agent.
+//
+// `emitDeny`'s `opts.systemMessage` is NOT the escape hatch this wants: the repo
+// documents its audience two ways that contradict each other — `scripts/lib/io.mjs`
+// § "Emitted payload" calls it "what the operator sees";
+// `skills/hook-development/SKILL.md` § "PreToolUse output schema" calls it
+// "Explanation shown to Claude". A session-wide guard disarm is not the payload
+// to bet on whichever of the two is right. Locked by
+// tests/lib/scope-gate.test.mjs § "no branch carries a runnable shell command".
+//
+// ## …and the reader may not be the OWNER (measured 2026-08-19)
+//
+// The staleness comparison is per-WORKING-COPY, not per-session. Both clocks
+// `sessionAgeMs` reads — `.orchestrator/current-session.json` `timestamp` and
+// `.orchestrator/session.lock` `started_at` — are shared by every session in the
+// checkout, and it takes the MINIMUM AGE, i.e. the NEWEST of the two. So a second
+// session starting at 18:51 moves the clock forward for EVERYONE, and every
+// manifest written before 18:51 — including the live one the first session is
+// using right now — classifies as `stale-manifest` for every subsequent reader.
+//
+// Measured in this repo at HEAD 55279a2: `session.lock` `started_at`
+// 2026-08-19T12:02:57Z (the running deep session) vs. `current-session.json`
+// `timestamp` 2026-08-19T18:51:54Z (a parallel session) — 6h49m apart, effective
+// `sessionStartMs` 18:51:54. Every wave manifest that session wrote between 12:02
+// and 18:51 is `mtime < sessionStartMs`. It is not hypothetical either: a
+// parallel session in this working copy was shown this very branch for the
+// coordinator's LIVE wave-4 manifest and told to delete it; it declined because
+// the operator works carefully, which is not a control.
+//
+// That is why the branch says "either a leftover or a parallel session's live
+// manifest" and routes to `blocked` instead of to a repair: the classifier cannot
+// distinguish the two, and the reader is frequently not the owner. PSA-001's
+// question — "Did I create this file? If not, it is not mine to touch" — is the
+// only safe posture a string in this channel can carry.
+//
+// Revisit trigger: a manifest that records its OWNING session id, which would let
+// this compare ownership instead of clocks. Until then the ambiguity is stated in
+// the text rather than resolved by a guess.
+//
 // ## Named ceiling (BV-004)
 //
-//   - This buys a CORRECT INSTRUCTION, never an unlock. A writable wave with a
-//     broken union still denies every write; the operator is simply told which
-//     command repairs it.
+//   - This buys a CORRECT DIAGNOSIS, never an unlock and never a command. A
+//     writable wave with a broken union still denies every write; the reader is
+//     told WHICH of the five states it is in, and who owns the repair.
 //   - It cannot see a union that is NON-EMPTY but WRONG. That is
 //     `--assert-subset`'s job and stays there.
 //   - `stale-manifest` degrades to `'unknown'` when no session clock is
@@ -1378,8 +1440,10 @@ export function classifyEmptyScope(input = {}) {
  * @param {string} reason — a {@link EMPTY_SCOPE_REASONS} member; anything else
  *   is treated as `'unknown'` (fail-safe toward the generic text)
  * @param {{role?: unknown, scopePath?: unknown}} [opts]
- *   `scopePath` is the manifest's location as the operator should type it
- *   (project-relative is ideal); it appears inside the `rm -f` hint.
+ *   `scopePath` is the manifest's location, project-relative where possible. It
+ *   is named as the SUBJECT of a diagnosis ("this file is a leftover") and never
+ *   as the target of a removal — see the module block above, § "The channel
+ *   belongs to the AGENT".
  * @returns {string}
  */
 export function suggestForEmptyScope(relPath, reason, opts = {}) {
@@ -1395,7 +1459,8 @@ export function suggestForEmptyScope(relPath, reason, opts = {}) {
         `wave-scope.json is unreadable — failing closed. ` +
         `The manifest exists but did not parse into a usable scope record, so NO path can be granted. ` +
         `Inspect '${scopeHint}'; a truncated or half-written manifest is repaired by re-running the ` +
-        `coordinator's scope-manifest step, not by editing the plan.`
+        `coordinator's scope-manifest step, not by editing the plan — report \`blocked\` and leave the ` +
+        `manifest to the coordinator.`
       );
 
     case 'read-only-role': {
@@ -1410,10 +1475,18 @@ export function suggestForEmptyScope(relPath, reason, opts = {}) {
     }
 
     case 'stale-manifest':
+      // NO COMMAND, and the manifest is never a removal TARGET here. Two reasons,
+      // both measured (module block, § "The channel belongs to the AGENT" and
+      // § "…and the reader may not be the owner"): the string is read by the agent
+      // whose Edit was just denied, and clearing the manifest disarms the whole
+      // gate — and the file may belong to a PARALLEL session in this working copy
+      // that is still using it. The diagnosis, which is what #1057 bought, stays.
       return (
-        `'${scopeHint}' was written before this session started — likely a leftover from a crashed session. ` +
-        `Restarting the wave will NOT clear it; remove it with \`rm -f ${scopeHint}\` and let the ` +
-        `coordinator write a fresh manifest.`
+        `'${scopeHint}' was written before the most recent session-start clock in this working copy — ` +
+        `either a leftover from a crashed session, or the live manifest of a PARALLEL session that is ` +
+        `still using it. This guard cannot tell which, and restarting the wave clears neither. ` +
+        `Treat the file as not yours (PSA-001): report \`blocked\` to your coordinator and name it. ` +
+        `Do NOT remove, move or edit it yourself (PSA-003/PSA-007).`
       );
 
     case 'writer-defect':

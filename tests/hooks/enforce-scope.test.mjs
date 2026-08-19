@@ -914,10 +914,19 @@ describe('empty allowedPaths — classified deny reason (#1057)', { timeout: 150
     expect(env.hookSpecificOutput.permissionDecisionReason).not.toContain(GENERIC_SENTENCE);
   });
 
-  it('T2 names a manifest older than session start as a crashed-session leftover, with rm -f', async () => {
-    // The bug: a leftover wave-scope.json blocks every write of the FOLLOWING
-    // session with no hint that it is a leftover — and "restart the wave", the
-    // only instruction on offer, cannot remove it.
+  it('T2 names a manifest older than session start as a crashed-session leftover — with NO removal command', async () => {
+    // Two bugs in one test. The FIRST is #1057's: a leftover wave-scope.json
+    // blocks every write of the FOLLOWING session with no hint that it is a
+    // leftover, and "restart the wave" — the only instruction on offer — cannot
+    // remove it. The SECOND is what the first fix introduced: the replacement
+    // sentence ended in `rm -f <manifest>`, and `permissionDecisionReason` is
+    // read by the AGENT whose Edit was just denied. Measured 2026-08-19 at HEAD
+    // 55279a2: `rm -f` is NOT blocked by hooks/pre-bash-destructive-guard.mjs
+    // (only `rm -rf` is, rule `rm-rf-destructive`), and with the manifest gone
+    // this hook returns emitAllow() at Gate 3 — a Write to /etc/evil.conf was
+    // ALLOWED in that state. So the guard was emitting, into the denied agent's
+    // own context, a working recipe for switching itself off for the rest of the
+    // session. The diagnosis stays; the command goes.
     const now = Date.now();
     const dir = await mkProjectWithClock(
       { wave: 2, role: 'Impl-Core', enforcement: 'strict', allowedPaths: [] },
@@ -926,11 +935,24 @@ describe('empty allowedPaths — classified deny reason (#1057)', { timeout: 150
     const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'README.md')) });
     const env = expectDeny(result, [
       'not in allowed paths',
-      'was written before this session started',
-      'likely a leftover from a crashed session',
-      'rm -f .claude/wave-scope.json',
+      'was written before the most recent session-start clock in this working copy',
+      'either a leftover from a crashed session',
+      // The live half of the incident: the reader may not be the owner. Measured
+      // 2026-08-19 — a parallel session in this working copy was shown this
+      // branch for the coordinator's LIVE wave-4 manifest and told to delete it.
+      'the live manifest of a PARALLEL session',
+      'Treat the file as not yours (PSA-001)',
+      'Do NOT remove, move or edit it yourself',
     ]);
     const reason = env.hookSpecificOutput.permissionDecisionReason;
+    // The live envelope, not just the pure function: assert on the exact string
+    // that reaches the model, because the reason half is assembled by the hook.
+    expect(reason).not.toMatch(/\brm\b/);
+    expect(reason).not.toMatch(/rm\s+-\w*f/);
+    expect(reason).not.toMatch(/(remove|delete|unlink|clear)[^.]{0,40}wave-scope\.json/i);
+    // Both emitted fields — the operator headline is derived from the reason, so
+    // a command reintroduced there would surface here too.
+    expect(env.systemMessage).not.toMatch(/\brm\b/);
     expect(reason).not.toContain(GENERIC_SENTENCE);
     expect(reason).not.toContain('--union');
   });
