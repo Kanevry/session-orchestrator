@@ -119,16 +119,25 @@ export function runCategory6(root) {
   // degrades to skip-as-pass so the audit never crashes or hard-fails on
   // ambient repo state it can't inspect.
   //
-  // ONE state is deliberately NOT skip-as-pass (#1039): a FAILED remote query.
-  // Until #1039 the remote list came from a bare `git remote` whose every
-  // failure mode collapsed to `null`, so a root that is not a git repository —
-  // or a host without git on PATH — scored 2 of 2 with the message "no github
-  // mirror remote configured". The audit rewarded its own blindness. The
-  // remote list now comes from `listRemotes`, whose contract separates ABSENCE
-  // (`ok:true, remotes:[]` — a legitimate repo state) from QUERY FAILURE
-  // (`ok:false`, every reason satisfying `isQueryFailure`). Absence keeps full
-  // points; a failed query is a `fail`, because a check that could not measure
-  // has not passed — and because the audit's own `checks_passed` counter
+  // TWO states are deliberately NOT skip-as-pass (#1039), and the rule that
+  // separates them from the rest is a single question: could the git call have
+  // returned null because the thing it asked about is legitimately ABSENT?
+  //
+  //   1. A FAILED remote query. Until #1039 the remote list came from a bare
+  //      `git remote` whose every failure mode collapsed to `null`, so a root
+  //      that is not a git repository — or a host without git on PATH — scored
+  //      2 of 2 with the message "no github mirror remote configured". The audit
+  //      rewarded its own blindness. The remote list now comes from
+  //      `listRemotes`, whose contract separates ABSENCE (`ok:true, remotes:[]`
+  //      — a legitimate repo state) from QUERY FAILURE (`ok:false`, every reason
+  //      satisfying `isQueryFailure`). Absence keeps full points.
+  //   2. An unmeasurable AHEAD-COUNT (see the fold at the `rev-list` call). The
+  //      two `rev-parse --verify --quiet` folds above stay skip-as-pass because
+  //      their null genuinely means "ref not fetched"; `rev-list` has no such
+  //      state left once the ref is verified, so its null means git failed.
+  //
+  // Both are a `fail`, because a check that could not measure has not passed —
+  // and because the audit's own `checks_passed` counter
   // (`scripts/harness-audit.mjs`) counts `status === 'pass'`, so recording an
   // unmeasurable check as a pass inflates the number that summarises audit trust.
   //
@@ -204,14 +213,35 @@ export function runCategory6(root) {
           message: 'github mirror ref not fetched locally — skipped',
         }));
       } else {
+        // The SECOND #1039 fold, and it is NOT symmetric with the one above —
+        // which is why the `rev-parse` folds stay skip-as-pass and this one does
+        // not. Up there, a null means the ref is simply absent: `git rev-parse
+        // --verify --quiet github/<branch>` exits 1 SILENTLY for an unfetched
+        // mirror ref, a legitimate repo state. Down here there is no legitimate
+        // absence left to express — `mirrorBranch` was already proven to exist by
+        // that very --verify, and `git rev-list --count <existing>..HEAD` exits 0
+        // with an integer or 128 with a fatal (measured 2026-08-19 in this repo:
+        // `HEAD~1..HEAD` → exit 0 "1"; `PLACEHOLDER-missing..HEAD` → exit 128).
+        // So a null here means git FAILED, not that the answer is "nothing", and
+        // booking it 2/2 was the same "the audit rewarded its own blindness"
+        // shape the remote-query branch above was fixed for.
+        //
+        // Both NaN shapes are folded into one `fail` on purpose. A successful
+        // `rev-list --count` always prints an integer, so non-numeric output is
+        // git not honouring its own contract — equally unmeasurable, and
+        // splitting it off would leave the identical fail-open standing behind a
+        // smaller trigger. `aheadCountQuery` records which of the two occurred.
         const revListOut = runGit(['rev-list', '--count', `github/${mirrorBranch}..HEAD`]);
         const aheadCount = revListOut !== null ? Number.parseInt(revListOut, 10) : NaN;
 
         if (Number.isNaN(aheadCount)) {
-          checks.push(pass({
-            checkId, points: 2, maxPoints: 2, path: relPath,
-            evidence: { hasGithubRemote: true, mirrorBranch, resolvedVia, aheadCount: null },
-            message: 'unable to determine ahead-count vs github mirror — skipped',
+          const aheadCountQuery = revListOut === null ? 'git-error' : 'unparseable-output';
+          checks.push(fail({
+            checkId, maxPoints: 2, path: relPath,
+            evidence: { hasGithubRemote: true, mirrorBranch, resolvedVia, aheadCount: null, aheadCountQuery },
+            message:
+              `unable to determine ahead-count vs github/${mirrorBranch} (${aheadCountQuery}) — ` +
+              'mirror drift not measurable',
           }));
         } else if (aheadCount === 0) {
           checks.push(pass({

@@ -289,6 +289,11 @@ describe('runCategory6', () => {
       expect(mirrorCheck.evidence.remoteCount).toBe(0);
     });
 
+    // THE OTHER SIDE of the ahead-count fix below: the `rev-parse` folds must
+    // NOT be swept up by it. Their null is a legitimate ABSENCE — `git rev-parse
+    // --verify --quiet github/<branch>` exits 1 silently when the mirror ref was
+    // never fetched (measured 2026-08-19: exit 1, no output), which is an
+    // ordinary repo state and not a failed measurement. Full points must survive.
     it('skips as pass with full points when neither github/HEAD nor the local-branch fallback verifies', () => {
       writeFileSync(join(root, 'CLAUDE.md'), minimalClaudeMd());
       execFileSyncMock.mockImplementation((cmd, args) => {
@@ -367,9 +372,59 @@ describe('runCategory6', () => {
     });
 
     // -----------------------------------------------------------------------
-    // Unparseable ahead-count — rev-list returns a non-numeric string.
+    // The ahead-count fold — the SECOND #1039 fail-open, closed after the
+    // remote-query one.
+    //
+    // BUG CAUGHT: an unmeasurable ahead-count booked as `pass 2/2`. By the time
+    // control reaches the `rev-list` call, `mirrorBranch` has already been
+    // proven to exist by `rev-parse --verify --quiet`, so `git rev-list --count
+    // github/<branch>..HEAD` has no "legitimately absent" answer left: measured
+    // in this repo on 2026-08-19, `git rev-list --count HEAD~1..HEAD` exits 0
+    // and `git rev-list --count PLACEHOLDER-missing..HEAD` exits 128. A null
+    // therefore means git FAILED — and the audit was awarding full points to a
+    // question it had not answered, inflating `checks_passed` in
+    // scripts/harness-audit.mjs.
+    //
+    // Both tests pin POINTS as well as STATUS. A status-only assertion would
+    // stay green if the fold were "fixed" to `pass({ points: 0 })`, which scores
+    // the same as a fail but keeps counting toward `checks_passed`.
     // -----------------------------------------------------------------------
-    it('skips as pass when the ahead-count cannot be parsed as a number', () => {
+    it('FAILS with zero points when the rev-list ahead-count query itself fails (git error ≠ absence)', () => {
+      writeFileSync(join(root, 'CLAUDE.md'), minimalClaudeMd());
+      execFileSyncMock.mockImplementation((cmd, args) => {
+        if (isRemoteListCall(args)) {
+          return remoteVOutput([
+            ['origin', 'git@gitlab.example.com:acme/widget.git'],
+            ['github', 'https://github.com/acme/widget.git'],
+          ]);
+        }
+        if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'github/main\n';
+        if (args[0] === 'rev-parse' && args[1] === '--verify') return '';
+        // Golden-record failure shape: git exits 128 and execFileSync throws.
+        if (args[0] === 'rev-list') {
+          throw gitExit128("fatal: bad revision 'github/main..HEAD'");
+        }
+        throw new Error('unexpected git invocation in this test');
+      });
+
+      const checks = runCategory6(root);
+      const mirrorCheck = checks.find((c) => c.check_id === 'github-mirror-sync');
+
+      expect(mirrorCheck.status).toBe('fail');
+      expect(mirrorCheck.points).toBe(0);
+      expect(mirrorCheck.max_points).toBe(2);
+      expect(mirrorCheck.evidence.aheadCount).toBe(null);
+      expect(mirrorCheck.evidence.aheadCountQuery).toBe('git-error');
+      expect(mirrorCheck.evidence.mirrorBranch).toBe('main');
+      expect(mirrorCheck.message).toContain('unable to determine ahead-count vs github/main (git-error)');
+    });
+
+    // Same fold, other shape: the call SUCCEEDS but prints something that is not
+    // a number. `git rev-list --count` always prints an integer on exit 0, so
+    // this is git not honouring its own contract — equally unmeasurable, and it
+    // shares the branch rather than keeping the fail-open behind a smaller
+    // trigger. `aheadCountQuery` is what tells the two apart in the scorecard.
+    it('FAILS with zero points when the ahead-count output cannot be parsed as a number', () => {
       writeFileSync(join(root, 'CLAUDE.md'), minimalClaudeMd());
       execFileSyncMock.mockImplementation((cmd, args) => {
         if (isRemoteListCall(args)) {
@@ -387,10 +442,11 @@ describe('runCategory6', () => {
       const checks = runCategory6(root);
       const mirrorCheck = checks.find((c) => c.check_id === 'github-mirror-sync');
 
-      expect(mirrorCheck.status).toBe('pass');
-      expect(mirrorCheck.points).toBe(2);
+      expect(mirrorCheck.status).toBe('fail');
+      expect(mirrorCheck.points).toBe(0);
       expect(mirrorCheck.max_points).toBe(2);
       expect(mirrorCheck.evidence.aheadCount).toBe(null);
+      expect(mirrorCheck.evidence.aheadCountQuery).toBe('unparseable-output');
       expect(mirrorCheck.message).toContain('unable to determine ahead-count');
     });
 

@@ -42,8 +42,28 @@ import { pathToFileURL } from 'node:url';
 // (ported from check-owner-leakage.mjs, wrapped as pure exported helpers)
 // ---------------------------------------------------------------------------
 
-/** Text-scan extension allow-list. */
-export const TEXT_EXTS = new Set(['.md', '.mjs', '.js', '.ts', '.json', '.yml', '.yaml', '.sh', '.txt']);
+/**
+ * Text-scan extension allow-list.
+ *
+ * '.html' (#1080 Finding C). This set is a SECOND, independent copy of the same
+ * concept check-owner-leakage.mjs maintains, and the two had DRIFTED: that scanner
+ * gained '.html' while this one kept the older list. The consequence was specific,
+ * not cosmetic — this validator exists for text "consumed by an LLM" (see the file
+ * header), and site/ ships four .html pages carrying JSON-LD directly beside
+ * site/llms.txt and site/llms-full.txt, i.e. exactly the consumer circle it was built
+ * for. Measured before adding: an identical U+202E + U+200B payload produced 2
+ * dangerous-invisible findings in a .md file and NOTHING in a .html file.
+ *
+ * DELIBERATELY NOT added to STRICT_EXTS below. STRICT flags every non-curated emoji,
+ * and .html is a prose/markup medium. Today that carve-out costs no detection — the
+ * strict variant was measured and produced the SAME single finding as the lenient one,
+ * so no emoji false positive exists in the tracked pages right now — but page copy is
+ * precisely where a future non-curated emoji legitimately lands, and a CI landmine
+ * armed by ordinary copywriting is not worth the marginal gain. The actual attack
+ * surface (invisibles, bidi overrides, tag-block smuggling) is flagged in BOTH
+ * contexts, so nothing security-relevant rides on the strict/lenient choice here.
+ */
+export const TEXT_EXTS = new Set(['.md', '.mjs', '.js', '.ts', '.json', '.yml', '.yaml', '.sh', '.txt', '.html']);
 
 /** STRICT-context extensions (emoji + homoglyphs flagged, not just invisibles). */
 const STRICT_EXTS = new Set(['.mjs', '.js', '.ts', '.sh', '.json', '.yml', '.yaml']);

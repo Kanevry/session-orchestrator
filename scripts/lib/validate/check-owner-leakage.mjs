@@ -9,11 +9,14 @@
  * `canonicalizeLine()` collapses every known textual encoding of a path
  * (URL-percent, dash-as-separator, backslash, double-slash, `\uXXXX`/`%uXXXX`
  * escapes, HTML/numeric entities, unicode homoglyph slashes/dashes, case)
- * into ONE canonical slash-form, and the owner-secret patterns are matched
- * ONCE against that canonical form (plus the raw line, for belt-and-braces).
- * A novel encoding of the same path normalizes to the same canonical string,
- * so it is caught structurally — no new regex required. Err toward
- * over-matching: this is a security guard, a false-positive is cheap, a
+ * into ONE canonical slash-form. CP1 is matched against that canonical form;
+ * the four DOT-anchored host/IP rules (CP2, CP3, CP7, CP8) are matched against
+ * the raw line AND the canonical form (#1080). The remaining rules stay RAW by
+ * measurement, not oversight — see the `canon` comment in the line loop for why
+ * the slash-anchored (CP4, CP10) and slug-anchored (CP6) rules must not be
+ * canonicalized. A novel encoding of the same path normalizes to the same
+ * canonical string, so it is caught structurally — no new regex required. Err
+ * toward over-matching: this is a security guard, a false-positive is cheap, a
  * false-negative ships a leak to the public mirror.
  *
  * Usage: check-owner-leakage.mjs <plugin-root>
@@ -442,6 +445,41 @@ const CP6_INPROCESS_PATTERNS = PRIVATE_SLUGS
 const CP7 = /gotzendorfer\.at/;
 
 /**
+ * GLOBAL twins of the two allowlist-consulting domain rules, used to count
+ * OCCURRENCES in the raw vs the canonical form of a line (#1080 Finding A).
+ *
+ * Why an occurrence COUNT and not simply a second `.test()` on the canonical
+ * form: CP3 and CP7 are the only rules whose verdict is filtered by
+ * isAllowlisted(), and that allowlist matches a LINE FORM — the sanctioned
+ * Impressum/author URL, and the exact events doc-comment contract line.
+ * Canonicalization folds every `-` run to `/`, which mangles precisely that
+ * prose: ` *   - No literal ...` canonicalizes to ` *   / No literal ...`. So
+ * re-running isAllowlisted() against the canonical form would fail to recognise
+ * its own sanctioned line and turn this gate — and with it .husky/pre-commit —
+ * permanently red on a clean tree. Measured, not reasoned: that exact exclusion
+ * regex returns true on the raw line and false on its canonical form.
+ *
+ * The occurrence count separates the two cases without touching the allowlist:
+ * when the canonical form carries MORE domain tokens than the raw line, the
+ * surplus was produced by DECODING an escape, and a decoded token can never be
+ * the sanctioned publication the allowlist covers — so it bypasses the allowlist.
+ * When the counts are equal, the rule behaves exactly as it always did and
+ * consults the allowlist on the raw line.
+ */
+const CP3_G = /\bevents\.gotzendorfer\.at\b/g;
+const CP7_G = /gotzendorfer\.at/g;
+
+/**
+ * Count matches of a GLOBAL regex in `s` (0 when none).
+ * @param {RegExp} re a regex carrying the `g` flag
+ * @param {string} s
+ * @returns {number}
+ */
+function countMatches(re, s) {
+  return (s.match(re) || []).length;
+}
+
+/**
  * CP8: full RFC1918 private dotted-quad — internal-IP leak.
  * Matches only literal 4-octet private IPs (10.x.x.x, 192.168.x.x, 172.16-31.x.x).
  * Deliberately does NOT match placeholder `.x` forms (10.x, 192.168.x) or CIDR/range
@@ -654,9 +692,25 @@ async function getConfidentialNamePatterns() {
 // ---------------------------------------------------------------------------
 // '.html' (#1076): the site/ tree is PUBLICLY SHIPPED (vercel.json outputDirectory:
 // "site"), so it is the highest-consequence class to scan, yet it was ungated here and
-// therefore invisible to all eleven CP rules. Its addition also revives canonicalizeLine()'s
-// HTML-entity decoding, which was dead in practice — .html is the only file class with
-// native entities, and it was never scanned.
+// therefore invisible to all eleven CP rules.
+//
+// CORRECTION (#1080 Finding A). An earlier revision of this comment justified '.html'
+// partly by claiming its addition "revives canonicalizeLine()'s HTML-entity decoding,
+// which was dead in practice". That was true of exactly ONE of the eleven rules.
+// matchOwnerPath() (CP1) was the SOLE consumer of the canonical form — CP2-CP8, CP10
+// and CP11 each tested the RAW line — so an entity-encoded private host inside an href
+// (a link the BROWSER resolves and the scanner did not) still reported nothing. The
+// per-line canonical re-test in the scan loop below is what actually closes that, and
+// only for the four dot-anchored rules; see the `canon` comment there for why the rest
+// stay raw.
+//
+// '.xml', '.svg', '.css' (#1080 Finding B): the PUBLICLY-SHIPPED sentence above is true
+// VERBATIM of site/sitemap.xml and site/favicon.svg — same directory, same publication,
+// same consequence — which the '.html' addition walked past. Measured with one identical
+// planted defect per class before adding: the .html and .txt copies FAILed, the .xml and
+// .svg copies reported nothing. Cost is zero: the five tracked files in these classes
+// (assets/icon.svg, assets/og-card.svg, site/favicon.svg, site/sitemap.xml,
+// templates/static-html/styles.css) carry no hits — 1542 -> 1547 scanned, 0 findings.
 // `.jsonl` closes a gap this very wave opened: the harvested golden-record fixture at
 // tests/lib/vault-mirror/fixtures/golden-sessions.jsonl is tracked production data that
 // `.json` does not match, so the scanner would have skipped it for good. Measured before
@@ -673,6 +727,9 @@ const TEXT_EXTS = new Set([
   '.sh',
   '.txt',
   '.html',
+  '.xml',
+  '.svg',
+  '.css',
 ]);
 
 // Dotfiles to include (checked by basename, BEFORE the extension gate —
@@ -907,6 +964,33 @@ for (const filePath of scanFiles) {
   lines.forEach((line, idx) => {
     const lineNum = idx + 1;
 
+    // The canonical form of this line, computed ONCE (#1080 Finding A). Until now
+    // matchOwnerPath (CP1) was the ONLY consumer of canonicalizeLine; every other rule
+    // tested the raw line, so an entity-encoded private host inside an href resolved in
+    // the browser and reported nothing here. The four DOT-anchored rules (CP2, CP3, CP7,
+    // CP8) are re-tested against it below.
+    //
+    // Why exactly those four, and not every rule — the discriminator is which character
+    // the rule ANCHORS on, and it was measured, not assumed:
+    //   - Canonicalization can FABRICATE a '/' out of any benign hyphen run
+    //     (`@goetzendorfer-team` -> `@goetzendorfer/team`, `~-Projects-Bernhard` ->
+    //     `~/Projects/Bernhard`; both flip false -> true under canon). So the
+    //     SLASH-anchored rules CP4 and CP10 would gain folding artifacts, and stay raw.
+    //   - It can never fabricate a '.' from a separator: `gitlab-gotzendorfer-at`
+    //     canonicalizes to `gitlab/gotzendorfer/at`, dot-free. A '.' appears in the
+    //     canonical form ONLY by decoding an escape — which is the evasion itself. So for
+    //     the DOT-anchored rules (CP2, CP3, CP7, CP8) every canonical-only hit is a
+    //     decoded evasion by construction, and the false-positive surface is empty.
+    //   - CP6 stays raw for the mirror-image reason: it anchors on `\b`-delimited slug
+    //     literals, and the dash folding SHREDS five of the seven slugs
+    //     (`mail-assistant` -> `mail/assistant`, which `\bmail-assistant\b` no longer
+    //     matches), so a canonical test there is a no-op at best.
+    //   - CP5 anchors on an identifier and CP11 on host-local names; neither is a path or
+    //     host spelling, so neither is re-tested.
+    // Repo-wide cost of the four, measured over 1547 tracked files before landing: 0 new
+    // findings.
+    const canon = canonicalizeLine(line);
+
     // CP1: personal home path — CANONICALIZED match (#661). One structural rule
     // replaces the slash-form (P1, #631) + dash-encoded (P9, #634) treadmill and
     // catches percent/unicode/backslash/homoglyph encodings of the same path.
@@ -915,14 +999,22 @@ for (const filePath of scanFiles) {
       violations.push({ relPath, lineNum, pattern: ownerPathHit, lineContent: line.trim() });
     }
 
-    // CP2: private GitLab host
-    if (CP2.test(line)) {
+    // CP2: private GitLab host — raw OR canonical (#1080). ONE `if` per rule, so a
+    // line matching BOTH forms still reports exactly ONE violation. (The pre-existing
+    // 'CP2: private GitLab host' scan row, which expects fails: 2 for the CP2+CP7 pair,
+    // is the standing guard against a double-count regression here.) CP2 consults no
+    // allowlist, so the raw/canonical split CP3 and CP7 need does not arise.
+    if (CP2.test(line) || CP2.test(canon)) {
       violations.push({ relPath, lineNum, pattern: 'CP2 (gitlab.gotzendorfer.at)', lineContent: line.trim() });
     }
 
-    // CP3: private events domain — check exclusion 6 first
-    if (CP3.test(line)) {
-      if (!isAllowlisted(relPath, line)) {
+    // CP3: private events domain — the raw form consults the exclusion allowlist
+    // exactly as before; a DECODED surplus occurrence (canonical count > raw count)
+    // bypasses it, because an encoded spelling is never the sanctioned publication.
+    // See CP3_G / CP7_G for why this is a count and not isAllowlisted(relPath, canon).
+    const cp3Decoded = countMatches(CP3_G, canon) > countMatches(CP3_G, line);
+    if (CP3.test(line) || cp3Decoded) {
+      if (cp3Decoded || !isAllowlisted(relPath, line)) {
         violations.push({ relPath, lineNum, pattern: 'CP3 (events.gotzendorfer.at)', lineContent: line.trim() });
       }
     }
@@ -947,15 +1039,23 @@ for (const filePath of scanFiles) {
       }
     }
 
-    // CP7: catch-all gotzendorfer.at — check exclusion allowlist
-    if (CP7.test(line)) {
-      if (!isAllowlisted(relPath, line)) {
+    // CP7: catch-all gotzendorfer.at — same split as CP3: the raw form consults the
+    // exclusion allowlist, a decoded surplus occurrence bypasses it. This is the arm
+    // that catches the sharpest shape of #1080 Finding A — a WORKING link on a published
+    // page, `<a href="https://gitlab&#46;gotzendorfer&#46;at/...">`, which the browser
+    // resolves and the raw-only rule read as ordinary text.
+    const cp7Decoded = countMatches(CP7_G, canon) > countMatches(CP7_G, line);
+    if (CP7.test(line) || cp7Decoded) {
+      if (cp7Decoded || !isAllowlisted(relPath, line)) {
         violations.push({ relPath, lineNum, pattern: 'CP7 (gotzendorfer.at catch-all)', lineContent: line.trim() });
       }
     }
 
-    // CP8: full RFC1918 private dotted-quad — internal IP leak (redaction-test fixtures exempt)
-    if (CP8.test(line) && !CP8_ALLOWLIST.has(relPath)) {
+    // CP8: full RFC1918 private dotted-quad — internal IP leak (redaction-test fixtures
+    // exempt). Raw OR canonical: `10&#46;11&#46;12&#46;13` decodes to a literal quad.
+    // The allowlist here is PATH-scoped, not line-scoped, so it needs no raw/canonical
+    // split — it applies identically to both forms.
+    if ((CP8.test(line) || CP8.test(canon)) && !CP8_ALLOWLIST.has(relPath)) {
       violations.push({ relPath, lineNum, pattern: 'CP8 (RFC1918 private IP)', lineContent: line.trim() });
     }
 

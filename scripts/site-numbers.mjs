@@ -528,12 +528,42 @@ export function readCensusSnapshot(root) {
  * publicly, so anything not on that list (paths, cwd, hostnames, raw records) is
  * dropped by construction rather than by review.
  *
+ * Every VALUE is checked against `SAFE_VALUE_RE` here, at the write, rather than
+ * inherited from `rewrite()`. That inheritance was the defect: `rewrite()` only
+ * ever sees a metric that HAS a `data-metric` span, and three of the thirteen
+ * (`rules`, `rules-generated`, `blocked-commands` — measured 2026-08-19: 10 ids
+ * carry a span, 13 exist) have none. Their values reached this public file
+ * unvetted, while the header above promises "no paths, no hostnames, no cwd" for
+ * the WHOLE file. All three are counters today, so this is defence in depth and
+ * not a live hole — but the promise is made per file, so the check belongs per
+ * file, not per span.
+ *
+ * A violation refuses the ENTIRE write rather than dropping the offending key: a
+ * census missing one id is a snapshot that silently stops answering that metric
+ * in a fresh clone, which is the quiet-failure shape this file exists to end.
+ *
  * @returns {{ ok: true } | { ok: false, reason: string, error?: string }}
  */
 export function writeCensusSnapshot(root, values) {
   const metrics = {};
+  const unsafe = [];
   for (const id of METRIC_IDS) {
-    if (Object.hasOwn(values, id)) metrics[id] = String(values[id]);
+    if (!Object.hasOwn(values, id)) continue;
+    const v = String(values[id]);
+    if (!SAFE_VALUE_RE.test(v)) {
+      unsafe.push(id);
+      continue;
+    }
+    metrics[id] = v;
+  }
+  if (unsafe.length > 0) {
+    return {
+      ok: false,
+      reason: 'unsafe-value',
+      error:
+        `value(s) rejected by the safe-value allowlist: ${unsafe.join(', ')} — ` +
+        'refusing to publish them in a served file',
+    };
   }
   return writeJsonAtomicSync(censusPath(root), { $schema: CENSUS_SCHEMA, metrics }, { tmpPrefix: '.tmp-census' });
 }

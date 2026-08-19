@@ -315,6 +315,61 @@ describe('check-unicode-safety — variation-selector carve-out', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Test 9a: .html joins the scan set (#1080 Finding C).
+//
+// Bug these cases catch: TEXT_EXTS here is a SECOND, independent copy of the set
+// check-owner-leakage.mjs maintains, and the two had drifted — that scanner gained
+// '.html', this one did not. Since this validator exists for text "consumed by an
+// LLM", and site/ ships four .html pages carrying JSON-LD beside site/llms.txt and
+// site/llms-full.txt, the drift removed exactly the intended consumer surface from
+// the scan. Reproduced before the fix with an IDENTICAL payload in both classes:
+// the .md copy produced 2 dangerous-invisible findings, the .html copy produced
+// none.
+// ---------------------------------------------------------------------------
+
+describe('check-unicode-safety — .html is scanned (#1080)', () => {
+  it('flags a bidi override + zero-width space in an .html page (identical payload to .md)', () => {
+    const root = makeFixture();
+    const payload = `<p>Datenschutz${RLO}erklaerung${ZWSP}</p>\n`;
+    writeTracked(root, 'site/index.html', payload);
+    writeTracked(root, 'control.md', payload);
+
+    const violations = collectUnicodeViolations(root);
+    const byFile = (f) => violations.filter((v) => v.file === f).map((v) => v.kind);
+
+    // The load-bearing assertion is the PARITY: pre-fix the .html arm was []
+    // while the .md control already returned the two findings.
+    expect(byFile('site/index.html')).toEqual(['dangerous-invisible', 'dangerous-invisible']);
+    expect(byFile('control.md')).toEqual(['dangerous-invisible', 'dangerous-invisible']);
+  });
+
+  it('reports the .html violation through the CLI with exit 1 and the code point', () => {
+    const root = makeFixture();
+    writeTracked(root, 'site/index.html', `<p>a${RLO}b</p>\n`);
+
+    const r = run(root);
+
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain('site/index.html:1:');
+    expect(r.stdout).toContain('dangerous-invisible U+202E');
+  });
+
+  it('treats .html as LENIENT — a non-curated emoji in page copy is NOT flagged', () => {
+    // Pins the deliberate decision to add '.html' to TEXT_EXTS but NOT to
+    // STRICT_EXTS. Page copy is where a future non-curated emoji legitimately
+    // lands; arming a CI landmine on ordinary copywriting buys no security,
+    // because the actual attack surface (invisibles / bidi / tag block) is
+    // flagged in BOTH contexts — as the two cases above demonstrate.
+    const root = makeFixture();
+    writeTracked(root, 'site/index.html', `<p>Ship it ${ROCKET}</p>\n`);
+
+    const violations = collectUnicodeViolations(root);
+
+    expect(violations).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Test 9: REGRESSION PIN (load-bearing) — the REAL repo tree must be clean.
 //
 // Green only AFTER the single stray U+00AD soft-hyphen in the gsd PRD is removed

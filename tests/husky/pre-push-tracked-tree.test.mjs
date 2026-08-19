@@ -33,10 +33,21 @@
  *      materialising before it bails — a silent bypass is worse than none
  *   4. the ~1600-file temp tree survives a FAILING gate — disk garbage per push
  *   5. the gate starts in the temp tree but resolves its files back to the
- *      working copy (via CLAUDE_PROJECT_DIR, which findProjectRoot() checks
+ *      working copy (via CLAUDE_PROJECT_DIR, which resolveProjectDir() checks
  *      BEFORE walking up from cwd) — green while proving nothing
  *   6. the not-a-git-repo fallback degrades SILENTLY — a gate that proves nothing
  *      and says nothing
+ *   7. the root-env scrub covers only the platforms someone happened to type out.
+ *      It covered SIX of the NINE names the two resolvers read: CURSOR_PROJECT_DIR,
+ *      the bare native PLUGIN_ROOT (rung ONE of resolvePluginRoot, outranking every
+ *      name that WAS scrubbed) and CURSOR_RULES_DIR all survived. The census for
+ *      that test is DERIVED FROM the resolver sources, so a tenth name added to
+ *      platform.mjs is covered without anyone editing this file — and a name with
+ *      a suffix the hook's sweep does not match goes RED here.
+ *   8. the git-env scrub names one handle of a two-handle channel — it removed
+ *      GIT_CONFIG_PARAMETERS but not the enumerated GIT_CONFIG_COUNT / KEY_n /
+ *      VALUE_n, which injects `core.hooksPath` into the materialised clone just
+ *      as effectively.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -44,6 +55,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+
+// The keep-set is imported, not restated: tests/setup/scrub-git-env.mjs and this
+// hook share one justification for which GIT_ names may survive a sweep, and a
+// second copy here would let the two drift apart unnoticed.
+import { GIT_ENV_KEEP } from '../setup/scrub-git-env.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const HOOK_PATH = join(REPO_ROOT, '.husky', 'pre-push');
@@ -67,9 +83,68 @@ writeFileSync(process.env.PROBE_OUT, JSON.stringify({
   gitIndexFile: process.env.GIT_INDEX_FILE ?? null,
   gitWorkTree: process.env.GIT_WORK_TREE ?? null,
   gitConfigParameters: process.env.GIT_CONFIG_PARAMETERS ?? null,
+  // Every name the gate child could still see that points at a project root, a
+  // plugin root, or a git repository. Reported generically so a test can assert
+  // over a census DERIVED FROM SOURCE rather than over a list typed out here —
+  // a list here would drift exactly the way the hook's own list did.
+  survivors: Object.keys(process.env)
+    .filter((k) => /(?:PROJECT_DIR|PLUGIN_ROOT|RULES_DIR)$/.test(k) || k.startsWith('GIT_'))
+    .sort(),
 }));
 process.exit(Number(process.env.PROBE_EXIT ?? '0'));
 `;
+
+/**
+ * The env vars the project-root / plugin-root resolvers actually read, DERIVED
+ * from their two source files instead of listed here.
+ *
+ * Why derived: the hook's own hand-written list is what this fixes. It named six
+ * of these nine, and the three it missed are the ones no reviewer would have
+ * spotted from the list alone — `CURSOR_PROJECT_DIR` (the fourth platform in
+ * resolveProjectDir's chain), the bare `PLUGIN_ROOT` (rung ONE of
+ * resolvePluginRoot, above every name the list did cover), and `CURSOR_RULES_DIR`
+ * (the Cursor plugin root is not called CURSOR_PLUGIN_ROOT, so extending the list
+ * by the guessed name would have read as a fix and closed nothing). A second
+ * hand-written copy here would drift the same way and, being a test, would drift
+ * silently green.
+ *
+ * Both read shapes are covered, and both are load-bearing: `process.env.NAME`
+ * (platform.mjs, four inline ifs) and the string-literal indirection
+ * (plugin-root.mjs, whose COMPATIBILITY_ROOTS table and `_envDirectory('PLUGIN_ROOT')`
+ * call are read via `process.env[envName]` — a `process.env\.` grep sees NONE of
+ * those five and undercounts by more than half, which is `.claude/rules/parallel-sessions.md`
+ * PSA-006's payload-vs-channel census trap in miniature).
+ *
+ * NON_LOCATION is an exclusion list, deliberately: every OTHER env read in those
+ * files enters the census by default, so a newly added read goes RED until
+ * someone either scrubs it in the hook or excludes it here with a reason.
+ *
+ * CEILING (BV-004): the hook sweeps by SUFFIX, so a location var with a novel
+ * suffix (a hypothetical `FOO_WORKSPACE`) is caught by this census but NOT by the
+ * sweep — which is the point; the test goes red and names it. Revisit trigger:
+ * the first resolver env var that is neither a PROJECT_DIR, a PLUGIN_ROOT nor a
+ * RULES_DIR.
+ */
+const RESOLVER_SOURCES = ['scripts/lib/platform.mjs', 'scripts/lib/plugin-root.mjs'];
+const NON_LOCATION = new Set([
+  // Reorders the compatibility roots; names no path. With every root swept it is
+  // inert, and scrubbing it would change which platform the gate believes it is
+  // running on — a behaviour change with no safety gain.
+  'SO_PLATFORM',
+  // A WSL presence flag (SO_IS_WSL), not a location.
+  'WSL_DISTRO_NAME',
+]);
+
+const ROOT_ENV_CENSUS = (() => {
+  const names = new Set();
+  for (const rel of RESOLVER_SOURCES) {
+    const src = readFileSync(join(REPO_ROOT, rel), 'utf8');
+    for (const m of src.matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) names.add(m[1]);
+    for (const m of src.matchAll(/'([A-Z][A-Z0-9_]*)'/g)) names.add(m[1]);
+  }
+  for (const excluded of NON_LOCATION) names.delete(excluded);
+  return [...names].sort();
+})();
 
 const tmpDirs = [];
 afterEach(() => {
@@ -173,12 +248,20 @@ describe('.husky/pre-push — gates the TRACKED tree, not the working tree', () 
     expect(res.stderr).toContain('Push blocked');
   });
 
-  it('reads TRACKED file content and clears the repo-root env vars', { timeout: 60_000 }, () => {
-    // bug_caught: #5 — the quiet way this rebuild goes useless. Starting the gate
-    // in a temp tree is not enough: scripts/lib/common.mjs findProjectRoot() and
-    // resolvePluginRoot() consult CLAUDE_PROJECT_DIR / CLAUDE_PLUGIN_ROOT BEFORE
-    // walking up from cwd, and Claude Code sets CLAUDE_PROJECT_DIR to the real
-    // repo. Left set, the gate resolves its files back to the working copy.
+  it('reads TRACKED file content and clears EVERY root env var the resolvers read', { timeout: 60_000 }, () => {
+    // bug_caught: #5 and #7 in one run. Starting the gate in a temp tree is not
+    // enough: platform.mjs resolveProjectDir() and plugin-root.mjs
+    // resolvePluginRoot() consult these names BEFORE walking up from cwd, and
+    // Claude Code sets CLAUDE_PROJECT_DIR to the real repo. Left set, the gate
+    // resolves its files back to the working copy.
+    //
+    // The census is DERIVED (see ROOT_ENV_CENSUS), not typed out, because the
+    // typed-out version is the defect: the hook scrubbed six of these nine names
+    // and the three it missed were not guessable. All of them are set here, so
+    // one run answers the whole population. `probe.survivors` reports what the
+    // gate child could still see, so the assertion is on the child's environment
+    // rather than on the hook's text.
+    //
     // Here the SAME path holds different bytes in each tree, so "which tree did
     // the gate read" has a single unambiguous answer.
     const { dir, sha } = makeRepo({
@@ -186,16 +269,24 @@ describe('.husky/pre-push — gates the TRACKED tree, not the working tree', () 
       worktree: { 'probe.txt': 'WORKTREE\n' },
     });
 
-    const { res, probe } = runHook({
-      cwd: dir,
-      stdin: contentLine(sha),
-      probeExit: 0,
-      env: { CLAUDE_PROJECT_DIR: dir, CLAUDE_PLUGIN_ROOT: dir },
-    });
+    const env = {};
+    for (const name of ROOT_ENV_CENSUS) env[name] = dir;
 
-    expect(probe.probeTxt).toBe('TRACKED');
+    const { res, probe } = runHook({ cwd: dir, stdin: contentLine(sha), probeExit: 0, env });
+
+    // The population is real: a census regex that silently matched nothing would
+    // make every assertion below vacuous.
+    expect(ROOT_ENV_CENSUS.length).toBeGreaterThanOrEqual(9);
+    expect(ROOT_ENV_CENSUS).toContain('CLAUDE_PROJECT_DIR'); // the one that was covered
+    expect(ROOT_ENV_CENSUS).toContain('CURSOR_PROJECT_DIR'); // the fourth platform
+    expect(ROOT_ENV_CENSUS).toContain('PLUGIN_ROOT'); // bare native, rung one
+    expect(ROOT_ENV_CENSUS).toContain('CURSOR_RULES_DIR'); // not "CURSOR_PLUGIN_ROOT"
+
+    expect(probe.survivors.filter((k) => ROOT_ENV_CENSUS.includes(k))).toEqual([]);
     expect(probe.claudeProjectDir).toBeNull();
     expect(probe.claudePluginRoot).toBeNull();
+
+    expect(probe.probeTxt).toBe('TRACKED');
     expect(probe.cwd.startsWith(dir)).toBe(false); // ran outside the working copy
     expect(res.status).toBe(0); // and a passing gate still lets the push through
   });
@@ -302,6 +393,15 @@ describe('.husky/pre-push — gates the TRACKED tree, not the working tree', () 
         GIT_DIR: join(dir, '.git'),
         GIT_INDEX_FILE: '.git/index',
         GIT_CONFIG_PARAMETERS: "'core.hooksPath'='.husky'",
+        // bug_caught: #8 — the ENUMERATED form of the same command-line config
+        // channel. It is independent of GIT_CONFIG_PARAMETERS (neither gates the
+        // other), so a scrub that named only the latter injected `core.hooksPath`
+        // into the materialised clone through this one instead. Measured
+        // 2026-08-19 in a throwaway /tmp repo: with these three set a `git commit`
+        // fired a foreign hook; without them it did not.
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'core.hooksPath',
+        GIT_CONFIG_VALUE_0: join(dir, '.husky-foreign'),
       },
     });
 
@@ -314,6 +414,12 @@ describe('.husky/pre-push — gates the TRACKED tree, not the working tree', () 
     // throwaway git repo the gate's suite creates fired the repository's real
     // pre-commit hooks. Three pushes reported `test: fail, total: 0` because of it.
     expect(probe.gitConfigParameters).toBeNull();
+    // …and every other GIT_ channel, asserted as a set rather than name by name:
+    // the keep-set (identity, GIT_EDITOR, transport) is the only thing that may
+    // survive, because it answers WHO/HOW and never WHICH repository.
+    expect(probe.survivors.filter((k) => k.startsWith('GIT_') && !GIT_ENV_KEEP.includes(k))).toEqual(
+      [],
+    );
 
     // 2. It still ran in the materialised tree and read TRACKED bytes there.
     expect(probe.cwd).not.toBe(dir);

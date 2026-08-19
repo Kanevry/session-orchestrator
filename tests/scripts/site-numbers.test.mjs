@@ -15,13 +15,20 @@
  *     it would couple this suite to whether THAT file happens to be current —
  *     which is not the contract under test here.
  *
- *     ONE named exception, read-only: the tracked census snapshot
- *     `site/_census.json`. Two tests open it — the public-schema pin (it is
- *     SERVED, so a stray debug field would ship) and the proof that a
- *     `--write --site <tmpdir>` run does not reach back into it. Neither looks at
- *     a single number, so neither couples to whether the file is current; and the
- *     second one would be untestable against a copy, because "the real file was
- *     not touched" is the claim.
+ *     TWO named exceptions, both read-only, both because the claim under test IS
+ *     about the shipped files and would be vacuous against a copy:
+ *
+ *       a. The tracked census snapshot `site/_census.json`. Two tests open it —
+ *          the public-schema pin (it is SERVED, so a stray debug field would
+ *          ship) and the proof that a `--write --site <tmpdir>` run does not
+ *          reach back into it. Neither looks at a single number, so neither
+ *          couples to whether the file is current; and the second one would be
+ *          untestable against a copy, because "the real file was not touched" is
+ *          the claim.
+ *       b. The real pages AND that snapshot together — see "page and receipt".
+ *          That test compares the two SHIPPED artefacts with EACH OTHER and
+ *          never with the repository, so it stays green while both go stale
+ *          together and goes red only when they were written by different runs.
  *  2. The CLI runs against the REAL repo root (that is where the census lives and
  *     the only place `git rev-parse HEAD` answers), while the census BASIS is
  *     pinned separately against a synthetic directory tree with hardcoded
@@ -48,6 +55,8 @@ import {
   headRef,
   censusPath,
   readCensusSnapshot,
+  writeCensusSnapshot,
+  listHtmlFiles,
   inspectHtml,
   rewrite,
   parseArgs,
@@ -684,5 +693,140 @@ describe('a known metric with no computed value', () => {
     expect(span.drift).toBe(false); // NOT drift — which is precisely why it needs its own flag
     expect(span.stale).toBe(false);
     expect(rewrite(html, { skills: '46' }).replaced).toBe(0); // and the stale number stays on the page
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The page and its receipt
+// ---------------------------------------------------------------------------
+
+describe('page and receipt — the two served artefacts must agree', () => {
+  /**
+   * BUG CAUGHT: `site/index.html` and `site/_census.json` committed from
+   * DIFFERENT `--write` runs. Both are tracked and both are served publicly
+   * (`vercel.json` `outputDirectory: "site"`), so a reader who opens
+   * `/_census.json` beside the page is reading the machine receipt for the
+   * numbers above it. On 2026-08-19 the two disagreed: the page said 252
+   * sessions / 135 learnings stamped `6fa214d`, the receipt said 253 / 140
+   * stamped `6f6bf58` — two provenance stamps for one "Measured" block.
+   *
+   * WHY IT COULD HAPPEN, and why a test is the right catcher: `--write` writes
+   * both from ONE measurement (that invariant is already pinned, in "writes the
+   * snapshot from the same measurement as the HTML cells"), but NOTHING made
+   * them travel together afterwards. `release.mjs --set-version` even prints
+   * "commit BOTH" — prose, addressed to whoever is reading. This is that
+   * sentence made mechanical.
+   *
+   * WHY THIS IS NOT A FRESHNESS GATE — the thing `release.mjs` explicitly
+   * refuses to put in CI, because `sessions` and `learnings` grow every session
+   * and such a gate would be permanently red: this test never consults the
+   * repository. It compares two COMMITTED files with each other. Both stale by
+   * the same measurement is GREEN here; only a split between them is red. That
+   * is why it can be a hard test rather than a warning.
+   */
+  it('every metric cell on every shipped page equals the receipt', () => {
+    // check-untracked-test-deps:ignore — both reads are of TRACKED files under site/;
+    // the R2 rule flags the module's closure, not which export reads what.
+    const snapshot = readCensusSnapshot(REPO_ROOT); // check-untracked-test-deps:ignore
+    expect(snapshot, 'site/_census.json must be readable and census-shaped').not.toBe(null);
+
+    const pages = listHtmlFiles(join(REPO_ROOT, 'site'));
+    expect(pages, 'site/ must exist').not.toBe(null);
+
+    const mismatched = [];
+    const violations = [];
+    let cells = 0;
+
+    for (const abs of pages) {
+      const rel = abs.slice(REPO_ROOT.length);
+      for (const span of inspectHtml(readFileSync(abs, 'utf8'), snapshot)) {
+        cells += 1;
+        if (!span.known || span.malformed || span.unresolved) {
+          violations.push({ file: rel, line: span.line, metric: span.metric });
+          continue;
+        }
+        // BOTH flags. `counted-at`/`counted-sha` are provenance, so a divergence
+        // sets `stale` and not `drift` — and the divergence that actually
+        // shipped was in `counted-sha`. Asserting on `drift` alone would have
+        // been green against the very state this test exists to forbid.
+        if (span.drift || span.stale) {
+          mismatched.push({ file: rel, line: span.line, metric: span.metric, page: span.actual.trim(), receipt: span.expected });
+        }
+      }
+    }
+
+    expect(violations).toEqual([]);
+    expect(mismatched).toEqual([]);
+    // Floor, not a pin (`.claude/rules/testing.md` § Dynamic Artifact Counts):
+    // the page's proof block grows. Zero cells would mean the loop asserted
+    // nothing at all, which is the shape this whole file is built against.
+    expect(cells).toBeGreaterThanOrEqual(8);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The safe-value allowlist, at the census write
+// ---------------------------------------------------------------------------
+
+describe('safe-value allowlist — the served census, not just the served page', () => {
+  /**
+   * BUG CAUGHT: three of the thirteen metrics reached the PUBLIC
+   * `site/_census.json` unvetted. `SAFE_VALUE_RE` was applied only inside
+   * `rewrite()`, and `rewrite()` only ever sees a metric that has a
+   * `data-metric` span. Measured on 2026-08-19 against the real page:
+   *
+   *   grep -o 'data-metric="[^"]*"' site/index.html | sort -u | wc -l   -> 10
+   *   node -e '…METRIC_IDS.length'                                      -> 13
+   *
+   * leaving `rules`, `rules-generated` and `blocked-commands` written by
+   * `String(values[id])` with no check at all — while the file's own header
+   * promises "no paths, no hostnames, no cwd" for the WHOLE file. All three are
+   * counters today, so the gap was defence-in-depth rather than a live hole;
+   * the promise is still made per file, so the check belongs per file.
+   */
+  it('refuses to write a census value carrying a path, and writes no file at all', () => {
+    const root = mkTmp('site-numbers-census-unsafe-');
+    mkdirSync(join(root, 'site'), { recursive: true });
+
+    const res = writeCensusSnapshot(root, { skills: '46', rules: '../../etc/passwd' });
+
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('unsafe-value');
+    expect(res.error).toContain('rules');
+    // Not "the bad key was dropped" — nothing was written. A census silently
+    // missing one id stops answering that metric in every fresh clone.
+    expect(existsSync(censusPath(root))).toBe(false);
+  });
+
+  /**
+   * BUG CAUGHT: the gap end-to-end, through `main()`, for a metric with NO span.
+   * The page here deliberately omits the `version` cell, so `rewrite()` never
+   * inspects that value and `rejected` stays 0 — which is exactly the state in
+   * which the old code shipped it into the receipt. The run must exit 2 (the
+   * caller's existing error path) and leave the previous receipt untouched.
+   */
+  it('exits 2 when an unvetted value would reach the census through a metric with no span', () => {
+    // The snapshot supplies `counted-sha` only — a synthetic tree has no `.git`,
+    // and without it the run dies on the partial-census guard before ever
+    // reaching the write. It doubles as the "previous receipt" this run must not
+    // corrupt.
+    const root = synthFullRepo({ snapshot: { 'counted-sha': 'deadbee' } });
+    const before = readFileSync(censusPath(root), 'utf8');
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'synth', version: '../../etc/passwd' }), 'utf8');
+    writeFileSync(
+      join(root, 'site', 'index.html'),
+      `<!doctype html><html><body>${METRIC_IDS.filter((id) => id !== 'version')
+        .map((id) => `<span class="num" data-metric="${id}">PLACEHOLDER</span>`)
+        .join('\n')}</body></html>`,
+      'utf8',
+    );
+
+    const res = run(['--write'], { root });
+
+    expect(res.code).toBe(2);
+    expect(res.stderr).toContain('safe-value allowlist');
+    expect(res.stderr).toContain('version');
+    // Byte-identical: the run refused, it did not half-write.
+    expect(readFileSync(censusPath(root), 'utf8')).toBe(before);
   });
 });

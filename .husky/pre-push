@@ -104,14 +104,66 @@ fi
 #     gate's own suite creates fired the REPOSITORY's real pre-commit hooks.
 #     Result: `test: fail, total: 0` on three consecutive pushes, green the moment
 #     the flag was dropped.
+#   - GIT_CONFIG_COUNT / GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n is the ENUMERATED
+#     form of the same command-line config channel, and it is INDEPENDENT of
+#     GIT_CONFIG_PARAMETERS — neither gates the other. Measured 2026-08-19 in a
+#     throwaway /tmp repo: with GIT_CONFIG_COUNT=1 / KEY_0=core.hooksPath /
+#     VALUE_0=<dir> a `git commit` fired the foreign hook; the identical commit
+#     without them did not. A name list that stopped at GIT_CONFIG_PARAMETERS
+#     therefore left the exact same door open under a different handle.
+#
+# SO THIS IS A NAMESPACE SWEEP, NOT A NAME LIST — and that is the whole point.
+# Every list-shaped version of this block has shipped with a hole in it: the
+# first named GIT_DIR but not GIT_CONFIG_PARAMETERS, the second named
+# GIT_CONFIG_PARAMETERS but not its enumerated sibling. `hooks/_lib/guard-source-loader.mjs`
+# reached the same verdict from the other direction and solved it with an
+# ALLOWLIST child env — which it can do because it builds the environment for one
+# `execFileSync` git child. This hook cannot: it scrubs its OWN shell, whose
+# children are npm, node and the entire test suite, so `env -i` is not on the
+# table. The middle form is an allowlist scoped to the GIT_ NAMESPACE — sweep
+# everything git could read, keep a short justified set. A channel a future git
+# release adds will be GIT_* too, so it is closed before it is named.
+#
+# THE KEEP-SET, and why each entry is safe. Every kept name answers WHO, WHEN or
+# HOW; none answers WHICH REPOSITORY or WHICH CONFIG, which is the only axis that
+# can redirect this hook:
+#   - GIT_AUTHOR_* / GIT_COMMITTER_* — identity and dates. They change the
+#     attribution of a fixture commit, never its destination.
+#   - GIT_EDITOR — measured, and NOT hygiene: Claude Code exports GIT_EDITOR=true
+#     precisely so git never blocks on an editor, and EDITOR is empty here.
+#     Sweeping it makes git fall back to `vi`, so any git call that wants an
+#     editor HANGS the gate behind ~2 min of expected silence. Keeping it removes
+#     a hang class and closes nothing.
+#   - GIT_ASKPASS / GIT_SSH / GIT_SSH_COMMAND / GIT_TERMINAL_PROMPT — credential
+#     and transport plumbing. Removing them turns an auth prompt into a hang for
+#     the same no gain.
+#   - GIT_EXEC_PATH — where git's OWN helper programs live, not where a repository
+#     lives. Measured 2026-08-19 by dumping the environment from a real pre-push
+#     hook in a throwaway /tmp repo: git exports exactly GIT_EDITOR, GIT_EXEC_PATH
+#     and GIT_PREFIX. GIT_PREFIX is a location and is swept; GIT_EXEC_PATH is kept
+#     because dropping it makes a child git fall back to its compiled-in libexec,
+#     which is wrong on a relocated or portable install and buys nothing — it can
+#     name no repository and inject no config.
 #
 # Unsetting is safe: git invokes a pre-push hook with cwd at the top of the work
 # tree, so ordinary discovery finds the same repository these variables named.
+# It is also local: the `git push` that spawned this hook already forked, so the
+# push's own transport runs in the parent and cannot be affected by these unsets.
 # This block must stay ABOVE every `git` invocation in this file — moving a git
 # call above it silently re-opens the hole.
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
-unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
-unset GIT_NAMESPACE GIT_PREFIX GIT_QUARANTINE_PATH GIT_CONFIG_PARAMETERS
+#
+# POSIX-sh notes: `grep -E` (not sed's `\|`, a GNU-only BRE extension that BSD
+# sed on the pusher's macOS does not support); the `case` pattern carries a
+# leading paren for bash 3.2; and `unset` on an absent name is a no-op, so a
+# stray match costs nothing.
+git_env_keep=' GIT_EXEC_PATH GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE GIT_EDITOR GIT_ASKPASS GIT_SSH GIT_SSH_COMMAND GIT_TERMINAL_PROMPT '
+for git_var in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | grep -E '^GIT_'); do
+  case "$git_env_keep" in
+    (*" $git_var "*) continue ;;
+  esac
+  unset "$git_var"
+done
+unset git_var git_env_keep
 
 # git feeds one line per pushed ref on stdin:
 #   <local_ref> <local_sha> <remote_ref> <remote_sha>
@@ -252,19 +304,48 @@ start=$(date +%s)
 # The subshell keeps the cd and the unsets local, so the EXIT trap above still
 # sees the parent's $work.
 #
-# The unsets are load-bearing, not hygiene. scripts/lib/common.mjs
-# findProjectRoot()/resolvePluginRoot() check CLAUDE_PROJECT_DIR (and the Codex /
-# pi equivalents) BEFORE walking up from cwd. Claude Code sets CLAUDE_PROJECT_DIR
-# to the real repo, so leaving it set makes the gate start in the temp tree and
-# resolve its files back to the working copy — green while proving nothing, the
-# precise way a rebuild like this goes quietly useless.
+# The unsets are load-bearing, not hygiene. scripts/lib/platform.mjs
+# resolveProjectDir() and scripts/lib/plugin-root.mjs resolvePluginRoot() consult
+# these BEFORE walking up from cwd. Claude Code sets CLAUDE_PROJECT_DIR to the
+# real repo, so leaving one set makes the gate start in the temp tree and resolve
+# its files back to the working copy — green while proving nothing, the precise
+# way a rebuild like this goes quietly useless.
+#
+# SUFFIX SWEEP, for the same reason the GIT_ block above is a namespace sweep:
+# the hand-written list here covered SIX of the NINE names the two resolvers
+# actually read, and the three it missed are not the ones anyone would guess.
+#   - CURSOR_PROJECT_DIR — the fourth platform in the resolveProjectDir chain
+#     (platform.mjs), simply absent from the list.
+#   - PLUGIN_ROOT — the bare native name, and it is rung ONE of resolvePluginRoot,
+#     i.e. it outranks every CLAUDE_/CODEX_/PI_ name the old list did unset.
+#   - CURSOR_RULES_DIR — the Cursor plugin root is NOT called CURSOR_PLUGIN_ROOT.
+#     Extending the list by the guessed name would have read as a complete fix in
+#     review and closed nothing at all.
+# Measured 2026-08-19: with CURSOR_PROJECT_DIR set, SO_PROJECT_DIR resolves to the
+# WORKING COPY from a foreign cwd — and that is a WRITE channel, not a path
+# string: scripts/lib/events.mjs eventsFilePath() defaults to SO_PROJECT_DIR and
+# run-quality-gate.mjs emitEvent() appends through it, so the temp-tree gate would
+# write telemetry back into the tree it exists to stay out of.
+#
+# The sweep is by SUFFIX (…PROJECT_DIR / …PLUGIN_ROOT / …RULES_DIR, which also
+# catches the bare PLUGIN_ROOT), so a fifth platform added to platform.mjs is
+# covered before anyone edits this file. What it does NOT cover is a location var
+# with a novel suffix (a hypothetical FOO_WORKSPACE) — that gap is held by
+# tests/husky/pre-push-tracked-tree.test.mjs, which derives the name census from
+# the two resolver modules and goes RED on exactly that case.
+# SO_PLATFORM is deliberately KEPT: it only reorders the compatibility roots and
+# names no path, so with every root swept it is inert — and scrubbing it would
+# change which platform the gate believes it runs on, a behaviour change with no
+# safety gain.
 #
 # `npm run --silent` keeps package.json as the single definition of the gate
 # command and drops npm's own ERR! banner; the child's exit code is forwarded.
 (
   cd "$run_dir" || exit 1
-  unset CLAUDE_PROJECT_DIR CODEX_PROJECT_DIR PI_PROJECT_DIR
-  unset CLAUDE_PLUGIN_ROOT CODEX_PLUGIN_ROOT PI_PLUGIN_ROOT
+  for root_var in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | grep -E 'PROJECT_DIR$|PLUGIN_ROOT$|RULES_DIR$'); do
+    unset "$root_var"
+  done
+  unset root_var
   npm run --silent quality-gate
 )
 status=$?

@@ -568,6 +568,120 @@ const SCAN_CASES = [
     expected: { status: 1, fails: 1, checkpoints: ['CP7'] },
   },
 
+  // =========================================================================
+  // #1080 Finding A — the canonical form now feeds the four DOT-anchored rules.
+  //
+  // Bug these rows catch: until #1080, matchOwnerPath (CP1) was the ONLY consumer
+  // of canonicalizeLine(). CP2-CP8/CP10/CP11 each tested the RAW line, so an
+  // entity-encoded private host inside an href — a link the BROWSER resolves and
+  // the scanner did not — reported nothing. Reproduced before the fix: the raw
+  // host FAILed CP2+CP7 while every encoded spelling below scanned CLEAN.
+  //
+  // Each row pins the ATTRIBUTED checkpoint AND the fail COUNT, so a regression
+  // that double-reports (raw hit + canonical hit pushed as two violations) fails
+  // just as loudly as one that stops detecting.
+  // =========================================================================
+  {
+    name: '#1080 A: entity-encoded private GitLab host in an .html link → CP2 + CP7',
+    files: { 'site/guide/index.html': '<a href="https://gitlab&#46;gotzendorfer&#46;at/runner">CI</a>\n' },
+    expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
+  },
+  {
+    name: '#1080 A: percent-encoded private GitLab host → CP2 + CP7 (same axis, other encoding)',
+    files: { 'site/guide/index.html': '<a href="https://gitlab%2Egotzendorfer%2Eat/runner">CI</a>\n' },
+    expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
+  },
+  {
+    name: '#1080 A: hex-entity private GitLab host → CP2 + CP7',
+    files: { 'site/guide/index.html': '<a href="https://gitlab&#x2E;gotzendorfer&#x2E;at/x">y</a>\n' },
+    expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
+  },
+  {
+    name: '#1080 A: entity-encoded events domain → CP3 + CP7',
+    files: { 'site/guide/index.html': '<img src="https://events&#46;gotzendorfer&#46;at/px.gif">\n' },
+    expected: { status: 1, fails: 2, checkpoints: ['CP3', 'CP7'] },
+  },
+  {
+    name: '#1080 A: entity-encoded RFC1918 quad → CP8',
+    files: { 'site/guide/index.html': '<!-- runner 10&#46;11&#46;12&#46;13 -->\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP8'] },
+  },
+  {
+    // The sharpest arm. On an ALLOWLISTED page every RAW gotzendorfer.at token is
+    // the sanctioned www. publication, so isAllowlisted(raw) is true. A naive fix
+    // ("if raw OR canonical matches, then consult isAllowlisted(raw)") would let
+    // that verdict cover the ENCODED private host riding on the same line — the
+    // exclusion would launder the leak. The occurrence-count split (canonical token
+    // count > raw token count, therefore decoded, therefore bypasses the allowlist)
+    // is what closes it. Paired with the CLEAN row below, which proves the allowlist
+    // is still doing its job rather than having been switched off.
+    name: '#1080 A: sanctioned www. URL + an encoded private host on ONE allowlisted line still FAILs',
+    files: {
+      'site/index.html':
+        '<a href="https://www.gotzendorfer.at" rel="author">M</a><!-- gitlab&#46;gotzendorfer&#46;at -->\n',
+    },
+    expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
+  },
+  {
+    name: '#1080 A: the same allowlisted page WITHOUT an encoded token stays CLEAN (allowlist intact)',
+    files: { 'site/index.html': '<a href="https://www.gotzendorfer.at" rel="author">M</a>\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    // No-double-count pin. A RAW host matches the raw line AND its canonical form
+    // (canonicalization is a no-op on a dot-separated domain). Two separate per-rule
+    // conditionals would report 4 here; the single OR-ed conditional reports 2.
+    name: '#1080 A: a raw host matching BOTH forms still reports exactly 2 (no double-count)',
+    files: { 'c.md': 'host: gitlab.gotzendorfer.at\n' },
+    expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
+  },
+  {
+    // CP6 is DELIBERATELY left raw: canonicalization folds dash runs to slashes,
+    // which SHREDS five of the seven private slugs (mail-assistant becomes
+    // mail/assistant), so a canonical CP6 test is a no-op at best. This row pins the
+    // other direction — the dash folding must not MANUFACTURE a slug hit out of
+    // ordinary hyphenation.
+    name: '#1080 A: CP6 stays raw — benign hyphenated prose is not folded into a slug hit',
+    files: { 'clean.md': 'The buchhalt-genie tool and the angebots-checker script are unrelated.\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
+  {
+    name: '#1080 A: CP6 dash-bearing slug still fires on the RAW line (unchanged by the canonical pass)',
+    files: { 'notes.md': 'Deploy notes for mail-assistant service.\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP6'] },
+  },
+
+  // =========================================================================
+  // #1080 Finding B — .xml / .svg / .css joined the PUBLICLY-SHIPPED scan set.
+  //
+  // Bug these rows catch: site/sitemap.xml and site/favicon.svg sit in the same
+  // published directory as the .html pages the previous wave gated, carry the same
+  // consequence, and were skipped by isTextFile(). Reproduced with one identical
+  // planted defect per class: the .html and .txt copies FAILed, the .xml and .svg
+  // copies reported nothing. .png stays out (see the pre-existing CLEAN row above),
+  // so the allowlist is proven to be an allowlist and not a scan-everything.
+  // =========================================================================
+  {
+    name: '#1080 B: planted private host in site/sitemap.xml → CP2 + CP7',
+    files: { 'site/sitemap.xml': '<loc>https://gitlab.gotzendorfer.at/x</loc>\n' },
+    expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
+  },
+  {
+    name: '#1080 B: planted private host in site/favicon.svg → CP2 + CP7',
+    files: { 'site/favicon.svg': '<svg><desc>gitlab.gotzendorfer.at</desc></svg>\n' },
+    expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
+  },
+  {
+    name: '#1080 B: planted private host in a .css file → CP2 + CP7',
+    files: { 'templates/static-html/styles.css': '/* gitlab.gotzendorfer.at */\n' },
+    expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
+  },
+  {
+    name: '#1080 B: an entity-encoded home path in .svg → CP1 (findings A and B compose)',
+    files: { 'site/favicon.svg': '<svg><desc>&#47;Users&#47;bernhardg&#47;PLACEHOLDER</desc></svg>\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+
   // --- Edge: empty repo / no-git dir ---
   {
     name: 'EDGE: empty git repo (no tracked files)',
