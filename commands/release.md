@@ -17,7 +17,7 @@ The user wants to cut a release of this package. Optional argument — the targe
 Verify it yourself before trusting the paragraph above:
 
 ```bash
-npm view session-orchestrator versions --json          # 3.16.0, 3.17.0, 3.19.0, 3.20.0 — no 3.18.0
+npm view session-orchestrator versions --json          # read 2026-08-19: 3.16.0, 3.17.0, 3.19.0, 3.20.0 — no 3.18.0
 git for-each-ref --format='%(refname:short) %(creatordate:short)' refs/tags
 gh release list --repo Kanevry/session-orchestrator --limit 12
 ```

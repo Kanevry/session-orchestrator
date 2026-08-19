@@ -310,6 +310,10 @@ export const LEAKAGE_PATTERNS = [
   { name: '.DS_Store', re: /\.DS_Store/ },
 ];
 
+// `commands/release.md` quotes the `npm view` OUTPUT that proves the 3.18.0 gap,
+// dated at the line. Bumping it would destroy the evidence it exists to carry —
+// the registry state on that date is the whole point of the paragraph.
+//
 // `site/guide/index.html` carries ONE dated historical sentence — "re-checked
 // against v<prev> on <date>" — deliberately left as a literal: a release that
 // bumped the version while the date stood still would fabricate a verification
@@ -318,7 +322,7 @@ export const LEAKAGE_PATTERNS = [
 // tests/scripts/site-numbers.test.mjs, which forbids ANY vX.Y.Z and the current
 // package version outside a `data-metric` cell on EVERY shipped page, and
 // exempts exactly the lines marked `site-numbers:historical`.
-export const HISTORY_ALLOWLIST = /^(CHANGELOG\.md|README\.md|docs\/|tests\/|skills\/npm-publish\/|scripts\/release\.mjs|\.orchestrator\/|site\/leaderboard\.json|site\/guide\/index\.html)/;
+export const HISTORY_ALLOWLIST = /^(CHANGELOG\.md|README\.md|docs\/|tests\/|skills\/npm-publish\/|scripts\/release\.mjs|\.orchestrator\/|site\/leaderboard\.json|site\/guide\/index\.html|commands\/release\.md)/;
 
 /** Pure check over pack-output lines. Returns violations: {name, line}[]. */
 export function checkLeakage(lines) {

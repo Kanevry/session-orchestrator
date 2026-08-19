@@ -399,6 +399,19 @@ describe('evaluateDriftSweep', () => {
     expect(r.ok).toBe(true);
   });
 
+  // THE BUG: the cheapest way to silence a sweep hit is to widen the allowlist to
+  // the whole directory — and then every future version literal under it goes
+  // unswept forever. Each exemption here is ONE file with a dated reason at the
+  // regex; a sibling in the same directory must stay swept.
+  it('exempts named files, never their directories', () => {
+    for (const exempt of ['site/guide/index.html', 'commands/release.md']) {
+      expect(HISTORY_ALLOWLIST.test(exempt), `${exempt} must be exempt`).toBe(true);
+    }
+    for (const sibling of ['site/guide/other.html', 'commands/close.md', 'site/index.html']) {
+      expect(HISTORY_ALLOWLIST.test(sibling), `${sibling} must stay swept`).toBe(false);
+    }
+  });
+
   it('still sweeps every other shipped page', () => {
     const grep = { status: 0, stdout: 'site/index.html\nsite/impressum/index.html\n', stderr: '' };
     const r = evaluateDriftSweep(grep, '3.20.0', HISTORY_ALLOWLIST);
