@@ -57,12 +57,6 @@
       "author": { "@id": "https://www.gotzendorfer.at/#person" },
       "publisher": { "@id": "https://www.gotzendorfer.at/#person" },
       "isAccessibleForFree": true,
-      "offers": {
-        "@type": "Offer",
-        "price": "0",
-        "priceCurrency": "EUR",
-        "availability": "https://schema.org/InStock"
-      },
       "mainEntityOfPage": { "@id": "https://session-orchestrator.com/#website" }
     },
     {
@@ -662,7 +656,6 @@ tr:last-child td{border-bottom:1px solid var(--line-2)}
 /plugin install session-orchestrator@kanevry</code></pre>
             </div>
             <p class="note">Then run <code>npm install</code> once inside the plugin cache and restart Claude Code.</p>
-            <!-- TODO: verified path pending, see session notes -->
             <div class="flag">
               <b>known broken</b>
               The one-liner documented for this step does not work: <code>claude plugin dir</code> does not exist and exits 1. Use this until a verified path lands:

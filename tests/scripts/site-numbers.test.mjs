@@ -390,6 +390,51 @@ describe('markup handling', () => {
     const html = '<span class="num" data-metric="skills"><b>46</b></span>';
     const [span] = inspectHtml(html, { skills: '99' });
     expect(span.malformed).toBe(true);
-    expect(rewrite(html, { skills: '99' })).toEqual({ html, replaced: 0, spans: 1 });
+    expect(rewrite(html, { skills: '99' })).toEqual({ html, replaced: 0, spans: 1, rejected: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Safe-value allowlist
+//
+// The bug this catches: `rewrite()` guarded the OLD cell content against `<>`
+// but never the NEW value. Eleven metrics are digits or hex by construction,
+// but `version` is whatever package.json says, and readPackageVersion only
+// checks "non-empty string". A crafted version literal could close the span and
+// open a tag. The precondition is write access to package.json — in this repo's
+// trust model already full access — so this is defence in depth. It is still
+// worth pinning, because the guard is invisible: nothing else fails if someone
+// deletes it.
+// ---------------------------------------------------------------------------
+
+describe('safe-value allowlist', () => {
+  const cell = '<span class="num" data-metric="version">3.20.0</span>';
+
+  it('writes an ordinary version', () => {
+    const r = rewrite(cell, { version: '3.21.0' });
+    expect(r.replaced).toBe(1);
+    expect(r.rejected).toBe(0);
+    expect(r.html).toContain('>3.21.0<');
+  });
+
+  it('accepts the shapes real versions actually take', () => {
+    for (const v of ['3.20.0', '3.20.0-rc.1', '3.20.0+codex.20260731000000', '1.0.0-beta_2']) {
+      expect(rewrite(cell, { version: v }).rejected, v).toBe(0);
+    }
+  });
+
+  it('refuses a value that would close the span and open a tag', () => {
+    const r = rewrite(cell, { version: '3.20.0"></span><script>alert(1)</script>' });
+    expect(r.rejected).toBe(1);
+    expect(r.replaced).toBe(0);
+    expect(r.html).toBe(cell); // byte-identical: nothing was written
+  });
+
+  it('refuses angle brackets, quotes and whitespace individually', () => {
+    for (const v of ['3.20<b>', '3.20"x', "3.20'x", '3.20 0', '3.20\n0']) {
+      const r = rewrite(cell, { version: v });
+      expect(r.rejected, JSON.stringify(v)).toBe(1);
+      expect(r.html, JSON.stringify(v)).toBe(cell);
+    }
   });
 });

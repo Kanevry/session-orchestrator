@@ -509,19 +509,40 @@ export function inspectHtml(html, values) {
  *
  * @returns {{html:string, replaced:number, spans:number}}
  */
+/**
+ * What a computed value is allowed to contain before it is written into HTML.
+ *
+ * Eleven of the thirteen metrics are digits (`fmtCount`) or hex (`git
+ * rev-parse --short`) by construction, but `version` is whatever
+ * `package.json` says and `readPackageVersion` only checks that it is a
+ * non-empty string. The pre-existing `/[<>]/` test below guards the OLD cell
+ * content, never the NEW value — so nothing stopped a crafted version literal
+ * from closing the span and opening a tag. The precondition is write access to
+ * `package.json`, which in this repo's trust model already means full access,
+ * so this is defence in depth rather than a live hole; it is cheap, and it is
+ * the one place where the page's `script-src 'unsafe-inline'` would stop being
+ * theoretical.
+ */
+const SAFE_VALUE_RE = /^[\w.+-]+$/;
+
 export function rewrite(html, values) {
   let replaced = 0;
   let spans = 0;
+  let rejected = 0;
   const next = html.replace(SPAN_RE, (whole, pre, q, metric, post, content) => {
     spans++;
     if (!Object.hasOwn(values, metric)) return whole; // unknown → caller errors out
     if (/[<>]/.test(content)) return whole; // malformed cell → caller errors out
     const value = values[metric];
+    if (!SAFE_VALUE_RE.test(value)) {
+      rejected++;
+      return whole; // caller errors out — never write an unvetted value
+    }
     if (content === value) return whole;
     replaced++;
     return `<span${pre}data-metric=${q}${metric}${q}${post}>${value}</span>`;
   });
-  return { html: next, replaced, spans };
+  return { html: next, replaced, spans, rejected };
 }
 
 /** Every `*.html` below `dir`, repo-relative-sorted for deterministic output. */
@@ -649,6 +670,10 @@ export function main(argv = process.argv.slice(2), env = {}) {
   let driftTotal = 0;
   let contractTotal = 0;
   let writtenTotal = 0;
+  // Values the safe-value allowlist refused. A rejection is a hard failure:
+  // the source producing it is corrupt, and writing the rest would be a
+  // partial write reported as success.
+  let rejectedTotal = 0;
 
   for (const abs of files) {
     // Repo-relative when the file is inside the repo; absolute otherwise (a
@@ -669,7 +694,15 @@ export function main(argv = process.argv.slice(2), env = {}) {
     let written = 0;
     if (args.write && unknown.length === 0 && malformed.length === 0 && spans.length > 0) {
       const res = rewrite(html, values);
-      if (res.replaced > 0) {
+      if (res.rejected > 0) {
+        // A value that fails SAFE_VALUE_RE is a corrupt or hostile source, not
+        // a formatting nit. Refuse the whole file rather than write the subset
+        // that happened to pass — a partial write is the silent-failure shape.
+        stderr(
+          `Error: ${res.rejected} computed value(s) rejected by the safe-value allowlist in ${rel} — refusing to write. Check the version literal in package.json.`,
+        );
+        rejectedTotal += res.rejected;
+      } else if (res.replaced > 0) {
         writeFileSync(abs, res.html, 'utf8');
         written = res.replaced;
         writtenTotal += res.replaced;
@@ -710,7 +743,7 @@ export function main(argv = process.argv.slice(2), env = {}) {
 
   // Under --write, remaining drift is not a failure — it was just written. Under
   // --check it is the whole point. A contract violation fails in either mode.
-  const ok = !noSpans && contractTotal === 0 && (args.write || driftTotal === 0);
+  const ok = !noSpans && contractTotal === 0 && rejectedTotal === 0 && (args.write || driftTotal === 0);
   const exitCode = ok ? 0 : 1;
 
   if (args.json) {
@@ -734,6 +767,7 @@ export function main(argv = process.argv.slice(2), env = {}) {
           driftCount: driftTotal,
           contractViolations: contractTotal,
           written: writtenTotal,
+          rejected: rejectedTotal,
           ok,
         },
         null,
