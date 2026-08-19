@@ -131,6 +131,9 @@ a:focus-visible,button:focus-visible,.skip:focus-visible{
      padding:22px 0 18px;border-bottom:1px solid var(--line)}
 .brand{font-family:var(--mono);font-size:13px;letter-spacing:.02em;color:var(--ink);text-decoration:none}
 .brand b{font-weight:500}
+/* mono numerals line up wherever a measured cell appears — same rule as the
+   home page, so a `data-metric` cell renders identically on both. */
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums slashed-zero}
 .nav{display:flex;flex-wrap:wrap;gap:6px 20px;margin-left:auto;font-family:var(--mono);font-size:12.5px}
 .nav a{color:var(--ink-2);text-decoration:none;padding:2px 0;border-bottom:1px solid transparent}
 .nav a:hover{color:var(--ink);border-bottom-color:var(--line-2)}
@@ -322,7 +325,7 @@ pre.code.has-copy{padding-right:64px}
   <div class="rail" aria-hidden="true"><span class="rail-fill"></span></div>
 
   <header class="top">
-    <a class="brand" href="/">session&#8209;orchestrator <b>v3.20.0</b></a>
+    <a class="brand" href="/">session&#8209;orchestrator <b>v<span class="num" data-metric="version">3.21.0</span></b></a>
     <nav class="nav" aria-label="Guide sections">
       <a href="#install">Install</a>
       <a href="#first-session">First session</a>
@@ -340,7 +343,7 @@ pre.code.has-copy{padding-right:64px}
       <p class="eyebrow">Claude Code &middot; Codex CLI &middot; Cursor IDE &middot; Pi</p>
       <h1>Install it, run one session, and check that it did what it says.</h1>
       <p class="lede">All four issues opened on this repository by people outside it were installation or environment problems. <em>Not one was a feature request.</em> So this page leads with the parts that break, and it says plainly where our own documentation was wrong.</p>
-      <p class="meta">Node.js 24 or later &middot; MIT &middot; every command below re&#8209;checked against v3.20.0 on 2026&#8209;08&#8209;19</p>
+      <p class="meta">Node.js 24 or later &middot; MIT &middot; every command below re&#8209;checked against v3.20.0 on 2026&#8209;08&#8209;19</p><!-- site-numbers:historical — the version in that sentence is a DATED RECORD of the release the commands were actually run against, not a claim about the current one. A release must never bump it; only an actual re-run of the commands may. Deliberately NOT a data-metric cell: --write would move the number while the date stayed put, fabricating a verification nobody ran. -->
     </section>
 
     <div class="guide">

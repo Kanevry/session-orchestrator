@@ -1,18 +1,18 @@
 {
   "$schema": "site-numbers/1 census snapshot",
   "metrics": {
-    "version": "3.20.0",
+    "version": "3.21.0",
     "skills": "46",
-    "commands": "25",
+    "commands": "26",
     "agents": "15",
     "hooks": "25",
-    "tests": "587",
+    "tests": "588",
     "sessions": "253",
     "learnings": "140",
     "rules": "30",
     "rules-generated": "13",
     "blocked-commands": "14",
     "counted-at": "2026-08-19",
-    "counted-sha": "1aa6cc2"
+    "counted-sha": "8984224"
   }
 }

@@ -2,7 +2,7 @@
 
 Loop engineering for AI coding agents: a session-orchestration plugin that turns ad-hoc agent sessions into a repeatable research, plan, wave-execute, close loop with verification gates. It is a workflow layer that runs on top of the coding agent you already have (Claude Code, Codex CLI, Cursor IDE, or Pi), not a replacement for it. Independent and community-maintained; not affiliated with or endorsed by Anthropic, OpenAI, or Cursor. MIT license, local by default, no account required, telemetry strictly opt-in.
 
-Version 3.20.0 · npm package: session-orchestrator · requires Node.js >= 24 · https://session-orchestrator.com
+Version 3.21.0 · npm package: session-orchestrator · requires Node.js >= 24 · https://session-orchestrator.com
 
 ## The loop
 
@@ -39,7 +39,7 @@ aiat-llm-eval v1: an open standard for honest LLM session evaluation. Pre-regist
 
 ## Numbers (measured 2026-08-19 at HEAD 3981267)
 
-Version 3.20.0 · 46 skills · 25 commands · 15 typed sub-agents · 25 hook files (24 plugin-wired, 10 event types) · 14 destructive-command rules · 14,023 tests (582 test files) · 252 sessions and 135 learnings recorded in the plugin's own repository.
+Version 3.21.0 · 46 skills · 25 commands · 15 typed sub-agents · 25 hook files (24 plugin-wired, 10 event types) · 14 destructive-command rules · 14,023 tests (582 test files) · 252 sessions and 135 learnings recorded in the plugin's own repository.
 
 ## Install
 

@@ -12,6 +12,13 @@
 //      release entry → release notes ship incomplete.
 //   4. A leakage pattern regresses to never-matching → secrets/tests leak
 //      into the published tarball unseen.
+//   5. A preflight check whose EVIDENCE-GATHERING failed reports `ok:true`
+//      anyway — an errored `git grep` reading as a clean sweep, an
+//      unparseable `npm view` reading as "no collision", an unparsed
+//      `npm pack` listing reading as "0 leaks". Each is a green check that
+//      verified nothing, guarding a step that cannot be undone.
+//   6. A release ships without its GitHub release, or a second `--publish`
+//      pass dies on the release that already exists.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
@@ -19,11 +26,21 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   SURFACES,
+  MIN_PACKED_ENTRIES,
   scanSurfaces,
   applyVersion,
   checkChangelogEntry,
   checkLeakage,
+  LEAKAGE_PATTERNS,
+  HISTORY_ALLOWLIST,
   verifyLiveSite,
+  evaluateDriftSweep,
+  evaluateRegistryCollision,
+  evaluateLeakageGate,
+  evaluateRemoteHeadParity,
+  evaluateNpmAuth,
+  validateFlags,
+  ensureGithubRelease,
 } from '../../scripts/release.mjs';
 
 // Fixture shapes are copied from the live repo files (golden-record rule in
@@ -38,7 +55,18 @@ function writeFixture(root, v) {
     'hooks/hooks.json': `{"hooks":{"SessionStart":[{"hooks":[{"command":"echo '🎯 Session Orchestrator v${v} — /session'"}]}]}}\n`,
     'hooks/hooks-codex.json': `{"hooks":{"SessionStart":[{"hooks":[{"command":"echo '🎯 Session Orchestrator v${v} — /session'"}]}]}}\n`,
     'README.md': `# session-orchestrator\n\n[![Version](https://img.shields.io/badge/version-${v}-blue.svg)](CHANGELOG.md)\n\n## Recent highlights (v${v})\n\nEvery release is additive and backward-compatible. Highlights of the v${v} line:\n`,
-    'site/index.html': `<script type="application/ld+json">{"softwareVersion": "${v}"}</script>\n<span class="mono-num">v${v}</span>\n`,
+    // Copied from the live page's three version cells (commit 8802aa4 shape),
+    // plus a PROSE mention of an older release. That last line is load-bearing:
+    // the pattern this surface used to carry was /v(\d+\.\d+\.\d+)\b/g, a
+    // replace-all that would have silently rewritten this sentence on every
+    // --set-version. See the "historical prose" test below.
+    'site/index.html': [
+      `<a class="brand" href="#main">session&#8209;orchestrator <b>v<span class="num" data-metric="version">${v}</span></b></a>`,
+      `<p class="meta">v<span class="num" data-metric="version">${v}</span> &middot; MIT &middot; npm session-orchestrator</p>`,
+      `<div class="read"><p class="n v">v<span class="num" data-metric="version">${v}</span></p><p class="l">current release</p></div>`,
+      `<p>The wave executor shipped in v3.2.0 and has not changed shape since.</p>`,
+      '',
+    ].join('\n'),
     'site/llms.txt': `Version: ${v} · npm: session-orchestrator\n`,
     'site/llms-full.txt': `Version ${v} · npm package: session-orchestrator\nVersion ${v} · 46 skills\n`,
     'package-lock.json': `{\n  "name": "session-orchestrator",\n  "version": "${v}",\n  "packages": { "": { "name": "session-orchestrator", "version": "${v}" } }\n}\n`,
@@ -89,6 +117,32 @@ describe('scanSurfaces', () => {
     expect(readme.problems.join()).toContain('pattern-dead');
   });
 
+  it('matches the live site/index.html metric-cell markup, and fails when that markup moves again', () => {
+    // THE BUG: commit 8802aa4 replaced this surface's markup (softwareVersion
+    // out of the JSON-LD, bare vX.Y.Z literals into data-metric cells) without
+    // updating SURFACES, leaving BOTH patterns matching nothing. The check was
+    // red at HEAD for exactly the right reason. This pins the new shape AND
+    // pins that the pattern-dead guard still bites when it moves again.
+    writeFixture(root, '3.21.0');
+    expect(scanSurfaces(root, '3.21.0').find((r) => r.file === 'site/index.html').ok).toBe(true);
+
+    // A stale cell is named, not skipped.
+    writeFileSync(
+      join(root, 'site/index.html'),
+      '<p class="meta">v<span class="num" data-metric="version">3.20.0</span></p>\n',
+    );
+    const stale = scanSurfaces(root, '3.21.0').find((r) => r.file === 'site/index.html');
+    expect(stale.ok).toBe(false);
+    expect(stale.problems.join()).toContain('3.20.0');
+
+    // The markup moving AGAIN (cells renamed away) must be pattern-dead, not a
+    // silent pass — the guard that found the 8802aa4 drift in the first place.
+    writeFileSync(join(root, 'site/index.html'), '<p class="meta">v<span class="num">3.21.0</span></p>\n');
+    const moved = scanSurfaces(root, '3.21.0').find((r) => r.file === 'site/index.html');
+    expect(moved.ok).toBe(false);
+    expect(moved.problems.join()).toContain('pattern-dead');
+  });
+
   it('fails a stale package-lock via JSON parse, not pattern match', () => {
     writeFixture(root, '3.19.0');
     writeFileSync(
@@ -111,9 +165,35 @@ describe('applyVersion', () => {
       '{"name":"session-orchestrator","version":"3.19.0","packages":{"":{"version":"3.19.0"}}}',
     );
     const changed = applyVersion(root, '3.19.0');
-    expect(changed).toHaveLength(SURFACES.length);
-    const rows = scanSurfaces(root, '3.19.0');
+    expect(changed).toHaveLength(SURFACES.filter((s) => !s.checkOnly).length);
+    // site/index.html stays stale here BY DESIGN — scripts/site-numbers.mjs
+    // owns that write in the real --set-version flow. Scan it separately.
+    const rows = scanSurfaces(root, '3.19.0').filter((r) => r.file !== 'site/index.html');
     expect(rows.filter((r) => !r.ok)).toEqual([]);
+  });
+
+  it('does not write site/index.html — one cell, one writer', () => {
+    // THE BUG: applyVersion and `site-numbers.mjs --write` would both be
+    // authoritative for the same data-metric cell. Two writers on one value is
+    // a divergence waiting to happen, and the divergence would only surface in
+    // a shipped release. The split is structural (`checkOnly`), not a comment
+    // asking the next editor to remember.
+    writeFixture(root, '3.18.0');
+    const before = readFileSync(join(root, 'site/index.html'), 'utf8');
+    expect(applyVersion(root, '3.19.0')).not.toContain('site/index.html');
+    expect(readFileSync(join(root, 'site/index.html'), 'utf8')).toBe(before);
+  });
+
+  it('leaves a historical version mentioned in site prose alone', () => {
+    // THE BUG the old pattern would have shipped: /v(\d+\.\d+\.\d+)\b/g was a
+    // replace-all over the whole page, so "shipped in v3.2.0" became "shipped
+    // in v3.19.0" on the next --set-version — a factual claim rewritten by a
+    // version bumper, silently. Belt and braces: checkOnly means applyVersion
+    // does not touch the file at all, and the pattern is cell-anchored so it
+    // could not reach the sentence even if it did.
+    writeFixture(root, '3.18.0');
+    applyVersion(root, '3.19.0');
+    expect(readFileSync(join(root, 'site/index.html'), 'utf8')).toContain('shipped in v3.2.0');
   });
 
   it('rotates the codex cachebuster to a fresh valid UTC stamp alongside the base bump', () => {
@@ -167,18 +247,32 @@ describe('checkChangelogEntry', () => {
 });
 
 describe('checkLeakage', () => {
-  it('flags each of the seven leak classes on real npm-notice shaped lines', () => {
-    const lines = [
-      'npm notice 1.2kB tests/lib/foo.test.mjs',
-      'npm notice 3.4kB .orchestrator/metrics/sessions.jsonl',
-      'npm notice 0.5kB .claude/settings.json',
-      'npm notice 0.5kB .github/workflows/ci.yml',
-      'npm notice 9.9kB node_modules/left-pad/index.js',
-      'npm notice 0.1kB .env.local',
-      'npm notice 0.2kB owner.yaml',
-    ];
-    const names = checkLeakage(lines).map((v) => v.name);
-    expect(new Set(names)).toEqual(new Set(['tests/', '.orchestrator/', '.claude/', '.github/', 'node_modules', '.env', 'owner.yaml']));
+  // THE BUG: a leak class is added to LEAKAGE_PATTERNS and never exercised.
+  // That is not hypothetical — `.DS_Store` was listed as checked in
+  // docs/distribution/npm-publish-checklist.md while the executed gate did not
+  // carry it at all (measured 2026-08-19: three leakage lists, three different
+  // sets). Deriving the expectation FROM the production list means the next
+  // pattern added without a sample line fails here instead of shipping unproven.
+  const SAMPLE_LINE = {
+    'tests/': 'npm notice 1.2kB tests/lib/foo.test.mjs',
+    '.orchestrator/': 'npm notice 3.4kB .orchestrator/metrics/sessions.jsonl',
+    '.claude/': 'npm notice 0.5kB .claude/settings.json',
+    '.github/': 'npm notice 0.5kB .github/workflows/ci.yml',
+    node_modules: 'npm notice 9.9kB node_modules/left-pad/index.js',
+    '.env': 'npm notice 0.1kB .env.local',
+    'owner.yaml': 'npm notice 0.2kB owner.yaml',
+    '.DS_Store': 'npm notice 6.1kB site/.DS_Store',
+  };
+
+  it('carries a sample line for every declared leak class', () => {
+    const declared = LEAKAGE_PATTERNS.map((p) => p.name);
+    expect(Object.keys(SAMPLE_LINE).sort()).toEqual([...declared].sort());
+  });
+
+  it('flags every declared leak class on real npm-notice shaped lines', () => {
+    const declared = LEAKAGE_PATTERNS.map((p) => p.name);
+    const names = checkLeakage(declared.map((n) => SAMPLE_LINE[n])).map((v) => v.name);
+    expect(new Set(names)).toEqual(new Set(declared));
   });
 
   it('returns no violations for a clean pack list', () => {
@@ -253,5 +347,317 @@ describe('verifyLiveSite', () => {
     const r = await verifyLiveSite('3.20.0', { attempts: 5, delayMs: 0, fetchImpl: flaky, url: 'https://example.test/llms.txt' });
     expect(r.ok).toBe(true);
     expect(n).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Preflight evaluators — the fail-closed family.
+//
+// Shared bug class: a check whose evidence-gathering FAILED reporting `ok:true`
+// anyway. All three of the originals produced an empty result set from a failed
+// subprocess and read that emptiness as an all-clear, on the one code path
+// (publish) that cannot be undone. Each test below feeds exactly the degraded
+// shape that used to pass.
+// ---------------------------------------------------------------------------
+
+const ALLOWLIST = /^(CHANGELOG\.md|docs\/)/;
+
+describe('evaluateDriftSweep', () => {
+  it('treats a FAILED git grep as inconclusive, not as a clean sweep', () => {
+    // THE BUG: the old code read `.stdout` and never `.status`. `git grep`
+    // exits 1 on "no match" (fine) and non-0/1 on a real error — measured 128
+    // for a bad regex and a bad pathspec, and git documents 2 for usage errors.
+    // Both produced an empty stdout, so a sweep that never ran reported
+    // "no tracked file still carries 3.20.0".
+    for (const status of [2, 128]) {
+      const r = evaluateDriftSweep({ status, stdout: '', stderr: 'fatal: bad thing' }, '3.20.0', ALLOWLIST);
+      expect(r.ok).toBe(false);
+      expect(r.detail).toContain('inconclusive');
+    }
+  });
+
+  it('accepts exit 1 (no match) as the genuine clean sweep', () => {
+    const r = evaluateDriftSweep({ status: 1, stdout: '', stderr: '' }, '3.20.0', ALLOWLIST);
+    expect(r.ok).toBe(true);
+    expect(r.detail).toContain('no tracked file');
+  });
+
+  it('fails on hits outside the history allowlist and names them', () => {
+    const grep = { status: 0, stdout: 'CHANGELOG.md\ndocs/x.md\nsite/llms.txt\n', stderr: '' };
+    const r = evaluateDriftSweep(grep, '3.20.0', ALLOWLIST);
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('site/llms.txt');
+    expect(r.detail).not.toContain('CHANGELOG.md');
+  });
+
+  // THE BUG: the cases above run against a hand-copied ALLOWLIST in this file,
+  // so the regex `preflight` actually uses was covered by nothing — an edit to
+  // it could not go red here. These two run the PRODUCTION export.
+  it('exempts the one page that keeps a dated historical version literal', () => {
+    const grep = { status: 0, stdout: 'site/guide/index.html\n', stderr: '' };
+    const r = evaluateDriftSweep(grep, '3.20.0', HISTORY_ALLOWLIST);
+    expect(r.ok).toBe(true);
+  });
+
+  it('still sweeps every other shipped page', () => {
+    const grep = { status: 0, stdout: 'site/index.html\nsite/impressum/index.html\n', stderr: '' };
+    const r = evaluateDriftSweep(grep, '3.20.0', HISTORY_ALLOWLIST);
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('site/index.html');
+    expect(r.detail).toContain('site/impressum/index.html');
+  });
+});
+
+describe('evaluateRegistryCollision', () => {
+  it('refuses to clear a target when npm view output is unparseable', () => {
+    // THE BUG, and the most dangerous one in the file: `catch {}` left the
+    // version list EMPTY, and `!published.includes(target)` then read that
+    // emptiness as "the version is free". An npm output-format change or a
+    // captive-portal/proxy HTML body with exit 0 turned the collision check
+    // into consent. Reproduced verbatim before the fix: ok = true, "latest: ?".
+    const r = evaluateRegistryCollision({ status: 0, stdout: '<html>proxy</html>', stderr: '' }, '3.21.0');
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('cannot rule out a collision');
+  });
+
+  it('refuses to clear a target on an empty version list', () => {
+    // A published package always has at least one version; an empty list is a
+    // shape we do not understand, not an all-clear.
+    const r = evaluateRegistryCollision({ status: 0, stdout: '[]', stderr: '' }, '3.21.0');
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('cannot rule out a collision');
+  });
+
+  it('fails on a real collision and passes on a genuinely free version', () => {
+    const versions = JSON.stringify(['3.19.0', '3.20.0']);
+    expect(evaluateRegistryCollision({ status: 0, stdout: versions, stderr: '' }, '3.20.0')).toEqual({
+      ok: false,
+      detail: '3.20.0 already published',
+    });
+    expect(evaluateRegistryCollision({ status: 0, stdout: versions, stderr: '' }, '3.21.0')).toEqual({
+      ok: true,
+      detail: 'latest: 3.20.0',
+    });
+  });
+
+  it('separates E404 (first publish) from every other npm view failure', () => {
+    expect(evaluateRegistryCollision({ status: 1, stdout: '', stderr: 'npm error code E404' }, '1.0.0').ok).toBe(true);
+    const down = evaluateRegistryCollision({ status: 1, stdout: '', stderr: 'ETIMEDOUT' }, '1.0.0');
+    expect(down.ok).toBe(false);
+    expect(down.detail).toContain('npm view failed');
+  });
+});
+
+describe('evaluateLeakageGate', () => {
+  // Shaped from real `npm pack --dry-run` stderr at 8984224 (830 entries).
+  const listing = (n, extra = []) =>
+    [
+      'npm notice',
+      // \u{1F4E6} escaped, not literal: check-unicode-safety.mjs forbids an emoji
+      // codepoint in a tracked file, and the runtime string is byte-identical.
+      'npm notice \u{1F4E6}  session-orchestrator@3.21.0',
+      'npm notice Tarball Contents',
+      ...Array.from({ length: n }, (_, i) => `npm notice ${1 + (i % 9)}.${i % 10}kB skills/s${i}/SKILL.md`),
+      ...extra,
+      `npm notice total files: ${n + extra.length}`,
+    ].join('\n');
+
+  it('refuses to call an unparsed pack listing "0 leaks"', () => {
+    // THE BUG: exit 0 + output the scan cannot parse → zero lines scanned →
+    // zero violations → "0 packed entries, 0 leaks". The SURFACES table has
+    // `pattern-dead` for exactly this class; the leak scan had no equivalent.
+    // Reproduced verbatim before the fix: ok = true on empty stdout+stderr.
+    const r = evaluateLeakageGate({ status: 0, stdout: '', stderr: '' });
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('did not parse');
+    expect(r.detail).toContain(`floor ${MIN_PACKED_ENTRIES}`);
+  });
+
+  it('refuses a listing that parses but sits under the floor', () => {
+    // The same hole one step less obvious: a format change that still yields a
+    // handful of matchable lines. 12 entries scanned is not evidence about 830.
+    expect(evaluateLeakageGate({ status: 0, stdout: '', stderr: listing(12) }).ok).toBe(false);
+  });
+
+  it('passes a full listing with no leaks, and reports the real entry count', () => {
+    // Regression guard on the counter itself: the old inline regex required a
+    // DIGIT immediately before "B", so it matched only byte-sized entries —
+    // 108 of 830 at 8984224. A floor asserted on that counter would have been
+    // permanently red.
+    const r = evaluateLeakageGate({ status: 0, stdout: '', stderr: listing(830) });
+    expect(r).toEqual({ ok: true, detail: '830 packed entries, 0 leaks' });
+  });
+
+  it('still catches a leak inside an otherwise healthy listing', () => {
+    const r = evaluateLeakageGate({
+      status: 0,
+      stdout: '',
+      stderr: listing(830, ['npm notice 1.2kB tests/lib/foo.test.mjs']),
+    });
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('tests/');
+  });
+
+  it('fails a non-zero npm pack instead of scanning its rubble', () => {
+    const r = evaluateLeakageGate({ status: 1, stdout: '', stderr: 'npm error ENOENT' });
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('npm pack failed');
+  });
+});
+
+describe('evaluateRemoteHeadParity', () => {
+  const HEAD = '89842241b678cec0c32a2b74569abded1ea989c1';
+  const BEHIND = '0123456789abcdef0123456789abcdef01234567';
+
+  it('fails when the github mirror is behind HEAD', () => {
+    // THE BUG: preflight compared HEAD to origin/main only. Vercel deploys off
+    // the GITHUB mirror, so a lagging mirror was discovered by verifyLiveSite —
+    // i.e. AFTER npm publish and AFTER both tag pushes, the two irreversible
+    // steps. This moves the discovery in front of them.
+    const r = evaluateRemoteHeadParity('github', { status: 0, stdout: `${BEHIND}\trefs/heads/main\n` }, HEAD);
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('the mirror is behind');
+    expect(r.detail).toContain(BEHIND.slice(0, 8));
+  });
+
+  it('fails a failed ls-remote rather than passing on its silence', () => {
+    const r = evaluateRemoteHeadParity('github', { status: 128, stdout: '', stderr: 'could not read' }, HEAD);
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('failed');
+  });
+
+  it('fails output that carries no sha at all', () => {
+    const r = evaluateRemoteHeadParity('github', { status: 0, stdout: '\n' }, HEAD);
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('no sha');
+  });
+
+  it('passes when the remote branch is exactly HEAD', () => {
+    expect(evaluateRemoteHeadParity('origin', { status: 0, stdout: `${HEAD}\trefs/heads/main\n` }, HEAD)).toEqual({
+      ok: true,
+      detail: HEAD.slice(0, 8),
+    });
+  });
+});
+
+describe('evaluateNpmAuth', () => {
+  it('refuses an exit-0 whoami that printed no identity', () => {
+    // Same class as the three above: a zero exit is not an identity.
+    expect(evaluateNpmAuth({ status: 0, stdout: '\n', stderr: '' }).ok).toBe(false);
+  });
+
+  it('fails a dead token before the publish rather than during it', () => {
+    const r = evaluateNpmAuth({ status: 1, stdout: '', stderr: 'npm error code E401' });
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('E401');
+  });
+
+  it('passes and names the authenticated identity', () => {
+    expect(evaluateNpmAuth({ status: 0, stdout: 'kanevry\n', stderr: '' })).toEqual({
+      ok: true,
+      detail: 'authenticated as kanevry',
+    });
+  });
+});
+
+describe('validateFlags', () => {
+  it('refuses --skip-ci under --publish', () => {
+    // THE BUG: --skip-ci makes ci-green-on-head report `ok:true` with the
+    // detail "SKIPPED via --skip-ci". Under --publish that is a green summary
+    // which verified nothing about CI authorising npm publish + two tag pushes,
+    // none of which can be taken back.
+    const r = validateFlags({ publish: true, 'skip-ci': true });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe(2);
+    expect(r.message).toContain('irreversible');
+  });
+
+  it('still allows --skip-ci for --check, which commits to nothing', () => {
+    expect(validateFlags({ check: true, 'skip-ci': true })).toEqual({ ok: true });
+    expect(validateFlags({ publish: true })).toEqual({ ok: true });
+  });
+});
+
+describe('ensureGithubRelease', () => {
+  const okRes = { status: 0, stdout: '', stderr: '' };
+
+  it('is a no-op when the release already exists, instead of erroring', () => {
+    // THE BUG: `gh release create` on an existing release exits non-zero. A
+    // second --publish pass (after, say, a site-verify failure) would then die
+    // on the one step that had already succeeded.
+    const calls = [];
+    const r = ensureGithubRelease('/repo', '3.21.0', {
+      repoSpec: 'github.com/Owner/repo',
+      runImpl: (cmd, args) => {
+        calls.push(args);
+        return okRes; // `gh release view` finds it
+      },
+    });
+    expect(r).toMatchObject({ ok: true, created: false, tag: 'v3.21.0' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].slice(0, 2)).toEqual(['release', 'view']);
+  });
+
+  it('creates with --verify-tag and the resolved -R spec when absent', () => {
+    // --verify-tag is what makes "release without a tag" structurally
+    // impossible rather than merely discouraged — gh refuses when the tag is
+    // not on the remote. The spec comes from resolveRepoSpec (#1039), never a
+    // hardcoded owner/repo.
+    const root = mkdtempSync(join(tmpdir(), 'release-gh-'));
+    try {
+      writeFileSync(join(root, 'CHANGELOG.md'), '# Changelog\n\n## [3.21.0] - 2026-08-19\n\n### Added\n- a thing\n');
+      const calls = [];
+      let notesSeenByGh = null;
+      const r = ensureGithubRelease(root, '3.21.0', {
+        repoSpec: 'github.com/Owner/repo',
+        runImpl: (cmd, args) => {
+          calls.push({ cmd, args });
+          if (args[1] === 'view') return { status: 1, stdout: '', stderr: 'release not found' };
+          // Read the notes file HERE — this is the only moment it exists, and
+          // it is exactly the moment gh would read it. The production code
+          // removes it in a finally, which is why asserting after the call
+          // would (and did) fail with ENOENT.
+          notesSeenByGh = readFileSync(args[args.indexOf('--notes-file') + 1], 'utf8');
+          return okRes;
+        },
+      });
+      expect(r).toMatchObject({ ok: true, created: true, tag: 'v3.21.0' });
+      const create = calls[1];
+      expect(create.cmd).toBe('gh');
+      expect(create.args).toContain('--verify-tag');
+      expect(create.args.slice(0, 3)).toEqual(['release', 'create', 'v3.21.0']);
+      expect(create.args[create.args.indexOf('--repo') + 1]).toBe('github.com/Owner/repo');
+      // The body is the CHANGELOG excerpt, passed by file (never as argv).
+      expect(notesSeenByGh).toContain('- a thing');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a gh failure instead of throwing, because publish already happened', () => {
+    // By the time this runs, npm publish and both tag pushes have SUCCEEDED.
+    // Throwing here would report a shipped release as a crash.
+    const root = mkdtempSync(join(tmpdir(), 'release-gh-'));
+    try {
+      writeFileSync(join(root, 'CHANGELOG.md'), '# Changelog\n\n## [3.21.0] - 2026-08-19\n\n- x\n');
+      const failed = ensureGithubRelease(root, '3.21.0', {
+        repoSpec: 'github.com/Owner/repo',
+        runImpl: (cmd, args) =>
+          args[1] === 'view' ? { status: 1, stdout: '', stderr: '' } : { status: 1, stdout: '', stderr: 'tag not found on remote' },
+      });
+      expect(failed.ok).toBe(false);
+      expect(failed.detail).toContain('tag not found on remote');
+
+      const missing = ensureGithubRelease(root, '3.21.0', {
+        repoSpec: 'github.com/Owner/repo',
+        runImpl: () => {
+          throw new Error('spawn gh ENOENT');
+        },
+      });
+      expect(missing.ok).toBe(false);
+      expect(missing.detail).toContain('ENOENT');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -7,16 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Mechanics-over-prose line, second half. The session set out to repair one unparseable YAML
-block and found the class instead: **a fact maintained in two places, and a guard that is
-green without biting.** It hit the same class seven times. The second half is the harder
-one, because a green check reads exactly like a working check — and the headline number is
-not the repair count but where the repairs were hiding: **12 of 46 `SKILL.md`** and **14 of
-16 `agents/*.md`** carried frontmatter that is not YAML, and every frontmatter checker in
-the tree had reported them clean for as long as they had existed.
+## [3.21.0] - 2026-08-19
+
+Twenty-one commits (12 `fix`, 4 `feat`, 4 `docs`, 1 `chore`; 209 files, +28,906/−2,893), no
+`BREAKING CHANGE:` footer and no `!` subject. Three strands — guard mechanics, the public
+site, cross-session messaging — that turned out to be one strand: **a fact maintained in two
+places, and a guard that is green without biting.** The sharpest instances are always the
+quiet ones. **12 of 46 `SKILL.md`** and **14 of 16 `agents/*.md`** carried frontmatter that is
+not YAML while every frontmatter checker in the tree had reported them clean for as long as
+they existed. The v2 vault renderer's branch condition was **structurally false from its first
+commit** and matched **0 of 253** session records. And the scope guard shipped, in the agent's
+own channel, the command that disarms it.
 
 ### Added
 
+- **Cross-session messaging is wired (#1049, #1050, #1047 — Epic #1048, waves 1–2 of 5).**
+  New always-on rule `.claude/rules/cross-session-messaging.md` with CSM-001..005, and the PSA
+  decision tree gained a peer-inform branch that hangs **below** the sibling check on the
+  foreign-scope leg — so it can mask neither the sibling branch nor the PSA-002 pause. That is
+  structural, not prose. The two-axis rationale is re-founded rather than restated: the moat
+  was never "peer sessions cannot talk to each other" — two independent sessions in one working
+  copy exchanged full round-trips on 2026-08-16 — it is that they share **one working copy**,
+  and what crosses the channel is information, never isolation. `READ_ONLY_TOOLS` gained
+  `SendMessage` + `ListAgents`, the mechanical precondition for upward agent escalation;
+  `validateTierConsistency` filtered on `WRITE_TOOLS` and therefore named **no culprit at all**
+  for an unknown tool.
+- **The public site is rebuilt, and it now proves its own numbers (#1043–#1046).** The live
+  page had served v3.19.0 against v3.20.0 in the repo for six days, all five legal paths were
+  404, and the `Measured` block — the honesty argument of the whole page — carried five wrong
+  numbers.
+  - The load-bearing element is a band whose station height **is** the file count a wave may
+    write: `--unit: 15px` = one file. Discovery is therefore not a box of height 0 but a stroke
+    on the baseline — the moment the limit becomes visibly geometric rather than requested.
+  - Mobile had **no** navigation at all (`display:none`, no hamburger, 20 viewports of scroll);
+    6 links are now visible at 390px. Twelve sections in identical scoring and 27 equally loud
+    cards became 10 sections with three loud blocks, cutting rendered height to **52.4%**
+    (10,350 → 5,428px — the factor is the durable figure, the viewport count is not: 5.98
+    viewports holds at 908px window height and becomes 6.03 at 900px). State no longer rides on
+    red/green alone but on shape **and** glyph. Cold-load acceptance without `<script>`: 115
+    content-bearing elements, 0 invisible, identical height — the page hangs on no condition.
+  - **`vercel.json`** carries the deploy configuration **versioned** instead of clicked into a
+    dashboard: `outputDirectory: "site"`, CSP/HSTS/`frame-ancestors` headers, www→apex redirect.
+    The Vercel Git integration is connected, so a push to the GitHub mirror publishes the site.
+    In `scripts/release.mjs` the checklist line `cd site && vercel --prod` is replaced by
+    `verifyLiveSite()` with four **distinguished** outcomes (version mismatch / success /
+    network error / surface moved), not collapsed onto a flat "not ok".
+  - **`scripts/site-numbers.mjs`** — 13 metrics read from the repo and written into
+    `data-metric` spans, ending the hand-maintained number block. Its first run against the new
+    page caught three real errors, one of them the coordinator's (`skills: page says 47, repo
+    says 46` — `skills/_shared/` has no `SKILL.md` and is not a skill) and one a contract defect
+    that would have produced `vv3.20.0` at the next release. Wired into `--set-version`,
+    deliberately **not** into CI: `sessions` and `learnings` grow every session, so a pipeline
+    gate on them would be permanently red.
+  - **`/guide`** — the four install paths, the first session with the honest number (7–10
+    questions, 2–4 minutes, not the claimed "one question"), and a section on recognising that
+    a session failed silently. The reason is a census, not a hunch: **all four issues opened by
+    people outside this repo are install or environment failures, not one a feature request**
+    (`gh issue list -R Kanevry/session-orchestrator --state all`; authors ≠ owner: #53, #54,
+    #62, #63).
+  - **`/impressum` and `/datenschutz`.** The privacy policy is not copied but written from the
+    measured processing: 0 external requests, no analytics, self-hosted fonts (3 files,
+    55,052 B), Vercel server logs only. The sibling site's Vercel-Analytics sections are absent
+    on purpose — `grep` shows they are not active here. Sitemap 1 → 4 URLs.
+- **Two catchers for the untracked-test-dependency class (#1081), because one was structurally
+  blind.** A differential run compares test *status*, and a test that swallows a missing file
+  and passes in **both** trees produces no difference at all. Statically:
+  `scripts/lib/validate/check-untracked-test-deps.mjs`, rules R2 (a statically resolved repo
+  root passed into an import closure that names an untracked path) and R4 (cwd-relative read),
+  measured 2/2 recall at 0 false positives where the obvious variants sat at 98–99% FP.
+  Structurally: `.husky/pre-push` materialises the sha being pushed via `git clone
+  --no-hardlinks` (1.04 s; `git archive` is unusable — without `.git`, 21 tests fail with "not a
+  git repository") and runs the gate **there**. It came within one function of being worthless:
+  `findProjectRoot()` checks `CLAUDE_PROJECT_DIR` and five siblings **before** cwd, so the gate
+  would have started in the tmp tree and read the working-tree files anyway.
+- **A tracked census snapshot, `site/_census.json`, with ledger precedence** — per-metric opt-in
+  for exactly `sessions`, `learnings`, `counted-sha`, never a blanket fallback, which would have
+  made `collect()` blind to "wrong root". `optional: true` was considered and rejected by name:
+  it would have let the two tiles fall silently back into the hand-maintained state while
+  `--check` still reported the page as current — verbatim the silent-failure class the script
+  was written against. A known metric id without a value is now a third contract violation
+  (`unresolved`).
+- **`tests/setup/scrub-git-env.mjs`, `scripts/lib/git-config-drift.mjs`, and
+  `check-test-git-config-target.mjs`** — the mechanism against this session's own accident (see
+  Notes). The setup file removes nine redirect-capable git variables once per worker; that is
+  the root, because the two lines that caused the damage passed a **correct** cwd, and `GIT_DIR`
+  beats cwd, `-C`, and even the positional of `git init <dir>`. The drift probe covers the
+  surface `git status` does not show, and runs with a filtered environment — a set `GIT_DIR`
+  would otherwise redirect the probe itself into a foreign repo and call this one clean. The
+  lint rule is WARN-only out of measurement, not caution: its first formulation had 11 hits,
+  **all** false positives (each a `git init <dir>` where the positional **is** the target); it
+  ends at 150/150 with a target.
 - **`scripts/lib/validate/check-skills.mjs` — a real parser over all 46 `SKILL.md`**,
   registered in `validate-plugin.mjs`. The sibling `check-agents.mjs` validated frontmatter
   with line-oriented regexes, which is precisely how the 12 broken blocks stayed invisible:
@@ -49,7 +129,7 @@ the tree had reported them clean for as long as they had existed.
   against it. The return is three-valued, not two — `null` means *never asked* or *asked and
   clean*; a `degraded` field with a closed enum means *the query failed and the state is
   unknown*. Collapsing that third state into `null` is what makes a dead probe
-  indistinguishable from a healthy repo, which is the next section's first entry.
+  indistinguishable from a healthy repo, which is the next section's recurring theme.
 - **`atomicWriteWithBackup()` in `scripts/lib/io.mjs`** — the tmp-write/rename/`.bak-<ISO>`
   primitive that `writeJsonAtomicSync` now delegates to, ending a second copy of the same
   sequence (#734).
@@ -71,6 +151,182 @@ the tree had reported them clean for as long as they had existed.
 
 ### Fixed
 
+- **The documented Claude Code install path was guaranteed broken.** `claude plugin dir` is not
+  a subcommand: `claude plugin dir session-orchestrator` answers `error: unknown command 'dir'`
+  and exits 1 (measured on Claude Code 2.1.235; `claude plugin --help` lists 14 subcommands and
+  `dir` is none of them). The `||` fallback therefore fired **every** time and pointed at
+  `~/.claude/plugins/session-orchestrator`, a directory that does not exist — so `cd` failed,
+  `&&` aborted, `npm install` never ran, and the hooks could not find `zx`. That is the cause
+  behind external issues #62/#63, whose reporters described the symptom. Replaced by a
+  layout-independent resolution through the plugin cache, extracted from the **shipped**
+  `site/index.html`, entity-decoded and executed verbatim: exit 0, correct path. Second defect
+  in `migration-v3.md` fixed alongside — a marketplace-installed plugin sits in a managed cache,
+  not a git checkout, so `git pull` there does nothing; replaced by `/plugin update`. Five sites
+  in five files; the two remaining matches for `claude plugin dir` are deliberate quotes on the
+  site explaining the breakage.
+- **The v2 vault renderer was dead at birth (#1074).** `total_agents` stands in
+  `REQUIRED_FIELDS`, so the branch condition `total_agents === undefined` is structurally false
+   — written 4h23m before the first record that could have matched it, and matching **0 of 253**
+  records since. The obvious fix would have been **worse than the bug**: `agents` is polymorphic
+   — measured over 599 wave objects, **210× a number and 14× an array** — so a naive `??` would
+  have written `[object Object]` into the vault. A type-aware alias chain repairs 239 agent, 5
+  files and 280 quality cells at changed-existing = 0. The fixtures are now harvested golden
+  records; the old `makeV2Entry` invented a record no production writer can produce.
+- **Four blind probes and one active fail-open (#1039).** `backlog-scan` folded "no remote" and
+  "query failed" into a silent `null`, from which the mode selector read "contributes 0 delta" —
+  a 40-issue backlog with critical labels looked like an empty one. `ci-status-banner` forbade in
+  its own comment at ~line 490 the very form it still used. `named-vault-resolver` had one
+  `source: 'fallback'` covering two causes (honestly relativised by the agent:
+  `resolveNamedVault` has zero production callers, so the defect was real but not yet reachable).
+  `scope-baseline` hardcoded `'origin/main...HEAD'` twice, and the damage sat elsewhere than in
+  the name: `wave-loop.md:874` renders `skipped: 'unresolvable-ref'` **silently**, so the
+  scope-drift tripwire was permanently inert in every non-origin repo and never said so.
+  `vault-mirror/namespace` `deriveRepo()` degraded silently to `basename(cwd)` and wrote that as
+  repo **identity** into the vault — which then happened for real this session. And
+  `harness-audit` category 6 was an active fail-open: outside a git repository it awarded **2/2
+  with "no github mirror remote configured — skipped"**; a non-measurable query now fails 0/2,
+  full marks only for genuine absence. Census correction: **14** executable origin hardcodings,
+  not the 4 the issue named.
+- **The scope guard shipped the instructions for its own disarmament (#1057).** The
+  stale-manifest branch ended on ``remove it with `rm -f <path>` and let the coordinator write a
+  fresh manifest`` — and that string travels through `emitDeny()` in `permissionDecisionReason`,
+  i.e. into the context of the very agent whose edit was just denied. Reproduced end to end from
+  the coordinator: `rm -f` is **allowed** by `pre-bash-destructive-guard.mjs` (14 rules, only
+  `rm-rf-destructive` bites); with the manifest removed, an in-project `Edit` is ALLOW **and** a
+  `Write` to `/etc/` is ALLOW — not only gate 7 (allowedPaths) falls but gate 6 (containment),
+  because under the exit-0 protocol the hook then emits no decision at all and exit 0 is not a
+  veto. The guard was off for the rest of the session. Not theoretical: a **parallel** session in
+  the same working copy received this suggestion for the **live** `wave-scope.json` of this one,
+  and declined only on an indicator (mtime 7 minutes old), not on knowledge — at one hour of age
+  the same indicator points the other way. The new text names both cases instead of guessing one
+  and routes to `blocked` per PSA-001/003/007. `systemMessage` was examined and deliberately not
+  used: `io.mjs:329` says the operator sees that field, `hook-development/SKILL.md:108` says it
+  is "shown to Claude" — a session-wide guard disarmament does not belong on a channel whose
+  reader the repo cannot name consistently.
+- **The owner-leakage scanner was blind to `.html` (#1076) — and its first sighted run found a
+  real defect.** The naive fix would have excluded **nothing**, because the sanctioned form
+  carries no `www.` while the site uses `www.` throughout; the result would have been a
+  permanently red gate including pre-commit. Then the eighth planted defect: seven forms had been
+  driven against the new coverage and all seven bit, but all seven sat in the CP1 corridor, and
+  CP1 is the **only** one of the eleven rules that runs through `canonicalizeLine()` — revived,
+  in other words, for 1 of 11. The eighth is an entity-encoded dot in the **domain**, which a
+  browser resolves and the scanner did not. CP2/CP3/CP7/CP8 now additionally check the canonical
+  form, and the discriminator is measured rather than guessed: dot-anchored rules gain
+  (canonicalisation can never fabricate a dot from a separator) while slash- and slug-anchored
+  rules stay raw (canon folds `-` onto `/`, which flips CP4/CP10 false→true and shreds CP6).
+  `isAllowlisted()` on the canonical form would have been **wrong** — canon breaks its own
+  allowlist — so the design uses an occurrence counter instead: if the canonical form carries
+  more domain tokens than the raw one, the surplus came from a decoding and can never be the
+  sanctioned publication. Cost repo-wide: 0 new findings.
+- **Admitting `.html` to `check-unicode-safety.mjs` immediately found a live legal defect.**
+  `site/datenschutz/index.html:277` carried a `U+00AD` at end of line. A soft hyphen does **not**
+  suppress the break — HTML collapses newline plus indentation into a space — so the page
+  rendered "Auftragsverarbeitungs vereinbarung", visibly broken, on a legally required page.
+  Deleting the `U+00AD` alone would not have fixed it; the space would have remained.
+- **Six findings from the review panel against the site, the most important a false promise
+  (#1043/#1044/#1046).** The privacy policy described a network request that does not exist — a
+  reload of `leaderboard.json` including `credentials: 'omit'` — while a grep for
+  `fetch(|XMLHttpRequest|sendBeacon|WebSocket|EventSource|import(|new Image` across all four
+  pages returns 0 hits. The direction is harmless (over- rather than under-declared); the place
+  is not, because §10 expressly invites the reader to open the network tab and check. It was the
+  single statement on the page a reader could falsify in two minutes — on a page whose thesis is
+  checkability. Struck without replacement. The other five: a `TODO` placeholder shipped live in
+  public source (`index.html:665`), a `/guide` canonical that contradicted itself three ways,
+  missing og/twitter tags on all three subpages (a shared guide link rendered as a bare URL in
+  Slack, X and Discord — for a product distributed through shared links, the one classically
+  SEO-adjacent item with real return), `offers` struck from the JSON-LD, and an unquantified
+  absolute ("Every issue an outside user has ever opened" → "All four issues opened by people
+  outside it") two paragraphs above where the number already stood correctly.
+- **A character allowlist in the census generator, and a `ReferenceError` on the path that
+  enforces it.** `rewrite()` checked `/[<>]/` against the **old** cell content, never the new
+  value. Eleven of the thirteen metrics are digits or hex by construction, but `version` is
+  whatever `package.json` says and `readPackageVersion` only checks "non-empty string" — a
+  prepared version literal could have closed the `<span>` and opened a tag. The precondition is
+  write access to `package.json`, which in this repo's trust model already means full access, so
+  this is defence in depth rather than an open hole — but it is the one place where `script-src
+  'unsafe-inline'` would stop being theoretical. A rejection now refuses the **whole** file, not
+  just the value, and the allowlist hangs on the write rather than on HTML-span presence (before,
+  `"rules": "../../etc/passwd"` landed unchecked in the shipped file). Building it caught a defect
+  of its own: the error path called a `writeStderrLine` that never existed in that file — a
+  `ReferenceError` exactly where the guard bites. Error paths have to be executed, not read.
+- **Accessibility: one real AA violation, and controls at 1.71:1.** `/guide` had no live region —
+  the copy button only changed its visible text, so a screen-reader user got **nothing** on
+  success and nothing on the error path, where "Press Ctrl+C" is the only way forward (WCAG
+  4.1.3). Seven copy buttons shared one name and were indistinguishable in a screen reader's
+  element list, the one place they are read outside their context; names are now derived from the
+  nearest label in **document order** plus the first non-comment line, measured 7 of 7 unique
+  against 1 of 7 before. `button.copy` and `a.btn-2` sat at 1.71:1, under the 3:1 a control
+  boundary needs (WCAG 1.4.11); raising `--line-2` globally would have been a design change, since
+  the same token draws decorative hairlines where 3:1 is loud, so a separate `--line-ui` token
+  carries the purpose: measured 3.40:1 / 3.57:1 / 3.57:1 on the rendered element. Two comments
+  that claimed too much were corrected — the print comment said "only the two moving 1px lines are
+  dropped" while the rule below hides five selectors including the whole six-link navigation.
+- **Page and receipt came from two different measurements.** `site/index.html` said
+  252/135/`6fa214d`, `site/_census.json` said 253/140/`6f6bf58` — both tracked, both publicly
+  shipped, `--check` reporting 3 drifted. The earlier instance had the same shape and a
+  coordinator cause: a `--write` step run against a file still inside a live agent's file scope —
+  the PSA-002 scope collision this repo built `--assert-disjoint` against, one level above the
+  wave mechanics. The new coupling test compares the two **committed** artefacts against each
+  other rather than against the repo, so "both stale together" is green and only a divergence is
+  red; it asserts on drift **or** stale, because `counted-sha` is `provenance: true` and a
+  drift-only assertion would have been green against exactly the state it forbids.
+- **The mirror push had a fourth state, and it was fail-open.** Today's own fix distinguished
+  three (no remote / push ok / push failed). Outside a git repository, `git remote get-url github`
+  fails with `fatal: not a git repository` — by exit code indistinguishable from "no such remote" —
+  so the block reported `no 'github' remote configured — skipping (not an error)` on stdout and
+  exited **0**: a broken environment reported as a healthy one, inside the fix that was closing
+  fail-open. Found by a reviewer explicitly briefed to **refute** the measurements; not by the
+  author, not by the test, not by the gate. Fixed with a `git rev-parse --git-dir` guard, all four
+  states executed individually in throwaway repos, `bash -n` **and** `sh -n` green (the bash-3.2
+  trap from this repo's own rule file).
+- **CI had been red for six consecutive pipelines (#1081).**
+  `tests/scripts/site-numbers.test.mjs` calls `collect(REPO_ROOT)` and requires `missing === []`;
+  two of the 13 metrics read `.orchestrator/metrics/*.jsonl`, untracked per `.gitignore:40`.
+  Locally 23/23, on CI `23 tests | 23 skipped`, because a throwing top-level `beforeAll` takes the
+  whole file with it in Vitest — the blast radius was 23, not 9. Measured now: #7276, #7277,
+  #7280, #7281, #7286 and #7288 red, green again from #7334 (`glab ci list --per-page 20`).
+- **The new pre-push gate produced three defects of its own before it worked**, each measured
+  rather than reasoned. (1) `git clone <path>` points the clone's origin at a **filesystem path**
+  while CI's checkout points at the real remote URL, so any code that *parses* that URL behaves
+  differently in the two trees — the opposite of the hook's purpose: `deriveRepo()` returned
+  `unknown-repo` where working tree and CI both return `session-orchestrator`, and
+  `namespace.test.mjs:199` asserts exactly against that. The real origin URL is now carried into
+  the clone. (2) A repo-pointing git environment beats both `-C <path>` and cwd, so
+  `git -C "$tree" checkout --detach` ran against the **original** repository. (3)
+  `GIT_CONFIG_PARAMETERS` propagates into every child once any `-c` was passed anywhere: pushing
+  with `git -c core.hooksPath=.husky push` carried that override into the materialised clone,
+  where every throwaway repo the gate's own test suite creates then fired the repository's
+  **real** pre-commit hooks — `test: fail, total: 0` three times in a row, green the moment the
+  `-c` was dropped. Both scrub sites are now namespace sweeps with a justified keep-set instead
+  of name lists, because the denylist has shipped with a hole **twice in a row**, each time at
+  the sibling form of the name just closed (`GIT_CONFIG_COUNT` without `GIT_CONFIG_PARAMETERS`,
+  then the exact mirror image). The source-derived census found **six of nine** unscrubbed
+  platform variables where the panel had reported three of four — including `PLUGIN_ROOT` (rung
+  **one** of `resolvePluginRoot`, above every `CLAUDE_`/`CODEX_`/`PI_` name the old list already
+  unset) and the Cursor plugin root, which is not `CURSOR_PLUGIN_ROOT` but `CURSOR_RULES_DIR`;
+  adding the guessed name would have read in review as a complete fix and closed nothing.
+  `GIT_EDITOR` and `GIT_EXEC_PATH` are kept by measurement, not hygiene: Claude Code sets
+  `GIT_EDITOR=true`, and a blind sweep drops git back to `vi` and hangs the worker.
+- **Two silent instrument errors (#979, #1062).** `scanBacklog` read 50 of 89 open issues and
+  reported the window nowhere: `limit 50 => total 50, critical 0, high 10, stale 0` against
+  `limit 100 => total 89, critical 1, high 18, stale 5`. All three numbers wrong, and the mode
+  selector at Phase 7.5 computed with them — `staleCount 0` meant not one stale issue was visible
+  to it. The cause was the window alone, not the `priority::`/`priority:` split. Separately,
+  `memory_cleanup_at` hung on a prose instruction that failed once: `stampMemoryCleanup()` had
+  zero production callers, every reference was text asking the coordinator LLM to remember. On
+  2026-08-14 a `/memory-cleanup` ran with documented yield, the step was skipped, all three
+  session records of that day carried `memory_cleanup_at: null`, and the banner reported "last
+  cleanup 29 days ago" against the 3 days of its own notes — with **no** mechanical signal
+  anywhere: zero `orchestrator.memory.cleanup*` events in 22,887. `/memory-cleanup` now emits the
+  event and `emit-session.mjs` derives the stamp from it.
+- **The host registry lost living sessions (#1047).** `hooks/on-stop.mjs` deleted the registry
+  entry and refreshed the lock heartbeat 12 lines further down — same `if` block, at every turn
+  end — while `heartbeat()` had had zero production callers since its birth commit. The fix is
+  atomic (deletion out **and** heartbeat wired), because either half alone would have been worse
+  than the bug: entries would survive but never age, drop out of `detectPeers` after 15 minutes
+  and be swept as "stale" after 60. Deregistration moved to `hooks/on-session-end.mjs`. The
+  platform census in the comment was wrong at first and corrected by review — pi does deregister,
+  Cursor never registers and so cannot leak; Codex is the only affected platform.
 - **`gh repo view -R` broke the GitHub CI banner for every external user of this plugin
   (#1022).** `gh repo view` takes the repository as a **positional** argument and has no
   `-R`/`--repo` flag at all, so the host-pinning added in #872 made `gh` exit 1 with
@@ -115,13 +371,32 @@ the tree had reported them clean for as long as they had existed.
 
 ### Notes
 
-- The sharpest instances of the class are the ones where the check was green. A hand-rolled
-  `getDescription` regex in `tests/lib/validate/skill-description-quality.test.mjs`
-  terminated on the first folded line, measuring **97 characters where the real YAML value is
-  329** (`session-start`; `autopilot` 107 vs 555, `bootstrap` 98 vs 341) — which made its own
-  `>= 250` assertion **vacuous** for every skill already using the block-scalar form. It
-  surfaced only because repairing the 12 unparseable blocks moved files across the threshold.
-  `yaml.load` is now the single reader.
+- **3.18.0 is missing from npm.** The tag `v3.18.0`, the GitHub release and the CHANGELOG entry
+  all exist; the registry has never seen the version — `npm view session-orchestrator versions`
+  returns `…, "3.16.0", "3.17.0", "3.19.0", "3.20.0"`. That gap is the incident #978 names and
+  the reason `scripts/release.mjs --publish` now creates the annotated tag only **after** a
+  registry-verified publish. Nothing in this line republishes it; the version number stays
+  skipped rather than reused.
+- **This session damaged its own repository, and the first recovery missed half the damage.** A
+  coordinator diagnostic command exported `GIT_DIR` and ran the suite. In the real `.git`: HEAD
+  detached, three fixture commits, plus a foreign remote and the fixture identity in
+  `.git/config` — which then authored two commits. The first recovery checked HEAD, the index and
+  all 1614 files and **overlooked `.git/config` entirely**, because `git status` does not show it;
+  an agent measuring something else found it two hours later. History rewriting failed on both
+  remotes' branch protection (GitLab "not allowed to force push", GitHub GH006), so authorship
+  was corrected via `.mailmap` — which incidentally refutes part of this session's own #1079
+  finding: `enforce_admins: false` does **not** make the protection bypassable for force-push.
+  One correction to the record: the claim "git runs every hook with `GIT_DIR` set", written in
+  `334ea2d`, is **false** — measured on git 2.x / macOS, `pre-push`, `pre-commit`, `commit-msg`
+  and `post-commit` all run with `GIT_DIR` unset. The scrub remains right as defence in depth;
+  its stated reason was not.
+- The sharpest instances of the frontmatter class are the ones where the check was green. A
+  hand-rolled `getDescription` regex in
+  `tests/lib/validate/skill-description-quality.test.mjs` terminated on the first folded line,
+  measuring **97 characters where the real YAML value is 329** (`session-start`; `autopilot`
+  107 vs 555, `bootstrap` 98 vs 341) — which made its own `>= 250` assertion **vacuous** for
+  every skill already using the block-scalar form. It surfaced only because repairing the 12
+  unparseable blocks moved files across the threshold. `yaml.load` is now the single reader.
 - **Found and deliberately not fixed here**, because both sit outside this line's scope and
   both are the same shape as the bugs above: `agents/eval-judge.md` is **valid** YAML and
   loses **96%** of its description — 1180 raw characters, 51 visible to a parser — because
@@ -129,6 +404,22 @@ the tree had reported them clean for as long as they had existed.
   `skills/discovery/probes-arch.md:39` calls
   `npx madge --circular --extensions ts,tsx,js,jsx src/` in an all-`.mjs` repo that has no
   `src/` directory: it processes zero files and reports success.
+- **Open, deliberately.** `site/llms-full.txt` still carries its numbers by hand — the generator
+  only touches HTML. They were corrected and cross-checked against the generator, but that is
+  exactly the defect this line fixes. Revisit trigger: as soon as a second text file carries
+  measured values. And the `scanBacklog` fix has no test of its own; it is covered only by the
+  171 existing tests of the touched modules staying green, with the fake regression outstanding.
+- One reported number did not survive review and is recorded here rather than quietly dropped:
+  "274 elements checked" for the site's contrast sweep is **not reproducible** — two independent
+  checkers measure 260 / 282 / 288 depending on an inclusion rule that was never shipped with the
+  number. The **value** 4.81:1 (worst text contrast) is stable across all three counting rules;
+  the count is not. A count without its rule is worthless — the same lesson #979 taught once
+  already in this line.
+- Gate at `8984224`, re-run for this entry rather than quoted: **587 test files, 14,244 passed
+  / 0 failed / 11 skipped** (`npm test`, exit 0), typecheck **404 files OK** (exit 0),
+  owner-leakage **1548 files / 0 findings**, unicode-safety 0 findings. The release commit also
+  reports `validate-plugin` 172/0 and lint 0 at that sha; both are quoted from it, not
+  re-measured here.
 
 ## [3.20.0] - 2026-08-13
 

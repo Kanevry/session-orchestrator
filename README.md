@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.20.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.21.0-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
 [![Tests](https://img.shields.io/badge/tests-12%2C000%2B-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
 
@@ -131,17 +131,18 @@ The system is markdown-driven config plus a thin Node runtime — skills, comman
 - **Cross-session learning is opt-in and inspectable.** Every session writes a record; after 5+ sessions `/evolve analyze` extracts confidence-scored patterns you can read and prune. Nothing is hidden.
 - **VCS dual support, no lock-in.** Auto-detects GitLab or GitHub from your remote and drives the full lifecycle for both.
 
-## Recent highlights (v3.20.0)
+## Recent highlights (v3.21.0)
 
-Every release is additive and backward-compatible. Highlights of the v3.20.0 line:
+Every release is additive and backward-compatible. Highlights of the v3.21.0 line:
 
-- **Learnings finally reach the agents doing the work (#1014)** — 233 sessions of accumulated memory had exactly zero read paths into a dispatched agent. Now a per-agent index, selected from that agent's declared file scope, riding the dispatch prompt the coordinator already writes. Measured at **+0.69%–1.15%** of the prompt an agent already receives, against **+72.3%** for the separate-injection path the delivery doc forbids — factor 92. The character cap is derived from that measurement, not chosen, and delivery emits an event so "did it run?" is a grep rather than an inference.
-- **Agent-authored text no longer reaches every agent unfiltered (#1015)** — the reconcile renderer wrote it verbatim into `.claude/rules/`, which Claude Code hands to every agent in every session, with no revocation. Machine values now reject, prose is framed and capped. Two premises in the issue itself did not survive verification and were corrected rather than implemented.
-- **The learning store is durable again (#1017)** — `/evolve` pruned by rewriting with no archive append; **11 of 13 provenance pointers in generated rules resolved to nothing**. One shared archive-then-rewrite path, and **11 of 11 lost records recovered** from the vault mirror. Dangling pointers 11 → 0.
-- **Semantic dedup + contradiction detection (#1016)** — a bounded, deliberately non-transitive candidate pool and a fail-closed judgment layer in which rendering an approval prompt from an unreadable verdict counts, structurally, as a write.
-- **The review panel found the same class inside the fix** — three independent reviewers returned FIX_REQUIRED: this line had hardened one delivery channel and shipped a second, unhardened one beside it. Closed in one cycle, which surfaced three further holes of the same shape. Every new guard is proven by fake regression, not by a green test.
+- **The site that proves its own numbers (#1043–#1046)** — the live page had served v3.19.0 against v3.20.0 in the repo for six days, all five legal paths were 404, and the `Measured` block — the honesty argument of the whole page — carried five wrong numbers. It is now generated: `scripts/site-numbers.mjs` reads **13 metrics** from the repo into `data-metric` spans, and its very first run caught three real errors, one of them the coordinator's own (`skills: page says 47, repo says 46`) and one a contract defect that would have shipped `vv3.20.0` at the next release. Deploy config moved from a dashboard into a versioned `vercel.json`. Rendered height fell to **52.4%** of the old page (10,350 → 5,428px), and mobile navigation — previously `display:none` with no hamburger — exists.
+- **The documented Claude Code install path was guaranteed broken** — `claude plugin dir` is not a subcommand; it exits 1, the fallback path does not exist, `cd` fails, `npm install` never runs, and every hook afterwards cannot find `zx`. Measured on Claude Code 2.1.235. That is the cause behind external issues #62/#63, whose reporters described the symptom — and **all four issues opened by people outside this repo are install or environment failures, not one a feature request**. The replacement was extracted from the shipped HTML, entity-decoded and executed verbatim.
+- **The scope guard shipped the instructions for its own disarmament (#1057)** — the stale-manifest denial ended on ``remove it with `rm -f <path>` ``, and that string travels in `permissionDecisionReason` into the context of the agent just denied. `rm -f` is not blocked (14 rules, only `rm-rf-destructive` bites), and with the manifest gone both allowedPaths **and** project-root containment fall. A parallel session in the same working copy received this suggestion for the live manifest of this one, and declined on an indicator rather than on knowledge.
+- **Two dead instruments, found by measuring rather than reading** — the v2 vault renderer's branch condition was **structurally false from its first commit** and matched **0 of 253** session records; the obvious fix would have been worse than the bug, because `agents` is polymorphic (210× a number, 14× an array over 599 wave objects) and a naive `??` would have written `[object Object]` into the vault. And `scanBacklog` read 50 of 89 open issues while reporting the window nowhere: `critical 0, high 10, stale 0` where the truth was `1 / 18 / 5`.
+- **Cross-session messaging is wired (Epic #1048, waves 1–2)** — a new always-on rule with CSM-001..005, and a peer-inform branch hung **below** the sibling check in the PSA decision tree so it can mask neither that branch nor the PSA-002 pause. The moat was never "peer sessions cannot talk to each other" — they demonstrably can — it is that they share one working copy, and what crosses the channel is information, never isolation.
+- **Guards that were green without biting** — the owner-leakage scanner did not read `.html` at all; admitting the class immediately found a live `U+00AD` breaking a word visibly on a legally required page. `harness-audit` category 6 awarded **2/2** outside a git repository. Six consecutive CI pipelines were red because a test depended on untracked ledger files: locally 23/23, on CI `23 tests | 23 skipped`. Each is now closed by a mechanism, and the review panel found further holes inside the fixes themselves — including one fail-open state inside the fix that was closing fail-open.
 
-Previous line (v3.19.0): guard hardening and release mechanics — six wrapper bypasses closed (#982), blocked-commands floor ∪ overlay (#972), session-lock ownership proof, and release as one dispatch (#978).
+Previous line (v3.20.0): the memory pipeline — 233 sessions of learnings that reached no agent (#1014), agent-authored text neutralised at the render point (#1015), and a learning store made durable after 11 of 13 provenance pointers resolved to nothing (#1017).
 
 Full version history: [CHANGELOG.md](CHANGELOG.md).
 

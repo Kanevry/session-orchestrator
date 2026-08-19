@@ -15,7 +15,7 @@
  *     it would couple this suite to whether THAT file happens to be current —
  *     which is not the contract under test here.
  *
- *     TWO named exceptions, both read-only, both because the claim under test IS
+ *     THREE named exceptions, all read-only, all because the claim under test IS
  *     about the shipped files and would be vacuous against a copy:
  *
  *       a. The tracked census snapshot `site/_census.json`. Two tests open it —
@@ -29,6 +29,11 @@
  *          That test compares the two SHIPPED artefacts with EACH OTHER and
  *          never with the repository, so it stays green while both go stale
  *          together and goes red only when they were written by different runs.
+ *       c. The real pages alone — see "no hand-maintained version literal". It
+ *          asserts the ABSENCE of a literal class in the shipped markup, which a
+ *          fixture cannot claim anything about: a fixture is green by
+ *          construction because the test author wrote it. It reads no number off
+ *          the pages, so it too is freshness-blind.
  *  2. The CLI runs against the REAL repo root (that is where the census lives and
  *     the only place `git rev-parse HEAD` answers), while the census BASIS is
  *     pinned separately against a synthetic directory tree with hardcoded
@@ -52,6 +57,7 @@ import {
   countHookFiles,
   countTestFiles,
   countJsonlEntries,
+  readPackageVersion,
   headRef,
   censusPath,
   readCensusSnapshot,
@@ -59,6 +65,7 @@ import {
   listHtmlFiles,
   inspectHtml,
   rewrite,
+  SPAN_RE,
   parseArgs,
   METRIC_IDS,
   CENSUS_SCHEMA,
@@ -761,6 +768,81 @@ describe('page and receipt — the two served artefacts must agree', () => {
     // the page's proof block grows. Zero cells would mean the loop asserted
     // nothing at all, which is the shape this whole file is built against.
     expect(cells).toBeGreaterThanOrEqual(8);
+  });
+});
+
+describe('no hand-maintained version literal on a shipped page', () => {
+  /**
+   * BUG CAUGHT: `site/guide/index.html` shipped `<b>v3.20.0</b>` in its header
+   * as a HARD LITERAL, months after the home page had moved every version it
+   * shows into `data-metric="version"` cells that `--write` fills. Nothing wrote
+   * the guide page, so the release that cut 3.21.0 would have published an
+   * install guide announcing 3.20.0 — a wrong version on the one page whose job
+   * is "here is how to install the thing you just downloaded", and wrong in the
+   * direction a reader can check in one command.
+   *
+   * WHY THIS IS NOT A PROSE PIN (`.claude/rules/test-value.md` TV-002c): it
+   * asserts the ABSENCE of a class of literals in generated markup, never the
+   * presence of a sentence. Rewrite every word on both pages and it stays green;
+   * re-introduce one hand-maintained version number and it goes red.
+   *
+   * TWO nets, because a version reaches a page in two shapes:
+   *   A. `vX.Y.Z` — how this project writes a release everywhere (brand, git
+   *      tags, CHANGELOG headings). Measured over every `.html` under `site/` on
+   *      2026-08-19: after this fix, zero outside cells. It is safe to be strict
+   *      because the two other triples on the pages carry no `v` — the WCAG
+   *      success-criterion number `1.4.11` and the engine range `>=24.0.0`.
+   *   B. the CURRENT `package.json` version as a bare substring — catches the
+   *      un-prefixed form ("version 3.21.0") at the moment it is INTRODUCED,
+   *      which is precisely when it equals package.json and lands in a diff.
+   *
+   * Neither net reads a number OFF the page, so this test is freshness-blind:
+   * a page whose cells are stale is the other test's business, not this one's.
+   *
+   * THE ONE EXCEPTION is a dated historical record — "re-checked against v3.20.0
+   * on 2026-08-19" — marked in the markup with `site-numbers:historical`. It must
+   * stay a literal: a release that bumped the version while the date stood still
+   * would fabricate a verification nobody ran. The marker is what keeps this
+   * test general instead of naming that one line, which WOULD be a prose pin.
+   */
+  const HISTORICAL_MARKER = 'site-numbers:historical';
+
+  it('carries every version it shows in a data-metric cell, or marked historical', () => {
+    // Every read below is of a TRACKED file under site/ plus package.json; the
+    // rule fires on the module CLOSURE, not on what this test actually opens.
+    // The exemptions are the two same-line markers — a marker in a comment
+    // BLOCK is inert (measured 2026-08-19: removing this comment leaves
+    // validate-plugin at 172/0; removing the marker on the readPackageVersion
+    // line drops it to 171/2), so do not add one here and assume it counts.
+    const pages = listHtmlFiles(join(REPO_ROOT, 'site')); // check-untracked-test-deps:ignore
+    expect(pages, 'site/ must exist').not.toBe(null);
+    expect(pages.length, 'at least the home page and the guide ship').toBeGreaterThanOrEqual(2);
+
+    const currentVersion = readPackageVersion(REPO_ROOT); // check-untracked-test-deps:ignore
+    expect(currentVersion, 'package.json must carry a version, else net B asserts nothing').toMatch(
+      /^\d+\.\d+\.\d+/,
+    );
+
+    const offenders = [];
+    for (const abs of pages) {
+      const rel = abs.slice(REPO_ROOT.length);
+      const html = readFileSync(abs, 'utf8');
+      // Blank out each metric cell while PRESERVING newlines, so line numbers in
+      // a failure message still point at the real line. A number inside a cell
+      // is the mechanism working, not the defect.
+      const masked = html.replace(SPAN_RE, (whole) => whole.replace(/[^\n]/g, ' '));
+      masked.split('\n').forEach((line, i) => {
+        if (line.includes(HISTORICAL_MARKER)) return;
+        for (const m of line.matchAll(/v\d+\.\d+\.\d+/g)) {
+          offenders.push({ file: rel, line: i + 1, literal: m[0], net: 'v-prefixed release' });
+        }
+        if (line.includes(currentVersion)) {
+          offenders.push({ file: rel, line: i + 1, literal: currentVersion, net: 'current package version' });
+        }
+      });
+    }
+
+    expect(offenders).toEqual([]);
   });
 });
 

@@ -43,7 +43,7 @@ describe('disable-model-invocation (#430)', () => {
   // (project-state research, no writes). The flag was blocking model dispatch
   // when users described session-start in prose rather than typing `/session`.
   const userOnlyCommands = [
-    'bootstrap', 'brainstorm', 'close', 'go', 'plan',
+    'bootstrap', 'brainstorm', 'close', 'go', 'plan', 'release',
   ];
 
   userOnlyCommands.forEach((cmd) => {

@@ -352,10 +352,16 @@ export const METRIC_DEFS = Object.freeze([
     id: 'version',
     provenance: false,
     // BARE, no leading "v". The "v" is presentation and belongs to the markup,
-    // which writes `v<span data-metric="version">3.20.0</span>`. A prefix baked
-    // into the data layer produced `vv3.20.0` on the first --write against the
+    // which writes `v<span data-metric="version">X.Y.Z</span>`. A prefix baked
+    // into the data layer produced `vvX.Y.Z` on the first --write against the
     // real page — caught before it shipped, but only because --check was run.
-    // `site/llms.txt` agrees: it carries `Version: 3.20.0`.
+    // `site/llms.txt` agrees: its `Version:` line carries the same bare form,
+    // and `scripts/release.mjs` bumps it from the same target.
+    // The `X.Y.Z` placeholders are deliberate. A concrete version in a comment
+    // is a number nobody bumps, and it is outside `release.mjs`'s
+    // HISTORY_ALLOWLIST — so it would be reported as release drift that is not
+    // drift, or worse, hand-bumped until the comment claims a version it does
+    // not mean.
     source: 'node -p "require(\'./package.json\').version"',
     compute: (root) => readPackageVersion(root),
   },

@@ -2,12 +2,14 @@
 name: npm-publish
 user-invocable: true
 model: sonnet
-description: Use when publishing this package to npm — a version release (npm publish), verifying the registry/pi.dev listing, or diagnosing npm auth failures (E403 2FA/token errors). Token-based flow via NPM_TOKEN in .env.local with a temp userconfig, leakage-gate greps before every publish, post-publish verification and marker/badge upkeep. Trigger on "publish to npm", "npm release", "E403 publish error".
+description: Use when publishing this package to npm — a version release (npm publish), verifying the registry/pi.dev listing, or diagnosing npm auth failures (E403 2FA/token errors). Token-based flow via NPM_TOKEN in .env.local with a temp userconfig, the leakage gate before every publish, post-publish verification and marker/badge upkeep. Trigger on "publish to npm", "npm release", "E403 publish error".
 ---
 
-# npm-publish — Token-based publish runbook
+# npm-publish — token auth, and the calls the script cannot make
 
-> Companion to `docs/distribution/npm-publish-checklist.md` (the original 7-step operator runbook). This skill adds the token-auth mechanics and the failure-mode diagnosis learned during the v3.16.0 first publish (2026-07-19).
+> **The release itself is `/release` → `scripts/release.mjs`.** That script mechanizes the whole sequence: version surfaces, CHANGELOG gate, drift sweep, tag/registry collision, CI, leakage gate, publish, tag-after-publish, push to both remotes, live-site poll. This skill does not restate it.
+>
+> What lives here is the half a script cannot own: the **token setup**, the **auth failure diagnosis**, and the **judgement calls** — which version, what a leak means, when to abort rather than repair.
 
 ## Why this skill exists
 
@@ -24,60 +26,20 @@ Create at https://www.npmjs.com/settings/<user>/tokens → Generate New Token �
 
 ## Auth resolution order
 
-1. `NPM_TOKEN` in `.env.local` at the repo root (gitignored — verify with `git check-ignore .env.local` before writing; also confirm no `.env` pattern in the `files` whitelist of package.json).
+1. `NPM_TOKEN` in `.env.local` at the repo root (gitignored — verify with `git check-ignore .env.local` before writing; also confirm no `.env` pattern in the `files` whitelist of package.json). `scripts/release.mjs` refuses to read the token if that ignore check fails.
 2. Interactive fallback: operator runs `npm publish --access public` in a real terminal (only works when account 2FA is enrolled — OTP prompt appears).
 
 **Never** put the token in the tracked `.npmrc` (it holds `ignore-scripts=true` per SEC-020 and is committed), never persist it into `~/.npmrc`, never echo it into logs.
 
-## Canonical path: `scripts/release.mjs` (Release als ein Dispatch, #978)
+## The three judgement calls
 
-Since v3.19.0 the release is ONE dispatch — the script mechanizes every step below plus the
-version-surface sync this skill previously left to operator memory (the gap that let v3.18.0
-ship tagged but unpublished):
+The script gates mechanics. These three are yours, and it will not make them for you.
 
-```bash
-node scripts/release.mjs --set-version X.Y.Z   # rewrite all 12 version literals (10 files) + codex cachebuster + lock sync
-# … author CHANGELOG entry + README highlights (enforced by --check) …
-node scripts/release.mjs --check               # preflight: surfaces, CHANGELOG, tag/registry collision, CI green, leakage gate
-node scripts/release.mjs --publish             # token publish → registry verify → tag AFTER publish → push origin+github
-```
+**1. Which version is the right one.** Semver per `.claude/rules/development.md` § Package Lifecycle & Versioning: patch = fixes/docs/internal refactor; minor = additive and backwards-compatible; major = removed or renamed exports, or changed runtime behaviour — and a major never merges without a migration guide and a `BREAKING CHANGE:` footer. The script validates the *shape* `X.Y.Z` and nothing about whether the number matches the diff. Read the CHANGELOG entry you just wrote and ask whether a consumer pinning `^` would be broken by it; if yes, the bump is a major regardless of how small the diff looks.
 
-The tag is created only AFTER a registry-verified publish — never before. The manual flow
-below remains as the fallback and as documentation of what the script does.
+**2. What a leak means when one is found.** A hit from the leakage gate is not a pattern to silence. Decide which of two it is: a real leak (fix `package.json` `files`, re-pack, re-check) or genuine over-matching (fix `LEAKAGE_PATTERNS` in `scripts/release.mjs` **with a test**). There is no third option, and neither is "publish anyway and clean it up in the next version" — an npm publish is not revocable, and unpublishing burns the version number permanently. Operator handling detail: `docs/distribution/npm-publish-checklist.md` § 3.
 
-## Publish flow (manual fallback)
-
-```bash
-# 1. Pre-flight (first publish: expect E404 = name free; upgrade: expect the previous version)
-npm view session-orchestrator version
-
-# 2. Leakage gate — every grep MUST print 0 (from docs/distribution/npm-publish-checklist.md)
-npm pack --dry-run 2>&1 | grep -cE "npm notice.* tests/"
-npm pack --dry-run 2>&1 | grep -c "npm notice.*\.orchestrator/"
-npm pack --dry-run 2>&1 | grep -cE "npm notice.*[[:space:]]\.claude/"
-npm pack --dry-run 2>&1 | grep -c "npm notice.*\.github/"
-npm pack --dry-run 2>&1 | grep -c "node_modules"
-npm pack --dry-run 2>&1 | grep -ci "\.env"
-npm pack --dry-run 2>&1 | grep -ci "owner\.yaml"
-
-# 3. Publish via temp userconfig (never a persistent npmrc)
-NPM_TOKEN=$(grep '^NPM_TOKEN=' .env.local | cut -d= -f2-)
-TMPRC=$(mktemp) && printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$TMPRC" && chmod 600 "$TMPRC"
-npm publish --access public --userconfig "$TMPRC"; rm "$TMPRC"
-
-# 4. Verify
-npm view session-orchestrator version   # must print the new version
-```
-
-Success marker: `+ session-orchestrator@<version>` on the publish output.
-
-## Post-publish checklist
-
-1. **Verify registry**: `npm view session-orchestrator version dist.unpackedSize keywords` — `pi-package` keyword must be present.
-2. **pi.dev gallery**: indexing is asynchronous — check https://pi.dev/packages later; do not block on it.
-3. **Marker upkeep** (first publish only — done in v3.16.0): README install matrix + npm badge, `site/index.html` install section, `docs/pi-setup.md` availability paragraph.
-4. **Rotate/delete the token** at https://www.npmjs.com/settings/<user>/tokens once the release is done — especially if the token value ever transited chat, a screenshot, or any log. A token pasted into a conversation is burned: rotate immediately after use.
-5. Update the release issue / CHANGELOG if the publish was part of a tracked release.
+**3. When to abort instead of repair.** Abort — do not patch forward — when the failure is upstream of the publish: a red preflight row, a lagging `github` mirror, CI not green on the exact commit, a dead token. These are cheap to fix and re-run from the top. Repair-in-place is only ever appropriate *after* a verified publish, where the version is already immutable: a missing GitHub release or a lagging site deploy can be reconciled, because npm already has the correct artifact. The dividing line is whether the registry has accepted the tarball — before that point, restart; after it, reconcile. `commands/release.md` § Abort criteria is the operative list.
 
 ## Failure-mode table
 
@@ -85,13 +47,23 @@ Success marker: `+ session-orchestrator@<version>` on the publish output.
 |---|---|---|
 | `E403 ... Two-factor authentication or granular access token with bypass 2fa enabled is required` — no OTP prompt | Account has no 2FA enrolled AND token (if any) lacks Bypass-2FA | Create granular token with all four requirements above, or enroll 2FA |
 | Same E403 despite a fresh token | Token created without the Bypass-2FA checkbox, or Read-only, or package-scoped on a first publish | Re-create: RW + All packages + Bypass-2FA |
+| `npm whoami` silent or non-zero | Token expired, or `.env.local` missing | Re-create the token; do not proceed — the preflight fails this row on purpose |
 | `E404` on `npm view` after publish | Registry propagation (rare, seconds) or publish actually failed | Re-check the publish output for `+ <name>@<version>` |
 | `ENEEDAUTH` | No login/token at all | Token flow above, or `npm login` |
 | OTP prompt appears but flow is non-interactive (`!`-prefix, script) | No TTY for the prompt | Use the token flow, or a real terminal |
 
+## Post-publish — the human half
+
+`--publish` verifies the registry and polls the live site itself, and prints the rest. What still needs a person:
+
+1. **Rotate/delete the token** at https://www.npmjs.com/settings/<user>/tokens. A token that ever transited a conversation, a screenshot, or any log is burned — rotate immediately.
+2. **pi.dev gallery**: indexing is asynchronous — check https://pi.dev/packages later; do not block on it.
+3. **Marker upkeep** on a first publish only (done in v3.16.0): README install matrix + npm badge, `site/index.html` install section, `docs/pi-setup.md` availability paragraph.
+4. Update the release issue if the publish was part of tracked work.
+
 ## Security invariants
 
 - `.env.local` is gitignored AND absent from the npm `files` whitelist — verify both before writing a token into it.
-- Temp userconfig: `chmod 600`, deleted immediately after publish.
+- Temp userconfig: `chmod 600`, deleted in a `finally` block immediately after publish.
 - The leakage gate runs before EVERY publish, not only the first.
 - npm's own recommendation for unattended CI/CD is **Trusted Publishing** (OIDC) — evaluate it if publishing ever moves into CI (ref: https://docs.npmjs.com/about-access-tokens).
