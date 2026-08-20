@@ -31,9 +31,9 @@ flowchart LR
 - **Content review:** `persona-panel`
 - **Visualization:** `tmux-layout` (opt-in operator side-channel — [ADR-0007](adr/0007-tmux-visualization-substrate.md))
 
-## Commands (25)
+## Commands (26)
 
-`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/dispatcher`, `/reconcile`, `/spinout`, `/eval`, `/contract-version-bump`.
+`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/dispatcher`, `/reconcile`, `/spinout`, `/eval`, `/release`, `/contract-version-bump`.
 
 ## Agents (15 typed sub-agents)
 

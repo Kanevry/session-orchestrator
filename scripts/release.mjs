@@ -355,8 +355,15 @@ export const PACKED_ENTRY_RE = /^npm notice\s+[\d.]+\s*(?:B|kB|MB|GB)\s+\S/;
  * Measured at 8984224 with `npm pack --dry-run`: npm's own summary reports
  * `total files: 830` and {@link PACKED_ENTRY_RE} independently counts 830 —
  * two differently-shaped measurements agreeing. Package size 2.9 MB, unpacked
- * 8.9 MB. (docs/distribution/npm-publish-checklist.md still records the older
- * "~750 files, ~6.5 MB unpacked" baseline; that file has a different owner.)
+ * 8.9 MB. Independently confirmable after the fact:
+ * `npm view session-orchestrator@3.21.0 dist.fileCount` returned 832 — npm's own
+ * count of what the registry actually accepted, from outside this repo.
+ *
+ * (An earlier revision of this comment claimed the checklist "still records the
+ * older ~750 files" baseline. It did not: commit a2e495c rewrote that line to
+ * the measured 830/2.9/8.9 at the same SHA this comment was written. The claim
+ * was a second copy of a fact, contradicting the first, inside the file that
+ * argues against second copies. Caught by the post-publish review panel.)
  *
  * 400 is a FLOOR, not a pin — deliberately ~48% of today's count. It cannot
  * break on growth (the pack only grows), and it is far enough below 830 that a
@@ -619,8 +626,14 @@ async function preflight(repoRoot, target, { skipCi = false } = {}) {
   // FAILED status call is indistinguishable from a genuinely clean tree, and
   // the empty-reads-as-all-clear shape is exactly the fail-open this file was
   // hardened against elsewhere. Same reasoning for the two `git tag -l` reads
-  // below — those are the only other preflight subprocesses whose emptiness
-  // means "all clear" (census: all 14 `run(` call sites in this file).
+  // below. A third subprocess shares the shape — the `git ls-remote --tags`
+  // collision probe further down reads an empty stdout as "no collision" — but
+  // that one guards it with an explicit `ls.status === 0`, so it is not
+  // fail-open. Emptiness-means-all-clear is the shape to look for; reading the
+  // status is what makes it safe. (Census: 14 `run(` call sites in this file.
+  // It does NOT cover the raw `spawnSync` calls — a payload-keyed census misses
+  // the consumer that uses a different channel, which is how the unread
+  // `spawnSync('sleep')` in the propagation poll stayed invisible to it.)
   const status = run('git', ['status', '--porcelain'], { cwd: repoRoot });
   const dirty = (status.stdout || '').trim();
   add(
