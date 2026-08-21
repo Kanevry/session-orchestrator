@@ -257,27 +257,50 @@ describe('evaluate() — two-signal rule (#1089 D3)', () => {
 // Zombies
 // ---------------------------------------------------------------------------
 
-describe('evaluate() — zombie signal (#178)', () => {
-  it('is soft: zombies alone never cap', () => {
+describe('evaluate() — zombie signal is informational (#178 / #1089)', () => {
+  it('reports zombies but never counts them as a capacity signal', () => {
     const snap = { ...HEALTHY_SNAPSHOT, zombie_processes_count: 13 };
     const result = evaluate(snap, DEFAULT_THRESHOLDS);
     expect(result.verdict).toBe('green');
-    expect(result.signals.soft).toEqual(['zombies']);
+    expect(result.signals.soft).toEqual([]);
+    expect(result.reasons.some((r) => r.includes('not counted as a capacity signal'))).toBe(true);
   });
 
-  it('stays silent on an otherwise idle host (no live peers or processes)', () => {
+  it('zombies do NOT become the second signal that caps a wave', () => {
+    // The #1089 live run produced exactly this: soft ["cpu","zombies"] → cap 2.
+    // Zombies are idle by definition (they are not causing the CPU load) and are
+    // a standing condition on a developer host — 6, 13 and 9 in three readings
+    // minutes apart. Pairing them with any axis restores the one-signal cap
+    // under a two-signal name.
+    const snap = {
+      ...HEALTHY_SNAPSHOT,
+      cpu_load_pct: 100,
+      cpu_load_5m_pct: 100,
+      zombie_processes_count: 9,
+    };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.verdict).toBe('green');
+    expect(result.recommended_agents_per_wave_cap).toBe(null);
+    expect(result.signals.soft).toEqual(['cpu']);
+  });
+
+  it('stays entirely silent on an otherwise idle host (no live peers or processes)', () => {
     const snap = {
       ...HEALTHY_SNAPSHOT,
       zombie_processes_count: 2,
       peer_sessions_count: 0,
       claude_processes_count: 0,
     };
-    expect(evaluate(snap, DEFAULT_THRESHOLDS).signals.soft).toEqual([]);
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.signals.soft).toEqual([]);
+    expect(result.reasons.some((r) => r.includes('zombie'))).toBe(false);
   });
 
   it('null zombie count means the feature is off, not zero', () => {
     const snap = { ...HEALTHY_SNAPSHOT, zombie_processes_count: null };
-    expect(evaluate(snap, DEFAULT_THRESHOLDS).signals.soft).toEqual([]);
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.signals.soft).toEqual([]);
+    expect(result.reasons.some((r) => r.includes('zombie'))).toBe(false);
   });
 });
 

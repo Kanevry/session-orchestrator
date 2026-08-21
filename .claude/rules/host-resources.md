@@ -25,12 +25,10 @@ repos** (2026-04-19 → 2026-08-21, `.orchestrator/metrics/events.jsonl` per rep
 Against 4884 recorded `orchestrator.session.stopped` events in the same window:
 zero OOM markers, zero ENOSPC, and no exit code recorded at all.
 
-When a class crosses ~10%, the response is to **re-aim the instrument, not to
-obey it and not to silence it**. Both of the other two responses are failures:
-obeying it caps every wave on noise, silencing it removes a protection whose
-underlying hazard is real (2026-04-19: 8-session host freeze plus two worktree
-OOMs; a separate repo recorded, conf 0.9, Chromium mis-painting under genuine
-memory pressure).
+When a class crosses ~10%, **re-aim the instrument — do not obey it, do not
+silence it**. Obeying caps every wave on noise; silencing drops a protection
+whose hazard is real (2026-04-19: 8-session host freeze plus two worktree OOMs).
+
 
 ## HR-102: Judge on the Best Signal Present, Never on a Worse One
 
@@ -42,21 +40,16 @@ ram_available_gb           (free + inactive + speculative + purgeable)
 ram_free_gb                (os.freemem)                    — last resort
 ```
 
-`os.freemem()` on Darwin reports only `Pages free`. Median across the corpus:
-**0.4 GB**; 53.8% of samples below 0.5 GB — on hosts with 24-128 GB installed.
-Live on the reference host: `ram_free_gb 0.1` / `ram_available_gb 6.6` /
-`memory_pressure 53% free`, machine fully responsive. The free number is not
-merely pessimistic, it is off by more than an order of magnitude and always in
-the same direction.
+`os.freemem()` on Darwin reports only `Pages free` — median **0.4 GB** across the
+corpus, on hosts with 24-128 GB installed. It is off by an order of magnitude and
+always in the same direction. On Linux/Windows it IS accurate, which is exactly
+where nothing better is published, so the fallback there is correct rather than a
+concession.
 
 **A better signal REPLACES a worse one — it does not merely suppress it.** The
-earlier half-fix (#667) only suppressed a free-RAM verdict when pressure was
-*healthy*, which left the entire band "pressure present but below 30%" still
-being judged on Pages-free. Suppression is a patch; precedence is the fix.
-
-On Linux and Windows `os.freemem()` IS accurate, and there the fallback is
-correct rather than a concession — the demotion is Darwin-specific by
-construction, because only Darwin publishes the two better signals.
+half-fix (#667) suppressed free-RAM only when pressure was *healthy*, leaving the
+whole band "pressure present but below 30%" still judged on Pages-free.
+Suppression is a patch; precedence is the fix.
 
 ## HR-103: Check the Unit Before the Threshold
 
@@ -69,11 +62,9 @@ claude_processes >= 5    93.6%      ← wrong unit
 peer_sessions   >= 5      4.2%      ← right unit, same number
 ```
 
-No threshold change would have fixed this, and any threshold change would have
-hidden it. Before tuning a number, confirm the two sides of the comparison are
-the same kind of thing. The live count comes from the session registry
-(`detectPeers()` — self excluded, heartbeat-fresh), which is the same source the
-`peer_count` event field already used.
+No threshold change would have fixed this, and any would have hidden it. Before
+tuning a number, confirm both sides of the comparison are the same kind of thing.
+The live count comes from `detectPeers()` — self excluded, heartbeat-fresh.
 
 ## HR-104: Two Independent Signals Before Any Cap
 
@@ -86,7 +77,15 @@ the same kind of thing. The live count comes from the session registry
 One noisy axis must not decide wave size. Simulated on the same corpus:
 `cpu>90 AND peers>=3` fires on 2.2%; `peers>=4` alone on 7.4%.
 
-Two corollaries worth stating because both were live defects:
+**Not every signal is eligible to be one of the two.** One that is essentially
+always present is no second opinion — pairing it with any axis restores the
+one-signal cap under a two-signal name. Zombies are the case: idle by definition
+(so not causing the load they pair with) and a standing condition — 6, 13 and 9
+in three readings minutes apart. They report, never count. Caught by the first
+live run after the rebuild: `warn | cap 2 | soft: ["cpu","zombies"]`. Before
+admitting a new axis, measure how often it is present; "usually" means report.
+
+Three corollaries worth stating because all three were live defects:
 
 - **Cumulative counters are not live pressure.** macOS swap accumulates over
   uptime. The reference host showed 6.9 GB swap used with memory_pressure at 35%
@@ -100,18 +99,14 @@ Two corollaries worth stating because both were live defects:
 ## HR-105: A Rule You Cannot Falsify Is Not a Rule
 
 `resource_verdict` reached `sessions.jsonl` for **15 of 1734 sessions (0.9%)**,
-all inside a single week in April 2026 — and the two fields it did persist were
-the two misleading ones. So the 99% firing rate was unfalsifiable from stored
-data for four months, while six repos independently wrote the false alarm into
-their learnings store (one at confidence **1.0**, one recording "five
-consecutive sessions wrongly capped at 2") where no threshold could ever read it.
+all in one April week — and persisted the two misleading fields. The 99% firing
+rate was therefore unfalsifiable for four months, while six repos independently
+wrote the false alarm into their learnings store (one at confidence **1.0**)
+where no threshold could read it.
 
-Therefore:
-
-- Every session-start persists the signals the verdict is **computed from** —
-  `memory_pressure_pct_free`, `ram_available_gb`, `peer_sessions_count` — not
-  only the human-readable ones.
-- Re-run the firing-rate audit before changing any threshold. It is one command:
+- Session-start persists the signals the verdict is **computed from** —
+  `memory_pressure_pct_free`, `ram_available_gb`, `peer_sessions_count`.
+- Re-run the firing-rate audit before changing any threshold:
 
 ```bash
 for d in ~/Projects/*/; do f="$d/.orchestrator/metrics/events.jsonl"; [ -f "$f" ] && \
@@ -128,15 +123,13 @@ the two look identical from the outside.
 
 ## HR-106: The Banner Reports What the Rule Judges
 
-Whatever number drives the verdict is the number the operator sees. A banner
-printing `0.4 GB free` beside a verdict computed from `53% pressure free`
-teaches the operator to distrust the verdict — and it was the banner, not the
-verdict, that six repos wrote learnings about. One consequence is mechanical:
-a Claude Code SessionStart hook surfaces only the **first** JSON object it
-writes to stdout, so all banner lines must leave as **one** `systemMessage`
-(measured 2026-08-21: five emitters, four stdout lines, one shown, and the two
-lines warning that another session held this working copy were among the three
-discarded).
+Whatever number drives the verdict is the number the operator sees. `0.4 GB free`
+beside a verdict computed from `53% pressure free` teaches distrust of the
+verdict — and it was the banner, not the verdict, that six repos wrote learnings
+about. One consequence is mechanical: a Claude Code SessionStart hook surfaces
+only the **first** JSON object on stdout, so all banner lines must leave as
+**one** `systemMessage` (measured: five emitters, four lines, one shown — and the
+two warning that another session held this working copy were among the discarded).
 
 ## Anti-Patterns
 

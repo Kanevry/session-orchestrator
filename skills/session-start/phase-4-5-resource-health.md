@@ -54,7 +54,7 @@ on it there fired the *critical* threshold on 84.0% of starts.
 | Live peer **sessions** from the registry | ≥ `concurrent-sessions-warn` (default 5) | soft |
 | Claude **processes** (fallback only, registry unreadable) | ≥ threshold × 6 | soft |
 | Swap, **only while memory is unhealthy** | `> 3072 MB` hard / `> 1024 MB` soft | both |
-| Zombie processes with a live peer/process context | ≥ 1 | soft |
+| Zombie processes with a live peer/process context | ≥ 1 | **info** (reported, never counted — see HR-104) |
 | SSH detected AND `ssh-no-docker: true` | — | info note |
 
 **Verdict composition:**

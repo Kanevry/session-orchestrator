@@ -366,18 +366,34 @@ export function evaluate(snapshot, thresholds, options = {}) {
     }
   }
 
-  // --- Zombies (#178) -------------------------------------------------------
-  // A stale-but-idle process holds RAM without doing work. Soft on its own:
-  // sweeping is housekeeping advice, not a reason to shrink a wave. Requires a
-  // live peer/process context so a lone leftover on an otherwise idle host
-  // stays silent.
+  // --- Zombies (#178) — INFORMATIONAL ONLY ----------------------------------
+  //
+  // A stale-but-idle process holds RAM without doing work, so it is worth
+  // reporting. It is NOT a capacity signal, and #1089's first live run proved
+  // why counting it as one re-opens the bug this module just closed:
+  //
+  //   VERDICT: warn | cap 2 | soft: ["cpu", "zombies"]
+  //
+  // Zombies are, by their own definition, idle (CPU <= 1%) — they are not
+  // causing the CPU load they were pairing with. And they are a STANDING
+  // condition on a developer host: three measurements minutes apart on the
+  // reference machine read 6, 13 and 9. A signal that is essentially always
+  // present is not a second opinion; pairing it with any other axis silently
+  // restores the one-signal cap under a two-signal name.
+  //
+  // So it reports and never counts. This also aligns the code with the rule
+  // text it always claimed to implement — `.claude/rules/host-resources.md`
+  // HR-104: "sweeping stale sessions is housekeeping advice, not a reason to
+  // shrink a wave."
+  //
+  // Still gated on a live peer/process context so a lone leftover on an
+  // otherwise idle host stays quiet.
   if (zombie_processes_count !== null && zombie_processes_count !== undefined && zombie_processes_count >= 1) {
     const liveContext =
       (peer_sessions_count !== null && peer_sessions_count !== undefined && peer_sessions_count > 0) ||
       (claude_processes_count !== null && claude_processes_count !== undefined && claude_processes_count > 0);
     if (liveContext) {
-      softSignals.push('zombies');
-      reasons.push(`${zombie_processes_count} zombie Claude/Node process(es) detected (age > ${thresholds['zombie-threshold-min'] ?? 30} min, idle CPU) — consider sweeping stale sessions.`);
+      reasons.push(`info: ${zombie_processes_count} zombie Claude/Node process(es) detected (age > ${thresholds['zombie-threshold-min'] ?? 30} min, idle CPU) — consider sweeping stale sessions; not counted as a capacity signal.`);
     }
   }
 

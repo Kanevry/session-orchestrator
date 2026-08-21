@@ -169,7 +169,17 @@ describe('check-unwired-features — declared-but-unread census', () => {
     }
   });
 
-  it('surfaces the real repo census without a tool error', () => {
+  // Explicit per-test timeout, NOT a global widen (`testing.md` § Async &
+  // Timeout Patterns permits exactly this for a known-slow operation; § Shard-Time
+  // Contention forbids raising the default to paper over one case).
+  //
+  // Measured 2026-08-21: this case walks the real repo tree and takes 5.3-6.0s in
+  // isolation across three runs — barely 40% headroom under the 10s default. It
+  // therefore passes alone and times out inside the full suite whenever the host
+  // is loaded, which is the "green locally, red in the suite" shape that reads as
+  // a code regression and is not one. The work is a filesystem census; the fix is
+  // headroom, not a faster assertion.
+  it('surfaces the real repo census without a tool error', { timeout: 30_000 }, () => {
     // Grounding pin: the collector must actually resolve this repo's surfaces.
     // Floor/ceiling per `testing.md` § Dynamic Artifact Counts — the key set grows.
     const result = inspectUnwiredFeatures(REPO_ROOT);
