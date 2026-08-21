@@ -29,6 +29,7 @@
  */
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { writeSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
@@ -47,10 +48,66 @@ import {
   detectPeers,
   sweepZombies,
   logSweepEvent,
+  repoPathHash,
 } from '../scripts/lib/session-registry.mjs';
 import { detectColdStart, consumeMarker } from '../scripts/lib/cold-start-detector.mjs';
+import { parseSessionId } from '../scripts/lib/session-id.mjs';
 
 const execFileAsync = promisify(execFile);
+
+// ---------------------------------------------------------------------------
+// Banner buffer (#1089 / #1052 A3a)
+// ---------------------------------------------------------------------------
+//
+// MEASURED 2026-08-21: this hook emitted FIVE independent
+// `console.log(JSON.stringify({ systemMessage }))` calls, and Claude Code
+// surfaces only the FIRST JSON object a SessionStart hook writes to stdout.
+// A live run against a copied 5-peer registry produced four stdout lines of
+// which the operator saw exactly one — the host/resource line. The three that
+// were silently discarded included:
+//
+//   ⚠️ 👥 Peers: 5 active (… session-orchestrator:main:wave-0 …)
+//   🔍 Mechanical peer-detection: 1 active in same repo (…)
+//
+// i.e. the two lines whose entire job is to warn that ANOTHER SESSION HOLDS
+// THIS WORKING COPY. The information was computed correctly, formatted
+// correctly, and thrown away by the transport — the "built but not wired"
+// class, with the wiring defect one layer below where anyone was looking.
+//
+// The fix is structural: every banner line goes into one buffer and leaves as
+// ONE systemMessage. Adding a sixth banner in future therefore cannot
+// re-introduce the bug.
+const bannerLines = [];
+
+/**
+ * Queue one or more banner lines for the single end-of-hook flush.
+ * @param {string|null|undefined} line — multi-line strings are pushed verbatim
+ */
+function pushBanner(line) {
+  if (typeof line !== 'string' || line.length === 0) return;
+  bannerLines.push(line);
+}
+
+/**
+ * Emit every queued banner line as ONE systemMessage envelope.
+ *
+ * Uses `fs.writeSync(1, …)` rather than `console.log`: the top-level guard
+ * calls `process.exit(0)`, which discards anything still sitting in libuv's
+ * async write queue when stdout is a pipe (see
+ * `.claude/rules/anti-pattern-console-log-process-exit-drops-stdout…`). The
+ * banner is far below the 64 KiB pipe buffer today, but a synchronous write
+ * costs nothing and removes the failure mode rather than staying under it.
+ *
+ * Idempotent: a second call after a flush is a no-op.
+ */
+function flushBanner() {
+  if (bannerLines.length === 0) return;
+  const payload = JSON.stringify({ systemMessage: bannerLines.join('\n') });
+  bannerLines.length = 0;
+  try {
+    writeSync(1, `${payload}\n`);
+  } catch { /* stdout closed — the hook is informational and never blocks */ }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -191,91 +248,42 @@ async function readStdinJson(timeoutMs = 500) {
  */
 async function resolveSessionId(input, projectRoot) {
   const fromStdin = (input && (input.session_id || input.sessionId)) ?? null;
+  const parsedStdinId = parseSessionId(fromStdin);
+  const rawStdinSessionId = parsedStdinId?.format === 'uuid' ? fromStdin : null;
 
-  // Mode normalization is shared by both branches (stdin-UUID + semantic-gen)
-  // so the semantic-id derivation works identically regardless of how
-  // sessionId was sourced. Epic #583 D4 #587: a semantic id is ALWAYS surfaced.
+  // Mode normalization is shared by both branches so semantic attribution is
+  // derived independently of the raw session identity. A semantic id is always
+  // descriptive metadata, never the physical lock/registry session_id.
   const rawMode = (input && (input.mode || input.session_type)) || 'session';
   const normalizedMode =
     String(rawMode).toLowerCase().replace(/[^a-z-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'session';
 
   let sessionId;
   let source;
-  // Epic #583 D4 #587: semanticSessionId is computed on BOTH branches so the
-  // session.lock + downstream consumers always see the semantic form, even
-  // when Claude Code's stdin payload provided a UUID-v4. Defaults to null
-  // and is populated below; the lock-bootstrap helper falls back to mirroring
-  // sessionId when this stays null.
+  // The lock and downstream consumers surface this independently-derived
+  // semantic attribution alongside the physical raw session id.
   let semanticSessionId = null;
 
-  if (typeof fromStdin === 'string' && fromStdin.length > 0) {
-    sessionId = fromStdin;
+  if (rawStdinSessionId !== null) {
+    sessionId = rawStdinSessionId;
     source = 'stdin';
-
-    // D4 #587: even on the stdin-UUID path, ALSO compute a semantic
-    // session-id so the lock and registry can surface it downstream.
-    // Best-effort: any failure leaves semanticSessionId = null which is
-    // handled gracefully by the lock-bootstrap helper.
-    try {
-      const semCandidate = await deriveSemanticCandidate({
-        projectRoot,
-        mode: normalizedMode,
-      });
-      if (semCandidate) semanticSessionId = semCandidate;
-    } catch { /* best effort — leave semanticSessionId = null */ }
   } else {
-    // No stdin id — generate a semantic session-id via P2.2 #573 (PRD §3 P2).
-    // Falls back to randomUUID() on any failure to keep the hook non-blocking.
-    try {
-      const candidate = await deriveSemanticCandidate({
-        projectRoot,
-        mode: normalizedMode,
-      });
-      if (!candidate) throw new Error('semantic-derivation-empty');
-
-      // Race-free host-wide uniqueness: try to atomically claim the registry slot
-      // for this sessionId via O_CREAT|O_EXCL. If another process won the race
-      // (EEXIST), fall back to UUID-v4 to guarantee distinct sessionIds across
-      // parallel hook invocations. The empty file is immediately overwritten by
-      // registerSelf() with the real entry — _validEntry() in readers filters
-      // any zero-content artifact during the millisecond gap.
-      try {
-        // entryPath() is NOT exported from session-registry.mjs (it is an
-        // internal helper); replicate its body inline so the race-free slot
-        // claim actually succeeds. Without this inline build, the
-        // destructuring on `entryPath` returns undefined and calling it
-        // throws TypeError → silent UUID-fallback, defeating the semantic-id
-        // generation path entirely. Pre-existing bug pre-dating Epic #583 P3.
-        const { activeDir } = await import('../scripts/lib/session-registry.mjs');
-        const fsAsync = await import('node:fs/promises');
-        await fsAsync.mkdir(activeDir(), { recursive: true });
-        const claimPath = path.join(activeDir(), `${candidate}.json`);
-        const handle = await fsAsync.open(claimPath, 'wx'); // O_CREAT|O_EXCL — fails with EEXIST on collision
-        await handle.close();
-        sessionId = candidate;
-        semanticSessionId = candidate;
-        source = 'generated-semantic';
-      } catch (claimErr) {
-        if (claimErr.code === 'EEXIST') {
-          // Collision with another parallel hook — fall back to UUID-v4 silently.
-          // Hook is informational-only; never write to stderr per existing convention.
-          sessionId = randomUUID();
-          source = 'generated-uuid-fallback-collision';
-          // We still surface the semantic candidate as semanticSessionId so the
-          // lock reflects what this session would have been called — useful for
-          // forensics even when the UUID won the registry-slot race.
-          semanticSessionId = candidate;
-        } else {
-          throw claimErr; // surfaces to outer catch → UUID fallback
-        }
-      }
-    } catch {
-      // Semantic id generation failed for any reason — silently fall back to UUID-v4.
-      // Hook is informational-only; never write to stderr per existing convention.
-      sessionId = randomUUID();
-      source = 'generated-uuid-fallback';
-    }
+    // A missing, malformed, or semantic stdin value is not a trustworthy raw
+    // identity. Generate the physical id locally; semantic derivation below is
+    // attribution only and must never become the lock/registry key.
+    sessionId = randomUUID();
+    source = 'generated-uuid';
   }
+
+  // Derive a descriptive semantic label for either raw-id source. Best-effort:
+  // a failure leaves it null without changing the physical raw session_id.
+  try {
+    const semCandidate = await deriveSemanticCandidate({
+      projectRoot,
+      mode: normalizedMode,
+    });
+    if (semCandidate) semanticSessionId = semCandidate;
+  } catch { /* best effort — leave semanticSessionId = null */ }
 
   try {
     const dir = path.join(projectRoot, '.orchestrator');
@@ -415,15 +423,43 @@ async function emitHostBanner(projectRoot) {
     if (!host || !resources) return null;
 
     const hostLine = `🖥️  Host: ${host.host_class} · ${host.ram_total_gb} GB RAM · ${host.platform ?? 'unknown'} · ${host.is_ssh ? 'ssh' : 'local'}`;
-    const procSuffix = resources.claude_processes_count === null
-      ? ''
-      : ` · ${resources.claude_processes_count} Claude process${resources.claude_processes_count === 1 ? '' : 'es'} running`;
-    const resourceLine = `📊 Resources: ${resources.ram_free_gb.toFixed(1)} GB free · CPU ${resources.cpu_load_pct}%${procSuffix}`;
-    const banner = `${hostLine}\n${resourceLine}`;
 
-    // systemMessage envelope is the Claude Code hook contract; ignored by
-    // consumers that do not read stdout, harmless in all cases.
-    console.log(JSON.stringify({ systemMessage: banner }));
+    // #1089: report the memory number a human can ACT on.
+    //
+    // The old line printed `ram_free_gb`, which on Darwin is `os.freemem()` =
+    // `Pages free` only. Median across 1477 measured session starts: 0.4 GB —
+    // on hosts with 24-128 GB installed. So this banner spent four months
+    // telling the operator the machine was seconds from death while the same
+    // machine reported 40%+ memory free and ran full waves clean. Six repos
+    // logged that false alarm as a learning; one capped agents for five
+    // consecutive sessions off this number.
+    //
+    // Precedence mirrors evaluate()'s memorySignal(): pressure > available >
+    // free. `free` survives only as the last resort — on Linux/Windows it is
+    // genuinely accurate, which is exactly where nothing better is published.
+    const memLine = (() => {
+      if (resources.memory_pressure_pct_free !== null && resources.memory_pressure_pct_free !== undefined) {
+        return `${resources.memory_pressure_pct_free}% memory free (OS pressure)`;
+      }
+      if (resources.ram_available_gb !== null && resources.ram_available_gb !== undefined) {
+        return `${resources.ram_available_gb.toFixed(1)} GB available`;
+      }
+      return `${resources.ram_free_gb.toFixed(1)} GB free`;
+    })();
+
+    // Peer SESSIONS, not Claude PROCESSES. Measured ratio 6.0:1 — the old
+    // suffix read "17 Claude processes running" on a host carrying 3 sessions,
+    // which is alarming and means nothing actionable.
+    const peerSuffix = resources.peer_sessions_count === null || resources.peer_sessions_count === undefined
+      ? ''
+      : ` · ${resources.peer_sessions_count} peer session${resources.peer_sessions_count === 1 ? '' : 's'}`;
+    const resourceLine = `📊 Resources: ${memLine} · CPU ${resources.cpu_load_pct}%${peerSuffix}`;
+
+    // systemMessage envelope is the Claude Code hook contract; buffered so all
+    // banner lines leave as ONE object (see flushBanner — Claude Code reads
+    // only the first).
+    pushBanner(hostLine);
+    pushBanner(resourceLine);
 
     return { host, resources };
   } catch {
@@ -464,11 +500,7 @@ async function main() {
     // Config / STATE.md / git, and only then the tool. The banner carries the
     // ORDER, not an absolute; full routing + exceptions in
     // .claude/rules/ask-via-tool.md.
-    try {
-      console.log(JSON.stringify({
-        systemMessage: '🎯 Decide: operator verb (/go) > derive+report > AUQ if blocking (.claude/rules/ask-via-tool.md).',
-      }));
-    } catch { /* best effort */ }
+    pushBanner('🎯 Decide: operator verb (/go) > derive+report > AUQ if blocking (.claude/rules/ask-via-tool.md).');
   }
 
   // F1.3 cold-start abandonment fix (PRD 2026-05-21). Emit a one-shot
@@ -490,11 +522,7 @@ async function main() {
         enabled: coldStartCfg.enabled !== false,
       });
       if (decision.shouldEmit) {
-        try {
-          console.log(JSON.stringify({
-            systemMessage: decision.bannerLines.join('\n'),
-          }));
-        } catch { /* best effort — stdout may be closed */ }
+        pushBanner(decision.bannerLines.join('\n'));
         if (decision.markerPath) {
           await consumeMarker(decision.markerPath).catch(() => false);
         }
@@ -592,17 +620,61 @@ async function main() {
   // Append a peer line to the host banner when a banner was already emitted
   // and at least one peer is live on this host.
   if (bannerData && peers.length > 0) {
+    // #1052 A3a — split peers by the axis that actually decides behaviour.
+    //
+    // `.claude/rules/parallel-sessions.md` defines the operator-session axis by
+    // the WORKING COPY, not by reachability: a peer in this checkout contends
+    // for one git index, one filesystem, one STATE.md, and can hold the
+    // wave-scope guard. A peer in another repo contends only for host capacity.
+    // Those are different problems and the old single-line summary blurred them
+    // into one comma-separated list sorted by nothing.
+    //
+    // Correlate on `repo_path_hash` rather than `repo_name`: a sibling worktree
+    // of this repo carries a DIFFERENT working copy (and a different hash) while
+    // often sharing a similar name, and it is the checkout — not the name — that
+    // can collide. Falls back to name comparison only if the hash is missing.
+    let selfRepoHash = null;
+    try { selfRepoHash = repoPathHash(projectRoot); } catch { /* best effort */ }
+    const sameCopy = peers.filter((p) =>
+      selfRepoHash && p.repo_path_hash ? p.repo_path_hash === selfRepoHash : false);
+    const elsewhere = peers.filter((p) => !sameCopy.includes(p));
+
     const threshold = await peerWarnThreshold(projectRoot);
-    const icon = peers.length >= threshold ? '⚠️ ' : '';
-    const summary = peers
-      .map((p) => `${p.repo_name ?? 'unknown'}:${p.branch ?? 'unknown'}:wave-${p.current_wave ?? 0}`)
-      .slice(0, 5)
-      .join(', ');
-    const overflow = peers.length > 5 ? ` +${peers.length - 5} more` : '';
-    const peerLine = `${icon}👥 Peers: ${peers.length} active (${summary}${overflow})`;
-    try {
-      console.log(JSON.stringify({ systemMessage: peerLine }));
-    } catch { /* best effort */ }
+    // WARN on any peer in THIS working copy — one is already enough to collide
+    // — or on host-wide count crossing the configured threshold.
+    const icon = sameCopy.length > 0 || peers.length >= threshold ? '⚠️ ' : '';
+
+    // Semantic ids are NOT unique — several live sessions routinely share e.g.
+    // `main-2026-08-21-session-2`, which makes a bare semantic label unusable
+    // for addressing a specific peer. Append a short uuid discriminator so two
+    // rows can be told apart (and so the id can be pasted into a lookup).
+    const fmt = (p) => {
+      const label = p.semantic_session_id ?? p.session_id ?? 'unknown';
+      const disc = p.session_id ? `#${String(p.session_id).slice(0, 8)}` : '';
+      return `${label}${disc}:${p.branch ?? 'unknown'}:wave-${p.current_wave ?? 0}`;
+    };
+    pushBanner(`${icon}👥 Peers: ${peers.length} live on this host`);
+    if (sameCopy.length > 0) {
+      const list = sameCopy.slice(0, 3).map(fmt).join(', ');
+      const more = sameCopy.length > 3 ? ` +${sameCopy.length - 3} more` : '';
+      // This is the line that matters. A peer here means PSA-002 territory:
+      // it may hold .claude/wave-scope.json, carry uncommitted work in files
+      // you are about to edit, or switch the branch under you.
+      pushBanner(`   ⚠️  ${sameCopy.length} in THIS working copy — coordinate before editing (${list}${more})`);
+    }
+    if (elsewhere.length > 0) {
+      const list = elsewhere
+        .slice(0, 4)
+        .map((p) => `${p.repo_name ?? 'unknown'}:${p.branch ?? 'unknown'}`)
+        .join(', ');
+      const more = elsewhere.length > 4 ? ` +${elsewhere.length - 4} more` : '';
+      pushBanner(`   other repos (host capacity only): ${list}${more}`);
+    }
+    // #1052 A3a acceptance criterion: state the limit, never imply a status we
+    // cannot read. `ListAgents` is a MODEL-side tool; this hook is a Node
+    // process and structurally cannot call it, so busy/waiting/idle is
+    // unavailable here. The coordinator half (A3b) overlays it later.
+    pushBanner('   (registry view: repo/branch/wave. Liveness (busy/idle) is model-side — not available in this hook.)');
   }
 
   // Epic #583 W3-P3 — Mechanical peer-detection banner (independent of the
@@ -632,10 +704,7 @@ async function main() {
           .map((p) => `${p.sessionId}:${p.mode ?? 'session'}`)
           .join(', ');
         const overflow = mechanicalPeers.length > 3 ? ` +${mechanicalPeers.length - 3} more` : '';
-        const mechanicalLine = `🔍 Mechanical peer-detection: ${mechanicalPeers.length} active in same repo (${summary}${overflow})`;
-        try {
-          console.log(JSON.stringify({ systemMessage: mechanicalLine }));
-        } catch { /* best effort */ }
+        pushBanner(`🔍 Mechanical peer-detection: ${mechanicalPeers.length} active in same repo (${summary}${overflow})`);
       }
     } catch { /* best effort — banner is informational, never blocks */ }
   }
@@ -652,8 +721,26 @@ async function main() {
     payload.ram_free_gb = bannerData.resources.ram_free_gb;
     payload.cpu_load_pct = bannerData.resources.cpu_load_pct;
     payload.claude_processes_count = bannerData.resources.claude_processes_count;
+    // #1089 — record the signals the verdict is actually computed from, so the
+    // firing rate of each rule class is measurable AFTER the fact.
+    //
+    // This is the defect that let the old rule set fire on 99.0% of starts for
+    // four months undetected: `resource_verdict` was written to sessions.jsonl
+    // for exactly 15 of 1734 sessions, all inside one week in April 2026, and
+    // the fields logged here were the two MISLEADING ones (`ram_free_gb`,
+    // `claude_processes_count`) — so even the surviving telemetry could not
+    // have falsified the thresholds. The three added below are the ones the
+    // rules now judge on. `.claude/rules/host-resources.md` HR-005 turns them
+    // into a standing 10%-firing-rate audit.
+    payload.ram_available_gb = bannerData.resources.ram_available_gb ?? null;
+    payload.memory_pressure_pct_free = bannerData.resources.memory_pressure_pct_free ?? null;
+    payload.peer_sessions_count = bannerData.resources.peer_sessions_count ?? null;
   }
   await emitEvent('orchestrator.session.started', payload);
+
+  // Single flush — see the bannerLines docstring for why this must stay the
+  // only stdout write in the hook.
+  flushBanner();
 
   // Size-based rotation of events.jsonl (#251). Session-start is the single
   // rotation trigger — per-append overhead is rejected design. Any failure
@@ -681,6 +768,10 @@ async function main() {
 }
 
 // Top-level guard — always exit 0 (non-blocking informational hook).
+// flushBanner() runs here too so a throw partway through main() still surfaces
+// whatever was already collected; it is idempotent, so the normal path (which
+// flushes at the end of main) does not double-emit.
 main().catch(() => {}).finally(() => {
+  flushBanner();
   process.exit(0);
 });

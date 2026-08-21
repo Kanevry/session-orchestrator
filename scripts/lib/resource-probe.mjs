@@ -18,6 +18,7 @@
  *     cpu_load_5m: 1.8,
  *     cpu_load_5m_pct: 45 | null,   // 5m load-average as pct-of-cores; null on Windows/zero-load (#943)
  *     claude_processes_count: 3 | null,
+ *     peer_sessions_count: 2 | null,   // live peer SESSIONS from the registry, self excluded (#1089)
  *     codex_processes_count: 0 | null,
  *     other_node_processes: 12 | null,
  *     zombie_processes_count: 1 | null,
@@ -40,13 +41,14 @@
  */
 
 import os from 'node:os';
-import { ramSnapshot, cpuSnapshot, processCounts, swapUsedMb, memoryPressurePctFree, ramAvailableGb } from './resource-probe/probe-platform.mjs';
+import { ramSnapshot, cpuSnapshot, processCounts, swapUsedMb, memoryPressurePctFree, ramAvailableGb, peerSessionsCount } from './resource-probe/probe-platform.mjs';
 
 // ---------------------------------------------------------------------------
 // Re-exports — preserve public API for all existing callers
 // ---------------------------------------------------------------------------
 
-export { evaluate } from './resource-probe/evaluate.mjs';
+export { evaluate, PROCESSES_PER_SESSION, PRESSURE_HARD_PCT, PRESSURE_SOFT_PCT, PRESSURE_HEALTHY_PCT, DEFAULT_RESOURCE_THRESHOLDS } from './resource-probe/evaluate.mjs';
+export { peerSessionsCount } from './resource-probe/probe-platform.mjs';
 export { parseEtimeToMinutes, countZombieProcesses, countProcessMatches, parseSwapUsageOutput, parseMemoryPressureOutput, parseVmStatAvailableGb } from './resource-probe/parsers.mjs';
 
 // ---------------------------------------------------------------------------
@@ -60,6 +62,9 @@ export { parseEtimeToMinutes, countZombieProcesses, countProcessMatches, parseSw
  * @param {boolean} [opts.skipExtendedSignals] — skip swap + memory_pressure calls (faster in tests)
  * @param {number|null} [opts.zombieThresholdMin] — when non-null, detect zombie Claude/Node
  *   processes older than this many minutes with low CPU. Default null (feature disabled).
+ * @param {string|null} [opts.sessionId] — own session id, excluded from `peer_sessions_count`
+ *   (#1089). Omit and the count simply includes every live registry entry, which
+ *   over-counts by exactly one — pass it whenever the caller knows its own id.
  * @returns {Promise<object>}
  */
 export async function probe(opts = {}) {
@@ -85,6 +90,13 @@ export async function probe(opts = {}) {
     ? { claude_processes_count: null, codex_processes_count: null, other_node_processes: null, zombie_processes_count: null }
     : await processCounts(zombieThresholdMin);
 
+  // #1089: the registry-denominated concurrency signal. Gated on the same
+  // skipProcessCounts flag as the `ps` pass — both answer "who else is on this
+  // host", and tests that skip one always mean to skip the other.
+  const peer_sessions_count = opts.skipProcessCounts
+    ? null
+    : await peerSessionsCount({ sessionId: opts.sessionId ?? null });
+
   let swap_used_mb = null;
   let memory_pressure_pct_free = null;
   let ram_available_gb = null;
@@ -104,6 +116,10 @@ export async function probe(opts = {}) {
     cpu_load_5m,
     cpu_load_5m_pct,
     ...procs,
+    // Live peer SESSIONS (registry, self excluded) — the unit
+    // `concurrent-sessions-warn` is named for. null = registry unreadable, in
+    // which case evaluate() falls back to the rescaled process count (#1089).
+    peer_sessions_count,
     swap_used_mb,
     memory_pressure_pct_free,
     // macOS-only numeric available-RAM (free + reclaimable) from vm_stat; null

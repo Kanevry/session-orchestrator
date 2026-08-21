@@ -423,7 +423,7 @@ Introduced by Epic #157 / issue #166. Lets session-start sense the host (RAM, CP
 |-------|------|---------|-------------|
 | `resource-awareness` | boolean | `true` | Master toggle for the env-aware runtime. When `false`, skips Phase 4.5 adaptive wave sizing and the host banner. |
 | `enable-host-banner` | boolean | `true` | Whether `hooks/on-session-start.mjs` emits the host + resource banner at the top of every session. Set `false` to silence. |
-| `resource-thresholds` | object | see below | Numeric thresholds that drive Phase 4.5 adaptive rules. Unset sub-keys fall back to defaults. Sub-keys: `ram-free-min-gb`, `ram-free-critical-gb`, `cpu-load-max-pct`, `concurrent-sessions-warn`, `ssh-no-docker`, `zombie-threshold-min`. |
+| `resource-thresholds` | object | see below | Numeric thresholds that drive Phase 4.5 adaptive rules. Unset sub-keys fall back to the single canonical default set (`DEFAULT_RESOURCE_THRESHOLDS` in `scripts/lib/resource-probe/evaluate.mjs`). Sub-keys: `ram-free-min-gb`, `ram-free-critical-gb`, `cpu-load-max-pct`, `concurrent-sessions-warn`, `ssh-no-docker`, `zombie-threshold-min`. |
 
 ### resource-thresholds
 
@@ -431,17 +431,40 @@ Sub-key defaults:
 
 ```yaml
 resource-thresholds:
-  ram-free-min-gb: 4            # below this, cap agents-per-wave at 2
-  ram-free-critical-gb: 2       # below this, recommend coordinator-direct
-  cpu-load-max-pct: 80          # sustained above this, cap agents-per-wave at 2
-  concurrent-sessions-warn: 5   # warn when host has this many Claude sessions
+  ram-free-min-gb: 4            # soft memory signal (see precedence below)
+  ram-free-critical-gb: 2       # hard memory signal → coordinator-direct
+  cpu-load-max-pct: 90          # soft CPU signal, judged on min(1m, 5m)
+  concurrent-sessions-warn: 5   # soft signal at this many live peer SESSIONS
   ssh-no-docker: true           # when session is over SSH, steer the plan away from Docker-based tests
   zombie-threshold-min: 30      # age (minutes) above which an idle Claude/Node process is a zombie candidate
 ```
 
-**`zombie-threshold-min`** (default: `30`): When set, the resource probe runs a secondary `ps` pass that counts Claude and Node processes older than this many minutes **and** with CPU% ≤ 1%. These are "zombie candidates" — stale sessions or orphaned workers that still hold RAM. The probe exposes them via `zombie_processes_count` in the snapshot. The evaluator escalates the verdict to at least `warn` when `zombie_processes_count >= 1` **and** `claude_processes_count > 0` (i.e., there are active Claude processes alongside the zombies). The reason string surfaces the threshold and count so the session-start banner gives actionable context. Set to `0` to disable zombie detection entirely (the field is omitted from the default snapshot when absent from config).
+**No single threshold caps a wave (#1089).** A cap requires either one *hard*
+signal (→ `critical`, coordinator-direct) or **two independent soft signals**
+agreeing (→ `warn`, cap 2). One soft signal alone is reported and acted on by
+nobody. Rationale and the measured firing rates are in
+[`.claude/rules/host-resources.md`](../.claude/rules/host-resources.md); the full
+rule table is in `skills/session-start/phase-4-5-resource-health.md`.
 
-Rationale: originated from the 2026-04-19 incident where 8 parallel Claude sessions on one Mac caused a hard freeze. The adaptive rules cap concurrent agent load when the host is under pressure, before a wave ever spawns subagents. See Epic #157 and Sub-Epic #158.
+**What the memory thresholds are compared against** is chosen by precedence, not
+by configuration: `memory_pressure_pct_free` (macOS, hard `<15%` / soft `<30%`)
+outranks `ram_available_gb`, which outranks `ram_free_gb`. The two GB-denominated
+keys above therefore apply to *available* RAM on macOS and to `os.freemem()` on
+Linux/Windows, where it is accurate. They are never compared against Darwin's
+`Pages free`, whose median across 1477 measured session starts was **0.4 GB** on
+hosts with 24-128 GB installed — gating on it fired `ram-free-critical-gb` on
+84.0% of all starts.
+
+**`concurrent-sessions-warn` counts SESSIONS, not processes.** The live count
+comes from the session registry (`detectPeers()` — self excluded,
+heartbeat-fresh). Until #1089 it was compared against `claude_processes_count`, a
+measured 6x unit error (median processes:sessions = 6.0) that fired the threshold
+on 93.6% of starts instead of 4.2%. When the registry is unreadable the probe
+falls back to the process count rescaled by that same factor.
+
+**`zombie-threshold-min`** (default: `30`): When set, the resource probe runs a secondary `ps` pass that counts Claude and Node processes older than this many minutes **and** with CPU% ≤ 1%. These are "zombie candidates" — stale sessions or orphaned workers that still hold RAM. The probe exposes them via `zombie_processes_count` in the snapshot. Since #1089 this is a *soft* signal: it is reported when `zombie_processes_count >= 1` **and** there is a live peer/process context, but on its own it caps nothing — sweeping stale sessions is housekeeping advice, not a reason to shrink a wave. The reason string surfaces the threshold and count so the session-start banner gives actionable context. Set to `0` to disable zombie detection entirely (the field is omitted from the default snapshot when absent from config).
+
+Rationale: originated from the 2026-04-19 incident where 8 parallel Claude sessions on one Mac caused a hard freeze. That hazard is real and the rules still escalate for it — what #1089 changed is that they now recognise it, instead of reporting it on 99.0% of session starts where it was not happening. See Epic #157, Sub-Epic #158, and `.claude/rules/host-resources.md`.
 
 ### isolation graduation
 

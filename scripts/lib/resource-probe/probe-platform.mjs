@@ -298,3 +298,38 @@ export async function ramAvailableGb() {
   const output = await runCommand('vm_stat', []);
   return parseVmStatAvailableGb(output);
 }
+
+/**
+ * Count LIVE PEER SESSIONS on this host from the session registry (#1089).
+ *
+ * This is the signal `concurrent-sessions-warn` was always named for. Until
+ * #1089 the threshold was compared against `claude_processes_count` instead —
+ * a measured 6x unit error (median processes:sessions = 6.0 over 1461 paired
+ * samples), which is why a threshold of 5 fired on 93.6% of session starts
+ * while the same threshold against the real count fires on 4.2%.
+ *
+ * Semantics mirror `detectPeers()` exactly: EXCLUDES the calling session and
+ * counts only entries whose `last_heartbeat` is within `freshnessMin` minutes.
+ * That matches the `peer_count` field already recorded on
+ * `orchestrator.session.started` events, so historical telemetry and live
+ * probes are denominated identically.
+ *
+ * Best-effort: returns null when the registry is unreadable (sandboxed test
+ * environments, a foreign `SO_SESSION_REGISTRY_DIR`, first run before any
+ * registration). Consumers treat null as "unknown" and fall back to the
+ * rescaled process count.
+ *
+ * @param {object} [opts]
+ * @param {string|null} [opts.sessionId] — own session id, excluded from the count
+ * @param {number} [opts.freshnessMin=15]
+ * @returns {Promise<number|null>}
+ */
+export async function peerSessionsCount({ sessionId = null, freshnessMin = 15 } = {}) {
+  try {
+    const { detectPeers } = await import('../session-registry.mjs');
+    const peers = await detectPeers({ sessionId, freshnessMin });
+    return Array.isArray(peers) ? peers.length : null;
+  } catch {
+    return null;
+  }
+}

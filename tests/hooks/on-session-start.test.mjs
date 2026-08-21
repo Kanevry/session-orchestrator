@@ -30,7 +30,7 @@ const EVENTS_RELPATH = path.join('.orchestrator', 'metrics', 'events.jsonl');
 /**
  * Spawn the hook with the given environment overrides and collect result.
  * @param {{ projectDir: string, env?: Record<string,string> }} opts
- * @returns {Promise<{ code: number|null, stdout: string, stderr: string }>}
+ * @returns {Promise<{ code: number|null, stdout: string, stderr: string, pid: number|undefined }>}
  */
 async function runHook({ projectDir, env = {}, stdin = null, registryDir = null, useCwd = false }) {
   return new Promise((resolve) => {
@@ -62,7 +62,7 @@ async function runHook({ projectDir, env = {}, stdin = null, registryDir = null,
       child.stdin.write(stdin);
     }
     child.stdin.end();
-    child.on('close', (code) => resolve({ code, stdout, stderr }));
+    child.on('close', (code) => resolve({ code, stdout, stderr, pid: child.pid }));
   });
 }
 
@@ -266,8 +266,7 @@ describe('project-dir resolution', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('register-failed observability breadcrumb', { timeout: 15000 }, () => {
-  it('hook still exits 0 when the registry dir is read-only (registerSelf fails)', async () => {
-    if (process.platform === 'win32') return; // chmod not meaningful on Windows
+  it.skipIf(isRoot || process.platform === 'win32')('hook still exits 0 when the registry dir is read-only (registerSelf fails)', async () => {
     const dir = await mkProjectTracked();
     // Point the registry to a non-writable path so registerSelf fails.
     const badRegistryDir = path.join(os.tmpdir(), 'hook-session-start-ro-' + Date.now());
@@ -284,8 +283,7 @@ describe('register-failed observability breadcrumb', { timeout: 15000 }, () => {
     }
   });
 
-  it.skipIf(isRoot)('appends a register-failed entry to sweep.log when registerSelf throws', async () => {
-    if (process.platform === 'win32') return; // chmod not meaningful on Windows
+  it.skipIf(isRoot || process.platform === 'win32')('appends a register-failed entry to sweep.log when registerSelf throws', async () => {
     const dir = await mkProjectTracked();
     const badRegistryDir = path.join(os.tmpdir(), 'hook-session-start-log-' + Date.now());
     const activeDir = path.join(badRegistryDir, 'active');
@@ -307,8 +305,7 @@ describe('register-failed observability breadcrumb', { timeout: 15000 }, () => {
     }
   });
 
-  it('does not write to stderr on registerSelf failure', async () => {
-    if (process.platform === 'win32') return;
+  it.skipIf(isRoot || process.platform === 'win32')('does not write to stderr on registerSelf failure', async () => {
     const dir = await mkProjectTracked();
     const badRegistryDir = path.join(os.tmpdir(), 'hook-session-start-stderr-' + Date.now());
     await fs.mkdir(badRegistryDir, { recursive: true });
@@ -353,44 +350,65 @@ describe('multi-session registry (#168)', { timeout: 15000 }, () => {
     expect((await readEvents(dir))[0].session_id).toBe(entries[0].session_id);
   });
 
-  it('uses the stdin session_id when provided', async () => {
+  it('generates a UUID instead of using a malformed stdin session_id', async () => {
     const dir = await mkProjectTracked();
-    const stdinId = 'claude-stdin-session-id-42';
-    await runHook({ projectDir: dir, stdin: JSON.stringify({ session_id: stdinId }) });
+    const malformedSessionId = 'not-a-uuid';
+    await runHook({ projectDir: dir, stdin: JSON.stringify({ session_id: malformedSessionId }) });
+
     const entries = await readRegistry();
+    const raw = await fs.readFile(path.join(dir, '.orchestrator', 'current-session.json'), 'utf8');
+    const currentSession = JSON.parse(raw);
     expect(entries).toHaveLength(1);
-    expect(entries[0].session_id).toBe(stdinId);
+    expect(currentSession).toMatchObject({
+      session_id: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i),
+      source: 'generated-uuid',
+    });
+    expect(currentSession.session_id).not.toBe(malformedSessionId);
+    expect(entries[0].session_id).toBe(currentSession.session_id);
   });
 
-  it('generates a session id when stdin carries no session_id', async () => {
-    // Post-P2.2 (#573): hook prefers semantic format `<branch>-<YYYY-MM-DD>-<mode>-<n>`,
-    // with UUID-v4 as the fallback when semantic resolution fails.
-    // Both formats are valid per PRD §3 P2 row 3 (backward-compat reader via parseSessionId).
+  it('generates a UUID raw session_id and a separate semantic label when stdin carries no session_id', async () => {
     const dir = await mkProjectTracked();
     await runHook({ projectDir: dir });
+
     const entries = await readRegistry();
-    expect(entries[0].session_id).toMatch(
-      /^([a-f0-9-]{36}|[a-z0-9._/-]+-\d{4}-\d{2}-\d{2}-[a-z-]+-\d+)$/,
-    );
+    const raw = await fs.readFile(path.join(dir, '.orchestrator', 'current-session.json'), 'utf8');
+    const currentSession = JSON.parse(raw);
+    expect(currentSession).toMatchObject({
+      session_id: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i),
+      semantic_session_id: expect.stringMatching(/^[a-z0-9._/-]+-\d{4}-\d{2}-\d{2}-[a-z-]+-\d+$/),
+      source: 'generated-uuid',
+    });
+    expect(entries[0].session_id).toBe(currentSession.session_id);
+    expect(currentSession.semantic_session_id).not.toBe(currentSession.session_id);
   });
 
-  it('persists the session id to .orchestrator/current-session.json', async () => {
-    // Post-P2.2 (#573): source label is one of: generated-semantic | generated-uuid-fallback | generated (legacy).
+  it('does not repurpose a semantic stdin label as the physical raw session_id', async () => {
+    const dir = await mkProjectTracked();
+    const semanticHint = 'main-2026-08-20-deep-9';
+    await runHook({ projectDir: dir, stdin: JSON.stringify({ session_id: semanticHint }) });
+
+    const raw = await fs.readFile(path.join(dir, '.orchestrator', 'current-session.json'), 'utf8');
+    const currentSession = JSON.parse(raw);
+    expect(currentSession.session_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    expect(currentSession.session_id).not.toBe(semanticHint);
+  });
+
+  it('persists the generated UUID source to .orchestrator/current-session.json', async () => {
     const dir = await mkProjectTracked();
     await runHook({ projectDir: dir });
     const raw = await fs.readFile(path.join(dir, '.orchestrator', 'current-session.json'), 'utf8');
     const parsed = JSON.parse(raw);
-    expect(parsed.session_id).toMatch(
-      /^([a-f0-9-]{36}|[a-z0-9._/-]+-\d{4}-\d{2}-\d{2}-[a-z-]+-\d+)$/,
-    );
-    expect(parsed.source).toMatch(/^generated(-semantic|-uuid-fallback)?$/);
+    expect(parsed.session_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    expect(parsed.source).toBe('generated-uuid');
   });
 
-  it('records source=stdin when session_id came from stdin', async () => {
+  it('preserves a valid UUID-v4 supplied through the sessionId alias', async () => {
     const dir = await mkProjectTracked();
-    await runHook({ projectDir: dir, stdin: JSON.stringify({ session_id: 'stdin-42' }) });
+    const stdinUuid = '550e8400-e29b-41d4-a716-446655440004';
+    await runHook({ projectDir: dir, stdin: JSON.stringify({ sessionId: stdinUuid }) });
     const raw = await fs.readFile(path.join(dir, '.orchestrator', 'current-session.json'), 'utf8');
-    expect(JSON.parse(raw).source).toBe('stdin');
+    expect(JSON.parse(raw)).toMatchObject({ session_id: stdinUuid, source: 'stdin' });
   });
 
   it('filters self out of detected peers — peer_count is 0 on a clean registry', async () => {
@@ -416,7 +434,9 @@ describe('multi-session registry (#168)', { timeout: 15000 }, () => {
       .map((l) => { try { return JSON.parse(l); } catch { return null; } })
       .filter(Boolean)
       .filter((l) => l.systemMessage);
-    const peerBanner = banners.find((l) => /Peers: \d+ active/.test(l.systemMessage));
+    // #1089: all banner lines leave as ONE systemMessage (see flushBanner) —
+    // search the combined text, not for a dedicated object.
+    const peerBanner = banners.find((l) => /Peers: \d+ live on this host/.test(l.systemMessage));
     expect(peerBanner).toBeDefined();
   });
 
@@ -425,21 +445,32 @@ describe('multi-session registry (#168)', { timeout: 15000 }, () => {
     const activeDir = path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active');
     await fs.mkdir(activeDir, { recursive: true });
     const now = new Date().toISOString();
-    for (const id of ['peer-a', 'peer-b']) {
-      await fs.writeFile(
-        path.join(activeDir, `${id}.json`),
-        JSON.stringify({
-          session_id: id,
-          pid: 99999,
-          repo_name: 'demo',
-          branch: 'main',
-          started_at: now,
-          last_heartbeat: now,
-          status: 'active',
-          current_wave: 0,
-        }),
-      );
-    }
+    await fs.writeFile(
+      path.join(activeDir, 'peer-a.json'),
+      JSON.stringify({
+        session_id: 'peer-a',
+        pid: 99999,
+        repo_name: 'demo',
+        branch: 'main',
+        started_at: now,
+        last_heartbeat: now,
+        status: 'active',
+        current_wave: 0,
+      }),
+    );
+    await fs.writeFile(
+      path.join(activeDir, 'peer-b.json'),
+      JSON.stringify({
+        session_id: 'peer-b',
+        pid: 99999,
+        repo_name: 'demo',
+        branch: 'main',
+        started_at: now,
+        last_heartbeat: now,
+        status: 'active',
+        current_wave: 0,
+      }),
+    );
     const dir = await mkProjectTracked();
     await fs.writeFile(
       path.join(dir, 'CLAUDE.md'),
@@ -453,8 +484,80 @@ describe('multi-session registry (#168)', { timeout: 15000 }, () => {
       .map((l) => { try { return JSON.parse(l); } catch { return null; } })
       .filter(Boolean)
       .filter((l) => l.systemMessage && l.systemMessage.includes('Peers:'));
+    // #1089: exactly ONE systemMessage object is written — that is the contract
+    // Claude Code reads. The WARN icon now sits on the peer LINE within it.
     expect(banners).toHaveLength(1);
-    expect(banners[0].systemMessage).toMatch(/^⚠️/);
+    const peerLine = banners[0].systemMessage
+      .split('\n')
+      .find((l) => l.includes('Peers:'));
+    expect(peerLine).toMatch(/^⚠️/);
+  });
+
+  // -------------------------------------------------------------------------
+  // Single-envelope transport (#1089)
+  // -------------------------------------------------------------------------
+  //
+  // Claude Code surfaces only the FIRST JSON object a SessionStart hook writes
+  // to stdout. This hook had five independent emitters, so a measured live run
+  // produced four stdout lines of which the operator saw one — silently
+  // discarding both peer banners, i.e. exactly the lines that warn another
+  // session holds this working copy. Every test in this file parsed stdout
+  // itself and therefore saw all four, which is why none of them noticed.
+  it('writes EXACTLY ONE JSON object to stdout even with peers present', async () => {
+    const activeDir = path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active');
+    await fs.mkdir(activeDir, { recursive: true });
+    const now = new Date().toISOString();
+    await fs.writeFile(
+      path.join(activeDir, 'peer-transport.json'),
+      JSON.stringify({
+        session_id: 'peer-transport',
+        pid: 99999,
+        repo_name: 'demo',
+        branch: 'main',
+        started_at: now,
+        last_heartbeat: now,
+        status: 'active',
+        current_wave: 0,
+      }),
+    );
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir });
+
+    const objects = result.stdout
+      .split('\n')
+      .filter((l) => l.trim().startsWith('{'));
+    expect(objects).toHaveLength(1);
+
+    // ...and that one object still carries every line, so the consolidation
+    // did not simply drop the banners it was meant to rescue.
+    const combined = JSON.parse(objects[0]).systemMessage;
+    expect(combined).toContain('Host:');
+    expect(combined).toContain('Resources:');
+    expect(combined).toContain('Peers:');
+  });
+
+  it('reports memory as pressure/available, never as Darwin Pages-free', async () => {
+    // HR-106: the banner number must be the number the rule judged. The old
+    // line printed `os.freemem()`, whose median across 1477 measured starts was
+    // 0.4 GB on 24-128 GB hosts.
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir });
+    const combined = result.stdout
+      .split('\n')
+      .filter((l) => l.trim().startsWith('{'))
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .filter((o) => o && o.systemMessage)
+      .map((o) => o.systemMessage)
+      .join('\n');
+    const resourceLine = combined.split('\n').find((l) => l.includes('Resources:'));
+    expect(resourceLine).toBeDefined();
+    if (process.platform === 'darwin') {
+      // On Darwin one of the two better signals is always published.
+      expect(resourceLine).toMatch(/memory free \(OS pressure\)|GB available/);
+      expect(resourceLine).not.toMatch(/GB free/);
+    }
+    // The concurrency figure is sessions, never the raw process count.
+    expect(resourceLine).not.toMatch(/Claude process/);
   });
 
   it('sweeps zombie heartbeats older than 60 minutes on session start', async () => {
@@ -629,8 +732,8 @@ describe('high-water-mark preservation across SessionStart (#612)', { timeout: 1
 // so discoverActiveSessions() picks up the current session even when the
 // coordinator-LLM skips the prose Phase 1.2 acquire-call. The lock body
 // adopts schema v2:
-//   - session_id           — the resolved id (semantic OR UUID)
-//   - semantic_session_id  — ALWAYS the semantic form (D4 #587)
+//   - session_id           — physical native raw ID from stdin, or a generated UUID
+//   - semantic_session_id  — separately derived semantic attribution (D4 #587)
 //   - started_at           — ISO timestamp at acquire-time
 //   - last_heartbeat       — ISO; basis for liveness (replaces PID-liveness)
 //   - mode                 — session mode
@@ -665,24 +768,22 @@ describe('mechanical session.lock writer (#584 + #587)', { timeout: 15000 }, () 
     expect(lock.semantic_session_id).not.toBe(stdinUuid);
   });
 
-  it('T2: hook without stdin writes session.lock with semantic session_id and matching semantic_session_id', async () => {
+  it('T2: hook without stdin writes session.lock with UUID session_id and separate semantic_session_id', async () => {
     const dir = await mkProjectTracked();
     await runHook({ projectDir: dir });
 
     const lock = await readSessionLock(dir);
-    // session_id should be semantic (no stdin → semantic-id generation path)
-    expect(lock.session_id).toMatch(
+    expect(lock.session_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    expect(lock.semantic_session_id).toMatch(
       /^[a-z0-9._/-]+-\d{4}-\d{2}-\d{2}-[a-z-]+-\d+$/,
     );
-    // semantic_session_id should be identical to session_id on this path
-    expect(lock.semantic_session_id).toBe(lock.session_id);
+    expect(lock.semantic_session_id).not.toBe(lock.session_id);
   });
 
-  it('T3: bootstrapLock failure does NOT crash the hook (best-effort contract)', async () => {
+  it.skipIf(process.platform === 'win32')('T3: bootstrapLock failure does NOT crash the hook (best-effort contract)', async () => {
     // Force a bootstrap failure by making the .orchestrator/ directory a
     // read-only file (so the lock write to .orchestrator/session.lock fails).
     // The hook should still exit 0 and emit its normal event.
-    if (process.platform === 'win32') return; // chmod not meaningful on Windows
     const dir = await mkProjectTracked();
     // Pre-create the .orchestrator/ as a file (not a dir) so any mkdir+write
     // inside it fails.
@@ -735,16 +836,13 @@ describe('mechanical session.lock writer (#584 + #587)', { timeout: 15000 }, () 
 
   it('T6: PID in lock is the writer process PID (forensics only — NOT used for liveness)', async () => {
     const dir = await mkProjectTracked();
-    await runHook({ projectDir: dir });
+    const result = await runHook({ projectDir: dir });
 
     const lock = await readSessionLock(dir);
-    expect(typeof lock.pid).toBe('number');
-    expect(lock.pid).toBeGreaterThan(0);
-    // The PID is the hook subprocess's process.pid (transient, dies in <1s).
-    // It must NOT be process.pid of this test runner. We cannot assert
-    // exact equality (subprocess PID is unknown), but we can assert that
-    // the spawn child's PID was NOT the test runner's.
-    expect(lock.pid).not.toBe(process.pid);
+    // The lock belongs to the hook child, not merely to any positive PID that
+    // happens not to equal the test runner. Capturing child.pid makes a stale
+    // or parent PID fail this forensic-field regression directly.
+    expect(lock.pid).toBe(result.pid);
   });
 
   it('emits orchestrator.session.lock.acquired observability event', async () => {
@@ -815,13 +913,14 @@ describe('mechanical peer-detection banner (Epic #583 W3-P3)', { timeout: 15000 
     const result = await runHook({ projectDir: dir, useCwd: true });
 
     const messages = parseSystemMessages(result.stdout);
-    const mechanical = messages.find((m) =>
-      /^🔍\s+Mechanical peer-detection:\s+\d+\s+active/.test(m.systemMessage),
-    );
+    // #1089: one combined systemMessage — match the LINE, not the object.
+    const mechanical = messages
+      .flatMap((m) => m.systemMessage.split('\n'))
+      .find((l) => /^🔍\s+Mechanical peer-detection:\s+\d+\s+active/.test(l));
     expect(mechanical).toBeDefined();
     // The banner must include the peer's session_id and mode.
-    expect(mechanical.systemMessage).toContain('peer-mech');
-    expect(mechanical.systemMessage).toContain('deep');
+    expect(mechanical).toContain('peer-mech');
+    expect(mechanical).toContain('deep');
   });
 
   it('does NOT emit the mechanical banner when discoverActiveSessions returns only self', async () => {
@@ -832,9 +931,9 @@ describe('mechanical peer-detection banner (Epic #583 W3-P3)', { timeout: 15000 
     const result = await runHook({ projectDir: dir, useCwd: true });
 
     const messages = parseSystemMessages(result.stdout);
-    const mechanical = messages.find((m) =>
-      /^🔍\s+Mechanical peer-detection:/.test(m.systemMessage),
-    );
+    const mechanical = messages
+      .flatMap((m) => m.systemMessage.split('\n'))
+      .find((l) => /^🔍\s+Mechanical peer-detection:/.test(l));
     // No mechanical-peer banner — discoverActiveSessions returns only self.
     expect(mechanical).toBeUndefined();
   });

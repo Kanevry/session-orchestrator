@@ -1,545 +1,367 @@
 /**
  * tests/lib/resource-probe/evaluate.test.mjs
  *
- * Per-submodule unit tests for scripts/lib/resource-probe/evaluate.mjs.
+ * Unit tests for scripts/lib/resource-probe/evaluate.mjs.
  *
- * The facade test (tests/lib/resource-probe.test.mjs) covers evaluate() via
- * the resource-probe.mjs barrel export. This file imports directly from the
- * submodule and focuses on branches and edge-cases the facade test misses:
+ * Rewritten for #1089. The previous suite pinned the OLD rule set — one soft
+ * signal caps, free-RAM decides memory, the process count is compared against a
+ * session threshold — so every case in it passed while the rule set produced a
+ * warn-or-worse verdict on 99.0% of 1477 measured session starts. Pinning a
+ * broken instrument precisely is not coverage.
  *
- *  • Exact threshold boundaries (at/just-below/just-above)
- *  • The 'degraded' verdict tier (not covered by legacy facade tests)
- *  • bumpVerdict precedence with mixed-tier signals
- *  • Snapshots missing optional fields (defensive defaults for undefined)
- *  • Swap-only critical path without RAM involvement
- *  • All 4 verdict values (green/warn/degraded/critical)
+ * Each test below names the defect it catches (TV-001). The four that matter:
  *
- * Pure function — no mocks required. All expected values are hardcoded
- * literals (test-quality.md anti-pattern #3 avoided).
+ *  D1  free-RAM decides the memory verdict even when memory_pressure is present
+ *      (the #667 half-fix only suppressed the HEALTHY band, leaving 15..30%
+ *      still judged on Pages-free)
+ *  D2  claude_processes_count compared against a SESSION-denominated threshold
+ *      (measured 6x unit error)
+ *  D3  a single soft signal caps agents-per-wave outright
+ *  D4  the real hazard (2026-04-19 freeze class) must STILL escalate
+ *
+ * Pure function — no mocks. Expected values are hardcoded literals.
  */
 
 import { describe, it, expect } from 'vitest';
-import { evaluate } from '@lib/resource-probe/evaluate.mjs';
+import {
+  evaluate,
+  DEFAULT_RESOURCE_THRESHOLDS,
+  PROCESSES_PER_SESSION,
+} from '@lib/resource-probe/evaluate.mjs';
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
 // ---------------------------------------------------------------------------
 
 const DEFAULT_THRESHOLDS = {
-  'ram-free-min-gb': 4,
-  'ram-free-critical-gb': 2,
-  'cpu-load-max-pct': 80,
-  'concurrent-sessions-warn': 5,
+  ...DEFAULT_RESOURCE_THRESHOLDS,
   'ssh-no-docker': true,
 };
 
-/** A snapshot where all signals are healthy — should always yield green. */
+/**
+ * A snapshot where every signal is healthy.
+ *
+ * Deliberately shaped like a REAL Darwin snapshot rather than a convenient one
+ * (testing.md § Unfaithful Double): `ram_free_gb` is LOW because that is what
+ * `os.freemem()` actually reports on macOS — median 0.4 GB across 1477 measured
+ * starts — while pressure and available report the truth. A fixture with a
+ * comfortable `ram_free_gb: 8` cannot exercise the defect this module exists to
+ * fix, which is precisely why the old suite could not see it.
+ */
 const HEALTHY_SNAPSHOT = {
-  ram_free_gb: 8,
-  ram_used_pct: 40,
+  ram_free_gb: 0.3,
+  ram_available_gb: 6.6,
+  memory_pressure_pct_free: 53,
+  ram_used_pct: 97,
   cpu_load_1m: 1.2,
   cpu_load_pct: 30,
-  claude_processes_count: 1,
+  cpu_load_5m_pct: 28,
+  claude_processes_count: 16,
+  peer_sessions_count: 1,
   codex_processes_count: 0,
   other_node_processes: 3,
   swap_used_mb: null,
-  memory_pressure_pct_free: null,
   zombie_processes_count: null,
 };
 
 // ---------------------------------------------------------------------------
-// Verdict: green — baseline
+// D1 — memory signal precedence
 // ---------------------------------------------------------------------------
 
-describe('evaluate() — green baseline', () => {
-  it('returns green with empty reasons when all metrics are healthy', () => {
+describe('evaluate() — memory signal precedence (#1089 D1)', () => {
+  it('returns green on a real Darwin snapshot: 0.3 GB free, 53% pressure free', () => {
+    // Catches: the 84%-firing false critical. This exact shape (free far below
+    // ram-free-critical-gb, pressure healthy) was 53.8% of all measured starts.
     const result = evaluate(HEALTHY_SNAPSHOT, DEFAULT_THRESHOLDS);
     expect(result.verdict).toBe('green');
-    expect(result.reasons).toEqual([]);
     expect(result.recommended_agents_per_wave_cap).toBe(null);
+    expect(result.signals).toEqual({ hard: [], soft: [] });
   });
 
-  it('returns warn (not critical) when RAM equals the critical threshold exactly', () => {
-    // ram_free_gb === ramCrit (2) — "< ramCrit" is false, but "< ramMin (4)" is true → warn
-    const snap = { ...HEALTHY_SNAPSHOT, ram_free_gb: 2 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('warn');
-    expect(result.recommended_agents_per_wave_cap).toBe(2);
-  });
-
-  it('returns green when CPU is exactly at (not above) the cpu-load-max-pct threshold', () => {
-    // cpu_load_pct === 80 — boundary is strictly "> cpuMax"
-    const snap = { ...HEALTHY_SNAPSHOT, cpu_load_pct: 80 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('green');
-  });
-
-  it('returns green when claude_processes_count is exactly one below concurrent-sessions-warn', () => {
-    // concWarn=5, so 4 processes → no warn
-    const snap = { ...HEALTHY_SNAPSHOT, claude_processes_count: 4 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('green');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Verdict: warn — individual triggers
-// ---------------------------------------------------------------------------
-
-describe('evaluate() — warn verdict', () => {
-  it('returns warn + cap=2 when RAM is just below the min threshold', () => {
-    // ram_free_gb < 4 (ramMin) → warn
-    const snap = { ...HEALTHY_SNAPSHOT, ram_free_gb: 3.9 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('warn');
-    expect(result.recommended_agents_per_wave_cap).toBe(2);
-    expect(result.reasons[0]).toMatch(/RAM free 3\.9 GB below threshold 4 GB/);
-  });
-
-  it('returns warn + cap=2 when CPU load is just above the threshold', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, cpu_load_pct: 81 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('warn');
-    expect(result.recommended_agents_per_wave_cap).toBe(2);
-    expect(result.reasons[0]).toMatch(/CPU load 81%/);
-  });
-
-  it('returns warn when claude_processes_count meets the concurrent-sessions-warn threshold', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, claude_processes_count: 5 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('warn');
-    expect(result.reasons[0]).toMatch(/5 Claude processes/);
-  });
-
-  it('returns warn when swap is in warn range (1024..2048 MB) and pressure is null', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, swap_used_mb: 1500, memory_pressure_pct_free: null };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('warn');
-    expect(result.recommended_agents_per_wave_cap).toBe(2);
-    expect(result.reasons.some((r) => r.includes('1500 MB in warn range'))).toBe(true);
-  });
-
-  it('returns warn when memory_pressure is in warn range (15..30%)', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, swap_used_mb: null, memory_pressure_pct_free: 20 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('warn');
-    expect(result.recommended_agents_per_wave_cap).toBe(2);
-    expect(result.reasons.some((r) => r.includes('20% in warn range (15..30%)'))).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Verdict: degraded
-// ---------------------------------------------------------------------------
-
-describe('evaluate() — degraded verdict', () => {
-  it('returns degraded + cap=2 when swap is in degraded range (2048..3072 MB) and pressure is null', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, swap_used_mb: 2500, memory_pressure_pct_free: null };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('degraded');
-    expect(result.recommended_agents_per_wave_cap).toBe(2);
-    expect(result.reasons.some((r) => r.includes('2500 MB in degraded range'))).toBe(true);
-  });
-
-  it('returns degraded when memory_pressure is in degraded range (5..15%)', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, swap_used_mb: null, memory_pressure_pct_free: 10 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('degraded');
-    expect(result.recommended_agents_per_wave_cap).toBe(2);
-    expect(result.reasons.some((r) => r.includes('10% in degraded range (5..15%)'))).toBe(true);
-  });
-
-  it('degraded swap + warn memory_pressure → final verdict degraded (bumpVerdict keeps highest)', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, swap_used_mb: 2500, memory_pressure_pct_free: 20 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('degraded');
-    expect(result.recommended_agents_per_wave_cap).toBe(2);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Verdict: critical
-// ---------------------------------------------------------------------------
-
-describe('evaluate() — critical verdict', () => {
-  it('returns critical + cap=0 when RAM is below the critical threshold', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, ram_free_gb: 1 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('critical');
-    expect(result.recommended_agents_per_wave_cap).toBe(0);
-    expect(result.reasons[0]).toMatch(/RAM free 1\.0 GB below critical threshold 2 GB/);
-  });
-
-  it('returns critical + cap=0 when swap exceeds critical threshold (3072 MB) and pressure is null', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, swap_used_mb: 3500, memory_pressure_pct_free: null };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('critical');
-    expect(result.recommended_agents_per_wave_cap).toBe(0);
-    expect(result.reasons.some((r) => r.includes('3500 MB above critical threshold 3072 MB'))).toBe(true);
-  });
-
-  it('returns critical + cap=0 when memory_pressure_pct_free < 5%', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, swap_used_mb: null, memory_pressure_pct_free: 3 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('critical');
-    expect(result.recommended_agents_per_wave_cap).toBe(0);
-    expect(result.reasons.some((r) => r.includes('3% below critical threshold 5%'))).toBe(true);
-  });
-
-  it('critical RAM beats warn CPU — final verdict stays critical, cap=0', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, ram_free_gb: 1, cpu_load_pct: 90 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('critical');
-    expect(result.recommended_agents_per_wave_cap).toBe(0);
-  });
-
-  it('critical RAM + degraded swap → verdict critical, cap=0', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, ram_free_gb: 1, swap_used_mb: 2500, memory_pressure_pct_free: null };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('critical');
-    expect(result.recommended_agents_per_wave_cap).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// macOS pressure-first override
-// ---------------------------------------------------------------------------
-
-describe('evaluate() — macOS pressure-first override', () => {
-  const MAC_BASE = {
-    ...HEALTHY_SNAPSHOT,
-    ram_free_gb: 0.5,    // would normally be critical (< 2 GB)
-    ram_used_pct: 95,
-    memory_pressure_pct_free: null,
-  };
-
-  it('suppresses critical RAM verdict when memory_pressure reports ≥ 30% free', () => {
-    const snap = { ...MAC_BASE, memory_pressure_pct_free: 65 };
+  it('judges on pressure, NOT free RAM, inside the unhealthy 15..30% band', () => {
+    // THE D1 regression. The #667 fix only suppressed free-RAM when pressure was
+    // HEALTHY (>=30%). At 20% the old code fell through to ram_free_gb 0.3 and
+    // returned critical + cap 0. Correct behaviour: one soft signal, no cap.
+    const snap = { ...HEALTHY_SNAPSHOT, memory_pressure_pct_free: 20 };
     const result = evaluate(snap, DEFAULT_THRESHOLDS);
     expect(result.verdict).toBe('green');
     expect(result.recommended_agents_per_wave_cap).toBe(null);
-    expect(result.reasons[0]).toMatch(/macOS memory_pressure healthy.*Pages-free underreports/);
+    expect(result.signals.soft).toEqual(['memory']);
+    expect(result.signals.hard).toEqual([]);
   });
 
-  it('does not suppress when pressure is exactly at the boundary (30% — not healthy)', () => {
-    // MACOS_HEALTHY_PRESSURE_PCT = 30; condition is >= 30, so 30 IS healthy
-    const snap = { ...MAC_BASE, memory_pressure_pct_free: 30 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    // Pressure ≥ 30 suppresses RAM; memory_pressure 30 does NOT enter any warn/degraded range
-    // (those ranges are < 30, < 15, < 5)
-    expect(result.verdict).toBe('green');
-    expect(result.recommended_agents_per_wave_cap).toBe(null);
-  });
-
-  it('does not suppress when pressure is just below the healthy boundary (29%)', () => {
-    // 29 < 30 → not macosPressureHealthy → RAM signal fires (critical)
-    const snap = { ...MAC_BASE, memory_pressure_pct_free: 25 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('critical');
-    expect(result.recommended_agents_per_wave_cap).toBe(0);
-  });
-
-  it('does not suppress when memory_pressure_pct_free is null (Linux path)', () => {
-    const snap = { ...MAC_BASE, memory_pressure_pct_free: null };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('critical');
-    expect(result.recommended_agents_per_wave_cap).toBe(0);
-  });
-
-  it('suppresses RAM but CPU warn still fires when pressure is healthy', () => {
-    const snap = { ...MAC_BASE, memory_pressure_pct_free: 65, cpu_load_pct: 95 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('warn');
-    expect(result.recommended_agents_per_wave_cap).toBe(2);
-    expect(result.reasons.some((r) => /CPU load 95/.test(r))).toBe(true);
-  });
-
-  it('healthy pressure suppresses swap critical signal (treats as informational)', () => {
-    const snap = { ...MAC_BASE, memory_pressure_pct_free: 81, swap_used_mb: 5219 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    // Pressure healthy → swap signal informational only → no critical
-    expect(result.verdict).not.toBe('critical');
-    expect(result.recommended_agents_per_wave_cap).not.toBe(0);
-    expect(result.reasons.some((r) => /Swap usage 5219 MB present.*informational/.test(r))).toBe(true);
-  });
-
-  it('unhealthy pressure lets swap critical signal through', () => {
-    const snap = { ...MAC_BASE, memory_pressure_pct_free: 10, swap_used_mb: 4000 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('critical');
-    expect(result.recommended_agents_per_wave_cap).toBe(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// macOS available-RAM override (#667 — judge criticality on AVAILABLE not FREE)
-// ---------------------------------------------------------------------------
-
-describe('evaluate() — macOS available-RAM (#667)', () => {
-  // On macOS, os.freemem() (ram_free_gb) reflects only `Pages free` and reads
-  // sub-1 GB while the host has tens of GB reclaimable. When the probe supplies
-  // ram_available_gb (free + reclaimable from vm_stat), criticality is judged
-  // on AVAILABLE. To isolate this signal from the memory_pressure suppression,
-  // these fixtures set memory_pressure_pct_free below the healthy boundary.
-  const LOW_FREE_BASE = {
-    ...HEALTHY_SNAPSHOT,
-    ram_free_gb: 0.3,                 // would be critical on FREE alone (< 2 GB)
-    ram_used_pct: 99,
-    memory_pressure_pct_free: 20,     // < 30 → NOT pressure-healthy; isolates available signal
-  };
-
-  it('judges GREEN when free is critically low but available RAM is ample', () => {
-    // free 0.3 GB (looks critical) but available 80 GB → no RAM verdict-bump.
-    // memory_pressure 20% normally adds a warn, so assert the RAM signal itself
-    // did not fire critical and no RAM reason is present.
-    const snap = { ...LOW_FREE_BASE, ram_available_gb: 80, memory_pressure_pct_free: null };
+  it('falls back to ram_available_gb when pressure is absent', () => {
+    const snap = { ...HEALTHY_SNAPSHOT, memory_pressure_pct_free: null, ram_available_gb: 6.6 };
     const result = evaluate(snap, DEFAULT_THRESHOLDS);
     expect(result.verdict).toBe('green');
-    expect(result.recommended_agents_per_wave_cap).toBe(null);
-    expect(result.reasons).toEqual([]);
+    expect(result.signals.soft).toEqual([]);
   });
 
-  it('does NOT bump to critical on low free when available RAM is high (pressure unhealthy)', () => {
-    // memory_pressure 20% is unhealthy → the RAM branch runs, but available 80 GB
-    // keeps RAM green; only the memory_pressure-range signal adds a warn.
-    const snap = { ...LOW_FREE_BASE, ram_available_gb: 80 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('warn'); // from memory_pressure 20% in 15..30 range
-    expect(result.reasons.some((r) => r.includes('RAM available') && r.includes('critical'))).toBe(false);
-    expect(result.reasons.some((r) => r.includes('20% in warn range'))).toBe(true);
-  });
-
-  it('judges CRITICAL when available RAM is genuinely low (cap=0)', () => {
-    // free 0.3 GB AND available 1.0 GB (< critical 2 GB) → real RAM critical.
-    const snap = { ...LOW_FREE_BASE, ram_available_gb: 1.0 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('critical');
-    expect(result.recommended_agents_per_wave_cap).toBe(0);
-    expect(result.reasons.some((r) => r.includes('RAM available 1.0 GB below critical threshold 2 GB'))).toBe(true);
-  });
-
-  it('judges WARN when available RAM is below min but above critical (cap=2)', () => {
-    // available 3.0 GB: above critical (2), below min (4) → warn.
-    const snap = { ...LOW_FREE_BASE, ram_available_gb: 3.0 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('warn');
-    expect(result.recommended_agents_per_wave_cap).toBe(2);
-    expect(result.reasons.some((r) => r.includes('RAM available 3.0 GB below threshold 4 GB'))).toBe(true);
-  });
-
-  it('falls back to FREE when ram_available_gb is null (Linux path unchanged)', () => {
-    // No ram_available_gb → use ram_free_gb (0.3 GB) → critical, with "RAM free" label.
-    const snap = { ...LOW_FREE_BASE, ram_available_gb: null };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('critical');
-    expect(result.recommended_agents_per_wave_cap).toBe(0);
-    expect(result.reasons.some((r) => r.includes('RAM free 0.3 GB below critical threshold 2 GB'))).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Multi-signal combining (bumpVerdict / cap interactions)
-// ---------------------------------------------------------------------------
-
-describe('evaluate() — multi-signal combining', () => {
-  it('combines two warn signals — verdict warn, reasons list has both entries', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, ram_free_gb: 3, cpu_load_pct: 90 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('warn');
-    expect(result.recommended_agents_per_wave_cap).toBe(2);
-    expect(result.reasons.length).toBe(2);
-  });
-
-  it('most-restrictive cap wins: warn swap + warn memory_pressure → cap=2, not null', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, swap_used_mb: 1500, memory_pressure_pct_free: 25 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('warn');
-    expect(result.recommended_agents_per_wave_cap).toBe(2);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Zombie signal
-// ---------------------------------------------------------------------------
-
-describe('evaluate() — zombie signal', () => {
-  const THRESHOLDS_WITH_ZOMBIE = { ...DEFAULT_THRESHOLDS, 'zombie-threshold-min': 30 };
-  const ZOMBIE_BASE = {
-    ...HEALTHY_SNAPSHOT,
-    claude_processes_count: 3,
-    zombie_processes_count: null,
-  };
-
-  it('zombie >= 1 AND claude > 0 → escalates to at least warn', () => {
-    const snap = { ...ZOMBIE_BASE, zombie_processes_count: 2 };
-    const result = evaluate(snap, THRESHOLDS_WITH_ZOMBIE);
-    expect(result.verdict).toBe('warn');
-    expect(result.reasons.some((r) => r.includes('2 zombie') && r.includes('30 min'))).toBe(true);
-  });
-
-  it('zombie >= 1 BUT claude_processes_count = 0 → no escalation', () => {
-    const snap = { ...ZOMBIE_BASE, claude_processes_count: 0, zombie_processes_count: 5 };
-    const result = evaluate(snap, THRESHOLDS_WITH_ZOMBIE);
-    expect(result.verdict).toBe('green');
-    expect(result.reasons.some((r) => r.includes('zombie'))).toBe(false);
-  });
-
-  it('zombie_processes_count = 0 → no escalation', () => {
-    const snap = { ...ZOMBIE_BASE, zombie_processes_count: 0 };
-    const result = evaluate(snap, THRESHOLDS_WITH_ZOMBIE);
-    expect(result.verdict).toBe('green');
-  });
-
-  it('zombie_processes_count = null → feature disabled, no escalation', () => {
-    const snap = { ...ZOMBIE_BASE, zombie_processes_count: null };
-    const result = evaluate(snap, THRESHOLDS_WITH_ZOMBIE);
-    expect(result.verdict).toBe('green');
-  });
-
-  it('zombie warn does not downgrade a higher degraded verdict', () => {
-    // Swap at degraded level + zombies → degraded wins via bumpVerdict
-    const snap = {
-      ...ZOMBIE_BASE,
-      swap_used_mb: 2500,
-      memory_pressure_pct_free: null,
-      zombie_processes_count: 3,
-    };
-    const result = evaluate(snap, THRESHOLDS_WITH_ZOMBIE);
-    expect(result.verdict).toBe('degraded');
-    expect(result.reasons.some((r) => r.includes('zombie'))).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Boundary pin: exact-zero ram_available_gb with null memory_pressure (#667)
-// ---------------------------------------------------------------------------
-//
-// The !==null guard treats 0 as a present value (genuinely-zero RAM), while
-// null signals "field unavailable". This test pins that exact-0 is critical —
-// parsers return null on measurement failure, never 0, so 0 means truly-zero
-// RAM. If the guard ever changes to falsy-check (!ram_available_gb), 0 would
-// be treated as "unavailable" and silently fall back to ram_free_gb. This
-// assertion would fail loudly before that regression could ship.
-
-describe('evaluate() — exact-zero ram_available_gb boundary pin (#667)', () => {
-  it('returns critical when ram_available_gb=0 and memory_pressure_pct_free=null (genuinely-zero RAM)', () => {
-    // ram_available_gb=0 means truly zero reclaimable RAM: 0 < ramCrit(2) → critical.
-    // memory_pressure_pct_free=null means signal unavailable — no suppression.
+  it('falls back to ram_free_gb only when BOTH better signals are absent (Linux path)', () => {
+    // On Linux os.freemem() is accurate, so free-RAM gating there is correct,
+    // not a concession. 1.5 GB free < critical 2 → hard signal.
     const snap = {
       ...HEALTHY_SNAPSHOT,
-      ram_available_gb: 0,
       memory_pressure_pct_free: null,
+      ram_available_gb: null,
+      ram_free_gb: 1.5,
     };
     const result = evaluate(snap, DEFAULT_THRESHOLDS);
     expect(result.verdict).toBe('critical');
     expect(result.recommended_agents_per_wave_cap).toBe(0);
-    // Reason must reference the available label, not the free label
-    expect(result.reasons.some((r) => r.includes('RAM available 0.0 GB below critical threshold 2 GB'))).toBe(true);
+    expect(result.signals.hard).toEqual(['memory']);
+  });
+
+  it('a healthy pressure reading states WHY free RAM was not consulted', () => {
+    // The operator-facing half of HR-106: an alarming banner number beside a
+    // green verdict must explain itself, or it teaches distrust of the verdict.
+    const result = evaluate(HEALTHY_SNAPSHOT, DEFAULT_THRESHOLDS);
+    expect(result.reasons.some((r) => r.includes('memory_pressure healthy') && r.includes('Pages-free'))).toBe(true);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Defensive defaults — missing optional fields
+// D4 — the real hazard must still escalate
 // ---------------------------------------------------------------------------
 
-describe('evaluate() — defensive defaults for missing fields', () => {
-  it('does not throw and returns green for a legacy snapshot without new fields', () => {
-    const legacySnap = {
-      ram_free_gb: 8,
-      ram_used_pct: 40,
-      cpu_load_1m: 1.2,
-      cpu_load_pct: 30,
-      claude_processes_count: 1,
-      codex_processes_count: 0,
-      other_node_processes: 5,
-      // No swap_used_mb, memory_pressure_pct_free, zombie_processes_count
-    };
-    expect(() => evaluate(legacySnap, DEFAULT_THRESHOLDS)).not.toThrow();
-    const result = evaluate(legacySnap, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('green');
-    expect(result.recommended_agents_per_wave_cap).toBe(null);
+describe('evaluate() — genuine pressure still escalates (#1089 D4)', () => {
+  it('escalates to critical when pressure is in the red band (<15%)', () => {
+    // Catches: over-loosening. This is the 2026-04-19 freeze class — the whole
+    // reason the gate exists. Loosening must not reach it.
+    const snap = { ...HEALTHY_SNAPSHOT, memory_pressure_pct_free: 8 };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.verdict).toBe('critical');
+    expect(result.recommended_agents_per_wave_cap).toBe(0);
+    expect(result.signals.hard).toEqual(['memory']);
   });
 
-  it('null claude_processes_count does not trigger a concurrent-sessions warning', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, claude_processes_count: null };
+  it('escalates to critical on heavy swap WHILE memory is unhealthy', () => {
+    const snap = { ...HEALTHY_SNAPSHOT, memory_pressure_pct_free: 20, swap_used_mb: 4096 };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.verdict).toBe('critical');
+    expect(result.signals.hard).toEqual(['swap']);
+  });
+
+  it('ignores the SAME swap volume when memory is healthy', () => {
+    // Catches: treating a cumulative counter as live pressure (HR-104). The
+    // reference host carried 6884 MB swap at 35% pressure-free, fully responsive.
+    const snap = { ...HEALTHY_SNAPSHOT, swap_used_mb: 6884 };
     const result = evaluate(snap, DEFAULT_THRESHOLDS);
     expect(result.verdict).toBe('green');
-    expect(result.reasons).toEqual([]);
+    expect(result.signals.soft).toEqual([]);
+    expect(result.reasons.some((r) => r.includes('cumulative, not live pressure'))).toBe(true);
   });
 });
 
 // ---------------------------------------------------------------------------
-// heavy-repo preflight cap (HR-003/HR-004, baseline #60)
+// D2 — concurrency unit
 // ---------------------------------------------------------------------------
-//
-// Optional third `options` param: { heavyRepo, agentsPerWave }. When
-// heavyRepo is true, recommended_agents_per_wave_cap is forced to at most
-// agentsPerWave REGARDLESS of the live-probe verdict — a static preflight
-// ceiling. More-restrictive-wins: effective = min(existing cap ?? Infinity,
-// agentsPerWave). Omitting the third arg entirely preserves pre-existing
-// behaviour (back-compat).
 
-describe('evaluate() — heavy-repo preflight cap (#60)', () => {
-  it('omitted options param preserves back-compat behaviour (green, cap null)', () => {
+describe('evaluate() — concurrency is denominated in sessions (#1089 D2)', () => {
+  it('does NOT fire on 16 Claude processes when only 1 peer session is live', () => {
+    // THE D2 regression. Old code compared 16 >= 5 and warned; measured ratio
+    // processes:sessions is 6.0, so 16 processes is ~3 sessions.
     const result = evaluate(HEALTHY_SNAPSHOT, DEFAULT_THRESHOLDS);
-    expect(result.verdict).toBe('green');
-    expect(result.recommended_agents_per_wave_cap).toBe(null);
+    expect(result.signals.soft).toEqual([]);
+    expect(result.reasons.some((r) => r.includes('peer session'))).toBe(false);
   });
 
-  it('forces a cap on an otherwise-uncapped green verdict when heavyRepo is true', () => {
+  it('fires when peer SESSIONS reach the threshold', () => {
+    const snap = { ...HEALTHY_SNAPSHOT, peer_sessions_count: 5 };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.signals.soft).toEqual(['concurrency']);
+    expect(result.reasons.some((r) => r.includes('5 peer session(s) live in the registry'))).toBe(true);
+  });
+
+  it('falls back to the RESCALED process count when the registry is unavailable', () => {
+    // 5 sessions x 6 processes/session = 30. 29 processes stays silent...
+    const below = { ...HEALTHY_SNAPSHOT, peer_sessions_count: null, claude_processes_count: 29 };
+    expect(evaluate(below, DEFAULT_THRESHOLDS).signals.soft).toEqual([]);
+    // ...30 fires.
+    const at = { ...HEALTHY_SNAPSHOT, peer_sessions_count: null, claude_processes_count: 30 };
+    expect(evaluate(at, DEFAULT_THRESHOLDS).signals.soft).toEqual(['concurrency']);
+  });
+
+  it('the rescale factor is the exported constant, not a magic number', () => {
+    const threshold = DEFAULT_THRESHOLDS['concurrent-sessions-warn'] * PROCESSES_PER_SESSION;
+    const snap = { ...HEALTHY_SNAPSHOT, peer_sessions_count: null, claude_processes_count: threshold };
+    expect(evaluate(snap, DEFAULT_THRESHOLDS).reasons.some((r) => r.includes(`fallback threshold ${threshold}`))).toBe(true);
+  });
+
+  it('registry count of 0 wins over a high process count (no fallback when known)', () => {
+    // A known-zero peer count is an ANSWER, not a missing value — the fallback
+    // must not fire behind it. Catches a `?? `-vs-`!= null` confusion.
+    const snap = { ...HEALTHY_SNAPSHOT, peer_sessions_count: 0, claude_processes_count: 40 };
+    expect(evaluate(snap, DEFAULT_THRESHOLDS).signals.soft).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D3 — two-signal rule
+// ---------------------------------------------------------------------------
+
+describe('evaluate() — two-signal rule (#1089 D3)', () => {
+  it('one soft signal reports but does NOT cap', () => {
+    // THE D3 regression. Old code: cpu > max → cap 2, full stop.
+    const snap = { ...HEALTHY_SNAPSHOT, cpu_load_pct: 95, cpu_load_5m_pct: 95 };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.verdict).toBe('green');
+    expect(result.recommended_agents_per_wave_cap).toBe(null);
+    expect(result.signals.soft).toEqual(['cpu']);
+    expect(result.reasons.some((r) => r.includes('no second signal agrees'))).toBe(true);
+  });
+
+  it('two independent soft signals cap at 2', () => {
+    const snap = {
+      ...HEALTHY_SNAPSHOT,
+      cpu_load_pct: 95,
+      cpu_load_5m_pct: 95,
+      peer_sessions_count: 6,
+    };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.verdict).toBe('warn');
+    expect(result.recommended_agents_per_wave_cap).toBe(2);
+    expect(result.signals.soft).toEqual(['cpu', 'concurrency']);
+  });
+
+  it('a hard signal outranks any number of soft ones', () => {
+    const snap = {
+      ...HEALTHY_SNAPSHOT,
+      memory_pressure_pct_free: 8,
+      cpu_load_pct: 99,
+      cpu_load_5m_pct: 99,
+      peer_sessions_count: 9,
+    };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.verdict).toBe('critical');
+    expect(result.recommended_agents_per_wave_cap).toBe(0);
+  });
+
+  it('a 1m CPU spike with a calm 5m average is not a signal at all (#943)', () => {
+    // The decaying tail of the coordinator's own gate run. Not counted, so it
+    // cannot become the second signal that triggers a cap.
+    const snap = {
+      ...HEALTHY_SNAPSHOT,
+      cpu_load_pct: 99,
+      cpu_load_5m_pct: 40,
+      peer_sessions_count: 6,
+    };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.verdict).toBe('green');
+    expect(result.signals.soft).toEqual(['concurrency']);
+    expect(result.reasons.some((r) => r.includes('decaying transient'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Zombies
+// ---------------------------------------------------------------------------
+
+describe('evaluate() — zombie signal (#178)', () => {
+  it('is soft: zombies alone never cap', () => {
+    const snap = { ...HEALTHY_SNAPSHOT, zombie_processes_count: 13 };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.verdict).toBe('green');
+    expect(result.signals.soft).toEqual(['zombies']);
+  });
+
+  it('stays silent on an otherwise idle host (no live peers or processes)', () => {
+    const snap = {
+      ...HEALTHY_SNAPSHOT,
+      zombie_processes_count: 2,
+      peer_sessions_count: 0,
+      claude_processes_count: 0,
+    };
+    expect(evaluate(snap, DEFAULT_THRESHOLDS).signals.soft).toEqual([]);
+  });
+
+  it('null zombie count means the feature is off, not zero', () => {
+    const snap = { ...HEALTHY_SNAPSHOT, zombie_processes_count: null };
+    expect(evaluate(snap, DEFAULT_THRESHOLDS).signals.soft).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Heavy-repo preflight ceiling (#60) — unchanged behaviour
+// ---------------------------------------------------------------------------
+
+describe('evaluate() — heavy-repo preflight cap (#60)', () => {
+  it('applies the static ceiling even on a green verdict', () => {
     const result = evaluate(HEALTHY_SNAPSHOT, DEFAULT_THRESHOLDS, { heavyRepo: true, agentsPerWave: 4 });
     expect(result.verdict).toBe('green');
     expect(result.recommended_agents_per_wave_cap).toBe(4);
   });
 
-  it('does not force a cap when heavyRepo is false, even with agentsPerWave set', () => {
-    const result = evaluate(HEALTHY_SNAPSHOT, DEFAULT_THRESHOLDS, { heavyRepo: false, agentsPerWave: 4 });
-    expect(result.verdict).toBe('green');
-    expect(result.recommended_agents_per_wave_cap).toBe(null);
-  });
-
-  it('more-restrictive-wins: keeps the tighter live-probe cap when agentsPerWave is looser', () => {
-    // CPU overload alone yields cap=2 (warn) — agentsPerWave=6 must not loosen it.
-    const snap = { ...HEALTHY_SNAPSHOT, cpu_load_pct: 95 };
+  it('more-restrictive-wins: keeps the tighter live cap when agentsPerWave is looser', () => {
+    const snap = { ...HEALTHY_SNAPSHOT, cpu_load_pct: 95, cpu_load_5m_pct: 95, peer_sessions_count: 6 };
     const result = evaluate(snap, DEFAULT_THRESHOLDS, { heavyRepo: true, agentsPerWave: 6 });
     expect(result.verdict).toBe('warn');
     expect(result.recommended_agents_per_wave_cap).toBe(2);
   });
 
-  it('more-restrictive-wins: tightens to agentsPerWave when it is stricter than the live-probe cap', () => {
-    // CPU overload alone yields cap=2 (warn) — agentsPerWave=1 must win (tighter).
-    const snap = { ...HEALTHY_SNAPSHOT, cpu_load_pct: 95 };
+  it('more-restrictive-wins: tightens to agentsPerWave when it is stricter', () => {
+    const snap = { ...HEALTHY_SNAPSHOT, cpu_load_pct: 95, cpu_load_5m_pct: 95, peer_sessions_count: 6 };
     const result = evaluate(snap, DEFAULT_THRESHOLDS, { heavyRepo: true, agentsPerWave: 1 });
     expect(result.verdict).toBe('warn');
     expect(result.recommended_agents_per_wave_cap).toBe(1);
   });
 
-  it('critical verdict cap (0) is unaffected by a looser agentsPerWave ceiling', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, ram_free_gb: 1 };
-    const result = evaluate(snap, DEFAULT_THRESHOLDS, { heavyRepo: true, agentsPerWave: 4 });
-    expect(result.verdict).toBe('critical');
-    expect(result.recommended_agents_per_wave_cap).toBe(0);
-  });
-
-  it('heavyRepo true with agentsPerWave omitted does not throw and leaves cap unchanged', () => {
-    expect(() => evaluate(HEALTHY_SNAPSHOT, DEFAULT_THRESHOLDS, { heavyRepo: true })).not.toThrow();
-    const result = evaluate(HEALTHY_SNAPSHOT, DEFAULT_THRESHOLDS, { heavyRepo: true });
-    expect(result.recommended_agents_per_wave_cap).toBe(null);
-  });
-
-  // Session-start Phase 4.5 (skills/session-start/phase-4-5-resource-health.md)
-  // documents `agentsPerWave: config['agents-per-wave']` verbatim — and
-  // `config['agents-per-wave']` is an OBJECT `{ default, <mode>: N }` whenever
-  // Session Config uses the documented HR-003 parenthetical override syntax
-  // (`agents-per-wave: 4 (deep: 18)`, parsed by `_coerceInteger()` in
-  // scripts/lib/config/coercers.mjs). Passing that object straight through
-  // must resolve to `.default`, not silently no-op the cap.
-  it('resolves the object override shape `{ default, deep }` using the default — caps agents down', () => {
+  it('resolves the {default, mode} override object to its default', () => {
     const result = evaluate(HEALTHY_SNAPSHOT, DEFAULT_THRESHOLDS, {
       heavyRepo: true,
       agentsPerWave: { default: 4, deep: 18 },
     });
-    expect(result.verdict).toBe('green');
     expect(result.recommended_agents_per_wave_cap).toBe(4);
+  });
+
+  it('is inert when heavyRepo is not true', () => {
+    const result = evaluate(HEALTHY_SNAPSHOT, DEFAULT_THRESHOLDS, { heavyRepo: false, agentsPerWave: 4 });
+    expect(result.recommended_agents_per_wave_cap).toBe(null);
+  });
+
+  it('never raises a coordinator-direct 0', () => {
+    const snap = { ...HEALTHY_SNAPSHOT, memory_pressure_pct_free: 8 };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS, { heavyRepo: true, agentsPerWave: 6 });
+    expect(result.recommended_agents_per_wave_cap).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Defensive shapes
+// ---------------------------------------------------------------------------
+
+describe('evaluate() — defensive shapes', () => {
+  it('does not throw on a legacy snapshot missing every optional field', () => {
+    const legacy = { ram_free_gb: 8, ram_used_pct: 40, cpu_load_1m: 1, cpu_load_pct: 25 };
+    const result = evaluate(legacy, DEFAULT_THRESHOLDS);
+    expect(result.verdict).toBe('green');
+    expect(result.signals).toEqual({ hard: [], soft: [] });
+  });
+
+  it('null claude_processes_count AND null peer count produce no concurrency signal', () => {
+    const snap = { ...HEALTHY_SNAPSHOT, peer_sessions_count: null, claude_processes_count: null };
+    expect(evaluate(snap, DEFAULT_THRESHOLDS).signals.soft).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Canonical defaults
+// ---------------------------------------------------------------------------
+
+describe('DEFAULT_RESOURCE_THRESHOLDS — single source (#1089)', () => {
+  it('carries the four documented keys', () => {
+    expect(DEFAULT_RESOURCE_THRESHOLDS).toEqual({
+      'ram-free-min-gb': 4,
+      'ram-free-critical-gb': 2,
+      'cpu-load-max-pct': 90,
+      'concurrent-sessions-warn': 5,
+    });
+  });
+
+  it('is frozen, so a consumer cannot mutate the shared default in place', () => {
+    // Catches: one consumer spreading-then-mutating and silently changing the
+    // thresholds every other consumer sees. Three divergent copies is exactly
+    // the state this constant replaced.
+    expect(Object.isFrozen(DEFAULT_RESOURCE_THRESHOLDS)).toBe(true);
   });
 });

@@ -7,7 +7,7 @@
  * Part of v3.1.0 Epic #157, Sub-Epic resource-gate. Issue #193.
  */
 
-import { probe } from './resource-probe.mjs';
+import { probe, evaluate } from './resource-probe.mjs';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -30,10 +30,23 @@ async function extractMeasurements(opts) {
       ramFreeGb: probeOverride.ramFreeGb,
       // Tests may supply ramAvailableGb to exercise the macOS path; absent → null.
       ramAvailableGb: probeOverride.ramAvailableGb ?? null,
+      // macOS memory_pressure — the highest-precedence memory signal (#1089).
+      memoryPressurePctFree: probeOverride.memoryPressurePctFree ?? null,
       cpuLoadPct: probeOverride.cpuLoadPct,
       // 5m-average CPU pct (#943); absent → null (legacy overrides → 1m-only judging).
       cpuLoad5mPct: probeOverride.cpuLoad5mPct ?? null,
+      // #1089: live peer SESSIONS from the registry — the unit
+      // `concurrent-sessions-warn` is named for. Absent → null, and the
+      // rescaled process-count fallback applies.
+      peerSessions: probeOverride.peerSessions ?? null,
+      // Raw Claude PROCESS count. Historically (and misleadingly) named
+      // `concurrentSessions` on this override object; kept as an accepted alias
+      // so existing callers keep working, but it is compared against a
+      // process-denominated threshold now, never a session-denominated one.
+      claudeProcesses: probeOverride.claudeProcesses ?? probeOverride.concurrentSessions ?? null,
       concurrentSessions: probeOverride.concurrentSessions,
+      swapUsedMb: probeOverride.swapUsedMb ?? null,
+      zombieProcesses: probeOverride.zombieProcesses ?? null,
     };
   }
 
@@ -48,12 +61,22 @@ async function extractMeasurements(opts) {
     // macOS: free + reclaimable (vm_stat). null on Linux/Windows where
     // os.freemem() is already accurate. (#667)
     ramAvailableGb: snapshot.ram_available_gb ?? null,
+    // macOS memory_pressure — outranks both of the above (#1089).
+    memoryPressurePctFree: snapshot.memory_pressure_pct_free ?? null,
     cpuLoadPct: snapshot.cpu_load_pct,
     // 5m load-average as pct-of-cores (#943). null on Windows/zero-load, where
     // the gate falls back to judging the 1m-derived cpu_load_pct alone.
     cpuLoad5mPct: snapshot.cpu_load_5m_pct ?? null,
-    // concurrent sessions: number of claude processes found by the probe.
+    // #1089: live peer SESSIONS (registry, self excluded) — what
+    // `concurrent-sessions-warn` was always named for. This line used to read
+    // `concurrentSessions: snapshot.claude_processes_count`, a measured 6x unit
+    // error that made the gate reduce waves on essentially every dispatch.
+    peerSessions: snapshot.peer_sessions_count ?? null,
+    claudeProcesses: snapshot.claude_processes_count ?? null,
+    // Retained for the returned `measurements` object, which callers log.
     concurrentSessions: snapshot.claude_processes_count ?? 0,
+    swapUsedMb: snapshot.swap_used_mb ?? null,
+    zombieProcesses: snapshot.zombie_processes_count ?? null,
   };
 }
 
@@ -131,28 +154,31 @@ function applyHeavyRepoCap(result, opts) {
 }
 
 /**
- * Rules 3-8: resource-driven decision sequence (RAM/CPU/concurrent-sessions).
- * Extracted so `applyDecisionRules` can layer the HR-004 heavy-repo cap on
- * top without duplicating this sequence.
+ * Resource-driven decision, delegated to `evaluate()` (#1089).
  *
- * @param {{ramFreeGb: number, ramAvailableGb?: number|null, cpuLoadPct: number, cpuLoad5mPct?: number|null, concurrentSessions: number}} measurements
+ * This function used to carry its OWN copy of the RAM/CPU/concurrency rules,
+ * running in sequence with first-match-wins. That duplication is exactly why
+ * the #667 available-RAM correction only ever landed halfway: it was applied
+ * here and in `evaluate()` separately, and the memory_pressure precedence that
+ * followed reached only one of the two. There is now one rule engine and this
+ * is a translation layer over it.
+ *
+ * Verdict → decision mapping:
+ *   critical (hard signal)      → coordinator-direct, 0 agents
+ *   warn     (2+ soft signals)  → reduce, plannedAgents / 2 (floor 1)
+ *   green    (0-1 soft signals) → proceed at plannedAgents, reasons retained
+ *
+ * The halving on `warn` is this gate's own policy and deliberately differs
+ * from `evaluate()`'s flat cap of 2: the gate knows `plannedAgents` (a wave of
+ * 3 should not be "capped" UP to nothing), `evaluate()` does not.
+ *
+ * @param {object} measurements — from extractMeasurements
  * @param {object} opts - Same opts shape as evaluateWaveResourceGate
  * @returns {{decision: string, agents: number, reasons: string[], measurements: object}}
  */
 function computeResourceDecision(measurements, opts) {
   const { config, plannedAgents } = opts;
-  const { ramFreeGb, ramAvailableGb, cpuLoadPct, cpuLoad5mPct, concurrentSessions } = measurements;
   const T = config['resource-thresholds'];
-
-  // macOS fix (#667): os.freemem() reports only `Pages free`, which reads
-  // sub-1 GB even on a 128 GB host with 80+ GB reclaimable cache — a false
-  // RAM-critical that forced spurious coordinator-direct fallbacks. When the
-  // probe supplied a numeric `ramAvailableGb` (free + reclaimable, via vm_stat),
-  // judge RAM thresholds on AVAILABLE; otherwise fall back to FREE (Linux/Win,
-  // where os.freemem() is already accurate).
-  const hasAvailable = ramAvailableGb !== null && ramAvailableGb !== undefined;
-  const effectiveRamGb = hasAvailable ? ramAvailableGb : ramFreeGb;
-  const ramLabel = hasAvailable ? 'RAM available' : 'RAM free';
 
   // Rule 3: resource-thresholds missing → degrade to proceed (defensive).
   // Handles legacy pre-#166 configs and test fixtures that omit the key.
@@ -166,77 +192,45 @@ function computeResourceDecision(measurements, opts) {
     };
   }
 
-  // Rule 4: RAM below critical → coordinator-direct.
-  if (effectiveRamGb < T['ram-free-critical-gb']) {
+  // Translate the gate's measurement shape into a probe-shaped snapshot so the
+  // single rule engine can judge it. Field names differ because the override
+  // object is a documented public test seam that predates the snapshot shape.
+  const snapshot = {
+    ram_free_gb: measurements.ramFreeGb,
+    ram_available_gb: measurements.ramAvailableGb ?? null,
+    memory_pressure_pct_free: measurements.memoryPressurePctFree ?? null,
+    cpu_load_pct: measurements.cpuLoadPct,
+    cpu_load_5m_pct: measurements.cpuLoad5mPct ?? null,
+    peer_sessions_count: measurements.peerSessions ?? null,
+    claude_processes_count: measurements.claudeProcesses ?? null,
+    swap_used_mb: measurements.swapUsedMb ?? null,
+    zombie_processes_count: measurements.zombieProcesses ?? null,
+  };
+
+  // heavyRepo is applied by applyHeavyRepoCap() on the way out, so it is
+  // deliberately NOT passed here — passing it would apply the ceiling twice.
+  const verdict = evaluate(snapshot, T);
+
+  if (verdict.verdict === 'critical') {
     return {
       decision: 'coordinator-direct',
       agents: 0,
-      reasons: [
-        `${ramLabel} ${effectiveRamGb}GB < critical ${T['ram-free-critical-gb']}GB — escalating to coordinator-direct`,
-      ],
+      reasons: verdict.reasons,
       measurements,
     };
   }
-
-  // Rule 5: RAM below min (but above critical) → reduce.
-  if (effectiveRamGb < T['ram-free-min-gb']) {
+  if (verdict.verdict === 'warn') {
     return {
       decision: 'reduce',
       agents: Math.max(1, Math.floor(plannedAgents / 2)),
-      reasons: [
-        `${ramLabel} ${effectiveRamGb}GB < min ${T['ram-free-min-gb']}GB — reducing agent count`,
-      ],
+      reasons: verdict.reasons,
       measurements,
     };
   }
-
-  // Rule 6: CPU overloaded → reduce. #943: this gate runs, by construction,
-  // right after the coordinator's own CPU-saturating quality-gate run — the 1m
-  // load average still carries that decaying tail (observed 2026-07-30:
-  // 96% → 91% → 78% → 75% within 36s), so a 1m-only reading systematically
-  // over-reports and halves waves without a real bottleneck. When the probe
-  // supplied a numeric 5m percentage, judge on min(1m, 5m): only-1m-high is a
-  // decaying transient (informational, no reduce), both-high is genuine
-  // sustained load. `cpuLoad5mPct` null (legacy overrides, Windows) → 1m-only.
-  const has5mCpu = typeof cpuLoad5mPct === 'number' && Number.isFinite(cpuLoad5mPct);
-  const effectiveCpuLoadPct = has5mCpu ? Math.min(cpuLoadPct, cpuLoad5mPct) : cpuLoadPct;
-  if (effectiveCpuLoadPct > T['cpu-load-max-pct']) {
-    const detail = has5mCpu ? ` (min of 1m ${cpuLoadPct}% / 5m ${cpuLoad5mPct}%)` : '';
-    return {
-      decision: 'reduce',
-      agents: Math.max(1, Math.floor(plannedAgents / 2)),
-      reasons: [
-        `CPU load ${effectiveCpuLoadPct}%${detail} > max ${T['cpu-load-max-pct']}% — reducing agent count`,
-      ],
-      measurements,
-    };
-  }
-  const cpuTransientNote =
-    has5mCpu && cpuLoadPct > T['cpu-load-max-pct']
-      ? `info: CPU 1m load ${cpuLoadPct}% > max ${T['cpu-load-max-pct']}% but 5m load ${cpuLoad5mPct}% is below — decaying transient (typically the coordinator's own just-finished gate run), not reducing (#943)`
-      : null;
-
-  // Rule 7: concurrent sessions above warn → proceed with warning.
-  if (concurrentSessions > T['concurrent-sessions-warn']) {
-    return {
-      decision: 'proceed',
-      agents: plannedAgents,
-      reasons: [
-        ...(cpuTransientNote ? [cpuTransientNote] : []),
-        `warn: ${concurrentSessions} concurrent sessions`,
-      ],
-      measurements,
-    };
-  }
-
-  // Rule 8: all within bounds.
   return {
     decision: 'proceed',
     agents: plannedAgents,
-    reasons: [
-      ...(cpuTransientNote ? [cpuTransientNote] : []),
-      'all thresholds within bounds',
-    ],
+    reasons: verdict.reasons.length > 0 ? verdict.reasons : ['all thresholds within bounds'],
     measurements,
   };
 }

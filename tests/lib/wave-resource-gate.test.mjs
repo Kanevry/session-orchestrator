@@ -45,6 +45,9 @@ function makeOverride(overrides = {}) {
   return {
     ramFreeGb: 8,
     cpuLoadPct: 30,
+    // #1089: a KNOWN zero, not a missing value — keeps the concurrency channel
+    // quiet so single-axis tests stay single-axis under the two-signal rule.
+    peerSessions: 0,
     concurrentSessions: 1,
     ...overrides,
   };
@@ -57,6 +60,7 @@ function makeMacOverride(overrides = {}) {
     ramFreeGb: 0.3,        // os.freemem() on Apple Silicon — Pages-free only
     ramAvailableGb: 80,    // free + reclaimable (vm_stat) — the real headroom
     cpuLoadPct: 30,
+    peerSessions: 0,
     concurrentSessions: 1,
     ...overrides,
   };
@@ -93,42 +97,75 @@ describe('evaluateWaveResourceGate', () => {
     expect(result.measurements.ramFreeGb).toBe(1.5);
   });
 
-  test('ramFreeGb below min but above critical → reduce with agents: floor(planned/2), minimum 1', async () => {
+  test('ramFreeGb below min ALONE → proceed (one soft signal never caps, #1089)', async () => {
     const result = await evaluateWaveResourceGate({
       config: makeConfig(),
       plannedAgents: 6,
       waveRole: 'Impl-Polish',
       probeOverride: makeOverride({ ramFreeGb: 3.0 }), // below min (4) but above critical (2)
     });
-    expect(result.decision).toBe('reduce');
-    expect(result.agents).toBe(3); // floor(6/2)
-    expect(result.agents).toBeGreaterThanOrEqual(1);
+    expect(result.decision).toBe('proceed');
+    expect(result.agents).toBe(6);
     expect(result.measurements.ramFreeGb).toBe(3.0);
   });
 
-  test('cpuLoadPct above max → reduce', async () => {
+  test('RAM below min PLUS a second signal → reduce with agents: floor(planned/2)', async () => {
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig(),
+      plannedAgents: 6,
+      waveRole: 'Impl-Polish',
+      probeOverride: makeOverride({ ramFreeGb: 3.0, peerSessions: 6 }),
+    });
+    expect(result.decision).toBe('reduce');
+    expect(result.agents).toBe(3); // floor(6/2)
+    expect(result.agents).toBeGreaterThanOrEqual(1);
+  });
+
+  test('cpuLoadPct above max ALONE → proceed (CPU alone no longer halves a wave, #1089)', async () => {
     const result = await evaluateWaveResourceGate({
       config: makeConfig(),
       plannedAgents: 4,
       waveRole: 'Quality',
       probeOverride: makeOverride({ cpuLoadPct: 90 }), // above max (80)
     });
-    expect(result.decision).toBe('reduce');
-    expect(result.agents).toBe(2); // floor(4/2)
+    expect(result.decision).toBe('proceed');
+    expect(result.agents).toBe(4);
     expect(result.measurements.cpuLoadPct).toBe(90);
   });
 
-  test('concurrentSessions above warn → proceed with warn reason, agents unchanged', async () => {
+  test('cpuLoadPct above max PLUS live peer sessions → reduce', async () => {
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig(),
+      plannedAgents: 4,
+      waveRole: 'Quality',
+      probeOverride: makeOverride({ cpuLoadPct: 90, peerSessions: 6 }),
+    });
+    expect(result.decision).toBe('reduce');
+    expect(result.agents).toBe(2); // floor(4/2)
+  });
+
+  test('peerSessions above warn → proceed with a reason, agents unchanged', async () => {
     const result = await evaluateWaveResourceGate({
       config: makeConfig(),
       plannedAgents: 4,
       waveRole: 'Discovery',
-      probeOverride: makeOverride({ concurrentSessions: 7 }), // above warn (5)
+      probeOverride: makeOverride({ peerSessions: 7 }), // above warn (5)
     });
     expect(result.decision).toBe('proceed');
     expect(result.agents).toBe(4);
-    expect(result.reasons.some((r) => r.includes('warn') || r.includes('concurrent'))).toBe(true);
-    expect(result.measurements.concurrentSessions).toBe(7);
+    expect(result.reasons.some((r) => r.includes('peer session'))).toBe(true);
+  });
+
+  test('7 Claude PROCESSES with a known-zero peer count → no concurrency signal (#1089 unit fix)', async () => {
+    // Catches the 6x unit error: 7 processes is ~1 session, not 7 sessions.
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig(),
+      plannedAgents: 4,
+      waveRole: 'Discovery',
+      probeOverride: makeOverride({ claudeProcesses: 7 }),
+    });
+    expect(result.decision).toBe('proceed');
+    expect(result.reasons.some((r) => r.includes('peer session'))).toBe(false);
   });
 
   test('all thresholds within bounds → proceed with reason "all thresholds within bounds"', async () => {
@@ -161,7 +198,7 @@ describe('evaluateWaveResourceGate', () => {
       config: makeConfig(),
       plannedAgents: 1,
       waveRole: 'Impl-Core',
-      probeOverride: makeOverride({ ramFreeGb: 3.0 }), // triggers reduce
+      probeOverride: makeOverride({ ramFreeGb: 3.0, peerSessions: 6 }), // two signals → reduce
     });
     expect(result.decision).toBe('reduce');
     expect(result.agents).toBe(1); // Math.max(1, floor(1/2)) = Math.max(1, 0) = 1
@@ -233,7 +270,7 @@ describe('evaluateWaveResourceGate', () => {
     });
     expect(result.decision).toBe('coordinator-direct');
     expect(result.agents).toBe(0);
-    expect(result.reasons.some((r) => r.includes('RAM available 1.5GB'))).toBe(true);
+    expect(result.reasons.some((r) => r.includes('RAM available 1.5 GB'))).toBe(true);
   });
 
   test('macOS: low free but available below min (above critical) → reduce', async () => {
@@ -241,11 +278,11 @@ describe('evaluateWaveResourceGate', () => {
       config: makeConfig(),
       plannedAgents: 6,
       waveRole: 'Impl-Polish',
-      probeOverride: makeMacOverride({ ramFreeGb: 0.3, ramAvailableGb: 3.0 }),
+      probeOverride: makeMacOverride({ ramFreeGb: 0.3, ramAvailableGb: 3.0, peerSessions: 6 }),
     });
     expect(result.decision).toBe('reduce');
     expect(result.agents).toBe(3); // floor(6/2)
-    expect(result.reasons.some((r) => r.includes('RAM available 3GB'))).toBe(true);
+    expect(result.reasons.some((r) => r.includes('RAM available 3.0 GB'))).toBe(true);
   });
 
   test('Linux: ramAvailableGb absent → gate falls back to free RAM (label "RAM free")', async () => {
@@ -258,7 +295,7 @@ describe('evaluateWaveResourceGate', () => {
     });
     expect(result.decision).toBe('coordinator-direct');
     expect(result.agents).toBe(0);
-    expect(result.reasons.some((r) => r.includes('RAM free 1.5GB'))).toBe(true);
+    expect(result.reasons.some((r) => r.includes('RAM free 1.5 GB'))).toBe(true);
   });
 
   // -------------------------------------------------------------------------
@@ -295,7 +332,7 @@ describe('evaluateWaveResourceGate', () => {
       config: makeConfig(),
       plannedAgents: 6,
       waveRole: 'Impl-Core',
-      probeOverride: makeOverride({ cpuLoadPct: 96, cpuLoad5mPct: 92 }),
+      probeOverride: makeOverride({ cpuLoadPct: 96, cpuLoad5mPct: 92, peerSessions: 6 }),
     });
     expect(result.decision).toBe('reduce');
     expect(result.agents).toBe(3);
@@ -323,7 +360,7 @@ describe('evaluateWaveResourceGate', () => {
       config: makeConfig(),
       plannedAgents: 4,
       waveRole: 'Quality',
-      probeOverride: makeOverride({ cpuLoadPct: 90 }), // no cpuLoad5mPct key
+      probeOverride: makeOverride({ cpuLoadPct: 90, peerSessions: 6 }), // no cpuLoad5mPct key
     });
     expect(result.decision).toBe('reduce');
     expect(result.agents).toBe(2);
@@ -484,13 +521,13 @@ describe('evaluateWaveResourceGate — heavy-repo preflight cap (#60)', () => {
   });
 
   test('leaves an already-stricter resource-driven reduce unchanged when the heavy-repo cap is looser', async () => {
-    // CPU overload alone → reduce to floor(6/2)=3; heavy-repo cap=8 is looser — no double-clamp.
+    // CPU + peers → reduce to floor(6/2)=3; heavy-repo cap=8 is looser — no double-clamp.
     const config = makeConfig({ 'heavy-repo': true, 'agents-per-wave': 8 });
     const result = await evaluateWaveResourceGate({
       config,
       plannedAgents: 6,
       waveRole: 'Impl-Core',
-      probeOverride: makeOverride({ cpuLoadPct: 90 }),
+      probeOverride: makeOverride({ cpuLoadPct: 90, peerSessions: 6 }),
     });
     expect(result.decision).toBe('reduce');
     expect(result.agents).toBe(3);

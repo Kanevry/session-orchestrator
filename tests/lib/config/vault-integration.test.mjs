@@ -239,7 +239,7 @@ describe('_parseVaultIntegration', () => {
 const RT_DEFAULTS = {
   'ram-free-min-gb': 4,
   'ram-free-critical-gb': 2,
-  'cpu-load-max-pct': 80,
+  'cpu-load-max-pct': 90,
   'concurrent-sessions-warn': 5,
   'ssh-no-docker': true,
 };

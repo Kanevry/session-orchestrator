@@ -34,7 +34,7 @@ import path from 'node:path';
 
 import { scanBacklog } from '../backlog-scan.mjs';
 import { checkCiStatus as realCheckCiStatus } from '../ci-status-banner.mjs';
-import { probe as realProbe, evaluate as realEvaluate } from '../resource-probe.mjs';
+import { probe as realProbe, evaluate as realEvaluate, DEFAULT_RESOURCE_THRESHOLDS as CANONICAL_RESOURCE_THRESHOLDS } from '../resource-probe.mjs';
 import { isRealSession } from '../session-schema/filters.mjs';
 
 /** Staleness cap (days). Beyond this, additional age does not raise the score. */
@@ -49,12 +49,9 @@ const MS_PER_DAY = 86_400_000;
  * Used by the default `resourceVerdict` dep so ranking works standalone
  * without a parsed Session Config in hand.
  */
-const DEFAULT_RESOURCE_THRESHOLDS = {
-  'ram-free-min-gb': 4,
-  'ram-free-critical-gb': 2,
-  'cpu-load-max-pct': 80,
-  'concurrent-sessions-warn': 5,
-};
+// #1089: re-exported from the single canonical definition rather than a third
+// hand-maintained copy — the three copies had already drifted apart.
+const DEFAULT_RESOURCE_THRESHOLDS = { ...CANONICAL_RESOURCE_THRESHOLDS };
 
 // ---------------------------------------------------------------------------
 // PURE core

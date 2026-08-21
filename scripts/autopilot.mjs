@@ -44,7 +44,7 @@ import {
 import { buildLiveSignals } from './lib/build-live-signals.mjs';
 import { surfaceTopN, decayOptsFromConfig } from './lib/learnings/surface.mjs';
 import { selectMode } from './lib/mode-selector.mjs';
-import { probe, evaluate } from './lib/resource-probe.mjs';
+import { probe, evaluate, DEFAULT_RESOURCE_THRESHOLDS } from './lib/resource-probe.mjs';
 import { detectPeers } from './lib/session-registry.mjs';
 import { normalizeSession } from './lib/session-schema.mjs';
 
@@ -112,13 +112,12 @@ const config = loadConfig();
  * @returns {object} thresholds object consumable by evaluate()
  */
 function loadResourceThresholds() {
-  // Probe defaults (mirrors resource-probe hard-coded values)
-  const DEFAULTS = {
-    'ram-free-min-gb': 2.0,
-    'ram-free-critical-gb': 0.5,
-    'cpu-load-max-pct': 85,
-    'concurrent-sessions-warn': 3,
-  };
+  // #1089: this block used to hold its OWN four numbers (2.0 / 0.5 / 85 / 3)
+  // under a comment claiming it "mirrors resource-probe hard-coded values" —
+  // which it did not, and had not for some time. Autopilot therefore judged
+  // every host against a threshold set no other consumer used, and the comment
+  // is what made that invisible. Now sourced from the one canonical definition.
+  const DEFAULTS = { ...DEFAULT_RESOURCE_THRESHOLDS };
 
   const rt = config && config['resource-thresholds'];
   if (rt && typeof rt === 'object') {

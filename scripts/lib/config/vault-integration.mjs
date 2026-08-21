@@ -192,9 +192,20 @@ function _parseInlineObject(raw) {
  */
 export function _parseResourceThresholds(kv) {
   return {
+    // Memory thresholds are denominated in the signal `evaluate()` actually
+    // judges on — memory_pressure > ram_available > ram_free, in that order
+    // (#1089). They are NOT compared against Darwin's `os.freemem()` unless
+    // nothing better is published, which on Darwin never happens.
     'ram-free-min-gb': _coerceInteger(kv, 'ram-free-min-gb', 4),
     'ram-free-critical-gb': _coerceInteger(kv, 'ram-free-critical-gb', 2),
-    'cpu-load-max-pct': _coerceInteger(kv, 'cpu-load-max-pct', 80),
+    // 80 → 90 (#1089). At 80 this fired on 15.6% of 1477 measured session
+    // starts, largely on the decaying tail of the coordinator's own gate run;
+    // at 90 it fires on 12.8%, and under the two-signal rule it no longer caps
+    // anything on its own. Both numbers are measurements, not preferences.
+    'cpu-load-max-pct': _coerceInteger(kv, 'cpu-load-max-pct', 90),
+    // Unchanged at 5 — but now compared against LIVE PEER SESSIONS rather than
+    // the Claude process count. Same number, different denominator: measured
+    // firing rate drops from 93.6% to 4.2% (median processes:sessions = 6.0).
     'concurrent-sessions-warn': _coerceInteger(kv, 'concurrent-sessions-warn', 5),
     'ssh-no-docker': _coerceBoolean(kv, 'ssh-no-docker', true),
   };
