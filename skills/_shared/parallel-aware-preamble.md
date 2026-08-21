@@ -29,6 +29,33 @@ If an `exclusive`-class session is also active, the Exclusive-Conflict AUQ takes
 **Always-OK class** (`discovery`, `evolve`, `plan`, `repo-audit`, `portfolio`):
 The preamble passes through with zero AUQ regardless of other active sessions. Read-only modes never conflict.
 
+## Identity Binding for `findPeers` (#1085)
+
+`mySessionId` / `callerSessionId` is a **hint for the caller's original
+surface**, not a license to turn an attribution label into ownership. A native
+raw id self-excludes on the discovered lock/registry surface directly. Given a
+semantic hint, `findPeers` may translate it to a concrete local raw id only when
+both proofs hold: `current-session.json` has the same semantic label **and** its
+raw `session_id` exactly equals the readable local lock's raw `session_id`.
+
+On a missing, malformed, or mismatched binding, `findPeers` must map nothing and
+leave the discovered lock visible. The STATE.md surface always receives the
+original hint and therefore compares STATE.md `session` as the attribution label
+it is; it is never rewritten to a raw id. This guarded translation is only
+self-exclusion for discovery, not lock/registry ownership and not a continuity
+bridge across a host rotation that changes both values.
+
+**What the binding does not prove.** Both files it reads are repo-global, so the
+check establishes that they are mutually CONSISTENT — not that they describe
+*this* process. Semantic labels are routinely shared between simultaneously live
+sessions, and when a foreign live session wrote both files last under a label
+equal to this hint, its raw id is filtered out and the peer disappears from the
+result. Measured 2026-08-21: with a null hint the foreign peer is returned, with
+the colliding semantic hint `peers` is empty. Treat a quiet `findPeers` result as
+weaker evidence than a git or filesystem signal, and prefer passing the native
+raw id whenever the caller has one. Closing this needs a per-process ownership
+proof; see #1091.
+
 ## Preamble Algorithm
 
 Execute these steps in order. Any classification determines outcome.
@@ -152,8 +179,10 @@ findPeers(repoRoot, { mySessionId }) → peer = peers.find((p) => p.source === '
 ```js
 import { findPeers } from '../../scripts/lib/peer-discovery.mjs';
 
-// Inside Phase 1b, before writing STATE.md:
-const { peers } = await findPeers(repoRoot, { mySessionId: sessionId });
+// Inside Phase 1b, before writing STATE.md. Preserve the original
+// attribution-label hint for the STATE.md surface; findPeers guards any
+// semantic→raw translation for discovered peers internally.
+const { peers } = await findPeers(repoRoot, { mySessionId: callerSessionHint });
 const peer = peers.find((p) => p.source === 'state-md') ?? null;
 // Phase 1.2.1 consumes only the 'state-md' subset (STATE.md surface only).
 if (peer !== null) {

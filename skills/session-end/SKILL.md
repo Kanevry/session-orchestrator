@@ -141,7 +141,8 @@ For every `SPIRAL` or `FAILED` agent surfaced in the walk above, ALSO append a c
 ```js
 import { appendWhatNotToRetryOnDisk } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
 
-// `parsed` = parseStateMd(STATE.md); session id from the `session:` frontmatter field.
+// `parsed` = parseStateMd(STATE.md); `session:` is an attribution/history label.
+// It records this entry's provenance only and never authorizes lock ownership.
 const sessionId = parsed.frontmatter.session ?? 'unknown-session';
 const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
@@ -646,7 +647,7 @@ import { planTailPhases } from '${PLUGIN_ROOT}/scripts/lib/session-end/phase-ski
 const { plan, skippedReport } = await planTailPhases({
   repoRoot: process.cwd(),
   config,        // parsed Session Config (from $CONFIG)
-  sessionId,     // session.lock `session_id` / STATE.md `session:` field (or null)
+  sessionId,     // physical session.lock `session_id` only (or null), never STATE.md `session`
   platform,      // 'claude' | 'codex' | 'cursor'
 });
 // plan: Array<{ phase, run, reason, inputSource }>, already in ascending phase order.
@@ -733,20 +734,21 @@ After STATE.md is finalized with `status: completed` (Phase 3.4) and Recommendat
 
 ```javascript
 import { release } from 'scripts/lib/session-lock.mjs';
-// sessionId = the session identifier established by session-start Phase 1.2 acquire()
-//   and stored in .orchestrator/session.lock (session_id field); matches the
-//   STATE.md frontmatter `session:` field written during Pre-Wave 1b initialization.
-const result = release({ sessionId, repoRoot: process.cwd() });
+// sessionId is the physical raw value established by session-start Phase 1.2
+// and stored in .orchestrator/session.lock `session_id`. It is not STATE.md
+// `session:` or `semantic_session_id`, both of which are attribution labels.
+const rawSessionId = sessionId;
+const result = release({ sessionId: rawSessionId, repoRoot: process.cwd() });
 // result.ok is always true unless a filesystem error occurred.
 // result.deleted === true  → lock file removed successfully.
-// result.deleted === false → lock was absent or belonged to a different session_id (silent-OK).
+// result.deleted === false → lock was absent or had a different raw session_id.
 ```
 
-If `result.deleted === false`, log `info: session-lock not released — already absent or session_id mismatch (no action needed)` and continue. This is a non-error state.
+If `result.deleted === false`, log `info: session-lock not released — already absent or raw session_id mismatch` and continue. An active lock whose raw id differs is ambiguous: do **not** retry release with an equal `semantic_session_id`, STATE.md `session`, or owner proof. Leave that live lock for its TTL/Reaper lifecycle.
 
 If `result.ok === false` (rare filesystem error), log `⚠ session-lock: release failed — <result.reason>` and continue. Do NOT block the close for a lock-release failure — the TTL provides automatic expiry for the next session.
 
-The lock is released here — AFTER all STATE.md writes are complete and BEFORE the commit is staged in Phase 4.1. This ordering ensures a clean handover: the lock file is absent from the working tree when the commit is assembled, so it is not accidentally staged.
+The lock is released here — AFTER all STATE.md writes are complete and BEFORE the commit is staged in Phase 4.1. This ordering ensures a clean handover when the current raw owner releases it: the lock file is absent from the working tree when the commit is assembled, so it is not accidentally staged.
 
 ## Phase 4: Commit & Push
 
@@ -1026,16 +1028,38 @@ if (sweep) {
     **Ordering (load-bearing):** run this as the LAST issue-creating action of Phase 5 — after step 3, after "Discovery Issue Creation", after step 4 — and re-read the counter file at that moment. Those steps can themselves push new entries into `overflow[]`; draining early would leave them unfiled.
 
     ```js
-    import { readBudgetState, budgetStatePath } from '${PLUGIN_ROOT}/scripts/lib/issue-budget.mjs';
-    const state = readBudgetState(repoRoot, sessionId);   // { sessionId, count, exempt, overflow: [...] }
+    import { readFileSync } from 'node:fs';
+    import {
+      readBudgetState,
+      budgetStatePath,
+      resolveIssueBudgetSessionId,
+    } from '${PLUGIN_ROOT}/scripts/lib/issue-budget.mjs';
+
+    // `sessionId` is the physical raw lock/registry identity from session-start.
+    const rawSessionId = sessionId;
+    let currentSession = null;
+    try {
+      currentSession = JSON.parse(
+        readFileSync(`${repoRoot}/.orchestrator/current-session.json`, 'utf8'),
+      );
+    } catch { /* no verified semantic accounting bridge */ }
+    const accountingSessionId = resolveIssueBudgetSessionId(rawSessionId, currentSession);
+    const state = readBudgetState(repoRoot, accountingSessionId);
+    // { sessionId, count, exempt, overflow: [...] }
     ```
 
+    `accountingSessionId` may be semantic only after
+    `currentSession.session_id === rawSessionId`; this is budget accounting, not
+    lock/registry ownership. When that proof is absent it remains the raw id.
+    A host rotation that changes both raw and semantic values has no guaranteed
+    budget continuity.
+
     - **`issue-budget.overflow: collect-issue` (default)** — create exactly ONE issue:
-      - Title: `[Backlog-Sammel] <session-id>, <N> zurückgestellte Punkte`
+      - Title: `[Backlog-Sammel] <accountingSessionId>, <N> zurückgestellte Punkte`
       - Labels: `type::backlog`, `priority::low`
       - Body: a Markdown checklist with one `- [ ]` line per `overflow[]` entry (`title` when present, otherwise the truncated `command`, plus its `at` timestamp).
       - This collector issue is itself EXEMPT from the cap (`[Backlog-Sammel]` is in the exemption list in `scripts/lib/issue-budget.mjs`), so it always lands even at count == max.
-    - **`issue-budget.overflow: vault-note`** — create NO issue. Write one Markdown file `vault/00-inbox/<session-id>-backlog-sammel.md` (path relative to `vault-integration.vault-dir`) with valid vault frontmatter and the same checklist body.
+    - **`issue-budget.overflow: vault-note`** — create NO issue. Write one Markdown file `vault/00-inbox/<accountingSessionId>-backlog-sammel.md` (path relative to `vault-integration.vault-dir`) with valid vault frontmatter and the same checklist body.
     - After the artefact exists, reset `overflow` to `[]` in the counter file and record the collector issue ID / note path in the Phase 6 Final Report under `### Zurückgestellt (issue-budget)`.
     - **Never exempt-by-accident:** the cap never applied to `priority::critical`, the carryover class (`[Carryover]`, SPIRAL/FAILED, `type::carryover`), or `broken-window` closure issues, so nothing on the Phase 1.65 carry-list can ever appear in `overflow[]`. The promises at Phase 1.8 ("SPIRAL / FAILED agent carryover … non-deselectable") and the Critical Rule "ALWAYS create issues for unfinished PLANNED work" stay intact by construction.
     - Fail-open: a missing or malformed counter file means "no overflow" — log a WARN and continue the close.
@@ -1134,7 +1158,7 @@ Present to the user:
 | `phase-3-7a-recommendations.md` § 3.7b | Phase 3.7b full procedural body — `withDurableCommit` invocation for `sessions.jsonl` + `STATE.md` (#490 AC2), `enabled:false` local no-op, autopilot.jsonl exclusion note |
 | (inline) Phase 3.7c | Vault Board → Closed (#674) — `mirrorBoard({ explicitStatus: 'closed' })` transitions this repo's board row to `closed`; gated on `vault-integration.enabled`, generator-marked + idempotent, non-blocking, ordered after 3.7b and before 3.7d/3.4/3.8 |
 | (inline) Phase 3.7d | Session-Eval (opt-in — #803) — `node scripts/eval-session.mjs --json` scores the just-closed session; gated on `eval.enabled` + `eval.mode != off` (parsed by `scripts/lib/config/eval.mjs`), optional `eval-judge` dispatch + `writeEvalReport`, advisory/never-blocks-close, ordered after 3.7 (record must exist) and before 3.4/Phase 4 (record committed with the session). Full flow in `skills/eval/SKILL.md` |
-| (inline) Phase 3.8 | Session Lock Release — `release()` call, silent-OK on mismatch/absent, non-fatal on fs-error, ordering note (after STATE.md writes, before Phase 4 commit staging) |
+| (inline) Phase 3.8 | Session Lock Release — `release()` uses the physical raw `session_id`; raw mismatch/absent is non-fatal but never repaired with semantic labels or proof (live ambiguity remains for TTL/Reaper); fs-errors are non-fatal; runs after STATE.md writes and before Phase 4 commit staging |
 
 ## Anti-Patterns
 

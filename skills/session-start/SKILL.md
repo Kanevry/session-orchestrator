@@ -42,7 +42,7 @@ This runs BEFORE the local session-lock acquire in Phase 1.2 — the preamble's 
 **Outcome handling:**
 - `PASS_THROUGH` → continue to Phase 1
 - `EXCLUSIVE_BLOCKED` → exit Phase 0 cleanly per the AUQ outcome (`Warten` / `Andere Session beenden` / `Abbrechen` — all three return without initializing STATE.md)
-- `PROMOTION_OFFER` with user picking "Worktree anlegen + starten" → call `enterWorktree({ basePath, sessionId, branch, repoRoot })` from `scripts/lib/autopilot/worktree-pipeline.mjs`. Compute params: `basePath = path.dirname(repoRoot)`, `sessionId` from resolveSemanticSessionId(), `branch` from current HEAD, `repoRoot = process.cwd()`. On success, exit Phase 0 immediately — the new worktree's own session-start runs from scratch (Phase 1 onwards), Phase 1.2 session-lock-acquire is the new worktree's responsibility. On enterWorktree failure (`WorktreeBoundaryError` or `git worktree add` non-zero exit), emit stderr WARN `parallel-aware: enterWorktree failed: <err>; falling back to Manuell` and proceed via the Manuell path.
+- `PROMOTION_OFFER` with user picking "Worktree anlegen + starten" → call `enterWorktree({ basePath, sessionId, branch, repoRoot })` from `scripts/lib/autopilot/worktree-pipeline.mjs`. Compute params: `basePath = path.dirname(repoRoot)`, `sessionId` from resolveSemanticSessionId() **for the worktree-name attribution label only**, `branch` from current HEAD, `repoRoot = process.cwd()`. It is not a lock/registry ownership key; the new worktree's Phase 1.2 obtains its own physical raw `session_id`. On success, exit Phase 0 immediately — the new worktree's own session-start runs from scratch (Phase 1 onwards), Phase 1.2 session-lock-acquire is the new worktree's responsibility. On enterWorktree failure (`WorktreeBoundaryError` or `git worktree add` non-zero exit), emit stderr WARN `parallel-aware: enterWorktree failed: <err>; falling back to Manuell` and proceed via the Manuell path.
 - `PROMOTION_OFFER` with user picking "Manuell — in-place daneben" → append Deviation, continue to Phase 1
 - `PROMOTION_OFFER` with user picking "Abbrechen" → exit cleanly
 
@@ -112,14 +112,14 @@ if (content && !isDispatcherAutonomyBlockPresent(content)) {
 
 Acquire a distributed session-lock to detect parallel sessions in the same repo before initializing STATE.md. This prevents two concurrent Claude/Codex sessions from stomping each other's wave state and metrics writes.
 
-**Mechanical wiring (Epic #583, 2026-05-27):** The SessionStart hook (`hooks/on-session-start.mjs` → `hooks/_lib/lock-bootstrap.mjs`) now writes `.orchestrator/session.lock` mechanically BEFORE this skill's prose runs. The prose Phase 1.2 becomes confirmatory — it verifies the lock exists with the expected shape via `readLock({ repoRoot: process.cwd() })`. Re-call `acquire()` only if `readLock()` returns `null` (mechanical hook failed) OR the existing lock's `session_id` does not match the current session's id (a rare divergence — surface via AUQ before overwriting). The decision flow below still applies to all three outcomes (active / stale / fs-error) when the prose path needs to acquire.
+**Mechanical wiring (Epic #583, 2026-05-27):** The SessionStart hook (`hooks/on-session-start.mjs` → `hooks/_lib/lock-bootstrap.mjs`) now writes `.orchestrator/session.lock` mechanically BEFORE this skill's prose runs. The prose Phase 1.2 becomes confirmatory — it verifies the lock exists with the expected shape via `readLock({ repoRoot: process.cwd() })`. Re-call `acquire()` only if `readLock()` returns `null` (mechanical hook failed) OR the existing lock's raw `session_id` does not exactly match the current session's raw id (a rare divergence — surface via AUQ before overwriting). A matching `semantic_session_id`, STATE.md `session`, or owner proof cannot repair that mismatch. The decision flow below still applies to all three outcomes (active / stale / fs-error) when the prose path needs to acquire.
 
 ```javascript
 import { acquire, forceAcquire } from 'scripts/lib/session-lock.mjs';
 const result = acquire({ sessionId, mode: sessionType, ttlHours: 4, repoRoot: process.cwd() });
 ```
 
-Where `sessionId` is the session identifier derived from the session type and timestamp (e.g. `main-2026-05-08-deep-1`), and `sessionType` is the session mode (`housekeeping`, `feature`, or `deep`).
+Where `sessionId` is the physical raw identity for this invocation: the native harness-provided raw id, or a generated UUID when no trustworthy raw id exists. It is the only value passed to `acquire()` and the only live lock/registry ownership key. `semanticSessionId` may be recorded separately as an attribution/history label and may populate STATE.md `session`; neither label is a substitute for `sessionId`. `sessionType` is the session mode (`housekeeping`, `feature`, or `deep`).
 
 ### Decision flow
 
@@ -196,11 +196,14 @@ When `existingLock.host !== os.hostname()`, PID liveness cannot be checked (`pid
 
 > Skip this phase if `persistence` config is `false`.
 
-After Phase 1.2 acquires (or confirms) the lock, call `checkPeerStateMd(repoRoot, sessionId)` from `scripts/lib/state-md-peer-guard.mjs`. This catches the rare case where lock-based detection missed an active peer (e.g., the peer's `session.lock` was force-deleted by an out-of-band sweep but STATE.md is still `status: active`, OR the peer's registry write succeeded but the lock-bootstrap hook crashed before the lock landed).
+After Phase 1.2 acquires (or confirms) the lock, use `findPeers(repoRoot, { mySessionId: callerSessionHint })` for the STATE.md peer guard. `callerSessionHint` is the original semantic attribution label when one exists, otherwise the raw `sessionId`: `findPeers` may translate the semantic hint for the discovered lock/registry surface only after the exact raw binding check in `parallel-aware-preamble.md`, while keeping the original hint for STATE.md. This catches the rare case where lock-based detection missed an active peer (e.g., the peer's `session.lock` was force-deleted by an out-of-band sweep but STATE.md is still `status: active`, OR the peer's registry write succeeded but the lock-bootstrap hook crashed before the lock landed).
 
 ```javascript
 import { findPeers } from '$PLUGIN_ROOT/scripts/lib/peer-discovery.mjs';
-const { peers } = await findPeers(process.cwd(), { mySessionId: sessionId });
+// Keep the STATE.md comparison in its original attribution-label space.
+// findPeers performs the guarded semantic→raw translation only for discovered peers.
+const callerSessionHint = semanticSessionId ?? sessionId;
+const { peers } = await findPeers(process.cwd(), { mySessionId: callerSessionHint });
 const peer = peers.find((p) => p.source === 'state-md') ?? null;
 // Phase 1.2.1 consumes only the 'state-md' subset (STATE.md surface only).
 if (peer) {
@@ -471,7 +474,7 @@ await sweepBoard({
 
 This single call does three things:
 
-1. **Sets THIS repo's board row to `in-progress`** with the current semantic-session-id, branch, mode, and heartbeat (read off this repo's `session.lock` v2 lease + the host-wide registry — both already written by Phase 1.2's `acquire()`).
+1. **Sets THIS repo's board row to `in-progress`** with the current semantic-session-id **attribution label** (never a lock/registry ownership key), branch, mode, and heartbeat (read off this repo's `session.lock` v2 lease + the host-wide registry — both already written by Phase 1.2's `acquire()`).
 2. **Re-derives THIS repo's status from its live lease**, so a stale lease left by a prior crashed session in this same repo renders as `force-closed` (heartbeat older than the v2 ttl, default 4h — `DEFAULT_TTL_HOURS` in `scripts/lib/session-lock.mjs`, evaluated via `isLockLive`) and is **never silently dropped** — its fields are read straight off the dead lock.
 3. **Re-derives every OTHER busy repo's status host-wide** via `enumerateCandidates` — a dead lease in repo B renders `force-closed` on the board the next time ANY repo's session-start runs `sweepBoard`, closing the #676→#716 gap. `frei` (lock-less) repos are excluded from re-derivation to avoid board noise; their prior rows, and the prior rows of any repo `enumerateCandidates` did not surface, are preserved unchanged via the idempotent merge — never dropped.
 

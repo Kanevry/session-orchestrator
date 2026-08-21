@@ -67,6 +67,7 @@ import { discoverActiveSessions } from './session-discovery.mjs';
 import { readLock, isLockLive, LOCK_PATH } from './session-lock.mjs';
 import { checkPeerStateMd } from './state-md-peer-guard.mjs';
 import { listWorktreesChecked } from './worktree/listing.mjs';
+import { parseSessionId } from './session-id.mjs';
 
 /** Closed enum of provenance sources. */
 const SOURCE_DISCOVERED = 'discovered'; // lock + registry unified (irreversibly merged upstream)
@@ -121,23 +122,63 @@ function _peerFromDiscovered(s, nowMs) {
 }
 
 /**
+ * Resolve a semantic hint to the concrete local raw ID for discovered surfaces.
+ *
+ * Semantic labels are attribution, not ownership. A mapping is usable only when
+ * current-session.json names the hint and its raw id exactly matches the local
+ * readable session.lock. Otherwise return null so a potentially foreign record
+ * stays visible. Raw caller ids retain the legacy direct comparison unchanged.
+ *
+ * This is a consistency check on two repo-global files, NOT a proof of ownership;
+ * a colliding semantic label from a foreign live session satisfies it. See the
+ * call site in findPeers for the measured case and why it is not closed here.
+ *
+ * @param {string|null} mySessionId
+ * @param {string} repoRoot
+ * @returns {string|null}
+ */
+function _discoveredSelfSessionId(mySessionId, repoRoot) {
+  if (typeof mySessionId !== 'string' || mySessionId.length === 0) return null;
+  if (parseSessionId(mySessionId)?.format !== 'semantic') return mySessionId;
+
+  try {
+    const raw = fs.readFileSync(
+      path.join(repoRoot, '.orchestrator', 'current-session.json'),
+      'utf8',
+    );
+    const current = JSON.parse(raw);
+    const lock = readLock({ repoRoot });
+    if (
+      current &&
+      typeof current === 'object' &&
+      !Array.isArray(current) &&
+      typeof current.session_id === 'string' &&
+      current.session_id.length > 0 &&
+      current.semantic_session_id === mySessionId &&
+      lock !== null &&
+      typeof lock.session_id === 'string' &&
+      lock.session_id === current.session_id
+    ) {
+      return lock.session_id;
+    }
+  } catch {
+    // Missing or malformed local state cannot prove a semantic alias.
+  }
+  return null;
+}
+
+/**
  * findPeers — union of all 3 peer-discovery surfaces, fail-open per surface.
  *
  * @param {string} repoRoot  Absolute path to the repository root.
  * @param {object} [opts] passthrough seams shared with the underlying surfaces.
- * @param {string|null} [opts.mySessionId]      Current session id, used for
- *   self-exclusion on BOTH surfaces — but the two surfaces read different
- *   id-spaces. Surface A+B (discoverActiveSessions) compares against
- *   `session_id` from session.lock / the host registry, which is ALWAYS the
- *   UUID (never `semantic_session_id` — see session-lock.mjs). Surface C
- *   (checkPeerStateMd) compares against STATE.md's `session:` frontmatter
- *   field, which callers may populate with either id-space as long as it is
- *   the SAME id-space `mySessionId` was derived from (see the PRECONDITION
- *   note in state-md-peer-guard.mjs). Passing a semantic id here self-excludes
- *   correctly on Surface C but NOT on Surface A+B (the UUID lock/registry
- *   entry for the same session will still surface as a 'discovered' peer of
- *   itself) — callers that need both surfaces to self-exclude MUST pass the
- *   UUID.
+ * @param {string|null} [opts.mySessionId]      Current session id hint. Raw
+ *   ids self-exclude directly on Surface A+B. A semantic hint maps to a raw
+ *   discovered-surface id only after the local current-session.json semantic
+ *   label matches it AND that file's raw id exactly equals local
+ *   session.lock.session_id. Missing, malformed, or mismatched local state
+ *   maps nothing, leaving discovered entries visible. Surface C receives this
+ *   original hint unchanged and compares it to STATE.md's `session:` field.
  * @param {number}      [opts.now]              ms-since-epoch (test seam for freshness/age).
  * @param {number}      [opts.freshnessMin]     Registry-entry freshness threshold (minutes).
  * @param {number}      [opts.maxAgeHours]      STATE.md abandonment threshold (hours).
@@ -155,6 +196,7 @@ function _peerFromDiscovered(s, nowMs) {
 export async function findPeers(repoRoot, opts = {}) {
   const nowMs = typeof opts.now === 'number' ? opts.now : Date.now();
   const mySessionId = opts.mySessionId ?? null;
+  const discoveredSelfSessionId = _discoveredSelfSessionId(mySessionId, repoRoot);
 
   const peers = [];
 
@@ -172,15 +214,24 @@ export async function findPeers(repoRoot, opts = {}) {
     });
     if (Array.isArray(discovered)) {
       for (const s of discovered) {
-        // Self-exclusion (#798): discoverActiveSessions has no notion of "my
-        // session" — it returns every live lock/registry entry, including the
-        // caller's own SessionStart-hook heartbeat. Exclude it here so it
-        // never surfaces as a source:'discovered' peer of itself. Mirrors the
-        // same guard in session-registry.mjs detectPeers() and
-        // hooks/on-session-start.mjs. `mySessionId === null` needs no special
-        // case: `!==` against a string sessionId is always true when
-        // mySessionId is null, so a foreign entry is never filtered.
-        if (s && typeof s.sessionId === 'string' && s.sessionId !== mySessionId) {
+        // Self-exclusion (#798, #1085): discovered entries carry raw ids. A
+        // semantic caller hint filters one such id only after the local raw
+        // binding was verified above.
+        //
+        // The binding proves CONSISTENCY of the two local files, not OWNERSHIP.
+        // Both are repo-global, so if a foreign live session wrote them last and
+        // its semantic label collides with this hint (labels like
+        // `main-2026-08-21-session-2` are routinely shared — see
+        // hooks/on-session-start.mjs), that foreign raw id is filtered and the
+        // peer PSA-002 exists to surface goes missing. Measured 2026-08-21:
+        // null hint -> peer visible, colliding semantic hint -> peers: [].
+        // Closing it needs a per-process ownership proof, not a stronger read
+        // of the same two files.
+        if (
+          s &&
+          typeof s.sessionId === 'string' &&
+          s.sessionId !== discoveredSelfSessionId
+        ) {
           peers.push(_peerFromDiscovered(s, nowMs));
         }
       }

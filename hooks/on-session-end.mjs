@@ -34,9 +34,7 @@ import { backfillAbandonedSession } from '../scripts/lib/session-close-backfill.
 import {
   readLockDetailed,
   release,
-  isLockLive,
   loadOwnerProof,
-  isLockOwnedByProof,
   OWNER_PROOF_RELPATH,
 } from '../scripts/lib/session-lock.mjs';
 import { deregisterSelf, logSweepEvent } from '../scripts/lib/session-registry.mjs';
@@ -83,20 +81,16 @@ async function readStdinJson() {
  * `semanticSessionId` is read from current-session.json (present since #587):
  * it is the SEMANTIC id (`<branch>-<date>-<mode>-<n>`) that sessions.jsonl is
  * keyed by, and the id the backfill (C1 #724) uses when the stdin session_id is
- * a harness UUID with no lock.acquired bridge.
+ * a harness UUID with no lock.acquired bridge. It is never a lock-release
+ * ownership identity; only the raw/native `sessionId` may release a live lock.
  *
  * #863 defect (c) — `semanticSessionId` is gated by the SAME "ending session
  * IS the recorded one" check as `durationMs` above. `current-session.json` is
  * a single repo-global file: it always reflects whichever session most
  * recently ran SessionStart, which may be a DIFFERENT, still-live session
- * when multiple windows share this repo. Before this fix, a foreign
- * terminating window (its own stdin `session_id` explicitly present, but NOT
- * equal to the recorded session) still inherited the CURRENTLY-recorded
- * session's `semantic_session_id` unconditionally — main()'s `ownBySemantic`
- * check then matched that OTHER, still-running session's lock and released
- * it. Gating this field closes that window: an unrelated/mismatched ending
- * session now resolves `semanticSessionId: null`, so `ownBySemantic` can
- * never accidentally fire on someone else's identity.
+ * when multiple windows share this repo. An unrelated/mismatched ending
+ * session therefore resolves `semanticSessionId: null` rather than inheriting
+ * another live session's backfill identity.
  *
  * @param {object|null} input
  * @param {string} projectRoot
@@ -181,24 +175,15 @@ async function main() {
     await backfillAbandonedSession({ repoRoot: projectRoot, sessionId, semanticSessionId });
   } catch { /* best-effort — never block teardown */ }
 
-  // (b) Deterministic lock release — ONLY our OWN lock. Match by UUID first,
-  //     then by semantic id (the UUID rotates across clear/compact/resume while
-  //     the semantic id stays stable, #612). A foreign lock is never released.
+  // (b) Deterministic lock release — ONLY a lock whose raw/native session_id
+  //     exactly matches this ending session's raw/native sessionId. Semantic
+  //     IDs remain lifecycle/backfill metadata and persisted proofs remain an
+  //     additional delete defense, but neither can heal a raw-ID mismatch.
   //
-  //     Epic #724 hardening ("ended logged but lock survived"): the ownership
-  //     match alone left two silent failure modes —
-  //       (1) release() can fail at the fs layer; the swallowed try/catch below
-  //           made this invisible (session.ended is logged, the lock survives).
-  //       (2) when the harness UUID rotates (clear/compact/resume) and
-  //           current-session.json's semantic_session_id is null/stale, BOTH
-  //           ownership checks are false and this branch never runs release()
-  //           at all — the lock survives until the NEXT session-start's own
-  //           reaper sweep discovers it.
-  //     Both are addressed below without loosening the strict
-  //     never-release-a-foreign-lock invariant: release() only ever runs when
-  //     ownership matched; the reconciliation fallback only ever runs through
-  //     reapRepoLock(), which independently NEVER reaps a live lease (and only
-  //     ever reaps on this same host with a dead recorded PID).
+  //     A mismatch routes only through reconciliation. The reaper independently
+  //     never touches a live lease, a cross-host lease, or a lease whose
+  //     recorded PID is still alive on this host; this retains dead/stale-lock
+  //     recovery without granting a SessionEnd hook foreign-lock ownership.
   try {
     // readLockDetailed (additive, see its JSDoc in session-lock.mjs) replaces
     // readLock() here so an unreadable/corrupt lock file is DISTINGUISHABLE
@@ -219,61 +204,15 @@ async function main() {
       } catch { /* observability is best-effort */ }
     } else if (lockDetail.status === 'ok') {
       const lock = lockDetail.lock;
-      const ownByUuid = sessionId !== null && lock.session_id === sessionId;
-      const ownBySemanticStrict =
-        semanticSessionId !== null && lock.semantic_session_id === semanticSessionId;
-      // #863 (d) — lock-shape trap: some on-disk locks store the semantic id
-      // directly in `session_id` with no separate `semantic_session_id` field
-      // at all (the "generated-semantic" acquisition path in
-      // on-session-start.mjs mints `session_id === the semantic id`, and
-      // bootstrapLock's v2 enrichment step never ran for that lock). Without
-      // this fallback, ownBySemanticStrict is dead code for that shape.
-      const ownBySemanticFallback =
-        semanticSessionId !== null && lock.session_id === semanticSessionId;
-      const ownBySemantic = ownBySemanticStrict || ownBySemanticFallback;
+      const ownByRawId = sessionId !== null && lock.session_id === sessionId;
 
-      // #987 Part 2 — persisted ownership proof (pid + host + started_at,
-      // written at lock genesis by bootstrapLock Step 2b, see
-      // writeOwnerProof() in session-lock.mjs). loadOwnerProof() is
-      // fail-closed: a missing/corrupt proof file yields null, and a null
-      // proof presented to isLockOwnedByProof() yields false — the hook then
-      // degrades to exactly the pre-#987 (proof-less) behaviour below.
-      const proof = loadOwnerProof({ repoRoot: projectRoot });
-      const ownByProof = isLockOwnedByProof(lock, proof);
+      if (ownByRawId) {
+        // The proof is deliberately passed to release() only after this raw-ID
+        // check. release() validates a supplied proof against its fresh on-disk
+        // read, preserving it as a second defense for the raw-owned path without
+        // allowing proof equality to establish ownership by itself.
+        const proof = loadOwnerProof({ repoRoot: projectRoot });
 
-      // #906-class fix: the semantic session id
-      // (`<branch>-<date>-<mode>-<n>`) is NOT globally unique — the
-      // id-counter can hand out the SAME id to two different session
-      // processes (live-observed twice on 2026-07-29: `main-2026-07-29-deep-1`
-      // and `main-2026-07-29-session-1`, each assigned to two distinct
-      // sessions). A live lock matched ONLY via a collidable semantic id
-      // (strict OR fallback, never corroborated by a non-collidable factor)
-      // is therefore NEVER trusted for release.
-      //
-      // #987 Part 2 — the discrimination the #906-class fix escalated as
-      // "structurally unobservable" is now OBSERVABLE via the persisted
-      // owner proof: a genuine same-session UUID rotation (clear/compact)
-      // and a foreign same-day semantic collision used to produce the
-      // IDENTICAL shape here (UUID mismatch + semantic match on a live
-      // lock), so the previous fix conservatively left BOTH un-released
-      // (bounded by the ttl_hours reaper). The proof written at lock genesis
-      // (pid + host + started_at — presence-at-genesis, never the collidable
-      // session_id/semantic id, see the FACTOR CHOICE docblock on
-      // isLockOwnedByProof()) is exactly the discriminator that RCR-007
-      // escalation named: on a self-rotation the on-disk lock is FROZEN at
-      // its pre-rotation values (bootstrapLock's shouldForce is false for a
-      // rotated UUID, so it bails without touching the lock), which are the
-      // SAME values the proof captured at genesis → ownByProof is true → the
-      // lock is released correctly. A foreign same-day collision wrote its
-      // lock in a DIFFERENT process at a DIFFERENT millisecond → ownByProof
-      // is false → semanticOnlyLive stays true → no release, the foreign
-      // lease survives (the never-release-a-foreign-lock invariant is
-      // untouched). No proof on disk (pre-#987 sessions, failed proof
-      // write) → ownByProof false → the conservative pre-#987 behaviour.
-      const semanticOnlyLive = !ownByUuid && !ownByProof && ownBySemantic && isLockLive(lock);
-      const releaseEligible = (ownByUuid || ownBySemantic) && !semanticOnlyLive;
-
-      if (releaseEligible) {
         // Defense-in-depth (#987): when a persisted proof exists, hand it to
         // release() so the delete is double-gated (session_id match AND
         // proof match) at the fs layer too. `proof` is `null` whenever
@@ -284,7 +223,7 @@ async function main() {
         // A 'proof-mismatch' result flows into the existing release_failed
         // breadcrumb below (releaseResult.reason surfaces verbatim).
         const releaseResult = release({
-          sessionId: lock.session_id,
+          sessionId,
           repoRoot: projectRoot,
           proof,
         });
@@ -355,16 +294,9 @@ async function main() {
           } catch { /* best-effort — a leftover proof is self-invalidating */ }
         }
       } else {
-        // Root-cause reconciliation fallback: either NEITHER the UUID nor the
-        // semantic id matched the recorded lock, OR the ONLY match was a
-        // collidable semantic comparison (strict or fallback) on a lock that
-        // is still live (semanticOnlyLive). attemptLockReconciliation() is
-        // the extracted, DI-testable seam (Issue #748) — it internally
-        // no-ops when the lease is still live (isLockLive), which is exactly
-        // what makes it safe to route the semanticOnlyLive case here too: it
-        // is otherwise best-effort, and reapRepoLock() never touches a live
-        // lease, a cross-host lease, or a lease whose recorded PID is still
-        // alive on this host.
+        // A raw-ID mismatch never grants release ownership. Reconciliation is
+        // the only remaining cleanup path; it no-ops for a live lock and safely
+        // reaps only eligible dead/stale locks.
         await attemptLockReconciliation({ repoRoot: projectRoot, sessionId, lock });
       }
     }

@@ -15,8 +15,8 @@
  *
  * Schema v2 (Epic #583 D4 #587):
  *   {
- *     session_id:           string,  // semantic OR UUID — whatever resolveSessionId returned
- *     semantic_session_id:  string,  // ALWAYS the semantic form (closes D4)
+ *     session_id:           string,  // native raw identity OR generated UUID; sole live lock/registry ownership key
+ *     semantic_session_id:  string,  // attribution/history label only; never ownership
  *     started_at:           ISO,
  *     last_heartbeat:       ISO,     // basis for liveness; replaces PID-liveness checks
  *     mode:                 string,  // "deep"|"feature"|"housekeeping"|"session"|...
@@ -47,10 +47,12 @@ import { writeJsonAtomicSync } from '../../scripts/lib/io.mjs';
  *
  * @param {object} opts
  * @param {string} opts.repoRoot — absolute path to the repository root.
- * @param {string} opts.sessionId — the resolved session id (semantic OR UUID).
- * @param {string} [opts.semanticSessionId] — the semantic form, ALWAYS surfaced
- *   even when sessionId is a UUID (closes D4 issue #587). When omitted, the
- *   field is populated by mirroring sessionId.
+ * @param {string} opts.sessionId — the physical raw session id from the native
+ *   harness, or a generated UUID when no trustworthy raw id exists. This is the
+ *   only live lock/registry ownership key.
+ * @param {string} [opts.semanticSessionId] — the semantic attribution/history
+ *   label, surfaced separately and never used for ownership. When omitted, the
+ *   field is populated by mirroring sessionId for backward-compatible display only.
  * @param {string} opts.mode — session mode (e.g. "deep", "feature").
  * @param {number} [opts.ttlHours=4] — lock TTL in hours.
  * @param {Function} [opts._acquireImpl] — DI for tests (defaults to importing acquire from session-lock.mjs).
@@ -88,9 +90,10 @@ export async function bootstrapLock({
 
   // Step 1: try to acquire. If a fresh acquire succeeds, we are done.
   // If a stale-PID-dead/-alive lock exists, force-overwrite it (the prior
-  // session has died; we own the worktree now).
-  // If the existing lock has the same sessionId, force-overwrite so the
-  // last_heartbeat gets refreshed.
+  // session has died; the current raw owner can take the worktree).
+  // Only an exact match of the existing physical raw sessionId permits the
+  // same-session force-refresh. semantic_session_id, STATE.md `session`, and
+  // an owner proof never make a different raw id the same owner.
   let acquireResult;
   try {
     // quiet: true suppresses the unknown-mode stderr WARN in acquire() (#592 MED-2).
@@ -169,9 +172,10 @@ export async function bootstrapLock({
     // last_heartbeat is the basis for liveness — set to started_at on bootstrap
     // so an immediate liveness check (< ttl_hours from now) succeeds.
     last_heartbeat: startedAt,
-    // semantic_session_id is ALWAYS the semantic form, even when session_id is
-    // a UUID-v4 (closes D4 #587). Fallback to mirroring session_id if no
-    // semantic was provided.
+    // semantic_session_id is an attribution/history label, normally semantic
+    // even when the physical session_id is a UUID-v4. Fall back to mirroring
+    // session_id only for backward-compatible display when no label was provided;
+    // it never changes the raw ownership key.
     semantic_session_id:
       typeof semanticSessionId === 'string' && semanticSessionId.length > 0
         ? semanticSessionId
@@ -190,7 +194,9 @@ export async function bootstrapLock({
   // Step 2b (#987 Part 1): persist the durable ownership proof at lock
   // genesis. `enriched` is byte-identical to the on-disk lock at this point
   // (the v2 overlay never touches pid/host/started_at), so the proof written
-  // here will verify via isLockOwnedByProof() against any later re-read.
+  // here will verify via isLockOwnedByProof() against any later re-read. The
+  // proof is supplementary evidence only: it never bridges a raw-id mismatch
+  // through semantic_session_id or STATE.md `session` equality.
   // This single call covers BOTH the plain-acquire and the forceAcquire
   // branch — both flow through the enriched write above. Best-effort like
   // the surrounding breadcrumb writes: writeOwnerProof() is no-throw by

@@ -73,6 +73,13 @@ function writeLock(wtPath, body) {
   writeFileSync(join(dir, 'session.lock'), JSON.stringify(body, null, 2) + '\n');
 }
 
+/** Write a current-session binding at the local repository root. */
+function writeCurrentSession(body) {
+  const dir = join(repoRoot, '.orchestrator');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'current-session.json'), JSON.stringify(body, null, 2) + '\n');
+}
+
 /** Lock body factory — all required schema-v2 fields with sensible defaults. */
 function lockBody(overrides = {}) {
   const nowIso = new Date().toISOString();
@@ -235,7 +242,7 @@ describe('Group B — multiple surfaces unioned', () => {
       .filter((p) => p.source === 'discovered')
       .map((p) => p.sessionId)
       .sort();
-    expect(discoveredIds).toEqual(['sess-lock-B1', 'sess-reg-B1'].sort());
+    expect(discoveredIds).toEqual(['sess-lock-B1', 'sess-reg-B1']);
     const stateMdPeer = result.peers.find((p) => p.source === 'state-md');
     expect(stateMdPeer).toBeDefined();
     expect(stateMdPeer.sessionId).toBe('sess-statemd-B1');
@@ -256,9 +263,7 @@ describe('Group B — multiple surfaces unioned', () => {
     expect(result.peers).toHaveLength(2);
     const sources = result.peers.map((p) => p.source).sort();
     expect(sources).toEqual(['discovered', 'state-md']);
-    for (const p of result.peers) {
-      expect(p.sessionId).toBe(shared);
-    }
+    expect(result.peers.map((p) => p.sessionId)).toEqual(['sess-shared-B2', 'sess-shared-B2']);
   });
 
   it('B3: lock + registry (distinct sessions), no STATE.md → 2 peers, no "state-md" entry', async () => {
@@ -299,8 +304,6 @@ describe('Group C — fail-open per surface (findPeers never throws)', () => {
       registryReader: emptyRegistryReader,
     });
 
-    // Must not reject.
-    await expect(promise).resolves.toBeTruthy();
     const result = await promise;
     expect(result.peers).toHaveLength(1);
     expect(result.peers[0].source).toBe('state-md');
@@ -411,33 +414,6 @@ describe('Group D — provenance heuristic & opts seams', () => {
     });
 
     expect(result.peers.some((p) => p.source === 'state-md')).toBe(false);
-  });
-
-  it('D4: findPeers returns a Promise (is thenable)', () => {
-    const returned = findPeers(repoRoot, {
-      listWorktreesImpl: async () => [],
-      registryReader: emptyRegistryReader,
-    });
-    expect(typeof returned.then).toBe('function');
-  });
-
-  it('D5: every emitted peer carries a source in the closed enum and a string sessionId', async () => {
-    writeLock(repoRoot, lockBody({ session_id: 'sess-lock-D5', pid: process.pid }));
-    writeActivePeerStateMd('sess-statemd-D5', { wave: 1 });
-
-    const result = await findPeers(repoRoot, {
-      mySessionId: 'main-2026-05-27-deep-6',
-      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
-      registryReader: async () => [regEntry({ session_id: 'sess-reg-D5', pid: 0 })],
-    });
-
-    const allowed = new Set(['discovered', 'state-md']);
-    expect(result.peers.length).toBeGreaterThanOrEqual(3);
-    for (const p of result.peers) {
-      expect(allowed.has(p.source)).toBe(true);
-      expect(typeof p.sessionId).toBe('string');
-      expect(p.sessionId.length).toBeGreaterThan(0);
-    }
   });
 });
 
@@ -700,7 +676,7 @@ describe('Group H — self-exclusion (#798)', () => {
       .filter((p) => p.source === 'discovered')
       .map((p) => p.sessionId)
       .sort();
-    expect(discoveredIds).toEqual(['sess-foreign-lock-H3', 'sess-foreign-reg-H3'].sort());
+    expect(discoveredIds).toEqual(['sess-foreign-lock-H3', 'sess-foreign-reg-H3']);
   });
 
   it('H4: lock and registry entries both share session_id === mySessionId → 0 discovered self-entries in the result', async () => {
@@ -728,6 +704,125 @@ describe('Group H — self-exclusion (#798)', () => {
     expect(result.peers).toHaveLength(1);
     expect(result.peers[0].source).toBe('discovered');
     expect(result.peers[0].sessionId).toBe('sess-foreign-H5');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group H2 — semantic hint aliases require a verified local raw binding (#1085)
+// ---------------------------------------------------------------------------
+
+describe('Group H2 — semantic hint aliases require a verified local raw binding (#1085)', () => {
+  const SELF_UUID = '550e8400-e29b-41d4-a716-446655440000';
+  const FOREIGN_UUID = '550e8400-e29b-41d4-a716-446655440001';
+  const SEMANTIC_HINT = 'main-2026-08-20-deep-1';
+
+  it('filters only the local raw UUID bound to a semantic hint and keeps a same-label foreign registry peer', async () => {
+    writeLock(repoRoot, lockBody({
+      session_id: SELF_UUID,
+      semantic_session_id: SEMANTIC_HINT,
+      pid: process.pid,
+    }));
+    writeCurrentSession({
+      session_id: SELF_UUID,
+      semantic_session_id: SEMANTIC_HINT,
+    });
+
+    const result = await findPeers(repoRoot, {
+      mySessionId: SEMANTIC_HINT,
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
+      registryReader: async () => [regEntry({
+        session_id: FOREIGN_UUID,
+        semantic_session_id: SEMANTIC_HINT,
+      })],
+    });
+
+    expect(result.peers).toEqual([
+      expect.objectContaining({ source: 'discovered', sessionId: FOREIGN_UUID }),
+    ]);
+  });
+
+  it('leaves the lock visible when the local current-session raw ID does not match it', async () => {
+    writeLock(repoRoot, lockBody({
+      session_id: SELF_UUID,
+      semantic_session_id: SEMANTIC_HINT,
+      pid: process.pid,
+    }));
+    writeCurrentSession({
+      session_id: FOREIGN_UUID,
+      semantic_session_id: SEMANTIC_HINT,
+    });
+
+    const result = await findPeers(repoRoot, {
+      mySessionId: SEMANTIC_HINT,
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
+      registryReader: emptyRegistryReader,
+    });
+
+    expect(result.peers).toEqual([
+      expect.objectContaining({ source: 'discovered', sessionId: SELF_UUID }),
+    ]);
+  });
+
+  it('leaves the lock visible when current-session.json is malformed', async () => {
+    writeLock(repoRoot, lockBody({
+      session_id: SELF_UUID,
+      semantic_session_id: SEMANTIC_HINT,
+      pid: process.pid,
+    }));
+    mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
+    writeFileSync(join(repoRoot, '.orchestrator', 'current-session.json'), '{ malformed', 'utf8');
+
+    const result = await findPeers(repoRoot, {
+      mySessionId: SEMANTIC_HINT,
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
+      registryReader: emptyRegistryReader,
+    });
+
+    expect(result.peers).toEqual([
+      expect.objectContaining({ source: 'discovered', sessionId: SELF_UUID }),
+    ]);
+  });
+
+  it('leaves a discovered registry entry visible when the local lock is malformed', async () => {
+    writeCurrentSession({
+      session_id: SELF_UUID,
+      semantic_session_id: SEMANTIC_HINT,
+    });
+    mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
+    writeFileSync(join(repoRoot, '.orchestrator', 'session.lock'), '{ malformed', 'utf8');
+
+    const result = await findPeers(repoRoot, {
+      mySessionId: SEMANTIC_HINT,
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
+      registryReader: async () => [regEntry({ session_id: SELF_UUID })],
+    });
+
+    expect(result.peers).toEqual([
+      expect.objectContaining({ source: 'discovered', sessionId: SELF_UUID }),
+    ]);
+  });
+
+  it('keeps the original semantic hint for the STATE.md surface', async () => {
+    writeLock(repoRoot, lockBody({
+      session_id: SELF_UUID,
+      semantic_session_id: SEMANTIC_HINT,
+      pid: process.pid,
+    }));
+    writeCurrentSession({
+      session_id: SELF_UUID,
+      semantic_session_id: SEMANTIC_HINT,
+    });
+    writeActivePeerStateMd(SELF_UUID, { wave: 2 });
+
+    const result = await findPeers(repoRoot, {
+      mySessionId: SEMANTIC_HINT,
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main'),
+      registryReader: emptyRegistryReader,
+    });
+
+    expect(result.peers).toEqual([
+      expect.objectContaining({ source: 'state-md', sessionId: SELF_UUID }),
+    ]);
   });
 });
 

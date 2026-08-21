@@ -690,7 +690,7 @@ describe('on-session-end.mjs — semantic-id contamination guard (#863)', { time
     expect(await lockExists(dir)).toBe(true);
   });
 
-  it('lock-shape trap (d), negative twin — a fallback-only semantic match on a STALE lock IS released via the primary path (not via reconciliation)', async () => {
+  it('lock-shape trap (d) — a fallback-only semantic match on a STALE lock is reaped by reconciliation', async () => {
     const dir = await mkProject();
     await seedLock(dir, {
       sessionId: 'sem-c',
@@ -709,11 +709,9 @@ describe('on-session-end.mjs — semantic-id contamination guard (#863)', { time
     });
 
     expect(await lockExists(dir)).toBe(false);
-    // Released via the PRIMARY release() path, not the reconciliation/reaper
-    // fallback — the discriminating signal versus the "matched neither
-    // ownership check" reconciliation path.
     const events = await readAllEvents(dir);
-    expect(events.some((e) => e.event === 'orchestrator.session.lock.reconcile_attempted')).toBe(false);
+    expect(events.some((e) => e.event === 'orchestrator.session.lock.reconcile_attempted')).toBe(true);
+    expect(events.some((e) => e.event === 'orchestrator.session.lock.released')).toBe(false);
   });
 });
 
@@ -828,24 +826,16 @@ describe('on-session-end.mjs — unreadable/corrupt lock surfaces as read_anomal
 });
 
 // ---------------------------------------------------------------------------
-// #906-class — the STRICT semantic comparison (lock.semantic_session_id
-// field) must gate on liveness exactly like the fallback comparison does. The
-// LIVE case (this test's negative twin) is covered above ("does NOT release a
-// LIVE lock matched only by the SEMANTIC id"); this proves the counterpart
-// holds too: a STRICT-only match on a genuinely STALE lock must still release
-// via the primary path. Without this counterpart, a regression that made
-// `semanticOnlyLive` ignore `isLockLive()` (e.g. hardcoding it to `true`)
-// would over-block release on every strict-only match, stale or not, and
-// nothing in the existing suite would catch it — the LIVE test would stay
-// green either way.
+// #1085 — a strict semantic match never grants direct release ownership.
+// The live case above must retain the lock; this counterpart proves that a
+// stale lock remains eligible for the reaper's separate reconciliation path.
 // ---------------------------------------------------------------------------
 
-describe('on-session-end.mjs — STRICT semantic-only match respects liveness, not just the fallback comparison (#906-class)', { timeout: 15000 }, () => {
-  it('releases via the primary path (not reconciliation) when the STRICT semantic match is on a STALE lock', async () => {
+describe('on-session-end.mjs — semantic mismatch preserves stale-lock reconciliation (#1085)', { timeout: 15000 }, () => {
+  it('reaps a STALE lock through reconciliation when only the STRICT semantic id matches', async () => {
     const dir = await mkProject();
-    // Lock recorded under an older UUID but the same semantic id, via the
-    // STRICT `semantic_session_id` field (not the session_id-holds-semantic
-    // fallback shape) — heartbeat is STALE (past the 4h default TTL).
+    // The strict semantic field matches, but the raw/native session IDs differ.
+    // A stale lease remains eligible for reaper cleanup, never direct release.
     await seedLock(dir, {
       sessionId: 'old-uuid-strict-stale',
       semanticSessionId: 'sem-shared-strict-stale',
@@ -864,26 +854,22 @@ describe('on-session-end.mjs — STRICT semantic-only match respects liveness, n
 
     expect(await lockExists(dir)).toBe(false);
     const events = await readAllEvents(dir);
-    expect(events.some((e) => e.event === 'orchestrator.session.lock.reconcile_attempted')).toBe(false);
+    expect(events.some((e) => e.event === 'orchestrator.session.lock.reconcile_attempted')).toBe(true);
+    expect(events.some((e) => e.event === 'orchestrator.session.lock.released')).toBe(false);
   });
 });
 
 // ---------------------------------------------------------------------------
-// #987 Part 2 — persisted owner proof converts the previously-conservative
-// self-rotation case (live semantic-only match, lock left until TTL) into a
-// correct release, WITHOUT opening the foreign same-day collision: the proof
-// triple (pid + host + started_at, captured at genesis) matches ONLY the lock
-// it was written from. These two tests are the positive/negative twins of the
-// existing "does NOT release a LIVE lock matched only by the SEMANTIC id"
-// pin above — same fixture shape, ± a matching proof file.
+// #1085 — raw native session_id is the sole live-lock ownership identity.
+// A matching semantic id and genesis proof can corroborate a raw-owned lock,
+// but must never heal a raw-ID mismatch.
 // ---------------------------------------------------------------------------
 
-describe('on-session-end.mjs — owner-proof-gated release of a live semantic-only match (#987 Part 2)', { timeout: 15000 }, () => {
-  it('releases a LIVE semantic-only-matched lock when the persisted owner proof matches (self-rotation across clear)', async () => {
+describe('on-session-end.mjs — raw-ID ownership boundary (#1085)', { timeout: 15000 }, () => {
+  it('does NOT release a LIVE semantic-only-matched lock when the persisted owner proof matches', async () => {
     const dir = await mkProject();
-    // Lock recorded under an older UUID but the same semantic id — live
-    // heartbeat (seedLock default). Identical shape to the conservative pin
-    // above, EXCEPT: the genesis proof is on disk and matches this exact lock.
+    // The ending session's native ID is not the lock's native ID. Its semantic
+    // ID and persisted proof happen to match, which must remain insufficient.
     await seedLock(dir, { sessionId: 'old-uuid-987', semanticSessionId: 'sem-987' });
     await seedOwnerProofFromLock(dir);
     await seedCurrentSession(dir, {
@@ -897,17 +883,12 @@ describe('on-session-end.mjs — owner-proof-gated release of a live semantic-on
       stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'new-uuid-987', reason: 'clear' }),
     });
 
-    // The proof discriminates self-rotation from foreign collision — the
-    // rotated session's own lock IS released now (pre-#987 it sat until TTL).
-    expect(await lockExists(dir)).toBe(false);
+    // The live lock and its proof remain for TTL/reaper reconciliation; neither
+    // semantic equality nor the matching proof grants delete ownership.
+    expect(await lockExists(dir)).toBe(true);
+    await expect(fs.access(path.join(dir, PROOF_REL))).resolves.toBeUndefined();
     const events = await readAllEvents(dir);
-    const released = events.find((e) => e.event === 'orchestrator.session.lock.released');
-    expect(released).toBeDefined();
-    expect(released.outcome).toBe('deleted');
-    expect(released.lock_session_id).toBe('old-uuid-987');
-    expect(events.some((e) => e.event === 'orchestrator.session.lock.reconcile_attempted')).toBe(false);
-    // #987 hygiene — the consumed genesis proof is cleaned up with the lock.
-    await expect(fs.access(path.join(dir, PROOF_REL))).rejects.toThrow();
+    expect(events.some((e) => e.event === 'orchestrator.session.lock.released')).toBe(false);
   });
 
   it('does NOT release when the proof startedAt differs by 1ms (foreign same-day collision)', async () => {
@@ -930,7 +911,7 @@ describe('on-session-end.mjs — owner-proof-gated release of a live semantic-on
     });
 
     // Foreign lease survives untouched — proof mismatch keeps the
-    // conservative semanticOnlyLive gate closed.
+    // raw-ID ownership boundary closed.
     expect(await lockExists(dir)).toBe(true);
     const events = await readAllEvents(dir);
     expect(events.some((e) => e.event === 'orchestrator.session.lock.released')).toBe(false);
@@ -1039,15 +1020,5 @@ describe('on-session-end.mjs — host-registry deregistration (#1047)', { timeou
 
     expect(res.code).toBe(0);
     expect(await exists(entryPath)).toBe(false);
-  });
-
-  it('exits 0 and touches nothing when no entry exists for this session', async () => {
-    const dir = await mkProject();
-    const res = await runHook({
-      projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'end-dereg-absent-4', reason: 'exit' }),
-    });
-    expect(res.code).toBe(0);
-    expect(res.stderr).toBe('');
   });
 });

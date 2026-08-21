@@ -17,7 +17,7 @@ current-wave: <N>
 total-waves: <N>
 # Optional fields (schema-version 1, additive for backward-compat):
 updated: <ISO 8601 UTC>      # last write timestamp, touched by any writer
-session: <session-id>        # <branch>-<YYYY-MM-DD>-<mode>-<n> (semantic, since #573); legacy UUID-v4 also accepted by parseSessionId
+session: <session-label>     # attribution/history label; normally semantic since #573, legacy UUID-v4 remains readable; never a lock/registry ownership key
 session-start-ref: <sha>     # git ref at session start
 ---
 ```
@@ -25,7 +25,7 @@ session-start-ref: <sha>     # git ref at session start
 ### Required vs. optional fields
 
 - `schema-version`, `session-type`, `branch`, `issues`, `started_at`, `status`, `current-wave`, `total-waves` — **required** in every session-owned STATE.md.
-- `updated`, `session`, `session-start-ref` — **optional**. Added by #184. STATE.md files without these fields remain valid and should be treated as `updated: null` / `session: null`. Writers SHOULD populate these fields but readers MUST tolerate their absence. The `session` field's value format is `<branch>-<YYYY-MM-DD>-<mode>-<n>` since #573 (Epic #568 Parallel-Aware Sessions P2.2); pre-#573 files may contain a UUID-v4 — both formats are read via `parseSessionId()` from `scripts/lib/session-id.mjs` per PRD §3 P2 row 3 (backward-compat).
+- `updated`, `session`, `session-start-ref` — **optional**. Added by #184. STATE.md files without these fields remain valid and should be treated as `updated: null` / `session: null`. Writers SHOULD populate these fields but readers MUST tolerate their absence. `session` is an attribution/history label, normally `<branch>-<YYYY-MM-DD>-<mode>-<n>` since #573 (Epic #568 Parallel-Aware Sessions P2.2); pre-#573 files may contain a UUID-v4 — both formats are read via `parseSessionId()` from `scripts/lib/session-id.mjs` per PRD §3 P2 row 3 (backward-compat). Neither form grants lock or registry ownership.
 
 The `session-type: none` + `status: idle` combination is used only for bootstrap-scaffolded placeholder files (no active session).
 
@@ -78,6 +78,32 @@ A log of unresolved, user-facing questions surfaced by wave agents during a sess
 - **Idle-Reset preservation (load-bearing):** **`## Open Questions` SURVIVES the completed-branch Idle Reset** — unlike per-session `## Deviations` (which is emptied) and `## Wave History` (which is demoted into `## Previous Session`). Unanswered questions are exactly the ones that need to reach the NEXT session's operator, so session-start's Idle Reset MUST NOT clear, demote, or drop it — mirroring `## What Not To Retry` above (#623).
 
 Helpers: `readOpenQuestions` (pure), `appendOpenQuestion` (pure), `markOpenQuestionAnswered` (pure), `appendOpenQuestionOnDisk` (lock-guarded write), `markOpenQuestionAnsweredOnDisk` (lock-guarded write) — all exported from `scripts/lib/state-md.mjs`.
+
+## Session Identity and Lock Ownership (#1085)
+
+This contract distinguishes a physical live-session key from labels that make a
+session intelligible to people and history readers. It does not add an identity
+layer.
+
+- **`session_id` is the only live ownership key.** It is the native raw identity
+  supplied by the active harness, or a generated UUID when no trustworthy raw
+  identity is available. Lock acquisition, registry membership, self-exclusion,
+  proof checks, and lock release use this physical key.
+- **`semantic_session_id` and STATE.md `session` are attribution/history
+  labels, never ownership.** They may describe the same work to a human, but
+  equality of either label cannot acquire, refresh, release, or reclaim a lock.
+  A legacy UUID in STATE.md remains readable only as historical data.
+- **Never bridge a raw mismatch with a label or a proof.** If the current raw
+  id and a live lock's raw id differ, ownership is ambiguous. Leave the live
+  lock visible and let its TTL/Reaper lifecycle resolve it; do not substitute a
+  semantic match, STATE.md `session` match, or owner-proof match.
+- **There is no `logical_session_id`.** A true cross-harness restart-continuity
+  contract requires a trusted native resume identifier and remains a follow-up.
+  In particular, a host rotation that changes both raw and semantic values has
+  no guaranteed continuity.
+
+The peer-discovery and issue-budget procedures below apply these rules at their
+narrow surfaces; neither creates a second ownership model.
 
 ## CCU-009 — Status = Index, Never History (#730/H6)
 
@@ -174,8 +200,8 @@ The `.orchestrator/session.lock` file is written mechanically by `hooks/_lib/loc
 
 ```json
 {
-  "session_id":          "<UUID-v4 OR semantic-id>",
-  "semantic_session_id": "<branch>-<YYYY-MM-DD>-<mode>-<n>",
+  "session_id":          "<native-raw-id OR generated-UUID>",
+  "semantic_session_id": "<attribution-label>",
   "started_at":          "<ISO-8601 UTC>",
   "last_heartbeat":      "<ISO-8601 UTC>",
   "mode":                "deep|feature|housekeeping|session|...",
@@ -189,8 +215,8 @@ The `.orchestrator/session.lock` file is written mechanically by `hooks/_lib/loc
 
 | Field | Required since | Description |
 |---|---|---|
-| `session_id` | v1 | The session identifier (UUID-v4 on Claude Code, semantic on Codex/Cursor). |
-| `semantic_session_id` | v2 (Epic #583) | The semantic form (`<branch>-<YYYY-MM-DD>-<mode>-<n>`) **always present**, even when `session_id` is a UUID. Closes D4 gap: semantic-id branch was previously dead code on Claude Code (stdin always provides UUID). |
+| `session_id` | v1 | The physical live lock/registry ownership key: a native raw harness identity, or a generated UUID when no trustworthy raw identity exists. Never use a semantic label here. |
+| `semantic_session_id` | v2 (Epic #583) | An attribution/history label, normally `<branch>-<YYYY-MM-DD>-<mode>-<n>`, surfaced alongside the raw key. It never establishes lock or registry ownership, including when it equals STATE.md `session`. |
 | `started_at` | v1 | ISO-8601 timestamp when the lock was written. |
 | `last_heartbeat` | v2 (Epic #583) | ISO-8601 timestamp updated by the `SessionStart` hook and by `PostToolBatch`/`Stop` hooks. **Basis for liveness determination** — replaces PID-liveness (see below). |
 | `mode` | v1 | Session mode consulted by exclusivity-matrix. May be `"unknown"` in the provisional lock written by the hook before Session Config + AUQ have settled. |
