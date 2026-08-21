@@ -417,7 +417,7 @@ describe('clean stop round-trip', { timeout: 15000 }, () => {
   // heartbeat must advance; deregistration moved to hooks/on-session-end.mjs.
   it('heartbeat file survives stop and its last_heartbeat advances', async () => {
     const dir = await mkProject();
-    const sessionId = 'test-session-clean-stop-42';
+    const sessionId = '8f52c2a1-7b3d-4e9a-8c1d-2f6a9b4e8d10';
 
     await runSessionStart({
       projectDir: dir,
@@ -603,7 +603,7 @@ describe('zombie sweep on session-start', { timeout: 15000 }, () => {
 describe('repeated turn-end (Stop) runs', { timeout: 15000 }, () => {
   it('running stop twice with the same session_id both exit 0, each appends a stop event, and the entry keeps being refreshed', async () => {
     const dir = await mkProject();
-    const sessionId = 'test-idempotent-stop-99';
+    const sessionId = '1c8a7e4b-2d5f-4a91-9b3c-6e0f8a2d4c57';
 
     // Register the session first
     await runSessionStart({
@@ -661,7 +661,7 @@ describe('repeated turn-end (Stop) runs', { timeout: 15000 }, () => {
 describe('heartbeat file schema', { timeout: 15000 }, () => {
   it('written heartbeat contains all required schema fields with correct types', async () => {
     const dir = await mkProject();
-    const sessionId = 'test-schema-validation-01';
+    const sessionId = '7d3e1a9c-6b4f-4c82-a5d9-0e7b3c1f6a28';
 
     await runSessionStart({
       projectDir: dir,
@@ -697,7 +697,7 @@ describe('heartbeat file schema', { timeout: 15000 }, () => {
 describe('stop event records registry-linked session_id', { timeout: 15000 }, () => {
   it('stop event in events.jsonl carries the session_id that was registered', async () => {
     const dir = await mkProject();
-    const sessionId = 'test-stop-event-session-id-77';
+    const sessionId = '4b9d2e7f-1a6c-4d83-b8e5-3f0a7c2d9e61';
 
     await runSessionStart({
       projectDir: dir,
