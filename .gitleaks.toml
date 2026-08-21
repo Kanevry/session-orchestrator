@@ -249,12 +249,12 @@ tags = ["grafana", "monitoring"]
 [[rules]]
 id = "baseline-vault-token"
 description = "HashiCorp Vault Token"
-regex = '''(?:hvs\.|s\.)[A-Za-z0-9]{24,}'''
+regex = '''\b(?:hvs\.|s\.)[A-Za-z0-9]{24,}'''
 severity = "CRITICAL"
 tags = ["vault", "secrets"]
 
   [rules.allowlist]
-  description = "FP: JS member access like deps.validatePathInsideProject, args.skipGeneratedRuleStaleness, or opts.throwOnFrontmatterUnsafe reads as the legacy Vault s.<token> format (s. + 24+ alnum). These are code identifiers (a published path-utils function name; a drift-check CLI flag; the writeStateMd frontmatter-safe-guard option from #747), never secrets."
+  description = "FP: JS member access like deps.validatePathInsideProject, args.skipGeneratedRuleStaleness, or opts.throwOnFrontmatterUnsafe reads as the legacy Vault s.<token> format (s. + 24+ alnum). These are code identifiers (a published path-utils function name; a drift-check CLI flag; the writeStateMd frontmatter-safe-guard option from #747), never secrets. Superseded structurally by the leading \\b in the rule regex above -- a member access never has a word boundary before its `s.`, so new identifiers no longer need an entry here. Kept as defence in depth."
   regexes = ['''validatePathInsideProject''', '''skipGeneratedRuleStaleness''', '''throwOnFrontmatterUnsafe''']
 
 # Twilio API Key
