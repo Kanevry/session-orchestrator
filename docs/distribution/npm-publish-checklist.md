@@ -45,9 +45,9 @@ npm pack --dry-run
 1. **Do not publish.** An npm publish is not revocable — a leaked file stays in that tarball version forever, and unpublishing burns the version number.
 2. Identify whether the hit is a real leak or a pattern false-positive. Read the matched line: the gate reports the pattern name and the offending `npm notice` line.
 3. If it is a real leak: fix `package.json` `files` (add the path, or a `!` negation), re-run `npm pack --dry-run`, and re-run `--check`. Never silence the pattern.
-4. If the pattern genuinely over-matches: fix it in `LEAKAGE_PATTERNS` **with a test in `tests/scripts/release.test.mjs`** — never by editing prose in this file.
+4. If the pattern genuinely over-matches: fix it in `LEAKAGE_PATTERNS` **with a test in `tests/scripts/release.test.mjs`** — never by editing prose in this file. An intentional distributed test asset is different: retain it only through an exact path allowlist at the leakage boundary; never bypass a segment or `templates/**` broadly.
 
-**Blind-scan guard.** A leak scan that parses *no* entries reports "0 leaks" with total confidence. The gate therefore also asserts a floor on parsed packed entries (`MIN_PACKED_ENTRIES` in `scripts/release.mjs`) — that single number catches an npm output-format change, an `npm notice` prefix rename, and a `files` edit that drops whole trees. Current ballpark, measured with `npm pack --dry-run` at `8984224`: **830 files, 2.9 MB packed, 8.9 MB unpacked.** A sudden drop means the scan went blind; a sudden jump means something leaked back in.
+**Blind-scan guard.** A leak scan that parses *no* entries reports "0 leaks" with total confidence. The gate therefore also asserts a floor on parsed packed entries (`MIN_PACKED_ENTRIES` in `scripts/release.mjs`) — that single number catches an npm output-format change, an `npm notice` prefix rename, and a `files` edit that drops whole trees. Current ballpark, measured with `npm pack --dry-run` on 2026-08-21: **805 files, 2.9 MB packed, 9.0 MB unpacked.** (830 before `package.json` `files` gained `!scripts/tests/**` and `!skills/vault-sync/tests/**`.) A sudden drop means the scan went blind; a sudden jump means something leaked back in.
 
 ## 4. Supporting gates
 
@@ -67,15 +67,17 @@ CI green on the exact commit being published is a separate, non-negotiable gate 
 node scripts/release.mjs --publish
 ```
 
-Runs the preflight first, then publishes, verifies the registry, creates the annotated tag **after** the verified publish, pushes `main` + tag to `origin` and the `github` mirror, and polls the live site.
+Runs the preflight first, then publishes. A target-confirmed npm receipt is the irreversible boundary: a failure **before** that receipt aborts normally; after it, never rerun `--publish`. The script tags **after** the receipt, pushes `main` + tag to `origin` and the `github` mirror, handles the GitHub release, and polls the live site even if registry propagation has not yet verified. If tag/push fails after the receipt, its dependent GitHub-release and live-site steps are skipped and the result carries structured reconciliation guidance.
 
 - `--access public` is passed by the script. It is required because npm defaults only *scoped* packages to restricted, but passing it explicitly removes the ambiguity.
-- The tag is never created before a registry-verified publish. That ordering is what makes the `3.18.0` state — tagged, released on GitHub, absent from npm — unreachable.
+- The tag is never created before a target-confirmed npm publish receipt. That ordering is what makes the `3.18.0` state — tagged, released on GitHub, absent from npm — unreachable.
+- A registry propagation timeout, query error, checked-wait failure, or tag/push failure after the receipt ends as **Post-publish reconciliation required**, not as a reason to repeat the publish. A tag/push failure skips the dependent GitHub-release and site operations; reconcile the named state directly and **do not rerun `--publish`** for that immutable version.
+- Exit `1` means a preflight/check failure or that post-publish reconciliation is required. Exit `2` remains a system/usage failure before a receipt exists.
 - **`--skip-ci` is refused under `--publish`** by the script itself, because it marks the CI row green without checking anything. Use it only to inspect the other preflight surfaces via `--check`.
 
 ## 6. Post-publish verification
 
-The registry check and the live-site poll are mechanized inside `--publish`. What remains for a human:
+The registry check and the live-site poll are mechanized inside `--publish`. It reports either **Release complete** or **Post-publish reconciliation required**; the latter still means npm accepted the package. What remains for a human:
 
 - `npm view session-orchestrator` — spot-check that `description`, `keywords`, `homepage` rendered as intended.
 - Check [pi.dev/packages](https://pi.dev/packages) for the listing. Gallery indexing runs on the Pi team's cadence — **not** instantaneous; a missing listing is not a failure until the next sync has passed.

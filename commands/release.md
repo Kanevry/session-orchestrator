@@ -32,13 +32,13 @@ The same reading shows the other half: the GitHub releases for 3.15/3.18/3.19/3.
 4. **Preflight.** `node scripts/release.mjs --check --json` — every row green. This runs *after* step 2, never before: `--check` derives its target from `package.json`, so on the pre-bump version the registry- and tag-collision rows are red by construction.
 5. **Gate, commit, push.** Full quality gate, then commit and push to **both** remotes.
 6. **CI green — on the commit that will be published.** Not on its predecessor. A green pipeline from before step 5's commit is evidence about a different tree.
-7. **Publish.** `node scripts/release.mjs --publish` — publishes, verifies the registry, tags **after** the verified publish, pushes `main` + tag to both remotes, then polls the live site. Add the GitHub release for the new tag (`gh release create`) as part of this step, not "later" — "later" is what produced the three-second backfill above.
+7. **Publish.** `node scripts/release.mjs --publish` — the target-confirmed npm receipt is the irreversible boundary. Before that receipt, any failure aborts normally. After it, never rerun `--publish`: registry propagation timeout/query/wait failures are reconciliation while the script still tags, pushes `main` + tag to both remotes, handles the GitHub release, and polls the live site. If tag/push fails after the receipt, the dependent GitHub-release and site steps are skipped and the script returns structured reconciliation guidance instead. Add the GitHub release for the new tag (`gh release create`) as part of this step, not "later" — "later" is what produced the three-second backfill above.
 
 Steps 2–7 are one continuous act. A release left parked between step 5 and step 7 is exactly the `3.18.0` state: every surface says released, the registry disagrees.
 
 ## Abort criteria
 
-Stop and report. Do not work around, do not "fix it after the publish" — an npm publish is not revocable.
+**Before a target-confirmed npm publish receipt:** stop and report. Do not work around, do not "fix it after the publish" — an npm publish is not revocable.
 
 | Signal | Why it stops the release |
 |---|---|
@@ -51,7 +51,9 @@ Stop and report. Do not work around, do not "fix it after the publish" — an np
 
 ## After
 
-`--publish` prints the remaining manual items (token rotation, async gallery indexing). Rotate the npm token — write tokens are short-lived by policy, and a token that transited a log or a chat is burned.
+`--publish` reports either **Release complete** or **Post-publish reconciliation required**. The latter means npm accepted the target release but registry propagation, tag/push, GitHub-release handling, or the live-site check still needs repair; a tag/push failure explicitly skips its dependent GitHub-release and site steps. **Do not rerun `--publish`**: reconcile the listed state directly, because a second publish cannot replace the immutable version. Exit `1` means a preflight/check failure or post-publish reconciliation is required; exit `2` remains a system/usage failure before the receipt.
+
+After a complete release, `--publish` prints the remaining manual items (token rotation, async gallery indexing). Rotate the npm token — write tokens are short-lived by policy, and a token that transited a log or a chat is burned.
 
 ## See Also
 

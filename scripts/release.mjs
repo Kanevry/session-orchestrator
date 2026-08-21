@@ -24,13 +24,17 @@
 //                         (local, origin, github), github/main mirror parity,
 //                         npm registry collision, npm token liveness, CI green
 //                         on HEAD, leakage gate over `npm pack --dry-run`.
-//   --publish             Runs --check first, then: token publish via temp
-//                         userconfig (NPM_TOKEN from .env.local), registry
-//                         verify, annotated tag AFTER successful publish
+//   --publish             Runs --check first, then token publish via temp
+//                         userconfig (NPM_TOKEN from .env.local). A
+//                         target-confirmed npm receipt is the irreversible
+//                         boundary: before it, failure aborts normally; after it,
+//                         never rerun --publish. The tail tags AFTER receipt
 //                         (never before — eliminates "tagged but unpublished"),
-//                         push main + tag to origin AND the github mirror,
-//                         the GitHub release (idempotent, `--verify-tag`), the
-//                         live-site poll, then the post-release checklist.
+//                         pushes main + tag to origin AND github, handles the
+//                         GitHub release (`--verify-tag`), reconciles registry
+//                         propagation, and polls the live site. A tag/push
+//                         failure skips the tag-dependent GitHub-release and
+//                         site phases and returns reconciliation guidance.
 //
 // USAGE:
 //   node scripts/release.mjs --check [--json] [--skip-ci]
@@ -39,10 +43,11 @@
 //
 // EXIT CODES:
 //   0  success
-//   1  check failure (stale surface, missing CHANGELOG entry, tag/registry
-//      collision, mirror behind, dead token, CI not green, leakage-gate hit)
-//   2  system/usage error (git/npm spawn failure, missing NPM_TOKEN,
-//      unknown flag, --skip-ci combined with --publish)
+//   1  preflight/check failure (stale surface, missing CHANGELOG entry,
+//      tag/registry collision, mirror behind, dead token, CI not green,
+//      leakage-gate hit) OR post-publish reconciliation required
+//   2  system/usage error before the npm receipt (git/npm spawn failure,
+//      missing NPM_TOKEN, unknown flag, --skip-ci combined with --publish)
 //
 // FAIL-CLOSED IS THE HOUSE RULE (the defect class this file kept re-growing):
 //   A preflight check reports on evidence it GATHERED. When the gathering
@@ -293,22 +298,36 @@ export function checkChangelogEntry(text, target) {
   return { ok: problems.length === 0, problems };
 }
 
-// The seven leakage patterns from skills/npm-publish/SKILL.md, applied to
-// `npm pack --dry-run` output lines. Any hit blocks the publish.
+// The leak checks operate only on paths extracted from real packed-entry lines,
+// never on arbitrary `npm notice` prose. `tests` and `.claude` are exact path
+// segments: nested copies leak too, while `contest` and `.claude-plugin` do not.
+function hasPathSegment(path, segment) {
+  return path.split('/').includes(segment);
+}
+
 export const LEAKAGE_PATTERNS = [
-  { name: 'tests/', re: /npm notice.* tests\// },
-  { name: '.orchestrator/', re: /npm notice.*\.orchestrator\// },
-  { name: '.claude/', re: /npm notice.*\s\.claude\// },
-  { name: '.github/', re: /npm notice.*\.github\// },
-  { name: 'node_modules', re: /node_modules/ },
-  { name: '.env', re: /npm notice.*\.env/i },
-  { name: 'owner.yaml', re: /owner\.yaml/i },
+  { name: 'tests/', matches: (path) => hasPathSegment(path, 'tests') },
+  { name: '.orchestrator/', matches: (path) => /\.orchestrator\//.test(path) },
+  { name: '.claude/', matches: (path) => hasPathSegment(path, '.claude') },
+  { name: '.github/', matches: (path) => /\.github\//.test(path) },
+  { name: 'node_modules', matches: (path) => /node_modules/.test(path) },
+  { name: '.env', matches: (path) => /\.env/i.test(path) },
+  { name: 'owner.yaml', matches: (path) => /owner\.yaml/i.test(path) },
   // Claimed as checked by docs/distribution/npm-publish-checklist.md long before
   // any code checked it (measured 2026-08-19: 3 leakage lists, 3 different sets).
   // `files` in package.json overrides .gitignore, so a stray .DS_Store inside a
   // shipped directory reaches the tarball.
-  { name: '.DS_Store', re: /\.DS_Store/ },
+  { name: '.DS_Store', matches: (path) => /\.DS_Store/.test(path) },
 ];
+
+// Bootstrap's public Standard path copies each selected template in full, so
+// these two sanity tests are intentional scaffold assets, not package-internal
+// test material. This is exact by path and applies only to the `tests/` class:
+// do not turn it into a templates/** or segment-level bypass.
+const INTENTIONAL_TEST_ASSET_PATHS = new Set([
+  'templates/node-minimal/tests/sanity.test.ts',
+  'templates/python-uv/tests/test_sanity.py',
+]);
 
 // `commands/release.md` quotes the `npm view` OUTPUT that proves the 3.18.0 gap,
 // dated at the line. Bumping it would destroy the evidence it exists to carry —
@@ -324,12 +343,15 @@ export const LEAKAGE_PATTERNS = [
 // exempts exactly the lines marked `site-numbers:historical`.
 export const HISTORY_ALLOWLIST = /^(CHANGELOG\.md|README\.md|docs\/|tests\/|skills\/npm-publish\/|scripts\/release\.mjs|\.orchestrator\/|site\/leaderboard\.json|site\/guide\/index\.html|commands\/release\.md)/;
 
-/** Pure check over pack-output lines. Returns violations: {name, line}[]. */
+/** Pure check over packed-entry lines. Returns violations: {name, line}[]. */
 export function checkLeakage(lines) {
   const violations = [];
   for (const line of lines) {
-    for (const { name, re } of LEAKAGE_PATTERNS) {
-      if (re.test(line)) violations.push({ name, line: line.trim() });
+    const entry = parsePackedEntry(line);
+    if (!entry) continue;
+    for (const { name, matches } of LEAKAGE_PATTERNS) {
+      if (name === 'tests/' && INTENTIONAL_TEST_ASSET_PATHS.has(entry.path)) continue;
+      if (matches(entry.path)) violations.push({ name, line: line.trim() });
     }
   }
   return violations;
@@ -339,25 +361,38 @@ export function checkLeakage(lines) {
  * One packed tarball entry in `npm pack --dry-run` output:
  * `npm notice 1.3kB .claude-plugin/marketplace.json`.
  *
- * The previous inline counter was `/npm notice.*[0-9]+B /`, which requires a
- * DIGIT immediately before the `B` and therefore matched only entries sized in
- * plain bytes — 108 of the 830 real entries at 8984224. It was never load-
- * bearing (it only decorated a detail string), but it becomes load-bearing the
- * moment a floor is asserted on it, so it is fixed here rather than floored at
- * a number that means nothing.
+ * This grammar intentionally excludes npm's package metadata and summary
+ * notices. Leakage decisions must be made over a file path, not a sentence
+ * that happens to mention one.
  */
-export const PACKED_ENTRY_RE = /^npm notice\s+[\d.]+\s*(?:B|kB|MB|GB)\s+\S/;
+export const PACKED_ENTRY_RE = /^npm notice\s+(\d+(?:\.\d+)?\s*(?:B|kB|MB|GB))\s+(\S.*)$/;
+
+/**
+ * Parse an npm packed-entry notice into its path. Returns null for every other
+ * npm notice line, including package metadata and summaries.
+ *
+ * @param {string} line
+ * @returns {{path: string}|null}
+ */
+export function parsePackedEntry(line) {
+  const match = line.match(PACKED_ENTRY_RE);
+  return match ? { path: match[2].trim() } : null;
+}
 
 /**
  * Floor on parsed packed entries, below which the leak scan is presumed BLIND
  * rather than clean.
  *
- * Measured at 8984224 with `npm pack --dry-run`: npm's own summary reports
- * `total files: 830` and {@link PACKED_ENTRY_RE} independently counts 830 —
+ * Measured 2026-08-21 with `npm pack --dry-run`: npm's own summary reports
+ * `total files: 805` and {@link PACKED_ENTRY_RE} independently counts 805 —
  * two differently-shaped measurements agreeing. Package size 2.9 MB, unpacked
- * 8.9 MB. Independently confirmable after the fact:
- * `npm view session-orchestrator@3.21.0 dist.fileCount` returned 832 — npm's own
- * count of what the registry actually accepted, from outside this repo.
+ * 9.0 MB. The count dropped from 830 when `package.json` `files` gained
+ * `!scripts/tests/**` and `!skills/vault-sync/tests/**`; those 28 entries were
+ * shipped in 3.21.0 (scanned: no secrets, no owner data — ballast, not an
+ * incident). Independently confirmable after the fact:
+ * `npm view session-orchestrator@3.21.0 dist.fileCount` returns 832 — npm's own
+ * count of what the registry accepted for THAT version, from outside this repo,
+ * and therefore still the pre-exclusion number.
  *
  * (An earlier revision of this comment claimed the checklist "still records the
  * older ~750 files" baseline. It did not: commit a2e495c rewrote that line to
@@ -365,8 +400,8 @@ export const PACKED_ENTRY_RE = /^npm notice\s+[\d.]+\s*(?:B|kB|MB|GB)\s+\S/;
  * was a second copy of a fact, contradicting the first, inside the file that
  * argues against second copies. Caught by the post-publish review panel.)
  *
- * 400 is a FLOOR, not a pin — deliberately ~48% of today's count. It cannot
- * break on growth (the pack only grows), and it is far enough below 830 that a
+ * 400 is a FLOOR, not a pin — deliberately ~50% of today's count. It cannot
+ * break on growth (the pack only grows), and it is far enough below 805 that a
  * deliberate docs/skills prune would not trip it. What it does catch is the
  * whole failure class in one number: an npm output-format change, an
  * `npm notice` prefix rename, a `files`/`.npmignore` edit that drops entire
@@ -488,7 +523,7 @@ export function evaluateLeakageGate(pack, { minEntries = MIN_PACKED_ENTRIES } = 
     return { ok: false, detail: `npm pack failed (exit ${pack.status}): ${(pack.stderr || '').trim().slice(-200)}` };
   }
   const lines = `${pack.stdout || ''}\n${pack.stderr || ''}`.split('\n');
-  const entries = lines.filter((l) => PACKED_ENTRY_RE.test(l)).length;
+  const entries = lines.filter(parsePackedEntry).length;
   if (entries < minEntries) {
     return {
       ok: false,
@@ -632,8 +667,8 @@ async function preflight(repoRoot, target, { skipCi = false } = {}) {
   // fail-open. Emptiness-means-all-clear is the shape to look for; reading the
   // status is what makes it safe. (Census: 14 `run(` call sites in this file.
   // It does NOT cover the raw `spawnSync` calls — a payload-keyed census misses
-  // the consumer that uses a different channel, which is how the unread
-  // `spawnSync('sleep')` in the propagation poll stayed invisible to it.)
+  // the consumer that uses a different channel, which is how the unchecked
+  // propagation wait stayed invisible to it.)
   const status = run('git', ['status', '--porcelain'], { cwd: repoRoot });
   const dirty = (status.stdout || '').trim();
   add(
@@ -783,49 +818,336 @@ function withTempUserconfig(token, fn) {
     chmodSync(tmpRc, 0o600);
     return fn(tmpRc);
   } finally {
-    rmSync(tmpDir, { recursive: true, force: true });
+    // NEVER let cleanup decide the release outcome. This finally runs AFTER
+    // `npm publish` has already published and BEFORE the caller evaluates the
+    // receipt, so a throwing rmSync (EPERM/EBUSY -- `force` only swallows
+    // ENOENT) surfaced as a pre-receipt system failure: published, untagged,
+    // unpushed, and reported as "safe to re-run". That is the #1088 F1 shape at
+    // its last remaining site. A surviving 0600 token file is a hygiene problem,
+    // so it is announced rather than swallowed.
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch (err) {
+      process.stderr.write(
+        `WARN: could not remove temporary npm userconfig ${tmpDir} (${err?.message ?? err}). ` +
+          `It contains a write token — delete it and rotate the token.\n`,
+      );
+    }
   }
 }
 
-function publish(repoRoot, target) {
-  const token = loadNpmToken(repoRoot);
-  const res = withTempUserconfig(token, (tmpRc) =>
-    run('npm', ['publish', '--access', 'public', '--userconfig', tmpRc], { cwd: repoRoot }),
-  );
-  const out = `${res.stdout}\n${res.stderr}`;
-  if (res.status !== 0 || !out.includes(`+ ${PACKAGE_NAME}@${target}`)) {
-    // Never echo the raw output wholesale into logs beyond the error slice —
-    // it cannot contain the token (npm masks userconfig), but stay frugal.
-    throw new Error(`npm publish failed (exit ${res.status}): ${out.slice(0, 800)}`);
-  }
+/**
+ * Evaluate npm publish output for the receipt that makes the release immutable.
+ * A successful process alone is insufficient: the receipt must name this package
+ * and this exact target version.
+ *
+ * @param {{status: number|null, stdout?: string, stderr?: string}} result
+ * @param {string} target
+ * @returns {{confirmed: boolean, target: string, detail: string}}
+ */
+export function evaluatePublishReceipt(result, target) {
+  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+  const receipt = new RegExp(`(?:^|\\n)\\+ ${PACKAGE_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}@${target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\r?$|\\s)`);
+  const confirmed = result.status === 0 && receipt.test(output);
+  return {
+    confirmed,
+    target,
+    detail: confirmed
+      ? `${PACKAGE_NAME}@${target} receipt confirmed`
+      : `npm publish did not emit a target-confirmed receipt for ${PACKAGE_NAME}@${target} (exit ${result.status})`,
+  };
+}
 
-  // Registry verify with propagation retries.
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    const view = run('npm', ['view', PACKAGE_NAME, 'version'], { cwd: repoRoot });
-    if (view.status === 0 && view.stdout.trim() === target) return;
-    if (attempt < 5) spawnSync('sleep', ['3']);
+/**
+ * Poll the registry after npm has issued a target-confirmed receipt. Every
+ * failure remains visible, but none invalidates the already irreversible npm
+ * publish; callers must reconcile rather than retry `--publish`.
+ *
+ * @param {string} repoRoot
+ * @param {string} target
+ * @param {{attempts?: number, delaySeconds?: number, runImpl?: Function, waitImpl?: Function}} [deps]
+ * @returns {{ok: boolean, kind: 'verified'|'timeout'|'query-failed'|'wait-failed', attempts: number, detail: string}}
+ */
+export function waitForRegistryPropagation(repoRoot, target, deps = {}) {
+  const attempts = deps.attempts ?? 5;
+  const delaySeconds = deps.delaySeconds ?? 3;
+  const runImpl = deps.runImpl ?? run;
+  const waitImpl = deps.waitImpl ?? (() => runImpl('sleep', [String(delaySeconds)], { cwd: repoRoot }));
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    let view;
+    try {
+      view = runImpl('npm', ['view', PACKAGE_NAME, 'version'], { cwd: repoRoot });
+    } catch (err) {
+      return {
+        ok: false,
+        kind: 'query-failed',
+        attempts: attempt,
+        detail: `registry query failed on attempt ${attempt}/${attempts}: ${err.message}`,
+      };
+    }
+    if (view.status === 0 && (view.stdout || '').trim() === target) {
+      return {
+        ok: true,
+        kind: 'verified',
+        attempts: attempt,
+        detail: `registry reports ${target} on attempt ${attempt}/${attempts}`,
+      };
+    }
+    if (view.status !== 0) {
+      return {
+        ok: false,
+        kind: 'query-failed',
+        attempts: attempt,
+        detail: `registry query failed on attempt ${attempt}/${attempts} (exit ${view.status}): ${(view.stderr || view.stdout || '').trim().slice(0, 300)}`,
+      };
+    }
+    if (attempt < attempts) {
+      let wait;
+      try {
+        wait = waitImpl({ attempt, delaySeconds });
+      } catch (err) {
+        return {
+          ok: false,
+          kind: 'wait-failed',
+          attempts: attempt,
+          detail: `registry propagation wait failed after attempt ${attempt}/${attempts}: ${err.message}`,
+        };
+      }
+      if (!wait || wait.status !== 0 || wait.error) {
+        return {
+          ok: false,
+          kind: 'wait-failed',
+          attempts: attempt,
+          detail: `registry propagation wait failed after attempt ${attempt}/${attempts} (exit ${wait?.status ?? 'unknown'}): ${(wait?.error?.message || wait?.stderr || wait?.stdout || '').trim().slice(0, 300)}`,
+        };
+      }
+    }
   }
-  throw new Error(`registry verify failed: npm view does not report ${target} after 5 attempts`);
+  return {
+    ok: false,
+    kind: 'timeout',
+    attempts,
+    detail: `registry did not report ${target} after ${attempts} attempts`,
+  };
+}
+
+/**
+ * Publish and return the receipt boundary plus the registry reconciliation
+ * result. Pre-receipt failures throw; post-receipt propagation failures return.
+ *
+ * @param {string} repoRoot
+ * @param {string} target
+ * @param {{runImpl?: Function, waitImpl?: Function, attempts?: number, delaySeconds?: number}} [deps]
+ * @returns {{receipt: {confirmed: boolean, target: string, detail: string}, propagation: ReturnType<typeof waitForRegistryPropagation>}}
+ */
+// Deliberately NOT exported: this is the irreversible act, and every production
+// path to it runs through main() -> preflight() (leakage gate, CI gate, dirty-tree
+// gate). Exporting it made the whole gate chain bypassable by any importer, and no
+// consumer needs it -- the tests drive runPublishRelease with an injected publisher.
+function publish(repoRoot, target, deps = {}) {
+  const token = loadNpmToken(repoRoot);
+  const runImpl = deps.runImpl ?? run;
+  const res = withTempUserconfig(token, (tmpRc) =>
+    runImpl('npm', ['publish', '--access', 'public', '--userconfig', tmpRc], { cwd: repoRoot }),
+  );
+  const receipt = evaluatePublishReceipt(res, target);
+  if (!receipt.confirmed) throw new Error(receipt.detail);
+
+  const propagation = waitForRegistryPropagation(repoRoot, target, {
+    attempts: deps.attempts,
+    delaySeconds: deps.delaySeconds,
+    runImpl,
+    waitImpl: deps.waitImpl,
+  });
+  return { receipt, propagation };
 }
 
 function tagAndPush(repoRoot, target) {
   const tag = `v${target}`;
-  const excerpt = changelogExcerpt(repoRoot, target);
-  const msgDir = mkdtempSync(join(tmpdir(), 'release-tagmsg-'));
-  const msgFile = join(msgDir, 'msg');
+  const progress = { tag, localTagCreated: false, pushed: [], remotes: [] };
   try {
-    writeFileSync(msgFile, `${tag}\n\n${excerpt}\n`);
-    mustRun('git', ['tag', '-a', tag, '-F', msgFile], { cwd: repoRoot });
-  } finally {
-    rmSync(msgDir, { recursive: true, force: true });
+    const excerpt = changelogExcerpt(repoRoot, target);
+    const msgDir = mkdtempSync(join(tmpdir(), 'release-tagmsg-'));
+    const msgFile = join(msgDir, 'msg');
+    try {
+      writeFileSync(msgFile, `${tag}\n\n${excerpt}\n`);
+      mustRun('git', ['tag', '-a', tag, '-F', msgFile], { cwd: repoRoot });
+      progress.localTagCreated = true;
+    } finally {
+      rmSync(msgDir, { recursive: true, force: true });
+    }
+    for (const remote of ['origin', 'github']) {
+      const remoteProgress = { remote, mainPushed: false, tagPushed: false };
+      progress.remotes.push(remoteProgress);
+      mustRun('git', ['push', remote, 'main'], { cwd: repoRoot });
+      remoteProgress.mainPushed = true;
+      mustRun('git', ['push', remote, tag], { cwd: repoRoot });
+      remoteProgress.tagPushed = true;
+      progress.pushed.push(remote);
+    }
+    return { tag, pushed: progress.pushed };
+  } catch (err) {
+    const failure = err instanceof Error ? err : new Error(String(err));
+    failure.releaseProgress = progress;
+    throw failure;
   }
-  const pushed = [];
-  for (const remote of ['origin', 'github']) {
-    mustRun('git', ['push', remote, 'main'], { cwd: repoRoot });
-    mustRun('git', ['push', remote, tag], { cwd: repoRoot });
-    pushed.push(remote);
+}
+
+/**
+ * Run the irreversible-release tail after npm's target-confirmed receipt.
+ * A tag/push failure stops tag-dependent phases; every other post-receipt
+ * finding remains a returned reconciliation result rather than a retry signal.
+ *
+ * @param {string} repoRoot
+ * @param {string} target
+ * @param {{publishImpl?: Function, tagAndPushImpl?: Function, ensureGithubReleaseImpl?: Function, verifyLiveSiteImpl?: Function}} [deps]
+ * @returns {Promise<{status: 'complete'|'post-publish-reconciliation', receipt: object, tag: string|null, pushed: string[], tagProgress?: object, release: object, live: object, propagation: object, reconciliation: Array<{phase: string, kind?: string, detail: string}>}>}
+ */
+export async function runPublishRelease(repoRoot, target, deps = {}) {
+  // Fail-closed: the real publisher must be handed in explicitly. Defaulting to
+  // the live `npm publish --access public` meant an importer that merely forgot
+  // `publishImpl` performed an irreversible public release with the token from
+  // .env.local and no preflight. main() wires it at the one call site that sits
+  // behind the gate chain.
+  const publishImpl = deps.publishImpl;
+  if (typeof publishImpl !== 'function') {
+    throw new Error('runPublishRelease requires an explicit publishImpl — refusing to publish by default');
   }
-  return { tag, pushed };
+  const tagAndPushImpl = deps.tagAndPushImpl ?? tagAndPush;
+  const ensureGithubReleaseImpl = deps.ensureGithubReleaseImpl ?? ensureGithubRelease;
+  const verifyLiveSiteImpl = deps.verifyLiveSiteImpl ?? verifyLiveSite;
+  const publication = publishImpl(repoRoot, target);
+
+  if (!publication?.receipt?.confirmed || publication.receipt.target !== target) {
+    throw new Error(`refusing release tail without a target-confirmed npm publish receipt for ${PACKAGE_NAME}@${target}`);
+  }
+
+  const propagation = publication.propagation;
+  let tagAndPushResult;
+  try {
+    tagAndPushResult = tagAndPushImpl(repoRoot, target);
+  } catch (err) {
+    const rawProgress = err?.releaseProgress;
+    const remotes = Array.isArray(rawProgress?.remotes)
+      ? rawProgress.remotes
+        .filter((remote) => typeof remote?.remote === 'string')
+        .map((remote) => ({
+          remote: remote.remote,
+          mainPushed: remote.mainPushed === true,
+          tagPushed: remote.tagPushed === true,
+        }))
+      : [];
+    const tagProgress = {
+      tag: typeof rawProgress?.tag === 'string' ? rawProgress.tag : null,
+      localTagCreated: rawProgress?.localTagCreated === true,
+      remotes,
+    };
+    const pushed = remotes.filter((remote) => remote.mainPushed && remote.tagPushed).map((remote) => remote.remote);
+    const prerequisite = 'skipped because tag-and-push did not complete';
+    return {
+      status: 'post-publish-reconciliation',
+      receipt: publication.receipt,
+      tag: tagProgress.tag,
+      pushed,
+      tagProgress,
+      release: { ok: false, skipped: true, state: 'skipped-prerequisite', detail: `GitHub release ${prerequisite}` },
+      live: { ok: false, skipped: true, state: 'skipped-prerequisite', detail: `live-site verification ${prerequisite}` },
+      propagation,
+      reconciliation: [
+        { phase: 'tag-and-push', kind: 'failed', detail: err instanceof Error ? err.message : String(err) },
+        { phase: 'github-release', kind: 'skipped-prerequisite', detail: `GitHub release ${prerequisite}` },
+        { phase: 'live-site', kind: 'skipped-prerequisite', detail: `live-site verification ${prerequisite}` },
+      ],
+    };
+  }
+
+  const { tag, pushed } = tagAndPushResult;
+  const release = ensureGithubReleaseImpl(repoRoot, target);
+  const live = await verifyLiveSiteImpl(target);
+  const reconciliation = [];
+  if (!propagation?.ok) {
+    reconciliation.push({
+      phase: 'registry-propagation',
+      kind: propagation?.kind ?? 'unknown',
+      detail: propagation?.detail ?? 'registry propagation was not verified',
+    });
+  }
+  if (!release.ok) reconciliation.push({ phase: 'github-release', detail: release.detail });
+  if (!live.ok) reconciliation.push({ phase: 'live-site', detail: live.detail });
+
+  return {
+    status: reconciliation.length === 0 ? 'complete' : 'post-publish-reconciliation',
+    receipt: publication.receipt,
+    tag,
+    pushed,
+    release,
+    live,
+    propagation,
+    reconciliation,
+  };
+}
+
+/**
+ * Print a completed publish-tail outcome and return the CLI exit code.
+ *
+ * @param {{status: string, propagation: object, tag: string|null, pushed: string[], release: object, live: object, reconciliation: Array<{phase: string, kind?: string, detail: string}>}} outcome
+ * @param {string} target
+ * @param {{log?: Function, error?: Function}} [io]
+ * @returns {number}
+ */
+export function printPublishOutcome(outcome, target, io = {}) {
+  const log = io.log ?? console.log;
+  const error = io.error ?? console.error;
+  const tagAndPushFailed = outcome.reconciliation.some((item) => item.phase === 'tag-and-push');
+
+  log(`  + ${PACKAGE_NAME}@${target} — target-confirmed npm receipt.`);
+  if (outcome.propagation.ok) {
+    log(`  registry verified (${outcome.propagation.detail}).`);
+  } else {
+    error(`\nRECONCILIATION: registry propagation is not yet verified — ${outcome.propagation.detail}`);
+  }
+  if (!tagAndPushFailed) {
+    log(`  tagged ${outcome.tag} (AFTER publish) and pushed main+tag to: ${outcome.pushed.join(', ')}.`);
+  }
+
+  if (outcome.release.skipped) {
+    error(`\nSKIPPED: ${outcome.release.detail}.`);
+  } else if (outcome.release.ok) {
+    log(`  ${outcome.release.detail}.`);
+  } else {
+    error(`\nRECONCILIATION: ${outcome.release.detail}`);
+    if (outcome.release.state === 'create-failed') {
+      error(`  Recover with: gh release create ${outcome.tag} --verify-tag --title ${outcome.tag} --notes-file <changelog excerpt>`);
+    } else {
+      error('  Inspect `gh release view` and its authentication/network state before attempting any create.');
+    }
+  }
+
+  if (outcome.live.skipped) {
+    error(`\nSKIPPED: ${outcome.live.detail}.`);
+  } else if (!outcome.live.ok) {
+    error(`\nRECONCILIATION: live site did not reach ${target}.`);
+    error(`  ${outcome.live.detail}`);
+    error('  Check https://vercel.com/kanevrys-projects/session-orchestrator for the deploy.');
+  } else {
+    log(`  site live at ${target} (${outcome.live.detail}).`);
+  }
+
+  if (outcome.status === 'post-publish-reconciliation') {
+    error('\nPost-publish reconciliation required: npm has accepted the target release.');
+    for (const item of outcome.reconciliation) {
+      error(`  - ${item.phase}${item.kind ? ` (${item.kind})` : ''}: ${item.detail}`);
+    }
+    error('  Do NOT rerun `--publish`; reconcile the listed post-publish state directly.');
+    return 1;
+  }
+
+  log(`\nRelease complete: ${PACKAGE_NAME}@${target} is published, tagged, released and live.`);
+  log('\nPost-release checklist (manual):');
+  log('  1. Rotate/delete the npm token: https://www.npmjs.com/settings/<user>/tokens');
+  log('  2. pi.dev gallery indexes asynchronously — do not block on it.');
+  return 0;
 }
 
 /**
@@ -844,9 +1166,9 @@ function tagAndPush(repoRoot, target) {
  *  - `--verify-tag` makes gh refuse when the tag is not on the remote, so
  *    "release without a tag" is structurally impossible rather than merely
  *    discouraged.
- *  - The `gh release view` probe first makes a re-run a no-op instead of an
- *    error, so a second `--publish` pass after a partial failure is not blocked
- *    by the step that already succeeded.
+ *  - The `gh release view` probe avoids a duplicate-release error when a
+ *    release is already present. It does not authorize rerunning `--publish`:
+ *    post-receipt failures are reconciled directly.
  *  - The `-R` spec comes from `resolveRepoSpec({vcs:'github'})` (#1039), not a
  *    hardcoded owner/repo, so a fork or a renamed remote targets its own repo.
  *
@@ -857,7 +1179,7 @@ function tagAndPush(repoRoot, target) {
  * @param {string} repoRoot
  * @param {string} target
  * @param {{runImpl?: Function, repoSpec?: string}} [deps] — injection seam for tests
- * @returns {{ok: boolean, created: boolean, tag: string, detail: string, argv?: string[]}}
+ * @returns {{ok: boolean, created: boolean, tag: string, state: 'exists'|'created'|'unknown'|'create-failed', detail: string, argv?: string[]}}
  */
 export function ensureGithubRelease(repoRoot, target, deps = {}) {
   const runImpl = deps.runImpl ?? run;
@@ -869,8 +1191,21 @@ export function ensureGithubRelease(repoRoot, target, deps = {}) {
 
   try {
     const existing = runImpl('gh', ['release', 'view', tag, ...repoFlag], { cwd: repoRoot });
-    if (existing.status === 0) {
-      return { ok: true, created: false, tag, detail: `GitHub release ${tag} already exists — no-op` };
+    const viewOutput = `${existing.stdout || ''}\n${existing.stderr || ''}`.trim();
+    if (existing.status === 0 && viewOutput) {
+      return { ok: true, created: false, tag, state: 'exists', detail: `GitHub release ${tag} already exists — no-op` };
+    }
+    // `gh release view` is tri-state. Only its documented absence response is
+    // permission to create; auth, network, empty and malformed responses leave
+    // release state unknown and must not trigger a write to GitHub.
+    if (!(existing.status === 1 && /^release not found$/i.test(viewOutput))) {
+      return {
+        ok: false,
+        created: false,
+        tag,
+        state: 'unknown',
+        detail: `could not determine whether GitHub release ${tag} exists (gh release view exited ${existing.status}: ${viewOutput.slice(0, 300) || 'empty output'})`,
+      };
     }
 
     const notesDir = mkdtempSync(join(tmpdir(), 'release-ghnotes-'));
@@ -885,16 +1220,17 @@ export function ensureGithubRelease(repoRoot, target, deps = {}) {
           ok: false,
           created: false,
           tag,
+          state: 'create-failed',
           argv,
           detail: `gh release create exited ${created.status}: ${(created.stderr || created.stdout || '').trim().slice(0, 300)}`,
         };
       }
-      return { ok: true, created: true, tag, argv, detail: `GitHub release ${tag} created (--verify-tag)` };
+      return { ok: true, created: true, tag, state: 'created', argv, detail: `GitHub release ${tag} created (--verify-tag)` };
     } finally {
       rmSync(notesDir, { recursive: true, force: true });
     }
   } catch (err) {
-    return { ok: false, created: false, tag, detail: `gh could not be run: ${err.message}` };
+    return { ok: false, created: false, tag, state: 'unknown', detail: `gh could not be run: ${err.message}` };
   }
 }
 
@@ -975,8 +1311,10 @@ async function main() {
   if (values.help) {
     console.log('Usage: node scripts/release.mjs [--set-version X.Y.Z | --check | --publish] [--skip-ci] [--json]');
     console.log('Release als ein Dispatch: surface sync, preflight checks, token publish, tag AFTER publish.');
+    console.log('  Receipt boundary: before the confirmed npm receipt, failure aborts; after it, never rerun --publish.');
+    console.log('  Tag/push failure after receipt skips GitHub-release and site phases and returns reconciliation guidance.');
     console.log('  --skip-ci  allowed with --check only; REFUSED with --publish (it verifies nothing).');
-    console.log('Exit codes: 0 success, 1 check failure, 2 system/usage error.');
+    console.log('Exit codes: 0 success, 1 preflight/check failure or post-publish reconciliation, 2 pre-receipt system/usage error.');
     return 0;
   }
 
@@ -1028,49 +1366,8 @@ async function main() {
     if (!values.publish) return 0;
 
     console.log(`\nPublishing ${PACKAGE_NAME}@${target} ...`);
-    publish(repoRoot, target);
-    console.log(`  + ${PACKAGE_NAME}@${target} — registry verified.`);
-    const { tag, pushed } = tagAndPush(repoRoot, target);
-    console.log(`  tagged ${tag} (AFTER publish) and pushed main+tag to: ${pushed.join(', ')}.`);
-
-    // GitHub release — after the tag is on the remote (so --verify-tag can do
-    // its job), before the site poll. Not fatal on its own: npm and both tags
-    // are already published at this point, and reporting a shipped release as a
-    // crash would be a worse lie than reporting the one missing artefact.
-    const release = ensureGithubRelease(repoRoot, target);
-    if (release.ok) {
-      console.log(`  ${release.detail}.`);
-    } else {
-      console.error(`\nFAIL: ${release.detail}`);
-      console.error('  npm publish and both tag pushes SUCCEEDED — only the GitHub release is missing.');
-      console.error(`  Recover with: gh release create ${tag} --verify-tag --title ${tag} --notes-file <changelog excerpt>`);
-    }
-
-    // The push to `github` above triggers the Vercel git integration, which
-    // deploys site/ (see vercel.json `outputDirectory`). The deploy is async,
-    // so poll rather than assume. This replaces the old manual checklist line
-    // `cd site && vercel --prod` — a checklist line is not a mechanism, and it
-    // was skipped twice in four weeks (#1043), leaving the live site a full
-    // release behind while every other surface said otherwise.
-    const live = await verifyLiveSite(target);
-    if (!live.ok) {
-      console.error(`\nFAIL: live site did not reach ${target}.`);
-      console.error(`  ${live.detail}`);
-      console.error('  npm and the tags ARE published — only the site lag remains.');
-      console.error('  Check https://vercel.com/kanevrys-projects/session-orchestrator for the deploy.');
-    } else {
-      console.log(`  site live at ${target} (${live.detail}).`);
-    }
-
-    // Both post-publish steps report before either decides the exit code —
-    // an operator who lost the GitHub release should still learn whether the
-    // site deployed, and vice versa.
-    if (!release.ok || !live.ok) return 1;
-
-    console.log('\nPost-release checklist (manual):');
-    console.log('  1. Rotate/delete the npm token: https://www.npmjs.com/settings/<user>/tokens');
-    console.log('  2. pi.dev gallery indexes asynchronously — do not block on it.');
-    return 0;
+    const outcome = await runPublishRelease(repoRoot, target, { publishImpl: publish });
+    return printPublishOutcome(outcome, target);
   }
 
   console.error('Nothing to do — pass --check, --publish, or --set-version X.Y.Z (see --help).');

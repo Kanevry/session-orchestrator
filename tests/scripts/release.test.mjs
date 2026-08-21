@@ -17,13 +17,14 @@
 //      unparseable `npm view` reading as "no collision", an unparsed
 //      `npm pack` listing reading as "0 leaks". Each is a green check that
 //      verified nothing, guarding a step that cannot be undone.
-//   6. A release ships without its GitHub release, or a second `--publish`
-//      pass dies on the release that already exists.
+//   6. A post-publish reconciliation misses its GitHub release, or an unknown
+//      GitHub state authorizes a duplicate create.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import {
   SURFACES,
   MIN_PACKED_ENTRIES,
@@ -31,6 +32,7 @@ import {
   applyVersion,
   checkChangelogEntry,
   checkLeakage,
+  parsePackedEntry,
   LEAKAGE_PATTERNS,
   HISTORY_ALLOWLIST,
   verifyLiveSite,
@@ -41,6 +43,10 @@ import {
   evaluateNpmAuth,
   validateFlags,
   ensureGithubRelease,
+  evaluatePublishReceipt,
+  waitForRegistryPropagation,
+  runPublishRelease,
+  printPublishOutcome,
 } from '../../scripts/release.mjs';
 
 // Fixture shapes are copied from the live repo files (golden-record rule in
@@ -284,6 +290,21 @@ describe('checkLeakage', () => {
     ];
     expect(checkLeakage(lines)).toEqual([]);
   });
+
+  it('checks only packed paths and blocks tests or .claude as nested path segments', () => {
+    const violations = checkLeakage([
+      'npm notice 1.2kB fixtures/tests/credentials.json',
+      'npm notice 1.2kB fixtures/.claude/settings.json',
+      'npm notice 1.2kB contest/notes.txt',
+      'npm notice 1.2kB .claude-plugin/marketplace.json',
+      'npm notice package: diagnostic mentions tests/ and .claude/',
+    ]);
+
+    expect(violations).toEqual([
+      { name: 'tests/', line: 'npm notice 1.2kB fixtures/tests/credentials.json' },
+      { name: '.claude/', line: 'npm notice 1.2kB fixtures/.claude/settings.json' },
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -339,14 +360,21 @@ describe('verifyLiveSite', () => {
   });
 
   it('retries before giving up, so an async deploy is not a false negative', async () => {
-    let n = 0;
-    const flaky = async () => {
-      n += 1;
-      return { ok: true, status: 200, text: async () => body(n < 3 ? '3.19.0' : '3.20.0') };
-    };
-    const r = await verifyLiveSite('3.20.0', { attempts: 5, delayMs: 0, fetchImpl: flaky, url: 'https://example.test/llms.txt' });
+    const flaky = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => body('3.19.0') })
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => body('3.19.0') })
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => body('3.20.0') });
+
+    const r = await verifyLiveSite('3.20.0', {
+      attempts: 5,
+      delayMs: 0,
+      fetchImpl: flaky,
+      url: 'https://example.test/llms.txt',
+    });
+
     expect(r.ok).toBe(true);
-    expect(n).toBe(3);
+    expect(flaky).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -363,17 +391,15 @@ describe('verifyLiveSite', () => {
 const ALLOWLIST = /^(CHANGELOG\.md|docs\/)/;
 
 describe('evaluateDriftSweep', () => {
-  it('treats a FAILED git grep as inconclusive, not as a clean sweep', () => {
+  it.each([2, 128])('treats failed git grep exit %i as inconclusive, not as a clean sweep', (status) => {
     // THE BUG: the old code read `.stdout` and never `.status`. `git grep`
     // exits 1 on "no match" (fine) and non-0/1 on a real error — measured 128
     // for a bad regex and a bad pathspec, and git documents 2 for usage errors.
     // Both produced an empty stdout, so a sweep that never ran reported
     // "no tracked file still carries 3.20.0".
-    for (const status of [2, 128]) {
-      const r = evaluateDriftSweep({ status, stdout: '', stderr: 'fatal: bad thing' }, '3.20.0', ALLOWLIST);
-      expect(r.ok).toBe(false);
-      expect(r.detail).toContain('inconclusive');
-    }
+    const r = evaluateDriftSweep({ status, stdout: '', stderr: 'fatal: bad thing' }, '3.20.0', ALLOWLIST);
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('inconclusive');
   });
 
   it('accepts exit 1 (no match) as the genuine clean sweep', () => {
@@ -403,13 +429,14 @@ describe('evaluateDriftSweep', () => {
   // the whole directory — and then every future version literal under it goes
   // unswept forever. Each exemption here is ONE file with a dated reason at the
   // regex; a sibling in the same directory must stay swept.
-  it('exempts named files, never their directories', () => {
-    for (const exempt of ['site/guide/index.html', 'commands/release.md']) {
-      expect(HISTORY_ALLOWLIST.test(exempt), `${exempt} must be exempt`).toBe(true);
-    }
-    for (const sibling of ['site/guide/other.html', 'commands/close.md', 'site/index.html']) {
-      expect(HISTORY_ALLOWLIST.test(sibling), `${sibling} must stay swept`).toBe(false);
-    }
+  it.each([
+    ['site/guide/index.html', true],
+    ['commands/release.md', true],
+    ['site/guide/other.html', false],
+    ['commands/close.md', false],
+    ['site/index.html', false],
+  ])('classifies %s as history-allowlisted=%s', (file, expected) => {
+    expect(HISTORY_ALLOWLIST.test(file)).toBe(expected);
   });
 
   it('still sweeps every other shipped page', () => {
@@ -516,6 +543,33 @@ describe('evaluateLeakageGate', () => {
     expect(r.ok).toBe(false);
     expect(r.detail).toContain('npm pack failed');
   });
+
+  it('accepts the actual working tree package without internal test material', () => {
+    // THE BUG: package.json whitelisted scripts/ and skills/ wholesale, so npm
+    // packed their internal tests and fixtures. Synthetic notice lines could
+    // prove matching, but not that the release configuration produced a clean
+    // real tarball.
+    const pack = spawnSync('npm', ['pack', '--dry-run'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    const packedPaths = [];
+    for (const line of `${pack.stdout || ''}\n${pack.stderr || ''}`.split('\n')) {
+      const entry = parsePackedEntry(line);
+      if (entry) packedPaths.push(entry.path);
+    }
+
+    expect(pack.status).toBe(0);
+    expect(packedPaths).toEqual(expect.arrayContaining([
+      'templates/node-minimal/tests/sanity.test.ts',
+      'templates/python-uv/tests/test_sanity.py',
+    ]));
+    expect(evaluateLeakageGate(pack)).toEqual({
+      ok: true,
+      detail: expect.stringMatching(/^\d+ packed entries, 0 leaks$/),
+    });
+  });
 });
 
 describe('evaluateRemoteHeadParity', () => {
@@ -592,12 +646,12 @@ describe('validateFlags', () => {
 });
 
 describe('ensureGithubRelease', () => {
-  const okRes = { status: 0, stdout: '', stderr: '' };
+  const okRes = { status: 0, stdout: 'https://github.com/Owner/repo/releases/tag/v3.21.0\n', stderr: '' };
 
   it('is a no-op when the release already exists, instead of erroring', () => {
     // THE BUG: `gh release create` on an existing release exits non-zero. A
-    // second --publish pass (after, say, a site-verify failure) would then die
-    // on the one step that had already succeeded.
+    // recovery action that encounters an already-created release must report a
+    // no-op, not turn that successful artifact into a duplicate-create error.
     const calls = [];
     const r = ensureGithubRelease('/repo', '3.21.0', {
       repoSpec: 'github.com/Owner/repo',
@@ -619,27 +673,28 @@ describe('ensureGithubRelease', () => {
     const root = mkdtempSync(join(tmpdir(), 'release-gh-'));
     try {
       writeFileSync(join(root, 'CHANGELOG.md'), '# Changelog\n\n## [3.21.0] - 2026-08-19\n\n### Added\n- a thing\n');
-      const calls = [];
       let notesSeenByGh = null;
-      const r = ensureGithubRelease(root, '3.21.0', {
-        repoSpec: 'github.com/Owner/repo',
-        runImpl: (cmd, args) => {
-          calls.push({ cmd, args });
-          if (args[1] === 'view') return { status: 1, stdout: '', stderr: 'release not found' };
+      const runImpl = vi
+        .fn()
+        .mockReturnValueOnce({ status: 1, stdout: '', stderr: 'release not found' })
+        .mockImplementationOnce((_cmd, args) => {
           // Read the notes file HERE — this is the only moment it exists, and
           // it is exactly the moment gh would read it. The production code
           // removes it in a finally, which is why asserting after the call
           // would (and did) fail with ENOENT.
           notesSeenByGh = readFileSync(args[args.indexOf('--notes-file') + 1], 'utf8');
           return okRes;
-        },
+        });
+      const r = ensureGithubRelease(root, '3.21.0', {
+        repoSpec: 'github.com/Owner/repo',
+        runImpl,
       });
       expect(r).toMatchObject({ ok: true, created: true, tag: 'v3.21.0' });
-      const create = calls[1];
-      expect(create.cmd).toBe('gh');
-      expect(create.args).toContain('--verify-tag');
-      expect(create.args.slice(0, 3)).toEqual(['release', 'create', 'v3.21.0']);
-      expect(create.args[create.args.indexOf('--repo') + 1]).toBe('github.com/Owner/repo');
+      const [, createArgs] = runImpl.mock.calls[1];
+      expect(runImpl.mock.calls[1][0]).toBe('gh');
+      expect(createArgs).toContain('--verify-tag');
+      expect(createArgs.slice(0, 3)).toEqual(['release', 'create', 'v3.21.0']);
+      expect(createArgs[createArgs.indexOf('--repo') + 1]).toBe('github.com/Owner/repo');
       // The body is the CHANGELOG excerpt, passed by file (never as argv).
       expect(notesSeenByGh).toContain('- a thing');
     } finally {
@@ -647,19 +702,25 @@ describe('ensureGithubRelease', () => {
     }
   });
 
-  it('reports a gh failure instead of throwing, because publish already happened', () => {
-    // By the time this runs, npm publish and both tag pushes have SUCCEEDED.
-    // Throwing here would report a shipped release as a crash.
+  it('does not create on an unknown gh release-view result', () => {
+    // A non-zero status alone is not "release absent": auth, network and empty
+    // output all share it. Creating in those states risks targeting the wrong
+    // repository or turning a transient API failure into a duplicate release.
     const root = mkdtempSync(join(tmpdir(), 'release-gh-'));
     try {
       writeFileSync(join(root, 'CHANGELOG.md'), '# Changelog\n\n## [3.21.0] - 2026-08-19\n\n- x\n');
-      const failed = ensureGithubRelease(root, '3.21.0', {
+      const calls = [];
+      const unknown = ensureGithubRelease(root, '3.21.0', {
         repoSpec: 'github.com/Owner/repo',
-        runImpl: (cmd, args) =>
-          args[1] === 'view' ? { status: 1, stdout: '', stderr: '' } : { status: 1, stdout: '', stderr: 'tag not found on remote' },
+        runImpl: (cmd, args) => {
+          calls.push({ cmd, args });
+          return { status: 1, stdout: '', stderr: 'HTTP 401: Bad credentials' };
+        },
       });
-      expect(failed.ok).toBe(false);
-      expect(failed.detail).toContain('tag not found on remote');
+      expect(unknown).toMatchObject({ ok: false, created: false, state: 'unknown' });
+      expect(unknown.detail).toContain('could not determine whether GitHub release');
+      expect(calls).toHaveLength(1);
+      expect(calls[0].args.slice(0, 2)).toEqual(['release', 'view']);
 
       const missing = ensureGithubRelease(root, '3.21.0', {
         repoSpec: 'github.com/Owner/repo',
@@ -672,5 +733,207 @@ describe('ensureGithubRelease', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('evaluatePublishReceipt', () => {
+  it('confirms only the receipt for the target package version', () => {
+    const receipt = evaluatePublishReceipt({
+      status: 0,
+      stdout: '+ session-orchestrator@3.21.0\n',
+      stderr: '',
+    }, '3.21.0');
+
+    expect(receipt).toMatchObject({ confirmed: true, target: '3.21.0' });
+    expect(evaluatePublishReceipt({ status: 0, stdout: '+ session-orchestrator@3.20.0\n', stderr: '' }, '3.21.0').confirmed).toBe(false);
+  });
+});
+
+describe('waitForRegistryPropagation', () => {
+  it('confirms the registry after a successful checked wait', () => {
+    const registryViews = ['3.20.0\n', '3.21.0\n'];
+    const calls = [];
+    const result = waitForRegistryPropagation('/repo', '3.21.0', {
+      attempts: 2,
+      runImpl: (cmd, args) => {
+        calls.push(`${cmd} ${args.join(' ')}`);
+        return { status: 0, stdout: registryViews.shift(), stderr: '' };
+      },
+      waitImpl: () => {
+        calls.push('wait');
+        return { status: 0, stdout: '', stderr: '' };
+      },
+    });
+
+    expect(result).toMatchObject({ ok: true, kind: 'verified', attempts: 2 });
+    expect(calls).toEqual([
+      'npm view session-orchestrator version',
+      'wait',
+      'npm view session-orchestrator version',
+    ]);
+  });
+
+  it('returns a visible propagation result when the checked wait fails', () => {
+    const calls = [];
+    const result = waitForRegistryPropagation('/repo', '3.21.0', {
+      attempts: 2,
+      runImpl: (cmd, args) => {
+        calls.push(`${cmd} ${args.join(' ')}`);
+        return { status: 0, stdout: '3.20.0\n', stderr: '' };
+      },
+      waitImpl: () => {
+        calls.push('wait');
+        return { status: 1, stdout: '', stderr: 'sleep unavailable' };
+      },
+    });
+
+    expect(result).toMatchObject({ ok: false, kind: 'wait-failed' });
+    expect(result.detail).toContain('sleep unavailable');
+    expect(calls).toEqual(['npm view session-orchestrator version', 'wait']);
+  });
+
+  it('returns a visible propagation result when the registry query fails', () => {
+    const result = waitForRegistryPropagation('/repo', '3.21.0', {
+      runImpl: () => ({ status: 1, stdout: '', stderr: 'EAI_AGAIN registry.npmjs.org' }),
+      waitImpl: () => {
+        throw new Error('wait must not be called after a failed query');
+      },
+    });
+
+    expect(result).toMatchObject({ ok: false, kind: 'query-failed' });
+    expect(result.detail).toContain('EAI_AGAIN');
+  });
+});
+
+describe('runPublishRelease', () => {
+  it('runs every tail operation in order after registry propagation times out', async () => {
+    const calls = [];
+    const outcome = await runPublishRelease('/repo', '3.21.0', {
+      publishImpl: () => ({
+        receipt: { confirmed: true, target: '3.21.0' },
+        propagation: { ok: false, kind: 'timeout', detail: 'registry has not propagated' },
+      }),
+      tagAndPushImpl: () => {
+        calls.push('tag-and-push');
+        return { tag: 'v3.21.0', pushed: ['origin', 'github'] };
+      },
+      ensureGithubReleaseImpl: () => {
+        calls.push('github-release');
+        return { ok: true, created: true, state: 'created', detail: 'GitHub release v3.21.0 created' };
+      },
+      verifyLiveSiteImpl: async () => {
+        calls.push('live-site');
+        return { ok: true, detail: 'attempt 1/1' };
+      },
+    });
+
+    expect(calls).toEqual(['tag-and-push', 'github-release', 'live-site']);
+    expect(outcome).toMatchObject({
+      status: 'post-publish-reconciliation',
+      tag: 'v3.21.0',
+      reconciliation: [{ phase: 'registry-propagation', kind: 'timeout' }],
+    });
+  });
+
+  it('reconciles a post-receipt tag-and-push exception without probing dependent phases', async () => {
+    const calls = [];
+    const tagFailure = Object.assign(new Error('git push github v3.21.0 exited 1: remote rejected'), {
+      releaseProgress: {
+        tag: 'v3.21.0',
+        localTagCreated: true,
+        pushed: ['origin'],
+        remotes: [
+          { remote: 'origin', mainPushed: true, tagPushed: true },
+          { remote: 'github', mainPushed: true, tagPushed: false },
+        ],
+      },
+    });
+    const outcome = await runPublishRelease('/repo', '3.21.0', {
+      publishImpl: () => ({
+        receipt: { confirmed: true, target: '3.21.0', detail: 'session-orchestrator@3.21.0 receipt confirmed' },
+        propagation: { ok: true, kind: 'verified', detail: 'registry reports 3.21.0 on attempt 1/5' },
+      }),
+      tagAndPushImpl: () => {
+        calls.push('tag-and-push');
+        throw tagFailure;
+      },
+      ensureGithubReleaseImpl: () => {
+        calls.push('github-release');
+        return { ok: true, detail: 'must not run' };
+      },
+      verifyLiveSiteImpl: async () => {
+        calls.push('live-site');
+        return { ok: true, detail: 'must not run' };
+      },
+    });
+
+    expect(calls).toEqual(['tag-and-push']);
+    expect(outcome).toMatchObject({
+      status: 'post-publish-reconciliation',
+      receipt: { confirmed: true, target: '3.21.0' },
+      propagation: { ok: true, kind: 'verified' },
+      tag: 'v3.21.0',
+      pushed: ['origin'],
+      tagProgress: {
+        localTagCreated: true,
+        remotes: [
+          { remote: 'origin', mainPushed: true, tagPushed: true },
+          { remote: 'github', mainPushed: true, tagPushed: false },
+        ],
+      },
+      release: { ok: false, skipped: true },
+      live: { ok: false, skipped: true },
+    });
+    expect(outcome.reconciliation).toEqual([
+      expect.objectContaining({ phase: 'tag-and-push', kind: 'failed', detail: expect.stringContaining('remote rejected') }),
+      expect.objectContaining({ phase: 'github-release', kind: 'skipped-prerequisite' }),
+      expect.objectContaining({ phase: 'live-site', kind: 'skipped-prerequisite' }),
+    ]);
+
+    const stdout = [];
+    const stderr = [];
+    const exitCode = printPublishOutcome(outcome, '3.21.0', {
+      log: (line) => stdout.push(line),
+      error: (line) => stderr.push(line),
+    });
+
+    expect(exitCode).toBe(1);
+    expect(stdout.join('\n')).not.toContain('tagged v3.21.0');
+    expect(stderr.join('\n')).toContain('tag-and-push');
+    expect(stderr.join('\n')).toContain('Do NOT rerun `--publish`');
+    expect(stderr.join('\n')).not.toContain('gh release view');
+    expect(stderr.join('\n')).not.toContain('vercel.com');
+  });
+
+  it('blocks every tail operation when the npm receipt is not target-confirmed', async () => {
+    const calls = [];
+    await expect(runPublishRelease('/repo', '3.21.0', {
+      publishImpl: () => ({
+        receipt: { confirmed: false, target: '3.21.0' },
+        propagation: { ok: false, kind: 'not-run', detail: 'no receipt' },
+      }),
+      tagAndPushImpl: () => calls.push('tag-and-push'),
+      ensureGithubReleaseImpl: () => calls.push('github-release'),
+      verifyLiveSiteImpl: () => calls.push('live-site'),
+    })).rejects.toThrow('target-confirmed npm publish receipt');
+
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('runPublishRelease — the irreversible default', () => {
+  // The bug this catches: an importer that forgets `publishImpl` used to get the
+  // live `npm publish --access public` as the DI default, bypassing preflight
+  // (leakage gate, CI gate, dirty-tree gate) and burning a version number.
+  it('refuses to publish when no publisher is injected', async () => {
+    await expect(runPublishRelease('/repo', '9.9.9', {})).rejects.toThrow(
+      /requires an explicit publishImpl/,
+    );
+  });
+
+  it('refuses when publishImpl is present but not callable', async () => {
+    await expect(
+      runPublishRelease('/repo', '9.9.9', { publishImpl: 'nope' }),
+    ).rejects.toThrow(/requires an explicit publishImpl/);
   });
 });
