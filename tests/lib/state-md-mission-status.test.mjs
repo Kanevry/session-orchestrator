@@ -218,6 +218,17 @@ status: active
 - m-1: brainstormed (updated 2026-07-31T00:00:00.000Z)
 `;
 
+/** Legacy state: a body entry exists, but its frontmatter registry is empty. */
+const STATE_LEGACY_EMPTY_FRONTMATTER_WITH_BODY = `---
+schema-version: 1
+status: active
+mission-status: []
+---
+
+## Mission Status
+- m-1: completed (updated 2026-08-20T00:00:00.000Z)
+`;
+
 describe('setMissionStatus', () => {
   it('round-trips: frontmatter reader and body reader both report the new status', () => {
     const out = setMissionStatus(STATE_BOTH_SURFACES, 'm-1', 'in-dev');
@@ -244,18 +255,124 @@ describe('setMissionStatus', () => {
     ]);
   });
 
-  it('updates the body and leaves frontmatter untouched when no entry has that id', () => {
+  it('appends a new id to a populated registry without touching existing metadata', () => {
     const out = setMissionStatus(STATE_BOTH_SURFACES, 'm-9', 'completed');
     expect(readMissionStatus(out, 'm-9')).toBe('completed');
-    // UPDATE-ONLY: never invents a frontmatter entry, because setMissionStatus
-    // does not know the mandatory `task`/`wave` fields — it only carries an id
-    // and a status. (This line cited validateMissionStatusEntry until 2026-08-15;
-    // that validator had zero production callers and was deleted, so the reason
-    // is spelled out here instead of pointed at.)
+    // The merge is a SUPERSET: m-1/m-2 keep their `task`/`wave`, and the new id
+    // is mirrored as the same truthful partial entry the empty-registry recovery
+    // already produces. Pinning "m-9 never appears" was pinning #1084 itself --
+    // update-only mirroring is why the registry froze after its first recovery.
     expect(parseMissionStatus(parseStateMd(out).frontmatter)).toEqual([
       { id: 'm-1', task: 'foo', wave: 1, status: 'brainstormed' },
       { id: 'm-2', task: 'bar', wave: 2, status: 'validated' },
+      { id: 'm-9', status: 'completed' },
     ]);
+  });
+
+  it('keeps body and frontmatter ids equal across sequential writes after a recovery', () => {
+    // The #1084 revisit trigger: Phase 1.9/1.10 counts the frontmatter, a plain
+    // grep counts the body. Before the superset merge this produced 1 vs 3 --
+    // a plausible undercount, which is worse than the obvious zero it replaced.
+    let out = STATE_LEGACY_EMPTY_FRONTMATTER_WITH_BODY;
+    out = setMissionStatus(out, 'm-1', 'completed');
+    out = setMissionStatus(out, 'm-2', 'in-dev');
+    out = setMissionStatus(out, 'm-3', 'in-dev');
+
+    const frontmatterIds = parseMissionStatus(parseStateMd(out).frontmatter).map((e) => e.id);
+    const bodyIds = out
+      .split('\n')
+      .map((l) => /^- ([^:]+): /.exec(l))
+      .filter((m) => m !== null)
+      .map((m) => m[1]);
+
+    expect(frontmatterIds).toEqual(['m-1', 'm-2', 'm-3']);
+    expect(bodyIds).toEqual(['m-1', 'm-2', 'm-3']);
+  });
+
+  it('recovers a truthful partial entry from an empty frontmatter registry', () => {
+    const out = setMissionStatus(STATE_LEGACY_EMPTY_FRONTMATTER_WITH_BODY, 'm-1', 'completed');
+
+    expect(readMissionStatus(out, 'm-1')).toBe('completed');
+    expect(parseMissionStatus(parseStateMd(out).frontmatter)).toEqual([
+      { id: 'm-1', status: 'completed' },
+    ]);
+  });
+
+  it('uses the exact Mission Status heading for set, read, and recovery', () => {
+    const contents = `---
+schema-version: 1
+status: active
+mission-status: []
+---
+
+## Mission Status Notes
+- m-1: notes only (updated 2026-08-20T00:00:00.000Z)
+## Mission Status
+- m-1: brainstormed (updated 2026-08-20T00:00:00.000Z)
+`;
+    const out = setMissionStatus(contents, 'm-2', 'completed');
+
+    expect(readMissionStatus(out, 'm-1')).toBe('brainstormed');
+    expect(parseMissionStatus(parseStateMd(out).frontmatter)).toEqual([
+      { id: 'm-1', status: 'brainstormed' },
+      { id: 'm-2', status: 'completed' },
+    ]);
+  });
+
+  it('recovers sibling body entries in order and reads full status text', () => {
+    const contents = `---
+schema-version: 1
+status: active
+mission-status: []
+---
+
+## Mission Status
+- m-1: brainstormed (updated 2026-08-20T00:00:00.000Z)
+- m-2: needs manual testing (updated 2026-08-20T00:00:00.000Z)
+`;
+    const out = setMissionStatus(contents, 'm-1', 'completed');
+
+    expect(readMissionStatus(out, 'm-2')).toBe('needs manual testing');
+    expect(parseMissionStatus(parseStateMd(out).frontmatter)).toEqual([
+      { id: 'm-1', status: 'completed' },
+      { id: 'm-2', status: 'needs manual testing' },
+    ]);
+  });
+
+  it.each([
+    ['prose', 'manual review required'],
+    ['pipe-bearing status', '- m-1: completed|testing (updated 2026-08-20T00:00:00.000Z)'],
+    ['unsafe mission ID', '- m_1: completed (updated 2026-08-20T00:00:00.000Z)'],
+    ['non-writer timestamp', '- m-1: completed (updated yesterday)'],
+  ])('keeps an empty registry when the body contains %s', (_label, bodyLine) => {
+    const contents = `---
+schema-version: 1
+status: active
+mission-status: []
+---
+
+## Mission Status
+${bodyLine}
+`;
+    const out = setMissionStatus(contents, 'm-2', 'completed');
+
+    expect(parseMissionStatus(parseStateMd(out).frontmatter)).toEqual([]);
+  });
+
+  it('keeps an empty registry when canonical body bullets duplicate an ID', () => {
+    const contents = `---
+schema-version: 1
+status: active
+mission-status: []
+---
+
+## Mission Status
+- m-1: brainstormed (updated 2026-08-20T00:00:00.000Z)
+- m-1: validated (updated 2026-08-20T00:00:00.000Z)
+`;
+    const out = setMissionStatus(contents, 'm-2', 'completed');
+
+    expect(parseMissionStatus(parseStateMd(out).frontmatter)).toEqual([]);
   });
 
   it('updates the body when frontmatter carries no mission-status array', () => {
@@ -271,5 +388,24 @@ describe('setMissionStatus', () => {
     ['contents has no parseable frontmatter', '# no frontmatter here', 'm-1', 'in-dev'],
   ])('returns contents unchanged when %s', (_label, contents, taskId, status) => {
     expect(setMissionStatus(contents, taskId, status)).toBe(contents);
+  });
+});
+
+describe('readMissionStatus — legacy body lines', () => {
+  it.each([
+    ['missing writer timestamp', '- m-1: in-dev', 'in-dev'],
+    ['extra bullet whitespace', '-   m-1:   in-dev', 'in-dev'],
+    ['annotated status', '- m-1: in-dev — task', 'in-dev'],
+  ])('returns the first status token for %s', (_label, line, expected) => {
+    const contents = `---
+schema-version: 1
+status: active
+---
+
+## Mission Status
+${line}
+`;
+
+    expect(readMissionStatus(contents, 'm-1')).toBe(expected);
   });
 });
