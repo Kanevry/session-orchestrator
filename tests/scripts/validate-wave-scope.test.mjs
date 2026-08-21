@@ -538,3 +538,22 @@ describe('validate-wave-scope.mjs — empty allowedPaths (#1057)', () => {
     expect(r.stderr).toBe('');
   });
 });
+
+describe('#1083 — empty flag values are refused, not treated as absent', () => {
+  const MANIFEST = JSON.stringify({
+    wave: 7,
+    role: 'Quality',
+    enforcement: 'warn',
+    allowedPaths: [],
+    blockedCommands: [],
+  });
+
+  // A failed $(...) capture of materialize-wave-scope.mjs yields ''. Because both
+  // modes were gated on a truthy path, '' skipped the check and still exited 0 --
+  // green, with the collision gate never run.
+  it.each([['--assert-disjoint'], ['--union']])('rejects %s with an empty value', (flag) => {
+    const res = spawnSync('node', [SCRIPT, flag, ''], { input: MANIFEST, encoding: 'utf8' });
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain(`${flag} requires a file-path argument`);
+  });
+});

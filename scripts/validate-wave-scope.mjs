@@ -115,6 +115,11 @@ function die(msg, code = 1) {
  * inherit it: a swallowed flag is silent (the mode never runs, and the caller
  * believes it did), whereas this refusal is loud and one line long.
  *
+ * An EMPTY value is the same failure class and is refused for the same reason.
+ * `--assert-disjoint ""` is what a failed `$(...)` capture of the materializer's
+ * stdout produces; since the mode is gated on a truthy path, the empty string
+ * silently skipped the collision check and still exited 0 (#1083).
+ *
  * @param {string[]} argv
  * @param {number} i - index of the FLAG token
  * @param {string} flag - the flag name, for the error message
@@ -122,7 +127,7 @@ function die(msg, code = 1) {
  */
 function flagValue(argv, i, flag) {
   const value = argv[i + 1];
-  if (value === undefined || value.startsWith('--')) {
+  if (value === undefined || value === '' || value.startsWith('--')) {
     die(`${flag} requires a file-path argument`, 1);
   }
   return value;

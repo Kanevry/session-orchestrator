@@ -1114,20 +1114,40 @@ Before each wave dispatch:
    ```
    The `gates` field (optional) mirrors `enforcement-gates` from Session Config (#77). When present, hooks check each gate individually via `gate_enabled()`. Missing gate entries default to enabled, preserving default behavior.
 2. Validate by piping through `node "$PLUGIN_ROOT/scripts/validate-wave-scope.mjs"` (where `$PLUGIN_ROOT` is `$CLAUDE_PLUGIN_ROOT`, `$CODEX_PLUGIN_ROOT`, or `$CURSOR_RULES_DIR` per platform — see `skills/_shared/config-reading.md`). If validation fails (exit 1), fix the JSON based on stderr errors and retry.
-3. **`allowedPaths` is COMPUTED from per-agent scope files — never hand-transcribed (#1020).** Transcribing the union by hand produced 5 scope divergences in ONE session. Three steps, in this order; none of them is a judgement call. Globs stay verbatim (`scripts/*.sh`) — the enforcement hook resolves them at check time.
+3. **`allowedPaths` is COMPUTED from one canonical declaration array — never hand-transcribed (#1020/#1083).** Transcribing either declaration shape or the union by hand produced scope divergences. Globs stay verbatim (`scripts/*.sh`) — the enforcement hook resolves them at check time.
 
-   **3.1 — one file per agent.** Write each agent's "Files:" scope from the session plan, verbatim, as a JSON array of strings to `<state-dir>/filescopes/wave-<N>/<agent-id>.json`. That path IS `$AGENT_FILESCOPE_JSON` — the same file `--assert-subset` (#796 below), Grounding Injection (#85), the Learnings-Index (#1014) and the File-Scope Injection (#1020) already consume. Do not write a second copy anywhere, and **never to a `$TMPDIR` temp path**: the injector and `hooks/pre-task-scope-disjoint.mjs` need an addressable, wave-keyed location that a temp file cannot be. Reading `$AGENT_FILESCOPE_JSON` as "some temp file" is the one failure that costs no error — the injector finds nothing, no `FILE-SCOPE` block reaches the prompt, `extractScopeFromPrompt` returns `[]`, and the dispatch is ALLOWed exactly as it was before #1020, signal-free. The coordinator's OWN planned direct edits go into `<state-dir>/filescopes/wave-<N>/coordinator.json` in the identical form and take part in both steps below: 2 of those 5 divergences were coordinator-direct edits, for which no agent scope file exists by construction, and the commit guard caught them only at the commit boundary.
+   **3.1 — materialize both declaration shapes once.** Build one JSON array from the session plan, one `{id, files}` record for every agent plus exactly one `coordinator` record for the coordinator's planned direct edits. `files` arrays, their entries and their order are the plan's verbatim declarations. Materialize it ONCE and capture the aggregate-sidecar path:
 
-   > **`<state-dir>/filescopes/` is control state, like `wave-scope.json` itself — never a wave territory.** Step 3.1 necessarily runs BEFORE the union of 3.3 exists, so writing these files reports `bash-write-verify: N file(s) changed by a Bash call OUTSIDE the wave's allowedPaths` naming `filescopes/wave-<N>/*.json`. Expected once per wave rollover at this step; it is information, not a scope violation. Never widen `allowedPaths` to silence it — that would grant agents write access to the deconfliction record itself.
+   ```bash
+   WAVE_SCOPE_RECORDS='[{"id":"W3-I1","files":["scripts/example.mjs"]},{"id":"coordinator","files":["skills/wave-executor/wave-loop.md"]}]'
+   WAVE_SCOPES_SIDECAR="$(
+     printf '%s' "$WAVE_SCOPE_RECORDS" | node "$PLUGIN_ROOT/scripts/materialize-wave-scope.mjs" \
+       --state-dir "$STATE_DIR" --wave "$WAVE"
+   )"
+   [ -n "$WAVE_SCOPES_SIDECAR" ] || { echo "materialize-wave-scope produced no sidecar path" >&2; exit 1; }
+   ```
 
-   **3.2 — assert disjointness BEFORE computing the union.** Build the sidecar — an ARRAY of `{id, files}` records (never an object map: a duplicated agent id must stay visible), one record per file written in 3.1, `coordinator.json` included — and run:
+   The non-empty check is not decoration. The materializer sends every diagnostic
+   to stderr, so a failure leaves `$WAVE_SCOPES_SIDECAR` empty, and an empty path
+   is what step 3.2 would then pass to `--assert-disjoint`. That combination used
+   to exit 0 with the collision gate never run — the same signal-free-ALLOW shape
+   #1083 exists to close. `validate-wave-scope.mjs` now refuses an empty flag
+   value as well, so this guard and that refusal are belt and braces.
+
+   `materialize-wave-scope.mjs` validates the COMPLETE input before writing; it writes `<state-dir>/filescopes/wave-<N>/<agent-id>.json` as each bare `files` array first, then writes `<state-dir>/filescopes/wave-<N>.scopes.json` as the unchanged aggregate record array last. Its human stdout is only that final sidecar path, so the command substitution above is the canonical `$WAVE_SCOPES_SIDECAR`. On error, do not continue with a partial declaration set; correct the plan and run the one command again.
+
+   The per-agent path IS `$AGENT_FILESCOPE_JSON` — the same file `--assert-subset` (#796 below), Grounding Injection (#85), the Learnings-Index (#1014) and File-Scope Injection (#1020) consume. Never write a `$TMPDIR` copy: it degrades to a signal-free allow when an injector cannot find the addressable wave-keyed file. The coordinator's record is materialized as `coordinator.json` and included in the aggregate, so its direct edits are covered by the two checks below.
+
+   > **`<state-dir>/filescopes/` is control state, like `wave-scope.json` itself — never a wave territory.** Step 3.1 necessarily runs before the union exists, so writing these files reports `bash-write-verify: N file(s) changed by a Bash call OUTSIDE the wave's allowedPaths` naming `filescopes/wave-<N>/*.json`. Expected once per wave rollover at this step; it is information, not a scope violation. Never widen `allowedPaths` to silence it — that would grant agents write access to the deconfliction record itself.
+
+   **3.2 — assert disjointness BEFORE computing the union.** The materialized aggregate is an ARRAY of `{id, files}` records (never an object map: a duplicated agent id must stay visible), including `coordinator.json`. Run:
 
    ```bash
    node "$PLUGIN_ROOT/scripts/validate-wave-scope.mjs" \
      --assert-disjoint "$WAVE_SCOPES_SIDECAR" < <state-dir>/wave-scope.json
    ```
 
-   Exit 1 (one stderr message per collision) means two agents were handed the same file: fix the session plan, rewrite the affected 3.1 files, re-assert. Never widen the union to make it pass. This runs **before** 3.3 because a union computed over colliding scopes launders the defect into the very artefact meant to prevent it — `allowedPaths` then grants the file and every later gate sees a legal write.
+   Exit 1 (one stderr message per collision) means two agents were handed the same file: fix the session plan, re-materialize, re-assert. Never widen the union to make it pass. This runs **before** 3.3 because a union computed over colliding scopes launders the defect into the very artefact meant to prevent it — `allowedPaths` then grants the file and every later gate sees a legal write.
 
    **3.3 — compute the union.** `--union` is a QUERY MODE that still requires a schema-valid manifest on stdin, so write the skeleton first with `"allowedPaths": []`, then:
 
@@ -1137,6 +1157,8 @@ Before each wave dispatch:
    ```
 
    It prints the computed `allowedPaths` array as JSON on stdout **instead of** the manifest echo — one JSON document per run, the flag decides which. Insert that array as `allowedPaths`, then write the final `wave-scope.json`. It already applies the Test-Sibling Expansion below (`expandTestSiblings(unionFileScopes(scopes), { role })`, role read from the manifest), so do not also run the helper by hand.
+
+   **Artifact production, disjointness and union computation are mechanized. Native prompt injection is a separate follow-up.** The materializer creates the durable declarations; the validator proves disjointness and computes the union. It does not install or prove the platform's prompt-injection transport, which remains independently responsible for reading `$AGENT_FILESCOPE_JSON` before dispatch.
 
    **The `--assert-subset` assertion (#796, below) stays unchanged and keeps running.** It checks a DIFFERENT property — each agent's scope ⊆ the union — and a double assignment is structurally invisible to it: a file claimed twice is a subset twice over. `--assert-disjoint` is an addition, never a replacement.
 

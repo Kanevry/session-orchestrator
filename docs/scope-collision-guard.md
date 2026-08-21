@@ -1,7 +1,7 @@
 # Scope-Collision Guard — Pre-Dispatch File-Scope Deconfliction
 
 > Reference for the mechanism that stops a wave from handing the SAME file to two agents (issue #1020).
-> Four moving parts: the per-agent scope files, `scripts/validate-wave-scope.mjs` (`--assert-disjoint` / `--union`), `findScopeCollisions()` + `unionFileScopes()` in [`scripts/lib/scope-gate.mjs`](../scripts/lib/scope-gate.mjs), and the `PreToolUse` hook [`hooks/pre-task-scope-disjoint.mjs`](../hooks/pre-task-scope-disjoint.mjs).
+> Five moving parts: `scripts/materialize-wave-scope.mjs` (the canonical declaration writer), the per-agent scope files, `scripts/validate-wave-scope.mjs` (`--assert-disjoint` / `--union`), `findScopeCollisions()` + `unionFileScopes()` in [`scripts/lib/scope-gate.mjs`](../scripts/lib/scope-gate.mjs), and the `PreToolUse` hook [`hooks/pre-task-scope-disjoint.mjs`](../hooks/pre-task-scope-disjoint.mjs).
 > The coordinator-side **runbook** is `skills/wave-executor/wave-loop.md` § Scope Manifest 3.1–3.3 — this document does not restate it. What lives here instead: how the mechanism works, how it fails, what it deliberately does not see, and how to debug it.
 
 ## 1. What the pre-existing gates could not see
@@ -17,8 +17,8 @@ Two things follow, and both are the point of #1020:
 
 | # | Step | Artefact | Mechanism |
 |---|------|----------|-----------|
-| 1 | Declare | `<state-dir>/filescopes/wave-<N>/<agent-id>.json` (one per agent, plus `coordinator.json`) | written verbatim from the session plan |
-| 2 | Assert disjointness | the sidecar array `[{id, files}, …]` | `validate-wave-scope.mjs --assert-disjoint` → `findScopeCollisions()` |
+| 1 | Materialize declarations | `<state-dir>/filescopes/wave-<N>/<agent-id>.json` (one per agent, plus `coordinator.json`) and `<state-dir>/filescopes/wave-<N>.scopes.json` | one canonical `[{id, files}, …]` stdin array → `materialize-wave-scope.mjs` |
+| 2 | Assert disjointness | the materialized sidecar array `[{id, files}, …]` | `validate-wave-scope.mjs --assert-disjoint` → `findScopeCollisions()` |
 | 3 | Compute the union | stdout of `--union` → `allowedPaths` | `expandTestSiblings(unionFileScopes(scopes), { role })` |
 | 4 | Inject | `FILE-SCOPE — exactly these:` + a fenced block in each agent prompt | the per-agent file from step 1 |
 | 5 | Dispatch | `.orchestrator/wave-dispatch-scopes.json` (ledger) | `hooks/pre-task-scope-disjoint.mjs`, `PreToolUse` matcher `Agent` |
