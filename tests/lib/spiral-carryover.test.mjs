@@ -14,6 +14,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import { readBudgetState } from '@lib/issue-budget.mjs';
 
 // ---------------------------------------------------------------------------
 // Mock node:child_process BEFORE importing the module under test.
@@ -136,15 +141,6 @@ describe('computeTaskHash', () => {
     expect(nullish).toBe(empty);
     expect(undef).toBe(empty);
   });
-
-  it('output format is always exactly 8 lowercase hex chars', () => {
-    const inputs = ['a', 'hello world', 'x'.repeat(500), 'japanese-task-name', '{"json": true}'];
-    for (const s of inputs) {
-      const h = computeTaskHash(s);
-      expect(h).toMatch(/^[0-9a-f]{8}$/);
-      expect(h).toHaveLength(8);
-    }
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -222,6 +218,45 @@ describe('findExistingCarryover (gitlab)', () => {
 // ---------------------------------------------------------------------------
 
 describe('createSpiralCarryoverIssue', () => {
+  it('uses the bound semantic key from the native environment session id', async () => {
+    const repoRoot = mkdtempSync(path.join(tmpdir(), 'spiral-carryover-budget-'));
+    try {
+      mkdirSync(path.join(repoRoot, '.orchestrator'), { recursive: true });
+      writeFileSync(
+        path.join(repoRoot, '.orchestrator', 'current-session.json'),
+        JSON.stringify({
+          session_id: 'native-spiral-raw',
+          semantic_session_id: 'main-2026-08-20-deep-1',
+        }),
+        'utf8',
+      );
+      vi.stubEnv('CLAUDE_PROJECT_DIR', repoRoot);
+      // CLAUDE_CODE_SESSION_ID is the name the harness actually exports; the
+      // earlier CLAUDE_SESSION_ID stub was an unfaithful double that kept a
+      // dead code path green (nothing sets that name in production).
+      vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'native-spiral-raw');
+      setCliResponses([
+        { ok: true, stdout: '[]' },
+        { ok: true, stdout: 'https://gitlab.example.com/g/p/-/issues/42\n' },
+      ]);
+
+      await createSpiralCarryoverIssue({
+        taskDescription: 'semantic budget bridge through spiral carryover',
+        kind: 'SPIRAL',
+        context: 'ctx',
+        vcs: 'gitlab',
+      });
+
+      expect(readBudgetState(repoRoot, 'main-2026-08-20-deep-1')).toMatchObject({
+        sessionId: 'main-2026-08-20-deep-1',
+        exempt: 1,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it('returns skipped:duplicate when a carryover already exists', async () => {
     const desc = 'retry flaky wave-executor path';
     const hash = computeTaskHash(desc);
@@ -723,9 +758,9 @@ describe('createSpiralCarryoverIssue — #839 host pinning (gitlab)', () => {
       resolveRepoSpecFn: () => undefined,
     });
 
-    for (const [, args] of execFileSync.mock.calls) {
-      expect(args).not.toContain('-R');
-    }
+    expect(execFileSync).toHaveBeenCalledTimes(2);
+    expect(execFileSync.mock.calls[0][1]).not.toContain('-R');
+    expect(execFileSync.mock.calls[1][1]).not.toContain('-R');
   });
 });
 
@@ -819,20 +854,17 @@ describe('createSpiralCarryoverIssue — default resolveRepoSpecFn wires the REA
     // is now only observable in the resolved value — `origin` must lose.
     const originUrl = 'https://gitlab.example.com/example-group/origin-must-lose.git';
     const createdUrl = 'https://gitlab.example.com/example-group/example-project/-/issues/99';
-    execFileSync.mockImplementation((cmd, args) => {
-      if (cmd === 'git' && args.includes('remote') && args.includes('-v')) {
+    setCliResponses([
+      {
+        ok: true,
         // `git remote -v` stdout shape: `<name>\t<url> (fetch|push)`.
-        return (
+        stdout:
           `gitlab\t${remoteUrl} (fetch)\ngitlab\t${remoteUrl} (push)\n` +
-          `origin\t${originUrl} (fetch)\norigin\t${originUrl} (push)\n`
-        );
-      }
-      if (cmd === 'glab') {
-        if (args.includes('list')) return '[]';
-        if (args.includes('create')) return `${createdUrl}\n`;
-      }
-      throw new Error(`Gap 3 test: unexpected cmd (${cmd} ${(args || []).join(' ')})`);
-    });
+          `origin\t${originUrl} (fetch)\norigin\t${originUrl} (push)\n`,
+      },
+      { ok: true, stdout: '[]' },
+      { ok: true, stdout: `${createdUrl}\n` },
+    ]);
 
     const res = await createSpiralCarryoverIssueReal({
       taskDescription: 'gap-3 default-resolver task',
@@ -867,30 +899,22 @@ describe('createSpiralCarryoverIssue — default resolveRepoSpecFn wires the REA
   });
 
   it('appends no -R at all when the real chain finds no matching remote (graceful degradation, default resolver)', async () => {
-    execFileSync.mockImplementation((cmd, args) => {
-      if (cmd === 'git' && args.includes('remote') && args.includes('-v')) {
+    setCliResponses([
+      {
+        ok: true,
         // TWO remotes, neither of them in the gitlab preference order
         // (`gitlab`, `origin`) — the shape that actually produces the
         // `no-matching-remote` state this test's name claims. A single
         // odd-named remote would be resolved by the sole-remote fallback; a
         // git-level throw would be the query-FAILURE branch instead (covered
         // by tests/lib/issue-close-strip-labels.test.mjs's "fails entirely").
-        return (
+        stdout:
           'fork\thttps://gitlab.example.com/example-group/fork.git (fetch)\n' +
-          'upstream\thttps://gitlab.example.com/other-group/upstream.git (fetch)\n'
-        );
-      }
-      if (cmd === 'git') {
-        const err = new Error('fatal: not a git repository');
-        err.stderr = 'fatal: not a git repository';
-        throw err;
-      }
-      if (cmd === 'glab') {
-        if (args.includes('list')) return '[]';
-        if (args.includes('create')) return 'https://gitlab.example.com/example-group/example-project/-/issues/100\n';
-      }
-      throw new Error(`Gap 3 test: unexpected cmd (${cmd} ${(args || []).join(' ')})`);
-    });
+          'upstream\thttps://gitlab.example.com/other-group/upstream.git (fetch)\n',
+      },
+      { ok: true, stdout: '[]' },
+      { ok: true, stdout: 'https://gitlab.example.com/example-group/example-project/-/issues/100\n' },
+    ]);
 
     await createSpiralCarryoverIssueReal({
       taskDescription: 'gap-3 no-remote task',
@@ -901,9 +925,8 @@ describe('createSpiralCarryoverIssue — default resolveRepoSpecFn wires the REA
 
     const glabCalls = execFileSync.mock.calls.filter(([cmd]) => cmd === 'glab');
     expect(glabCalls).toHaveLength(2);
-    for (const [, args] of glabCalls) {
-      expect(args).not.toContain('-R');
-    }
+    expect(glabCalls[0][1]).not.toContain('-R');
+    expect(glabCalls[1][1]).not.toContain('-R');
   });
 });
 

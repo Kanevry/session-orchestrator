@@ -38,6 +38,36 @@ import { _parseIssueBudget } from './config/issue-budget.mjs';
 export const BUDGET_STATE_REL = '.orchestrator/runtime/issue-budget.json';
 
 /**
+ * Resolve the accounting key for a native session id.
+ *
+ * A semantic id is an accounting continuity bridge only after the native id
+ * proves that `current-session.json` belongs to this invocation. This neither
+ * establishes lock ownership nor bridges a host rotation that changes both ids.
+ *
+ * @param {string|null|undefined} candidateRawSessionId native hook/env session id
+ * @param {unknown} currentSession parsed `.orchestrator/current-session.json`
+ * @returns {string|null} semantic key for a verified pair, otherwise raw key
+ */
+export function resolveIssueBudgetSessionId(candidateRawSessionId, currentSession) {
+  const rawSessionId =
+    typeof candidateRawSessionId === 'string' && candidateRawSessionId.length > 0
+      ? candidateRawSessionId
+      : null;
+  if (
+    rawSessionId === null ||
+    !currentSession ||
+    typeof currentSession !== 'object' ||
+    Array.isArray(currentSession) ||
+    currentSession.session_id !== rawSessionId ||
+    typeof currentSession.semantic_session_id !== 'string' ||
+    currentSession.semantic_session_id.length === 0
+  ) {
+    return rawSessionId;
+  }
+  return currentSession.semantic_session_id;
+}
+
+/**
  * Commands whose issue creation MUST NOT be blocked, with the reason recorded
  * for the stderr trace and for the overflow bookkeeping.
  *
@@ -109,20 +139,34 @@ export function budgetStatePath(repoRoot) {
  * a fresh zeroed state for `sessionId` — the counter is per session by
  * construction, so a new session never inherits the previous session's spend.
  *
+ * An identity-less invocation always gets a fresh state and never reads a
+ * persisted budget. It therefore cannot provide durable per-session continuity,
+ * but avoiding cross-session budget and overflow attribution wins over a
+ * continuity guess without a verified native identity.
+ *
+ * The counter file is SHARED across invocations, so this read-side isolation is
+ * only half the contract: an identity-less charge must also never PERSIST its
+ * fresh state, or it silently zeroes a live session's count and deletes its
+ * parked overflow records. `chargeIssueBudget` enforces that write-side half.
+ *
  * @param {string} repoRoot
  * @param {string|null} sessionId
  * @returns {{ sessionId: string|null, count: number, exempt: number, overflow: object[] }}
  */
 export function readBudgetState(repoRoot, sessionId) {
-  const fresh = { sessionId: sessionId ?? null, count: 0, exempt: 0, overflow: [] };
+  const accountingSessionId =
+    typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null;
+  const fresh = { sessionId: accountingSessionId, count: 0, exempt: 0, overflow: [] };
+  if (accountingSessionId === null) return fresh;
+
   const file = budgetStatePath(repoRoot);
   if (!existsSync(file)) return fresh;
   try {
     const data = JSON.parse(readFileSync(file, 'utf8'));
     if (!data || typeof data !== 'object') return fresh;
-    if (sessionId && data.sessionId && data.sessionId !== sessionId) return fresh;
+    if (data.sessionId !== accountingSessionId) return fresh;
     return {
-      sessionId: data.sessionId ?? sessionId ?? null,
+      sessionId: accountingSessionId,
       count: Number.isInteger(data.count) && data.count >= 0 ? data.count : 0,
       exempt: Number.isInteger(data.exempt) && data.exempt >= 0 ? data.exempt : 0,
       overflow: Array.isArray(data.overflow) ? data.overflow : [],
@@ -200,13 +244,23 @@ export function chargeIssueBudget({
     return { ...base, decision: 'off', count: 0, overflowCount: 0, reason: null };
   }
 
-  const state = readBudgetState(repoRoot, sessionId);
-  state.sessionId = sessionId ?? state.sessionId;
+  const accountingSessionId =
+    typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null;
+  const state = readBudgetState(repoRoot, accountingSessionId);
+  state.sessionId = accountingSessionId;
+
+  // An identity-less charge has no key to account under, so it must not touch
+  // the SHARED counter file at all. Writing its fresh state would reset a live
+  // session's count to 0 AND drop its parked overflow[] entries — breaking the
+  // strict cap (a single identity-less call clears it) and session-end's
+  // "nothing is lost" promise. Read-side isolation alone does not cover this.
+  const persist = (next) =>
+    accountingSessionId === null ? false : writeBudgetState(repoRoot, next);
 
   const { exempt, reason } = classifyExemption(command);
   if (exempt) {
     state.exempt += 1;
-    writeBudgetState(repoRoot, state);
+    persist(state);
     return {
       ...base,
       decision: 'exempt',
@@ -218,13 +272,13 @@ export function chargeIssueBudget({
 
   if (state.count < max) {
     state.count += 1;
-    writeBudgetState(repoRoot, state);
+    persist(state);
     return { ...base, decision: 'allow', count: state.count, overflowCount: state.overflow.length, reason: null };
   }
 
   if (mode === 'warn') {
     state.count += 1;
-    writeBudgetState(repoRoot, state);
+    persist(state);
     return { ...base, decision: 'warn', count: state.count, overflowCount: state.overflow.length, reason: null };
   }
 
@@ -234,7 +288,7 @@ export function chargeIssueBudget({
     command: String(command).slice(0, 500),
     at: now,
   });
-  writeBudgetState(repoRoot, state);
+  persist(state);
   return {
     ...base,
     decision: 'block',

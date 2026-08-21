@@ -44,6 +44,7 @@ import { readJson } from '../scripts/lib/common.mjs';
 import { isIssueCreate, extractTitle } from './_lib/vcs-create-matcher.mjs';
 import {
   loadIssueBudgetConfig,
+  resolveIssueBudgetSessionId,
   chargeIssueBudget,
   formatBlockReason,
 } from '../scripts/lib/issue-budget.mjs';
@@ -61,32 +62,30 @@ if (!shouldRunHook('pre-bash-issue-budget')) process.exit(0);
 // ---------------------------------------------------------------------------
 
 /**
- * Pull the session_id from the hook stdin payload, with a single fallback to
- * the persisted file written by on-session-start.mjs. Mirrors the resolution
- * in pre-bash-templates-first.mjs. Returns null when neither source yields a
- * string — the counter then degrades to a per-repo counter, which still caps.
+ * Resolve the accounting session key from the native hook payload. A persisted
+ * semantic id can bridge repeated calls only when its recorded raw id exactly
+ * matches the native stdin id; it never substitutes for a missing raw id.
  *
  * @param {object|null} input
  * @param {string|null} projectDir
  * @returns {Promise<string|null>}
  */
 async function resolveSessionId(input, projectDir) {
-  const fromStdin = input?.session_id ?? input?.sessionId ?? null;
-  if (typeof fromStdin === 'string' && fromStdin.length > 0) return fromStdin;
+  const nativeRawId = input?.session_id ?? input?.sessionId ?? null;
+  if (typeof nativeRawId !== 'string' || nativeRawId.length === 0) return null;
 
-  if (!projectDir) return null;
-  const persisted = path.join(projectDir, '.orchestrator', 'current-session.json');
-  if (!existsSync(persisted)) return null;
-  try {
-    const data = await readJson(persisted);
-    if (data && typeof data === 'object') {
-      const sid = data.session_id ?? data.sessionId ?? null;
-      if (typeof sid === 'string' && sid.length > 0) return sid;
+  let currentSession = null;
+  if (projectDir) {
+    const persisted = path.join(projectDir, '.orchestrator', 'current-session.json');
+    if (existsSync(persisted)) {
+      try {
+        currentSession = await readJson(persisted);
+      } catch {
+        // Malformed or unreadable records conservatively retain the raw key.
+      }
     }
-  } catch {
-    // ignore — null below
   }
-  return null;
+  return resolveIssueBudgetSessionId(nativeRawId, currentSession);
 }
 
 // ---------------------------------------------------------------------------

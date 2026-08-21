@@ -163,6 +163,56 @@ describe('cap enforcement', { timeout: 30000 }, () => {
     expectDeny(blocked, 'issue-budget');
   });
 
+  it('uses the bound semantic key across repeated native stdin calls', async () => {
+    const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 1\n  mode: strict' });
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'current-session.json'),
+      JSON.stringify({
+        session_id: 'native-hook-raw',
+        semantic_session_id: 'main-2026-08-20-deep-1',
+      }),
+      'utf8',
+    );
+
+    expectAllow(await runHook({
+      projectDir: dir,
+      stdin: bashPayload('glab issue create --title "first"', 'native-hook-raw'),
+    }));
+    const repeated = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('glab issue create --title "second"', 'native-hook-raw'),
+    });
+
+    expectDeny(repeated, 'issue-budget');
+    const state = JSON.parse(
+      await fs.readFile(path.join(dir, '.orchestrator', 'runtime', 'issue-budget.json'), 'utf8'),
+    );
+    expect(state.sessionId).toBe('main-2026-08-20-deep-1');
+  });
+
+  it('allows a payload without a native session id without attributing overflow to a spent prior session', async () => {
+    const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 1\n  mode: strict' });
+    expectAllow(await fill(dir, 1, 'prior-session'));
+
+    const identityLess = await runHook({
+      projectDir: dir,
+      stdin: { tool_name: 'Bash', tool_input: { command: 'glab issue create --title "identity-less"' } },
+    });
+
+    expectAllow(identityLess);
+    // Allowed, but it must leave the shared ledger alone: persisting its fresh
+    // state would clear prior-session's spent cap and delete parked overflow.
+    expect(JSON.parse(
+      await fs.readFile(path.join(dir, '.orchestrator', 'runtime', 'issue-budget.json'), 'utf8'),
+    )).toEqual({
+      sessionId: 'prior-session',
+      count: 1,
+      exempt: 0,
+      overflow: [],
+    });
+  });
+
   it('names the overflow store in the deny reason so the agent knows where the item went', async () => {
     const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 1\n  mode: strict' });
     await fill(dir, 1);
@@ -178,12 +228,11 @@ describe('cap enforcement', { timeout: 30000 }, () => {
   it('emits a deny envelope on stdout with a short operator headline', async () => {
     const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 0\n  mode: strict' });
     const blocked = await runHook({ projectDir: dir, stdin: bashPayload('glab issue create --title "x"') });
-    expectDeny(blocked);
     // The operator half of the #906 repair: first line only, not the whole
     // 8-line reason, and not silence.
-    expect(JSON.parse(blocked.stdout).systemMessage).toBe(
-      '⛔ issue-budget: session cap reached — 0/0 issues already created.',
-    );
+    expectDeny(blocked, {
+      systemMessage: '⛔ issue-budget: session cap reached — 0/0 issues already created.',
+    });
   });
 
   it('records the blocked request in the counter file (lossless overflow)', async () => {

@@ -35,8 +35,14 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { digestSha256Short } from './crypto-digest-utils.mjs';
-import { chargeIssueBudget, formatBlockReason } from './issue-budget.mjs';
+import {
+  chargeIssueBudget,
+  formatBlockReason,
+  resolveIssueBudgetSessionId,
+} from './issue-budget.mjs';
 import { resolveRepoSpec } from './vcs-repo-spec.mjs';
 
 /**
@@ -99,10 +105,25 @@ function runCli(cmd, args) {
   if (isIssueCreateArgv(cmd, args)) {
     try {
       const repoRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+      // The harness exports CLAUDE_CODE_SESSION_ID (measured 2026-08-21: it is
+      // present in the Bash tool environment this module runs in). There is no
+      // CLAUDE_SESSION_ID — reading that name made this whole block dead code
+      // and left the cap permanently off on the programmatic path.
+      const nativeRawId = process.env.CLAUDE_CODE_SESSION_ID ?? null;
+      let currentSession = null;
+      if (typeof nativeRawId === 'string' && nativeRawId.length > 0) {
+        try {
+          currentSession = JSON.parse(
+            readFileSync(path.join(repoRoot, '.orchestrator', 'current-session.json'), 'utf8'),
+          );
+        } catch {
+          // Missing or malformed records conservatively retain the native env key.
+        }
+      }
       const titleIdx = args.indexOf('--title');
       const verdict = chargeIssueBudget({
         repoRoot,
-        sessionId: process.env.CLAUDE_SESSION_ID || null,
+        sessionId: resolveIssueBudgetSessionId(nativeRawId, currentSession),
         command: [cmd, ...args].join(' '),
         title: titleIdx >= 0 ? (args[titleIdx + 1] ?? null) : null,
       });

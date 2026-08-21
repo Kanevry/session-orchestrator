@@ -15,6 +15,7 @@ import path from 'node:path';
 import {
   classifyExemption,
   loadIssueBudgetConfig,
+  resolveIssueBudgetSessionId,
   chargeIssueBudget,
   readBudgetState,
   budgetStatePath,
@@ -77,6 +78,152 @@ describe('loadIssueBudgetConfig', () => {
   it('falls back to defaults when the repo has no instruction file', () => {
     rmSync(path.join(repoRoot, 'CLAUDE.md'));
     expect(loadIssueBudgetConfig(repoRoot)['max-per-session']).toBe(12);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Accounting session identity
+// ---------------------------------------------------------------------------
+
+describe('resolveIssueBudgetSessionId', () => {
+  it('uses the semantic accounting key only when the recorded raw id matches', () => {
+    expect(
+      resolveIssueBudgetSessionId('native-raw-1', {
+        session_id: 'native-raw-1',
+        semantic_session_id: 'main-2026-08-20-deep-1',
+      }),
+    ).toBe('main-2026-08-20-deep-1');
+  });
+
+  it('keeps the native raw id when the record belongs to another raw session', () => {
+    expect(
+      resolveIssueBudgetSessionId('native-raw-2', {
+        session_id: 'native-raw-1',
+        semantic_session_id: 'foreign-semantic',
+      }),
+    ).toBe('native-raw-2');
+  });
+
+  it('keeps a missing native raw id missing instead of adopting a semantic id', () => {
+    expect(
+      resolveIssueBudgetSessionId(null, {
+        session_id: 'native-raw-1',
+        semantic_session_id: 'foreign-semantic',
+      }),
+    ).toBeNull();
+  });
+
+  it('keeps the native raw id when the current-session record is malformed', () => {
+    expect(resolveIssueBudgetSessionId('native-raw-1', 'not-a-record')).toBe('native-raw-1');
+  });
+
+  it('keeps the native raw id when the matching record lacks a semantic id', () => {
+    expect(resolveIssueBudgetSessionId('native-raw-1', { session_id: 'native-raw-1' })).toBe('native-raw-1');
+  });
+});
+
+describe('semantic issue-budget accounting continuity', () => {
+  const config = { 'max-per-session': 1, mode: 'strict', overflow: 'collect-issue' };
+
+  it('preserves a spent cap across matching native calls', () => {
+    const currentSession = {
+      session_id: 'native-raw-1',
+      semantic_session_id: 'main-2026-08-20-deep-1',
+    };
+    const sessionId = resolveIssueBudgetSessionId('native-raw-1', currentSession);
+    chargeIssueBudget({ repoRoot, sessionId, command: 'glab issue create --title "first"', config });
+    const repeated = chargeIssueBudget({ repoRoot, sessionId, command: 'glab issue create --title "second"', config });
+
+    expect(repeated).toMatchObject({ decision: 'block', count: 1 });
+  });
+
+  it('starts fresh when both the raw and semantic identities rotate', () => {
+    const firstId = resolveIssueBudgetSessionId('native-raw-1', {
+      session_id: 'native-raw-1',
+      semantic_session_id: 'main-2026-08-20-deep-1',
+    });
+    const secondId = resolveIssueBudgetSessionId('native-raw-2', {
+      session_id: 'native-raw-2',
+      semantic_session_id: 'main-2026-08-20-deep-2',
+    });
+    chargeIssueBudget({ repoRoot, sessionId: firstId, command: 'glab issue create --title "first"', config });
+    const next = chargeIssueBudget({ repoRoot, sessionId: secondId, command: 'glab issue create --title "second"', config });
+
+    expect(next).toMatchObject({ decision: 'allow', count: 1 });
+  });
+
+  it('does not inherit a foreign older semantic budget through a raw mismatch', () => {
+    chargeIssueBudget({
+      repoRoot,
+      sessionId: 'main-2026-08-20-deep-1',
+      command: 'glab issue create --title "older session"',
+      config,
+    });
+    const sessionId = resolveIssueBudgetSessionId('native-raw-new', {
+      session_id: 'native-raw-old',
+      semantic_session_id: 'main-2026-08-20-deep-1',
+    });
+    const incoming = chargeIssueBudget({ repoRoot, sessionId, command: 'glab issue create --title "incoming"', config });
+
+    expect(incoming).toMatchObject({ decision: 'allow', count: 1 });
+  });
+
+  it('uses a fresh identity-less state rather than preserving cross-invocation budget continuity', () => {
+    chargeIssueBudget({ repoRoot, sessionId: 'prior-session', command: 'glab issue create --title "prior"', config });
+
+    const first = chargeIssueBudget({
+      repoRoot,
+      sessionId: null,
+      command: 'glab issue create --title "identity-less first"',
+      config,
+    });
+    const second = chargeIssueBudget({
+      repoRoot,
+      sessionId: null,
+      command: 'glab issue create --title "identity-less second"',
+      config,
+    });
+
+    // Each identity-less call reads a fresh state, so both are allowed -- and
+    // because neither PERSISTS, the second sees the same fresh state as the
+    // first rather than the other's spend.
+    expect(first).toMatchObject({ decision: 'allow', count: 1, overflowCount: 0 });
+    expect(second).toMatchObject({ decision: 'allow', count: 1, overflowCount: 0 });
+    // The shared ledger still belongs to `prior-session`, untouched.
+    expect(JSON.parse(readFileSync(budgetStatePath(repoRoot), 'utf8'))).toEqual({
+      sessionId: 'prior-session',
+      count: 1,
+      exempt: 0,
+      overflow: [],
+    });
+  });
+
+  it('does not let an identity-less charge clear a spent strict cap or drop parked overflow', () => {
+    // prior-session spends its cap (max 1) and parks one overflow record.
+    chargeIssueBudget({ repoRoot, sessionId: 'prior-session', command: 'glab issue create --title "prior"', config });
+    const parked = chargeIssueBudget({
+      repoRoot,
+      sessionId: 'prior-session',
+      command: 'glab issue create --title "parked"',
+      title: 'parked',
+      config,
+    });
+    expect(parked).toMatchObject({ decision: 'block', count: 1, overflowCount: 1 });
+
+    chargeIssueBudget({ repoRoot, sessionId: null, command: 'glab issue create --title "identity-less"', config });
+
+    // Without the write-side guard this returned `allow` with count 1 -- one
+    // identity-less call was enough to hand a capped session a fresh budget
+    // and delete the overflow record session-end is supposed to file.
+    const after = chargeIssueBudget({
+      repoRoot,
+      sessionId: 'prior-session',
+      command: 'glab issue create --title "after"',
+      title: 'after',
+      config,
+    });
+    expect(after).toMatchObject({ decision: 'block', count: 1, overflowCount: 2 });
+    expect(JSON.parse(readFileSync(budgetStatePath(repoRoot), 'utf8')).overflow).toHaveLength(2);
   });
 });
 
