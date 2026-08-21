@@ -18,6 +18,7 @@ import { promisify } from 'node:util';
 import {
   resolveRepoSpec,
   resolveRepoHost,
+  resolveGitlabProjectTarget,
   redactUrlCredentials,
   detectVcsFamily,
   isQueryFailure,
@@ -191,42 +192,19 @@ async function getHeadSha(repoRoot, deps = {}) {
 }
 
 /**
- * Get GitLab project ID via glab.
+ * Run a host-pinned `glab api <path>` request and return parsed JSON.
  *
- * #872: pins to `deps.repoSpec` via `-R` when resolved (host-pinning —
- * `glab repo view` otherwise falls back to the ambient `GITLAB_HOST`).
- *
- * @param {string} repoRoot
- * @param {{ execFile?: Function, timeoutMs?: number, repoSpec?: string }} deps
- * @returns {Promise<number>}
- */
-async function getGlabProjectId(repoRoot, deps = {}) {
-  const args = ['repo', 'view', '--output', 'json'];
-  if (deps.repoSpec) args.push('-R', deps.repoSpec);
-  const result = await execWithTimeout(
-    'glab',
-    args,
-    { cwd: repoRoot, timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS, execFile: deps.execFile },
-  );
-  const parsed = JSON.parse(result.stdout);
-  return parsed.id;
-}
-
-/**
- * Run `glab api <path>` and return parsed JSON.
- *
- * #872: `glab api` has no repo/`-R` concept — it accepts only `--hostname`
- * to pin which GitLab instance the request targets. Pinned via
- * `deps.repoHost` when resolved.
+ * GitLab's API accepts neither a remote URL nor `-R`; callers provide the host
+ * proven by `resolveGitlabProjectTarget` so this helper cannot fall back to
+ * ambient `GITLAB_HOST` configuration.
  *
  * @param {string} apiPath
  * @param {string} repoRoot
- * @param {{ execFile?: Function, timeoutMs?: number, repoHost?: string }} deps
+ * @param {{ execFile?: Function, timeoutMs?: number, repoHost: string }} deps
  * @returns {Promise<unknown>}
  */
 async function glabApi(apiPath, repoRoot, deps = {}) {
-  const args = ['api', apiPath];
-  if (deps.repoHost) args.push('--hostname', deps.repoHost);
+  const args = ['api', apiPath, '--hostname', deps.repoHost];
   const result = await execWithTimeout(
     'glab',
     args,
@@ -276,17 +254,32 @@ function ageDaysFrom(isoDate, now) {
  *
  * @param {string} repoRoot
  * @param {number} now
- * @param {{ execFile?: Function, timeoutMs?: number, repoSpec?: string, repoHost?: string }} deps
+ * @param {{
+ *   execFile?: Function,
+ *   timeoutMs?: number,
+ *   gitlabProject?: { host: string, encodedProjectPath: string },
+ * }} deps
  * @returns {Promise<object|null>}
  */
 async function checkGitlab(repoRoot, now, deps = {}) {
-  const projectId = await getGlabProjectId(repoRoot, deps);
-  const currentSha = await getHeadSha(repoRoot, deps);
+  const project = deps.gitlabProject;
+  if (
+    !project ||
+    typeof project.host !== 'string' ||
+    typeof project.encodedProjectPath !== 'string' ||
+    project.host === '' ||
+    project.encodedProjectPath === ''
+  ) {
+    return null;
+  }
 
+  const currentSha = await getHeadSha(repoRoot, deps);
+  const apiDeps = { ...deps, repoHost: project.host };
+  const projectPath = `projects/${project.encodedProjectPath}`;
   const pipelines = await glabApi(
-    `projects/${projectId}/pipelines?order_by=updated_at&sort=desc&per_page=15`,
+    `${projectPath}/pipelines?order_by=updated_at&sort=desc&per_page=15`,
     repoRoot,
-    deps,
+    apiDeps,
   );
 
   if (!Array.isArray(pipelines)) return null;
@@ -316,9 +309,9 @@ async function checkGitlab(repoRoot, now, deps = {}) {
     let allowFailureJobs;
     try {
       const jobs = await glabApi(
-        `projects/${projectId}/pipelines/${currentPipeline.id}/jobs`,
+        `${projectPath}/pipelines/${currentPipeline.id}/jobs`,
         repoRoot,
-        deps,
+        apiDeps,
       );
       if (Array.isArray(jobs)) {
         const softFailed = jobs
@@ -383,9 +376,9 @@ async function checkGitlab(repoRoot, now, deps = {}) {
     let failingJobName;
     try {
       const jobs = await glabApi(
-        `projects/${projectId}/pipelines/${currentPipeline.id}/jobs`,
+        `${projectPath}/pipelines/${currentPipeline.id}/jobs`,
         repoRoot,
-        deps,
+        apiDeps,
       );
       if (Array.isArray(jobs)) {
         const failedJob = jobs.find((j) => j.status === 'failed');
@@ -433,9 +426,9 @@ async function checkGitlab(repoRoot, now, deps = {}) {
  * `[HOST/]OWNER/REPO` shape `resolveRepoSpec({ vcs: 'github' })` returns is
  * exactly the positional's documented input format.
  *
- * The asymmetry with `getGlabProjectId` is real and deliberate: `glab repo
- * view` DOES accept `-R`, and `gh api`/`glab api` accept neither `-R` nor a
- * positional — only `--hostname`. Do not unify these three call sites.
+ * GitLab CI differs deliberately: it derives a host-pinned API target from
+ * the selected remote, while GitHub still needs this lookup because its API
+ * path requires `nameWithOwner`. Do not unify these call sites.
  *
  * `nameWithOwner` is NOT derivable from `deps.repoSpec`, so this lookup
  * cannot be dropped: the spec carries a HOST prefix the `repos/<owner>/<repo>`
@@ -540,10 +533,11 @@ async function checkGithub(repoRoot, deps = {}) {
  *   execFile?: Function,
  *   resolveRepoSpec?: (opts: { repoRoot: string, vcs: 'gitlab'|'github' }) => string|undefined,
  *   resolveRepoHost?: (opts: { repoRoot: string, vcs: 'gitlab'|'github' }) => string|undefined,
- * }} deps  Dependency-injection seam for testing. `resolveRepoSpec`/
- *   `resolveRepoHost` default to the real `vcs-repo-spec.mjs` exports
- *   (#872 host-pinning — see that module for the `-R` vs `--hostname`
- *   contract).
+ *   resolveGitlabProjectTarget?: (opts: { repoRoot: string }) =>
+ *     { host: string, encodedProjectPath: string }|undefined,
+ * }} deps  Dependency-injection seam for testing. GitLab defaults to
+ *   `resolveGitlabProjectTarget`, which proves host and project path from one
+ *   sanitized remote; GitHub retains the #872 spec/host resolvers.
  * @returns {Promise<null | {
  *   status: 'green'|'red'|'unknown',
  *   ok: boolean,
@@ -572,6 +566,7 @@ export async function checkCiStatus(opts = {}, deps = {}) {
 
   const resolveRepoSpecDep = deps.resolveRepoSpec ?? resolveRepoSpec;
   const resolveRepoHostDep = deps.resolveRepoHost ?? resolveRepoHost;
+  const resolveGitlabProjectTargetDep = deps.resolveGitlabProjectTarget ?? resolveGitlabProjectTarget;
 
   const depsWithExec = { execFile: execFileDep, timeoutMs };
 
@@ -605,22 +600,33 @@ export async function checkCiStatus(opts = {}, deps = {}) {
       vcs = detected.vcs;
     }
 
-    // Step 1b (#872): resolve the -R/--hostname host-pinning spec ONCE per
-    // checkCiStatus call — a bare glab/gh spawn falls back to the ambient
-    // GITLAB_HOST/GH_HOST env var, which can silently target the wrong
-    // instance on a multi-instance host. `cwd: repoRoot` alone does not fix
-    // this (ambient env still wins over cwd).
-    const repoSpec = resolveRepoSpecDep({ repoRoot, vcs });
-    const repoHost = resolveRepoHostDep({ repoRoot, vcs });
-    const depsWithPinning = { ...depsWithExec, repoSpec, repoHost };
-
-    // Step 2: dispatch to VCS-specific implementation.
+    // Step 1b: GitLab's API target must be proven before its first glab spawn.
+    // A missing target is never permission to fall back to ambient
+    // GITLAB_HOST/repository configuration. GitHub retains its distinct
+    // repository lookup because its API path requires `nameWithOwner`.
+    //
+    // It is also not an ABSENCE: detectVcs just proved a GitLab remote exists,
+    // so `!gitlabProject` means "remote present, its form was rejected" — a
+    // QUERY FAILURE by the same rule the block above states. Returning null
+    // silently put this repo back in the pre-#1039 state where "CI green" and
+    // "could not ask" look identical. Reachable inputs measured 2026-08-21:
+    // `git://` scheme, a doubled slash in the path, a query string.
     if (vcs === 'gitlab') {
-      return await checkGitlab(repoRoot, now, depsWithPinning);
+      const gitlabProject = resolveGitlabProjectTargetDep({ repoRoot });
+      if (!gitlabProject) {
+        console.warn(
+          'WARN ci-status-banner: a GitLab remote was detected but its host/project path ' +
+            'could not be derived, banner suppressed — CI state is UNKNOWN, not "green".',
+        );
+        return null;
+      }
+      return await checkGitlab(repoRoot, now, { ...depsWithExec, gitlabProject });
     }
 
     if (vcs === 'github') {
-      return await checkGithub(repoRoot, depsWithPinning);
+      const repoSpec = resolveRepoSpecDep({ repoRoot, vcs });
+      const repoHost = resolveRepoHostDep({ repoRoot, vcs });
+      return await checkGithub(repoRoot, { ...depsWithExec, repoSpec, repoHost });
     }
 
     // Unknown VCS value — silent no-op.

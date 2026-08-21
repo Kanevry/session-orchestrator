@@ -25,12 +25,12 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
+import { join, resolve, dirname, relative, isAbsolute, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 
 import {
   assertGlabExists, setVerbose as setGlabVerbose,
-  listGroupRepos, checkVaultYaml, fetchRepoOwner,
+  listGroupRepos, checkVaultYaml,
 } from './lib/vault-backfill/glab.mjs';
 
 import {
@@ -155,11 +155,25 @@ function createVaultFolderStub(vaultDir, slug) {
 
 // ── Process one repo ──────────────────────────────────────────────────────────
 
+/** Derive the complete parent namespace from a canonical GitLab project path. */
+function parentNamespace(repoPath) {
+  if (typeof repoPath !== 'string') return 'unknown';
+
+  const segments = repoPath.split('/');
+  if (
+    segments.length < 2 ||
+    segments.some((segment) => !segment || segment === '.' || segment === '..')
+  ) {
+    return 'unknown';
+  }
+
+  return segments.slice(0, -1).join('/');
+}
+
 function processRepo(entry, vaultDir, templateContent) {
   const { path: repoPath, slug, tier, visibility, group, id } = entry;
   const humanName = slugToHumanName(slug);
-
-  const owner = applyWrites ? fetchRepoOwner(id) : 'unknown';
+  const owner = parentNamespace(repoPath);
 
   let renderedContent;
   try {
@@ -184,7 +198,20 @@ function processRepo(entry, vaultDir, templateContent) {
   }
 
   // Apply: write to staging directory at <out-dir>/<group>/<repo>/.vault.yaml
-  const writePath = join(outDir, repoPath, '.vault.yaml');
+  const writePath = resolve(outDir, repoPath, '.vault.yaml');
+  const writePathRelativeToOutDir = relative(outDir, writePath);
+  if (
+    writePathRelativeToOutDir === '..' ||
+    writePathRelativeToOutDir.startsWith(`..${sep}`) ||
+    isAbsolute(writePathRelativeToOutDir)
+  ) {
+    const error = 'refusing to write outside staging directory';
+    emitAction('write-failed', '', { error });
+    process.stderr.write(`[vault-backfill] ERROR: ${error}\n`);
+    hadWriteError = true;
+    return;
+  }
+
   try {
     mkdirSync(dirname(writePath), { recursive: true });
     writeFileSync(writePath, renderedContent, 'utf8');

@@ -27,7 +27,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { isRoot } from '../_helpers/perms.mjs';
@@ -99,6 +99,46 @@ function run(args, { env = {}, cwd } = {}) {
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
   };
+}
+
+/** Run the interactive CLI and answer prompts one at a time over stdin. */
+function runInteractive(args, { env = {}, cwd } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(NODE, [SCRIPT_PATH, ...args], {
+      cwd: cwd ?? REPO_ROOT,
+      env: {
+        HOME: homedir(),
+        PATH: '/usr/bin:/bin:/usr/local/bin',
+        ...env,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const prompts = [
+      'Slug [',
+      'Tier (top/active/archived) [active]: ',
+      'Skip this repo? [y/N]: ',
+      'Apply? [y/N]: ',
+    ];
+    const answers = ['\n', '\n', 'n\n', 'y\n'];
+    let promptIndex = 0;
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+      if (!stderr.includes(prompts[promptIndex])) return;
+
+      const answer = answers[promptIndex++];
+      if (promptIndex === answers.length) child.stdin.end(answer);
+      else child.stdin.write(answer);
+    });
+    child.on('error', reject);
+    child.stdin.on('error', reject);
+    child.on('close', (status) => resolve({ status, stdout, stderr }));
+  });
 }
 
 /**
@@ -285,6 +325,170 @@ describe('headless --yes apply mode', () => {
     const wrote = actions.find((a) => a.action === 'wrote');
     expect(wrote).toBeDefined();
     expect(wrote.slug).toBe('alpha-service');
+  });
+
+  it('derives the complete nested namespace owner in headless apply without glab', () => {
+    setupTemplateDir(tmpBase);
+    const manifestPath = writeManifest(tmpBase, {
+      version: 1,
+      repos: [
+        {
+          id: 11,
+          path: 'engineering/platform/edge-proxy',
+          slug: 'edge-proxy',
+          tier: 'active',
+          visibility: 'internal',
+        },
+      ],
+    });
+
+    const { status } = run(
+      ['--yes', manifestPath, '--apply', '--out-dir', outDir],
+      { env: { PROJECTS_BASELINE_DIR: tmpBase, HOME: homedir(), PATH: '' } },
+    );
+
+    expect(status).toBe(0);
+    const content = readFileSync(
+      join(outDir, 'engineering', 'platform', 'edge-proxy', '.vault.yaml'),
+      'utf8',
+    );
+    expect(content).toContain('owner: "engineering/platform"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Interactive group scan + apply
+// ---------------------------------------------------------------------------
+
+describe('interactive group apply mode', () => {
+  it('emits the scanned project id in wrote actions while deriving owner from path', async () => {
+    setupTemplateDir(tmpBase);
+    const binDir = join(tmpBase, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    const glabPath = join(binDir, 'glab');
+    writeFileSync(glabPath, `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'glab version 1.0.0\\n'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "groups/engineering%2Fplatform/projects?simple=true&per_page=100" ]; then
+  printf '%s\\n' '[[{"id":314,"path_with_namespace":"engineering/platform/edge-proxy","visibility":"internal","created_at":"2026-07-01T12:00:00Z","namespace":{"full_path":"engineering/platform"},"web_url":"https://gitlab.example.test/engineering/platform/edge-proxy","private_token":"must-not-escape-the-normalized-representation"}]]'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "projects/engineering%2Fplatform%2Fedge-proxy/repository/files/.vault.yaml/raw" ]; then
+  printf '404 File Not Found\\n' >&2
+  exit 1
+fi
+printf 'unexpected glab arguments: %s %s\\n' "$1" "$2" >&2
+exit 2
+`, 'utf8');
+    chmodSync(glabPath, 0o755);
+
+    const { status, stdout } = await runInteractive(
+      ['--groups', 'engineering/platform', '--apply', '--out-dir', outDir],
+      {
+        env: {
+          PROJECTS_BASELINE_DIR: tmpBase,
+          HOME: homedir(),
+          PATH: `${binDir}:/usr/bin:/bin`,
+        },
+      },
+    );
+
+    expect(status).toBe(0);
+    const actions = parseActions(stdout);
+    expect(actions).toEqual([{
+      action: 'wrote',
+      path: join(outDir, 'engineering', 'platform', 'edge-proxy', '.vault.yaml'),
+      slug: 'edge-proxy',
+      id: 314,
+      tier: 'active',
+      visibility: 'internal',
+      group: 'engineering/platform',
+    }]);
+    expect(readFileSync(join(outDir, 'engineering', 'platform', 'edge-proxy', '.vault.yaml'), 'utf8'))
+      .toContain('owner: "engineering/platform"');
+  });
+
+  it('rejects traversal from exit-zero GitLab output before apply and confines writes to staging', async () => {
+    setupTemplateDir(tmpBase);
+    const binDir = join(tmpBase, 'bin');
+    const stagingDir = join(tmpBase, 'staging', 'nested');
+    const escapedFile = join(tmpBase, 'outside-response-sentinel', '.vault.yaml');
+    mkdirSync(binDir, { recursive: true });
+    const glabPath = join(binDir, 'glab');
+    writeFileSync(glabPath, `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'glab version 1.0.0\\n'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "groups/engineering%2Fplatform/projects?simple=true&per_page=100" ]; then
+  printf '%s\\n' '[[{"id":1065,"path_with_namespace":"../../outside-response-sentinel","visibility":"private","created_at":"2026-08-21T00:00:00Z"}]]'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "projects/..%2F..%2Foutside-response-sentinel/repository/files/.vault.yaml/raw" ]; then
+  printf '404 File Not Found\\n' >&2
+  exit 1
+fi
+printf 'unexpected glab arguments: %s %s\\n' "$1" "$2" >&2
+exit 2
+`, 'utf8');
+    chmodSync(glabPath, 0o755);
+
+    const { status, stdout, stderr } = await runInteractive(
+      ['--groups', 'engineering/platform', '--apply', '--out-dir', stagingDir],
+      {
+        env: {
+          PROJECTS_BASELINE_DIR: tmpBase,
+          HOME: homedir(),
+          PATH: `${binDir}:/usr/bin:/bin`,
+          SO_VAULT_DIR: join(tmpBase, 'vault'),
+        },
+      },
+    );
+
+    expect(status).toBe(3);
+    expect(parseActions(stdout)).toEqual([]);
+    expect(stderr).toContain('unexpected project-list response shape');
+    expect(`${stdout}${stderr}`).not.toContain('outside-response-sentinel');
+    expect(existsSync(escapedFile)).toBe(false);
+    expect(existsSync(stagingDir)).toBe(false);
+  });
+
+  it('returns API failure without crashing for an exit-zero project list with malformed created_at', () => {
+    setupTemplateDir(tmpBase);
+    const binDir = join(tmpBase, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    const glabPath = join(binDir, 'glab');
+    writeFileSync(glabPath, `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'glab version 1.0.0\\n'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "groups/engineering%2Fplatform/projects?simple=true&per_page=100" ]; then
+  printf '%s\\n' '[[{"id":315,"path_with_namespace":"engineering/platform/bad-timestamp","visibility":"internal","created_at":42,"private_token":"must-not-escape-the-api-diagnostic"}]]'
+  exit 0
+fi
+printf 'unexpected glab arguments: %s %s\\n' "$1" "$2" >&2
+exit 2
+`, 'utf8');
+    chmodSync(glabPath, 0o755);
+
+    const { status, stdout, stderr } = run(
+      ['--groups', 'engineering/platform'],
+      {
+        env: {
+          PROJECTS_BASELINE_DIR: tmpBase,
+          HOME: homedir(),
+          PATH: `${binDir}:/usr/bin:/bin`,
+        },
+      },
+    );
+
+    expect(status).toBe(3);
+    expect(parseActions(stdout)).toEqual([]);
+    expect(stderr).toContain('unexpected project-list response shape');
+    expect(stderr).not.toContain('must-not-escape-the-api-diagnostic');
   });
 });
 
@@ -498,28 +702,15 @@ describe('renderTemplate (unit)', () => {
 import { pathToSlug } from '@lib/vault-backfill/template.mjs';
 
 describe('pathToSlug (unit)', () => {
-  it('already-kebab slug is unchanged', () => {
-    expect(pathToSlug('auth-service')).toBe('auth-service');
-  });
-
-  it('Auth_Service → auth-service (uppercase + underscore)', () => {
-    expect(pathToSlug('Auth_Service')).toBe('auth-service');
-  });
-
-  it('auth.service.v2 → auth-service-v2 (dots → hyphens)', () => {
-    expect(pathToSlug('auth.service.v2')).toBe('auth-service-v2');
-  });
-
-  it('extracts last path segment from group/repo', () => {
-    expect(pathToSlug('my-group/my-repo')).toBe('my-repo');
-  });
-
-  it('collapses multiple hyphens into one', () => {
-    expect(pathToSlug('my--repo')).toBe('my-repo');
-  });
-
-  it('strips leading and trailing hyphens', () => {
-    expect(pathToSlug('-repo-')).toBe('repo');
+  it.each([
+    ['auth-service', 'auth-service'],
+    ['Auth_Service', 'auth-service'],
+    ['auth.service.v2', 'auth-service-v2'],
+    ['my-group/my-repo', 'my-repo'],
+    ['my--repo', 'my-repo'],
+    ['-repo-', 'repo'],
+  ])('normalizes %s to %s', (input, expected) => {
+    expect(pathToSlug(input)).toBe(expected);
   });
 });
 
@@ -606,6 +797,28 @@ describe('validateManifest (unit)', () => {
     expect(err).toContain('path');
   });
 
+  it.each([
+    ['a single project segment', 'project'],
+    ['a leading separator', '/group/project'],
+    ['a trailing separator', 'group/project/'],
+    ['an empty nested segment', 'group//project'],
+    ['a dot segment', 'group/./project'],
+    ['a traversal segment', '../../manifest-response-sentinel'],
+    ['a backslash', 'group\\project'],
+    ['whitespace', 'group/repo name'],
+    ['a URI fragment delimiter', 'group/repo#fragment'],
+    ['a URI escape delimiter', 'group/repo%2Fother'],
+    ['a colon delimiter', 'group/repo:tag'],
+    ['a control character', 'group/repo\nother'],
+  ])('rejects %s without echoing the untrusted manifest path', (_description, path) => {
+    const err = collectError({
+      version: 1,
+      repos: [{ id: 1065, path, slug: 'repo', tier: 'active', visibility: 'private' }],
+    });
+
+    expect(err).toBe('manifest.repos[0].path must be a valid GitLab namespace/project path');
+  });
+
   it('slug with uppercase letters fails validation', () => {
     const err = collectError({
       version: 1,
@@ -659,30 +872,26 @@ describe('validateManifest (unit)', () => {
     expect(result[0].skip).toBe(false);
   });
 
-  it('all three valid tier values pass', () => {
-    for (const tier of ['top', 'active', 'archived']) {
-      const result = validateManifest(
-        {
-          version: 1,
-          repos: [{ id: 1, path: 'g/r', slug: 'repo', tier, visibility: 'public' }],
-        },
-        (c, m) => { throw new Error(m); },
-      );
-      expect(result[0].tier).toBe(tier);
-    }
+  it.each(['top', 'active', 'archived'])('accepts the valid tier %s', (tier) => {
+    const result = validateManifest(
+      {
+        version: 1,
+        repos: [{ id: 1, path: 'g/r', slug: 'repo', tier, visibility: 'public' }],
+      },
+      (_code, message) => { throw new Error(message); },
+    );
+    expect(result[0].tier).toBe(tier);
   });
 
-  it('all three valid visibility values pass', () => {
-    for (const visibility of ['public', 'internal', 'private']) {
-      const result = validateManifest(
-        {
-          version: 1,
-          repos: [{ id: 1, path: 'g/r', slug: 'repo', tier: 'active', visibility }],
-        },
-        (c, m) => { throw new Error(m); },
-      );
-      expect(result[0].visibility).toBe(visibility);
-    }
+  it.each(['public', 'internal', 'private'])('accepts the valid visibility %s', (visibility) => {
+    const result = validateManifest(
+      {
+        version: 1,
+        repos: [{ id: 1, path: 'g/r', slug: 'repo', tier: 'active', visibility }],
+      },
+      (_code, message) => { throw new Error(message); },
+    );
+    expect(result[0].visibility).toBe(visibility);
   });
 });
 
@@ -693,51 +902,18 @@ describe('validateManifest (unit)', () => {
 import { yamlScalar } from '@lib/vault-backfill/template.mjs';
 
 describe('yamlScalar (unit, #247)', () => {
-  it('wraps a plain ASCII string in double quotes', () => {
-    expect(yamlScalar('alice')).toBe('"alice"');
-  });
-
-  it('escapes embedded newline — newline cannot create a new YAML key', () => {
-    const result = yamlScalar('alice\nmalicious-key: malicious-value');
-    // JSON.stringify encodes \n as \\n inside the quoted string
-    expect(result).toBe('"alice\\nmalicious-key: malicious-value"');
-    // The literal text "malicious-key:" must not appear unescaped
-    expect(result).not.toContain('\nmalicious-key:');
-  });
-
-  it('escapes embedded carriage return', () => {
-    expect(yamlScalar('alice\r\nbob')).toBe('"alice\\r\\nbob"');
-  });
-
-  it('escapes colon (YAML key separator)', () => {
-    // JSON.stringify does NOT escape ":" because JSON strings allow it — but the
-    // value is wrapped in double quotes, making it a YAML scalar, not a key.
-    const result = yamlScalar('ns:path');
-    expect(result).toBe('"ns:path"');
-    expect(result.startsWith('"')).toBe(true);
-    expect(result.endsWith('"')).toBe(true);
-  });
-
-  it('escapes hash character (YAML comment marker)', () => {
-    const result = yamlScalar('alice # injected comment');
-    expect(result).toBe('"alice # injected comment"');
-  });
-
-  it('escapes backslash', () => {
-    expect(yamlScalar('a\\b')).toBe('"a\\\\b"');
-  });
-
-  it('escapes embedded double quote', () => {
-    expect(yamlScalar('say "hello"')).toBe('"say \\"hello\\""');
-  });
-
-  it('handles empty string', () => {
-    expect(yamlScalar('')).toBe('""');
-  });
-
-  it('coerces non-string to string before quoting', () => {
-    // undefined → "undefined" (safe scalar)
-    expect(yamlScalar(undefined)).toBe('"undefined"');
+  it.each([
+    ['plain ASCII', 'alice', '"alice"'],
+    ['an embedded newline', 'alice\nmalicious-key: malicious-value', '"alice\\nmalicious-key: malicious-value"'],
+    ['an embedded carriage return', 'alice\r\nbob', '"alice\\r\\nbob"'],
+    ['a colon', 'ns:path', '"ns:path"'],
+    ['a hash', 'alice # injected comment', '"alice # injected comment"'],
+    ['a backslash', 'a\\b', '"a\\\\b"'],
+    ['an embedded double quote', 'say "hello"', '"say \\"hello\\""'],
+    ['the empty string', '', '""'],
+    ['a non-string value', undefined, '"undefined"'],
+  ])('returns a quoted scalar for %s', (_label, input, expected) => {
+    expect(yamlScalar(input)).toBe(expected);
   });
 });
 

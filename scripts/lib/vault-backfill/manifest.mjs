@@ -7,7 +7,33 @@
 
 const VALID_TIERS = new Set(['top', 'active', 'archived']);
 const VALID_VISIBILITIES = new Set(['public', 'internal', 'private']);
+const GITLAB_PATH_SEGMENT_RE = /^[A-Za-z0-9_.-]+$/;
 export const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/**
+ * Return whether a value is a canonical GitLab namespace/project path.
+ *
+ * GitLab project paths have at least one namespace and one project segment.
+ * Each segment uses the slug character set; dot segments remain excluded so
+ * the result is safe to use as a path below a controlled staging directory.
+ *
+ * @param {unknown} value
+ * @returns {value is string}
+ */
+export function isValidRepoPath(value) {
+  if (typeof value !== 'string') return false;
+
+  const segments = value.split('/');
+  return (
+    segments.length >= 2 &&
+    segments.every(
+      (segment) =>
+        segment !== '.' &&
+        segment !== '..' &&
+        GITLAB_PATH_SEGMENT_RE.test(segment),
+    )
+  );
+}
 
 /**
  * Validate and normalise a manifest object.
@@ -34,14 +60,8 @@ export function validateManifest(raw, dieFn) {
     const prefix = `manifest.repos[${i}]`;
 
     if (typeof entry.id !== 'number') dieFn(1, `${prefix}.id must be a number`);
-    if (typeof entry.path !== 'string' || !entry.path) {
-      dieFn(1, `${prefix}.path must be a non-empty string`);
-    }
-    if (entry.path.startsWith('/') || entry.path.split('/').includes('..')) {
-      dieFn(
-        1,
-        `${prefix}.path '${entry.path}' is invalid — must be a relative repo path (no leading '/' or '..' segments)`,
-      );
+    if (!isValidRepoPath(entry.path)) {
+      dieFn(1, `${prefix}.path must be a valid GitLab namespace/project path`);
     }
     if (typeof entry.slug !== 'string') dieFn(1, `${prefix}.slug must be a string`);
     if (!SLUG_RE.test(entry.slug)) {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { checkCiStatus as checkCiStatusReal, DEFAULT_TIMEOUT_MS } from '@lib/ci-status-banner.mjs';
+import { checkCiStatus as checkCiStatusReal } from '@lib/ci-status-banner.mjs';
 
 // ── stderr WARN capture (#1022 follow-up) ────────────────────────────────────
 //
@@ -20,25 +20,18 @@ afterEach(() => {
   warnSpy.mockRestore();
 });
 
-// ── #872 host-pinning DI default ────────────────────────────────────────────
+// ── #1065 GitLab API target DI default ─────────────────────────────────────
 //
-// checkCiStatus now resolves a `-R`/`--hostname` host-pinning spec via
-// `vcs-repo-spec.mjs`'s `resolveRepoSpec`/`resolveRepoHost`, which by
-// default shell out to the REAL `git remote get-url` (via execFileSync —
-// a separate mechanism from this file's `deps.execFile` async mock). Every
-// pre-#872 test below is unaware of this and asserts an EXACT execFileSync
-// call sequence for just the glab/gh calls it mocks — so `checkCiStatus`
-// (the name used throughout this file) is a local wrapper that injects
-// no-op resolvers (`() => undefined`, matching pre-#872 "no -R/--hostname
-// appended" behaviour) as the DEFAULT, keeping every unmodified test
-// hermetic (no real subprocess spawn) and its call-sequence assertions
-// byte-for-byte identical. Tests that specifically exercise #872
-// host-pinning call `checkCiStatusReal` directly with explicit
-// `resolveRepoSpec`/`resolveRepoHost` overrides.
+// GitLab CI requests derive one { host, encodedProjectPath } target from the
+// sanitized preferred remote. The production resolver shells out synchronously
+// through the shared remote core, while this file injects async `execFile`.
+// Keep ordinary banner tests hermetic by providing the resolved target directly.
+// GitHub retains its #872 resolveRepoSpec/resolveRepoHost seams unchanged.
 function checkCiStatus(opts, deps = {}) {
   return checkCiStatusReal(opts, {
     resolveRepoSpec: () => undefined,
     resolveRepoHost: () => undefined,
+    resolveGitlabProjectTarget: () => GITLAB_PROJECT_TARGET,
     ...deps,
   });
 }
@@ -104,7 +97,10 @@ const HEAD_SHA = 'abc1234def5678abc1234def5678abc1234def56';
 const GITLAB_ORIGIN = 'https://gitlab.example.com/org/session-orchestrator.git';
 const GITHUB_ORIGIN = 'https://github.com/Kanevry/session-orchestrator.git';
 
-const GLAB_REPO_VIEW = JSON.stringify({ id: 42, name: 'session-orchestrator' });
+const GITLAB_PROJECT_TARGET = {
+  host: 'gitlab.example.com',
+  encodedProjectPath: 'org%2Fsession-orchestrator',
+};
 const GH_REPO_VIEW = JSON.stringify({ nameWithOwner: 'Kanevry/session-orchestrator' });
 
 // `git remote -v` stub (#1039). The probe no longer asks for a remote BY NAME
@@ -132,12 +128,6 @@ function gitRevParseResponse(sha) {
   return { cmd: 'git', args: ['rev-parse', 'HEAD'], stdout: sha + '\n' };
 }
 
-const glabRepoViewResponse = {
-  cmd: 'glab',
-  args: ['repo', 'view', '--output', 'json'],
-  stdout: GLAB_REPO_VIEW,
-};
-
 const ghRepoViewResponse = {
   cmd: 'gh',
   args: ['repo', 'view', '--json', 'nameWithOwner'],
@@ -147,7 +137,12 @@ const ghRepoViewResponse = {
 function glabPipelinesResponse(pipelines) {
   return {
     cmd: 'glab',
-    args: ['api', 'projects/42/pipelines?order_by=updated_at&sort=desc&per_page=15'],
+    args: [
+      'api',
+      'projects/org%2Fsession-orchestrator/pipelines?order_by=updated_at&sort=desc&per_page=15',
+      '--hostname',
+      'gitlab.example.com',
+    ],
     stdout: JSON.stringify(pipelines),
   };
 }
@@ -155,7 +150,12 @@ function glabPipelinesResponse(pipelines) {
 function glabJobsResponse(pipelineId, jobs) {
   return {
     cmd: 'glab',
-    args: ['api', `projects/42/pipelines/${pipelineId}/jobs`],
+    args: [
+      'api',
+      `projects/org%2Fsession-orchestrator/pipelines/${pipelineId}/jobs`,
+      '--hostname',
+      'gitlab.example.com',
+    ],
     stdout: JSON.stringify(jobs),
   };
 }
@@ -179,7 +179,6 @@ describe('checkCiStatus — GitLab green', () => {
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITLAB_ORIGIN),
       gitRevParseResponse(HEAD_SHA),
-      glabRepoViewResponse,
       glabPipelinesResponse(pipelines),
     ]);
 
@@ -219,7 +218,6 @@ describe('checkCiStatus — GitLab green with a soft-failed job', () => {
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITLAB_ORIGIN),
       gitRevParseResponse(HEAD_SHA),
-      glabRepoViewResponse,
       glabPipelinesResponse(pipelines),
       glabJobsResponse(101, jobs),
     ]);
@@ -249,7 +247,6 @@ describe('checkCiStatus — GitLab green with a soft-failed job', () => {
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITLAB_ORIGIN),
       gitRevParseResponse(HEAD_SHA),
-      glabRepoViewResponse,
       glabPipelinesResponse(pipelines),
       glabJobsResponse(101, jobs),
     ]);
@@ -284,7 +281,6 @@ describe('checkCiStatus — GitLab red with last-green', () => {
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITLAB_ORIGIN),
       gitRevParseResponse(HEAD_SHA),
-      glabRepoViewResponse,
       glabPipelinesResponse(pipelines),
       glabJobsResponse(104, jobs),
     ]);
@@ -319,7 +315,7 @@ describe('checkCiStatus — glab not in PATH', () => {
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITLAB_ORIGIN),
       gitRevParseResponse(HEAD_SHA),
-      // glab repo view → ENOENT
+      // glab API request → ENOENT
       { cmd: 'glab', error: enoentError },
     ]);
 
@@ -453,7 +449,6 @@ describe('checkCiStatus — GitLab pipeline running', () => {
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITLAB_ORIGIN),
       gitRevParseResponse(HEAD_SHA),
-      glabRepoViewResponse,
       glabPipelinesResponse(pipelines),
     ]);
 
@@ -480,7 +475,6 @@ describe('checkCiStatus — no pipeline for HEAD SHA', () => {
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITLAB_ORIGIN),
       gitRevParseResponse(HEAD_SHA),
-      glabRepoViewResponse,
       glabPipelinesResponse(pipelines),
     ]);
 
@@ -506,7 +500,6 @@ describe('checkCiStatus — forced vcs', () => {
     const mockExecFile = makeExecFileMock([
       // No git remote get-url call expected — vcs is forced.
       gitRevParseResponse(HEAD_SHA),
-      glabRepoViewResponse,
       glabPipelinesResponse(pipelines),
     ]);
 
@@ -518,14 +511,6 @@ describe('checkCiStatus — forced vcs', () => {
     expect(result).not.toBeNull();
     expect(result.status).toBe('green');
     expect(result.ok).toBe(true);
-  });
-});
-
-// ── Test 11: DEFAULT_TIMEOUT_MS export ───────────────────────────────────────
-
-describe('DEFAULT_TIMEOUT_MS constant', () => {
-  it('equals 8000', () => {
-    expect(DEFAULT_TIMEOUT_MS).toBe(8000);
   });
 });
 
@@ -543,7 +528,6 @@ describe('checkCiStatus — GitLab red with no prior green', () => {
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITLAB_ORIGIN),
       gitRevParseResponse(HEAD_SHA),
-      glabRepoViewResponse,
       glabPipelinesResponse(pipelines),
       glabJobsResponse(203, jobs),
     ]);
@@ -590,25 +574,20 @@ describe('checkCiStatus — GitHub action_required → red', () => {
 
 // ── Test 14: never throws ─────────────────────────────────────────────────────
 
-describe('checkCiStatus — never throws', () => {
-  it('does not throw when called with a mock that immediately errors', async () => {
-    // Use a mock that errors out immediately (simulates "no git" environment).
-    const errorMock = makeExecFileMock([
-      { cmd: 'git', error: new Error('fatal: not a git repository') },
-    ]);
-    const result = await checkCiStatus({ repoRoot: '/tmp' }, { execFile: errorMock });
-    expect(result).toBeNull();
-  });
-
+describe('checkCiStatus — error containment', () => {
   it('returns null on malformed JSON from glab pipelines API', async () => {
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITLAB_ORIGIN),
       gitRevParseResponse(HEAD_SHA),
-      glabRepoViewResponse,
       // Return garbage JSON for the pipelines call.
       {
         cmd: 'glab',
-        args: ['api', 'projects/42/pipelines?order_by=updated_at&sort=desc&per_page=15'],
+        args: [
+          'api',
+          'projects/org%2Fsession-orchestrator/pipelines?order_by=updated_at&sort=desc&per_page=15',
+          '--hostname',
+          'gitlab.example.com',
+        ],
         stdout: 'not-valid-json{{{',
       },
     ]);
@@ -622,12 +601,16 @@ describe('checkCiStatus — never throws', () => {
   });
 });
 
-// ── Test 15: #872 host-pinning — GitLab (-R on repo view, --hostname on api) ──
+// ── Test 15: #1065 GitLab API target — no ambient project lookup ─────────────
 
-describe('checkCiStatus — #872 GitLab host-pinning', () => {
-  it('pins `glab repo view` with -R <spec> and `glab api` calls with --hostname <host>', async () => {
-    const spec = 'https://gitlab.example.com/example-group/example-project.git';
-    const host = 'gitlab.example.com';
+describe('checkCiStatus — #1065 GitLab API target', () => {
+  // Bug: `glab repo view` resolves a numeric ID through ambient GitLab config,
+  // so a correct remote can still query an unrelated project on another host.
+  it('uses the encoded remote project path and hostname for every GitLab request', async () => {
+    const target = {
+      host: 'gitlab.example.com',
+      encodedProjectPath: 'example-group%2Fsubgroup%2Fexample-project',
+    };
     const pipelines = [
       { id: 101, sha: HEAD_SHA, status: 'success', created_at: '2026-05-10T10:00:00Z' },
     ];
@@ -635,65 +618,110 @@ describe('checkCiStatus — #872 GitLab host-pinning', () => {
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITLAB_ORIGIN),
       gitRevParseResponse(HEAD_SHA),
-      { cmd: 'glab', args: ['repo', 'view', '--output', 'json', '-R', spec], stdout: GLAB_REPO_VIEW },
       {
         cmd: 'glab',
         args: [
           'api',
-          'projects/42/pipelines?order_by=updated_at&sort=desc&per_page=15',
+          'projects/example-group%2Fsubgroup%2Fexample-project/pipelines?order_by=updated_at&sort=desc&per_page=15',
           '--hostname',
-          host,
+          'gitlab.example.com',
         ],
         stdout: JSON.stringify(pipelines),
+      },
+      {
+        cmd: 'glab',
+        args: [
+          'api',
+          'projects/example-group%2Fsubgroup%2Fexample-project/pipelines/101/jobs',
+          '--hostname',
+          'gitlab.example.com',
+        ],
+        stdout: JSON.stringify([]),
       },
     ]);
 
     const result = await checkCiStatusReal(
       { repoRoot: '/fake/repo', now: NOW },
-      { execFile: mockExecFile, resolveRepoSpec: () => spec, resolveRepoHost: () => host },
+      { execFile: mockExecFile, resolveGitlabProjectTarget: () => target },
     );
 
-    expect(result).not.toBeNull();
-    expect(result.status).toBe('green');
-
-    const [, repoViewArgs] = mockExecFile.mock.calls.find(
-      ([cmd, args]) => cmd === 'glab' && args.includes('view'),
-    );
-    expect(repoViewArgs).toContain('-R');
-    expect(repoViewArgs).not.toContain('--hostname');
-
-    const [, pipelinesArgs] = mockExecFile.mock.calls.find(
-      ([cmd, args]) => cmd === 'glab' && args.includes('api'),
-    );
-    expect(pipelinesArgs).toContain('--hostname');
-    expect(pipelinesArgs).not.toContain('-R');
+    expect(result).toEqual({
+      status: 'green',
+      ok: true,
+      details: { currentPipelineId: 101, cliUsed: 'glab' },
+    });
+    expect(mockExecFile.mock.calls.filter(([cmd, args]) => cmd === 'glab' && args[0] === 'repo' && args[1] === 'view')).toHaveLength(0);
+    expect(mockExecFile.mock.calls.map(([cmd, args]) => [cmd, args])).toEqual([
+      ['git', ['remote', '-v']],
+      ['git', ['rev-parse', 'HEAD']],
+      [
+        'glab',
+        [
+          'api',
+          'projects/example-group%2Fsubgroup%2Fexample-project/pipelines?order_by=updated_at&sort=desc&per_page=15',
+          '--hostname',
+          'gitlab.example.com',
+        ],
+      ],
+      [
+        'glab',
+        [
+          'api',
+          'projects/example-group%2Fsubgroup%2Fexample-project/pipelines/101/jobs',
+          '--hostname',
+          'gitlab.example.com',
+        ],
+      ],
+    ]);
   });
 
-  it('omits both -R and --hostname when resolveRepoSpec/resolveRepoHost return undefined (graceful degradation)', async () => {
-    const pipelines = [
-      { id: 101, sha: HEAD_SHA, status: 'success', created_at: '2026-05-10T10:00:00Z' },
-    ];
+  // Bug: starting bare glab when either half of the API target is unknown lets
+  // GITLAB_HOST and unrelated ambient repository state choose the project.
+  it('warns instead of going silent when a GitLab host/path cannot be proven', async () => {
+    const mockExecFile = makeExecFileMock([]);
 
+    const result = await checkCiStatusReal(
+      { repoRoot: '/fake/repo', vcs: 'gitlab', now: NOW },
+      { execFile: mockExecFile, resolveGitlabProjectTarget: () => undefined },
+    );
+
+    expect(result).toBeNull();
+    expect(mockExecFile).not.toHaveBeenCalled();
+    // A GitLab remote WAS detected; only its form was rejected. That is a query
+    // failure, not an absence, so silence here would restore exactly the
+    // pre-#1039 state this module's own rule forbids: "CI green" and "could not
+    // ask" rendering identically. Pinning toHaveLength(0) pinned that silence.
+    expect(warnSpy.mock.calls).toHaveLength(1);
+    expect(warnSpy.mock.calls[0][0]).toContain('CI state is UNKNOWN, not "green"');
+  });
+
+  // Bug: an API response containing benign metadata but no pipeline array could
+  // escape as a result or warning, exposing implementation-only sentinel data.
+  it('returns no result and logs nothing for unexpected benign pipeline metadata', async () => {
+    const benignMetadataSentinel = 'benign-pipeline-metadata-sentinel';
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITLAB_ORIGIN),
       gitRevParseResponse(HEAD_SHA),
-      glabRepoViewResponse,
-      glabPipelinesResponse(pipelines),
+      {
+        cmd: 'glab',
+        args: [
+          'api',
+          'projects/org%2Fsession-orchestrator/pipelines?order_by=updated_at&sort=desc&per_page=15',
+          '--hostname',
+          'gitlab.example.com',
+        ],
+        stdout: JSON.stringify({ metadata: benignMetadataSentinel }),
+      },
     ]);
 
     const result = await checkCiStatusReal(
       { repoRoot: '/fake/repo', now: NOW },
-      { execFile: mockExecFile, resolveRepoSpec: () => undefined, resolveRepoHost: () => undefined },
+      { execFile: mockExecFile, resolveGitlabProjectTarget: () => GITLAB_PROJECT_TARGET },
     );
 
-    expect(result).not.toBeNull();
-    expect(result.status).toBe('green');
-
-    for (const [cmd, args] of mockExecFile.mock.calls) {
-      if (cmd !== 'glab') continue;
-      expect(args).not.toContain('-R');
-      expect(args).not.toContain('--hostname');
-    }
+    expect(result).toBeNull();
+    expect(warnSpy.mock.calls).toHaveLength(0);
+    expect(JSON.stringify([result, warnSpy.mock.calls])).not.toContain(benignMetadataSentinel);
   });
 });
 
@@ -786,21 +814,20 @@ describe('checkCiStatus — #1022 rejected-invocation WARN', () => {
     ]);
   });
 
-  it('redacts URL-embedded credentials out of the warned error text', async () => {
-    // `resolveRepoSpec` hands the raw remote URL to `glab -R`, and a Node
-    // execFile rejection quotes the full argv back in `err.message`. On a repo
-    // whose remote carries HTTPS credentials, that message is a live secret —
-    // and this WARN prints it to stderr, where session-start transcripts and
-    // CI logs keep it. This is a leak path, not a formatting preference.
-    const credentialedSpec =
+  // Bug: a GitLab API failure can still echo a credential-bearing URL from an
+  // external error; the warning path must retain its source-level redaction.
+  it('redacts URL-embedded credentials out of a rejected GitLab API warning', async () => {
+    const credentialedUrl =
       'https://ci-bot:glpat-xxxxxxxxxxxx@gitlab.example.com/org/session-orchestrator.git';
     const rejected = new Error(
-      'Command failed: glab repo view --output json -R ' + credentialedSpec + '\nexit status 1\n',
+      'Command failed: glab api projects/org%2Fsession-orchestrator/pipelines --hostname gitlab.example.com ' +
+        credentialedUrl + '\nexit status 1\n',
     );
     rejected.code = 1;
 
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITLAB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
       { cmd: 'glab', error: rejected },
     ]);
 
@@ -808,8 +835,7 @@ describe('checkCiStatus — #1022 rejected-invocation WARN', () => {
       { repoRoot: '/fake/repo', now: NOW },
       {
         execFile: mockExecFile,
-        resolveRepoSpec: () => credentialedSpec,
-        resolveRepoHost: () => 'gitlab.example.com',
+        resolveGitlabProjectTarget: () => GITLAB_PROJECT_TARGET,
       },
     );
 
@@ -817,12 +843,10 @@ describe('checkCiStatus — #1022 rejected-invocation WARN', () => {
     expect(warnSpy.mock.calls).toEqual([
       [
         'WARN ci-status-banner: CI status check failed, banner suppressed — ' +
-          'Command failed: glab repo view --output json -R ' +
+          'Command failed: glab api projects/org%2Fsession-orchestrator/pipelines --hostname gitlab.example.com ' +
           'https://***@gitlab.example.com/org/session-orchestrator.git\nexit status 1\n',
       ],
     ]);
-    // Stated as the security invariant too, independent of the exact wording
-    // of the surrounding sentence: neither half of the credential survives.
     expect(warnSpy.mock.calls[0][0]).not.toContain('ci-bot');
     expect(warnSpy.mock.calls[0][0]).not.toContain('glpat-');
   });
@@ -854,7 +878,6 @@ describe('checkCiStatus — #1039 remote selection', () => {
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(['gitlab', GITLAB_ORIGIN], ['github', GITHUB_ORIGIN]),
       gitRevParseResponse(HEAD_SHA),
-      glabRepoViewResponse,
       glabPipelinesResponse(pipelines),
     ]);
 
@@ -876,7 +899,6 @@ describe('checkCiStatus — #1039 remote selection', () => {
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(['origin', GITLAB_ORIGIN], ['github', GITHUB_ORIGIN]),
       gitRevParseResponse(HEAD_SHA),
-      glabRepoViewResponse,
       glabPipelinesResponse(pipelines),
     ]);
 

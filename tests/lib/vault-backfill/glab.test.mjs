@@ -6,11 +6,11 @@
  * Covers:
  *   assertGlabExists — glab found → no dieFn call; glab missing → dieFn(1, ...)
  *   glabRun          — success path: argv assertion + return shape; failure: non-zero exit throws-like ok:false
- *   parseRepoList    — JSON array; JSONL multi-line; empty input → []; malformed JSON → [] (skipped per JSONL path)
+ *   parseRepoList    — project arrays and page arrays; valid [] stays empty; malformed response shapes → null
  *   setVerbose       — verbose=true causes stderr to log via process.stderr.write
  */
 
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Mock node:child_process so spawnSync never shells out
@@ -23,6 +23,7 @@ import { spawnSync } from 'node:child_process';
 import {
   assertGlabExists,
   glabRun,
+  listGroupRepos,
   parseRepoList,
   setVerbose,
 } from '@lib/vault-backfill/glab.mjs';
@@ -97,6 +98,7 @@ describe('assertGlabExists', () => {
 
 describe('glabRun', () => {
   afterEach(() => {
+    setVerbose(false);
     vi.restoreAllMocks();
   });
 
@@ -144,19 +146,119 @@ describe('glabRun', () => {
     expect(result.stdout).toBe('');
   });
 
-  it('logs to process.stderr when verbose mode is enabled', () => {
+  it('logs the command argv to process.stderr when verbose mode is enabled', () => {
     spawnSync.mockReturnValue(successResult(''));
     setVerbose(true);
     const writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
     glabRun(['repo', 'list', '-g', 'mygroup']);
 
-    expect(writeSpy).toHaveBeenCalled();
-    const loggedText = writeSpy.mock.calls.map((c) => c[0]).join('');
-    expect(loggedText).toContain('repo list -g mygroup');
+    expect(writeSpy).toHaveBeenCalledWith('[vault-backfill:verbose] glab repo list -g mygroup\n');
 
     // Reset verbose to avoid polluting other tests
     setVerbose(false);
+  });
+
+  it('does not log a raw project object returned on stdout in verbose mode', () => {
+    const rawProject = JSON.stringify({
+      path_with_namespace: 'platform/secret-project',
+      private_token: 'project-object-secret',
+    });
+    spawnSync.mockReturnValue(successResult(rawProject));
+    setVerbose(true);
+    const writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const result = glabRun(['api', 'groups/platform/projects?simple=true&per_page=100']);
+
+    expect(result.stdout).toBe(rawProject);
+    expect(writeSpy).toHaveBeenCalledWith(
+      '[vault-backfill:verbose] glab api groups/platform/projects?simple=true&per_page=100\n',
+    );
+    setVerbose(false);
+  });
+
+  it('redacts URL userinfo in verbose argv and normalized glab errors', () => {
+    spawnSync.mockReturnValue(failResult({
+      stderr: 'request to https://gitlab-ci-token:super-secret@example.test/api failed',
+    }));
+    setVerbose(true);
+    const writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const result = glabRun(['api', 'https://gitlab-ci-token:super-secret@example.test/api']);
+
+    expect(writeSpy).toHaveBeenCalledWith(
+      '[vault-backfill:verbose] glab api https://***@example.test/api\n',
+    );
+    expect(result).toEqual({
+      ok: false,
+      stdout: '',
+      stderr: 'request to https://***@example.test/api failed',
+    });
+    setVerbose(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listGroupRepos
+// ---------------------------------------------------------------------------
+
+describe('listGroupRepos', () => {
+  beforeEach(() => {
+    spawnSync.mockClear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('uses the simple paginated group endpoint without a project-detail request', () => {
+    spawnSync.mockReturnValue(successResult(JSON.stringify([[
+      {
+        id: 99,
+        path_with_namespace: 'platform/observability/collector',
+        name: 'collector',
+        visibility: 'internal',
+        created_at: '2026-06-15T08:00:00Z',
+        namespace: { full_path: 'platform/observability' },
+        private_token: 'must-not-escape-the-normalized-representation',
+      },
+    ]])));
+
+    const repos = listGroupRepos('platform/observability');
+
+    expect(spawnSync).toHaveBeenCalledWith('glab', [
+      'api',
+      'groups/platform%2Fobservability/projects?simple=true&per_page=100',
+      '--paginate',
+      '--slurp',
+    ], {
+      encoding: 'utf8',
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    expect(spawnSync).toHaveBeenCalledOnce();
+    expect(repos).toEqual([{
+      id: 99,
+      path: 'platform/observability/collector',
+      visibility: 'internal',
+      createdAt: '2026-06-15',
+    }]);
+  });
+
+  it('returns null and emits a bounded diagnostic for an exit-zero non-list response', () => {
+    const rawResponse = JSON.stringify({
+      message: 'upstream failure',
+      private_token: 'must-not-escape-the-shape-diagnostic',
+    });
+    spawnSync.mockReturnValue(successResult(rawResponse));
+    const writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const repos = listGroupRepos('platform/observability');
+
+    expect(repos).toBeNull();
+    expect(writeSpy).toHaveBeenCalledWith(
+      "[vault-backfill] WARN: glab api groups/<group>/projects returned an unexpected project-list response shape for group 'platform/observability'\n",
+    );
+    expect(writeSpy).not.toHaveBeenCalledWith(expect.stringContaining('must-not-escape-the-shape-diagnostic'));
   });
 });
 
@@ -165,15 +267,11 @@ describe('glabRun', () => {
 // ---------------------------------------------------------------------------
 
 describe('parseRepoList', () => {
-  it('returns an empty array for empty input', () => {
-    expect(parseRepoList('')).toEqual([]);
+  it.each(['', '   \n  '])('returns null for blank output %j', (input) => {
+    expect(parseRepoList(input)).toBeNull();
   });
 
-  it('returns an empty array for whitespace-only input', () => {
-    expect(parseRepoList('   \n  ')).toEqual([]);
-  });
-
-  it('parses a JSON array of repos into the expected shape', () => {
+  it('preserves id with path, visibility, and date while dropping response extras', () => {
     const input = JSON.stringify([
       {
         id: 42,
@@ -181,6 +279,9 @@ describe('parseRepoList', () => {
         name: 'my-repo',
         visibility: 'private',
         created_at: '2026-01-15T08:00:00Z',
+        namespace: { full_path: 'group' },
+        web_url: 'https://gitlab.example.test/group/my-repo',
+        private_token: 'must-not-escape-the-normalized-representation',
       },
     ]);
 
@@ -190,64 +291,96 @@ describe('parseRepoList', () => {
     expect(result[0]).toEqual({
       id: 42,
       path: 'group/my-repo',
-      name: 'my-repo',
       visibility: 'private',
       createdAt: '2026-01-15',
     });
   });
 
-  it('parses JSONL (one JSON object per line) into a repo array', () => {
-    const line1 = JSON.stringify({
+  it('distinguishes a valid empty project list from invalid exit-zero response shapes', () => {
+    expect(parseRepoList('[]')).toEqual([]);
+  });
+
+  it.each([
+    ['a single project segment', 'project'],
+    ['a leading separator', '/group/project'],
+    ['a trailing separator', 'group/project/'],
+    ['an empty nested segment', 'group//project'],
+    ['a dot segment', 'group/./project'],
+    ['a traversal segment', 'group/../project'],
+    ['a backslash', 'group\\project'],
+    ['whitespace', 'group/repo name'],
+    ['a URI query delimiter', 'group/repo?query'],
+    ['a URI escape delimiter', 'group/repo%2Fother'],
+    ['a colon delimiter', 'group/repo:tag'],
+    ['a control character', 'group/repo\nother'],
+  ])('rejects %s in GitLab project output', (_description, pathWithNamespace) => {
+    const result = parseRepoList(JSON.stringify([{
+      id: 1065,
+      path_with_namespace: pathWithNamespace,
+      visibility: 'private',
+      created_at: '2026-08-21T00:00:00Z',
+    }]));
+
+    expect(result).toBeNull();
+  });
+
+  it('preserves valid nested GitLab namespace paths and standard slug characters', () => {
+    const result = parseRepoList(JSON.stringify([{
+      id: 1065,
+      path_with_namespace: 'platform_1/observability.v2/collector-rc.1',
+      visibility: 'private',
+      created_at: '2026-08-21T00:00:00Z',
+    }]));
+
+    expect(result).toEqual([{
+      id: 1065,
+      path: 'platform_1/observability.v2/collector-rc.1',
+      visibility: 'private',
+      createdAt: '2026-08-21',
+    }]);
+  });
+
+  // Regression: a malformed projected field used to either throw during
+  // normalization or leak an unvalidated value into the downstream manifest.
+  it.each([
+    ['a numeric created_at', { created_at: 42 }],
+    ['a null created_at', { created_at: null }],
+    ['a date-only created_at', { created_at: '2026-06-15' }],
+    ['a nonexistent calendar date', { created_at: '2026-02-30T08:00:00Z' }],
+    ['a numeric visibility', { visibility: 42 }],
+  ])('fails the complete response closed for %s', (_description, malformedFields) => {
+    const validProject = {
       id: 1,
-      path_with_namespace: 'group/repo-one',
-      name: 'repo-one',
-      visibility: 'public',
-      created_at: '2026-02-01T00:00:00Z',
-    });
-    const line2 = JSON.stringify({
+      path_with_namespace: 'group/valid-repo',
+      visibility: 'private',
+      created_at: '2026-06-15T08:00:00Z',
+    };
+    const malformedProject = {
+      ...validProject,
       id: 2,
-      path_with_namespace: 'group/repo-two',
-      name: 'repo-two',
-      visibility: 'internal',
-      created_at: '2026-03-10T12:00:00Z',
-    });
-    const input = `${line1}\n${line2}`;
+      path_with_namespace: 'group/malformed-repo',
+      ...malformedFields,
+    };
 
-    // JSON.parse of JSONL fails → fallback to line-by-line parsing
-    const result = parseRepoList(input);
-
-    expect(result).toHaveLength(2);
-    expect(result[0].id).toBe(1);
-    expect(result[0].path).toBe('group/repo-one');
-    expect(result[1].id).toBe(2);
-    expect(result[1].createdAt).toBe('2026-03-10');
+    expect(parseRepoList(JSON.stringify([[validProject, malformedProject]]))).toBeNull();
   });
 
-  it('skips malformed JSONL lines and returns only parseable entries', () => {
-    const goodLine = JSON.stringify({ id: 99, name: 'ok-repo', visibility: 'private', created_at: '' });
-    const input = `not-valid-json\n${goodLine}\nalso-bad`;
-
-    const result = parseRepoList(input);
-
-    expect(result).toHaveLength(1);
-    expect(result[0].id).toBe(99);
-  });
-
-  it('returns an empty array when the JSON value is not an array', () => {
-    // JSON object instead of array → treated as invalid
-    const result = parseRepoList(JSON.stringify({ id: 1, name: 'foo' }));
-    expect(result).toEqual([]);
-  });
-
-  it('applies defaults for missing fields (id→0, visibility→private, createdAt→empty)', () => {
-    const input = JSON.stringify([{ name: 'minimal' }]);
-
-    const result = parseRepoList(input);
-
-    expect(result).toHaveLength(1);
-    expect(result[0].id).toBe(0);
-    expect(result[0].path).toBe('');
-    expect(result[0].visibility).toBe('private');
-    expect(result[0].createdAt).toBe('');
+  it.each([
+    ['a top-level object', JSON.stringify({ message: 'upstream failure' })],
+    ['a malformed page list', JSON.stringify([
+      [{ id: 1, path_with_namespace: 'group/repo-one' }],
+      { message: 'not a page' },
+    ])],
+    ['a page containing a non-project envelope', JSON.stringify([[
+      { id: 1, path_with_namespace: 'group/repo-one' },
+      { message: 'not a project' },
+    ]])],
+    ['a project object without an id', JSON.stringify([{ path_with_namespace: 'group/repo-one' }])],
+    ['JSONL, which is not emitted by the --slurp production call', [
+      JSON.stringify({ id: 1, path_with_namespace: 'group/repo-one' }),
+      JSON.stringify({ id: 2, path_with_namespace: 'group/repo-two' }),
+    ].join('\n')],
+  ])('returns null for %s', (_description, stdout) => {
+    expect(parseRepoList(stdout)).toBeNull();
   });
 });

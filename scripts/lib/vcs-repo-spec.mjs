@@ -227,17 +227,56 @@ const WRONG_FAMILY_HOST = {
   github: 'gitlab.com',
 };
 
+/** URI schemes that can name a supported Git remote. */
+const REMOTE_URI_PROTOCOLS = new Set(['http:', 'https:', 'ssh:']);
+
 /**
- * Extract the bare hostname from a git remote URL, handling both the HTTPS
- * (`https://host/owner/repo.git`) and SSH (`git@host:owner/repo.git`) forms.
- * Returns `null` for an unrecognized shape (never throws).
+ * Parse a URI-style remote only when it uses one of this module's supported
+ * protocols. The `URL` parser makes hostname/port handling consistent between
+ * HTTP(S) and URI-style SSH while scp-style SSH stays a separate grammar.
+ *
+ * @param {string} url
+ * @returns {URL|null}
+ */
+function parseRemoteUri(url) {
+  if (typeof url !== 'string' || !/^(?:https?|ssh):\/\//i.test(url)) return null;
+  try {
+    const parsed = new URL(url);
+    return REMOTE_URI_PROTOCOLS.has(parsed.protocol) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract the operational host from a git remote URL, handling HTTPS
+ * (`https://host/owner/repo.git`), scp-style SSH (`git@host:owner/repo.git`),
+ * and URI-style SSH (`ssh://git@host/owner/repo.git`) forms. A non-default
+ * URI port is preserved because callers may need it to address a self-hosted
+ * instance. Returns `null` for an unrecognized shape (never throws).
  *
  * @param {string} url
  * @returns {string|null}
  */
 function extractHost(url) {
-  const httpsMatch = /^https?:\/\/([^/]+)/i.exec(url);
-  if (httpsMatch) return httpsMatch[1].toLowerCase();
+  const parsed = parseRemoteUri(url);
+  if (parsed !== null) return parsed.host.toLowerCase() || null;
+  const sshMatch = /^[^@\s]+@([^:\s]+):/i.exec(url);
+  if (sshMatch) return sshMatch[1].toLowerCase();
+  return null;
+}
+
+/**
+ * Extract a bare hostname for VCS-family comparisons. This deliberately drops
+ * a URI port: `github.com:443` is still the public GitHub host, while the
+ * operational `extractHost()` value retains a non-default self-hosted port.
+ *
+ * @param {string} url
+ * @returns {string|null}
+ */
+function extractHostname(url) {
+  const parsed = parseRemoteUri(url);
+  if (parsed !== null) return parsed.hostname.toLowerCase() || null;
   const sshMatch = /^[^@\s]+@([^:\s]+):/i.exec(url);
   if (sshMatch) return sshMatch[1].toLowerCase();
   return null;
@@ -367,12 +406,12 @@ export function resolveRepoSpec({ repoRoot, vcs = 'gitlab', gitRun = defaultGitR
 }
 
 /**
- * Resolve the bare hostname of the matching remote, for use with
- * `glab api --hostname`/`gh api --hostname` — the `api` subcommand of both
- * CLIs does NOT accept `-R`/`--repo` (it has no repo concept), only a
- * `--hostname` flag to pin which instance the request targets. This is the
- * host-pinning counterpart to `resolveRepoSpec` for those api-only call
- * sites.
+ * Resolve the operational host of the matching remote, preserving a
+ * non-default self-hosted port for `glab api --hostname`/`gh api --hostname`.
+ * The `api` subcommand of both CLIs does NOT accept `-R`/`--repo` (it has no
+ * repo concept), only `--hostname` to pin which instance the request targets.
+ * This is the host-pinning counterpart to `resolveRepoSpec` for those api-only
+ * call sites.
  *
  * Applies the identical remote-preference-order + cross-family-guard
  * resolution as `resolveRepoSpec`, just returning the host instead of the
@@ -391,6 +430,136 @@ export function resolveRepoHost({ repoRoot, vcs, gitRun } = {}) {
   const url = resolveRawRemoteUrl({ repoRoot, vcs, gitRun });
   const host = url ? (extractHost(url) ?? undefined) : undefined;
   return isUnsafeForArgv(host) ? undefined : host;
+}
+
+/** Project-path characters that cannot name a GitLab namespace/project. */
+// eslint-disable-next-line no-control-regex -- validate every C0/C1 control before encoding a GitLab API path
+const UNSAFE_PROJECT_PATH_CHARS_RE = /[\\\x00-\x1f\x7f-\x9f?#]/;
+
+/**
+ * Decode a transport project path exactly once, then validate its canonical
+ * namespace/project shape. A percent sign surviving the one decode is rejected
+ * because `%252e%252e` is indistinguishable from a literal encoded escape; do
+ * not normalize that ambiguity into an API target.
+ *
+ * @param {string} rawProjectPath
+ * @param {{ uriPath: boolean }} opts
+ * @returns {string|undefined}
+ */
+function normalizeGitlabProjectPath(rawProjectPath, { uriPath }) {
+  if (typeof rawProjectPath !== 'string') return undefined;
+
+  let projectPath = rawProjectPath;
+  if (uriPath) {
+    // URI syntax supplies one separator before the path. More than one is a
+    // path segment, not syntax to trim away.
+    if (!projectPath.startsWith('/') || projectPath.startsWith('//')) return undefined;
+    projectPath = projectPath.slice(1);
+  }
+
+  if (
+    projectPath === '' ||
+    projectPath.startsWith('/') ||
+    projectPath.endsWith('/') ||
+    UNSAFE_PROJECT_PATH_CHARS_RE.test(projectPath)
+  ) {
+    return undefined;
+  }
+
+  let decodedProjectPath;
+  try {
+    decodedProjectPath = decodeURIComponent(projectPath);
+  } catch {
+    return undefined;
+  }
+
+  if (
+    decodedProjectPath.includes('%') ||
+    UNSAFE_PROJECT_PATH_CHARS_RE.test(decodedProjectPath) ||
+    isUnsafeForArgv(decodedProjectPath)
+  ) {
+    return undefined;
+  }
+
+  const withoutGitSuffix = decodedProjectPath.replace(/\.git$/i, '');
+  const segments = withoutGitSuffix.split('/');
+  if (
+    withoutGitSuffix === '' ||
+    withoutGitSuffix.startsWith('/') ||
+    withoutGitSuffix.endsWith('/') ||
+    segments.length < 2 ||
+    segments.some((segment) => segment === '' || segment === '.' || segment === '..')
+  ) {
+    return undefined;
+  }
+
+  return withoutGitSuffix;
+}
+
+/**
+ * Extract an operational GitLab host and the raw (not URL-normalized) project
+ * path. URI parsing owns authority/port validation, while the raw path keeps
+ * dot and percent-encoded traversal visible to {@link normalizeGitlabProjectPath}
+ * before WHATWG URL normalization could erase it.
+ *
+ * @param {string} url
+ * @returns {{ host: string, rawProjectPath: string, uriPath: boolean }|undefined}
+ */
+function extractGitlabProjectTargetParts(url) {
+  const scpMatch = /^[^@/\s]+@([^:/\s]+):(.+)$/.exec(url);
+  if (scpMatch) {
+    return { host: scpMatch[1], rawProjectPath: scpMatch[2], uriPath: false };
+  }
+
+  const parsed = parseRemoteUri(url);
+  if (
+    parsed === null ||
+    parsed.search !== '' ||
+    parsed.hash !== '' ||
+    ((parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+      (parsed.username !== '' || parsed.password !== ''))
+  ) {
+    return undefined;
+  }
+
+  // `parsed.pathname` is intentionally NOT used: the URL parser resolves
+  // `.`/`..` before this boundary can reject them. The regex reads only the
+  // path from an already-parsed, supported URI.
+  const rawPathMatch = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*(\/[^?#]*)?(?:[?#].*)?$/i.exec(url);
+  if (rawPathMatch === null) return undefined;
+  return { host: parsed.host, rawProjectPath: rawPathMatch[1] ?? '', uriPath: true };
+}
+
+/**
+ * Derive the API target for a GitLab project from the same sanitized,
+ * preference-selected remote that powers {@link resolveRepoSpec}. GitLab's REST
+ * API takes a URL-encoded `namespace/project` path rather than a remote URL or
+ * numeric project ID, so this projection removes the ambient project-metadata
+ * lookup from callers that need to pin both project and host.
+ *
+ * Supports HTTPS, scp-style SSH, and `ssh://` remotes. Credential stripping
+ * happens upstream in {@link listRemotes}; this helper returns only an
+ * operational host (including a non-default self-hosted port) and a once-only
+ * encoded project path, never a remote URL or HTTP userinfo. An SSH login such
+ * as `git@host` is transport identity, not project-path userinfo.
+ *
+ * @param {{ repoRoot?: string, gitRun?: GitRun }} [opts]
+ * @returns {{ host: string, encodedProjectPath: string }|undefined}
+ */
+export function resolveGitlabProjectTarget({ repoRoot, gitRun = defaultGitRun } = {}) {
+  const url = resolveRawRemoteUrl({ repoRoot, vcs: 'gitlab', gitRun });
+  if (!url) return undefined;
+
+  const parts = extractGitlabProjectTargetParts(url);
+  if (!parts || isUnsafeForArgv(parts.host)) return undefined;
+
+  const projectPath = normalizeGitlabProjectPath(parts.rawProjectPath, { uriPath: parts.uriPath });
+  if (!projectPath) return undefined;
+
+  return {
+    host: parts.host.toLowerCase(),
+    encodedProjectPath: encodeURIComponent(projectPath),
+  };
 }
 
 /**
@@ -636,7 +805,7 @@ export function resolvePreferredRemote({ repoRoot, vcs, gitRun = defaultGitRun }
   const vcsPinned = vcs === 'github' || vcs === 'gitlab' ? vcs : null;
   const order = vcsPinned ? REMOTE_PREFERENCE[vcsPinned] : VCS_LESS_PREFERENCE;
   const wrongFamilyHost = vcsPinned ? WRONG_FAMILY_HOST[vcsPinned] : null;
-  const isWrongFamily = (url) => wrongFamilyHost !== null && extractHost(url) === wrongFamilyHost;
+  const isWrongFamily = (url) => wrongFamilyHost !== null && extractHostname(url) === wrongFamilyHost;
 
   /** @param {GitRemote} remote @param {'preference'|'sole-remote'} via */
   const accept = (remote, via) =>
@@ -670,7 +839,7 @@ export function resolvePreferredRemote({ repoRoot, vcs, gitRun = defaultGitRun }
  * @returns {{ family: 'gitlab'|'github', via: 'host-match'|'remote-name' }|null}
  */
 function classifyRemoteFamily(remote) {
-  const host = extractHost(remote.url);
+  const host = extractHostname(remote.url);
   if (host !== null) {
     if (host === 'github.com' || host.startsWith('github.')) return { family: 'github', via: 'host-match' };
     if (host === 'gitlab.com' || host.startsWith('gitlab.')) return { family: 'gitlab', via: 'host-match' };

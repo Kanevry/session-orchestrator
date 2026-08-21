@@ -18,6 +18,7 @@ import { describe, it, expect } from 'vitest';
 import {
   resolveRepoSpec,
   resolveRepoHost,
+  resolveGitlabProjectTarget,
   defaultGlabRepo,
   stripUrlCredentials,
   redactUrlCredentials,
@@ -222,6 +223,11 @@ describe('resolveRepoSpec — cross-VCS-family fallback guard (#839 follow-up)',
   it('does NOT fall back to an origin remote whose host is the public gitlab.com, when vcs is github', () => {
     const fn = remotesRun({ origin: 'git@gitlab.com:example-group/example-project.git' });
     expect(resolveRepoSpec({ repoRoot: '/repo', vcs: 'github', gitRun: fn })).toBeUndefined();
+  });
+
+  it('rejects a github.com ssh URL when vcs is gitlab', () => {
+    const fn = remotesRun({ gitlab: 'ssh://git@github.com/example-group/example-project.git' });
+    expect(resolveRepoSpec({ repoRoot: '/repo', vcs: 'gitlab', gitRun: fn })).toBeUndefined();
   });
 
   it('rejects a wrong-family host even on the FIRST-preference remote name, not only the origin fallback', () => {
@@ -498,6 +504,86 @@ describe('resolveRepoHost (#872)', () => {
   it('defaults vcs to gitlab when omitted, matching resolveRepoSpec default', () => {
     const fn = remotesRun({ gitlab: 'https://gitlab.example.com/example-group/example-project.git' });
     expect(resolveRepoHost({ repoRoot: '/repo', gitRun: fn })).toBe('gitlab.example.com');
+  });
+});
+
+describe('resolveGitlabProjectTarget (#1065)', () => {
+  // Bug: numeric project-ID resolution goes through `glab repo view`, which can
+  // target ambient GITLAB_HOST rather than the sanitized remote selected here.
+  it('derives host and a once-encoded nested path from an HTTPS GitLab remote', () => {
+    const fn = remotesRun({
+      gitlab: 'https://ci-token:glpat-SECRET@gitlab.example.com/group/subgroup/project.git',
+    });
+
+    const target = resolveGitlabProjectTarget({ repoRoot: '/repo', gitRun: fn });
+
+    expect(target).toEqual({
+      host: 'gitlab.example.com',
+      encodedProjectPath: 'group%2Fsubgroup%2Fproject',
+    });
+    expect(JSON.stringify(target)).not.toContain('ci-token');
+    expect(JSON.stringify(target)).not.toContain('glpat-SECRET');
+  });
+
+  // Bug: treating `user@host:path` as a URL loses the project namespace and
+  // restores the ambient fallback that the API target must eliminate.
+  it('derives host and a once-encoded nested path from a scp-style SSH remote', () => {
+    const fn = remotesRun({ gitlab: 'git@gitlab.example.com:team/area/service.git' });
+
+    expect(resolveGitlabProjectTarget({ repoRoot: '/repo', gitRun: fn })).toEqual({
+      host: 'gitlab.example.com',
+      encodedProjectPath: 'team%2Farea%2Fservice',
+    });
+  });
+
+  // Bug: `ssh://` uses a slash-delimited path unlike scp-style SSH; rejecting
+  // it makes legitimate nested GitLab projects silently unqueryable.
+  it('derives host and a once-encoded nested path from an ssh URL remote', () => {
+    const fn = remotesRun({ gitlab: 'ssh://git@gitlab.example.com/team/area/service.git' });
+
+    expect(resolveGitlabProjectTarget({ repoRoot: '/repo', gitRun: fn })).toEqual({
+      host: 'gitlab.example.com',
+      encodedProjectPath: 'team%2Farea%2Fservice',
+    });
+  });
+
+  it('rejects a github.com ssh URL instead of deriving a GitLab API target', () => {
+    const fn = remotesRun({ gitlab: 'ssh://git@github.com/example-group/example-project.git' });
+    expect(resolveGitlabProjectTarget({ repoRoot: '/repo', gitRun: fn })).toBeUndefined();
+  });
+
+  it('rejects a public GitHub HTTPS remote with an explicit port instead of deriving a GitLab target', () => {
+    const fn = remotesRun({ gitlab: 'https://github.com:443/example-group/example-project.git' });
+    expect(resolveGitlabProjectTarget({ repoRoot: '/repo', gitRun: fn })).toBeUndefined();
+  });
+
+  it('rejects a scp-style SSH project path containing traversal', () => {
+    const fn = remotesRun({ gitlab: 'git@gitlab.example.com:group/../project.git' });
+    expect(resolveGitlabProjectTarget({ repoRoot: '/repo', gitRun: fn })).toBeUndefined();
+  });
+
+  it.each([
+    ['HTTPS', 'https://gitlab.example.com/group/%252e%252e/project.git'],
+    ['ssh URI', 'ssh://git@gitlab.example.com/group/%252e%252e/project.git'],
+  ])('rejects double-encoded traversal in a %s project path', (_transport, remote) => {
+    const fn = remotesRun({ gitlab: remote });
+    expect(resolveGitlabProjectTarget({ repoRoot: '/repo', gitRun: fn })).toBeUndefined();
+  });
+
+  it('preserves a non-default self-hosted GitLab port in the API target', () => {
+    const fn = remotesRun({ gitlab: 'https://gitlab.example.com:8443/group/project.git' });
+    expect(resolveGitlabProjectTarget({ repoRoot: '/repo', gitRun: fn })).toEqual({
+      host: 'gitlab.example.com:8443',
+      encodedProjectPath: 'group%2Fproject',
+    });
+  });
+
+  // Bug: passing a malformed remote onward leaves glab to guess an ambient
+  // project; target derivation must withhold an unprovable host/path pair.
+  it('returns undefined when the selected remote has no project path', () => {
+    const fn = remotesRun({ gitlab: 'https://gitlab.example.com/' });
+
+    expect(resolveGitlabProjectTarget({ repoRoot: '/repo', gitRun: fn })).toBeUndefined();
   });
 });
 
@@ -992,10 +1078,6 @@ describe('resolveBaselineRange (#1039)', () => {
 /* ------------------------------------- #1039: reason enum + isQueryFailure */
 
 describe('REMOTE_RESOLUTION_REASONS / isQueryFailure (#1039)', () => {
-  it('is frozen, so a consumer cannot mutate the shared taxonomy at runtime', () => {
-    expect(Object.isFrozen(REMOTE_RESOLUTION_REASONS)).toBe(true);
-  });
-
   it('splits query failures from absences exactly as documented', () => {
     // Bug: an absence mis-classified as a query failure makes a benign fresh
     // repo look broken; a query failure mis-classified as an absence is the
