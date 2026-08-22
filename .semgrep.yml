@@ -51,7 +51,7 @@ rules:
   - pattern-not: safeFetchJSON($URL, ...)
   - pattern-not: fetchWithTimeout($URL, ...)
   - pattern-not: fetchWithRetry($URL, ...)
-  message: Use safeFetch() or safeFetchJSON() from @goetzendorfer/http-client for user-supplied URLs (SEC-014).
+  message: Use safeFetch() or safeFetchJSON() from @your-org/http-client for user-supplied URLs (SEC-014).
     Raw fetch() does not validate against private IP ranges.
   languages:
   - typescript
