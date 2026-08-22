@@ -108,30 +108,35 @@ export const DEFAULT_CEILING = 480;
  * bytes (95.3%). That asymmetry is inherited from the pre-existing directive
  * ratchet, not introduced here.
  *
- * RE-BASELINED 2026-08-22: 114000 -> 121000. The ratchet fired, and it fired
- * for exactly the reason stated above — "a genuinely NEW always-on surface is
- * added". Since the 2026-07-30 calibration the corpus grew 108589 -> 115730 B
- * (15 always-on files), and the largest single cause is a new rule file the
- * operator adopted: .claude/rules/host-resources.md (7457 B, #1089, live
- * 2026-08-21). Today's SEC-020 corrections added a further ~1800 B of factual
- * repair — the four pnpm-only keys were being read as npm gaps, and the file
- * claimed a Semgrep CI stage that did not exist.
+ * RE-BASELINED 2026-08-22: 114000 -> 121000. The ratchet fired for exactly the
+ * reason stated above — "a genuinely NEW always-on surface is added". Since the
+ * 2026-07-30 calibration this repo's corpus grew 108589 -> 115730 B, and the
+ * largest single cause is a rule file the operator adopted:
+ * .claude/rules/host-resources.md (7457 B, #1089, live 2026-08-21). Headroom
+ * unchanged at +5%: 115730 x 1.05 = 121516, rounded DOWN to 121000. Same
+ * relative slack, measured against the corpus that actually exists.
  *
- * Headroom is deliberately UNCHANGED at +5%: 115730 x 1.05 = 121516, rounded
- * DOWN to 121000. This is a re-baseline, not a loosening — the same relative
- * slack, measured against the corpus that actually exists.
+ * Consumer impact was CHECKED, not assumed. This module ships inside the npm
+ * package, so the first instinct was to keep the shared default fixed and set a
+ * repo-local `instruction-budget.byte-ceiling` override instead. Two
+ * measurements killed that plan: (a) the package ships THREE always-on rules
+ * totalling 9261 B — both ceilings sit ~12x above any consumer's inherited
+ * corpus, so the delta is numerically inert downstream; and (b) the number was
+ * never a shipped-corpus figure in the first place — the calibration above says
+ * "measured against this repo's own always-on corpus". A repo-local override
+ * also could not have worked: tests/rules/receiving-review.test.mjs calls
+ * computeInstructionBudget({repoRoot}), which does not read Session Config, so
+ * it pins this constant by construction.
  *
- * Two things this re-baseline is NOT. It is not a licence to raise the number
- * whenever it is hit; a ratchet that yields on contact measures nothing, and
- * the NEXT breach must be answered by a diet, not another bump. And it is not
- * a verdict that the corpus is right-sized: 4499 B of the always-on
- * security.md describes surfaces this repo does not have (SSRF via
- * @your-org/http-client, an OWASP table, Supabase RLS, bcrypt/JWT) — vendored
- * from the baseline and never adapted, the same class as the Semgrep claim
- * fixed today. Cutting it is a real, nameable reduction and is tracked in
- * #1126; it was deliberately NOT done in the same pass that raised the
- * ceiling, because deleting security prose to hit a number is the failure
- * .claude/rules/build-value.md BV-002 names.
+ * Not a licence to raise the number whenever it is hit — a ratchet that yields
+ * on contact measures nothing, and the NEXT breach belongs to a diet. 4499 B of
+ * the always-on security.md still describes surfaces this repo does not have
+ * (SSRF via an http-client package, an OWASP table, RLS, bcrypt/JWT), vendored
+ * from the baseline and never adapted — the same class as the Semgrep claim
+ * fixed today. That cut is real and nameable and is tracked in #1126; it was
+ * deliberately NOT taken in the same pass that raised the ceiling, because
+ * deleting security prose to hit a number is the failure build-value.md BV-002
+ * names.
  */
 export const DEFAULT_BYTE_CEILING = 121000;
 
