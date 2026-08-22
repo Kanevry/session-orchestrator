@@ -353,7 +353,7 @@ Keine. `SendMessage` steht bereits in `READ_ONLY_TOOLS` (`scripts/lib/validate/t
 |---|---|---|---|
 | **A2 ungemessen: die Eskalation kommt erst mit dem Batch-Ende an.** Konfidenz der Blockade-These: 0,85 | hoch | FA-3 ist jetzt Tag 1 und Gate; die Abbruchlinie (§ 2.1) beschreibt beide Ausgänge | Experiment |
 | **FA-1 wird ausgeliefert und feuert nie** — das Schicksal von #980 | hoch | Erfolgsmessung in § 3: mindestens ein Detektor in den ersten fünf Wellen. Kein Feuer = Befund, nicht Erfolg | Implement |
-| **Der Always-on-Regelkorpus ist knapp.** Live gemessen: `totalDirectives 465 / 480`, `totalBytes 113.957 / 114.000`, `overBudget false`. Luft: **15 Direktiven / 43 Byte** | mittel | Dieser PRD schlägt **keine** neue `.claude/rules/`-Datei vor. Verhaltensregeln gehen in `agents/*.md` und `wave-loop.md` | Implement |
+| **Der Always-on-Regelkorpus ist knapp.** Live gemessen: `totalDirectives 465 / 480`, `totalBytes 113.975 / 114.000`, `overBudget false`. Luft: **15 Direktiven / 25 Byte** (Stand 2026-08-22 nach dem Commit der Parallel-Session; wandernd, weil `/reconcile` maschinell erzeugte Regeln in dieses Verzeichnis schreibt) | mittel | Dieser PRD schlägt **keine** neue `.claude/rules/`-Datei vor. Verhaltensregeln gehen in `agents/*.md` und `wave-loop.md` | Implement |
 | **Der Scope-Guard sperrt sessionübergreifend** (§ 1d) | hoch | #1082; als Vorbedingung notiert. Vor Umsetzungsbeginn `.claude/wave-scope.json` prüfen | Defer |
 | Der Monitor überschwemmt den Koordinator-Kontext und wird gestoppt | mittel | Drei Detektoren, keine Rohzeilen; ein Stopp muss als Ereignis sichtbar sein | Implement |
 | Ein Agent nutzt den Rückkanal für Fragen, die er selbst beantworten könnte | mittel | Eskalationsregel definiert „wellenblockierend" eng, mit Gegenbeispielen; #1051 hat die Allowlist und die Nicht-Liste | Implement |
@@ -380,7 +380,7 @@ Keine. `SendMessage` steht bereits in `READ_ONLY_TOOLS` (`scripts/lib/validate/t
 | # | Beanstandung | Erledigung |
 |---|---|---|
 | 1 | „21 Checkpoints" nicht herleitbar (0 Fundstellen) | Zahl gestrichen, qualitativ mit echtem Anker formuliert |
-| 2 | Regelbudget-Arithmetik selbstwidersprüchlich | Auf die Metrik des Tests umgestellt: 465/480 Direktiven, 113.957/114.000 Byte, `overBudget: false` |
+| 2 | Regelbudget-Arithmetik selbstwidersprüchlich | Auf die Metrik des Tests umgestellt: 465/480 Direktiven, 113.975/114.000 Byte, `overBudget: false` |
 | 3 | `tail_finding` dupliziert `stagnation_detected` | Neuer Ereignisname gestrichen; bestehendes Ereignis um zwei Enum-Werte + `source` erweitert |
 | 4 | `status-partial`-AC verlangt unmögliche Reihenfolge | Auf Haltbarkeit umgestellt |
 | 5 | FA-3 ist ein Gate, stand aber an dritter Stelle; keine Abbruchlinie | FA-3 auf Tag 1; § 2.1 Abbruchlinie ergänzt |
