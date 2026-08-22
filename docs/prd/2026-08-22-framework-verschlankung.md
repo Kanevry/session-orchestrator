@@ -2,12 +2,14 @@
 
 **Date:** 2026-08-22
 **Author:** Bernhard Götzendorfer + Claude (AI-gestützte Planung)
-**Status:** Draft, Revision 2 — Optionen NICHT abgestimmt
-**Appetite:** 1w `[ANNAHME]` (Revision 1 sagte 2w)
+**Status:** Draft, Revision 2 — **VS-1 vom Operator bestätigt** (2026-08-22, Entscheidung A5 „alle vier veralteten Aussagen korrigieren"; die `express-path`-Verdrahtung ist die vierte davon)
+**Appetite:** 1w
 **Parent Project:** session-orchestrator
 
+> **Warnung an jeden, der dieses Dokument bearbeitet: keine `#NNN` in den Kopfbereich.** Am 2026-08-22 hat `scripts/archive-closed-prds.mjs --apply` diese Datei archiviert und aus dem Arbeitsbaum gelöscht, weil `parseEpicRef` den ersten `#NNN` im Kopf nimmt — und dort stand das **Zitat** „Phase 8.5 Express Path (Issue 214)" aus der Kritik unten — Nummer 214 ist geschlossen, also galt das Dokument als erledigt. Wiederhergestellt von der verursachenden Session. Die Auswahlregel bevorzugt damit systematisch Dokumente **ohne** Kontext; als Issue erfasst.
+
 > **Revision 2 nach unabhängiger Prüfung — und sie hat die Hauptthese umgedreht.**
-> Revision 1 schlug einen Housekeeping-Fast-Path vor. Der Prüfer wies nach, dass es ihn gibt: `skills/session-start/SKILL.md:1181`, **Phase 8.5 Express Path (#214)**, aktiviert bei `session_type: housekeeping` + Scope ≤ 3 Issues, ausdrücklich *„executes tasks coordinator-direct (bypassing session-plan and wave-executor)"*. Ebenso widerlegt: der zweite Arbeitsstrang (Regelkorpus) löste ein Problem, das nicht existiert — der Korpus liegt **unter** der Grenze.
+> Revision 1 schlug einen Housekeeping-Fast-Path vor. Der Prüfer wies nach, dass es ihn gibt: `skills/session-start/SKILL.md:1181`, **Phase 8.5 Express Path (Issue 214)**, aktiviert bei `session_type: housekeeping` + Scope ≤ 3 Issues, ausdrücklich *„executes tasks coordinator-direct (bypassing session-plan and wave-executor)"*. Ebenso widerlegt: der zweite Arbeitsstrang (Regelkorpus) löste ein Problem, das nicht existiert — der Korpus liegt **unter** der Grenze.
 > Was von Revision 1 hält: die Messung 22/30, die Phasenzahlen, die 12 abgeschalteten Subsysteme, die Löschkandidaten — letztere um **6 von 8** gekürzt, weil sie die eigene Zwei-Signale-Regel nicht bestanden.
 > Das Ergebnis ist ein kleineres, richtigeres Dokument. Das Änderungsprotokoll steht am Ende.
 
@@ -83,7 +85,7 @@ Jede Session in jedem Repo mit diesem Plugin — 21 Repos auf diesem Host mit `.
 
 ## 2. Solution & Scope
 
-### In-Scope `[ANNAHME]`
+### In-Scope — VS-1 vom Operator bestätigt
 
 - [ ] **VS-1 — Express Path beobachtbar und konfigurierbar machen.** Nicht neu bauen: den Schlüssel `express-path` dem Parser bekannt machen, die Aktivierung als Ereignis emittieren, das `express_path`-Feld in `sessions.jsonl` auf **eine** Form vereinheitlichen. Danach ist die Frage „greift er?" beantwortbar — heute ist sie es nicht.
 - [ ] **VS-2 — Belegte Löschungen, auf zwei Signale eingedampft.** Nur was **0 Invocations UND 0 eingehende Referenzen** hat. Nach Nachprüfung: 2 Skills, 3 Skripte, 1 Hook. (Revision 1 nannte 8 Skills und 6 Skripte.)

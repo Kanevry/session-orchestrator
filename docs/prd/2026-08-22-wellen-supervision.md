@@ -2,24 +2,25 @@
 
 **Date:** 2026-08-22
 **Author:** Bernhard Götzendorfer + Claude (AI-gestützte Planung)
-**Status:** Draft, Revision 2 — Optionen NICHT abgestimmt
-**Appetite:** 1w `[ANNAHME]`
+**Status:** Draft, Revision 3 — **vom Operator abgestimmt** (2026-08-22)
+**Appetite:** 2w
 **Parent Project:** session-orchestrator
 
-> **Revision 2** nach unabhängiger Prüfung. Zwölf Beanstandungen, davon vier tragende Zahlen falsch. Alle korrigiert und im Fließtext markiert. Was sich dadurch **inhaltlich** geändert hat: der neue Ereignisname ist weg (das bestehende `stagnation_detected` wird zum Feuern gebracht), FA-3 ist von Position 3 auf Position 1 gerückt und ist jetzt ein Gate, es gibt eine Abbruchlinie und eine Erfolgsmessung, und der prosa-pinnende Test in FA-4 ist gestrichen.
+> **Revision 3.** Der Operator hat alle vier Weichen entschieden, und FA-3 ist **gelaufen** — das Ergebnis steht in § 1e und macht aus der zentralen Vermutung dieses Dokuments eine Messung. Dadurch geändert: die Prohibition wird gekippt (nicht nur gemessen), vier veraltete Aussagen werden mitkorrigiert, der Appetit steht auf 2 Wochen, und die Abbruchlinie ist durch eine Schnittfolge ersetzt.
+>
+> **Revision 2** nach unabhängiger Prüfung: zwölf Beanstandungen, davon vier tragende Zahlen falsch. Inhaltlich geändert: der neue Ereignisname ist weg (das bestehende `stagnation_detected` wird zum Feuern gebracht), es gibt eine Erfolgsmessung, und der prosa-pinnende Test in FA-4 ist gestrichen.
 
 ---
 
-## 0. Entscheidungen unter Vorbehalt
+## 0. Entschieden
 
-Vier Weichenstellungen wurden ohne Operator-Antwort gesetzt (AUQ lief 600 s ins Leere). Jede ist kippbar, ohne das Dokument neu zu schreiben:
-
-| # | Frage | Gesetzt auf | Verworfene Alternativen |
+| # | Frage | Entscheidung (2026-08-22) | Verworfen |
 |---|---|---|---|
-| A1 | Welche Mechanik? | Transkript-Tail **+** SendMessage-Rückkanal | nur Tail · nur Rückkanal · nichts bauen, Observer abwarten |
-| A2 | `run_in_background: false` kippen? | Nein — erst messen (FA-3, jetzt Tag 1) | sofort kippen · Prohibition unangetastet lassen |
-| A3 | Verschlankung hier mitplanen? | Nein — eigenes Dokument | zusammenziehen · nur als Issues ablegen |
-| A4 | Appetit | 1 Woche mit Abbruchlinie (§ 2.1) | 2 Wochen (plattformneutral) · 2-Tage-Spike |
+| A1 | Welche Mechanik? | **Transkript-Tail + SendMessage-Rückkanal** | nur Tail · nur Rückkanal · nichts bauen |
+| A2 | `run_in_background: false` kippen? | **Ja — messen, dann kippen.** FA-3 ist gelaufen (§ 1e), das Kippen ist damit belegt statt geplant | sofort ohne Messung · Prohibition behalten |
+| A3 | Verschlankung hier mitplanen? | Nein — eigenes Dokument | zusammenziehen |
+| A4 | Appetit | **2 Wochen** | 1 Woche mit Abbruchlinie · zwei getrennte Schnitte |
+| A5 | Welche veralteten Aussagen mitkorrigieren? | **Alle vier**: `platform-tools.md`, die 6 Pin-Stellen, der Hook-Kommentar `:601`, die `express-path`-Verdrahtung (letztere im Schwester-PRD als VS-1) | einzelne auslassen |
 
 ---
 
@@ -94,6 +95,29 @@ Die Nachbar-Session hat den Zustand auf Meldung hin zurückgenommen und dabei de
 
 *Rev-2-Korrektur: Revision 1 schrieb „`.orchestrator/filescopes/` ist leer". Das Verzeichnis **existiert nicht** — ein anderer Zustand mit anderer Bedeutung.*
 
+**(e) FA-3 ist gelaufen: die Eskalations-Latenz ist die Restlaufzeit des Batches. GEMESSEN, nicht mehr vermutet.**
+
+Durchgeführt 2026-08-22, Claude Code v2.1.239, in dieser Planungssession. Aufbau: ein Hintergrund-Agent meldet sich nach 90 s per `SendMessage` an `main`; der Koordinator blockiert sich im selben Turn mit einem 240-s-Tool-Call, um den Zustand einer blockierenden Welle nachzustellen.
+
+| Ereignis | Zeit (UTC) | t |
+|---|---|---|
+| Koordinator blockiert sich | 16:31:24,31 | 0 s |
+| Probe startet | 16:31:26,39 | +2 s |
+| **Probe sendet PING an `main`** | **16:33:01,72** | **+97 s** |
+| Koordinator wird wieder handlungsfähig | 16:35:24,50 | +240 s |
+| Probe endet | 16:35:42,81 | +258 s |
+
+**Befund: 143 Sekunden nicht handlungsfähig.** Zwischen dem Absenden der Eskalation und dem nächsten Turn des Koordinators lag kein Zeitpunkt, an dem er hätte reagieren können.
+
+Die Formulierung ist bewusst eng, weil nur das beobachtbar ist: der Koordinator kann messen, **ab wann er handeln konnte**, nicht wann das Byte ankam. Für jede Entscheidung ist genau das die relevante Größe. Die Zustellung selbst erfolgt an einer **Tool-Result-Grenze** — bei einem einzelnen langen Tool-Call ist das dessen Ende, bei einem Wellen-Batch mit `run_in_background: false` das Zurückkommen des gesamten Batches.
+
+Daraus folgt die A2-Entscheidung, und sie folgt aus der Messung statt aus einer Annahme:
+
+- **Mit blockierendem Dispatch** ist die Eskalations-Latenz gleich der Restlaufzeit des Batches. Bei einem Wellen-Batch von 3–4 Agenten mit typisch 10–20 min Laufzeit heißt das: die Meldung kommt mit dem Abschlussbericht — sie **ordnet um, sie warnt nicht**.
+- **Mit Hintergrund-Dispatch** gewinnt der Koordinator zwischen den Agenten-Abschlüssen Turns zurück. Dieselbe Session hat das nebenbei belegt: acht Agenten liefen im Hintergrund, jeder meldete sich einzeln, und ein Fortschrittsbericht eines noch laufenden Agenten erreichte den Koordinator ~9 min vor dessen Abschlussbericht.
+
+**Konsequenz für dieses Dokument:** FA-2 ist unter blockierendem Dispatch reine Haltbarkeit. Erst zusammen mit FA-6 (Kippen) wird daraus Supervision. Die beiden gehören deshalb in denselben Schnitt und nicht in zwei.
+
 ### Who
 
 Der **Koordinator** in `feature`- und `deep`-Sessions. Über die letzten 30 Sessions: 7 von 30, alle `deep`, jede mit ≥1 Welle (5, 6, 2, 1, 3, 5, 6 Wellen bei 33/31/9/0/9/26/30 Agenten). Housekeeping-Sessions dispatchen keine Wellen und sind **nicht** betroffen.
@@ -104,19 +128,23 @@ Sekundär der **Operator**, der heute nur per `tmux`-Pane und `.orchestrator/STE
 
 ## 2. Solution & Scope
 
-### In-Scope `[ANNAHME A1]` — in Ausführungsreihenfolge
+### In-Scope — in Ausführungsreihenfolge
 
-- [ ] **FA-3 (Tag 1, Gate) — Das Dispatch-Experiment.** Gemessene Antwort auf: erreicht eine Eskalation den Koordinator, während eine blockierende Welle läuft, oder erst wenn der Batch zurückkommt? *Steht bewusst an erster Stelle: das Ergebnis ändert, wie FA-2 beschrieben und verkauft wird.*
+- [x] **FA-3 — Das Dispatch-Experiment. ERLEDIGT 2026-08-22** (§ 1e). Ergebnis: 143 s nicht handlungsfähig; Eskalations-Latenz = Restlaufzeit des Batches. Verbleibende Arbeit: die ADR-Zeile in `docs/adr/0010-native-autonomy-commands.md`.
 - [ ] **FA-1 — Transkript-Tail.** Ein Out-of-Process-Beobachter folgt den live wachsenden `subagents/agent-*.jsonl` der aktuellen Welle und bringt das **bestehende** `stagnation_detected`-Ereignis zum Feuern. Drei Detektoren.
-- [ ] **FA-2 — Agent→Koordinator-Rückkanal.** Die fünf **schreibenden** Agenten plus `session-reviewer` dürfen einen wellenblockierenden Hinderungsgrund per `SendMessage` an `main` melden. Setzt **#1051** um; dieser PRD ergänzt nur die Koordinator-Seite.
+- [ ] **FA-2 — Agent→Koordinator-Rückkanal.** Die fünf **schreibenden** Agenten plus `session-reviewer` dürfen einen wellenblockierenden Hinderungsgrund per `SendMessage` an `main` melden. Setzt **#1051** um; dieser PRD ergänzt die Koordinator-Seite.
+- [ ] **FA-6 — Die Prohibition kippen.** `run_in_background: true` in Wellen erlauben. **Der riskanteste Teil, und er ist mehr als eine Textänderung:** der heutige Batch-Schutz (3–4 Calls je Message, wartend) verhindert das dokumentierte „große Fan-outs verschlucken Agent-Calls still" (Konfidenz 1,0, 5 Sessions). Er muss **ersetzt** werden, nicht entfernt — Dispatch-Verification muss gegen die Menge der *gestarteten* Agenten prüfen, nicht gegen die Menge der zurückgekehrten Tool-Results.
+- [ ] **FA-7 — Veraltete Aussagen korrigieren** (Operator-Entscheidung A5). Zwei Ziele in diesem Schnitt: (a) `skills/_shared/platform-tools.md` gegen die gemessene Codex-Realität; (b) die 6 Pin-Stellen samt ihrer widerlegten Begründung. Das dritte Ziel ist FA-4, das vierte (`express-path`) liegt im Schwester-PRD als VS-1.
 - [ ] **FA-4 — Fehladressierungs-Fix.** `post-subagent-discovery-validator.mjs`: den irreführenden Kommentar entfernen, den tatsächlichen Zustellweg dokumentieren, und einen Test auf den **Ausgabekanal** (nicht auf den Kommentartext) legen.
 - [ ] **FA-5 — Observer-Beobachtungsposten.** ADR-Eintrag zum nativen `observer:`/`ObserverReport`-Fund samt seiner zwei Sperren.
 
-### 2.1 Abbruchlinie (wenn die Woche knapp wird)
+### 2.1 Schnittfolge (2 Wochen)
 
-Fällt in dieser Reihenfolge weg: **FA-5** zuerst, dann **FA-4**. **FA-3, FA-1 und FA-2 fallen nicht** — ohne FA-3 ist FA-2 falsch beschrieben, ohne FA-1 gibt es keine Beobachtung, und FA-2 ist der billigste Teil.
+**Woche 1 — Beobachtung.** FA-1, FA-2, FA-4. Nach Woche 1 ist der Datei-Kanal live und die Agenten können melden; beides funktioniert unter dem heutigen blockierenden Dispatch, nur mit der in § 1e gemessenen Latenz.
 
-Ergibt FA-3, dass die Eskalation erst mit dem Batch-Ende ankommt: **FA-2 wird als Haltbarkeits-Gewinn ausgeliefert, nicht als Supervision** — die Meldung überlebt dann einen maxTurns-Kill, mehr nicht. FA-1 bleibt unverändert der tragende Teil.
+**Woche 2 — Steuerung.** FA-6, FA-7, FA-5. FA-6 steht bewusst NACH FA-1: der Tail ist dann bereits scharf und würde ein durch das Kippen verschlucktes Agenten-Dispatch als Auffälligkeit zeigen — der neue Guard beobachtet den Umbau, der ihn nötig macht.
+
+**Wenn Woche 2 kippt:** FA-5 zuerst weg, dann FA-7(b). **FA-6 fällt nicht** — ohne das Kippen bleibt FA-2 dauerhaft Haltbarkeit statt Supervision, und genau das war die Operator-Entscheidung A2. Wird FA-6 nicht fertig, ist der Schnitt nicht fertig.
 
 ### Out-of-Scope
 
@@ -126,7 +154,7 @@ Ergibt FA-3, dass die Eskalation erst mit dem Batch-Ende ankommt: **FA-2 wird al
 - **Ein neues Artefakt-Verzeichnis unter `.orchestrator/`.**
 - **Eine neue `.claude/rules/`-Datei** — § 5.
 - **Reparatur der 89-%-Phantom-Telemetrie** — der Tailer umgeht das Problem; #1068 deckt die Lifecycle-Seite ab.
-- **Verschlankung des Frameworks** — eigenes Dokument `[ANNAHME A3]`.
+- **Verschlankung des Frameworks** — eigenes Dokument (Operator-Entscheidung A3).
 - **Plattformneutrale Umsetzung für Codex/Cursor/Pi.** *Rev-2-Änderung:* Revision 1 erklärte das für außerhalb und behielt trotzdem 25 Zeilen Codex-Telemetrie im Text — eine Ausklammerung, die ihren Platzbedarf behält (BV-001.1). Die Messung ist jetzt auf sechs Zeilen gekürzt (§ 4) und der Rest gehört in ein Issue gegen `platform-tools.md`, nicht hierher.
 
 **Sollte drin sein, ist es nicht — bewusst:** der Session-Bindungs-Fix aus #1082. FA-1 verlangt Session-Identität (Edge-Case-AC), und § 1d zeigt den sessionblinden Guard. Beides in einem Schnitt wäre richtiger; es bleibt draußen, weil der Guard-Umbau `hooks/enforce-scope.mjs` und `scripts/lib/scope-gate.mjs` berührt — beide in der Änderungsmenge der Parallel-Session. **Als Vorbedingung notiert, nicht als Nebensache.**
@@ -221,6 +249,51 @@ Then landet der Befund in events.jsonl und auf stderr
 ```
 > *Rev-2-Korrektur:* Revision 1 forderte einen Test, der pinnt, dass ein Kommentar-Anspruch nicht wiederkehrt. Das verstößt gegen `test-value.md` TV-001 (kein benennbarer Bug) und TV-002c (Prosa-Pinning ist ohne Zeremonie löschbar). Der Test prüft jetzt das Verhalten.
 
+### FA-6 — Prohibition kippen
+
+```gherkin
+Given eine Welle dispatcht N Agenten mit run_in_background: true
+When alle N gestartet sind
+Then verifiziert der Koordinator gegen die Menge der GESTARTETEN Agenten,
+     nicht gegen die Menge der zurueckgekehrten Tool-Results
+  And ein Agent, der nie startet, ist als solcher erkennbar
+  And ein Agent, der startet und nie zurueckkommt, ist als solcher erkennbar
+```
+
+```gherkin
+Given ein Agent meldet mitten im Lauf einen wellenblockierenden Hinderungsgrund
+When der Koordinator seinen naechsten Turn beginnt
+Then liegt zwischen Absenden und Handlungsfaehigkeit weniger Zeit
+     als die Restlaufzeit des langsamsten Agenten der Welle
+  And die gemessene Latenz ist gegen den 143-s-Referenzwert aus § 1e protokolliert
+```
+
+```gherkin
+Given die 6 Pin-Stellen sind geaendert
+When ein Leser die neue Fassung liest
+Then findet er KEINE Begruendung mehr, die auf "you lose coordination ability" beruht
+  And er findet die gemessene Latenz-Aussage aus § 1e als Ersatzbegruendung
+```
+
+### FA-7 — Veraltete Aussagen
+
+```gherkin
+Given skills/_shared/platform-tools.md beschreibt Codex-Subagenten
+When die Datei nach FA-7 gelesen wird
+Then nennt sie das collaboration-Namespace-Toolset
+     (spawn_agent, list_agents, wait_agent, send_message, followup_task,
+      interrupt_agent, close_agent)
+  And sie nennt die gemessene Codex-Version, gegen die das gilt
+  And sie behauptet nicht laenger "otherwise execute sequentially"
+```
+
+```gherkin
+Given eine Aussage in platform-tools.md ueber eine fremde Plattform
+When sie geschrieben wird
+Then traegt sie Messdatum und Werkzeugversion
+  And ohne beides gilt sie als unbelegt (PSA-006)
+```
+
 ### Erfolgsmessung (neu in Rev 2)
 
 ```gherkin
@@ -291,9 +364,15 @@ Then ist es an einem Record in events.jsonl erkennbar
 | `agents/{code-implementer,db-specialist,ui-developer,test-writer,docs-writer}.md` | `SendMessage` in `tools` (**5 schreibende Agenten**) | ändern (5) |
 | `agents/session-reviewer.md` | `SendMessage` in `tools` — read-only Agent, siehe Hinweis | ändern |
 | `agents/AGENTS.md` | Autorenkonvention: wer eskalieren darf | ändern |
-| `hooks/post-subagent-discovery-validator.mjs` | Kommentar korrigieren | ändern |
-| `docs/adr/0010-native-autonomy-commands.md` | Observer-Posten + FA-3-Ergebnis | ändern |
+| `hooks/post-subagent-discovery-validator.mjs` | FA-4: Kommentar korrigieren | ändern |
+| `docs/adr/0010-native-autonomy-commands.md` | Observer-Posten + FA-3-Ergebnis (§ 1e) | ändern |
 | `tests/lib/wave-transcript-tail.test.mjs` | drei Detektoren gegen Fixture-JSONL | **neu** |
+| **FA-6** `skills/wave-executor/wave-loop.md` (`:272`, `:507`, `:786`, `:805`), `SKILL.md:482`, `circuit-breaker.md:106` | Prohibition kippen; Begründung durch die gemessene Latenz ersetzen | ändern (3 Dateien, 6 Stellen) |
+| **FA-6** Dispatch-Verification in `wave-loop.md:114-120` | gegen GESTARTETE statt zurückgekehrte Agenten prüfen — der Ersatz für den entfallenden Batch-Schutz | ändern |
+| **FA-6** `skills/session-start/SKILL.md:1210` | trägt dieselbe Prohibition („ALWAYS use `run_in_background: false`") — sonst widersprechen sich zwei Skills | ändern |
+| **FA-7** `skills/_shared/platform-tools.md` | Codex-Zeile gegen die gemessene Realität; Cursor-Zeile prüfen | ändern |
+
+**Nicht angefasst, obwohl sie dieselbe Zeile tragen:** `skills/plan/SKILL.md:112`, `skills/discovery/SKILL.md:205`, `skills/persona-panel/SKILL.md:167`, `skills/test-runner/SKILL.md:158`, `skills/session-end/*`. Dort ist `run_in_background: false` **richtig** — diese Skills brauchen die Ergebnisse aller Agenten, bevor sie weiterlaufen können (`test-runner/SKILL.md:162` begründet es ausdrücklich mit `findings.jsonl`). Nur die Wellen-Ausführung profitiert vom Kippen; ein blindes Suchen-und-Ersetzen über alle Fundstellen wäre ein Fehler.
 
 *Rev-2-Korrektur:* Revision 1 schrieb „die sechs schreibenden Agenten". `agents/session-reviewer.md:6` trägt `tools: Read, Grep, Glob, Bash` — **read-only**. Es sind fünf schreibende plus ein lesender. Die Tier-Schlussfolgerung ändert sich nicht (`SendMessage` steht in `READ_ONLY_TOOLS`, `tier-inference.mjs:33-41`), der Satz war trotzdem falsch — in einem Dokument, das über Genauigkeit argumentiert.
 
@@ -351,7 +430,10 @@ Keine. `SendMessage` steht bereits in `READ_ONLY_TOOLS` (`scripts/lib/validate/t
 
 | Risiko | Impact | Mitigation | Triage |
 |---|---|---|---|
-| **A2 ungemessen: die Eskalation kommt erst mit dem Batch-Ende an.** Konfidenz der Blockade-These: 0,85 | hoch | FA-3 ist jetzt Tag 1 und Gate; die Abbruchlinie (§ 2.1) beschreibt beide Ausgänge | Experiment |
+| ~~A2 ungemessen~~ — **erledigt.** § 1e misst 143 s Nicht-Handlungsfähigkeit; die Blockade-These ist bestätigt und aus der Risikoliste heraus | — | — | Erledigt |
+| **FA-6: das Kippen entfernt den Batch-Schutz.** „Große Fan-outs verschlucken Agent-Calls still" ist mit Konfidenz 1,0 über 5 Sessions belegt — und ein verschluckter Agent sieht aus wie ein sauberer Lauf, also ist der Schaden per Konstruktion unsichtbar | **hoch** | Der Schutz wird **ersetzt, nicht entfernt**: Dispatch-Verification prüft gegen die Menge der GESTARTETEN Agenten statt der zurückgekehrten Tool-Results. Zusätzlich steht FA-6 in Woche 2, wenn FA-1 bereits scharf ist und ein verschlucktes Dispatch als Auffälligkeit zeigen würde | Implement |
+| **Ein PRD, das seine Vorarbeit zitiert, wird von `archive-closed-prds.mjs` archiviert und gelöscht.** Am 2026-08-22 ist genau das mit dem Schwester-PRD passiert: `parseEpicRef` nimmt den ersten `#NNN` im Kopfbereich, fand das **Zitat** `#214` in einer Kritik, stellte fest dass #214 geschlossen ist, und archivierte. Wiederhergestellt — beim ersten Versuch aus dem falschen Commit, was 402 Byte still zurücksetzte | **hoch** | Die Auswahlregel bevorzugt systematisch Dokumente OHNE Kontext: wer Vorgänger-Issues nennt, trägt fremde Nummern im Kopf. Von der Parallel-Session als Issue erfasst. **Bis zum Fix: in diesem PRD keine `#NNN` im Kopfbereich** — alle Issue-Verweise stehen in § 5 | Defer |
+| **Dritter Fall derselben Klasse an einem Tag: Repo-Bezug statt Session-Bezug.** `wave-scope.json` (§ 1d), `current-session.json`, und die Archiv-Phase — alle drei wirken auf eine fremde Session, ohne zu wissen, dass sie fremd ist | mittel | Sammelt sich um #1082. FA-1s Session-UUID-Filter ist die Gegenmaßnahme auf der eigenen Seite; die drei Fälle gehören gebündelt, nicht einzeln geflickt | Defer |
 | **FA-1 wird ausgeliefert und feuert nie** — das Schicksal von #980 | hoch | Erfolgsmessung in § 3: mindestens ein Detektor in den ersten fünf Wellen. Kein Feuer = Befund, nicht Erfolg | Implement |
 | **Der Always-on-Regelkorpus ist knapp.** Live gemessen: `totalDirectives 465 / 480`, `totalBytes 113.975 / 114.000`, `overBudget false`. Luft: **15 Direktiven / 25 Byte** (Stand 2026-08-22 nach dem Commit der Parallel-Session; wandernd, weil `/reconcile` maschinell erzeugte Regeln in dieses Verzeichnis schreibt) | mittel | Dieser PRD schlägt **keine** neue `.claude/rules/`-Datei vor. Verhaltensregeln gehen in `agents/*.md` und `wave-loop.md` | Implement |
 | **Der Scope-Guard sperrt sessionübergreifend** (§ 1d) | hoch | #1082; als Vorbedingung notiert. Vor Umsetzungsbeginn `.claude/wave-scope.json` prüfen | Defer |
@@ -374,6 +456,18 @@ Keine. `SendMessage` steht bereits in `READ_ONLY_TOOLS` (`scripts/lib/validate/t
 - **#966** — `wave_number` ins Gate-Ereignis. Der erweiterte `stagnation_detected`-Record trägt `wave` bereits.
 - **#1068** — `subagents.jsonl`-Lifecycle.
 - **Parallel-Session `session-orchestrator-fa`** — hielt am 2026-08-22 **73** uncommitted Pfade (`git status --porcelain | wc -l`) in `scripts/`, `hooks/`, `skills/`, `.claude/rules/`, `tests/`. `docs/prd/` ist bei 0 Treffern. **Vor Umsetzungsbeginn neu abstimmen** — die Pfade aus § 4 überschneiden sich.
+
+### Rev-3-Änderungsprotokoll (Operator-Entscheidungen + FA-3-Ergebnis)
+
+| # | Änderung | Auslöser |
+|---|---|---|
+| 1 | **FA-3 durchgeführt**, Ergebnis als § 1e — 143 s Nicht-Handlungsfähigkeit, Latenz = Restlaufzeit des Batches | Operator: „messen und dann durchführen" |
+| 2 | **FA-6 neu: die Prohibition wird gekippt**, nicht nur gemessen. Mit der Auflage, den Batch-Schutz zu ERSETZEN statt zu entfernen | Operator-Entscheidung A2 |
+| 3 | **FA-7 neu: veraltete Aussagen korrigieren** — `platform-tools.md` + die 6 Pin-Stellen | Operator-Entscheidung A5 („alles mit Mehrwert und Sinn") |
+| 4 | Appetit 1w → **2w**, Abbruchlinie durch eine Zwei-Wochen-Schnittfolge ersetzt (Woche 1 Beobachtung, Woche 2 Steuerung) | Operator-Entscheidung A4 |
+| 5 | Risiko „A2 ungemessen" gestrichen (erledigt); drei neue Risiken: FA-6-Batch-Schutz, das Archiv-Skript, der dritte Repo-statt-Session-Fall | Messung + Vorfall am 2026-08-22 |
+| 6 | Fünf Fundstellen ausdrücklich **nicht** angefasst (`plan`, `discovery`, `persona-panel`, `test-runner`, `session-end`) — dort ist die Prohibition richtig | eigene Prüfung; ein Suchen-und-Ersetzen über alle 6+5 Stellen wäre ein Fehler |
+| 7 | Kopfbereich trägt bewusst **keine** `#NNN` mehr | das Archiv-Skript hat das Schwester-PRD wegen eines zitierten `#214` gelöscht |
 
 ### Rev-2-Änderungsprotokoll
 
