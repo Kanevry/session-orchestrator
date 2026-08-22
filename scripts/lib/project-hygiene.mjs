@@ -213,23 +213,69 @@ function duBytes(absPath) {
 }
 
 /**
+ * Human-readable byte size. Sub-megabyte totals are the common case once the
+ * aged subset is sized correctly, and `Math.round(bytes / MB)` renders every
+ * one of them as "0 MB" — which is why the unit is chosen, not fixed.
+ * @param {number} bytes
+ * @returns {string}
+ */
+function formatBytes(bytes) {
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 10) return `${Math.round(mb)} MB`;
+  if (mb >= 1) return `${mb.toFixed(2)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
+/**
  * H3 — Aged orchestrator artifacts.
  *
  * Measured 5/6. Largest observed: 184 MB under .orchestrator/, of which
  * 147 MB were Playwright test-run captures dating back seven weeks, plus
  * 592 files older than 30 days.
  *
+ * Counts and sizes ONLY untracked aged files. Two properties are load-bearing
+ * and were both defects until 2026-08-22:
+ *
+ *   1. The byte total describes the set the sentence names — the aged files —
+ *      not the whole directory. Sizing the directory overstated the reachable
+ *      win by a factor of ~18 in this repo (11 MB claimed, 0.68 MB real).
+ *   2. Version-tracked paths are excluded. `.orchestrator/policy/*.json` and
+ *      `.orchestrator/steering/*.md` are read at runtime by hooks and skills;
+ *      their age is a sign of stability, not decay. Proposing them for
+ *      "pruning" is proposing to delete source.
+ *
  * @param {string} repoRoot
  * @param {number} ageDays
  * @param {number} now
- * @returns {object|null}
+ * @returns {{check: string, fixable: boolean, agedFiles: number, agedBytes: number, message: string}|null}
  */
 export function checkStaleArtifacts(repoRoot, ageDays = DEFAULT_ARTIFACT_AGE_DAYS, now = Date.now()) {
   const dir = join(repoRoot, '.orchestrator');
   if (!existsSync(dir)) return null;
 
+  // Resolve the tracked set ONCE per call — `git ls-files --error-unmatch` per
+  // file would cost one process per candidate for the same answer.
+  //
+  // FAIL-SAFE, NOT FAIL-OPEN: when git cannot answer (no repo, git absent,
+  // non-zero exit) source and artifact are indistinguishable, so the probe
+  // stays SILENT rather than falling back to "nothing is tracked" — that
+  // fallback IS the defect this exclusion closes, and it would return
+  // invisibly. Losing an advisory finding costs nothing; proposing to delete
+  // versioned files costs a restore. `-z` suppresses git's path quoting, so
+  // non-ASCII and space-bearing paths compare byte-exactly.
+  const trackedRaw = git(['ls-files', '-z', '--', '.orchestrator'], repoRoot);
+  if (trackedRaw === null) return null;
+  const tracked = new Set(
+    trackedRaw
+      .split('\0')
+      .filter(Boolean)
+      .map((p) => join(repoRoot, p)),
+  );
+
   const cutoff = now - ageDays * 24 * 60 * 60 * 1000;
   let aged = 0;
+  let agedBytes = 0;
   let scanned = 0;
 
   /** @param {string} d @param {number} depth */
@@ -248,9 +294,16 @@ export function checkStaleArtifacts(repoRoot, ageDays = DEFAULT_ARTIFACT_AGE_DAY
       if (e.isDirectory()) {
         walk(full, depth + 1);
       } else if (e.isFile()) {
+        // Counted before the tracked-skip so the 20k bound still measures the
+        // walk, not the reportable subset.
         scanned++;
+        if (tracked.has(full)) continue;
         try {
-          if (statSync(full).mtimeMs < cutoff) aged++;
+          const st = statSync(full);
+          if (st.mtimeMs < cutoff) {
+            aged++;
+            agedBytes += st.size;
+          }
         } catch {
           /* vanished mid-scan — ignore */
         }
@@ -261,11 +314,18 @@ export function checkStaleArtifacts(repoRoot, ageDays = DEFAULT_ARTIFACT_AGE_DAY
 
   if (aged === 0) return null;
 
-  const mb = Math.round((duBytes(dir) ?? 0) / (1024 * 1024));
+  // `fixable: true` stays. The only consumer is skills/session-start/SKILL.md
+  // (Phase 4), which routes fixable findings to "safe batch work" instead of
+  // the operator Q&A — prose guidance to the coordinator, not an automatic
+  // deletion run; `grep -rn "fixable" scripts/ skills/ hooks/` finds no other
+  // reader than the `mechanical` count below. With tracked paths excluded the
+  // claim is now true: every reported path is an untracked artifact.
   return {
     check: 'stale-artifacts',
     fixable: true,
-    message: `${aged} file(s) under .orchestrator/ older than ${ageDays}d${mb > 0 ? ` (${mb} MB total)` : ''} — candidates for pruning`,
+    agedFiles: aged,
+    agedBytes,
+    message: `${aged} untracked file(s) under .orchestrator/ older than ${ageDays}d${agedBytes > 0 ? ` (${formatBytes(agedBytes)} total)` : ''} — candidates for pruning`,
   };
 }
 

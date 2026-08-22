@@ -150,6 +150,103 @@ describe('checkStaleArtifacts', () => {
     expect(result.check).toBe('stale-artifacts');
     expect(result.fixable).toBe(true);
   });
+
+  it('sizes the AGED subset, not the whole .orchestrator/ directory', () => {
+    // Bug this catches: the reported byte total was `du -s .orchestrator`, i.e.
+    // the whole directory — while the sentence around it speaks about the aged
+    // files only. Against this repo that overstated the reachable win by ~18x
+    // (11 MB claimed, 0.68 MB actually reclaimable). An operator who follows
+    // the finding frees a fraction of what it promised.
+    mkdirSync(join(root, '.orchestrator', 'metrics'), { recursive: true });
+    const old = join(root, '.orchestrator', 'metrics', 'ancient.jsonl');
+    writeFileSync(old, 'x'.repeat(2048));
+    const young = join(root, '.orchestrator', 'metrics', 'fresh.bin');
+    writeFileSync(young, 'y'.repeat(5 * 1024 * 1024));
+    const longAgo = Date.now() / 1000 - 90 * 24 * 60 * 60;
+    utimesSync(old, longAgo, longAgo);
+
+    const result = checkStaleArtifacts(root, 30);
+    expect(result).not.toBeNull();
+    expect(result.agedFiles).toBe(1);
+    expect(result.agedBytes).toBe(2048);
+    expect(result.message).toContain('2 KB');
+    // The young 5 MB file must not appear in the total in any rendering.
+    expect(result.message).not.toContain('5 MB');
+  });
+
+  it('excludes version-tracked paths — they are source, not artifacts', () => {
+    // Bug this catches: the probe consulted git nowhere, so it proposed pruning
+    // .orchestrator/policy/*.json and .orchestrator/steering/*.md — files read
+    // at runtime by hooks and skills. Their age means stability, not decay.
+    mkdirSync(join(root, '.orchestrator', 'policy'), { recursive: true });
+    mkdirSync(join(root, '.orchestrator', 'metrics'), { recursive: true });
+    const trackedSource = join(root, '.orchestrator', 'policy', 'schema.json');
+    writeFileSync(trackedSource, 'z'.repeat(4096));
+    gitIn(['add', '--', '.orchestrator/policy/schema.json']);
+    gitIn(['commit', '-q', '-m', 'add policy schema']);
+    const untrackedArtifact = join(root, '.orchestrator', 'metrics', 'old.jsonl');
+    writeFileSync(untrackedArtifact, '{}');
+
+    const longAgo = Date.now() / 1000 - 90 * 24 * 60 * 60;
+    utimesSync(trackedSource, longAgo, longAgo);
+    utimesSync(untrackedArtifact, longAgo, longAgo);
+
+    // Anti-trap: a tmp fixture where git simply found nothing would pass this
+    // test while pinning the OPPOSITE of its name. Prove the file is tracked.
+    const lsOut = execFileSync('git', ['ls-files', '--', '.orchestrator'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    expect(lsOut).toContain('.orchestrator/policy/schema.json');
+
+    const result = checkStaleArtifacts(root, 30);
+    expect(result).not.toBeNull();
+    expect(result.agedFiles).toBe(1);
+    expect(result.agedBytes).toBe(2); // only the untracked '{}' artifact
+    expect(result.message).toContain('1 untracked file');
+  });
+
+  it('returns null when every aged file under .orchestrator/ is tracked', () => {
+    // Corollary of the exclusion: the tracked set must be removed BEFORE the
+    // "nothing aged" short-circuit, or a repo whose only aged files are source
+    // still gets a pruning proposal.
+    mkdirSync(join(root, '.orchestrator', 'steering'), { recursive: true });
+    const trackedSource = join(root, '.orchestrator', 'steering', 'tech.md');
+    writeFileSync(trackedSource, '# tech\n');
+    gitIn(['add', '--', '.orchestrator/steering/tech.md']);
+    gitIn(['commit', '-q', '-m', 'add steering']);
+    const longAgo = Date.now() / 1000 - 90 * 24 * 60 * 60;
+    utimesSync(trackedSource, longAgo, longAgo);
+
+    expect(checkStaleArtifacts(root, 30)).toBeNull();
+  });
+
+  it('stays silent when git cannot resolve the tracked set (fail-safe, not fail-open)', () => {
+    // Bug this catches: falling back to an empty tracked set on git failure
+    // re-opens the exact defect the exclusion closes — every source file under
+    // .orchestrator/ becomes a pruning candidate again, silently.
+    const notARepo = mkdtempSync(join(tmpdir(), 'so-hygiene-nogit-'));
+    try {
+      mkdirSync(join(notARepo, '.orchestrator'), { recursive: true });
+      const old = join(notARepo, '.orchestrator', 'old.jsonl');
+      writeFileSync(old, '{}');
+      const longAgo = Date.now() / 1000 - 90 * 24 * 60 * 60;
+      utimesSync(old, longAgo, longAgo);
+
+      // Anti-trap: assert git really fails here rather than assuming it.
+      expect(() =>
+        execFileSync('git', ['ls-files', '--', '.orchestrator'], {
+          cwd: notARepo,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }),
+      ).toThrow();
+
+      expect(checkStaleArtifacts(notARepo, 30)).toBeNull();
+    } finally {
+      rmSync(notARepo, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── CI configuration ─────────────────────────────────────────────────────────
