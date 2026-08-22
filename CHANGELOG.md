@@ -7,6 +7,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.22.0] - 2026-08-22
+
+Twenty commits (12 `fix`, 5 `docs`, 2 `feat`, 1 `chore`; 150 files, +17,312/−2,575), no
+`BREAKING CHANGE:` footer and no `!` subject. One strand runs through all of it:
+**an instrument that reported confidently and measured the wrong quantity.** Not a
+threshold set too tight, not a rule too strict — the wrong quantity, reported with the
+same certainty as the right one. The host-resource warning fired on **99.0% of 1,477
+measured session starts** and nobody could falsify it, because the two fields it was
+computed from were never persisted. A hygiene probe announced "37 files (11 MB)" while
+sizing the entire directory instead of the 37 — factor ~18 — and proposed deleting
+version-controlled source files, because it never asked git. And the questions this tool
+puts to its operator had never been measured at all: **21 of 72 passed** on first
+measurement, and the single dominant cause was a 12-codepoint header limit that silently
+truncated 30 of them.
+
+### Added
+
+- **The operator's questions are now measured before he reads them (#1107).** `scripts/auq-audit.mjs`
+  scores every `AskUserQuestion` block and every prose fallback list against eight criteria
+  (K1–K8) plus two hard hurdles, all thresholds sourced from one registry — no hard-coded
+  number in the scorer. The census found **three populations, not one**: 40 Claude Code blocks,
+  10 Codex prose lists, and 17 that every prior count had missed (9 `.cursor/rules/*.mdc` with
+  10 choice blocks, plus 6 runtime questions inside `.mjs`). Baseline **21 of 72 (29%)**, after
+  the pass **72 of 72**. The dominant cause was structural: `header` caps at 12 codepoints and
+  the tool truncates silently — **26 of 42 headers exceeded it**, and one NFD-composed header
+  measured 12 visible characters as 14, destroying the question. Population A — the operator's
+  own path — ran 62% failing against 0% for the Codex and Cursor forms, which carry no header
+  at all.
+- **A guard on the guard (#1122 groundwork).** The `AskUserQuestion` PreToolUse hook denies only
+  the two hard hurdles and reports the rest to stderr; `check-auq-clarity` is wired into
+  `validate-plugin` and blocks on H1/H2 with a measured 0% false-positive rate. Its own wiring is
+  proven by fake regression, not asserted.
+- **`/eli5`** — say the last answer again in plain words, same facts, in the order the operator
+  needs them.
+
+### Fixed
+
+- **The warning that fired on 99.0% of all session starts (#1089).** Measured over **1,477
+  `orchestrator.session.started` events across 18 repos**: `ram_free_gb < 2` fired on 84.0%,
+  `claude_processes >= 5` on 93.6%, any of the three on **99.0%** — against 4,884 stop events
+  with zero OOM markers. Three independent measurement errors, no threshold among them.
+  (a) `os.freemem()` on Darwin reports only `Pages free` — median **0.4 GB** on hosts with
+  24–128 GB — so memory is now judged on `memory_pressure_pct_free` and a better signal
+  *replaces* a worse one rather than suppressing it. (b) `concurrent-sessions-warn` is
+  denominated in sessions and was compared against a process count; measured ratio **6.0:1**.
+  Same threshold, right denominator: 93.6% → **4.2%**. (c) One noisy axis could cap a wave;
+  now two independent soft signals must agree. The verdict had reached `sessions.jsonl` for
+  **15 of 1,734 sessions (0.9%)**, which is why the false alarm survived four months while six
+  repos independently wrote it into their learnings store — one at confidence **1.0**.
+  Codified as `.claude/rules/host-resources.md` (HR-101..106).
+- **A standing condition is not a second opinion (#1089 follow-up).** The first live run of the
+  rebuilt verdict returned `warn | cap 2 | soft: ["cpu","zombies"]`. Zombie processes are idle
+  by definition — they cannot cause the load they are paired with — and are always present
+  (6, 13 and 9 in three readings minutes apart). They report; they never count toward the
+  two-signal rule.
+- **A probe that sized the wrong set and never asked git.** `checkStaleArtifacts` computed its
+  byte figure over the whole of `.orchestrator/` instead of the aged subset it names —
+  the 37 files weighed **0.68 MB against 11 MB reported**. Independently, it consulted git
+  nowhere and therefore proposed pruning seven tracked, runtime-read source files, among them
+  the policy file `pre-bash-templates-first.mjs` reads and the two steering documents
+  session-start loads. The git exclusion is fail-**silent**, not fail-open: falling back to
+  "nothing is tracked" *is* the defect it closes.
+- **Only the raw session ID releases a lock (#1085).** One session carried three identities —
+  STATE.md said `session-2`, the lock said `session-3`, issue-budget counted against a third
+  UUID — and `findPeers` reported the session's own presence as a foreign peer. The semantic
+  ID is now attribution metadata only; a release requires exact raw-ID equality, and a
+  semantic hint resolves to a raw ID only against a verified local binding. The companion fix
+  to issue-budget removed a data-loss path in which an identity-less invocation wrote its
+  fresh state into the shared counter and erased a live session's parked overflow.
+- **The npm receipt is the boundary — and a `throw` lay behind it (#1088).** `publish()` threw
+  *after* a successful `npm publish`, during a 12-second registry-propagation poll: published,
+  not tagged, not pushed, reported as "failed, retryable". Propagation now returns a typed
+  outcome, each post-receipt step gets exactly one attempt, and everything else is collected as
+  `post-publish-reconciliation`. Leak detection decides on an extracted path rather than a regex
+  over `npm notice` prose (`contest` ≠ `tests`), and `ensureGithubRelease` became tri-state so
+  an auth or network answer no longer reads as "no release exists".
+- **`--silent` leaked into the children, and the gate discarded its own diagnosis (a4f93cf).**
+- **The empty sidecar path skipped the collision gate with exit 0 (#1083).** A coordinator that
+  wrote only the aggregate form of the two-shape scope declaration ran **six waves and ~27
+  dispatches with zero `FILE-SCOPE` injection** — and the absence looked identical to a clean
+  run. `scripts/materialize-wave-scope.mjs` is now the canonical writer of both shapes.
+- **The GitLab target comes from the explicit path (#1065).** `glab repo view --output json`
+  materialised a full project response to read one field; on 2026-08-17 that response carried a
+  runner registration credential into a tool transcript. Project identity is now
+  `(host, URL-encoded namespace/project)` with traversal and double-encoding rejection, and the
+  same minimisation reached the vault-backfill path.
+- **The restore froze after its first run (#state-md).** Also: a `gitleaks` allowlist that grew
+  by one proper name per incident now matches on a word boundary instead.
+- **Four count claims where the checker could only see two (#docs-parity).** `docs/components.md`
+  claimed 46 skills and 26 commands against 47 and 27 on disk. The drift checker reported two —
+  its patterns are `^##`-anchored — while a census of the same two surfaces in the same file
+  found four; the two inside the Mermaid diagram were already self-contradictory before the fix.
+
+### Notes
+
+`.claude/rules/host-resources.md` is new and always-on. `.claude/rules/bash-harness-pitfalls.md`
+gained no rule text this line, but two measurement traps were recorded against it in the
+learnings store: `rg -rn` is not `grep -rn` (`-r` is `--replace` and silently substitutes every
+match), and zsh does not word-split an unquoted variable, so a multi-path `git log -- $paths`
+reports zero matches with exit 0 — both produce a plausible wrong number without erroring.
+
 ## [3.21.0] - 2026-08-19
 
 Twenty-one commits (12 `fix`, 4 `feat`, 4 `docs`, 1 `chore`; 209 files, +28,906/−2,893), no

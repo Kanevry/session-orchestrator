@@ -2,7 +2,7 @@
 
 > Loop engineering for AI coding agents. Turn ad-hoc sessions into a repeatable research, plan, wave-execute, close loop with verification gates. Runs on Claude Code, Codex CLI, Cursor, and Pi. MIT-licensed, local by default, no account.
 
-Version: 3.21.0 · npm: session-orchestrator · requires Node.js >= 24
+Version: 3.22.0 · npm: session-orchestrator · requires Node.js >= 24
 
 ## Install
 
