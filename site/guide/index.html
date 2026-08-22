@@ -739,5 +739,15 @@ enforcement: warn</pre>
   }
 })();
 </script>
+<!-- Vercel Web Analytics. Beides same-origin: das Skript liegt unter
+     /_vercel/insights/script.js auf DIESER Domain, der Beacon geht an
+     /_vercel/insights/view — deshalb traegt die CSP in vercel.json
+     (script-src 'self'; connect-src 'self') das ohne neuen Origin, und die
+     Zusage "keine Verbindungen zu Dritt-Servern" in /datenschutz bleibt wahr.
+     Der window.va-Stub ist die Warteschlange aus dem offiziellen HTML-Snippet;
+     er haelt Parity mit @vercel/analytics, das ihn ebenfalls immer setzt.
+     Deklariert in /datenschutz Punkt 04. Cookielos, kein localStorage. -->
+<script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>
+<script defer src="/_vercel/insights/script.js"></script>
 </body>
 </html>

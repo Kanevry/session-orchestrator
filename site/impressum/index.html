@@ -1,8 +1,9 @@
-<!-- Vom Betreiber freigegeben 2026-08-19. Unternehmensdaten uebernommen von
-     https://www.gotzendorfer.at/impressum. Die Datenschutzerklaerung ist NICHT
-     von dort kopiert, sondern aus der gemessenen Verarbeitung dieser Seite
-     geschrieben: 0 externe Requests, keine Analytics, self-hosted Fonts,
-     ausschliesslich Vercel-Serverlogs. Aendert sich das, aendert sich sie. -->
+<!-- Vom Betreiber freigegeben 2026-08-19, aktualisiert 2026-08-22. Unternehmensdaten
+     uebernommen von https://www.gotzendorfer.at/impressum. Die Datenschutzerklaerung
+     ist NICHT von dort kopiert, sondern aus der gemessenen Verarbeitung dieser Seite
+     geschrieben: 0 Requests an fremde Hosts, self-hosted Fonts, Vercel-Serverlogs und
+     seit 2026-08-22 Vercel Web Analytics — cookielos und same-origin unter
+     /_vercel/insights/. Aendert sich das, aendert sich sie. -->
 <!DOCTYPE html>
 <html lang="de">
 <head>
@@ -326,5 +327,15 @@ dl.data dd span.q{display:block;color:var(--ink-2);font-size:13.5px;margin-top:3
     <a class="right" href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
   </footer>
 </div>
+<!-- Vercel Web Analytics. Beides same-origin: das Skript liegt unter
+     /_vercel/insights/script.js auf DIESER Domain, der Beacon geht an
+     /_vercel/insights/view — deshalb traegt die CSP in vercel.json
+     (script-src 'self'; connect-src 'self') das ohne neuen Origin, und die
+     Zusage "keine Verbindungen zu Dritt-Servern" in /datenschutz bleibt wahr.
+     Der window.va-Stub ist die Warteschlange aus dem offiziellen HTML-Snippet;
+     er haelt Parity mit @vercel/analytics, das ihn ebenfalls immer setzt.
+     Deklariert in /datenschutz Punkt 04. Cookielos, kein localStorage. -->
+<script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>
+<script defer src="/_vercel/insights/script.js"></script>
 </body>
 </html>
