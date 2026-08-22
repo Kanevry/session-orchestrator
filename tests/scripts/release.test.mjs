@@ -549,10 +549,16 @@ describe('evaluateLeakageGate', () => {
     // packed their internal tests and fixtures. Synthetic notice lines could
     // prove matching, but not that the release configuration produced a clean
     // real tarball.
+    // Pin the loglevel instead of inheriting it: under `npm run --silent`
+    // (the pre-push gate) an inherited silent level makes `npm pack --dry-run`
+    // emit ZERO notice lines with exit 0, so this test went red inside the
+    // nested gate while passing under a bare `npm test`. Same env-isolation
+    // class as the TYPECHECK_CMD/TEST_CMD boilerplate in the gate tests.
     const pack = spawnSync('npm', ['pack', '--dry-run'], {
       cwd: process.cwd(),
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
+      env: { ...process.env, npm_config_loglevel: 'notice' },
     });
     const packedPaths = [];
     for (const line of `${pack.stdout || ''}\n${pack.stderr || ''}`.split('\n')) {

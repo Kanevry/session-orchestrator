@@ -263,6 +263,7 @@ describe('runCheck', () => {
     expect(result).toEqual({
       status: 'pass',
       output: '(stubbed: echo)',
+      fullOutput: '(stubbed: echo)',
       exitCode: 0,
       stubbed: { kind: 'echo' },
     });
@@ -273,6 +274,7 @@ describe('runCheck', () => {
     expect(result).toEqual({
       status: 'pass',
       output: '(stubbed: noop)',
+      fullOutput: '(stubbed: noop)',
       exitCode: 0,
       stubbed: { kind: 'noop' },
     });
@@ -371,5 +373,45 @@ describe('resolveTestFiles', () => {
 
   it('returns an empty array when both csv and ref are absent', () => {
     expect(resolveTestFiles(undefined, undefined)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runCheck — fullOutput vs the human tail (2026-08-22)
+// ---------------------------------------------------------------------------
+
+describe('runCheck fullOutput', () => {
+  // THE BUG: `output` was a 5-line tail AND the parser's input. Vitest prints
+  // its `Tests` summary and THEN the per-failure detail, so on a real failure
+  // the summary sat ~760 lines above the tail; extractTestCounts read the tail,
+  // found no numbers, and the gate reported `total 0, passed 0, failed 0` --
+  // indistinguishable from "the runner never ran" and silent about WHICH test
+  // failed.
+  const SUMMARY = ' Tests  1 failed | 14357 passed | 16 skipped (14374)';
+  const script = [
+    `echo "${SUMMARY}"`,
+    'for i in $(seq 1 40); do echo "failure detail line $i"; done',
+    'exit 1',
+  ].join('; ');
+
+  it('keeps the whole captured text in fullOutput while output stays a bounded tail', () => {
+    const res = runCheck(`sh -c '${script}'`);
+    expect(res.status).toBe('fail');
+    expect(res.fullOutput).toContain('14357 passed');
+    expect(res.output).not.toContain('14357 passed');
+    expect(res.output.split('\n').length).toBeLessThanOrEqual(5);
+  });
+
+  it('lets extractTestCounts recover the real counts from fullOutput, not from the tail', () => {
+    const res = runCheck(`sh -c '${script}'`);
+    expect(extractTestCounts(res.fullOutput)).toEqual({ passed: 14357, failed: 1, total: 14358 });
+    // The tail alone is exactly the phantom the gate used to report.
+    expect(extractTestCounts(res.output)).toEqual({ passed: 0, failed: 0, total: 0 });
+  });
+
+  it('reports fullOutput on the success path too', () => {
+    const res = runCheck(`sh -c 'echo "${SUMMARY}"; echo trailing'`);
+    expect(res.status).toBe('pass');
+    expect(res.fullOutput).toContain('14357 passed');
   });
 });

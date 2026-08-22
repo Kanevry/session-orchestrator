@@ -774,7 +774,18 @@ async function preflight(repoRoot, target, { skipCi = false } = {}) {
   }
 
   // 7. Leakage gate over the actual pack file list.
-  const pack = run('npm', ['pack', '--dry-run'], { cwd: repoRoot });
+  // `npm_config_loglevel` is INHERITED, and `npm pack --dry-run` writes its whole
+  // file listing as `npm notice` lines. Any ancestor that ran under `npm run
+  // --silent` (the pre-push gate does exactly that) therefore hands this child a
+  // silent loglevel and the listing is EMPTY with exit 0 — measured: 818 notice
+  // lines normally, 0 under `npm_config_loglevel=silent`. The blind-scan floor
+  // turns that into a correct fail-closed verdict, but a red leakage row that
+  // means "we could not look" is not the row anyone reads it as. Pin the level
+  // rather than inherit it, so the gate's input never depends on its caller.
+  const pack = run('npm', ['pack', '--dry-run'], {
+    cwd: repoRoot,
+    env: { ...process.env, npm_config_loglevel: 'notice' },
+  });
   const leakage = evaluateLeakageGate(pack);
   add('leakage-gate', leakage.ok, leakage.detail);
 

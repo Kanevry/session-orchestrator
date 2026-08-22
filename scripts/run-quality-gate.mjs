@@ -277,8 +277,22 @@ if (!existsSync(gatePath)) {
   die(`Gate script not found: ${gatePath}`);
 }
 
+// `npm_config_loglevel` is INHERITED by every descendant, and the pre-push hook
+// invokes this script as `npm run --silent quality-gate` — which sets it to
+// `silent`. That level then reached the gate's own children: `npm pack
+// --dry-run` emitted ZERO `npm notice` lines instead of 818 (measured
+// 2026-08-22), so the release leakage test saw an empty listing, and several
+// validate-plugin/e2e tests that shell out to npm went red the same way. Every
+// one of them passes under a bare `npm test` and fails only INSIDE the gate,
+// which is the hardest shape to diagnose and cost an hour of chasing phantoms.
+//
+// Pinned rather than deleted: an explicit level makes the gate's children
+// independent of how the gate itself was invoked. `--silent` still does its real
+// job — keeping THIS process's stdout to the single JSON envelope — because the
+// children's output is captured by `runCheck`, never streamed.
 const env = {
   ...process.env,
+  npm_config_loglevel: 'notice',
   TYPECHECK_CMD,
   TEST_CMD,
   LINT_CMD,

@@ -41,17 +41,28 @@ function isTestFile(filePath) {
 /**
  * Execute a shell command and return a structured result.
  *
+ * `output` is a bounded TAIL for humans. `fullOutput` is the complete captured
+ * text and is what every COUNT parse must read.
+ *
+ * Why both: the tail was 5 lines and was also the parser's input. Vitest prints
+ * its `Test Files` / `Tests` summary and THEN the per-failure detail, so on any
+ * real failure the summary sits hundreds of lines above the tail — measured
+ * 2026-08-22: line 174 of 936. `extractTestCounts` then found nothing and the
+ * gate reported `test: fail, total 0, passed 0, failed 0`, which reads as
+ * "the runner never produced results" and hides WHICH test failed. An hour was
+ * spent chasing that phantom before the real cause (one red test) was found.
+ *
  * @param {string} cmd - Shell command to run, or `"skip"` / empty to skip.
- * @returns {{ status: 'pass'|'fail'|'skip', output: string, exitCode: number, stubbed?: { kind: 'echo'|'noop' } }}
+ * @returns {{ status: 'pass'|'fail'|'skip', output: string, fullOutput: string, exitCode: number, stubbed?: { kind: 'echo'|'noop' } }}
  */
 export function runCheck(cmd) {
   if (!cmd || cmd === 'skip') {
-    return { status: 'skip', output: '', exitCode: 0 };
+    return { status: 'skip', output: '', fullOutput: '', exitCode: 0 };
   }
 
   const stub = detectStubCommand(cmd);
   if (stub.isStub) {
-    return { status: 'pass', output: `(stubbed: ${stub.kind})`, exitCode: 0, stubbed: { kind: stub.kind } };
+    return { status: 'pass', output: `(stubbed: ${stub.kind})`, fullOutput: `(stubbed: ${stub.kind})`, exitCode: 0, stubbed: { kind: stub.kind } };
   }
 
   try {
@@ -61,18 +72,18 @@ export function runCheck(cmd) {
       maxBuffer: RUN_CHECK_MAX_BUFFER_BYTES,
     });
     const output = raw.split('\n').slice(-5).join('\n').trim();
-    return { status: 'pass', output, exitCode: 0 };
+    return { status: 'pass', output, fullOutput: raw, exitCode: 0 };
   } catch (err) {
     const exitCode = typeof err.status === 'number' ? err.status : 1;
 
     // Exit code 127 means command not found — treat as skip.
     if (exitCode === 127) {
-      return { status: 'skip', output: 'command not found', exitCode };
+      return { status: 'skip', output: 'command not found', fullOutput: '', exitCode };
     }
 
     const combined = [err.stdout ?? '', err.stderr ?? ''].join('\n');
     const output = combined.split('\n').slice(-5).join('\n').trim();
-    return { status: 'fail', output, exitCode };
+    return { status: 'fail', output, fullOutput: combined, exitCode };
   }
 }
 

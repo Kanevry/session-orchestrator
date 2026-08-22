@@ -36,7 +36,7 @@ const startTime = Date.now();
 const tcResult = runCheck(typecheckCmd);
 const tcErrorCount =
   tcResult.status === 'fail'
-    ? extractCount(tcResult.output, /error TS\d+/)
+    ? extractCount(tcResult.fullOutput ?? tcResult.output, /error TS\d+/)
     : 0;
 
 // --- Test ---
@@ -46,14 +46,14 @@ const tcErrorCount =
 const testResult = runCheck(testCmd);
 const { passed: testPassed, failed: testFailed, total: testTotal } =
   testResult.status !== 'skip'
-    ? extractTestCounts(testResult.output)
+    ? extractTestCounts(testResult.fullOutput ?? testResult.output)
     : { passed: 0, failed: 0, total: 0 };
 
 // --- Lint ---
 const lintResult = runCheck(lintCmd);
 const lintWarnings =
   lintResult.status !== 'skip'
-    ? extractCount(lintResult.output, /warning/i)
+    ? extractCount(lintResult.fullOutput ?? lintResult.output, /warning/i)
     : 0;
 
 // --- Debug artifacts ---

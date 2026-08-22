@@ -431,3 +431,32 @@ describe('run-quality-gate.mjs — quality_gate telemetry emission (#610)', () =
     if (expected === undefined) expect(Object.keys(ev)).not.toContain('wave_number');
   });
 });
+
+// ---------------------------------------------------------------------------
+// npm loglevel isolation (2026-08-22)
+// ---------------------------------------------------------------------------
+
+describe('run-quality-gate.mjs — npm loglevel is pinned, not inherited', () => {
+  // THE BUG: the pre-push hook runs `npm run --silent quality-gate`, which sets
+  // npm_config_loglevel=silent in the environment. That level is INHERITED by
+  // every descendant, so the gate's own children went quiet: `npm pack
+  // --dry-run` emitted 0 `npm notice` lines instead of 818, and every test that
+  // shells out to an npm-based tool failed -- but ONLY inside the gate, never
+  // under a bare `npm test`. Pinning the level makes the gate's children
+  // independent of how the gate was invoked.
+  const probe = 'sh -c \'echo "loglevel=[$npm_config_loglevel]"; echo " Tests  1 passed (1)"\'';
+
+  it('neutralises an inherited silent loglevel for its child commands', () => {
+    const config = JSON.stringify({
+      'typecheck-command': 'skip',
+      'test-command': probe,
+      'lint-command': 'skip',
+    });
+    const r = run(['--variant', 'baseline', '--config', config], { npm_config_loglevel: 'silent' });
+    expect(r.status).toBe(0);
+    const parsed = JSON.parse(r.stdout);
+    const captured = JSON.stringify(parsed);
+    expect(captured).toContain('loglevel=[notice]');
+    expect(captured).not.toContain('loglevel=[silent]');
+  });
+});
