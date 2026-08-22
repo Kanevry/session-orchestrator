@@ -31,14 +31,53 @@ const HOOK = path.join(REPO_ROOT, 'hooks', 'pre-auq-clarity.mjs');
  * Drive the hook with a raw stdin string. `spawnSync` and not an in-process
  * import on purpose: the decision lives in the process's stdout envelope, and an
  * imported `decide()` would prove nothing about how that envelope is emitted.
+ *
+ * `CLAUDE_PROJECT_DIR` is pinned to a FRESH tmp dir per call, and that is not
+ * tidiness — it is a correctness requirement with a measured incident behind it.
+ * The hook appends one telemetry record per decision to
+ * `<project-dir>/.orchestrator/metrics/events.jsonl`; `resolveProjectDir` reads
+ * that env var first and otherwise walks up from CWD, so with `cwd: REPO_ROOT`
+ * and no pin every spawn here lands in the REAL fleet telemetry. Measured
+ * 2026-08-22 on the first run after the telemetry landed: 22 synthetic
+ * `auq_clarity` records in the live store, each carrying the coordinator's real
+ * `session_id` — indistinguishable, after the fact, from denies a live operator
+ * actually hit. `eventsFilePath`'s own doc comment warns of exactly this.
+ *
+ * Per call rather than per file so no test can observe another's records, and so
+ * the guard-inactive banner (keyed on project dir) cannot be deduplicated away
+ * by a sibling test that happened to run first.
+ *
+ * @returns {object} spawnSync result, plus `eventsHome` — the pinned project dir.
  */
 function runHook(stdin, { hook = HOOK, execArgv = [] } = {}) {
-  return spawnSync(process.execPath, [...execArgv, hook], {
+  const eventsHome = mkdtempSync(path.join(os.tmpdir(), 'auq-events-'));
+  const result = spawnSync(process.execPath, [...execArgv, hook], {
     input: stdin,
     encoding: 'utf8',
     cwd: REPO_ROOT,
     timeout: 20_000,
+    env: { ...process.env, CLAUDE_PROJECT_DIR: eventsHome },
   });
+  return { ...result, eventsHome };
+}
+
+/**
+ * Parse the telemetry the hook wrote under a `runHook` result's `eventsHome`.
+ * Returns `[]` when the file does not exist — "wrote nothing" is a legitimate
+ * outcome to assert, not an error.
+ *
+ * @param {string} eventsHome
+ * @returns {object[]}
+ */
+function readEvents(eventsHome) {
+  const file = path.join(eventsHome, '.orchestrator', 'metrics', 'events.jsonl');
+  let raw;
+  try {
+    raw = readFileSync(file, 'utf8');
+  } catch {
+    return [];
+  }
+  return raw.split('\n').filter(Boolean).map((line) => JSON.parse(line));
 }
 
 /**
@@ -295,6 +334,72 @@ describe('pre-auq-clarity — envelope shape', () => {
 // Fake regression — proves each test above actually bites
 // ---------------------------------------------------------------------------
 
+describe('pre-auq-clarity — telemetry (the guard must be falsifiable)', () => {
+  it('writes an allowed event for a clean question — without it "never fired" and "fired, clean" are the same observation', () => {
+    // The bug: someone drops the allow-side emit as redundant ("we only care
+    // about denies"). Nothing goes red, and the hook silently becomes
+    // unfalsifiable — under ADR-0011 an allow exits 0 and writes no stdout, so
+    // from outside the process a hook that never ran looks EXACTLY like a hook
+    // that ran and found nothing. That is the state HR-105 exists to forbid, and
+    // it is the open question this whole guard was built to answer.
+    const run = runHook(envelope([cleanQuestion()]));
+    expectAllow(run);
+
+    const events = readEvents(run.eventsHome).filter((e) => e.event.startsWith('orchestrator.auq_clarity.'));
+    expect(events).toHaveLength(1);
+    expect(events[0].event).toBe('orchestrator.auq_clarity.allowed');
+    expect(events[0].hurdles).toEqual([]);
+    expect(events[0].questions).toBe(1);
+  });
+
+  it('records the hurdle that actually broke, not merely that something did', () => {
+    // The bug: the payload degrades to a bare {denied: true}. The deny rate
+    // stays measurable but becomes un-actionable — H1 (header truncated by the
+    // tool) and H2 (too many options to weigh) have different causes and
+    // different fixes, and a tally that cannot separate them cannot tell you
+    // which one to re-aim.
+    const run = runHook(envelope([cleanQuestion({ header: 'Welche Strategie waehlen wir?' })]));
+    expectDeny(run);
+
+    const denied = readEvents(run.eventsHome).find((e) => e.event === 'orchestrator.auq_clarity.denied');
+    expect(denied.hurdles).toEqual(['H1']);
+  });
+
+  it('carries no question text — events.jsonl is read by audits never scoped to hold it', () => {
+    // The bug: a later edit adds the offending header to the payload "to make
+    // triage easier". The operator's question text is the one thing a clarity
+    // guard necessarily sees in full, and this store is swept fleet-wide.
+    const secret = 'Zroniankaertigungsschluessel';
+    const run = runHook(envelope([cleanQuestion({ header: secret })]));
+    expectDeny(run);
+
+    const raw = JSON.stringify(readEvents(run.eventsHome));
+    expect(raw).not.toContain(secret);
+  });
+
+  it('still denies when the telemetry write fails — measurement never overrides the verdict', () => {
+    // The bug: the emit is awaited OUTSIDE a try/catch, or the catch is dropped.
+    // A single unwritable metrics path then turns every deny into an allow, and
+    // the guard fails open at exactly the moment its logging is broken — the
+    // worst possible correlation.
+    const run = runHook(envelope([cleanQuestion({ header: 'Welche Strategie waehlen wir?' })]));
+    // Re-run against a project dir whose events.jsonl is a DIRECTORY, so the
+    // append throws EISDIR inside the hook.
+    const home = mkdtempSync(path.join(os.tmpdir(), 'auq-broken-'));
+    mkdirSync(path.join(home, '.orchestrator', 'metrics', 'events.jsonl'), { recursive: true });
+    const broken = spawnSync(process.execPath, [HOOK], {
+      input: envelope([cleanQuestion({ header: 'Welche Strategie waehlen wir?' })]),
+      encoding: 'utf8',
+      cwd: REPO_ROOT,
+      timeout: 20_000,
+      env: { ...process.env, CLAUDE_PROJECT_DIR: home },
+    });
+
+    expectDeny(run);
+    expectDeny(broken); // same verdict, telemetry broken
+  });
+});
+
 describe('pre-auq-clarity — fake regression (proves the guard bites)', () => {
   /**
    * Copy the hook into $TMPDIR with symlinks back to the real `scripts/` and
@@ -387,6 +492,28 @@ describe('pre-auq-clarity — fake regression (proves the guard bites)', () => {
     expect(() => expectDeny(vague, ['questions[0].header', '[gemessen: 29, Grenze: 12]'])).toThrow();
 
     expectDeny(runHook(stdin), ['questions[0].header', '[gemessen: 29, Grenze: 12]']);
+  });
+
+  it('DEFECT: allow-side telemetry dropped as redundant — the falsifiability test goes red', () => {
+    // The most plausible future edit against this guard, because it looks like
+    // pure noise reduction: "we only care about denies". It is the one edit that
+    // silently restores the unfalsifiable state — allow exits 0 and writes no
+    // stdout, so with no allow event nothing distinguishes a hook that never
+    // fired from one that fired and found nothing. Proving the test goes RED
+    // here is the only thing that makes it a guard rather than decoration.
+    const broken = stageHookCopy((src) => src.replace(
+      "  if (verdict.telemetry) {\n    await logDecision(verdict.action === 'deny' ? 'denied' : 'allowed', verdict.telemetry, input);\n  }",
+      "  if (verdict.telemetry && verdict.action === 'deny') {\n    await logDecision('denied', verdict.telemetry, input);\n  }",
+    ));
+
+    const stdin = envelope([cleanQuestion()]);
+    const trap = runHook(stdin, { hook: broken });
+    expectAllow(trap); // the decision is unchanged — that is what makes it silent
+    expect(readEvents(trap.eventsHome).filter((e) => e.event.startsWith('orchestrator.auq_clarity.'))).toHaveLength(0);
+
+    // ...and the real hook, same input, does record it.
+    const good = runHook(stdin);
+    expect(readEvents(good.eventsHome).map((e) => e.event)).toEqual(['orchestrator.auq_clarity.allowed']);
   });
 
   it('DEFECT: permissionDecision emitted beside updatedInput — the envelope test goes red', () => {

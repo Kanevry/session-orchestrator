@@ -103,7 +103,28 @@
  *
  * ## PSA
  *
- * No git command, read-only or otherwise (PSA-007). No filesystem write.
+ * No git command, read-only or otherwise (PSA-007). The only filesystem write is
+ * the append-only telemetry line to `.orchestrator/metrics/events.jsonl` (see
+ * § Telemetry) — never a repo file, and never anything a sibling session could
+ * be mid-edit on.
+ *
+ * ## Telemetry
+ *
+ * Every SCORED call emits exactly one `orchestrator.auq_clarity.*` event; the two
+ * fail-open paths emit one too, so an unchecked question is distinguishable from
+ * a checked-and-clean one after the fact. Without this the hook is unfalsifiable:
+ * allow and deny share exit code 0 under ADR-0011, so from outside the process
+ * "never fired" and "fired and allowed" are the SAME observation.
+ *
+ * The payload carries SHAPES ONLY — counts, hurdle ids, criterion tallies. No
+ * header, label, description or question text ever leaves this process. That is
+ * a privacy boundary, not a size optimisation: the operator's question text is
+ * the one thing a clarity guard necessarily sees in full, and `events.jsonl` is
+ * read by fleet-wide audits that were never scoped to hold it.
+ *
+ * Telemetry is best-effort at every call site and can never alter the verdict —
+ * awaited BEFORE the terminal emit, because `emitAllow`/`emitDeny` call
+ * `process.exit()` and never return, which would discard a pending async write.
  *
  * hooks.json registration is NOT part of this file's change set — see the
  * sibling agent's wiring change.
@@ -127,6 +148,7 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 /** @type {typeof import('../scripts/lib/io.mjs').readStdin} */ let readStdin;
 /** @type {typeof import('../scripts/lib/io.mjs').emitAllow} */ let emitAllow;
 /** @type {typeof import('../scripts/lib/io.mjs').emitDeny} */ let emitDeny;
+/** @type {typeof import('../scripts/lib/events.mjs').emitEvent} */ let emitEvent;
 /** @type {typeof import('../scripts/lib/auq/schema.mjs')} */ let schemaMod;
 /** @type {typeof import('../scripts/lib/auq/clarity.mjs')} */ let clarityMod;
 
@@ -209,6 +231,16 @@ async function bootstrap() {
   const { modules } = await armGuard(
     {
       io: { specifier: lib('io.mjs'), requires: ['readStdin', 'emitAllow', 'emitDeny'] },
+      // Telemetry is in the ARMING manifest, not loaded opportunistically at the
+      // call site, and that is deliberate. A guard whose firing rate nothing
+      // records is unfalsifiable (`.claude/rules/host-resources.md` § HR-105:
+      // one such verdict stayed wrong for four months because it reached the
+      // metrics store for 0.9 % of sessions). Under `armGuard` a broken
+      // events.mjs disarms this hook LOUDLY via the GUARD INACTIVE banner;
+      // loaded lazily it would instead disarm the measurement SILENTLY, and a
+      // silent measurement gap looks exactly like a clean run. Same placement as
+      // the sibling deny-capable guard, `hooks/pre-bash-destructive-guard.mjs`.
+      events: { specifier: lib('events.mjs'), requires: ['emitEvent'] },
       schema: {
         specifier: lib('auq', 'schema.mjs'),
         requires: ['makeQuestion', 'makeOption'],
@@ -224,6 +256,7 @@ async function bootstrap() {
   );
 
   ({ readStdin, emitAllow, emitDeny } = modules.io);
+  ({ emitEvent } = modules.events);
   schemaMod = modules.schema;
   clarityMod = modules.clarity;
 }
@@ -396,7 +429,15 @@ function renderFinding(f, questionNo) {
  */
 export function decide(input, lib) {
   const notes = [];
-  const allow = () => ({ action: /** @type {'allow'} */ ('allow'), notes });
+  // `telemetry: null` means NOTHING WAS SCORED, which is a distinct outcome to
+  // scored-and-clean; the two must not collapse into one event. The early
+  // returns below all take that branch; only the terminal allow/deny carry real
+  // counts.
+  //
+  // (Phrased without the words `from` + a quoted string on one line: the
+  // hooks static-import guard in tests/hooks/on-stop.test.mjs scans source
+  // textually and reads that shape inside a COMMENT as a third-party import.)
+  const allow = (telemetry = null) => ({ action: /** @type {'allow'} */ ('allow'), notes, telemetry });
 
   if (input?.tool_name !== AUQ_TOOL) return allow();
 
@@ -499,7 +540,24 @@ export function decide(input, lib) {
     );
   }
 
-  if (broken.size === 0) return allow();
+  // Built ONCE, here, from the same maps the verdict itself is derived from.
+  // Re-deriving these counts at the emit site would be a second implementation
+  // of the judgement, free to drift from the one that actually decided.
+  //
+  // `soft` is the load-bearing field, not `hurdles`. The eight content criteria
+  // K1-K8 have a measured false-positive rate of 14-25 % and therefore do NOT
+  // block (module head) — but that rate was measured on TEMPLATES, and nothing
+  // has ever measured it on live runtime questions. `soft` is what makes that
+  // measurable: a criterion that fires on almost every real question is a broken
+  // instrument by HR-101 and must be re-aimed, not promoted to a hurdle.
+  const telemetry = {
+    questions: toolInput.questions.length,
+    skipped,
+    hurdles: [...broken.keys()],
+    soft: Object.fromEntries([...softByCriterion.entries()].sort((a, b) => a[0].localeCompare(b[0]))),
+  };
+
+  if (broken.size === 0) return allow(telemetry);
 
   const sections = [];
   let used = 0;
@@ -566,7 +624,7 @@ export function decide(input, lib) {
     'Operator es sehen könnte. Inhaltliche Kriterien (Grund/Preis/Folge je Option, Jargon, ' +
     '„geh selbst nachsehen") werden hier NICHT geprüft und sind kein Grund für diese Sperre.';
 
-  return { action: 'deny', reason, suggestion, notes };
+  return { action: 'deny', reason, suggestion, notes, telemetry };
 }
 
 // ---------------------------------------------------------------------------
@@ -589,6 +647,40 @@ function writeNotes(notes) {
   } catch { /* stderr may be closed; the decision below is what matters */ }
 }
 
+/**
+ * Append one telemetry line, then get out of the way.
+ *
+ * Awaited by every caller BEFORE the terminal emit — `emitAllow`/`emitDeny` call
+ * `process.exit()` and never return, and node discards a pending async write at
+ * exit (the same class as `.claude/rules/` § "console.log + process.exit() drops
+ * stdout above the pipe buffer"). Awaiting is what makes the record real.
+ *
+ * Swallows EVERYTHING, including a missing `emitEvent` binding: a telemetry
+ * failure that turned a deny into an allow would be strictly worse than no
+ * telemetry at all — the guard's whole purpose would be traded for its
+ * measurement.
+ *
+ * @param {string} verb    terminal segment of `orchestrator.auq_clarity.<verb>`
+ * @param {object} payload shapes and counts only — never question text
+ * @param {object|null} input the PreToolUse payload, for session attribution
+ * @returns {Promise<void>}
+ */
+async function logDecision(verb, payload, input) {
+  try {
+    const sessionId = typeof input?.session_id === 'string' && input.session_id
+      ? input.session_id
+      : (typeof input?.parent_session_id === 'string' && input.parent_session_id
+        ? input.parent_session_id
+        : null);
+    await emitEvent(`orchestrator.auq_clarity.${verb}`, {
+      ...(sessionId ? { session_id: sessionId } : {}),
+      ...payload,
+    });
+  } catch {
+    // Best-effort — telemetry must never block or alter the guard decision.
+  }
+}
+
 async function main() {
   let input;
   try {
@@ -597,15 +689,29 @@ async function main() {
     // Malformed / oversized / slow stdin is a harness quirk, not a bad question.
     // Denying here would destroy every question on a parse error.
     writeNotes([`stdin unlesbar (${String(err?.message ?? err).split('\n')[0]}) — durchgelassen.`]);
+    // Logged, because this is a question that reached the operator UNCHECKED.
+    // Silent fail-open is the state this whole guard exists to make visible.
+    await logDecision('fail_open', { cause: 'stdin-unreadable' }, null);
     return emitAllow();
   }
   if (!input) return emitAllow();
 
   // Cheap pre-check: the matcher in hooks.json is not the only line of defence.
+  // Deliberately UNLOGGED: on a correct `AskUserQuestion` matcher this branch is
+  // unreachable, and logging every foreign tool call would bury the AUQ signal
+  // under traffic this hook has no opinion about.
   if (input.tool_name !== AUQ_TOOL) return emitAllow();
 
   const verdict = decide(input, { schema: schemaMod, clarity: clarityMod });
   writeNotes(verdict.notes);
+
+  // The allow event is not bookkeeping — it is the ONLY proof the hook fires at
+  // all. Under ADR-0011 allow and deny share exit code 0 and an allow writes no
+  // stdout, so "the matcher never delivered" and "delivered, question was clean"
+  // are indistinguishable from outside this process without it.
+  if (verdict.telemetry) {
+    await logDecision(verdict.action === 'deny' ? 'denied' : 'allowed', verdict.telemetry, input);
+  }
 
   if (verdict.action === 'deny') return emitDeny(verdict.reason, verdict.suggestion);
   return emitAllow();
@@ -664,13 +770,18 @@ if (invokedAsScript()) {
     process.exit(0); // fail-open, but no longer fail-silent
   }
 
-  main().catch((e) => {
+  main().catch(async (e) => {
     try {
       process.stderr.write(
         `⚠ ${HOOK_NAME}: internal hook error — question ALLOWED unchecked ` +
           `(${String(e?.message ?? e).split('\n')[0]})\n`,
       );
     } catch { /* stderr may be closed; the allow below is the decision */ }
+    // stderr is a debug channel nothing is obliged to read (§ writeNotes), so the
+    // durable record of "a question got through unchecked" has to go somewhere a
+    // later audit can find it. `logDecision` swallows its own failures, so this
+    // await cannot keep the allow below from happening.
+    await logDecision('fail_open', { cause: 'internal-error' }, null);
     emitAllow();
   });
 }
