@@ -7,8 +7,8 @@ Detailed component inventory and architecture reference for Session Orchestrator
 ```mermaid
 flowchart LR
     USER([Operator]) -->|invokes /session| COORD[Coordinator]
-    COORD -->|reads| SK[Skills<br/>46 user-facing]
-    COORD -->|invokes| CMD[Commands<br/>25 slash-cmds]
+    COORD -->|reads| SK[Skills<br/>47 user-facing]
+    COORD -->|invokes| CMD[Commands<br/>27 slash-cmds]
     COORD -->|dispatches| AG[Agents<br/>15 typed sub-agents]
     AG -.->|parallel waves| W1[code-implementer]
     AG -.-> W2[test-writer]
@@ -18,7 +18,7 @@ flowchart LR
     COORD -->|writes| METRIC[.orchestrator/metrics/<br/>sessions · learnings · events]
 ```
 
-## Skills (46 user-facing)
+## Skills (47 user-facing)
 
 - **Lifecycle:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `quality-gates`, `using-orchestrator`
 - **Authoring:** `skill-creator`, `mcp-builder`, `hook-development`, `frontmatter-guard`, `contract-version-bump`
@@ -29,11 +29,12 @@ flowchart LR
 - **Ecosystem:** `bootstrap`, `gitlab-ops`, `gitlab-portfolio`, `ecosystem-health`, `mode-selector`, `autopilot`, `dispatcher`, `spinout`, `npm-publish`
 - **Testing:** `test-runner`, `playwright-driver`, `peekaboo-driver`
 - **Content review:** `persona-panel`
+- **Operator ergonomics:** `eli5` (plain-language restatement of the last answer)
 - **Visualization:** `tmux-layout` (opt-in operator side-channel — [ADR-0007](adr/0007-tmux-visualization-substrate.md))
 
-## Commands (26)
+## Commands (27)
 
-`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/dispatcher`, `/reconcile`, `/spinout`, `/eval`, `/release`, `/contract-version-bump`.
+`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/dispatcher`, `/reconcile`, `/spinout`, `/eval`, `/release`, `/contract-version-bump`, `/eli5`.
 
 ## Agents (15 typed sub-agents)
 
