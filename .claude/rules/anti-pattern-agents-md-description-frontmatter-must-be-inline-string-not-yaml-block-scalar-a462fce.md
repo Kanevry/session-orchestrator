@@ -5,6 +5,9 @@ description: validate-plugin Check 11 explicitly rejects YAML block scalars in a
 globs:
   - "agents/**"
   - "scripts/lib/validate/**"
+paths:
+  - "agents/**"
+  - "scripts/lib/validate/**"
 learning-key: anti-pattern/agents-md-description-frontmatter-must-be-inline-string-not-yaml-block-scalar
 confidence: 0.9
 expires-at: 2026-11-19

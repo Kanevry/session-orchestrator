@@ -6,6 +6,10 @@ globs:
   - "tests/hooks/**"
   - "tests/lib/**"
   - "tests/fixtures/**"
+paths:
+  - "tests/hooks/**"
+  - "tests/lib/**"
+  - "tests/fixtures/**"
 learning-key: anti-pattern/a-green-quality-gate-on-the-development-platform-is-not-evidence-the-tree-builds-on-ci
 confidence: 0.9
 expires-at: 2026-10-28

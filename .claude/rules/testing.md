@@ -6,6 +6,13 @@ globs:
   - tests/**
   - vitest.config.*
   - playwright.config.*
+paths:
+  - "**/*.test.*"
+  - "**/*.spec.*"
+  - "**/*Tests*"
+  - tests/**
+  - vitest.config.*
+  - playwright.config.*
 tier: wave-only
 review-date: 2026-10-23
 ---

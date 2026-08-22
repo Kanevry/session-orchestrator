@@ -9,6 +9,18 @@
  *   (b) learning-key must be present
  *   (c) expires-at must be present
  *
+ * Plus two COHORT-INDEPENDENT invariants that bind on every rule file:
+ *   (d) the frontmatter must parse (#1015)
+ *   (e) harness parity (#1108) — a rule that expresses a path restriction must
+ *       express it in `paths:`, the only scope key Claude Code's own loader
+ *       reads. `globs:`-only, or `globs:`/`paths:` carrying different pattern
+ *       sets, means the rule loads in different contexts on different
+ *       harnesses. See Case 13 at the end of this file.
+ *
+ * Every non-empty `globs:` fixture below therefore carries a mirroring
+ * `paths:` — it is the shape the repo's rules now use, and without it each
+ * fixture would trip (e) and stop isolating the invariant it is testing.
+ *
  * Rules WITHOUT `auto-generated: true` are silently skipped.
  * No auto-generated rules found → exit 0.
  * Any invariant violation → exit 1.
@@ -97,7 +109,7 @@ describe('check-rules — no auto-generated rules', () => {
   it('exits 0 when all .md files lack auto-generated: true', () => {
     const { root, rulesDir } = makeFixture();
     // A handwritten rule with no auto-generated key.
-    writeRule(rulesDir, 'handwritten.md', '---\ndescription: A handwritten rule\nglobs: ["src/**"]\n---\n# Rule\nSome content.\n');
+    writeRule(rulesDir, 'handwritten.md', '---\ndescription: A handwritten rule\nglobs: ["src/**"]\npaths: ["src/**"]\n---\n# Rule\nSome content.\n');
 
     const r = run(root);
 
@@ -157,7 +169,7 @@ describe('check-rules — missing learning-key', () => {
     writeRule(
       rulesDir,
       'no-learning-key.md',
-      '---\nauto-generated: true\nglobs: ["src/**/*.ts"]\nexpires-at: 2099-01-01\n---\n# Rule\nContent.\n',
+      '---\nauto-generated: true\nglobs: ["src/**/*.ts"]\npaths: ["src/**/*.ts"]\nexpires-at: 2099-01-01\n---\n# Rule\nContent.\n',
     );
 
     const r = run(root);
@@ -179,7 +191,7 @@ describe('check-rules — missing expires-at', () => {
     writeRule(
       rulesDir,
       'no-expires.md',
-      '---\nauto-generated: true\nglobs: ["scripts/**"]\nlearning-key: anti-pattern/missing-expiry\n---\n# Rule\nContent.\n',
+      '---\nauto-generated: true\nglobs: ["scripts/**"]\npaths: ["scripts/**"]\nlearning-key: anti-pattern/missing-expiry\n---\n# Rule\nContent.\n',
     );
 
     const r = run(root);
@@ -201,7 +213,7 @@ describe('check-rules — valid auto-generated rule', () => {
     writeRule(
       rulesDir,
       'valid-generated.md',
-      '---\nauto-generated: true\nglobs: ["src/**/*.ts"]\nlearning-key: anti-pattern/use-strict\nexpires-at: 2099-12-31\n---\n# Rule\nContent.\n',
+      '---\nauto-generated: true\nglobs: ["src/**/*.ts"]\npaths: ["src/**/*.ts"]\nlearning-key: anti-pattern/use-strict\nexpires-at: 2099-12-31\n---\n# Rule\nContent.\n',
     );
 
     const r = run(root);
@@ -218,7 +230,7 @@ describe('check-rules — valid auto-generated rule', () => {
     writeRule(
       rulesDir,
       'valid-gen.md',
-      '---\nauto-generated: true\nglobs: ["tests/**"]\nlearning-key: fragile-pattern/test-fixture\nexpires-at: 2099-06-01\n---\n# Rule\n',
+      '---\nauto-generated: true\nglobs: ["tests/**"]\npaths: ["tests/**"]\nlearning-key: fragile-pattern/test-fixture\nexpires-at: 2099-06-01\n---\n# Rule\n',
     );
 
     const r = run(root);
@@ -285,7 +297,7 @@ describe('check-rules — handwritten always-on rule is not flagged', () => {
     writeRule(
       rulesDir,
       'valid-gen.md',
-      '---\nauto-generated: true\nglobs: ["src/**"]\nlearning-key: anti-pattern/foo\nexpires-at: 2099-01-01\n---\n# Gen\n',
+      '---\nauto-generated: true\nglobs: ["src/**"]\npaths: ["src/**"]\nlearning-key: anti-pattern/foo\nexpires-at: 2099-01-01\n---\n# Gen\n',
     );
 
     const r = run(root);
@@ -395,13 +407,13 @@ describe('check-rules — mixed valid and invalid auto-generated rules', () => {
     writeRule(
       rulesDir,
       'aaaa-valid.md',
-      '---\nauto-generated: true\nglobs: ["src/**"]\nlearning-key: anti-pattern/correct\nexpires-at: 2099-01-01\n---\n# Valid\n',
+      '---\nauto-generated: true\nglobs: ["src/**"]\npaths: ["src/**"]\nlearning-key: anti-pattern/correct\nexpires-at: 2099-01-01\n---\n# Valid\n',
     );
     // Invalid generated rule — missing expires-at.
     writeRule(
       rulesDir,
       'zzzz-invalid.md',
-      '---\nauto-generated: true\nglobs: ["tests/**"]\nlearning-key: anti-pattern/broken\n---\n# Broken\n',
+      '---\nauto-generated: true\nglobs: ["tests/**"]\npaths: ["tests/**"]\nlearning-key: anti-pattern/broken\n---\n# Broken\n',
     );
 
     const r = run(root);
@@ -504,7 +516,7 @@ describe('check-rules — malformed frontmatter is a FAIL, not a skip (#1015)', 
     writeRule(
       rulesDir,
       'aaaa-sound.md',
-      '---\nauto-generated: true\nglobs: ["src/**"]\nlearning-key: anti-pattern/ok\nexpires-at: 2099-01-01\n---\n# Sound\n',
+      '---\nauto-generated: true\nglobs: ["src/**"]\npaths: ["src/**"]\nlearning-key: anti-pattern/ok\nexpires-at: 2099-01-01\n---\n# Sound\n',
     );
     writeRule(
       rulesDir,
@@ -535,5 +547,204 @@ describe('check-rules — malformed frontmatter is a FAIL, not a skip (#1015)', 
 
     expect(r.status).toBe(0);
     expect(findings(r.stdout).fail).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Case 13 (#1108): HARNESS-PARITY — a rule that expresses a path restriction
+// must express it in `paths:`.
+//
+// Claude Code's own rule loader reads ONLY `paths:` and treats a rule without
+// it as unconditional ("rules without a `paths` field are loaded
+// unconditionally and apply to all files" — code.claude.com/docs/en/memory
+// § Path-specific rules). `globs:` is the CURSOR field name. Measured
+// 2026-08-22 before the fix this guards: 16 of 31 rule files carried `globs:`
+// and 0 carried `paths:`, so all 31 loaded unconditionally — 186,993 bytes
+// ≈ 46,700 tokens per dispatch. The fix (adding `paths:` alongside `globs:`)
+// landed the same day; these tests are the RECURRENCE guard, which is what was
+// missing, not the fix.
+//
+// Formulated as PARITY, not presence: the contexts a rule loads in under
+// Claude Code's loader (reads `paths:`) must equal those under rule-loader.mjs
+// (reads `globs:`, falls back to `paths:` — #795, globs wins).
+// ---------------------------------------------------------------------------
+
+describe('check-rules — harness parity: globs: without paths: (#1108)', () => {
+  // BUG CAUGHT: the exact regression this guard exists for — a NEW rule
+  // authored with only `globs:` (the Cursor key) passes every other invariant
+  // and is silently loaded ALWAYS-ON by Claude Code. Before this check the
+  // same fixture exited 0 with a PASS line.
+  it('FAILs a handwritten rule that declares globs: but no paths:', () => {
+    const { root, rulesDir } = makeFixture();
+    writeRule(
+      rulesDir,
+      'globs-only.md',
+      '---\ntier: wave-only\nglobs:\n  - "src/**"\nreview-date: 2026-10-23\n---\n# Globs Only\nContent.\n',
+    );
+
+    const r = run(root);
+
+    expect(r.status).toBe(1);
+    const { fail, pass } = findings(r.stdout);
+    expect(fail).toHaveLength(1);
+    expect(fail[0]).toContain('globs-only.md');
+    expect(fail[0]).toContain('no paths:');
+    // The file must not ALSO earn the handwritten PASS — a file that FAILs
+    // must never simultaneously PASS.
+    expect(pass.filter((l) => l.includes('globs-only.md'))).toEqual([]);
+  });
+
+  // BUG CAUGHT: wiring the parity check into the handwritten branch only.
+  // scripts/lib/reconcile/renderer.mjs (~:264) emits `globs:` and never
+  // `paths:`, so the auto-generated cohort is the cohort with a LIVE producer
+  // of this defect — a handwritten-only check would miss every machine-written
+  // rule from the next reconcile run onward.
+  it('FAILs an auto-generated rule that declares globs: but no paths: (cohort-independent)', () => {
+    const { root, rulesDir } = makeFixture();
+    writeRule(
+      rulesDir,
+      'gen-globs-only.md',
+      '---\nauto-generated: true\nglobs: ["scripts/**"]\nlearning-key: anti-pattern/x\nexpires-at: 2099-01-01\n---\n# Gen\n',
+    );
+
+    const r = run(root);
+
+    expect(r.status).toBe(1);
+    const { fail, pass } = findings(r.stdout);
+    expect(fail).toHaveLength(1);
+    expect(fail[0]).toContain('gen-globs-only.md');
+    expect(fail[0]).toContain('no paths:');
+    expect(pass.filter((l) => l.includes('gen-globs-only.md'))).toEqual([]);
+  });
+
+  // BUG CAUGHT: an over-broad check that demands BOTH keys. `paths:` alone is
+  // the form the native documentation prescribes and the form the primary
+  // downstream consumer uses exclusively (projects-baseline: 26 rule files,
+  // all `paths:`, 0 `globs:`). Demanding `globs:` too would turn that repo red
+  // and would contradict validate-vendored-rules.mjs (~:289), which already
+  // owns the globs:-is-canonical-for-vendored-rules preference at WARN level.
+  it('does not fire on a paths:-only rule (the shape Claude Code documents)', () => {
+    const { root, rulesDir } = makeFixture();
+    writeRule(
+      rulesDir,
+      'paths-only-rule.md',
+      '---\ntier: wave-only\npaths:\n  - "src/**"\nreview-date: 2026-10-23\n---\n# Paths Only\nContent.\n',
+    );
+
+    const r = run(root);
+
+    expect(r.status).toBe(0);
+    expect(findings(r.stdout).fail).toEqual([]);
+  });
+});
+
+describe('check-rules — harness parity: globs:/paths: divergence (#1108)', () => {
+  // BUG CAUGHT: an order-sensitive comparison (a bare
+  // `JSON.stringify(globs) === JSON.stringify(paths)` on the unsorted lists)
+  // reporting two IDENTICAL pattern sets as divergent. A glob list is matched
+  // any-of, so order carries no meaning and a reordered mirror is not a defect.
+  it('does not fire when the two lists carry the same patterns in a different order', () => {
+    const { root, rulesDir } = makeFixture();
+    writeRule(
+      rulesDir,
+      'reordered.md',
+      '---\ntier: wave-only\nglobs:\n  - "b/**"\n  - "a/**"\npaths:\n  - "a/**"\n  - "b/**"\nreview-date: 2026-10-23\n---\n# Reordered\n',
+    );
+
+    const r = run(root);
+
+    expect(r.status).toBe(0);
+    expect(findings(r.stdout).fail).toEqual([]);
+  });
+
+  // BUG CAUGHT: comparing the two keys by their RAW frontmatter text instead of
+  // their parsed lists. Flow style and block style are the same list to
+  // rule-loader.mjs, so a text comparison reports a false divergence on a rule
+  // that is perfectly mirrored — and would push authors toward the one form
+  // that happens to satisfy the checker.
+  it('does not fire when one key uses flow style and the other block style', () => {
+    const { root, rulesDir } = makeFixture();
+    writeRule(
+      rulesDir,
+      'mixed-style.md',
+      '---\ntier: wave-only\nglobs: ["a/**", "b/**"]\npaths:\n  - "a/**"\n  - "b/**"\nreview-date: 2026-10-23\n---\n# Mixed Style\n',
+    );
+
+    const r = run(root);
+
+    expect(r.status).toBe(0);
+    expect(findings(r.stdout).fail).toEqual([]);
+  });
+
+  // BUG CAUGHT: a comparison too coarse to see a real difference (comparing
+  // only list LENGTHS, or only "both keys present"). The two lists here are the
+  // same length and differ in every element — Claude Code would scope this rule
+  // to tests/, rule-loader.mjs and Cursor to src/. Same rule, two harnesses,
+  // disjoint activation.
+  it('FAILs when both keys are present with equal-length but different pattern sets', () => {
+    const { root, rulesDir } = makeFixture();
+    writeRule(
+      rulesDir,
+      'divergent.md',
+      '---\ntier: wave-only\nglobs:\n  - "src/**"\n  - "lib/**"\npaths:\n  - "tests/**"\n  - "docs/**"\nreview-date: 2026-10-23\n---\n# Divergent\n',
+    );
+
+    const r = run(root);
+
+    expect(r.status).toBe(1);
+    const { fail, pass } = findings(r.stdout);
+    expect(fail).toHaveLength(1);
+    expect(fail[0]).toContain('divergent.md');
+    expect(fail[0]).toContain('DIFFERENT pattern sets');
+    expect(pass.filter((l) => l.includes('divergent.md'))).toEqual([]);
+  });
+});
+
+describe('check-rules — harness parity leaves the empty-list special cases alone (#1108)', () => {
+  // BUG CAUGHT: the parity check double-reporting on `paths: []`. That shape is
+  // a path-restriction key by presence, yet rule-loader.mjs excludes it
+  // unconditionally at `globs.length === 0` AFTER gating — so the accurate
+  // finding is the existing "matches NOTHING / never loads" one, and a second,
+  // opposite-sounding "loads ALWAYS-ON in Claude Code" line on the same file is
+  // precisely the confusion #880 QA Defect 1 / #892 removed. Exactly one
+  // finding, and it must be the empty-list one.
+  it('reports only the empty-list finding for a paths: [] rule, never a parity finding', () => {
+    const { root, rulesDir } = makeFixture();
+    writeRule(
+      rulesDir,
+      'empty-paths.md',
+      '---\ntier: wave-only\npaths: []\nreview-date: 2026-10-23\n---\n# Empty Paths\nContent.\n',
+    );
+
+    const r = run(root);
+
+    expect(r.status).toBe(0); // handwritten cohort stays warn-only
+    const { fail, warn } = findings(r.stdout);
+    expect(fail).toEqual([]);
+    const own = warn.filter((l) => l.includes('empty-paths.md'));
+    expect(own).toHaveLength(1);
+    expect(own[0]).toContain('matches NOTHING');
+  });
+
+  // BUG CAUGHT: the parity check breaking the #892 module-header special case —
+  // an auto-generated `globs: []` paired with `host-class:` must still earn its
+  // ONE distinct "matches NOTHING" FAIL. A parity check that fired on the empty
+  // list would add a contradictory second FAIL claiming the same rule loads
+  // always-on.
+  it('leaves the #892 empty-globs + host-class case at exactly one FAIL', () => {
+    const { root, rulesDir } = makeFixture();
+    writeRule(
+      rulesDir,
+      'empty-globs-hostclass.md',
+      '---\nauto-generated: true\nglobs: []\nhost-class: mac-m-series\nlearning-key: anti-pattern/dead\nexpires-at: 2099-01-01\n---\n# Empty\n',
+    );
+
+    const r = run(root);
+
+    expect(r.status).toBe(1);
+    const { fail } = findings(r.stdout);
+    expect(fail).toHaveLength(1);
+    expect(fail[0]).toContain('matches NOTHING');
+    expect(fail[0]).not.toContain('no paths:');
   });
 });

@@ -243,12 +243,12 @@ For each batch (proposals sliced into groups of 4):
 ```
 AskUserQuestion({
   questions: [{
-    question: "Which rule proposals should be written to .claude/rules/?  (batch K of N)",
-    header: "Reconcile — Approve Rule Proposals",
+    question: "Batch K of N — which rule proposals should be written into .claude/rules/?",
+    header: "Regeln",
     options: [
       {
         label: "<slug>.md (confidence: 0.72)",
-        description: "Learning: <learningKey> | Path: .claude/rules/<slug>.md | <first 100 chars of rendered content>"
+        description: "From learning <learningKey>. Becomes a file under .claude/rules/ — where this repo keeps its rules. Text: <first 100 chars of rendered content>"
       },
       ...up to 4 options per batch...
       {

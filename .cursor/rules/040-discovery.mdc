@@ -186,9 +186,9 @@ Options:
 1. [title] — [file_path]:[line] ([severity])
 
 Options:
-1. Accept all (Recommended) — create issues for all
-2. Review individually
-3. Dismiss all
+1. Accept all (Recommended) — one issue per finding. Fastest, and you can still close any of them later.
+2. Review individually — decide finding by finding. Costs about a minute per item.
+3. Dismiss all — no issues created, and the findings are gone when this session ends.
 ```
 
 ### Step 4: Batch Confirmation
@@ -196,9 +196,9 @@ Options:
 ```
 Ready to create [N] issues? ([X] critical, [Y] high, [Z] medium, [W] low)
 
-1. Create all [N] issues (Recommended)
-2. Review list first
-3. Cancel
+1. Create all [N] issues (Recommended) — the list is already filtered, so nothing here is noise. You can close any of them later.
+2. Review list first — read the titles before anything is written. Costs one extra step.
+3. Cancel — nothing is written, and this run's findings are not kept.
 ```
 
 ## Phase 5: Issue Creation

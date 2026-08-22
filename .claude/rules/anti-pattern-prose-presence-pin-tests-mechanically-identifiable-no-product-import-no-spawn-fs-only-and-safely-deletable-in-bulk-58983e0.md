@@ -4,6 +4,8 @@ alwaysApply: false
 description: Test files that import zero product code, spawn no process, and only readFileSync markdown to assert prose presence are…
 globs:
   - ".claude/rules/**"
+paths:
+  - ".claude/rules/**"
 learning-key: anti-pattern/prose-presence-pin-tests-mechanically-identifiable-no-product-import-no-spawn-fs-only-and-safely-deletable-in-bulk
 confidence: 0.9
 expires-at: 2026-10-25

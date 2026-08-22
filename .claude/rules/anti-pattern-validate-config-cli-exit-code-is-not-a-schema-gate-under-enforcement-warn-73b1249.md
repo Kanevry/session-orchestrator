@@ -6,6 +6,10 @@ globs:
   - "scripts/**"
   - "scripts/lib/**"
   - "tests/docs/**"
+paths:
+  - "scripts/**"
+  - "scripts/lib/**"
+  - "tests/docs/**"
 host-class: macos-arm64
 learning-key: anti-pattern/validate-config-cli-exit-code-is-not-a-schema-gate-under-enforcement-warn
 confidence: 0.9

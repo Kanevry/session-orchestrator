@@ -292,7 +292,7 @@ Always use the `priority::<level>` format in VCS CLI commands, not P0/P1/P2/P3.
 
 ### Step 4: Present for user confirmation
 
-Use AskUserQuestion to present the full issue structure:
+Use the AskUserQuestion payload in `SKILL.md` § 6.3 verbatim — the issue table belongs in the option's `preview` field, not in the question text:
 
 - Epic title and description
 - Sub-issues with: title, priority, labels, dependency links

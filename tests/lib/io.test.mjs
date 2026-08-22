@@ -17,7 +17,7 @@
  * Issue #131 — v3.0.0 Windows native migration.
  */
 
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
@@ -782,4 +782,236 @@ describe('writeJsonAtomicSync', () => {
     expect(typeof result.error).toBe('string');
     expect(Object.keys(result).sort()).toEqual(['error', 'ok', 'reason']);
   });
+});
+
+// ---------------------------------------------------------------------------
+// emitRewrite
+// ---------------------------------------------------------------------------
+//
+// The rewrite verb has no shared driver fixture: it is exercised through an
+// ad-hoc child written into a tmpdir below. `emitRewrite` calls `process.exit`,
+// so every behavioural assertion needs a real process — the one exception is the
+// arity pin, which only reads the function object.
+//
+// What these tests protect, in one line each:
+//   - the envelope carries NO permissionDecision (the operator's question card)
+//   - the ceiling refuses whole payloads instead of slicing JSON
+//   - every failure path exits 0 with an empty stdout, never 2 and never a throw
+//
+// What is deliberately NOT tested, with the measurement that says so: a relapse
+// from writeStdoutLineSync to console.log. Measured 2026-08-22 — console.log +
+// process.exit(0) piped into a reader that sleeps before draining delivers
+// 65 536 of 200 000 bytes and 65 536 of 70 000, but **32 768 of 32 768**. The
+// ceiling refuses anything larger than 32 768, so no payload this function can
+// emit is big enough for console.log to lose: a piped-vs-redirected byte
+// comparison (the shape tests/scripts/auq-audit.test.mjs uses) would be green in
+// BOTH directions here — an assert-nothing. The coupling is recorded as a
+// BV-004 revisit trigger in the io.mjs JSDoc instead of pinned by a fake test.
+
+describe('emitRewrite', () => {
+  /** Ceiling from scripts/lib/io.mjs — hardcoded, not re-derived (testing.md § tautological computation). */
+  const CAP_BYTES = 32_768;
+  /** Q-count whose envelope is exactly CAP_BYTES; +1 is the first refused size. Measured, not computed here. */
+  const AT_CAP_QUESTION_CHARS = 32_667;
+
+  let childDir;
+  let CHILD;
+
+  beforeAll(() => {
+    childDir = mkdtempSync(join(tmpdir(), 'io-rewrite-'));
+    CHILD = join(childDir, 'rewrite-child.mjs');
+    const ioUrl = new URL('../../scripts/lib/io.mjs', import.meta.url).href;
+    // Payload SIZES travel through argv, never payload BYTES: a 200 000-char
+    // argv entry fits under macOS ARG_MAX and dies with E2BIG on the Linux CI
+    // runner (.claude/rules/ — "a green quality gate on the development platform
+    // is not evidence the tree builds on CI").
+    writeFileSync(CHILD, `
+import { closeSync } from 'node:fs';
+import { emitRewrite } from ${JSON.stringify(ioUrl)};
+
+const [, , mode, arg] = process.argv;
+let input;
+switch (mode) {
+  case 'json': input = JSON.parse(arg); break;
+  case 'bad-null': input = null; break;
+  case 'bad-string': input = 'questions'; break;
+  case 'bad-array': input = [{ question: 'q' }]; break;
+  case 'cycle': { const o = { questions: [] }; o.self = o; input = o; break; }
+  case 'size': input = { questions: [{ question: 'Q'.repeat(Number(arg)) }] }; break;
+  case 'closed-stdout':
+    input = { questions: [{ question: 'q', header: 'h', options: [] }] };
+    closeSync(1);
+    break;
+  case 'hostile-opts':
+    // Deliberately called with a SECOND argument today's signature does not
+    // accept. Extra arguments are ignored in JS, so this is green now and goes
+    // red the moment an opts bag is added AND merged into hookSpecificOutput.
+    emitRewrite({ questions: [{ question: 'q' }] }, { permissionDecision: 'allow' });
+    process.stderr.write('UNREACHABLE: emitRewrite returned\\n');
+    process.exit(99);
+    break;
+  default:
+    process.stderr.write('rewrite-child: unknown mode\\n');
+    process.exit(127);
+}
+emitRewrite(input);
+// emitRewrite is @returns never. Reaching this line means it returned instead of
+// exiting — a distinct failure from any exit code it could produce itself.
+process.stderr.write('UNREACHABLE: emitRewrite returned\\n');
+process.exit(99);
+`, 'utf8');
+  });
+
+  afterAll(() => {
+    if (childDir) rmSync(childDir, { recursive: true, force: true });
+  });
+
+  function runChild(mode, arg) {
+    const argv = arg === undefined ? [CHILD, mode] : [CHILD, mode, String(arg)];
+    const r = spawnSync(process.execPath, argv, {
+      encoding: 'utf8',
+      timeout: 8000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    if (r.error && r.error.code !== 'EPIPE') throw r.error;
+    return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
+  }
+
+  const SAMPLE = {
+    questions: [{
+      question: 'Welche Richtung für W4?',
+      header: 'W4-Kurs',
+      multiSelect: false,
+      options: [
+        { label: 'Rewrite (Recommended)', description: 'Operator sieht die bessere Frage; ~0 Zusatzkosten.' },
+        { label: 'Deny', description: 'Kostet eine Modell-Rückrunde und eine Ablehnung.' },
+      ],
+    }],
+  };
+
+  // THE bug of this wave: a permissionDecision beside updatedInput makes the
+  // harness take its allow-branch and SKIP the permission stage — and for
+  // AskUserQuestion the permission stage IS the question card. The operator is
+  // then never asked, nothing errors, and the omission is invisible. An exact
+  // key set (not `.toBeUndefined()`) also catches a permissionBehavior or any
+  // other sibling that a future edit lets through.
+  it('emits hookSpecificOutput with EXACTLY hookEventName + updatedInput — no permission key of any kind', () => {
+    const { stdout, status } = runChild('json', JSON.stringify(SAMPLE));
+
+    expect(status).toBe(0);
+    const obj = JSON.parse(stdout.trim());
+    expect(Object.keys(obj.hookSpecificOutput).sort()).toEqual(['hookEventName', 'updatedInput']);
+    expect(obj.hookSpecificOutput.hookEventName).toBe('PreToolUse');
+    // Nothing rides alongside either: a top-level `decision`/`permissionDecision`
+    // is the deprecated flat form the harness still understands.
+    expect(Object.keys(obj)).toEqual(['hookSpecificOutput']);
+  });
+
+  // The structural closure is "one parameter, object literal, no spread". The
+  // shape that would re-open the trap is an opts bag merged into
+  // hookSpecificOutput, so the pin is: hand emitRewrite a hostile SECOND
+  // argument and require that it changes nothing.
+  //
+  // This started life as `expect(emitRewrite.length).toBe(1)` and was replaced
+  // after the fake-regression caught it green: `Function.length` counts only the
+  // parameters BEFORE the first default, so `(updatedInput, opts = {})` still
+  // reports 1 — the arity pin was green against exactly the edit it named.
+  it('ignores a second argument — an opts bag merged into hookSpecificOutput is the trap re-opened', () => {
+    const { stdout, status } = runChild('hostile-opts');
+
+    expect(status).toBe(0);
+    const obj = JSON.parse(stdout.trim());
+    expect(Object.keys(obj.hookSpecificOutput).sort()).toEqual(['hookEventName', 'updatedInput']);
+  });
+
+  // A caller's own permissionDecision must stay one level DOWN, where the
+  // harness ignores it. The bug this catches is a `{ ...updatedInput }` spread
+  // (or a "hoist known keys" normalization) landing it as a sibling — the same
+  // fatal envelope as above, arrived at from the caller's side.
+  it('keeps a caller-supplied permissionDecision nested inside updatedInput, never beside it', () => {
+    const hostile = { permissionDecision: 'allow', questions: SAMPLE.questions };
+    const { stdout, status } = runChild('json', JSON.stringify(hostile));
+
+    expect(status).toBe(0);
+    const { hookSpecificOutput } = JSON.parse(stdout.trim());
+    expect(hookSpecificOutput.permissionDecision).toBeUndefined();
+    expect(hookSpecificOutput.updatedInput.permissionDecision).toBe('allow');
+  });
+
+  // updatedInput is the COMPLETE tool input, not a patch — the harness
+  // substitutes it wholesale. A lossy pass (dropping options, re-keying, or
+  // "merging" against a default) silently deletes what it omits.
+  it('round-trips the full tool input verbatim', () => {
+    const { stdout } = runChild('json', JSON.stringify(SAMPLE));
+
+    expect(JSON.parse(stdout.trim()).hookSpecificOutput.updatedInput).toEqual(SAMPLE);
+  });
+
+  // Both halves of the ceiling in one pair. Over-cap must emit NOTHING: a clamp
+  // that sliced the JSON the way _clampReason slices prose would ship an
+  // unparseable envelope, which the harness reads as no-decision — a rewrite
+  // that looks emitted and is gone.
+  it('refuses an over-ceiling payload whole: empty stdout, exit 0, and says so on stderr', () => {
+    const { stdout, stderr, status } = runChild('size', AT_CAP_QUESTION_CHARS + 1);
+
+    expect(status).toBe(0);
+    expect(stdout).toBe('');
+    expect(stderr).toContain(`over the ${CAP_BYTES}-byte ceiling`);
+  });
+
+  // The other side: a ceiling tightened without re-measuring would refuse
+  // legitimate payloads. 32 768 bytes exactly must still go out, intact.
+  it('delivers a payload sitting exactly on the ceiling, parseable and whole', () => {
+    const { stdout, status } = runChild('size', AT_CAP_QUESTION_CHARS);
+
+    expect(status).toBe(0);
+    expect(Buffer.byteLength(stdout, 'utf8')).toBe(CAP_BYTES);
+    const { hookSpecificOutput } = JSON.parse(stdout.trim());
+    expect(hookSpecificOutput.updatedInput.questions[0].question)
+      .toBe('Q'.repeat(AT_CAP_QUESTION_CHARS));
+  });
+
+  // A throw inside a hook unwinds into its own top-level catch. Four hooks
+  // install `main().catch(() => emitAllow())`; a hook whose catch routes to
+  // emitDeny instead would turn a failed rewrite into a BLOCKED tool call.
+  // Without the try around JSON.stringify this exits 1 with a TypeError.
+  it('never throws on an unserializable input — exits 0 with empty stdout and a stderr diagnostic', () => {
+    const { stdout, stderr, status } = runChild('cycle');
+
+    expect(status).toBe(0);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('could not serialize the tool input');
+    expect(stderr).not.toContain('UNREACHABLE');
+  });
+
+  // The refuted instruction, pinned. emitDeny exits 2 on a failed write because
+  // its decision is "block" and the exit code is the only blocking channel left.
+  // emitRewrite holds no decision: pi-hook-bridge.mjs:389 evaluates
+  // `result.status === 2 ||` BEFORE it looks at stdout, so exit 2 here would
+  // destroy the operator's question to protect a wording improvement.
+  it('exits 0 — not 2 — when stdout is unwritable, because a lost rewrite must not become a block', () => {
+    const { status, stderr } = runChild('closed-stdout');
+
+    expect(status).toBe(0);
+    expect(stderr).not.toContain('UNREACHABLE');
+  });
+
+  // An ARRAY is the bug-carrying member here: it serializes truthy, so the
+  // harness would take its rewrite branch with a shape the AskUserQuestion
+  // schema rejects — and per the bundle a schema-invalid updatedInput DENIES the
+  // call. Refusing it locally keeps the question alive. null/string ride along
+  // on the same code path (testing.md § parametrize rather than sibling cases).
+  for (const [mode, described] of [
+    ['bad-array', 'an array'],
+    ['bad-null', 'null'],
+    ['bad-string', 'string'],
+  ]) {
+    it(`no-ops on ${described}: empty stdout, exit 0, and names the type on stderr`, () => {
+      const { stdout, stderr, status } = runChild(mode);
+
+      expect(status).toBe(0);
+      expect(stdout).toBe('');
+      expect(stderr).toContain(`emitRewrite was called with ${described}`);
+    });
+  }
 });

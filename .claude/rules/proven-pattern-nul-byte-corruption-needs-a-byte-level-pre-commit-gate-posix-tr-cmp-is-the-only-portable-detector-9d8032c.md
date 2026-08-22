@@ -5,6 +5,9 @@ description: NUL bytes written into a source file survive BOTH vitest and eslint
 globs:
   - ".husky/**"
   - "tests/husky/**"
+paths:
+  - ".husky/**"
+  - "tests/husky/**"
 learning-key: proven-pattern/nul-byte-corruption-needs-a-byte-level-pre-commit-gate-posix-tr-cmp-is-the-only-portable-detector
 confidence: 0.8
 expires-at: 2026-10-25

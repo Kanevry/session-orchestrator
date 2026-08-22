@@ -5,6 +5,9 @@ description: Node stdout is ASYNC on a pipe (macOS)
 globs:
   - "scripts/lib/**"
   - "scripts/lib/validate/**"
+paths:
+  - "scripts/lib/**"
+  - "scripts/lib/validate/**"
 learning-key: anti-pattern/console-log-process-exit-drops-stdout-above-the-pipe-buffer-on-an-exit-0-protocol-that-means-fail-open
 confidence: 0.95
 expires-at: 2026-10-27

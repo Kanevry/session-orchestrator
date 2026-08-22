@@ -5,6 +5,9 @@ description: exit 2 blocks regardless of what stdout did, so bugs in the payload
 globs:
   - "scripts/lib/**"
   - "tests/_helpers/**"
+paths:
+  - "scripts/lib/**"
+  - "tests/_helpers/**"
 learning-key: proven-pattern/moving-a-guard-from-exit-code-signalling-to-stdout-json-inverts-its-failure-direction-re-verify-every-deny-path-afterwards
 confidence: 0.9
 expires-at: 2026-10-27

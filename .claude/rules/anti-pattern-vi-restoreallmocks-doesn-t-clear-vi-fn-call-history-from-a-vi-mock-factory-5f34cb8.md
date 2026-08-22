@@ -4,6 +4,8 @@ alwaysApply: false
 description: A vi.fn() instantiated inside a vi.mock('node:child_process', factory) factory (e.g
 globs:
   - "tests/lib/autopilot/**"
+paths:
+  - "tests/lib/autopilot/**"
 learning-key: anti-pattern/vi-restoreallmocks-doesn-t-clear-vi-fn-call-history-from-a-vi-mock-factory
 confidence: 0.85
 expires-at: 2026-10-24

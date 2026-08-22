@@ -7,6 +7,8 @@ review-date: 2026-10-23
 
 A user decision has three legitimate forms. Pick the form first — asking is one of them, not the default.
 
+**Write for someone who knows this project but has not seen what you just saw.** What he needs to decide stands in the text, not in the file it points at — in the AUQ payload and in every finding you post.
+
 ## AUQ-001: Route Before You Ask
 
 Choose exactly one, in this order:
@@ -54,3 +56,9 @@ Same standard as `skills/grill/SKILL.md` § AUQ format rules. Deferred tool: cal
 - `(Recommended)` with no reason, cost, or consequence (AUQ-003).
 - An AUQ that blocks nothing — the operator was going to type `/go` anyway (AUQ-001.1).
 - Options the operator can only judge by reading the code they describe (AUQ-002).
+
+## AUQ-006: Plain Words, Real Things
+
+Say plainly what happens; invent nothing. **Test:** delete every noun the system lacks — survives, no analogy; collapses, say what happens (not "like a level crossing"). Simplifying drops words, never facts: anything greppable stays, and `skills/session-start/soul.md` § "Never traded for brevity" wins.
+
+`header` caps at **12 codepoints** — the tool truncates; 30 of 72 questions break it. Give an option a `preview` when the options differ in something literal — a diff, a title, a config block, a file list: if the answer puts that text somewhere, he sees it first.

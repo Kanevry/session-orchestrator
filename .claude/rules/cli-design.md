@@ -8,6 +8,15 @@ globs:
   - packages/*/bin/**
   - tools/**
   - "*.sh"
+paths:
+  - scripts/**
+  - bin/**
+  - cli/**
+  - src/cli/**
+  - src/commands/**
+  - packages/*/bin/**
+  - tools/**
+  - "*.sh"
 tier: wave-only
 review-date: 2026-10-23
 ---

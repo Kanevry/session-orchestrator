@@ -105,6 +105,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-auq-clarity.mjs\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [

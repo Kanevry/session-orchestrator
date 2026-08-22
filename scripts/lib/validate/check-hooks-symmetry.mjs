@@ -84,6 +84,16 @@ const DOCUMENTED_ASYMMETRIES = {
         // Cursor IDE and Pi v1 have no parallel agent dispatch at all
         // (skills/session-plan/SKILL.md Platform Note), and Codex has no payload
         // adapter for it. A matcher that can never fire is not enforcement.
+        // pre-auq-clarity (#1107): NOT ported by construction. The hook matches
+        // the `AskUserQuestion` tool, which this platform does not have — it
+        // renders a numbered Markdown list instead (docs/codex-setup.md:112,
+        // docs/cursor-setup.md:86), and pi-hook-bridge's TOOL_NAME_MAP carries
+        // no `askuserquestion` entry. A matcher on a tool that never fires is a
+        // dead entry: maintenance cost that ASSERTS a protection it does not
+        // provide. Revisit the day the platform gains the tool — the mechanical
+        // witness for that day is the mapPiToolName assertion in
+        // tests/hooks/pre-auq-clarity-wiring.test.mjs, which goes red then.
+        'pre-auq-clarity.mjs',
         'pre-task-scope-disjoint.mjs',
         'skill-invocation-telemetry.mjs',
         'enforce-scope.mjs',
@@ -132,6 +142,16 @@ const DOCUMENTED_ASYMMETRIES = {
         // Cursor IDE and Pi v1 have no parallel agent dispatch at all
         // (skills/session-plan/SKILL.md Platform Note), and Codex has no payload
         // adapter for it. A matcher that can never fire is not enforcement.
+        // pre-auq-clarity (#1107): NOT ported by construction. The hook matches
+        // the `AskUserQuestion` tool, which this platform does not have — it
+        // renders a numbered Markdown list instead (docs/codex-setup.md:112,
+        // docs/cursor-setup.md:86), and pi-hook-bridge's TOOL_NAME_MAP carries
+        // no `askuserquestion` entry. A matcher on a tool that never fires is a
+        // dead entry: maintenance cost that ASSERTS a protection it does not
+        // provide. Revisit the day the platform gains the tool — the mechanical
+        // witness for that day is the mapPiToolName assertion in
+        // tests/hooks/pre-auq-clarity-wiring.test.mjs, which goes red then.
+        'pre-auq-clarity.mjs',
         'pre-task-scope-disjoint.mjs',
         'skill-invocation-telemetry.mjs',
         'pre-bash-sessions-ledger-guard.mjs', // #958
@@ -160,6 +180,16 @@ const DOCUMENTED_ASYMMETRIES = {
         // Cursor IDE and Pi v1 have no parallel agent dispatch at all
         // (skills/session-plan/SKILL.md Platform Note), and Codex has no payload
         // adapter for it. A matcher that can never fire is not enforcement.
+        // pre-auq-clarity (#1107): NOT ported by construction. The hook matches
+        // the `AskUserQuestion` tool, which this platform does not have — it
+        // renders a numbered Markdown list instead (docs/codex-setup.md:112,
+        // docs/cursor-setup.md:86), and pi-hook-bridge's TOOL_NAME_MAP carries
+        // no `askuserquestion` entry. A matcher on a tool that never fires is a
+        // dead entry: maintenance cost that ASSERTS a protection it does not
+        // provide. Revisit the day the platform gains the tool — the mechanical
+        // witness for that day is the mapPiToolName assertion in
+        // tests/hooks/pre-auq-clarity-wiring.test.mjs, which goes red then.
+        'pre-auq-clarity.mjs',
         'pre-task-scope-disjoint.mjs',
         'skill-invocation-telemetry.mjs',    // #919
         'enforce-scope.mjs',                 // #919

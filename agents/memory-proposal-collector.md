@@ -135,8 +135,8 @@ and `{{options}}` at render time.
 ```
 AskUserQuestion({
   questions: [{
-    header: "Memory — Confirm Proposals (Batch {{N}} of {{M}})",
-    question: "Select the learnings you want to store permanently. Unselected proposals will be archived as declined.",
+    header: "Memory",
+    question: "Batch {{N}} of {{M}} — which learnings should be stored permanently? Unselected ones are archived as declined.",
     options: [
       // one entry per proposal in this batch — see label format below
       { label: "{{label}}", description: "{{description}}" },
@@ -147,11 +147,13 @@ AskUserQuestion({
 })
 ```
 
-**When there is only one batch** (`M === 1`), omit the batch suffix:
+**When there is only one batch** (`M === 1`), omit the batch prefix from the question:
 
 ```
-header: "Memory — Confirm Proposals"
+question: "Which learnings should be stored permanently? Unselected ones are archived as declined."
 ```
+
+`header` stays `"Memory"` in both cases: the field is cut off after 12 characters, so anything longer never reaches the operator.
 
 ### Option label format
 

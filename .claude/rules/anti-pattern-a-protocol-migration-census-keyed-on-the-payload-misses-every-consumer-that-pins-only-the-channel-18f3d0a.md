@@ -5,6 +5,9 @@ description: When migrating an output protocol, grepping for the payload field n
 globs:
   - "tests/hooks/**"
   - "tests/integration/**"
+paths:
+  - "tests/hooks/**"
+  - "tests/integration/**"
 learning-key: anti-pattern/a-protocol-migration-census-keyed-on-the-payload-misses-every-consumer-that-pins-only-the-channel
 confidence: 0.9
 expires-at: 2026-10-27

@@ -43,7 +43,7 @@ This quirk bit several consumer repos before it was codified — the baseline ma
 Enforced by commitlint (see `.commitlintrc` / repo commitlint config). Quick ref: `type(scope): description`; `BREAKING CHANGE:` footer for majors.
 
 ## Code Style
-Enforced by ESLint flat config (`eslint.config.mjs`) + Prettier. Notable behavioural rule: `no-console` error (except warn/error) — prevents PII leakage in production.
+Enforced by ESLint flat config (`eslint.config.js`) + Prettier. `no-console` is **off** (`:38`) — the linter catches no stray print; keep data on stdout, diagnostics on stderr yourself.
 
 ## Dependencies
 - Prefer established, maintained packages. No packages with <1000 weekly downloads unless justified.

@@ -131,21 +131,21 @@ Where `sessionId` is the physical raw identity for this invocation: the native h
      ```js
      AskUserQuestion({
        questions: [{
-         question: `Another session lock is active in this repo (started ${ageHours}h ago, mode=${existingLock.mode}, host=${existingLock.host}, pid=${existingLock.pid}). How should I proceed?`,
-         header: "Session Lock Conflict",
+         question: `Another session holds the lock here — started ${ageHours}h ago, mode=${existingLock.mode}, host=${existingLock.host}, pid=${existingLock.pid}. Wait, or take the lock?`,
+         header: "Session lock",
          multiSelect: false,
          options: [
-           { label: "Abort (Recommended)", description: "Let the other session finish. Safe default — prevents metrics and wave-state corruption." },
-           { label: "Force-take the lock", description: "Overwrites the active lock. ONLY use if you are certain the other session is no longer running." },
+           { label: "Abort (Recommended)", description: "Stop here and let the other session finish, then start again. Nothing is written until it releases the lock, and two sessions sharing one wave state overwrite each other's metrics." },
+           { label: "Force-take the lock", description: "Overwrites the active lock and starts anyway. Only when that session is certainly gone — otherwise both keep writing the same wave state and one of them loses everything." },
          ],
        }],
      });
      ```
    - **Codex CLI / Cursor IDE fallback (numbered Markdown list):**
      ```
-     Session lock conflict — active lock detected (started <ageHours>h ago, mode=<mode>, host=<host>, pid=<pid>).
-     1. Abort (Recommended) — let the other session finish.
-     2. Force-take the lock — ONLY if the other session is known dead.
+     Another session holds the lock here — started <ageHours>h ago, mode=<mode>, host=<host>, pid=<pid>. Wait, or take the lock?
+     1. Abort (Recommended) — stop here and let the other session finish, then start again; nothing is written until it releases the lock.
+     2. Force-take the lock — overwrites the active lock. Only when that session is certainly gone, otherwise both keep writing the same wave state and one loses everything.
      Reply with the number of your choice.
      ```
    - On **Abort**: exit session-start cleanly with a brief stderr note (`session-lock: aborted — active lock held by session_id=<id>`). Do NOT initialize STATE.md.
@@ -158,21 +158,21 @@ Where `sessionId` is the physical raw identity for this invocation: the native h
      ```js
      AskUserQuestion({
        questions: [{
-         question: `Stale session lock found (started ${ageHours}h ago, ttl=${existingLock.ttl_hours}h). Process pid=${existingLock.pid} on host=${existingLock.host} is ${reason === 'stale-pid-dead' ? 'confirmed dead' : 'still running or status unknown'}. Reclaim the lock?`,
-         header: "Stale Session Lock",
+         question: `A stale session lock is in the way — started ${ageHours}h ago, its ttl=${existingLock.ttl_hours}h has expired, and pid=${existingLock.pid} on host=${existingLock.host} is ${reason === 'stale-pid-dead' ? 'confirmed dead' : 'still running or status unknown'}. Reclaim it?`,
+         header: "Stale lock",
          multiSelect: false,
          options: [
-           { label: "Reclaim (Recommended)", description: "Overwrite the stale lock and continue. Safe when the previous session is no longer active." },
-           { label: "Abort — investigate manually", description: "Stop here. Inspect .orchestrator/session.lock before proceeding." },
+           { label: "Reclaim (Recommended)", description: "Overwrites the stale lock and continues, because its time-to-live has run out. When that process is really dead, nothing of the old session is lost." },
+           { label: "Abort — investigate manually", description: "Stops here and writes nothing. The lock file `.orchestrator/session.lock` (it names the process that wrote it) tells you whether that session is still alive." },
          ],
        }],
      });
      ```
    - **Codex CLI / Cursor IDE fallback (numbered Markdown list):**
      ```
-     Stale session lock found (started <ageHours>h ago, ttl=<ttlHours>h, pid=<pid> on <host>).
-     1. Reclaim (Recommended) — overwrite stale lock and continue.
-     2. Abort — investigate .orchestrator/session.lock manually.
+     A stale session lock is in the way — started <ageHours>h ago, ttl=<ttlHours>h expired, pid=<pid> on <host>. Reclaim it?
+     1. Reclaim (Recommended) — overwrites the stale lock and continues, because its time-to-live has run out and that process is no longer holding anything.
+     2. Abort — stops here and writes nothing. The lock file `.orchestrator/session.lock` (it names the process that wrote it) tells you whether that session is still alive.
      Reply with the number of your choice.
      ```
    - On **Reclaim**: call `forceAcquire({ sessionId, mode: sessionType, ttlHours: 4, repoRoot: process.cwd() })`. After Phase 1.5 initializes STATE.md, append a deviation:
@@ -370,29 +370,60 @@ If `snaps.length >= 1` → present the following choice:
 
 **Claude Code (AskUserQuestion):**
 
+Before asking, read what "Recover" would actually put back — the operator decides on that diff, not on the word:
+
+```js
+import { execFileSync } from 'node:child_process';
+
+// Read-only: `git stash show` prints a diffstat and never touches the working tree.
+// Capped at 12 lines so the preview box stays shorter than the option list beside it.
+const stat = execFileSync('git', ['stash', 'show', '--stat', snaps[0].sha], { encoding: 'utf8' })
+  .split('\n').slice(0, 12).join('\n');
+const refs = snaps.map((s) => s.ref).join('\n');
+```
+
 ```js
 AskUserQuestion({
   questions: [{
-    question: `Found ${snaps.length} coordinator snapshot(s) from the resumed session (latest from ${humanAgeOf(snaps[0].createdAt)}). Recover, keep as backup, or discard?`,
+    question: `${snaps.length} snapshot(s) from the resumed session, newest ${humanAgeOf(snaps[0].createdAt)}. Recover, keep, discard?`,
     header: "Snapshot",
     multiSelect: false,
     options: [
-      { label: "Recover (diff vs current tree) (Recommended)", description: "Apply the latest snapshot back onto the working tree. You will see a diff and can unstage unwanted changes before committing." },
-      { label: "Keep as backup", description: "Leave refs/so-snapshots/* in place untouched. You can recover manually later via `git stash apply $(git rev-parse <ref>)`." },
-      { label: "Discard all", description: "Delete all refs/so-snapshots/<sessionId>/* immediately via deleteSnapshot." },
+      {
+        label: "Recover (Recommended)",
+        description: "Puts the newest saved state back into your working tree and commits nothing. You can drop any of those changes afterwards.",
+        preview: `These files come back:\n\n\`\`\`\n${stat}\n\`\`\``,
+      },
+      {
+        label: "Keep as backup",
+        description: "Nothing happens now: `refs/so-snapshots/*` (the saved states) stay, and `git stash apply $(git rev-parse <ref>)` (this puts one back) works later.",
+      },
+      {
+        label: "Discard all",
+        description: "Deletes every saved state of this session for good: `refs/so-snapshots/<sessionId>/*` (all of them) is gone, and there is no second copy.",
+        preview: `Deleted for good:\n\n\`\`\`\n${refs}\n\`\`\``,
+      },
     ],
   }],
 });
 ```
 
+`preview` renders beside the option list and only works with `multiSelect: false`. It is used here because the answer decides which literal text lands in the working tree — "Recover" is a diff, "Discard all" is a list of refs that stop existing. "Keep as backup" carries none: keeping is exactly the state the operator already sees.
+
 **Codex CLI / Cursor IDE fallback (numbered Markdown list):**
 
-```markdown
-Snapshot recovery options:
+These harnesses have no preview box, so the same diffstat is printed inline — it is the only place the operator ever sees it:
 
-1. **Recover (Recommended)** — Apply the latest snapshot back onto the working tree. You will see a diff and can unstage unwanted changes before committing.
-2. **Keep as backup** — Leave the refs in place untouched. You can recover manually later.
-3. **Discard all** — Delete all refs/so-snapshots/<sessionId>/* immediately.
+```markdown
+"Recover" would put these files back:
+
+    <git stash show --stat <snaps[0].sha>, capped at 12 lines>
+
+<N> snapshot(s) from the resumed session, newest <age>. Recover, keep, discard?
+
+1. **Recover (Recommended)** — puts the newest saved state back into your working tree and commits nothing. You can drop any of those changes afterwards.
+2. **Keep as backup** — nothing happens now: `refs/so-snapshots/*` (the saved states) stay, and `git stash apply $(git rev-parse <ref>)` (this puts one back) works later.
+3. **Discard all** — deletes every saved state of this session for good: `refs/so-snapshots/<sessionId>/*` (all of them) is gone, and there is no second copy.
 
 Reply with the number of your choice.
 ```
@@ -1052,12 +1083,12 @@ if (!c.prompt) {
 ```js
 AskUserQuestion({
   questions: [{
-    question: "Anonyme Usage-Telemetrie aktivieren? Strikt opt-in, whitelist-projiziert (keine Repo-Namen/Pfade/Prompts), jederzeit abschaltbar — Details: docs/telemetry.md",
-    header: "Usage Telemetry",
+    question: "Anonyme Usage-Telemetrie aktivieren? Strikt opt-in, jederzeit abschaltbar; was genau gesendet wird: docs/telemetry.md",
+    header: "Telemetrie",
     multiSelect: false,
     options: [
-      { label: "Ja, aktivieren", description: "Anonymer Zähl-/Struktur-Datensatz (Skill-/Phasen-Nutzung, Erfolg/Abbruch) — whitelist-projiziert, keine Pfade/Prompts/Repo-Namen. Details: docs/telemetry.md" },
-      { label: "Nein", description: "Keine Telemetrie senden. Jederzeit später aktivierbar via node scripts/telemetry.mjs." },
+      { label: "Ja, aktivieren", description: "Sendet anonyme Zähl- und Strukturdaten (welche Phase lief, Erfolg oder Abbruch), whitelist-projiziert: keine Pfade, keine Prompts, keine Repo-Namen." },
+      { label: "Nein", description: "Sendet nichts; die Frage kommt hier nicht wieder. Einschalten geht später mit `node scripts/telemetry.mjs` (das ist der Befehl dafür)." },
     ],
   }],
 });
@@ -1067,9 +1098,9 @@ AskUserQuestion({
 
 - **Codex CLI / Cursor IDE fallback (numbered Markdown list — AUQ-004 exception 1):**
   ```
-  Anonyme Usage-Telemetrie aktivieren? Strikt opt-in, whitelist-projiziert (keine Repo-Namen/Pfade/Prompts), jederzeit abschaltbar — Details: docs/telemetry.md
-  1. Ja, aktivieren — anonymer Zähl-/Struktur-Datensatz, keine Pfade/Prompts/Repo-Namen.
-  2. Nein — keine Telemetrie senden.
+  Anonyme Usage-Telemetrie aktivieren? Strikt opt-in, jederzeit abschaltbar; was genau gesendet wird: docs/telemetry.md
+  1. Ja, aktivieren — sendet anonyme Zähl- und Strukturdaten (welche Phase lief, Erfolg oder Abbruch), whitelist-projiziert: keine Pfade, keine Prompts, keine Repo-Namen.
+  2. Nein — sendet nichts; die Frage kommt hier nicht wieder. Einschalten geht später mit `node scripts/telemetry.mjs` (das ist der Befehl dafür).
   Reply with the number of your choice. (No option is pre-recommended — the choice is yours.)
   ```
 

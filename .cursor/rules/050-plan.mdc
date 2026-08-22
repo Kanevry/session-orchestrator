@@ -29,9 +29,9 @@ If no mode specified, ask via numbered list:
 ```
 Which planning mode?
 
-1. new (Recommended) — Project kickoff (full PRD, repo setup, issue creation)
-2. feature — Feature PRD (compact scope, acceptance criteria, issues)
-3. retro — Retrospective (metrics analysis, reflection, improvement actions)
+1. new (Recommended) — Project kickoff: full PRD, repo setup, issue creation. Fits a repo that has no PRD yet.
+2. feature — One feature: compact scope, acceptance criteria, issues. Cheaper, but assumes the project context already exists.
+3. retro — Retrospective on finished work: metrics, reflection, improvement actions. Defines no new scope.
 ```
 
 ## Phase 2: Q&A Engine (Shared Core)
@@ -154,9 +154,9 @@ If any criterion fails, revise and re-review. Maximum **3 iterations**. After 3 
 The PRD reviewer flagged these remaining issues:
 [list]
 
-1. Accept as-is (Recommended) — issues are minor, proceed
-2. Manual edit — I'll edit the PRD myself before continuing
-3. Re-run review — try one more revision round
+1. Accept as-is (Recommended) — the flagged issues are minor, so the PRD is usable now. You can still edit it later.
+2. Manual edit — you edit the PRD yourself before continuing. Costs a round-trip.
+3. Re-run review — one more revision round. Costs another review pass and may surface nothing new.
 ```
 
 Then present the saved PRD path and ask for final approval:
@@ -164,8 +164,8 @@ Then present the saved PRD path and ask for final approval:
 ```
 PRD saved to [path]. Ready for your review.
 
-1. Approve PRD (Recommended) — proceed to issue creation
-2. Request changes — describe what to change
+1. Approve PRD (Recommended) — proceed to issue creation. You can still edit the PRD afterwards; the issues link to it rather than copy it.
+2. Request changes — describe what to change. Costs one more revision round.
 ```
 
 ## Phase 5: Issue Creation

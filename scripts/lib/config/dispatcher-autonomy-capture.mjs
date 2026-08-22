@@ -44,12 +44,35 @@ const ALLOWED_AUTONOMY = ['off', 'advisory', 'autonomous-gated'];
 const DEFAULT_CONFIDENCE_FLOOR = 0.5;
 
 /**
+ * The display-only tail of an option LABEL, stripped before the enum match.
+ *
+ * The label and the stored value were the SAME string, which made the label
+ * unchangeable: both consumers (`skills/session-start/SKILL.md` Phase 1.1 and
+ * `skills/bootstrap/SKILL.md` Phase 3.5.1) hand the SELECTED LABEL straight to
+ * writeDispatcherAutonomyBlock(), and coerceAutonomy() falls back to 'off' on
+ * any value outside the enum. Putting AUQ-003's `(Recommended)` marker into the
+ * label would therefore have written `autonomy: off` for an operator who picked
+ * `advisory` — a silent downgrade, fail-closed and therefore invisible.
+ *
+ * Measured before this split (renderDispatcherAutonomyBlock, 2026-08-22):
+ *   'advisory'                => autonomy: advisory
+ *   'Advisory (surface only)' => autonomy: off      ← the downgrade
+ *
+ * Anchored at the end, so it can only ever strip a suffix. The enum values
+ * themselves are untouched and stay greppable.
+ */
+const RECOMMENDED_SUFFIX = /\s*\((?:Recommended|Empfohlen|Default)\)\s*$/u;
+
+/**
  * Coordinator-facing AUQ question definition for the one-time capture.
  * Mirrors the shape of `getInterviewQuestions()` entries in owner-interview.mjs:
  *   { question, header, options: [{ label, description }], multiSelect }
  *
- * Option labels match the ALLOWED_AUTONOMY enum so the selected label maps
- * directly to the `autonomy` value passed to writeDispatcherAutonomyBlock().
+ * Each label BEGINS with its ALLOWED_AUTONOMY value; option 1 additionally
+ * carries the `(Recommended)` marker AUQ-003 puts in the label. `coerceAutonomy()`
+ * strips that marker, so the selected label still maps to the enum value written
+ * by writeDispatcherAutonomyBlock() — see the comment on RECOMMENDED_SUFFIX for
+ * why the two halves must not be the same string.
  * Option 1 (`off`) is the recommended, fail-closed default.
  *
  * @returns {{ question: string, header: string, options: Array<{ label: string, description: string }>, multiSelect: boolean }}
@@ -57,23 +80,23 @@ const DEFAULT_CONFIDENCE_FLOOR = 0.5;
 export function getDispatcherAutonomyQuestion() {
   return {
     question:
-      'Cross-repo dispatcher autonomy: how should this repo participate when the free-repo dispatcher routes work to it?',
-    header: 'Dispatcher Autonomy (one-time)',
+      'When /dispatcher looks across your repos for the next one to work on, how may it treat this repo?',
+    header: 'Dispatcher',
     options: [
       {
-        label: 'off',
+        label: 'off (Recommended)',
         description:
-          '(Recommended) Fail-closed. The dispatcher never routes work to this repo automatically. No behaviour change.',
+          'Nothing changes: this repo is never offered and never started for you. Safe default — you keep picking the work.',
       },
       {
         label: 'advisory',
         description:
-          'The dispatcher surfaces ranked free-repo candidates for operator review — no automated dispatch.',
+          'This repo may appear in the ranked suggestions, so you can compare it against the others. You still start each session.',
       },
       {
         label: 'autonomous-gated',
         description:
-          'A deterministic confidence gate is checked first; only dispatches that clear the confidence-floor route automatically.',
+          'Work may start here without asking, but only when the ranking beats the confidence floor written next to this setting.',
       },
     ],
     multiSelect: false,
@@ -128,7 +151,7 @@ export function isDispatcherAutonomyBlockPresent(claudeMdContent) {
  */
 function coerceAutonomy(value) {
   if (value === null || value === undefined) return 'off';
-  const normalized = String(value).toLowerCase().trim();
+  const normalized = String(value).toLowerCase().replace(RECOMMENDED_SUFFIX, '').trim();
   return ALLOWED_AUTONOMY.includes(normalized) ? normalized : 'off';
 }
 

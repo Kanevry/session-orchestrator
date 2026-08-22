@@ -262,10 +262,23 @@ export function renderRule(learning, metadata) {
   // purely by `host-class:` (loads only on a matching host) — the intended
   // behavior, and still never always-on (host-class IS an activation axis).
   if (globs.length > 0) {
-    fm.push('globs:');
-    for (const glob of globs) {
-      // Always double-quote — keeps `*`/`[`/`{` safe; loader strips quotes.
-      fm.push(`  - "${glob}"`);
+    // TWO keys, same list, on purpose (#1108). `globs:` is what THIS repo's
+    // `rule-loader.mjs` and Cursor read; `paths:` is the ONLY key Claude Code's
+    // own loader honours, and a rule without it is loaded UNCONDITIONALLY into
+    // every agent (https://code.claude.com/docs/en/memory § Path-specific
+    // rules). Emitting `globs:` alone therefore produced a rule that LOOKS
+    // scoped, IS scoped for us, and is always-on for the harness — measured
+    // 2026-08-22: 16 such rules put 72_195 bytes (~18_300 tokens) into every
+    // single dispatch. `check-rules.mjs` now hard-FAILs that shape, so a
+    // globs-only rule emitted here would be rejected by the gate the moment it
+    // lands. Keep the two lists IDENTICAL: divergence is its own FAIL class,
+    // because it would scope Claude Code and Cursor to different rule sets.
+    for (const key of ['globs', 'paths']) {
+      fm.push(`${key}:`);
+      for (const glob of globs) {
+        // Always double-quote — keeps `*`/`[`/`{` safe; loader strips quotes.
+        fm.push(`  - "${glob}"`);
+      }
     }
   }
   if (hostClass !== undefined) {

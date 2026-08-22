@@ -32,6 +32,21 @@ import {
 
 import { _parseDispatcherAutonomy } from '../../../scripts/lib/config/dispatcher-autonomy.mjs';
 
+/**
+ * What a picked option LABEL actually ends up as in CLAUDE.md.
+ *
+ * Deliberately the full round-trip — label → writer → parser — rather than a
+ * peek at the private coerceAutonomy(): both consumers (session-start Phase 1.1,
+ * bootstrap Phase 3.5.1) hand the selected label straight to the writer, so this
+ * is the path a wrong label would actually travel. It fails if either half drifts.
+ *
+ * @param {string} label
+ * @returns {string} the `autonomy` value that would be committed
+ */
+function autonomyOf(label) {
+  return _parseDispatcherAutonomy(renderDispatcherAutonomyBlock({ autonomy: label })).autonomy;
+}
+
 // ---------------------------------------------------------------------------
 // getDispatcherAutonomyQuestion — AUQ shape contract
 // ---------------------------------------------------------------------------
@@ -45,17 +60,29 @@ describe('getDispatcherAutonomyQuestion — AUQ shape', () => {
     expect(getDispatcherAutonomyQuestion().multiSelect).toBe(false);
   });
 
-  it('orders option labels as the enum off → advisory → autonomous-gated', () => {
-    const labels = getDispatcherAutonomyQuestion().options.map((o) => o.label);
-    expect(labels).toEqual(['off', 'advisory', 'autonomous-gated']);
+  // The label is what the operator reads; the value written to CLAUDE.md is what
+  // the label RESOLVES to. These used to be the same string, so pinning the label
+  // text pinned the stored value by accident. Pin the resolution instead — that is
+  // the property that actually matters and the one a prettier label can break.
+  it('resolves the option labels to the enum off → advisory → autonomous-gated, in order', () => {
+    const stored = getDispatcherAutonomyQuestion().options.map((o) =>
+      autonomyOf(o.label),
+    );
+    expect(stored).toEqual(['off', 'advisory', 'autonomous-gated']);
   });
 
   it('makes option 1 the off (recommended fail-closed) default', () => {
-    expect(getDispatcherAutonomyQuestion().options[0].label).toBe('off');
+    expect(autonomyOf(getDispatcherAutonomyQuestion().options[0].label)).toBe('off');
   });
 
-  it('marks the off option description as Recommended', () => {
-    expect(getDispatcherAutonomyQuestion().options[0].description).toContain('(Recommended)');
+  // AUQ-003 puts the marker in the LABEL: an operator skims labels, so a
+  // recommendation that lives only in the description is one he never sees.
+  // The old assertion pinned it to the description and would have gone green
+  // for exactly the state the rule forbids.
+  it('carries the (Recommended) marker in the label, not the description', () => {
+    const first = getDispatcherAutonomyQuestion().options[0];
+    expect(first.label).toContain('(Recommended)');
+    expect(first.description).not.toContain('(Recommended)');
   });
 
   it('gives every option a non-empty description string', () => {
@@ -63,10 +90,14 @@ describe('getDispatcherAutonomyQuestion — AUQ shape', () => {
     expect(descs.every((d) => typeof d === 'string' && d.length > 0)).toBe(true);
   });
 
-  it('provides a non-empty question and header', () => {
+  // The header field is truncated at 12 characters by the AskUserQuestion tool
+  // itself, so the limit is the contract — not the wording. The old assertion
+  // pinned a 30-character string, which was 18 characters the operator never saw.
+  it('provides a non-empty question and a header within the 12-character limit', () => {
     const q = getDispatcherAutonomyQuestion();
     expect(q.question.length).toBeGreaterThan(0);
-    expect(q.header).toBe('Dispatcher Autonomy (one-time)');
+    expect([...q.header].length).toBeLessThanOrEqual(12);
+    expect(q.header.length).toBeGreaterThan(0);
   });
 });
 

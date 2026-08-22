@@ -81,7 +81,25 @@ The proposals queue is populated mid-session by wave-executor agents calling `no
    }
    ```
 
-   Then iterate `batches` and emit one `AskUserQuestion` per batch with `header: "Memory — Confirm Proposals (Batch N of M)"`. Option label format: `[<type-12>] | <subject-40> | conf=X.XX`. Option description: `evidence: <first 60 chars of insight>`. `multiSelect: true`.
+   Then iterate `batches` and emit one `AskUserQuestion` per batch. The verbatim template is `agents/memory-proposal-collector.md` § AUQ Question Template — keep the two in step:
+
+   ```javascript
+   AskUserQuestion({
+     questions: [{
+       header: "Memory",
+       question: "Batch <N> of <M> — which of these learnings should be stored permanently?",
+       options: [
+         // one entry per proposal in this batch (max 4)
+         // label + description formats are LOCKED by D3 — see that file, do not restate them here
+         { label: "[type   ] | subject(40) | conf=X.XX", description: "evidence: <first 60 chars of insight>" },
+         ...
+       ],
+       multiSelect: true
+     }]
+   })
+   ```
+
+   The batch counter moved out of `header` and into the question because `header` is cut off after 12 characters — `Memory — Confirm Proposals (Batch N of M)` reached the operator as `Memory — Con`.
 
 5. After all batches answered, partition the queue into `approved` (any option selected across all batches) and `rejected` (all unselected).
 
@@ -337,7 +355,24 @@ After the auto-dialectic nudge decision is made (Phase 3.6.7), and when the reco
    }
    ```
 
-   Iterate `batches` and emit one `AskUserQuestion` per batch with `header: "Reconciliation — Confirm Rule Proposals (Batch N of M)"`. Option label format: `<slug-40> | conf=<confidence>`. Option description: first 80 chars of the rendered `content` (the rule prose preview). `multiSelect: true`.
+   Iterate `batches` and emit one `AskUserQuestion` per batch:
+
+   ```javascript
+   AskUserQuestion({
+     questions: [{
+       header: "Regeln",
+       question: "Batch <N> of <M> — which rule proposals should be written into .claude/rules/?",
+       options: [
+         // one entry per proposal in this batch (max 4)
+         { label: "<slug-40>", description: "Confidence <confidence>. First 80 chars of the rendered rule text: <…>" },
+         ...
+       ],
+       multiSelect: true
+     }]
+   })
+   ```
+
+   The batch counter moved out of `header` and into the question because `header` is cut off after 12 characters — `Reconciliation — Confirm Rule Proposals (Batch N of M)` reached the operator as `Reconciliati`. The rendered `content` shown in the description is the rule prose that will land on disk.
 
 6. After all batches are answered, partition proposals into `approved` (any option selected across all batches) and `rejected` (all unselected). Proposals the operator rejected join the engine's `rejected` array for archival.
 

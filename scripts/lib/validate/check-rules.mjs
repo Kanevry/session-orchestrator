@@ -30,6 +30,51 @@
 //           parse error as always-on with empty meta, so the skipped file is
 //           exactly the one that loads everywhere and clears every gate. See
 //           the inline rationale at the parse site below.
+//       (e) HARNESS-PARITY (#1108): a rule that expresses a path restriction
+//           must express it in `paths:`, because `paths:` is the ONLY key
+//           Claude Code's own rule loader reads. Its documentation
+//           (code.claude.com/docs/en/memory § "Path-specific rules") is
+//           explicit: rules are scoped "using YAML frontmatter with the
+//           `paths` field", and "rules without a `paths` field are loaded
+//           unconditionally and apply to all files". `globs:` is the CURSOR
+//           field name. A `globs:`-only rule is therefore scoped for
+//           rule-loader.mjs (#795 alias) and for Cursor, yet ALWAYS-ON for
+//           Claude Code — the rule *looks* scoped everywhere it is inspected
+//           and is silently loaded everywhere it is used.
+//           Measured 2026-08-22 before the fix: 16 of 31 rule files carried
+//           `globs:` and 0 carried `paths:`, so all 31 loaded unconditionally
+//           — 186,993 bytes ≈ 46,700 tokens per dispatch, 72,195 of them
+//           unwanted (testing.md alone is 36,431 bytes and carries
+//           `tier: wave-only`, i.e. is explicitly meant to be conditional).
+//           This check is the recurrence guard for that fix, not the fix.
+//           It is formulated as a PARITY check rather than a presence check,
+//           which folds two defects into one invariant: the rule must load in
+//           the SAME contexts under Claude Code's loader (which reads
+//           `paths:`, treating absence as always-on) as under rule-loader.mjs
+//           (which reads `globs:` and falls back to `paths:` — #795, globs
+//           wins). Two ways to violate it:
+//             - `globs:` present and non-empty, `paths:` ABSENT → always-on
+//               in Claude Code.
+//             - both present with DIFFERENT pattern sets → Claude Code scopes
+//               on one list, rule-loader.mjs and Cursor on the other.
+//           Order and duplicates are irrelevant (a glob list is matched
+//           any-of), so the comparison is over the sorted unique set.
+//           NOT flagged: `paths:` alone. It is the form the native
+//           documentation prescribes and the form the primary downstream
+//           consumer uses exclusively (projects-baseline: 26 rule files, all
+//           `paths:`, 0 `globs:` — rule-loader.mjs module doc). The
+//           `globs:`-is-canonical preference for VENDORED rules is a separate,
+//           warn-level concern already owned by
+//           scripts/lib/validate-vendored-rules.mjs (~:289, issue #742) and is
+//           deliberately not duplicated here.
+//           NOT flagged either: an EMPTY `globs: []`. That shape is already
+//           owned — with an accurate, opposite message — by the dedicated
+//           empty-globs branches below (#880 QA Defect 1 / #892), and firing
+//           a second, contradictory-sounding finding ("never loads" beside
+//           "always-on in Claude Code") on one file is exactly the confusion
+//           those fixes went out of their way to remove. The parity check
+//           therefore requires a NON-EMPTY `globs:` list; populating it is the
+//           prescribed remedy for `globs: []`, at which point parity binds.
 //
 // (2) HANDWRITTEN rules (no `auto-generated: true` — #880 FA5, WARN-only,
 //     NEVER affects the exit code). The auto-generated brandmauer above only
@@ -70,9 +115,10 @@
 //
 // Usage: check-rules.mjs <plugin-root>
 // Outputs lines of the form "  PASS: ..." / "  FAIL: ..." / "  WARN: ...".
-// Exit 0 = all AUTO-GENERATED invariants satisfied (WARN lines from the
-// handwritten check NEVER affect the exit code); exit 1 = at least one
-// auto-generated FAIL.
+// Exit 0 = all AUTO-GENERATED invariants plus the two cohort-independent
+// invariants (d) frontmatter-parses and (e) harness-parity are satisfied (WARN
+// lines from the handwritten check NEVER affect the exit code); exit 1 = at
+// least one FAIL.
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -130,6 +176,69 @@ function hasFrontmatterKey(contents, key) {
   const keyRe = new RegExp(`^${key}:\\s*(\\S.*)?$`, 'm');
   const keyMatch = keyRe.exec(match[1]);
   return Boolean(keyMatch && keyMatch[1] && keyMatch[1].trim() !== '');
+}
+
+// ---------------------------------------------------------------------------
+// Per-key list access for the harness-parity check (#1108).
+//
+// `parseGlobsFrontmatter()` deliberately COLLAPSES `globs:` and `paths:` into
+// one value ("callers never see which key produced the value" — rule-loader.mjs
+// module doc, #795 precedence). The parity check needs both lists separately,
+// and re-deriving list parsing here would be a second frontmatter parser — the
+// exact drift class that produced #840. So instead of re-parsing, the OTHER key
+// is MASKED to a name the parser ignores (any key that is neither globs/paths
+// nor in SCALAR_META_KEYS is dropped without error, and its indented `  - x`
+// continuation lines are skipped as "another block's continuation"), and the
+// SAME parser then returns the surviving key's list verbatim — flow style,
+// block style, quote stripping and provenance-header tolerance included.
+//
+// Masking cannot make a parseable file unparseable: it renames a key, so the
+// line keeps its colon. Callers reach this only for files that already parsed.
+// ---------------------------------------------------------------------------
+const MASKED_KEY_PREFIX = 'x-check-rules-masked-';
+
+/**
+ * Returns the value of exactly ONE of the two scope keys, ignoring the other —
+ * `null` when that key is absent, `[]` when present but empty.
+ *
+ * @param {string} contents - raw file contents (must already parse)
+ * @param {'globs'|'paths'} key - the key whose list to return
+ * @returns {string[] | null}
+ */
+function scopeKeyValue(contents, key) {
+  const other = key === 'globs' ? 'paths' : 'globs';
+  const masked = contents.replace(
+    new RegExp(`^${other}:`, 'gm'),
+    `${MASKED_KEY_PREFIX}${other}:`,
+  );
+  return parseGlobsFrontmatter(masked).globs;
+}
+
+/** Sorted, de-duplicated copy — glob lists are matched any-of, so neither
+ * order nor repetition changes which files a rule applies to. */
+function normalizePatterns(list) {
+  return [...new Set(list)].sort();
+}
+
+/**
+ * Harness-parity verdict for one rule file (#1108) — see module doc (e).
+ *
+ * @param {string} contents - raw file contents (must already parse)
+ * @returns {{ ok: true } | { ok: false, kind: 'missing-paths'|'divergent', globs: string[], paths: string[] | null }}
+ */
+function checkHarnessParity(contents) {
+  const globs = scopeKeyValue(contents, 'globs');
+  // Only a NON-EMPTY globs list expresses a path restriction. Absent globs →
+  // whatever `paths:` says is what every loader sees. Empty globs → owned by
+  // the dedicated empty-globs branches, which prescribe populating it.
+  if (!Array.isArray(globs) || globs.length === 0) return { ok: true };
+
+  const paths = scopeKeyValue(contents, 'paths');
+  if (paths === null) return { ok: false, kind: 'missing-paths', globs, paths };
+
+  const same =
+    JSON.stringify(normalizePatterns(globs)) === JSON.stringify(normalizePatterns(paths));
+  return same ? { ok: true } : { ok: false, kind: 'divergent', globs, paths };
 }
 
 // ============================================================================
@@ -207,17 +316,44 @@ for (const name of mdFiles.sort()) {
   const { globs, meta } = parsed;
   const rel = `.claude/rules/${name}`;
 
+  // (e) HARNESS-PARITY (#1108) — cohort-independent, like the parse check
+  // above: `paths:` is the only scope key Claude Code's own loader reads, so a
+  // `globs:`-only or divergently-scoped rule loads differently there than it
+  // does under rule-loader.mjs. Emitted here, in file order, and recorded on
+  // the entry so the cohort branches below suppress their PASS line — a file
+  // must never both PASS and FAIL.
+  const parity = checkHarnessParity(contents);
+  if (!parity.ok && parity.kind === 'missing-paths') {
+    fail(
+      `${rel} — declares globs: (${parity.globs.length} pattern(s)) but no paths: — Claude Code's native rule ` +
+        'loader reads ONLY the `paths` frontmatter field and treats a rule without it as unconditional ' +
+        '("rules without a paths field are loaded unconditionally and apply to all files" — ' +
+        'code.claude.com/docs/en/memory § Path-specific rules). `globs:` is the Cursor field name, so this rule ' +
+        'is scoped for rule-loader.mjs and Cursor but loads ALWAYS-ON in Claude Code — a silent instruction-budget ' +
+        'failure (#1108). Add a paths: key carrying the same patterns as globs: (keep globs: — it stays the ' +
+        'canonical form for vendored rules, validate-vendored-rules.mjs #742).',
+    );
+  } else if (!parity.ok && parity.kind === 'divergent') {
+    fail(
+      `${rel} — globs: and paths: declare DIFFERENT pattern sets (globs: ${JSON.stringify(parity.globs)} vs ` +
+        `paths: ${JSON.stringify(parity.paths)}) — Claude Code's native loader scopes on paths:, while ` +
+        'rule-loader.mjs and Cursor scope on globs: (globs: wins silently when both are present, #795). The rule ' +
+        'therefore loads in different contexts on different harnesses (#1108). Make the two lists carry the same ' +
+        'patterns — order and duplicates are irrelevant.',
+    );
+  }
+
   if (meta['auto-generated'] === true) {
-    autoGeneratedEntries.push({ rel, globs, meta });
+    autoGeneratedEntries.push({ rel, globs, meta, parityOk: parity.ok });
   } else {
-    handwrittenEntries.push({ rel, globs, meta, contents });
+    handwrittenEntries.push({ rel, globs, meta, contents, parityOk: parity.ok });
   }
 }
 
 // ---------------------------------------------------------------------------
 // Auto-generated branch (FA4 #697) — UNCHANGED behaviour, hard-fail.
 // ---------------------------------------------------------------------------
-for (const { rel, globs, meta } of autoGeneratedEntries) {
+for (const { rel, globs, meta, parityOk } of autoGeneratedEntries) {
   // (a) never-always-on: must have at least one activation axis.
   // globs is one of: null (no frontmatter / no globs key), [] (key present
   // but EMPTY — the #892 QA-Defect special case, see module doc), or a
@@ -264,9 +400,11 @@ for (const { rel, globs, meta } of autoGeneratedEntries) {
   // an empty globs array, which is dead-not-passing regardless of host-class)
   // AND learning-key AND expires-at. When any failed, the FAIL line(s) above
   // already emitted.
+  // `parityOk` joins the conjunction for the same reason `hasEmptyGlobs` does:
+  // its FAIL already emitted above, and a file must never both PASS and FAIL.
   const lkOk = Object.prototype.hasOwnProperty.call(meta, 'learning-key');
   const eaOk = Object.prototype.hasOwnProperty.call(meta, 'expires-at');
-  if (!hasEmptyGlobs && (hasGlobs || hasHostClass) && lkOk && eaOk) {
+  if (!hasEmptyGlobs && (hasGlobs || hasHostClass) && lkOk && eaOk && parityOk) {
     pass(`${rel} — auto-generated rule satisfies all invariants`);
   }
 }
@@ -283,7 +421,7 @@ console.log(
   '--- Check: .claude/rules/ handwritten-rule activation + review-date (warn mode, #880) ---',
 );
 
-for (const { rel, globs, meta, contents } of handwrittenEntries) {
+for (const { rel, globs, meta, contents, parityOk } of handwrittenEntries) {
   // `globs` (the merged globs/paths value from parseGlobsFrontmatter — #795
   // alias, `globs:` wins when both are present) is one of:
   //   - null                     → neither key present
@@ -333,7 +471,13 @@ for (const { rel, globs, meta, contents } of handwrittenEntries) {
     );
   }
 
-  if (!hasEmptyGlobs && hasAxis && hasReviewDate) {
+  // `parityOk` joins the conjunction for the same reason `hasEmptyGlobs` does
+  // (#1108): its FAIL already emitted in the parse loop, and a file must never
+  // both PASS and FAIL. This is the one place a handwritten rule's PASS is
+  // withheld for a HARD-fail reason — the parity invariant is cohort-
+  // independent by construction, so it is not part of this branch's
+  // deliberately warn-only posture.
+  if (!hasEmptyGlobs && hasAxis && hasReviewDate && parityOk) {
     pass(`${rel} — handwritten rule has an activation axis and a review-date`);
   }
 }

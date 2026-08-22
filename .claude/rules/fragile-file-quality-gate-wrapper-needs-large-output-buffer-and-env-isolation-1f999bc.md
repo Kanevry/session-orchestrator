@@ -5,6 +5,9 @@ description: Full-gate wrapper tests can fail for harness reasons when verbose n
 globs:
   - "scripts/lib/gates/**"
   - "tests/scripts/gates/**"
+paths:
+  - "scripts/lib/gates/**"
+  - "tests/scripts/gates/**"
 learning-key: fragile-file/quality-gate-wrapper-needs-large-output-buffer-and-env-isolation
 confidence: 0.85
 expires-at: 2026-10-01

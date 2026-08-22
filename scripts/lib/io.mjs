@@ -99,6 +99,45 @@ const DENY_REASON_MAX = 16_000;
 const WARN_MESSAGE_MAX = 16_000;
 
 /**
+ * Hard ceiling (in BYTES, including the trailing newline) for the whole
+ * {@link emitRewrite} envelope.
+ *
+ * Denominated in bytes, not characters, unlike {@link DENY_REASON_MAX} — the
+ * quantity that actually matters here is what the kernel pipe buffer holds, and
+ * a character count only approximates that for ASCII. `Buffer.byteLength` makes
+ * the bound exact for any input.
+ *
+ * Derivation, measured 2026-08-22 against the repo's own AUQ corpus
+ * (`node scripts/auq-audit.mjs --json`, 70 real question blocks, HEAD clean):
+ *
+ * | quantity                                                  | measured |
+ * |-----------------------------------------------------------|----------|
+ * | largest real tool-input in the corpus (plan/SKILL.md:136) | 1 369 B  |
+ * | median / mean over all 70 blocks                          | 549 / 547 B |
+ * | max question text · header · label · description · preview | 269 · 12 · 48 · 180 · 252 |
+ * | protocol-cap worst case: 4 questions × 4 options, each field at its measured max | 9 785 B |
+ *
+ * The protocol caps come from `.claude/rules/ask-via-tool.md` § AUQ-003 (1–4
+ * questions, 2–4 options); the corpus tops out at 3 questions and 4 options, so
+ * the 9 785 B row is already an over-estimate of anything observed. 32 768 sits
+ * **3.35× above that worst case** and **23.9× above the largest real payload**,
+ * while being exactly **half** the 65 536-byte kernel pipe buffer — so a
+ * cap-sized envelope fits one buffer with the whole second half to spare, and a
+ * rewrite that expands its source text several-fold is still nowhere near the
+ * ceiling.
+ *
+ * ## Why this REJECTS where {@link DENY_REASON_MAX} CLAMPS
+ *
+ * A deny reason is prose: clipping it leaves a valid deny with a shorter
+ * explanation. `updatedInput` is structure: clipping it mid-object yields
+ * unparseable JSON, which the harness reads as no-decision — the truncated
+ * envelope would silently discard the rewrite while looking like a successful
+ * emit. So an over-ceiling payload is never sliced; it is refused whole, and the
+ * tool call proceeds with its original input (see {@link emitRewrite}).
+ */
+const REWRITE_ENVELOPE_MAX_BYTES = 32_768;
+
+/**
  * Reason substituted when a caller denies without supplying one.
  *
  * A guard must never fail on its own bookkeeping: throwing here used to land in
@@ -486,6 +525,206 @@ export function emitWarn(message) {
   // Visible channel. Return value is deliberately ignored — see the asymmetry
   // note above: a warning that cannot be delivered must not become a block.
   writeStdoutLineSync(JSON.stringify({ systemMessage: text }));
+  process.exit(0);
+}
+
+/**
+ * Rewrite the **tool input** of the current PreToolUse invocation and let the
+ * normal flow continue: emit exactly one JSON object on stdout, then exit **0**.
+ *
+ * This is the third PreToolUse verb, alongside {@link emitDeny} ("block") and
+ * {@link emitWarn} ("allow, with a notice"). It decides nothing — it hands the
+ * harness a replacement input and steps out of the way.
+ *
+ * ## Emitted payload (single stdout line, nothing else on stdout)
+ *
+ * ```json
+ * {"hookSpecificOutput":{"hookEventName":"PreToolUse","updatedInput":{…}}}
+ * ```
+ *
+ * ## THE TRAP: there is deliberately no `permissionDecision`, and no way to add one
+ *
+ * The shipped Claude Code binary (2.1.239) routes the rewrite through a branch
+ * that is guarded on the ABSENCE of a permission decision:
+ *
+ * ```js
+ * if (p.updatedInput && p.permissionBehavior === void 0)
+ *   yield { type: "hookUpdatedInput", updatedInput: p.updatedInput };
+ * ```
+ *
+ * Pair `updatedInput` with `permissionDecision: "allow"` and a different branch
+ * takes it: the input is still replaced, but the **permission stage is skipped**.
+ * For most tools that is merely a lost prompt. For `AskUserQuestion` it is fatal,
+ * because the permission stage IS the question card — `checkPermissions` returns
+ * `behavior: "ask"`, and that "ask" is what renders the options to the operator.
+ * An `allow` there does not approve the question; it routes the question PAST the
+ * human. The operator is never asked, nothing errors, and the omission is
+ * invisible from both ends.
+ *
+ * The prevention is structural, not advisory. This function takes **one**
+ * parameter — the tool input — and builds `hookSpecificOutput` here as a
+ * two-key object literal with no spread, no `opts` bag, and no caller-reachable
+ * key. There is no argument a caller can pass that lands as a sibling of
+ * `updatedInput`; a `permissionDecision` key inside the caller's own object
+ * nests one level deeper (`updatedInput.permissionDecision`), where the harness
+ * ignores it. Adding a spread or an options parameter here would re-open the
+ * trap — that is what `tests/lib/io.test.mjs` pins, since the structure cannot
+ * defend itself against a future edit.
+ *
+ * A hook that needs BOTH a permission decision and a rewrite cannot have both:
+ * choose the decision, because a rewrite that skips the operator's question is
+ * the exact failure this function is shaped to avoid.
+ *
+ * ## `updatedInput` is the COMPLETE tool input, never a patch
+ *
+ * The bundle types it as a map, not a diff (`updatedInput: oo(H(), Pn())`), and
+ * the harness substitutes it wholesale. A caller that passes only the fields it
+ * changed **deletes every field it omitted** — for `AskUserQuestion`, passing
+ * `{questions: [{question: '…'}]}` drops the options and the header along with
+ * them. Read the original input from the hook payload, modify it, and pass the
+ * whole object back.
+ *
+ * ## Fail-closed on an invalid rewrite is the HARNESS's behaviour, not ours
+ *
+ * A syntactically fine but schema-invalid `updatedInput` (5 questions where 4 is
+ * the cap, 1 option where 2 is the minimum) does not slip through as a silent
+ * pass — the bundle turns it into a deny:
+ *
+ * ```js
+ * if (!f.success && m.length > 0) { … u = { behavior: "deny", message: g, … }; continue }
+ * ```
+ *
+ * So a malformed rewrite costs the tool call, not the operator's trust. Callers
+ * are still responsible for emitting a schema-valid input; this note only
+ * records that the failure direction is safe.
+ *
+ * ## EVIDENCE STATUS — code-evidence, not runtime-evidence
+ *
+ * Everything above is read out of the shipped 2.1.239 bundle. **No hook with a
+ * matcher of `AskUserQuestion` has ever run in this repo**, so the rewrite
+ * branch has not been observed executing. The runtime proof needs a session
+ * restart and is outstanding. Treat the branch conditions as verified source and
+ * the end-to-end behaviour as expected-but-unconfirmed.
+ *
+ * ## When emitRewrite is the WRONG verb
+ *
+ *  1. **You need to block.** A rewrite carries no denial; the tool call proceeds
+ *     whatever the new input says. Use {@link emitDeny}.
+ *  2. **You need to pre-approve.** Skipping the permission prompt is
+ *     `permissionDecision: "allow"`, and combining it with a rewrite is the trap
+ *     above. Emit one or the other, never a hand-rolled envelope carrying both.
+ *  3. **The event is not PreToolUse.** `hookEventName` is hardcoded; PostToolUse
+ *     / Stop / SubagentStop have no `updatedInput` at all and signal through a
+ *     top-level `decision` (same precondition as {@link emitDeny}).
+ *  4. **You cannot reconstruct the whole input.** A partial object deletes the
+ *     rest — if the original input is not in hand, do nothing ({@link emitAllow})
+ *     rather than emit a lossy replacement.
+ *
+ * ## Delivery, and why a failed write still exits 0
+ *
+ * The envelope goes out through {@link writeStdoutLineSync}, never
+ * `console.log`: on macOS a piped stdout is asynchronous, so `console.log` +
+ * `process.exit(0)` drops everything past the 65 536-byte kernel pipe buffer and
+ * the rewrite vanishes without a trace. The payload is additionally bounded by
+ * {@link REWRITE_ENVELOPE_MAX_BYTES} — refused whole rather than clipped, since
+ * a clipped JSON object is not a smaller rewrite but an unparseable one.
+ *
+ * ── BV-004: at TODAY'S ceiling the two bounds are not equally load-bearing ────
+ * Measured 2026-08-22 (`console.log` of an N-byte line + `process.exit(0)`,
+ * piped into a reader that sleeps 300 ms before draining, so the buffer really
+ * fills): N=200 000 → 65 536 delivered, N=70 000 → 65 536, **N=32 768 → 32 768
+ * delivered intact**. Since the ceiling refuses anything larger, no payload this
+ * function can emit is big enough for `console.log` to lose — the clamp alone
+ * carries the guarantee today, and the synchronous write is the redundant half.
+ * It stays anyway, and this is the trigger to re-read before touching either:
+ * **raise {@link REWRITE_ENVELOPE_MAX_BYTES} above 65 536 and the sync write
+ * becomes the ONLY thing standing between a large rewrite and silent
+ * truncation.** Swapping in `console.log` "because the cap already protects us"
+ * is safe only for as long as nobody moves the cap — which is precisely the kind
+ * of coupling that rots unremarked. Note also that no behavioural test can
+ * currently distinguish the two writers here (see `tests/lib/io.test.mjs`).
+ *
+ * {@link emitDeny} exits **2** when stdout is unwritable, because its decision is
+ * "block" and with the structured channel gone the exit code is the only
+ * blocking signal left. **This function must not copy that.** `emitRewrite`
+ * holds no decision to preserve: its degraded state is "the tool call runs with
+ * its original input", which is exactly what happens when no envelope is
+ * emitted. Exit 2 would convert that harmless loss into a block —
+ * `scripts/lib/pi-hook-bridge.mjs:389` treats the status unconditionally
+ * (`const blocked = result.status === 2 || …`, evaluated before stdout is
+ * consulted), and the documented contract says exit 2 discards stdout and feeds
+ * stderr back to Claude as an error. On the `AskUserQuestion` path that means
+ * the operator's question is destroyed to protect a wording improvement. Every
+ * failure here therefore degrades to "no stdout, exit 0, loud stderr" — the same
+ * asymmetry {@link emitWarn} documents, for the same reason.
+ *
+ * Never throws, for the reason {@link emitDeny} spells out: a throw unwinds into
+ * the `main().catch(() => emitAllow())` that four hooks install. Here that
+ * catch would be harmless by luck rather than by design, and a hook whose catch
+ * routes to `emitDeny` instead would turn a failed rewrite into a block.
+ *
+ * @param {object} updatedInput  The COMPLETE replacement tool input. A non-object,
+ *        `null`, an array, or a value `JSON.stringify` rejects degrades to a
+ *        no-op plus a stderr diagnostic — never a throw, never a partial emit.
+ * @returns {never}
+ */
+export function emitRewrite(updatedInput) {
+  /**
+   * Abandon the rewrite: say why on stderr, emit nothing, exit 0. The tool call
+   * then runs with its original input — the intended degraded state, not a
+   * fail-open, because this helper never held a decision to lose.
+   *
+   * @param {string} diagnostic
+   * @returns {never}
+   */
+  const bail = (diagnostic) => {
+    try {
+      process.stderr.write(
+        `⚠ io.mjs: emitRewrite ${diagnostic} — leaving the tool input unchanged\n`,
+      );
+    } catch { /* stderr may be closed; the silent no-op below is what matters */ }
+    process.exit(0);
+  };
+
+  if (updatedInput === null || typeof updatedInput !== 'object' || Array.isArray(updatedInput)) {
+    // `updatedInput` is a MAP in the bundle schema, so an array is as wrong as a
+    // string — and an array would serialize into a shape the harness cannot use.
+    bail(
+      `was called with ${Array.isArray(updatedInput) ? 'an array' : String(updatedInput === null ? 'null' : typeof updatedInput)}, not a tool-input object`,
+    );
+  }
+
+  let line;
+  try {
+    // The whole trap-closure: a two-key object literal, built here. No spread,
+    // no caller-supplied opts — nothing a caller passes can become a sibling of
+    // `updatedInput`, and `permissionDecision` therefore cannot appear.
+    line = JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        updatedInput,
+      },
+    });
+  } catch (err) {
+    // A cycle or a BigInt in the caller's object. JSON.stringify can also return
+    // undefined (a toJSON that yields undefined) — caught by the same guard.
+    bail(`could not serialize the tool input (${err?.message ?? String(err)})`);
+  }
+
+  if (typeof line !== 'string') {
+    bail('serialized the tool input to undefined (a toJSON returning undefined?)');
+  }
+
+  const bytes = Buffer.byteLength(`${line}\n`, 'utf8');
+  if (bytes > REWRITE_ENVELOPE_MAX_BYTES) {
+    // Refused whole, never sliced — see REWRITE_ENVELOPE_MAX_BYTES for why a
+    // clipped structure is worse than no structure.
+    bail(`envelope is ${bytes} bytes, over the ${REWRITE_ENVELOPE_MAX_BYTES}-byte ceiling`);
+  }
+
+  // Return value deliberately ignored: a rewrite that cannot be delivered costs
+  // the improvement, never the tool call. See the asymmetry note above.
+  writeStdoutLineSync(line);
   process.exit(0);
 }
 

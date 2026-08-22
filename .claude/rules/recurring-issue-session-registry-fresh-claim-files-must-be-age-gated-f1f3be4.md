@@ -6,6 +6,10 @@ globs:
   - "scripts/lib/**"
   - "tests/lib/**"
   - "tests/integration/**"
+paths:
+  - "scripts/lib/**"
+  - "tests/lib/**"
+  - "tests/integration/**"
 learning-key: recurring-issue/session-registry-fresh-claim-files-must-be-age-gated
 confidence: 0.9
 expires-at: 2026-10-01

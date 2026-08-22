@@ -5,6 +5,9 @@ description: Claude Code grep (ugrep -I) skips binary files SILENTLY — exit 1,
 globs:
   - "hooks/**"
   - ".husky/**"
+paths:
+  - "hooks/**"
+  - ".husky/**"
 learning-key: anti-pattern/a-nul-byte-in-a-tracked-production-file-makes-it-invisible-to-every-grep-based-audit
 confidence: 0.9
 expires-at: 2026-10-27

@@ -260,6 +260,9 @@ process.stdout.write('\n');
 if (runCheck('check-rules.mjs') !== 0) checkFailed = 1;
 
 process.stdout.write('\n');
+if (runCheck('check-auq-clarity.mjs') !== 0) checkFailed = 1;
+
+process.stdout.write('\n');
 if (runCheck('check-unicode-safety.mjs') !== 0) checkFailed = 1;
 
 process.stdout.write('\n');

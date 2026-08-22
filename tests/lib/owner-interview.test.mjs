@@ -40,6 +40,7 @@ vi.mock('@lib/owner-yaml.mjs', async (importOriginal) => {
 import {
   getInterviewQuestions,
   applyInterviewAnswers,
+  optionValue,
   runOwnerInterview,
 } from '@lib/owner-interview.mjs';
 
@@ -80,27 +81,92 @@ describe('getInterviewQuestions', () => {
     }
   });
 
+  // Labels are read by the operator; optionValue(label) is what reaches owner.yaml.
+  // The two used to be one string, so asserting on the raw label pinned the stored
+  // value by accident. Assert the resolution — that is the property a reworded
+  // label can silently break.
   it('first question covers language selection with de and en options', () => {
     const first = getInterviewQuestions()[0];
-    const labels = first.options.map((o) => o.label);
-    expect(labels).toContain('de');
-    expect(labels).toContain('en');
+    const values = first.options.map((o) => optionValue(o.label));
+    expect(values).toContain('de');
+    expect(values).toContain('en');
   });
 
   it('second question covers tone style with direct, neutral, friendly options', () => {
     const second = getInterviewQuestions()[1];
-    const labels = second.options.map((o) => o.label);
-    expect(labels).toContain('direct');
-    expect(labels).toContain('neutral');
-    expect(labels).toContain('friendly');
+    const values = second.options.map((o) => optionValue(o.label));
+    expect(values).toContain('direct');
+    expect(values).toContain('neutral');
+    expect(values).toContain('friendly');
   });
 
   it('fifth question covers hardware-sharing consent with Yes/No/Preview options', () => {
     const fifth = getInterviewQuestions()[4];
-    const labels = fifth.options.map((o) => o.label);
-    expect(labels).toContain('Yes');
-    expect(labels).toContain('No');
-    expect(labels).toContain('Preview');
+    const values = fifth.options.map((o) => optionValue(o.label));
+    expect(values).toContain('Yes');
+    expect(values).toContain('No');
+    expect(values).toContain('Preview');
+  });
+
+  // The AskUserQuestion header field is truncated at 12 characters by the tool
+  // itself. All five headers used to run 32–48 characters, so every one of them
+  // reached the operator as the same useless stub "Owner Interv".
+  it('keeps every header inside the 12-character limit the tool truncates at', () => {
+    const tooLong = getInterviewQuestions()
+      .map((q) => q.header)
+      .filter((h) => [...h].length > 12);
+    expect(tooLong).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Label ←→ stored value (the split that let the labels be rewritten at all)
+// ---------------------------------------------------------------------------
+
+describe('option label → stored config value', () => {
+  // The regression this file exists to prevent: applyInterviewAnswers() matches
+  // the answer against closed enums and falls back to a default on any miss, so a
+  // label that carries display text the resolver does not strip is written to
+  // owner.yaml as the WRONG value — silently, with no error anywhere.
+  it('writes the enum value, not the label, when the label carries (Recommended)', () => {
+    const filePath = ownerYamlPath;
+    const result = applyInterviewAnswers(
+      ['de', 'direct (Recommended)', 'full (Recommended)', 'minimal (Recommended)', 'No (Recommended)'],
+      { path: filePath },
+    );
+
+    expect(result.ok).toBe(true);
+    const written = readFileSync(filePath, 'utf8');
+    expect(written).toContain('style: direct');
+    expect(written).toContain('output-level: full');
+    expect(written).toContain('preamble: minimal');
+  });
+
+  it('resolves every shipped option label to a value the enums accept', () => {
+    // Fails the moment a label is reworded into something applyInterviewAnswers
+    // would silently swap for a default.
+    const accepted = [
+      ['de', 'en', 'other'],
+      ['direct', 'neutral', 'friendly'],
+      ['lite', 'full', 'ultra'],
+      ['minimal', 'verbose'],
+      ['Yes', 'No', 'Preview'],
+    ];
+    const resolved = getInterviewQuestions().map((q) => q.options.map((o) => optionValue(o.label)));
+    resolved.forEach((values, i) => {
+      values.forEach((v) => expect(accepted[i]).toContain(v));
+    });
+  });
+
+  it('leaves a label without a marker exactly as it is', () => {
+    expect(optionValue('autonomous-gated')).toBe('autonomous-gated');
+    expect(optionValue('advisory')).toBe('advisory');
+  });
+
+  it('returns an empty string for a non-string label instead of throwing', () => {
+    expect(optionValue(null)).toBe('');
+    expect(optionValue(undefined)).toBe('');
+    expect(optionValue(42)).toBe('');
   });
 });
 

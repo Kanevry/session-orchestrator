@@ -5,6 +5,12 @@ globs:
   - scripts/**
   - tests/**
   - .husky/**
+paths:
+  - "**/*.sh"
+  - "**/*.bash"
+  - scripts/**
+  - tests/**
+  - .husky/**
 tier: wave-only
 review-date: 2026-10-23
 ---

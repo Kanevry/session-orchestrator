@@ -13,10 +13,16 @@
  *     to AskUserQuestion in the coordinator. Each object has the shape:
  *       { question, header, options: [{ label, description }], multiSelect }
  *
+ *   optionValue(label)
+ *     Maps a displayed option label to the value stored in owner.yaml by
+ *     stripping the trailing `(Recommended)` marker. The label and the stored
+ *     value are deliberately NOT the same string — see the function comment.
+ *
  *   applyInterviewAnswers(answers, { path? } = {})
  *     Accepts an array of selected option labels (one per question, same order
- *     as getInterviewQuestions()), validates the result against validateOwnerConfig,
- *     and writes owner.yaml via writeOwnerConfig.
+ *     as getInterviewQuestions()), resolves each through optionValue(), validates
+ *     the result against validateOwnerConfig, and writes owner.yaml via
+ *     writeOwnerConfig.
  *     Returns { ok, path, errors }.
  *
  *   runOwnerInterview({ skipIfExists?, force?, path? } = {})
@@ -38,6 +44,40 @@ import {
 } from './owner-yaml.mjs';
 
 // ---------------------------------------------------------------------------
+// Label ←→ stored value
+// ---------------------------------------------------------------------------
+
+/**
+ * A trailing recommendation marker on an option LABEL — the display half of a
+ * label, never part of the stored value.
+ *
+ * Anchored at the end and non-greedy about whitespace so it can only ever strip
+ * a suffix; a value that merely CONTAINS the word (there is none today) survives.
+ */
+const RECOMMENDED_SUFFIX = /\s*\((?:Recommended|Empfohlen|Default)\)\s*$/u;
+
+/**
+ * Map an AUQ option label back to the value that is written to owner.yaml.
+ *
+ * The label and the stored value used to be the SAME string, which made the
+ * label unchangeable: `applyInterviewAnswers()` matches the answer against
+ * closed enums (`['direct','neutral','friendly']` and friends) and falls back to
+ * a default on any miss. Adding the `(Recommended)` marker AUQ-003 requires
+ * would therefore have turned a picked `direct` into a silently-stored
+ * `neutral` — a wrong answer written to disk with no error anywhere.
+ *
+ * Splitting the two keeps the label free for the operator and the value pinned
+ * to the enum. Everything before the marker is the value, verbatim.
+ *
+ * @param {unknown} label — the option label as selected by the operator
+ * @returns {string} the enum value to store, or '' for a non-string input
+ */
+export function optionValue(label) {
+  if (typeof label !== 'string') return '';
+  return label.replace(RECOMMENDED_SUFFIX, '').trim();
+}
+
+// ---------------------------------------------------------------------------
 // Question definitions
 // ---------------------------------------------------------------------------
 
@@ -50,51 +90,51 @@ import {
 export function getInterviewQuestions() {
   return [
     {
-      question: 'Which language should the assistant use for its responses?',
-      header: 'Owner Interview — Language (1/5)',
+      question: 'Which language should the assistant answer in?',
+      header: 'Language 1/5',
       options: [
-        { label: 'de', description: 'German — responses, narration, and questions in Deutsch.' },
-        { label: 'en', description: 'English — responses, narration, and questions in English.' },
-        { label: 'other', description: 'Other — write your ISO-639-1 code when prompted.' },
+        { label: 'de', description: 'German — answers, narration and questions all in Deutsch.' },
+        { label: 'en', description: 'English — answers, narration and questions all in English.' },
+        { label: 'other', description: 'Stored as English either way — only de and en are accepted. Change it later in owner.yaml (your settings file).' },
       ],
       multiSelect: false,
     },
     {
-      question: 'What communication tone style do you prefer?',
-      header: 'Owner Interview — Tone Style (2/5)',
+      question: 'How should the assistant talk to you?',
+      header: 'Tone 2/5',
       options: [
-        { label: 'direct', description: '(Recommended for pros) No filler phrases, straight to the point.' },
-        { label: 'neutral', description: 'Balanced: professional without being terse.' },
-        { label: 'friendly', description: 'Warm and conversational — good for exploratory sessions.' },
+        { label: 'direct (Recommended)', description: 'No filler, no praise, straight to the point — fastest to read once you know the project.' },
+        { label: 'neutral', description: 'Professional without being terse. Pick this if direct reads too blunt.' },
+        { label: 'friendly', description: 'Warm and conversational. Costs a few lines per answer, and suits open-ended exploration.' },
       ],
       multiSelect: false,
     },
     {
-      question: 'How much output should the assistant produce by default?',
-      header: 'Owner Interview — Output Level (3/5)',
+      question: 'How much should the assistant write by default?',
+      header: 'Output 3/5',
       options: [
-        { label: 'lite', description: 'Verbose mode — articles, explanations, and context kept. Good for learning.' },
-        { label: 'full', description: '(Default) Terse but complete. Narration trimmed, data preserved.' },
-        { label: 'ultra', description: 'Telegraphic — code and decisions only, no narration.' },
+        { label: 'full (Recommended)', description: 'Terse but complete: narration trimmed, every fact kept. Safe default — you lose words, never data.' },
+        { label: 'lite', description: 'Keeps the explanations and background too. Slower to read, better while the codebase is still new to you.' },
+        { label: 'ultra', description: 'Code and decisions only, no narration. You will have to ask why more often.' },
       ],
       multiSelect: false,
     },
     {
-      question: 'How should the assistant handle preamble before taking actions?',
-      header: 'Owner Interview — Preamble (4/5)',
+      question: 'How much should the assistant explain before it starts working?',
+      header: 'Preamble 4/5',
       options: [
-        { label: 'minimal', description: 'One-line status updates only. Jump straight to execution.' },
-        { label: 'verbose', description: 'Explain plan + rationale before each major action.' },
+        { label: 'minimal (Recommended)', description: 'One line of status, then it works. Safe default — you can still ask for the reasoning afterwards.' },
+        { label: 'verbose', description: 'Plan and reasoning before each major action. Costs a few lines every step.' },
       ],
       multiSelect: false,
     },
     {
-      question: 'Hardware-sharing consent: may the plugin share anonymized hardware patterns to improve resource defaults? (Issue #173 C4)',
-      header: 'Owner Interview — Hardware Sharing Consent (5/5)',
+      question: 'May the plugin share anonymized hardware data to improve its resource defaults?',
+      header: 'Sharing 5/5',
       options: [
-        { label: 'No', description: '(Default) No data is shared. Fully private.' },
-        { label: 'Yes', description: 'Share anonymized patterns (hashed, no PII). Helps tune wave/session defaults.' },
-        { label: 'Preview', description: 'Show exactly what would be shared before deciding.' },
+        { label: 'No (Recommended)', description: 'Nothing leaves this machine. Safe default — you can switch it on later without redoing this interview.' },
+        { label: 'Yes', description: 'Shares hashed hardware patterns — never file names, paths or content. Helps tune the wave and session defaults.' },
+        { label: 'Preview', description: 'Shows exactly what would be sent, then asks again. Costs one extra step.' },
       ],
       multiSelect: false,
     },
@@ -108,12 +148,15 @@ export function getInterviewQuestions() {
 /**
  * Map interview answer labels to an owner.yaml config object and write it.
  *
+ * Each answer is the LABEL the operator picked, which may carry a trailing
+ * `(Recommended)` marker; optionValue() strips it before the enum match below.
+ *
  * @param {string[]} answers - Array of selected option labels, one per question (5 total).
- *   answers[0] = language label ('de' | 'en' | free-text)
- *   answers[1] = tone style label
- *   answers[2] = output level label
- *   answers[3] = preamble label
- *   answers[4] = hardware-sharing label ('Yes' | 'No' | 'Preview')
+ *   answers[0] = language label ('de' | 'en' | 'other')
+ *   answers[1] = tone style label ('direct' | 'neutral' | 'friendly', ± marker)
+ *   answers[2] = output level label ('full' | 'lite' | 'ultra', ± marker)
+ *   answers[3] = preamble label ('minimal' | 'verbose', ± marker)
+ *   answers[4] = hardware-sharing label ('Yes' | 'No' | 'Preview', ± marker)
  * @param {{ path?: string }} [opts]
  * @returns {{ ok: boolean, path: string, errors: string[] }}
  */
@@ -124,7 +167,10 @@ export function applyInterviewAnswers(answers, opts = {}) {
     return { ok: false, path: filePath, errors: ['applyInterviewAnswers requires exactly 5 answers'] };
   }
 
-  const [langRaw, toneRaw, outputLevelRaw, preambleRaw, hwConsentRaw] = answers;
+  // Strip the display-only `(Recommended)` marker before matching against the
+  // enums below — see optionValue(). A non-string answer becomes '' and falls
+  // through to the same default it always did.
+  const [langRaw, toneRaw, outputLevelRaw, preambleRaw, hwConsentRaw] = answers.map(optionValue);
 
   // --- Language ---
   // Accept 'de', 'en', or treat anything else as a free-text language code.

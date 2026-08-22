@@ -79,7 +79,6 @@ AskUserQuestion({
     question: "Leeres Repo erkannt. Basierend auf '<HEURISTIC_REASON>' empfehle ich **<RECOMMENDED_TIER>**. Passt das?",
     header: "Bootstrap",
     options: [
-      { label: "<RECOMMENDED_TIER> (Empfohlen)", description: "<one-line description of what this tier scaffolds>" },
       { label: "fast", description: "Nur CLAUDE.md + .gitignore + README. Für Demos, Spikes, Playgrounds." },
       { label: "standard", description: "Fast + package.json/Manifest + TypeScript + Linting + Tests. Für MVPs und echte Produkte." },
       { label: "deep", description: "Standard + CI + CODEOWNERS + CHANGELOG. Für Production, Team, Langlebige Repos." },
@@ -89,6 +88,8 @@ AskUserQuestion({
   }]
 })
 ```
+
+Before rendering: append ` (Empfohlen)` to whichever of the three tier labels equals `<RECOMMENDED_TIER>`, and move that option to position 1. The recommended tier is one of the three — listing it a fourth time as its own option made five options, one more than `AskUserQuestion` accepts, and repeated the same choice twice.
 
 If user selects "Abbrechen": stop. Report "Bootstrap abgebrochen. Kein Kommando wird ausgeführt." Do not continue.
 

@@ -59,9 +59,9 @@ Present the user with a structured choice via `AskUserQuestion`:
 AskUserQuestion({
   questions: [{
     question: "Which test profile should be run?",
-    header: "Test Command: profile selection",
+    header: "Profil",
     options: [
-      { label: "smoke (Recommended)", description: "Quick sanity pass — key flows, axe critical/serious, console errors." },
+      { label: "smoke (Recommended)", description: "Quick sanity pass — key flows, axe critical/serious, console errors. The fastest of the four; run it first." },
       { label: "full", description: "All checks at full depth — slower, used before release." },
       { label: "a11y", description: "Accessibility-focused pass — axe-core exhaustive scan." },
       { label: "onboarding", description: "Onboarding step-count + Liquid Glass conformance checks." }

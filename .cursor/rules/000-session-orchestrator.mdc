@@ -33,10 +33,11 @@ You have Session Orchestrator capabilities. This plugin provides structured sess
 **No AskUserQuestion tool**: Present choices as numbered Markdown lists:
 ```
 Choose one:
-1. Option A — description
-2. Option B — description
+1. Option A (Recommended) — what it does, and why it is the safe default here.
+2. Option B — when B applies instead, and what it costs.
 Reply with the number of your choice.
 ```
+Two rules the example above follows. `(Recommended)` goes on option 1, in the label — an operator skims labels, so a recommendation hidden in the description is a recommendation he never sees. And every option names a reason, a cost, or a consequence: a recommendation without one is a claim he can only believe or ignore.
 
 **No TaskCreate/Update**: Use plain-text checklists to track progress:
 ```

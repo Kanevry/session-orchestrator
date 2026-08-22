@@ -77,7 +77,12 @@ describe('check-rules — handwritten rule with axis + review-date', () => {
     writeRule(
       rulesDir,
       'compliant.md',
-      '---\nglobs:\n  - "src/**"\nreview-date: 2026-10-23\n---\n# Compliant Rule\nContent.\n',
+      // BOTH keys, same list (#1108). `globs:` alone is no longer compliant:
+      // Claude Code's own loader reads only `paths:` and treats its absence as
+      // unconditional, so a globs-only rule loads into every agent. The fixture
+      // has to model a rule that is genuinely scoped on BOTH loaders — otherwise
+      // it stops being an example of "fully compliant".
+      '---\nglobs:\n  - "src/**"\npaths:\n  - "src/**"\nreview-date: 2026-10-23\n---\n# Compliant Rule\nContent.\n',
     );
 
     const r = run(root);
@@ -273,7 +278,11 @@ describe('check-rules — handwritten WARNs never affect the exit code', () => {
     writeRule(
       rulesDir,
       'valid-gen.md',
-      '---\nauto-generated: true\nglobs: ["src/**"]\nlearning-key: anti-pattern/ok\nexpires-at: 2099-01-01\n---\n# Gen\n',
+      // BOTH keys (#1108) — the harness-parity invariant is cohort-independent,
+      // so a machine-authored rule is held to it exactly like a handwritten one.
+      // That is deliberate: scripts/lib/reconcile/renderer.mjs is the live
+      // producer of this shape, and it emitted globs: alone until this session.
+      '---\nauto-generated: true\nglobs: ["src/**"]\npaths: ["src/**"]\nlearning-key: anti-pattern/ok\nexpires-at: 2099-01-01\n---\n# Gen\n',
     );
 
     const r = run(root);
@@ -321,7 +330,16 @@ describe('check-rules — paths: alone satisfies the handwritten axis requiremen
 // ---------------------------------------------------------------------------
 
 describe('check-rules — globs: wins over paths: when both present (#795 precedence)', () => {
-  it('treats a non-empty globs: as authoritative when paths: also present (globs wins)', () => {
+  // Diese Fixture ist per Konstruktion DIVERGENT (`lib/**` vs `src/**`) und
+  // beschreibt damit genau den zweiten Defekt, den die #1108-Paritätsprüfung
+  // verbietet: Claude Code würde die Regel auf `src/**` scopen, unser eigener
+  // rule-loader und Cursor auf `lib/**`. Zwei Lader, zwei Regelmengen.
+  //
+  // Der #795-Präzedenzvertrag ("globs gewinnt, wenn beide da sind") ist dadurch
+  // NICHT ungeprüft — er ist direkt am Parser gepinnt, in
+  // tests/lib/rule-loader.test.mjs:1166-1170. Hier wurde er über den Validator
+  // mitgeprüft, und der Validator hat seit #1108 eine strengere Meinung.
+  it('FAILs a rule whose globs: and paths: name different pattern sets', () => {
     const { root, rulesDir } = makeFixture();
     writeRule(
       rulesDir,
@@ -331,11 +349,13 @@ describe('check-rules — globs: wins over paths: when both present (#795 preced
 
     const r = run(root);
 
-    expect(r.status).toBe(0);
-    expect(r.stdout).toContain(
+    expect(r.status).toBe(1);
+    expect(r.stdout).toMatch(/FAIL:.*globs-wins-nonempty\.md/);
+    // Eine Datei darf nie gleichzeitig PASSen und FAILen — sonst liest ein
+    // Operator die erste Zeile und hört auf.
+    expect(r.stdout).not.toContain(
       'PASS: .claude/rules/globs-wins-nonempty.md — handwritten rule has an activation axis and a review-date',
     );
-    expect(r.stdout).not.toMatch(/WARN:.*globs-wins-nonempty\.md/);
   });
 
   it('treats an empty globs: [] as authoritative even when paths: is a non-empty array (globs wins)', () => {

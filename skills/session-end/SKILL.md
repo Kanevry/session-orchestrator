@@ -892,15 +892,24 @@ if (!promoted) {
 When the worktree is dirty (uncommitted, untracked, OR unpushed), render this AUQ via the coordinator's `AskUserQuestion` tool. The AUQ is coordinator-only — per `.claude/rules/ask-via-tool.md` AUQ-004, dispatched agents cannot call AUQ. Calling `git worktree remove --force` without explicit operator confirmation would violate PSA-003 (destructive action safeguards) — the dirty state may contain another session's work-in-progress or unmerged commits.
 
 ```js
+// What is actually at stake, shown beside the options via `preview` (AUQ-006):
+// the operator must see WHICH changes he would lose before he authorises the delete.
+// Capped at 10 lines so the preview never outgrows the option list next to it.
+const dirtyDetail = execFileSync('git', ['-C', promoted.wtPath, 'status', '--short', '--branch'], { encoding: 'utf8' })
+  .trim()
+  .split('\n')
+  .slice(0, 10)
+  .join('\n');
+
 AskUserQuestion({
   questions: [{
     question: `Auto-promoted worktree at ${promoted.wtPath} has uncommitted/untracked/unpushed changes. How should I proceed?`,
-    header: "Worktree-Cleanup",
+    header: "Worktree",
     multiSelect: false,
     options: [
-      { label: "Behalten (Recommended)", description: "Keep the worktree as-is. No cleanup. Review and remove manually later." },
-      { label: "Löschen", description: "I confirm the changes are handled or expendable. Run 'git worktree remove --force' on the worktree." },
-      { label: "Manuell", description: "Exit /close. I will inspect the worktree before re-running /close." },
+      { label: "Behalten (Recommended)", description: "Keeps the worktree exactly as it is — nothing is deleted, and you can still remove it by hand later.", preview: `Stays on disk:\n${dirtyDetail}` },
+      { label: "Löschen", description: "I confirm the changes are handled or expendable. Run 'git worktree remove --force' on the worktree.", preview: `Deleted with the worktree:\n${dirtyDetail}` },
+      { label: "Manuell", description: "Exit /close. I will inspect the worktree before re-running /close.", preview: `You would inspect this first:\n${dirtyDetail}` },
     ],
   }],
 });
@@ -909,8 +918,8 @@ AskUserQuestion({
 **Codex CLI / Cursor IDE fallback** (numbered Markdown list):
 
 ```
-Worktree cleanup options:
-1. **Behalten (Recommended)** — Keep the worktree as-is. No cleanup. Review and remove manually later.
+Worktree cleanup options (the changes at stake are the `git status --short --branch` lines printed above):
+1. **Behalten (Recommended)** — Keeps the worktree exactly as it is; nothing is deleted, and you can still remove it by hand later.
 2. **Löschen** — I confirm the changes are handled or expendable. Run 'git worktree remove --force'.
 3. **Manuell** — Exit /close. I will inspect the worktree before re-running /close.
 Reply with the number of your choice.

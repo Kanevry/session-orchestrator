@@ -5,6 +5,9 @@ description: Two assertions in the same CI-gate test were green against exactly 
 globs:
   - "tests/ci/**"
   - "tests/lib/**"
+paths:
+  - "tests/ci/**"
+  - "tests/lib/**"
 learning-key: anti-pattern/a-file-wide-tocontain-in-a-test-that-judges-one-block-passes-for-states-the-block-never-reaches
 confidence: 0.9
 expires-at: 2026-10-28
