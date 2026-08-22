@@ -847,13 +847,13 @@ describe('computeInstructionBudget — byte ceiling as a verdict axis (#931a)', 
     expect(oneUnder.overByteBudget).toBe(true);
   });
 
-  it('defaults byteCeiling to DEFAULT_BYTE_CEILING (114000) when not supplied', () => {
+  it('defaults byteCeiling to DEFAULT_BYTE_CEILING (121000) when not supplied', () => {
     const dir = makeFullFixture();
 
     const result = computeInstructionBudget({ rulesDir: dir });
 
-    expect(result.byteCeiling).toBe(114000);
-    expect(DEFAULT_BYTE_CEILING).toBe(114000);
+    expect(result.byteCeiling).toBe(121000);
+    expect(DEFAULT_BYTE_CEILING).toBe(121000);
     expect(result.overByteBudget).toBe(false);
   });
 
@@ -956,14 +956,14 @@ describe('never throws on a missing rulesDir', () => {
   const missingDir = join(tmpdir(), 'instr-budget-does-not-exist-xyz-987');
 
   it('computeInstructionBudget returns the safe empty shape', () => {
-    const result = computeInstructionBudget({ rulesDir: missingDir, ceiling: 480, byteCeiling: 114000 });
+    const result = computeInstructionBudget({ rulesDir: missingDir, ceiling: 480, byteCeiling: 121000 });
 
     expect(result).toEqual({
       totalDirectives: 0,
       totalBytes: 0,
       perFile: [],
       ceiling: 480,
-      byteCeiling: 114000,
+      byteCeiling: 121000,
       overDirectiveBudget: false,
       overByteBudget: false,
       overBudget: false,
@@ -1006,7 +1006,7 @@ function makeConfigFixture(configBlock) {
 }
 
 describe('_parseInstructionBudget — block parser', () => {
-  const FALLBACK = { enabled: true, ceiling: 480, 'byte-ceiling': 114000, mode: 'warn' };
+  const FALLBACK = { enabled: true, ceiling: 480, 'byte-ceiling': 121000, mode: 'warn' };
 
   it('returns fallback for empty / absent block', () => {
     expect(_parseInstructionBudget('', FALLBACK)).toEqual(FALLBACK);
@@ -1026,7 +1026,7 @@ describe('_parseInstructionBudget — block parser', () => {
     expect(_parseInstructionBudget(block, FALLBACK)).toEqual({
       enabled: false,
       ceiling: 300,
-      'byte-ceiling': 114000,
+      'byte-ceiling': 121000,
       mode: 'off',
     });
   });
@@ -1042,7 +1042,7 @@ describe('_parseInstructionBudget — block parser', () => {
     expect(_parseInstructionBudget(block, FALLBACK)).toEqual({
       enabled: true,
       ceiling: 480,
-      'byte-ceiling': 114000,
+      'byte-ceiling': 121000,
       mode: 'warn',
     });
   });
@@ -1072,8 +1072,8 @@ describe('_parseInstructionBudget — block parser', () => {
     ].join('\n');
     const malformed = ['instruction-budget:', '  byte-ceiling: not-a-number'].join('\n');
 
-    expect(_parseInstructionBudget(nonPositive, FALLBACK)['byte-ceiling']).toBe(114000);
-    expect(_parseInstructionBudget(malformed, FALLBACK)['byte-ceiling']).toBe(114000);
+    expect(_parseInstructionBudget(nonPositive, FALLBACK)['byte-ceiling']).toBe(121000);
+    expect(_parseInstructionBudget(malformed, FALLBACK)['byte-ceiling']).toBe(121000);
   });
 
   it('supplies DEFAULT_BYTE_CEILING when the caller passes a pre-#931a defaults object without the key', () => {

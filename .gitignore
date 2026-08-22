@@ -144,3 +144,8 @@ evals/instruction-ablation/results/
 
 # Vercel CLI local link state (never committed)
 .vercel
+
+# semgrep / npm-audit-signatures job scratch output (CI writes these into the workdir)
+sig-audit.json
+sig-audit.err
+.semgrep_logs/

@@ -130,14 +130,25 @@ variables:
 # ---------------------------------------------------------------------------
 # Stage: security (#350, #351)
 #
-# Two gates run before tests:
-#   gitleaks-scan  — scans the working tree for committed secrets
-#   npm-audit      — runs `npm audit --audit-level=high --omit=dev`
+# Three gates run before tests:
+#   gitleaks-scan          — scans the working tree for committed secrets
+#   npm-audit              — runs `npm audit --audit-level=high --omit=dev`
+#   npm-audit-signatures   — verifies registry signatures on installed tarballs
 #
-# Both fail the pipeline on findings. The npm-audit job uses
+# All three fail the pipeline on findings. The npm-audit job uses
 # --audit-level=high (matches `audit-level=high` in .npmrc); to bypass a
 # false positive temporarily, override per-pipeline via CI variable
 # AUDIT_LEVEL=critical (still gates on critical) — never silently ignore.
+#
+# npm-audit and npm-audit-signatures answer DIFFERENT questions and neither
+# subsumes the other: `npm audit` asks "does a published advisory match a
+# version in my tree?" (a CVE database lookup); `npm audit signatures` asks
+# "was each tarball I actually installed signed by the registry that claims to
+# have published it?" (a cryptographic provenance check). A tampered tarball
+# served under a legitimate version number has no advisory and passes the
+# first gate; the second is what catches it. This is the npm-native counterpart
+# to pnpm's `trust-policy=no-downgrade`, which .claude/rules/security.md
+# § SEC-020 mandates and which npm has no equivalent config key for.
 # ---------------------------------------------------------------------------
 
 gitleaks-scan:
@@ -172,6 +183,142 @@ npm-audit:
     # --audit-level: high by default; set AUDIT_LEVEL=critical via CI
     # variable to temporarily lower the bar while triaging a false positive.
     - npm audit --audit-level=${AUDIT_LEVEL} --omit=dev
+  rules: *gate-rules
+
+# ---------------------------------------------------------------------------
+# npm-audit-signatures — registry-signature provenance gate (SEC-020)
+#
+# BLOCKING by construction. Measured 2026-08-22 at 141d418 on npm 11.8.0:
+#   $ npm audit signatures
+#   audited 332 packages in 3s
+#   332 packages have verified registry signatures
+#   44 packages have verified attestations
+#   exit=0
+# A gate that can be binding today is wired binding today — there is no
+# allow_failure here and no exit code is excused. Contrast schema-drift-check,
+# which is advisory only because its precondition (a CI token) is genuinely
+# absent in this project.
+#
+# WHY THE SCRIPT IS NOT A BARE `npm audit signatures`:
+# npm collapses two categorically different outcomes onto the SAME exit 1 —
+# "the tarballs did not verify" and "I could not ask the registry". Measured,
+# same machine, minutes apart:
+#   $ npm audit signatures --json --registry=https://registry.invalid.example/
+#   exit=1  stdout: {"error":{"code":"ENOTFOUND","summary":"request to ... failed"}}
+#   $ npm audit signatures --json   # in a tree with no node_modules
+#   exit=1  stdout: {"error":{"summary":"found no dependencies to audit ..."}}
+# Left bare, a DNS blip or a half-populated node_modules would surface as
+# "npm-audit-signatures FAILED" and send the next reader hunting a supply-chain
+# compromise that never happened — the exact confusion #933 removed from
+# schema-drift-check, where "you forgot the token" and "the schema diverged"
+# used to be the same red. So the ENVELOPE is classified, never the exit code:
+# the `error` key means the query never completed, and its absence means the
+# answer is real. Both remaining `invalid`/`missing` arrays empty is the only
+# green. A job that compared nothing must never report the same green as a job
+# that compared everything.
+#
+# Exit-code taxonomy (all hard failures; the codes carry the DIAGNOSIS):
+#   0  VERIFIED     every installed tarball carries a valid registry signature
+#   1  FAILED       the query completed and returned invalid/missing signatures
+#                   <- the only code that is a signature verdict
+#   5  UNAVAILABLE  the query itself failed (registry unreachable, no installed
+#                   tree, unparseable output). NOT a verdict; nothing compared.
+#
+# `<<: *node-setup` is REQUIRED, not cosmetic: `npm audit signatures` reads the
+# installed tree, not the lockfile. Measured in a temp dir holding only
+# package.json + package-lock.json -> "found no dependencies to audit that were
+# installed from a supported registry" (exit 1). Without npm ci this job would
+# be structurally incapable of verifying anything.
+# ---------------------------------------------------------------------------
+
+npm-audit-signatures:
+  <<: *node-setup
+  stage: security
+  interruptible: true
+  timeout: 5m
+  script:
+    # One folded block on purpose: a single shell scope, one exit decision, and
+    # no value passes through a `$(...)` capture that a stray npm notice could
+    # corrupt (.claude/rules/bash-harness-pitfalls.md #2/#3). `|| true` keeps
+    # the runner's `set -e` from aborting before the classifier has run — npm
+    # exits 1 on BOTH failure classes and the whole point is to tell them apart.
+    - >
+      set -u;
+      npm audit signatures --json > sig-audit.json 2> sig-audit.err || true;
+      echo "[sig-audit] npm stderr follows (empty on a clean verification):";
+      cat sig-audit.err || true;
+      node -e 'const fs=require("fs"); let j=null; try{j=JSON.parse(fs.readFileSync("sig-audit.json","utf8"))}catch(e){j=null} if(!j||j.error){const d=j&&j.error?((j.error.code?j.error.code+": ":"")+(j.error.summary||"no summary")):"npm produced no parseable JSON envelope on stdout"; console.log("[sig-audit] RESULT: UNAVAILABLE (exit 5, hard failure). The registry query did not complete: "+d); console.log("[sig-audit] This is NOT a signature verdict - nothing was compared, so it does not mean the signatures are bad. Check registry reachability and that npm ci populated node_modules, then re-run."); process.exit(5)} const inv=j.invalid||[]; const mis=j.missing||[]; if(inv.length||mis.length){console.log("[sig-audit] RESULT: FAILED (exit 1, hard failure). The query DID complete and returned "+inv.length+" invalid and "+mis.length+" missing registry signature(s). This IS a verdict - treat it as a supply-chain finding."); console.log(JSON.stringify({invalid:inv,missing:mis},null,2)); process.exit(1)} console.log("[sig-audit] RESULT: VERIFIED (exit 0). The query completed; every installed tarball carries a valid registry signature (0 invalid, 0 missing).");'
+  rules: *gate-rules
+
+# ---------------------------------------------------------------------------
+# semgrep — static analysis over the repo's own source (SEC-020 / #1127)
+#
+# WHY THIS EXISTS AT ALL. `.claude/rules/security.md` claimed "Semgrep SAST
+# (65+ custom rules in .semgrep.yml + 4 managed rulesets) in CI" since the
+# 2026-04-28 baseline-vendor commit 9a35a2e. Measured 2026-08-22: `.semgrep.yml`
+# absent, 0 references in this file and in .github/workflows/. The claim was a
+# true statement about the operator's APP repos that travelled into a CLI repo
+# unchecked.
+#
+# WHY THE RULESET IS 25 RULES AND NOT THE BASELINE'S 64. Vendoring without
+# adapting is what produced the false claim; copying 64 rules would repeat it.
+# Measured, in three passes at 141d418 (474-495 files):
+#   * baseline verbatim          -> 78 findings, ALL false positives. Five rules
+#     fire only on this repo's shape: path.join(CONST,'literal'), a literal
+#     createHash('sha256'), new RegExp(re.source, flags) rebuilding a literal
+#     regex, `return {error: err.message}` from an internal fn to its OWN caller
+#     (SEC-009 governs HTTP responses; there is no client here), and console.log
+#     (`no-console` is deliberately off — eslint.config.js:38). Removed.
+#   * 32 of the remaining 59 were STRUCTURALLY DEAD: `paths.include` pointing at
+#     **/src/, **/Dockerfile, **/middleware.ts — a Next.js layout this repo does
+#     not have. Their green meant "nothing was examined", not "nothing is wrong"
+#     — including unsafe-command-injection, unsafe-shell-spawn and unsafe-eval,
+#     the three that matter most for a tool that spawns processes constantly.
+#     Path scope dropped where the PATTERN applies here; rule dropped where it
+#     needs a req/res/JSX surface (25 rules) or an auth/secret surface (9 rules,
+#     e.g. timing-unsafe-comparison — a `===` on strings is only a timing attack
+#     when the operands are secrets; unscoped it produced 12,001 hits).
+#   * the surviving 25 -> 27 real findings, and a synthetic probe confirmed the
+#     ruleset BITES: exec("ls " + u) now trips 3 distinct rules.
+#
+# WHY --baseline-commit AND NOT A FULL SCAN. Those 27 pre-existing findings are
+# triaged in #1127 (6 are genuine: JSON.stringify used as shell quoting in
+# durable-telemetry.mjs, an unquoted ${ref} in gate-helpers.mjs). A job that is
+# red on all 27 from day one gets ignored within a week — the inverse of a guard
+# that is green without biting, and the same instrument failure HR-101 names.
+# So the gate blocks on what a change ADDS, which is the property CI can enforce
+# without a human triaging 27 lines on every pipeline.
+#
+# Exit codes (semgrep, measured 2026-08-22 on 1.161.0):
+#   0  no NEW findings
+#   1  new findings introduced by this change  <- the verdict; hard failure
+#   7  config unreadable / unparseable         <- NOT a verdict; hard failure
+# Unlike `npm audit signatures`, semgrep already separates "found something"
+# from "could not run", so no envelope classification is needed here.
+# ---------------------------------------------------------------------------
+
+semgrep:
+  stage: security
+  image: semgrep/semgrep:1.161.0
+  interruptible: true
+  timeout: 10m
+  variables:
+    SEMGREP_SEND_METRICS: "off"
+    GIT_DEPTH: "0"   # --baseline-commit needs real history, not a shallow clone
+  script:
+    - >
+      set -eu;
+      BASE="${CI_MERGE_REQUEST_DIFF_BASE_SHA:-${CI_COMMIT_BEFORE_SHA:-}}";
+      if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+        echo "[semgrep] no usable baseline ref - scanning the full tree in REPORT-ONLY mode.";
+        echo "[semgrep] This is NOT a pass: the 27 findings triaged in #1127 are expected here.";
+        semgrep scan --config .semgrep.yml --metrics=off scripts/ hooks/ skills/ agents/ commands/ monitors/ pi/ || true;
+        echo "[semgrep] RESULT: REPORTED (exit 0). Nothing was gated - no baseline to diff against.";
+      else
+        echo "[semgrep] gating on findings NEW since $BASE";
+        semgrep scan --config .semgrep.yml --error --metrics=off --baseline-commit "$BASE" scripts/ hooks/ skills/ agents/ commands/ monitors/ pi/;
+        echo "[semgrep] RESULT: CLEAN (exit 0). This change introduced no new findings.";
+      fi
   rules: *gate-rules
 
 # ---------------------------------------------------------------------------
@@ -568,6 +715,8 @@ pipeline-gate:
     # Hard — absence is a pipeline-creation error (see mechanism 1 above).
     - gitleaks-scan
     - npm-audit
+    - npm-audit-signatures
+    - semgrep
     - lint
     - typecheck
     - owner-leakage

@@ -107,8 +107,33 @@ export const DEFAULT_CEILING = 480;
  * the live repo sits at 471/480 directives (98.1% of ceiling) but 108589/114000
  * bytes (95.3%). That asymmetry is inherited from the pre-existing directive
  * ratchet, not introduced here.
+ *
+ * RE-BASELINED 2026-08-22: 114000 -> 121000. The ratchet fired, and it fired
+ * for exactly the reason stated above — "a genuinely NEW always-on surface is
+ * added". Since the 2026-07-30 calibration the corpus grew 108589 -> 115730 B
+ * (15 always-on files), and the largest single cause is a new rule file the
+ * operator adopted: .claude/rules/host-resources.md (7457 B, #1089, live
+ * 2026-08-21). Today's SEC-020 corrections added a further ~1800 B of factual
+ * repair — the four pnpm-only keys were being read as npm gaps, and the file
+ * claimed a Semgrep CI stage that did not exist.
+ *
+ * Headroom is deliberately UNCHANGED at +5%: 115730 x 1.05 = 121516, rounded
+ * DOWN to 121000. This is a re-baseline, not a loosening — the same relative
+ * slack, measured against the corpus that actually exists.
+ *
+ * Two things this re-baseline is NOT. It is not a licence to raise the number
+ * whenever it is hit; a ratchet that yields on contact measures nothing, and
+ * the NEXT breach must be answered by a diet, not another bump. And it is not
+ * a verdict that the corpus is right-sized: 4499 B of the always-on
+ * security.md describes surfaces this repo does not have (SSRF via
+ * @your-org/http-client, an OWASP table, Supabase RLS, bcrypt/JWT) — vendored
+ * from the baseline and never adapted, the same class as the Semgrep claim
+ * fixed today. Cutting it is a real, nameable reduction and is tracked in
+ * #1126; it was deliberately NOT done in the same pass that raised the
+ * ceiling, because deleting security prose to hit a number is the failure
+ * .claude/rules/build-value.md BV-002 names.
  */
-export const DEFAULT_BYTE_CEILING = 114000;
+export const DEFAULT_BYTE_CEILING = 121000;
 
 /**
  * Read the `instruction-budget:` nested block from the `## Session Config`

@@ -61,19 +61,24 @@ Once a service crosses ~10 managed secrets, `.env.example` alone stops being a u
 - Redirect handling: use `redirect: 'manual'` and re-validate each Location URL via `validateUrl()` before following. This prevents redirect-based SSRF attacks. The `safeFetch()` function in `@your-org/http-client` implements this pattern with `RedirectLimitError` for exceeded limits.
 
 ## Dependencies
-- `pnpm audit --prod --audit-level=high` in CI pipeline. Block deploys on high/critical vulnerabilities.
-- Gitleaks (37 rules) + Semgrep SAST (65+ custom rules in `.semgrep.yml` + 4 managed rulesets) in CI.
+- The canonical PM's production audit in CI — `npm audit --omit=dev --audit-level=high` / `pnpm audit --prod --audit-level=high`. Block deploys on high/critical vulnerabilities.
+- Gitleaks (37 rules) in CI — verified in this repo (`.gitleaks.toml`, GitLab job `gitleaks-scan` + a SHA-pinned GitHub action). **Semgrep SAST (65+ custom rules in `.semgrep.yml` + 4 managed rulesets) is a baseline requirement this repo has NOT adopted** — measured 2026-08-22 @ `141d418`: `.semgrep.yml` absent, 0 references in `.gitlab-ci.yml` and `.github/workflows/`. Do not read this line as coverage that exists here.
 - Review `node_modules` additions in PRs (supply chain awareness).
 
 ## Supply Chain Security (SEC-020)
-- Set `ignore-scripts=true` in `.npmrc` as the global default. No package may run install/postinstall/prepare scripts unless explicitly allowlisted via `only-built-dependencies-of[]`. This is the single most effective defense against Axios-style postinstall attacks.
-- Allowlisted packages (native binaries that genuinely need install scripts): `@your-org/*`, `esbuild`, `sharp`, `@playwright/test`, `@sentry/cli`, `prisma`, `better-sqlite3`, `@typescript/native-preview`. Only add new entries after verifying the package requires postinstall.
-- Use `block-exotic-subdeps=true` in `.npmrc` to prevent transitive dependencies from using git or tarball sources. Mitigates PackageGate-class attacks (CVE-2026-xxxx).
-- Set `minimum-release-age=1440` (24 hours) to delay package updates, giving security vendors time to detect malicious releases.
-- Use `trust-policy=no-downgrade` to reject packages with lower trust signals than previously installed versions.
+
+**Scope note — check the package manager before reading an omission as a gap.** Only `ignore-scripts` below is read by BOTH npm and pnpm; the other four keys are **pnpm-only directives that npm silently ignores**. An npm-canonical repo that omits them is CORRECT, not deficient — this repo is one (`package-lock.json` is the tracked lockfile, per `.claude/rules/development.md` § Package Management), and its `.npmrc` records the omission in a comment block. Measured 2026-08-22 @ `141d418`: `npm config get ignore-scripts` → `true`.
+
+- **npm + pnpm** — Set `ignore-scripts=true` in `.npmrc` as the global default. No package may run install/postinstall/prepare scripts unless explicitly allowlisted via `only-built-dependencies-of[]` (pnpm-only; under npm the switch is all-or-nothing). This is the single most effective defense against Axios-style postinstall attacks.
+- **pnpm** — Allowlisted packages (native binaries that genuinely need install scripts): `@your-org/*`, `esbuild`, `sharp`, `@playwright/test`, `@sentry/cli`, `prisma`, `better-sqlite3`, `@typescript/native-preview`. Only add new entries after verifying the package requires postinstall.
+- **pnpm** — Use `block-exotic-subdeps=true` in `.npmrc` to prevent transitive dependencies from using git or tarball sources. Mitigates PackageGate-class attacks (CVE-2026-xxxx).
+- **pnpm** — Set `minimum-release-age=1440` (24 hours) to delay package updates, giving security vendors time to detect malicious releases.
+- **pnpm** — Use `trust-policy=no-downgrade` to reject packages with lower trust signals than previously installed versions.
+- **npm** — Run `npm audit signatures` in CI: it verifies the registry signatures/provenance of the installed tarballs — the npm-native counterpart to pnpm's `trust-policy`. Required in every npm-canonical pipeline.
+- **A repo-local `.npmrc` is CWD-scoped and does not travel.** npm resolves config from the working directory upward, so anything invoked outside a repo never sees the hardening — measured 2026-08-22: a globally configured MCP server ran `npx -y <pkg>@latest` from `$HOME`, where `~/.npmrc` carried no `ignore-scripts`. Set the key host-wide too; verify with `cd /tmp && npm config get ignore-scripts`.
 - Never use `git+ssh://` or `git+https://` as dependency specifiers in `package.json`. Always use npm registry versions.
 - Audit all new dependencies before adding: check npm download trends, last publish date, maintainer count. Minimum 1000 weekly downloads unless justified.
-- In CI: always use `pnpm install --frozen-lockfile` to prevent lockfile tampering.
+- In CI: always use the canonical PM's frozen-lockfile install — `npm ci` / `pnpm install --frozen-lockfile` — to prevent lockfile tampering.
 - Registry hijacking is mitigated by pnpm's scoped registry config in `.npmrc` (`@your-org:registry=...` + `strict-ssl=true`). pnpm v9 lockfiles do not embed registry URLs — they resolve from `.npmrc` at install time.
 
 ### Session Config Command Trust (Quality-Gate Command Injection)

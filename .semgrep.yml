@@ -1,0 +1,551 @@
+# Semgrep ruleset — session-orchestrator
+#
+# PROVENANCE: vendored 2026-08-22 from projects-baseline
+# templates/shared/.semgrep.yml (64 rules, baseline copy dated 2026-04-25).
+#
+# WHY THIS FILE IS NOT A VERBATIM COPY. The baseline ruleset targets web apps
+# with user-supplied input. This repo is a CLI/agent harness: 1102 .mjs files,
+# no HTTP surface, no browser, no end-user request path. Five rules fire here
+# purely on that context mismatch. They were REMOVED rather than carried and
+# ignored, because a scanner that is red on noise trains people to skip it —
+# the same failure mode .claude/rules/host-resources.md HR-101 names for
+# warnings ("a signal may only warn if it is rare").
+#
+# Measured 2026-08-22 @ 141d418, `semgrep scan` over scripts/ hooks/ skills/,
+# 474 files scanned, 78 findings — ALL from these five, ALL false positives:
+#
+#   41x baseline-path-traversal-join    path.join(SO_PROJECT_DIR, 'CLAUDE.md')
+#                                       — second argument is a literal, not input.
+#   21x raw-error-to-client             return { error: err.message } from an
+#                                       internal function to its own caller.
+#                                       SEC-009 governs HTTP responses to end
+#                                       users; there is no client here.
+#   10x baseline-redos-user-regex       new RegExp(re.source, flags) rebuilding a
+#                                       literal RegExp declared in the same
+#                                       module — never a user-supplied pattern.
+#    5x baseline-dynamic-hash-algorithm crypto.createHash('sha256') — the
+#                                       algorithm IS the literal the rule wants.
+#    1x console-log-production          `no-console` is deliberately OFF here
+#                                       (eslint.config.js:38, development.md).
+#
+# Re-enable any of them the moment this repo grows the surface it assumes:
+# an HTTP endpoint, a browser bundle, or a user-supplied regex/path.
+#
+# The remaining 59 rules produce ZERO findings today. That is the point: they
+# cost nothing now and bite on the next regression. Among them are the ones
+# that matter most for a repo that shells out constantly and consumes agent
+# output — unsafe-command-injection, json-parse-untrusted-input,
+# prototype-pollution-object-assign, math-random-security, and the three
+# unsafe-llm-* rules.
+#
+# Drift check against the baseline:
+#   diff <(grep '^  - id:' ~/Projects/projects-baseline/templates/shared/.semgrep.yml) \
+#        <(grep '^  - id:' .semgrep.yml)
+#   → expect exactly the five removals above.
+
+rules:
+- id: unsafe-fetch-user-url
+  patterns:
+  - pattern: fetch($URL, ...)
+  - pattern-not: safeFetch($URL, ...)
+  - pattern-not: safeFetchJSON($URL, ...)
+  - pattern-not: fetchWithTimeout($URL, ...)
+  - pattern-not: fetchWithRetry($URL, ...)
+  message: Use safeFetch() or safeFetchJSON() from @goetzendorfer/http-client for user-supplied URLs (SEC-014).
+    Raw fetch() does not validate against private IP ranges.
+  languages:
+  - typescript
+  - javascript
+  severity: WARNING
+  metadata:
+    category: security
+    cwe: 'CWE-918: Server-Side Request Forgery'
+- id: math-random-security
+  pattern: Math.random()
+  message: Math.random() is not cryptographically secure (SEC-015). In security-sensitive code, use crypto.getRandomValues()
+    or crypto.randomUUID() for tokens, keys, nonces, and session IDs. Math.random() is acceptable for
+    non-security purposes like retry jitter or UI randomization.
+  languages:
+  - typescript
+  - javascript
+  severity: WARNING
+  metadata:
+    category: security
+    cwe: 'CWE-330: Use of Insufficiently Random Values'
+- id: csv-without-sanitize
+  patterns:
+  - pattern-either:
+    - pattern: '$VAR.join(",")
+
+        '
+    - pattern: '`${$X},${$Y}`
+
+        '
+  message: CSV output without sanitization. Use sanitizeCsvField() to prevent CSV injection (SEC-016).
+  languages:
+  - typescript
+  - javascript
+  severity: WARNING
+  metadata:
+    category: security
+    cwe: 'CWE-1236: Improper Neutralization of Formula Elements in a CSV File'
+- id: unpinned-docker-image
+  patterns:
+  - pattern-regex: FROM\s+\S+:latest
+  message: Docker image uses :latest tag. Pin to a specific version for reproducible builds and supply
+    chain security.
+  languages:
+  - dockerfile
+  severity: WARNING
+  metadata:
+    category: security
+    cwe: 'CWE-829: Inclusion of Functionality from Untrusted Control Sphere'
+- id: missing-frozen-lockfile
+  patterns:
+  - pattern-regex: RUN\s+(?:npm|pnpm)\s+install(?!.*--frozen-lockfile)
+  - pattern-not-regex: RUN\s+(?:npm|pnpm)\s+install.*--frozen-lockfile
+  message: Package install in Dockerfile without --frozen-lockfile. Use --frozen-lockfile for deterministic
+    builds.
+  languages:
+  - dockerfile
+  severity: WARNING
+  metadata:
+    category: best-practice
+- id: xxe-unsafe-xml-parsing
+  patterns:
+  - pattern-either:
+    - pattern: new DOMParser()
+    - pattern: xml2js.parseString(...)
+    - pattern: parseString(...)
+    - pattern: new XMLParser()
+    - pattern: 'new XMLParser({...})
+
+        '
+  - pattern-not: 'new XMLParser({..., processEntities: false, ...})
+
+      '
+  message: 'Unsafe XML parsing detected (SEC-013). DOMParser and xml2js.parseString are unsafe for untrusted
+    XML. For fast-xml-parser, use new XMLParser({ processEntities: false }). Prefer JSON over XML at all
+    API boundaries.'
+  languages:
+  - typescript
+  - javascript
+  severity: ERROR
+  metadata:
+    category: security
+    cwe: 'CWE-611: Improper Restriction of XML External Entity Reference'
+- id: unsafe-command-injection
+  patterns:
+  - pattern-either:
+    - pattern: exec(`...${$X}...`)
+    - pattern: exec(`...${$X}...`, ...)
+    - pattern: execSync(`...${$X}...`)
+    - pattern: execSync(`...${$X}...`, ...)
+    - pattern: exec($A + $B)
+    - pattern: exec($A + $B, ...)
+    - pattern: execSync($A + $B)
+    - pattern: execSync($A + $B, ...)
+  message: 'Command injection risk: exec/execSync called with template literal or string concatenation
+    (CWE-78). Use execFile() with array arguments instead, which does not invoke a shell.'
+  languages:
+  - typescript
+  - javascript
+  severity: ERROR
+  metadata:
+    category: security
+    cwe: 'CWE-78: Improper Neutralization of Special Elements used in an OS Command'
+- id: unsafe-llm-output-eval
+  patterns:
+  - pattern-either:
+    - pattern: eval($RESPONSE.content)
+    - pattern: eval($RESPONSE.text)
+    - pattern: eval($RESPONSE.choices[0].message.content)
+    - pattern: new Function($RESPONSE.content)
+    - pattern: new Function($RESPONSE.text)
+    - pattern: new Function($RESPONSE.choices[0].message.content)
+    - pattern: vm.runInNewContext($RESPONSE.content, ...)
+    - pattern: vm.runInNewContext($RESPONSE.text, ...)
+    - pattern: vm.runInNewContext($RESPONSE.choices[0].message.content, ...)
+  message: LLM output passed to eval(), new Function(), or vm.runInNewContext() (OWASP LLM04). Never execute
+    LLM-generated content as code. Parse structured output with JSON.parse() + Zod validation instead.
+  languages:
+  - typescript
+  - javascript
+  severity: ERROR
+  metadata:
+    category: security
+    cwe: 'CWE-94: Improper Control of Generation of Code'
+    owasp: LLM04:2025
+- id: xxe-missing-entity-disable
+  patterns:
+  - pattern: 'new XMLParser($OPTS)
+
+      '
+  - pattern-not: 'new XMLParser({..., processEntities: false, ...})
+
+      '
+  message: 'SEC-013: XMLParser created without processEntities: false. External entity processing must
+    be disabled to prevent XXE attacks. Add processEntities: false to the options object.
+
+    '
+  languages:
+  - typescript
+  - javascript
+  severity: ERROR
+  metadata:
+    category: security
+    cwe: CWE-611
+    owasp: A03:2021
+    confidence: HIGH
+- id: missing-zod-validation-server-actions
+  patterns:
+  - pattern-either:
+    - pattern: formData.get(...)
+    - pattern: formData.getAll(...)
+  - pattern-not-inside: '$SCHEMA.parse(...)
+
+      '
+  - pattern-not-inside: '$SCHEMA.safeParse(...)
+
+      '
+  message: FormData accessed without Zod validation in server action (SEC-006). Parse form data with a
+    Zod schema before use.
+  languages:
+  - typescript
+  - javascript
+  severity: WARNING
+  metadata:
+    category: security
+    cwe: 'CWE-20: Improper Input Validation'
+- id: baseline-path-traversal-fs
+  patterns:
+  - pattern-either:
+    - pattern: fs.readFile($REQ. ... .$PARAM, ...)
+    - pattern: fs.readFileSync($REQ. ... .$PARAM, ...)
+    - pattern: fs.createReadStream($REQ. ... .$PARAM, ...)
+  message: 'Path traversal risk: filesystem operation with user-controlled path. Validate and sanitize
+    the path, use path.resolve() with a safe base directory.'
+  languages:
+  - typescript
+  - javascript
+  severity: ERROR
+  metadata:
+    category: security
+    cwe: 'CWE-22: Improper Limitation of a Pathname to a Restricted Directory'
+    owasp: A03:2021
+    confidence: HIGH
+- id: baseline-weak-hash-algorithm
+  pattern-either:
+  - pattern: crypto.createHash("md5")
+  - pattern: crypto.createHash('md5')
+  - pattern: crypto.createHash("sha1")
+  - pattern: crypto.createHash('sha1')
+  message: 'SEC-015: MD5/SHA1 not suitable for security purposes. Use SHA-256+ for hashing, bcrypt/scrypt
+    for passwords.'
+  languages:
+  - typescript
+  - javascript
+  severity: ERROR
+  metadata:
+    category: security
+    cwe: 'CWE-328: Use of Weak Hash'
+    owasp: A02:2021
+    confidence: HIGH
+- id: baseline-cors-wildcard-express
+  pattern-either:
+  - pattern: 'cors({origin: ''*''})'
+  - pattern: 'cors({origin: "*"})'
+  - pattern: cors()
+  message: CORS wildcard origin detected. In production, use an explicit origin allowlist. See security-web.md.
+  languages:
+  - typescript
+  - javascript
+  severity: WARNING
+  metadata:
+    category: security
+    cwe: 'CWE-942: Permissive Cross-domain Policy with Untrusted Domains'
+    confidence: MEDIUM
+- id: baseline-cors-wildcard-header
+  pattern-either:
+  - pattern: $RES.setHeader("Access-Control-Allow-Origin", "*")
+  - pattern: $RES.setHeader('Access-Control-Allow-Origin', '*')
+  - pattern: $RES.header("Access-Control-Allow-Origin", "*")
+  - pattern: $RES.header('Access-Control-Allow-Origin', '*')
+  message: CORS wildcard via manual header. Use cors() middleware with explicit origin allowlist in production.
+  languages:
+  - typescript
+  - javascript
+  severity: WARNING
+  metadata:
+    category: security
+    cwe: 'CWE-942: Permissive Cross-domain Policy with Untrusted Domains'
+    confidence: HIGH
+- id: baseline-tls-reject-unauthorized
+  pattern-either:
+  - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+  - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+  - pattern: process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
+  message: 'SEC-015: Disabling TLS certificate verification. Never disable in production.'
+  languages:
+  - typescript
+  - javascript
+  severity: ERROR
+  metadata:
+    category: security
+    cwe: 'CWE-295: Improper Certificate Validation'
+    confidence: HIGH
+- id: baseline-tls-reject-unauthorized-option
+  pattern-either:
+  - pattern: '{..., rejectUnauthorized: false, ...}
+
+      '
+  - pattern: 'rejectUnauthorized: false
+
+      '
+  message: 'SEC-015: TLS certificate verification disabled via rejectUnauthorized:false. Never disable
+    in production.'
+  languages:
+  - typescript
+  - javascript
+  severity: ERROR
+  metadata:
+    category: security
+    cwe: 'CWE-295: Improper Certificate Validation'
+    confidence: HIGH
+- id: baseline-open-redirect-nextjs
+  patterns:
+  - pattern-either:
+    - pattern: redirect($REQ. ... .$PARAM)
+    - pattern: router.push($REQ. ... .$PARAM)
+    - pattern: router.replace($REQ. ... .$PARAM)
+  message: 'Open redirect risk: redirect/router with user-controlled URL. Validate against an allowlist
+    of safe destinations.'
+  languages:
+  - typescript
+  - javascript
+  severity: WARNING
+  metadata:
+    category: security
+    cwe: 'CWE-601: URL Redirection to Untrusted Site'
+    owasp: A01:2021
+    confidence: MEDIUM
+- id: ssti-template-injection
+  patterns:
+  - pattern-either:
+    - pattern: $ENGINE.compile($USER_INPUT)
+    - pattern: $ENGINE.render($USER_INPUT, ...)
+    - pattern: $ENGINE.renderString($USER_INPUT, ...)
+    - pattern: Handlebars.compile($USER_INPUT)
+    - pattern: ejs.render($USER_INPUT, ...)
+    - pattern: pug.compile($USER_INPUT)
+    - pattern: pug.render($USER_INPUT, ...)
+    - pattern: nunjucks.renderString($USER_INPUT, ...)
+    - pattern: new Function("return `" + $USER_INPUT + "`")
+  message: 'SEC-P3: Potential server-side template injection (SSTI) — user input passed to template engine
+    compile/render. Never compile templates from user-controlled strings. Use pre-compiled templates with
+    safe data binding. CWE-1336.'
+  languages:
+  - typescript
+  - javascript
+  severity: ERROR
+  metadata:
+    category: security
+    cwe: 'CWE-1336: Improper Neutralization of Special Elements Used in a Template Engine'
+    owasp: A03:2021
+    confidence: MEDIUM
+- id: unsafe-eval
+  patterns:
+  - pattern-either:
+    - pattern: eval(...)
+    - pattern: new Function(...)
+    - pattern: setTimeout("...", ...)
+    - pattern: setInterval("...", ...)
+    - patterns:
+      - pattern: setTimeout($CODE, ...)
+      - metavariable-pattern:
+          metavariable: $CODE
+          patterns:
+          - pattern-either:
+            - pattern: $A + $B
+            - pattern: '`...${$X}...`'
+    - patterns:
+      - pattern: setInterval($CODE, ...)
+      - metavariable-pattern:
+          metavariable: $CODE
+          patterns:
+          - pattern-either:
+            - pattern: $A + $B
+            - pattern: '`...${$X}...`'
+  - pattern-not: eval("...")
+  - pattern-not: new Function("...")
+  message: 'SEC-P3: Unsafe code evaluation — eval(), new Function(), or string-based setTimeout/setInterval
+    detected. These enable arbitrary code execution. Use safer alternatives: JSON.parse() for data, direct
+    function references for callbacks. CWE-95.'
+  languages:
+  - typescript
+  - javascript
+  severity: ERROR
+  metadata:
+    category: security
+    cwe: 'CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code'
+    owasp: A03:2021
+    confidence: MEDIUM
+- id: unsafe-shell-spawn
+  patterns:
+  - pattern-either:
+    - pattern: 'spawn($CMD, $ARGS, {..., shell: true, ...})'
+    - pattern: 'spawnSync($CMD, $ARGS, {..., shell: true, ...})'
+    - pattern: 'spawn($CMD, {..., shell: true, ...})'
+    - pattern: 'spawnSync($CMD, {..., shell: true, ...})'
+    - pattern: child_process.exec(...)
+    - pattern: child_process.execSync(...)
+    - pattern: require("child_process").exec(...)
+    - pattern: require("child_process").execSync(...)
+    - pattern: require('child_process').exec(...)
+    - pattern: require('child_process').execSync(...)
+  message: 'SEC-P3: Unsafe shell spawn — child_process.exec() or spawn with shell:true invokes a shell,
+    enabling command injection. Use execFile() or spawn() without shell:true, passing arguments as arrays.
+    CWE-78.'
+  languages:
+  - typescript
+  - javascript
+  severity: WARNING
+  metadata:
+    category: security
+    cwe: 'CWE-78: Improper Neutralization of Special Elements used in an OS Command'
+    owasp: A03:2021
+    confidence: MEDIUM
+- id: aes-ecb-mode
+  patterns:
+  - pattern-either:
+    - pattern: crypto.createCipheriv("aes-128-ecb", ...)
+    - pattern: crypto.createCipheriv('aes-128-ecb', ...)
+    - pattern: crypto.createCipheriv("aes-192-ecb", ...)
+    - pattern: crypto.createCipheriv('aes-192-ecb', ...)
+    - pattern: crypto.createCipheriv("aes-256-ecb", ...)
+    - pattern: crypto.createCipheriv('aes-256-ecb', ...)
+    - pattern: crypto.createDecipheriv("aes-128-ecb", ...)
+    - pattern: crypto.createDecipheriv('aes-128-ecb', ...)
+    - pattern: crypto.createDecipheriv("aes-192-ecb", ...)
+    - pattern: crypto.createDecipheriv('aes-192-ecb', ...)
+    - pattern: crypto.createDecipheriv("aes-256-ecb", ...)
+    - pattern: crypto.createDecipheriv('aes-256-ecb', ...)
+  message: 'SEC-P3: AES-ECB mode detected — ECB does not use an IV and leaks plaintext patterns. Use AES-GCM
+    (aes-256-gcm) for authenticated encryption, or AES-CBC as a minimum. CWE-327.'
+  languages:
+  - typescript
+  - javascript
+  severity: ERROR
+  metadata:
+    category: security
+    cwe: 'CWE-327: Use of a Broken or Risky Cryptographic Algorithm'
+    owasp: A02:2021
+    confidence: HIGH
+- id: tob-node-disable-certificate-validation
+  patterns:
+  - pattern-either:
+    - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+    - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+    - pattern: process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
+    - pattern: process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = '0'
+    - pattern: '{..., rejectUnauthorized: false, ...}
+
+        '
+  message: 'SEC-015: TLS certificate validation disabled (CWE-295). NODE_TLS_REJECT_UNAUTHORIZED=''0''
+    or rejectUnauthorized:false bypasses certificate checks, enabling MITM attacks. Never disable in production
+    — use proper CA certificates instead.'
+  languages:
+  - typescript
+  - javascript
+  severity: ERROR
+  metadata:
+    category: security
+    cwe: 'CWE-295: Improper Certificate Validation'
+    owasp: A02:2021
+    confidence: HIGH
+    source: trail-of-bits-adapted
+- id: tob-postgres-insecure-sslmode
+  patterns:
+  - pattern-either:
+    - pattern: '{..., ssl: false, ...}
+
+        '
+    - pattern: '{..., sslmode: ''disable'', ...}
+
+        '
+    - pattern: '{..., sslmode: "disable", ...}
+
+        '
+    - pattern: '{..., ssl: { rejectUnauthorized: false }, ...}
+
+        '
+  message: 'SEC-015: Insecure PostgreSQL SSL configuration (CWE-319). Setting ssl:false or sslmode:''disable''
+    transmits credentials and data in plaintext. Use ssl:{ rejectUnauthorized: true } with proper CA certificates.'
+  languages:
+  - typescript
+  - javascript
+  severity: ERROR
+  metadata:
+    category: security
+    cwe: 'CWE-319: Cleartext Transmission of Sensitive Information'
+    owasp: A02:2021
+    confidence: HIGH
+    source: trail-of-bits-adapted
+- id: tob-redis-unencrypted-transport
+  patterns:
+  - pattern-either:
+    - pattern: 'createClient({..., url: "redis://...", ...})
+
+        '
+    - pattern: 'createClient({..., url: ''redis://...'', ...})
+
+        '
+    - pattern: 'new Redis("redis://...")
+
+        '
+    - pattern: 'new Redis(''redis://...'')
+
+        '
+    - pattern: 'new $IOREDIS("redis://...", ...)
+
+        '
+    - pattern: 'new $IOREDIS(''redis://...'', ...)
+
+        '
+  message: 'SEC-015: Redis connection without TLS (CWE-319). Use rediss:// (note double ''s'') protocol
+    for encrypted connections, or configure the tls option explicitly. Plaintext redis:// transmits auth
+    tokens and data unencrypted.'
+  languages:
+  - typescript
+  - javascript
+  severity: WARNING
+  metadata:
+    category: security
+    cwe: 'CWE-319: Cleartext Transmission of Sensitive Information'
+    owasp: A02:2021
+    confidence: MEDIUM
+    source: trail-of-bits-adapted
+- id: tob-unsafe-child-process
+  patterns:
+  - pattern-either:
+    - pattern: child_process.exec(`...${$INPUT}...`, ...)
+    - pattern: child_process.exec(`...${$INPUT}...`)
+    - pattern: child_process.execSync(`...${$INPUT}...`, ...)
+    - pattern: child_process.execSync(`...${$INPUT}...`)
+    - pattern: require("child_process").exec(`...${$INPUT}...`, ...)
+    - pattern: require('child_process').exec(`...${$INPUT}...`, ...)
+    - pattern: require("child_process").execSync(`...${$INPUT}...`, ...)
+    - pattern: require('child_process').execSync(`...${$INPUT}...`, ...)
+  message: 'Command injection risk: child_process.exec/execSync with string interpolation (CWE-78). Use
+    child_process.execFile() or child_process.spawn() with array arguments to avoid shell interpretation.
+    Never pass user input through a shell.'
+  languages:
+  - typescript
+  - javascript
+  severity: ERROR
+  metadata:
+    category: security
+    cwe: 'CWE-78: Improper Neutralization of Special Elements used in an OS Command'
+    owasp: A03:2021
+    confidence: HIGH
+    source: trail-of-bits-adapted
