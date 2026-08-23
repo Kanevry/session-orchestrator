@@ -38,12 +38,20 @@
  *                                   it, so nothing turns the YAML into a value.
  *
  * S2 exists because S1 alone is fooled by a mention that reads nothing.
- * `express-path.enabled` passes S1 on the strength of ONE line —
- * `scripts/lib/state-md/body-sections.mjs:699`, a log-message template literal
- * that interpolates a value its caller already had. No parser resolves
- * `express-path` from config at all; the gate lives entirely in
- * `skills/session-start/phase-8-5-express-path.md` prose. S1 called that wired;
- * S2 calls it what it is.
+ * The exemplar it was written against was `express-path.enabled`: it passed S1 on
+ * the strength of ONE line — `scripts/lib/state-md/body-sections.mjs:699`, a
+ * log-message template literal interpolating a value its caller already had —
+ * while no parser resolved `express-path` from config at all and the gate lived
+ * entirely in `skills/session-start/phase-8-5-express-path.md` prose. S1 called
+ * that wired; S2 called it what it was.
+ *
+ * FIXED 2026-08-23 (#1119): `scripts/lib/config.mjs` now parses the block, and
+ * `scripts/lib/express-path.mjs` makes the activation decision AND records it.
+ * Verified the same day — `express-path` no longer appears in this checker's
+ * stdout or stderr under either signal. **The exemplar is therefore historical.**
+ * It is kept because it is the clearest statement of what S2 detects, and because
+ * a rule that only cites live instances loses its explanation the moment it works.
+ * If you need a CURRENT S2 hit, run the checker; do not assume this one.
  *
  * S2 applies to TOP-LEVEL keys only — a nested key reaches code through its
  * parent — and its premise is structural: every Session Config key has to pass
@@ -209,7 +217,18 @@ const CONSUMER_DIRS = Object.freeze(['scripts', 'hooks']);
 const CODE_EXTENSIONS = Object.freeze(['.mjs', '.js', '.cjs']);
 
 /** Directory names excluded from the consumer scan at any depth. */
-const EXCLUDED_DIRS = Object.freeze(['node_modules', '.git', 'tests', 'test', '__tests__']);
+// `worktrees` is here for a measured reason, not by analogy to node_modules.
+// This walk uses `readdirSync`, NOT `git ls-files`, so `.gitignore` does not reach
+// it — and `git worktree add` inside the repo (this repo's own convention is
+// `.claude/worktrees/<name>`) drops a COMPLETE second checkout into the walk.
+// Measured 2026-08-23 with one peer worktree present: +755 `.md` and +1209 `.mjs`
+// files, 133 MB, `collectOrphanedProseModules` at 1727 ms of a 2270 ms total.
+// The cost is the smaller half. The correctness half is worse: the peer's copy of
+// `.claude/rules/owner-persona.md` was counted as an INDEPENDENT document naming
+// the same module, so a finding cited two sources where one exists. Any scanner
+// that walks the filesystem instead of the index has this bug; eight under
+// `scripts/lib/validate/` use `readdirSync`.
+const EXCLUDED_DIRS = Object.freeze(['node_modules', '.git', 'tests', 'test', '__tests__', 'worktrees']);
 
 /** Extension carrying prose claims (signal S3). */
 const PROSE_EXTENSIONS = Object.freeze(['.md']);
@@ -580,17 +599,48 @@ export function collectOrphanedProseModules(pluginRoot) {
       body: readFileSync(absolute, 'utf8'),
     }));
 
+  // Both membership questions below were nested scans: (1) re-filtered EVERY prose
+  // document per module, (2) re-scanned EVERY other module's lines per module.
+  // At this repo's size that is 467 x ~700 full-body `includes` plus 467 x 467 x
+  // ~300 line tests — measured 1727 ms of `inspectUnwiredFeatures`'s 2270 ms, in a
+  // CLI that eight test files spawn under a 30 s hook timeout. Indexing both once
+  // is O(corpus) instead of O(corpus^2); the answers are unchanged by construction,
+  // and the acceptance criterion for the rewrite was byte-identical CLI output.
+  /** basename -> prose docs naming it */
+  const claimsByBase = new Map();
+  for (const doc of prose) {
+    for (const module of modules) {
+      if (!doc.body.includes(module.base)) continue;
+      const list = claimsByBase.get(module.base);
+      if (list) list.push(doc);
+      else claimsByBase.set(module.base, [doc]);
+    }
+  }
+  /** basename -> set of module paths referencing it OUTSIDE a comment */
+  const referencedBy = new Map();
+  for (const other of modules) {
+    for (const line of other.lines) {
+      if (isCommentLine(line)) continue;
+      for (const match of line.matchAll(/[A-Za-z0-9_.-]+\.(?:mjs|js|cjs)/g)) {
+        const set = referencedBy.get(match[0]);
+        if (set) set.add(other.relative);
+        else referencedBy.set(match[0], new Set([other.relative]));
+      }
+    }
+  }
+
   for (const module of modules) {
     // (1) named by a live document
-    const claims = prose.filter((doc) => doc.body.includes(module.base));
+    const claims = claimsByBase.get(module.base) ?? [];
     if (claims.length === 0) continue;
 
-    // (2) no production module references it outside a comment
-    const referenced = modules.some(
-      (other) =>
-        other.relative !== module.relative &&
-        other.lines.some((line) => line.includes(module.base) && !isCommentLine(line)),
-    );
+    // (2) no production module references it outside a comment.
+    // Self-references do not count, which is why the index stores the referring
+    // path rather than a bare boolean.
+    const referrers = referencedBy.get(module.base);
+    const referenced =
+      referrers !== undefined &&
+      (referrers.size > 1 || !referrers.has(module.relative));
     if (referenced) continue;
 
     // (3) not invoked by path

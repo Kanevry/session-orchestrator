@@ -180,3 +180,95 @@ describe('normalizeSession — idempotence', () => {
     expect(twice).toEqual(once);
   });
 });
+
+// ---------------------------------------------------------------------------
+// express_path — legacy object form collapsed onto the canonical boolean
+//
+// Synthetic fixtures only. The live .orchestrator/metrics/sessions.jsonl is
+// gitignored (absent on CI) and measuring the living tree would punish its own
+// repair; the shapes below are copied from the 2026-08-23 census by hand.
+// ---------------------------------------------------------------------------
+
+/** The one real object-form record, shape-for-shape (main-2026-05-01-housekeeping-2). */
+const LEGACY_EXPRESS_OBJECT = () => ({
+  session_id: 'sess-express-legacy',
+  session_type: 'housekeeping',
+  schema_version: 1,
+  express_path: {
+    activated: true,
+    tasks: 3,
+    notes: 'Cross-repo migrate-v2 --apply + promote-vault-strict --apply',
+  },
+});
+
+describe('normalizeSession — express_path canonical form', () => {
+  it('collapses the legacy object onto the boolean carried by `activated`', () => {
+    const out = normalizeSession(LEGACY_EXPRESS_OBJECT());
+    expect(out.express_path).toBe(true);
+  });
+
+  it('collapses {activated: false} to false — an object is TRUTHY, so a consumer branching on `express_path` would have counted a declined express path as taken', () => {
+    // The bug in one line: Boolean({activated: false}) === true. Any reader
+    // doing `if (r.express_path)` or `r.express_path === true ? ... : ...`
+    // mis-classifies the record before this collapse. 14 of the 21 live
+    // records are `false`, i.e. they ARE the denominator of "greift er?".
+    expect(Boolean({ activated: false })).toBe(true); // the trap, pinned
+    const out = normalizeSession({
+      session_id: 'sess-express-declined',
+      schema_version: 1,
+      express_path: { activated: false, tasks: 0 },
+    });
+    expect(out.express_path).toBe(false);
+    expect(typeof out.express_path).toBe('boolean');
+  });
+
+  it('preserves the pre-collapse object verbatim under _express_path_detail', () => {
+    // Bug: a collapse that keeps only `activated` silently destroys `tasks`
+    // and `notes` — the only copy of them, since the ledger is append-only.
+    const src = LEGACY_EXPRESS_OBJECT();
+    const out = normalizeSession(src);
+    expect(out._express_path_detail).toEqual(src.express_path);
+    expect(out._express_path_detail.tasks).toBe(3);
+  });
+
+  it('leaves an already-canonical boolean untouched and writes no sidecar', () => {
+    // Bug: an over-eager normalizer that wraps or re-shapes the 20 records
+    // that are already canonical.
+    for (const v of [true, false]) {
+      const out = normalizeSession({ session_id: `sess-b-${v}`, schema_version: 1, express_path: v });
+      expect(out.express_path).toBe(v);
+      expect('_express_path_detail' in out).toBe(false);
+    }
+  });
+
+  it('is idempotent on the legacy object — the second pass must not overwrite the sidecar with the collapsed boolean', () => {
+    // Bug: without the non-clobber guard, normalize(normalize(x)) would set
+    // _express_path_detail to the already-collapsed boolean and lose the
+    // original object on any double-normalized read path.
+    const once = normalizeSession(LEGACY_EXPRESS_OBJECT());
+    const twice = normalizeSession(once);
+    expect(twice).toEqual(once);
+    expect(twice._express_path_detail).toEqual(LEGACY_EXPRESS_OBJECT().express_path);
+  });
+
+  it('passes unrecognised shapes through untouched and never throws', () => {
+    // Bug: normalizeSession's documented "never throws / malformed passes
+    // through" contract broken for a shape the collapse cannot recognise.
+    // Refusing these is the write path's job (validator.mjs), not the reader's.
+    for (const bad of ['yes', 7, [1], { tasks: 3 }, { activated: 'true' }, null]) {
+      const src = { session_id: 'sess-express-weird', schema_version: 1, express_path: bad };
+      let out;
+      expect(() => {
+        out = normalizeSession(src);
+      }).not.toThrow();
+      expect(out.express_path).toEqual(bad);
+      expect('_express_path_detail' in out).toBe(false);
+    }
+  });
+
+  it('leaves records without express_path alone (no key invented)', () => {
+    const out = normalizeSession({ session_id: 'sess-no-express', schema_version: 1 });
+    expect('express_path' in out).toBe(false);
+    expect('_express_path_detail' in out).toBe(false);
+  });
+});

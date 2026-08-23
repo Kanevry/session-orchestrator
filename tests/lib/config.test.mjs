@@ -375,3 +375,43 @@ describe('_coerceCollisionRisk', () => {
     expect(() => _coerceCollisionRisk('extreme')).toThrow(matcher);
   });
 });
+
+// ---------------------------------------------------------------------------
+// express-path (#214 / #1119)
+//
+// The key was documented in docs/session-config-template.md:585 and
+// docs/session-config-reference.md:1519 from the day #214 shipped, and the
+// parser never knew it. Measured 2026-08-23 at HEAD 4f6404e:
+//
+//   grep -c "express" scripts/lib/config.mjs                       → 0
+//   node scripts/parse-config.mjs | jq '."express-path"'           → null
+//
+// and a probe file carrying `express-path:` + `  enabled: false` produced 88
+// top-level keys with `express-path` absent from all of them. So the key was
+// dropped even when it stood in the file: an operator's explicit opt-out was a
+// no-op, and the documented default was prose rather than a value.
+// ---------------------------------------------------------------------------
+
+describe('express-path key survives parseSessionConfig', () => {
+  it('yields the documented default object when the block is absent', () => {
+    // NO_BLOCK is the fixture without any `## Session Config` section at all —
+    // the strongest form of "the block is not there".
+    expect(NO_BLOCK['express-path']).toEqual({ enabled: true });
+  });
+
+  it('carries an explicit enabled: false through to the parsed config', () => {
+    // The exact probe shape whose result was `[]` before this key was wired.
+    const content = [
+      '# Test',
+      '',
+      '## Session Config',
+      '',
+      'waves: 5',
+      '',
+      'express-path:',
+      '  enabled: false',
+      '',
+    ].join('\n');
+    expect(parseSessionConfig(content)['express-path']).toEqual({ enabled: false });
+  });
+});

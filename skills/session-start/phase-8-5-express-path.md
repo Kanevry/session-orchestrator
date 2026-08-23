@@ -4,11 +4,37 @@
 
 After the user confirms the session type and scope via the Q&A above, evaluate whether the **Express Path** applies before handing off to session-plan. The express path collapses the full 5-wave plan into a single coordinator-direct phase for lightweight sessions.
 
-**Activation conditions (ALL three must be true):**
+**Do not evaluate these conditions by hand — call the code (#1119).**
+
+```js
+import { evaluateExpressPath } from '$PLUGIN_ROOT/scripts/lib/express-path.mjs';
+const { activated, reasons } = await evaluateExpressPath({
+  repoRoot, config, sessionType, taskCount, parallelAgentsRequired,
+});
+```
+
+`evaluateExpressPath` makes the decision AND records it as `orchestrator.express_path.evaluated`
+— on **every** evaluation, activation and refusal alike. That is the whole point: until #1119 the
+conditions below were prose only, `scripts/lib/config.mjs` discarded `express-path` **even when the
+block was present** (measured: 88 keys emitted, none of them this one), and the ledger held **0**
+express-path events across its entire history. Whether the path ever fired was unanswerable.
+Re-deriving the conditions in a coordinator turn re-opens exactly that hole; the conditions below
+are the specification the module implements, not a second implementation.
+
+`reasons` carries the blocking codes when `activated: false` and the satisfied ones when `true`.
+Nothing short-circuits, so a refusal names **every** blocker — a reader can see whether trimming
+the issue list alone would have helped. Unmeasured inputs are omitted from the payload, never
+written as `0`/`false`, and an unmeasured `sessionType`/`taskCount` fails CLOSED.
+
+**Activation conditions (the module's specification):**
 
 1. `express-path.enabled` is `true` in Session Config (default: `true` — opt-in by default, opt-out via `express-path.enabled: false`).
 2. Session type is `housekeeping` (the user confirmed `housekeeping` in Phase 8).
 3. Agreed issue scope is ≤ 3 issues AND no parallel agents are required (i.e., tasks are sequential, no wave decomposition needed).
+
+> Condition 3 carries **two** clauses, so the module takes **four** inputs, not three. The
+> condition matrix below and `docs/session-config-reference.md` both list a `housekeeping` / 1–3 /
+> `enabled: true` row that still does NOT activate, because parallel agents are required.
 
 **Backward compat:** when `express-path.enabled: false`, this evaluation is skipped entirely and the normal 5-wave session-plan flow runs as before.
 
@@ -22,7 +48,22 @@ Emit the following banner immediately after the Phase 8 Q&A resolves:
 Express path activated — <N> tasks, coordinator-direct, no inter-wave checks.
 ```
 
-Then **skip the handoff to session-plan entirely**. Instead, execute the agreed tasks directly as the coordinator:
+> **UNRESOLVED — three documents disagree about what happens AFTER activation, and none of them is code (measured 2026-08-23).** The activation *conditions* are identical everywhere; the *routing* is not:
+>
+> | Site | Says |
+> |---|---|
+> | this file (below) | "skip the handoff to session-plan **entirely**" |
+> | `skills/session-start/SKILL.md:1189` | "executes tasks coordinator-direct (**bypassing session-plan** and wave-executor)" |
+> | `docs/session-config-reference.md:1542` | "session-plan **is called** but receives the express-path signal" |
+> | `skills/session-plan/SKILL.md:51` | has an `## Express Path Short-Circuit (#214)` section that emits a **1-wave plan** |
+> | `commands/go.md:19` | gates on the banner **AND** "the session-plan output emitted a 1-wave Express Path plan" |
+>
+> Two of the five say session-plan is skipped; three say it runs and short-circuits. `/go` cannot
+> work under the first reading — it looks for a plan that would never have been produced. Deliberately
+> NOT resolved here: picking one silently is the failure class this repo keeps paying for. It is an
+> Open Question for the operator; whoever answers it edits all five sites in one pass.
+
+Under the reading this file has carried so far — **skip the handoff to session-plan entirely** — execute the agreed tasks directly as the coordinator:
 
 1. For each agreed task (in dependency order): execute as a direct coordinator action — read files, make changes, run quality checks inline.
 2. After all tasks complete, invoke `skills/session-end/SKILL.md` directly (bypass session-plan and wave-executor).

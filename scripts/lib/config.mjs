@@ -14,6 +14,10 @@
  *   events-rotation.mjs   — _parseEventsRotation
  *   vault-integration.mjs — _parseVaultIntegration + _parseResourceThresholds
  *
+ * One parser lives OUTSIDE that directory: `_parseExpressPath` in
+ * scripts/lib/express-path.mjs, alongside the express-path decision it configures.
+ * See that module's header for the reason and the revisit trigger.
+ *
  * Originally ported from parse-config.sh (v2) plus its helper libs
  * config-yaml-parser.sh and config-json-coercion.sh. Windows + CRLF safe.
  *
@@ -72,6 +76,11 @@ import { _parseSkillEvolution } from './config/skill-evolution.mjs';
 import { _parseDispatcherAutonomy, resolveDispatcherAutonomy } from './config/dispatcher-autonomy.mjs';
 import { loadHostPaths, resolveHostPath } from './config/host-paths.mjs';
 import { resolveNamedBaseline } from './named-baseline-resolver.mjs';
+// express-path lives one level UP from config/ (see its module header for why):
+// the parser is a sibling of config/state-md-lock.mjs in every respect except
+// its directory. Only the pure parser is imported here — `evaluateExpressPath`
+// and its telemetry stay out of this module's import graph by construction.
+import { _parseExpressPath } from './express-path.mjs';
 
 // Re-export the two functions that external callers import directly from this module.
 export { _coerceEnum, _coerceCollisionRisk } from './config/coercers.mjs';
@@ -286,6 +295,14 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   // events-rotation: parsed from full content (standalone top-level block)
   const eventsRotation = _parseEventsRotation(mdContent);
 
+  // express-path: parsed from full content (standalone top-level block, #214/#1119).
+  // Documented in docs/session-config-template.md:585 and
+  // docs/session-config-reference.md:1519 since #214, but never in the key schema —
+  // measured 2026-08-23, a probe carrying `express-path:\n  enabled: false` produced
+  // 88 keys and none of them was `express-path`. The key was dropped even when it
+  // stood in the file, so the documented default was prose rather than a value.
+  const expressPath = _parseExpressPath(mdContent);
+
   // vault-mirror.quality: parsed from full content (PRD F1.2 / issue #504)
   const vaultMirror = _parseVaultMirrorQuality(mdContent);
 
@@ -482,6 +499,7 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     'context-coverage': contextCoverage,
     'worktree-orphans': worktreeOrphans,
     'events-rotation': eventsRotation,
+    'express-path': expressPath,
     'test': testConfig,
     'gitlab-portfolio': gitlabPortfolio,
     'wave-reviewers': waveReviewers,

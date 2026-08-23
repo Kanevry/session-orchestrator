@@ -13,6 +13,8 @@ import {
   ValidationError,
   validateSession,
 } from '@lib/session-schema/validator.mjs';
+import { normalizeSession } from '@lib/session-schema/normalizer.mjs';
+import { serializeSessionLineChecked } from '@lib/session-schema/serializer.mjs';
 
 // ---------------------------------------------------------------------------
 // Fixture
@@ -419,5 +421,88 @@ describe('#773 open-question telemetry fields', () => {
     expect('open_questions_asked' in v).toBe(false);
     expect('open_questions_answered' in v).toBe(false);
     expect('open_questions_deferred' in v).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// express_path — write-path gate for the canonical boolean (+ bounded legacy
+// tolerance). Synthetic fixtures only; the live ledger is gitignored and
+// measuring it would punish its own repair.
+// ---------------------------------------------------------------------------
+
+describe('validateSession — express_path', () => {
+  it('accepts the canonical boolean in both polarities', () => {
+    // Bug: a new gate that rejects the boolean form would newly invalidate all
+    // 20 boolean records measured in the ledger on 2026-08-23 — every one of
+    // them would light up the sessions-integrity banner.
+    for (const v of [true, false]) {
+      expect(() => validateSession({ ...VALID(), express_path: v })).not.toThrow();
+    }
+  });
+
+  it('accepts null and absent (not-measured stays distinguishable from false)', () => {
+    expect(() => validateSession({ ...VALID(), express_path: null })).not.toThrow();
+    expect(() => validateSession(VALID())).not.toThrow();
+  });
+
+  it('accepts the legacy {activated: boolean, ...} object — rejecting it would cost main-2026-05-01-housekeeping-2 its clean bill of health', () => {
+    // Bug: `validateSession` fails 0 of 271 live records today (measured
+    // 2026-08-23). A strict boolean-only gate makes that 1, which is exactly
+    // the "21 sessions lose their vault note" regression this field's
+    // unification must not cause.
+    const legacy = {
+      ...VALID(),
+      express_path: { activated: true, tasks: 3, notes: 'cross-repo migrate-v2 --apply' },
+    };
+    expect(() => validateSession(legacy)).not.toThrow();
+  });
+
+  it('rejects a third form — the tolerance is bounded to {activated: boolean}, it is not "any object"', () => {
+    // Bug: an unbounded tolerance is how the ledger got two forms in the first
+    // place. An object without a boolean `activated` carries no answer to
+    // "greift der Express Path?" and must not enter the ledger unnoticed.
+    for (const bad of ['yes', 1, 0, [true], {}, { tasks: 3 }, { activated: 'true' }]) {
+      expect(() => validateSession({ ...VALID(), express_path: bad })).toThrow(ValidationError);
+    }
+  });
+
+  it('names the offending shape in the error message', () => {
+    expect(() => validateSession({ ...VALID(), express_path: [true] })).toThrow(/got: array/);
+    expect(() => validateSession({ ...VALID(), express_path: 'yes' })).toThrow(/got: string/);
+  });
+
+  it('validates the _express_path_detail forensic sidecar as object-or-null', () => {
+    expect(() =>
+      validateSession({ ...VALID(), express_path: true, _express_path_detail: { activated: true } })
+    ).not.toThrow();
+    expect(() => validateSession({ ...VALID(), _express_path_detail: null })).not.toThrow();
+    expect(() => validateSession({ ...VALID(), _express_path_detail: 'x' })).toThrow(ValidationError);
+  });
+});
+
+describe('express_path — normalize/serialize/parse round-trip', () => {
+  it('the canonical boolean survives a full serialize → parse → normalize cycle unchanged', () => {
+    // Bug: a canonical form that is not stable across the write path silently
+    // re-introduces a second form on the next read — the exact defect being
+    // fixed. `serializeSessionLineChecked` runs validateSession on the
+    // reparsed line, so this also proves the write path accepts what the read
+    // path produces.
+    const normalized = normalizeSession({ ...VALID(), express_path: false });
+    const line = serializeSessionLineChecked(normalized);
+    const reparsed = JSON.parse(line);
+    expect(reparsed.express_path).toBe(false);
+    expect(normalizeSession(reparsed).express_path).toBe(false);
+  });
+
+  it('a legacy-object record round-trips as the canonical boolean and keeps its detail sidecar', () => {
+    const legacyDetail = { activated: true, tasks: 3, notes: 'cross-repo migrate-v2 --apply' };
+    const normalized = normalizeSession({ ...VALID(), express_path: legacyDetail });
+    expect(normalized.express_path).toBe(true);
+
+    const reparsed = JSON.parse(serializeSessionLineChecked(normalized));
+    expect(reparsed.express_path).toBe(true);
+    expect(reparsed._express_path_detail).toEqual(legacyDetail);
+    // Stable: normalizing the reparsed record changes nothing further.
+    expect(normalizeSession(reparsed)).toEqual(normalized);
   });
 });

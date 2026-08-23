@@ -431,6 +431,46 @@ function _validateOptionalFields(entry) {
       }
     }
   }
+
+  // `express_path` — CANONICAL FORM IS BOOLEAN (`true` = the express path was
+  // taken, `false` = it was offered and declined). Until now the field had no
+  // arbiter at all: the ledger carried 20 booleans and 1 object
+  // (`{activated, tasks, notes}`) and nothing in the schema knew the key, so
+  // neither shape could be called wrong. See the rationale + the 2026-08-23
+  // census in normalizer.mjs `_canonicalizeExpressPath`.
+  //
+  // The legacy `{activated: boolean, ...}` object is a BOUNDED read tolerance,
+  // in the same spirit as `_validateSchemaVersion` accepting [0,1,2,3] while
+  // only CURRENT_SESSION_SCHEMA_VERSION is ever written. It is bounded in two
+  // ways: an object WITHOUT a boolean `activated` is refused (the tolerance
+  // cannot grow into "any object"), and `normalizeSession` collapses the
+  // legacy object to the canonical boolean on every read, so no consumer
+  // downstream of the read path ever observes two shapes. Rejecting the legacy
+  // object outright here would have cost exactly one historical record its
+  // clean bill of health in `checkSessionsIntegrity` for zero benefit —
+  // measured 2026-08-23: `validateSession` fails 0 of 271 records today.
+  //
+  // REVISIT TRIGGER: when no ledger record uses the object form any more, drop
+  // the `isPlainObject` branch below and require a boolean outright.
+  if (entry.express_path !== undefined && entry.express_path !== null) {
+    const ep = entry.express_path;
+    if (typeof ep !== 'boolean' && !(isPlainObject(ep) && typeof ep.activated === 'boolean')) {
+      const shape = Array.isArray(ep) ? 'array' : typeof ep;
+      throw new ValidationError(
+        `express_path must be a boolean (canonical), null, or the legacy {activated: boolean} object, got: ${shape}`
+      );
+    }
+  }
+
+  // `_express_path_detail` — forensic sidecar written by `normalizeSession`
+  // when it collapses a legacy object `express_path` onto its boolean. Holds
+  // the pre-collapse object verbatim so the conversion stays reversible.
+  // Same optional-object contract as `effectiveness` / `discovery_stats`.
+  if (entry._express_path_detail !== undefined && entry._express_path_detail !== null) {
+    if (!isPlainObject(entry._express_path_detail)) {
+      throw new ValidationError('_express_path_detail must be an object or null');
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
