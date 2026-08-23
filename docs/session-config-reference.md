@@ -193,7 +193,7 @@ issue-budget:
 
 **Exemptions (load-bearing).** `priority::critical`, the carryover class (`[Carryover]`, `[SPIRAL]`/`[FAILED]`, `type::carryover`, a bare `carryover` label) and `broken-window` closure issues bypass the cap unconditionally. Without those exemptions the cap would break the standing session-end promises in `skills/session-end/SKILL.md` (Phase 1.8 "non-deselectable" SPIRAL/FAILED carryover, and the Critical Rule "ALWAYS create issues for unfinished PLANNED work"). Exempt creations are counted in the state file's `exempt` field for observability but never blocked.
 
-**Counter file:** `.orchestrator/runtime/issue-budget.json` — `{ sessionId, count, exempt, overflow: [...] }`. It resets automatically when a new `sessionId` is seen.
+**Counter file:** `.orchestrator/runtime/issue-budget/<sha256(sessionId)[0..16]>.json` — `{ sessionId, count, exempt, overflow: [...] }`, ONE file per session (#1141: the former single `issue-budget.json` slot was reset by whichever session wrote last, so two sessions in one working copy silently disabled each other's cap). Identity-less callers still use the legacy flat path; `budgetStatePath(repoRoot, sessionId)` in `scripts/lib/issue-budget.mjs` is the resolver.
 
 **Used by:** `hooks/pre-bash-issue-budget.mjs` (shell path, PreToolUse/Bash), `scripts/lib/spiral-carryover.mjs` `runCli()` (programmatic path), `scripts/lib/issue-budget.mjs` (shared decision core), `skills/session-end/SKILL.md` Phase 5 Step 3b (overflow drain). Parser: `scripts/lib/config/issue-budget.mjs`.
 
@@ -1539,7 +1539,7 @@ When any condition is false, the full 5-wave flow runs as before — the check i
 
 ### What changes when express path is active
 
-- **session-start:** After Phase 8 Q&A, emits `"Express path activated — N tasks, coordinator-direct, no inter-wave checks."` banner and executes tasks directly as the coordinator. session-plan is called but receives the express-path signal.
+- **session-start:** After Phase 8 Q&A, Phase 8.5 runs `node scripts/express-path.mjs` (the canonical caller — it makes the decision and records `orchestrator.express_path.evaluated` on refusal as well as activation, #1146), which emits the `"Express path activated — N tasks, coordinator-direct, no inter-wave checks."` banner. Tasks are then executed directly as the coordinator. session-plan is called but receives the express-path signal.
 - **session-plan:** Detects the banner in conversation context and emits a minimal 1-wave `coordinator-direct` plan (0 agents dispatched). Skips all role decomposition, complexity scoring, and wave splitting.
 - **STATE.md:** Activation is logged in the `## Deviations` section for traceability.
 - **Inter-wave checkpoints:** Skipped entirely — no Discovery → Impl-Core → Quality pipeline.
@@ -1563,6 +1563,7 @@ Set `express-path.enabled: false` when:
 | `housekeeping` | 1–3 | `true` | Yes | No — parallel agents required |
 
 **Related skills and files:**
+- `scripts/express-path.mjs` — the CLI Phase 8.5 runs; `scripts/lib/express-path.mjs` holds the decision + its `orchestrator.express_path.evaluated` record
 - `skills/session-start/SKILL.md` — Phase 8.5: Express Path Evaluation (activation logic + banner)
 - `skills/session-plan/SKILL.md` — Express Path Short-Circuit section (1-wave plan emission)
 - GitLab issue `#214` (foundation and codification)

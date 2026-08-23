@@ -52,6 +52,8 @@ These are passed via the conversation context (not a file). Parse the preceding 
 
 > Check this **before Step 0**. If the express path is active, this skill emits a minimal 1-wave plan and exits — no role decomposition, no wave splitting, no agent count computation.
 
+> Phase 8.5 of session-start hands off here NORMALLY when the express path activates — it does not skip session-plan (#1146). The banner below is printed by `node scripts/express-path.mjs`, and the 1-wave plan this section emits is the artifact `/go` detects.
+
 **Detect express-path activation:** Search the conversation context for the banner line:
 
 ```

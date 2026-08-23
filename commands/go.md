@@ -10,7 +10,7 @@ The user has approved the session plan. Begin execution immediately.
 
 ## Express Path Detection
 
-Before invoking the wave-executor, check the conversation context for the Express Path activation banner emitted by session-plan or session-start Phase 8.5:
+Before invoking the wave-executor, check the conversation context for the Express Path activation banner — printed by `node scripts/express-path.mjs` in session-start Phase 8.5, and carried through session-plan's Short-Circuit (#1146):
 
 ```
 Express path activated — <N> tasks, coordinator-direct, no inter-wave checks.

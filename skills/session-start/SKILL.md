@@ -152,13 +152,16 @@ Where `sessionId` is the physical raw identity for this invocation: the native h
    - On **Force-take**: call `forceAcquire({ sessionId, mode: sessionType, ttlHours: 4, repoRoot: process.cwd() })`. After Phase 1.5 initializes STATE.md, append a deviation via `appendDeviation()`:
      `Force-took session lock from session_id=<existingLock.session_id>, age=<ageHours>h, mode=<existingLock.mode>, pid=<existingLock.pid>`. Continue.
 
-3. **`result.ok === false`** with `reason === 'stale-pid-dead'` or `'stale-pid-alive'**:
-   - A stale lock was found (TTL expired). Likely left behind by a session that crashed or was force-killed.
+3. **`result.ok === false`** with `reason === 'stale-heartbeat'`:
+   - A stale lock was found (its last heartbeat is older than its ttl). Likely left behind by a session that crashed or was force-killed. The lock's recorded `pid` is NOT consulted — it belongs to the ephemeral hook subprocess that wrote the lock, never to the session; measured 2026-08-23: 7 of 7 recorded pids were dead, including the live heartbeating session's own (#1137).
    - Present a choice via `AskUserQuestion`:
      ```js
+     // `heartbeatAgeMinutes` and `ageHours` come straight off the acquire() result (#1137);
+     // `sameHost` is not on the result — compute it first:
+     const sameHost = existingLock.host === os.hostname();
      AskUserQuestion({
        questions: [{
-         question: `A stale session lock is in the way — started ${ageHours}h ago, its ttl=${existingLock.ttl_hours}h has expired, and pid=${existingLock.pid} on host=${existingLock.host} is ${reason === 'stale-pid-dead' ? 'confirmed dead' : 'still running or status unknown'}. Reclaim it?`,
+         question: `A stale session lock is in the way — started ${ageHours}h ago on host=${existingLock.host}${sameHost ? '' : ' (another machine)'}, its ttl=${existingLock.ttl_hours}h has expired, and its last heartbeat was ${Math.round(heartbeatAgeMinutes)} minutes ago. Reclaim it?`,
          header: "Stale lock",
          multiSelect: false,
          options: [
@@ -170,7 +173,7 @@ Where `sessionId` is the physical raw identity for this invocation: the native h
      ```
    - **Codex CLI / Cursor IDE fallback (numbered Markdown list):**
      ```
-     A stale session lock is in the way — started <ageHours>h ago, ttl=<ttlHours>h expired, pid=<pid> on <host>. Reclaim it?
+     A stale session lock is in the way — started <ageHours>h ago on <host>, ttl=<ttlHours>h expired, last heartbeat <heartbeatAgeMinutes> minutes ago. Reclaim it?
      1. Reclaim (Recommended) — overwrites the stale lock and continues, because its time-to-live has run out and that process is no longer holding anything.
      2. Abort — stops here and writes nothing. The lock file `.orchestrator/session.lock` (it names the process that wrote it) tells you whether that session is still alive.
      Reply with the number of your choice.
@@ -186,7 +189,7 @@ Where `sessionId` is the physical raw identity for this invocation: the native h
 
 ### Cross-host behaviour
 
-When `existingLock.host !== os.hostname()`, PID liveness cannot be checked (`pidAlive: null`). In this case:
+When `existingLock.host !== os.hostname()`, the lock was written on another machine and nothing local can corroborate its heartbeat (`pidAlive` is `null` everywhere since #1137 and no longer distinguishes the cases). In this case:
 - For `reason === 'active'`: the recommendation is **Abort** — cross-host locks cannot be verified as dead.
 - For stale reasons: the recommendation is still **Reclaim** only if TTL is clearly expired (>2× ttl_hours). Otherwise default to **Abort**.
 - **Never auto-reclaim cross-host locks** under any circumstance — always present the AUQ and let the user decide.
@@ -1182,13 +1185,13 @@ Present your findings following that structure. Key rules:
 
 ### Phase 8.5: Express Path Evaluation (#214)
 
-After the user confirms session type and scope, evaluate whether the Express Path applies. Activation requires ALL three: `express-path.enabled: true` in Session Config (default: `true` — when `express-path.enabled: false`, this evaluation is skipped entirely and the normal 5-wave session-plan flow runs), session type `housekeeping`, and scope ≤ 3 sequential issues. The 13 prior coordinator-direct sessions in `CLAUDE.md` (or `AGENTS.md` on Codex CLI; 2026-04 series) were all running this pattern implicitly — this phase codifies what was already proven to work.
+After the user confirms session type and scope, evaluate whether the Express Path applies. **Do not judge the conditions by hand — run `node scripts/express-path.mjs --repo-root "$PWD" --session-type <type> --task-count <N> --parallel-agents <true|false>`.** That CLI is the canonical caller (#1146): it makes the decision AND records it as `orchestrator.express_path.evaluated`, on refusal as well as activation. stdout is one JSON line `{"activated":<bool>,"reasons":[…]}`; exit 0 means the evaluation completed, so branch on `activated`, never on the exit code. Activation requires ALL three: `express-path.enabled: true` in Session Config (default: `true`; an explicit `false` still runs the evaluation and records `disabled-by-config`, then the normal 5-wave session-plan flow proceeds), session type `housekeeping`, and scope ≤ 3 sequential issues. The 13 prior coordinator-direct sessions in `CLAUDE.md` (or `AGENTS.md` on Codex CLI; 2026-04 series) were all running this pattern implicitly — this phase codifies what was already proven to work.
 
-When all conditions are met, emits the banner:
+When all conditions are met, the CLI emits the banner on stderr:
 ```
 Express path activated — <N> tasks, coordinator-direct, no inter-wave checks.
 ```
-Then executes tasks coordinator-direct (bypassing session-plan and wave-executor) and logs a Deviations entry in STATE.md. Silent no-op when any condition fails — proceeds normally to Phase 9.
+Carry that banner into Phase 9 and hand off to session-plan as usual — session-plan short-circuits to a 1-wave `coordinator-direct` plan, which is the artifact `/go` detects. Tasks are then executed coordinator-direct (bypassing wave-executor, subagent dispatch and inter-wave checkpoints) and a Deviations entry is logged in STATE.md. Silent no-op when any condition fails — proceeds normally to Phase 9.
 
 **See `phase-8-5-express-path.md` for full details.**
 
