@@ -6,6 +6,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -411,5 +413,75 @@ describe('resolveProjectDir', () => {
     const result = resolveProjectDir('pi');
     expect(result).toBe('/my/pi/project');
     vi.unstubAllEnvs();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 13. Walk boundary — the marker search never leaves the project (#1139)
+// ---------------------------------------------------------------------------
+
+describe('walk boundary (#1139)', () => {
+  /** @type {string} */
+  let sandbox;
+
+  beforeEach(() => {
+    // realpathSync: macOS reaches tmpdir through a symlink (/var -> /private/var).
+    // The boundary compares resolved path strings, so the faked HOME and the faked
+    // cwd must agree on one form.
+    sandbox = realpathSync(mkdtempSync(path.join(tmpdir(), 'so-platform-boundary-')));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  /**
+   * Point os.homedir() and process.cwd() into the sandbox.
+   * os.homedir() reads HOME on POSIX and USERPROFILE on Windows.
+   *
+   * @param {string} relCwd  Path of the faked cwd relative to the sandbox
+   * @returns {string}  The absolute faked cwd
+   */
+  const enterSandbox = (relCwd) => {
+    vi.stubEnv('HOME', sandbox);
+    vi.stubEnv('USERPROFILE', sandbox);
+    const cwd = path.join(sandbox, relCwd);
+    mkdirSync(cwd, { recursive: true });
+    vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+    return cwd;
+  };
+
+  it('does not adopt a marker sitting in the home directory (the ~/.pi false positive)', () => {
+    mkdirSync(path.join(sandbox, '.pi'));
+    enterSandbox(path.join('scratch', 'nested'));
+
+    expect(detectPlatform()).toBe('claude');
+  });
+
+  it('stops at a repo root marked by a .git FILE (worktree form)', () => {
+    mkdirSync(path.join(sandbox, 'outer', '.pi'), { recursive: true });
+    const repo = path.join(sandbox, 'outer', 'repo');
+    mkdirSync(repo, { recursive: true });
+    writeFileSync(path.join(repo, '.git'), 'gitdir: /elsewhere/worktrees/repo\n');
+    enterSandbox(path.join('outer', 'repo', 'sub', 'deep'));
+
+    expect(detectPlatform()).toBe('claude');
+  });
+
+  it('still finds a marker at the repo root itself', () => {
+    const repo = path.join(sandbox, 'outer', 'repo');
+    mkdirSync(path.join(repo, '.codex-plugin'), { recursive: true });
+    writeFileSync(path.join(repo, '.git'), 'gitdir: /elsewhere/worktrees/repo\n');
+    enterSandbox(path.join('outer', 'repo', 'sub', 'deep'));
+
+    expect(detectPlatform()).toBe('codex');
+  });
+
+  it('resolveProjectDir does not return the home directory for a stray CLAUDE.md there', () => {
+    writeFileSync(path.join(sandbox, 'CLAUDE.md'), '# stray home-level config\n');
+    const cwd = enterSandbox(path.join('scratch', 'nested'));
+
+    expect(resolveProjectDir('claude')).toBe(cwd);
   });
 });

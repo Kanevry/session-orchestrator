@@ -9,6 +9,7 @@
  */
 
 import { existsSync, statSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { resolvePluginRoot as _resolvePluginRootRobust } from './plugin-root.mjs';
 
@@ -42,9 +43,66 @@ function _hasEnvValue(envName) {
 }
 
 /**
- * Walk up the directory tree from startDir looking for marker.
- * Uses path.parse(dir).root so it terminates correctly on Windows ("C:\\")
- * and POSIX ("/").
+ * Absolute home directory, or null when the host cannot report one.
+ * os.homedir() reads $HOME on POSIX and %USERPROFILE% on Windows.
+ *
+ * @returns {string|null}
+ */
+function _homeDir() {
+  try {
+    const home = os.homedir();
+    return home ? path.resolve(home) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when `dir` is the home directory itself or one of its ancestors
+ * ("/", "/Users", "C:\\", …). Unrelated branches of the tree (e.g. "/opt")
+ * are neither — they are walked normally.
+ *
+ * @param {string} dir
+ * @param {string|null} home
+ * @returns {boolean}
+ */
+function _isHomeOrAbove(dir, home) {
+  if (home === null) return false;
+  if (dir === home) return true;
+  // The filesystem root already ends in the separator ("/", "C:\\") — appending
+  // a second one ("//") would make it match nothing and silently exempt the one
+  // directory that is an ancestor of every home.
+  const prefix = dir.endsWith(path.sep) ? dir : dir + path.sep;
+  return home.startsWith(prefix);
+}
+
+/**
+ * Walk up the directory tree from startDir looking for marker, bounded by the
+ * project the walk started in.
+ *
+ * Two boundaries, both load-bearing (#1139) — a marker outside the project can
+ * never describe the project:
+ *
+ *  1. **Repo root.** The first ancestor holding `.git` is the LAST directory
+ *     inspected (inclusive — a marker at the repo root is still found). `.git`
+ *     is a directory in a normal clone and a FILE in a worktree or submodule,
+ *     so existence is checked, not the kind.
+ *  2. **Home directory.** os.homedir() and its ancestors are never inspected —
+ *     even when no repo root was found (cwd outside every checkout). This is
+ *     what stops a stray `~/.pi` / `~/.cursor/rules` / `~/CLAUDE.md` from being
+ *     adopted by every markerless directory on the host: before this boundary
+ *     existed, 63 of 84 telemetry records from Claude Code sessions reported
+ *     `platform=pi` because the walk reached `$HOME` and found `~/.pi` there.
+ *
+ * Named ceiling (BV-004): when a checkout's root IS the home directory (a
+ * dotfiles repo at `$HOME`), boundary 2 wins over boundary 1 and no marker is
+ * detected there — deliberate, because that false positive is silent and
+ * host-wide while the false negative degrades to the documented default
+ * ('claude' for detectPlatform, cwd for resolveProjectDir). Revisit if a
+ * repo-at-$HOME layout ever has to carry orchestrator state.
+ *
+ * Terminates correctly on Windows ("C:\\") and POSIX ("/") via the
+ * parent === dir fixpoint.
  *
  * @param {string} startDir   Absolute directory to begin walking from
  * @param {string} marker     Relative sub-path to look for inside each candidate dir
@@ -53,7 +111,7 @@ function _hasEnvValue(envName) {
  */
 function walkUpFor(startDir, marker, kind) {
   let dir = path.resolve(startDir);
-  const root = path.parse(dir).root; // "/" on POSIX, "C:\\" on Windows
+  const home = _homeDir();
 
   const check = (candidate) => {
     if (!existsSync(candidate)) return false;
@@ -62,15 +120,14 @@ function walkUpFor(startDir, marker, kind) {
     return true; // 'any'
   };
 
-  while (dir !== root) {
+  for (;;) {
+    if (_isHomeOrAbove(dir, home)) break;          // boundary 2 — never inspected
     if (check(path.join(dir, marker))) return dir;
+    if (existsSync(path.join(dir, '.git'))) break; // boundary 1 — repo root was the last candidate
     const parent = path.dirname(dir);
-    if (parent === dir) break; // safety guard — should not happen but protects against edge cases
+    if (parent === dir) break;                     // filesystem root reached
     dir = parent;
   }
-
-  // Check root itself
-  if (check(path.join(root, marker))) return root;
 
   return null;
 }
@@ -109,6 +166,12 @@ export function detectPlatform() {
   if (walkUpFor(cwd, path.join('.cursor', 'rules'),  'dir')) return 'cursor';
   if (walkUpFor(cwd, '.pi',                           'dir')) return 'pi';
 
+  // Signal-free fallback, deliberate rather than inherited: Claude Code is the
+  // only harness that drives this code through `hooks.json` without exporting a
+  // platform env var, so it is the harness that actually reaches this line.
+  // Codex, Cursor and pi each set their own env var (step 2) or ship a marker
+  // directory (step 3), so a wrong answer here costs them nothing they had.
+  // No config key for this (BV-001) — SO_PLATFORM already overrides it.
   return 'claude';
 }
 
