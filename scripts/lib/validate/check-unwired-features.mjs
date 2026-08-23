@@ -135,7 +135,7 @@
  * whose document is honest about what it should do.
  *
  * Output shape is deliberately different from S1-S3 too. Those report a handful
- * of lines; S4 measured 51 on the live tree of 2026-08-23, which is a BACKLOG.
+ * of lines; S4 measured 50 on the live tree (2026-08-23 @ 34321bc — a count, so read it as history) of 2026-08-23, which is a BACKLOG.
  * The CLI therefore prints one aggregate WARN carrying the count, and the full
  * census behind `--list` — see `runCheckUnwiredFeatures`. The `findings` array
  * always carries every finding, so no programmatic consumer loses data.
@@ -601,7 +601,7 @@ export function collectOrphanedProseModules(pluginRoot) {
 
   // Both membership questions below were nested scans: (1) re-filtered EVERY prose
   // document per module, (2) re-scanned EVERY other module's lines per module.
-  // At this repo's size that is 467 x ~700 full-body `includes` plus 467 x 467 x
+  // At this repo's size that is 468 x ~700 full-body `includes` plus 468 x 468 x
   // ~300 line tests — measured 1727 ms of `inspectUnwiredFeatures`'s 2270 ms, in a
   // CLI that eight test files spawn under a 30 s hook timeout. Indexing both once
   // is O(corpus) instead of O(corpus^2); the answers are unchanged by construction,
@@ -672,7 +672,7 @@ export function collectOrphanedProseModules(pluginRoot) {
  * Extract every module-filename token a body mentions, ignoring comment lines.
  *
  * Token extraction beats a substring scan in BOTH directions. It is faster (one
- * pass per file instead of one regex per candidate pair — 467² pair tests on the
+ * pass per file instead of one regex per candidate pair — 468² pair tests on the
  * live tree), and it is more precise: `text.includes('writer.mjs')` is TRUE for
  * `config-writer.mjs`, which silently marks an unrelated module as referenced.
  * The character class stops at `/`, so `'./locks/state-md-lock.mjs'` yields
@@ -714,7 +714,7 @@ function mentionedModuleTokens(lines) {
  * path, and "the operator types `/autopilot`, whose skill body runs
  * `node scripts/autopilot.mjs`" IS this repo's architecture — reporting it would
  * indict the design rather than a defect. Measured 2026-08-23: treating CLI
- * entrypoints as non-roots moves the census from 73 to 268 of 467 modules
+ * entrypoints as non-roots moves the census from 71 to 268 of 468 modules
  * (15.6% → 57.5%), i.e. straight into the broken-instrument band that
  * `.claude/rules/host-resources.md` § HR-101 forbids. A LIBRARY module, by
  * contrast, can only ever be reached by being imported — so "nothing imports it,
@@ -726,8 +726,8 @@ function mentionedModuleTokens(lines) {
  * unreachable module references. `scripts/lib/owner-config.mjs` has no importer
  * and drags its whole 7-file `owner-config/` subtree down with it; reporting the
  * six interior files would multiply one deletion into seven findings that all
- * disappear together. Measured on the live tree: 73 unreachable modules collapse
- * to 51 roots. This is category separation in the sense of
+ * disappear together. Measured on the live tree: 71 unreachable modules collapse
+ * to 50 roots. This is category separation in the sense of
  * `.claude/rules/development.md` § Guard & Threshold Design — a structural split,
  * never a raised threshold.
  *
@@ -1006,8 +1006,8 @@ export function runCheckUnwiredFeatures(pluginRoot, { list = false } = {}) {
   const { declaredKeys, consumerFiles, unwired, allowlisted, orphanedModules, unreachableModules } =
     inspection.summary;
 
-  // S4 is a BACKLOG, not a per-run alarm: 51 findings on the live tree against
-  // 1-2 WARN lines from every sibling check. Printing all 51 every run is the
+  // S4 is a BACKLOG, not a per-run alarm: 50 findings on the live tree against
+  // 1-2 WARN lines from every sibling check. Printing all 50 every run is the
   // "gate that prints 282 lines gets switched off in week two" failure this
   // file's own header names. So the default carries the NUMBER (which ratchets,
   // and which a reviewer can compare run to run) plus the first few paths; the

@@ -212,8 +212,12 @@ describe('runSessionStartProbes — what did not run is recorded', () => {
     );
     expect(calls[0].payload.total).toBe(2);
     expect(calls[0].payload.skipped).toBe(1);
+    // `reason` travels into the payload, not just the in-memory result. Without it
+    // the ledger cannot tell `network-probe-opt-in` (the intended default) from
+    // `module-absent` (a permanently dead registry entry) — and the module's own
+    // header calls dropping it "the exact defect this module repairs".
     expect(calls[0].payload.probes).toEqual([
-      { id: 'net', outcome: 'skipped' },
+      { id: 'net', outcome: 'skipped', reason: 'network-probe-opt-in' },
       { id: 'local', outcome: 'ran-clean' },
     ]);
     // Excluded means not invoked — its banner must not appear.

@@ -185,6 +185,40 @@ describe('shared vcs-create matcher', () => {
     expect(matchesBypass('gh pr create --title x', [])).toBe(false);
   });
 
+  it('an APPENDED bypass statement must not exempt a different create call (#1106 regression)', () => {
+    // The named bug: scoping the MATCH to statements while leaving the BYPASS a
+    // boolean over the whole command let a decoy lift the gate for a real call.
+    // Reproduced against the live policy on 2026-08-23 — `glab issue create --label ci`
+    // is a real bypass_patterns entry, so this is the shape an agent would actually
+    // type, not a synthetic one. The pre-#1106 code was NOT vulnerable (it
+    // prefix-matched the whole command, so a TRAILING pattern could not match);
+    // widening the matcher without narrowing the bypass opened it.
+    const patterns = ['glab issue create --label ci', 'gh issue create --label bot'];
+
+    // The create the operator actually makes carries no bypass pattern …
+    expect(matchesBypass('glab issue create --title REAL', patterns)).toBe(false);
+    // … and appending one as a second statement must not change that.
+    expect(
+      matchesBypass('glab issue create --title REAL; glab issue create --label ci --title junk', patterns),
+    ).toBe(false);
+    // Same shape through the other separators the lexer splits on.
+    expect(
+      matchesBypass('glab issue create --title REAL && glab issue create --label ci', patterns),
+    ).toBe(false);
+    expect(
+      matchesBypass('glab issue create --title REAL\nglab issue create --label ci', patterns),
+    ).toBe(false);
+
+    // The documented intent is preserved: when the CREATE STATEMENT itself is the
+    // bypass, it still exempts — including behind a `cd` chain.
+    expect(matchesBypass('glab issue create --label ci --title x', patterns)).toBe(true);
+    expect(matchesBypass('cd /r && glab issue create --label ci --title x', patterns)).toBe(true);
+    // And a leading decoy is no more effective than a trailing one.
+    expect(
+      matchesBypass('glab issue create --label ci --title junk; glab issue create --title REAL', patterns),
+    ).toBe(true); // the FIRST statement is the create, and it IS the bypass — correct.
+  });
+
   it('isIssueCreate is issue-only — pr/mr creation is not budgeted', () => {
     expect(isIssueCreate('glab issue create --title x')).toBe(true);
     expect(isIssueCreate('glab mr create --title x')).toBe(false);

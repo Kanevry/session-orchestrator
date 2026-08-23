@@ -581,7 +581,16 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
     errored,
     timed_out: timedOut,
     duration_ms: Date.now() - started,
-    probes: results.map((r) => ({ id: r.id, outcome: r.outcome })),
+    // `reason` travels. Dropping it here was the module's own rule broken at its
+    // own boundary: `module-absent` is the ONE skip reason that means a probe is
+    // permanently dead, and without it the ledger cannot tell that apart from
+    // `network-probe-opt-in`, which is the intended default. "Measured, then
+    // discarded" is worse than "not measured" — the value existed.
+    probes: results.map((r) => ({
+      id: r.id,
+      outcome: r.outcome,
+      ...(typeof r.reason === 'string' && r.reason.length > 0 ? { reason: r.reason } : {}),
+    })),
   };
 
   // Telemetry is best-effort like every other side effect here: a ledger that

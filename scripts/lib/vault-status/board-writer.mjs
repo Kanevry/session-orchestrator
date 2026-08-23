@@ -731,14 +731,65 @@ export const BOARD_EVENT = 'orchestrator.vault.board_written';
  * @param {number} [opts.durationMs]
  * @returns {Promise<void>}
  */
+/**
+ * Reduce an absolute vault path to its LAST TWO segments for telemetry.
+ *
+ * The full path is the module's public return contract and stays untouched.
+ * What must not travel is the path in the EMITTED payload: on a real host it
+ * reads `/Users/<name>/Projects/<vault>/01-projects/<private-slug>/…`, i.e. an
+ * OS username plus a private project slug. Those are exactly the two shapes
+ * `scripts/lib/validate/check-owner-leakage.mjs` blocks as CP1 and CP6 — and
+ * that scanner structurally cannot see this one, because it walks `git ls-files`
+ * and `.orchestrator/metrics/*.jsonl` is gitignored (`.gitignore:40`).
+ * The record is invisible to the pre-commit guard and visible to the optional
+ * Clank webhook (`scripts/lib/events.mjs`, `CLANK_EVENT_URL`), which posts the
+ * payload verbatim with no redaction.
+ *
+ * The BASENAME is the deliberate ceiling — one segment, not two. Two segments
+ * would keep the parent directory, and under `01-projects/` that directory IS
+ * the private project slug, i.e. exactly the CP6 shape this is meant to drop.
+ * The diagnostic value lives in the filename alone: it says WHICH writer ran
+ * (`_session-narrative.md` vs `_active-sessions.md`), which is the question the
+ * event exists to answer. Which project it was is already answerable from the
+ * record's own `session_id` / repo-scoped ledger location.
+ * Revisit trigger: a consumer that needs more than the filename — then it
+ * belongs in the RETURN value, which already carries the absolute path, never
+ * in the event.
+ *
+ * @param {unknown} outputPath
+ * @returns {string|undefined} `undefined` when there is nothing measured to report.
+ */
+function telemetrySafePath(outputPath) {
+  if (typeof outputPath !== 'string' || outputPath.length === 0) return undefined;
+  const base = path.basename(outputPath);
+  return base.length > 0 ? base : undefined;
+}
+
 async function emitBoardEvent({ repoRoot, caller, action, path: outputPath, rows, reposSwept, durationMs }) {
+  // Refuse the SO_PROJECT_DIR fallback instead of guessing a destination.
+  // Without an explicit repoRoot, `emitEvent` resolves `eventsFilePath(undefined)`
+  // and writes into whatever tree the ambient env points at — so `mirrorBoard()`
+  // called with no argument used to append a record to an UNRELATED repo's ledger.
+  // Measured 2026-08-23: a review agent reproduced it and put a second, byte-identical
+  // record into this repo's live events.jsonl doing so. Two sibling emitters in the
+  // same commit arc already refuse it (`express-path.mjs` with a WARN,
+  // `narrative-mirror.mjs` silently); this one was the odd one out, and it was the
+  // unsafe one. A stderr WARN, not silence: a telemetry record that goes missing
+  // should say so, or it becomes the very blind spot this event was added to close.
+  if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
+    process.stderr.write(
+      `[board-writer] ${BOARD_EVENT} not emitted: no repoRoot given, and the ambient ` +
+        `SO_PROJECT_DIR fallback would write to an unrelated repo's ledger.\n`,
+    );
+    return;
+  }
   try {
     await emitEvent(
       BOARD_EVENT,
       {
         action,
         caller,
-        ...(typeof outputPath === 'string' && outputPath.length > 0 ? { path: outputPath } : {}),
+        ...(telemetrySafePath(outputPath) !== undefined ? { path_tail: telemetrySafePath(outputPath) } : {}),
         // Number.isFinite — NOT truthiness — is what keeps a MEASURED zero in
         // the record (`repos_swept: 0` = "enumeration ran, found nothing") while
         // still omitting an unmeasured field. `x || undefined` would silently
@@ -748,7 +799,7 @@ async function emitBoardEvent({ repoRoot, caller, action, path: outputPath, rows
         ...(Number.isFinite(reposSwept) ? { repos_swept: reposSwept } : {}),
         ...(Number.isFinite(durationMs) ? { duration_ms: durationMs } : {}),
       },
-      typeof repoRoot === 'string' && repoRoot.length > 0 ? { repoRoot } : {},
+      { repoRoot },
     );
   } catch {
     /* Best-effort telemetry. emitEvent does real file I/O (mkdir + append), so a

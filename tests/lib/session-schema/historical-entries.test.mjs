@@ -184,6 +184,17 @@ describe('historical sessions.jsonl entries — additive contract (ADR-364 DoD-1
 //                        exercises the migrateEntry path
 //   sess-v2-004        — happy-path schema_version=2 canonical entry (#372 —
 //                        exercises the post-bump CURRENT_SESSION_SCHEMA_VERSION)
+//   sess-express-bool-005   — express_path in the CANONICAL boolean form, and
+//                        deliberately `false`: Boolean({activated:false}) is
+//                        true, so a reader that collapses the legacy object by
+//                        truthiness turns a DECLINED express path into a taken
+//                        one. 14 of the 21 live records carry false, so this is
+//                        the majority case, not an edge (#1119).
+//   sess-express-legacy-006 — express_path in the LEGACY object form. Exactly
+//                        one live record ever used it, and the live ledger is
+//                        gitignored and absent on CI — so this committed line is
+//                        the ONLY mechanical guard that the legacy shape stays
+//                        readable. Delete it and the tolerance rots unobserved.
 // ---------------------------------------------------------------------------
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

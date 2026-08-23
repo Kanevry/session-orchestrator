@@ -212,8 +212,24 @@ export function matchesBypass(command, bypassPatterns) {
     return false;
   }
 
-  const statements = statementsOf(command);
-  if (statements.length === 0) return false;
+  // The bypass is checked against THE CREATE STATEMENT, never against any
+  // statement in the chain. Getting this wrong is a security regression, and it
+  // was one: scoping the MATCH to statements while leaving the BYPASS a boolean
+  // over the whole command let an appended decoy lift the gate for a real call.
+  // Reproduced 2026-08-23 against the live policy (`glab issue create --label ci`
+  // is a real bypass_patterns entry):
+  //   "glab issue create --title A"                                  -> DENY
+  //   "glab issue create --title REAL; glab issue create --label ci" -> ALLOW
+  // The second one creates an untemplated issue titled REAL. The pre-#1106 code
+  // was not vulnerable here — it prefix-matched the whole command, so a TRAILING
+  // pattern could not match. Widening the matcher without narrowing this opened it.
+  //
+  // The documented intent still holds: `cd /repo && gh pr create --dry-run` must
+  // remain exempt when `gh pr create --dry-run` is a bypass entry — that is the
+  // create statement itself, so it matches.
+  const create = findCreateStatement(command);
+  if (!create) return false;
+  const tokens = create.tokens;
 
   for (const pat of bypassPatterns) {
     if (typeof pat !== 'string' || pat.length === 0) continue;
@@ -224,10 +240,8 @@ export function matchesBypass(command, bypassPatterns) {
     const patTokens = patStatements[0].map((t) => t.text);
     if (patTokens.length === 0) continue;
 
-    for (const tokens of statements) {
-      if (tokens.length < patTokens.length) continue;
-      if (patTokens.every((text, i) => tokens[i].text === text)) return true;
-    }
+    if (tokens.length < patTokens.length) continue;
+    if (patTokens.every((text, i) => tokens[i].text === text)) return true;
   }
   return false;
 }

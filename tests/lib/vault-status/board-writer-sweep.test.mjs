@@ -42,7 +42,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 
 import {
   boardKey,
@@ -837,7 +837,12 @@ describe('sweepBoard — board_written telemetry', () => {
     expect(events[0].caller).toBe('sweepBoard');
     expect(events[0].repos_swept).toBe(0);
     expect(events[0].action).toBe('written');
-    expect(events[0].path).toBe(resolveBoardPath(vaultDir));
+    // path_tail, not path: the event carries the BASENAME only, because under
+    // 01-projects/ the parent directory is a private project slug and this payload
+    // also travels over the optional Clank webhook. The full path stays in the
+    // RETURN value. This line used to assert the absolute path — it PINNED the leak.
+    expect(events[0].path_tail).toBe(basename(resolveBoardPath(vaultDir)));
+    expect(events[0]).not.toHaveProperty('path');
     expect(events[0].rows).toBe(1);
   });
 });

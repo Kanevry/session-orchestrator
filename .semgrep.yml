@@ -345,12 +345,28 @@ rules:
     cwe: 'CWE-601: URL Redirection to Untrusted Site'
     owasp: A01:2021
     confidence: MEDIUM
+# NARROWED 2026-08-23. The three generic `$ENGINE.*` patterns were removed, not
+# suppressed at a call site. They carried NO constraint on `$USER_INPUT` — unlike
+# `unsafe-llm-prompt-injection` below, which pins its `$INPUT` to `req.body`/
+# `req.query` via `metavariable-pattern`. So `$ENGINE.render($USER_INPUT, ...)`
+# matched ANY two-token call named `render`, and the message asserted "user input
+# passed to template engine" — a claim the pattern never tested.
+#
+# Measured here: this repo has ZERO template-engine dependencies (handlebars, ejs,
+# pug, nunjucks, mustache, liquidjs, eta — none in package.json) and exactly ONE
+# `.render(` call in scripts/ + hooks/. True-positive capacity: zero. False-positive
+# capacity: every future `.render()`. It blocked pipeline #7542 on `probe.render(result)`,
+# a registry dispatch with no engine anywhere near it.
+#
+# The named-engine patterns below are KEPT: they are path-dead today and become
+# true positives the moment someone adds an engine — which is what a cheap rule
+# should look like. This is category separation, not a threshold change
+# (.claude/rules/development.md § Guard & Threshold Design).
+# Revisit trigger: a template engine enters package.json — then re-add a generic
+# pattern WITH a metavariable-pattern constraint, never without one.
 - id: ssti-template-injection
   patterns:
   - pattern-either:
-    - pattern: $ENGINE.compile($USER_INPUT)
-    - pattern: $ENGINE.render($USER_INPUT, ...)
-    - pattern: $ENGINE.renderString($USER_INPUT, ...)
     - pattern: Handlebars.compile($USER_INPUT)
     - pattern: ejs.render($USER_INPUT, ...)
     - pattern: pug.compile($USER_INPUT)

@@ -617,6 +617,40 @@ export const NARRATIVE_EVENT = 'orchestrator.vault.narrative_mirrored';
  *   masking (#1025) is that such prose carries secrets.
  * @returns {Promise<void>}
  */
+/**
+ * Reduce an absolute vault path to its LAST TWO segments for telemetry.
+ *
+ * The full path is the module's public return contract and stays untouched.
+ * What must not travel is the path in the EMITTED payload: on a real host it
+ * reads `/Users/<name>/Projects/<vault>/01-projects/<private-slug>/…`, i.e. an
+ * OS username plus a private project slug. Those are exactly the two shapes
+ * `scripts/lib/validate/check-owner-leakage.mjs` blocks as CP1 and CP6 — and
+ * that scanner structurally cannot see this one, because it walks `git ls-files`
+ * and `.orchestrator/metrics/*.jsonl` is gitignored (`.gitignore:40`).
+ * The record is invisible to the pre-commit guard and visible to the optional
+ * Clank webhook (`scripts/lib/events.mjs`, `CLANK_EVENT_URL`), which posts the
+ * payload verbatim with no redaction.
+ *
+ * The BASENAME is the deliberate ceiling — one segment, not two. Two segments
+ * would keep the parent directory, and under `01-projects/` that directory IS
+ * the private project slug, i.e. exactly the CP6 shape this is meant to drop.
+ * The diagnostic value lives in the filename alone: it says WHICH writer ran
+ * (`_session-narrative.md` vs `_active-sessions.md`), which is the question the
+ * event exists to answer. Which project it was is already answerable from the
+ * record's own `session_id` / repo-scoped ledger location.
+ * Revisit trigger: a consumer that needs more than the filename — then it
+ * belongs in the RETURN value, which already carries the absolute path, never
+ * in the event.
+ *
+ * @param {unknown} outputPath
+ * @returns {string|undefined} `undefined` when there is nothing measured to report.
+ */
+function telemetrySafePath(outputPath) {
+  if (typeof outputPath !== 'string' || outputPath.length === 0) return undefined;
+  const base = path.basename(outputPath);
+  return base.length > 0 ? base : undefined;
+}
+
 async function emitNarrativeEvent({ repoRoot, action, path: outputPath, chars, errorCode }) {
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) return;
   try {
@@ -624,12 +658,15 @@ async function emitNarrativeEvent({ repoRoot, action, path: outputPath, chars, e
       NARRATIVE_EVENT,
       {
         action,
-        ...(typeof outputPath === 'string' && outputPath.length > 0 ? { path: outputPath } : {}),
+        ...(telemetrySafePath(outputPath) !== undefined ? { path_tail: telemetrySafePath(outputPath) } : {}),
         // `typeof … === 'number'` rather than `!= null`: the repo's eslint
         // `eqeqeq: always` forbids the loose form, and this shape additionally
         // refuses a non-numeric `chars` outright. A measured `0` still lands.
         ...(typeof chars === 'number' ? { chars } : {}),
-        ...(errorCode ? { error_code: errorCode } : {}),
+        // `typeof === 'string'`, not truthiness: an `err.code` of '' is a measured
+        // empty code, and the sibling `chars` field four lines up already states
+        // why this file rejects the loose form.
+        ...(typeof errorCode === 'string' && errorCode.length > 0 ? { error_code: errorCode } : {}),
         // session_id / semantic_session_id — omitted entirely when no session
         // lock is readable (CI, ad-hoc runs). See sessionAttribution's contract:
         // a fabricated id would read as a real session.

@@ -896,6 +896,37 @@ describe('mirrorNarrative', () => {
         .map((line) => JSON.parse(line));
     }
 
+    it('the emitted payload carries NO filesystem path — only a basename (security review W5-R1)', async () => {
+      // The named bug: the event carried the FULL output path. On a real host that
+      // reads `/Users/<name>/Projects/<vault>/01-projects/<private-slug>/…` — an OS
+      // username plus a private project slug, i.e. the two shapes
+      // check-owner-leakage blocks as CP1 and CP6. That scanner cannot reach this
+      // one: it walks `git ls-files`, and `.orchestrator/metrics/*.jsonl` is
+      // gitignored. So the record is invisible to the pre-commit guard and visible
+      // to the optional Clank webhook, which posts the payload verbatim.
+      //
+      // Asserting on the RETURN value instead would pass while the event leaked:
+      // the return contract deliberately still carries the absolute path.
+      const { repoRoot } = scaffold({ repoDirName: 'telemetry-nopath-repo', withStateMd: false });
+      await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+
+      const records = readLedger(repoRoot);
+      expect(records).toHaveLength(1);
+      const record = records[0];
+
+      // Positive: the diagnostic value — WHICH writer ran — is still there.
+      expect(record.path_tail).toBe('_session-narrative.md');
+      // Negative: the old field is gone, not merely emptied.
+      expect(record).not.toHaveProperty('path');
+      // And nothing anywhere in the serialised record looks like a filesystem path.
+      // A substring test over the whole line, not over one field, because the leak
+      // class is "some field carries it", not "this field carries it".
+      const serialised = JSON.stringify(record);
+      expect(serialised).not.toContain(os.homedir());
+      expect(serialised).not.toContain(path.sep + 'Users' + path.sep);
+      expect(serialised).not.toContain(repoRoot);
+    });
+
     it('emits ONE event on the SILENT skipped-no-statemd path, with chars ABSENT (never 0)', async () => {
       const { repoRoot } = scaffold({ repoDirName: 'telemetry-nostate-repo', withStateMd: false });
 
@@ -905,7 +936,12 @@ describe('mirrorNarrative', () => {
       const events = readLedger(repoRoot).filter((e) => e.event === NARRATIVE_EVENT);
       expect(events).toHaveLength(1);
       expect(events[0].action).toBe('skipped-no-statemd');
-      expect(events[0].path).toBe(result.path);
+      // path_tail, not path: the event carries the BASENAME only. The full path
+      // stays in the RETURN value (asserted elsewhere) — it must not travel in a
+      // payload that also goes over the Clank webhook. This assertion used to
+      // read `events[0].path).toBe(result.path)`, i.e. it PINNED the leak.
+      expect(events[0].path_tail).toBe(path.basename(result.path));
+      expect(events[0]).not.toHaveProperty('path');
       // ABSENT IS NOT ZERO: nothing was rendered on this path, so the key is
       // missing. A `chars: 0` here would be indistinguishable from a narrative
       // that genuinely rendered empty.
@@ -921,7 +957,12 @@ describe('mirrorNarrative', () => {
       const events = readLedger(repoRoot).filter((e) => e.event === NARRATIVE_EVENT);
       expect(events).toHaveLength(1);
       expect(events[0].action).toBe('written');
-      expect(events[0].path).toBe(result.path);
+      // path_tail, not path: the event carries the BASENAME only. The full path
+      // stays in the RETURN value (asserted elsewhere) — it must not travel in a
+      // payload that also goes over the Clank webhook. This assertion used to
+      // read `events[0].path).toBe(result.path)`, i.e. it PINNED the leak.
+      expect(events[0].path_tail).toBe(path.basename(result.path));
+      expect(events[0]).not.toHaveProperty('path');
       // Independent oracle: the file on disk, not a re-derivation of the
       // renderer's own arithmetic.
       expect(events[0].chars).toBe(fs.readFileSync(result.path, 'utf8').length);
