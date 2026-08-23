@@ -94,4 +94,40 @@ process.stdout.write(JSON.stringify(output) + '\n');
 const failed = [tcResult, testResult, lintResult].some(
   (r) => r.status === 'fail',
 );
+
+// --- Failure disclosure ---
+// A gate that BLOCKS and says nothing is not concise, it is unusable. Measured
+// 2026-08-23: a pre-push run emitted exactly
+//   {"test":{"status":"fail","total":14671,"passed":14671,"failed":0}, …}
+// and nothing else. `failed: 0` beside `status: fail` is not a contradiction in
+// the data — it is the SHAPE of the report: `extractTestCounts` reads vitest's
+// `Tests …` summary line, and vitest OMITS the `N failed` segment when no
+// individual test failed. A suite that dies at import time is counted on the
+// `Test Files …` line, which this payload has no field for. So a file-level
+// failure is, by construction, reported as zero failures.
+//
+// Reconstructing which file died then cost a full manual re-materialisation of
+// the tracked tree. That is the cost this block removes: on failure the raw
+// output of every failing gate goes to STDERR, where the JSON contract on
+// STDOUT is untouched and every existing consumer keeps parsing one line.
+//
+// stderr, not stdout, and only on failure, for three reasons that are all
+// contract-preserving: `scripts/run-quality-gate.mjs` and the pre-push hook
+// parse stdout as ONE JSON document; a green run stays silent, so the "~2 min
+// of silence" the hook promises still holds; and the operator gets the failure
+// at the moment of the block instead of a second run to find it.
+if (failed) {
+  for (const [name, result] of [
+    ['typecheck', tcResult],
+    ['test', testResult],
+    ['lint', lintResult],
+  ]) {
+    if (result.status !== 'fail') continue;
+    const raw = result.fullOutput ?? result.output ?? '';
+    process.stderr.write(`\n──── ${name} FAILED — raw output ────\n`);
+    process.stderr.write(raw.length > 0 ? raw : '(the gate captured no output)\n');
+    process.stderr.write(`──── end ${name} ────\n`);
+  }
+}
+
 process.exit(failed ? 2 : 0);
