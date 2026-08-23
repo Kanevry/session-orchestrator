@@ -31,17 +31,33 @@
 # Re-enable any of them the moment this repo grows the surface it assumes:
 # an HTTP endpoint, a browser bundle, or a user-supplied regex/path.
 #
-# The remaining 59 rules produce ZERO findings today. That is the point: they
-# cost nothing now and bite on the next regression. Among them are the ones
-# that matter most for a repo that shells out constantly and consumes agent
-# output — unsafe-command-injection, json-parse-untrusted-input,
-# prototype-pollution-object-assign, math-random-security, and the three
-# unsafe-llm-* rules.
+# The remaining 25 rules produce ZERO findings today. That is the point: they
+# cost nothing now and bite on the next regression. Present and load-bearing
+# for a repo that shells out constantly: unsafe-command-injection,
+# unsafe-shell-spawn, tob-unsafe-child-process, unsafe-eval,
+# math-random-security, unsafe-llm-output-eval.
 #
-# Drift check against the baseline:
-#   diff <(grep '^  - id:' ~/Projects/projects-baseline/templates/shared/.semgrep.yml) \
-#        <(grep '^  - id:' .semgrep.yml)
-#   → expect exactly the five removals above.
+# NOT PRESENT, and this file previously claimed they were (measured 2026-08-23):
+#   json-parse-untrusted-input          removed by `paths: include: **/src/`
+#   prototype-pollution-object-assign   removed by `paths: include: **/src/`
+#   unsafe-llm-output-rendering         removed by `paths: include: **/src/`
+# None of the three is inapplicable here — all three were dropped by a path
+# filter naming a directory this repo does not have. Re-pointing that filter at
+# scripts/ hooks/ skills/ would make them live; that is an open decision, not a
+# settled exclusion. A fourth, unsafe-llm-prompt-injection, IS correctly absent:
+# it matches anthropic/openai SDK calls fed from req.body, and this repo has
+# neither an HTTP request path nor those SDK call sites.
+#
+# Drift check against the baseline. NOTE the indent normalisation: the baseline
+# indents rules by two spaces, this file does not. A recipe pinned to '^  - id:'
+# matches 64 lines there and 0 here, and then reports every baseline rule as
+# removed — measured 2026-08-23. Strip the indent on BOTH sides:
+#   norm() { grep -oE '^[[:space:]]*- id: [A-Za-z0-9_-]+' "$1" \
+#            | sed -E 's/^[[:space:]]*- id: //' | sort; }
+#   comm -23 <(norm ~/Projects/projects-baseline/templates/shared/.semgrep.yml) \
+#            <(norm .semgrep.yml)
+#   → measured 2026-08-23 @ 4f6404e: 64 baseline / 25 here / 39 removed / 0 added.
+#     Only the five above are explained; the other 34 are not.
 
 rules:
 - id: unsafe-fetch-user-url

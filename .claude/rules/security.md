@@ -62,7 +62,7 @@ Once a service crosses ~10 managed secrets, `.env.example` alone stops being a u
 
 ## Dependencies
 - The canonical PM's production audit in CI — `npm audit --omit=dev --audit-level=high` / `pnpm audit --prod --audit-level=high`. Block deploys on high/critical vulnerabilities.
-- Gitleaks (37 rules) in CI — verified in this repo (`.gitleaks.toml`, GitLab job `gitleaks-scan` + a SHA-pinned GitHub action). **Semgrep SAST (65+ custom rules in `.semgrep.yml` + 4 managed rulesets) is a baseline requirement this repo has NOT adopted** — measured 2026-08-22 @ `141d418`: `.semgrep.yml` absent, 0 references in `.gitlab-ci.yml` and `.github/workflows/`. Do not read this line as coverage that exists here.
+- Gitleaks (37 rules) in CI — verified in this repo (`.gitleaks.toml`, GitLab job `gitleaks-scan` + a SHA-pinned GitHub action). **Semgrep SAST is adopted here, but NOT in the baseline's shape** — measured 2026-08-23 @ `4f6404e`: `.semgrep.yml` carries **25** rules, not the baseline's 64, and no managed rulesets. Delta measured against the baseline copy: **39 removed, 0 added**. Its header names only 5 of them (measured false positives, 78 findings, all from those five); the other 34 are not individually accounted for there, and the header's own claim of "the remaining 59 rules" contradicts the 25 in the file. CI: GitLab job `semgrep:` (`.gitlab-ci.yml:300`, image `semgrep/semgrep:1.161.0`), gated on findings NEW since the baseline commit, wired into `pipeline-gate` (`:719`). **GitHub Actions: 0 references** — the mirror runs no SAST. Read this line as: GitLab-side coverage exists and is narrower than the baseline; GitHub-side coverage does not exist.
 - Review `node_modules` additions in PRs (supply chain awareness).
 
 ## Supply Chain Security (SEC-020)
