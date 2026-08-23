@@ -43,6 +43,8 @@
 
 import { createHash } from 'node:crypto';
 
+import yaml from 'js-yaml';
+
 import { kebab } from '../learnings/kebab.mjs';
 import {
   EVIDENCE_ITEM_MAX_BYTES,
@@ -69,6 +71,45 @@ import {
  */
 function shortHash(input) {
   return createHash('sha1').update(String(input)).digest('hex').slice(0, 7);
+}
+
+/**
+ * Serialize a single-line frontmatter scalar the way real YAML requires it
+ * (#1041), while staying parseable by `rule-loader.mjs`'s hand-rolled parser.
+ *
+ * `description` is the one frontmatter field {@link assertSafeDescription}
+ * permits to contain a colon (14 live rules carry a second `:` in their
+ * description, and this repo's own loader tolerates it — see `sanitize.mjs`'s
+ * module doc). This repo's loader is not the only reader: Claude Code's OWN
+ * native frontmatter loader parses `.claude/rules/*.md` as real YAML, and
+ * `description: fixes X: this breaks Y` emitted unquoted is a YAML mapping
+ * with an extra, unindented `this breaks Y` value — js-yaml throws "bad
+ * indentation of a mapping entry" on exactly that shape.
+ *
+ * `yaml.dump` emits a bare plain scalar when no quoting is needed (byte-
+ * identical to the un-quoted output this renderer shipped before #1041, so
+ * every colon-free description stays unchanged) and falls back to a quoted
+ * scalar only when required. js-yaml's DEFAULT quoting style (no
+ * `quotingType` option passed) is SINGLE-quote, not double — confirmed via
+ * `node_modules/js-yaml/lib/dumper.js` `chooseScalarStyle`, which only forces
+ * DOUBLE for a string containing a non-printable code point. A single-quoted
+ * scalar is what `rule-loader.mjs`'s hand-rolled parser round-trips
+ * correctly: it strips exactly one leading/trailing quote character
+ * (`/^["']|["']$/g`) with NO escape processing, so a js-yaml DOUBLE-quoted
+ * `\"` escape would survive the strip verbatim and corrupt the parsed value —
+ * single-quote style has no such escape to survive (its only escape, an
+ * interior `'` doubled to `''`, is a narrower edge case than the colon defect
+ * this fix targets and is out of scope here). `description` can never contain
+ * a raw newline by the time this runs — {@link assertSafeDescription} /
+ * {@link assertNoControlChars} reject one earlier in the same call — so the
+ * literal/folded block-scalar branches `yaml.dump` has for multi-line input
+ * are unreachable on this call site.
+ *
+ * @param {string} value
+ * @returns {string} a single YAML scalar line, no trailing newline
+ */
+function dumpYamlScalar(value) {
+  return yaml.dump(value, { lineWidth: -1 }).trimEnd();
 }
 
 /**
@@ -253,7 +294,9 @@ export function renderRule(learning, metadata) {
   fm.push('---');
   fm.push('auto-generated: true');
   fm.push('alwaysApply: false');
-  fm.push(`description: ${metadata.description}`);
+  // #1041: js-yaml-safe serialization — see `dumpYamlScalar` above. Byte-
+  // identical to the prior unquoted output for every colon-free description.
+  fm.push(`description: ${dumpYamlScalar(metadata.description)}`);
   // OMIT the `globs:` key entirely when there are no globs (a host-class-only
   // activation axis). An empty `globs:` line parses in the loader as
   // `globs: []`, which short-circuits BEFORE the host-class gate runs

@@ -43,21 +43,40 @@
  *     throw to an audited `emit/render error: …` rejection, never a crash.
  *
  * -- What this module deliberately does NOT touch -----------------------------
- * Colons (14 live `description:` lines carry a second one, and the loader's
- * first-colon split at rule-loader.mjs handles them), non-ASCII punctuation
- * (`—` is content; the trailing `…` is the emitter's own truncation marker),
- * `*`/`**` inside globs (already double-quoted by the renderer), body `---`
- * horizontal rules (a WRAPPER-side concern in print-applicable-rules.mjs, not
- * ours), fenced code blocks, markdown headings, inline backticks and HTML
- * comments in the body — those ARE the reconciler's own output shape.
+ * Colons in general (a mid-line `#`), non-ASCII punctuation (`—` is content;
+ * the trailing `…` is the emitter's own truncation marker), `*`/`**` inside
+ * globs (already double-quoted by the renderer), body `---` horizontal rules
+ * (a WRAPPER-side concern in print-applicable-rules.mjs, not ours), fenced
+ * code blocks, markdown headings, inline backticks and HTML comments in the
+ * body — those ARE the reconciler's own output shape, and this module's SHAPE
+ * asserts below are unaffected either way: they reject on control characters,
+ * dangerous invisibles, wrapper-forgery literals and length, never on colons.
  *
- * The frontmatter parser this defends against is HAND-ROLLED, not a YAML
- * library (`rule-loader.mjs` imports only node:fs/path/module): a `:` in a
- * scalar is harmless, a mid-line `#` is harmless, quotes survive — the ONE
- * escape is a newline, which starts a new top-level key. That is why the
- * machine-value asserts below are shaped as "no control characters / exact
- * token shape" and NOT as YAML quoting or colon escaping, which would be both
- * wrong and destructive here.
+ * The frontmatter parser THIS module's asserts are shaped for is HAND-ROLLED,
+ * not a YAML library (`rule-loader.mjs` imports only node:fs/path/module): a
+ * `:` in a scalar is harmless there, a mid-line `#` is harmless, quotes
+ * survive — the ONE escape is a newline, which starts a new top-level key.
+ * That is why the machine-value asserts below are shaped as "no control
+ * characters / exact token shape" and NOT as YAML quoting or colon escaping,
+ * which would be both wrong and destructive for THIS parser.
+ *
+ * That reasoning stopped being the whole story once #1041 landed: Claude
+ * Code's OWN native frontmatter loader — the thing that actually delivers a
+ * rendered rule into every future agent's context — parses the SAME file as
+ * real YAML, and a colon-bearing `description:` value emitted unquoted
+ * (`description: fixes X: this breaks Y`) is a syntax error there ("bad
+ * indentation of a mapping entry"), not merely a shape this module chose not
+ * to touch. The fix for that is NOT a new assert in this module — 14 live
+ * `description:` lines legitimately carry a second colon, and this module's
+ * job stays "reject an unsafe SHAPE", never "reformat a safe one". Instead
+ * `renderer.mjs`'s `dumpYamlScalar` (built on the already-installed `js-yaml`
+ * dependency) serializes the `description` value returned by
+ * {@link assertSafeDescription} as a real YAML scalar (plain when safe,
+ * single-quoted only when a colon or similar forces it) at the render POINT,
+ * after this module's shape gate has already run. The two layers stay
+ * distinct on purpose: this module still decides whether the value may be
+ * emitted at all; `renderer.mjs` decides how to spell the value both parsers
+ * — the hand-rolled one AND js-yaml — can read back unchanged.
  *
  * Pure functions — no file I/O, no process state. Part of issue #1015.
  *
@@ -190,8 +209,12 @@ export const PROVENANCE_TOKEN_RE = /^[A-Za-z0-9._:-]+$/;
 // byte gate. The property class keeps the source pure ASCII by construction.
 //
 // CONTROL_RE is the REJECT test for single-line machine values, where a TAB or
-// LF is an escape rather than formatting.
-const CONTROL_RE = /\p{Cc}/u;
+// LF is an escape rather than formatting. U+2028/U+2029 (Zl/Zp) are NOT \p{Cc}
+// but YAML 1.1 and js-yaml's loader treat them as line breaks — measured
+// 2026-08-23 (W4-R2): `"safe\u2028alwaysApply: true"` passed this gate and was
+// neutralised only by js-yaml's escaping in the renderer. The guarantee
+// belongs in the gate, not in a downstream serializer's style choice.
+const CONTROL_RE = /[\p{Cc}\u2028\u2029]/u;
 
 // The same category, global, for the prose strip. TAB/LF are re-admitted by the
 // replacement callback in `sanitizeProse` (multi-line prose is legitimate in a

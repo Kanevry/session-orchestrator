@@ -81,6 +81,31 @@ const MIN_RULE_DAYS_DEFAULT = 7;
  */
 const HOST_CLASS_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
+/**
+ * Learning `type`s whose `host_class` is actually chip/OS-specific and may be
+ * copied through into the emitted rule's activation axis (#1090).
+ *
+ * Before this allowlist, EVERY type's `host_class` was copied through
+ * unconditionally the moment it passed {@link HOST_CLASS_RE}. Measured against
+ * the live corpus (12/146 learnings carrying `host_class`, all
+ * `macos-arm64-m4pro`, on `anti-pattern`/`proven-pattern`/`recurring-issue` —
+ * NONE of them chip-specific content): a rule proposal could ship with
+ * `host-class` as its SOLE activation axis on a learning that has nothing to
+ * do with hardware, silently restricting an otherwise-general finding (a
+ * PNG-size anti-pattern, say) to one operator's one machine.
+ *
+ * `hardware-pattern` is `ruleConvertible: false` in
+ * `scripts/lib/learnings/schema.mjs` `LEARNING_TYPE_REGISTRY` — it can never
+ * reach `eligibility.mjs`'s CONVERT_TYPES allow-list today, so this set is
+ * currently INERT (no live record can exercise the "copied through" branch).
+ * It stays here as forward-compat: the day a type is made BOTH host-scoped
+ * AND rule-convertible, this is the one place that decides it is allowed to
+ * gate a rule by host.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const HOST_SPECIFIC_TYPES = new Set(['hardware-pattern']);
+
 // Characters that make a `file_paths[]` entry unsafe to serialise as a glob.
 // The renderer emits each glob as `  - "<value>"`, so a control char (a newline
 // above all) breaks out of the block sequence into new top-level frontmatter
@@ -104,16 +129,28 @@ const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F]/g;
 // .claude/rules/proven-pattern-nul-byte-corruption...).
 const CONTROL_CHARS_TEST_RE = new RegExp(CONTROL_CHARS_RE.source);
 
-// Glob metacharacters (issue #900-follow-up, Q3-MED). A top-level
-// (dirname==='.') file_paths entry is emitted AS THE GLOB ITSELF below — so a
-// stray '**' or '[ab]' entry (e.g. from an OLD learning record predating the
-// #900 C / schema.mjs argv-boundary guards) must never reach the renderer
-// verbatim, or it would produce an effectively always-on rule glob. Skipped
-// here as defense-in-depth even though the argv (memory-propose.mjs) and
-// schema (memory-proposals/schema.mjs) layers already reject these at write
-// time — this emitter also processes learnings.jsonl entries that predate
-// those guards.
-const GLOB_METACHAR_RE = /[*?[\]{}]/;
+// Glob metacharacters (issue #900-follow-up, Q3-MED; extended #1089). A
+// top-level (dirname==='.') file_paths entry is emitted AS THE GLOB ITSELF
+// below — so a stray '**', '[ab]', or a path containing a picomatch group
+// (parens) must never reach the renderer verbatim, or it would either produce
+// an effectively always-on rule glob OR — the #1089 defect — a glob that
+// LOOKS scoped but can never match anything at all: `(` / `)` are not
+// filtered here even though a directory segment like `app/(marketing)/page`
+// (a Next.js route group) contains them, so `app/(marketing)/**` is emitted
+// and picomatch's own group syntax then reads `(marketing)` as a capture
+// group rather than a literal path segment — `picomatch.isMatch('app/
+// (marketing)/page.tsx', 'app/(marketing)/**')` is `false`. A rule minted from
+// such an entry loads, looks scoped, and never fires on the very path it was
+// derived from. `!`, `@`, `+` are ALSO picomatch extglob prefixes, but only
+// when immediately followed by `(` (`!(...)`, `@(...)`, `+(...)`) — bare `!`
+// (e.g. a filename) is not itself unsafe and is left alone.
+//
+// Every entry this regex rejects is now recorded, not silently dropped — see
+// {@link globsFromFilePaths}'s `rejections` parameter (#1089 part A): the
+// original `continue` produced neither a WARN nor an auditable reason, so an
+// operator reviewing a proposal could not tell "no scoping info" from "scoping
+// info was silently thrown away".
+const GLOB_METACHAR_RE = /[*?[\]{}()]|[!@+](?=\()/;
 
 /**
  * Derive non-empty directory globs from a learning's `file_paths`.
@@ -121,25 +158,36 @@ const GLOB_METACHAR_RE = /[*?[\]{}]/;
  * For each path: take its directory (`path.dirname`) and emit `<dir>/**`. When
  * the file sits at the repo top level (`dirname` === '.'), emit the bare
  * basename pattern instead of `./**` (e.g. `"foo.mjs"`). Entries containing a
- * glob metacharacter (`* ? [ ] { }`) are skipped entirely — see
- * {@link GLOB_METACHAR_RE} — as are entries carrying a control char or a quote
- * character, which would break out of the renderer's `  - "<glob>"` sequence
- * item into new top-level frontmatter keys (#1015; see
- * {@link CONTROL_CHARS_TEST_RE} / {@link UNSAFE_PATH_QUOTE_RE}). Results are
- * deduped, order-preserving on first occurrence.
+ * glob metacharacter (`* ? [ ] { } ( )`, or an extglob prefix `! @ +` directly
+ * before `(`) are skipped entirely — see {@link GLOB_METACHAR_RE} — as are
+ * entries carrying a control char or a quote character, which would break out
+ * of the renderer's `  - "<glob>"` sequence item into new top-level
+ * frontmatter keys (#1015; see {@link CONTROL_CHARS_TEST_RE} /
+ * {@link UNSAFE_PATH_QUOTE_RE}). Results are deduped, order-preserving on
+ * first occurrence.
  *
  * @param {string[]} filePaths
+ * @param {{ path: string, reason: 'glob-metacharacter' | 'unsafe-shape' }[]} [rejections]
+ *   optional out-array; every skipped entry is pushed here with its reason
+ *   (#1089 part A) so a caller can surface "N file_paths entries were dropped
+ *   and why" instead of the drop being invisible.
  * @returns {string[]}
  */
-function globsFromFilePaths(filePaths) {
+function globsFromFilePaths(filePaths, rejections) {
   const out = [];
   const seen = new Set();
   for (const raw of filePaths) {
     if (typeof raw !== 'string' || raw === '') continue;
-    if (GLOB_METACHAR_RE.test(raw)) continue;
+    if (GLOB_METACHAR_RE.test(raw)) {
+      if (Array.isArray(rejections)) rejections.push({ path: raw, reason: 'glob-metacharacter' });
+      continue;
+    }
     // #1015: frontmatter-structure guard. Skipping (never escaping) keeps this
     // idempotent and non-overlapping with the renderer's sanitiser.
-    if (CONTROL_CHARS_TEST_RE.test(raw) || UNSAFE_PATH_QUOTE_RE.test(raw)) continue;
+    if (CONTROL_CHARS_TEST_RE.test(raw) || UNSAFE_PATH_QUOTE_RE.test(raw)) {
+      if (Array.isArray(rejections)) rejections.push({ path: raw, reason: 'unsafe-shape' });
+      continue;
+    }
     const normalized = raw.replace(/\\/g, '/');
     const dir = dirname(normalized);
     const pattern = dir === '.' ? normalized : `${dir}/**`;
@@ -260,9 +308,13 @@ function computeExpiresAt(learning, ruleExpiryDays, now, minRuleDays) {
  *   autoGenerated: true,
  *   alwaysApply: false,
  *   hostClass?: string,
+ *   droppedFilePaths?: { path: string, reason: 'glob-metacharacter' | 'unsafe-shape' }[],
  * }}
  * @throws {Error} when no activation axis can be produced (empty globs AND no
- *   hostClass) — the never-always-on invariant.
+ *   hostClass) — the never-always-on invariant. When `host_class` WAS present
+ *   and valid but its `type` is not in {@link HOST_SPECIFIC_TYPES} (#1090), the
+ *   message names that specifically rather than reporting the generic
+ *   "no activation axis" reason.
  * @throws {Error} when the learning has no derivable `learning_key` (no usable
  *   `type`, or no `title`/`subject` that slugs to a non-empty token) — a rule
  *   whose key resolves to no learning is worse than no rule.
@@ -273,7 +325,10 @@ export function toActivationMetadata(learning, { ruleExpiryDays, now, minRuleDay
   }
 
   const filePaths = Array.isArray(learning.file_paths) ? learning.file_paths : [];
-  const globs = globsFromFilePaths(filePaths);
+  // #1089 part A: every skipped file_paths entry is now recorded with a reason
+  // instead of vanishing behind a bare `continue` — see {@link globsFromFilePaths}.
+  const droppedFilePaths = [];
+  const globs = globsFromFilePaths(filePaths, droppedFilePaths);
 
   // #1015: `host_class` is copied straight into an UNQUOTED `host-class:`
   // frontmatter line by the renderer, so its SHAPE is load-bearing. Reject a
@@ -282,7 +337,16 @@ export function toActivationMetadata(learning, { ruleExpiryDays, now, minRuleDay
   // silently emitting the rest of the rule from the same record would hide it.
   // The engine wraps each learning in its own try/catch, so this throw degrades
   // to ONE recorded rejection with an auditable reason, never a crashed run.
+  // Shape validation runs UNCONDITIONALLY, regardless of `type` — a malformed
+  // value is a corruption signal on its own and is rejected whether or not the
+  // type would ever be allowed to use it as an activation axis (see below).
   let hostClass;
+  // #1090: `host_class` is only meaningful as an activation axis for a type
+  // that is actually chip/OS-specific (see {@link HOST_SPECIFIC_TYPES}) — set
+  // when a VALID host_class exists but its type is not in that allow-list, so
+  // the never-always-on throw below can name the reason instead of reporting
+  // the generic "no activation axis" message.
+  let hostClassDroppedByType = false;
   if (typeof learning.host_class === 'string' && learning.host_class !== '') {
     if (!HOST_CLASS_RE.test(learning.host_class)) {
       throw new Error(
@@ -292,12 +356,24 @@ export function toActivationMetadata(learning, { ruleExpiryDays, now, minRuleDay
           `defeating the never-always-on brandmauer and the expiry sweep. Expected ${HOST_CLASS_RE.source}.`,
       );
     }
-    hostClass = learning.host_class;
+    if (HOST_SPECIFIC_TYPES.has(learning.type)) {
+      hostClass = learning.host_class;
+    } else {
+      hostClassDroppedByType = true;
+    }
   }
 
   // The brandmauer: an auto-generated rule must carry ≥1 activation axis. If we
   // could derive neither a glob nor a host-class, refuse — never emit always-on.
   if (globs.length === 0 && hostClass === undefined) {
+    if (hostClassDroppedByType) {
+      throw new Error(
+        `emitter: host_class ${JSON.stringify(learning.host_class)} is present and well-formed, but type ` +
+          `${JSON.stringify(learning.type)} is not host-specific (#1090 — host-class is only copied through for ` +
+          `${[...HOST_SPECIFIC_TYPES].join(', ')}) — refusing to emit always-on auto-generated rule ` +
+          '(never-always-on invariant); no other activation axis (globs) is available either.',
+      );
+    }
     throw new Error(
       'emitter: no activation axis (globs/host-class) — refusing to emit always-on auto-generated rule (never-always-on invariant)',
     );
@@ -342,6 +418,13 @@ export function toActivationMetadata(learning, { ruleExpiryDays, now, minRuleDay
 
   if (hostClass !== undefined) {
     metadata.hostClass = hostClass;
+  }
+
+  // #1089 part A: present only when something was actually dropped — absence
+  // (not an empty array) is the "nothing to report" signal, matching the
+  // conditional-presence pattern `hostClass` already uses above.
+  if (droppedFilePaths.length > 0) {
+    metadata.droppedFilePaths = droppedFilePaths;
   }
 
   return metadata;

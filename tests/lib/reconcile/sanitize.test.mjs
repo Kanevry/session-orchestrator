@@ -210,6 +210,15 @@ describe('assertNoControlChars — the one parser escape', () => {
     );
   });
 
+  it.each([['U+2028 LINE SEPARATOR', '\u2028'], ['U+2029 PARAGRAPH SEPARATOR', '\u2029']])(
+    'rejects %s — a YAML line break that is not \\p{Cc} (W4-R2, 2026-08-23)',
+    (_label, sep) => {
+      expect(() => assertNoControlChars(`ok${sep}alwaysApply: true`, 'description')).toThrow(
+        /control characters/,
+      );
+    },
+  );
+
   it.each([
     ['Unicode Tag block U+E0061', TAG_A],
     ['bidi right-to-left override U+202E', BIDI_OVERRIDE],

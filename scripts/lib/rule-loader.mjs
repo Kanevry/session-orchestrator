@@ -220,6 +220,28 @@ const SCALAR_META_KEYS = new Set([
  * @param {string} contents - raw file contents
  * @returns {{ globs: string[] | null, meta: Record<string, unknown> }}
  */
+/**
+ * Undo the ONE quoting style the renderer emits for a scalar (#1041 follow-up).
+ *
+ * `scripts/lib/reconcile/renderer.mjs` serialises `description:` through
+ * js-yaml, which picks SINGLE-quote style whenever the plain form would be
+ * ambiguous (a `: ` inside) and escapes an interior `'` as `''`. A bare
+ * leading/trailing-quote strip then returns `it''s` for `it's` — measured
+ * 2026-08-23 on 40 of 146 live learning insights carrying both characters.
+ * Single-quoted: strip + un-double. Double-quoted: strip + unescape `\"` and
+ * `\\`. Unquoted: returned verbatim (the pre-#1041 behaviour, unchanged).
+ */
+function unquoteYamlScalar(valuePart) {
+  const v = valuePart.trim();
+  if (v.length >= 2 && v.startsWith("'") && v.endsWith("'")) {
+    return v.slice(1, -1).replace(/''/g, "'");
+  }
+  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
+    return v.slice(1, -1).replace(/\\(["\\])/g, '$1');
+  }
+  return v.replace(/^["']|["']$/g, '');
+}
+
 export function parseGlobsFrontmatter(contents) {
   const match = FRONTMATTER_RE.exec(stripLeadingProvenanceHeader(contents));
   if (!match) return { globs: null, meta: {} };
@@ -299,7 +321,7 @@ export function parseGlobsFrontmatter(contents) {
     } else if (SCALAR_META_KEYS.has(key)) {
       // Scalar activation key (issue #694). Strip surrounding quotes, then
       // apply per-key coercion. Empty values are skipped (key not present).
-      const stripped = valuePart.replace(/^["']|["']$/g, '');
+      const stripped = unquoteYamlScalar(valuePart);
       if (stripped === '') continue;
       if (key === 'alwaysApply' || key === 'auto-generated') {
         if (stripped === 'true') meta[key] = true;

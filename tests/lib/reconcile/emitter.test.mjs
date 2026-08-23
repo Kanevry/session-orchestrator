@@ -12,12 +12,20 @@
  *   - confidence passthrough + default-to-0.
  */
 
+import { createRequire } from 'node:module';
+
 import { describe, it, expect } from 'vitest';
 
 import { toActivationMetadata } from '../../../scripts/lib/reconcile/emitter.mjs';
 // Imported READ-ONLY, to prove the emitter's key survives the renderer's
 // machine-value assert (or, for a hostile type, is rejected by it).
 import { renderRule } from '../../../scripts/lib/reconcile/renderer.mjs';
+
+// picomatch is a transitive dependency (resolved the same way rule-loader.mjs
+// resolves it) — used ONLY to prove the #1089 falsification claim: any glob
+// this emitter DOES produce must be matchable by the SAME matcher the loader
+// uses at runtime, not merely "look scoped".
+const picomatch = createRequire(import.meta.url)('picomatch');
 
 /**
  * File-wide frozen clock for every expiry assertion.
@@ -179,8 +187,11 @@ describe('toActivationMetadata — never-always-on invariant', () => {
     );
   });
 
-  it('does NOT throw when host_class is the sole axis (empty file_paths)', () => {
+  it('does NOT throw when host_class is the sole axis (empty file_paths) for a HOST_SPECIFIC_TYPES type', () => {
+    // #1090: host_class is only copied through for types in the
+    // HOST_SPECIFIC_TYPES allow-list — 'hardware-pattern' is the only member.
     const learning = fragileLearning({
+      type: 'hardware-pattern',
       file_paths: [],
       host_class: 'macos-arm64-m4pro',
     });
@@ -218,6 +229,64 @@ describe('toActivationMetadata — glob-metacharacter file_paths entries are ski
     });
     const meta = toActivationMetadata(learning, {});
     expect(meta.globs).toEqual(['scripts/lib/autopilot/**']);
+  });
+
+  // #1089 part B — a Next.js route-group directory (parens in a real path
+  // segment) is not itself an old/malformed record; it is a LEGITIMATE path
+  // that picomatch's own group syntax cannot match once turned into a glob.
+  it('skips a "(marketing)" route-group path entry — either it throws, or every remaining glob would match picomatch against the path it was derived from', () => {
+    const learning = fragileLearning({ file_paths: ['app/(marketing)/page.tsx'] });
+    // FALSIFICATION: before #1089, this entry sailed through GLOB_METACHAR_RE
+    // (which never listed `(`/`)`) and was emitted as `app/(marketing)/**` —
+    // a glob picomatch.isMatch() never matches against the very path it came
+    // from, proven directly below rather than asserted as a belief.
+    expect(picomatch.isMatch('app/(marketing)/page.tsx', 'app/(marketing)/**')).toBe(false);
+
+    // With the entry now skipped, the sole file_paths entry yields no glob at
+    // all and no host_class → never-always-on throw (never a dead-on-arrival
+    // rule). The alternative half of the contract (every SURVIVING glob does
+    // match its own source path) is proven by the sibling-path test below.
+    expect(() => toActivationMetadata(learning, {})).toThrow(/never-always-on|activation axis/);
+  });
+
+  it('keeps a clean sibling glob that DOES match its own source path via picomatch when a route-group entry is skipped', () => {
+    const learning = fragileLearning({
+      file_paths: ['app/(marketing)/page.tsx', 'scripts/lib/autopilot/worktree-pipeline.mjs'],
+    });
+    const meta = toActivationMetadata(learning, {});
+    expect(meta.globs).toEqual(['scripts/lib/autopilot/**']);
+    // The surviving glob is verified against picomatch directly — the same
+    // matcher rule-loader.mjs uses at runtime — not merely shaped correctly.
+    expect(
+      picomatch.isMatch('scripts/lib/autopilot/worktree-pipeline.mjs', meta.globs[0]),
+    ).toBe(true);
+  });
+});
+
+// #1089 part A — dropped entries are recorded with a reason, not silently
+// discarded behind a bare `continue`.
+describe('toActivationMetadata — dropped file_paths entries are recorded (#1089)', () => {
+  it('surfaces meta.droppedFilePaths with a reason for a glob-metacharacter entry', () => {
+    const learning = fragileLearning({
+      file_paths: ['**', 'scripts/lib/autopilot/worktree-pipeline.mjs'],
+    });
+    const meta = toActivationMetadata(learning, {});
+    expect(meta.droppedFilePaths).toEqual([{ path: '**', reason: 'glob-metacharacter' }]);
+  });
+
+  it('surfaces meta.droppedFilePaths with a reason for a control-char/quote entry', () => {
+    const learning = fragileLearning({
+      file_paths: ['scripts/evil.mjs\ntier: always', 'scripts/lib/autopilot/worktree-pipeline.mjs'],
+    });
+    const meta = toActivationMetadata(learning, {});
+    expect(meta.droppedFilePaths).toEqual([
+      { path: 'scripts/evil.mjs\ntier: always', reason: 'unsafe-shape' },
+    ]);
+  });
+
+  it('omits droppedFilePaths entirely when nothing was dropped', () => {
+    const meta = toActivationMetadata(fragileLearning(), {});
+    expect('droppedFilePaths' in meta).toBe(false);
   });
 });
 
@@ -303,9 +372,62 @@ describe('toActivationMetadata — host_class shape gate (#1015)', () => {
     'windows-x86_64',
     'freebsd-riscv64', // the `${osName}-${arch}` fallback branch
   ])('accepts the real classifyHost() value %s', (hostClass) => {
-    const learning = fragileLearning({ file_paths: [], host_class: hostClass });
+    // #1090: 'hardware-pattern' is the sole HOST_SPECIFIC_TYPES member — the
+    // only type whose host_class is actually copied through as an axis.
+    const learning = fragileLearning({ type: 'hardware-pattern', file_paths: [], host_class: hostClass });
     const meta = toActivationMetadata(learning, { now: FROZEN_NOW });
     expect(meta.hostClass).toBe(hostClass);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1090 — host_class is only an activation axis for HOST_SPECIFIC_TYPES.
+//
+// Discovery census (2026-08-23, HEAD 01eb35d): 12/146 live learnings carry
+// `host_class`, all `macos-arm64-m4pro`, all on `anti-pattern`(9) /
+// `proven-pattern`(2) / `recurring-issue`(1) — NONE of them hardware-scoped
+// content. Before this fix, ANY type's valid host_class was copied through
+// unconditionally, so one of the corpus's own dry-run proposals would have
+// shipped host-class as its SOLE activation axis on a finding that has
+// nothing to do with the chip it happened to be authored on.
+// ---------------------------------------------------------------------------
+
+describe('toActivationMetadata — host_class is type-gated to HOST_SPECIFIC_TYPES (#1090)', () => {
+  it('drops host_class for anti-pattern (not host-specific): meta.hostClass is undefined', () => {
+    // Regression test named in the task: anti-pattern + host_class →
+    // meta.hostClass undefined. file_paths stays non-empty so this returns
+    // metadata instead of throwing — the point under test is the DROP, not
+    // the never-always-on invariant (that is the next test).
+    const learning = fragileLearning({ type: 'anti-pattern', host_class: 'macos-arm64-m4pro' });
+    const meta = toActivationMetadata(learning, { now: FROZEN_NOW });
+    expect(meta.hostClass).toBeUndefined();
+    // Sanity: the glob axis (from file_paths) still carries the rule.
+    expect(meta.globs).toEqual(['scripts/lib/autopilot/**']);
+  });
+
+  it('throws a reason naming the type-gate drop when host_class was the ONLY axis', () => {
+    // FALSIFICATION: without the #1090 gate, this would return metadata with
+    // hostClass set (globs is empty, so the type-gate is the only thing that
+    // can make this throw at all).
+    const learning = fragileLearning({
+      type: 'anti-pattern',
+      file_paths: [],
+      host_class: 'macos-arm64-m4pro',
+    });
+    expect(() => toActivationMetadata(learning, { now: FROZEN_NOW })).toThrow(
+      /host_class .* is present and well-formed, but type "anti-pattern" is not host-specific/,
+    );
+  });
+
+  it('still throws on a malformed host_class even for a non-host-specific type (shape gate is unconditional)', () => {
+    // The shape gate is a corruption/injection signal independent of whether
+    // the type would ever be allowed to use the value as an axis — it must
+    // fire before the type gate is even consulted.
+    const learning = fragileLearning({
+      type: 'anti-pattern',
+      host_class: 'macos-arm64-m4pro\ntier: always',
+    });
+    expect(() => toActivationMetadata(learning, { now: FROZEN_NOW })).toThrow(/host_class/);
   });
 });
 

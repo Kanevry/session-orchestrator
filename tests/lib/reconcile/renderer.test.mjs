@@ -15,6 +15,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import yaml from 'js-yaml';
+
 import { deriveSlug, renderRule } from '../../../scripts/lib/reconcile/renderer.mjs';
 import { toActivationMetadata } from '../../../scripts/lib/reconcile/emitter.mjs';
 import { loadApplicableRules, parseGlobsFrontmatter } from '../../../scripts/lib/rule-loader.mjs';
@@ -131,7 +133,15 @@ describe('renderRule — round-trip through the real rule-loader', () => {
 describe('renderRule — host-class-only round-trip through the real rule-loader', () => {
   it('omits the globs: key for a host-class-only rule so it loads on a matching host (and is excluded on a non-matching host)', () => {
     // A learning with NO file_paths but a host_class → host-class-only axis.
-    const learning = fragileLearning({ file_paths: [], host_class: 'macos-arm64-m4pro' });
+    // type: 'hardware-pattern' — #1090 only copies host_class through for
+    // HOST_SPECIFIC_TYPES; the default fixture type ('fragile-pattern') is
+    // not in that allow-list and would now throw here instead of producing
+    // a host-class-only metadata object.
+    const learning = fragileLearning({
+      type: 'hardware-pattern',
+      file_paths: [],
+      host_class: 'macos-arm64-m4pro',
+    });
     const metadata = toActivationMetadata(learning, { now: Date.parse('2026-06-21') });
     // Sanity: the emitter produced empty globs + the host-class axis.
     expect(metadata.globs).toEqual([]);
@@ -467,5 +477,82 @@ describe('renderRule — harness parity (#1108)', () => {
     expect(frontmatter).not.toMatch(/^globs:/mu);
     expect(frontmatter).not.toMatch(/^paths:/mu);
     expect(frontmatter).toMatch(/^host-class: macos-arm64$/mu);
+  });
+});
+
+describe('renderRule — description containing ": " is real-YAML-safe (#1041)', () => {
+  /**
+   * FÄNGT: `description: ${metadata.description}` emitted unquoted. js-yaml
+   * (Claude Code's OWN native frontmatter loader) throws "bad indentation of
+   * a mapping entry" on `description: fixes X: this breaks Y` — the SAME
+   * live 2-of-10 dry-run-proposal defect named in the task. This repo's own
+   * hand-rolled `rule-loader.mjs` parser tolerated the unquoted colon (it
+   * splits on the FIRST `:` only), which is exactly why the defect was
+   * invisible to every existing round-trip test here — none of them exercise
+   * a REAL YAML parser against the rendered frontmatter.
+   */
+  it('parses via js-yaml without throwing, and rule-loader recovers the original description text', () => {
+    // buildDescription (emitter.mjs) takes the first sentence (split on '. ')
+    // — 'fixes X: this breaks Y' is that first sentence, colon and all.
+    const learning = fragileLearning({
+      insight: 'fixes X: this breaks Y. More context follows in the second sentence.',
+    });
+    const metadata = toActivationMetadata(learning, { now: Date.parse('2026-06-21') });
+    expect(metadata.description).toBe('fixes X: this breaks Y');
+
+    const { content } = renderRule(learning, metadata);
+
+    // Extract the raw frontmatter block the same way rule-loader.mjs's own
+    // FRONTMATTER_RE does, and feed it to a REAL YAML parser.
+    const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    expect(fmMatch).not.toBeNull();
+    // FALSIFICATION: before #1041, `yaml.load` on this exact block threw
+    // YAMLException "bad indentation of a mapping entry" — this call is the
+    // proof the fix bites, not merely a shape assertion on the string.
+    expect(() => yaml.load(fmMatch[1])).not.toThrow();
+
+    const parsedByYaml = yaml.load(fmMatch[1]);
+    expect(parsedByYaml.description).toBe('fixes X: this breaks Y');
+
+    // And the hand-rolled loader parser recovers the identical original text
+    // — the round-trip the task requires, proven against BOTH parsers.
+    const { meta } = parseGlobsFrontmatter(content);
+    expect(meta.description).toBe('fixes X: this breaks Y');
+  });
+
+  /**
+   * FÄNGT (W4-R3 HIGH, 2026-08-23): js-yaml picks SINGLE-quote style for a
+   * colon-bearing scalar and doubles an interior apostrophe (`it's` →
+   * `'it''s'`). rule-loader's former bare strip returned `it''s` — a
+   * corruption that did NOT exist before #1041 (unquoted emission round-
+   * tripped verbatim). Measured population: 40 of 146 live learning insights
+   * carry both characters. All four quadrants of {colon, apostrophe} must
+   * survive BOTH parsers with the original text intact.
+   */
+  it.each([
+    ['neither', 'fixes X and breaks Y'],
+    ['colon only', 'fixes X: this breaks Y'],
+    ['apostrophe only', "the loader's parser is broken"],
+    ['apostrophe AND colon', "loader's parser: it's broken"],
+  ])('round-trips a description with %s through js-yaml AND rule-loader', (_label, sentence) => {
+    const learning = fragileLearning({ insight: `${sentence}. Second sentence.` });
+    const metadata = toActivationMetadata(learning, { now: Date.parse('2026-06-21') });
+    expect(metadata.description).toBe(sentence);
+    const { content } = renderRule(learning, metadata);
+    const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    expect(yaml.load(fmMatch[1]).description).toBe(sentence);
+    expect(parseGlobsFrontmatter(content).meta.description).toBe(sentence);
+  });
+
+  it('renders a colon-free description byte-identically to the prior unquoted form', () => {
+    // Non-regression: the #1041 fix must not touch the common case (no `: `
+    // in the description) — same fixture + assertion as the pre-existing
+    // "still renders the emitter-built description unchanged" test above,
+    // pinned again here alongside the colon-bearing case for contrast.
+    const learning = fragileLearning();
+    const metadata = toActivationMetadata(learning, { now: Date.parse('2026-06-21') });
+    const { content } = renderRule(learning, metadata);
+    expect(content).toContain(`description: ${metadata.description}`);
+    expect(metadata.description).not.toContain(':');
   });
 });
