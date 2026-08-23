@@ -109,6 +109,29 @@
  * (`soul-resolve.mjs`, whose only live claim is in `.claude/rules/owner-persona.md`
  * but whose symbols appear in a 2026-06 changelog entry).
  *
+ * ## S4 `unreachable-library-module` — the question the machine can answer
+ *
+ * S3 asks a document a question about GRAMMAR and accepts "the prose names an
+ * exported symbol" as wiring. That is generous by design, and it is where the
+ * largest instance of this defect class hid: `skills/session-start/SKILL.md`
+ * Phase 4 named 19 banner probes and their symbols, so S3 read every one of them
+ * as wired — while no hook, npm script, CI job or husky stage reached a single
+ * one. S1/S2 could not see them either, being config-key checks.
+ *
+ * S4 drops the grammar question and asks a reachability one: can any process
+ * that ACTUALLY STARTS arrive at this file? See `collectUnreachableLibraryModules`
+ * for the four conditions, the deliberate CLI-entrypoint boundary (with the
+ * measured cost of the alternative), the cluster-root collapse, and the named
+ * residuals. S4 does not subsume S3 and is not subsumed by it: S3 catches a
+ * REACHABLE module whose document lies about it, S4 catches an unreachable one
+ * whose document is honest about what it should do.
+ *
+ * Output shape is deliberately different from S1-S3 too. Those report a handful
+ * of lines; S4 measured 51 on the live tree of 2026-08-23, which is a BACKLOG.
+ * The CLI therefore prints one aggregate WARN carrying the count, and the full
+ * census behind `--list` — see `runCheckUnwiredFeatures`. The `findings` array
+ * always carries every finding, so no programmatic consumer loses data.
+ *
  * ## Consumer scope, and why "prose-only" is a finding rather than an error
  *
  * Read sites are counted in `scripts/**` and `hooks/**` (`.mjs`/`.js`/`.cjs`),
@@ -221,6 +244,20 @@ const PROSE_EXCLUDED_FILES = Object.freeze(['CHANGELOG.md', 'STATE.md']);
 const SELF_REL = path.join('scripts', 'lib', 'validate', 'check-unwired-features.mjs');
 
 /**
+ * Signal S4 entry surfaces: the NON-markdown files that mechanically invoke a
+ * module by path. Markdown is deliberately absent — that a SKILL.md names a
+ * module is precisely the claim S4 refuses to accept as wiring.
+ */
+const WIRING_FILES = Object.freeze(['package.json', '.gitlab-ci.yml']);
+
+/** Directory surfaces for S4, as `[dir, extensions]`. `''` catches husky's extensionless stages. */
+const WIRING_DIRS = Object.freeze([
+  ['.github', Object.freeze(['.yml', '.yaml'])],
+  ['.husky', Object.freeze(['', '.sh'])],
+  ['hooks', Object.freeze(['.json', '.sh'])],
+]);
+
+/**
  * The config-parser layer: the files a Session Config key must pass through to
  * become a runtime value. Signal S2 (see header) checks top-level keys against
  * this subset. Directories are walked; plain files are taken as-is.
@@ -261,7 +298,8 @@ const ALLOWLIST = Object.freeze({
 /**
  * @typedef {{
  *   kind: 'unwired-config-key' | 'parser-orphan-config-key' | 'allowlist-missing-reason'
- *       | 'allowlist-stale' | 'orphaned-prose-module' | 'tool-error',
+ *       | 'allowlist-stale' | 'orphaned-prose-module' | 'unreachable-library-module'
+ *       | 'tool-error',
  *   key: string,
  *   message: string,
  * }} Finding
@@ -581,6 +619,167 @@ export function collectOrphanedProseModules(pluginRoot) {
 }
 
 /**
+ * Extract every module-filename token a body mentions, ignoring comment lines.
+ *
+ * Token extraction beats a substring scan in BOTH directions. It is faster (one
+ * pass per file instead of one regex per candidate pair — 467² pair tests on the
+ * live tree), and it is more precise: `text.includes('writer.mjs')` is TRUE for
+ * `config-writer.mjs`, which silently marks an unrelated module as referenced.
+ * The character class stops at `/`, so `'./locks/state-md-lock.mjs'` yields
+ * exactly `state-md-lock.mjs`.
+ *
+ * @param {string[]} lines source lines
+ * @returns {Set<string>} module basenames mentioned outside comments
+ */
+function mentionedModuleTokens(lines) {
+  /** @type {Set<string>} */
+  const tokens = new Set();
+  for (const line of lines) {
+    if (isCommentLine(line)) continue;
+    for (const match of line.matchAll(/[A-Za-z0-9_.-]+\.(?:mjs|js|cjs)/g)) tokens.add(match[0]);
+  }
+  return tokens;
+}
+
+/**
+ * Signal S4 — library modules no mechanical caller can reach.
+ *
+ * ## The gap this closes, in one line
+ *
+ * S3 asks "does a DOCUMENT name a symbol of this module?" and accepts a yes as
+ * wiring. S4 asks the question the machine can answer: "can any process that
+ * actually starts — a hook, an npm script, a CI job, a husky stage — arrive at
+ * this file?" Prose in a SKILL.md is an instruction to an LLM, not a caller: the
+ * measured instance is `skills/session-start/SKILL.md` Phase 4, which named 19
+ * banner probes that no `.mjs` reached from any entrypoint.
+ *
+ * ## Entry roots, and why CLI entrypoints are among them
+ *
+ * Roots are (a) every module named in a NON-markdown wiring surface
+ * (`package.json`, `.gitlab-ci.yml`, `.github/workflows/**`, `.husky/**`,
+ * `hooks/*.json`) and (b) every CLI entrypoint. Reachability then follows
+ * module→module references transitively.
+ *
+ * (b) is a DELIBERATE boundary, not an oversight. A CLI entrypoint is invoked by
+ * path, and "the operator types `/autopilot`, whose skill body runs
+ * `node scripts/autopilot.mjs`" IS this repo's architecture — reporting it would
+ * indict the design rather than a defect. Measured 2026-08-23: treating CLI
+ * entrypoints as non-roots moves the census from 73 to 268 of 467 modules
+ * (15.6% → 57.5%), i.e. straight into the broken-instrument band that
+ * `.claude/rules/host-resources.md` § HR-101 forbids. A LIBRARY module, by
+ * contrast, can only ever be reached by being imported — so "nothing imports it,
+ * transitively" is a fact about the machine, not a judgement about prose.
+ *
+ * ## Cluster roots — one defect, one line
+ *
+ * Only the ROOT of each unreachable cluster is reported: a module no OTHER
+ * unreachable module references. `scripts/lib/owner-config.mjs` has no importer
+ * and drags its whole 7-file `owner-config/` subtree down with it; reporting the
+ * six interior files would multiply one deletion into seven findings that all
+ * disappear together. Measured on the live tree: 73 unreachable modules collapse
+ * to 51 roots. This is category separation in the sense of
+ * `.claude/rules/development.md` § Guard & Threshold Design — a structural split,
+ * never a raised threshold.
+ *
+ * ## Named residuals
+ *
+ *  - **Basename granularity.** 22 basenames collide across 56 files (7 × `schema.mjs`,
+ *    3 × `telemetry.mjs`, …), so a mention of `schema.mjs` marks every `schema.mjs`
+ *    as referenced. This errs toward WIRED — it can hide a finding, never invent
+ *    one, which is the right direction for a check whose failure mode is being
+ *    switched off. Revisit if a real module-resolver (import-specifier resolution
+ *    relative to the importing file) becomes cheap, or if a collided basename is
+ *    ever confirmed to mask a true positive.
+ *  - **Reachable ≠ executed.** A module imported by a hook that never takes that
+ *    branch reads as wired here. Proving execution needs coverage data, not a graph.
+ *  - **Reachable from SOME entrypoint is not reachable from the PROMISED one.**
+ *    This is the sharpest limit and it cost real recall. `ci-status-banner.mjs` is
+ *    imported by `dispatcher/rank.mjs`, so S4 stays silent — yet CLAUDE.md promises
+ *    it runs at SESSION-START, and no SessionStart path reached it at `4f6404e`.
+ *    Same shape for `sessions-integrity-banner.mjs` (via `session-record-repair.mjs`)
+ *    and `historical-guard.mjs` (via `check-banner-parity.mjs`). Catching those needs
+ *    a per-entrypoint reachability question ("is X reachable from the SessionStart
+ *    hook?"), which is a different check with a different root set, not a tightening
+ *    of this one. Revisit if a second promised-entrypoint claim is ever missed.
+ *
+ * @param {string} pluginRoot absolute plugin root
+ * @returns {{findings: Finding[], scanned: {modules: number, roots: number, unreachable: number}}}
+ */
+export function collectUnreachableLibraryModules(pluginRoot) {
+  const absolute = CONSUMER_DIRS.flatMap((dir) => walkCode(path.join(pluginRoot, dir))).sort();
+  const modules = absolute.map((file) => {
+    const body = readFileSync(file, 'utf8');
+    const lines = body.split('\n');
+    return {
+      relative: path.relative(pluginRoot, file),
+      base: path.basename(file),
+      entrypoint: isCliEntrypoint(body),
+      exports: collectExportedSymbols(body),
+      mentions: mentionedModuleTokens(lines),
+    };
+  });
+
+  // Non-markdown surfaces that mechanically invoke a module by path.
+  const wiringBodies = [
+    ...WIRING_FILES.map((rel) => path.join(pluginRoot, rel)).filter((file) => existsSync(file)),
+    ...WIRING_DIRS.flatMap(([dir, extensions]) =>
+      walkCode(path.join(pluginRoot, dir), [], extensions, EXCLUDED_DIRS),
+    ),
+  ].map((file) => readFileSync(file, 'utf8'));
+  const wiringTokens = mentionedModuleTokens(wiringBodies.join('\n').split('\n'));
+
+  /** @type {Set<string>} */
+  const reachable = new Set();
+  /** @type {string[]} */
+  const stack = [];
+  for (const module of modules) {
+    if (!module.entrypoint && !wiringTokens.has(module.base)) continue;
+    reachable.add(module.relative);
+    stack.push(module.relative);
+  }
+
+  const byRelative = new Map(modules.map((module) => [module.relative, module]));
+  while (stack.length > 0) {
+    const current = byRelative.get(/** @type {string} */ (stack.pop()));
+    if (!current) continue;
+    for (const module of modules) {
+      if (reachable.has(module.relative) || !current.mentions.has(module.base)) continue;
+      reachable.add(module.relative);
+      stack.push(module.relative);
+    }
+  }
+
+  const unreachable = modules.filter(
+    (module) => !reachable.has(module.relative) && !module.entrypoint && module.exports.length > 0,
+  );
+  const unreachableSet = new Set(unreachable.map((module) => module.relative));
+  const roots = unreachable.filter(
+    (module) =>
+      !unreachable.some((other) => other.relative !== module.relative && other.mentions.has(module.base)),
+  );
+
+  const findings = roots.map((module) => {
+    const dragged = [...module.mentions].filter(
+      (token) => token !== module.base && [...unreachableSet].some((rel) => path.basename(rel) === token),
+    );
+    const tail = dragged.length > 0 ? `, and drags ${dragged.length} further unreachable module(s)` : '';
+    return /** @type {Finding} */ ({
+      kind: 'unreachable-library-module',
+      key: module.relative,
+      message:
+        `exports ${module.exports.length} symbol(s) (${module.exports.slice(0, 3).join(', ')}) but no hook, ` +
+        `npm script, CI job or husky stage reaches it — transitively${tail}. Only markdown names it, and ` +
+        'prose is an instruction to an LLM, not a caller: wire it, delete it, or allowlist it with a reason',
+    });
+  });
+
+  return {
+    findings,
+    scanned: { modules: modules.length, roots: roots.length, unreachable: unreachable.length },
+  };
+}
+
+/**
  * Run the full census.
  *
  * @param {string} pluginRoot absolute plugin root
@@ -598,7 +797,14 @@ export function inspectUnwiredFeatures(pluginRoot) {
   const findings = [];
   const result = {
     ok: false,
-    summary: { declaredKeys: 0, consumerFiles: 0, unwired: 0, allowlisted: 0, orphanedModules: 0 },
+    summary: {
+      declaredKeys: 0,
+      consumerFiles: 0,
+      unwired: 0,
+      allowlisted: 0,
+      orphanedModules: 0,
+      unreachableModules: 0,
+    },
     /** @type {string[]} */
     sourcesScanned: [],
     findings,
@@ -613,6 +819,8 @@ export function inspectUnwiredFeatures(pluginRoot) {
   let parserBody;
   /** @type {ReturnType<typeof collectOrphanedProseModules>} */
   let orphans;
+  /** @type {ReturnType<typeof collectUnreachableLibraryModules>} */
+  let unreachable;
   try {
     declared = collectDeclaredKeys(pluginRoot);
     corpus = CONSUMER_DIRS.flatMap((dir) => walkCode(path.join(pluginRoot, dir)))
@@ -630,6 +838,7 @@ export function inspectUnwiredFeatures(pluginRoot) {
       .map((absolute) => readFileSync(absolute, 'utf8'))
       .join('\n');
     orphans = collectOrphanedProseModules(pluginRoot);
+    unreachable = collectUnreachableLibraryModules(pluginRoot);
   } catch (error) {
     result.toolError = true;
     findings.push({
@@ -691,6 +900,24 @@ export function inspectUnwiredFeatures(pluginRoot) {
     findings.push(issue);
   }
 
+  // S3 — prose promises a module nothing calls. Reported alongside the config
+  // census because it is the same defect class one level out: a claim with no
+  // mechanism behind it.
+  result.summary.orphanedModules = orphans.findings.length;
+  findings.push(...orphans.findings);
+
+  // S4 — no process that actually starts can reach these. Allowlistable on the
+  // same terms as a config key: the entry's reason must name the real consumer.
+  for (const finding of unreachable.findings) {
+    if (Object.prototype.hasOwnProperty.call(ALLOWLIST, finding.key)) {
+      result.summary.allowlisted += 1;
+      flagged.add(finding.key);
+      continue;
+    }
+    result.summary.unreachableModules += 1;
+    findings.push(finding);
+  }
+
   for (const key of Object.keys(ALLOWLIST).sort()) {
     if (flagged.has(key)) continue;
     findings.push({
@@ -701,12 +928,6 @@ export function inspectUnwiredFeatures(pluginRoot) {
         : 'allowlisted key is no longer declared in any config surface — remove the entry',
     });
   }
-
-  // S3 — prose promises a module nothing calls. Reported alongside the config
-  // census because it is the same defect class one level out: a claim with no
-  // mechanism behind it.
-  result.summary.orphanedModules = orphans.findings.length;
-  findings.push(...orphans.findings);
 
   result.ok = !result.toolError && findings.length === 0;
   return result;
@@ -721,7 +942,7 @@ export function inspectUnwiredFeatures(pluginRoot) {
  * @param {string} pluginRoot absolute plugin root
  * @returns {number} 0 = scan completed (with or without findings), 2 = tool error
  */
-export function runCheckUnwiredFeatures(pluginRoot) {
+export function runCheckUnwiredFeatures(pluginRoot, { list = false } = {}) {
   console.log('--- Check: unwired config keys (declared-but-unread census, WARN-only) ---');
   const inspection = inspectUnwiredFeatures(pluginRoot);
 
@@ -732,14 +953,32 @@ export function runCheckUnwiredFeatures(pluginRoot) {
     return 2;
   }
 
-  const { declaredKeys, consumerFiles, unwired, allowlisted, orphanedModules } = inspection.summary;
+  const { declaredKeys, consumerFiles, unwired, allowlisted, orphanedModules, unreachableModules } =
+    inspection.summary;
+
+  // S4 is a BACKLOG, not a per-run alarm: 51 findings on the live tree against
+  // 1-2 WARN lines from every sibling check. Printing all 51 every run is the
+  // "gate that prints 282 lines gets switched off in week two" failure this
+  // file's own header names. So the default carries the NUMBER (which ratchets,
+  // and which a reviewer can compare run to run) plus the first few paths; the
+  // full census is one `--list` away. Nothing is suppressed — only deferred.
+  const s4 = inspection.findings.filter((item) => item.kind === 'unreachable-library-module');
   for (const item of inspection.findings) {
+    if (!list && item.kind === 'unreachable-library-module') continue;
     console.log(`  WARN: [${item.kind}] ${item.key} — ${item.message}`);
   }
+  if (!list && s4.length > 0) {
+    console.log(
+      `  WARN: [unreachable-library-module] ${s4.length} library module(s) that no hook, npm script, ` +
+        `CI job or husky stage can reach — e.g. ${s4.slice(0, 3).map((item) => item.key).join(', ')}. ` +
+        'Re-run with --list for the full census.',
+    );
+  }
+
   console.log(
     `  PASS: censused ${declaredKeys} declared key(s) from ${inspection.sourcesScanned.join(' + ') || '(no source)'} ` +
       `against ${consumerFiles} consumer file(s) — ${unwired} unwired, ${allowlisted} allowlisted, ` +
-      `${orphanedModules} prose-orphaned module(s)`,
+      `${orphanedModules} prose-orphaned module(s), ${unreachableModules} unreachable module(s)`,
   );
   console.log('');
   console.log('Results: 1 passed, 0 failed');
@@ -748,10 +987,12 @@ export function runCheckUnwiredFeatures(pluginRoot) {
 
 const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href;
 if (isMain) {
-  const pluginRoot = process.argv[2];
+  const args = process.argv.slice(2);
+  const pluginRoot = args.find((arg) => !arg.startsWith('-'));
   if (!pluginRoot) {
-    console.error('Usage: check-unwired-features.mjs <plugin-root>');
+    console.error('Usage: check-unwired-features.mjs <plugin-root> [--list]');
+    console.error('  --list  print every unreachable-library-module finding instead of the aggregate');
     process.exit(2);
   }
-  process.exit(runCheckUnwiredFeatures(path.resolve(pluginRoot)));
+  process.exit(runCheckUnwiredFeatures(path.resolve(pluginRoot), { list: args.includes('--list') }));
 }

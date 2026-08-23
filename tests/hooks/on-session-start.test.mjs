@@ -1061,3 +1061,138 @@ describe('close-through backfill at SessionStart (#926)', { timeout: 15000 }, ()
     expect(events).toHaveLength(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 4 measurement probes (#1128)
+// ---------------------------------------------------------------------------
+//
+// `skills/session-start/SKILL.md` § Phase 4 names 18 probes with module paths
+// and entry functions. Measured 2026-08-23 at `4f6404e`, none of them had a
+// mechanical caller anywhere in hooks/, npm scripts, .gitlab-ci.yml or .husky/
+// — the only caller was the prose itself — and across 336 recorded session
+// starts no event of any kind proved they had ever run. Built, documented,
+// never wired, and unfalsifiable while it stayed that way.
+
+describe('Phase 4 measurement probes', { timeout: 20000 }, () => {
+  const PROBE_EVENT = 'orchestrator.probes.completed';
+
+  async function probeEvents(dir) {
+    return (await readAllEvents(dir)).filter((e) => e.event === PROBE_EVENT);
+  }
+
+  /** Age the bootstrap lock past the probe's 90-day alert threshold. */
+  async function seedStaleBootstrapLock(dir) {
+    const old = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString();
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'bootstrap.lock'),
+      `version: 1\ntier: fast\nbootstrapped-at: ${old}\nplugin-version: 0.0.1\n`,
+      'utf8',
+    );
+  }
+
+  // BUG: the wiring is reverted, removed by a merge, or never fires — and the
+  // probe family silently returns to the state this test was written to end.
+  // Nothing else in the suite would notice: the hook exits 0, the banner still
+  // renders, and the absence of a probe run looks exactly like a clean one.
+  it('records one orchestrator.probes.completed per session start', async () => {
+    const dir = await mkProjectTracked();
+    const vault = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-probe-vault-'));
+    tmpDirs.push(vault);
+
+    const result = await runHook({ projectDir: dir, env: { SO_VAULT_DIR: vault } });
+    expect(result.code).toBe(0);
+
+    const events = await probeEvents(dir);
+    expect(events).toHaveLength(1);
+    const [evt] = events;
+    // Every probe SKILL.md names must be accounted for, with an outcome each —
+    // "absent is not zero": a probe that did not run is recorded as skipped,
+    // never dropped from the census.
+    expect(evt.total).toBe(evt.probes.length);
+    expect(evt.total).toBeGreaterThanOrEqual(18);
+    for (const p of evt.probes) {
+      expect(p.outcome).toMatch(/^(ran-clean|ran-warn|ran-alert|skipped|timeout|error)$/);
+    }
+    expect(evt.ran + evt.skipped + evt.errored + evt.timed_out).toBe(evt.total);
+    expect(Number.isFinite(evt.duration_ms)).toBe(true);
+    // The two network probes are excluded by default, and the exclusion is
+    // visible rather than silent (that silence IS the defect being repaired).
+    const byId = Object.fromEntries(evt.probes.map((p) => [p.id, p.outcome]));
+    expect(byId['ci-status']).toBe('skipped');
+    expect(byId['mirror-issues']).toBe('skipped');
+  });
+
+  // BUG: the probes run, find something, and their banner is discarded on the
+  // way to the operator — half the original defect, restored. The existing
+  // single-envelope test pins that stdout carries ONE object; nothing pins that
+  // a probe finding is INSIDE it.
+  it('delivers a probe finding inside the single stdout envelope', async () => {
+    const dir = await mkProjectTracked();
+    const vault = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-probe-vault-'));
+    tmpDirs.push(vault);
+    await seedStaleBootstrapLock(dir);
+
+    const result = await runHook({ projectDir: dir, env: { SO_VAULT_DIR: vault } });
+
+    const objects = result.stdout.split('\n').filter((l) => l.trim().startsWith('{'));
+    expect(objects).toHaveLength(1);
+    const combined = JSON.parse(objects[0]).systemMessage;
+    expect(combined).toContain('bootstrap.lock');
+    expect(combined).toMatch(/age=\d+d/);
+
+    const [evt] = await probeEvents(dir);
+    const byId = Object.fromEntries(evt.probes.map((p) => [p.id, p.outcome]));
+    expect(byId['bootstrap-lock-freshness']).toBe('ran-alert');
+  });
+
+  // BUG: a documented escape hatch that does nothing — the built-but-not-wired
+  // class in miniature, on the one control an operator has over this run.
+  it('runs no probes when SO_DISABLE_STARTUP_PROBES=1', async () => {
+    const dir = await mkProjectTracked();
+    const vault = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-probe-vault-'));
+    tmpDirs.push(vault);
+
+    const result = await runHook({
+      projectDir: dir,
+      env: { SO_VAULT_DIR: vault, SO_DISABLE_STARTUP_PROBES: '1' },
+    });
+
+    expect(result.code).toBe(0);
+    expect(await probeEvents(dir)).toHaveLength(0);
+    // The rest of the hook is untouched by the opt-out.
+    expect(await readEvents(dir)).toHaveLength(1);
+  });
+
+  // BUG: someone resolves the `enable-host-banner: false` collision by moving
+  // the probe RUN inside the banner gate. Every operator who silenced banners
+  // then silently loses the measurement too — rebuilding the unfalsifiable
+  // blind spot behind a display preference (HR-105). The opt-out governs the
+  // banner and nothing else.
+  it('keeps measuring when enable-host-banner is false, and stays silent', async () => {
+    const dir = await mkProjectTracked();
+    const vault = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-probe-vault-'));
+    tmpDirs.push(vault);
+    await seedStaleBootstrapLock(dir);
+    await fs.writeFile(
+      path.join(dir, 'CLAUDE.md'),
+      '# Test\n\n## Session Config\n\nenable-host-banner: false\n',
+      'utf8',
+    );
+
+    const result = await runHook({ projectDir: dir, env: { SO_VAULT_DIR: vault } });
+
+    // Assert on the PROBE line specifically, not on `systemMessage` as such:
+    // the cold-start nudge is a separate emitter that is NOT gated on
+    // enable-host-banner (pre-existing, out of scope here) and the aged
+    // bootstrap.lock this test seeds is exactly its trigger.
+    expect(result.stdout).not.toContain('bootstrap.lock');
+    expect(result.stdout).not.toMatch(/age=\d+d/);
+
+    // ...while the measurement itself happened and is on the record.
+    const [evt] = await probeEvents(dir);
+    expect(evt).toBeDefined();
+    const byId = Object.fromEntries(evt.probes.map((p) => [p.id, p.outcome]));
+    expect(byId['bootstrap-lock-freshness']).toBe('ran-alert');
+  });
+});

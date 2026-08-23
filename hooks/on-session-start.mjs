@@ -709,6 +709,43 @@ async function main() {
     } catch { /* best effort — banner is informational, never blocks */ }
   }
 
+  // Phase 4 measurement probes — the mechanical caller (#1128).
+  //
+  // `skills/session-start/SKILL.md` § Phase 4 names 18 probes with module paths
+  // and entry functions. Measured 2026-08-23 at `4f6404e`, not one of them had
+  // a caller anywhere in hooks/, npm scripts, .gitlab-ci.yml or .husky/ — the
+  // only caller was the prose itself, and across 336 recorded session starts
+  // there was no event proving any of them had ever run. Built, documented,
+  // never wired.
+  //
+  // Placement is deliberate: AFTER the backfill (so `sessions-staleness` and
+  // `sessions-integrity` measure the reconstructed ledger, not the stale one)
+  // and BEFORE flushBanner() (so probe findings ride the single systemMessage
+  // envelope instead of adding a second stdout object Claude Code would
+  // discard — see the bannerLines docstring and HR-106).
+  //
+  // Best-effort exactly like `backfillOnSessionStart` above: the runner has no
+  // rejecting path of its own, and this try/catch is defence-in-depth so a
+  // future regression inside it still cannot block a session start.
+  // Escape hatch: SO_DISABLE_STARTUP_PROBES=1.
+  //
+  // `enable-host-banner: false` silences the DISPLAY, never the MEASUREMENT.
+  // The documented opt-out ("a user who silenced session-start banners has
+  // opted out of ALL session-start banners") governs `pushBanner` and nothing
+  // else: the probes still run and `orchestrator.probes.completed` is still
+  // written, because the defect this wiring repairs is precisely that nobody
+  // could tell whether the probes had ever run (HR-105). Gating the run on a
+  // display preference would rebuild that blind spot behind a config key.
+  if (process.env.SO_DISABLE_STARTUP_PROBES !== '1') {
+    try {
+      const { runSessionStartProbes } = await import('../scripts/lib/session-start-probes.mjs');
+      const probeRun = await runSessionStartProbes({ repoRoot: projectRoot });
+      if (bannerData) {
+        for (const line of probeRun.bannerLines) pushBanner(line);
+      }
+    } catch { /* hook must remain non-blocking */ }
+  }
+
   const payload = {
     platform,
     project: projectName,

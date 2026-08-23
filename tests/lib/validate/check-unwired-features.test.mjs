@@ -15,12 +15,13 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
   inspectUnwiredFeatures,
   collectOrphanedProseModules,
+  collectUnreachableLibraryModules,
 } from '@lib/validate/check-unwired-features.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -326,6 +327,173 @@ describe('check-unwired-features — S3 orphaned-prose-module census', () => {
       expect(run.status).toBe(0);
       expect(run.stdout).toContain('WARN: [orphaned-prose-module]');
       expect(run.stdout).not.toMatch(/^ {2}FAIL:/m);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Build a fixture repo for the S4 reachability census.
+ *
+ * Shape: `hooks/hooks.json` names `hooks/entry.mjs` (the only mechanical entry
+ * root), plus whatever modules the case plants under `scripts/lib/`.
+ *
+ * @param {{entry?: string, modules?: Record<string, string>, pkg?: object, prose?: string}} parts
+ * @returns {string} absolute fixture root (caller removes it)
+ */
+function makeGraphFixture(parts) {
+  const root = mkdtempSync(join(tmpdir(), 'unreachable-module-'));
+  mkdirSync(join(root, 'hooks'), { recursive: true });
+  mkdirSync(join(root, 'scripts', 'lib'), { recursive: true });
+
+  writeFileSync(
+    join(root, 'hooks', 'hooks.json'),
+    JSON.stringify({ hooks: { SessionStart: [{ command: 'node hooks/entry.mjs' }] } }),
+  );
+  writeFileSync(join(root, 'hooks', 'entry.mjs'), parts.entry ?? 'export const noop = 1;\n');
+  writeFileSync(join(root, 'package.json'), JSON.stringify(parts.pkg ?? { scripts: {} }));
+  for (const [rel, body] of Object.entries(parts.modules ?? {})) {
+    mkdirSync(join(root, 'scripts', 'lib', dirname(rel)), { recursive: true });
+    writeFileSync(join(root, 'scripts', 'lib', rel), body);
+  }
+  if (parts.prose) {
+    mkdirSync(join(root, 'skills'), { recursive: true });
+    writeFileSync(join(root, 'skills', 'SKILL.md'), parts.prose);
+  }
+  return root;
+}
+
+/** @param {string} root @returns {string[]} reported module paths */
+const unreachableKeys = (root) =>
+  collectUnreachableLibraryModules(root).findings.map((f) => f.key);
+
+describe('check-unwired-features — S4 unreachable-library-module census', () => {
+  it('reports a module only markdown names, and stops once a hook actually imports it', () => {
+    // THE BUG: skills/session-start/SKILL.md Phase 4 named 19 banner probes with
+    // their symbols, and no hook reached one of them. S3 reads a symbol-naming
+    // document as wiring (its condition 5), so it stayed silent for all 19.
+    // Fake-regression: the SAME module and the SAME prose, one import apart.
+    const proseOnly = makeGraphFixture({
+      modules: { 'probe-banner.mjs': 'export function checkProbe() {\n  return 1;\n}\n' },
+      prose: 'Phase 4 invokes `scripts/lib/probe-banner.mjs` via `checkProbe({ repoRoot })`.\n',
+    });
+    const hookWired = makeGraphFixture({
+      entry: "import { checkProbe } from '../scripts/lib/probe-banner.mjs';\nexport const r = checkProbe();\n",
+      modules: { 'probe-banner.mjs': 'export function checkProbe() {\n  return 1;\n}\n' },
+      prose: 'Phase 4 invokes `scripts/lib/probe-banner.mjs` via `checkProbe({ repoRoot })`.\n',
+    });
+    try {
+      expect(unreachableKeys(proseOnly)).toContain(join('scripts', 'lib', 'probe-banner.mjs'));
+      expect(unreachableKeys(hookWired)).toEqual([]);
+    } finally {
+      rmSync(proseOnly, { recursive: true, force: true });
+      rmSync(hookWired, { recursive: true, force: true });
+    }
+  });
+
+  it('does not report a module reached only TRANSITIVELY through another module', () => {
+    // False-positive edge: `memory-paths.mjs` is imported by `memory-banner.mjs`,
+    // never by a hook. A one-hop reachability check would report it and be wrong —
+    // the graph must close transitively or every second-level helper fires.
+    const root = makeGraphFixture({
+      entry: "import { mid } from '../scripts/lib/middle.mjs';\nexport const r = mid();\n",
+      modules: {
+        'middle.mjs': "import { leaf } from './deep/leaf.mjs';\nexport function mid() {\n  return leaf();\n}\n",
+        'deep/leaf.mjs': 'export function leaf() {\n  return 1;\n}\n',
+      },
+    });
+    try {
+      expect(unreachableKeys(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports only the ROOT of a dead cluster, not the interior it drags down', () => {
+    // THE BUG this collapse prevents: `scripts/lib/owner-config.mjs` has no
+    // importer and drags a 7-file subtree with it. Reporting all 7 turns one
+    // deletion into seven findings that vanish together — the line-count that
+    // gets a WARN-only census switched off (`.claude/rules/host-resources.md` HR-101).
+    const root = makeGraphFixture({
+      modules: {
+        'orphan-root.mjs': "import { helper } from './orphan/helper.mjs';\nexport function top() {\n  return helper();\n}\n",
+        'orphan/helper.mjs': 'export function helper() {\n  return 1;\n}\n',
+      },
+    });
+    try {
+      expect(unreachableKeys(root)).toEqual([join('scripts', 'lib', 'orphan-root.mjs')]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not report a CLI entrypoint, whose markdown-only invocation is the design', () => {
+    // The deliberate boundary. Treating entrypoints as non-roots was measured at
+    // 268/467 modules (57.5%) versus 73 (15.6%) — straight into HR-101's
+    // broken-instrument band. `scripts/vault-mirror.mjs` is the known instance
+    // this boundary knowingly gives up.
+    const root = makeGraphFixture({
+      modules: { 'tool.mjs': '#!/usr/bin/env node\nexport function run() {\n  return 1;\n}\n' },
+      prose: 'Run `scripts/lib/tool.mjs` to refresh the board.\n',
+    });
+    try {
+      expect(unreachableKeys(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('counts an npm script as wiring, so a module CI reaches is not reported', () => {
+    // False-positive edge: hooks are not the only mechanical entry surface. A
+    // module reached solely by `npm run <x>` is wired, and reporting it would
+    // indict every build helper in the repo.
+    const root = makeGraphFixture({
+      modules: { 'built.mjs': 'export function build() {\n  return 1;\n}\n' },
+      pkg: { scripts: { build: 'node scripts/lib/built.mjs' } },
+    });
+    try {
+      expect(unreachableKeys(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not report a module whose only mention in reachable code is a comment', () => {
+    // The inverse guard, and the one that keeps S4 honest: a JSDoc line naming a
+    // module is documentation, not a call. If comments counted as edges, a single
+    // `@see foo.mjs` in a live file would mark a dead module wired forever.
+    const root = makeGraphFixture({
+      entry: '/**\n * Callers should use the helper in ghost.mjs.\n */\nexport const noop = 1;\n',
+      modules: { 'ghost.mjs': 'export function ghost() {\n  return 1;\n}\n' },
+    });
+    try {
+      expect(unreachableKeys(root)).toContain(join('scripts', 'lib', 'ghost.mjs'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the CLI at exit 0 and prints an aggregate, with --list expanding it', () => {
+    // THE BUG: validate-plugin tallies /^[ ]{2}FAIL:/gm module-wide and ignores
+    // this check's exit code. A blocking S4 would redden the whole validator on a
+    // 50-module backlog; an unaggregated one would print 50 WARN lines against the
+    // 1-2 every sibling check emits, which is how a census gets switched off.
+    const root = makeGraphFixture({
+      modules: {
+        'ghost-a.mjs': 'export function a() {\n  return 1;\n}\n',
+        'ghost-b.mjs': 'export function b() {\n  return 1;\n}\n',
+      },
+    });
+    try {
+      const aggregate = spawnSync('node', [SCRIPT, root], { encoding: 'utf8' });
+      expect(aggregate.status).toBe(0);
+      expect(aggregate.stdout).not.toMatch(/^ {2}FAIL:/m);
+      expect(aggregate.stdout).toMatch(/WARN: \[unreachable-library-module\] 2 library module\(s\)/);
+
+      const listed = spawnSync('node', [SCRIPT, root, '--list'], { encoding: 'utf8' });
+      expect(listed.status).toBe(0);
+      expect(listed.stdout.match(/WARN: \[unreachable-library-module\]/g)).toHaveLength(2);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
