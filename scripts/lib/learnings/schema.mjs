@@ -215,47 +215,99 @@ export class ValidationError extends Error {
  * Throws ValidationError on contract violations. Does NOT mutate input.
  *
  * @param {object} entry — candidate learning
+ * @param {{ legacyTolerant?: boolean }} [opts] — GitLab #386. When `true`, a
+ *   value `normalizeLearning()` already passes through UNCHECKED (or merely
+ *   DEFAULTED, never validated) on read is no longer rejected here either:
+ *   an out-of-enum `schema_version` (measured against the real EventDrop.at
+ *   store: 3 live records carry `schema_version: 2`), the
+ *   LEGACY_REQUIRED_FIELDS presence check, the `confidence` range/type check
+ *   when NO `confidence` key is present, and the `scope`/`host_class`/
+ *   `anonymized` shape checks (measured live: a record with `scope:
+ *   "src/components/landing/mobile-sticky-cta.tsx"` — a producer bug that
+ *   wrote a file path into the scope column, which `normalizeLearning` never
+ *   validates and therefore never rejects). A field that IS present keeps
+ *   being validated regardless when its DATA TYPE can be silently corrupted
+ *   by a JSON round-trip (a present-but-malformed `confidence` still throws
+ *   — see io.mjs #662): this option relaxes "you must HAVE a valid value",
+ *   never "if a round-trip could have silently mangled it, that's fine too".
+ *   The privacy CONTRACT (`scope: 'public'` requiring `anonymized`/
+ *   `host_class` to be consistent) is NEVER relaxed — it only ever fires for
+ *   a record that genuinely claims `scope: 'public'`, which is exactly the
+ *   case a round-trip must not silently launder. Default `false` — every
+ *   existing direct caller (including `appendLearning`'s single-record write
+ *   path) is unaffected.
  * @returns {object} normalized entry with scope/host_class/anonymized defaulted
  */
-export function validateLearning(entry) {
+export function validateLearning(entry, { legacyTolerant = false } = {}) {
   if (!entry || typeof entry !== 'object') {
     throw new ValidationError('learning must be an object');
   }
 
   // schema_version: 0 (implicit/legacy), 1 (current). Both accepted.
+  // `normalizeLearning()` never validates this value on read (any value
+  // passes through as-is), so under legacyTolerant an ABSENT schema_version
+  // (defaults to the valid `0`) or one already present with SOME value is
+  // both fine — only a truly missing-AND-invalid combination cannot occur
+  // (missing defaults to 0, which is always valid), so in practice this skips
+  // the check whenever legacyTolerant is set and a non-legacy value survived
+  // a prior read (e.g. `schema_version: 2`, measured live in production).
   const schemaVersion = entry.schema_version ?? 0;
-  if (schemaVersion !== 0 && schemaVersion !== 1) {
+  if (!legacyTolerant && schemaVersion !== 0 && schemaVersion !== 1) {
     throw new ValidationError(
       `schema_version must be 0 (legacy) or 1, got: ${schemaVersion}`
     );
   }
 
-  for (const field of LEGACY_REQUIRED_FIELDS) {
-    if (!(field in entry)) {
-      throw new ValidationError(`learning missing required field: ${field}`);
+  if (!legacyTolerant) {
+    for (const field of LEGACY_REQUIRED_FIELDS) {
+      if (!(field in entry)) {
+        throw new ValidationError(`learning missing required field: ${field}`);
+      }
     }
   }
 
-  if (typeof entry.confidence !== 'number' || entry.confidence < 0 || entry.confidence > 1) {
-    throw new ValidationError(`confidence must be a number in [0, 1], got: ${entry.confidence}`);
+  // confidence carries its own type/range check in addition to the presence
+  // loop above, so it needs its own legacyTolerant gate: skip ONLY when the
+  // key is genuinely absent (mirrors the presence loop); a present-but-bad
+  // value (wrong type, out of range, or `null` after a JSON round-trip
+  // coerced a non-serializable value — see io.mjs #662) still throws under
+  // legacyTolerant, same as under strict mode.
+  if (!legacyTolerant || 'confidence' in entry) {
+    if (typeof entry.confidence !== 'number' || entry.confidence < 0 || entry.confidence > 1) {
+      throw new ValidationError(`confidence must be a number in [0, 1], got: ${entry.confidence}`);
+    }
   }
 
+  // scope/host_class/anonymized: `normalizeLearning()` only DEFAULTS an
+  // absent value (`d.scope ?? 'local'`, etc.) on read — it never validates a
+  // PRESENT one, so a corrupt legacy value round-trips silently today
+  // (measured live in production: a record with `scope:
+  // "src/components/landing/mobile-sticky-cta.tsx"` — evidently a producer
+  // bug that wrote a file path into the scope column). All three checks are
+  // therefore skipped under legacyTolerant. Unlike `confidence` (a number,
+  // where `NaN`/`Infinity` are non-JSON-safe and silently become `null`
+  // across a JSON round-trip — the #662 concern), a string/string-or-null/
+  // boolean value round-trips through JSON byte-for-byte, so there is no
+  // corresponding round-trip-corruption risk to guard against here.
   const scope = entry.scope ?? 'local';
-  if (!VALID_SCOPES.includes(scope)) {
+  if (!legacyTolerant && !VALID_SCOPES.includes(scope)) {
     throw new ValidationError(`scope must be one of ${VALID_SCOPES.join('|')}, got: ${scope}`);
   }
 
   const hostClass = entry.host_class ?? null;
-  if (hostClass !== null && typeof hostClass !== 'string') {
+  if (!legacyTolerant && hostClass !== null && typeof hostClass !== 'string') {
     throw new ValidationError(`host_class must be string or null, got: ${typeof hostClass}`);
   }
 
   const anonymized = entry.anonymized ?? false;
-  if (typeof anonymized !== 'boolean') {
+  if (!legacyTolerant && typeof anonymized !== 'boolean') {
     throw new ValidationError(`anonymized must be boolean, got: ${typeof anonymized}`);
   }
 
-  // Privacy contract
+  // Privacy contract — NEVER relaxed, legacyTolerant or not: an out-of-enum
+  // `scope` (garbage or otherwise) is by definition not `'public'`, so this
+  // pair only ever fires for a record that genuinely claims `scope: 'public'`
+  // — exactly the case a round-trip must not silently launder.
   if (scope === 'public' && !anonymized) {
     throw new ValidationError(
       'scope=public requires anonymized=true (privacy contract violation)'

@@ -40,6 +40,40 @@
  * sessions.jsonl` — piping the writer's `{"action":"appended"}` receipt INTO
  * the ledger. That is a bug, and denying it is correct.
  *
+ * ## The repair CLI (GitLab #385) — allowed by EXACT MATCH, not structurally
+ *
+ * `repair-invalid-sessions.mjs --apply` is a FIFTH sanctioned writer, but it
+ * is allowed by a different mechanism than the four above: it mutates the
+ * ledger through `repairRecord()` (`scripts/lib/session-record-repair.mjs`)
+ * from inside Node, so structurally it is identical to the four writers — no
+ * ledger write-intent for the matcher to see — EXCEPT that this hook's OWN
+ * matcher independently resolves its `node <script> --apply` argv shape as an
+ * ledger-mutating verb (`findWriteVerbTarget`'s `verb === 'node'` branch,
+ * #1005) and denies it on sight. Before this hook had any opinion on the
+ * subject at all, the guard was therefore denying its own validating writer —
+ * the fix-it CLI for a corrupted ledger record could never run, which is the
+ * #385 deadlock.
+ *
+ * The fix (`REPAIR_APPLY_CANONICAL_COMMAND`, see below) is an EXACT STRING
+ * comparison against the trimmed command — not a name check, and not
+ * equivalent to the spoofable name allowlist rejected above. The distinction
+ * that matters: a name allowlist matches a SUBSTRING anywhere in the command
+ * (a comment, an argument, a quoted payload), so an attacker can smuggle the
+ * name into a command that does something else entirely. An exact-command
+ * comparison has no such position to smuggle into — the command either IS,
+ * in its entirety, `node scripts/repair-invalid-sessions.mjs --apply`, or it
+ * is not, and ANY addition (a flag, a wrapper, a second command chained
+ * after it, a subshell) breaks the match and falls through to the existing
+ * deny logic unchanged (`sonst weiter DENY` — see the #385 tests). There is
+ * still nothing to spoof, for the same reason the four structural writers
+ * have nothing to spoof: allowing this ONE exact invocation grants nothing an
+ * attacker did not already have. `repairRecord()` validates every record it
+ * writes the same way `emit-session.mjs` does, so a caller who can already
+ * invoke arbitrary Bash could run this repair CLI directly, or edit
+ * `session-record-repair.mjs` itself, without ever touching this hook — the
+ * hook's protection scope is shell-redirect writes that BYPASS validation,
+ * and this command never does that.
+ *
  * ## Path scope
  *
  * A write target counts as the ledger when its BASENAME is `sessions.jsonl`,
@@ -172,6 +206,11 @@
  *     verbs (a redirect inside an `awk` program string is quoted data here).
  *   - The Write/Edit tools — a different PreToolUse matcher entirely
  *     (`hooks/enforce-scope.mjs` territory), not this hook's surface.
+ *   - The #385 repair-apply subshell/backtick deny (`unwrapSubshellLayers`)
+ *     only unwraps a command that IS, in its entirety, one wrapped run —
+ *     `x=$(node scripts/repair-invalid-sessions.mjs --apply)` (the wrapper is
+ *     part of a larger assignment, not the whole command) still allows. Same
+ *     class as the line above: a determined rewrite, not the accident shape.
  *
  * This is a guard against the accident that actually happened, not a
  * containment boundary. Determined circumvention is out of scope by design.
@@ -352,6 +391,29 @@ const REPAIR_SCRIPT_BASENAME = 'repair-invalid-sessions.mjs';
 const REPAIR_APPLY_MARKER = `${REPAIR_SCRIPT_BASENAME} --apply`;
 
 /**
+ * The ONE command string this guard treats as a sanctioned, exact-match
+ * repair-apply invocation (GitLab #385).
+ *
+ * Without this exception the guard denied its OWN validating writer:
+ * `repair-invalid-sessions.mjs --apply` mutates the ledger through
+ * `repairRecord()` in `scripts/lib/session-record-repair.mjs` — the same
+ * validated-write discipline this hook exists to enforce (mandatory `.bak`,
+ * atomic rename, post-verification restore on failure) — yet the module
+ * docblock's own "ALLOWED STRUCTURALLY" section (see the top of this file)
+ * never named it, because the matcher below still resolves `node` as the verb
+ * and denies on sight. The fix is deliberately an EXACT STRING match, not a
+ * pattern: matching by verb/flags (as `findWriteVerbTarget` already does for
+ * the deny case) cannot distinguish "the operator ran the sanctioned
+ * runbook command" from "the operator ran something ADJACENT to it" — a
+ * wrapper, an extra flag, a second command chained after it. `sonst weiter
+ * DENY` (issue text): any deviation — chaining, piping, a wrapper, extra
+ * arguments, a subshell, backticks — falls through UNCHANGED to the existing
+ * deny logic below, which is why this constant is compared against the RAW,
+ * merely-trimmed command string before any tokenizing/unwrapping happens.
+ */
+const REPAIR_APPLY_CANONICAL_COMMAND = `node scripts/${REPAIR_SCRIPT_BASENAME} --apply`;
+
+/**
  * How much of the offending target may appear in the deny reason.
  *
  * Load-bearing, not cosmetic. `emitDeny` clamps the whole reason to
@@ -414,6 +476,68 @@ function refersToRepairScript(target) {
   if (typeof target !== 'string' || target.length === 0) return false;
   const normalized = target.replace(/\\/g, '/');
   return path.posix.basename(normalized) === REPAIR_SCRIPT_BASENAME;
+}
+
+/**
+ * Strip exactly ONE layer of `$( … )`, backtick, or bare `( … )` wrapping from
+ * `s`, when `s` (already trimmed) is wholly that one wrapped run. Returns
+ * `null` when `s` is not wrapped, or when a bare-paren/`$(…)` wrapper's
+ * interior has unbalanced parens (ambiguous — leave it alone rather than
+ * unwrap something that was not really a single wrapped command).
+ *
+ * Deliberately narrow: this is NOT a general shell parser. It exists only to
+ * answer "is this string exactly the canonical repair-apply command sitting
+ * inside one layer of command-substitution/subshell syntax" (see
+ * {@link unwrapSubshellLayers} and GitLab #385 test (c)) — the general
+ * `blocker.tokenizeCommand` path glues a leading `$(`/`` ` ``/`(` onto the
+ * next word (#385 measured: `$(node …)` tokenizes as a single `$(node`
+ * token), which is why the existing verb-based matcher never resolves `node`
+ * as the verb for a wrapped command and silently ALLOWS it today.
+ *
+ * @param {string} s - already-trimmed candidate
+ * @returns {string|null} the unwrapped, trimmed interior, or null
+ */
+function unwrapSingleSubshellLayer(s) {
+  const balanced = (inner) => {
+    let depth = 0;
+    for (const ch of inner) {
+      if (ch === '(') depth++;
+      else if (ch === ')') { depth--; if (depth < 0) return false; }
+    }
+    return depth === 0;
+  };
+  if (s.length >= 4 && s.startsWith('$(') && s.endsWith(')')) {
+    const inner = s.slice(2, -1);
+    return balanced(inner) ? inner.trim() : null;
+  }
+  if (s.length >= 2 && s.startsWith('`') && s.endsWith('`')) {
+    return s.slice(1, -1).trim();
+  }
+  if (s.length >= 2 && s.startsWith('(') && s.endsWith(')')) {
+    const inner = s.slice(1, -1);
+    return balanced(inner) ? inner.trim() : null;
+  }
+  return null;
+}
+
+/**
+ * Repeatedly apply {@link unwrapSingleSubshellLayer} up to `maxDepth` times.
+ * Bounded the same way payload recursion is bounded elsewhere in this file —
+ * no realistic hand-typed command nests this deep, and the outer command is
+ * still matched on its own terms regardless of how far this unwrapping gets.
+ *
+ * @param {string} command
+ * @param {number} [maxDepth]
+ * @returns {string}
+ */
+function unwrapSubshellLayers(command, maxDepth = 3) {
+  let current = command.trim();
+  for (let n = 0; n < maxDepth; n++) {
+    const next = unwrapSingleSubshellLayer(current);
+    if (next === null) break;
+    current = next;
+  }
+  return current;
 }
 
 /**
@@ -972,6 +1096,41 @@ async function main() {
       `${HOOK_NAME}: DEGRADED — guard module(s) loaded from HEAD, not your working tree ` +
         `(${degradedLabels.join(', ')}); uncommitted changes to them are NOT in effect. See #992.`
     );
+  }
+
+  // #385 — the repair CLI's own sanctioned invocation is the ONE write this
+  // guard must let through: it mutates the ledger via the SAME validated-write
+  // discipline (`repairRecord()`, mandatory backup, atomic rename, post-verify
+  // restore) this hook exists to enforce, not a hand-composed shell append.
+  // Compared against the RAW, merely-trimmed command — before any
+  // tokenizing/sanitizing — so the exception is exactly as narrow as the
+  // string itself; "conservative" per the issue text means matching the
+  // string, not a pattern that could also match something adjacent to it.
+  const trimmedCommand = command.trim();
+  if (trimmedCommand === REPAIR_APPLY_CANONICAL_COMMAND) {
+    return flushNotices(notices);
+  }
+  // The SAME canonical command wrapped in one layer of command substitution /
+  // backticks / a bare subshell is a DIFFERENT command — bash still executes
+  // the repair mutation for the substitution's side effect, but it no longer
+  // matches the exact sanctioned string, so `sonst weiter DENY` applies. This
+  // also closes a real gap the exact-match alone would not: `blocker`'s
+  // tokenizer glues a leading `$(`/`` ` ``/`(` onto `node`, so the EXISTING
+  // verb-based matcher below never resolves verb `node` for a wrapped command
+  // and silently allowed it before this hook had any opinion on the subject.
+  if (unwrapSubshellLayers(trimmedCommand) === REPAIR_APPLY_CANONICAL_COMMAND) {
+    emitDeny(
+      [
+        `Direct write to the sessions ledger blocked: '${REPAIR_APPLY_MARKER} (wrapped in a subshell/backticks — denied)'`,
+        `The sanctioned repair invocation is allowed ONLY as the exact bare command:`,
+        `  ${REPAIR_APPLY_CANONICAL_COMMAND}`,
+        `Wrapping it in $(...), backticks, or a subshell is denied even though the`,
+        `command is otherwise identical — see hooks/pre-bash-sessions-ledger-guard.mjs #385.`,
+        `Override (intentional maintenance only): run the session with`,
+        `SO_DISABLED_HOOKS=pre-bash-sessions-ledger-guard`,
+      ].join('\n'),
+    );
+    return;
   }
 
   // G3 — matcher. No direct ledger write → allow.

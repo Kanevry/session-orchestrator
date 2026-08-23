@@ -44,6 +44,12 @@
  * @property {string} created_at      - ISO timestamp.
  * @property {string|null} processed_at  - terminal stamp (mirrors repair store).
  * @property {string|null} superseded_by
+ * @property {string|null} [outcome]  - terminal disposition, e.g. `'written'`
+ *        (writer.mjs persisted the rule file) or `'already-on-disk'` (engine.mjs
+ *        found a matching `.claude/rules/` provenance block before proposing —
+ *        issue #484). Optional and additive: `isCandidateShape` only requires
+ *        `learning_key` + `created_at`, so an older record without this field
+ *        still round-trips through the store unchanged.
  */
 
 import { mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
@@ -336,4 +342,86 @@ export function mergeCandidates({ candidates, repoRoot, storePath } = {}) {
 
   const result = writeStore(absPath, merged);
   return { merged, written: result.ok === true, skipped };
+}
+
+/**
+ * Stamp the persisted candidate for `learningKey` as terminally processed and
+ * write it back through {@link mergeCandidates} — the ONLY writer of this
+ * store, so this function opens no second write path and no new persisted
+ * format: `outcome` is an ordinary field alongside `processed_at`, and the
+ * read-side shape guard (`isCandidateShape`) only requires `learning_key` +
+ * `created_at`, so it accepts the stamped record unchanged.
+ *
+ * Looks up the existing record by `learningKey` first, so the write preserves
+ * everything the run that proposed it originally recorded (`slug`, `reason`,
+ * `confidence`, `created_at`) and only ADDS the terminal stamp. When no record
+ * exists yet — e.g. the proposing run used `dryRun` and never merged into the
+ * store, or `engine.mjs` discovered the on-disk `.claude/rules/` file directly
+ * without ever having proposed it in a prior run — a fresh terminal record is
+ * minted from the caller-supplied `fallback*` fields so a LATER run can still
+ * dedupe against it.
+ *
+ * `mergeCandidates`'s own dedupe rule still applies underneath this call: if
+ * the existing record is ALREADY terminal (a prior `processed_at`), the merge
+ * keeps the existing verdict and this call is a no-op on disk — a terminal
+ * verdict is never regressed, even by a second stamp attempt.
+ *
+ * Never throws (delegates to the never-throwing `loadCandidates`/
+ * `mergeCandidates`); on write failure returns `{ written: false, ... }`.
+ *
+ * @param {Object} [params]
+ * @param {string} [params.learningKey] - required; a missing/empty key is a no-op (`{written:false, stamped:null}`).
+ * @param {'written'|'already-on-disk'|string} [params.outcome]
+ * @param {string} [params.processedAt] - ISO timestamp; defaults to `new Date().toISOString()`.
+ * @param {string} [params.fallbackSlug] - used only when no existing record is found.
+ * @param {string} [params.fallbackCandidateId] - used only when no existing record is found; defaults to `makeCandidateId(learningKey, fallbackSlug)`.
+ * @param {number} [params.fallbackConfidence] - used only when no existing record is found.
+ * @param {string} [params.repoRoot]
+ * @param {string} [params.storePath]
+ * @returns {{ written: boolean, stamped: ReconcileCandidate|null }}
+ */
+export function markCandidateProcessed({
+  learningKey,
+  outcome,
+  processedAt,
+  fallbackSlug,
+  fallbackCandidateId,
+  fallbackConfidence,
+  repoRoot,
+  storePath,
+} = {}) {
+  if (typeof learningKey !== 'string' || learningKey.length === 0) {
+    return { written: false, stamped: null };
+  }
+
+  const stampAt =
+    typeof processedAt === 'string' && processedAt.length > 0 ? processedAt : new Date().toISOString();
+
+  const { records: existing } = loadCandidates({ repoRoot, storePath });
+  const found = existing.find((rec) => rec && rec.learning_key === learningKey);
+
+  /** @type {ReconcileCandidate} */
+  let stamped;
+  if (found) {
+    stamped = { ...found, processed_at: stampAt, outcome: typeof outcome === 'string' ? outcome : (found.outcome ?? null) };
+  } else {
+    const slug = typeof fallbackSlug === 'string' ? fallbackSlug : '';
+    stamped = buildCandidate({
+      id:
+        typeof fallbackCandidateId === 'string' && fallbackCandidateId.length > 0
+          ? fallbackCandidateId
+          : makeCandidateId(learningKey, slug),
+      learningKey,
+      slug,
+      status: 'proposed',
+      reason: 'stamped without a prior sidecar record',
+      confidence: typeof fallbackConfidence === 'number' ? fallbackConfidence : 0,
+      createdAt: stampAt,
+    });
+    stamped.processed_at = stampAt;
+    stamped.outcome = typeof outcome === 'string' ? outcome : null;
+  }
+
+  const result = mergeCandidates({ candidates: [stamped], repoRoot, storePath });
+  return { written: result.written === true, stamped };
 }

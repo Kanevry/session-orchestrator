@@ -22,8 +22,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-import { backfillAbandonedSession, isUuid } from '@lib/session-close-backfill.mjs';
+import { backfillAbandonedSession, backfillCompletedFromStateMd, isUuid } from '@lib/session-close-backfill.mjs';
 import { validateSession } from '@lib/session-schema/validator.mjs';
+import { serializeStateMd } from '@lib/state-md/yaml-parser.mjs';
 
 const UUID = '11111111-2222-4333-8444-555555555555';
 const OTHER_UUID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -64,6 +65,25 @@ function seedEvents(records) {
 
 function seedSessions(records) {
   writeJsonl(path.join(metricsDir(), 'sessions.jsonl'), records);
+}
+
+/**
+ * Write a STATE.md at a fixed, DI-injected path (bypasses the real
+ * `resolveStateMdPath()`'s env-dependent platform detection — deterministic
+ * regardless of ambient `SO_PLATFORM`/`SO_STATE_DIR`, mirroring the other
+ * `deps` overrides in this file).
+ */
+function stateMdPath() {
+  return path.join(repoRoot, 'STATE.md');
+}
+
+function writeStateMd(frontmatter, body = '\n# STATE\n') {
+  fs.mkdirSync(repoRoot, { recursive: true });
+  fs.writeFileSync(stateMdPath(), serializeStateMd({ frontmatter, body }), 'utf8');
+}
+
+function stateMdDeps() {
+  return { resolveStateMdPath: () => stateMdPath() };
 }
 
 /** Write a session.lock file at the tmp repoRoot with the given fields. */
@@ -793,5 +813,154 @@ describe('backfillAbandonedSession — never throws', () => {
     // dryRun writes nothing (no sessions.jsonl, no marker).
     expect(readSessions()).toHaveLength(0);
     expect(fs.existsSync(path.join(metricsDir(), '.backfilled-main-2026-05-27-session-1.marker'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #429 — backfillCompletedFromStateMd: STATE.md `status: completed` without a
+// matching sessions.jsonl record (the /close Pre-Check gap). Three cases per
+// the task: (a) completed + record present -> no-op, (b) completed + no
+// record -> backfilled with `_backfill_source: 'state-md-completed'`,
+// (c) a second run after (b) -> no-op (idempotent).
+// ---------------------------------------------------------------------------
+
+describe('backfillCompletedFromStateMd — #429', () => {
+  const COMPLETED_FRONTMATTER = {
+    'schema-version': 1,
+    'session-type': 'deep',
+    branch: 'main',
+    issues: [],
+    started_at: STARTED_AT,
+    status: 'completed',
+    'current-wave': 3,
+    'total-waves': 3,
+    session: 'main-2026-05-27-session-1',
+  };
+
+  it('(a) no-op when a record for the STATE.md session id already exists', async () => {
+    writeStateMd(COMPLETED_FRONTMATTER);
+    seedSessions([
+      {
+        session_id: 'main-2026-05-27-session-1',
+        session_type: 'deep',
+        started_at: STARTED_AT,
+        completed_at: '2026-05-27T15:00:00.000Z',
+        total_waves: 3,
+        waves: [{ wave: 1, role: 'coordinator' }],
+        agent_summary: { complete: 3, partial: 0, failed: 0, spiral: 0 },
+        total_agents: 3,
+        total_files_changed: 5,
+        status: 'completed',
+      },
+    ]);
+
+    const res = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+
+    expect(res.action).toBe('skipped-already-recorded');
+    expect(res.sessionId).toBe('main-2026-05-27-session-1');
+    // The pre-existing record is untouched (still exactly one record).
+    expect(readSessions()).toHaveLength(1);
+  });
+
+  it('(b) backfills a status:completed record tagged _backfill_source:state-md-completed when none exists', async () => {
+    writeStateMd(COMPLETED_FRONTMATTER);
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      {
+        timestamp: '2026-05-27T14:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: 'main-2026-05-27-session-1',
+        mode: 'deep',
+      },
+      { timestamp: '2026-05-27T17:00:00.000Z', event: 'orchestrator.session.ended', session_id: UUID, reason: 'clear' },
+    ]);
+    // No sessions.jsonl at all yet.
+
+    const res = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+
+    expect(res.action).toBe('backfilled');
+    expect(res.sessionId).toBe('main-2026-05-27-session-1');
+
+    const recorded = readSessions();
+    expect(recorded).toHaveLength(1);
+    const rec = recorded[0];
+    expect(rec.session_id).toBe('main-2026-05-27-session-1');
+    // The load-bearing distinction vs. backfillAbandonedSession: 'completed',
+    // never 'abandoned' — STATE.md itself claims the session finished normally.
+    expect(rec.status).toBe('completed');
+    expect(rec._backfill_source).toBe('state-md-completed');
+    expect(rec.session_type).toBe('deep');
+    // events.jsonl-derived counters (same machinery as the abandoned path).
+    expect(rec.completed_at).toBe('2026-05-27T17:00:00.000Z');
+    expect(() => validateSession(rec)).not.toThrow();
+  });
+
+  it('(c) a second run after (b) is a no-op (idempotent — dedupe against the just-written record)', async () => {
+    writeStateMd(COMPLETED_FRONTMATTER);
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+    ]);
+
+    const first = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+    expect(first.action).toBe('backfilled');
+    expect(readSessions()).toHaveLength(1);
+
+    const second = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+
+    expect(second.action).toBe('skipped-already-recorded');
+    expect(second.sessionId).toBe('main-2026-05-27-session-1');
+    // No duplicate record.
+    expect(readSessions()).toHaveLength(1);
+  });
+
+  it('skips silently when STATE.md status is not completed (active/paused/idle)', async () => {
+    writeStateMd({ ...COMPLETED_FRONTMATTER, status: 'active' });
+
+    const res = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+
+    expect(res.action).toBe('skipped-not-completed');
+    expect(res.status).toBe('active');
+    expect(readSessions()).toHaveLength(0);
+  });
+
+  it('skips when STATE.md has no `session` field to key the record by', async () => {
+    const { session, ...withoutSession } = COMPLETED_FRONTMATTER;
+    void session;
+    writeStateMd(withoutSession);
+
+    const res = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+
+    expect(res.action).toBe('skipped-no-session-id');
+    expect(readSessions()).toHaveLength(0);
+  });
+
+  it('skips when STATE.md does not exist at the resolved path', async () => {
+    // repoRoot exists but nothing was ever written at stateMdPath().
+    const res = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+
+    expect(res.action).toBe('skipped-no-state-md');
+    expect(readSessions()).toHaveLength(0);
+  });
+
+  it('never throws when the append fails (no-throw contract, mirrors backfillAbandonedSession)', async () => {
+    writeStateMd(COMPLETED_FRONTMATTER);
+    // Pre-create .orchestrator/metrics/ (normally done by seeding events/sessions)
+    // so the failure under test is the injected append, not an incidental ENOENT
+    // on the TOCTOU marker's own directory.
+    fs.mkdirSync(metricsDir(), { recursive: true });
+    const boom = () => {
+      throw new Error('disk full');
+    };
+
+    const res = await backfillCompletedFromStateMd({
+      repoRoot,
+      now: NOW_MS,
+      deps: { ...stateMdDeps(), appendJsonl: boom },
+    });
+
+    expect(res.action).toBe('error');
+    expect(res.error).toMatch(/disk full/);
+    expect(readSessions()).toHaveLength(0);
   });
 });

@@ -420,7 +420,12 @@ const decisionAssertions = { allow: expectAllow, deny: expectDeny };
 
 describe('#1005 — repair apply is ledger-guarded', () => {
   it.each([
-    ['default target', 'node scripts/repair-invalid-sessions.mjs --apply', 'deny', 'repair-invalid-sessions.mjs --apply'],
+    // #385: the EXACT canonical command is the guard's own sanctioned repair
+    // path (repairRecord() in session-record-repair.mjs validates itself the
+    // same way this hook enforces on every other writer) and is now allowed.
+    // Every OTHER row below is a DEVIATION from that exact string — an extra
+    // flag, a wrapper, a different path form — and stays denied unchanged.
+    ['canonical exact command (#385 sanctioned exact match)', 'node scripts/repair-invalid-sessions.mjs --apply', 'allow'],
     [
       'boolean Node runtime option before the script',
       'node --no-warnings scripts/repair-invalid-sessions.mjs --apply',
@@ -524,6 +529,83 @@ describe('#1005 — repair apply is ledger-guarded', () => {
     ],
   ])('%s', (_label, command, decision, reason) => {
     decisionAssertions[decision](runHook({ command }), reason);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #385 — the exact canonical repair-apply command is the sanctioned
+// mechanism, not a spoofable name allowlist. `repairRecord()` in
+// `scripts/lib/session-record-repair.mjs` is the SAME validated write path
+// (`.bak` before rewrite, atomic rename, post-verification restore on
+// failure) this hook exists to force every OTHER writer through — denying it
+// created a fix-it deadlock, because there is no other sanctioned way to
+// invoke it. The exception is deliberately an EXACT STRING match: matching by
+// verb/flags (like the deny matcher below it) cannot tell "the operator ran
+// the runbook command" apart from "the operator ran something adjacent to
+// it" — chaining, piping, an extra flag, a wrapper. See the module docblock
+// (top of the hook, "ALLOWED STRUCTURALLY") for why a name in the command
+// string is otherwise trivially spoofable.
+// ---------------------------------------------------------------------------
+describe('#385 — canonical repair-apply exact-match exception', () => {
+  it('(a) the exact canonical command is allowed', () => {
+    expectAllow(runHook({ command: 'node scripts/repair-invalid-sessions.mjs --apply' }));
+  });
+
+  it('(b) the canonical command chained with a direct ledger append is still denied', () => {
+    // Two write intents in one command: the repair invocation itself would be
+    // sanctioned in isolation, but "no further shell operators in the same
+    // command" (issue text) means the chain as a whole is not the exact
+    // canonical string, and the appended `>>` is caught by the existing
+    // redirect-target scan regardless — belt and braces, not either/or.
+    expectDeny(
+      runHook({
+        command:
+          'node scripts/repair-invalid-sessions.mjs --apply; echo x >> .orchestrator/metrics/sessions.jsonl',
+      }),
+      '.orchestrator/metrics/sessions.jsonl',
+    );
+  });
+
+  it('(b) chained with a second, non-write command is still denied (no operators allowed in the same command)', () => {
+    // Same principle as above with no redirect present, so this exercises the
+    // chain-length check on its own: the repair segment alone would exact-match,
+    // but it is not alone in this command.
+    expectDeny(
+      runHook({ command: 'node scripts/repair-invalid-sessions.mjs --apply; echo done' }),
+      'repair-invalid-sessions.mjs --apply',
+    );
+  });
+
+  it('(c) the canonical command wrapped in $(...) is denied', () => {
+    expectDeny(
+      runHook({ command: '$(node scripts/repair-invalid-sessions.mjs --apply)' }),
+      'wrapped in a subshell/backticks',
+    );
+  });
+
+  it('(c) the canonical command wrapped in backticks is denied', () => {
+    expectDeny(
+      runHook({ command: '`node scripts/repair-invalid-sessions.mjs --apply`' }),
+      'wrapped in a subshell/backticks',
+    );
+  });
+
+  it('(c) the canonical command wrapped in a bare subshell is denied', () => {
+    expectDeny(
+      runHook({ command: '(node scripts/repair-invalid-sessions.mjs --apply)' }),
+      'wrapped in a subshell/backticks',
+    );
+  });
+
+  it('leading/trailing whitespace around the exact command is still allowed (trim, not literal-byte match)', () => {
+    expectAllow(runHook({ command: '  node scripts/repair-invalid-sessions.mjs --apply  \n' }));
+  });
+
+  it('a single extra trailing flag breaks the exact match and stays denied', () => {
+    expectDeny(
+      runHook({ command: 'node scripts/repair-invalid-sessions.mjs --apply --json' }),
+      'repair-invalid-sessions.mjs --apply',
+    );
   });
 });
 

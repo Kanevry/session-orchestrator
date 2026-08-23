@@ -30,7 +30,10 @@ if (!shouldRunHook('on-session-end')) process.exit(0);
 
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
-import { backfillAbandonedSession } from '../scripts/lib/session-close-backfill.mjs';
+import {
+  backfillAbandonedSession,
+  backfillCompletedFromStateMd,
+} from '../scripts/lib/session-close-backfill.mjs';
 import {
   readLockDetailed,
   release,
@@ -281,6 +284,18 @@ async function main() {
   //     at hook-time is, by definition, a real active session, not stale history.
   try {
     await backfillAbandonedSession({ repoRoot: projectRoot, sessionId, semanticSessionId });
+  } catch { /* best-effort — never block teardown */ }
+
+  // (a2) #429 — STATE.md `status: completed` self-heal. Orthogonal to (a)
+  //      above and to THIS session's own id: it reads STATE.md directly and
+  //      repairs a PAST session whose `status: completed` was set (by hand or
+  //      otherwise) without session-end's Phase 3.7 ever writing the matching
+  //      sessions.jsonl record — the exact state `commands/close.md`'s
+  //      Pre-Check then reads as "already finalized" forever after. Cheap
+  //      no-op on the overwhelmingly common path (STATE.md status is
+  //      'active'/'paused'/'idle', or the record already exists).
+  try {
+    await backfillCompletedFromStateMd({ repoRoot: projectRoot });
   } catch { /* best-effort — never block teardown */ }
 
   // (b) Deterministic lock release — ONLY a lock whose raw/native session_id

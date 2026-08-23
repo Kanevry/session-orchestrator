@@ -65,6 +65,7 @@ describe('runReconcile — committed-fixture regression lock (DI-injected dryRun
       proposed: 2,
       rejected: 4,
       capped: 0,
+      alreadyMaterialized: 0,
       written: false,
     });
     expect(result.proposals).toHaveLength(2);
@@ -160,6 +161,7 @@ describe('runReconcile — empty short-circuit', () => {
       proposed: 0,
       rejected: 0,
       capped: 0,
+      alreadyMaterialized: 0,
       written: false,
     });
     // Empty short-circuit touches no disk — merge seam is never invoked.
@@ -185,6 +187,7 @@ describe('runReconcile — never-throws boundary', () => {
       proposed: 0,
       rejected: 0,
       capped: 0,
+      alreadyMaterialized: 0,
       written: false,
     });
     expect(result.proposals).toEqual([]);
@@ -585,5 +588,124 @@ describe('runReconcile — a frontmatter-injecting learning is rejected, never p
     const { globs, meta } = parseGlobsFrontmatter(result.proposals[0].content);
     expect(globs).toEqual(['scripts/lib/autopilot/**']);
     expect(meta.tier).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #484 — idempotency + on-disk dedupe. Before this fix, engine.mjs
+// computed `isProcessed`/`isTerminal` in idempotency.mjs but NEVER called
+// them, and never looked at `.claude/rules/` at all — a run reproposed every
+// eligible learning every time, even the ones a `.claude/rules/*.md` file
+// already covered (9 of 10 proposals in one real run were exactly this).
+// ---------------------------------------------------------------------------
+
+/** Minimal well-formed rule document carrying a `learning-key:` frontmatter
+ * line — mirrors renderer.mjs's real output shape closely enough for the
+ * regex-based provenance scan in engine.mjs to find it. */
+function materializedRuleDoc(learningKey) {
+  return [
+    '---',
+    'auto-generated: true',
+    'alwaysApply: false',
+    `learning-key: ${learningKey}`,
+    'confidence: 0.8',
+    'expires-at: 2099-09-30',
+    '---',
+    '',
+    `# Auto-generated rule: ${learningKey}`,
+    '',
+  ].join('\n');
+}
+
+describe('runReconcile — on-disk dedupe against .claude/rules/ provenance (issue #484)', () => {
+  it('does not re-propose a learning whose learning-key already has a materialized rule file, but still proposes a sibling', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'reconcile-engine-dedupe-disk-'));
+    try {
+      const rulesDir = join(repoRoot, '.claude', 'rules');
+      mkdirSync(rulesDir, { recursive: true });
+      writeFileSync(
+        join(rulesDir, 'fragile-pattern-eligible-frag-existing.md'),
+        materializedRuleDoc('fragile-pattern/eligible-frag'),
+        'utf8',
+      );
+
+      const merge = vi.fn(() => ({ merged: [], written: true }));
+      const result = await runReconcile(
+        { repoRoot, now: new Date('2026-06-25T00:00:00Z') },
+        {
+          learnings: [
+            // learningKey resolves to fragile-pattern/eligible-frag — matches
+            // the on-disk file above.
+            eligibleLearning({ subject: 'eligible-frag' }),
+            // A genuinely new sibling — must NOT be crowded out by the dedupe.
+            eligibleLearning({ subject: 'brand-new', file_paths: ['scripts/lib/new/z.mjs'] }),
+          ],
+          merge,
+        },
+      );
+
+      expect(result.summary.eligible).toBe(2);
+      expect(result.summary.alreadyMaterialized).toBe(1);
+      expect(result.summary.proposed).toBe(1);
+      expect(result.summary.rejected).toBe(1);
+      expect(result.proposals.map((p) => p.learningKey)).toEqual(['fragile-pattern/brand-new']);
+
+      const dedupeRejection = result.rejected.find(
+        (r) => r.learningKey === 'fragile-pattern/eligible-frag',
+      );
+      expect(dedupeRejection).toBeDefined();
+      expect(dedupeRejection.reason).toContain('already materialized');
+
+      // The freshly discovered on-disk match is stamped into the candidates
+      // handed to merge() — the SAME write path as every other record this
+      // run produces (never a second one) — so a future run can dedupe via
+      // the sidecar alone, without rescanning .claude/rules/.
+      expect(merge).toHaveBeenCalledTimes(1);
+      const mergedCandidates = merge.mock.calls[0][0].candidates;
+      const stampedRecord = mergedCandidates.find(
+        (c) => c.learning_key === 'fragile-pattern/eligible-frag',
+      );
+      expect(stampedRecord).toBeDefined();
+      expect(stampedRecord.outcome).toBe('already-on-disk');
+      expect(typeof stampedRecord.processed_at).toBe('string');
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('a learning stamped terminal via an on-disk match in run 1 is still skipped in run 2 even after the rule file is removed (sidecar isProcessed() carries the verdict, not a re-scan)', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'reconcile-engine-dedupe-persist-'));
+    try {
+      const rulesDir = join(repoRoot, '.claude', 'rules');
+      mkdirSync(rulesDir, { recursive: true });
+      const ruleFilePath = join(rulesDir, 'fragile-pattern-persist-case.md');
+      writeFileSync(ruleFilePath, materializedRuleDoc('fragile-pattern/persist-case'), 'utf8');
+
+      const learnings = [eligibleLearning({ subject: 'persist-case' })];
+      const args = { repoRoot, now: new Date('2026-06-25T00:00:00Z') };
+
+      // Run 1 — REAL merge (no stub, no dryRun): discovers the on-disk match
+      // and stamps it terminal into the real sidecar under repoRoot.
+      const run1 = await runReconcile(args, { learnings });
+      expect(run1.summary.alreadyMaterialized).toBe(1);
+      expect(run1.summary.proposed).toBe(0);
+      expect(run1.summary.written).toBe(true);
+
+      // Remove the rule file. If run 2 skipped this learning ONLY because of
+      // the disk scan, it would propose it again now — it must not: the
+      // sidecar stamp from run 1 has to carry the terminal verdict forward.
+      rmSync(ruleFilePath);
+
+      const run2 = await runReconcile(args, { learnings });
+      // Still counted as materialized — but now via the SIDECAR verdict
+      // (isProcessed()), not a fresh disk match (the file is gone).
+      expect(run2.summary.alreadyMaterialized).toBe(1);
+      expect(run2.summary.proposed).toBe(0); // still not proposed — isProcessed() caught it
+      const rej = run2.rejected.find((r) => r.learningKey === 'fragile-pattern/persist-case');
+      expect(rej).toBeDefined();
+      expect(rej.reason).toContain('already processed');
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
   });
 });

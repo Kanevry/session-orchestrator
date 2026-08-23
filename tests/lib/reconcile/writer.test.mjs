@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -601,5 +601,116 @@ describe('writeApprovedRules — error collection (non-fatal)', () => {
 
     expect(result.written).toBe(0);
     expect(result.errors.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Idempotency-sidecar stamp after a successful write (issue #484 point 1)
+// ---------------------------------------------------------------------------
+
+describe('writeApprovedRules — stamps the idempotency sidecar after a successful write (#484)', () => {
+  function storeLines() {
+    const storePath = join(tmpDir, '.orchestrator', 'runtime', 'reconcile-candidates.jsonl');
+    if (!existsSync(storePath)) return [];
+    return readFileSync(storePath, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  }
+
+  it('marks the candidate for item.learningKey terminal with outcome "written"', async () => {
+    const result = await writeApprovedRules({
+      approved: [
+        {
+          slug: 'stamped-rule',
+          path: '.claude/rules/stamped-rule.md',
+          content: '# Stamped Rule\n\nBody.\n',
+          learningKey: 'fragile-pattern/stamped-rule',
+          candidateId: 'rc-teststamp',
+          confidence: 0.8,
+        },
+      ],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.written).toBe(1);
+    expect(result.errors).toEqual([]);
+
+    const records = storeLines();
+    expect(records).toHaveLength(1);
+    expect(records[0].learning_key).toBe('fragile-pattern/stamped-rule');
+    expect(records[0].outcome).toBe('written');
+    expect(typeof records[0].processed_at).toBe('string');
+    // processed_at must be a valid ISO 8601 timestamp
+    expect(new Date(records[0].processed_at).toISOString()).toBe(records[0].processed_at);
+  });
+
+  it('preserves the prior sidecar record (id/slug/confidence) — only ADDS the terminal stamp', async () => {
+    // Pre-seed the store with a live (non-terminal) candidate, mirroring what
+    // engine.mjs writes when it first proposes a learning.
+    const runtimeDir = join(tmpDir, '.orchestrator', 'runtime');
+    mkdirSync(runtimeDir, { recursive: true });
+    const preExisting = {
+      id: 'rc-preexist1',
+      schema_version: 1,
+      learning_key: 'anti-pattern/pre-existing',
+      slug: 'anti-pattern-pre-existing-abcdef1',
+      status: 'proposed',
+      reason: 'reconciliation engine proposed a conditional rule',
+      confidence: 0.77,
+      created_at: '2026-08-01T00:00:00.000Z',
+      processed_at: null,
+      superseded_by: null,
+    };
+    writeFileSync(join(runtimeDir, 'reconcile-candidates.jsonl'), JSON.stringify(preExisting) + '\n', 'utf8');
+
+    const result = await writeApprovedRules({
+      approved: [
+        {
+          slug: 'pre-existing-rule',
+          path: '.claude/rules/pre-existing-rule.md',
+          content: '# Pre-existing\n',
+          learningKey: 'anti-pattern/pre-existing',
+        },
+      ],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.written).toBe(1);
+    expect(result.errors).toEqual([]);
+
+    const records = storeLines();
+    expect(records).toHaveLength(1);
+    expect(records[0].id).toBe('rc-preexist1'); // preserved, not re-minted
+    expect(records[0].slug).toBe('anti-pattern-pre-existing-abcdef1'); // preserved
+    expect(records[0].confidence).toBe(0.77); // preserved
+    expect(records[0].outcome).toBe('written');
+    expect(typeof records[0].processed_at).toBe('string');
+  });
+
+  it('does not touch the sidecar when the approved item carries no learningKey', async () => {
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'no-key', path: '.claude/rules/no-key.md', content: '# No key\n' }],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.written).toBe(1);
+    expect(result.errors).toEqual([]);
+    expect(existsSync(join(tmpDir, '.orchestrator', 'runtime', 'reconcile-candidates.jsonl'))).toBe(false);
+  });
+
+  it('does not stamp when the write itself failed (path-confinement refusal)', async () => {
+    const result = await writeApprovedRules({
+      approved: [
+        {
+          slug: 'escape',
+          path: '.claude/rules/../../evil-escape.md',
+          content: '# escape\n',
+          learningKey: 'fragile-pattern/never-written',
+        },
+      ],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.written).toBe(0);
+    expect(result.errors.length).toBeGreaterThanOrEqual(1);
+    expect(existsSync(join(tmpDir, '.orchestrator', 'runtime', 'reconcile-candidates.jsonl'))).toBe(false);
   });
 });

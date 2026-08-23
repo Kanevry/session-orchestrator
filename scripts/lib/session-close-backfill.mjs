@@ -13,6 +13,17 @@
  * from `hooks/on-session-end.mjs` and by the one-time historical migration CLI
  * `scripts/backfill-abandoned-sessions.mjs`.
  *
+ * A second, sibling export — `backfillCompletedFromStateMd` — closes a
+ * different gap (#429): `commands/close.md`'s Pre-Check treats STATE.md
+ * `status: completed` as proof the session-end writer already ran and refuses
+ * to invoke it again. When that status was set by hand (or by any path that
+ * never reached Phase 3.7), no sessions.jsonl record is EVER written — the
+ * Pre-Check keeps blocking the only thing that would normally create one.
+ * `backfillCompletedFromStateMd` reads STATE.md directly, and when its status
+ * is `completed` with no matching sessions.jsonl record, backfills one tagged
+ * `status: 'completed'` + `_backfill_source: 'state-md-completed'` (never
+ * `'abandoned'` — the session itself claims to have finished normally).
+ *
  * ── ID BRIDGE ────────────────────────────────────────────────────────────────
  *   sessions.jsonl records are keyed by SEMANTIC ids (`main-2026-05-27-session-1`).
  *   events.jsonl carries the harness UUID on `session.started` / `stop` / `ended`.
@@ -43,6 +54,8 @@ import { appendJsonl as defaultAppendJsonl } from './common.mjs';
 import { readLock as defaultReadLock, isLockLive as defaultIsLockLive, DEFAULT_TTL_HOURS } from './session-lock.mjs';
 import { validateSession as defaultValidateSession } from './session-schema/validator.mjs';
 import { serializeSessionLineChecked as defaultSerialize } from './session-schema.mjs';
+import { resolveStateMdPath as defaultResolveStateMdPath } from './state-md/frontmatter-mutators.mjs';
+import { parseStateMd as defaultParseStateMd } from './state-md/yaml-parser.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -213,12 +226,16 @@ function isCandidateDeadByAge({ relaxDeadByAge, assumeDeadBeforeMs, lastEventMs,
 }
 
 /**
- * Build the abandoned-session stub record. Required fields with no events
- * source are defaulted to empty/zero and enumerated in
- * `_backfill_incomplete_fields`; the mode → session_type coercion sets
- * `_session_type_inferred`.
+ * Build a backfilled stub record. Required fields with no events source are
+ * defaulted to empty/zero and enumerated in `_backfill_incomplete_fields`;
+ * the mode → session_type coercion sets `_session_type_inferred`.
+ *
+ * `status` / `backfillSource` are parameterized (#429 — the STATE.md
+ * `status: completed` backfill below reuses this exact synthesis, just with
+ * a different terminal status and provenance tag). Defaults reproduce the
+ * original `backfillAbandonedSession` behaviour exactly for existing callers.
  */
-function synthesizeRecord({ recordId, synthetic, gathered, nowMs }) {
+function synthesizeRecord({ recordId, synthetic, gathered, nowMs, status = 'abandoned', backfillSource = 'events-jsonl' }) {
   const startedIso = canonicalIso(gathered.startedAt, gathered.earliestMs ?? nowMs);
   const startedMs = Date.parse(startedIso);
   // completed_at is events-attested, never the backfill-run wall-clock (#914 R1).
@@ -271,13 +288,14 @@ function synthesizeRecord({ recordId, synthetic, gathered, nowMs }) {
     agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
     total_agents: 0,
     total_files_changed: 0,
-    status: 'abandoned',
-    // Issue #773 — an abandoned session never ran Phase 1.65, so its carryover
-    // is genuinely UNKNOWN. Emit `null` (not 0) so downstream effectiveness
-    // consumers can tell "not measured" apart from "measured zero" — 0 here
-    // would resurrect the very carryover=0 blind spot #773 exists to close.
+    status,
+    // Issue #773 — a backfilled stub never ran (or cannot be proven to have
+    // run) Phase 1.65, so its carryover is genuinely UNKNOWN. Emit `null` (not
+    // 0) so downstream effectiveness consumers can tell "not measured" apart
+    // from "measured zero" — 0 here would resurrect the very carryover=0
+    // blind spot #773 exists to close.
     effectiveness: { carryover: null },
-    _backfill_source: 'events-jsonl',
+    _backfill_source: backfillSource,
     _backfill_incomplete_fields: incomplete,
   };
   if (branchFound) record.branch = gathered.branch;
@@ -558,6 +576,212 @@ export async function backfillAbandonedSession({
   }
 
   /** Best-effort JSONL breadcrumb (project-local; never cascades). */
+  function logBreadcrumb(res) {
+    try {
+      if (typeof log === 'function') {
+        log(res);
+        return;
+      }
+      if (typeof repoRoot !== 'string' || repoRoot.length === 0) return;
+      const logPath = path.join(repoRoot, ...BACKFILL_LOG_REL);
+      fs.mkdirSync(path.dirname(logPath), { recursive: true });
+      fs.appendFileSync(
+        logPath,
+        JSON.stringify({
+          timestamp: new Date(nowMs).toISOString(),
+          action: res.action,
+          session_id: res.sessionId ?? null,
+          ...(res.error ? { error: res.error } : {}),
+        }) + '\n',
+        'utf8'
+      );
+    } catch {
+      /* never let logging cascade into the caller */
+    }
+  }
+}
+
+/**
+ * Backfill a `status: 'completed'` session record from STATE.md when STATE.md
+ * itself already carries `status: completed` but sessions.jsonl has no
+ * matching record (#429).
+ *
+ * ── THE GAP THIS CLOSES ──────────────────────────────────────────────────
+ *   `commands/close.md`'s Pre-Check treats `STATE.md status: completed` as
+ *   PROOF that the session-end skill's Phase 3.7 writer already ran, and
+ *   stops before invoking it — including when `status: completed` was set by
+ *   hand (or by any path that never reached Phase 3.7). The session then has
+ *   no record in sessions.jsonl, permanently: nothing else ever re-drives the
+ *   write, because the Pre-Check keeps refusing to invoke session-end for as
+ *   long as STATE.md says `completed`. This function is the mechanical
+ *   self-heal — every SessionEnd hook firing checks the invariant
+ *   "STATE.md completed ⇒ a record exists" and repairs it once, regardless of
+ *   which session's hook happens to run next.
+ *
+ * ── WHY `status: 'completed'`, NOT `'abandoned'` ─────────────────────────
+ *   `backfillAbandonedSession` (above) marks its stub `abandoned` because a
+ *   session that never reached `/close` is, by definition, unfinished. This
+ *   case is the opposite: STATE.md's own `status: completed` is a truth claim
+ *   the session made about itself — only the LEDGER write failed to run. The
+ *   record is tagged `_backfill_source: 'state-md-completed'` (never
+ *   `'events-jsonl'`) so a later reader can tell the two backfill classes
+ *   apart at a glance.
+ *
+ * ── DATA SOURCE ──────────────────────────────────────────────────────────
+ *   Required numeric counters (`total_waves`, `total_agents`,
+ *   `total_files_changed`, `agent_summary`) are derived ONLY from
+ *   events.jsonl via the same `collectSessionEvents` + `synthesizeRecord`
+ *   machinery `backfillAbandonedSession` uses — never from STATE.md's own
+ *   body sections (Wave History, etc.), which this module deliberately never
+ *   parses. Schema `REQUIRED_FIELDS` forbids `null` on these (non-negative
+ *   number, `session-schema/validator.mjs`), so "otherwise null" is realized
+ *   as "otherwise 0, flagged in `_backfill_incomplete_fields`" — the same
+ *   contract the abandoned path already carries and the same reason it exists.
+ *
+ *   CONSTRAINT specific to this path: STATE.md's `session` field is already
+ *   the SEMANTIC id, never the raw harness UUID — unlike
+ *   `backfillAbandonedSession` (which usually receives the UUID directly from
+ *   SessionEnd stdin), this function has no UUID to seed `collectSessionEvents`'s
+ *   `uuids` set with. Events therefore only surface here when a
+ *   `lock.acquired` breadcrumb bridges the UUID to this exact semantic id
+ *   (`ev.semantic_session_id === recordId`) — the SAME bridge condition
+ *   `backfillAbandonedSession`'s synthetic-id fallback exists to handle when
+ *   ABSENT. Without that bridge, `gathered` stays empty and the record still
+ *   validates (started_at/completed_at both fall back to `now`, flagged
+ *   incomplete) — degraded but never blocked.
+ *
+ * Never throws. Returns one of:
+ *   { action: 'backfilled', sessionId, record }              — written to disk
+ *   { action: 'would-backfill', sessionId, record }           — dryRun only
+ *   { action: 'skipped-no-state-md' }                — no STATE.md at any candidate path
+ *   { action: 'skipped-unparseable-state-md' }        — frontmatter did not parse
+ *   { action: 'skipped-not-completed', status }       — STATE.md status isn't 'completed'
+ *   { action: 'skipped-no-session-id' }               — completed but no `session:` field
+ *   { action: 'skipped-already-recorded', sessionId } — sessions.jsonl already has it
+ *   { action: 'skipped-marker-exists', sessionId }    — lost the TOCTOU claim
+ *   { action: 'error', error, sessionId? }             — any failure, swallowed
+ *
+ * @param {object} args
+ * @param {string} args.repoRoot            absolute project root
+ * @param {number|string} [args.now]        ms-since-epoch (test seam) or ISO string
+ * @param {boolean} [args.dryRun=false]      compute + validate only, no marker/write
+ * @param {object} [args.deps]               DI overrides (fs, appendJsonl, resolveStateMdPath, …)
+ * @returns {Promise<object>}
+ */
+export async function backfillCompletedFromStateMd({
+  repoRoot,
+  now = Date.now(),
+  dryRun = false,
+  deps = {},
+} = {}) {
+  const {
+    readFileSync = fs.readFileSync,
+    appendJsonl = defaultAppendJsonl,
+    openSync = fs.openSync,
+    closeSync = fs.closeSync,
+    validateSession = defaultValidateSession,
+    serializeSessionLineChecked = defaultSerialize,
+    resolveStateMdPath = defaultResolveStateMdPath,
+    parseStateMd = defaultParseStateMd,
+    log = null,
+  } = deps;
+
+  const nowMs = resolveNowMs(now);
+  const result = await run();
+  logBreadcrumb(result);
+  return result;
+
+  async function run() {
+    try {
+      if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
+        return { action: 'error', error: 'repoRoot must be a non-empty string' };
+      }
+
+      // -- Read + parse STATE.md ------------------------------------------------
+      const stateMdPath = resolveStateMdPath(repoRoot);
+      let raw;
+      try {
+        raw = readFileSync(stateMdPath, 'utf8');
+      } catch {
+        return { action: 'skipped-no-state-md' };
+      }
+      const parsed = parseStateMd(raw);
+      if (parsed === null) {
+        return { action: 'skipped-unparseable-state-md' };
+      }
+
+      const stateStatus = parsed.frontmatter?.status;
+      if (stateStatus !== 'completed') {
+        return { action: 'skipped-not-completed', status: stateStatus ?? null };
+      }
+
+      const recordId = parsed.frontmatter?.session;
+      if (typeof recordId !== 'string' || recordId.length === 0) {
+        return { action: 'skipped-no-session-id' };
+      }
+
+      // -- Dedupe against sessions.jsonl ----------------------------------------
+      const sessionsPath = path.join(repoRoot, ...SESSIONS_REL);
+      const dupe = checkAlreadyRecorded(readFileSync, sessionsPath, { recordId, sessionId: recordId });
+      if (dupe) return dupe;
+
+      // -- Derive whatever is derivable from events.jsonl (never STATE.md body) -
+      const eventsPath = path.join(repoRoot, ...EVENTS_REL);
+      const events = readJsonlSafe(readFileSync, eventsPath);
+      const gathered = collectSessionEvents(events, { sessionId: null, semanticSessionId: recordId });
+
+      // -- Synthesize + validate (round-trip gate) BEFORE any disk mutation ----
+      const record = synthesizeRecord({
+        recordId,
+        synthetic: false,
+        gathered,
+        nowMs,
+        status: 'completed',
+        backfillSource: 'state-md-completed',
+      });
+      let validated;
+      try {
+        validated = validateSession(record);
+        serializeSessionLineChecked(record);
+      } catch (err) {
+        return { action: 'error', error: `validation: ${err?.message ?? String(err)}`, sessionId: recordId };
+      }
+
+      if (dryRun) {
+        return { action: 'would-backfill', sessionId: recordId, record: validated };
+      }
+
+      // -- TOCTOU marker — atomic create-or-fail, own namespace so a concurrent
+      // abandoned-path claim for the same id can never collide with this one. --
+      const markerPath = path.join(repoRoot, '.orchestrator', 'metrics', markerName(`completed-${recordId}`));
+      try {
+        const fd = openSync(markerPath, 'wx');
+        closeSync(fd);
+      } catch (err) {
+        if (err && err.code === 'EEXIST') {
+          return { action: 'skipped-marker-exists', sessionId: recordId };
+        }
+        return { action: 'error', error: `marker: ${err?.message ?? String(err)}`, sessionId: recordId };
+      }
+
+      // -- Write via the shared append path -------------------------------------
+      try {
+        await appendJsonl(sessionsPath, validated);
+      } catch (err) {
+        return { action: 'error', error: `append: ${err?.message ?? String(err)}`, sessionId: recordId };
+      }
+      return { action: 'backfilled', sessionId: recordId, record: validated };
+    } catch (err) {
+      // Absolute backstop — the hook must never see an exception from here.
+      return { action: 'error', error: err?.message ?? String(err) };
+    }
+  }
+
+  /** Best-effort JSONL breadcrumb (project-local; never cascades). Shares the
+   * same log file as backfillAbandonedSession — the two are distinguishable
+   * by `_backfill_source` on the eventual sessions.jsonl record, and by the
+   * distinct action vocabulary above (`skipped-not-completed`,
+   * `skipped-no-state-md`, …) in the breadcrumb itself. */
   function logBreadcrumb(res) {
     try {
       if (typeof log === 'function') {

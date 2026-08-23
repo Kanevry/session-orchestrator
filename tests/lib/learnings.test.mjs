@@ -515,6 +515,66 @@ describe('rewriteLearnings — pre-write round-trip self-validation (#662)', () 
 });
 
 // ---------------------------------------------------------------------------
+// rewriteLearnings — legacy-tolerant round-trip (GitLab #386)
+//
+// readLearnings() already tolerates a record missing `source_session` (WARN,
+// pass through unchanged — see 'normalizeLearning — required-key WARN' above).
+// Before this fix, rewriteLearnings() re-validated with the SAME strict
+// legacy-required-fields gate appendLearning uses for a brand-new single
+// record, so a round-trip (read the store, rewrite it) could throw on data
+// the reader itself had just accepted. sweep-expired-learnings --apply
+// exercises exactly this path via its KEEP-batch dry-run probe.
+// ---------------------------------------------------------------------------
+
+describe('rewriteLearnings — legacy-tolerant round-trip (#386)', () => {
+  const legacyNoSourceSession = () => {
+    const e = LEGACY();
+    delete e.source_session;
+    return e;
+  };
+
+  it('does NOT throw for a record already missing source_session (default legacyTolerant: true)', async () => {
+    const filePath = join(tmp, 'legacy-round-trip.jsonl');
+    writeFileSync(filePath, JSON.stringify(legacyNoSourceSession()) + '\n');
+
+    const { entries } = await readLearnings(filePath);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).not.toHaveProperty('source_session');
+
+    // Pre-fix: rejects with ValidationError('learning missing required field: source_session').
+    await expect(rewriteLearnings(filePath, entries)).resolves.toBeDefined();
+
+    const { entries: after } = await readLearnings(filePath);
+    expect(after).toHaveLength(1);
+    expect(after[0]).not.toHaveProperty('source_session'); // not fabricated
+    expect(after[0].id).toBe(legacyNoSourceSession().id);
+    expect(after[0].insight).toBe(legacyNoSourceSession().insight);
+  });
+
+  it('legacyTolerant: false opts back into the strict pre-#386 behaviour', async () => {
+    const filePath = join(tmp, 'legacy-strict.jsonl');
+    writeFileSync(filePath, JSON.stringify(legacyNoSourceSession()) + '\n');
+    const { entries } = await readLearnings(filePath);
+
+    await expect(
+      rewriteLearnings(filePath, entries, { legacyTolerant: false })
+    ).rejects.toThrow(/source_session/);
+  });
+
+  it('still THROWS when a field vanishes during JSON serialization, even under legacyTolerant (#662 stays intact)', async () => {
+    const filePath = join(tmp, 'legacy-drop.jsonl');
+    writeFileSync(filePath, JSON.stringify(LEGACY()) + '\n');
+    // `insight: undefined` is a KEY on the object handed to rewriteLearnings
+    // (survives the lenient legacy presence check on the first validation
+    // pass) but JSON.stringify drops it — the exact corruption #662 exists to
+    // catch, and it must still be caught under the new default.
+    const entriesToWrite = [{ ...legacyNoSourceSession(), id: 'drop-1', insight: undefined }];
+    await expect(rewriteLearnings(filePath, entriesToWrite)).rejects.toThrow(ValidationError);
+    await expect(rewriteLearnings(filePath, entriesToWrite)).rejects.toThrow(/insight/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // rewriteLearnings — backup-before-rewrite + keep-N rotation (#721)
 //
 // The atomic rewrite is destructive on a gitignored store (no VCS restore). A

@@ -42,10 +42,20 @@ import {
  * append touches disk, so a bad write can never reach the file.
  *
  * @param {object} validated — already validated+normalized learning entry
+ * @param {{ legacyTolerant?: boolean }} [opts] — GitLab #386. When `true`,
+ *   a field that was ALREADY ABSENT on `validated` (e.g. a legacy record with
+ *   no `source_session`, tolerated by `readLearnings()`) stays tolerated after
+ *   the round-trip too — the re-validation call below runs in the same
+ *   tolerant mode. This does NOT weaken the #662 guarantee: a key that WAS
+ *   present on `validated` (even `undefined`) and is no longer a key on the
+ *   reparsed object is genuine JSON.stringify corruption, detected by the
+ *   dedicated `droppedKeys` check below and thrown regardless of
+ *   `legacyTolerant`. Default `false` — `appendLearning`'s single-record path
+ *   calls this with no options and is unaffected.
  * @returns {string} the verified JSONL line (newline-terminated)
  * @throws {ValidationError} when the serialized line does not round-trip
  */
-function serializeLearningLineChecked(validated) {
+function serializeLearningLineChecked(validated, { legacyTolerant = false } = {}) {
   let line;
   try {
     line = JSON.stringify(validated);
@@ -66,9 +76,23 @@ function serializeLearningLineChecked(validated) {
       `serialized learning line does not parse back as JSON: ${err.message}`
     );
   }
+  if (legacyTolerant) {
+    // A key that existed on `validated` (present, even as `undefined`) but
+    // vanished from `reparsed` was DROPPED by JSON.stringify — the exact
+    // undefined/NaN/etc. corruption #662 exists to catch. A key that was
+    // never on `validated` in the first place (the #386 legacy-field case)
+    // cannot appear here, because we only iterate `validated`'s own keys.
+    const droppedKeys = Object.keys(validated).filter((k) => !(k in reparsed));
+    if (droppedKeys.length > 0) {
+      throw new ValidationError(
+        `learning lost field(s) during JSON round-trip serialization ` +
+          `(non-serializable value?): ${droppedKeys.join(', ')}`
+      );
+    }
+  }
   // Re-validate the round-tripped shape — catches required fields that were
-  // present as `undefined`/`NaN` before stringify but vanished after.
-  validateLearning(reparsed);
+  // present as `undefined`/`NaN` before stringify but vanished/coerced after.
+  validateLearning(reparsed, { legacyTolerant });
   return line + '\n';
 }
 
@@ -203,29 +227,50 @@ async function rotateBackups(dir, baseName, keep = BACKUP_KEEP) {
  * - `backup` (default `true`): before the destructive rename, copy the current
  *   file to `${filePath}.bak-<ISO>`, then rotate to keep only the newest
  *   {@link BACKUP_KEEP}. Rotation is best-effort and never blocks the rewrite.
+ * - `legacyTolerant` (default `true`, GitLab #386): this function is a
+ *   ROUND-TRIP writer — its usual caller (`sweepExpiredLearnings` /
+ *   `pruneLearnings` in `expiry-sweep.mjs`) reads the store with
+ *   `readLearnings()` first, and that reader already tolerates a legacy
+ *   record missing e.g. `source_session` (WARN, pass through unchanged — see
+ *   `normalizeLearning`). Before this option existed, `rewriteLearnings()`
+ *   re-validated with the SAME strict gate `appendLearning()` uses for a
+ *   brand-new single record, so re-writing the unchanged KEEP batch of a
+ *   mechanical sweep could throw on data the reader itself had just accepted
+ *   — `sweep-expired-learnings --apply` failed on ANY store holding one such
+ *   record, even though the sweep never touches that record's fields. The
+ *   default is `true` precisely because the sweep/prune call sites cannot be
+ *   changed to opt in explicitly without touching `expiry-sweep.mjs`, which
+ *   passes no `legacyTolerant`; every field that genuinely CANNOT survive a
+ *   round-trip (a value JSON.stringify drops or coerces, e.g. `undefined`/
+ *   `NaN`) is still caught by the #662 checked serializer regardless of this
+ *   flag — see {@link serializeLearningLineChecked}. Pass `false` to restore
+ *   the pre-#386 fully-strict behaviour.
  *
  * @param {string} filePath
  * @param {object[]} entries
- * @param {{dryRun?: boolean, backup?: boolean}} [opts]
+ * @param {{dryRun?: boolean, backup?: boolean, legacyTolerant?: boolean}} [opts]
  * @returns {Promise<object[]>} validated entries (always returned, even dryRun)
  */
 export async function rewriteLearnings(
   filePath,
   entries,
-  { dryRun = false, backup = true } = {}
+  { dryRun = false, backup = true, legacyTolerant = true } = {}
 ) {
   const validated = entries.map((e) =>
-    validateLearning({
-      ...e,
-      schema_version: e?.schema_version ?? CURRENT_SCHEMA_VERSION,
-    })
+    validateLearning(
+      {
+        ...e,
+        schema_version: e?.schema_version ?? CURRENT_SCHEMA_VERSION,
+      },
+      { legacyTolerant }
+    )
   );
   // Pre-write round-trip self-validation (#662): serialize ALL entries through
   // the checked serializer before touching disk — a single bad entry throws
   // ValidationError and the file is left untouched (atomicity preserved because
   // we validate the full batch first, then write once). This runs even under
   // dryRun, so an invalid entry is still rejected on a dry probe.
-  const lines = validated.map((e) => serializeLearningLineChecked(e));
+  const lines = validated.map((e) => serializeLearningLineChecked(e, { legacyTolerant }));
 
   // dryRun (#721): validation has run; deliberately do NOT touch disk — no
   // rewrite, no backup — and hand the validated entries back to the caller.

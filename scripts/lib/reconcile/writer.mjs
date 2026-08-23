@@ -11,7 +11,9 @@
  *    concurrent writers — mirrors PSA-005 (withStateMdLock) pattern.
  *  - For each approved proposal: path-safety guard → STRUCTURAL content gate
  *    (#1015, see {@link frontmatterRefusalReason}) → mkdirSync → atomic
- *    tmp+rename write.
+ *    tmp+rename write → stamp the idempotency sidecar terminal via
+ *    `markCandidateProcessed` (issue #484 point 1) so a later reconcile run's
+ *    `isProcessed()` check does not re-propose the same learning.
  *  - For each rejected proposal: JSONL-append to `.orchestrator/reconcile.rejected.log`.
  *  - Never throws — all failures are collected into errors[] and returned.
  *
@@ -47,6 +49,7 @@ import path from 'node:path';
 import { withFileLock } from '../file-lock.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
 import { parseGlobsFrontmatter } from '../rule-loader.mjs';
+import { markCandidateProcessed } from './idempotency.mjs';
 
 // ---------------------------------------------------------------------------
 // Path constants (relative to repoRoot)
@@ -290,6 +293,9 @@ export async function writeApprovedRules({ approved, rejected = [], repoRoot, se
       let archived = 0;
 
       const rulesDir = rulesAbsDir(repoRoot);
+      // Shared stamp for every candidate this batch writes — mirrors `rejectedAt`
+      // below (step 2), one timestamp per invocation rather than one per item.
+      const approvedAt = new Date().toISOString();
 
       // Parent-directory symlink hardening (#697 security follow-up): if
       // `.claude/rules/` is itself a pre-planted symlink to a directory outside
@@ -356,13 +362,38 @@ export async function writeApprovedRules({ approved, rejected = [], repoRoot, se
         }
 
         // Ensure .claude/rules/ exists and write atomically
+        let writeOk = false;
         try {
           mkdirSync(rulesDir, { recursive: true });
           writeTextAtomic(absPath, item.content);
           written++;
+          writeOk = true;
         } catch (err) {
           const msg = err && err.message ? err.message : String(err);
           errors.push(`write failed "${item.path}": ${msg}`);
+        }
+
+        // Stamp the idempotency sidecar (issue #484 point 1): once a rule
+        // file is on disk, the candidate that proposed it must be marked
+        // terminal, or the next reconcile run has no way to know the
+        // proposal was already acted on and re-proposes it. Best-effort and
+        // gated on a successful write — the rule file landing is the thing
+        // that matters; a stamp failure is reported but does not undo it.
+        if (writeOk && typeof item.learningKey === 'string' && item.learningKey.length > 0) {
+          const stampResult = markCandidateProcessed({
+            learningKey: item.learningKey,
+            outcome: 'written',
+            processedAt: approvedAt,
+            fallbackSlug: item.slug,
+            fallbackCandidateId: item.candidateId,
+            fallbackConfidence: item.confidence,
+            repoRoot,
+          });
+          if (!stampResult.written) {
+            errors.push(
+              `sidecar-stamp failed for "${item.path}" (learningKey=${item.learningKey}) — rule file was written but the idempotency sidecar was not updated`,
+            );
+          }
         }
       }
 

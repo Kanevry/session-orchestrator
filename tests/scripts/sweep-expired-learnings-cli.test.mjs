@@ -159,6 +159,51 @@ describe('sweep-expired-learnings.mjs — --apply', () => {
     const backups = readdirSync(workdir).filter((f) => f.startsWith('learnings.jsonl.bak-'));
     expect(backups).toHaveLength(1);
   });
+
+  // GitLab #386: rewriteLearnings() re-validated the KEEP batch with the same
+  // strict gate as a brand-new write, so ONE legacy record missing
+  // `source_session` (a field readLearnings() already tolerates with a WARN)
+  // blocked the entire --apply — including archiving an UNRELATED expired
+  // record that has nothing to do with the defective one. "The sweep only
+  // moves records" (issue text) is exactly what this proves: the legacy
+  // record is never mutated, it just has to survive being re-written as part
+  // of the KEEP batch.
+  it('#386: a legacy record missing source_session no longer blocks --apply, and round-trips unchanged', () => {
+    const legacyActive = learning({
+      id: 'legacy-no-source-session',
+      expires_at: new Date(Date.now() + 30 * DAY_MS).toISOString(), // still active -> stays in KEEP
+    });
+    delete legacyActive.source_session;
+
+    const expired = learning({
+      id: 'expired-1',
+      expires_at: new Date(Date.now() - 30 * DAY_MS).toISOString(), // past grace -> archived
+    });
+
+    writeJsonl(learningsPath, [legacyActive, expired]);
+
+    const result = runSweep(['--file', learningsPath, '--archive', archivePath, '--apply']);
+    // Pre-fix: exit 2, "prune/sweep failed: learning missing required field: source_session".
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('dry_run=false');
+    expect(result.stdout).toContain('archived=1');
+
+    const remaining = readJsonl(learningsPath);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].id).toBe('legacy-no-source-session');
+    // Not fabricated — the fix must not invent a value to satisfy the validator.
+    expect(remaining[0]).not.toHaveProperty('source_session');
+    // Every other field survives the round trip unchanged (in substance).
+    expect(remaining[0].insight).toBe(legacyActive.insight);
+    expect(remaining[0].evidence).toBe(legacyActive.evidence);
+    expect(remaining[0].confidence).toBe(legacyActive.confidence);
+    expect(remaining[0].created_at).toBe(legacyActive.created_at);
+
+    const archived = readJsonl(archivePath);
+    expect(archived).toHaveLength(1);
+    expect(archived[0].id).toBe('expired-1');
+    expect(archived[0]._archive_reason).toBe('expired');
+  });
 });
 
 // ---------------------------------------------------------------------------

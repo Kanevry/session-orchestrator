@@ -70,6 +70,16 @@
  *        `capped` is a diagnostic sub-count that lets a report distinguish
  *        "genuinely ineligible" rejections from "eligible but cut by the volume
  *        brake" ones at a glance.
+ * @property {number} alreadyMaterialized - count of eligible learnings that were
+ *        NOT proposed this run because they are already terminal — either the
+ *        idempotency sidecar already carries a `processed_at` stamp for their
+ *        `learning_key` (`isProcessed`), or a `.claude/rules/*.md` file already
+ *        carries a matching `learning-key`/`learning-id` provenance marker
+ *        (issue #484: 9 of 10 proposals in one run were exactly this). Runs
+ *        BEFORE the `maxProposalsPerRun` volume brake so an already-materialized
+ *        learning never consumes a new learning's quota. Same accounting pattern
+ *        as `capped`: each one is ALSO counted inside `rejected`, and
+ *        `totalLearnings === proposed + rejected` still holds unchanged.
  * @property {boolean} written
  * @property {number} [skipped] - how many persisted sidecar lines the store's
  *        read-side shape guard rejected and this run therefore DROPPED from disk
@@ -88,7 +98,7 @@
  * @property {string} [error]  - present only when the never-throws top-level guard fired.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
 import { learningKeyOf } from '../learnings/kebab.mjs';
@@ -99,7 +109,9 @@ import { renderRule } from './renderer.mjs';
 import {
   DEFAULT_STORE_PATH,
   buildCandidate,
+  isProcessed,
   makeCandidateId,
+  loadCandidates as realLoadCandidates,
   mergeCandidates as realMergeCandidates,
 } from './idempotency.mjs';
 
@@ -130,6 +142,7 @@ function zeroedResult(error) {
       proposed: 0,
       rejected: 0,
       capped: 0,
+      alreadyMaterialized: 0,
       written: false,
     },
   };
@@ -239,6 +252,87 @@ function warnDroppedStoreRecords(skipped) {
 }
 
 /**
+ * Default sidecar-candidate loader for the issue #484 idempotency dedupe
+ * check (below, step 3a). Deliberately gated on `repoRoot` being a
+ * caller-supplied, non-empty string — UNLIKE `defaultLoadLearnings` and
+ * `realMergeCandidates`, this does NOT fall back to `process.cwd()` when
+ * `repoRoot` is absent. Every existing engine test exercises this module via
+ * `opts.learnings` with no `repoRoot`, precisely to avoid touching this repo's
+ * OWN `.orchestrator/runtime/reconcile-candidates.jsonl`; a cwd fallback here
+ * would silently read it. The disk-touching default is reserved for callers
+ * that always pass an explicit `repoRoot` (the `/reconcile` skill resolves it
+ * via `git rev-parse --show-toplevel`).
+ * @param {string|undefined} repoRoot
+ * @returns {{ records: import('./idempotency.mjs').ReconcileCandidate[] }}
+ */
+function defaultLoadCandidatesForDedupe(repoRoot) {
+  if (typeof repoRoot !== 'string' || repoRoot.length === 0) return { records: [] };
+  const { records } = realLoadCandidates({ repoRoot });
+  return { records };
+}
+
+/** Frontmatter form emitted by renderer.mjs: `learning-key: <value>` (no backticks, no leading dash). */
+const FRONTMATTER_LEARNING_KEY_RE = /^learning-key:\s*(.+)$/gm;
+/** Provenance-body form emitted by renderer.mjs: `` - learning-key: `<value>` ``. */
+const BODY_LEARNING_KEY_RE = /-\s*learning-key:\s*`([^`]+)`/g;
+/** Provenance-body form emitted by renderer.mjs: `` - learning-id: `<value>` ``. */
+const BODY_LEARNING_ID_RE = /-\s*learning-id:\s*`([^`]+)`/g;
+
+/**
+ * Scan `<repoRoot>/.claude/rules/*.md` for the provenance markers the
+ * renderer stamps on every machine-generated rule — the frontmatter
+ * `learning-key:` line and the body `## Provenance` block's `learning-key`/
+ * `learning-id` bullets (`renderer.mjs`) — and return the two identity sets a
+ * learning can already be materialized under. A learning whose derived
+ * `learning_key` OR raw `.id` appears in either set already has a rule file
+ * on disk: re-proposing it is the issue #484 defect (9 of 10 proposals in one
+ * run were learnings a `.claude/rules/` file already covered).
+ *
+ * Gated the same way as {@link defaultLoadCandidatesForDedupe}: an absent
+ * `repoRoot` yields empty sets rather than falling back to `process.cwd()`.
+ * Never throws — a missing `.claude/rules/` dir or an unreadable file
+ * degrades to "nothing materialized" for that source, never a crash.
+ * @param {string|undefined} repoRoot
+ * @returns {{ keys: Set<string>, ids: Set<string> }}
+ */
+function defaultReadMaterializedProvenance(repoRoot) {
+  const keys = new Set();
+  const ids = new Set();
+  if (typeof repoRoot !== 'string' || repoRoot.length === 0) return { keys, ids };
+
+  const rulesDir = join(repoRoot, '.claude', 'rules');
+  let entries;
+  try {
+    entries = readdirSync(rulesDir);
+  } catch {
+    return { keys, ids }; // no rules dir yet → nothing materialized
+  }
+
+  for (const entry of entries) {
+    if (!entry.endsWith('.md')) continue;
+    let content;
+    try {
+      content = readFileSync(join(rulesDir, entry), 'utf8');
+    } catch {
+      continue; // unreadable file — skip it, do not fail the whole scan
+    }
+    for (const m of content.matchAll(FRONTMATTER_LEARNING_KEY_RE)) {
+      const v = m[1].trim();
+      if (v) keys.add(v);
+    }
+    for (const m of content.matchAll(BODY_LEARNING_KEY_RE)) {
+      const v = m[1].trim();
+      if (v) keys.add(v);
+    }
+    for (const m of content.matchAll(BODY_LEARNING_ID_RE)) {
+      const v = m[1].trim();
+      if (v && v !== 'n/a') ids.add(v);
+    }
+  }
+  return { keys, ids };
+}
+
+/**
  * Run the reconciliation engine.
  *
  * Composes the four leaf modules into the full proposal pipeline. NEVER throws —
@@ -273,6 +367,13 @@ function warnDroppedStoreRecords(skipped) {
  *        direct learnings injection (takes precedence over `loadLearnings`).
  * @param {typeof realMergeCandidates} [opts.merge]
  *        override the sidecar merge (so tests never touch real `.orchestrator/runtime/`).
+ * @param {(repoRoot?: string) => { records: import('./idempotency.mjs').ReconcileCandidate[] }} [opts.loadCandidates]
+ *        override the idempotency-sidecar read used by the issue #484 dedupe step (below,
+ *        step 3a) — defaults to {@link defaultLoadCandidatesForDedupe} (repoRoot-gated, no
+ *        cwd fallback; see that function's doc for why).
+ * @param {(repoRoot?: string) => { keys: Set<string>, ids: Set<string> }} [opts.readMaterializedProvenance]
+ *        override the `.claude/rules/` provenance scan used by the same dedupe step —
+ *        defaults to {@link defaultReadMaterializedProvenance} (same repoRoot gate).
  * @param {boolean} [opts.dryRun]         - when true, compute proposals but SKIP the merge entirely.
  * @returns {Promise<ReconcileResult>}
  */
@@ -294,6 +395,12 @@ export async function runReconcile(
     // (the documented DI seam) — either location flips it on.
     const dryRun = dryRunParam === true || opts.dryRun === true;
     const merge = typeof opts.merge === 'function' ? opts.merge : realMergeCandidates;
+    const loadCandidatesForDedupe =
+      typeof opts.loadCandidates === 'function' ? opts.loadCandidates : defaultLoadCandidatesForDedupe;
+    const readMaterializedProvenance =
+      typeof opts.readMaterializedProvenance === 'function'
+        ? opts.readMaterializedProvenance
+        : defaultReadMaterializedProvenance;
     // Volume brake (#900 D) — always active; a missing/invalid override falls
     // back to the same default the Session Config parser uses.
     const maxProposalsPerRun =
@@ -331,20 +438,8 @@ export async function runReconcile(
       minInsightChars,
     });
 
-    // --- Pipeline step 3b — volume brake (#900 D) ---------------------------
-    // Sort eligible learnings by confidence DESC (ties keep their original,
-    // stable relative order) and keep only the top `maxProposalsPerRun`. The
-    // rest are cut BEFORE they ever reach the emitter — never proposed this
-    // run — and recorded as `capped` rejections in step 4b below so a report
-    // stays honest about the cut instead of silently dropping them.
     const confidenceOf = (l) =>
       l && typeof l === 'object' && typeof l.confidence === 'number' ? l.confidence : 0;
-    const sortedEligible = eligible
-      .map((learning, index) => ({ learning, index }))
-      .sort((a, b) => confidenceOf(b.learning) - confidenceOf(a.learning) || a.index - b.index)
-      .map(({ learning }) => learning);
-    const keptEligible = sortedEligible.slice(0, maxProposalsPerRun);
-    const cappedEligible = sortedEligible.slice(maxProposalsPerRun);
 
     /** @type {ReconcileProposal[]} */
     const proposals = [];
@@ -352,6 +447,92 @@ export async function runReconcile(
     const rejected = [];
     /** @type {import('./idempotency.mjs').ReconcileCandidate[]} */
     const candidates = [];
+
+    // --- Pipeline step 3a — idempotency + on-disk dedupe (issue #484) ------
+    // Runs BEFORE the volume brake (step 3b) so an already-materialized
+    // learning does not consume `maxProposalsPerRun` quota that a genuinely
+    // new learning could use — the #484 defect measured on a real repo was
+    // exactly this: 9 of 10 proposals in one run were learnings that already
+    // had a `.claude/rules/` file on disk, crowding out the tenth new one.
+    // Two independent sources both count as terminal, either is sufficient:
+    //   - the idempotency sidecar already carries a `processed_at` stamp for
+    //     this `learning_key` (`isProcessed`, previously computed but NEVER
+    //     called from this module — the other half of #484);
+    //   - a `.claude/rules/*.md` file already carries a matching
+    //     `learning-key`/`learning-id` provenance marker, discovered by
+    //     scanning disk directly (covers the case where a rule was written
+    //     without ever going through this sidecar, e.g. hand-authored).
+    const { records: existingCandidates } = loadCandidatesForDedupe(repoRoot) ?? { records: [] };
+    const materialized = readMaterializedProvenance(repoRoot) ?? { keys: new Set(), ids: new Set() };
+
+    /** @type {Array<Record<string, unknown>>} */
+    const stillEligible = [];
+    let alreadyMaterialized = 0;
+
+    for (const learning of eligible) {
+      const learningKey = rejectedLearningKey(learning);
+      const learningId =
+        learning &&
+        typeof learning === 'object' &&
+        typeof learning.id === 'string' &&
+        learning.id.length > 0
+          ? learning.id
+          : null;
+
+      const sidecarTerminal =
+        learningKey !== null && isProcessed({ learning_key: learningKey }, existingCandidates);
+      const onDisk =
+        (learningKey !== null && materialized.keys.has(learningKey)) ||
+        (learningId !== null && materialized.ids.has(learningId));
+
+      if (!sidecarTerminal && !onDisk) {
+        stillEligible.push(learning);
+        continue;
+      }
+
+      alreadyMaterialized += 1;
+      const type = learningType(learning);
+      const reason = sidecarTerminal
+        ? 'already processed — the idempotency sidecar already carries a terminal verdict for this learning-key'
+        : 'already materialized — a .claude/rules/ file already carries this learning-key/learning-id';
+      rejected.push({ learningKey, type, reason, status: 'rejected' });
+
+      // Freshly discovered on-disk materialization (not yet reflected in the
+      // sidecar): stamp it terminal now so a FUTURE run's `isProcessed()`
+      // check catches it without re-scanning `.claude/rules/` every time.
+      // Routed through the SAME `candidates` array + `merge()` call as every
+      // other record produced this run (step 6 below), so — like everything
+      // else here — it is skipped entirely under `dryRun`; this is not a
+      // second write path.
+      if (onDisk && !sidecarTerminal && learningKey !== null) {
+        const stamped = buildCandidate({
+          id: makeCandidateId(learningKey, `materialized-${type}`),
+          learningKey,
+          slug: '',
+          status: 'proposed',
+          reason,
+          confidence: confidenceOf(learning),
+          createdAt,
+        });
+        stamped.processed_at = createdAt;
+        stamped.outcome = 'already-on-disk';
+        candidates.push(stamped);
+      }
+    }
+
+    // --- Pipeline step 3b — volume brake (#900 D) ---------------------------
+    // Sort STILL-eligible learnings (post-dedupe) by confidence DESC (ties
+    // keep their original, stable relative order) and keep only the top
+    // `maxProposalsPerRun`. The rest are cut BEFORE they ever reach the
+    // emitter — never proposed this run — and recorded as `capped`
+    // rejections in step 4b below so a report stays honest about the cut
+    // instead of silently dropping them.
+    const sortedEligible = stillEligible
+      .map((learning, index) => ({ learning, index }))
+      .sort((a, b) => confidenceOf(b.learning) - confidenceOf(a.learning) || a.index - b.index)
+      .map(({ learning }) => learning);
+    const keptEligible = sortedEligible.slice(0, maxProposalsPerRun);
+    const cappedEligible = sortedEligible.slice(maxProposalsPerRun);
 
     // --- Pipeline step 4 — per eligible learning (wrapped per-item) ---------
     for (const learning of keptEligible) {
@@ -499,6 +680,7 @@ export async function runReconcile(
       proposed: proposals.length,
       rejected: rejected.length,
       capped: cappedEligible.length,
+      alreadyMaterialized,
       written,
     };
     // Additive + absence-preserving: the key exists ONLY when the store was
