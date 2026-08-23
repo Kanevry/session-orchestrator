@@ -50,7 +50,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { emitEvent } from '../events.mjs';
+import { emitEvent, sessionAttribution } from '../events.mjs';
 import { isLockLive, readLock, DEFAULT_TTL_HOURS } from '../session-lock.mjs';
 import { readRegistry, repoPathHash, isRegistryEntryFresh } from '../session-registry.mjs';
 import { parseFrontmatter } from '../vault-mirror/utils.mjs';
@@ -798,6 +798,13 @@ async function emitBoardEvent({ repoRoot, caller, action, path: outputPath, rows
         ...(Number.isFinite(rows) ? { rows } : {}),
         ...(Number.isFinite(reposSwept) ? { repos_swept: reposSwept } : {}),
         ...(Number.isFinite(durationMs) ? { duration_ms: durationMs } : {}),
+        // #1147: join key parity with the sibling `narrative_mirrored` event,
+        // which has carried attribution since #1073. Without it a board record
+        // cannot be joined to the session that wrote it. Both keys are OMITTED
+        // (never fabricated) when no session.lock is readable at `repoRoot` —
+        // and `repoRoot` is the SAME root the ledger line is pinned to below,
+        // so the attribution can never name a different tree than the record.
+        ...sessionAttribution(repoRoot),
       },
       { repoRoot },
     );

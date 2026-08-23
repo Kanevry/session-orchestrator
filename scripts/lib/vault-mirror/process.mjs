@@ -14,6 +14,7 @@ import { isRealSession } from '../session-schema/filters.mjs';
 import { resolveRepoNamespace } from './namespace.mjs';
 import { detectLearningSchema, normalizeLearningEntry, generateLearningNote, generateLearningNoteV2 } from './render-learnings.mjs';
 import { detectSessionSchema, normalizeSessionEntry, generateSessionNote, generateSessionNoteV2, generateSessionNoteV3 } from './render-sessions.mjs';
+import { emitMirrorEvent } from './telemetry.mjs';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 
@@ -256,8 +257,31 @@ export { deriveRepo } from './namespace.mjs';
  * @param {object} [opts.meta] — optional extra fields merged into the emitted JSON
  *   (used for quality-gate skips to carry a `reason` field). Callers that omit
  *   `meta` get the base JSON shape unchanged.
+ * @param {number} [opts.line] — 1-based JSONL line number. When FINITE, this
+ *   entry also gets one `orchestrator.vault.mirror_completed` ledger record
+ *   (#1147). Omitting it keeps the stdout-only behaviour, which is what the
+ *   direct unit tests of this function exercise.
+ * @param {boolean} [opts.dryRun] — the run's dry-run flag, for telemetry only.
+ * @param {string} [opts.skipClass] — `validation` | `mapper-crash`; telemetry only.
+ * @param {string} [opts.reason] — explicit telemetry reason. Defaults to
+ *   `meta.reason` when that exists, so the quality-gate strings
+ *   (`confidence:X < min:Y` / `narrative:N < min:M` / `status:…`) are REUSED
+ *   rather than recomputed — recomputing is how one fact becomes two copies.
+ * @returns {Promise<string>} the `action` string, so the CLI's main loop can
+ *   tally a run-level denominator without a second census of these call sites.
  */
-export function emitAction({ action, path, kind, id, vaultDir, meta }) {
+export async function emitAction({
+  action,
+  path,
+  kind,
+  id,
+  vaultDir,
+  meta,
+  line,
+  dryRun,
+  skipClass,
+  reason,
+}) {
   let rel;
   if (path === null || path === undefined) {
     rel = null;
@@ -271,7 +295,44 @@ export function emitAction({ action, path, kind, id, vaultDir, meta }) {
   if (meta && typeof meta === 'object') {
     Object.assign(payload, meta);
   }
+  // The stdout JSON-per-entry protocol is the CONTRACT other callers parse —
+  // it stays byte-identical; the ledger record below is purely additive.
   process.stdout.write(JSON.stringify(payload) + '\n');
+
+  if (Number.isFinite(line)) {
+    const telemetryReason =
+      reason ?? (meta && typeof meta.reason === 'string' ? meta.reason : undefined);
+    await emitMirrorEvent({
+      action,
+      kind,
+      line,
+      recordId: id,
+      // The VAULT-RELATIVE path (`rel`), never the absolute one: the ledger
+      // record can travel over the optional Clank webhook unredacted.
+      path: rel,
+      skipClass,
+      reason: telemetryReason,
+      dryRun,
+    });
+  }
+
+  return action;
+}
+
+/**
+ * Per-entry stdout + telemetry wrapper used by {@link processLearning} and
+ * {@link processSession}. Threads the line number, kind, vaultDir and dry-run
+ * flag out of the processor `ctx` so the 18 call sites do not repeat them.
+ *
+ * @param {number} lineNum — 1-based JSONL line number of the entry.
+ * @param {object} ctx — processor context (`vaultDir`, `dryRun`, `kind`).
+ * @param {object} opts — the remaining {@link emitAction} fields (`action`,
+ *   `path`, `id`, and optionally `meta`).
+ * @returns {Promise<string>} the `action` string.
+ */
+function emitEntryAction(lineNum, ctx, opts) {
+  const { vaultDir, dryRun, kind } = ctx;
+  return emitAction({ ...opts, vaultDir, kind, line: lineNum, dryRun });
 }
 
 // ── Secret masking (#974) — THE choke-point ───────────────────────────────────
@@ -447,7 +508,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
   const {
     vaultDir,
     dryRun,
-    kind,
+    kind: _kind, // threaded to emitAction via ctx by emitEntryAction (#1147); kept for ctx symmetry
     force = false,
     qualityMinConfidence = 0.5,
     qualityMinNarrativeChars: _qualityMinNarrativeChars = 400, // unused for learnings; kept for ctx symmetry
@@ -531,15 +592,12 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
   // Missing/non-numeric confidence is treated as 1.0 (legacy entries pass).
   const learningConfidence = typeof entry.confidence === 'number' ? entry.confidence : 1.0;
   if (learningConfidence < qualityMinConfidence) {
-    emitAction({
+    return emitEntryAction(_lineNum, ctx, {
       action: 'skipped-quality-low',
       path: null,
-      kind,
       id: entryId,
-      vaultDir,
       meta: { reason: `confidence:${learningConfidence} < min:${qualityMinConfidence}` },
     });
-    return;
   }
 
   // #660: namespace new writes under a per-repo subdirectory.
@@ -572,8 +630,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
         // Render the candidate and compare canonical fields before deciding to skip.
         const candidateContent = generator(entry, slug, generatorOpts);
         if (learningContentMatches(legacyContent, candidateContent)) {
-          emitAction({ action: 'skipped-noop', path: legacyFlatPath, kind, id: slug, vaultDir });
-          return;
+          return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: legacyFlatPath, id: slug });
         }
         // Content differs — fall through to write into the namespaced path.
       }
@@ -588,15 +645,13 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     if (!fm || !fm['_generator']) {
       // Hand-written: skip
       process.stderr.write(`SKIP hand-written: ${targetPath}\n`);
-      emitAction({ action: 'skipped-handwritten', path: targetPath, kind, id: entryId, vaultDir });
-      return;
+      return emitEntryAction(_lineNum, ctx, { action: 'skipped-handwritten', path: targetPath, id: entryId });
     }
 
     if (fm['_generator'] !== GENERATOR_MARKER) {
       // Different generator — treat as hand-written to be safe
       process.stderr.write(`SKIP unknown generator: ${targetPath}\n`);
-      emitAction({ action: 'skipped-handwritten', path: targetPath, kind, id: entryId, vaultDir });
-      return;
+      return emitEntryAction(_lineNum, ctx, { action: 'skipped-handwritten', path: targetPath, id: entryId });
     }
 
     if (fm['id'] !== slug) {
@@ -611,16 +666,14 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
         const disambigFm = parseFrontmatter(disambigContent);
         if (!disambigFm || !disambigFm['_generator']) {
           process.stderr.write(`SKIP hand-written (disambig): ${targetPath}\n`);
-          emitAction({ action: 'skipped-handwritten', path: targetPath, kind, id: entryId, vaultDir });
-          return;
+          return emitEntryAction(_lineNum, ctx, { action: 'skipped-handwritten', path: targetPath, id: entryId });
         }
         // Check updated advancement; if date has not advanced, also diff content.
         const entryUpdated = toDate(dateSource);
         if (disambigFm['updated'] && disambigFm['updated'] >= entryUpdated) {
           const candidateContent = generator(entry, slug, generatorOpts);
           if (learningContentMatches(disambigContent, candidateContent)) {
-            emitAction({ action: 'skipped-noop', path: targetPath, kind, id: disambigSlug, vaultDir });
-            return;
+            return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: targetPath, id: disambigSlug });
           }
           // Content differs — fall through to write.
         }
@@ -628,8 +681,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
 
       const content = generator(entry, slug, generatorOpts);
       if (!dryRun) writeFileSync(targetPath, content, 'utf8');
-      emitAction({ action: 'skipped-collision-resolved', path: targetPath, kind, id: slug, vaultDir });
-      return;
+      return emitEntryAction(_lineNum, ctx, { action: 'skipped-collision-resolved', path: targetPath, id: slug });
     }
 
     // Same id: check if updated would advance (unless --force overrides).
@@ -639,8 +691,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     if (!force && fm['updated'] && fm['updated'] >= entryUpdated) {
       const candidateContent = generator(entry, slug, generatorOpts);
       if (learningContentMatches(existingContent, candidateContent)) {
-        emitAction({ action: 'skipped-noop', path: targetPath, kind, id: slug, vaultDir });
-        return;
+        return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: targetPath, id: slug });
       }
       // Content differs — fall through to overwrite (same path as date-advance branch).
     }
@@ -648,21 +699,20 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     // Overwrite with advanced updated date (or forced re-render)
     const content = generator(entry, slug, generatorOpts);
     if (!dryRun) writeFileSync(targetPath, content, 'utf8');
-    emitAction({ action: 'updated', path: targetPath, kind, id: slug, vaultDir });
-    return;
+    return emitEntryAction(_lineNum, ctx, { action: 'updated', path: targetPath, id: slug });
   }
 
   // File does not exist — create
   const content = generator(entry, slug, generatorOpts);
   if (!dryRun) writeFileSync(targetPath, content, 'utf8');
-  emitAction({ action: 'created', path: targetPath, kind, id: slug, vaultDir });
+  return emitEntryAction(_lineNum, ctx, { action: 'created', path: targetPath, id: slug });
 }
 
 export async function processSession(rawEntry, _lineNum, ctx) {
   const {
     vaultDir,
     dryRun,
-    kind,
+    kind: _kind, // threaded to emitAction via ctx by emitEntryAction (#1147); kept for ctx symmetry
     force = false,
     qualityMinNarrativeChars = 400,
     qualityMinConfidence: _qualityMinConfidence = 0.5, // unused for sessions; kept for ctx symmetry
@@ -716,15 +766,12 @@ export async function processSession(rawEntry, _lineNum, ctx) {
   // status from the vault; the mapping keeps every OTHER status honest, and
   // guards the generators' other entry point (the render.mjs barrel).
   if (!isRealSession(entry)) {
-    emitAction({
+    return emitEntryAction(_lineNum, ctx, {
       action: 'skipped-abandoned',
       path: null,
-      kind,
       id: session_id,
-      vaultDir,
       meta: { reason: `status:${entry?.status}` },
     });
-    return;
   }
 
   // #732: resolve the leak-guarded repo namespace ONCE per session, BEFORE the
@@ -752,15 +799,12 @@ export async function processSession(rawEntry, _lineNum, ctx) {
   const narrativeBody = renderedBody.replace(/^---[\s\S]*?---/m, '').trim();
   const narrativeChars = narrativeBody.length;
   if (narrativeChars < qualityMinNarrativeChars) {
-    emitAction({
+    return emitEntryAction(_lineNum, ctx, {
       action: 'skipped-quality-low',
       path: null,
-      kind,
       id: session_id,
-      vaultDir,
       meta: { reason: `narrative:${narrativeChars} < min:${qualityMinNarrativeChars}` },
     });
-    return;
   }
 
   // #660: namespace new writes under a per-repo subdirectory. repoNs was
@@ -786,8 +830,7 @@ export async function processSession(rawEntry, _lineNum, ctx) {
     if (legacyFm && legacyFm['_generator'] === GENERATOR_MARKER && legacyFm['id'] === session_id) {
       const entryUpdated = toDate(entry.completed_at);
       if (!force && legacyFm['updated'] && legacyFm['updated'] >= entryUpdated) {
-        emitAction({ action: 'skipped-noop', path: legacyFlatPath, kind, id: session_id, vaultDir });
-        return;
+        return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: legacyFlatPath, id: session_id });
       }
       // Updated date would advance — fall through to write into the namespaced path.
     }
@@ -800,31 +843,27 @@ export async function processSession(rawEntry, _lineNum, ctx) {
     if (!fm || !fm['_generator']) {
       // Hand-written: skip
       process.stderr.write(`SKIP hand-written: ${targetPath}\n`);
-      emitAction({ action: 'skipped-handwritten', path: targetPath, kind, id: session_id, vaultDir });
-      return;
+      return emitEntryAction(_lineNum, ctx, { action: 'skipped-handwritten', path: targetPath, id: session_id });
     }
 
     if (fm['_generator'] !== GENERATOR_MARKER) {
       process.stderr.write(`SKIP unknown generator: ${targetPath}\n`);
-      emitAction({ action: 'skipped-handwritten', path: targetPath, kind, id: session_id, vaultDir });
-      return;
+      return emitEntryAction(_lineNum, ctx, { action: 'skipped-handwritten', path: targetPath, id: session_id });
     }
 
     // Same generator: check id and updated
     if (fm['id'] === session_id) {
       const entryUpdated = toDate(entry.completed_at);
       if (!force && fm['updated'] && fm['updated'] >= entryUpdated) {
-        emitAction({ action: 'skipped-noop', path: targetPath, kind, id: session_id, vaultDir });
-        return;
+        return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: targetPath, id: session_id });
       }
       if (!dryRun) writeFileSync(targetPath, renderedBody, 'utf8');
-      emitAction({ action: 'updated', path: targetPath, kind, id: session_id, vaultDir });
-      return;
+      return emitEntryAction(_lineNum, ctx, { action: 'updated', path: targetPath, id: session_id });
     }
   }
 
   // File does not exist — create. Reuse the rendered body computed during the
   // quality-gate check (avoids a second generator invocation).
   if (!dryRun) writeFileSync(targetPath, renderedBody, 'utf8');
-  emitAction({ action: 'created', path: targetPath, kind, id: session_id, vaultDir });
+  return emitEntryAction(_lineNum, ctx, { action: 'created', path: targetPath, id: session_id });
 }

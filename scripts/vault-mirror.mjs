@@ -56,6 +56,7 @@ import { createReadStream } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import { processLearning, processSession, getMaskerStats } from './lib/vault-mirror/process.mjs';
+import { emitMirrorEvent, emitMirrorRunEvent } from './lib/vault-mirror/telemetry.mjs';
 import { emitEvent } from './lib/events.mjs';
 import { autoCommitVaultMirror } from './lib/vault-mirror/auto-commit.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
@@ -131,56 +132,16 @@ export function _normalizeRemote(url) {
 //     `CLAUDE_PROJECT_DIR` or the CWD walk-up). This CLI has no repo-root flag
 //     and deriving one from `--source` would split a single run's telemetry
 //     across two ledgers.
-
-/**
- * Upper bound (characters) on the `reason` string written into the events
- * ledger. Renderer validation messages are short and structured
- * (`missing required field 'x' (session_id=…)`), and native mapper-crash
- * messages are bounded in practice — the clamp only stops a pathological
- * message from bloating every ledger line. Revisit if a legitimate reason is
- * ever observed truncated.
- */
-const MIRROR_REASON_MAX = 300;
-
-/**
- * Emit one `orchestrator.vault.mirror_completed` telemetry record for a single
- * mirrored entry. Never throws — a rejected emit is swallowed silently.
- *
- * @param {object} opts
- * @param {string} opts.action — the `action` value this script wrote to stdout
- *   for the same entry (currently always `skipped-invalid`).
- * @param {string} opts.kind — `learning` | `session` (the `--kind` flag).
- * @param {number} opts.line — 1-based JSONL line number of the entry. Always
- *   measured; the only locator available when the record has no id.
- * @param {string|null|undefined} opts.recordId — the record's `id` /
- *   `session_id`. Omitted from the payload when absent.
- * @param {string} opts.skipClass — failure class discriminator, mirroring the
- *   stdout `reason` where one exists: `validation` | `mapper-crash`.
- * @param {string|undefined} opts.reason — the renderer's error message.
- *   Clamped to {@link MIRROR_REASON_MAX}; omitted when absent.
- * @param {boolean} opts.dryRun — whether this run wrote anything at all.
- * @returns {Promise<void>}
- */
-async function emitMirrorEvent({ action, kind, line, recordId, skipClass, reason, dryRun }) {
-  // "Absent is not zero": a field we did not measure is OMITTED. `null` counts as
-  // not-measured here — `entryId` is explicitly null for a record carrying
-  // neither `id` nor `session_id`, and a null record_id in the ledger would read
-  // as a measured empty id rather than as "this record had none".
-  const present = (v) => v !== undefined && v !== null;
-  try {
-    await emitEvent('orchestrator.vault.mirror_completed', {
-      action,
-      kind,
-      line,
-      ...(present(recordId) ? { record_id: recordId } : {}),
-      ...(present(skipClass) ? { skip_class: skipClass } : {}),
-      ...(present(reason) ? { reason: String(reason).slice(0, MIRROR_REASON_MAX) } : {}),
-      dry_run: dryRun,
-    });
-  } catch {
-    // Silent no-op — telemetry must never be the reason a mirror run fails.
-  }
-}
+//
+// #1147 moved both emitters into `scripts/lib/vault-mirror/telemetry.mjs` and
+// widened the coverage from "the two skipped-invalid branches" to "every entry,
+// plus one run-level roll-up":
+//   - `emitMirrorEvent` is now also called from `process.mjs`'s 18 `emitAction`
+//     sites, so `created`/`updated`/every `skipped-*` gets a record too.
+//   - `emitMirrorRunEvent` adds the DENOMINATOR. Per-entry records alone cannot
+//     distinguish "healthy run over an empty source" from "the emitter is
+//     broken" — both write nothing (HR-105). The run event is emitted
+//     unconditionally, so `total: 0` is a measured zero.
 
 // ── CLI argument parsing ──────────────────────────────────────────────────────
 //
@@ -362,6 +323,98 @@ if (kind !== 'learning' && kind !== 'session') {
 // imports) so they are import-safe and unit-testable; see _resolveCanonicalSuffix
 // / _normalizeRemote there (#607 D2).
 
+// ── Run-level accounting + run close-out (#1147) ──────────────────────────────
+//
+// Deliberately OUTSIDE main(): the run event's whole contract is that it is
+// written ONCE PER RUN and that its ABSENCE is the broken-emitter signal
+// (HR-105). Three exits bypass main's normal tail — the malformed-JSON abort and
+// the filesystem-error abort inside the loop (both `process.exit`, which no
+// `finally` and no `catch` can intercept) and the top-level `main().catch`,
+// which runs in a scope where main's locals no longer exist. Keeping the
+// counters and the emitter out here is what lets all three close the run out
+// through ONE function instead of each re-deriving the payload.
+const runState = {
+  /** Non-blank JSONL lines the run ATTEMPTED — the denominator. */
+  total: 0,
+  /** Entries that produced `skipped-invalid` (validation error or mapper crash). */
+  skippedInvalid: 0,
+  /** Per-`action` tally, keyed by the same strings the entries wrote to stdout. */
+  actions: new Map(),
+  /** Latch: the run may only be closed out once. */
+  finished: false,
+};
+
+/** Count one entry action into {@link runState}. Ignores a non-string action. */
+const tally = (action) => {
+  if (typeof action !== 'string' || action.length === 0) return;
+  runState.actions.set(action, (runState.actions.get(action) ?? 0) + 1);
+};
+
+/**
+ * Close the run out: emit the run-level roll-up AND the masking roll-up,
+ * exactly once. Never throws, never exits — the caller owns the exit code.
+ *
+ * Both emits are documented as unconditional, and both used to sit only on the
+ * happy tail: an abort skipped them, so the very runs an operator most wants
+ * counted were the ones that vanished from the ledger, in the one shape
+ * ("no record") that the docstring reserves for a broken emitter.
+ *
+ * @param {'malformed-json'|'filesystem-error'|'unexpected-error'} [aborted]
+ *   Omitted on a complete run. When present it LABELS the counters as partial:
+ *   every line after the abort was never attempted, so the classes no longer
+ *   partition `total`.
+ * @returns {Promise<void>}
+ */
+async function finishRun(aborted) {
+  if (runState.finished) return;
+  runState.finished = true;
+
+  const countOf = (action) => runState.actions.get(action) ?? 0;
+  const actionBreakdown = Object.fromEntries(runState.actions);
+  await emitMirrorRunEvent({
+    kind,
+    total: runState.total,
+    created: countOf('created'),
+    updated: countOf('updated'),
+    // Every non-failure skip class, summed from the SAME map the breakdown is
+    // built from — `skipped-invalid` is deliberately excluded and reported as
+    // `failed`, because those are the entries whose session silently ends up
+    // without a vault note.
+    skipped: [...runState.actions].reduce(
+      (sum, [action, n]) =>
+        action.startsWith('skipped-') && action !== 'skipped-invalid' ? sum + n : sum,
+      0,
+    ),
+    failed: runState.skippedInvalid,
+    actionBreakdown,
+    dryRun,
+    ...(aborted ? { aborted } : {}),
+  });
+
+  // ── Masking telemetry (#1025) ───────────────────────────────────────────────
+  //
+  // Emitted here, at the END of the run, rather than at the lazy build site
+  // inside process.mjs. The build site is only reached once a record is actually
+  // processed, so a run over an empty/fully-skipped source would emit nothing and
+  // "the masker never ran" would be indistinguishable from "this channel has no
+  // masker wired".
+  //
+  // Counts only — never a needle, never a prefix of one, never masked text.
+  // Best-effort: a telemetry write must never be the reason a mirror run fails.
+  try {
+    const maskerStats = getMaskerStats();
+    await emitEvent('orchestrator.secret_masker.applied', {
+      channel: 'vault-mirror',
+      needle_count: maskerStats.needleCount,
+      records: maskerStats.records,
+      hits: maskerStats.hits,
+      dry_run: dryRun,
+    });
+  } catch {
+    // Silent no-op — see the note above.
+  }
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -405,7 +458,13 @@ async function main() {
   }
 
   let lineNum = 0;
-  let skippedInvalidCount = 0;
+  // The run-level denominator lives in `runState` above: `runState.total` counts
+  // every NON-BLANK line the run attempted, so
+  // `created + updated + skipped + failed === runState.total` for any run that
+  // does not abort — and an aborted run says so with the `aborted` field rather
+  // than publishing a partial count as a complete one. The breakdown is keyed by
+  // the same `action` string the entry wrote to stdout, so no second vocabulary
+  // is introduced.
   const ctx = {
     vaultDir,
     dryRun,
@@ -420,21 +479,30 @@ async function main() {
     lineNum++;
     const trimmed = line.trim();
     if (!trimmed) continue;
+    runState.total++;
 
     let entry;
     try {
       entry = JSON.parse(trimmed);
     } catch (err) {
       process.stderr.write(`vault-mirror: malformed JSON on line ${lineNum}: ${err.message}\n`);
+      // Close the run out BEFORE exiting: `process.exit` runs no `finally`, so
+      // without this the abort is the one outcome that leaves no run record —
+      // exactly the shape reserved for a broken emitter.
+      await finishRun('malformed-json');
       process.exit(1);
     }
 
     try {
-      if (kind === 'learning') {
-        await processLearning(entry, lineNum, ctx);
-      } else {
-        await processSession(entry, lineNum, ctx);
-      }
+      // Both processors return the `action` string they emitted (every one of
+      // their exit paths is an `emitAction` call), so the tally needs no second
+      // census of the 18 call sites in process.mjs — a census that would go
+      // stale the first time a branch is added.
+      const action =
+        kind === 'learning'
+          ? await processLearning(entry, lineNum, ctx)
+          : await processSession(entry, lineNum, ctx);
+      tally(action);
     } catch (err) {
       // Validation errors (missing required fields) → per-entry skip, not a global failure
       if (err.message.startsWith('vault-mirror:')) {
@@ -443,7 +511,8 @@ async function main() {
         process.stdout.write(
           JSON.stringify({ action: 'skipped-invalid', path: null, kind, id: entryId }) + '\n',
         );
-        skippedInvalidCount++;
+        runState.skippedInvalid++;
+        tally('skipped-invalid');
         await emitMirrorEvent({
           action: 'skipped-invalid',
           kind,
@@ -481,7 +550,8 @@ async function main() {
             reason: 'mapper-crash',
           }) + '\n',
         );
-        skippedInvalidCount++;
+        runState.skippedInvalid++;
+        tally('skipped-invalid');
         await emitMirrorEvent({
           action: 'skipped-invalid',
           kind,
@@ -495,42 +565,28 @@ async function main() {
       }
       // Unexpected filesystem errors → fatal
       process.stderr.write(`vault-mirror: filesystem error on line ${lineNum}: ${err.message}\n`);
+      await finishRun('filesystem-error');
       process.exit(2);
     }
   }
 
-  // ── Masking telemetry (#1025) ───────────────────────────────────────────────
+  // ── Run close-out (#1147) ───────────────────────────────────────────────────
   //
-  // Emitted UNCONDITIONALLY, exactly once per channel run, and HERE — at the end
-  // of the run rather than at the lazy build site inside process.mjs. The build
-  // site is only reached once a record is actually processed, so a run over an
-  // empty/fully-skipped source would emit nothing and "the masker never ran" would
-  // be indistinguishable from "this channel has no masker wired". Placed BEFORE
-  // the --strict-schema abort so a failing run still reports its masking posture.
-  //
-  // Counts only — never a needle, never a prefix of one, never masked text.
-  // Best-effort: a telemetry write must never be the reason a mirror run fails.
-  try {
-    const maskerStats = getMaskerStats();
-    await emitEvent('orchestrator.secret_masker.applied', {
-      channel: 'vault-mirror',
-      needle_count: maskerStats.needleCount,
-      records: maskerStats.records,
-      hits: maskerStats.hits,
-      dry_run: dryRun,
-    });
-  } catch {
-    // Silent no-op — see the note above.
-  }
+  // The happy tail. Both roll-ups live in `finishRun` above, which every abort
+  // path also calls, so "the run ended" is emitted from ONE place regardless of
+  // HOW it ended. Placed BEFORE the --strict-schema abort so a failing run still
+  // reports its denominator — that run is precisely the one an operator wants
+  // counted.
+  await finishRun();
 
   // --strict-schema: abort with exit 1 when any entry was skipped-invalid.
   // Useful in CI to catch producer-side schema drift early (issue #249).
-  if (strictSchema && skippedInvalidCount > 0) {
+  if (strictSchema && runState.skippedInvalid > 0) {
     process.stdout.write(
-      JSON.stringify({ action: 'strict-schema-abort', skipped: skippedInvalidCount, kind }) + '\n',
+      JSON.stringify({ action: 'strict-schema-abort', skipped: runState.skippedInvalid, kind }) + '\n',
     );
     process.stderr.write(
-      `vault-mirror: --strict-schema: ${skippedInvalidCount} entries failed validation — exiting 1\n`,
+      `vault-mirror: --strict-schema: ${runState.skippedInvalid} entries failed validation — exiting 1\n`,
     );
     process.exit(1);
   }
@@ -543,8 +599,12 @@ async function main() {
   }
 }
 
-  main().catch((err) => {
+  main().catch(async (err) => {
     process.stderr.write(`vault-mirror: unexpected error: ${err.message}\n`);
+    // Same reason as the two in-loop aborts: an unexpected throw is a run that
+    // ENDED, and the ledger has to say so. `finishRun` never throws, so this
+    // cannot turn a diagnosable crash into a silent one.
+    await finishRun('unexpected-error');
     process.exit(2);
   });
 }

@@ -1434,6 +1434,32 @@ describe('mirrorBoard — board_written telemetry', () => {
     expect(events[0]).not.toHaveProperty('path');
     expect(events[0]).not.toHaveProperty('rows');
     expect(events[0]).not.toHaveProperty('repos_swept');
+    // #1147: the sibling `narrative_mirrored` event spreads sessionAttribution;
+    // without a readable lock BOTH keys stay omitted rather than fabricated.
+    expect(events[0]).not.toHaveProperty('session_id');
+    expect(events[0]).not.toHaveProperty('semantic_session_id');
+  });
+
+  it('board_written carries sessionAttribution when a session.lock is readable (#1147)', async () => {
+    // Bug this catches: board_written had NO attribution while its sibling
+    // narrative_mirrored has carried it since #1073 — so a board record could
+    // not be joined to the session that wrote it.
+    const repoRoot = makeRepo(
+      'attr-board-repo',
+      buildLockBody({
+        sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        semanticSessionId: 'main-2026-08-23-deep-1',
+        now: FIXED_NOW,
+      }),
+    );
+
+    const result = await mirrorBoard({ repoRoot, now: FIXED_NOW, hostPaths: HERMETIC_HOST_PATHS });
+    expect(result).toEqual({ action: 'skipped-vault-disabled' });
+
+    const events = readBoardEvents(repoRoot);
+    expect(events).toHaveLength(1);
+    expect(events[0].session_id).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
+    expect(events[0].semantic_session_id).toBe('main-2026-08-23-deep-1');
   });
 
   it('still writes the board when the events ledger path is unwritable', async () => {

@@ -18,6 +18,19 @@ vi.mock('node:child_process', async () => {
   return { ...actual };
 });
 
+// #1147: emitAction now also writes an `orchestrator.vault.mirror_completed`
+// ledger record. These are UNIT tests of the stdout protocol — without this mock
+// every processLearning/processSession case here would append synthetic records
+// to the REAL `.orchestrator/metrics/events.jsonl` (the tests/lib/worktree.test.mjs
+// self-poisoning class, #984). The CLI-level tests in tests/unit/vault-mirror.test.mjs
+// exercise the real emitter against a pinned throwaway CLAUDE_PROJECT_DIR.
+vi.mock('../../../scripts/lib/vault-mirror/telemetry.mjs', () => ({
+  MIRROR_EVENT: 'orchestrator.vault.mirror_completed',
+  MIRROR_RUN_EVENT: 'orchestrator.vault.mirror_run_completed',
+  emitMirrorEvent: vi.fn(async () => {}),
+  emitMirrorRunEvent: vi.fn(async () => {}),
+}));
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /**
@@ -140,7 +153,7 @@ describe('emitAction', () => {
     const { emitAction } = await import('@lib/vault-mirror/process.mjs');
     const vaultDir = '/vault';
     const filePath = '/vault/40-learnings/my-learning.md';
-    const { lines } = captureStdout(() =>
+    const { lines } = await captureStdout(() =>
       emitAction({ action: 'created', path: filePath, kind: 'learning', id: 'my-id', vaultDir }),
     );
     expect(lines).toHaveLength(1);
@@ -158,7 +171,7 @@ describe('emitAction', () => {
     const { emitAction } = await import('@lib/vault-mirror/process.mjs');
     const vaultDir = '/vault';
     const filePath = '/vault/50-sessions/session.md';
-    const { lines } = captureStdout(() =>
+    const { lines } = await captureStdout(() =>
       emitAction({ action: 'created', path: filePath, kind: 'session', id: 'sess-id', vaultDir }),
     );
     expect(lines[0].path).toBe('50-sessions/session.md');

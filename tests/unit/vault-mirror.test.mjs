@@ -377,6 +377,201 @@ describe('vault-mirror CLI', () => {
     // "Absent is not zero": no target path is resolved on this branch, so the
     // key must be MISSING rather than written as null.
     expect(mirrorEvents[0]).not.toHaveProperty('path');
+    // No session.lock under the pinned projectDir → sessionAttribution omits
+    // BOTH keys rather than fabricating an id that would collide across every
+    // unattributed run.
+    expect(mirrorEvents[0]).not.toHaveProperty('session_id');
+    expect(mirrorEvents[0]).not.toHaveProperty('semantic_session_id');
+  });
+
+  // ── #1147: per-entry coverage + the run-level denominator ──────────────────
+  //
+  // Bug this block catches: `mirror_completed` fired ONLY on the two
+  // skipped-invalid branches, so a HEALTHY run wrote nothing to the ledger —
+  // and a run whose emitter was broken also wrote nothing. Measured 2026-08-23:
+  // 0 `vault.mirror_completed` records in this repo's events.jsonl against 1272
+  // `secret_masker.applied` from the same CLI.
+
+  /** Read the ledger the CLI wrote under a pinned CLAUDE_PROJECT_DIR. */
+  function readMirrorEvents(projectDir, eventName = 'orchestrator.vault.mirror_completed') {
+    const ledger = join(projectDir, '.orchestrator', 'metrics', 'events.jsonl');
+    return readFileSync(ledger, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.event === eventName);
+  }
+
+  it('happy-path created emits mirror_completed with the vault-RELATIVE path (#1147)', () => {
+    const vaultDir = tmp();
+    const projectDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, VALID_SESSION);
+
+    const result = runMirror(
+      ['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session', '--vault-name', 'test-vault'],
+      { projectDir },
+    );
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim()).action).toBe('created');
+
+    const mirrorEvents = readMirrorEvents(projectDir);
+    expect(mirrorEvents).toHaveLength(1);
+    expect(mirrorEvents[0]).toMatchObject({
+      action: 'created',
+      kind: 'session',
+      record_id: 'session-2026-04-13',
+      line: 1,
+      dry_run: false,
+    });
+    expect(forwardSlashes(mirrorEvents[0].path)).toBe('50-sessions/test-vault/session-2026-04-13.md');
+    // `skip_class` is a FAILURE discriminator; a success record must omit it
+    // rather than invent a class.
+    expect(mirrorEvents[0]).not.toHaveProperty('skip_class');
+  });
+
+  it('skipped-quality-low emits mirror_completed carrying the existing meta.reason (#1147)', () => {
+    const vaultDir = tmp();
+    const projectDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+
+    const result = runMirror(
+      [
+        '--vault-dir', vaultDir,
+        '--source', sourceFile,
+        '--kind', 'learning',
+        '--quality-min-confidence', '0.95',
+      ],
+      { projectDir },
+    );
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim()).action).toBe('skipped-quality-low');
+
+    const mirrorEvents = readMirrorEvents(projectDir);
+    expect(mirrorEvents).toHaveLength(1);
+    expect(mirrorEvents[0].action).toBe('skipped-quality-low');
+    expect(mirrorEvents[0].kind).toBe('learning');
+    // The reason is REUSED from the stdout `meta.reason`, not recomputed.
+    expect(mirrorEvents[0].reason).toMatch(/confidence:0\.9 < min:0\.95/);
+    // A quality-gate skip resolves no target path (stdout `path: null`).
+    expect(mirrorEvents[0]).not.toHaveProperty('path');
+  });
+
+  it('mirror_completed carries sessionAttribution when a session.lock is readable (#1147)', () => {
+    const vaultDir = tmp();
+    const projectDir = tmp();
+    mkdirSync(join(projectDir, '.orchestrator'), { recursive: true });
+    writeFileSync(
+      join(projectDir, '.orchestrator', 'session.lock'),
+      JSON.stringify({
+        session_id: '11111111-2222-4333-8444-555555555555',
+        semantic_session_id: 'main-2026-08-23-deep-1',
+        started_at: '2026-08-23T10:00:00.000Z',
+        mode: 'deep',
+        pid: 999999,
+        host: 'test-host',
+        ttl_hours: 4,
+      }) + '\n',
+      'utf8',
+    );
+    const sourceFile = writeJsonl(vaultDir, VALID_SESSION);
+
+    const result = runMirror(
+      ['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session', '--vault-name', 'test-vault'],
+      { projectDir },
+    );
+    expect(result.status).toBe(0);
+
+    const mirrorEvents = readMirrorEvents(projectDir);
+    expect(mirrorEvents).toHaveLength(1);
+    // The lock is read at SO_PROJECT_DIR (the pinned projectDir), NOT at
+    // process.cwd() — `readLock` defaults to cwd, which here is the real repo.
+    // A cwd-defaulted attribution would name the operator's live session.
+    expect(mirrorEvents[0].session_id).toBe('11111111-2222-4333-8444-555555555555');
+    expect(mirrorEvents[0].semantic_session_id).toBe('main-2026-08-23-deep-1');
+  });
+
+  it('a run over ZERO entries still emits mirror_run_completed with total:0 (#1147 denominator)', () => {
+    // THE named bug: with per-entry events only, a healthy empty run writes
+    // nothing and a broken emitter writes nothing — indistinguishable
+    // (host-resources.md § HR-105). The denominator must exist even when
+    // nothing happened, so its ABSENCE is the only broken-emitter signal.
+    const vaultDir = tmp();
+    const projectDir = tmp();
+    const sourceFile = join(vaultDir, 'source.jsonl');
+    writeFileSync(sourceFile, '', 'utf8');
+
+    const result = runMirror(
+      ['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning'],
+      { projectDir },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+
+    // No entry was processed, so there is no per-entry record at all …
+    expect(readMirrorEvents(projectDir)).toHaveLength(0);
+    // … and exactly one run record, whose zeros are MEASURED.
+    const runEvents = readMirrorEvents(projectDir, 'orchestrator.vault.mirror_run_completed');
+    expect(runEvents).toHaveLength(1);
+    expect(runEvents[0]).toMatchObject({
+      kind: 'learning',
+      total: 0,
+      created: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+      dry_run: false,
+    });
+    // Nothing occurred, so the breakdown has nothing to enumerate — an empty
+    // object would claim the same thing more loudly and read as measured.
+    expect(runEvents[0]).not.toHaveProperty('action_breakdown');
+  });
+
+  it('mirror_run_completed counts created / skipped / failed across a multi-entry run (#1147)', () => {
+    const vaultDir = tmp();
+    const projectDir = tmp();
+    // 3 entries: one valid (created), one below the confidence floor
+    // (skipped-quality-low), one missing `insight` (skipped-invalid).
+    const lowConfidence = JSON.stringify({
+      ...JSON.parse(VALID_LEARNING),
+      id: 'a1b2c3d4-0001-4000-8000-000000000002',
+      subject: 'low-confidence-entry',
+      confidence: 0.1,
+    });
+    const invalid = JSON.stringify({
+      id: 'a1b2c3d4-0001-4000-8000-000000000003',
+      type: 'architectural',
+      subject: 'missing-insight-entry',
+      confidence: 0.9,
+      created_at: '2026-04-13T10:00:00Z',
+    });
+    const sourceFile = join(vaultDir, 'source.jsonl');
+    writeFileSync(sourceFile, [VALID_LEARNING, lowConfidence, invalid].join('\n') + '\n', 'utf8');
+
+    const result = runMirror(
+      ['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning'],
+      { projectDir },
+    );
+    expect(result.status).toBe(0);
+
+    expect(readMirrorEvents(projectDir)).toHaveLength(3);
+    const runEvents = readMirrorEvents(projectDir, 'orchestrator.vault.mirror_run_completed');
+    expect(runEvents).toHaveLength(1);
+    expect(runEvents[0]).toMatchObject({
+      kind: 'learning',
+      total: 3,
+      created: 1,
+      updated: 0,
+      skipped: 1,
+      failed: 1,
+    });
+    // The invariant the denominator exists for: the classes partition `total`.
+    const { total, created, updated, skipped, failed } = runEvents[0];
+    expect(created + updated + skipped + failed).toBe(total);
+    expect(runEvents[0].action_breakdown).toMatchObject({
+      created: 1,
+      'skipped-quality-low': 1,
+      'skipped-invalid': 1,
+    });
   });
 
   // ── --strict-schema flag (Issue #249 follow-up) ──────────────────────────
@@ -753,6 +948,55 @@ describe('vault-mirror CLI', () => {
 
     const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
     expect(result.stderr.trim().length).toBeGreaterThan(0);
+  });
+
+  it('malformed JSONL still emits mirror_run_completed, labelled aborted:malformed-json', () => {
+    // THE named bug: the malformed-JSON branch called `process.exit(1)` from
+    // inside the loop, jumping over the run emit at the tail. So the run event —
+    // whose documented contract is "emitted unconditionally, its ABSENCE is the
+    // broken-emitter signal" — was missing for precisely the runs an operator
+    // most wants counted, in the one shape reserved for a broken emitter.
+    const vaultDir = tmp();
+    const projectDir = tmp();
+    // Line 1 mirrors cleanly (created), line 2 is truncated JSON → abort.
+    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING + '\n{"id":\n');
+
+    const result = runMirror(
+      ['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning'],
+      { projectDir },
+    );
+    expect(result.status).toBe(1);
+
+    const runEvents = readMirrorEvents(projectDir, 'orchestrator.vault.mirror_run_completed');
+    expect(runEvents).toHaveLength(1);
+    expect(runEvents[0]).toMatchObject({
+      kind: 'learning',
+      aborted: 'malformed-json',
+      total: 2,
+      created: 1,
+    });
+    // The counters are PARTIAL and `aborted` is what says so: the classes do
+    // NOT partition `total` here (the malformed line was attempted, never
+    // classified), and without the label that gap would read as producer/consumer
+    // drift rather than as an abort.
+    const { total, created, updated, skipped, failed } = runEvents[0];
+    expect(created + updated + skipped + failed).toBeLessThan(total);
+  });
+
+  it('a COMPLETE run omits `aborted` entirely — absent means "ran to the end"', () => {
+    const vaultDir = tmp();
+    const projectDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+
+    const result = runMirror(
+      ['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning'],
+      { projectDir },
+    );
+    expect(result.status).toBe(0);
+
+    const runEvents = readMirrorEvents(projectDir, 'orchestrator.vault.mirror_run_completed');
+    expect(runEvents).toHaveLength(1);
+    expect(runEvents[0]).not.toHaveProperty('aborted');
   });
 
   // ── Dry-run mode ──────────────────────────────────────────────────────────
