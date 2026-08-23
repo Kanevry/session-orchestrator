@@ -1032,7 +1032,7 @@ if (sweep) {
 
      Fail-open: a `markOpenQuestionAnsweredOnDisk` failure is non-fatal — log a WARN and proceed with the close; the question simply stays `- [ ]` and roundtrips to the next session.
 
-3b. **Drain the issue-budget overflow — exactly ONE collector artefact (issue-budget):** when `.orchestrator/runtime/issue-budget.json` has a non-empty `overflow[]`, the session hit its `issue-budget.max-per-session` cap and every over-cap creation was PARKED rather than filed. Fold the whole list into a single artefact so nothing is silently dropped.
+3b. **Drain the issue-budget overflow — exactly ONE collector artefact (issue-budget):** when this session's budget file (`budgetStatePath(repoRoot, accountingSessionId)` → `.orchestrator/runtime/issue-budget/<hash>.json`, #1141) has a non-empty `overflow[]`, the session hit its `issue-budget.max-per-session` cap and every over-cap creation was PARKED rather than filed. Fold the whole list into a single artefact so nothing is silently dropped.
 
     **Ordering (load-bearing):** run this as the LAST issue-creating action of Phase 5 — after step 3, after "Discovery Issue Creation", after step 4 — and re-read the counter file at that moment. Those steps can themselves push new entries into `overflow[]`; draining early would leave them unfiled.
 
