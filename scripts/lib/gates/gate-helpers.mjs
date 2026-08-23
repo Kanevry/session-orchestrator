@@ -154,7 +154,35 @@ export function extractCount(output, pattern) {
 const TEST_SUMMARY_LINE = /^\s*Tests\b/;
 
 /**
- * Parse test-runner output for pass/fail/total TEST-CASE counts.
+ * Matches vitest's FILE-level summary line (`Test Files  8 failed | 595 passed (603)`).
+ *
+ * Distinct from {@link TEST_SUMMARY_LINE} (the TEST-CASE line, `Tests  ...`): a
+ * suite that dies at import time is counted HERE, and the `Tests` line then
+ * carries no `N failed` segment at all (#1149) — vitest omits it whenever zero
+ * individual test cases ran. Last matching line wins (the final summary after
+ * any rerun), mirroring `TEST_SUMMARY_LINE`'s own convention.
+ */
+const TEST_FILES_SUMMARY_LINE = /^\s*Test Files\b/;
+
+/**
+ * Parse a `<N> passed` / `<N> failed` pair out of one summary line/scope.
+ * `total` is their sum (skipped excluded) — the same rule the top-level
+ * test-case triple in {@link extractTestCounts} publishes.
+ *
+ * @param {string} scope
+ * @returns {{ passed: number, failed: number, total: number }}
+ */
+function parseCountTriple(scope) {
+  const passMatch = scope.match(/(\d+)\s+passed/);
+  const failMatch = scope.match(/(\d+)\s+failed/);
+  const passed = passMatch ? parseInt(passMatch[1], 10) : 0;
+  const failed = failMatch ? parseInt(failMatch[1], 10) : 0;
+  return { passed, failed, total: passed + failed };
+}
+
+/**
+ * Parse test-runner output for pass/fail/total TEST-CASE counts, plus the
+ * vitest FILE-level triple when a `Test Files` summary line is present.
  *
  * ## Which line is parsed
  *
@@ -168,10 +196,38 @@ const TEST_SUMMARY_LINE = /^\s*Tests\b/;
  * A naive whole-output scan hits the FILE count (550) and publishes it as the
  * test count — the number then rides `gate-full.mjs`'s `test.passed` into the
  * `orchestrator.quality_gate.*` event stream looking authoritative. So: when a
- * `Tests`-anchored summary line exists, ONLY that line is parsed (the LAST one,
- * which is the final summary after any rerun). Terse or non-vitest output with
- * no such line falls back to scanning the whole string, which preserves the
- * bare `"42 passed"` / `"10 passed, 5 failed"` forms.
+ * `Tests`-anchored summary line exists, ONLY that line is parsed for the
+ * test-case triple (the LAST one, which is the final summary after any
+ * rerun). Terse or non-vitest output with no such line falls back to scanning
+ * the whole string, which preserves the bare `"42 passed"` / `"10 passed, 5
+ * failed"` forms.
+ *
+ * The `Test Files` line is parsed the same way, into a SEPARATE nested `files`
+ * triple — never folded into `failed`/`total`. `total === passed + failed` is
+ * load-bearing for the test-case triple (`admitSuiteCounts`, and historically
+ * `failed = total - passed` in `run-quality-gate.mjs`); mixing file counts in
+ * would either break that invariant or invent phantom test-case failures. A
+ * suite that dies at import is invisible on the `Tests` line (vitest omits
+ * `N failed` there when zero test cases ran) and visible only on `Test
+ * Files` — #1149, measured as
+ * `{"test":{"status":"fail","total":14671,"passed":14671,"failed":0}}`, with
+ * no field anywhere naming the 8 files that actually died.
+ * `gate-full.mjs` derives a `suite_died` boolean from `files.failed` for
+ * exactly this shape.
+ *
+ * ## `files` is NULL when no `Test Files` line was seen — never a zero triple
+ *
+ * Only vitest prints that line. A non-vitest runner, a terse reporter, or a
+ * fail-fast crash produces output with no file-level summary at all, and the
+ * function used to publish `files_total/passed/failed: 0` there — an UNMEASURED
+ * zero, byte-identical in the envelope to a measured one, from which
+ * `gate-full.mjs` then derived `suite_died: false` as if it had checked. That is
+ * the same "absent is not zero" defect `admitSuiteCounts` exists to prevent one
+ * field over, so it uses the same channel: `null` means "no file-level
+ * measurement", and the caller OMITS the keys rather than zero-filling them.
+ * The test-case triple keeps its zeros — those are the caller's fallback, not a
+ * parse result, and `total: 0` is already the "no counts" signal
+ * `admitSuiteCounts` rejects.
  *
  * ## What `total` means — passed + failed, NOT vitest's parenthesised number
  *
@@ -189,22 +245,27 @@ const TEST_SUMMARY_LINE = /^\s*Tests\b/;
  * see. Add it together with a consumer, never ahead of one.
  *
  * @param {string} output - Captured test-runner stdout/stderr (or a tail of it).
- * @returns {{ passed: number, failed: number, total: number }} `total === passed + failed`.
+ * @returns {{ passed: number, failed: number, total: number, files: {passed: number, failed: number, total: number}|null }}
+ *   Test-case `total === passed + failed`. `files` is `null` when the output
+ *   carried no `Test Files` summary line; when present,
+ *   `files.total === files.passed + files.failed`.
  */
 export function extractTestCounts(output) {
-  if (!output) return { passed: 0, failed: 0, total: 0 };
+  const EMPTY = { passed: 0, failed: 0, total: 0, files: null };
+  if (!output) return EMPTY;
 
-  const summaryLines = output.split('\n').filter((line) => TEST_SUMMARY_LINE.test(line));
+  const lines = output.split('\n');
+  const summaryLines = lines.filter((line) => TEST_SUMMARY_LINE.test(line));
   const scope = summaryLines.length > 0 ? summaryLines[summaryLines.length - 1] : output;
+  const { passed, failed, total } = parseCountTriple(scope);
 
-  const passMatch = scope.match(/(\d+)\s+passed/);
-  const failMatch = scope.match(/(\d+)\s+failed/);
+  const fileSummaryLines = lines.filter((line) => TEST_FILES_SUMMARY_LINE.test(line));
+  const fileScope = fileSummaryLines.length > 0 ? fileSummaryLines[fileSummaryLines.length - 1] : '';
+  // No `Test Files` line → NOT MEASURED. See the docstring section above: a zero
+  // triple here would be indistinguishable from a real all-passed-zero-files run.
+  const files = fileScope ? parseCountTriple(fileScope) : null;
 
-  const passed = passMatch ? parseInt(passMatch[1], 10) : 0;
-  const failed = failMatch ? parseInt(failMatch[1], 10) : 0;
-  const total = passed + failed;
-
-  return { passed, failed, total };
+  return { passed, failed, total, files };
 }
 
 /**

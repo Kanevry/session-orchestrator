@@ -48,7 +48,17 @@ describe('gate-full — all skip', () => {
     // `failed` is published explicitly since #967 item 1 — a skipped test gate
     // must still carry the key (as 0), or the consumer's
     // `passed + failed === total` drift check silently degrades to a derivation.
-    expect(json.test).toEqual({ status: 'skip', total: 0, passed: 0, failed: 0 });
+    //
+    // The file-level four are the OPPOSITE case and are ABSENT here: a skipped
+    // gate produced no `Test Files` line, so nothing about files was measured.
+    // Publishing `files_*: 0` + `suite_died: false` stated a verdict nobody
+    // checked — this whole-object `toEqual` is what pins their absence.
+    expect(json.test).toEqual({
+      status: 'skip',
+      total: 0,
+      passed: 0,
+      failed: 0,
+    });
     expect(json.lint).toEqual({ status: 'skip', warnings: 0 });
     expect(json.debug_artifacts).toEqual([]);
     expect(typeof json.duration_seconds).toBe('number');
@@ -87,6 +97,52 @@ describe('gate-full — test failure', () => {
     const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'node -e "process.exit(1)"', LINT_CMD: 'skip' });
     expect(r.status).toBe(2);
     expect(JSON.parse(r.stdout).test.status).toBe('fail');
+  });
+
+  // #1149 — a suite that dies at import is a file-level failure. Vitest omits
+  // `N failed` on the `Tests` line when zero test CASES ran, so the test-case
+  // triple stays `failed: 0` even though a file died. `files_failed` and the
+  // self-diagnosing `suite_died` boolean must still land on the ONE stdout
+  // JSON document, so the contradiction is greppable instead of silent.
+  it('publishes files_failed and suite_died:true when a suite dies at import with no test-case failed segment (#1149)', () => {
+    const cmd =
+      'node -e "process.stdout.write(\' Test Files  1 failed (1)\\n      Tests  5 passed (5)\\n\'); process.exit(1)"';
+    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: cmd, LINT_CMD: 'skip' });
+    expect(r.status).toBe(2);
+
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed.test).toEqual({
+      status: 'fail',
+      total: 5,
+      passed: 5,
+      failed: 0,
+      files_total: 1,
+      files_passed: 0,
+      files_failed: 1,
+      suite_died: true,
+    });
+    // Contract: consumers parse exactly one JSON document from stdout.
+    expect(r.stdout.trim().split('\n')).toHaveLength(1);
+  });
+
+  // The sibling of the row above, and the bug it names: a FAILING runner that
+  // prints no `Test Files` line at all (non-vitest, or a terse reporter) used to
+  // publish `files_total/passed/failed: 0` plus `suite_died: false` — an
+  // unmeasured zero the envelope could not tell from a measured one, and a
+  // "the suite did not die" verdict derived from it. Absent, not zero.
+  it('omits every files_* key AND suite_died when the runner printed no Test Files line', () => {
+    const cmd = 'node -e "process.stdout.write(\'      Tests  3 passed (3)\\n\'); process.exit(1)"';
+    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: cmd, LINT_CMD: 'skip' });
+    expect(r.status).toBe(2);
+
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed.test).toEqual({ status: 'fail', total: 3, passed: 3, failed: 0 });
+    expect(parsed.test).not.toHaveProperty('files_total');
+    expect(parsed.test).not.toHaveProperty('files_passed');
+    expect(parsed.test).not.toHaveProperty('files_failed');
+    // The load-bearing half: `suite_died: false` here would be a claim about a
+    // file-level measurement that never happened.
+    expect(parsed.test).not.toHaveProperty('suite_died');
   });
 });
 

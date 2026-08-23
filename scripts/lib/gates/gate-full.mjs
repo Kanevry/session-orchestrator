@@ -40,14 +40,42 @@ const tcErrorCount =
     : 0;
 
 // --- Test ---
-// NOTE: `testFailed`, NOT `failed` — a local `failed` is already bound near the
-// bottom of this file and drives `process.exit(failed ? 2 : 0)`. Shadowing it
-// would corrupt the gate's exit code.
+// NOTE: `testCounts`, NOT `failed` — a local `failed` is already bound near
+// the bottom of this file and drives `process.exit(failed ? 2 : 0)`.
+// Shadowing it would corrupt the gate's exit code.
 const testResult = runCheck(testCmd);
-const { passed: testPassed, failed: testFailed, total: testTotal } =
+const testCounts =
   testResult.status !== 'skip'
     ? extractTestCounts(testResult.fullOutput ?? testResult.output)
-    : { passed: 0, failed: 0, total: 0 };
+    : { passed: 0, failed: 0, total: 0, files: null };
+
+// A suite that dies at import time (a bad import, a syntax error in a test
+// file) is counted on vitest's `Test Files` line, not its `Tests` line —
+// vitest omits `N failed` from `Tests` when zero individual test CASES ran.
+// That leaves `status: 'fail'` sitting beside `failed: 0`, which reads as "no
+// failures" even though the gate is about to block. `suite_died` names the
+// contradiction explicitly, in the JSON itself, rather than leaving it
+// inferable only by cross-referencing three separate fields (#1149).
+//
+// All FOUR of these fields are file-measurement-derived, so all four are
+// published together or not at all. Only vitest prints a `Test Files` line; a
+// non-vitest runner or a terse reporter prints none, and the previous
+// zero-filled `files_*: 0` was an UNMEASURED zero the envelope could not tell
+// from a measured one — with `suite_died: false` derived from it, stating a
+// verdict nobody had checked. Absent, not zero: the same contract this
+// envelope's `counts` field already keeps (`admitSuiteCounts`).
+const fileFields = testCounts.files
+  ? {
+      files_total: testCounts.files.total,
+      files_passed: testCounts.files.passed,
+      files_failed: testCounts.files.failed,
+      // Self-diagnosing: true exactly when `status: 'fail'` sits beside a
+      // test-case `failed: 0` that a file-level failure explains. Greppable —
+      // a consumer no longer has to recompute the contradiction by hand.
+      suite_died:
+        testResult.status === 'fail' && testCounts.failed === 0 && testCounts.files.failed > 0,
+    }
+  : {};
 
 // --- Lint ---
 const lintResult = runCheck(lintCmd);
@@ -79,9 +107,15 @@ const output = {
   // `passed + failed === total` as a real producer/consumer drift guard.
   test: {
     status: testResult.status,
-    total: testTotal,
-    passed: testPassed,
-    failed: testFailed,
+    total: testCounts.total,
+    passed: testCounts.passed,
+    failed: testCounts.failed,
+    // File-level counts + `suite_died` (#1149) — present only when a
+    // `Test Files` line was actually parsed; see `fileFields` above.
+    // Additive keys only: `admitSuiteCounts` / `suiteCountsFromGateStdout`
+    // read just passed/failed/total, so the stdout JSON contract stays one
+    // document and the test-case triple keeps `total === passed + failed`.
+    ...fileFields,
   },
   lint: { status: lintResult.status, warnings: lintWarnings },
   debug_artifacts: debugArtifacts,
@@ -99,12 +133,15 @@ const failed = [tcResult, testResult, lintResult].some(
 // A gate that BLOCKS and says nothing is not concise, it is unusable. Measured
 // 2026-08-23: a pre-push run emitted exactly
 //   {"test":{"status":"fail","total":14671,"passed":14671,"failed":0}, …}
-// and nothing else. `failed: 0` beside `status: fail` is not a contradiction in
-// the data — it is the SHAPE of the report: `extractTestCounts` reads vitest's
-// `Tests …` summary line, and vitest OMITS the `N failed` segment when no
-// individual test failed. A suite that dies at import time is counted on the
-// `Test Files …` line, which this payload has no field for. So a file-level
-// failure is, by construction, reported as zero failures.
+// and nothing else. `failed: 0` beside `status: fail` was not a contradiction
+// in the data — it was the SHAPE of the report: `extractTestCounts` reads
+// vitest's `Tests …` summary line, and vitest OMITS the `N failed` segment
+// when no individual test case failed. A suite that dies at import time is
+// counted on the `Test Files …` line instead, which this payload had no field
+// for. So a file-level failure was, by construction, reported as zero
+// failures. The JSON envelope now carries `files_failed` and `suite_died`
+// (#1149) so that contradiction is published rather than only inferable —
+// but the envelope still does not name WHICH file died.
 //
 // Reconstructing which file died then cost a full manual re-materialisation of
 // the tracked tree. That is the cost this block removes: on failure the raw

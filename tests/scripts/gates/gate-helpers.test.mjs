@@ -62,14 +62,16 @@ describe('extractCount', () => {
 describe('extractTestCounts', () => {
   // Terse / non-vitest forms: no `Tests`-anchored summary line, so the parser
   // falls back to scanning the whole string. These pin the pre-existing
-  // fallback contract unchanged.
+  // fallback contract unchanged. No `Test Files` line either → the file-level
+  // triple is NOT MEASURED, so it is `null` rather than a zero triple.
+  const NO_FILES = { files: null };
   it.each([
-    ['passed + failed on one terse line', 'Tests: 5 passed, 2 failed', { passed: 5, failed: 2, total: 7 }],
-    ['failure-only output (no "passed" marker)', 'Tests: 3 failed', { passed: 0, failed: 3, total: 3 }],
-    ['bare passed count with no "failed" marker', '42 passed', { passed: 42, failed: 0, total: 42 }],
-    ['bare passed + failed, total is their sum', '10 passed, 5 failed', { passed: 10, failed: 5, total: 15 }],
-    ['empty output', '', { passed: 0, failed: 0, total: 0 }],
-    ['null output', null, { passed: 0, failed: 0, total: 0 }],
+    ['passed + failed on one terse line', 'Tests: 5 passed, 2 failed', { passed: 5, failed: 2, total: 7, ...NO_FILES }],
+    ['failure-only output (no "passed" marker)', 'Tests: 3 failed', { passed: 0, failed: 3, total: 3, ...NO_FILES }],
+    ['bare passed count with no "failed" marker', '42 passed', { passed: 42, failed: 0, total: 42, ...NO_FILES }],
+    ['bare passed + failed, total is their sum', '10 passed, 5 failed', { passed: 10, failed: 5, total: 15, ...NO_FILES }],
+    ['empty output', '', { passed: 0, failed: 0, total: 0, ...NO_FILES }],
+    ['null output', null, { passed: 0, failed: 0, total: 0, ...NO_FILES }],
   ])('parses %s', (_name, input, expected) => {
     expect(extractTestCounts(input)).toEqual(expected);
   });
@@ -85,6 +87,11 @@ describe('extractTestCounts', () => {
   // the real full-suite tail, the old parser returned passed=550 where the truth
   // was 12904. Both rows below have file counts that differ from test counts, so
   // a regression to first-match parsing turns them RED.
+  //
+  // `passed`/`failed`/`total` stay TEST-case counts (the load-bearing triple:
+  // `total === passed + failed`, skipped excluded). File-level counts ride the
+  // nested `files` triple below (#1149) so a consumer can see the `Test Files`
+  // line without mixing units into `failed`.
   it.each([
     [
       'all-pass run (file count 1 vs test count 48)',
@@ -94,7 +101,7 @@ describe('extractTestCounts', () => {
         '   Start at  18:37:40',
         '   Duration  447ms (transform 23ms, setup 0ms, import 33ms, tests 289ms, environment 0ms)',
       ].join('\n'),
-      { passed: 48, failed: 0, total: 48 },
+      { passed: 48, failed: 0, total: 48, files: { passed: 1, failed: 0, total: 1 } },
     ],
     [
       // vitest reports `(8)` here — 5 passed + 1 failed + 2 skipped. `total` is
@@ -107,10 +114,48 @@ describe('extractTestCounts', () => {
         '   Start at  18:38:17',
         '   Duration  131ms (transform 17ms, setup 0ms, import 29ms, tests 6ms, environment 0ms)',
       ].join('\n'),
-      { passed: 5, failed: 1, total: 6 },
+      { passed: 5, failed: 1, total: 6, files: { passed: 1, failed: 1, total: 2 } },
     ],
   ])('parses the TEST-case counts, not the file counts, from a real vitest %s', (_name, input, expected) => {
     expect(extractTestCounts(input)).toEqual(expected);
+  });
+
+  // #1149 — file-level failure with NO test-case `N failed` segment. Vitest
+  // prints TWO summary lines; when a suite dies at import (no individual test
+  // case ran, so none failed) the `Tests` line OMITS `N failed` entirely. The
+  // old parser read only that line, found no `failed` marker → `failed: 0`,
+  // and had no field for the `Test Files  8 failed` count at all. Measured
+  // production payload before this fix:
+  // `{"test":{"status":"fail","total":14671,"passed":14671,"failed":0}}`.
+  it('reports file-level failures when the Tests line has no failed segment (#1149)', () => {
+    const input = [
+      ' Test Files  8 failed | 595 passed (603)',
+      '      Tests  14671 passed (14671)',
+      '   Start at  18:01:02',
+      '   Duration  12.34s',
+    ].join('\n');
+    expect(extractTestCounts(input)).toEqual({
+      passed: 14671,
+      failed: 0,
+      total: 14671,
+      files: { passed: 595, failed: 8, total: 603 },
+    });
+  });
+
+  // The bug the `files: null` channel exists for: with a zero triple, output
+  // from a non-vitest runner (or any terse reporter) published
+  // `files_total/passed/failed: 0` — an UNMEASURED zero the envelope could not
+  // tell from a measured one, and from which `gate-full.mjs` then derived
+  // `suite_died: false` as though it had checked. `null` is the only value that
+  // says "no file-level summary was printed".
+  it('returns files:null — never a zero triple — when the output has only a Tests line', () => {
+    const input = [
+      '      Tests  12 passed (12)',
+      '   Duration  310ms',
+    ].join('\n');
+    const counts = extractTestCounts(input);
+    expect(counts).toEqual({ passed: 12, failed: 0, total: 12, files: null });
+    expect(counts.files).toBeNull();
   });
 });
 
@@ -404,9 +449,19 @@ describe('runCheck fullOutput', () => {
 
   it('lets extractTestCounts recover the real counts from fullOutput, not from the tail', () => {
     const res = runCheck(`sh -c '${script}'`);
-    expect(extractTestCounts(res.fullOutput)).toEqual({ passed: 14357, failed: 1, total: 14358 });
+    expect(extractTestCounts(res.fullOutput)).toEqual({
+      passed: 14357,
+      failed: 1,
+      total: 14358,
+      files: null,
+    });
     // The tail alone is exactly the phantom the gate used to report.
-    expect(extractTestCounts(res.output)).toEqual({ passed: 0, failed: 0, total: 0 });
+    expect(extractTestCounts(res.output)).toEqual({
+      passed: 0,
+      failed: 0,
+      total: 0,
+      files: null,
+    });
   });
 
   it('reports fullOutput on the success path too', () => {
