@@ -8,7 +8,8 @@
  *   - renderNarrative    — frontmatter ordering (_generator LAST), placeholder vs rollup.
  *   - writeNarrative     — idempotency guards + _overview.md safety refusal (injectable fs).
  *   - mirrorNarrative    — repo-derivation regression (#675), vault-disabled / no-STATE.md /
- *                          missing-repoRoot skip outcomes (os.tmpdir temp repos).
+ *                          missing-repoRoot skip outcomes (os.tmpdir temp repos),
+ *                          telemetry on the SILENT skip paths (#1129).
  *
  * PORTABLE — no hardcoded home paths. All real-fs work happens under os.tmpdir().
  * Fixtures are INLINE deterministic strings reproducing the real STATE.md shapes.
@@ -21,6 +22,7 @@ import fs from 'node:fs';
 
 import {
   GENERATOR_MARKER,
+  NARRATIVE_EVENT,
   extractNarrative,
   renderNarrative,
   resolveNarrativePath,
@@ -860,6 +862,90 @@ describe('mirrorNarrative', () => {
 
       expect(run2.action).toBe('written');
       expect(fs.readFileSync(run2.path, 'utf8')).toContain('- Pasted [REDACTED] once, and then rotated it.');
+    });
+  });
+
+  // =========================================================================
+  // Telemetry (#1129)
+  //
+  // THE BUG THIS CATCHES, NAMED: the mirror's REJECTION and NO-OP paths return
+  // silently, so an outage of the writer is indistinguishable from a healthy
+  // skip. Its only production caller is shell prose in
+  // `skills/session-end/session-metrics-write.md`, which under `mode: warn`
+  // prints a WARNING and closes the session anyway — nothing durable is left
+  // behind. Measured 2026-08-23: 0 board/mirror events in 28 387 ledger records.
+  //
+  // Each case reads the ledger under the TMP repoRoot, which doubles as the
+  // `opts.repoRoot`-forwarding falsification (#941): drop the forwarding and
+  // the record lands in whatever repo the process sits in, the tmp ledger never
+  // appears, and these go red rather than silently polluting fleet telemetry.
+  // =========================================================================
+
+  describe('telemetry (#1129)', () => {
+    /**
+     * Read every ledger record written under `repoRoot`. Returns [] when the
+     * ledger was never created — the exact shape the pre-#1129 module produced.
+     */
+    function readLedger(repoRoot) {
+      const ledger = path.join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
+      if (!fs.existsSync(ledger)) return [];
+      return fs
+        .readFileSync(ledger, 'utf8')
+        .split('\n')
+        .filter((line) => line.trim().length > 0)
+        .map((line) => JSON.parse(line));
+    }
+
+    it('emits ONE event on the SILENT skipped-no-statemd path, with chars ABSENT (never 0)', async () => {
+      const { repoRoot } = scaffold({ repoDirName: 'telemetry-nostate-repo', withStateMd: false });
+
+      const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+      expect(result.action).toBe('skipped-no-statemd');
+
+      const events = readLedger(repoRoot).filter((e) => e.event === NARRATIVE_EVENT);
+      expect(events).toHaveLength(1);
+      expect(events[0].action).toBe('skipped-no-statemd');
+      expect(events[0].path).toBe(result.path);
+      // ABSENT IS NOT ZERO: nothing was rendered on this path, so the key is
+      // missing. A `chars: 0` here would be indistinguishable from a narrative
+      // that genuinely rendered empty.
+      expect(Object.prototype.hasOwnProperty.call(events[0], 'chars')).toBe(false);
+    });
+
+    it('emits action=written with chars = the length of the document actually on disk', async () => {
+      const { repoRoot } = scaffold({ repoDirName: 'telemetry-written-repo' });
+
+      const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+      expect(result.action).toBe('written');
+
+      const events = readLedger(repoRoot).filter((e) => e.event === NARRATIVE_EVENT);
+      expect(events).toHaveLength(1);
+      expect(events[0].action).toBe('written');
+      expect(events[0].path).toBe(result.path);
+      // Independent oracle: the file on disk, not a re-derivation of the
+      // renderer's own arithmetic.
+      expect(events[0].chars).toBe(fs.readFileSync(result.path, 'utf8').length);
+    });
+
+    it('a BROKEN ledger never breaks the mirror — the narrative is still written', async () => {
+      const { repoRoot } = scaffold({ repoDirName: 'telemetry-broken-ledger-repo' });
+      // `.orchestrator` as a regular FILE makes emitEvent's own
+      // `mkdir -p .orchestrator/metrics` fail with ENOTDIR — uniformly, for
+      // every uid including root (`.claude/rules/testing.md` § root-as-uid-0).
+      // Real failure injection through the real dependency: no module mock, so
+      // this exercises the production emit path rather than a double of it.
+      fs.writeFileSync(path.join(repoRoot, '.orchestrator'), 'not a directory');
+
+      // Without the best-effort catch around the emit, this call REJECTS and
+      // the narrative — already written to the vault by then — is reported as
+      // a failure to the caller.
+      const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+
+      expect(result.action).toBe('written');
+      expect(fs.readFileSync(result.path, 'utf8')).toContain(
+        '# telemetry-broken-ledger-repo — Session Narrative',
+      );
+      expect(readLedger(repoRoot)).toEqual([]);
     });
   });
 });

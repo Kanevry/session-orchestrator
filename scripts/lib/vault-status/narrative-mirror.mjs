@@ -18,6 +18,7 @@
  *
  * Exports:
  *   GENERATOR_MARKER       — frontmatter sentinel identifying generator-owned files
+ *   NARRATIVE_EVENT        — canonical telemetry event name for a mirror attempt
  *   extractNarrative       — pure: STATE.md contents → { waveHistory, deviations, whatNotToRetry, missionStatus }
  *   renderNarrative        — pure: narrative + repo + now → full markdown (frontmatter + body)
  *   writeNarrative         — idempotent write with skip-handwritten / skip-noop / dry-run + _overview refusal
@@ -30,6 +31,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
+import { emitEvent, sessionAttribution } from '../events.mjs';
 import { parseStateMd, parseMissionStatus } from '../state-md.mjs';
 import {
   parseFrontmatter,
@@ -557,6 +559,91 @@ function resolveLooseSlug(vaultDir, candidateSlug, fsSeam = {}) {
   return matches.length === 1 ? matches[0] : candidateSlug;
 }
 
+// ── Telemetry ────────────────────────────────────────────────────────────────────
+
+/**
+ * Canonical event name for a narrative-mirror attempt (issue #1129).
+ *
+ * ONE event per {@link mirrorNarrative} call — the REJECTION and NO-OP paths
+ * included, because those are the point. Before this existed, a vault-disabled
+ * config, a missing STATE.md, a hand-authored target file and a healthy write
+ * were all indistinguishable from the ledger's side: measured 2026-08-23 over
+ * 28 387 records in `.orchestrator/metrics/events.jsonl`, ZERO board/mirror
+ * events, because this module did not import {@link emitEvent} at all. Its only
+ * caller is shell prose in `skills/session-end/session-metrics-write.md`, whose
+ * `mode: warn` degradation prints a WARNING and closes the session anyway — so
+ * an outage of this writer left no durable trace whatsoever.
+ *
+ * Name deliberately NOT minted here: it is the one the wave assigned, so the
+ * fact "a narrative mirror ran" has exactly one address in the ledger.
+ */
+export const NARRATIVE_EVENT = 'orchestrator.vault.narrative_mirrored';
+
+/**
+ * Emit the narrative-mirror telemetry record. Best-effort: never throws, never
+ * alters the mirror result.
+ *
+ * ABSENT IS NOT ZERO (`docs/events-schema.md`): every optional field is spread
+ * conditionally, so an UNMEASURED field is MISSING from the record rather than
+ * written as `0`. `chars: 0` would then honestly mean "the narrative rendered to
+ * an empty document"; an absent `chars` means "no render was reached on this
+ * path" — reading the missing key as `0` conflates the two in both directions.
+ *
+ * NAMED CEILING (build-value BV-004): when `repoRoot` is absent or empty this
+ * emits NOTHING. `emitEvent` without `opts.repoRoot` falls back to
+ * `SO_PROJECT_DIR` (#941), so the only destination left for a rootless call is
+ * whichever repo the process happens to sit in — i.e. a caller that named no
+ * repo would silently append to a FOREIGN ledger, and the two call shapes that
+ * reach this branch today are the `repoRoot: ''` / omitted-`repoRoot` unit
+ * tests, which would then write synthetic records into this repo's real fleet
+ * telemetry on every suite run. REVISIT TRIGGER: if a production caller ever
+ * legitimately invokes `mirrorNarrative` without a `repoRoot`, that call needs a
+ * destination decision of its own — not this silent skip.
+ *
+ * @param {object} opts
+ * @param {string} [opts.repoRoot] — pins the ledger to THIS repo's
+ *   `.orchestrator/metrics/events.jsonl` (#941), and supplies session attribution.
+ * @param {string} opts.action — the `action` the mirror returned, or `'error'`
+ *   when the writer threw. ALWAYS present.
+ * @param {string} [opts.path] — resolved narrative path, when one was resolved.
+ * @param {number} [opts.chars] — length of the rendered narrative document this
+ *   call produced. Present whenever the render was reached (so also on
+ *   `skipped-noop` / `dry-run`, where the document was built but not written —
+ *   `action` is what says whether it landed); absent on the earlier no-op paths,
+ *   which return before anything is rendered.
+ * @param {string} [opts.errorCode] — `err.code` on the throw path (a bounded
+ *   token such as `EACCES`). The error MESSAGE is deliberately NOT recorded: it
+ *   can quote a path or STATE.md content, and this module's whole reason for
+ *   masking (#1025) is that such prose carries secrets.
+ * @returns {Promise<void>}
+ */
+async function emitNarrativeEvent({ repoRoot, action, path: outputPath, chars, errorCode }) {
+  if (typeof repoRoot !== 'string' || repoRoot.length === 0) return;
+  try {
+    await emitEvent(
+      NARRATIVE_EVENT,
+      {
+        action,
+        ...(typeof outputPath === 'string' && outputPath.length > 0 ? { path: outputPath } : {}),
+        // `typeof … === 'number'` rather than `!= null`: the repo's eslint
+        // `eqeqeq: always` forbids the loose form, and this shape additionally
+        // refuses a non-numeric `chars` outright. A measured `0` still lands.
+        ...(typeof chars === 'number' ? { chars } : {}),
+        ...(errorCode ? { error_code: errorCode } : {}),
+        // session_id / semantic_session_id — omitted entirely when no session
+        // lock is readable (CI, ad-hoc runs). See sessionAttribution's contract:
+        // a fabricated id would read as a real session.
+        ...sessionAttribution(repoRoot),
+      },
+      { repoRoot },
+    );
+  } catch {
+    /* Best-effort telemetry. emitEvent does real file I/O (mkdir + append), so a
+       read-only or occupied ledger path WILL throw — and a broken ledger must
+       never fail a narrative write. The mirror result is authoritative. */
+  }
+}
+
 // ── Convenience orchestration ────────────────────────────────────────────────────
 
 /**
@@ -594,10 +681,50 @@ function resolveLooseSlug(vaultDir, candidateSlug, fsSeam = {}) {
  * @returns {Promise<{ action: string, path?: string }>}
  */
 export async function mirrorNarrative(opts) {
+  let outcome;
+  try {
+    outcome = await runNarrativeMirror(opts);
+  } catch (err) {
+    // The harshest silent-failure case: `session-metrics-write.md` catches this
+    // throw, prints a WARNING under `mode: warn` and closes the session anyway.
+    // Record it, then re-throw — telemetry observes, it never swallows.
+    await emitNarrativeEvent({
+      repoRoot: opts?.repoRoot,
+      action: 'error',
+      errorCode: typeof err?.code === 'string' ? err.code : undefined,
+    });
+    throw err;
+  }
+
+  await emitNarrativeEvent({
+    repoRoot: opts?.repoRoot,
+    action: outcome.result.action,
+    path: outcome.result.path,
+    chars: outcome.chars,
+  });
+
+  return outcome.result;
+}
+
+/**
+ * The mirror itself — every early return of {@link mirrorNarrative} lives here.
+ *
+ * Split out so that exactly ONE emit site covers EVERY outcome: a future early
+ * return added inside this function is telemetered by construction, whereas
+ * hand-placing an emit beside each of the seven `return`s makes "forgot the new
+ * one" the default failure. The `chars` companion travels beside the result
+ * rather than inside it because the returned object is a PUBLIC shape that
+ * callers (and tests) compare with `toEqual` — adding a key there would be an
+ * observable contract change for a purely internal measurement.
+ *
+ * @param {Parameters<typeof mirrorNarrative>[0]} opts
+ * @returns {Promise<{ result: { action: string, path?: string }, chars?: number }>}
+ */
+async function runNarrativeMirror(opts) {
   const { repoRoot, repo, now = new Date(), dryRun = false, fs: injectedFs, hostPaths } = opts;
 
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
-    return { action: 'skipped-vault-disabled' };
+    return { result: { action: 'skipped-vault-disabled' } };
   }
 
   // Read Session Config (CLAUDE.md / AGENTS.md) and resolve vault settings.
@@ -606,12 +733,12 @@ export async function mirrorNarrative(opts) {
     const configText = await readConfigFile(repoRoot);
     config = parseSessionConfig(configText, { hostPaths });
   } catch {
-    return { action: 'skipped-vault-disabled' };
+    return { result: { action: 'skipped-vault-disabled' } };
   }
 
   const vaultIntegration = config?.['vault-integration'];
   if (!vaultIntegration || vaultIntegration.enabled !== true) {
-    return { action: 'skipped-vault-disabled' };
+    return { result: { action: 'skipped-vault-disabled' } };
   }
 
   // Defense-in-depth: when the caller omits (or passes an empty) `repo`, derive
@@ -628,7 +755,7 @@ export async function mirrorNarrative(opts) {
 
   const rawVaultDir = vaultIntegration['vault-dir'];
   if (!rawVaultDir || typeof rawVaultDir !== 'string') {
-    return { action: 'skipped-vault-disabled' };
+    return { result: { action: 'skipped-vault-disabled' } };
   }
 
   const vaultDir = path.resolve(expandHome(rawVaultDir));
@@ -642,7 +769,7 @@ export async function mirrorNarrative(opts) {
   // Defense-in-depth: ensure the resolved file stays inside the vault root.
   const inside = validatePathInsideProject(path.relative(vaultDir, outputPath), vaultDir);
   if (!inside.ok) {
-    return { action: 'skipped-invalid-path', path: outputPath };
+    return { result: { action: 'skipped-invalid-path', path: outputPath } };
   }
 
   // Read STATE.md (best-effort; absent STATE.md → nothing to mirror).
@@ -651,7 +778,7 @@ export async function mirrorNarrative(opts) {
   try {
     stateContents = await readFile(stateMdPath, 'utf8');
   } catch {
-    return { action: 'skipped-no-statemd', path: outputPath };
+    return { result: { action: 'skipped-no-statemd', path: outputPath } };
   }
 
   // #1025: the ONE masking site for the narrative mirror — after the frontmatter
@@ -660,5 +787,11 @@ export async function mirrorNarrative(opts) {
   const narrative = maskNarrative(extractNarrative(stateContents));
   const content = renderNarrative({ repo: repoName, narrative, now });
 
-  return writeNarrative({ outputPath, content, dryRun, fs: injectedFs });
+  // `chars` measures the document THIS call rendered — so it is present on
+  // `skipped-noop` and `dry-run` too, where the render happened but nothing
+  // landed. `action` is the field that says whether it landed.
+  return {
+    result: writeNarrative({ outputPath, content, dryRun, fs: injectedFs }),
+    chars: content.length,
+  };
 }

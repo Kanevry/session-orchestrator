@@ -788,3 +788,56 @@ describe('vault-name override on the sweepBoard path (#835)', () => {
     expect(afterClose[0].status).toBe('closed');
   });
 });
+
+// ===========================================================================
+// sweepBoard — board_written telemetry
+// ===========================================================================
+
+describe('sweepBoard — board_written telemetry', () => {
+  /** Read the board_written records this repo's own ledger accumulated. */
+  function readBoardEvents(repoRoot) {
+    const raw = readFileSync(join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl'), 'utf8');
+    return raw
+      .split('\n')
+      .filter((l) => l.trim().length > 0)
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.event === 'orchestrator.vault.board_written');
+  }
+
+  it('emits ONE record attributed to sweepBoard, with a MEASURED repos_swept of 0', async () => {
+    // Two bugs this catches:
+    //  (a) both entry points reporting `caller: 'mirrorBoard'` — session-start's
+    //      host-wide sweep and session-end's single-repo close then become
+    //      indistinguishable in the ledger, so a sweep that stops running is
+    //      masked by the close that still runs. Also pins ONE record per sweep:
+    //      sweepBoard delegating to mirrorBoard must not double-count.
+    //  (b) `repos_swept` dropped because its value is 0. An enumeration that
+    //      silently surfaces nothing (the macOS realpath-hop failure documented
+    //      at the top of this file: 0 candidates, no error) is exactly the
+    //      outage the field exists to show — and `repos.length` cannot show it,
+    //      because buildSweepRepos always unions thisRepo in.
+    const { sandbox, hostDir, vaultDir } = scaffold();
+    const thisRepoRoot = makeThisRepo(sandbox, 'this-repo', {
+      vaultDir,
+      lock: buildLockBody({ sessionId: 'this-sess', now: FIXED_NOW }),
+    });
+
+    // hostDir is an EMPTY confinement root: enumeration RUNS and finds nothing.
+    const result = await sweepBoard({
+      repoRoot: thisRepoRoot,
+      startDir: hostDir,
+      now: FIXED_NOW,
+      deps: NO_CROSS_REPO_DEPS,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+    expect(result.action).toBe('written');
+
+    const events = readBoardEvents(thisRepoRoot);
+    expect(events).toHaveLength(1);
+    expect(events[0].caller).toBe('sweepBoard');
+    expect(events[0].repos_swept).toBe(0);
+    expect(events[0].action).toBe('written');
+    expect(events[0].path).toBe(resolveBoardPath(vaultDir));
+    expect(events[0].rows).toBe(1);
+  });
+});

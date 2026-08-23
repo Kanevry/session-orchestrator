@@ -10,8 +10,16 @@
  * liveness via {@link isLockLive}) plus the host-wide session registry (the
  * registry entry is the ONLY source of `branch` — the lock lacks that field).
  *
+ * Telemetry: every {@link mirrorBoard} call — and therefore every
+ * {@link sweepBoard} call — emits exactly ONE {@link BOARD_EVENT} record,
+ * including the no-op paths (`skipped-vault-disabled`, `skipped-handwritten`,
+ * `skipped-noop`, `skipped-write-failed`). Those are the states that previously
+ * looked identical to a healthy write from outside the process. Emission is
+ * best-effort and can never fail a board write.
+ *
  * Exports:
  *   GENERATOR_MARKER  — frontmatter sentinel that identifies generator-owned files
+ *   BOARD_EVENT       — canonical event name for a board-write attempt
  *   boardKey          — repoRoot → stable path-derived row identity (issue #871)
  *   resolveBoardPath  — vaultDir → `<vaultDir>/01-projects/_active-sessions.md`
  *   collectRows       — per-repo status derivation (readLock + readRegistry)
@@ -42,6 +50,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { emitEvent } from '../events.mjs';
 import { isLockLive, readLock, DEFAULT_TTL_HOURS } from '../session-lock.mjs';
 import { readRegistry, repoPathHash, isRegistryEntryFresh } from '../session-registry.mjs';
 import { parseFrontmatter } from '../vault-mirror/utils.mjs';
@@ -681,6 +690,73 @@ export function writeBoard(opts) {
   return { action: 'written', path: outputPath };
 }
 
+// ── Telemetry ────────────────────────────────────────────────────────────────────
+
+/**
+ * Canonical event name for a board-write attempt.
+ *
+ * ONE event per {@link mirrorBoard} call — including every no-op path. The
+ * no-op paths are the point: a vault-disabled config, a hand-edited board, or a
+ * failed write returned silently before this existed, so an outage of this
+ * writer was indistinguishable from a healthy skip. Measured 2026-08-23 over
+ * 28 387 ledger records: ZERO board/mirror events, because this module did not
+ * import {@link emitEvent} at all.
+ */
+export const BOARD_EVENT = 'orchestrator.vault.board_written';
+
+/**
+ * Emit the board-write telemetry record. Best-effort: never throws, never
+ * alters the board result.
+ *
+ * ABSENT IS NOT ZERO (`docs/events-schema.md`): every optional field is spread
+ * conditionally, so an UNMEASURED field is missing from the record rather than
+ * written as `0`. A present `repos_swept: 0` therefore means "enumeration ran
+ * and surfaced nothing" (the documented silent-enumeration failure mode), while
+ * an absent `repos_swept` means "not a sweep, or enumeration threw" — reading
+ * the missing key as `0` would conflate the two in both directions.
+ *
+ * @param {object} opts
+ * @param {string} [opts.repoRoot] — pins the ledger to THIS repo's
+ *   `.orchestrator/metrics/events.jsonl` (#941). Omitted only when the caller
+ *   supplied no usable root, where `SO_PROJECT_DIR` is the sole destination left.
+ * @param {'sweepBoard'|'mirrorBoard'} opts.caller — which entry point ran.
+ * @param {string} opts.action — the `action` the board write returned.
+ * @param {string} [opts.path] — resolved board path, when one was resolved.
+ * @param {number} [opts.rows] — rows in the board content THIS call rendered.
+ *   Present whenever the render was reached (so also on `skipped-noop` /
+ *   `dry-run`, where the content was built but not written — `action` is what
+ *   says whether it landed); absent on the early no-op paths that never render.
+ * @param {number} [opts.reposSwept] — candidates {@link enumerateCandidates}
+ *   returned, on the {@link sweepBoard} path only.
+ * @param {number} [opts.durationMs]
+ * @returns {Promise<void>}
+ */
+async function emitBoardEvent({ repoRoot, caller, action, path: outputPath, rows, reposSwept, durationMs }) {
+  try {
+    await emitEvent(
+      BOARD_EVENT,
+      {
+        action,
+        caller,
+        ...(typeof outputPath === 'string' && outputPath.length > 0 ? { path: outputPath } : {}),
+        // Number.isFinite — NOT truthiness — is what keeps a MEASURED zero in
+        // the record (`repos_swept: 0` = "enumeration ran, found nothing") while
+        // still omitting an unmeasured field. `x || undefined` would silently
+        // delete exactly the zero the field exists to report. (`!= null` is the
+        // idiom elsewhere but this repo's eqeqeq rule forbids it.)
+        ...(Number.isFinite(rows) ? { rows } : {}),
+        ...(Number.isFinite(reposSwept) ? { repos_swept: reposSwept } : {}),
+        ...(Number.isFinite(durationMs) ? { duration_ms: durationMs } : {}),
+      },
+      typeof repoRoot === 'string' && repoRoot.length > 0 ? { repoRoot } : {},
+    );
+  } catch {
+    /* Best-effort telemetry. emitEvent does real file I/O (mkdir + append), so a
+       read-only or occupied ledger path WILL throw — and a broken ledger must
+       never fail a board write. The board result is authoritative. */
+  }
+}
+
 // ── Convenience: config-read + resolve + write ───────────────────────────────────
 
 /**
@@ -717,11 +793,14 @@ export function writeBoard(opts) {
  *   `owner.yaml`, whose `paths.vault-dir` override (if set) wins over the fixture value
  *   and bleeds into the assertion (issue #783). Production callers omit this — the
  *   default (real owner.yaml resolution) is the correct host-local behavior there.
- * @returns {Promise<{ action: string, path?: string }>}
+ * @returns {Promise<{ result: { action: string, path?: string }, rows?: number }>}
+ *   `rows` is present only once the render was reached — see
+ *   {@link emitBoardEvent}'s `rows` contract. The public {@link mirrorBoard}
+ *   wrapper unwraps `result` so the caller-visible return shape is unchanged.
  */
-export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new Date(), dryRun = false, fs, hostPaths } = {}) {
+async function mirrorBoardInner({ repoRoot, repos, explicitStatus, now = new Date(), dryRun = false, fs, hostPaths } = {}) {
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
-    return { action: 'skipped-vault-disabled' };
+    return { result: { action: 'skipped-vault-disabled' } };
   }
 
   // Read + parse Session Config. Any failure → silent no-op.
@@ -730,16 +809,16 @@ export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new D
     const text = await readConfigFile(repoRoot);
     config = parseSessionConfig(text, { hostPaths });
   } catch {
-    return { action: 'skipped-vault-disabled' };
+    return { result: { action: 'skipped-vault-disabled' } };
   }
 
   const vault = config?.['vault-integration'];
   if (!vault || vault.enabled !== true) {
-    return { action: 'skipped-vault-disabled' };
+    return { result: { action: 'skipped-vault-disabled' } };
   }
   const vaultDir = vault['vault-dir'];
   if (typeof vaultDir !== 'string' || vaultDir.length === 0) {
-    return { action: 'skipped-vault-disabled' };
+    return { result: { action: 'skipped-vault-disabled' } };
   }
 
   // Safety: the resolved vault dir must live under $HOME.
@@ -747,7 +826,7 @@ export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new D
   const home = os.homedir();
   const inHome = validatePathInsideProject(expandedVault, home);
   if (!inHome.ok) {
-    return { action: 'skipped-vault-disabled' };
+    return { result: { action: 'skipped-vault-disabled' } };
   }
 
   // `vault-name` (#660) overrides the git-derived repo slug for per-project
@@ -922,7 +1001,55 @@ export async function mirrorBoard({ repoRoot, repos, explicitStatus, now = new D
 
   const content = renderBoard([...merged.values()], { now, createdIso });
 
-  return writeBoard({ outputPath, content, dryRun, fs });
+  return { result: writeBoard({ outputPath, content, dryRun, fs }), rows: merged.size };
+}
+
+/**
+ * Public {@link mirrorBoardInner} wrapper that emits exactly ONE
+ * {@link BOARD_EVENT} per call — on EVERY path, no-ops included.
+ *
+ * The wrapper exists so the emit cannot be forgotten: the six return points
+ * inside {@link mirrorBoardInner} (five `skipped-vault-disabled` guards plus
+ * whatever {@link writeBoard} decides) all funnel through here, and so does the
+ * seventh someone adds next. Emitting per-return instead would leave each new
+ * early return silent by default — which is the exact defect being fixed.
+ *
+ * A THROW from the inner function is deliberately NOT converted into an event:
+ * `action` is mandatory in the payload and a throw has no action the code knows,
+ * so inventing one would put a fictional state in the ledger. The throw is not
+ * silent either — it propagates to the caller, and on the {@link sweepBoard}
+ * path the fallback write emits its own record.
+ *
+ * Return shape is byte-identical to the pre-telemetry contract.
+ *
+ * @param {Parameters<typeof mirrorBoardInner>[0] & {
+ *   caller?: 'sweepBoard'|'mirrorBoard', reposSwept?: number }} [opts]
+ *   — full parameter contract (`repoRoot`, `repos`, `explicitStatus`, `now`,
+ *   `dryRun`, `fs`, `hostPaths`) is documented on {@link mirrorBoardInner}.
+ *   `caller` / `reposSwept` are telemetry attribution only and never reach the
+ *   board content. `caller` defaults to `'mirrorBoard'`; {@link sweepBoard}
+ *   overrides it so the two entry points stay separable in the ledger.
+ * @returns {Promise<{ action: string, path?: string }>}
+ */
+export async function mirrorBoard(opts = {}) {
+  const startedAt = Date.now();
+  // Destructured directly (not via `opts ?? {}`) so a `null` argument still
+  // throws exactly as it did before this wrapper existed.
+  const { repoRoot, caller = 'mirrorBoard', reposSwept } = opts;
+
+  const { result, rows } = await mirrorBoardInner(opts);
+
+  await emitBoardEvent({
+    repoRoot,
+    caller,
+    action: result?.action,
+    path: result?.path,
+    rows,
+    reposSwept,
+    durationMs: Date.now() - startedAt,
+  });
+
+  return result;
 }
 
 // ── Host-wide sweep (issue #716) ─────────────────────────────────────────────────
@@ -1022,6 +1149,12 @@ export function buildSweepRepos(candidates, { thisRepoRoot } = {}) {
  * write still happens. `mirrorBoard`'s own internal guards (vault disabled,
  * `_overview.md` refusal, noop-skip, …) are untouched and still apply.
  *
+ * Telemetry: BOTH paths emit one {@link BOARD_EVENT} with `caller: 'sweepBoard'`
+ * (the wrapping {@link mirrorBoard} call does the emitting, so a sweep never
+ * produces two records). The happy path carries `repos_swept`; the fallback
+ * omits it, which is what distinguishes "enumeration ran and found nothing"
+ * (`repos_swept: 0`) from "enumeration threw" (key absent).
+ *
  * @param {object} [opts]
  * @param {string} opts.repoRoot — the calling repo (always included in the sweep).
  * @param {string} [opts.startDir] — enumeration root; omitted in production so
@@ -1061,11 +1194,21 @@ export async function sweepBoard({ repoRoot, startDir, now = new Date(), dryRun 
   try {
     const candidates = await enumerateCandidates({ startDir, now: nowMs, deps });
     const repos = buildSweepRepos(candidates, { thisRepoRoot: repoRoot });
-    return await mirrorBoard({ repoRoot, repos, now: nowForMirror, dryRun, fs, hostPaths });
+    // Telemetry counts what ENUMERATION surfaced, not what we sweep: `repos`
+    // always contains at least `thisRepoRoot` (buildSweepRepos unions it in),
+    // so a silently-empty enumeration — the documented macOS realpath-hop
+    // failure, 0 candidates and no error — would be invisible in `repos.length`
+    // and plainly visible as `repos_swept: 0`. Guarded with Array.isArray so a
+    // non-array return keeps flowing into buildSweepRepos exactly as before
+    // rather than throwing us into the fallback branch below.
+    const reposSwept = Array.isArray(candidates) ? candidates.length : undefined;
+    return await mirrorBoard({ repoRoot, repos, now: nowForMirror, dryRun, fs, hostPaths, caller: 'sweepBoard', reposSwept });
   } catch (err) {
     console.warn('[sweepBoard] host-wide enumeration failed — degraded to single-repo board write:', err?.message ?? err);
     // Best-effort fallback: enumeration failed for any reason — degrade to the
     // pre-#716 single-repo write so the board is still updated for THIS repo.
-    return mirrorBoard({ repoRoot, explicitStatus: 'in-progress', now: nowForMirror, dryRun, fs, hostPaths });
+    // `reposSwept` is deliberately NOT passed: nothing was enumerated, so the
+    // field is omitted rather than reported as 0 (absent is not zero).
+    return mirrorBoard({ repoRoot, explicitStatus: 'in-progress', now: nowForMirror, dryRun, fs, hostPaths, caller: 'sweepBoard' });
   }
 }

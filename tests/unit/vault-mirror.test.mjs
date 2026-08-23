@@ -41,7 +41,14 @@ const VALID_SESSION = JSON.stringify({
   effectiveness: { planned_issues: 3, completed: 3, carryover: 0, emergent: 1, completion_rate: 1.0 },
 });
 
-function runMirror(args) {
+/**
+ * @param {string[]} args — CLI flags passed to scripts/vault-mirror.mjs.
+ * @param {{ projectDir?: string }} [opts] — `projectDir` pins CLAUDE_PROJECT_DIR
+ *   to a caller-owned tmp dir so the test can READ the resulting
+ *   `.orchestrator/metrics/events.jsonl`. Omit it to keep the default throwaway
+ *   dir (the ledger is then unreadable by design — see the note below).
+ */
+function runMirror(args, opts = {}) {
   // VAULT_MIRROR_SKIP_CANONICAL_CHECK=1 bypasses the #600 canonical-vault guard:
   // every test here mirrors into a non-git mkdtempSync tmp dir, which would be
   // rejected by the guard (no git origin). The guard's own behaviour is covered
@@ -56,12 +63,19 @@ function runMirror(args) {
   // its newest foreign event against the sessions ledger, and `/evolve` mines it).
   // A test that silently writes into the substrate it is not testing is the same
   // class as tests/lib/worktree.test.mjs self-poisoning (#984).
+  const projectDir = opts.projectDir ?? mkdtempSync(join(tmpdir(), 'vault-mirror-events-'));
   return spawnSync('node', [MIRROR, ...args], {
     encoding: 'utf8',
     env: {
       ...process.env,
       VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1',
-      CLAUDE_PROJECT_DIR: mkdtempSync(join(tmpdir(), 'vault-mirror-events-')),
+      CLAUDE_PROJECT_DIR: projectDir,
+      // Belt-and-braces: `vault-dir` resolves HOST-LOCALLY elsewhere in this
+      // codebase (SO_VAULT_DIR > owner.yaml > CLAUDE.md). This CLI takes
+      // --vault-dir as a flag and never consults that chain, but pinning the
+      // override at a throwaway keeps a future resolver change from turning this
+      // suite into a writer against the operator's REAL vault.
+      SO_VAULT_DIR: projectDir,
     },
   });
 }
@@ -304,6 +318,65 @@ describe('vault-mirror CLI', () => {
     const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout.trim()).action).toBe('skipped-invalid');
+  });
+
+  // ── Telemetry: the silent drop must reach the events ledger (#1116) ────────
+  //
+  // The concrete bug this catches, which no other assertion in this file does:
+  // a schema-invalid record is dropped, `{"action":"skipped-invalid"}` goes to
+  // stdout, and the process STILL exits 0 — so the affected session ends up with
+  // no vault note and nothing durable says which one. Every other
+  // skipped-invalid test here reads stdout only, so deleting the emitMirrorEvent
+  // call in scripts/vault-mirror.mjs leaves all of them green. This one pins the
+  // ledger record AND its `record_id`, the single field that answers WHICH
+  // session lost its note.
+  it('skipped-invalid emits orchestrator.vault.mirror_completed carrying the record_id', () => {
+    const vaultDir = tmp();
+    const projectDir = tmp(); // pins CLAUDE_PROJECT_DIR → readable events.jsonl
+    // `agent_summary` omitted → the VALIDATION path (a `vault-mirror:` error
+    // thrown by the renderer), not the mapper-crash path.
+    const invalidSession = JSON.stringify({
+      session_id: 'session-2026-04-13-lost-note',
+      session_type: 'feature',
+      platform: 'claude-code',
+      started_at: '2026-04-13T08:00:00Z',
+      completed_at: '2026-04-13T10:00:00Z',
+      duration_seconds: 7200,
+      total_waves: 3,
+      total_agents: 6,
+      total_files_changed: 12,
+      waves: [{ wave: 1, role: 'Planning', agent_count: 1, files_changed: 2, quality: 'ok' }],
+      effectiveness: { planned_issues: 3, completed: 3, carryover: 0, emergent: 1, completion_rate: 1.0 },
+    });
+    const sourceFile = writeJsonl(vaultDir, invalidSession);
+
+    const result = runMirror(
+      ['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session'],
+      { projectDir },
+    );
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim()).action).toBe('skipped-invalid');
+
+    const ledger = join(projectDir, '.orchestrator', 'metrics', 'events.jsonl');
+    const mirrorEvents = readFileSync(ledger, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.event === 'orchestrator.vault.mirror_completed');
+
+    expect(mirrorEvents).toHaveLength(1);
+    expect(mirrorEvents[0]).toMatchObject({
+      action: 'skipped-invalid',
+      kind: 'session',
+      record_id: 'session-2026-04-13-lost-note',
+      skip_class: 'validation',
+      line: 1,
+      dry_run: false,
+    });
+    expect(mirrorEvents[0].reason).toContain('agent_summary');
+    // "Absent is not zero": no target path is resolved on this branch, so the
+    // key must be MISSING rather than written as null.
+    expect(mirrorEvents[0]).not.toHaveProperty('path');
   });
 
   // ── --strict-schema flag (Issue #249 follow-up) ──────────────────────────

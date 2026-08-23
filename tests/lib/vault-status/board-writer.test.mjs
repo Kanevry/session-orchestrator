@@ -1394,3 +1394,70 @@ describe('mirrorBoard — TTL-staleness re-derivation on preserved rows (#829)',
     ]);
   });
 });
+
+// ===========================================================================
+// mirrorBoard — board_written telemetry
+// ===========================================================================
+
+describe('mirrorBoard — board_written telemetry', () => {
+  /**
+   * Read the JSONL records this repo's own ledger accumulated. Deliberately
+   * reads the FILE emitEvent wrote (not a spy): the deliverable is a record a
+   * fleet query can find, so the file is the contract.
+   */
+  function readBoardEvents(repoRoot) {
+    const raw = readFileSync(join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl'), 'utf8');
+    return raw
+      .split('\n')
+      .filter((l) => l.trim().length > 0)
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.event === 'orchestrator.vault.board_written');
+  }
+
+  it('records a board_written event on the SILENT no-op path (vault disabled), pinned to the calling repo', async () => {
+    // Bug this catches: an emitter wired onto the `written` path only. The
+    // no-op returns are precisely the states that look identical to a healthy
+    // write from outside the process, so a writer that stops running stays
+    // invisible — the whole premise of this telemetry (0 board events across
+    // 28 387 ledger records, measured 2026-08-23).
+    const repoRoot = makeRepo('no-vault-config-repo'); // no CLAUDE.md → config read throws
+
+    const result = await mirrorBoard({ repoRoot, now: FIXED_NOW, hostPaths: HERMETIC_HOST_PATHS });
+    expect(result).toEqual({ action: 'skipped-vault-disabled' });
+
+    const events = readBoardEvents(repoRoot);
+    expect(events).toHaveLength(1);
+    expect(events[0].action).toBe('skipped-vault-disabled');
+    expect(events[0].caller).toBe('mirrorBoard');
+    // Absent is not zero: nothing was resolved, rendered or swept on this path,
+    // so those keys must be MISSING rather than reported as '' / 0.
+    expect(events[0]).not.toHaveProperty('path');
+    expect(events[0]).not.toHaveProperty('rows');
+    expect(events[0]).not.toHaveProperty('repos_swept');
+  });
+
+  it('still writes the board when the events ledger path is unwritable', async () => {
+    // Bug this catches: an emit that is not wrapped in try/catch lets telemetry
+    // FAIL a board write. `.orchestrator/metrics` is created as a FILE here, so
+    // emitEvent's own `fs.mkdir(..., {recursive:true})` throws EEXIST for real —
+    // no mock, the genuine failure shape.
+    const vaultDir = makeVaultDir();
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+    const repoRoot = makeThisRepoConfig('ledger-blocked-repo', vaultDir);
+    mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
+    writeFileSync(join(repoRoot, '.orchestrator', 'metrics'), 'not-a-directory\n', 'utf8');
+
+    const result = await mirrorBoard({
+      repoRoot,
+      explicitStatus: 'closed',
+      now: FIXED_NOW,
+      hostPaths: HERMETIC_HOST_PATHS,
+    });
+
+    expect(result.action).toBe('written');
+    const rows = parseBoardRows(readFileSync(resolveBoardPath(vaultDir), 'utf8'));
+    expect(rows.map((r) => r.repo)).toEqual(['ledger-blocked-repo']);
+    // The blocking file is untouched — the emit failed, it did not clobber.
+    expect(readFileSync(join(repoRoot, '.orchestrator', 'metrics'), 'utf8')).toBe('not-a-directory\n');
+  });
+});

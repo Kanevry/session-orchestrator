@@ -105,6 +105,83 @@ export function _normalizeRemote(url) {
     .replace(/\/+$/, '');
 }
 
+// ── Mirror telemetry (#1116) ──────────────────────────────────────────────────
+//
+// The mirror run itself used to be SILENT in `.orchestrator/metrics/events.jsonl`
+// (measured 2026-08-23: `jq -r '.event' … | grep -icE 'board|mirror'` → 0 of
+// 28 387 records; the only event this CLI emitted was
+// `orchestrator.secret_masker.applied`). The expensive consequence is the
+// `skipped-invalid` path below: a schema-invalid record is reported on stdout
+// and the process still exits 0, so the affected session ends up WITHOUT a vault
+// note and nothing durable records which one.
+//
+// Design constraints, all load-bearing:
+//   - Additive only. The stdout JSON protocol is untouched; consumers parse it.
+//   - Best-effort. A telemetry failure must never fail a mirror run, so every
+//     emit is wrapped and its rejection swallowed (same posture as the masker
+//     emit at the end of main()).
+//   - "Absent is not zero" (docs/events-schema.md): a field that was not
+//     measured is OMITTED, never written as 0/null. Hence no `path` key here —
+//     these emit sites are reached BEFORE any target path is resolved, so there
+//     is no path to report. `record_id` is likewise omitted when the record
+//     carries neither `id` nor `session_id`; `line` is the fallback locator that
+//     is always measured.
+//   - Same ledger as the masker emit: `emitEvent` is called 2-arg so both events
+//     from one run resolve the SAME destination (`SO_PROJECT_DIR`, i.e.
+//     `CLAUDE_PROJECT_DIR` or the CWD walk-up). This CLI has no repo-root flag
+//     and deriving one from `--source` would split a single run's telemetry
+//     across two ledgers.
+
+/**
+ * Upper bound (characters) on the `reason` string written into the events
+ * ledger. Renderer validation messages are short and structured
+ * (`missing required field 'x' (session_id=…)`), and native mapper-crash
+ * messages are bounded in practice — the clamp only stops a pathological
+ * message from bloating every ledger line. Revisit if a legitimate reason is
+ * ever observed truncated.
+ */
+const MIRROR_REASON_MAX = 300;
+
+/**
+ * Emit one `orchestrator.vault.mirror_completed` telemetry record for a single
+ * mirrored entry. Never throws — a rejected emit is swallowed silently.
+ *
+ * @param {object} opts
+ * @param {string} opts.action — the `action` value this script wrote to stdout
+ *   for the same entry (currently always `skipped-invalid`).
+ * @param {string} opts.kind — `learning` | `session` (the `--kind` flag).
+ * @param {number} opts.line — 1-based JSONL line number of the entry. Always
+ *   measured; the only locator available when the record has no id.
+ * @param {string|null|undefined} opts.recordId — the record's `id` /
+ *   `session_id`. Omitted from the payload when absent.
+ * @param {string} opts.skipClass — failure class discriminator, mirroring the
+ *   stdout `reason` where one exists: `validation` | `mapper-crash`.
+ * @param {string|undefined} opts.reason — the renderer's error message.
+ *   Clamped to {@link MIRROR_REASON_MAX}; omitted when absent.
+ * @param {boolean} opts.dryRun — whether this run wrote anything at all.
+ * @returns {Promise<void>}
+ */
+async function emitMirrorEvent({ action, kind, line, recordId, skipClass, reason, dryRun }) {
+  // "Absent is not zero": a field we did not measure is OMITTED. `null` counts as
+  // not-measured here — `entryId` is explicitly null for a record carrying
+  // neither `id` nor `session_id`, and a null record_id in the ledger would read
+  // as a measured empty id rather than as "this record had none".
+  const present = (v) => v !== undefined && v !== null;
+  try {
+    await emitEvent('orchestrator.vault.mirror_completed', {
+      action,
+      kind,
+      line,
+      ...(present(recordId) ? { record_id: recordId } : {}),
+      ...(present(skipClass) ? { skip_class: skipClass } : {}),
+      ...(present(reason) ? { reason: String(reason).slice(0, MIRROR_REASON_MAX) } : {}),
+      dry_run: dryRun,
+    });
+  } catch {
+    // Silent no-op — telemetry must never be the reason a mirror run fails.
+  }
+}
+
 // ── CLI argument parsing ──────────────────────────────────────────────────────
 //
 // Migrated to scripts/lib/cli-flags.mjs (#510). Behaviour changes vs prior
@@ -367,6 +444,15 @@ async function main() {
           JSON.stringify({ action: 'skipped-invalid', path: null, kind, id: entryId }) + '\n',
         );
         skippedInvalidCount++;
+        await emitMirrorEvent({
+          action: 'skipped-invalid',
+          kind,
+          line: lineNum,
+          recordId: entryId,
+          skipClass: 'validation',
+          reason: err.message,
+          dryRun,
+        });
         continue;
       }
       // #718: discriminate genuine filesystem/system errors (which must still
@@ -396,6 +482,15 @@ async function main() {
           }) + '\n',
         );
         skippedInvalidCount++;
+        await emitMirrorEvent({
+          action: 'skipped-invalid',
+          kind,
+          line: lineNum,
+          recordId: entryId,
+          skipClass: 'mapper-crash',
+          reason: err.message,
+          dryRun,
+        });
         continue;
       }
       // Unexpected filesystem errors → fatal
