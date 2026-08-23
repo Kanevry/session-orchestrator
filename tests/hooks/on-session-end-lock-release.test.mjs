@@ -28,6 +28,7 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { telemetryIsolationEnv } from '../_helpers/telemetry-isolation.mjs';
 
 const HOOK = path.resolve(import.meta.dirname, '../../hooks/on-session-end.mjs');
 const EVENTS_REL = path.join('.orchestrator', 'metrics', 'events.jsonl');
@@ -83,6 +84,12 @@ async function runHook({ projectDir, stdin = '' }) {
         CLAUDE_PROJECT_DIR: projectDir,
         CLANK_EVENT_SECRET: undefined,
         CLANK_EVENT_URL: undefined,
+        // #1138 — see the same guard in tests/hooks/on-session-end.test.mjs:
+        // the hook flushes telemetry on every run, and an inherited HOME +
+        // absent SO_TELEMETRY_ENDPOINT means the operator's real consent
+        // record and the production endpoint. Verified by md5: without this,
+        // a run of this file alone rewrote the real offline queue.
+        ...telemetryIsolationEnv(),
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });

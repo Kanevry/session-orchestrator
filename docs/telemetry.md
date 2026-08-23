@@ -84,6 +84,16 @@ Precedence, highest wins:
    headless or CI invocation never shows this prompt and never sends
    telemetry, regardless of any saved state.
 
+The prompt is triggered **mechanically**: `hooks/on-session-start.mjs` calls
+`resolveConsent()` on every session start and, only when no decision is on
+record and the run is not CI, injects a one-line instruction into the session
+via `hookSpecificOutput.additionalContext` — riding the same single stdout
+envelope as the host banner. The skill phase that describes the question
+(`skills/session-start/SKILL.md` § Phase 6.8) is the wording, not the trigger.
+The CI check is `isCiEnv()`, deliberately **not** `isHeadless()`: a hook's
+stdout is always a pipe, so `isHeadless()` would answer "headless" every time
+and the prompt could never appear (#1138).
+
 If the consent file is corrupt or unreadable, the client fails **closed**:
 telemetry state degrades to "no consent" (nothing sent) rather than
 guessing, with a one-line stderr hint pointing at the CLI below.
@@ -128,6 +138,18 @@ The send is fire-and-forget with a short timeout; if the endpoint is
 unreachable, the batch queues locally (bounded size, oldest entries dropped
 first) and retries later. Telemetry never blocks or slows down a session
 beyond that short timeout budget.
+
+**When a send is attempted.** `hooks/on-session-end.mjs` calls `flush()` at the
+end of every session teardown — including sessions that never run `/close`. The
+`skills/session-end/SKILL.md` § Phase 3.45 description documents the behaviour;
+the hook is what fires it. Each attempt writes one
+`orchestrator.telemetry.flush` breadcrumb (`{outcome, reason}` only — no
+payload, no `anon_id`) to the repo's local `events.jsonl`, so the send rate is
+measurable rather than assumed. A second, `Skill`-triggered daily fallback
+sends when more than 24h have passed since the last successful flush AND either
+the offline queue is non-empty or a session has completed since — the latter
+clause is what lets the fallback originate a ping instead of only retrying a
+failed one (#1138).
 
 ## Retention
 

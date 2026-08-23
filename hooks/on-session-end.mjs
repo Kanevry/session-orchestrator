@@ -38,6 +38,8 @@ import {
   OWNER_PROOF_RELPATH,
 } from '../scripts/lib/session-lock.mjs';
 import { deregisterSelf, logSweepEvent } from '../scripts/lib/session-registry.mjs';
+import { readConfigFile, parseSessionConfig } from '../scripts/lib/config.mjs';
+import { flush } from '../scripts/lib/telemetry/sync.mjs';
 import { attemptLockReconciliation } from './_lib/lock-reconcile.mjs';
 
 // ---------------------------------------------------------------------------
@@ -136,6 +138,112 @@ async function resolveSession(input, projectRoot) {
   const resolvedSemanticSessionId = isRecordedSession ? semanticSessionId : null;
 
   return { sessionId, semanticSessionId: resolvedSemanticSessionId, durationMs };
+}
+
+/**
+ * POST budget for the close-time telemetry flush (ms).
+ *
+ * NAMED CEILING, and the reason it is BELOW the module default POST_TIMEOUT_MS
+ * (3000): the two timeouts fail differently.
+ *
+ *   - This one expiring is LOSSLESS. `flush()` catches the abort and routes the
+ *     record into the bounded offline queue; the daily fallback
+ *     (`shouldDailyFlush`) drains it on a later session.
+ *   - The HARNESS timeout expiring is LOSSY. Claude Code kills the hook process
+ *     mid-flight, so the enqueue never runs and the record is simply gone —
+ *     which is the exact failure #1138 exists to remove.
+ *
+ * So the internal bound must stay comfortably under the harness bound, not
+ * merely below it. Budget (hooks/hooks.json `SessionEnd.timeout: 10` s, raised
+ * from 5 with this change): up to 500 ms stdin + a backfill measured at a
+ * ~845 ms median (its TAIL, not its median, is what would collide) + lock
+ * release + deregistration, then this 2 s. That leaves several seconds of slack
+ * for the backfill tail while still covering a normal round-trip many times
+ * over.
+ *
+ * Revisit if the hooks.json SessionEnd timeout changes — the pin lives in
+ * tests/hooks/on-session-end.test.mjs.
+ */
+const TELEMETRY_FLUSH_TIMEOUT_MS = 2000;
+
+/**
+ * Read `persistence` from the repo's Session Config. Defaults to `true` — the
+ * same default `scripts/lib/config.mjs` applies — so an unreadable or absent
+ * CLAUDE.md (or its Codex alias AGENTS.md) never silently disables the flush.
+ *
+ * @param {string} projectRoot
+ * @returns {Promise<boolean>}
+ */
+async function readPersistence(projectRoot) {
+  try {
+    const md = await readConfigFile(projectRoot);
+    return parseSessionConfig(md).persistence !== false;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Reduce a `flush()` result to the two-field breadcrumb the event carries.
+ *
+ * `reason` is normalised to its head token because `flush()` may return
+ * `build-error: <message>`, and a raw error message is unbounded free text in a
+ * stream whose whole purpose is aggregation by class.
+ *
+ * @param {{sent?: boolean, queued?: boolean, reason?: string}|null|undefined} res
+ * @returns {{outcome: 'sent'|'queued'|'gated'|'skipped', reason: string}}
+ */
+function classifyFlush(res) {
+  const reason = String(res?.reason ?? 'unknown').split(':')[0];
+  if (res?.sent === true) return { outcome: 'sent', reason };
+  if (res?.queued === true) return { outcome: 'queued', reason };
+  if (reason === 'gated') return { outcome: 'gated', reason };
+  return { outcome: 'skipped', reason };
+}
+
+/**
+ * #1138 — the MECHANICAL telemetry flush.
+ *
+ * Until now the close-time flush existed only as prose in
+ * `skills/session-end/SKILL.md` § Phase 3.45, i.e. it ran only when the
+ * coordinator LLM happened to execute that phase. Measured 2026-08-23: 588
+ * session closes across 13 repos produced 82 ingest records (~14%). A hook is
+ * the only caller that fires on EVERY close, including the ones that never
+ * reach `/close` at all.
+ *
+ * Strictly best-effort: never throws, and bounded by TELEMETRY_FLUSH_TIMEOUT_MS.
+ * The consent gate lives INSIDE `flush()` (`resolveConsent()` is its first
+ * statement) — this function deliberately does not re-implement it, so there is
+ * exactly one place where "may we send?" is decided.
+ *
+ * Always emits `orchestrator.telemetry.flush` with `{ outcome, reason }` and
+ * NOTHING else — no payload, no anon_id. Per `.claude/rules/host-resources.md`
+ * HR-105, a mechanism whose firing rate nothing records cannot be falsified;
+ * this event is what makes the flush rate measurable next time.
+ *
+ * @param {string} projectRoot
+ * @returns {Promise<void>}
+ */
+async function flushTelemetry(projectRoot) {
+  let result;
+  try {
+    result = (await readPersistence(projectRoot))
+      ? classifyFlush(await flush({
+        metricsDir: path.join(projectRoot, '.orchestrator', 'metrics'),
+        timeoutMs: TELEMETRY_FLUSH_TIMEOUT_MS,
+      }))
+      // `persistence: false` means this session leaves no durable local trace;
+      // a telemetry ping is a durable record too, so it honours the same switch.
+      : { outcome: 'skipped', reason: 'persistence-disabled' };
+  } catch {
+    result = { outcome: 'skipped', reason: 'error' };
+  }
+
+  // `result` is passed through verbatim: it holds EXACTLY {outcome, reason}, so
+  // no payload field can leak into the event by accident.
+  try {
+    await emitEvent('orchestrator.telemetry.flush', result);
+  } catch { /* observability is best-effort */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -348,6 +456,12 @@ async function main() {
       logSweepEvent({ event: 'deregister-failed', session_id: sessionId, error: err?.message ?? String(err) });
     }
   }
+
+  // (d) #1138 — mechanical telemetry flush. Deliberately LAST: it is the only
+  //     step here that may touch the network, so every local-fs guarantee above
+  //     (backfill, lock release, deregistration) is already durable before the
+  //     hook spends any of its remaining budget on a POST.
+  await flushTelemetry(projectRoot);
 }
 
 // Exit 0 always — informational hook must never block session teardown.

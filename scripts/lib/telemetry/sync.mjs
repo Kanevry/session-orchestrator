@@ -287,25 +287,63 @@ export async function flush({
 // ---------------------------------------------------------------------------
 
 /**
- * Whether a daily-fallback flush is due: the queue is non-empty AND more than 24h
- * have passed since the last successful flush (a never-flushed queue with items
- * counts as due). Cheap — a single telemetry.json read + a queue stat. Never throws.
+ * Whether a daily-fallback flush is due. Two independent ways to be due, both
+ * requiring that more than 24h have passed since the last successful flush
+ * (never-flushed counts as infinitely stale):
+ *
+ *   (a) RETRY — the offline queue is non-empty: earlier sends failed and the
+ *       backlog deserves another attempt.
+ *   (b) CATCH-UP — the queue is empty, but `<metricsDir>/sessions.jsonl` ends on
+ *       a record whose `completed_at` is NEWER than `last_flush_at`: a session
+ *       closed since the last successful send and produced no ping.
+ *
+ * (b) is the reason this predicate exists at all. While it was queue-only, the
+ * "daily fallback" could ONLY re-send what had already failed to send — it could
+ * never originate a ping. Measured 2026-08-23 (#1138): 588 session closes across
+ * 13 repos produced 82 ingest records (~14%), because the ONE writer of the
+ * queue is a failed `flush()`, and a `flush()` that never runs never fails.
+ *
+ * Cheap in the common case: the staleness gate is checked FIRST (one small
+ * telemetry.json read), so a host that flushed within the last 24h returns
+ * before touching either the queue or the session ledger.
+ *
+ * Never throws.
  *
  * @param {object} [opts]
  * @param {string} [opts.statePath]  telemetry.json path override.
  * @param {string} [opts.queuePath]  queue path override.
+ * @param {string} [opts.metricsDir] Metrics dir for the (b) catch-up probe
+ *                                   (default `<cwd>/.orchestrator/metrics`).
  * @param {number} [opts.now]        Reference time in epoch-ms (default Date.now()).
  * @returns {boolean}
  */
-export function shouldDailyFlush({ statePath, queuePath, now = Date.now() } = {}) {
+export function shouldDailyFlush({ statePath, queuePath, metricsDir, now = Date.now() } = {}) {
   try {
-    const { count } = queueStats({ path: queuePath });
-    if (count <= 0) return false;
-
+    // Staleness gate — shared by BOTH disjuncts, so it runs first and short-
+    // circuits the two file probes below on every fresh host.
     const { record } = readTelemetryState({ path: statePath });
     const raw = record?.last_flush_at;
     const lastMs = typeof raw === 'string' && !Number.isNaN(Date.parse(raw)) ? Date.parse(raw) : 0;
-    return now - lastMs > DAILY_FLUSH_MS;
+    if (now - lastMs <= DAILY_FLUSH_MS) return false;
+
+    // (a) Retry an existing backlog.
+    const { count } = queueStats({ path: queuePath });
+    if (count > 0) return true;
+
+    // (b) Catch-up: a session completed after the last successful flush.
+    //     Reuses buildBatch's reader — same file, same skipInvalid tolerance,
+    //     no second parser.
+    //
+    //     Deliberate simplification (named ceiling): this parses the WHOLE
+    //     sessions.jsonl to look at its last record. At the observed ledger size
+    //     (271 records / 292 KB in this repo, 2026-08-23) that is sub-millisecond
+    //     and it only runs once the 24h gate above has already passed. Revisit
+    //     with a tail-read if any repo's sessions.jsonl passes ~10 MB.
+    const dir = metricsDir || path.join(process.cwd(), '.orchestrator', 'metrics');
+    const sessions = readJsonlFile(path.join(dir, 'sessions.jsonl'), { skipInvalid: true });
+    const last = sessions.length > 0 ? sessions[sessions.length - 1] : null;
+    const completedMs = Date.parse(last?.completed_at);
+    return !Number.isNaN(completedMs) && completedMs > lastMs;
   } catch {
     return false;
   }

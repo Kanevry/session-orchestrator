@@ -15,6 +15,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { isRoot } from '../_helpers/perms.mjs';
+import { telemetryIsolationEnv } from '../_helpers/telemetry-isolation.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -43,6 +44,12 @@ async function runHook({ projectDir, env = {}, stdin = null, registryDir = null,
         CLANK_EVENT_URL: '',
         // Isolate session registry writes to the per-test directory (#168).
         ...(registryDir ? { SO_SESSION_REGISTRY_DIR: registryDir } : {}),
+        // #1138 — the hook reads the host's telemetry consent record to decide
+        // whether to inject the consent nudge. It never WRITES it, so there is
+        // no data hazard here; the hazard is determinism, because stdout would
+        // otherwise differ between a machine that has decided and one that has
+        // not. The nudge block below overrides HOME deliberately.
+        ...telemetryIsolationEnv(),
         ...env,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -1194,5 +1201,111 @@ describe('Phase 4 measurement probes', { timeout: 20000 }, () => {
     expect(evt).toBeDefined();
     const byId = Object.fromEntries(evt.probes.map((p) => [p.id, p.outcome]));
     expect(byId['bootstrap-lock-freshness']).toBe('ran-alert');
+  });
+});
+
+// #1138 — one-time telemetry-consent nudge (hookSpecificOutput.additionalContext)
+// ---------------------------------------------------------------------------
+
+/**
+ * Isolation contract: HOME is a fresh mkdtemp for every run, so `os.homedir()`
+ * — and with it `~/.config/session-orchestrator/telemetry.json` and
+ * `owner.yaml` — resolves into throwaway state. The operator's real consent
+ * record is never read and never written by this block. The env kill-switches
+ * are cleared explicitly so an ambient DO_NOT_TRACK cannot turn a
+ * "nudge present" assertion into a passing "nudge absent".
+ */
+describe('telemetry-consent nudge (#1138)', { timeout: 15000 }, () => {
+  // THE DEFECT THIS BLOCK PINS: the consent AUQ lived only as prose in
+  // skills/session-start/SKILL.md § Phase 6.8 — line ~1060 of 1230, behind 24
+  // other phases — and no hook ever called resolveConsent(). Measured
+  // 2026-08-23: 0 ingest records from any host but the author's.
+
+  /** A fresh fake HOME with an optional telemetry.json seeded into it. */
+  async function mkFakeHome(state = null) {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-session-start-home-'));
+    tmpDirs.push(home);
+    if (state !== null) {
+      const cfg = path.join(home, '.config', 'session-orchestrator');
+      await fs.mkdir(cfg, { recursive: true });
+      await fs.writeFile(path.join(cfg, 'telemetry.json'), JSON.stringify(state));
+    }
+    return home;
+  }
+
+  const consentEnv = (home, extra = {}) => ({
+    HOME: home,
+    SO_TELEMETRY: '',
+    SO_TELEMETRY_DISABLED: '',
+    DO_NOT_TRACK: '',
+    CI: '',
+    GITHUB_ACTIONS: '',
+    GITLAB_CI: '',
+    CONTINUOUS_INTEGRATION: '',
+    ...extra,
+  });
+
+  /** Every stdout JSON object the hook wrote. */
+  const stdoutObjects = (stdout) =>
+    stdout.split('\n').filter((l) => l.trim().startsWith('{')).map((l) => JSON.parse(l));
+
+  it('injects the nudge when the host has no consent decision on record', async () => {
+    const dir = await mkProjectTracked();
+    const home = await mkFakeHome();
+
+    const result = await runHook({ projectDir: dir, env: consentEnv(home) });
+
+    const objects = stdoutObjects(result.stdout);
+    expect(objects).toHaveLength(1);
+    expect(objects[0].hookSpecificOutput).toMatchObject({ hookEventName: 'SessionStart' });
+    expect(objects[0].hookSpecificOutput.additionalContext).toContain('Phase 6.8');
+    // ...and the operator-facing banner still rides the SAME object, because a
+    // second stdout write would be silently discarded by Claude Code.
+    expect(objects[0].systemMessage).toContain('Host:');
+  });
+
+  it('stays silent once a decision is stored — granted', async () => {
+    const dir = await mkProjectTracked();
+    const home = await mkFakeHome({ schema_version: 1, consent: 'granted', decided_at: '2026-08-01T00:00:00.000Z' });
+
+    const result = await runHook({ projectDir: dir, env: consentEnv(home) });
+
+    for (const obj of stdoutObjects(result.stdout)) {
+      expect(obj.hookSpecificOutput).toBeUndefined();
+    }
+  });
+
+  it('stays silent once a decision is stored — denied', async () => {
+    const dir = await mkProjectTracked();
+    const home = await mkFakeHome({ schema_version: 1, consent: 'denied', decided_at: '2026-08-01T00:00:00.000Z' });
+
+    const result = await runHook({ projectDir: dir, env: consentEnv(home) });
+
+    for (const obj of stdoutObjects(result.stdout)) {
+      expect(obj.hookSpecificOutput).toBeUndefined();
+    }
+  });
+
+  it('never nudges in CI — there is no operator to answer an AskUserQuestion', async () => {
+    const dir = await mkProjectTracked();
+    const home = await mkFakeHome();
+
+    const result = await runHook({ projectDir: dir, env: consentEnv(home, { CI: 'true' }) });
+
+    for (const obj of stdoutObjects(result.stdout)) {
+      expect(obj.hookSpecificOutput).toBeUndefined();
+    }
+  });
+
+  it('never nudges under the env kill-switches (DO_NOT_TRACK / SO_TELEMETRY_DISABLED)', async () => {
+    const dir = await mkProjectTracked();
+
+    for (const kill of [{ DO_NOT_TRACK: '1' }, { SO_TELEMETRY_DISABLED: '1' }]) {
+      const home = await mkFakeHome();
+      const result = await runHook({ projectDir: dir, env: consentEnv(home, kill) });
+      for (const obj of stdoutObjects(result.stdout)) {
+        expect(obj.hookSpecificOutput).toBeUndefined();
+      }
+    }
   });
 });

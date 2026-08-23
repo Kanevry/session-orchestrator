@@ -11,11 +11,13 @@
  *   2. Read JSON payload from stdin: { tool_name, tool_input: { skill }, session_id }.
  *   3. Belt-and-suspenders guard: if tool_name !== "Skill", exit 0 immediately.
  *   4. Build a 'selected' record and call appendSkillInvocation().
- *   5. Daily-fallback telemetry flush check (Epic #841, #844) — non-blocking:
- *      when a bounded offline queue has aged past 24h AND consent resolves to
- *      send, spawn a detached child that runs `telemetry _flush`. Cheap by
- *      construction (env kill-switch pre-check → queue+state stat → consent)
- *      and never loads the roster on the hot hook path.
+ *   5. Daily-fallback telemetry flush check (Epic #841, #844; #1138) — non-blocking:
+ *      when more than 24h have passed since the last successful flush AND either
+ *      the offline queue is non-empty or a session has completed since, AND
+ *      consent resolves to send, spawn a detached child that runs
+ *      `telemetry _flush`. Cheap by construction (env kill-switch pre-check →
+ *      state stat → queue/ledger probe → consent) and never loads the roster on
+ *      the hot hook path.
  *   6. Output: nothing on stdout. Diagnostic errors to stderr only.
  *
  * Exit codes: 0 always (informational, never blocking).
@@ -40,7 +42,9 @@ import { loadOwnerConfig } from '../scripts/lib/owner-yaml.mjs';
 // Constants
 // ---------------------------------------------------------------------------
 
-const JSONL_PATH = path.join(SO_PROJECT_DIR, '.orchestrator', 'metrics', 'skill-invocations.jsonl');
+const METRICS_DIR = path.join(SO_PROJECT_DIR, '.orchestrator', 'metrics');
+
+const JSONL_PATH = path.join(METRICS_DIR, 'skill-invocations.jsonl');
 
 /** Absolute path to the telemetry CLI (carries the hidden `_flush` subcommand). */
 const TELEMETRY_CLI_PATH = path.resolve(
@@ -95,8 +99,9 @@ function readStdinJson() {
 /**
  * Non-blocking daily-fallback flush trigger. Ordered cheapest-first:
  *   1. env kill-switches (no I/O) — DO_NOT_TRACK / SO_TELEMETRY_DISABLED.
- *   2. shouldDailyFlush (one telemetry.json read + one queue stat) — the common
- *      case (empty queue) returns here WITHOUT loading owner.yaml or the roster.
+ *   2. shouldDailyFlush (one telemetry.json read; a queue stat + a sessions.jsonl
+ *      read only once the 24h gate has passed) — the common case (flushed within
+ *      24h) returns here WITHOUT loading owner.yaml or the roster.
  *   3. full consent resolution — spawn a detached `telemetry _flush` only when it
  *      resolves to send.
  *
@@ -108,6 +113,8 @@ function readStdinJson() {
  * @param {number} [opts.now]             Reference time epoch-ms (default Date.now()).
  * @param {string} [opts.statePath]       telemetry.json path override (test injection).
  * @param {string} [opts.queuePath]       queue path override (test injection).
+ * @param {string} [opts.metricsDir]      Metrics dir for shouldDailyFlush's catch-up
+ *                                        probe (default: this repo's metrics dir).
  * @returns {{ spawned: boolean, reason: string }}
  */
 export function maybeSpawnDailyFlush({
@@ -116,6 +123,7 @@ export function maybeSpawnDailyFlush({
   now = Date.now(),
   statePath,
   queuePath,
+  metricsDir = METRICS_DIR,
 } = {}) {
   try {
     // 1. Cheapest gate: env kill-switches, no file I/O.
@@ -123,8 +131,11 @@ export function maybeSpawnDailyFlush({
       return { spawned: false, reason: 'disabled-env' };
     }
 
-    // 2. Cheap backlog check — bails out before owner.yaml load in the common case.
-    if (!shouldDailyFlush({ statePath, queuePath, now })) {
+    // 2. Backlog / catch-up check — bails out before owner.yaml load in the
+    //    common case. Since #1138 this is due EITHER on a stale non-empty queue
+    //    OR on a session that completed after the last successful flush, so the
+    //    fallback can originate a ping instead of only retrying failed sends.
+    if (!shouldDailyFlush({ statePath, queuePath, metricsDir, now })) {
       return { spawned: false, reason: 'not-due' };
     }
 

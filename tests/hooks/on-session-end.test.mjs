@@ -14,7 +14,9 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import http from 'node:http';
 import { permsEnforced } from '../_helpers/perms.mjs';
+import { telemetryIsolationEnv } from '../_helpers/telemetry-isolation.mjs';
 
 const HOOK = path.resolve(import.meta.dirname, '../../hooks/on-session-end.mjs');
 const EVENTS_REL = path.join('.orchestrator', 'metrics', 'events.jsonl');
@@ -128,7 +130,7 @@ async function readSessions(projectDir) {
   }
 }
 
-async function runHook({ projectDir, stdin = '' }) {
+async function runHook({ projectDir, stdin = '', env = {} }) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [HOOK], {
       env: {
@@ -136,6 +138,16 @@ async function runHook({ projectDir, stdin = '' }) {
         CLAUDE_PROJECT_DIR: projectDir,
         CLANK_EVENT_SECRET: undefined,
         CLANK_EVENT_URL: undefined,
+        // #1138 — the hook now calls flush() on EVERY run, so a spawn helper
+        // that merely inherits process.env turns each of the ~35 tests below
+        // into a real telemetry sender against the developer's own consent
+        // record. Measured 2026-08-23 before this line existed: one suite run
+        // stamped `last_flush_at` on the operator's real
+        // ~/.config/session-orchestrator/telemetry.json — i.e. a production
+        // send — and rewrote their 50-entry offline queue. Fail-closed by
+        // default; the flush tests override it deliberately via `env`.
+        ...telemetryIsolationEnv(),
+        ...env,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -148,10 +160,19 @@ async function runHook({ projectDir, stdin = '' }) {
   });
 }
 
+/**
+ * The last `orchestrator.session.ended` record in events.jsonl.
+ *
+ * Selected BY EVENT NAME rather than by file position: since #1138 the hook
+ * appends a terminal `orchestrator.telemetry.flush` breadcrumb after the
+ * lifecycle event, so "last line" and "the session.ended record" are no longer
+ * the same row. No production consumer depends on physical position either —
+ * `scripts/lib/session-close-backfill.mjs` matches on `ev.event` (:165).
+ */
 async function readLastEvent(projectDir) {
-  const content = await fs.readFile(path.join(projectDir, EVENTS_REL), 'utf8');
-  const lines = content.trim().split('\n').filter((l) => l.length > 0);
-  return JSON.parse(lines[lines.length - 1]);
+  const ended = (await readAllEvents(projectDir))
+    .filter((e) => e.event === 'orchestrator.session.ended');
+  return ended[ended.length - 1];
 }
 
 /** Read + parse EVERY record in events.jsonl; missing file → []. */
@@ -1020,5 +1041,279 @@ describe('on-session-end.mjs — host-registry deregistration (#1047)', { timeou
 
     expect(res.code).toBe(0);
     expect(await exists(entryPath)).toBe(false);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// #1138 — mechanical telemetry flush
+// ---------------------------------------------------------------------------
+
+/**
+ * Isolation contract for this block:
+ *   - HOME is a fresh mkdtemp for EVERY run, so `os.homedir()` (and with it
+ *     `~/.config/session-orchestrator/telemetry.json`, the send queue, and
+ *     owner.yaml) resolves into throwaway state. The operator's real consent
+ *     record is never read and never written.
+ *   - SO_TELEMETRY_ENDPOINT points at a local 127.0.0.1 collector or at a closed
+ *     port. No test here reaches the real ingest server.
+ *   - The three env kill-switches are cleared explicitly, so an ambient
+ *     DO_NOT_TRACK on a developer machine cannot silently turn a "sent"
+ *     assertion into a passing "gated".
+ */
+
+/** A fresh fake HOME; auto-removed by the outer afterEach. */
+async function mkFakeHome() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'on-session-end-home-'));
+  tmpDirs.push(dir);
+  return dir;
+}
+
+/** Write ~/.config/session-orchestrator/telemetry.json inside a fake HOME. */
+async function seedTelemetryState(fakeHome, record) {
+  const dir = path.join(fakeHome, '.config', 'session-orchestrator');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, 'telemetry.json'), JSON.stringify(record));
+}
+
+/** Env block shared by every flush test: fake HOME + cleared kill-switches. */
+function telemetryEnv(fakeHome, endpoint) {
+  return {
+    HOME: fakeHome,
+    SO_TELEMETRY_ENDPOINT: endpoint,
+    SO_TELEMETRY: '',
+    SO_TELEMETRY_DISABLED: '',
+    DO_NOT_TRACK: '',
+  };
+}
+
+/** A local collector that records every POSTed body and answers 204. */
+async function startCollector() {
+  const received = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      try { received.push(JSON.parse(body)); } catch { received.push(body); }
+      res.writeHead(204).end();
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${server.address().port}/`;
+  return { url, received, close: () => new Promise((r) => server.close(r)) };
+}
+
+const flushEvents = async (dir) =>
+  (await readAllEvents(dir)).filter((e) => e.event === 'orchestrator.telemetry.flush');
+
+describe('on-session-end.mjs — mechanical telemetry flush (#1138)', { timeout: 20000 }, () => {
+  // THE DEFECT THIS BLOCK PINS: before #1138 the close-time flush lived only in
+  // `skills/session-end/SKILL.md` § Phase 3.45 prose. `main()` never called
+  // `flush()`, so a session that never ran /close — or a coordinator that never
+  // reached phase 3.45 — sent nothing at all. Measured 2026-08-23: 588 closes
+  // across 13 repos produced 82 ingest records (~14%).
+
+  it('calls flush() on every close — a host with no consent decision records a gated outcome', async () => {
+    const dir = await mkProject();
+    const home = await mkFakeHome();
+
+    const res = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', reason: 'other' }),
+      // Port 9 (discard) is never listened on; the consent gate short-circuits
+      // long before any socket is opened.
+      env: telemetryEnv(home, 'http://127.0.0.1:9/'),
+    });
+
+    expect(res.code).toBe(0);
+    expect(await flushEvents(dir)).toEqual([
+      expect.objectContaining({ event: 'orchestrator.telemetry.flush', outcome: 'gated', reason: 'gated' }),
+    ]);
+  });
+
+  it("sends a ping built from the ENDING project's metrics dir, not the hook process cwd", async () => {
+    const dir = await mkProject();
+    const home = await mkFakeHome();
+    const collector = await startCollector();
+    try {
+      await seedTelemetryState(home, {
+        schema_version: 1,
+        consent: 'granted',
+        decided_at: '2026-08-01T00:00:00.000Z',
+        last_flush_at: null,
+      });
+      // `session_type: 'deep'` is the discriminator: it survives the whitelist
+      // projection and can ONLY come from THIS project's sessions.jsonl.
+      await seedSessions(dir, [{
+        schema_version: 1,
+        session_id: 'flush-me',
+        session_type: 'deep',
+        started_at: '2026-08-23T09:00:00.000Z',
+        completed_at: '2026-08-23T09:30:00.000Z',
+      }]);
+
+      const res = await runHook({
+        projectDir: dir,
+        stdin: JSON.stringify({ hook_event_name: 'SessionEnd', reason: 'clear' }),
+        env: telemetryEnv(home, collector.url),
+      });
+
+      expect(res.code).toBe(0);
+      expect(collector.received).toHaveLength(1);
+      expect(collector.received[0]).toHaveLength(1);
+      expect(collector.received[0][0]).toMatchObject({ session_type: 'deep' });
+      expect(await flushEvents(dir)).toEqual([
+        expect.objectContaining({ outcome: 'sent', reason: 'sent' }),
+      ]);
+    } finally {
+      await collector.close();
+    }
+  });
+
+  it('queues instead of sending when the endpoint is unreachable, and never throws', async () => {
+    const dir = await mkProject();
+    const home = await mkFakeHome();
+    await seedTelemetryState(home, {
+      schema_version: 1,
+      consent: 'granted',
+      decided_at: '2026-08-01T00:00:00.000Z',
+      last_flush_at: null,
+    });
+
+    const res = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', reason: 'other' }),
+      env: telemetryEnv(home, 'http://127.0.0.1:9/'),
+    });
+
+    expect(res.code).toBe(0);
+    expect(await flushEvents(dir)).toEqual([
+      expect.objectContaining({ outcome: 'queued', reason: 'queued' }),
+    ]);
+    // The record landed in the host-local queue under the FAKE home.
+    const queued = await fs.readFile(
+      path.join(home, '.config', 'session-orchestrator', 'telemetry-queue.ndjson'),
+      'utf8',
+    );
+    expect(queued.trim().split('\n')).toHaveLength(1);
+  });
+
+  it('skips the flush entirely under persistence: false', async () => {
+    const dir = await mkProject();
+    const home = await mkFakeHome();
+    const collector = await startCollector();
+    try {
+      await seedTelemetryState(home, {
+        schema_version: 1,
+        consent: 'granted',
+        decided_at: '2026-08-01T00:00:00.000Z',
+        last_flush_at: null,
+      });
+      await fs.writeFile(
+        path.join(dir, 'CLAUDE.md'),
+        '# Test\n\n## Session Config\n\npersistence: false\nenforcement: warn\n',
+      );
+
+      const res = await runHook({
+        projectDir: dir,
+        stdin: JSON.stringify({ hook_event_name: 'SessionEnd', reason: 'other' }),
+        env: telemetryEnv(home, collector.url),
+      });
+
+      expect(res.code).toBe(0);
+      expect(collector.received).toEqual([]);
+      expect(await flushEvents(dir)).toEqual([
+        expect.objectContaining({ outcome: 'skipped', reason: 'persistence-disabled' }),
+      ]);
+    } finally {
+      await collector.close();
+    }
+  });
+
+  // THE GUARD'S OWN GUARD. The other ~35 tests in this file would keep passing
+  // if `...telemetryIsolationEnv()` were dropped from runHook — they assert
+  // nothing about telemetry, which is precisely why the leak went unnoticed
+  // until an md5 of the operator's real queue file caught it. This test bites
+  // on exactly the machines where the hazard is real: a host whose
+  // ~/.config/session-orchestrator/telemetry.json says `granted` would produce
+  // 'sent' or 'queued' here without the isolation. On a host with no consent
+  // record (a clean CI runner) it is green either way — an asymmetry worth
+  // stating rather than papering over.
+  it('is fail-closed by DEFAULT — a run with no env override never sends, whatever the host consented to', async () => {
+    const dir = await mkProject();
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', reason: 'other' }),
+    });
+
+    expect(await flushEvents(dir)).toEqual([
+      expect.objectContaining({ outcome: 'gated', reason: 'gated' }),
+    ]);
+  });
+
+  it('carries no telemetry payload on the observability event — exactly {outcome, reason}', async () => {
+    const dir = await mkProject();
+    const home = await mkFakeHome();
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', reason: 'other' }),
+      env: telemetryEnv(home, 'http://127.0.0.1:9/'),
+    });
+
+    const [ev] = await flushEvents(dir);
+    // timestamp + event come from emitEvent; the hook adds exactly two keys.
+    expect(Object.keys(ev).sort()).toEqual(['event', 'outcome', 'reason', 'timestamp']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1138 — the flush's time budget: manifest timeout + position in main()
+// ---------------------------------------------------------------------------
+
+describe('on-session-end.mjs — flush time budget (#1138)', { timeout: 20000 }, () => {
+  // WHY THIS IS PINNED. Every one of the 44 hook timeouts across the four
+  // manifests is `5`; SessionEnd is now the single deliberate exception, so a
+  // future "make the timeouts consistent" edit would silently revert it and
+  // nothing else would notice. The two timeouts fail differently: the internal
+  // one (TELEMETRY_FLUSH_TIMEOUT_MS) expiring queues the record, while the
+  // HARNESS one expiring kills the process mid-flight and loses it — which is
+  // exactly the silent drop #1138 removes.
+  it('gives the SessionEnd hook a 10 s manifest budget, not the shared 5 s', async () => {
+    const manifest = JSON.parse(
+      await fs.readFile(path.resolve(import.meta.dirname, '../../hooks/hooks.json'), 'utf8'),
+    );
+    const entries = manifest.hooks.SessionEnd.flatMap((r) => r.hooks);
+    const ours = entries.filter((h) => String(h.command).includes('on-session-end.mjs'));
+    expect(ours).toHaveLength(1);
+    expect(ours[0].timeout).toBe(10);
+  });
+
+  // WHY ORDER MATTERS. The flush is the only step in main() that may touch the
+  // network, so it is the only one that can be killed by the harness timeout.
+  // Running it LAST means such a kill takes nothing with it: the backfill, the
+  // lock release and the deregistration are already durable on disk. If the
+  // flush ever moves earlier, a slow endpoint starts eating the lock release.
+  it('runs the flush AFTER the lifecycle event and the lock release', async () => {
+    const dir = await mkProject();
+    const home = await mkFakeHome();
+    const sessionId = 'end-flush-order-1';
+    await seedLock(dir, { sessionId });
+    await seedOwnerProofFromLock(dir);
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: sessionId, reason: 'clear' }),
+      env: telemetryEnv(home, 'http://127.0.0.1:9/'),
+    });
+
+    const names = (await readAllEvents(dir)).map((e) => e.event);
+    expect(names).toContain('orchestrator.session.lock.released');
+    expect(names[names.length - 1]).toBe('orchestrator.telemetry.flush');
+    expect(names.indexOf('orchestrator.telemetry.flush'))
+      .toBeGreaterThan(names.indexOf('orchestrator.session.ended'));
+    expect(names.indexOf('orchestrator.telemetry.flush'))
+      .toBeGreaterThan(names.indexOf('orchestrator.session.lock.released'));
   });
 });

@@ -25,7 +25,7 @@
           {
             "type": "command",
             "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/on-session-end.mjs\"",
-            "timeout": 5
+            "timeout": 10
           }
         ]
       }

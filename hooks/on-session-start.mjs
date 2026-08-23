@@ -52,6 +52,8 @@ import {
 } from '../scripts/lib/session-registry.mjs';
 import { detectColdStart, consumeMarker } from '../scripts/lib/cold-start-detector.mjs';
 import { parseSessionId } from '../scripts/lib/session-id.mjs';
+import { readTelemetryState, resolveConsent, isCiEnv } from '../scripts/lib/telemetry/consent.mjs';
+import { loadOwnerConfig } from '../scripts/lib/owner-yaml.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -80,6 +82,19 @@ const execFileAsync = promisify(execFile);
 const bannerLines = [];
 
 /**
+ * Coordinator-directed context for the single end-of-hook flush (#1138).
+ *
+ * The banner above is for the OPERATOR (`systemMessage`); this is for the
+ * MODEL (`hookSpecificOutput.additionalContext`). Both leave in the SAME JSON
+ * object for the same reason the banner was consolidated: Claude Code surfaces
+ * only the FIRST JSON object a SessionStart hook writes to stdout, so a second
+ * `writeSync` would be silently discarded.
+ *
+ * @type {string|null}
+ */
+let pendingAdditionalContext = null;
+
+/**
  * Queue one or more banner lines for the single end-of-hook flush.
  * @param {string|null|undefined} line — multi-line strings are pushed verbatim
  */
@@ -89,7 +104,25 @@ function pushBanner(line) {
 }
 
 /**
- * Emit every queued banner line as ONE systemMessage envelope.
+ * Queue the ONE `additionalContext` string for the single end-of-hook flush.
+ * Last writer wins; there is deliberately no accumulation, because every
+ * character here costs context on every session start.
+ * @param {string|null|undefined} text
+ */
+function setAdditionalContext(text) {
+  if (typeof text !== 'string' || text.length === 0) return;
+  pendingAdditionalContext = text;
+}
+
+/**
+ * Emit the queued banner lines AND any queued additionalContext as ONE JSON
+ * envelope.
+ *
+ * Both keys are valid siblings of one hook-output object: the shipped Claude
+ * Code binary (v2.1.241) documents `systemMessage` ("Display a message to the
+ * user (all hooks)") and `hookSpecificOutput.additionalContext` ("Text injected
+ * into model context") as fields of the same "Hook JSON Output" object, and its
+ * output validator recognises both keys on that one object.
  *
  * Uses `fs.writeSync(1, …)` rather than `console.log`: the top-level guard
  * calls `process.exit(0)`, which discards anything still sitting in libuv's
@@ -101,11 +134,22 @@ function pushBanner(line) {
  * Idempotent: a second call after a flush is a no-op.
  */
 function flushBanner() {
-  if (bannerLines.length === 0) return;
-  const payload = JSON.stringify({ systemMessage: bannerLines.join('\n') });
+  const hasBanner = bannerLines.length > 0;
+  const hasContext = typeof pendingAdditionalContext === 'string' && pendingAdditionalContext.length > 0;
+  if (!hasBanner && !hasContext) return;
+
+  const envelope = {};
+  if (hasBanner) envelope.systemMessage = bannerLines.join('\n');
+  if (hasContext) {
+    envelope.hookSpecificOutput = {
+      hookEventName: 'SessionStart',
+      additionalContext: pendingAdditionalContext,
+    };
+  }
   bannerLines.length = 0;
+  pendingAdditionalContext = null;
   try {
-    writeSync(1, `${payload}\n`);
+    writeSync(1, `${JSON.stringify(envelope)}\n`);
   } catch { /* stdout closed — the hook is informational and never blocks */ }
 }
 
@@ -467,6 +511,60 @@ async function emitHostBanner(projectRoot) {
   }
 }
 
+/**
+ * The one-time telemetry-consent instruction handed to the coordinator (#1138).
+ *
+ * Deliberately terse: it is injected into the model context on EVERY session
+ * start until the operator decides, so every character is a recurring cost.
+ * It names the phase rather than restating it, so the AUQ wording stays
+ * single-sourced in `skills/session-start/SKILL.md` § Phase 6.8.
+ */
+const CONSENT_NUDGE =
+  'Telemetrie-Consent ist auf diesem Host unentschieden. Stelle JETZT, vor jeder anderen Arbeit, '
+  + 'genau einmal die consent-neutrale AskUserQuestion aus skills/session-start/SKILL.md § Phase 6.8 '
+  + '(zwei Optionen, keine "(Recommended)"-Markierung; Codex/Cursor: nummerierte Liste) und rufe danach '
+  + 'grantConsent() bzw. denyConsent() aus scripts/lib/telemetry/consent.mjs. Danach nie wieder fragen.';
+
+/**
+ * #1138 — queue the consent nudge when, and only when, this host has no
+ * telemetry decision on record.
+ *
+ * WHY A HOOK AT ALL. Phase 6.8 was prose only: it fired when the coordinator
+ * happened to reach line ~1060 of a 1230-line skill, after 24 other phases.
+ * Measured 2026-08-23: 0 records from any host other than the author's.
+ *
+ * WHY `isCiEnv` AND NOT `isHeadless`. `isHeadless()` answers "can THIS process
+ * prompt on a TTY?" — and this process is a hook whose stdout is a pipe, so it
+ * would answer `true` unconditionally and the nudge could never fire. Measured
+ * in a plain non-TTY subprocess on this host, 2026-08-23:
+ *   `isHeadless()=true isCiEnv()=false stdout.isTTY=undefined`
+ * The question that actually matters here is a different one: "is there an
+ * operator who can answer an AskUserQuestion?" The prompting happens in the
+ * live session, not in this process, so TTY-ness of the hook is irrelevant and
+ * `isCiEnv()` — the fail-closed "this is unattended automation" probe — is the
+ * correct gate. (The same trap sits in the Phase 6.8 prose, which passes
+ * `interactive: !isHeadless()` from a `node -e` subprocess whose stdout is also
+ * a pipe: it would have resolved `prompt:false` every time even if executed.)
+ *
+ * `resolveConsent` remains the single decision point: `prompt` is true only for
+ * a host with no stored decision, no env override, and no fleet flag.
+ *
+ * Never throws — a failure here must not affect session start.
+ */
+function maybeQueueConsentNudge() {
+  try {
+    if (isCiEnv(process.env)) return;
+    const consent = resolveConsent({
+      env: process.env,
+      ownerConfig: loadOwnerConfig().config,
+      state: readTelemetryState().record,
+      interactive: true,
+    });
+    if (consent.prompt !== true) return;
+    setAdditionalContext(CONSENT_NUDGE);
+  } catch { /* best effort — the nudge is informational, never blocks */ }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -774,6 +872,10 @@ async function main() {
     payload.peer_sessions_count = bannerData.resources.peer_sessions_count ?? null;
   }
   await emitEvent('orchestrator.session.started', payload);
+
+  // #1138 — one-time telemetry-consent nudge. Queued (never written) here so it
+  // rides the single stdout envelope below.
+  maybeQueueConsentNudge();
 
   // Single flush — see the bannerLines docstring for why this must stay the
   // only stdout write in the hook.

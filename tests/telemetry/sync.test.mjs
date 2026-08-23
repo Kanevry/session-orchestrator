@@ -267,22 +267,54 @@ describe('flush — queue drain', () => {
 // ---------------------------------------------------------------------------
 
 describe('shouldDailyFlush', () => {
-  it('is false when the queue is empty', () => {
-    seedState({ schema_version: 1, last_flush_at: null });
-    expect(shouldDailyFlush({ statePath, queuePath, now: Date.parse(NOW) })).toBe(false);
+  // metricsDir is passed EVERYWHERE below: without it the predicate falls back
+  // to `<cwd>/.orchestrator/metrics`, i.e. this repo's real session ledger,
+  // and the catch-up disjunct would answer from live host state.
+
+  it('is false when the queue is empty and no session completed since the last flush', () => {
+    seedMetrics({
+      sessions: [{ session_id: 's0', completed_at: '2026-07-19T00:00:00.000Z' }],
+    });
+    seedState({ schema_version: 1, last_flush_at: '2026-07-19T12:00:00.000Z' });
+    expect(shouldDailyFlush({ statePath, queuePath, metricsDir, now: Date.parse(NOW) })).toBe(false);
   });
 
   it('is false when the last flush is fresh (< 24h ago)', () => {
     enqueue({ record_kind: 'usage-ping' }, { path: queuePath });
     seedState({ schema_version: 1, last_flush_at: NOW });
-    expect(shouldDailyFlush({ statePath, queuePath, now: Date.parse(NOW) })).toBe(false);
+    expect(shouldDailyFlush({ statePath, queuePath, metricsDir, now: Date.parse(NOW) })).toBe(false);
   });
 
   it('is true when the queue is non-empty and the last flush is > 24h old', () => {
     enqueue({ record_kind: 'usage-ping' }, { path: queuePath });
     const nowMs = Date.parse(NOW);
     seedState({ schema_version: 1, last_flush_at: new Date(nowMs - DAY_MS - 1000).toISOString() });
-    expect(shouldDailyFlush({ statePath, queuePath, now: nowMs })).toBe(true);
+    expect(shouldDailyFlush({ statePath, queuePath, metricsDir, now: nowMs })).toBe(true);
+  });
+
+  // #1138 — the catch-up disjunct. Before it, an EMPTY queue short-circuited to
+  // false, so the "daily fallback" could only ever RETRY a send that had already
+  // failed; it could never originate one. On a host where flush() simply never
+  // ran, the queue stays empty forever and the fallback never fires — which is
+  // the mechanism behind the measured 82 records for 588 closes.
+  it('is true when the queue is EMPTY but a session completed after the last flush', () => {
+    const nowMs = Date.parse(NOW);
+    seedMetrics({
+      sessions: [
+        { session_id: 's0', completed_at: '2026-07-01T00:00:00.000Z' },
+        { session_id: 's1', completed_at: '2026-07-19T20:00:00.000Z' },
+      ],
+    });
+    seedState({ schema_version: 1, last_flush_at: '2026-07-19T00:00:00.000Z' });
+
+    expect(queueStats({ path: queuePath }).count).toBe(0);
+    expect(shouldDailyFlush({ statePath, queuePath, metricsDir, now: nowMs })).toBe(true);
+  });
+
+  it('is false when the empty-queue host has never had a session complete at all', () => {
+    seedMetrics({ sessions: [] });
+    seedState({ schema_version: 1, last_flush_at: null });
+    expect(shouldDailyFlush({ statePath, queuePath, metricsDir, now: Date.parse(NOW) })).toBe(false);
   });
 });
 
@@ -425,6 +457,7 @@ describe('maybeSpawnDailyFlush', () => {
       spawnFn,
       statePath,
       queuePath,
+      metricsDir,
       now: Date.parse(NOW),
     });
 
@@ -432,14 +465,33 @@ describe('maybeSpawnDailyFlush', () => {
     expect(spawnFn).not.toHaveBeenCalled();
   });
 
-  it('does not spawn when the queue is empty (not due)', () => {
+  it('does not spawn when the queue is empty and nothing completed since (not due)', () => {
+    seedMetrics({ sessions: [] });
     seedState({ schema_version: 1, consent: 'granted', last_flush_at: null });
     const spawnFn = vi.fn(() => ({ unref: vi.fn() }));
 
-    const res = maybeSpawnDailyFlush({ env: {}, spawnFn, statePath, queuePath, now: Date.parse(NOW) });
+    const res = maybeSpawnDailyFlush({ env: {}, spawnFn, statePath, queuePath, metricsDir, now: Date.parse(NOW) });
 
     expect(res).toEqual({ spawned: false, reason: 'not-due' });
     expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  // #1138 — the hook-side half of the catch-up disjunct: an empty queue plus a
+  // freshly completed session is now due, so a host that has never flushed at
+  // all finally originates one.
+  it('spawns on an EMPTY queue when a session completed after the last flush', () => {
+    seedMetrics({ sessions: [{ session_id: 's1', completed_at: '2026-07-19T20:00:00.000Z' }] });
+    seedState({
+      schema_version: 1,
+      consent: 'granted',
+      last_flush_at: '2026-07-19T00:00:00.000Z',
+    });
+    const spawnFn = vi.fn(() => ({ unref: vi.fn() }));
+
+    const res = maybeSpawnDailyFlush({ env: {}, spawnFn, statePath, queuePath, metricsDir, now: Date.parse(NOW) });
+
+    expect(res).toEqual({ spawned: true, reason: 'spawned' });
+    expect(spawnFn).toHaveBeenCalledTimes(1);
   });
 
   it('spawns a detached _flush child when due and consent resolves to send', () => {
@@ -448,7 +500,7 @@ describe('maybeSpawnDailyFlush', () => {
     const unref = vi.fn();
     const spawnFn = vi.fn(() => ({ unref }));
 
-    const res = maybeSpawnDailyFlush({ env: {}, spawnFn, statePath, queuePath, now: Date.parse(NOW) });
+    const res = maybeSpawnDailyFlush({ env: {}, spawnFn, statePath, queuePath, metricsDir, now: Date.parse(NOW) });
 
     expect(res).toEqual({ spawned: true, reason: 'spawned' });
     expect(spawnFn).toHaveBeenCalledTimes(1);
