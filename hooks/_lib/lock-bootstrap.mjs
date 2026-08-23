@@ -89,8 +89,9 @@ export async function bootstrapLock({
   }
 
   // Step 1: try to acquire. If a fresh acquire succeeds, we are done.
-  // If a stale-PID-dead/-alive lock exists, force-overwrite it (the prior
-  // session has died; the current raw owner can take the worktree).
+  // If a stale-heartbeat lock exists, force-overwrite it (the prior session
+  // stopped heartbeating past its ttl; the current raw owner can take the
+  // worktree).
   // Only an exact match of the existing physical raw sessionId permits the
   // same-session force-refresh. semantic_session_id, STATE.md `session`, and
   // an owner proof never make a different raw id the same owner.
@@ -107,8 +108,11 @@ export async function bootstrapLock({
 
   const shouldForce =
     acquireResult.ok !== true && (
-      acquireResult.reason === 'stale-pid-dead' ||
-      acquireResult.reason === 'stale-pid-alive' ||
+      // #1137: 'stale-heartbeat' replaced the former 'stale-pid-dead' /
+      // 'stale-pid-alive' pair. Both legacy spellings are gone from
+      // session-lock.mjs; matching only the new one keeps this force-branch
+      // reachable.
+      acquireResult.reason === 'stale-heartbeat' ||
       (acquireResult.reason === 'active' &&
         acquireResult.existingLock &&
         acquireResult.existingLock.session_id === sessionId)

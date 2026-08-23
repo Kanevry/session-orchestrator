@@ -22,7 +22,9 @@
  *   G5 exemption — priority::critical / carryover class / broken-window /
  *      the overflow collector itself bypass the cap unconditionally, keeping
  *      the session-end promises at SKILL.md:319 and :1113 intact.
- *   G6 charge the counter in .orchestrator/runtime/issue-budget.json.
+ *   G6 charge the counter in .orchestrator/runtime/issue-budget/<hash>.json
+ *      (one file per session since #1141 — see scripts/lib/issue-budget.mjs
+ *      `budgetStateRel`).
  *      under cap → allow; over cap + `warn` → allow with stderr notice;
  *      over cap + `strict` → park in `overflow[]`, then deny via emitDeny.
  *
@@ -66,12 +68,28 @@ if (!shouldRunHook('pre-bash-issue-budget')) process.exit(0);
  * semantic id can bridge repeated calls only when its recorded raw id exactly
  * matches the native stdin id; it never substitutes for a missing raw id.
  *
+ * ENV FALLBACK (#1141). A PreToolUse payload without `session_id` used to
+ * resolve to `null`, and an identity-less charge neither reads nor persists —
+ * so for that payload shape the cap was silently OFF. The harness also exports
+ * `CLAUDE_CODE_SESSION_ID` (measured: it equals the `session.lock` `session_id`
+ * and survives into subagents), which is a native id of the same kind as the
+ * stdin one, so it is a faithful substitute rather than a guess. Note the
+ * NAME: there is no `CLAUDE_SESSION_ID` — reading that spelling is what left
+ * the identical fallback in `scripts/lib/spiral-carryover.mjs` dead code.
+ *
+ * stdin still wins: it is the id of THIS tool call, whereas the env var is the
+ * id of the process tree, and the two differ in a nested harness.
+ *
  * @param {object|null} input
  * @param {string|null} projectDir
  * @returns {Promise<string|null>}
  */
 async function resolveSessionId(input, projectDir) {
-  const nativeRawId = input?.session_id ?? input?.sessionId ?? null;
+  const stdinRawId = input?.session_id ?? input?.sessionId ?? null;
+  const nativeRawId =
+    typeof stdinRawId === 'string' && stdinRawId.length > 0
+      ? stdinRawId
+      : (process.env.CLAUDE_CODE_SESSION_ID ?? null);
   if (typeof nativeRawId !== 'string' || nativeRawId.length === 0) return null;
 
   let currentSession = null;

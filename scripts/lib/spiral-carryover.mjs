@@ -110,7 +110,10 @@ function isIssueCreateArgv(cmd, args) {
  * `CLAUDE_PROJECT_DIR=$(mktemp -d) npx vitest run tests/lib/spiral-carryover.test.mjs`
  * left `{"sessionId":"1c2e5507-…","count":0,"exempt":15}` in the sandbox — 15
  * bookings per run, carrying the REAL session id, which under a plain
- * `npm test` land in the live `.orchestrator/runtime/issue-budget.json`.
+ * `npm test` land in this repo's live issue-budget ledger (since #1141 the
+ * per-session file `.orchestrator/runtime/issue-budget/<hash>.json`; the path
+ * is owned by `budgetStateRel` in `scripts/lib/issue-budget.mjs` — no caller,
+ * including this one, spells it out).
  *
  * The `repoRoot`-less fallback is `resolveProjectDir()` from `platform.mjs` —
  * the SAME resolver `hooks/pre-bash-issue-budget.mjs` uses, so both producers

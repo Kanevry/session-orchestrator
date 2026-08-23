@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -19,6 +19,7 @@ import {
   chargeIssueBudget,
   readBudgetState,
   budgetStatePath,
+  budgetStateRel,
   BUDGET_STATE_REL,
 } from '@lib/issue-budget.mjs';
 
@@ -189,8 +190,10 @@ describe('semantic issue-budget accounting continuity', () => {
     // first rather than the other's spend.
     expect(first).toMatchObject({ decision: 'allow', count: 1, overflowCount: 0 });
     expect(second).toMatchObject({ decision: 'allow', count: 1, overflowCount: 0 });
-    // The shared ledger still belongs to `prior-session`, untouched.
-    expect(JSON.parse(readFileSync(budgetStatePath(repoRoot), 'utf8'))).toEqual({
+    // `prior-session`'s own ledger is untouched, and no identity-less write
+    // landed on the legacy flat path either.
+    expect(existsSync(budgetStatePath(repoRoot, null))).toBe(false);
+    expect(JSON.parse(readFileSync(budgetStatePath(repoRoot, 'prior-session'), 'utf8'))).toEqual({
       sessionId: 'prior-session',
       count: 1,
       exempt: 0,
@@ -223,7 +226,9 @@ describe('semantic issue-budget accounting continuity', () => {
       config,
     });
     expect(after).toMatchObject({ decision: 'block', count: 1, overflowCount: 2 });
-    expect(JSON.parse(readFileSync(budgetStatePath(repoRoot), 'utf8')).overflow).toHaveLength(2);
+    expect(
+      JSON.parse(readFileSync(budgetStatePath(repoRoot, 'prior-session'), 'utf8')).overflow,
+    ).toHaveLength(2);
   });
 });
 
@@ -386,7 +391,7 @@ describe('chargeIssueBudget — warn and off modes do not enforce', () => {
       config,
     });
     expect(v.decision).toBe('off');
-    expect(existsSync(budgetStatePath(repoRoot))).toBe(false);
+    expect(existsSync(budgetStatePath(repoRoot, 's1'))).toBe(false);
   });
 });
 
@@ -395,15 +400,91 @@ describe('chargeIssueBudget — warn and off modes do not enforce', () => {
 // ---------------------------------------------------------------------------
 
 describe('budget state file', () => {
-  it('lives at .orchestrator/runtime/issue-budget.json', () => {
+  it('lives at .orchestrator/runtime/issue-budget/<hash>.json, one file per session', () => {
+    expect(budgetStateRel('s1')).toMatch(
+      /^\.orchestrator\/runtime\/issue-budget\/[0-9a-f]{16}\.json$/,
+    );
+    // Two ids never share a slot; one id is stable across calls.
+    expect(budgetStateRel('s1')).not.toBe(budgetStateRel('s2'));
+    expect(budgetStateRel('s1')).toBe(budgetStateRel('s1'));
+    // Identity-less callers keep the legacy flat path (they never read or
+    // persist — they only need a stable name for messages).
+    expect(budgetStateRel(null)).toBe(BUDGET_STATE_REL);
     expect(BUDGET_STATE_REL).toBe('.orchestrator/runtime/issue-budget.json');
+
     chargeN(1, { 'max-per-session': 5, mode: 'strict', overflow: 'collect-issue' });
-    const raw = JSON.parse(readFileSync(budgetStatePath(repoRoot), 'utf8'));
+    const raw = JSON.parse(readFileSync(budgetStatePath(repoRoot, 's1'), 'utf8'));
     expect(raw).toMatchObject({ sessionId: 's1', count: 1 });
     expect(Array.isArray(raw.overflow)).toBe(true);
   });
 
-  it('resets when a different sessionId shows up', () => {
+  // #1141 — the bug this split exists for. The counter used to be ONE slot per
+  // WORKING COPY, and `readBudgetState` zeroes a state whose `sessionId` does
+  // not match the reader. Two sessions sharing a working copy therefore reset
+  // each other on every charge: with a cap of 3 both ran forever at count 1,
+  // i.e. the cap was silently OFF FOR BOTH. Measured 2026-08-23 in the live
+  // repo, where the single file was owned by a session started 11 h earlier.
+  it('does not let two sessions in one working copy reset each other (#1141)', () => {
+    const config = { 'max-per-session': 3, mode: 'strict', overflow: 'collect-issue' };
+
+    // Interleaved, which is the shape that made the old single slot fail —
+    // sequential runs would have hidden it.
+    for (let i = 0; i < 3; i++) {
+      chargeN(1, config, 'session-A');
+      chargeN(1, config, 'session-B');
+    }
+
+    // Two distinct files, each holding its own full spend.
+    const fileA = budgetStatePath(repoRoot, 'session-A');
+    const fileB = budgetStatePath(repoRoot, 'session-B');
+    expect(fileA).not.toBe(fileB);
+    expect(existsSync(fileA)).toBe(true);
+    expect(existsSync(fileB)).toBe(true);
+
+    // Before the fix this was [1, 1]: each charge re-zeroed the other's count.
+    expect([
+      readBudgetState(repoRoot, 'session-A').count,
+      readBudgetState(repoRoot, 'session-B').count,
+    ]).toEqual([3, 3]);
+
+    // And the cap now actually bites — for BOTH, independently.
+    expect(chargeN(1, config, 'session-A')).toMatchObject({ decision: 'block', count: 3 });
+    expect(chargeN(1, config, 'session-B')).toMatchObject({ decision: 'block', count: 3 });
+  });
+
+  it('seeds a session-scoped file from the legacy flat file it still owns (one-time migration)', () => {
+    const config = { 'max-per-session': 3, mode: 'strict', overflow: 'collect-issue' };
+    // A session that started before the split has its spend in the flat file.
+    mkdirSync(path.join(repoRoot, '.orchestrator', 'runtime'), { recursive: true });
+    writeFileSync(
+      budgetStatePath(repoRoot, null),
+      JSON.stringify({ sessionId: 's1', count: 2, exempt: 4, overflow: [{ title: 'parked' }] }),
+      'utf8',
+    );
+
+    expect(readBudgetState(repoRoot, 's1')).toMatchObject({ count: 2, exempt: 4 });
+    // Without the seed the split itself would hand the in-flight session a
+    // fresh cap — this third charge would be `allow`, not `block`.
+    expect(chargeN(1, config, 's1')).toMatchObject({ decision: 'allow', count: 3 });
+    expect(chargeN(1, config, 's1')).toMatchObject({ decision: 'block' });
+    // The seed is read-only: the new spend lands in the per-session file.
+    expect(JSON.parse(readFileSync(budgetStatePath(repoRoot, 's1'), 'utf8')).count).toBe(3);
+    expect(JSON.parse(readFileSync(budgetStatePath(repoRoot, null), 'utf8')).count).toBe(2);
+  });
+
+  it('does not seed from a legacy flat file owned by a different session', () => {
+    mkdirSync(path.join(repoRoot, '.orchestrator', 'runtime'), { recursive: true });
+    writeFileSync(
+      budgetStatePath(repoRoot, null),
+      JSON.stringify({ sessionId: 'foreign', count: 9, exempt: 0, overflow: [] }),
+      'utf8',
+    );
+    expect(readBudgetState(repoRoot, 's1')).toEqual({
+      sessionId: 's1', count: 0, exempt: 0, overflow: [],
+    });
+  });
+
+  it('starts a different sessionId at zero without touching the first', () => {
     const config = { 'max-per-session': 2, mode: 'strict', overflow: 'collect-issue' };
     chargeN(2, config, 's1');
     const v = chargeIssueBudget({
@@ -414,10 +495,11 @@ describe('budget state file', () => {
     });
     expect(v.decision).toBe('allow');
     expect(v.count).toBe(1);
+    expect(readBudgetState(repoRoot, 's1').count).toBe(2);
   });
 
   it('treats a malformed counter file as a fresh state (fail-open)', () => {
-    const p = budgetStatePath(repoRoot);
+    const p = budgetStatePath(repoRoot, 's1');
     writeFileSync(path.join(repoRoot, 'CLAUDE.md'), '## Session Config\n', 'utf8');
     // create dir + garbage
     chargeN(1, { 'max-per-session': 5, mode: 'strict', overflow: 'collect-issue' });

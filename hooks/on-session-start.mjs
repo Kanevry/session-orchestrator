@@ -104,6 +104,27 @@ function pushBanner(line) {
 }
 
 /**
+ * Render a session id compactly for a banner line.
+ *
+ * Semantic ids (`main-2026-08-23-deep-1`) are already short and are printed
+ * verbatim — they carry the branch and the mode, which is exactly what an
+ * operator needs to recognise a peer. A UUID (Claude Code's `session_id` on
+ * hosts where no semantic id was resolved) is truncated to its first 8 chars:
+ * long enough to disambiguate the handful of peers a repo can have, short
+ * enough that three of them fit on one banner line.
+ *
+ * Ceiling: 8 chars is ~4 billion values against at most a few dozen live
+ * sessions per host — revisit only if two peers ever collide in a banner.
+ *
+ * @param {string} id
+ * @returns {string}
+ */
+function shortSessionId(id) {
+  if (typeof id !== 'string' || id.length === 0) return '?';
+  return id.length > 24 ? id.slice(0, 8) : id;
+}
+
+/**
  * Queue the ONE `additionalContext` string for the single end-of-hook flush.
  * Last writer wins; there is deliberately no accumulation, because every
  * character here costs context on every session start.
@@ -797,12 +818,24 @@ async function main() {
       const allActive = await discoverActiveSessions(projectRoot);
       const mechanicalPeers = allActive.filter((s) => s.sessionId !== sessionId);
       if (mechanicalPeers.length > 0) {
+        // #1137 part 1 — say WHERE, not just how many. discoverActiveSessions()
+        // walks EVERY path `git worktree list` reports, which includes worktrees
+        // another coordinator parked outside this working copy (e.g. under
+        // /private/tmp/…). Measured 2026-08-23: all 4 reported "peers" were the
+        // 4 registered worktrees, none of them in this checkout — and the old
+        // wording ("active in same repo") read as 4 sessions competing for THIS
+        // directory. The surface is deliberately unchanged (a foreign-worktree
+        // session IS a peer of this repo); only the label and the per-peer
+        // detail are, so the operator can tell the two apart at a glance.
         const summary = mechanicalPeers
           .slice(0, 3)
-          .map((p) => `${p.sessionId}:${p.mode ?? 'session'}`)
+          .map((p) => {
+            const where = p.worktreePath ? path.basename(p.worktreePath) : '?';
+            return `${where}:${shortSessionId(p.sessionId)}`;
+          })
           .join(', ');
         const overflow = mechanicalPeers.length > 3 ? ` +${mechanicalPeers.length - 3} more` : '';
-        pushBanner(`🔍 Mechanical peer-detection: ${mechanicalPeers.length} active in same repo (${summary}${overflow})`);
+        pushBanner(`🔍 Mechanical peer-detection: ${mechanicalPeers.length} active in this repo's worktree set (${summary}${overflow})`);
       }
     } catch { /* best effort — banner is informational, never blocks */ }
   }

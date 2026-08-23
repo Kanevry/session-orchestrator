@@ -167,13 +167,13 @@ describe('cross-process acquire() — single-winner race contract (H4 #591)', ()
     const winners = parsed.filter((p) => p.ok === true);
     expect(winners).toHaveLength(1);
 
-    // INVARIANT 2: every loser reports a contention reason — 'active' (live
-    // PID + fresh TTL is the overwhelmingly common case for sibling node
-    // procs that are still alive), or a stale-* variant. Never ok:true.
+    // INVARIANT 2: every loser reports a contention reason — 'active' (a
+    // fresh heartbeat is the overwhelmingly common case for sibling node procs
+    // started moments ago), or 'stale-heartbeat'. Never ok:true.
     const losers = parsed.filter((p) => p.ok === false);
     expect(losers).toHaveLength(N - 1);
     for (const loser of losers) {
-      expect(['active', 'stale-pid-dead', 'stale-pid-alive']).toContain(loser.reason);
+      expect(['active', 'stale-heartbeat']).toContain(loser.reason);
     }
 
     // INVARIANT 3: the on-disk lock is a single, valid JSON owner whose

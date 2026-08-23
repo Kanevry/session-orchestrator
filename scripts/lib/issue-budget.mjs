@@ -27,6 +27,7 @@
  * Stdlib only — the hook path must stay cheap enough to run on every Bash call.
  */
 
+import { digestSha256Short } from './crypto-digest-utils.mjs';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -34,8 +35,50 @@ import { writeJsonAtomicSync } from './io.mjs';
 import { resolveInstructionFile } from './common.mjs';
 import { _parseIssueBudget } from './config/issue-budget.mjs';
 
-/** Runtime counter file, relative to the repo root. */
+/**
+ * Legacy single-slot counter file, relative to the repo root.
+ *
+ * Kept as the path for IDENTITY-LESS callers only, and as the one-time
+ * migration source for a session whose spend was recorded before #1141.
+ */
 export const BUDGET_STATE_REL = '.orchestrator/runtime/issue-budget.json';
+
+/** Directory holding the per-session counter files, relative to the repo root. */
+export const BUDGET_STATE_DIR_REL = '.orchestrator/runtime/issue-budget';
+
+/**
+ * Relative path of the counter file for one accounting session (#1141).
+ *
+ * WHY per session and not one file: the counter used to be ONE slot per
+ * WORKING COPY, keyed by whichever `sessionId` happened to write last, and
+ * `readBudgetState` zeroes the state whenever the file's `sessionId` differs
+ * from the reader's. Two concurrent sessions in one working copy therefore
+ * alternately reset each other's counter and BOTH ran with the cap silently
+ * off — measured 2026-08-23, where the live file was owned by a session that
+ * had started 11 h before the one reading it. Session identity belongs in the
+ * FILE NAME, not in a field the next writer overwrites.
+ *
+ * The name is a truncated SHA-256 rather than the id itself because session
+ * ids are operator/host-supplied strings: a semantic id contains `/`-free but
+ * unbounded text, and a raw id is a UUID. Hashing gives a fixed-length,
+ * filesystem-safe, path-traversal-free name for both shapes. 16 hex chars
+ * (64 bits) is far beyond the handful of sessions that ever share one working
+ * copy; revisit only if a repo ever needs the id to be readable from the name
+ * (it never has — every reader already knows which session it is).
+ *
+ * An identity-less caller (`null`/empty) keeps the legacy flat path: it never
+ * reads and never persists (see `readBudgetState` / `chargeIssueBudget`), so
+ * it needs a stable path only to NAME the store in messages.
+ *
+ * @param {string|null|undefined} sessionId accounting session key
+ * @returns {string} repo-relative path
+ */
+export function budgetStateRel(sessionId) {
+  const key = typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null;
+  if (key === null) return BUDGET_STATE_REL;
+  const digest = digestSha256Short(key, { length: 16 });
+  return `${BUDGET_STATE_DIR_REL}/${digest}.json`;
+}
 
 /**
  * Resolve the accounting key for a native session id.
@@ -126,12 +169,55 @@ export function loadIssueBudgetConfig(repoRoot) {
 }
 
 /**
- * Absolute path of the runtime counter file for a repo.
+ * Absolute path of the runtime counter file for one session in a repo.
+ *
  * @param {string} repoRoot
+ * @param {string|null} [sessionId] accounting session key; omitted/empty
+ *   yields the legacy identity-less flat path.
  * @returns {string}
  */
-export function budgetStatePath(repoRoot) {
-  return path.join(repoRoot, BUDGET_STATE_REL);
+export function budgetStatePath(repoRoot, sessionId = null) {
+  return path.join(repoRoot, budgetStateRel(sessionId));
+}
+
+/**
+ * Coerce a parsed counter file into a state object, or `null` when it does not
+ * belong to `accountingSessionId`.
+ *
+ * The owner check survives the move to per-session files: the file NAME now
+ * carries identity, but a hand-edited, hash-colliding or hand-copied file must
+ * still not hand its spend to a different session.
+ *
+ * @param {unknown} data
+ * @param {string} accountingSessionId
+ * @returns {{ sessionId: string, count: number, exempt: number, overflow: object[] }|null}
+ */
+function _coerceState(data, accountingSessionId) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  if (data.sessionId !== accountingSessionId) return null;
+  return {
+    sessionId: accountingSessionId,
+    count: Number.isInteger(data.count) && data.count >= 0 ? data.count : 0,
+    exempt: Number.isInteger(data.exempt) && data.exempt >= 0 ? data.exempt : 0,
+    overflow: Array.isArray(data.overflow) ? data.overflow : [],
+  };
+}
+
+/**
+ * Read a counter file and coerce it, swallowing every I/O and parse error
+ * (fail-open: an unreadable ledger must never block a creation).
+ *
+ * @param {string} file
+ * @param {string} accountingSessionId
+ * @returns {object|null}
+ */
+function _readStateFile(file, accountingSessionId) {
+  if (!existsSync(file)) return null;
+  try {
+    return _coerceState(JSON.parse(readFileSync(file, 'utf8')), accountingSessionId);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -144,10 +230,18 @@ export function budgetStatePath(repoRoot) {
  * but avoiding cross-session budget and overflow attribution wins over a
  * continuity guess without a verified native identity.
  *
- * The counter file is SHARED across invocations, so this read-side isolation is
- * only half the contract: an identity-less charge must also never PERSIST its
- * fresh state, or it silently zeroes a live session's count and deletes its
- * parked overflow records. `chargeIssueBudget` enforces that write-side half.
+ * The counter file is per session since #1141, but an identity-less charge
+ * still must never PERSIST its fresh state — it would land on the shared
+ * legacy path and, before the split, silently zeroed a live session's count
+ * and deleted its parked overflow records. `chargeIssueBudget` enforces that
+ * write-side half.
+ *
+ * MIGRATION (one-time, read-only): a session that started before the per-session
+ * split has its spend in the legacy flat file. When no per-session file exists
+ * yet and the legacy file still names THIS session, seed from it — otherwise the
+ * split itself would hand every in-flight session a fresh cap, which is the very
+ * failure it exists to remove. The legacy file is never written back; the first
+ * charge after the seed persists to the per-session path.
  *
  * @param {string} repoRoot
  * @param {string|null} sessionId
@@ -159,33 +253,33 @@ export function readBudgetState(repoRoot, sessionId) {
   const fresh = { sessionId: accountingSessionId, count: 0, exempt: 0, overflow: [] };
   if (accountingSessionId === null) return fresh;
 
-  const file = budgetStatePath(repoRoot);
-  if (!existsSync(file)) return fresh;
-  try {
-    const data = JSON.parse(readFileSync(file, 'utf8'));
-    if (!data || typeof data !== 'object') return fresh;
-    if (data.sessionId !== accountingSessionId) return fresh;
-    return {
-      sessionId: accountingSessionId,
-      count: Number.isInteger(data.count) && data.count >= 0 ? data.count : 0,
-      exempt: Number.isInteger(data.exempt) && data.exempt >= 0 ? data.exempt : 0,
-      overflow: Array.isArray(data.overflow) ? data.overflow : [],
-    };
-  } catch {
-    return fresh;
-  }
+  const ownFile = budgetStatePath(repoRoot, accountingSessionId);
+  const own = _readStateFile(ownFile, accountingSessionId);
+  if (own) return own;
+  // A present-but-unusable own file is a fail-open fresh state, NOT a reason to
+  // fall back to the legacy slot — the migration seed applies only before the
+  // session has a file of its own.
+  if (existsSync(ownFile)) return fresh;
+
+  return _readStateFile(path.join(repoRoot, BUDGET_STATE_REL), accountingSessionId) ?? fresh;
 }
 
 /**
- * Persist the counter file. Best-effort: a write failure never blocks a
- * creation (fail-open), it only means the count is under-reported.
+ * Persist the counter file for `state.sessionId`. Best-effort: a write failure
+ * never blocks a creation (fail-open), it only means the count is
+ * under-reported.
+ *
+ * The target path is derived from `state.sessionId`, so a state object can only
+ * ever be written into its OWN session's slot. `writeJsonAtomicSync` mkdir -p's
+ * the containing directory (`io.mjs#atomicWriteWithBackup`), which is what
+ * creates `.orchestrator/runtime/issue-budget/` on first use.
  *
  * @param {string} repoRoot
  * @param {object} state
  * @returns {boolean} true on success
  */
 export function writeBudgetState(repoRoot, state) {
-  const res = writeJsonAtomicSync(budgetStatePath(repoRoot), state, {
+  const res = writeJsonAtomicSync(budgetStatePath(repoRoot, state?.sessionId ?? null), state, {
     tmpPrefix: '.issue-budget',
   });
   return res.ok === true;
@@ -236,7 +330,12 @@ export function chargeIssueBudget({
   const max = cfg['max-per-session'];
   const mode = cfg.mode;
   const overflowSink = cfg.overflow;
-  const overflowPath = budgetStatePath(repoRoot);
+  const accountingSessionId =
+    typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null;
+  // Per-session store (#1141) — the path an operator or session-end must open
+  // to find THIS session's parked overflow, so the verdict has to name the
+  // session's own slot, not the directory or the legacy flat file.
+  const overflowPath = budgetStatePath(repoRoot, accountingSessionId);
 
   const base = { max, mode, overflowSink, overflowPath };
 
@@ -244,8 +343,6 @@ export function chargeIssueBudget({
     return { ...base, decision: 'off', count: 0, overflowCount: 0, reason: null };
   }
 
-  const accountingSessionId =
-    typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null;
   const state = readBudgetState(repoRoot, accountingSessionId);
   state.sessionId = accountingSessionId;
 

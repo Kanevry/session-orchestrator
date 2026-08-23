@@ -174,11 +174,12 @@ describe('acquire() — TOCTOU-safe create-or-fail fresh write (#590 Item 2)', (
     expect(result.exclusivityClass).toBe('parallel-ok');
   });
 
-  it('EEXIST loser path: a second acquire over an expired-heartbeat dead-PID lock returns reason=stale-pid-dead', () => {
+  it('EEXIST loser path: a second acquire over an expired-heartbeat lock returns reason=stale-heartbeat', () => {
     // Pre-write a same-host lock whose PID is guaranteed dead AND whose
-    // heartbeat is expired (#744 re-fixture — a FRESH heartbeat with a dead
-    // PID must classify 'active', not 'stale-pid-dead'; see the dedicated
-    // "#744 heartbeat-first liveness" describe block below for that case).
+    // heartbeat is expired (#744 re-fixture — a FRESH heartbeat must classify
+    // 'active'; see the dedicated "#744 heartbeat-first liveness" describe
+    // block below for that case). The pid is irrelevant to the reason since
+    // #1137 — only the expired heartbeat produces 'stale-heartbeat'.
     const fiveHoursAgo = new Date(Date.now() - 5 * 3600 * 1000).toISOString();
     const deadLock = {
       session_id: 'sess-dead-winner',
@@ -196,7 +197,7 @@ describe('acquire() — TOCTOU-safe create-or-fail fresh write (#590 Item 2)', (
     const result = acquire({ sessionId: 'sess-new', mode: 'deep', repoRoot });
 
     expect(result.ok).toBe(false);
-    expect(result.reason).toBe('stale-pid-dead');
+    expect(result.reason).toBe('stale-heartbeat');
     expect(result.existingLock.session_id).toBe('sess-dead-winner');
   });
 
@@ -227,7 +228,7 @@ describe('acquire() — TOCTOU-safe create-or-fail fresh write (#590 Item 2)', (
 // ---------------------------------------------------------------------------
 //
 // Fixes the incident where a live heartbeating session was misclassified
-// 'stale-pid-dead': classifyExisting used to gate on
+// stale: classifyExisting used to gate on
 // `!isTtlExpired(existing) && pidAlive !== false` — a dead recorded PID (the
 // lock's `pid` field is the ephemeral hook subprocess PID, not the semantic
 // session's own PID) VETOED a fresh last_heartbeat, and isTtlExpired measures
@@ -235,6 +236,10 @@ describe('acquire() — TOCTOU-safe create-or-fail fresh write (#590 Item 2)', (
 // heartbeating session was ALSO wrongly flagged expired. isLockLive(existing)
 // is now the SOLE active gate; these cases pin the corrected classification
 // matrix (fresh/expired heartbeat × dead/alive PID × same/cross host).
+//
+// #1137 follow-up: the STALE half no longer consults the pid either — every
+// expired-heartbeat lock classifies 'stale-heartbeat' regardless of pid or
+// host. The former 'stale-pid-dead' / 'stale-pid-alive' split is gone.
 
 describe('acquire() — #744 heartbeat-first liveness', () => {
   function writeLockFile(repoRootDir, lock) {
@@ -282,7 +287,7 @@ describe('acquire() — #744 heartbeat-first liveness', () => {
     expect(result.existingLock.session_id).toBe('sess-744-long-running');
   });
 
-  it('case 3: expired heartbeat + dead PID classifies stale-pid-dead', () => {
+  it('case 3: expired heartbeat + dead PID classifies stale-heartbeat', () => {
     const fiveHoursAgo = new Date(Date.now() - 5 * 3600 * 1000).toISOString();
     writeLockFile(repoRoot, {
       session_id: 'sess-744-expired-dead',
@@ -297,10 +302,10 @@ describe('acquire() — #744 heartbeat-first liveness', () => {
     const result = acquire({ sessionId: 'sess-744-intruder-3', mode: 'deep', repoRoot });
 
     expect(result.ok).toBe(false);
-    expect(result.reason).toBe('stale-pid-dead');
+    expect(result.reason).toBe('stale-heartbeat');
   });
 
-  it('case 4: expired heartbeat + live PID classifies stale-pid-alive', () => {
+  it('case 4: expired heartbeat + LIVE PID also classifies stale-heartbeat (#1137 — pid does not vote)', () => {
     const fiveHoursAgo = new Date(Date.now() - 5 * 3600 * 1000).toISOString();
     writeLockFile(repoRoot, {
       session_id: 'sess-744-expired-alive',
@@ -315,7 +320,7 @@ describe('acquire() — #744 heartbeat-first liveness', () => {
     const result = acquire({ sessionId: 'sess-744-intruder-4', mode: 'deep', repoRoot });
 
     expect(result.ok).toBe(false);
-    expect(result.reason).toBe('stale-pid-alive');
+    expect(result.reason).toBe('stale-heartbeat');
   });
 
   it('case 5a: cross-host fresh heartbeat classifies active', () => {
@@ -336,7 +341,7 @@ describe('acquire() — #744 heartbeat-first liveness', () => {
     expect(result.reason).toBe('active');
   });
 
-  it('case 5b: cross-host expired heartbeat classifies stale-pid-alive, never stale-pid-dead', () => {
+  it('case 5b: cross-host expired heartbeat classifies stale-heartbeat, same as same-host', () => {
     const fiveHoursAgo = new Date(Date.now() - 5 * 3600 * 1000).toISOString();
     writeLockFile(repoRoot, {
       session_id: 'sess-744-cross-host-expired',
@@ -351,10 +356,10 @@ describe('acquire() — #744 heartbeat-first liveness', () => {
     const result = acquire({ sessionId: 'sess-744-intruder-5b', mode: 'deep', repoRoot });
 
     expect(result.ok).toBe(false);
-    expect(result.reason).toBe('stale-pid-alive');
+    expect(result.reason).toBe('stale-heartbeat');
   });
 
-  it('case 6: checkStale().isLive diverges from pidAlive on fresh-heartbeat + dead-PID', () => {
+  it('case 6: checkStale().isLive is true on fresh-heartbeat + dead-PID (pidAlive no longer computed)', () => {
     const now = new Date().toISOString();
     writeLockFile(repoRoot, {
       session_id: 'sess-744-checkstale',
@@ -368,8 +373,77 @@ describe('acquire() — #744 heartbeat-first liveness', () => {
 
     const result = checkStale({ repoRoot });
 
-    expect(result.pidAlive).toBe(false);
+    // #1137: pidAlive is retained for shape back-compat but always null.
+    expect(result.pidAlive).toBeNull();
     expect(result.isLive).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1137 — the pid is not evidence about the session
+// ---------------------------------------------------------------------------
+//
+// The bug this pins: `classifyExisting()` derived its stale reason from
+// `isPidAliveOnHost(existing.pid)`, so a stale lock was reported as
+// 'stale-pid-dead' ("confirmed dead" in the Phase-1.2 AUQ) whenever that pid
+// was gone — which is essentially always, because the pid on a lock belongs to
+// the `node -e` / hook subprocess that wrote it and exits within ~1s. Measured
+// 2026-08-23: 7 of 7 recorded pids dead, INCLUDING the lock of the session
+// that was heartbeating at that moment. Falsification: reintroduce the pid
+// branch and `reason` becomes 'stale-pid-dead' (assertion 3 fails) or the
+// dead-pid live lock is no longer 'active' (assertion 1 fails).
+
+describe('#1137 — heartbeat, not pid, decides both halves of the classification', () => {
+  const TTL_HOURS = 4;
+
+  function writeLockFile(lock) {
+    const orchDir = join(repoRoot, '.orchestrator');
+    mkdirSync(orchDir, { recursive: true });
+    writeFileSync(join(orchDir, 'session.lock'), JSON.stringify(lock) + '\n');
+  }
+
+  it('dead pid + fresh heartbeat → acquire reason "active" and checkStale isLive true', () => {
+    const now = new Date().toISOString();
+    writeLockFile({
+      session_id: 'sess-1137-live',
+      started_at: new Date(Date.now() - 6 * 3600 * 1000).toISOString(),
+      last_heartbeat: now,
+      mode: 'deep',
+      pid: DEAD_PID,
+      host: hostname(),
+      ttl_hours: TTL_HOURS,
+    });
+
+    const result = acquire({ sessionId: 'sess-1137-intruder', mode: 'deep', repoRoot });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('active');
+
+    const stale = checkStale({ repoRoot });
+    expect(stale.isLive).toBe(true);
+    expect(stale.heartbeatAgeMinutes).toBeLessThan(TTL_HOURS * 60);
+  });
+
+  it('expired heartbeat → reason "stale-heartbeat" carrying heartbeatAgeMinutes > ttl minutes', () => {
+    const fiveHoursAgo = new Date(Date.now() - 5 * 3600 * 1000).toISOString();
+    writeLockFile({
+      session_id: 'sess-1137-stale',
+      started_at: fiveHoursAgo,
+      last_heartbeat: fiveHoursAgo,
+      mode: 'deep',
+      pid: DEAD_PID,
+      host: hostname(),
+      ttl_hours: TTL_HOURS,
+    });
+
+    const result = acquire({ sessionId: 'sess-1137-intruder-2', mode: 'deep', repoRoot });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('stale-heartbeat');
+    expect(result.heartbeatAgeMinutes).toBeGreaterThan(TTL_HOURS * 60);
+    expect(result.ageHours).toBeGreaterThan(TTL_HOURS);
+
+    const stale = checkStale({ repoRoot });
+    expect(stale.isLive).toBe(false);
+    expect(stale.heartbeatAgeMinutes).toBeGreaterThan(TTL_HOURS * 60);
   });
 });
 
@@ -1019,7 +1093,7 @@ describe('checkStale', () => {
     expect(result.ageHours).toBeGreaterThan(4);
   });
 
-  it('cross-host lock: sameHost=false and pidAlive=null', () => {
+  it('cross-host lock: sameHost=false and pidAlive=null (never computed since #1137)', () => {
     const crossHostLock = {
       session_id: 'sess-remote',
       started_at: new Date().toISOString(),
@@ -1041,7 +1115,7 @@ describe('checkStale', () => {
     expect(result.host).toBe('other-host-that-does-not-exist');
   });
 
-  it('same-host lock with dead PID: pidAlive=false', () => {
+  it('same-host lock with dead PID: pidAlive is null (#1137 — no longer computed)', () => {
     const lockWithDeadPid = {
       session_id: 'sess-dead-pid',
       started_at: new Date().toISOString(),
@@ -1059,7 +1133,7 @@ describe('checkStale', () => {
 
     expect(result.exists).toBe(true);
     expect(result.sameHost).toBe(true);
-    expect(result.pidAlive).toBe(false);
+    expect(result.pidAlive).toBeNull();
   });
 });
 

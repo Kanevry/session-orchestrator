@@ -35,6 +35,11 @@ import {
 } from '../../hooks/_lib/vcs-create-matcher.mjs';
 
 import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
+// The counter file is one-per-session since #1141 (`.orchestrator/runtime/
+// issue-budget/<sha256(sessionId)[0..16]>.json`). The test asks the production
+// helper for the path instead of re-spelling the layout — a hand-written path
+// here would pin the OLD single-slot shape and pass while the split regressed.
+import { budgetStatePath } from '@lib/issue-budget.mjs';
 
 const HOOK = path.resolve(import.meta.dirname, '../../hooks/pre-bash-issue-budget.mjs');
 
@@ -288,7 +293,7 @@ describe('cap enforcement', { timeout: 30000 }, () => {
     expectDeny(blocked, 'issue-budget');
 
     const state = JSON.parse(
-      await fs.readFile(path.join(dir, '.orchestrator', 'runtime', 'issue-budget.json'), 'utf8'),
+      await fs.readFile(budgetStatePath(dir, 'budget-session-001'), 'utf8'),
     );
     // count 1, not 0: the first chained call was actually charged.
     expect(state.count).toBe(1);
@@ -321,7 +326,7 @@ describe('cap enforcement', { timeout: 30000 }, () => {
 
     expectDeny(repeated, 'issue-budget');
     const state = JSON.parse(
-      await fs.readFile(path.join(dir, '.orchestrator', 'runtime', 'issue-budget.json'), 'utf8'),
+      await fs.readFile(budgetStatePath(dir, 'main-2026-08-20-deep-1'), 'utf8'),
     );
     expect(state.sessionId).toBe('main-2026-08-20-deep-1');
   });
@@ -333,19 +338,60 @@ describe('cap enforcement', { timeout: 30000 }, () => {
     const identityLess = await runHook({
       projectDir: dir,
       stdin: { tool_name: 'Bash', tool_input: { command: 'glab issue create --title "identity-less"' } },
+      // Truly identity-less: the suite inherits the operator's real
+      // CLAUDE_CODE_SESSION_ID, which the hook now reads as a fallback (#1141).
+      // Without this the case under test cannot occur inside a live session.
+      extraEnv: { CLAUDE_CODE_SESSION_ID: '' },
     });
 
     expectAllow(identityLess);
     // Allowed, but it must leave the shared ledger alone: persisting its fresh
     // state would clear prior-session's spent cap and delete parked overflow.
     expect(JSON.parse(
-      await fs.readFile(path.join(dir, '.orchestrator', 'runtime', 'issue-budget.json'), 'utf8'),
+      await fs.readFile(budgetStatePath(dir, 'prior-session'), 'utf8'),
     )).toEqual({
       sessionId: 'prior-session',
       count: 1,
       exempt: 0,
       overflow: [],
     });
+  });
+
+  // #1141 — a PreToolUse payload without `session_id` used to resolve to `null`,
+  // and an identity-less charge neither reads nor persists: for that payload
+  // shape the cap was silently OFF. The harness exports CLAUDE_CODE_SESSION_ID
+  // (same native id as the stdin one), so the fallback restores enforcement.
+  it('falls back to CLAUDE_CODE_SESSION_ID when stdin carries no session id (#1141)', async () => {
+    const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 1\n  mode: strict' });
+    const noStdinId = { tool_name: 'Bash', tool_input: { command: 'glab issue create --title "env-keyed"' } };
+
+    expectAllow(await runHook({
+      projectDir: dir,
+      stdin: noStdinId,
+      extraEnv: { CLAUDE_CODE_SESSION_ID: 'env-session-001' },
+    }));
+    // Before the fallback BOTH calls were allowed forever — nothing persisted.
+    expectDeny(await runHook({
+      projectDir: dir,
+      stdin: noStdinId,
+      extraEnv: { CLAUDE_CODE_SESSION_ID: 'env-session-001' },
+    }), 'issue-budget');
+
+    const state = JSON.parse(await fs.readFile(budgetStatePath(dir, 'env-session-001'), 'utf8'));
+    expect(state).toMatchObject({ sessionId: 'env-session-001', count: 1 });
+  });
+
+  it('prefers the stdin session id over the env one when both are present', async () => {
+    const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 5\n  mode: strict' });
+    expectAllow(await runHook({
+      projectDir: dir,
+      stdin: bashPayload('glab issue create --title "stdin wins"', 'stdin-session'),
+      extraEnv: { CLAUDE_CODE_SESSION_ID: 'env-session-002' },
+    }));
+
+    expect(JSON.parse(await fs.readFile(budgetStatePath(dir, 'stdin-session'), 'utf8')))
+      .toMatchObject({ sessionId: 'stdin-session', count: 1 });
+    await expect(fs.access(budgetStatePath(dir, 'env-session-002'))).rejects.toThrow();
   });
 
   it('names the overflow store in the deny reason so the agent knows where the item went', async () => {
@@ -356,7 +402,7 @@ describe('cap enforcement', { timeout: 30000 }, () => {
       stdin: bashPayload('glab issue create --title "parked"'),
     });
     const reason = expectDeny(blocked).hookSpecificOutput.permissionDecisionReason;
-    expect(reason).toContain('.orchestrator/runtime/issue-budget.json');
+    expect(reason).toContain('.orchestrator/runtime/issue-budget/');
     expect(reason).toContain('Backlog-Sammel');
   });
 
@@ -374,7 +420,7 @@ describe('cap enforcement', { timeout: 30000 }, () => {
     const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 0\n  mode: strict' });
     await runHook({ projectDir: dir, stdin: bashPayload('glab issue create --title "lost?"') });
     const state = JSON.parse(
-      await fs.readFile(path.join(dir, '.orchestrator', 'runtime', 'issue-budget.json'), 'utf8'),
+      await fs.readFile(budgetStatePath(dir, 'budget-session-001'), 'utf8'),
     );
     expect(state.overflow).toHaveLength(1);
     expect(state.overflow[0].title).toBe('lost?');
@@ -399,7 +445,7 @@ describe('modes', { timeout: 30000 }, () => {
     const r = await runHook({ projectDir: dir, stdin: bashPayload('glab issue create --title "x"') });
     expectAllow(r);
     await expect(
-      fs.access(path.join(dir, '.orchestrator', 'runtime', 'issue-budget.json')),
+      fs.access(path.join(dir, '.orchestrator', 'runtime')),
     ).rejects.toThrow();
   });
 

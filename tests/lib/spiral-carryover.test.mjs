@@ -325,9 +325,11 @@ describe('createSpiralCarryoverIssue', () => {
         sessionId: 'ledger-binding-raw',
         exempt: 1,
       });
-      // The ambient root must be untouched — no ledger file was created there.
-      expect(existsSync(path.join(ambient, '.orchestrator', 'runtime', 'issue-budget.json')))
-        .toBe(false);
+      // The ambient root must be untouched — no ledger was created there at
+      // all. Asserting the RUNTIME DIRECTORY is absent, not one filename:
+      // since #1141 the ledger is `runtime/issue-budget/<hash>.json`, so a
+      // check pinned to the old flat name would now be vacuously true.
+      expect(existsSync(path.join(ambient, '.orchestrator', 'runtime'))).toBe(false);
     } finally {
       vi.unstubAllEnvs();
       rmSync(named, { recursive: true, force: true });

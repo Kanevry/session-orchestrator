@@ -237,10 +237,21 @@ This replaces the v1 PID-liveness check (`process.kill(pid, 0)`) which was funda
 Despite the v2 liveness rule above existing since Epic #583, `acquire()`'s conflict classifier (`scripts/lib/session-lock.mjs`, the `classifyExisting()` closure) and `checkStale()` still let `pidAlive`/TTL-age act as an independent veto — which let an external `/close` observe the lock's recorded `pid` (the ephemeral hook subprocess / `node -e acquire()` PID, routinely dead within <1s) as dead and misclassify a live, actively-heartbeating session as `stale-pid-dead`, hijacking it mid-wave. Fixed in #744:
 
 - `classifyExisting()` now checks `isLockLive(existing)` **first** and unconditionally returns `{ reason: 'active' }` when true — a dead recorded `pid` can never veto a fresh `last_heartbeat`.
-- Only once `isLockLive()` is false does `pidAlive` pick the stale variant: `stale-pid-dead` when `pidAlive === false` (same-host, confirmed dead), else `stale-pid-alive` — which also covers `pidAlive === null` (cross-host locks, `host !== os.hostname()`, never a confirmable dead PID, so cross-host locks can never land on `stale-pid-dead`).
-- `checkStale()` surfaces the same `isLockLive()` result as an additive `isLive` field alongside the legacy `ttlExpired`/`pidAlive` signals, so recovery-flow diagnostics can observe when the two diverge.
+- Only once `isLockLive()` is false is the lock classified stale — see the #1137 follow-up below for the single reason it now returns.
+- `checkStale()` surfaces the same `isLockLive()` result as an additive `isLive` field alongside the legacy `ttlExpired` signal, so recovery-flow diagnostics can observe when the two diverge.
 
 Net: `pid` (field notes above) stays forensic-only; `last_heartbeat` freshness is the sole determinant of "is this session still active" everywhere in `session-lock.mjs`.
+
+### #1137 — one stale reason, `stale-heartbeat`
+
+#744 left the *stale* half still keyed on `pidAlive`: `stale-pid-dead` when the recorded pid was confirmed dead, `stale-pid-alive` otherwise. Measured 2026-08-23 across the fleet's live locks: **7 of 7 recorded pids were dead**, including the lock of the session that was heartbeating at that very moment. The pid on a lock is the `node -e` / hook subprocess that wrote it, and it exits within about a second of genesis. Two consequences, both live defects:
+
+- `stale-pid-alive` was **structurally unreachable** same-host — nothing could produce it except a pid-number collision.
+- The Phase-1.2 recovery AUQ rendered "pid=… is confirmed dead" for **every** same-host stale lock, presenting a measurement it had not made as the operator's reason to reclaim.
+
+The fix removes the question rather than re-answering it. `classifyExisting()` returns exactly one stale reason, `stale-heartbeat`, carrying `ageHours` (age from `started_at`, unchanged) and `heartbeatAgeMinutes` (age from `last_heartbeat`) — the quantity the liveness rule actually thresholds against, so a recovery prompt states the measured heartbeat age instead of a liveness verdict. `checkStale()` gains the same `heartbeatAgeMinutes` field and keeps `pidAlive` only as a shape-compatible `null`; it is no longer computed.
+
+`isPidAliveOnHost` remains exported from `session-lock.mjs` and is unaffected — `file-lock.mjs` and `lock-reaper.mjs` are legitimate callers, because there the pid IS the process being asked about.
 
 ### Schema v1 → v2 backward-compat
 

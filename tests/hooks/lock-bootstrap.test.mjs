@@ -223,10 +223,10 @@ describe('bootstrapLock — failure paths (best-effort contract)', () => {
     expect(forceAcquire).not.toHaveBeenCalled();
   });
 
-  it('force-overwrites a stale-pid-dead lock', async () => {
+  it('force-overwrites a stale-heartbeat lock', async () => {
     const staleAcquire = vi.fn(() => ({
       ok: false,
-      reason: 'stale-pid-dead',
+      reason: 'stale-heartbeat',
       existingLock: {
         session_id: 'old-session',
         started_at: '2026-05-26T00:00:00.000Z',
@@ -619,7 +619,7 @@ describe('bootstrapLock — observability', () => {
 //
 // Falsification: if the #744 fix in classifyExisting were reverted (dead PID
 // once again vetoes a fresh heartbeat), `acquire()` would misclassify this
-// foreign lock as 'stale-pid-dead', bootstrapLock's `shouldForce` would flip
+// foreign lock as 'stale-heartbeat', bootstrapLock's `shouldForce` would flip
 // true, and `forceAcquire()` would overwrite the foreign lock — the first
 // assertion below (`onDisk.session_id` still equals the foreign id) would fail.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -720,13 +720,13 @@ describe('bootstrapLock — owner-proof persistence at genesis (#987 Part 1)', (
     });
   });
 
-  it('also persists the proof on the forceAcquire branch (stale-pid-dead takeover)', async () => {
+  it('also persists the proof on the forceAcquire branch (stale-heartbeat takeover)', async () => {
     // Bug this catches: proof-write wired only into the plain-acquire path —
     // a takeover session would then hold a lock with no proof and its /close
     // would degrade to the weaker session_id-only release forever.
     const staleAcquire = vi.fn(() => ({
       ok: false,
-      reason: 'stale-pid-dead',
+      reason: 'stale-heartbeat',
       existingLock: {
         session_id: 'old-session',
         started_at: '2026-05-26T00:00:00.000Z',

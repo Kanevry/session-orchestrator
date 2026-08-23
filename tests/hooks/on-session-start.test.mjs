@@ -886,7 +886,7 @@ describe('mechanical peer-detection banner (Epic #583 W3-P3)', { timeout: 15000 
       .filter((m) => m && m.systemMessage);
   }
 
-  it('emits "Mechanical peer-detection:" banner when discoverActiveSessions returns a peer (other than self)', async () => {
+  it('emits "Mechanical peer-detection:" banner naming the peer\'s worktree basename (#1137)', async () => {
     const dir = await mkProjectTracked();
     // Plant a registry entry for a peer session (the registry fallback
     // path in discoverActiveSessions surfaces entries with matching
@@ -925,9 +925,17 @@ describe('mechanical peer-detection banner (Epic #583 W3-P3)', { timeout: 15000 
       .flatMap((m) => m.systemMessage.split('\n'))
       .find((l) => /^🔍\s+Mechanical peer-detection:\s+\d+\s+active/.test(l));
     expect(mechanical).toBeDefined();
-    // The banner must include the peer's session_id and mode.
-    expect(mechanical).toContain('peer-mech');
-    expect(mechanical).toContain('deep');
+    // #1137: the label must say WHICH repo surface was searched. The old
+    // wording ("active in same repo") claimed the peers share this working
+    // copy; discoverActiveSessions walks every path `git worktree list`
+    // reports, including worktrees parked elsewhere on the host.
+    expect(mechanical).toContain("active in this repo's worktree set");
+    expect(mechanical).not.toContain('active in same repo');
+    // Each peer is rendered `<worktree-basename>:<session-id>` so a peer in a
+    // FOREIGN worktree is distinguishable from one in this checkout. The
+    // registry-fallback path sets worktreePath = the discovery repoRoot, so
+    // the basename here is the fixture repo's own directory name.
+    expect(mechanical).toContain(`${path.basename(dir)}:peer-mech`);
   });
 
   it('does NOT emit the mechanical banner when discoverActiveSessions returns only self', async () => {

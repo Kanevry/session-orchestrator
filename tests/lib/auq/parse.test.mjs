@@ -122,12 +122,15 @@ describe('Falle 1 — verschachtelter Zaun im Fragetext', () => {
 // Falle 2 — Template-Literale mit ${…}
 // ---------------------------------------------------------------------------
 
-// Wörtlich aus skills/session-start/SKILL.md:158-170 (Einrückung erhalten).
+// Nach skills/session-start/SKILL.md Phase 1.2 (Einrückung erhalten); der
+// Ternary-Diskriminator ist seit #1137 `sameHost` statt des entfallenen
+// `reason === 'stale-pid-dead'`. Die Falle bleibt dieselbe: einfache
+// Anführungszeichen INNERHALB einer ${…}-Interpolation in einem Backtick-String.
 const BACKTICK_FENCE = [
   '     ```js',
   '     AskUserQuestion({',
   '       questions: [{',
-  "         question: `Stale session lock found (started ${ageHours}h ago, ttl=${existingLock.ttl_hours}h). Process pid=${existingLock.pid} on host=${existingLock.host} is ${reason === 'stale-pid-dead' ? 'confirmed dead' : 'still running or status unknown'}. Reclaim the lock?`,",
+  "         question: `Stale session lock found (started ${ageHours}h ago, ttl=${existingLock.ttl_hours}h). Its last heartbeat was ${heartbeatAgeMinutes} minutes ago on host=${existingLock.host}, which is ${sameHost ? 'this machine' : 'another machine'}. Reclaim the lock?`,",
   '         header: "Stale Session Lock",',
   '         multiSelect: false,',
   '         options: [',
@@ -150,8 +153,8 @@ describe('Falle 2 — Backtick-Fragen', () => {
   it('überspringt das Ternary mit einfachen Anführungszeichen im ${…}, statt daran zu zerreißen', () => {
     const q = firstQuestion(parseFile({ file: 'skills/session-start/SKILL.md', content: BACKTICK_FENCE }));
     // Der Text NACH der Interpolation ist der Beweis: ein Split auf
-    // Anführungszeichen endet bei 'stale-pid-dead' und verliert alles danach.
-    expect(q.question).toContain("${reason === 'stale-pid-dead' ?");
+    // Anführungszeichen endet bei 'this machine' und verliert alles danach.
+    expect(q.question).toContain("${sameHost ? 'this machine' :");
     expect(q.question.endsWith('. Reclaim the lock?')).toBe(true);
     expect(q.header).toBe('Stale Session Lock');
   });

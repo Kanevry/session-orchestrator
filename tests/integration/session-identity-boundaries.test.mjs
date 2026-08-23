@@ -14,6 +14,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { expectAllow } from '../_helpers/hook-decision.mjs';
+import { budgetStatePath } from '../../scripts/lib/issue-budget.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
 const SESSION_START_HOOK = path.join(REPO_ROOT, 'hooks/on-session-start.mjs');
@@ -238,7 +239,7 @@ describe('SessionStart identity boundaries across peer discovery and issue budge
       });
       expectAllow(chargedBudget);
       const boundBudget = JSON.parse(await fs.readFile(
-        path.join(projectDir, '.orchestrator', 'runtime', 'issue-budget.json'),
+        budgetStatePath(projectDir, currentSession.semantic_session_id),
         'utf8',
       ));
 
@@ -273,7 +274,7 @@ describe('SessionStart identity boundaries across peer discovery and issue budge
       });
       expectAllow(unboundBudgetResult);
       const unboundBudget = JSON.parse(await fs.readFile(
-        path.join(projectDir, '.orchestrator', 'runtime', 'issue-budget.json'),
+        budgetStatePath(projectDir, UNBOUND_NATIVE_RAW_ID),
         'utf8',
       ));
 

@@ -99,8 +99,8 @@ export async function runDispatch({ startDir, now, deps } = {}) {
  * session-lock.mjs — returns its result VERBATIM so callers (the skill prose,
  * Wave-4 tests) can branch on the exact `{ ok, reason, ... }` contract.
  *
- * On `ok:false` (race lost / busy — reasons: active, stale-pid-alive,
- * stale-pid-dead, fs-error, ...) the dispatcher must exclude that repo and
+ * On `ok:false` (race lost / busy — reasons: active, stale-heartbeat,
+ * fs-error, ...) the dispatcher must exclude that repo and
  * re-rank the remaining free candidates. On `ok:true` the claim is held and the
  * coordinator may launch the chosen entry command.
  *

@@ -147,6 +147,28 @@ function lockAgeHours(lock) {
 }
 
 /**
+ * Compute the age of a lock's heartbeat in fractional minutes.
+ *
+ * This is the diagnostic counterpart to `isLockLive()` — the SAME quantity the
+ * liveness rule thresholds against, surfaced as a number so callers (the
+ * Phase-1.2 stale-lock AUQ, recovery diagnostics) can report WHY a lock was
+ * classified stale instead of asserting a PID verdict the lock cannot support
+ * (#1137). Mirrors `isLockLive()`'s `last_heartbeat` → `started_at` fallback.
+ *
+ * @param {{ last_heartbeat?: string, started_at?: string }} lock
+ * @returns {number|null} minutes since the last heartbeat, or null if unparseable.
+ */
+function heartbeatAgeMinutes(lock) {
+  if (!lock || typeof lock !== 'object') return null;
+  const hbStr = (typeof lock.last_heartbeat === 'string' && lock.last_heartbeat.length > 0)
+    ? lock.last_heartbeat
+    : lock.started_at;
+  const ts = Date.parse(hbStr);
+  if (Number.isNaN(ts)) return null;
+  return (Date.now() - ts) / (60 * 1000);
+}
+
+/**
  * Parse lock file contents into an object. Returns null on any parse error.
  *
  * Schema v2 (Epic #583, W2-I3): adds `last_heartbeat` (optional, populated by
@@ -455,10 +477,15 @@ export function readLockDetailed(opts = {}) {
  *       — lock created
  *   { ok: false, reason: 'active', existingLock, exclusivityClass? }
  *       — local lock held (live TTL, live PID)
- *   { ok: false, reason: 'stale-pid-dead', existingLock, exclusivityClass? }
- *       — local lock stale (dead PID)
- *   { ok: false, reason: 'stale-pid-alive', existingLock, exclusivityClass? }
- *       — local lock stale (live PID, TTL expired)
+ *   { ok: false, reason: 'stale-heartbeat', existingLock, ageHours, heartbeatAgeMinutes, exclusivityClass? }
+ *       — local lock stale: its last_heartbeat is older than ttl_hours. This is
+ *         the ONLY stale reason (#1137). It replaced the `stale-pid-dead` /
+ *         `stale-pid-alive` pair, which claimed a PID verdict the lock cannot
+ *         support: the recorded `pid` is the ephemeral hook / `node -e`
+ *         subprocess, dead within ~1s of genesis (measured 2026-08-23: 7 of 7
+ *         recorded pids dead, INCLUDING the currently heartbeating session's
+ *         own lock), so `stale-pid-alive` was unreachable same-host and every
+ *         stale lock rendered as "confirmed dead" in the recovery AUQ.
  *   { ok: false, reason: 'fs-error', error, exclusivityClass? }
  *       — filesystem failure
  *   { ok: false, reason: 'active-incompatible-exclusive', allActiveSessions, blockingSession, exclusivityClass }
@@ -563,12 +590,8 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
   try {
     // Classify an existing lock into the correct failure result. Shared by the
     // up-front readLock() check AND the create-race EEXIST-loser path below so
-    // both report identical active / stale-pid-dead / stale-pid-alive reasons.
+    // both report identical active / stale-heartbeat reasons.
     const classifyExisting = (existing) => {
-      const sameHost = existing.host === os.hostname();
-      // PID liveness is only meaningful on the same host.
-      const pidAlive = sameHost ? isPidAliveOnHost(existing.pid) : null;
-
       // Heartbeat-first liveness (#744): isLockLive is the SOLE active gate.
       // A dead recorded PID must NOT veto a fresh last_heartbeat — the pid on
       // a session.lock is the ephemeral hook subprocess PID, not the semantic
@@ -581,11 +604,24 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
         return { ok: false, reason: 'active', existingLock: existing, exclusivityClass: callerClass };
       }
 
-      // Heartbeat expired — classify the stale variant. Cross-host locks never
-      // have a confirmable dead PID (pidAlive stays null), so they always land
-      // on 'stale-pid-alive' rather than 'stale-pid-dead'.
-      const reason = (pidAlive === false) ? 'stale-pid-dead' : 'stale-pid-alive';
-      return { ok: false, reason, existingLock: existing, exclusivityClass: callerClass };
+      // Heartbeat expired — ONE stale reason, derived from the same signal the
+      // active gate above used (#1137). The former two-way split asked
+      // isPidAliveOnHost(existing.pid) and reported 'stale-pid-dead' /
+      // 'stale-pid-alive'; that question has no answer the lock can give,
+      // because `pid` is the short-lived writer subprocess, not the session.
+      // Same-host it was therefore ~always 'dead' (7/7 measured, live sessions
+      // included) and 'stale-pid-alive' was structurally unreachable. The
+      // ageHours + heartbeatAgeMinutes fields carry the evidence instead, so a
+      // recovery prompt can state the measured heartbeat age rather than a
+      // liveness verdict.
+      return {
+        ok: false,
+        reason: 'stale-heartbeat',
+        existingLock: existing,
+        ageHours: lockAgeHours(existing),
+        heartbeatAgeMinutes: heartbeatAgeMinutes(existing),
+        exclusivityClass: callerClass,
+      };
     };
 
     const existing = readLock({ repoRoot });
@@ -978,7 +1014,8 @@ export function updateHeartbeat({ repoRoot, sessionId } = {}) {
  *   lock: object|null,
  *   ageHours: number|null,
  *   ttlExpired: boolean,
- *   pidAlive: boolean|null,
+ *   heartbeatAgeMinutes: number|null,
+ *   pidAlive: null,
  *   host: string|null,
  *   sameHost: boolean,
  *   isLive: boolean
@@ -993,6 +1030,7 @@ export function checkStale({ repoRoot } = {}) {
       lock: null,
       ageHours: null,
       ttlExpired: false,
+      heartbeatAgeMinutes: null,
       pidAlive: null,
       host: null,
       sameHost: false,
@@ -1003,13 +1041,19 @@ export function checkStale({ repoRoot } = {}) {
   const ageHours = lockAgeHours(lock);
   const ttlExpired = isTtlExpired(lock);
   const sameHost = lock.host === os.hostname();
-  // Only attempt PID check when the lock was written on this machine.
-  const pidAlive = sameHost ? isPidAliveOnHost(lock.pid) : null;
-  // Heartbeat-based liveness (#744) — additive field alongside the pre-existing
-  // ttlExpired/pidAlive/sameHost fields (back-compat). This is the SAME check
-  // acquire()'s classifyExisting now uses as its sole active gate, surfaced
-  // here so callers of checkStale() (recovery-flow diagnostics) can observe
-  // when isLive diverges from the legacy pidAlive/ttlExpired signals.
+  // `pidAlive` is retained as a field for shape back-compat but is ALWAYS null
+  // since #1137: it is no longer computed. Probing isPidAliveOnHost(lock.pid)
+  // answered a question about the ephemeral writer subprocess, not the session
+  // — measured 2026-08-23, 7 of 7 recorded pids were dead, including the lock
+  // of the session that was heartbeating at that very moment. A `false` here
+  // read as "the session is dead" and was wrong every time. Use `isLive` (and
+  // `heartbeatAgeMinutes` for the magnitude) instead. `isPidAliveOnHost` itself
+  // stays exported — file-lock.mjs and lock-reaper.mjs are legitimate callers,
+  // where the pid IS the process being asked about.
+  const pidAlive = null;
+  // Heartbeat-based liveness (#744) — the SAME check acquire()'s
+  // classifyExisting uses as its sole active gate, surfaced here so callers of
+  // checkStale() (recovery-flow diagnostics) can observe it directly.
   const isLive = isLockLive(lock);
 
   return {
@@ -1017,6 +1061,7 @@ export function checkStale({ repoRoot } = {}) {
     lock,
     ageHours,
     ttlExpired,
+    heartbeatAgeMinutes: heartbeatAgeMinutes(lock),
     pidAlive,
     host: lock.host,
     sameHost,
