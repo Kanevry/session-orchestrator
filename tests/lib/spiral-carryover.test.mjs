@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -58,18 +58,51 @@ const {
 // byte-for-byte identical without editing a single one of them. The
 // "#839 host pinning" describe block at the end of this file calls the
 // `*Real` functions directly to exercise the real behaviour.
+//
+// Live-ledger containment (#1058 follow-on)
+//
+// `repoRoot` defaults to `process.cwd()` in production, and under vitest that
+// is THIS repository. 13 of the 14 creator call sites below pass no `repoRoot`,
+// so every issue-create in this file charged the REAL
+// `.orchestrator/runtime/issue-budget.json` — measured 2026-08-23 with
+// `CLAUDE_PROJECT_DIR=$(mktemp -d) npx vitest run tests/lib/spiral-carryover.test.mjs`:
+// `{"sessionId":"1c2e5507-…","count":0,"exempt":15}`, 15 bookings per run
+// carrying the live session id. Same class as the session-6 incident where a
+// test harness wrote 22 synthetic records into a live store.
+//
+// The containment is a DEFAULT in the shim, not 13 edits: it covers every
+// existing call site and every future one, and `...opts` still lets a test
+// name its own root (the budget-bridge test below does exactly that).
 // ---------------------------------------------------------------------------
+const SANDBOX_ROOT = mkdtempSync(path.join(tmpdir(), 'spiral-carryover-sandbox-'));
+
 function findExistingCarryover(opts) {
-  return findExistingCarryoverReal({ resolveRepoSpecFn: () => undefined, ...opts });
+  return findExistingCarryoverReal({
+    resolveRepoSpecFn: () => undefined,
+    repoRoot: SANDBOX_ROOT,
+    ...opts,
+  });
 }
 function findExistingBrokenWindow(opts) {
-  return findExistingBrokenWindowReal({ resolveRepoSpecFn: () => undefined, ...opts });
+  return findExistingBrokenWindowReal({
+    resolveRepoSpecFn: () => undefined,
+    repoRoot: SANDBOX_ROOT,
+    ...opts,
+  });
 }
 function createSpiralCarryoverIssue(opts) {
-  return createSpiralCarryoverIssueReal({ resolveRepoSpecFn: () => undefined, ...opts });
+  return createSpiralCarryoverIssueReal({
+    resolveRepoSpecFn: () => undefined,
+    repoRoot: SANDBOX_ROOT,
+    ...opts,
+  });
 }
 function createBrokenWindowIssue(opts) {
-  return createBrokenWindowIssueReal({ resolveRepoSpecFn: () => undefined, ...opts });
+  return createBrokenWindowIssueReal({
+    resolveRepoSpecFn: () => undefined,
+    repoRoot: SANDBOX_ROOT,
+    ...opts,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -230,7 +263,6 @@ describe('createSpiralCarryoverIssue', () => {
         }),
         'utf8',
       );
-      vi.stubEnv('CLAUDE_PROJECT_DIR', repoRoot);
       // CLAUDE_CODE_SESSION_ID is the name the harness actually exports; the
       // earlier CLAUDE_SESSION_ID stub was an unfaithful double that kept a
       // dead code path green (nothing sets that name in production).
@@ -245,6 +277,12 @@ describe('createSpiralCarryoverIssue', () => {
         kind: 'SPIRAL',
         context: 'ctx',
         vcs: 'gitlab',
+        // Names its own ledger root explicitly, overriding the shim's sandbox
+        // default. This replaces a `CLAUDE_PROJECT_DIR` stub: since the ledger
+        // root is now the caller's `repoRoot`, the argument IS the contract
+        // under test — the env stub only worked while the module re-derived
+        // the root from ambient state behind the caller's back.
+        repoRoot,
       });
 
       expect(readBudgetState(repoRoot, 'main-2026-08-20-deep-1')).toMatchObject({
@@ -254,6 +292,46 @@ describe('createSpiralCarryoverIssue', () => {
     } finally {
       vi.unstubAllEnvs();
       rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('charges the caller\'s repoRoot ledger, never the ambient CLAUDE_PROJECT_DIR one (#1058)', async () => {
+    // The bug: `runCli` derived the budget-ledger root from
+    // `process.env.CLAUDE_PROJECT_DIR || process.cwd()` while the SAME call
+    // resolved its `-R` host-pinning spec from the caller's `repoRoot`. One
+    // call could therefore file an issue into repo A and charge repo B's
+    // ledger — and under vitest "repo B" was this live repository, which is how
+    // 15 synthetic bookings per test run reached the real
+    // `.orchestrator/runtime/issue-budget.json` carrying the live session id.
+    const named = mkdtempSync(path.join(tmpdir(), 'spiral-carryover-named-'));
+    const ambient = mkdtempSync(path.join(tmpdir(), 'spiral-carryover-ambient-'));
+    try {
+      vi.stubEnv('CLAUDE_PROJECT_DIR', ambient);
+      vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'ledger-binding-raw');
+      setCliResponses([
+        { ok: true, stdout: '[]' },
+        { ok: true, stdout: 'https://gitlab.example.com/g/p/-/issues/7\n' },
+      ]);
+
+      await createSpiralCarryoverIssue({
+        taskDescription: 'ledger binding follows the named repoRoot',
+        kind: 'SPIRAL',
+        context: 'ctx',
+        vcs: 'gitlab',
+        repoRoot: named,
+      });
+
+      expect(readBudgetState(named, 'ledger-binding-raw')).toMatchObject({
+        sessionId: 'ledger-binding-raw',
+        exempt: 1,
+      });
+      // The ambient root must be untouched — no ledger file was created there.
+      expect(existsSync(path.join(ambient, '.orchestrator', 'runtime', 'issue-budget.json')))
+        .toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(named, { recursive: true, force: true });
+      rmSync(ambient, { recursive: true, force: true });
     }
   });
 
@@ -706,6 +784,7 @@ describe('createSpiralCarryoverIssue — #839 host pinning (gitlab)', () => {
     ]);
 
     const res = await createSpiralCarryoverIssueReal({
+      repoRoot: SANDBOX_ROOT,   // #1058: never charge the live issue-budget ledger
       taskDescription: 'host-pinned carryover',
       kind: 'SPIRAL',
       context: 'ctx',
@@ -734,6 +813,7 @@ describe('createSpiralCarryoverIssue — #839 host pinning (gitlab)', () => {
     const spy = vi.fn(() => 'https://gitlab.example.com/group/session-orchestrator.git');
 
     await createSpiralCarryoverIssueReal({
+      repoRoot: SANDBOX_ROOT,   // #1058: never charge the live issue-budget ledger
       taskDescription: 'resolve-once check',
       kind: 'SPIRAL',
       context: 'ctx',
@@ -751,6 +831,7 @@ describe('createSpiralCarryoverIssue — #839 host pinning (gitlab)', () => {
     ]);
 
     await createSpiralCarryoverIssueReal({
+      repoRoot: SANDBOX_ROOT,   // #1058: never charge the live issue-budget ledger
       taskDescription: 'no remote resolves',
       kind: 'SPIRAL',
       context: 'ctx',
@@ -773,6 +854,7 @@ describe('createSpiralCarryoverIssue — #839 host pinning (github)', () => {
     ]);
 
     const res = await createSpiralCarryoverIssueReal({
+      repoRoot: SANDBOX_ROOT,   // #1058: never charge the live issue-budget ledger
       taskDescription: 'gh host-pinned carryover',
       kind: 'FAILED',
       context: 'ctx',
@@ -812,6 +894,7 @@ describe('createBrokenWindowIssue — #839 host pinning (gitlab)', () => {
     ]);
 
     const res = await createBrokenWindowIssueReal({
+      repoRoot: SANDBOX_ROOT,   // #1058: never charge the live issue-budget ledger
       item: { title: 'host-pinned broken window', source: 'gap-839' },
       vcs: 'gitlab',
       resolveRepoSpecFn: () => spec,
@@ -867,6 +950,7 @@ describe('createSpiralCarryoverIssue — default resolveRepoSpecFn wires the REA
     ]);
 
     const res = await createSpiralCarryoverIssueReal({
+      repoRoot: SANDBOX_ROOT,   // #1058: never charge the live issue-budget ledger
       taskDescription: 'gap-3 default-resolver task',
       kind: 'SPIRAL',
       context: 'ctx',
@@ -878,12 +962,17 @@ describe('createSpiralCarryoverIssue — default resolveRepoSpecFn wires the REA
 
     // The real chain actually shelled out to `git remote -v` — proof the
     // default parameter is wired to the real module, not a no-op. The exact
-    // argv still pins the repo root the probe runs against (`-C <cwd>`); the
-    // remote NAME left this argv with #1039 and is pinned below instead, on
-    // the `-R` value the two glab calls carry.
+    // argv still pins the repo root the probe runs against; the remote NAME
+    // left this argv with #1039 and is pinned below instead, on the `-R` value
+    // the two glab calls carry.
+    //
+    // This expectation was `process.cwd()` while the call above passed no
+    // `repoRoot` — the DEFAULT happened to be cwd, so the assertion could not
+    // tell "follows the caller's repoRoot" from "happens to equal cwd". Naming
+    // the root explicitly (#1058) makes it discriminate.
     const gitCalls = execFileSync.mock.calls.filter(([cmd]) => cmd === 'git');
     expect(gitCalls).toHaveLength(1);
-    expect(gitCalls[0][1]).toEqual(['-C', process.cwd(), 'remote', '-v']);
+    expect(gitCalls[0][1]).toEqual(['-C', SANDBOX_ROOT, 'remote', '-v']);
 
     // Both the dedup `glab issue list` call and the `glab issue create` call
     // carry the -R spec resolved through that real chain.
@@ -917,6 +1006,7 @@ describe('createSpiralCarryoverIssue — default resolveRepoSpecFn wires the REA
     ]);
 
     await createSpiralCarryoverIssueReal({
+      repoRoot: SANDBOX_ROOT,   // #1058: never charge the live issue-budget ledger
       taskDescription: 'gap-3 no-remote task',
       kind: 'SPIRAL',
       context: 'ctx',

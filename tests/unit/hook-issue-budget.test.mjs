@@ -27,7 +27,12 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-import { matchVcsCreate, isIssueCreate, extractTitle } from '../../hooks/_lib/vcs-create-matcher.mjs';
+import {
+  matchVcsCreate,
+  isIssueCreate,
+  extractTitle,
+  matchesBypass,
+} from '../../hooks/_lib/vcs-create-matcher.mjs';
 
 import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
 
@@ -107,10 +112,44 @@ describe('shared vcs-create matcher', () => {
     expect(matchVcsCreate('echo glab issue create')).toBeNull();
   });
 
-  it('isIssueCreate is issue-only — pr/mr creation is not budgeted', () => {
-    expect(isIssueCreate('glab issue create --title x')).toBe(true);
-    expect(isIssueCreate('glab mr create --title x')).toBe(false);
-    expect(isIssueCreate('gh pr create --title x')).toBe(false);
+  // #1106 — the bug: the matcher was anchored at the START of the whole command
+  // string, so every form that does not BEGIN with the CLI name was invisible.
+  // Measured 2026-08-23 in a live session: four issues were created as
+  // `cd <repo>\nglab issue create …` and the runtime ledger recorded `count: 0`.
+  // The cap was not circumvented — for that command form it never existed.
+  it('sees a create call that is not the first statement in the chain (#1106)', () => {
+    expect(isIssueCreate('cd /repo\nglab issue create --title x')).toBe(true);
+    expect(isIssueCreate('cd /repo && glab issue create --title x')).toBe(true);
+    expect(isIssueCreate('cd /repo; glab issue create')).toBe(true);
+    expect(isIssueCreate('cd /repo || glab issue create')).toBe(true);
+    expect(isIssueCreate('echo body | glab issue create -F -')).toBe(true);
+    expect(matchVcsCreate('cd /repo && gh pr create --title x')).toEqual({
+      host: 'github', kind: 'pr', verb: 'create',
+    });
+  });
+
+  // The other direction of the same change: splitting on `\n`/`&&`/`;` must not
+  // start matching the WORDS where they are data rather than a command. A naive
+  // splitter cuts inside quotes and here-doc bodies and turns each of these into
+  // a phantom create call — which in strict mode is a DENY on a command that
+  // creates nothing.
+  it('still ignores the create words when they are data, not a command (#1106)', () => {
+    expect(isIssueCreate('echo "glab issue create"')).toBe(false);
+    expect(isIssueCreate("echo 'a; glab issue create'")).toBe(false);
+    expect(isIssueCreate('echo "cd /x && glab issue create"')).toBe(false);
+    expect(isIssueCreate('# glab issue create')).toBe(false);
+    expect(isIssueCreate('cd /x  # && glab issue create')).toBe(false);
+    expect(isIssueCreate('grep -rn "glab issue create" docs/')).toBe(false);
+    expect(isIssueCreate('cat > f <<EOF\nglab issue create --title x\nEOF')).toBe(false);
+    // ONE token that merely contains the words runs a binary of that literal
+    // name; the lexer strips quotes, so token boundaries are the only evidence.
+    expect(isIssueCreate('"glab issue create" --title x')).toBe(false);
+  });
+
+  it('a widened matcher must not widen the kind: mr/pr and list/note stay out', () => {
+    expect(isIssueCreate('cd /repo && glab mr create --title x')).toBe(false);
+    expect(isIssueCreate('cd /repo && glab issue list')).toBe(false);
+    expect(isIssueCreate('cd /repo && glab issue note 5 -m x')).toBe(false);
   });
 
   it('extractTitle handles quoted, single-quoted, = and bare forms', () => {
@@ -119,6 +158,39 @@ describe('shared vcs-create matcher', () => {
     expect(extractTitle('glab issue create --title=short')).toBe('short');
     expect(extractTitle('glab issue create --description x')).toBeNull();
   });
+
+  // #1106 — reading `--title` off the WHOLE command picks up a neighbouring
+  // statement's flag, so the parked overflow record is labelled with a title
+  // that belongs to a different command. Silent: the wrong label still looks
+  // like a plausible one.
+  it('extractTitle reads the title off the create statement, not a neighbour (#1106)', () => {
+    expect(extractTitle('cd /r && glab issue create --title "real"')).toBe('real');
+    expect(
+      extractTitle('glab issue list --search "--title decoy" ; glab issue create --title "real"'),
+    ).toBe('real');
+    expect(extractTitle('echo --title decoy && glab issue create --title real')).toBe('real');
+  });
+
+  // The bypass list is the operator's escape hatch for the templates-first
+  // guard. Statement-splitting newly GATES `cd /r && gh pr create --dry-run`,
+  // so a bypass still matched against the whole command string would be dead
+  // exactly for the shapes the widening added.
+  it('matchesBypass is statement-scoped and keeps the token boundary (#1106)', () => {
+    expect(matchesBypass('cd /r && gh pr create --dry-run', ['gh pr create --dry-run'])).toBe(true);
+    expect(matchesBypass('gh issue create --label bot', ['gh issue create --label bot'])).toBe(true);
+    // Prefix-inclusion must not bypass: `bot` !== `botanical`.
+    expect(matchesBypass('gh issue create --label botanical', ['gh issue create --label bot'])).toBe(false);
+    // A pattern that lexes to nothing must not prefix-match every statement.
+    expect(matchesBypass('gh pr create --title x', ['   '])).toBe(false);
+    expect(matchesBypass('gh pr create --title x', [])).toBe(false);
+  });
+
+  it('isIssueCreate is issue-only — pr/mr creation is not budgeted', () => {
+    expect(isIssueCreate('glab issue create --title x')).toBe(true);
+    expect(isIssueCreate('glab mr create --title x')).toBe(false);
+    expect(isIssueCreate('gh pr create --title x')).toBe(false);
+  });
+
 });
 
 // ---------------------------------------------------------------------------
@@ -161,6 +233,35 @@ describe('cap enforcement', { timeout: 30000 }, () => {
       stdin: bashPayload('glab issue create --title "third" --label "type::chore,priority::low"'),
     });
     expectDeny(blocked, 'issue-budget');
+  });
+
+  // #1106 end-to-end through the REAL hook, not the matcher alone. The live
+  // failure was invisible precisely because every unit test fed the hook a
+  // command starting at column 0, which is the one shape the old anchor saw.
+  it('charges and denies a `cd`-prefixed create — the live bypass shape (#1106)', async () => {
+    const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 1\n  mode: strict' });
+
+    const first = await runHook({
+      projectDir: dir,
+      stdin: bashPayload(`cd ${dir}\nglab issue create --title "chained first"`),
+    });
+    expectAllow(first);
+
+    const blocked = await runHook({
+      projectDir: dir,
+      stdin: bashPayload(`cd ${dir} && glab issue create --title "chained second"`),
+    });
+    expectDeny(blocked, 'issue-budget');
+
+    const state = JSON.parse(
+      await fs.readFile(path.join(dir, '.orchestrator', 'runtime', 'issue-budget.json'), 'utf8'),
+    );
+    // count 1, not 0: the first chained call was actually charged.
+    expect(state.count).toBe(1);
+    // The parked record carries the create statement's own title, not the
+    // `cd` statement's text or a neighbouring flag.
+    expect(state.overflow).toHaveLength(1);
+    expect(state.overflow[0].title).toBe('chained second');
   });
 
   it('uses the bound semantic key across repeated native stdin calls', async () => {

@@ -376,7 +376,12 @@ describe('post-subagent-discovery-validator hook', () => {
   // (c) additionalContext feed-back (#666 — v2.1.163+)
   //
   // On a violation the hook MUST emit hookSpecificOutput.additionalContext to
-  // stdout so the warning is fed back to the coordinator turn inline.
+  // stdout so the warning is fed back inline to the SUBAGENT that just stopped
+  // — not to the coordinator. Verified in the shipped binary (Claude Code
+  // 2.1.241, 2026-08-23); the delivery note at the hook's hookSpecificOutput
+  // write carries the quoted schema text and the `agentId ? … : …` selector.
+  // The assertions below therefore pin the CHANNEL (hookEventName +
+  // non-empty additionalContext), which is what this hook controls.
   // On a clean path (no violation) stdout must be empty.
   // -------------------------------------------------------------------------
 
@@ -714,7 +719,8 @@ describe('post-subagent-discovery-validator hook', () => {
     const events = readEvents();
     expect(events).toHaveLength(1);
     expect(events[0].claim_text).toBe('The metrics store holds 92 learnings.');
-    // …and the advisory count is surfaced to the coordinator.
+    // …and the advisory count is surfaced in additionalContext (which reaches
+    // the stopping subagent, not the coordinator).
     const ctx = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
     expect(ctx).toContain('1 verified claim(s) carry no measurement timestamp (advisory).');
   });
@@ -870,7 +876,7 @@ describe('post-subagent-discovery-validator hook', () => {
 
     expect(result.status).toBe(0);
     expect(readEvents()).toEqual([]);
-    // No additionalContext either — the coordinator sees nothing at all.
+    // No additionalContext either — the stopping subagent sees nothing at all.
     expect(result.stdout.trim()).toBe('');
   });
 });

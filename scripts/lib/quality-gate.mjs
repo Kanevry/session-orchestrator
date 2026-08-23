@@ -29,15 +29,19 @@
  *     failureContext.
  *
  *   - `last-green-sha.txt` lives at `.orchestrator/runtime/last-green-sha.txt`
- *     and is updated atomically after every successful gate. `changedFiles`
- *     diffs against this file when present, falling back to `HEAD~1` otherwise.
- *     The file is best-effort — git diff failures degrade to an empty array
+ *     and is updated atomically after every successful gate. `changedFiles` is
+ *     the UNION of the diff against this file (falling back to `HEAD~1`) and
+ *     the UNCOMMITTED working tree (#1058) — wave agents never commit, so the
+ *     committed half alone reported nothing they did. Both halves are
+ *     best-effort: a git failure in either degrades to an empty contribution
  *     rather than blocking the gate.
  *
  *   - `corrective_context` is read from `.orchestrator/current-session.json`
  *     (written by `hooks/post-tool-failure-corrective-context.mjs`). Missing
- *     file / parse failure → empty array. The most recent 5 entries are
- *     forwarded to the fixer (older noise is dropped to keep prompts lean).
+ *     file / parse failure → empty array; a file that provably belongs to a
+ *     PEER session in the same working copy is treated as absent, with a stderr
+ *     WARN (#1058). The most recent 5 entries are forwarded to the fixer (older
+ *     noise is dropped to keep prompts lean).
  *
  *   - Diagnostics bundle path: `.orchestrator/metrics/verification-failures/<ts>.json`.
  *     Timestamp colons are replaced with `-` for filesystem portability.
@@ -63,6 +67,7 @@ import { fileURLToPath } from 'node:url';
 import { emitEvent, sessionAttribution } from './events.mjs';
 import { admitSuiteCounts, extractTestCounts } from './gates/gate-helpers.mjs';
 import { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
+import { readLock } from './session-lock.mjs';
 
 export { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
 
@@ -254,15 +259,79 @@ function writeLastGreenSha(repoRoot) {
 }
 
 /**
- * List files changed since `ref` (or HEAD~1 if no ref). Best-effort: returns
- * empty array on any git failure.
+ * Parse `git status --porcelain -z` stdout into repo-root-relative paths.
+ *
+ * `-z` is not a convenience flag here — it is the only shape of this command
+ * whose paths are unambiguous. Measured 2026-08-23 (git 2.53.0) on a fixture
+ * carrying a space, a non-ASCII name, a literal `"` and a rename:
+ *
+ * ```
+ *   git status --porcelain            git status --porcelain -z
+ *   ------------------------------    ---------------------------------
+ *    M "scripts/lib/old name.mjs"      M scripts/lib/old name.mjs
+ *    M "scripts/lib/\303\274ml.mjs"    M scripts/lib/üml.mjs
+ *   ?? "scripts/lib/quo\"te.mjs"      ?? scripts/lib/quo"te.mjs
+ *   R  old.mjs -> new.mjs             R  new.mjs \0 old.mjs
+ * ```
+ *
+ * The non-`-z` form C-quotes any path containing a space, a `"` or — under the
+ * default `core.quotePath=true` — a non-ASCII byte. `-c core.quotePath=false`
+ * repairs only the non-ASCII third of that (measured: the space and the `"`
+ * stayed quoted). A field-splitting parser over the non-`-z` form fails three
+ * separate ways on one input — measured `awk '{print $2}'` output for the four
+ * lines above: `"scripts/lib/old` (truncated at the space), the undecoded
+ * `\303\274` octal escape, and `old.mjs` (the PRE-rename path) for the `R`
+ * line. `-z` emits every path verbatim, so there is no unquoting step to get
+ * wrong.
+ *
+ * Rename/copy entries carry their ORIGINAL path as the NEXT NUL field, with NO
+ * `XY ` prefix. Consuming that extra field is mandatory, not optional: a naive
+ * per-field `slice(3)` would emit `.mjs`-suffixed garbage (`d.mjs` for
+ * `old.mjs`) as if it were a real path. Both paths are kept — a file moved OUT
+ * of `scripts/lib/` is as much a shared-lib touch as one moved in, and a fixer
+ * needs the old path to make sense of the new one. `R`/`C` are checked in BOTH
+ * status columns because git-status(1) documents `R `/`C ` (renamed/copied in
+ * index) as well as ` R`/` C` (renamed/copied in work tree).
+ *
+ * Untracked DIRECTORIES are not a case this parser has to handle: the caller
+ * passes `-uall`, which expands them to individual files (measured: `?? nd/`
+ * became `?? nd/a.mjs` + `?? nd/b.mjs`).
+ *
+ * @param {string} raw — raw stdout of `git status --porcelain -z …`.
+ * @returns {string[]} repo-root-relative paths, in git's emission order.
+ */
+function parsePorcelainZ(raw) {
+  const fields = String(raw ?? '').split('\0');
+  const paths = [];
+  for (let i = 0; i < fields.length; i += 1) {
+    const entry = fields[i];
+    // `XY P` is the shortest well-formed entry. Anything shorter — including
+    // the empty trailing field `split` always produces — is not an entry
+    // header, and the `[2] === ' '` check rejects a stray original-path field
+    // that a malformed stream could leave unconsumed.
+    if (typeof entry !== 'string' || entry.length < 4 || entry[2] !== ' ') continue;
+    const filePath = entry.slice(3);
+    if (filePath) paths.push(filePath);
+    const x = entry[0];
+    const y = entry[1];
+    if (x === 'R' || x === 'C' || y === 'R' || y === 'C') {
+      i += 1;
+      const original = fields[i];
+      if (typeof original === 'string' && original) paths.push(original);
+    }
+  }
+  return paths;
+}
+
+/**
+ * Files that differ between `baseRef` and `HEAD` — the COMMITTED half of the
+ * change set. Best-effort: `[]` on any git failure.
  *
  * @param {string} repoRoot
- * @param {string|null} ref
+ * @param {string} baseRef
  * @returns {string[]}
  */
-function listChangedFiles(repoRoot, ref) {
-  const baseRef = ref ?? 'HEAD~1';
+function listCommittedChangedFiles(repoRoot, baseRef) {
   try {
     const result = spawnSync('git', ['diff', '--name-only', baseRef, 'HEAD'], {
       cwd: repoRoot,
@@ -280,8 +349,181 @@ function listChangedFiles(repoRoot, ref) {
 }
 
 /**
+ * Files modified, staged, or untracked in the WORKING TREE — the uncommitted
+ * half of the change set. Best-effort: `[]` on any git failure.
+ *
+ * `-uall` lists untracked files individually instead of collapsing a new
+ * directory to `dir/`; measured 2026-08-23 on this repo it costs nothing
+ * (`-uall` 30-33 ms vs `-unormal` 30-32 ms over 3 runs each), because ignored
+ * trees — `node_modules/`, `.orchestrator/runtime/` — are never walked.
+ *
+ * Ceiling (BV-004): the union below relies on `.gitignore` to keep the
+ * orchestrator's OWN runtime artifacts out of the result. In this repo
+ * `.orchestrator/runtime/`, `current-session.json` and `session.lock` are all
+ * ignored (`git check-ignore -v`, measured 2026-08-23), so the gate's
+ * `last-green-sha.txt` write cannot show up as a "changed file". A consumer
+ * repo that does NOT ignore `.orchestrator/` will see those artifacts here.
+ * Revisit if a caller needs a hard exclusion rather than a gitignore-derived
+ * one.
+ *
+ * @param {string} repoRoot
+ * @returns {string[]}
+ */
+function listWorkingTreeChangedFiles(repoRoot) {
+  try {
+    const result = spawnSync('git', ['status', '--porcelain', '-z', '-uall'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    if (result.status !== 0 || !result.stdout) return [];
+    return parsePorcelainZ(result.stdout);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * List files this wave touched since `ref` (or HEAD~1 if no ref) — the UNION of
+ * the committed diff and the working tree.
+ *
+ * The union is the whole point (#1058). The committed half alone answered a
+ * question nobody asks: wave agents never commit — `.claude/rules/parallel-sessions.md`
+ * § PSA-007 forbids every git-write operation to a dispatched subagent, and the
+ * auto-commit that would have closed the gap does not exist (`skills/wave-executor/wave-loop.md`
+ * marks it "not yet implemented as of v3.10.0"; `scripts/lib/auto-commit.mjs` is
+ * absent, verified 2026-08-23). So at the moment {@link detectSharedLibTouch}
+ * runs, every file the wave produced is UNCOMMITTED, and a committed-only diff
+ * reports the previous coordinator commit's files or nothing at all. The FL-3
+ * auto-promotion to the Full Gate could therefore never fire on the wave's own
+ * work — structurally, not occasionally.
+ *
+ * Each half is independently best-effort: a failure in one contributes nothing
+ * and does not suppress the other. Both fail (no repo at all, unreadable index)
+ * → `[]`, preserving the documented never-throw / never-block contract.
+ *
+ * @param {string} repoRoot
+ * @param {string|null} ref
+ * @returns {string[]} de-duplicated, lexicographically sorted.
+ */
+function listChangedFiles(repoRoot, ref) {
+  const baseRef = ref ?? 'HEAD~1';
+  const union = new Set([
+    ...listCommittedChangedFiles(repoRoot, baseRef),
+    ...listWorkingTreeChangedFiles(repoRoot),
+  ]);
+  return [...union].sort();
+}
+
+/**
+ * The id-space THIS process belongs to, for comparison against a repo-global
+ * file that any session in the working copy may have written.
+ *
+ * Two sources, both read rather than invented — this deliberately adds no third
+ * way of answering "who am I" (`scripts/lib/lock-reaper.mjs` takes the id from
+ * its caller; `scripts/lib/peer-discovery.mjs` reads `readLock()`):
+ *
+ *   1. `CLAUDE_CODE_SESSION_ID` — the only PER-PROCESS source, and therefore
+ *      the only one a foreign session cannot spoof by writing a file. Measured
+ *      2026-08-23 inside a dispatched wave agent: present, and equal to the
+ *      coordinator's `current-session.json` `session_id` (a child session
+ *      inherits the parent's id, which is what makes it usable here).
+ *      `scripts/lib/spiral-carryover.mjs` reads the same variable, under the
+ *      same measured premise.
+ *   2. `session.lock` `session_id` / `semantic_session_id` — a repo-global
+ *      FALLBACK for harnesses that export no session env var. Weaker on
+ *      purpose: the lock is one more shared file in the same working copy, so
+ *      it can name a peer rather than us. It is used only when (1) is absent,
+ *      where the alternative is no check at all.
+ *
+ * @param {string} repoRoot
+ * @returns {Set<string>} possibly empty — an empty set means "identity
+ *   unresolvable", which the classifier below treats as `unknown`, never as a
+ *   mismatch.
+ */
+function readOwnSessionIds(repoRoot) {
+  const ids = new Set();
+  // `.trim()` first: a whitespace-only env var is truthy and would otherwise
+  // enter the set as a phantom id (`development.md` § env-var whitespace trap).
+  const fromEnv = (process.env.CLAUDE_CODE_SESSION_ID || '').trim();
+  if (fromEnv) ids.add(fromEnv);
+  if (ids.size === 0) {
+    try {
+      const lock = readLock({ repoRoot });
+      for (const key of ['session_id', 'semantic_session_id']) {
+        const value = typeof lock?.[key] === 'string' ? lock[key].trim() : '';
+        if (value) ids.add(value);
+      }
+    } catch { /* readLock never throws, but the contract is not ours to trust */ }
+  }
+  return ids;
+}
+
+/**
+ * Decide whether a parsed `current-session.json` belongs to THIS session.
+ *
+ * Three outcomes, and the middle one is load-bearing:
+ *
+ *   - `'foreign'` — the file names at least one session id, we know at least
+ *     one of our own, and NONE of them match. This is the only verdict that
+ *     discards data.
+ *   - `'unknown'` — the file names no id, or we could not resolve our own.
+ *     Ownership is unproven in BOTH directions, so the content is kept. A file
+ *     without an id cannot be attributed to a peer either; discarding it would
+ *     turn "cannot tell" into a silent feature-off on every harness that
+ *     exports no session id.
+ *   - `'own'` — an id matched.
+ *
+ * Rejecting only what is PROVABLY foreign is the point. The hazard being closed
+ * (#1058 second finding) is a peer session's corrective hints briefing this
+ * session's fixer agent, and that hazard always carries a concrete, mismatching
+ * id — the live file in this repo carried `conflict_with_session_id` from a
+ * genuine second session while it was measured.
+ *
+ * Residual gap this classifier CANNOT close, because it is a property of the
+ * writer: `hooks/post-tool-failure-corrective-context.mjs` appends to whatever
+ * `current-session.json` it finds without checking or stamping ownership, and
+ * `hooks/on-session-start.mjs` rewrites the identity block on session start.
+ * Two live sessions therefore interleave entries into ONE array under the
+ * NEWER session's id. This check catches the older session reading the newer
+ * session's file (verdict `foreign`); it cannot un-mix entries inside a file
+ * that legitimately carries our own id. Per-entry attribution belongs to the
+ * writer hook, not here.
+ *
+ * @param {unknown} parsed — parsed `current-session.json` content.
+ * @param {Set<string>} ownIds
+ * @returns {{ verdict: 'own'|'foreign'|'unknown', fileIds: string[] }}
+ */
+function classifyCurrentSessionOwnership(parsed, ownIds) {
+  const fileIds = [];
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    for (const key of ['session_id', 'semantic_session_id']) {
+      const value = typeof parsed[key] === 'string' ? parsed[key].trim() : '';
+      if (value) fileIds.push(value);
+    }
+  }
+  if (fileIds.length === 0 || ownIds.size === 0) return { verdict: 'unknown', fileIds };
+  const matched = fileIds.some((id) => ownIds.has(id));
+  return { verdict: matched ? 'own' : 'foreign', fileIds };
+}
+
+/**
  * Read `corrective_context` array from `.orchestrator/current-session.json`.
- * Returns the most-recent N entries. Empty array on missing file / parse failure.
+ * Returns the most-recent N entries. Empty array on missing file / parse failure
+ * — and, since #1058, on a file that provably belongs to ANOTHER session.
+ *
+ * `current-session.json` is repo-global: every session sharing this working
+ * copy writes to the same path. Without the ownership check below, a peer
+ * session's tool-failure hints were forwarded verbatim into THIS session's
+ * fixer-agent prompt, which is how a fixer gets briefed on a failure that never
+ * happened in the tree it is editing.
+ *
+ * A foreign file is treated as ABSENT — and said out loud on stderr. A silent
+ * discard and a silent misuse are the same error class: both leave the operator
+ * unable to tell that two sessions are contending for this working copy. The
+ * WARN is not de-duplicated; this function runs at most once per fixer dispatch
+ * plus once at abort, and each line marks a distinct decision point.
  *
  * @param {string} repoRoot
  * @returns {Array<object>}
@@ -292,6 +534,15 @@ function readCorrectiveContext(repoRoot) {
     if (!existsSync(p)) return [];
     const raw = readFileSync(p, 'utf8');
     const parsed = JSON.parse(raw);
+    const { verdict, fileIds } = classifyCurrentSessionOwnership(parsed, readOwnSessionIds(repoRoot));
+    if (verdict === 'foreign') {
+      process.stderr.write(
+        `⚠️  quality-gate: .orchestrator/current-session.json belongs to another session ` +
+        `(${fileIds.join(', ')}) — corrective context ignored. ` +
+        'Another session is active in this working copy (PSA-001).\n',
+      );
+      return [];
+    }
     const arr = Array.isArray(parsed?.corrective_context) ? parsed.corrective_context : [];
     return arr.slice(-CORRECTIVE_CONTEXT_TAIL);
   } catch {
@@ -334,8 +585,15 @@ function writeDiagnosticsBundle(repoRoot, bundle) {
  * `scripts/lib/*`, `hooks/*`, or `.husky/*`, the blast radius is wider than the
  * agent could predict — auto-promote to Full Gate.
  *
- * Safe-default: any git failure (missing sinceRef, detached HEAD, no commits)
- * returns `{ touched: false, paths: [] }` so the gate never blocks a session.
+ * Since #1058 the underlying change set is the UNION of the committed diff and
+ * the UNCOMMITTED working tree. Without the second half this detector could
+ * never fire on the wave's own work: PSA-007 forbids a dispatched subagent
+ * every git-write, so at the moment this runs the wave's edits are uncommitted
+ * by construction — see {@link listChangedFiles}.
+ *
+ * Safe-default: a git failure on one half (missing sinceRef, detached HEAD, no
+ * commits) simply contributes nothing; both halves failing returns
+ * `{ touched: false, paths: [] }` so the gate never blocks a session.
  *
  * @param {object} opts
  * @param {string} opts.repoRoot                    — repo to diff against.

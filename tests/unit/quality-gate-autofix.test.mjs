@@ -447,6 +447,135 @@ describe('runQualityGateWithRetry — correctiveContext sourcing', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 5a. #1058 — corrective_context must be bound to THIS session.
+//
+// `.orchestrator/current-session.json` is repo-global: every session sharing a
+// working copy writes that one path, and `hooks/post-tool-failure-corrective-context.mjs`
+// appends to whatever file it finds. Before this binding, a PEER session's
+// tool-failure hints were forwarded verbatim into THIS session's fixer-agent
+// prompt — briefing a fixer on failures from a tree it never edited.
+//
+// Own-session identity is read from `CLAUDE_CODE_SESSION_ID` (per-process, and
+// therefore the only source a foreign session cannot write). These tests stub it
+// explicitly rather than inheriting the ambient value, so they assert the
+// binding rather than the harness's current state.
+// ---------------------------------------------------------------------------
+
+describe('runQualityGateWithRetry — correctiveContext session binding (#1058)', () => {
+  const OWN_ID = 'own-1111-2222-3333';
+  const PEER_ID = 'peer-4444-5555-6666';
+
+  /** Write current-session.json with the given identity + one hint. */
+  function writeSessionFile(identity) {
+    mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
+    writeFileSync(
+      join(repoRoot, '.orchestrator', 'current-session.json'),
+      JSON.stringify({ ...identity, corrective_context: ['hint-from-that-session'] }),
+      'utf8',
+    );
+  }
+
+  beforeEach(() => {
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', OWN_ID);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('drops corrective_context when the file belongs to a PEER session', async () => {
+    writeSessionFile({ session_id: PEER_ID, semantic_session_id: 'main-2026-08-23-session-9' });
+    const dispatchFixer = vi.fn().mockResolvedValue(undefined);
+
+    await runQualityGateWithRetry({
+      maxRetries: 1,
+      dispatchFixer,
+      repoRoot,
+      commands: FAIL_LINT_COMMANDS,
+    });
+
+    const callArg = dispatchFixer.mock.calls[0][0];
+    expect(callArg.correctiveContext).toEqual([]);
+  });
+
+  it('WARNS on stderr when it drops a peer session\'s corrective_context', async () => {
+    // A silent discard is the same error class as a silent misuse: both hide
+    // that two sessions are contending for this working copy.
+    writeSessionFile({ session_id: PEER_ID });
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await runQualityGateWithRetry({
+      maxRetries: 1,
+      dispatchFixer: vi.fn().mockResolvedValue(undefined),
+      repoRoot,
+      commands: FAIL_LINT_COMMANDS,
+    });
+
+    const warnings = stderrSpy.mock.calls
+      .map(([line]) => String(line))
+      .filter((line) => line.includes('belongs to another session'));
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings[0]).toContain(PEER_ID);
+  });
+
+  it('still forwards corrective_context when the file carries OUR session id', async () => {
+    // The over-correction guard: the binding must not silently turn the whole
+    // feature off for the session that legitimately owns the file.
+    writeSessionFile({ session_id: OWN_ID, semantic_session_id: 'main-2026-08-23-session-1' });
+    const dispatchFixer = vi.fn().mockResolvedValue(undefined);
+
+    await runQualityGateWithRetry({
+      maxRetries: 1,
+      dispatchFixer,
+      repoRoot,
+      commands: FAIL_LINT_COMMANDS,
+    });
+
+    const callArg = dispatchFixer.mock.calls[0][0];
+    expect(callArg.correctiveContext).toContain('hint-from-that-session');
+  });
+
+  it('matches on semantic_session_id alone when the raw ids differ', async () => {
+    // `on-session-start.mjs` rotates the UUID `session_id` on clear/compact/
+    // resume while `semantic_session_id` stays stable across the SAME logical
+    // session. Matching only the raw id would read our own file as foreign
+    // after a compact.
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'main-2026-08-23-session-1');
+    writeSessionFile({ session_id: PEER_ID, semantic_session_id: 'main-2026-08-23-session-1' });
+    const dispatchFixer = vi.fn().mockResolvedValue(undefined);
+
+    await runQualityGateWithRetry({
+      maxRetries: 1,
+      dispatchFixer,
+      repoRoot,
+      commands: FAIL_LINT_COMMANDS,
+    });
+
+    const callArg = dispatchFixer.mock.calls[0][0];
+    expect(callArg.correctiveContext).toContain('hint-from-that-session');
+  });
+
+  it('keeps corrective_context when the file carries NO session id at all', async () => {
+    // Unproven in BOTH directions is not the same as foreign. A file with no id
+    // cannot be attributed to a peer either, and discarding it would turn
+    // "cannot tell" into a silent feature-off on every harness that exports no
+    // session id. This also pins the back-compat shape the pre-#583 writer left.
+    writeSessionFile({});
+    const dispatchFixer = vi.fn().mockResolvedValue(undefined);
+
+    await runQualityGateWithRetry({
+      maxRetries: 1,
+      dispatchFixer,
+      repoRoot,
+      commands: FAIL_LINT_COMMANDS,
+    });
+
+    const callArg = dispatchFixer.mock.calls[0][0];
+    expect(callArg.correctiveContext).toContain('hint-from-that-session');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 6. maxRetries boundary conditions
 // ---------------------------------------------------------------------------
 

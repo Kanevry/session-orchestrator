@@ -209,3 +209,115 @@ describe('detectSharedLibTouch — #555 FL-3', () => {
     expect(result).toEqual({ touched: false, paths: [] });
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1058 — the change set must include the UNCOMMITTED working tree.
+//
+// Every test above commits before measuring, which is exactly the shape the
+// production caller never has. `.claude/rules/parallel-sessions.md` § PSA-007
+// forbids a dispatched wave agent EVERY git-write, and the auto-commit that
+// would have closed the gap does not exist (`scripts/lib/auto-commit.mjs`
+// absent; `skills/wave-executor/wave-loop.md` says "not yet implemented as of
+// v3.10.0"). So when the inter-wave Quality-Lite step runs this detector, the
+// wave's edits are uncommitted BY CONSTRUCTION and the committed-only diff saw
+// none of them.
+// ---------------------------------------------------------------------------
+
+describe('detectSharedLibTouch — #1058 uncommitted working tree', () => {
+  it('detects an UNCOMMITTED new file under scripts/lib/', () => {
+    // The bug: a wave agent creates scripts/lib/foo.mjs and cannot commit it.
+    // Before the union, `git diff <base> HEAD` reported nothing, the detector
+    // returned touched:false, and the FL-3 auto-promotion to the Full Gate
+    // could never fire on the wave's own work.
+    writeFileInRepo('scripts/lib/agent-wrote-this.mjs', 'export const x = 1;\n');
+    // Deliberately NO `git add` / `git commit` — that is the whole point.
+
+    const result = detectSharedLibTouch({ repoRoot, sinceRef: baseSha });
+
+    expect(result).toEqual({ touched: true, paths: ['scripts/lib/agent-wrote-this.mjs'] });
+  });
+
+  it('detects an UNCOMMITTED modification of a tracked shared-lib file', () => {
+    // Same bug, edit-in-place variant: the far more common wave-agent shape.
+    writeFileInRepo('scripts/lib/tracked.mjs', 'export const x = 1;\n');
+    git('add', 'scripts/lib/tracked.mjs');
+    git('commit', '--quiet', '-m', 'add tracked shared-lib file');
+    const sinceRef = git('rev-parse', 'HEAD');
+
+    writeFileInRepo('scripts/lib/tracked.mjs', 'export const x = 2;\n');
+
+    const result = detectSharedLibTouch({ repoRoot, sinceRef });
+
+    expect(result).toEqual({ touched: true, paths: ['scripts/lib/tracked.mjs'] });
+  });
+
+  it('unions committed and uncommitted touches without double-counting', () => {
+    // A wave that lands on top of a coordinator commit: one path from each half,
+    // plus the same path in BOTH halves (committed, then edited again).
+    writeFileInRepo('scripts/lib/committed.mjs', 'v1\n');
+    writeFileInRepo('scripts/lib/both.mjs', 'v1\n');
+    git('add', 'scripts/lib/committed.mjs', 'scripts/lib/both.mjs');
+    git('commit', '--quiet', '-m', 'coordinator commit');
+
+    writeFileInRepo('scripts/lib/both.mjs', 'v2\n');            // now also dirty
+    writeFileInRepo('scripts/lib/uncommitted.mjs', 'v1\n');      // untracked
+
+    const result = detectSharedLibTouch({ repoRoot, sinceRef: baseSha });
+
+    expect(result.touched).toBe(true);
+    expect(result.paths).toEqual([
+      'scripts/lib/both.mjs',
+      'scripts/lib/committed.mjs',
+      'scripts/lib/uncommitted.mjs',
+    ]);
+  });
+
+  it('returns the verbatim path for an uncommitted file inside a directory with a space', () => {
+    // The porcelain-parsing bug, half 1. `git status --porcelain` (without -z)
+    // C-quotes this path — measured 2026-08-23 (git 2.53.0):
+    //   `?? "scripts/lib/my dir/quo\"te.mjs"`.
+    // A whitespace-splitting parser (`awk '{print $2}'`) truncates it to
+    // `"scripts/lib/my` — measured on the same input. `-z` emits it verbatim.
+    // The `"` is included because `-c core.quotePath=false` does NOT unquote it
+    // (measured); only `-z` does. Non-ASCII names exercise the same code path
+    // but are left out on purpose — macOS/Linux disagree on NFC/NFD
+    // normalisation, which would make the assertion flaky for a reason that has
+    // nothing to do with this parser.
+    writeFileInRepo('scripts/lib/my dir/quo"te.mjs', 'export const x = 1;\n');
+
+    const result = detectSharedLibTouch({ repoRoot, sinceRef: baseSha });
+
+    expect(result).toEqual({ touched: true, paths: ['scripts/lib/my dir/quo"te.mjs'] });
+  });
+
+  it('returns BOTH sides of an uncommitted rename inside scripts/lib/', () => {
+    // The porcelain-parsing bug, half 2. A rename is `R  <new>\0<old>\0` under
+    // -z: the ORIGINAL path is a separate NUL field carrying NO `XY ` prefix.
+    // A parser that does not CONSUME that field emits `ipts/lib/before.mjs`
+    // (slice(3) applied to a bare path); one that reads the non-z ` -> ` form
+    // by field index returns only the PRE-rename path — measured on
+    // `awk '{print $2}'`. Both sides matter: moving a file OUT of scripts/lib/
+    // is as much a shared-lib touch as moving one in.
+    writeFileInRepo('scripts/lib/before.mjs', 'export const x = 1;\n');
+    git('add', 'scripts/lib/before.mjs');
+    git('commit', '--quiet', '-m', 'add file to be renamed');
+    const sinceRef = git('rev-parse', 'HEAD');
+
+    git('mv', 'scripts/lib/before.mjs', 'scripts/lib/after.mjs');
+
+    const result = detectSharedLibTouch({ repoRoot, sinceRef });
+
+    expect(result.touched).toBe(true);
+    expect(result.paths).toEqual(['scripts/lib/after.mjs', 'scripts/lib/before.mjs']);
+  });
+
+  it('still returns touched:false for an uncommitted file OUTSIDE the prefix list', () => {
+    // Guards the obvious over-correction: the union must widen WHAT is seen,
+    // never WHICH prefixes promote. An untracked docs/ file must not promote.
+    writeFileInRepo('docs/notes.md', '# notes\n');
+
+    const result = detectSharedLibTouch({ repoRoot, sinceRef: baseSha });
+
+    expect(result).toEqual({ touched: false, paths: [] });
+  });
+});

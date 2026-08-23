@@ -594,12 +594,30 @@ async function main() {
   }
 
   if (alreadyWarned) {
-    // Events logged above; suppress additionalContext to prevent coordinator loop.
+    // Events logged above; suppress the repeat additionalContext for this
+    // already-warned real context. (Recipient is the stopping subagent, not the
+    // coordinator — see the delivery note at the hookSpecificOutput write below.)
     return;
   }
 
-  // v2.1.163+ additionalContext: feed the warning back to the coordinator turn
-  // so the finding is visible inline, not just in stderr + events.jsonl.
+  // v2.1.163+ additionalContext: surface the finding inline, not just in
+  // stderr + events.jsonl.
+  //
+  // The recipient is the SUBAGENT that just stopped — NOT the coordinator.
+  // Measured in the shipped binary (Claude Code 2.1.241, 2026-08-23): the
+  // SubagentStop hookSpecificOutput schema reads "additionalContext is
+  // non-error feedback delivered to the subagent; the subagent continues so it
+  // can act on it", and the emitter picks its target with
+  // `i.agentId ? "SubagentStop" : "Stop"`, yielding a `hook_additional_context`
+  // message into that agent's own loop. So this text lands in the transcript of
+  // the agent whose claims it is about, one moment after that agent is done.
+  //
+  // Worth knowing before "fixing" the path: PSA-006 asks the COORDINATOR to
+  // reject unverified distributional claims, and this channel never reaches
+  // him. His copy of the finding is events.jsonl + stderr, not this write.
+  // Whether he SHOULD receive it is a product question (#1116) — changing the
+  // route is not a comment edit.
+  //
   // Non-blocking — exit 0 always. Decision:"block" must never be set here.
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {

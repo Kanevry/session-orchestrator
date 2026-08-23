@@ -85,6 +85,15 @@ const FAIL = 'node -e "process.exit(1)"';
  * initial commit containing `file` with `content`. Returns the SHA of the
  * initial commit.
  *
+ * The initial commit also carries a `.gitignore` for `.orchestrator/`, which
+ * models production rather than decorating the fixture: in this repo
+ * `.orchestrator/runtime/`, `current-session.json` and `session.lock` are all
+ * ignored (`git check-ignore -v`, measured 2026-08-23 @ 4f6404e). Since #1058
+ * `listChangedFiles` unions the UNCOMMITTED working tree into its result, so a
+ * fixture without that ignore reports the gate's own `last-green-sha.txt` write
+ * as a file the wave changed — an artifact of the fixture that exists nowhere
+ * a session actually runs.
+ *
  * @param {string} dir
  * @param {string} file  — filename relative to dir
  * @param {string} content
@@ -94,6 +103,7 @@ function initGitRepo(dir, file = 'A.txt', content = 'initial') {
   execSync('git init -q', { cwd: dir });
   execSync('git config user.email "test@test.local"', { cwd: dir });
   execSync('git config user.name "Test"', { cwd: dir });
+  writeFileSync(join(dir, '.gitignore'), '.orchestrator/\n', 'utf8');
   writeFileSync(join(dir, file), content, 'utf8');
   execSync('git add .', { cwd: dir });
   execSync('git commit -m "init" -q', { cwd: dir });

@@ -43,6 +43,7 @@ import {
   formatBlockReason,
   resolveIssueBudgetSessionId,
 } from './issue-budget.mjs';
+import { resolveProjectDir } from './platform.mjs';
 import { resolveRepoSpec } from './vcs-repo-spec.mjs';
 
 /**
@@ -97,14 +98,39 @@ function isIssueCreateArgv(cmd, args) {
  * exactly the session-end promise at SKILL.md:319 / :1113 being preserved. It
  * bites for any FUTURE non-exempt producer added to this module.
  *
+ * REPO BINDING (#1058 follow-on). The ledger root is the `repoRoot` the CALLER
+ * named — the same value that already decides the `-R` host-pinning spec a few
+ * lines down. Before this parameter existed, `runCli` re-derived it from
+ * `process.env.CLAUDE_PROJECT_DIR || process.cwd()`, so one call could file an
+ * issue into repo A (via `-R`) while charging repo B's budget ledger. Two
+ * answers to "which repo" inside one call path is the defect; the caller's
+ * answer is the authoritative one.
+ *
+ * That split brain was also a live test leak, measured 2026-08-23: a sandboxed
+ * `CLAUDE_PROJECT_DIR=$(mktemp -d) npx vitest run tests/lib/spiral-carryover.test.mjs`
+ * left `{"sessionId":"1c2e5507-…","count":0,"exempt":15}` in the sandbox — 15
+ * bookings per run, carrying the REAL session id, which under a plain
+ * `npm test` land in the live `.orchestrator/runtime/issue-budget.json`.
+ *
+ * The `repoRoot`-less fallback is `resolveProjectDir()` from `platform.mjs` —
+ * the SAME resolver `hooks/pre-bash-issue-budget.mjs` uses, so both producers
+ * of this ledger agree on which file they are charging. It strictly supersedes
+ * the hand-rolled expression it replaces: env fast-path first (including the
+ * Codex/Cursor/pi variants), then a walk-up for the instruction file — `CLAUDE.md`
+ * on Claude Code, `AGENTS.md` on Codex CLI (transparent aliases) — or `.git`, then cwd.
+ *
  * @param {string} cmd
  * @param {string[]} args
+ * @param {string} [repoRoot] — repo whose issue-budget ledger this call is
+ *   charged against. Falls back to `resolveProjectDir()` when absent.
  * @returns {{ ok: boolean, stdout: string, stderr: string, budgetBlocked?: boolean }}
  */
-function runCli(cmd, args) {
+function runCli(cmd, args, repoRoot) {
   if (isIssueCreateArgv(cmd, args)) {
     try {
-      const repoRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+      const budgetRoot = (typeof repoRoot === 'string' && repoRoot.trim())
+        ? repoRoot
+        : (resolveProjectDir() || process.cwd());
       // The harness exports CLAUDE_CODE_SESSION_ID (measured 2026-08-21: it is
       // present in the Bash tool environment this module runs in). There is no
       // CLAUDE_SESSION_ID — reading that name made this whole block dead code
@@ -113,16 +139,43 @@ function runCli(cmd, args) {
       let currentSession = null;
       if (typeof nativeRawId === 'string' && nativeRawId.length > 0) {
         try {
-          currentSession = JSON.parse(
-            readFileSync(path.join(repoRoot, '.orchestrator', 'current-session.json'), 'utf8'),
+          const parsed = JSON.parse(
+            readFileSync(path.join(budgetRoot, '.orchestrator', 'current-session.json'), 'utf8'),
           );
+          // SESSION BINDING (#1058). `current-session.json` is repo-global —
+          // every session sharing this working copy writes the same path — so
+          // the file in hand may describe a PEER session, not us.
+          //
+          // The binding itself is not new: `resolveIssueBudgetSessionId`
+          // already requires `currentSession.session_id === nativeRawId` before
+          // it will adopt the file's semantic label, and falls back to the raw
+          // env id otherwise. What was missing is that the mismatch was
+          // INVISIBLE — the comparison lives one module over, so a foreign file
+          // was discarded with no trace, which is the same error class as using
+          // it silently. Deciding it HERE makes the outcome identical and the
+          // reason audible; it deliberately does not restate the wider
+          // multi-id-space classifier `scripts/lib/quality-gate.mjs` needs
+          // (that reader has no raw env id guaranteed in hand — this one does,
+          // by the `typeof nativeRawId === 'string'` guard above).
+          const foreignId = typeof parsed?.session_id === 'string' && parsed.session_id.length > 0
+            ? parsed.session_id
+            : null;
+          if (foreignId !== null && foreignId !== nativeRawId) {
+            process.stderr.write(
+              '⚠️  spiral-carryover: .orchestrator/current-session.json belongs to another ' +
+              `session (${foreignId}) — using the native session id for issue-budget ` +
+              'accounting. Another session is active in this working copy (PSA-001).\n',
+            );
+          } else {
+            currentSession = parsed;
+          }
         } catch {
           // Missing or malformed records conservatively retain the native env key.
         }
       }
       const titleIdx = args.indexOf('--title');
       const verdict = chargeIssueBudget({
-        repoRoot,
+        repoRoot: budgetRoot,
         sessionId: resolveIssueBudgetSessionId(nativeRawId, currentSession),
         command: [cmd, ...args].join(' '),
         title: titleIdx >= 0 ? (args[titleIdx + 1] ?? null) : null,
@@ -211,7 +264,7 @@ async function findExistingLabeledIssue({
         'number,url,body',
       ];
       if (spec) args.push('-R', spec);
-      const res = runCli('gh', args);
+      const res = runCli('gh', args, repoRoot);
       if (!res.ok) return { exists: false };
       let arr;
       try {
@@ -231,7 +284,7 @@ async function findExistingLabeledIssue({
     // Default: gitlab via glab.
     const args = ['issue', 'list', '--label', label, '--per-page', '100', '--output', 'json'];
     if (spec) args.push('-R', spec);
-    const res = runCli('glab', args);
+    const res = runCli('glab', args, repoRoot);
     if (!res.ok) return { exists: false };
     let arr;
     try {
@@ -420,7 +473,7 @@ export async function createSpiralCarryoverIssue({
     }
     if (spec) args.push('-R', spec);
 
-    const res = runCli(cmd, args);
+    const res = runCli(cmd, args, repoRoot);
     if (!res.ok) {
       return { created: false, skipped: 'error', error: res.stderr.trim() || 'CLI invocation failed' };
     }
@@ -609,7 +662,7 @@ export async function createBrokenWindowIssue({
     }
     if (spec) args.push('-R', spec);
 
-    const res = runCli(cmd, args);
+    const res = runCli(cmd, args, repoRoot);
     if (!res.ok) {
       return { created: false, skipped: 'error', error: res.stderr.trim() || 'CLI invocation failed' };
     }
