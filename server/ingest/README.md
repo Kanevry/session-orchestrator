@@ -45,7 +45,42 @@ preserved in `raw_json` (additive forward-compatibility). An unknown
 
 ### `GET /healthz`
 
-`200 {"status":"ok"}` — no rate limit, no body, no DB write.
+`200` — no rate limit, no body read, no DB write. Also the read-out for the
+in-memory response counters (GitLab #1140):
+
+```json
+{
+  "status": "ok",
+  "started_at": "2026-08-23T08:16:14.636Z",
+  "counters": { "202": 1, "400": 1, "404": 1, "415": 1 },
+  "accepted_records": 1
+}
+```
+
+- `counters` — one tally per HTTP status the server has answered with. This is
+  the only trace a rejected send leaves: a `400`/`413`/`415`/`429` stores no row
+  and (by privacy design) writes no log line, so without these tallies a host
+  with zero foreign records cannot distinguish *nobody sends* from *everybody is
+  rejected*.
+- `accepted_records` — total records persisted, summed across batches. A `202`
+  tally alone cannot separate one batch of 50 from 50 single-record posts.
+- `started_at` — process start (ISO-8601 UTC).
+- **`/healthz` itself is not counted.** The container `HEALTHCHECK` probes it
+  every 30s (~2880/day); counting it would bury every other status under one
+  dominant `200`. Probe health is already reported by
+  `docker inspect --format '{{.State.Health.Status}}'`.
+- **Reset semantics:** the counters are in-memory and per-process. A container
+  restart resets every tally to zero and moves `started_at` — always read a
+  tally against `started_at`, never as a lifetime total. There is no persistence
+  and no back-fill; the weekly digest (`digest.mjs`) is the durable read path.
+- **Privacy:** status-code tallies only. No IP, no path, no body, no
+  per-request timestamp — a bare HTTP status carries no client identity, so the
+  invariants above are unchanged.
+- **Not counted, by construction:** responses produced by Node's own HTTP layer
+  rather than by the request handler (`requestTimeout`/`headersTimeout` → `408`,
+  `maxRequestsPerSocket` → `503`) never pass through the application's response
+  helper. Revisit only if transport-level rejections ever need to be visible —
+  that needs a `res.on('finish')` hook, not a second counting site.
 
 Non-POST on `/v1/records` → `405` + `Allow: POST`. Any other path → `404`.
 
@@ -88,7 +123,7 @@ Smoke test:
 
 ```sh
 curl -fsS http://127.0.0.1:8787/healthz
-# {"status":"ok"}
+# {"status":"ok","started_at":"…","counters":{},"accepted_records":0}
 ```
 
 ## Extending with a new `record_kind`

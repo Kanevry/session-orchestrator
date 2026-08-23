@@ -10,6 +10,9 @@
  *     on an error path. The single boot line on stderr carries no IP.
  *   - SEC-009: an internal error message never reaches the client; responses
  *     carry only fixed machine-readable error codes.
+ *   - The response counters (GitLab #1140) are status-code tallies only. No IP,
+ *     no path, no body, no timestamp-per-request is retained — a bare HTTP
+ *     status carries no client identity, so the invariants above are unchanged.
  *
  * POST /v1/records flow ordering is load-bearing — see handleRecordsPost.
  */
@@ -23,8 +26,68 @@ import { createRateLimiter, extractIp } from './rate-limit.mjs';
 import { scheduleRetention } from './retention.mjs';
 
 /**
+ * Symbol key under which the routing layer binds this response's status
+ * counter onto the ServerResponse. Bound once in `handleRequest`, read once in
+ * `sendJson` — which is the single point EVERY response in this module leaves
+ * through — so no response path can silently escape counting (BV-003).
+ */
+const RESPONSE_COUNTER = Symbol('so.ingest.responseCounter');
+
+/**
+ * Per-instance response statistics (GitLab #1140).
+ *
+ * Motivation: a send attempt that fails with 400/413/415/429 stores nothing and
+ * (by privacy design) logs nothing, so before these counters a host with zero
+ * foreign records could not distinguish "nobody sends" from "everybody is
+ * rejected". The counters make the rejection visible without recording anything
+ * about who was rejected.
+ *
+ * In-memory and per-instance by design: a container restart resets every tally
+ * to zero. `started_at` is what makes that legible — a small `202` count next
+ * to a recent `started_at` is a young process, not a quiet week.
+ *
+ * @returns {{
+ *   countStatus: (status: number) => void,
+ *   addAccepted: (n: number) => void,
+ *   snapshot: () => { started_at: string, counters: Record<string, number>, accepted_records: number },
+ * }}
+ */
+function createStats() {
+  const counters = Object.create(null);
+  const startedAt = new Date().toISOString();
+  let acceptedRecords = 0;
+
+  return {
+    countStatus(status) {
+      counters[status] = (counters[status] ?? 0) + 1;
+    },
+    addAccepted(n) {
+      acceptedRecords += n;
+    },
+    snapshot() {
+      // Copy — callers must never hold a handle on the live tally.
+      return {
+        started_at: startedAt,
+        counters: { ...counters },
+        accepted_records: acceptedRecords,
+      };
+    },
+  };
+}
+
+/**
  * Send a JSON response. Guards against a double-send (e.g. after a mid-stream
  * 413 + destroy) via `headersSent`.
+ *
+ * This is also the ONLY status-counting site: all 13 call sites in this module
+ * funnel through here, so one increment covers every response path. The
+ * optional call is deliberate — `/healthz` binds no counter (see
+ * `handleRequest`), and responses produced by Node's own HTTP layer rather than
+ * by this handler (`requestTimeout`/`headersTimeout` → 408,
+ * `maxRequestsPerSocket` → 503) never reach this function and are therefore not
+ * counted. Named ceiling: if those transport-level rejections ever need to be
+ * visible, they require a `res.on('finish')` hook, not another call site here.
+ *
  * @param {import('node:http').ServerResponse} res
  * @param {number} status
  * @param {object} body
@@ -34,6 +97,7 @@ function sendJson(res, status, body, headers = {}) {
   if (res.headersSent) return;
   res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
   res.end(JSON.stringify(body));
+  res[RESPONSE_COUNTER]?.(status);
 }
 
 /**
@@ -43,7 +107,7 @@ function sendJson(res, status, body, headers = {}) {
  * while the stream byte-count is the real cap because Content-Length can lie or
  * be absent under chunked transfer-encoding).
  */
-function handleRecordsPost(req, res, { config, db, rateLimiter }) {
+function handleRecordsPost(req, res, { config, db, rateLimiter, stats }) {
   // (1) Content-Type must begin with application/json.
   const ctype = (req.headers['content-type'] || '').toLowerCase();
   if (!ctype.startsWith('application/json')) {
@@ -123,6 +187,9 @@ function handleRecordsPost(req, res, { config, db, rateLimiter }) {
     // (8) Persist the whole batch in one transaction.
     try {
       const accepted = insertRecords(db, rows);
+      // Counted where the rows are actually stored — a 202 tally alone cannot
+      // distinguish one batch of 50 from 50 single-record posts.
+      stats.addAccepted(accepted);
       // (9) Success.
       return sendJson(res, 202, { accepted });
     } catch (err) {
@@ -143,9 +210,22 @@ function handleRequest(req, res, ctx) {
   const method = req.method || 'GET';
 
   // GET /healthz — no rate limit, no body read, no DB write.
+  //
+  // Deliberately NOT counted (#1140): the container HEALTHCHECK probes this
+  // path every 30s (~2880/day), so counting it would bury the ingest statuses
+  // the counters exist to surface under a single dominant `200`. Nothing is
+  // lost by the omission — probe health is already reported by
+  // `docker inspect --format '{{.State.Health.Status}}'` and process age by
+  // `started_at` below. Concretely: no counter is bound on this branch, so
+  // sendJson's optional call is a no-op here.
   if (path === '/healthz') {
-    return sendJson(res, 200, { status: 'ok' });
+    return sendJson(res, 200, { status: 'ok', ...ctx.stats.snapshot() });
   }
+
+  // Every other path IS counted. Binding here (one line, at the single routing
+  // fork) rather than at each sendJson call site is what makes it impossible
+  // for a new response path to be added without being counted.
+  res[RESPONSE_COUNTER] = ctx.stats.countStatus;
 
   if (path === '/v1/records') {
     if (method !== 'POST') {
@@ -172,6 +252,7 @@ export function createIngestServer(overrides = {}) {
   const config = { ...resolveConfig(), ...overrides };
 
   const db = openDb(config.dbPath);
+  const stats = createStats();
   const rateLimiter = createRateLimiter({
     windowMs: config.rateWindowMs,
     limit: config.rateLimit,
@@ -182,7 +263,9 @@ export function createIngestServer(overrides = {}) {
     intervalMs: config.retentionIntervalMs,
   });
 
-  const server = http.createServer((req, res) => handleRequest(req, res, { config, db, rateLimiter }));
+  const server = http.createServer((req, res) =>
+    handleRequest(req, res, { config, db, rateLimiter, stats }),
+  );
 
   // Connection hardening (defense against slowloris / socket exhaustion).
   server.requestTimeout = 10000;

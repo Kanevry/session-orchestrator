@@ -254,7 +254,7 @@ describe('rate limiting', () => {
     // /healthz is never rate-limited.
     const health = await fetch(`${ctx.base}/healthz`);
     expect(health.status).toBe(200);
-    expect(await health.json()).toEqual({ status: 'ok' });
+    expect(await health.json()).toMatchObject({ status: 'ok' });
   });
 });
 
@@ -263,7 +263,7 @@ describe('routing', () => {
     ctx = await start();
     const res = await fetch(`${ctx.base}/healthz`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ status: 'ok' });
+    expect(await res.json()).toMatchObject({ status: 'ok' });
   });
 
   it('returns 405 + Allow: POST for a non-POST /v1/records', async () => {
@@ -528,5 +528,96 @@ describe('POST /v1/records — list boundary acceptance', () => {
     const res = await post(ctx.base, validPing({ skills: ['x'.repeat(64)] }));
     expect(res.status).toBe(202);
     expect(await res.json()).toEqual({ accepted: 1 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /healthz — response-status counters (GitLab #1140)
+//
+// The defect these tests pin: before the counters existed, a send attempt that
+// failed with 400/413/415/429 left NO trace anywhere — not in the DB (nothing
+// is stored on a rejection) and not in the container log (which carried only
+// the boot line). With zero foreign records on the host it was undecidable
+// whether nobody sends or everybody is rejected. Deleting the counter wiring
+// from server.mjs turns every test below RED.
+// ---------------------------------------------------------------------------
+
+/** GET /healthz and return its parsed body. */
+async function getHealth(base) {
+  const res = await fetch(`${base}/healthz`);
+  expect(res.status).toBe(200);
+  return res.json();
+}
+
+describe('GET /healthz — response counters', () => {
+  it('counts an accepted and a rejected request, and sums accepted_records', async () => {
+    ctx = await start();
+
+    expect(await post(ctx.base, validPing()).then((r) => r.status)).toBe(202);
+    expect(await post(ctx.base, [validPing(), validPing()]).then((r) => r.status)).toBe(202);
+    expect(await post(ctx.base, validPing({ record_kind: 'totally-unknown' })).then((r) => r.status)).toBe(400);
+
+    const body = await getHealth(ctx.base);
+    expect(body.status).toBe('ok');
+    expect(body.started_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    // The rejection is visible even though it stored nothing — that IS the fix.
+    expect(body.counters).toEqual({ 202: 2, 400: 1 });
+    // 1 + 2 stored records; the rejected batch contributes nothing.
+    expect(body.accepted_records).toBe(3);
+    expect(countRows(ctx.db)).toBe(3);
+  });
+
+  it('counts every rejection class that stores nothing (415, 413, 429, 404, 405)', async () => {
+    // rateLimit 1 → the second valid POST is rate-limited. The 415 and 413
+    // paths short-circuit BEFORE the limiter, so they consume no budget.
+    ctx = await start({ rateLimit: 1 });
+
+    // 415 — wrong Content-Type.
+    await fetch(`${ctx.base}/v1/records`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify(validPing()),
+    });
+    // 413 — oversized body via the Content-Length precheck.
+    await post(ctx.base, 'x'.repeat(33000));
+    // 202 — consumes the single rate-limit token.
+    await post(ctx.base, validPing());
+    // 429 — budget exhausted.
+    await post(ctx.base, validPing());
+    // 404 — unknown path.
+    await fetch(`${ctx.base}/does-not-exist`);
+    // 405 — wrong method on the records path.
+    await fetch(`${ctx.base}/v1/records`, { method: 'GET' });
+
+    const body = await getHealth(ctx.base);
+    expect(body.counters).toEqual({ 202: 1, 404: 1, 405: 1, 413: 1, 415: 1, 429: 1 });
+    expect(body.accepted_records).toBe(1);
+  });
+
+  it('does NOT count /healthz itself — the 30s container probe must not drown the signal', async () => {
+    ctx = await start();
+
+    await post(ctx.base, validPing());
+    await getHealth(ctx.base);
+    await getHealth(ctx.base);
+    await getHealth(ctx.base);
+
+    const body = await getHealth(ctx.base);
+    // Exactly the one data request — no '200' key from the four probes above.
+    expect(body.counters).toEqual({ 202: 1 });
+    expect(Object.keys(body.counters)).not.toContain('200');
+  });
+
+  it('keeps counters per server instance (a restart resets them to an empty object)', async () => {
+    ctx = await start();
+    await post(ctx.base, validPing());
+    expect((await getHealth(ctx.base)).counters).toEqual({ 202: 1 });
+    await ctx.close();
+
+    // A second instance in the same process must not inherit the first's counts.
+    ctx = await start();
+    const body = await getHealth(ctx.base);
+    expect(body.counters).toEqual({});
+    expect(body.accepted_records).toBe(0);
   });
 });
