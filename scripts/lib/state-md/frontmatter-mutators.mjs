@@ -239,11 +239,20 @@ function extractFrontmatterBlock(text) {
  *
  * Scoped to the frontmatter block only (see the "Frontmatter-safe round-trip
  * guard" comment above `DEFAULT_STATE_MD_SIZE_CEILING_BYTES` for the scoping
- * rationale). Content with no parseable frontmatter (`parseStateMd(after) ===
- * null`) is treated as SAFE — there is nothing frontmatter-shaped to verify,
- * and this keeps non-STATE.md-shaped writes (e.g. arbitrary test fixtures)
- * ungated by this check, matching `evaluateSizeCeiling`'s content-agnostic
- * posture for that case.
+ * rationale).
+ *
+ * `parseStateMd(after) === null` has TWO causes and they get OPPOSITE verdicts,
+ * because collapsing them is what made this guard blind:
+ *   - NO frontmatter fence in `after` → SAFE. There is nothing frontmatter-shaped
+ *     to verify, and non-STATE.md-shaped writes (arbitrary test fixtures, plain
+ *     body text) stay ungated, matching `evaluateSizeCeiling`'s content-agnostic
+ *     posture for that case.
+ *   - A fence IS present but its contents do not parse → UNSAFE. A write whose
+ *     frontmatter this repo's own parser cannot read back is precisely the
+ *     corruption class this guard exists to refuse; treating it as "nothing to
+ *     verify" let the single worst input pass unchecked (the 2026-08-24 #1111
+ *     regression, where one flow item nulled the whole document, sat in exactly
+ *     this hole).
  *
  * Never throws — mirrors the never-throw contract of yaml-parser.mjs.
  *
@@ -251,12 +260,20 @@ function extractFrontmatterBlock(text) {
  * @returns {{ unsafe: boolean, reason: string|null }}
  */
 export function evaluateFrontmatterSafe(after) {
+  const beforeBlock = extractFrontmatterBlock(after);
   const parsed = parseStateMd(after);
   if (parsed === null) {
-    return { unsafe: false, reason: null };
+    if (beforeBlock === null) {
+      return { unsafe: false, reason: null };
+    }
+    return {
+      unsafe: true,
+      reason:
+        `frontmatter block is present but parseStateMd could not read it back ` +
+        `(${Buffer.byteLength(beforeBlock, 'utf8')}B unparseable)`,
+    };
   }
   const reserialized = serializeStateMd(parsed);
-  const beforeBlock = extractFrontmatterBlock(after);
   const afterBlock = extractFrontmatterBlock(reserialized);
   if (beforeBlock !== afterBlock) {
     return {
@@ -320,7 +337,10 @@ function writeFileAtomic(filePath, contents) {
  * deliberately left unshipped when issue #739 first landed, because the
  * yaml-parser asymmetry it exists to catch made it false-positive on ordinary
  * content at the time) — #747 closed that asymmetry in yaml-parser.mjs, so
- * the check is safe to enforce. It catches FUTURE serializer/parser drift
+ * the check is safe to enforce. A frontmatter fence that is present but does
+ * NOT parse back is refused by the same guard (see `evaluateFrontmatterSafe`);
+ * only content with no fence at all leaves it inert. It catches FUTURE
+ * serializer/parser drift
  * that reintroduces a non-idempotent frontmatter round-trip — the exact
  * incident class behind #739 — rather than the symptom (file size) the
  * size-ceiling guard was limited to. Same non-throw, WARN-then-refuse
@@ -395,6 +415,19 @@ export async function writeStateMd(repoRoot, transformer, opts = {}) {
         return { written: false, path: statePath, contents: before, reason: 'frontmatter-unsafe' };
       }
 
+      // A list item the parser cannot represent is dropped on READ (see
+      // yaml-parser.mjs `parseBlockValue`), so this write is what makes the drop
+      // permanent on disk. Dropping is the right call — the alternatives are a
+      // mangled key or a dead no-op — but it must not be SILENT, which is the
+      // whole complaint the per-item scoping answers. Name the items, then write
+      // anyway: blocking here would re-create the no-op this fix removed.
+      const droppedItems = parseStateMd(before)?.warnings;
+      if (droppedItems !== undefined) {
+        process.stderr.write(
+          `⚠ writeStateMd: ${statePath} — dropping ${droppedItems.length} unrepresentable list item(s): ` +
+            `${droppedItems.map((w) => `${w.key}[${w.index}] (${w.reason})`).join(', ')}\n`
+        );
+      }
       writeFileAtomic(statePath, after);
       return { written: true, path: statePath, contents: after };
     },

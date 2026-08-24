@@ -605,3 +605,115 @@ k: "has "raw" quotes"
     expect(result.frontmatter.k).toBe('has "raw" quotes');
   });
 });
+
+// ─── Flow collections as block-sequence items (#1111) ─────────────────────────
+//
+// Bug caught (original): a `mission-status:` (or `docs-tasks:`) entry hand-written
+// as a YAML FLOW mapping — `- { id: m-1, task: "x", wave: 1, status: brainstormed }`,
+// which any real YAML parser accepts — was split at the FIRST colon by this subset
+// parser. Measured before the fix, 2026-08-24 @ f0766e1:
+//   len: 1 · keys: ["{ id"] · status: undefined
+// i.e. a plausible-looking entry object with a key literally named `{ id` and no
+// `status` at all, reported by nothing. Existing suite could not catch it: every
+// block-seq test feeds block notation only.
+//
+// Bug caught (regression, same day): the first fix answered that by returning
+// `null` for the WHOLE document, which turned every STATE.md mutator into a
+// silent no-op on a file carrying one such item (see the TV-001 block in
+// tests/lib/state-md-mission-status.test.mjs). The contract these tests now pin
+// is per-ITEM: a flow MAPPING parses correctly, anything else flow-shaped is
+// dropped from its own list and reported on `warnings` — and in NEITHER case
+// does a mangled `{ id`-style key survive, which is the #1111 protection itself.
+
+describe('parseStateMd — flow collections as block-sequence items (#1111)', () => {
+  const withItem = (item) => `---
+schema-version: 1
+mission-status:
+  - ${item}
+---
+
+## Body
+`;
+
+  it.each([
+    [
+      'flow mapping',
+      '{ id: m-1, task: "x", wave: 1, status: brainstormed }',
+      { id: 'm-1', task: 'x', wave: 1, status: 'brainstormed' },
+    ],
+    [
+      'flow mapping without inner spaces',
+      '{id: m-1, status: brainstormed}',
+      { id: 'm-1', status: 'brainstormed' },
+    ],
+    [
+      'flow mapping whose quoted value carries the separator characters',
+      '{ id: m-1, task: "a, b: c", status: in-dev }',
+      { id: 'm-1', task: 'a, b: c', status: 'in-dev' },
+    ],
+  ])('parses a %s list item into the same object a block item yields', (_label, item, expected) => {
+    const result = parseStateMd(withItem(item));
+
+    expect(result).not.toBeNull();
+    expect(result.frontmatter['mission-status']).toEqual([expected]);
+    // The #1111 damage itself: never a key literally named `{ id`.
+    expect(Object.keys(result.frontmatter['mission-status'][0]).some((k) => k.startsWith('{'))).toBe(false);
+    // Clean parse ⇒ no `warnings` key at all (omitted, not empty).
+    expect(Object.prototype.hasOwnProperty.call(result, 'warnings')).toBe(false);
+  });
+
+  it('re-emits a parsed flow item in block notation, byte-stable on the next cycle', () => {
+    const once = serializeStateMd(parseStateMd(withItem('{ id: m-1, wave: 1, status: in-dev }')));
+
+    expect(once).toContain('  - id: m-1\n    wave: 1\n    status: in-dev');
+    expect(once).not.toContain('{');
+    expect(serializeStateMd(parseStateMd(once))).toBe(once);
+  });
+
+  it.each([
+    ['flow sequence carrying a colon', '[ id: m-1, status: brainstormed ]', 'flow-sequence-item'],
+    ['unterminated flow mapping', '{ id: m-1, status: brainstormed', 'malformed-flow-mapping'],
+    ['flow mapping with a segment that has no colon', '{ id: m-1, brainstormed }', 'malformed-flow-mapping'],
+  ])('drops an unrepresentable %s list item and reports it — never nulls the document', (_label, item, reason) => {
+    const result = parseStateMd(withItem(item));
+
+    expect(result).not.toBeNull();
+    expect(result.frontmatter['schema-version']).toBe(1);
+    expect(result.frontmatter['mission-status']).toEqual([]);
+    expect(result.warnings).toEqual([{ key: 'mission-status', index: 0, reason }]);
+  });
+
+  it('drops ONLY the bad item — the healthy siblings around it survive with source-position indices', () => {
+    const doc = `---
+schema-version: 1
+mission-status:
+  - id: m-1
+    status: in-dev
+  - [ id: m-2, status: in-dev ]
+  - { id: m-3, status: completed }
+---
+
+## Body
+`;
+    const result = parseStateMd(doc);
+
+    expect(result.frontmatter['mission-status']).toEqual([
+      { id: 'm-1', status: 'in-dev' },
+      { id: 'm-3', status: 'completed' },
+    ]);
+    // index 1 = the RAW source position of the dropped item, not the surviving array's.
+    expect(result.warnings).toEqual([
+      { key: 'mission-status', index: 1, reason: 'flow-sequence-item' },
+    ]);
+  });
+
+  it('still parses a block item whose VALUE merely starts with a brace', () => {
+    // Guards against an over-broad fix: only the ITEM may not open a flow
+    // collection. A braced scalar value is ordinary content.
+    const result = parseStateMd(withItem('id: m-1\n    task: {templated} run'));
+    expect(result).not.toBeNull();
+    expect(result.frontmatter['mission-status']).toEqual([
+      { id: 'm-1', task: '{templated} run' },
+    ]);
+  });
+});

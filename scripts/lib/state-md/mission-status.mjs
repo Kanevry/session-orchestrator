@@ -19,9 +19,85 @@ import { updateFrontmatterFields, writeStateMd } from './frontmatter-mutators.mj
 const MISSION_STATUS_HEADING_RE = /^##\s+Mission Status\s*$/;
 const WRITER_TIMESTAMP_SOURCE = '\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z';
 const WRITER_TIMESTAMP_RE = new RegExp(`^${WRITER_TIMESTAMP_SOURCE}$`);
+
+/**
+ * Task-ID grammar, shared by the body writer/recovery regex below and the
+ * frontmatter validator in `parseMissionStatusStrict`. ONE source on purpose:
+ * a reader whose ID grammar is narrower than the writer's drops entries the
+ * writer just produced — the two-surface divergence class this module exists to
+ * close (#960/#1084). Accepts `m-1`, `docs-2`, `w2-a10`; rejects `M-1`, `m1`.
+ */
+const MISSION_STATUS_ID_SOURCE = '[a-z][a-z0-9]*(?:-[a-z0-9]+)*-\\d+';
+const MISSION_STATUS_ID_RE = new RegExp(`^${MISSION_STATUS_ID_SOURCE}$`);
 const CANONICAL_MISSION_STATUS_ENTRY_RE = new RegExp(
-  `^- ([a-z][a-z0-9]*(?:-[a-z0-9]+)*-\\d+): (.*) \\(updated (${WRITER_TIMESTAMP_SOURCE})\\)$`
+  `^- (${MISSION_STATUS_ID_SOURCE}): (.*) \\(updated (${WRITER_TIMESTAMP_SOURCE})\\)$`
 );
+
+/**
+ * The 5-value mission-status vocabulary (`skills/session-plan/SKILL.md` §
+ * Mission-Status Enum). A VOCABULARY, not a state machine and not a gate: an
+ * out-of-enum value is reported as a WARNING by `parseMissionStatusStrict` and
+ * still returned by `parseMissionStatus`, because dropping it on the read side
+ * would hide on the frontmatter surface exactly what `setMissionStatus`
+ * deliberately makes visible on both.
+ *
+ * @type {readonly string[]}
+ */
+export const MISSION_STATUS_VALUES = Object.freeze([
+  'brainstormed',
+  'validated',
+  'in-dev',
+  'testing',
+  'completed',
+]);
+
+/** Scalar shapes this YAML subset can produce for an entry field. */
+function isScalarField(value) {
+  return (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  );
+}
+
+/**
+ * Validates ONE `mission-status` entry.
+ *
+ * Hard requirements are exactly the fields a consumer cannot work without: the
+ * entry must be a mapping, `id` must match the writer's own ID grammar, and
+ * `status` must be a non-empty string. `task` and `wave` are OPTIONAL — the
+ * recovery path in `recoverFrontmatterMissionStatus` emits truthful partial
+ * `{ id, status }` entries on purpose, and requiring the metadata here would
+ * delete them on read (measured: `setMissionStatus` on a legacy body yields
+ * `[{"id":"docs-2","status":"completed"}]`). When present they must still be
+ * scalars — an object or array there is a parse gone sideways, and renders as
+ * `[object Object]` in the vault rollup table.
+ *
+ * @param {unknown} entry
+ * @returns {{ valid: true, warning: string|null }|{ valid: false, reason: string }}
+ */
+function validateMissionStatusEntry(entry) {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    return { valid: false, reason: 'not-a-mapping' };
+  }
+  if (typeof entry.id !== 'string' || !MISSION_STATUS_ID_RE.test(entry.id)) {
+    return { valid: false, reason: 'invalid-id' };
+  }
+  if (typeof entry.status !== 'string' || entry.status.trim() === '') {
+    return { valid: false, reason: 'invalid-status' };
+  }
+  if (Object.prototype.hasOwnProperty.call(entry, 'task') && !isScalarField(entry.task)) {
+    return { valid: false, reason: 'invalid-task' };
+  }
+  if (Object.prototype.hasOwnProperty.call(entry, 'wave') && !isScalarField(entry.wave)) {
+    return { valid: false, reason: 'invalid-wave' };
+  }
+  return {
+    valid: true,
+    warning: MISSION_STATUS_VALUES.includes(entry.status) ? null : 'status-not-in-enum',
+  };
+}
 
 /**
  * Finds the first exact `## Mission Status` section and its closing heading.
@@ -52,33 +128,92 @@ function isWriterTimestamp(timestamp) {
 
 /**
  * Parses the optional `mission-status:` block from a STATE.md frontmatter object
- * (as returned by `parseStateMd(...).frontmatter`).
+ * (as returned by `parseStateMd(...).frontmatter`), keeping only entries that pass
+ * `validateMissionStatusEntry`.
  *
  * Returns `null` when the `mission-status` key is absent (backward-compat: pre-#340
- * STATE.md files). Returns `[]` when the key is present but the value is an empty
- * array. Returns the array of entries when present and non-empty.
+ * STATE.md files) or holds a non-array. Returns `[]` when the key is present but the
+ * value is an empty array — or when every entry in it was rejected.
  *
- * Does NOT validate individual entry shapes, and no helper in this repo does:
- * entry shape and the `status` enum are coordinator convention, deliberately not a
- * mechanical gate (see `syncFrontmatterMissionStatus` below for why).
+ * The rejects are NOT surfaced here (the return type is unchanged for existing
+ * callers). Use `parseMissionStatusStrict` when you need to report them; a caller
+ * that only counts or renders entries wants the clean list.
  *
  * @param {object} frontmatter
  * @returns {object[]|null}
  */
 export function parseMissionStatus(frontmatter) {
+  return parseMissionStatusStrict(frontmatter).items;
+}
+
+/**
+ * `parseMissionStatus` with its rejects and vocabulary warnings attached.
+ *
+ * Before #1111 nothing in this repo validated entry shape, so a malformed entry —
+ * a flow-mapping list item mangled into a key literally named `{ id`, a bare
+ * scalar left in the array, an entry with no `status` — reached session-end Phase
+ * 1.9/1.10 and `vault-status/narrative-mirror.mjs` as a plausible-looking task and
+ * was counted. `items` is what a consumer may trust; `invalid` is what a reporter
+ * must show instead of silently dropping.
+ *
+ * The `{ id` mangling itself no longer originates HERE: yaml-parser.mjs now parses
+ * a single-line flow mapping into the same object a block item yields. This
+ * validator stays the reader-side net for every OTHER source of a malformed entry
+ * — a hand-built array passed to `writeMissionStatus`, a future parser change, a
+ * third-party writer — none of which the parser fix can speak for.
+ *
+ * - `items` — mirrors `parseMissionStatus` exactly (`null` when the key is absent
+ *   or not an array; otherwise the entries that validated, in source order).
+ * - `invalid` — `{ index, reason }` per rejected entry, `index` addressing the RAW
+ *   array. Reasons: `not-a-mapping`, `invalid-id`, `invalid-status`, `invalid-task`,
+ *   `invalid-wave`.
+ * - `warnings` — `{ index, reason }` for entries that are structurally fine but
+ *   suspect: `duplicate-id` (a second entry with an id already seen — the sync in
+ *   `syncFrontmatterMissionStatus` only ever updates the FIRST match, so the copy
+ *   keeps a stale status forever and Phase 1.10 counts the task twice) and
+ *   `status-not-in-enum`. Both stay in `items` on purpose.
+ *
+ * @param {object} frontmatter
+ * @returns {{ items: object[]|null, invalid: Array<{index: number, reason: string}>, warnings: Array<{index: number, reason: string}> }}
+ */
+export function parseMissionStatusStrict(frontmatter) {
+  const empty = { items: null, invalid: [], warnings: [] };
   if (frontmatter === null || typeof frontmatter !== 'object' || Array.isArray(frontmatter)) {
-    return null;
+    return empty;
   }
   if (!Object.prototype.hasOwnProperty.call(frontmatter, 'mission-status')) {
-    return null;
+    return empty;
   }
   const raw = frontmatter['mission-status'];
   if (!Array.isArray(raw)) {
     // Present but not an array (e.g. null scalar from empty key) — treat as absent
-    return null;
+    return empty;
   }
-  // Return a shallow copy to prevent mutation of the parsed frontmatter
-  return raw.slice();
+
+  // A fresh array (never `raw` itself) keeps the shallow-copy contract: callers may
+  // push/splice their result without touching the parsed frontmatter.
+  const items = [];
+  const invalid = [];
+  const warnings = [];
+  const seenIds = new Set();
+  for (let index = 0; index < raw.length; index++) {
+    const entry = raw[index];
+    const verdict = validateMissionStatusEntry(entry);
+    if (!verdict.valid) {
+      invalid.push({ index, reason: verdict.reason });
+      continue;
+    }
+    if (seenIds.has(entry.id)) {
+      warnings.push({ index, reason: 'duplicate-id' });
+    } else {
+      seenIds.add(entry.id);
+    }
+    if (verdict.warning !== null) {
+      warnings.push({ index, reason: verdict.warning });
+    }
+    items.push(entry);
+  }
+  return { items, invalid, warnings };
 }
 
 /**
@@ -90,9 +225,11 @@ export function parseMissionStatus(frontmatter) {
  * - Works on string input (pure — no file I/O). Returns the updated STATE.md contents.
  * - No-ops if `contents` has no parseable frontmatter (returns input unchanged).
  *
- * Individual entry objects are expected to carry `{ id, task, wave, status }`, but
- * this function does NOT enforce that shape and no validator in this repo does —
- * callers own the invariant.
+ * Individual entry objects are expected to carry `{ id, task, wave, status }`. This
+ * WRITER does not enforce that shape — whatever it is handed is serialized, so a
+ * malformed entry lands visibly in the file rather than being dropped on the way in.
+ * The READER is where the shape is checked since #1111: `parseMissionStatus` returns
+ * only entries that validate, and `parseMissionStatusStrict` reports the rest.
  *
  * @param {string} contents
  * @param {object[]|null|undefined} missionStatusArray

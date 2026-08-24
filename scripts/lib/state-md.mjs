@@ -1,13 +1,13 @@
 /**
  * STATE.md helpers (issue #184).
  *
- * Thin barrel — re-exports all 25 public symbols from the split submodules.
+ * Thin barrel — re-exports every public symbol of the split submodules.
  * Implementation lives in scripts/lib/state-md/*.mjs.
  *
  * @see scripts/lib/state-md/yaml-parser.mjs        parseStateMd, serializeStateMd
  * @see scripts/lib/state-md/frontmatter-mutators.mjs touchUpdatedField, updateFrontmatterFields
  * @see scripts/lib/state-md/body-sections.mjs       readCurrentTask, appendDeviation, markExpressPathComplete, appendWhatNotToRetry, readWhatNotToRetry, readOpenQuestions, appendOpenQuestion, markOpenQuestionAnswered
- * @see scripts/lib/state-md/mission-status.mjs      parseMissionStatus, writeMissionStatus, setMissionStatus, readMissionStatus
+ * @see scripts/lib/state-md/mission-status.mjs      parseMissionStatus, parseMissionStatusStrict, MISSION_STATUS_VALUES, writeMissionStatus, setMissionStatus, readMissionStatus
  * @see scripts/lib/state-md/recommendations.mjs     parseRecommendations
  */
 
@@ -43,6 +43,14 @@ export {
 
 export {
   parseMissionStatus,
+  // The strict reader and the status vocabulary are part of the same public
+  // surface as `parseMissionStatus` (#1111) — a consumer that imports from this
+  // barrel (the documented entry point) reached neither until this re-export
+  // landed: a static `import { parseMissionStatusStrict } from '.../state-md.mjs'`
+  // failed at link time, and the `await import()` form — the one hooks and
+  // lazy loaders use — yielded `undefined` and failed only at the call.
+  parseMissionStatusStrict,
+  MISSION_STATUS_VALUES,
   writeMissionStatus,
   setMissionStatus,
   readMissionStatus,

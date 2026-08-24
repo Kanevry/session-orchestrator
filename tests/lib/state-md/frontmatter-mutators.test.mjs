@@ -4,9 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseStateMd } from '@lib/state-md/yaml-parser.mjs';
 import {
+  evaluateFrontmatterSafe,
   resolveStateMdPath,
   touchUpdatedField,
   updateFrontmatterFields,
+  writeStateMd,
 } from '@lib/state-md/frontmatter-mutators.mjs';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -179,6 +181,140 @@ describe('resolveStateMdPath', () => {
 
       expect(resolveStateMdPath(root)).toBe(join(root, stateDir, 'STATE.md'));
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── One flow item does not disable the mutators (#1111 regression) ──────────
+//
+// TV-001 — the bug this catches: with the first #1111 fix, `parseStateMd`
+// returned `null` for a whole document as soon as ONE list item opened a flow
+// collection. Both mutators here open with `if (parsed === null) return
+// contents;`, so on the fixture below they returned their input BYTE-IDENTICAL:
+// `updated` was never touched, no key was ever set or deleted, and the on-disk
+// wrappers reported a clean no-op (`after === before` short-circuits every
+// guard). Measured before the fix, 2026-08-24:
+// `touchUpdatedField(FLOW_ITEM_STATE, ts) === FLOW_ITEM_STATE` → true.
+
+const FLOW_ITEM_STATE = `---
+schema-version: 1
+status: active
+updated: 2026-04-19T17:30:00Z
+custom-extension: keep-me
+mission-status:
+  - id: m-1
+    task: block item
+    wave: 1
+    status: in-dev
+  - { id: m-2, task: "hand-written flow item", wave: 2, status: brainstormed }
+---
+
+## Body
+`;
+
+describe('mutators — a document containing one flow list item (#1111 regression)', () => {
+  it('touchUpdatedField writes the timestamp instead of returning the input unchanged', () => {
+    const out = touchUpdatedField(FLOW_ITEM_STATE, '2026-05-01T12:00:00Z');
+
+    expect(out).not.toBe(FLOW_ITEM_STATE);
+    expect(parseStateMd(out).frontmatter.updated).toBe('2026-05-01T12:00:00Z');
+  });
+
+  it('updateFrontmatterFields still sets, deletes and preserves the other keys', () => {
+    const out = updateFrontmatterFields(FLOW_ITEM_STATE, {
+      'recommended-mode': 'feature',
+      'custom-extension': null,
+    });
+    const { frontmatter } = parseStateMd(out);
+
+    expect(frontmatter['recommended-mode']).toBe('feature');
+    expect(Object.prototype.hasOwnProperty.call(frontmatter, 'custom-extension')).toBe(false);
+    expect(frontmatter['schema-version']).toBe(1);
+    expect(frontmatter.status).toBe('active');
+  });
+
+  it('carries BOTH list items through the write, the flow one included', () => {
+    const out = updateFrontmatterFields(FLOW_ITEM_STATE, { status: 'completed' });
+
+    expect(parseStateMd(out).frontmatter['mission-status']).toEqual([
+      { id: 'm-1', task: 'block item', wave: 1, status: 'in-dev' },
+      { id: 'm-2', task: 'hand-written flow item', wave: 2, status: 'brainstormed' },
+    ]);
+  });
+});
+
+// ─── evaluateFrontmatterSafe: present-but-unparseable is NOT safe ────────────
+//
+// The bug this catches: the guard treated `parseStateMd(after) === null` as
+// SAFE across the board ("nothing frontmatter-shaped to verify"). That verdict
+// is right for content with no fence and wrong for content WITH one — a write
+// whose frontmatter this repo's own parser cannot read back was waved through
+// by the very check meant to refuse corrupt frontmatter. The counterweight (no
+// fence at all ⇒ still inert) stays pinned in frontmatter-safe-guard.test.mjs.
+
+describe('evaluateFrontmatterSafe — fence present but unparseable', () => {
+  it('reports unsafe rather than "nothing to verify"', () => {
+    const unparseable = '---\nschema-version: 1\n  bad-indent: oops\n---\n\n## Body\n';
+
+    expect(parseStateMd(unparseable)).toBeNull();
+    const result = evaluateFrontmatterSafe(unparseable);
+    expect(result.unsafe).toBe(true);
+    expect(result.reason).toContain('could not read it back');
+  });
+});
+
+// ─── A dropped list item is announced, not silently erased ──────────────────
+//
+// The bug this catches: the parser drops a list item it cannot represent (a flow
+// SEQUENCE item — see yaml-parser.mjs `parseBlockValue`), and the FIRST write
+// after that is what erases it from disk for good. Without this WARN the item is
+// simply gone: the mutator reports a clean `written: true`, the file is one entry
+// shorter, and nothing anywhere says why. Refusing the write instead would
+// re-create the very no-op the #1111 regression fix removed, so the contract is
+// "write, but say what was lost".
+
+describe('writeStateMd — announces list items the parser could not preserve', () => {
+  it('WARNs with the key, source index and reason, and still performs the write', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'state-md-drop-'));
+    const stderrChunks = [];
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderrChunks.push(String(chunk));
+      return true;
+    });
+    try {
+      vi.stubEnv('SO_STATE_DIR', '');
+      vi.stubEnv('SO_PLATFORM', 'claude');
+      const statePath = join(root, '.claude', 'STATE.md');
+      mkdirSync(join(root, '.claude'), { recursive: true });
+      writeFileSync(
+        statePath,
+        `---
+schema-version: 1
+updated: 2026-04-19T17:30:00Z
+mission-status:
+  - id: m-1
+    status: in-dev
+  - [ id: m-2, status: in-dev ]
+---
+
+## Body
+`,
+        'utf8'
+      );
+
+      const result = await writeStateMd(root, (contents) =>
+        touchUpdatedField(contents, '2026-05-01T12:00:00Z')
+      );
+
+      expect(result.written).toBe(true);
+      expect(stderrChunks.join('')).toContain('mission-status[1] (flow-sequence-item)');
+      expect(parseStateMd(result.contents).frontmatter.updated).toBe('2026-05-01T12:00:00Z');
+      expect(parseStateMd(result.contents).frontmatter['mission-status']).toEqual([
+        { id: 'm-1', status: 'in-dev' },
+      ]);
+    } finally {
+      stderrSpy.mockRestore();
       rmSync(root, { recursive: true, force: true });
     }
   });

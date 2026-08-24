@@ -6,6 +6,10 @@ import {
   setMissionStatus,
   readMissionStatus,
 } from '@lib/state-md.mjs';
+import {
+  parseMissionStatusStrict,
+  MISSION_STATUS_VALUES,
+} from '@lib/state-md/mission-status.mjs';
 
 /**
  * Minimal valid STATE.md fixture (no mission-status key).
@@ -407,5 +411,250 @@ ${line}
 `;
 
     expect(readMissionStatus(contents, 'm-1')).toBe(expected);
+  });
+});
+
+// ─── Entry-shape validation (#1111) ──────────────────────────────────────────
+//
+// Bug caught: before #1111 `parseMissionStatus` returned `raw.slice()` — every
+// element of the array, whatever its shape. Measured before the fix, 2026-08-24
+// @ f0766e1, on `[1, 'x', null, { id: 'm-1' }, { nope: true }]`:
+//   [1,"x",null,{"id":"m-1"},{"nope":true}]
+// All five reached session-end Phase 1.9/1.10 (which counts them per `status`)
+// and `vault-status/narrative-mirror.mjs` (which renders one table row each) as
+// plausible tasks. Nothing reported them, because no validator existed.
+
+/**
+ * Verbatim copy of the block notation the live `.claude/STATE.md` frontmatter
+ * carried at f0766e1 (first three entries). A COPY on purpose: a test that reads
+ * the live file pins that file's state and breaks when the session moves on.
+ */
+const STATE_LIVE_SHAPE = `---
+schema-version: 1
+session-type: deep
+session: main-2026-08-24-session-1
+status: active
+mission-status:
+  - id: m-1
+    task: "W1 Discovery D1-D4 (Session-Feld-Design, hostname, PRD-Eigentum, #1151-Reverify)"
+    wave: 1
+    status: completed
+  - id: m-2
+    task: "#1123 Fall 1 wave-scope Session-Feld (A1 Writer/Schema + A2 Leser) + #1082-Rest"
+    wave: 2
+    status: in-dev
+  - id: m-10
+    task: "#1111-Rest parseMissionStatus-Validierung"
+    wave: 2
+    status: in-dev
+---
+
+## Body
+`;
+
+describe('parseMissionStatus — entry-shape validation (#1111)', () => {
+  it.each([
+    ['a bare number', 1, 'not-a-mapping'],
+    ['a bare string', 'm-1', 'not-a-mapping'],
+    ['null', null, 'not-a-mapping'],
+    ['an array', ['m-1'], 'not-a-mapping'],
+    ['a flow-mangled key', { '{ id': 'm-1, task: x', status: 'brainstormed' }, 'invalid-id'],
+    ['an id outside the writer grammar', { id: 'M_1', status: 'in-dev' }, 'invalid-id'],
+    ['a missing status', { id: 'm-1', task: 'x', wave: 1 }, 'invalid-status'],
+    ['an empty status', { id: 'm-1', status: '   ' }, 'invalid-status'],
+    ['a non-scalar task', { id: 'm-1', task: { a: 1 }, status: 'in-dev' }, 'invalid-task'],
+    ['a non-scalar wave', { id: 'm-1', wave: [2], status: 'in-dev' }, 'invalid-wave'],
+  ])('rejects %s and reports it as %s', (_label, entry, reason) => {
+    const frontmatter = { 'mission-status': [entry] };
+    expect(parseMissionStatus(frontmatter)).toEqual([]);
+    expect(parseMissionStatusStrict(frontmatter).invalid).toEqual([{ index: 0, reason }]);
+  });
+
+  it('keeps valid siblings and reports the reject by its RAW array index', () => {
+    const good = { id: 'm-1', task: 'foo', wave: 1, status: 'in-dev' };
+    const alsoGood = { id: 'm-3', task: 'bar', wave: 2, status: 'completed' };
+    const strict = parseMissionStatusStrict({ 'mission-status': [good, 'junk', alsoGood] });
+
+    expect(strict.items).toEqual([good, alsoGood]);
+    expect(strict.invalid).toEqual([{ index: 1, reason: 'not-a-mapping' }]);
+    expect(strict.warnings).toEqual([]);
+  });
+
+  it.each([
+    ['key absent', {}],
+    ['frontmatter is null', null],
+    ['value is a scalar null', { 'mission-status': null }],
+  ])('reports no rejects and null items when %s', (_label, frontmatter) => {
+    expect(parseMissionStatusStrict(frontmatter)).toEqual({
+      items: null,
+      invalid: [],
+      warnings: [],
+    });
+  });
+
+  it('keeps a truthful partial { id, status } recovery entry', () => {
+    // Regression pin for the refutation of "wave must be a positive integer":
+    // `recoverFrontmatterMissionStatus` emits partial entries BY DESIGN (#1084),
+    // and a reader that required the metadata would delete what the writer in
+    // this very module had just produced — the two-surface divergence again.
+    const out = setMissionStatus(STATE_LEGACY_EMPTY_FRONTMATTER_WITH_BODY, 'm-1', 'completed');
+    expect(parseMissionStatus(parseStateMd(out).frontmatter)).toEqual([
+      { id: 'm-1', status: 'completed' },
+    ]);
+  });
+});
+
+describe('parseMissionStatusStrict — warnings stay in items', () => {
+  it('warns on an out-of-enum status without dropping it', () => {
+    // `setMissionStatus` mirrors any status onto BOTH surfaces on purpose. A
+    // reader that dropped out-of-enum values would hide on the frontmatter
+    // surface exactly what the writer makes visible on the body one.
+    const entry = { id: 'm-1', task: 'foo', wave: 1, status: 'blocked-on-review' };
+    const strict = parseMissionStatusStrict({ 'mission-status': [entry] });
+
+    expect(strict.items).toEqual([entry]);
+    expect(strict.invalid).toEqual([]);
+    expect(strict.warnings).toEqual([{ index: 0, reason: 'status-not-in-enum' }]);
+    expect(MISSION_STATUS_VALUES).not.toContain('blocked-on-review');
+  });
+
+  it('warns on a duplicate id', () => {
+    // Bug caught: `syncFrontmatterMissionStatus` updates only the FIRST match, so
+    // a duplicated id keeps a stale status forever while Phase 1.10 counts the
+    // task twice.
+    const strict = parseMissionStatusStrict({
+      'mission-status': [
+        { id: 'm-1', status: 'in-dev' },
+        { id: 'm-1', status: 'completed' },
+      ],
+    });
+
+    expect(strict.items).toHaveLength(2);
+    expect(strict.warnings).toEqual([{ index: 1, reason: 'duplicate-id' }]);
+  });
+
+  it.each(MISSION_STATUS_VALUES)('accepts the enum value %s without warning', (status) => {
+    const strict = parseMissionStatusStrict({
+      'mission-status': [{ id: 'm-1', task: 'foo', wave: 1, status }],
+    });
+    expect(strict.warnings).toEqual([]);
+    expect(strict.items).toHaveLength(1);
+  });
+});
+
+describe('parseMissionStatus — live STATE.md block shape (#1111)', () => {
+  it('parses the live block notation with no rejects and no warnings', () => {
+    const strict = parseMissionStatusStrict(parseStateMd(STATE_LIVE_SHAPE).frontmatter);
+
+    expect(strict.invalid).toEqual([]);
+    expect(strict.warnings).toEqual([]);
+    expect(strict.items).toEqual([
+      {
+        id: 'm-1',
+        task: 'W1 Discovery D1-D4 (Session-Feld-Design, hostname, PRD-Eigentum, #1151-Reverify)',
+        wave: 1,
+        status: 'completed',
+      },
+      {
+        id: 'm-2',
+        task: '#1123 Fall 1 wave-scope Session-Feld (A1 Writer/Schema + A2 Leser) + #1082-Rest',
+        wave: 2,
+        status: 'in-dev',
+      },
+      { id: 'm-10', task: '#1111-Rest parseMissionStatus-Validierung', wave: 2, status: 'in-dev' },
+    ]);
+  });
+
+  it('round-trips through writeMissionStatus unchanged', () => {
+    const items = parseMissionStatus(parseStateMd(STATE_LIVE_SHAPE).frontmatter);
+    const rewritten = writeMissionStatus(STATE_LIVE_SHAPE, items);
+
+    expect(parseMissionStatus(parseStateMd(rewritten).frontmatter)).toEqual(items);
+    // Second cycle is a byte-fixpoint — the writer's own output re-serializes identically.
+    expect(writeMissionStatus(rewritten, items)).toBe(rewritten);
+  });
+});
+
+// ─── One flow item must not disable the whole document (#1111 regression) ────
+//
+// TV-001 — the bug this catches: the #1111 fix rejected the WHOLE document
+// (`parseStateMd` → `null`) as soon as ONE list item opened a flow collection.
+// Every mutator in this family starts with `parseStateMd(contents); if (parsed
+// === null) return contents;` — so on a STATE.md carrying 12 healthy block
+// entries and one hand-written `- { … }` entry, `setMissionStatus` returned its
+// input BYTE-IDENTICAL: the body bullet was never written, the frontmatter
+// never synced, and the on-disk wrapper reported a successful no-op write
+// (`after === before` short-circuits before any guard). Silent-wrong (#1111's
+// mangled `{ id` key) had been traded for silent-absent. Measured before the
+// fix, 2026-08-24: `setMissionStatus(fixture, 'm-1', 'completed') === fixture`
+// → true, and `parseMissionStatus(parseStateMd(fixture).frontmatter)` → null.
+// No existing test could see it: the #1111 suite feeds documents whose ONLY
+// item is the flow item, where a null document and a dropped item look alike.
+
+const TWELVE_BLOCK_ITEMS = Array.from({ length: 12 }, (_, n) =>
+  `  - id: m-${n + 1}\n    task: block task ${n + 1}\n    wave: ${(n % 4) + 1}\n    status: in-dev`
+).join('\n');
+
+const STATE_WITH_ONE_FLOW_ITEM = `---
+schema-version: 1
+status: active
+mission-status:
+${TWELVE_BLOCK_ITEMS}
+  - { id: m-13, task: "hand-written flow item", wave: 5, status: brainstormed }
+custom-extension: keep-me
+---
+
+## Mission Status
+
+- m-1: in-dev (updated 2026-08-24T09:00:00.000Z)
+`;
+
+describe('setMissionStatus — one flow item does not disable the document (#1111 regression)', () => {
+  it('writes the body bullet instead of returning the input unchanged', () => {
+    const out = setMissionStatus(STATE_WITH_ONE_FLOW_ITEM, 'm-1', 'completed');
+
+    expect(out).not.toBe(STATE_WITH_ONE_FLOW_ITEM);
+    expect(readMissionStatus(out, 'm-1')).toBe('completed');
+  });
+
+  it('mirrors the status onto the frontmatter entry of the same id', () => {
+    const out = setMissionStatus(STATE_WITH_ONE_FLOW_ITEM, 'm-1', 'completed');
+    const items = parseMissionStatus(parseStateMd(out).frontmatter);
+
+    expect(items.find((e) => e.id === 'm-1').status).toBe('completed');
+  });
+
+  it('keeps all 13 entries — the 12 block items AND the flow item', () => {
+    const out = setMissionStatus(STATE_WITH_ONE_FLOW_ITEM, 'm-1', 'completed');
+    const items = parseMissionStatus(parseStateMd(out).frontmatter);
+
+    expect(items).toHaveLength(13);
+    expect(items.map((e) => e.id)).toEqual([
+      'm-1', 'm-2', 'm-3', 'm-4', 'm-5', 'm-6', 'm-7', 'm-8', 'm-9', 'm-10', 'm-11', 'm-12', 'm-13',
+    ]);
+    expect(items[12]).toEqual({
+      id: 'm-13',
+      task: 'hand-written flow item',
+      wave: 5,
+      status: 'brainstormed',
+    });
+  });
+
+  it('reports no invalid entries — the flow item is a valid entry, not a mangled key', () => {
+    const strict = parseMissionStatusStrict(parseStateMd(STATE_WITH_ONE_FLOW_ITEM).frontmatter);
+
+    expect(strict.invalid).toEqual([]);
+    expect(strict.warnings).toEqual([]);
+    // #1111's original damage: a key literally named `{ id`. Never again.
+    expect(strict.items.flatMap((e) => Object.keys(e)).filter((k) => k.startsWith('{'))).toEqual([]);
+  });
+
+  it('preserves unrelated frontmatter keys through the write', () => {
+    const out = setMissionStatus(STATE_WITH_ONE_FLOW_ITEM, 'm-1', 'completed');
+    const { frontmatter } = parseStateMd(out);
+
+    expect(frontmatter['custom-extension']).toBe('keep-me');
+    expect(frontmatter['schema-version']).toBe(1);
+    expect(frontmatter.status).toBe('active');
   });
 });
