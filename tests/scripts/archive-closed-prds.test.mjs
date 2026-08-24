@@ -42,7 +42,9 @@ import { join } from 'node:path';
 
 import {
   main,
+  parseEpicDeclaration,
   parseEpicRef,
+  classifyOwnership,
   readHeaderRegion,
   listTrackedPrds,
   epicState,
@@ -80,6 +82,10 @@ afterEach(() => {
 });
 
 const FIXED_NOW = new Date('2026-03-04T09:00:00Z');
+// The fixture session started at FIXED_NOW; fixture docs were committed well
+// before it, so the #1123 ownership guard classifies them as 'mine'.
+const SESSION_STARTED_AT = FIXED_NOW.toISOString();
+const OLD_COMMIT_ISO = '2026-01-01T00:00:00Z';
 // Hermetic host-path ctx: no env override, no owner.yaml — committed value wins.
 const HOST_PATHS = { env: {}, ownerConfig: undefined };
 
@@ -129,6 +135,16 @@ function makeRepo({ withVaultDir = true } = {}) {
     '# PRD — Legacy uncommitted\n\n**Epic:** #100\n\n## Problem\n\nbody\n',
   );
 
+
+  // A STATE.md carrying this session's started_at — the fallback identity source
+  // readSessionStartedAt() uses when no .orchestrator/session.lock exists. Written
+  // as a fixture (not injected) so the real resolution path is exercised.
+  writeFile(
+    repo,
+    '.claude/STATE.md',
+    ['---', 'schema-version: 1', 'session: fixture-session', `started_at: ${SESSION_STARTED_AT}`, 'issues: [100]', 'status: active', '---', '', '# STATE', ''].join('\n'),
+  );
+
   const prdRelPaths = [
     'docs/prd/2026-01-01-closed-epic.md',
     'docs/prd/2026-01-02-open-epic.md',
@@ -153,12 +169,29 @@ function makeGlab() {
   return { fn, calls };
 }
 
-/** Fake git: ls-files → the fixture PRD list; remote -v → fake remotes; rm → ok. */
-function makeGit(prdRelPaths) {
+/**
+ * Fake git: ls-files → the fixture doc list; remote -v → fake remotes; rm → ok;
+ * status --porcelain / log -1 → the #1123 ownership probes (see inline).
+ * @param {string[]} prdRelPaths
+ * @param {{ porcelain?: Record<string,string>, committedAt?: Record<string,string> }} [overrides]
+ */
+function makeGit(prdRelPaths, overrides = {}) {
   const rmCalls = [];
   const fn = (args) => {
     if (args.includes('ls-files')) {
       return { ok: true, stdout: prdRelPaths.join('\n') + '\n', stderr: '' };
+    }
+    // #1123 session-ownership probes. Defaults model the benign case: the doc
+    // is committed, clean, and OLDER than the fixture session's started_at
+    // (FIXED_NOW) — i.e. ours to archive. Individual tests override via
+    // `overrides` to model a dirty tree or a parallel session's fresh commit.
+    if (args.includes('status') && args.includes('--porcelain')) {
+      const rel = args[args.length - 1];
+      return { ok: true, stdout: overrides.porcelain?.[rel] ?? '', stderr: '' };
+    }
+    if (args.includes('log') && args.includes('-1')) {
+      const rel = args[args.length - 1];
+      return { ok: true, stdout: (overrides.committedAt?.[rel] ?? OLD_COMMIT_ISO) + '\n', stderr: '' };
     }
     if (args.includes('remote') && args.includes('-v')) {
       // `git remote -v` shape (#1039): the resolver makes ONE such call and
@@ -231,6 +264,16 @@ function makePlansRepo() {
     repo,
     'docs/plans/2026-02-03-no-epic-plan.md',
     '# Plan — No Epic Ref\n\n**Source:** docs/prd/2026-01-03-no-epic.md\n\n## Steps\n\nbody\n',
+  );
+
+
+  // A STATE.md carrying this session's started_at — the fallback identity source
+  // readSessionStartedAt() uses when no .orchestrator/session.lock exists. Written
+  // as a fixture (not injected) so the real resolution path is exercised.
+  writeFile(
+    repo,
+    '.claude/STATE.md',
+    ['---', 'schema-version: 1', 'session: fixture-session', `started_at: ${SESSION_STARTED_AT}`, 'issues: [100]', 'status: active', '---', '', '# STATE', ''].join('\n'),
   );
 
   const planRelPaths = [
@@ -706,5 +749,419 @@ describe('custom-phases command conformance', () => {
         'node scripts/archive-closed-prds.mjs --apply --prd-dir docs/plans --vault-subdir 01-projects/session-orchestrator/plans',
       mode: 'warn',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1112 — a CITATION is not a DECLARATION
+// ---------------------------------------------------------------------------
+
+/**
+ * The header of `docs/prd/2026-08-22-framework-verschlankung.md` as it stood on
+ * 2026-08-22, when the old `parseEpicRef` (first `#NNN` anywhere in the header)
+ * read the QUOTED, long-closed `#214` as this document's own Epic and archived +
+ * `git rm`'d it. Reproduced from the file's own incident note, not hand-shaped:
+ * there is no declaration line anywhere in it — only prose that mentions an issue.
+ */
+const CITATION_ONLY_HEADER = [
+  '# Feature: Verschlankung — den vorhandenen Fast-Path zum Feuern bringen',
+  '',
+  '**Date:** 2026-08-22',
+  '**Author:** Operator + Claude (AI-gestützte Planung)',
+  '**Status:** Draft, Revision 2',
+  '**Appetite:** 1w',
+  '**Parent Project:** session-orchestrator',
+  '',
+  '> **Revision 2 nach unabhängiger Prüfung — und sie hat die Hauptthese umgedreht.**',
+  '> Revision 1 schlug einen Housekeeping-Fast-Path vor. Der Prüfer wies nach, dass es',
+  '> ihn gibt: `skills/session-start/SKILL.md:1181`, **Phase 8.5 Express Path (#214)**,',
+  '> aktiviert bei `session_type: housekeeping` + Scope ≤ 3 Issues.',
+  '',
+].join('\n');
+
+/**
+ * Build a repo fixture with CLAUDE.md + STATE.md and the given docs.
+ * @param {Record<string,string>} docs — repo-relative path → content.
+ */
+function makeDocRepo(docs) {
+  const repo = mkTmp('acp-doc-repo-');
+  const vault = mkTmp('acp-doc-vault-');
+
+  writeFile(
+    repo,
+    'CLAUDE.md',
+    [
+      '# Fixture',
+      '',
+      '## Session Config',
+      '',
+      'persistence: true',
+      '',
+      'vault-integration:',
+      '  enabled: true',
+      `  vault-dir: ${vault}`,
+      '  mode: warn',
+      '',
+    ].join('\n'),
+  );
+  writeFile(
+    repo,
+    '.claude/STATE.md',
+    [
+      '---',
+      'schema-version: 1',
+      'session: fixture-session',
+      `started_at: ${SESSION_STARTED_AT}`,
+      'issues: [100]',
+      'status: active',
+      '---',
+      '',
+      '# STATE',
+      '',
+    ].join('\n'),
+  );
+
+  for (const [rel, content] of Object.entries(docs)) writeFile(repo, rel, content);
+  return { repo, vault, relPaths: Object.keys(docs) };
+}
+
+describe('parseEpicDeclaration (#1112 citation guard)', () => {
+  it('returns null for the literal #1112 header — a quoted issue is not a declaration', () => {
+    expect(parseEpicDeclaration(CITATION_ONLY_HEADER)).toBeNull();
+  });
+
+  it('reads a frontmatter epic: key (via=frontmatter)', () => {
+    const header = ['---', 'title: Foo', 'epic: 1113', '---', '', '# Plan — Foo', ''].join('\n');
+    expect(parseEpicDeclaration(header)).toEqual({ iid: '1113', via: 'frontmatter' });
+  });
+
+  it('ignores an epic: key OUTSIDE the leading frontmatter block', () => {
+    const header = ['# Plan — Foo', '', 'epic: 1113', ''].join('\n');
+    expect(parseEpicDeclaration(header)).toBeNull();
+  });
+
+  it('does not read body lines as frontmatter when the leading --- never closes', () => {
+    // A leading `---` is also a Markdown THEMATIC BREAK. Without a closing
+    // `---` inside the header region the branch scanned the whole body, so a
+    // prose `issue:` note outranked the doc's real declaration below it —
+    // archiving (and `git rm`-ing) the doc against a long-closed issue.
+    const header = [
+      '---',
+      '',
+      '# Plan — Foo',
+      '',
+      'issue: 214 (the old, closed one — quoted for context)',
+      '',
+      '**Epic:** #1113',
+      '',
+    ].join('\n');
+
+    expect(parseEpicDeclaration(header)).toEqual({ iid: '1113', via: 'label' });
+  });
+
+  it('still reads a CLOSED frontmatter block that opens the header', () => {
+    const header = ['---', 'title: Foo', 'issue: 900', '---', '', '# Plan — Foo (#1113)', ''].join('\n');
+    expect(parseEpicDeclaration(header)).toEqual({ iid: '900', via: 'frontmatter' });
+  });
+
+  it('reads the live label shapes (via=label)', () => {
+    // `**Epic:** #1048 · **Sub-Issues:** #1049` — the primary declaration leads.
+    expect(
+      parseEpicDeclaration('**Epic:** #1048 · **Sub-Issues:** #1049 (A5) · #1050 (A1+A2)'),
+    ).toEqual({ iid: '1048', via: 'label' });
+    expect(parseEpicDeclaration('**Epic:** #1113')).toEqual({ iid: '1113', via: 'label' });
+    expect(parseEpicDeclaration('- **Issue:** #366')).toEqual({ iid: '366', via: 'label' });
+    expect(parseEpicDeclaration('**Epic**: [#271 autopilot](https://host/g/r/-/issues/271)')).toEqual(
+      { iid: '271', via: 'label' },
+    );
+    // The plan-header shape (skills/write-executable-plan/SKILL.md:193).
+    expect(parseEpicDeclaration('Source: docs/prd/2026-07-09-foo.md (#786)')).toEqual({
+      iid: '786',
+      via: 'label',
+    });
+  });
+
+  it('reads an H1 title suffix (via=title)', () => {
+    expect(parseEpicDeclaration('# Feature: Wellen-Supervision (#1113)')).toEqual({
+      iid: '1113',
+      via: 'title',
+    });
+  });
+
+  it('never takes a #NNN out of a non-declaration line', () => {
+    // Every one of these appears in the live vault archive as a CITATION.
+    expect(parseEpicDeclaration('**Status:** Complete (2026-05-02, Epic #229 closed)')).toBeNull();
+    expect(parseEpicDeclaration('lineage: #487 / #440')).toBeNull();
+    expect(parseEpicDeclaration('Issues resolved this week: #1042, #1127')).toBeNull();
+    expect(parseEpicDeclaration('> siehe **Phase 8.5 Express Path (#214)**')).toBeNull();
+  });
+});
+
+describe('main (citation-only header — #1112)', () => {
+  it('never archives a doc whose only #NNN is a prose citation, even under --apply with a closed Epic', () => {
+    const rel = 'docs/prd/2026-08-22-framework-verschlankung.md';
+    const { repo, vault } = makeDocRepo({
+      [rel]: `${CITATION_ONLY_HEADER}\n## 1. Problem & Motivation\n\nbody\n`,
+    });
+    // glab answers "closed" for EVERY iid — so if the citation #214 were ever
+    // treated as a declaration, this doc would archive. It must not.
+    const glabCalls = [];
+    const glab = (args) => {
+      glabCalls.push(args);
+      return { ok: true, stdout: JSON.stringify({ state: 'closed' }), stderr: '' };
+    };
+    const git = makeGit([rel]);
+
+    const res = main({
+      argv: ['--apply'],
+      repoRoot: repo,
+      glabRunFn: glab,
+      gitRunFn: git.fn,
+      now: FIXED_NOW,
+      hostPaths: HOST_PATHS,
+    });
+
+    expect(res.code).toBe(0);
+    expect(res.archived).toEqual([]);
+    expect(res.skipped).toEqual([{ source: rel, reason: 'citation-only' }]);
+    // The Epic state was never even asked for — the guard runs BEFORE glab.
+    expect(glabCalls).toEqual([]);
+    // Nothing written to the vault, nothing removed from the working tree.
+    expect(existsSync(join(vault, '01-projects/session-orchestrator/prd'))).toBe(false);
+    expect(git.rmCalls).toEqual([]);
+    expect(existsSync(join(repo, rel))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1123 — session ownership (the doc a PARALLEL session just committed)
+// ---------------------------------------------------------------------------
+
+describe('main (session ownership — #1123)', () => {
+  const REL = 'docs/prd/2026-08-22-parallel.md';
+  const DOC = '# PRD — Parallel Thing\n\n**Epic:** #100\n\n## Problem\n\nbody\n';
+
+  it('skips a doc committed at/after this session started — foreign-session, no git rm', () => {
+    const { repo, vault } = makeDocRepo({ [REL]: DOC });
+    const glab = makeGlab();
+    // Committed 20 minutes AFTER this session started — the #1123 shape exactly.
+    const git = makeGit([REL], { committedAt: { [REL]: '2026-03-04T09:20:00Z' } });
+
+    const res = main({
+      argv: ['--apply'],
+      repoRoot: repo,
+      glabRunFn: glab.fn,
+      gitRunFn: git.fn,
+      now: FIXED_NOW,
+      sessionStartedAt: SESSION_STARTED_AT,
+      hostPaths: HOST_PATHS,
+    });
+
+    expect(res.archived).toEqual([]);
+    expect(res.skipped).toEqual([
+      { source: REL, reason: 'foreign-session', iid: '100', via: 'label', ownership: 'foreign' },
+    ]);
+    expect(git.rmCalls).toEqual([]);
+    expect(existsSync(join(vault, '01-projects/session-orchestrator/prd'))).toBe(false);
+    expect(existsSync(join(repo, REL))).toBe(true);
+  });
+
+  it('skips a doc with uncommitted changes — uncommitted, no git rm', () => {
+    const { repo } = makeDocRepo({ [REL]: DOC });
+    const glab = makeGlab();
+    const git = makeGit([REL], { porcelain: { [REL]: ` M ${REL}\n` } });
+
+    const res = main({
+      argv: ['--apply'],
+      repoRoot: repo,
+      glabRunFn: glab.fn,
+      gitRunFn: git.fn,
+      now: FIXED_NOW,
+      sessionStartedAt: SESSION_STARTED_AT,
+      hostPaths: HOST_PATHS,
+    });
+
+    expect(res.archived).toEqual([]);
+    expect(res.skipped[0]).toMatchObject({ source: REL, reason: 'uncommitted', ownership: 'uncommitted' });
+    expect(git.rmCalls).toEqual([]);
+  });
+
+  it('archives a doc this session already owned — older commit, clean tree, closed Epic', () => {
+    const { repo, vault } = makeDocRepo({ [REL]: DOC });
+    const glab = makeGlab();
+    const git = makeGit([REL]); // defaults: clean tree, committed 2026-01-01
+
+    const res = main({
+      argv: ['--apply'],
+      repoRoot: repo,
+      glabRunFn: glab.fn,
+      gitRunFn: git.fn,
+      now: FIXED_NOW,
+      sessionStartedAt: SESSION_STARTED_AT,
+      hostPaths: HOST_PATHS,
+    });
+
+    expect(res.skipped).toEqual([]);
+    expect(res.archived).toHaveLength(1);
+    expect(res.archived[0]).toMatchObject({
+      source: REL,
+      action: 'archived',
+      iid: '100',
+      via: 'label',
+      ownership: 'mine',
+    });
+    expect(existsSync(join(vault, '01-projects/session-orchestrator/prd/2026-08-22-parallel.md'))).toBe(
+      true,
+    );
+    expect(git.rmCalls).toEqual([['-C', repo, 'rm', '--', REL]]);
+  });
+
+  it('treats every doc as foreign when no session identity resolves (fail-closed)', () => {
+    const { repo } = makeDocRepo({ [REL]: DOC });
+    const glab = makeGlab();
+    const git = makeGit([REL]);
+
+    const res = main({
+      argv: ['--apply'],
+      repoRoot: repo,
+      glabRunFn: glab.fn,
+      gitRunFn: git.fn,
+      now: FIXED_NOW,
+      sessionStartedAt: null, // no session.lock, no STATE.md started_at
+      hostPaths: HOST_PATHS,
+    });
+
+    expect(res.archived).toEqual([]);
+    expect(res.skipped[0]).toMatchObject({ reason: 'foreign-session' });
+    expect(git.rmCalls).toEqual([]);
+  });
+
+  it('--ignore-session-guard overrides foreign-session but NEVER the uncommitted guard', () => {
+    const foreign = makeDocRepo({ [REL]: DOC });
+    const foreignGit = makeGit([REL], { committedAt: { [REL]: '2026-03-04T09:20:00Z' } });
+    const sweep = main({
+      argv: ['--apply', '--ignore-session-guard'],
+      repoRoot: foreign.repo,
+      glabRunFn: makeGlab().fn,
+      gitRunFn: foreignGit.fn,
+      now: FIXED_NOW,
+      sessionStartedAt: SESSION_STARTED_AT,
+      hostPaths: HOST_PATHS,
+    });
+    expect(sweep.archived).toHaveLength(1);
+    expect(foreignGit.rmCalls).toEqual([['-C', foreign.repo, 'rm', '--', REL]]);
+
+    const dirty = makeDocRepo({ [REL]: DOC });
+    const dirtyGit = makeGit([REL], { porcelain: { [REL]: `?? ${REL}\n` } });
+    const guarded = main({
+      argv: ['--apply', '--ignore-session-guard'],
+      repoRoot: dirty.repo,
+      glabRunFn: makeGlab().fn,
+      gitRunFn: dirtyGit.fn,
+      now: FIXED_NOW,
+      sessionStartedAt: SESSION_STARTED_AT,
+      hostPaths: HOST_PATHS,
+    });
+    expect(guarded.archived).toEqual([]);
+    expect(guarded.skipped[0]).toMatchObject({ reason: 'uncommitted' });
+    expect(dirtyGit.rmCalls).toEqual([]);
+  });
+});
+
+describe('main (--owned-issues-only)', () => {
+  it('archives only docs whose declared iid is in STATE.md issues:', () => {
+    const mine = 'docs/prd/mine.md';
+    const theirs = 'docs/prd/theirs.md';
+    const { repo } = makeDocRepo({
+      // STATE.md fixture declares `issues: [100]`.
+      [mine]: '# PRD — Mine\n\n**Epic:** #100\n\n## Problem\n\nbody\n',
+      [theirs]: '# PRD — Theirs\n\n**Epic:** #300\n\n## Problem\n\nbody\n',
+    });
+    // Both Epics closed — only the ownership filter may separate them.
+    const glab = () => ({ ok: true, stdout: JSON.stringify({ state: 'closed' }), stderr: '' });
+    const git = makeGit([mine, theirs]);
+
+    const res = main({
+      argv: ['--apply', '--owned-issues-only'],
+      repoRoot: repo,
+      glabRunFn: glab,
+      gitRunFn: git.fn,
+      now: FIXED_NOW,
+      sessionStartedAt: SESSION_STARTED_AT,
+      hostPaths: HOST_PATHS,
+    });
+
+    expect(res.archived).toHaveLength(1);
+    expect(res.archived[0].source).toBe(mine);
+    expect(res.skipped).toEqual([
+      { source: theirs, reason: 'epic-#300-not-owned', iid: '300', via: 'label', ownership: 'mine' },
+    ]);
+    expect(git.rmCalls).toEqual([['-C', repo, 'rm', '--', mine]]);
+  });
+});
+
+describe('classifyOwnership (#1123 fail-closed contract)', () => {
+  const base = { repoRoot: '/repo', rel: 'docs/prd/x.md', sessionStartedAt: '2026-03-04T09:00:00Z' };
+
+  it('returns foreign when a git probe fails or the commit timestamp is unparseable', () => {
+    expect(classifyOwnership({ ...base, gitRunFn: () => ({ ok: false, stdout: '', stderr: 'boom' }) })).toBe(
+      'foreign',
+    );
+    const badTimestamp = (args) =>
+      args.includes('status')
+        ? { ok: true, stdout: '', stderr: '' }
+        : { ok: true, stdout: 'not-a-date\n', stderr: '' };
+    expect(classifyOwnership({ ...base, gitRunFn: badTimestamp })).toBe('foreign');
+  });
+
+  it('never throws when gitRunFn itself throws', () => {
+    const thrower = () => {
+      throw new Error('spawn ENOENT');
+    };
+    expect(classifyOwnership({ ...base, gitRunFn: thrower })).toBe('foreign');
+  });
+
+  it('reads a REBASED commit as foreign — the author date is old, the committer date is not', () => {
+    // The bug: `--format=%aI` alone reads the AUTHOR date, which survives
+    // rebase / cherry-pick / --amend unchanged. A peer session's PRD rebased
+    // onto this branch therefore looked older than our session start → 'mine'
+    // → `git rm` of live foreign work (the #1123 damage shape).
+    const rebased = (args) =>
+      args.includes('status')
+        ? { ok: true, stdout: '', stderr: '' }
+        : // `%aI%n%cI`: author 2026-01-01 (old), committer 09:20 (after our start).
+          { ok: true, stdout: '2026-01-01T00:00:00Z\n2026-03-04T09:20:00Z\n', stderr: '' };
+
+    expect(classifyOwnership({ ...base, gitRunFn: rebased })).toBe('foreign');
+    // The argv proves BOTH stamps are requested — a `%aI`-only format could not
+    // produce the verdict above no matter what the stub returned.
+    const seen = [];
+    classifyOwnership({
+      ...base,
+      gitRunFn: (args) => {
+        seen.push(args);
+        return { ok: true, stdout: '', stderr: '' };
+      },
+    });
+    expect(seen.some((a) => a.includes('--format=%aI%n%cI'))).toBe(true);
+  });
+
+  it('treats a commit in the SAME second as started_at as foreign (>= boundary, fail-closed)', () => {
+    const exact = (args) =>
+      args.includes('status')
+        ? { ok: true, stdout: '', stderr: '' }
+        : { ok: true, stdout: `${base.sessionStartedAt}\n${base.sessionStartedAt}\n`, stderr: '' };
+
+    // Equality is ambiguous — the doc may have been committed by the parallel
+    // session in the same second this one started. 'foreign' is the verdict
+    // that does not delete.
+    expect(classifyOwnership({ ...base, gitRunFn: exact })).toBe('foreign');
+
+    // One millisecond earlier is unambiguously ours.
+    const justBefore = (args) =>
+      args.includes('status')
+        ? { ok: true, stdout: '', stderr: '' }
+        : { ok: true, stdout: '2026-03-04T08:59:59.999Z\n2026-03-04T08:59:59.999Z\n', stderr: '' };
+    expect(classifyOwnership({ ...base, gitRunFn: justBefore })).toBe('mine');
   });
 });
