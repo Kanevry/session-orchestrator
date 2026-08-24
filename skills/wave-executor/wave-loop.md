@@ -1102,17 +1102,36 @@ Before each wave dispatch:
    # Warning: policy file .orchestrator/policy/blocked-commands.json not found — using legacy hardcoded blocklist
    ```
 
+   **Deriving the session binding (#1123):** `wave-scope.json` lives in the WORKING COPY, and `hooks/enforce-scope.mjs` applies whatever it finds there to every session running in that checkout. Without a binding, a Discovery wave's `allowedPaths: []` denied every write of an unrelated parallel session. Name the writer — both fields come from ONE `sessionAttribution()` call, which reads `.orchestrator/session.lock` once:
+   ```bash
+   SESSION_BINDING=$(node --input-type=module -e "
+   import { sessionAttribution } from '$PLUGIN_ROOT/scripts/lib/events.mjs';
+   const a = sessionAttribution(process.cwd());
+   const out = {};
+   if (a.session_id) out.session = a.session_id;
+   if (a.semantic_session_id) out.semantic_session = a.semantic_session_id;
+   console.log(JSON.stringify(out));
+   ")
+   ```
+   **Verify the binding names YOU before you write it (#1123 follow-up).** `sessionAttribution()` reads the repo-global `.orchestrator/session.lock`, which in a shared working copy can hold a PEER's id — a session that lost the acquire race (`bootstrapLock()` reason `active`) leaves the lock naming the session that won it. Compare both ids against your own session (STATE.md `session`): **if they do not match, OMIT the `session`/`semantic_session` keys entirely** and write an unbound manifest. Unbound = ENFORCE, which is the fail-closed direction; writing a foreign id instead publishes a manifest that classifies as somebody else's for every reader. The reader half is defensive against exactly this (Gate 3b resolves identity as the UNION of payload, env and lock, so a peer-owned-lock manifest still reads `own` to its writer), but the reader cannot repair a binding the writer knowingly got wrong — and a manifest naming a peer is unreadable as an audit record either way.
+
+   Merge `$SESSION_BINDING`'s keys into the manifest. **If a value is empty, OMIT the key — never write `"session": ""`.** An empty id is present-but-equal-to-nobody: the legacy warning stays silent while every reader compares it against its own id, finds no match, and treats the manifest as FOREIGN — the one disposition that skips enforcement entirely. `sessionAttribution()` already omits rather than fills (CI runs hold no lock), and `validate-wave-scope.mjs` rejects the empty string outright, so the honest path is also the only one that validates.
+
    ```json
    {
      "wave": N,
      "role": "<role>",
      "enforcement": "<from Session Config, default: warn>",
+     "session": "<raw session_id from sessionAttribution(); OMIT the key if unavailable>",
+     "semantic_session": "<semantic_session_id from the same call; OMIT if unavailable>",
      "allowedPaths": ["<from agent specs in session plan>"],
      "blockedCommands": "<derived dynamically from the effective floor∪overlay policy via loadEffectivePolicy (severity: block rules, #972); falls back to legacy 5-element array if no policy resolves>",
      "gates": "<copy of enforcement-gates from Session Config, or omit if unset>"
    }
    ```
    The `gates` field (optional) mirrors `enforcement-gates` from Session Config (#77). When present, hooks check each gate individually via `gate_enabled()`. Missing gate entries default to enabled, preserving default behavior.
+
+   **What the binding means to a reader.** Three states, and the disposition differs for each. **Absent** = legacy = ENFORCE: a manifest written before #1123 (or by a stale skill body) binds nobody, so it must keep constraining everyone exactly as it did before — this is the only state that preserves the pre-#1123 contract, and `validate-wave-scope.mjs` marks it with one advisory stderr line rather than an error, because § 3.3's pre-union skeleton is itself an unbound manifest. **Own session** = ENFORCE, unchanged. **Foreign session** — `session` present and not this session's id — = ALLOW: `hooks/enforce-scope.mjs` lets the write through and emits `orchestrator.scope.foreign_session_ignored` so the skip is counted rather than silent. A foreign manifest is somebody else's wave plan; it never had authority over this session's writes, and the event is what keeps that visible instead of leaving an allow nothing recorded. (The reader half lives in `hooks/enforce-scope.mjs` — the writer's only obligation is to name itself honestly here.)
 2. Validate by piping through `node "$PLUGIN_ROOT/scripts/validate-wave-scope.mjs"` (where `$PLUGIN_ROOT` is `$CLAUDE_PLUGIN_ROOT`, `$CODEX_PLUGIN_ROOT`, or `$CURSOR_RULES_DIR` per platform — see `skills/_shared/config-reading.md`). If validation fails (exit 1), fix the JSON based on stderr errors and retry.
 3. **`allowedPaths` is COMPUTED from one canonical declaration array — never hand-transcribed (#1020/#1083).** Transcribing either declaration shape or the union by hand produced scope divergences. Globs stay verbatim (`scripts/*.sh`) — the enforcement hook resolves them at check time.
 

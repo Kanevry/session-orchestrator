@@ -9,6 +9,10 @@
  *   G1  tool filter — only Edit/Write/MultiEdit are gated
  *   G2  file_path present + string
  *   G3  wave-scope.json exists
+ *   G3b (#1123) the manifest belongs to THIS session — a manifest that
+ *       PROVABLY names another live session in this shared working copy is not
+ *       ours to enforce; allow + emit one event. Runs AFTER the parse so a
+ *       corrupt manifest still fails closed.
  *   G4  path-guard gate enabled
  *   G5  enforcement != "off"
  *   G5b (#792) allowlist-first: an EXPLICIT absolute allowedPaths entry that
@@ -98,6 +102,9 @@ let readJson;
 let classifyEmptyScope;
 let suggestForEmptyScope;
 let sessionStartedAtMs;
+// #1123 — "is this manifest even mine?" (G3b).
+let readOwnSessionIds;
+let classifyManifestSession;
 
 const PLUGIN_ROOT = path.resolve(import.meta.dirname, '..');
 
@@ -154,6 +161,10 @@ async function bootstrap() {
       // `scope-gate` transitively, so this adds no new failure mode — a broken
       // scope-gate already banners GUARD INACTIVE through that edge.
       scopeGate: { specifier: lib('scope-gate.mjs') },
+      // #1123. Bound through the same loader as every other repo dependency, so
+      // a SyntaxError in the identity module banners GUARD INACTIVE instead of
+      // link-crashing the hook into a silent fail-open (#993).
+      sessionIdentity: { specifier: lib('session-identity/own-session.mjs') },
     },
     {
       hookName: HOOK_NAME,
@@ -169,6 +180,7 @@ async function bootstrap() {
   ({ findScopeFile, pathMatchesPattern, suggestForScopeViolation } = modules.hardening);
   ({ readJson } = modules.common);
   ({ classifyEmptyScope, suggestForEmptyScope, sessionStartedAtMs } = modules.scopeGate);
+  ({ readOwnSessionIds, classifyManifestSession } = modules.sessionIdentity);
 }
 
 async function main() {
@@ -218,6 +230,58 @@ async function main() {
   } catch {
     parseOk = false;
     scope = {};
+  }
+
+  // -------------------------------------------------------------------------
+  // Gate 3b (#1123) — is this manifest even MINE?
+  //
+  // `wave-scope.json` lives in the WORKING COPY, not in the session. Two live
+  // sessions sharing one checkout read the same file, so session A's manifest
+  // enforced session B's writes: measured 2026-08-22 (#1082), where a Discovery
+  // wave's `allowedPaths: []` — which `wave-loop.md` prescribes for EVERY
+  // Discovery wave — denied every write of an unrelated parallel session, with
+  // a deny reason that could only tell it to fix a wave plan it does not own.
+  //
+  // Deliberately runs AFTER the parse block: a corrupt manifest yields `{}`,
+  // hence no ids, hence `'unknown'` — and keeps failing closed. A gate that
+  // peeked at the raw bytes instead would let a truncated manifest disarm the
+  // guard.
+  //
+  // `'own'` and `'unknown'` fall through completely unchanged. A legacy manifest
+  // without a `session` field is `'unknown'` and stays enforced: only what is
+  // PROVABLY foreign is treated as foreign.
+  //
+  // ACCEPTED RESIDUAL, named rather than hidden: `session` is a plain field in a
+  // file any process in this working copy can write, so writing a foreign id
+  // into it switches this guard off for that manifest. That is the SAME power
+  // `enforcement: "off"` already grants in the same file — this gate adds no new
+  // authority, and the manifest is the coordinator's own artefact either way.
+  {
+    const ownIds = readOwnSessionIds(projectRoot, { hookInput: input });
+    const { verdict, manifestIds } = classifyManifestSession(scope, ownIds);
+    if (verdict === 'foreign') {
+      // Observability only, and deliberately NOT emitWarn: this branch is hit on
+      // every single Edit of the non-owning session, so a stderr line per write
+      // would be noise the operator learns to ignore. One event per decision
+      // point, awaited before emitAllow() — emitAllow() calls process.exit(),
+      // which would discard a pending append.
+      try {
+        const { emitEvent } = await import('../scripts/lib/events.mjs');
+        await emitEvent(
+          'orchestrator.scope.foreign_session_ignored',
+          {
+            hook: HOOK_NAME,
+            manifest: scopePath,
+            manifest_session: manifestIds,
+            own_session: [...ownIds],
+            wave: scope.wave,
+            file_path: filePath,
+          },
+          { repoRoot: projectRoot },
+        );
+      } catch { /* observability is best-effort — never blocks the decision */ }
+      return emitAllow();
+    }
   }
 
   const enforcement = scope.enforcement ?? 'strict';

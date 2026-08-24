@@ -41,6 +41,7 @@ if (!shouldRunHook('post-tool-batch-wave-signal')) process.exit(0);
 
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
 import { emitEvent } from '../scripts/lib/events.mjs';
+import { findScopeFile } from '../scripts/lib/scope-gate.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -135,17 +136,25 @@ async function resolveSessionIdForHeartbeat(input, sessionFile) {
 }
 
 /**
- * Resolve the current wave number from .claude/wave-scope.json `.wave`.
+ * Resolve the current wave number from the wave-scope manifest's `.wave`.
  * Returns 0 when the file is absent or unparseable, mirroring the
  * pre-bash-memory-propose-audit.mjs G5 precedent ("wave defaults to 0 when
  * wave-scope.json absent"). The file is deleted mid-session at Quality phase
  * transitions and final cleanup, so absence is an expected, non-error state.
  *
+ * The manifest is located via `findScopeFile()` (#1082), the same precedence
+ * every other consumer uses — `.pi` > `.cursor` > `.codex` > `.claude`. The
+ * previous hard-coded `.claude/` path made this hook's whole wave-lifecycle
+ * fallback structurally dead on Codex CLI, Cursor and pi: the manifest exists,
+ * it just is not under `.claude/`, so every batch read 0 and no
+ * `orchestrator.wave.started`/`completed` event was ever emitted there.
+ *
  * @param {string} projectDir
  * @returns {Promise<number>}
  */
 async function resolveWaveNumber(projectDir) {
-  const waveFile = path.join(projectDir, '.claude', 'wave-scope.json');
+  const waveFile = findScopeFile(projectDir);
+  if (waveFile === null) return 0;
   try {
     const raw = await readFile(waveFile, 'utf8');
     const data = JSON.parse(raw);

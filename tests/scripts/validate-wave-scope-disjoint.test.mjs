@@ -72,6 +72,10 @@ const unionArgs = (p) => ['--union', p];
 // report — the round ended well by luck, not construction.
 // ---------------------------------------------------------------------------
 
+// #1123: the validator warns on manifests without a session field; these fixtures
+// predate the field. Strip exactly that one warning so byte-empty-stderr pins keep biting.
+const stripSessionWarn = (s) => s.replace(/^WARNING: no session field — [^\n]*\n/m, '');
+
 describe('validate-wave-scope.mjs — --assert-disjoint findings (#1020)', () => {
   it('exits 1 and names BOTH agent ids plus the witness file', () => {
     const r = runWithSidecar(
@@ -101,7 +105,7 @@ describe('validate-wave-scope.mjs — --assert-disjoint findings (#1020)', () =>
       disjointArgs,
     );
     expect(r.status).toBe(0);
-    expect(r.stderr).toBe('');
+    expect(stripSessionWarn(r.stderr)).toBe('');
   });
 
   // BUG CAUGHT: findScopeCollisions returns ok:false for duplicate ids with an
@@ -218,7 +222,7 @@ describe('validate-wave-scope.mjs — #1020 sidecar I/O and shape guard', () => 
         cwd: REPO_ROOT,
       });
       expect(r.status).toBe(1);
-      expect(r.stderr).toBe(`ERROR: --assert-disjoint file is not valid JSON: ${p}\n`);
+      expect(stripSessionWarn(r.stderr)).toBe(`ERROR: --assert-disjoint file is not valid JSON: ${p}\n`);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -278,7 +282,7 @@ describe('validate-wave-scope.mjs — --union (#1020)', () => {
   it('prints the deduplicated union in first-seen order on stdout, exit 0', () => {
     const r = runWithSidecar(SCOPES, unionArgs);
     expect(r.status).toBe(0);
-    expect(r.stderr).toBe('');
+    expect(stripSessionWarn(r.stderr)).toBe('');
     expect(JSON.parse(r.stdout).slice(0, 3)).toEqual([
       'scripts/lib/alpha.mjs',
       'tests/lib/alpha.test.mjs',
@@ -439,7 +443,7 @@ describe('validate-wave-scope.mjs — #1020 no-flag regression (R3/R4)', () => {
     const r = spawnSync('node', [SCRIPT], { input, encoding: 'utf8', cwd: REPO_ROOT });
     expect(r.status).toBe(0);
     expect(r.stdout).toBe(`${input}\n`);
-    expect(r.stderr).toBe('');
+    expect(stripSessionWarn(r.stderr)).toBe('');
   });
 });
 
@@ -482,6 +486,6 @@ describe('validate-wave-scope.mjs — fake regression on #1020 Vorfall 3', () =>
       disjointArgs,
     );
     expect(r.status).toBe(0);
-    expect(r.stderr).toBe('');
+    expect(stripSessionWarn(r.stderr)).toBe('');
   });
 });

@@ -37,6 +37,31 @@ Steps 1, 2, 3, 4 and the `--assert-subset` assertion all read the *same* file, a
 
 The coordinator's **own** planned direct edits belong in `coordinator.json` in the identical form. They are not dispatches, so the hook can never see them (§ 6); the CLI check is the only gate that covers them.
 
+### 2.3 The manifest names its writer (#1123)
+
+`wave-scope.json` is written into the WORKING COPY, not into the session — so until #1123 one session's manifest governed every session sharing that checkout. Measured 2026-08-22 (#1082): a Discovery wave's `allowedPaths: []` — which `wave-loop.md` prescribes for *every* Discovery wave — denied every write of an unrelated parallel session, with a deny reason that could only tell it to fix a wave plan it does not own.
+
+Two OPTIONAL manifest fields close that: `session` (the raw `session_id`) and its human-readable twin `semantic_session`. Both come from ONE `sessionAttribution(repoRoot)` call (`scripts/lib/events.mjs`, reads `.orchestrator/session.lock` once) in the same coordinator step that writes the rest of the manifest — `skills/wave-executor/wave-loop.md` § Scope Manifest 1.
+
+The reader is `hooks/enforce-scope.mjs` **Gate 3b**, between the manifest parse (G3) and the path-guard gate (G4). It resolves identity via `readOwnSessionIds(projectRoot, { hookInput: input })` and classifies via `classifyManifestSession(scope, ownIds)`, both from [`scripts/lib/session-identity/own-session.mjs`](../scripts/lib/session-identity/own-session.mjs):
+
+| Manifest state | `classifyManifestSession` verdict | Gate 3b disposition |
+|---|---|---|
+| no `session` / `semantic_session` (legacy, pre-#1123) | `unknown` | ENFORCE — falls through unchanged |
+| an id present and matching one of our own | `own` | ENFORCE — falls through unchanged |
+| ids present, none matching, own identity resolvable | `foreign` | **ALLOW** + one `orchestrator.scope.foreign_session_ignored` event |
+| ids present, own identity unresolvable (empty id set) | `unknown` | ENFORCE |
+
+Five properties are choices, not omissions — and every one of them points the fail-**closed** way, the deliberate inverse of § 4.1's posture for the dispatch hook:
+
+- **Only what is PROVABLY foreign is foreign.** `readOwnSessionIds()` returns the **UNION** of three sources — hook input (`session_id`/`sessionId`/`parent_session_id`) ∪ `CLAUDE_CODE_SESSION_ID` ∪ `session.lock` (`session_id`/`semantic_session_id`) — and an EMPTY set when none yields an id, which can only produce `unknown`. A gate that guessed would turn "cannot tell" into a silent enforcement-off on every harness exporting no session id. Every value is trimmed on the way in, so a whitespace-only env var cannot enter as a phantom id that matches nothing (`.claude/rules/development.md` § env-var whitespace trap).
+- **Union, not first-tier-wins.** Any id the process can legitimately claim names this session; only an id in NO source is somebody else's. Gating the sources made the READER's identity a strict subset of the WRITER's — the manifest's `session` comes from `sessionAttribution()` = the same repo-global lock — and three divergences all produced the same silent failure, the OWN manifest read `foreign` and the write gate switched itself off for the whole wave, logging an event indistinguishable from correct behaviour: (a) a nested harness where payload `session_id` ≠ `CLAUDE_CODE_SESSION_ID` (measured in `hooks/pre-bash-issue-budget.mjs` `resolveSessionId`); (b) a sub-agent invocation, whose own id is the subagent's while the manifest names the coordinator; (c) a session that lost the lock race and therefore wrote a PEER's id into its own manifest (see the writer guard below). The union only ADDS ids the process actually carries, so the security direction is unchanged: a manifest whose id appears in no source still classifies `foreign`. Its cost is named and points fail-**closed** — a peer-owned lock makes us enforce a peer's wave plan, which is a visible deny rather than a silent enforcement-off.
+- **The writer verifies the binding names itself.** Because the lock is repo-global, `skills/wave-executor/wave-loop.md` § Scope Manifest 1 requires the coordinator to compare `sessionAttribution()`'s ids against its own session (STATE.md `session`) and to OMIT the `session`/`semantic_session` keys when they diverge — unbound = ENFORCE. The reader's union covers the case anyway; the writer guard keeps the manifest readable as an audit record instead of publishing a foreign name.
+- **Gate 3b runs after the parse, never on the raw bytes.** A corrupt manifest yields `{}`, hence no ids, hence `unknown` — and keeps failing closed. A gate that peeked at the bytes first would let a truncated manifest disarm the guard.
+- **The empty string is a validator ERROR, not a third flavour of absent.** `validateSession()` → `validateOptionalSessionId()` in `scripts/validate-wave-scope.mjs` rejects `"session": ""` with *"an empty id attributes to nothing; omit the key entirely to declare the manifest unbound"*. An empty id satisfies a truthiness check while matching nobody, so every reader would classify the manifest FOREIGN where the writer meant UNBOUND — opposite dispositions, not a cosmetic ambiguity. An ABSENT key only WARNS, because the § 3.3 pre-union skeleton is itself an unbound manifest and so is every manifest written before #1123.
+
+The event is what keeps the skip countable rather than silent: `orchestrator.scope.foreign_session_ignored` carries `hook`, `manifest`, `manifest_session`, `own_session`, `wave` and `file_path`. It is deliberately an event and not an `emitWarn` — the branch is hit on *every* Edit of the non-owning session, so a stderr line per write would be noise the operator learns to ignore.
+
 ## 3. The collision algorithm
 
 `findScopeCollisions(agentScopes, { knownFiles })` compares every cross-agent entry pair through `classifyEntryCollision()`, in three binding stages:
@@ -129,6 +154,9 @@ Complete list of what this guard does **not** see, or sees only approximately:
 6. **Glob ∩ glob without witnesses.** Stage 3a needs tracked files; with git unavailable (row 8) or for files not yet on disk, only stage 3b's prefix fallback carries the load — and it requires at least one recursive entry, so two non-recursive globs that intersect only in an unborn file are not detected.
 7. **Only collisions involving the current dispatch are actionable.** A pair among already-dispatched agents was either denied at its own dispatch or predates the guard; re-denying it would block an innocent third agent.
 8. **Lock loss reopens the race.** On lock timeout the cycle runs unlocked (row 14) — two dispatches starting together can then read the same ledger state and one record is lost. That is the pre-lock behaviour, chosen over denying on a lock-file problem.
+9. **The session binding is self-declared** (§ 2.3). `session` is a plain field in a file any process in this working copy can write, so writing a foreign id into it turns the write gate off for that manifest. Named rather than hidden: it is the SAME power `enforcement: "off"` already grants in the same file, so Gate 3b adds no new authority — the manifest is the coordinator's own artefact either way.
+10. **Only the WRITE gate is session-bound.** The dispatch ledger of § 4 takes its session component from the harness's own `input.session_id` (`waveKeyOf(projectDir, sessionId, …)`), and reads only `wave` and `role` out of `wave-scope.json` — the `session` field is not consulted there at all. So a peer session's manifest cannot bind this session's writes since #1123, but the two hooks reach that property by different routes, and a change to one does not carry to the other.
+11. **A peer-owned lock costs enforcement precision, deliberately.** `readOwnSessionIds()` unions the `session.lock` ids in (§ 2.3), and the lock is repo-global — so while a peer holds it, that peer's manifest classifies `own` here and its `allowedPaths` bind this session's writes: the #1082 shape, but now as a visible deny naming a wave plan we do not own. The alternative (gating the lock behind the payload) fails the other way and silently, because the manifest's own `session` is written from that same lock. Bounded by the writer guard in `skills/wave-executor/wave-loop.md` § Scope Manifest 1 (omit rather than write a foreign id) and by `session.lock` heartbeat-liveness. Revisit if a manifest ever carries the writer's PROCESS identity alongside the lock-derived one, which would let the reader distinguish the two cases instead of unioning them.
 
 ## 7. Debugging
 
@@ -163,5 +191,6 @@ Re-measure before citing any of these downstream. A count re-briefed later is a 
 
 - `skills/wave-executor/wave-loop.md` § Scope Manifest — the coordinator runbook (steps 3.1–3.3) and § Pre-Dispatch: File-Scope Injection (the prompt block shape).
 - `.claude/rules/parallel-sessions.md` § Decision Tree (why a file in two declared scopes is never a benign sibling signal), § PSA-006 (measurement discipline).
-- `hooks/enforce-scope.mjs` — the write-time gate, fail-**closed**; the deliberate inversion of this hook's posture.
+- `hooks/enforce-scope.mjs` — the write-time gate, fail-**closed**; the deliberate inversion of this hook's posture. Its Gate 3b is the reader of the § 2.3 session binding; `scripts/lib/session-identity/own-session.mjs` holds the identity half.
+- `skills/_shared/state-ownership.md` § `wave-scope.json` Session Binding — the same contract from the ownership side (which shared working-copy artefact belongs to which session).
 - [`docs/adr/0011-guard-degradation-semantics.md`](adr/0011-guard-degradation-semantics.md) — the exit-0 hook protocol (#906) and why a truncated stdout envelope reads as no-decision, i.e. as ALLOW.

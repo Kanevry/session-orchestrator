@@ -52,11 +52,20 @@ const HOOK = path.resolve(import.meta.dirname, '../../hooks/enforce-scope.mjs');
 
 /**
  * Spawn the hook, pipe stdin JSON, collect stdout/stderr, resolve with exit code.
+ *
+ * `env` overlays the inherited environment. A value of `null` DELETES the
+ * variable — the only way to reproduce a harness that exports no session id
+ * (#1123), since the live operator environment exports `CLAUDE_CODE_SESSION_ID`
+ * and `spawn` inherits it by default.
  */
-async function runHook({ projectDir, stdin, execArgv = [] }) {
+async function runHook({ projectDir, stdin, execArgv = [], env = {} }) {
   return new Promise((resolve) => {
+    const childEnv = { ...process.env, CLAUDE_PROJECT_DIR: projectDir, ...env };
+    for (const [key, value] of Object.entries(env)) {
+      if (value === null) delete childEnv[key];
+    }
     const child = spawn(process.execPath, [...execArgv, HOOK], {
-      env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
+      env: childEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -1048,5 +1057,246 @@ describe('empty allowedPaths — classified deny reason (#1057)', { timeout: 150
     expect(reason).not.toContain('--union');
     expect(reason).not.toContain('read-only');
     expect(reason).not.toContain('leftover from a crashed session');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Foreign-session manifest (#1123 / #1082)
+// ---------------------------------------------------------------------------
+//
+// `wave-scope.json` lives in the WORKING COPY, not in the session. Two live
+// sessions sharing one checkout read the same manifest, so session A's
+// `allowedPaths` decided session B's writes — measured 2026-08-22 (#1082): a
+// Discovery wave's `allowedPaths: []` (which wave-loop.md prescribes for EVERY
+// Discovery wave) denied every write of an unrelated parallel session, with a
+// deny reason that could only tell it to repair a wave plan it does not own.
+//
+// The gate is deliberately narrow: ONLY a manifest that PROVABLY names another
+// session is ignored. Legacy manifests, corrupt manifests and an unresolvable
+// own identity all keep the pre-#1123 behaviour, which is why most cases below
+// are "still denies".
+//
+// Identity resolves as the UNION of every source this process carries — hook
+// payload (`session_id` + `parent_session_id`), `CLAUDE_CODE_SESSION_ID`, and
+// `session.lock`. Narrowing it below what the process carries is the silent
+// failure the last two "still denies" pin: the session's OWN manifest reads
+// foreign and enforcement switches itself off for the whole wave.
+
+/** Write `.orchestrator/session.lock` with a session id into a tracked project. */
+async function writeSessionLock(dir, fields) {
+  await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+  await fs.writeFile(
+    path.join(dir, '.orchestrator', 'session.lock'),
+    JSON.stringify({
+      started_at: new Date().toISOString(),
+      mode: 'session',
+      pid: process.pid,
+      host: 'test-host',
+      ttl_hours: 4,
+      ...fields,
+    }),
+  );
+}
+
+/** Parse every JSONL record the hook emitted into the project's events log. */
+async function readEvents(dir) {
+  try {
+    const raw = await fs.readFile(
+      path.join(dir, '.orchestrator', 'metrics', 'events.jsonl'),
+      'utf8',
+    );
+    return raw.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  } catch {
+    return [];
+  }
+}
+
+/** A manifest that grants nothing — the #1082 shape (Discovery wave, read-only). */
+const PEER_SCOPE = {
+  wave: 4,
+  role: 'Discovery',
+  enforcement: 'strict',
+  session: 'PEER-UUID-1111',
+  semantic_session: 'main-2026-01-01-session-9',
+  allowedPaths: [],
+};
+
+describe('foreign-session manifest (#1123)', { timeout: 15000 }, () => {
+  it('allows an out-of-scope write when the manifest names ANOTHER session', async () => {
+    // The bug, verbatim from #1082: a peer session's `allowedPaths: []` locked
+    // this session out of every single write in the shared working copy.
+    const dir = await mkProjectTracked(PEER_SCOPE);
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'README.md')),
+      env: { CLAUDE_CODE_SESSION_ID: 'OWN-UUID-2222' },
+    });
+    expectAllow(result);
+  });
+
+  it('emits exactly one orchestrator.scope.foreign_session_ignored event', async () => {
+    // The bug: an ownership check that changes a decision without leaving a
+    // trace is unfalsifiable — the operator cannot tell "guard correctly stood
+    // down" from "guard silently broken" (the #1020 signal-free-ALLOW class).
+    // Exactly ONE, because the alternative considered (emitWarn) would print on
+    // every Edit of the non-owning session.
+    const dir = await mkProjectTracked(PEER_SCOPE);
+    await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'README.md')),
+      env: { CLAUDE_CODE_SESSION_ID: 'OWN-UUID-2222' },
+    });
+
+    const events = (await readEvents(dir))
+      .filter((e) => e.event === 'orchestrator.scope.foreign_session_ignored');
+    expect(events).toHaveLength(1);
+    expect(events[0].hook).toBe('enforce-scope');
+    expect(events[0].manifest_session).toEqual(['PEER-UUID-1111', 'main-2026-01-01-session-9']);
+    expect(events[0].own_session).toEqual(['OWN-UUID-2222']);
+    expect(events[0].wave).toBe(4);
+    expect(events[0].file_path).toBe(path.join(dir, 'README.md'));
+  });
+
+  it('reads the session id from the HOOK PAYLOAD, not just the environment', async () => {
+    // The bug: wiring the gate to the env var only. The payload is the harness's
+    // per-invocation statement of who is calling; ignoring it means a sub-agent
+    // invocation is judged by whatever the ambient env happens to hold.
+    // Here the payload says we ARE the peer → our own manifest → deny stands.
+    // The env id is in the own-set too (the tiers UNION), which is why this case
+    // discriminates on the payload alone: drop it and the set is {OWN-UUID-2222},
+    // the manifest reads foreign, and the hook allows.
+    const dir = await mkProjectTracked(PEER_SCOPE);
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        session_id: 'PEER-UUID-1111',
+        tool_name: 'Edit',
+        tool_input: { file_path: path.join(dir, 'README.md') },
+      }),
+      env: { CLAUDE_CODE_SESSION_ID: 'OWN-UUID-2222' },
+    });
+    expectDeny(result, ['not in allowed paths']);
+  });
+
+  it('still DENIES when the manifest names THIS session', async () => {
+    // The load-bearing regression: the whole gate is worthless if it also stands
+    // down for the manifest we actually own. This is the case the live session
+    // runs in.
+    const dir = await mkProjectTracked(PEER_SCOPE);
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'README.md')),
+      env: { CLAUDE_CODE_SESSION_ID: 'PEER-UUID-1111' },
+    });
+    expectDeny(result, ['not in allowed paths']);
+  });
+
+  it('still DENIES for a sub-agent invocation whose parent_session_id names the manifest session', async () => {
+    // The bug (qa, HIGH): a dispatched wave agent's payload names ITSELF in
+    // `session_id` while the manifest names the COORDINATOR that wrote it. If
+    // `parent_session_id` stops counting as our own, EVERY agent of EVERY wave
+    // gets `{subagent-uuid}`, every manifest reads foreign, and Gate 3b allows
+    // every write — each one logging an event that looks like the guard
+    // correctly standing down. Env deleted so the payload is the only source.
+    const dir = await mkProjectTracked({ ...PEER_SCOPE, session: 'COORD-UUID-4444' });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        session_id: 'SUBAGENT-UUID-3333',
+        parent_session_id: 'COORD-UUID-4444',
+        tool_name: 'Edit',
+        tool_input: { file_path: path.join(dir, 'README.md') },
+      }),
+      env: { CLAUDE_CODE_SESSION_ID: null },
+    });
+    expectDeny(result, ['not in allowed paths']);
+    expect(await readEvents(dir)).toEqual([]);
+  });
+
+  it('a manifest built from a PEER-owned lock does not disarm the session that wrote it', async () => {
+    // The bug (qa, HIGH): WRITER identity and READER identity are different
+    // reads. The manifest's `session` comes from `sessionAttribution()` = the
+    // repo-global `session.lock`; a session that lost the acquire race
+    // (`bootstrapLock()` reason `active` — the lock keeps the PEER's id) writes
+    // that peer id into its OWN manifest. With the tiers gated, the payload id
+    // won, the lock was never read, the session's own manifest classified
+    // foreign, and its write gate switched itself off for the whole wave.
+    // Union semantics keep the lock ids in the own-set → own → deny stands.
+    const dir = await mkProjectTracked({ ...PEER_SCOPE, session: 'PEER-UUID-1111' });
+    await writeSessionLock(dir, { session_id: 'PEER-UUID-1111' });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        session_id: 'OWN-UUID-2222',
+        tool_name: 'Edit',
+        tool_input: { file_path: path.join(dir, 'README.md') },
+      }),
+      env: { CLAUDE_CODE_SESSION_ID: null },
+    });
+    expectDeny(result, ['not in allowed paths']);
+    expect(await readEvents(dir)).toEqual([]);
+  });
+
+  it('still DENIES a LEGACY manifest that carries no session field', async () => {
+    // The bug: treating "no id" as foreign would switch scope enforcement off in
+    // every repo (and every older session) that has not adopted the field —
+    // turning "cannot tell" into a silent feature-off.
+    const dir = await mkProjectTracked({
+      wave: 2, role: 'Impl-Core', enforcement: 'strict', allowedPaths: ['src/**'],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'README.md')),
+      env: { CLAUDE_CODE_SESSION_ID: 'OWN-UUID-2222' },
+    });
+    expectDeny(result, ['not in allowed paths']);
+  });
+
+  it('still DENIES when our own identity is unresolvable (no env var, no lock)', async () => {
+    // The bug: with an empty own-id set every manifest mismatches, so a
+    // "mismatch means foreign" reading would disarm the guard entirely on any
+    // harness that publishes no session id.
+    const dir = await mkProjectTracked(PEER_SCOPE);
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'README.md')),
+      env: { CLAUDE_CODE_SESSION_ID: null },
+    });
+    expectDeny(result, ['not in allowed paths']);
+    expect(await readEvents(dir)).toEqual([]);
+  });
+
+  it('resolves identity from session.lock when no env var is exported', async () => {
+    // The bug: without the lock fallback the gate is dead code on every harness
+    // that exports no session env var (Codex CLI, Cursor) — precisely the
+    // platforms where the #1082 lockout is hardest to diagnose.
+    const dir = await mkProjectTracked(PEER_SCOPE);
+    await writeSessionLock(dir, {
+      session_id: 'OWN-UUID-2222',
+      semantic_session_id: 'main-2026-08-24-session-1',
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'README.md')),
+      env: { CLAUDE_CODE_SESSION_ID: null },
+    });
+    expectAllow(result);
+  });
+
+  it('still FAILS CLOSED on a corrupt manifest whose raw bytes name a peer', async () => {
+    // The bug a raw-bytes peek would introduce: truncating the manifest (or
+    // pasting a peer id into unparseable JSON) would let anyone switch the guard
+    // off. The gate runs AFTER the parse, so a corrupt manifest has no ids at
+    // all → `unknown` → the pre-#1123 fail-closed deny.
+    const dir = await mkProjectRawScopeTracked(
+      '{"wave":2,"session":"PEER-UUID-1111","allowedPaths":[',
+    );
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'README.md')),
+      env: { CLAUDE_CODE_SESSION_ID: 'OWN-UUID-2222' },
+    });
+    expectDeny(result, ['not in allowed paths']);
+    expect(await readEvents(dir)).toEqual([]);
   });
 });

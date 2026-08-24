@@ -253,6 +253,72 @@ function validateRequired(obj, errors) {
 }
 
 /**
+ * Shape-check ONE optional identifier field: present ⇒ a non-empty string.
+ *
+ * Returns whether the key was PRESENT at all (regardless of validity), so the
+ * caller can distinguish "absent" from "present but malformed" — the two need
+ * different treatment and only the first is a warning.
+ *
+ * An EMPTY string is an error rather than a second flavour of absent, for the
+ * reason `sessionAttribution()` (scripts/lib/events.mjs) already states about
+ * omitting the key: an empty id satisfies a truthiness check while attributing
+ * to nothing. A reader comparing `manifest.session === <own session id>` would
+ * then treat the manifest as FOREIGN (ignore it) where the writer meant
+ * UNBOUND (enforce it) — the two dispositions are opposites, so the ambiguity
+ * is not cosmetic. Absence is the only honest encoding of "not session-bound".
+ *
+ * @param {Record<string, unknown>} obj
+ * @param {string} key
+ * @param {string[]} errors
+ * @returns {boolean} true when the key is present (valid or not)
+ */
+function validateOptionalSessionId(obj, key, errors) {
+  if (!(key in obj) || obj[key] === undefined) return false;
+  const value = obj[key];
+  const t = value === null ? 'null' : typeof value;
+  if (t !== 'string') {
+    errors.push(`${key} must be a non-empty string, got type: ${t}`);
+    return true;
+  }
+  if (/** @type {string} */ (value).length === 0) {
+    errors.push(
+      `${key} must be a non-empty string, got: "" — an empty id attributes to nothing; omit the key entirely to declare the manifest unbound`,
+    );
+  }
+  return true;
+}
+
+/**
+ * Validate the OPTIONAL session binding (#1123): `session` (the raw
+ * `session_id` of the session that WROTE this manifest) and its human-readable
+ * twin `semantic_session`. Both come from one `sessionAttribution(repoRoot)`
+ * call — see `skills/wave-executor/wave-loop.md` § Scope Manifest.
+ *
+ * Deliberately NOT part of {@link validateRequired}, and that is a compatibility
+ * constraint rather than a preference: `wave-scope.json` is a shared
+ * working-copy artefact, every manifest written before #1123 lacks the field,
+ * and the pre-union skeleton of § Scope Manifest 3.3 is fed through this very
+ * validator before the union exists. Requiring it would reject manifests the
+ * documented procedure itself produces. The absent case therefore WARNS — the
+ * flip to an error belongs to a later release, once no legacy writer remains.
+ *
+ * @param {Record<string, unknown>} obj
+ * @param {string[]} errors
+ * @param {string[]} warnings
+ */
+function validateSession(obj, errors, warnings) {
+  const present = validateOptionalSessionId(obj, 'session', errors);
+  validateOptionalSessionId(obj, 'semantic_session', errors);
+  if (!present) {
+    warnings.push(
+      'no session field — manifest is not session-bound (legacy, #1123), so every session sharing this ' +
+        'working copy is enforced against it. The writer derives it from sessionAttribution() — see ' +
+        'skills/wave-executor/wave-loop.md § Scope Manifest.',
+    );
+  }
+}
+
+/**
  * Literal filesystem-root forms — POSIX "/" and the Windows equivalents "\"
  * and a bare drive root ("C:\", "C:\\", ...). Checked independently of
  * `path.isAbsolute()` because that primitive is platform-native: on a POSIX
@@ -683,6 +749,7 @@ function validate(
   const warnings = [];
 
   validateRequired(obj, errors);
+  validateSession(obj, errors, warnings);
   validateAllowedPaths(obj, errors, warnings);
   validateBlockedCommands(obj, errors);
   validateGates(obj, errors);

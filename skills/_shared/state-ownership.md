@@ -143,6 +143,20 @@ The Ownership Model above resolves *STATE.md* specifically, but the same discipl
 
 This is the wave-plan-time analog of PSA-007 (subagents never race the shared git index) applied one layer up, to shared *files* rather than the git index — see [`../../.claude/rules/parallel-sessions.md`](../../.claude/rules/parallel-sessions.md) § PSA-007.
 
+### `wave-scope.json` Session Binding (#1123)
+
+The rule above deconflicts writers *inside one wave*. The same working copy is also shared across SESSIONS, and `<state-dir>/wave-scope.json` is the one control artefact that constrains writes rather than describing them. It lives in the working copy, not in the session — so before #1123 a manifest written by session A governed session B's every Edit. Measured 2026-08-22 (#1082): a Discovery wave's `allowedPaths: []` — prescribed for every Discovery wave — denied all writes of an unrelated parallel session, with a deny reason that could only tell it to fix a wave plan it does not own.
+
+**The manifest is SESSION-BOUND since #1123.** The coordinator that writes it names itself in two optional fields, `session` (raw `session_id`) and `semantic_session`, both from ONE `sessionAttribution(repoRoot)` call (`scripts/lib/events.mjs`) — see `skills/wave-executor/wave-loop.md` § Scope Manifest 1. `hooks/enforce-scope.mjs` Gate 3b classifies the manifest with `readOwnSessionIds()` + `classifyManifestSession()` (`scripts/lib/session-identity/own-session.mjs`):
+
+- **`foreign`** (ids present, none of them ours) → the gate ALLOWS the write and emits one `orchestrator.scope.foreign_session_ignored` event. A foreign manifest is somebody else's wave plan; it never had authority here, and the event keeps the skip counted rather than silent.
+- **`own`** → enforce, unchanged.
+- **`unknown`** — no id in the manifest (legacy, pre-#1123) or our own identity unresolvable → enforce, unchanged. Only what is PROVABLY foreign is treated as foreign; a guess would turn "cannot tell" into a silent enforcement-off.
+
+Two consequences for anyone touching this artefact. A stale manifest left by a crashed or finished PEER session no longer scopes this session out of its own writes — but a stale manifest of THIS session still does, so the § Scope Manifest lifecycle (delete `wave-scope.json` with `filescopes/` at session end) remains the operator's job. And an empty id is never an honest "unbound": `scripts/validate-wave-scope.mjs` (`validateSession()`) rejects `"session": ""` as an ERROR while an ABSENT key is only a warning, because an empty id matches nobody and would make every reader treat the manifest as foreign where the writer meant "binds everyone".
+
+Mechanism, disposition table and named limits: [`../../docs/scope-collision-guard.md`](../../docs/scope-collision-guard.md) § 2.3.
+
 ## Guards
 
 ### Branch Validation
@@ -249,7 +263,9 @@ Net: `pid` (field notes above) stays forensic-only; `last_heartbeat` freshness i
 - `stale-pid-alive` was **structurally unreachable** same-host — nothing could produce it except a pid-number collision.
 - The Phase-1.2 recovery AUQ rendered "pid=… is confirmed dead" for **every** same-host stale lock, presenting a measurement it had not made as the operator's reason to reclaim.
 
-The fix removes the question rather than re-answering it. `classifyExisting()` returns exactly one stale reason, `stale-heartbeat`, carrying `ageHours` (age from `started_at`, unchanged) and `heartbeatAgeMinutes` (age from `last_heartbeat`) — the quantity the liveness rule actually thresholds against, so a recovery prompt states the measured heartbeat age instead of a liveness verdict. `checkStale()` gains the same `heartbeatAgeMinutes` field and keeps `pidAlive` only as a shape-compatible `null`; it is no longer computed.
+The fix removes the question rather than re-answering it. `classifyExisting()` returns exactly one stale reason, `stale-heartbeat`, carrying `ageHours` (age from `started_at`, unchanged) and `heartbeatAgeMinutes` (age from `last_heartbeat`) — the quantity the liveness rule actually thresholds against, so a recovery prompt states the measured heartbeat age instead of a liveness verdict. `checkStale()` gains the same `heartbeatAgeMinutes` field.
+
+**#1151 follow-up — the `pidAlive` stub is GONE.** #1137 left `checkStale()` returning `pidAlive: null` as a shape-compatible placeholder. It was removed outright: measured @ `f0766e1`, zero production readers repo-wide, so the field only invited a reader to treat `null` as "unknown liveness" — a question this code no longer asks. `checkStale()` now returns `isLive` (the verdict) and `heartbeatAgeMinutes` (the magnitude behind it); anything reasoning about a lock's liveness reads those two. `isPidAliveOnHost` stays exported for `file-lock.mjs` and `lock-reaper.mjs`, where the pid IS the process being asked about.
 
 `isPidAliveOnHost` remains exported from `session-lock.mjs` and is unaffected — `file-lock.mjs` and `lock-reaper.mjs` are legitimate callers, because there the pid IS the process being asked about.
 

@@ -328,3 +328,30 @@ describe('post-tool-batch mechanical wave-lifecycle fallback (#612)', () => {
     expect(readSessionFile().last_wave).toBe(3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Manifest location follows findScopeFile() precedence (#1082)
+// ---------------------------------------------------------------------------
+
+describe('post-tool-batch wave manifest lookup (#1082)', () => {
+  it('reads the wave number from .codex/wave-scope.json, not only .claude/', () => {
+    // The bug: this hook hard-coded `.claude/wave-scope.json` while every other
+    // consumer resolves the manifest via findScopeFile() (.pi > .cursor > .codex
+    // > .claude). On Codex CLI, Cursor and pi the manifest therefore read as
+    // ABSENT on every batch, resolveWaveNumber() returned 0, and the whole
+    // mechanical wave-lifecycle fallback was structurally dead — no
+    // orchestrator.wave.started/completed event was ever emitted on those
+    // platforms, with nothing to distinguish it from an idle session.
+    mkdirSync(join(tmp, '.codex'), { recursive: true });
+    writeFileSync(join(tmp, '.codex', 'wave-scope.json'), JSON.stringify({ wave: 3 }), 'utf8');
+    writeCurrentSession({ session_id: 's', last_wave: 0 });
+
+    const result = runHook(JSON.stringify({ batch_id: 'b-codex', batch_size: 2 }));
+    expect(result.status).toBe(0);
+
+    const started = readEvents().filter((e) => e.event === 'orchestrator.wave.started');
+    expect(started).toHaveLength(1);
+    expect(started[0].wave_number).toBe(3);
+    expect(readSessionFile().last_wave).toBe(3);
+  });
+});

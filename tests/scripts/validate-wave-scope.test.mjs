@@ -34,11 +34,26 @@ const VALID = {
   blockedCommands: ['rm -rf', 'git reset --hard'],
 };
 
+/**
+ * #1123: a manifest with NO `session` field now emits one advisory stderr line
+ * (absence = legacy = not session-bound). `VALID` deliberately stays unbound —
+ * it is the legacy shape every pre-#1123 manifest still has, and the suite must
+ * keep exercising it — so the pre-existing "nothing reached stderr" assertions
+ * strip exactly that one line rather than being weakened to `.not.toMatch(/ERROR/)`.
+ * Anything else on stderr still fails them.
+ *
+ * @param {string} stderr
+ * @returns {string}
+ */
+function stderrSansSessionWarn(stderr) {
+  return stderr.replace(/^WARNING: no session field — [^\n]*\n/m, '');
+}
+
 describe('validate-wave-scope.mjs — happy path', () => {
   it('accepts a valid wave-scope.json from stdin and exits 0', () => {
     const r = run(JSON.stringify(VALID));
     expect(r.status).toBe(0);
-    expect(r.stderr).toBe('');
+    expect(stderrSansSessionWarn(r.stderr)).toBe('');
     expect(JSON.parse(r.stdout)).toMatchObject(VALID);
   });
 
@@ -49,7 +64,7 @@ describe('validate-wave-scope.mjs — happy path', () => {
     try {
       const r = run(null, path);
       expect(r.status).toBe(0);
-      expect(r.stderr).toBe('');
+      expect(stderrSansSessionWarn(r.stderr)).toBe('');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -175,7 +190,7 @@ describe('validate-wave-scope.mjs — security checks', () => {
   it('accepts a bare relative "**" entry unaffected by #870 (not a Gate 5b grant, ordinary in-repo glob)', () => {
     const r = run(JSON.stringify({ ...VALID, allowedPaths: ['**'] }));
     expect(r.status).toBe(0);
-    expect(r.stderr).toBe('');
+    expect(stderrSansSessionWarn(r.stderr)).toBe('');
   });
 
   it('rejects non-array allowedPaths', () => {
@@ -263,7 +278,7 @@ describe('validate-wave-scope.mjs — catastrophic absolute grant rejection (#87
   it('leaves relative paths unaffected', () => {
     const r = run(JSON.stringify({ ...VALID, allowedPaths: ['src/**', 'tests/**'] }));
     expect(r.status).toBe(0);
-    expect(r.stderr).toBe('');
+    expect(stderrSansSessionWarn(r.stderr)).toBe('');
   });
 
   // The traversal check remains INDEPENDENT (not else-if) of the new absolute
@@ -318,7 +333,7 @@ describe('validate-wave-scope.mjs — stdin pipe (shebang/runnable)', () => {
       encoding: 'utf8',
     });
     expect(r.status).toBe(0);
-    expect(r.stderr).toBe('');
+    expect(stderrSansSessionWarn(r.stderr)).toBe('');
     // Output must be valid JSON matching the source
     const parsed = JSON.parse(r.stdout);
     expect(parsed.wave).toBe(2);
@@ -347,7 +362,7 @@ describe('validate-wave-scope.mjs — --assert-subset (#796)', () => {
     // VALID.allowedPaths = ['src/**', 'tests/**'] — src/a.ts ⊆ src/**.
     const r = runSubset(VALID, ['src/a.ts', 'tests/a.test.ts']);
     expect(r.status).toBe(0);
-    expect(r.stderr).toBe('');
+    expect(stderrSansSessionWarn(r.stderr)).toBe('');
   });
 
   it('exits 1 with a missing: list when the fileScope is not a subset', () => {
@@ -402,7 +417,9 @@ describe('validate-wave-scope.mjs — --assert-subset (#796)', () => {
         encoding: 'utf8',
       });
       expect(r.status).toBe(1);
-      expect(r.stderr).toBe(`ERROR: --assert-subset file is not valid JSON: ${fsPath}\n`);
+      expect(stderrSansSessionWarn(r.stderr)).toBe(
+        `ERROR: --assert-subset file is not valid JSON: ${fsPath}\n`,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -451,14 +468,14 @@ describe('validate-wave-scope.mjs — --expand-test-siblings (#970)', () => {
     // not some unrelated schema change, produced the exit 1.
     const r = runSiblings(PROD_ONLY, ['scripts/lib/x.mjs']);
     expect(r.status).toBe(0);
-    expect(r.stderr).toBe('');
+    expect(stderrSansSessionWarn(r.stderr)).toBe('');
   });
 
   it('exits 0 once the union grants the test sibling', () => {
     const granted = { ...VALID, allowedPaths: ['scripts/lib/x.mjs', 'tests/**'] };
     const r = runSiblings(granted, ['scripts/lib/x.mjs'], ['--expand-test-siblings']);
     expect(r.status).toBe(0);
-    expect(r.stderr).toBe('');
+    expect(stderrSansSessionWarn(r.stderr)).toBe('');
   });
 
   // The flag is gated on the MANIFEST's own role, so wave-loop.md can carry it
@@ -528,14 +545,14 @@ describe('validate-wave-scope.mjs — empty allowedPaths (#1057)', () => {
     (role) => {
       const r = run(JSON.stringify({ ...VALID, role, allowedPaths: [] }));
       expect(r.status).toBe(0);
-      expect(r.stderr).toBe('');
+      expect(stderrSansSessionWarn(r.stderr)).toBe('');
     },
   );
 
   it('stays silent when allowedPaths is non-empty', () => {
     const r = run(JSON.stringify({ ...VALID, role: 'Impl-Core' }));
     expect(r.status).toBe(0);
-    expect(r.stderr).toBe('');
+    expect(stderrSansSessionWarn(r.stderr)).toBe('');
   });
 });
 
@@ -555,5 +572,103 @@ describe('#1083 — empty flag values are refused, not treated as absent', () =>
     const res = spawnSync('node', [SCRIPT, flag, ''], { input: MANIFEST, encoding: 'utf8' });
     expect(res.status).toBe(1);
     expect(res.stderr).toContain(`${flag} requires a file-path argument`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session binding (#1123)
+//
+// A wave-scope manifest is a SHARED working-copy artefact: `hooks/enforce-scope.mjs`
+// applies it to every session running in this checkout, so a Discovery wave's
+// `allowedPaths: []` written by session A denied every write of unrelated
+// session B. The manifest now names the session that wrote it, and the writer
+// derives both fields from ONE `sessionAttribution(repoRoot)` call.
+//
+// The field is OPTIONAL by measurement, not by taste: every manifest written
+// before #1123 lacks it, and § Scope Manifest 3.3 feeds a pre-union skeleton
+// through this validator. Absence therefore WARNs; the flip to an error is a
+// later release.
+// ---------------------------------------------------------------------------
+
+describe('validate-wave-scope.mjs — session binding (#1123)', () => {
+  const SESSION = '10de3bb9-95bc-4793-ab51-a609287d11df';
+  const SEMANTIC = 'main-2026-08-24-session-1';
+
+  // BUG CAUGHT: a validator that rejects (or silently drops) the new binding
+  // makes every session-bound manifest fail at the Scope Manifest step, and the
+  // coordinator's only recovery is to stop writing the field — reverting #1123
+  // while every gate still reports green.
+  it('accepts a manifest carrying both session and semantic_session, silently', () => {
+    const r = run(JSON.stringify({ ...VALID, session: SESSION, semantic_session: SEMANTIC }));
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
+    expect(JSON.parse(r.stdout)).toMatchObject({ session: SESSION, semantic_session: SEMANTIC });
+  });
+
+  // BUG CAUGHT: a non-string id (a JSON number from a hand-edited manifest, or
+  // an object from a mis-spread `sessionAttribution()` result) can never equal
+  // the reader's own string session id, so EVERY session reads the manifest as
+  // foreign and skips enforcement — a deny-all scope silently becomes allow-all.
+  it.each([
+    ['a number', 12345, 'number'],
+    ['null', null, 'null'],
+    ['an object', { session_id: SESSION }, 'object'],
+    ['an array', [SESSION], 'object'],
+  ])('rejects a session that is %s', (_label, value, type) => {
+    const r = run(JSON.stringify({ ...VALID, session: value }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(
+      new RegExp(`ERROR: session must be a non-empty string, got type: ${type}`),
+    );
+  });
+
+  // BUG CAUGHT — the one the pre-#1123 code let through: `"session": ""` is what
+  // a failed lock read yields when the writer fills the key unconditionally
+  // instead of omitting it. It is present (so no legacy warning fires) yet equal
+  // to no session id (so every reader treats the manifest as FOREIGN and
+  // enforces nothing). Measured before the fix: exit 0, empty stderr.
+  it('rejects an EMPTY-STRING session — bound to nothing reads as foreign to everyone', () => {
+    const r = run(JSON.stringify({ ...VALID, session: '' }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/ERROR: session must be a non-empty string, got: ""/);
+    expect(r.stderr).toMatch(/omit the key entirely/);
+  });
+
+  it('rejects an empty-string semantic_session for the same reason', () => {
+    const r = run(JSON.stringify({ ...VALID, session: SESSION, semantic_session: '' }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/ERROR: semantic_session must be a non-empty string/);
+  });
+
+  // BUG CAUGHT: making the field REQUIRED would exit 1 on every legacy manifest
+  // and on the `allowedPaths: []` pre-union skeleton § Scope Manifest 3.3 pipes
+  // through this very script — breaking the documented procedure that produces
+  // the field it complains about. Warning-and-0 is the load-bearing half.
+  it('WARNS and exits 0 when session is absent — legacy manifests still validate', () => {
+    const r = run(JSON.stringify(VALID));
+    expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(/WARNING: no session field — manifest is not session-bound \(legacy, #1123\)/);
+    expect(r.stderr).not.toMatch(/ERROR/);
+    expect(JSON.parse(r.stdout)).toMatchObject(VALID);
+  });
+
+  // BUG CAUGHT: keying the presence check off `semantic_session` (the readable
+  // one) instead of `session`. `hooks/enforce-scope.mjs` compares the RAW id, so
+  // a manifest carrying only the semantic twin is still unbound — a check on the
+  // wrong field would silence the warning for exactly the manifest that needs it.
+  it('still WARNS when only semantic_session is present — the raw id is what binds', () => {
+    const r = run(JSON.stringify({ ...VALID, semantic_session: SEMANTIC }));
+    expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(/WARNING: no session field/);
+    expect(stderrSansSessionWarn(r.stderr)).toBe('');
+  });
+
+  // Fake-regression control for the warning: the SAME manifest with the field
+  // present is silent. Green here + warned above is the only evidence that the
+  // absence of `session`, and not some unrelated field, produced the line.
+  it('emits NO session warning once the field is present', () => {
+    const r = run(JSON.stringify({ ...VALID, session: SESSION }));
+    expect(r.status).toBe(0);
+    expect(r.stderr).not.toMatch(/no session field/);
   });
 });
