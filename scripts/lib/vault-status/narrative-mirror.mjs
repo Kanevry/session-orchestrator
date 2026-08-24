@@ -804,7 +804,17 @@ async function runNarrativeMirror(opts) {
   const outputPath = resolveNarrativePath(vaultDir, repoSlug);
 
   // Defense-in-depth: ensure the resolved file stays inside the vault root.
-  const inside = validatePathInsideProject(path.relative(vaultDir, outputPath), vaultDir);
+  //
+  // `canonicalizeRoot: true` (#1033) is load-bearing, not hygiene. The guard's
+  // realpath phase is skipped while the target is ABSENT (ENOENT) and fires once
+  // it EXISTS — so on a vault root reached through a symlink, run 1 writes and
+  // run 2 resolves the file to the canonical path, reads it as outside the
+  // LEXICAL root, and returns `skipped-invalid-path` forever after. Canonicalizing
+  // the root makes both sides of the comparison the same kind of path. Same call
+  // shape as scripts/lib/reconcile/writer.mjs and scripts/lib/memory-proposals/store.mjs.
+  const inside = validatePathInsideProject(path.relative(vaultDir, outputPath), vaultDir, {
+    canonicalizeRoot: true,
+  });
   if (!inside.ok) {
     return { result: { action: 'skipped-invalid-path', path: outputPath } };
   }

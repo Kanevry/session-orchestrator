@@ -437,14 +437,16 @@ describe('mirrorNarrative', () => {
    * matching today's config shape (regression baseline for bb26964).
    */
   function scaffold({ repoDirName, vaultEnabled = true, withStateMd = true, vaultName } = {}) {
-    // `realpathSync` on the tmp ROOT is load-bearing on macOS, where os.tmpdir()
-    // is `/var/folders/…` — a symlink to `/private/var/folders/…`. mirrorNarrative
-    // runs `validatePathInsideProject` WITHOUT `canonicalizeRoot`, whose realpath
-    // phase is skipped (ENOENT) while the target file is absent but fires once it
-    // EXISTS: on a symlinked root the resolved `/private/var/…` then reads as
-    // outside the lexical `/var/…` vault root and every SECOND call returns
-    // `skipped-invalid-path`. A real vault dir is a canonical path, so canonicalizing
-    // here makes the fixture match production rather than papering over anything.
+    // `realpathSync` on the tmp ROOT keeps this fixture the shape a real vault
+    // has: on macOS os.tmpdir() is `/var/folders/…`, a symlink to
+    // `/private/var/folders/…`, while a real vault dir is canonical.
+    //
+    // It USED to be load-bearing for a different reason: mirrorNarrative ran
+    // `validatePathInsideProject` without `canonicalizeRoot`, so on a symlinked
+    // root every SECOND call returned `skipped-invalid-path` — which meant this
+    // line also hid that bug from all 25 call sites below. The guard now
+    // canonicalizes (#1033), and the symlinked-vault test further down exercises
+    // the non-canonical root directly instead of relying on a fixture to avoid it.
     tmpBase = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'narrative-mirror-'));
     const repoRoot = path.join(tmpBase, repoDirName);
     const vaultDir = path.join(tmpBase, 'vault');
@@ -725,6 +727,66 @@ describe('mirrorNarrative', () => {
       expect(result.action).toBe('written');
       expect(result.path).toBe(resolveNarrativePath(vaultDir, 'whitespace-vault-name-repo'));
     });
+  });
+
+  // =========================================================================
+  // Symlinked vault root (#1033)
+  //
+  // THE BUG THIS CATCHES, NAMED: the SECOND mirror into a vault reached through
+  // a symlink returns `skipped-invalid-path` and never writes again. The guard's
+  // realpath phase is skipped while the target file is ABSENT (ENOENT) and fires
+  // once it EXISTS, so run 1 passes and run 2 resolves the file to the canonical
+  // path, compares it against the LEXICAL root, and rejects it as an escape.
+  // Under `mode: warn` that prints a warning and closes the session, so the
+  // narrative silently stops updating from the second session onward.
+  //
+  // WHY THE SUITE MISSED IT — measured at f0766e1, before this test:
+  //   grep -c "await mirrorNarrative(" …/narrative-mirror.test.mjs   → 25
+  //   grep -n "const run1\|const run2"  …/narrative-mirror.test.mjs   → 4 (2 tests)
+  //   grep -n "mkdtempSync"             …/narrative-mirror.test.mjs   → 2 sites
+  // Both double-call tests go through `scaffold()`, whose tmp root is
+  // `fs.realpathSync(os.tmpdir())` (line ~448) — canonical, so the two paths can
+  // never disagree. The one NON-canonical fixture (the quoted-whitespace
+  // vault-name test) calls the mirror exactly once. So the gap was not "never
+  // called twice"; it was never called twice against a root that is a symlink,
+  // which on macOS is what `os.tmpdir()` — and any vault under a symlinked home
+  // or a synced folder — actually is.
+  // =========================================================================
+
+  it('mirrors TWICE through a SYMLINKED vault path — run 2 is not skipped-invalid-path (#1033)', async () => {
+    tmpBase = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'narrative-mirror-symlink-'));
+    const realRoot = path.join(tmpBase, 'real');
+    const linkRoot = path.join(tmpBase, 'link');
+    fs.mkdirSync(realRoot, { recursive: true });
+    fs.symlinkSync(realRoot, linkRoot, 'dir');
+
+    // The repo is addressed canonically; only the VAULT is reached through the
+    // link, which is the production shape (the vault path comes from config).
+    const repoRoot = path.join(realRoot, 'symlinked-vault-repo');
+    const vaultDir = path.join(linkRoot, 'vault');
+    fs.mkdirSync(path.join(repoRoot, '.claude'), { recursive: true });
+    fs.writeFileSync(
+      path.join(repoRoot, 'CLAUDE.md'),
+      '# Repo\n\n## Session Config\n\nvault-integration:\n' +
+        `  enabled: true\n  vault-dir: ${vaultDir}\n  mode: warn\n`,
+    );
+    fs.writeFileSync(
+      path.join(repoRoot, '.claude', 'STATE.md'),
+      '---\nsession-id: main-symlink-1\n---\n\n## Wave History\n\n### Wave 1\n\n- did a thing.\n',
+    );
+
+    // Run 1: the target does not exist yet, so the guard's realpath phase is
+    // skipped either way — this run passed even before the fix.
+    const run1 = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+    expect(run1.action).toBe('written');
+
+    // Run 2: same unchanged STATE.md, but the file now EXISTS. Without
+    // `canonicalizeRoot: true` this returned `skipped-invalid-path`.
+    const run2 = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+    expect(run2.action).toBe('skipped-noop');
+
+    // The write really landed under the symlink's target, not beside it.
+    expect(fs.existsSync(path.join(realRoot, 'vault', '01-projects', 'symlinked-vault-repo', '_session-narrative.md'))).toBe(true);
   });
 
   // =========================================================================

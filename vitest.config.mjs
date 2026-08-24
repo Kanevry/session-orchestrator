@@ -20,7 +20,24 @@ export default defineConfig({
     // The two call sites that caused it already passed a correct `cwd`, which
     // is why the static census (check-test-git-config-target.mjs) cannot close
     // this half and reports it as `gitDirInheritable` instead.
-    setupFiles: ['./tests/setup/scrub-git-env.mjs'],
+    // vault-guard pins SO_VAULT_DIR — the HIGHEST tier of the host-local
+    // vault-dir chain (env > owner.yaml > committed CLAUDE.md) — at a fresh tmp
+    // dir per worker. Without it a test that calls a vault writer without a
+    // hermetic hostPaths ctx resolves tiers 2/3 on the HOST and writes into the
+    // operator's real vault, which is a foreign tracked repo. Opt out with
+    // SO_VAULT_GUARD_ALLOW_REAL=1.
+    // host-alias-guard pins SO_HOST_ALIASES_FILE at a per-run tmp file. Without
+    // it a lock-taking suite writes the operator's REAL
+    // ~/.config/session-orchestrator/host-aliases.json, because recordHostAlias()
+    // fires inside buildLock() — and that ledger is what hostnamesMatch() reads
+    // to decide whether a lock is this machine's (#1072). Measured 2026-08-24:
+    // three suites reach that path with no redirect of their own. Opt out with
+    // SO_HOST_ALIAS_GUARD_ALLOW_REAL=1.
+    setupFiles: [
+      './tests/setup/scrub-git-env.mjs',
+      './tests/setup/vault-guard.mjs',
+      './tests/setup/host-alias-guard.mjs',
+    ],
     // skills/vault-sync/tests/schema-drift.test.mjs intentionally excluded:
     // it requires a sibling projects-baseline checkout (HAS_CANONICAL) and
     // ALL 5 tests skip in CI anyway. In vitest 2.1.9 + tinypool, discovering
