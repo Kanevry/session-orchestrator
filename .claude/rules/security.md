@@ -162,7 +162,7 @@ Cross-references:
 | A03 | Injection | SEC-006 (Zod), SEC-007 (parameterized queries), SEC-013 (XXE), prototype-pollution (CWE-1321), ReDoS (CWE-1333), DOMPurify sanitization |
 | A04 | Insecure Design | MVP scope rules (mvp-scope.md), threat modeling at design phase |
 | A05 | Security Misconfiguration | rules/opt-in-stack/security-web.md (CSP, headers, CORS), CORS wildcard (CWE-942), baseline infrastructure rules — Docker hardening (not vendored) |
-| A06 | Vulnerable Components | Dependencies section (pnpm audit), CI Semgrep (65+ custom rules) + Gitleaks (37 rules) |
+| A06 | Vulnerable Components | Dependencies section (canonical-PM audit), CI Semgrep (25 rules, GitLab only — see § Dependencies) + Gitleaks (37 rules) |
 | A07 | Auth Failures | SEC-004 (requireAuth), SEC-017 (session hardening in rules/opt-in-stack/security-web.md) |
 | A08 | Data Integrity Failures | CI/CD pipeline integrity, Gitleaks, pnpm lockfile, SEC-020 (supply chain), json-parse-untrusted (CWE-502) |
 | A09 | Logging Failures | rules/opt-in-stack/backend.md (structured logging), @your-org/logger |

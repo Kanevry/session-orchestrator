@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync, execSync } from 'node:child_process';
@@ -54,22 +54,70 @@ const VALID_SESSION = JSON.stringify({
   effectiveness: { planned_issues: 3, completed: 3, carryover: 0, emergent: 1, completion_rate: 1.0 },
 });
 
-function runMirror(args) {
+/**
+ * Pin `CLAUDE_PROJECT_DIR` at a caller-owned (or throwaway) tmp dir.
+ *
+ * THE BUG THIS PREVENTS, and it was live in this file: `emitEvent` resolves its
+ * target ledger from `CLAUDE_PROJECT_DIR`, so every unpinned spawn that reaches
+ * an emit appends synthetic records to the OPERATOR'S REAL
+ * `.orchestrator/metrics/events.jsonl` — the same self-poisoning class the
+ * sibling suite documents at tests/unit/vault-mirror.test.mjs:56-64. The two
+ * markdown-as-JSONL cases below already hit `finishRun('malformed-json')`, and
+ * since #1151 the three pre-loop aborts emit too, so the exposure only grew.
+ *
+ * @param {string} [projectDir] — pass one to READ the resulting events.jsonl;
+ *   omit it to get an unreadable throwaway (the ledger is discarded by design).
+ * @returns {Record<string, string>} env overlay for `spawnSync`.
+ */
+function pinnedLedgerEnv(projectDir) {
+  const dir = projectDir ?? mkdtempSync(join(tmpdir(), 'vault-mirror-entry-events-'));
+  return { CLAUDE_PROJECT_DIR: dir, SO_VAULT_DIR: dir };
+}
+
+/**
+ * @param {string[]} args — CLI flags passed to scripts/vault-mirror.mjs.
+ * @param {{ projectDir?: string }} [opts] — see {@link pinnedLedgerEnv}.
+ */
+function runMirror(args, opts = {}) {
   // VAULT_MIRROR_SKIP_CANONICAL_CHECK=1 bypasses the #600 canonical-vault guard
   // so the existing #536 invariant tests (which mirror into non-git tmp dirs)
   // keep exercising the --kind/--source/JSON.parse rejection layers. The guard
   // itself is covered by the `runMirrorGuarded` suite below.
   return spawnSync('node', [MIRROR, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1' },
+    env: {
+      ...process.env,
+      VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1',
+      ...pinnedLedgerEnv(opts.projectDir),
+    },
   });
+}
+
+/**
+ * Read the `orchestrator.vault.*` records the CLI wrote under a pinned
+ * `CLAUDE_PROJECT_DIR`. Returns `[]` when the ledger does not exist at all —
+ * "the run emitted nothing" is a legitimate observation, not a test error.
+ *
+ * @param {string} projectDir — the dir passed as `opts.projectDir`.
+ * @param {string} eventName — the `event` field to filter on.
+ * @returns {object[]}
+ */
+function readEvents(projectDir, eventName) {
+  const ledger = join(projectDir, '.orchestrator', 'metrics', 'events.jsonl');
+  if (!existsSync(ledger)) return [];
+  return readFileSync(ledger, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => JSON.parse(l))
+    .filter((e) => e.event === eventName);
 }
 
 // Runs the mirror WITHOUT the bypass so the #600 canonical-vault guard is live.
 // Strips VAULT_MIRROR_SKIP_CANONICAL_CHECK from the inherited env in case the
 // test runner itself sets it.
 function runMirrorGuarded(args, extraEnv = {}) {
-  const env = { ...process.env, ...extraEnv };
+  const env = { ...process.env, ...pinnedLedgerEnv(), ...extraEnv };
   if (extraEnv.VAULT_MIRROR_SKIP_CANONICAL_CHECK === undefined) {
     delete env.VAULT_MIRROR_SKIP_CANONICAL_CHECK;
   }
@@ -130,14 +178,39 @@ describe('vault-mirror entry-point invariant (#536)', () => {
     // absolute path inside a fresh tmp dir we never create makes exit 2
     // deterministic regardless of cwd or whether real sidecars exist.
     const vaultDir = tmp();
+    const projectDir = tmp(); // pins CLAUDE_PROJECT_DIR → readable events.jsonl
     const missingSidecar = join(tmp(), '.orchestrator', 'pending-dream.md');
-    const result = runMirror([
-      '--vault-dir', vaultDir,
-      '--source', missingSidecar,
-      '--kind', 'learning',
-    ]);
+    const result = runMirror(
+      [
+        '--vault-dir', vaultDir,
+        '--source', missingSidecar,
+        '--kind', 'learning',
+      ],
+      { projectDir },
+    );
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('source file not found');
+
+    // #1151 — THE named bug: this exit sat BEFORE `finishRun`, so an aborted
+    // run left NOTHING durable behind. stderr is not durable (it goes to
+    // whatever spawned the CLI, and session-end discards it), so a mirror that
+    // never started was indistinguishable from one that was never invoked —
+    // the exact "no record" shape the run event reserves for a broken emitter.
+    const runEvents = readEvents(projectDir, 'orchestrator.vault.mirror_run_completed');
+    expect(runEvents).toHaveLength(1);
+    expect(runEvents[0]).toMatchObject({
+      kind: 'learning',
+      aborted: 'missing-source',
+      total: 0,
+      created: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+    });
+    // A pre-loop abort processed no entry, so there is no per-entry record and
+    // nothing for the breakdown to enumerate.
+    expect(readEvents(projectDir, 'orchestrator.vault.mirror_completed')).toHaveLength(0);
+    expect(runEvents[0]).not.toHaveProperty('action_breakdown');
   });
 
   it('invariant: pending-dream.md as --source fails because Markdown is not JSONL (exit 1, fixture-based)', () => {
@@ -169,14 +242,25 @@ describe('vault-mirror entry-point invariant (#536)', () => {
     // would resolve against the runner cwd and find a real sidecar mid-
     // consolidation, flaking to exit 1 (markdown != JSONL).
     const vaultDir = tmp();
+    const projectDir = tmp();
     const missingSidecar = join(tmp(), '.orchestrator', 'dialectic-pending.md');
-    const result = runMirror([
-      '--vault-dir', vaultDir,
-      '--source', missingSidecar,
-      '--kind', 'session',
-    ]);
+    const result = runMirror(
+      [
+        '--vault-dir', vaultDir,
+        '--source', missingSidecar,
+        '--kind', 'session',
+      ],
+      { projectDir },
+    );
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('source file not found');
+
+    // #1151, second sidecar: the abort record must carry the `--kind` of THIS
+    // run, not a constant — the field is what lets an operator tell a failed
+    // session mirror from a failed learning mirror in the ledger.
+    const runEvents = readEvents(projectDir, 'orchestrator.vault.mirror_run_completed');
+    expect(runEvents).toHaveLength(1);
+    expect(runEvents[0]).toMatchObject({ kind: 'session', aborted: 'missing-source', total: 0 });
   });
 
   it('invariant: dialectic-pending.md as --source fails because Markdown is not JSONL (exit 1, fixture-based)', () => {

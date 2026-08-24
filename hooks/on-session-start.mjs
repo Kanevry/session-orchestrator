@@ -831,7 +831,16 @@ async function main() {
           .slice(0, 3)
           .map((p) => {
             const where = p.worktreePath ? path.basename(p.worktreePath) : '?';
-            return `${where}:${shortSessionId(p.sessionId)}`;
+            // #1151 — carry the peer's MODE when the source recorded one.
+            // `worktree:id` says where a peer sits but not what it is doing,
+            // and the operator's next decision (wait / promote / proceed)
+            // turns on exactly that: a `deep` peer holding this worktree set
+            // is a different situation from a `discovery` one. Guarded rather
+            // than assumed — sessionFromLock() passes `lock.mode` verbatim, so
+            // a lock written without the field yields undefined here, while
+            // sessionFromRegistryEntry() always defaults it to 'session'.
+            const mode = typeof p.mode === 'string' && p.mode.length > 0 ? `:${p.mode}` : '';
+            return `${where}:${shortSessionId(p.sessionId)}${mode}`;
           })
           .join(', ');
         const overflow = mechanicalPeers.length > 3 ? ` +${mechanicalPeers.length - 3} more` : '';

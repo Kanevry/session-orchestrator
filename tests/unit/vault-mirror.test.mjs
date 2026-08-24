@@ -384,6 +384,56 @@ describe('vault-mirror CLI', () => {
     expect(mirrorEvents[0]).not.toHaveProperty('semantic_session_id');
   });
 
+  // The MAPPER-CRASH twin of the test above (#1151). Both invalid branches write
+  // `{"action":"skipped-invalid"}` to stdout and exit 0; in the ledger only
+  // `skip_class` separates them. The suite pinned `validation` and left
+  // `mapper-crash` unpinned, so THE named bug this catches is: drop (or mistype)
+  // the `skipClass: 'mapper-crash'` argument at scripts/vault-mirror.mjs:560 in
+  // a refactor and every existing assertion in this file stays green — while the
+  // ledger loses the only field that separates "the producer wrote a shape the
+  // renderer cannot map" from "the record failed schema validation". Those are
+  // two different owners and two different fixes.
+  it('mapper-crash skipped-invalid emits mirror_completed carrying skip_class mapper-crash', () => {
+    const vaultDir = tmp();
+    const projectDir = tmp(); // pins CLAUDE_PROJECT_DIR → readable events.jsonl
+    // `started_at: 12345` survives JSON.parse AND schema validation, then
+    // crashes `toDate(12345)` inside the renderer with a plain TypeError — no
+    // `err.code`/`err.syscall`, so the #718 discriminator routes it to the
+    // per-record mapper-crash branch instead of the fatal filesystem one.
+    const crashingSession = JSON.stringify({ ...JSON.parse(VALID_SESSION), started_at: 12345 });
+    const sourceFile = writeJsonl(vaultDir, crashingSession);
+
+    const result = runMirror(
+      ['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session'],
+      { projectDir },
+    );
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toMatchObject({
+      action: 'skipped-invalid',
+      reason: 'mapper-crash',
+    });
+
+    const mirrorEvents = readMirrorEvents(projectDir);
+    expect(mirrorEvents).toHaveLength(1);
+    expect(mirrorEvents[0]).toMatchObject({
+      action: 'skipped-invalid',
+      kind: 'session',
+      record_id: 'session-2026-04-13',
+      skip_class: 'mapper-crash',
+      line: 1,
+      dry_run: false,
+    });
+    // `reason` carries the RENDERER's native message, not the literal
+    // 'mapper-crash' the stdout line uses: that string is already in
+    // `skip_class`, and echoing it here would discard the only field that says
+    // WHAT crashed.
+    expect(typeof mirrorEvents[0].reason).toBe('string');
+    expect(mirrorEvents[0].reason).not.toBe('mapper-crash');
+    // No target path is resolved on this branch — the key must be MISSING
+    // rather than written as null ("absent is not zero").
+    expect(mirrorEvents[0]).not.toHaveProperty('path');
+  });
+
   // ── #1147: per-entry coverage + the run-level denominator ──────────────────
   //
   // Bug this block catches: `mirror_completed` fired ONLY on the two
@@ -572,6 +622,50 @@ describe('vault-mirror CLI', () => {
       'skipped-quality-low': 1,
       'skipped-invalid': 1,
     });
+  });
+
+  it('skipped-noop writes NO per-entry record — the run event carries the count (#1151)', () => {
+    // THE named bug, in both directions. (a) Before the gate: a re-run over an
+    // already-mirrored ledger wrote one per-entry record per record — measured
+    // ~276 for a single `--kind session` run over this repo's sessions.jsonl,
+    // nearly all of them saying nothing happened, which buries every other event
+    // class in the same file. (b) After it, the failure mode inverts: a gate that
+    // over-reaches would drop the noop COUNT too, and "everything was already
+    // mirrored" would become indistinguishable from "the run processed nothing"
+    // (HR-105). So this pins both halves — zero per-entry records AND a run
+    // event that still names the class.
+    const vaultDir = tmp();
+    const firstProjectDir = tmp();
+    const secondProjectDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+    const args = ['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault'];
+
+    // Run 1 writes the note (separate projectDir so run 2's ledger is clean).
+    const first = runMirror(args, { projectDir: firstProjectDir });
+    expect(first.status).toBe(0);
+    expect(JSON.parse(first.stdout.trim()).action).toBe('created');
+
+    // Run 2 is the steady state: same input, nothing to do.
+    const second = runMirror(args, { projectDir: secondProjectDir });
+    expect(second.status).toBe(0);
+    expect(JSON.parse(second.stdout.trim()).action).toBe('skipped-noop');
+
+    // (a) No per-entry flood — the whole point of the gate.
+    expect(readMirrorEvents(secondProjectDir)).toHaveLength(0);
+
+    // (b) …and the count survives at run level, twice over: in the `skipped`
+    // total and by name in the breakdown.
+    const runEvents = readMirrorEvents(secondProjectDir, 'orchestrator.vault.mirror_run_completed');
+    expect(runEvents).toHaveLength(1);
+    expect(runEvents[0]).toMatchObject({
+      kind: 'learning',
+      total: 1,
+      created: 0,
+      updated: 0,
+      skipped: 1,
+      failed: 0,
+    });
+    expect(runEvents[0].action_breakdown).toMatchObject({ 'skipped-noop': 1 });
   });
 
   // ── --strict-schema flag (Issue #249 follow-up) ──────────────────────────

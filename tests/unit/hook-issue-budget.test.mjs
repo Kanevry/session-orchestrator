@@ -39,7 +39,7 @@ import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
 // issue-budget/<sha256(sessionId)[0..16]>.json`). The test asks the production
 // helper for the path instead of re-spelling the layout — a hand-written path
 // here would pin the OLD single-slot shape and pass while the split regressed.
-import { budgetStatePath } from '@lib/issue-budget.mjs';
+import { budgetStatePath, reapStaleBudgetFiles } from '@lib/issue-budget.mjs';
 
 const HOOK = path.resolve(import.meta.dirname, '../../hooks/pre-bash-issue-budget.mjs');
 
@@ -61,17 +61,28 @@ async function mkProject({ budgetBlock } = {}) {
   return dir;
 }
 
+// The bug this deletion prevents (#1151): the child inherits `...process.env`,
+// and a live operator session exports `CLAUDE_CODE_SESSION_ID`. The hook reads
+// that as its session-id fallback (`hooks/pre-bash-issue-budget.mjs:92`), so
+// every case that means "no session id" silently ran WITH one — keyed to the
+// operator's real session — and the suite's verdict depended on whether it was
+// run from inside a Claude Code session or from a bare shell. Deleted by
+// default; a test that needs the fallback opts in via `extraEnv`, which is
+// applied AFTER the deletion.
 async function runHook({ projectDir, stdin, extraEnv = {} }) {
+  const env = {
+    ...process.env,
+    CLAUDE_PROJECT_DIR: projectDir,
+    CLAUDE_PLUGIN_ROOT: path.resolve(import.meta.dirname, '../..'),
+    SO_HOOK_PROFILE: 'full',
+  };
+  delete env.CLAUDE_CODE_SESSION_ID;
+  Object.assign(env, extraEnv);
+
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [HOOK], {
       cwd: projectDir,
-      env: {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: projectDir,
-        CLAUDE_PLUGIN_ROOT: path.resolve(import.meta.dirname, '../..'),
-        SO_HOOK_PROFILE: 'full',
-        ...extraEnv,
-      },
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -335,16 +346,22 @@ describe('cap enforcement', { timeout: 30000 }, () => {
     const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 1\n  mode: strict' });
     expectAllow(await fill(dir, 1, 'prior-session'));
 
-    const identityLess = await runHook({
-      projectDir: dir,
-      stdin: { tool_name: 'Bash', tool_input: { command: 'glab issue create --title "identity-less"' } },
-      // Truly identity-less: the suite inherits the operator's real
-      // CLAUDE_CODE_SESSION_ID, which the hook now reads as a fallback (#1141).
-      // Without this the case under test cannot occur inside a live session.
-      extraEnv: { CLAUDE_CODE_SESSION_ID: '' },
-    });
-
-    expectAllow(identityLess);
+    const noIdPayload = {
+      tool_name: 'Bash',
+      tool_input: { command: 'glab issue create --title "identity-less"' },
+    };
+    // Truly identity-less: no stdin id, and `runHook` deletes the inherited
+    // CLAUDE_CODE_SESSION_ID the hook would otherwise fall back to (#1151).
+    expectAllow(await runHook({ projectDir: dir, stdin: noIdPayload }));
+    // A SECOND identity-less charge is still allowed at max-per-session: 1 —
+    // the observable signature of "no identity ⇒ nothing persisted, so nothing
+    // accumulates". This is also what makes the #1151 env deletion falsifiable:
+    // measured 2026-08-24 with the deletion removed and
+    // CLAUDE_CODE_SESSION_ID exported, a leaked env keys BOTH calls to that one
+    // session and this line goes RED (`AssertionError: expected
+    // '{"hookSpecificOutput":{"hookEventName…' to be ''`) instead of silently
+    // exercising the env-keyed path under an identity-less name.
+    expectAllow(await runHook({ projectDir: dir, stdin: noIdPayload }));
     // Allowed, but it must leave the shared ledger alone: persisting its fresh
     // state would clear prior-session's spent cap and delete parked overflow.
     expect(JSON.parse(
@@ -392,6 +409,37 @@ describe('cap enforcement', { timeout: 30000 }, () => {
     expect(JSON.parse(await fs.readFile(budgetStatePath(dir, 'stdin-session'), 'utf8')))
       .toMatchObject({ sessionId: 'stdin-session', count: 1 });
     await expect(fs.access(budgetStatePath(dir, 'env-session-002'))).rejects.toThrow();
+  });
+
+  // #1151 — the bug a `??`-refactor would introduce: `session_id: ''` is a
+  // PRESENT but empty key, and `input.session_id ?? process.env.CLAUDE_CODE_
+  // SESSION_ID` keeps the empty string (`??` only falls through on nullish).
+  // The charge would then be identity-less — never read, never persisted — and
+  // the cap silently OFF for that payload shape, exactly the #1141 defect. The
+  // hook's length check is what prevents it; nothing pinned that until now.
+  it('treats an EMPTY stdin session id as absent and still enforces via the env id (#1151)', async () => {
+    const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 1\n  mode: strict' });
+    const emptyStdinId = {
+      session_id: '',
+      tool_name: 'Bash',
+      tool_input: { command: 'glab issue create --title "empty stdin id"' },
+    };
+
+    expectAllow(await runHook({
+      projectDir: dir,
+      stdin: emptyStdinId,
+      extraEnv: { CLAUDE_CODE_SESSION_ID: 'env-session-003' },
+    }));
+    expectDeny(await runHook({
+      projectDir: dir,
+      stdin: emptyStdinId,
+      extraEnv: { CLAUDE_CODE_SESSION_ID: 'env-session-003' },
+    }), 'issue-budget');
+
+    // Keyed to the env id — an identity-less charge would have written nothing
+    // at all, and the second call would have been allowed.
+    expect(JSON.parse(await fs.readFile(budgetStatePath(dir, 'env-session-003'), 'utf8')))
+      .toMatchObject({ sessionId: 'env-session-003', count: 1 });
   });
 
   it('names the overflow store in the deny reason so the agent knows where the item went', async () => {
@@ -505,5 +553,67 @@ describe('exemptions', { timeout: 30000 }, () => {
       stdin: bashPayload('glab issue create --title "[Discovery] dead export" --label "type::discovery,priority::low"'),
     });
     expectDeny(r);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Counter-file lifecycle — the other half of the per-session split (#1151)
+// ---------------------------------------------------------------------------
+//
+// The bug: `.orchestrator/runtime/issue-budget/` had a writer and no reaper —
+// zero unlink sites repo-wide — so every session in a working copy left a
+// permanent artefact behind. Placed in this file because it is the one test
+// file in this task's declared scope; the function under test is the sibling
+// export of `budgetStatePath`, which this file already imports.
+
+describe('reapStaleBudgetFiles', () => {
+  /** Write a counter file for `sessionId` and backdate it by `ageDays`. */
+  async function seed(dir, sessionId, ageDays) {
+    const file = budgetStatePath(dir, sessionId);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, JSON.stringify({ sessionId, count: 1, exempt: 0, overflow: [] }), 'utf8');
+    const at = new Date(Date.now() - ageDays * 24 * 60 * 60 * 1000);
+    await fs.utimes(file, at, at);
+    return file;
+  }
+
+  it('removes files past the age cutoff, keeps young ones and the current session', async () => {
+    const dir = await mkProject();
+    const stale = await seed(dir, 'long-gone-session', 30);
+    const young = await seed(dir, 'yesterdays-session', 1);
+    // The current session's file is exempt REGARDLESS of age — a long-running
+    // session must not have its own live counter reaped mid-flight.
+    const ownAndOld = await seed(dir, 'current-session', 30);
+
+    const { removed, kept } = reapStaleBudgetFiles({ repoRoot: dir, sessionId: 'current-session' });
+
+    expect(removed).toEqual([stale]);
+    expect(kept.sort()).toEqual([ownAndOld, young].sort());
+    await expect(fs.access(stale)).rejects.toThrow();
+    await expect(fs.access(young)).resolves.toBeUndefined();
+    await expect(fs.access(ownAndOld)).resolves.toBeUndefined();
+  });
+
+  it('leaves unrecognised files in the directory alone', async () => {
+    const dir = await mkProject();
+    await seed(dir, 'seed-to-create-the-dir', 1);
+    const foreign = path.join(dir, '.orchestrator/runtime/issue-budget/NOTES.md');
+    await fs.writeFile(foreign, 'hand-written', 'utf8');
+    const at = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+    await fs.utimes(foreign, at, at);
+
+    const { removed, kept } = reapStaleBudgetFiles({ repoRoot: dir, sessionId: null });
+
+    // Not part of the reaper's population at all: neither removed nor kept.
+    expect(removed).toEqual([]);
+    expect(kept).not.toContain(foreign);
+    await expect(fs.access(foreign)).resolves.toBeUndefined();
+  });
+
+  it('never throws on a missing directory (best-effort contract)', async () => {
+    const dir = await mkProject();
+    expect(reapStaleBudgetFiles({ repoRoot: dir })).toEqual({ removed: [], kept: [] });
+    expect(reapStaleBudgetFiles({ repoRoot: path.join(dir, 'does', 'not', 'exist') }))
+      .toEqual({ removed: [], kept: [] });
   });
 });

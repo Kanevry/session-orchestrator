@@ -16,8 +16,10 @@
  * shape that does not BEGIN with the CLI name was therefore invisible, and the
  * most common agent shape — a `cd` into the repo, then the create call — is
  * exactly such a shape. Measured 2026-08-23 in a live session: four issues were
- * created as `cd <repo>\nglab issue create …` and
- * `.orchestrator/runtime/issue-budget.json` recorded `count: 0`. The
+ * created as `cd <repo>\nglab issue create …` and the session's issue-budget
+ * counter file recorded `count: 0` (then the flat
+ * `.orchestrator/runtime/issue-budget.json`; one file per session under
+ * `.orchestrator/runtime/issue-budget/<hash>.json` since #1141). The
  * `issue-budget` cap was not circumvented — for that command form it had never
  * existed.
  *
@@ -59,8 +61,9 @@
  *     (`GITLAB_HOST=y glab issue create …`) is NOT matched: the segment's first
  *     token is not the CLI name. Both were already invisible before #1106, so
  *     this is an unchanged ceiling, not a regression. Revisit if either shape
- *     shows up in `.orchestrator/runtime/issue-budget.json` overflow triage or
- *     in a transcript census of real create calls.
+ *     shows up in the overflow triage of a per-session counter file
+ *     (`.orchestrator/runtime/issue-budget/<hash>.json`, #1141) or in a
+ *     transcript census of real create calls.
  *   - Process wrappers (`sudo`, `env`, `xargs`) are not unwrapped here.
  *     `command-blocker.mjs` exports `resolveSegmentVerb` for that; wire it in
  *     only if a wrapped create call is actually observed.

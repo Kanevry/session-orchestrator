@@ -259,8 +259,10 @@ export { deriveRepo } from './namespace.mjs';
  *   `meta` get the base JSON shape unchanged.
  * @param {number} [opts.line] — 1-based JSONL line number. When FINITE, this
  *   entry also gets one `orchestrator.vault.mirror_completed` ledger record
- *   (#1147). Omitting it keeps the stdout-only behaviour, which is what the
- *   direct unit tests of this function exercise.
+ *   (#1147) — UNLESS `action` is `skipped-noop`, whose per-entry record is
+ *   suppressed as ledger flood and reported only in the run-level roll-up
+ *   (#1151; see the gate below). Omitting `line` keeps the stdout-only
+ *   behaviour, which is what the direct unit tests of this function exercise.
  * @param {boolean} [opts.dryRun] — the run's dry-run flag, for telemetry only.
  * @param {string} [opts.skipClass] — `validation` | `mapper-crash`; telemetry only.
  * @param {string} [opts.reason] — explicit telemetry reason. Defaults to
@@ -299,7 +301,22 @@ export async function emitAction({
   // it stays byte-identical; the ledger record below is purely additive.
   process.stdout.write(JSON.stringify(payload) + '\n');
 
-  if (Number.isFinite(line)) {
+  // Per-entry ledger record for every action EXCEPT `skipped-noop` (#1151).
+  //
+  // `skipped-noop` is the STEADY STATE, not an event: on a populated vault
+  // nearly every record is already mirrored, so one `--kind session` run over
+  // this repo's ~276-record sessions ledger wrote ~276 per-entry records that
+  // between them said "nothing happened" — burying every other event class in
+  // the same file. No information is lost by dropping them: `finishRun()` in
+  // `scripts/vault-mirror.mjs` counts this class into the run event's `skipped`
+  // total AND names it in `action_breakdown['skipped-noop']`, so the noop COUNT
+  // stays measured per run and the gate stays falsifiable (HR-105).
+  //
+  // BV-004 ceiling: what this drops is the per-LINE locator for noops — the
+  // ledger can still say HOW MANY records were unchanged, never WHICH. Revisit
+  // if a consumer ever needs to name them (a staleness audit over unchanged
+  // notes would); reinstate it behind an opt-in flag then, not unconditionally.
+  if (Number.isFinite(line) && action !== 'skipped-noop') {
     const telemetryReason =
       reason ?? (meta && typeof meta.reason === 'string' ? meta.reason : undefined);
     await emitMirrorEvent({

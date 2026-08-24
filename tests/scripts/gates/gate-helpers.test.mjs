@@ -157,6 +157,44 @@ describe('extractTestCounts', () => {
     expect(counts).toEqual({ passed: 12, failed: 0, total: 12, files: null });
     expect(counts.files).toBeNull();
   });
+
+  // #1151 — the ZERO-COLLECTED line. `TEST_SUMMARY_LINE` (/^\s*Tests\b/) also
+  // matches vitest's `Tests  no tests`, which carries no digits at all, so the
+  // test-case triple degrades to 0/0/0. That is CORRECT and must stay pinned:
+  // 0/0/0 is this parser's "no counts" signal, and the two downstream consumers
+  // both refuse to read it as a pass — `admitSuiteCounts` returns null (the
+  // envelope OMITS `counts` rather than publishing a phantom 0-passed success),
+  // and `gate-full.mjs` derives `suite_died` from `files.failed`, which DOES
+  // carry the death. The bug this would catch is a "helpful" future change that
+  // makes the zero triple admissible (e.g. relaxing `total <= 0`), turning a run
+  // that collected nothing into a green 0-passed gate.
+  //
+  // Golden record — real `npx vitest run` tail, measured 2026-08-24 against a
+  // file whose only suite has no test cases (`describe("empty", () => {})`).
+  it('reports a zero-collected vitest run distinctly, never as a 0-passed success (#1151)', () => {
+    const input = [
+      ' FAIL  empty.test.mjs > empty',
+      'Error: No test found in suite empty',
+      ' Test Files  1 failed (1)',
+      '      Tests  no tests',
+      '   Start at  19:35:29',
+      '   Duration  111ms',
+    ].join('\n');
+
+    const counts = extractTestCounts(input);
+    expect(counts).toEqual({
+      passed: 0,
+      failed: 0,
+      total: 0,
+      files: { passed: 0, failed: 1, total: 1 },
+    });
+
+    // No admissible measurement → the caller omits `counts` entirely.
+    expect(admitSuiteCounts({ passed: counts.passed, failed: counts.failed, total: counts.total })).toBeNull();
+
+    // gate-full.mjs's `suite_died` expression, evaluated on this shape.
+    expect(counts.failed === 0 && counts.files.failed > 0).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

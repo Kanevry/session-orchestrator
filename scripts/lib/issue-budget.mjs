@@ -28,7 +28,7 @@
  */
 
 import { digestSha256Short } from './crypto-digest-utils.mjs';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 
 import { writeJsonAtomicSync } from './io.mjs';
@@ -417,4 +417,106 @@ export function formatBlockReason(v) {
     `To raise the cap for this repo, edit \`issue-budget.max-per-session\` in the Session Config;`,
     `\`mode: warn\` reports without blocking, \`mode: off\` disables the gate.`,
   ].join('\n');
+}
+
+/**
+ * Default age past which a per-session counter file is reaped (#1151).
+ *
+ * BV-004 ceiling: 14 days is a "nobody will ever drain this now" horizon, not a
+ * measured retention requirement. A session's overflow is drained at ITS OWN
+ * close (session-end Phase 5 Step 3b), so a file still carrying undrained
+ * overflow two weeks later belongs to a session that ended without closing —
+ * its parked items are already unreachable by the drain, which only ever reads
+ * the CURRENT session's file. Revisit if a triage workflow ever reads a foreign
+ * session's overflow after the fact.
+ */
+export const BUDGET_REAP_MAX_AGE_DAYS = 14;
+
+/**
+ * Recognised per-session counter file name — the 16-hex digest `budgetStateRel`
+ * emits, plus `.json`. Anything else in the directory is left alone: the reaper
+ * must only ever remove files it can prove it wrote itself.
+ */
+const BUDGET_FILE_NAME_RE = /^[0-9a-f]{16}\.json$/;
+
+/**
+ * Remove stale per-session counter files (#1151).
+ *
+ * WHY: the per-session split (#1141) writes one file per accounting session
+ * into `.orchestrator/runtime/issue-budget/` and NOTHING ever removed them —
+ * there was not a single unlink site for that directory in the repo. Every
+ * session in a working copy therefore left a permanent 100-200 byte artefact
+ * behind. This is the missing other half of the file's lifecycle, owned by
+ * session-end Phase 5 Step 3b (the drain runs first, this sweeps after).
+ *
+ * Age is judged by MTIME, and the CURRENT session's file is exempt regardless
+ * of age. Both halves are safety, not convenience: a parallel session in the
+ * same working copy (PSA-001) owns a file this process did not write, and its
+ * freshly-touched mtime is the only evidence available here that the owner is
+ * still alive — the same age-gate discipline `session-registry.mjs`
+ * `sweepZombies` uses for in-flight claim files.
+ *
+ * Best-effort by contract: every failure path is swallowed and the file counted
+ * as kept. A reaper that throws would abort the session close it runs inside,
+ * which is a strictly worse outcome than an un-reaped counter file.
+ *
+ * @param {{
+ *   repoRoot: string,
+ *   sessionId?: string|null,
+ *   maxAgeDays?: number,
+ *   now?: number,
+ * }} opts `sessionId` is the accounting session id whose file must survive;
+ *   `now` is an epoch-ms injection point for tests.
+ * @returns {{ removed: string[], kept: string[] }} absolute paths, so a caller
+ *   gets both a count (`.length`) and an audit trail.
+ */
+export function reapStaleBudgetFiles({
+  repoRoot,
+  sessionId = null,
+  maxAgeDays = BUDGET_REAP_MAX_AGE_DAYS,
+  now = Date.now(),
+} = {}) {
+  const removed = [];
+  const kept = [];
+  try {
+    const dir = path.join(repoRoot, BUDGET_STATE_DIR_REL);
+    const cutoff = now - maxAgeDays * 24 * 60 * 60 * 1000;
+    const ownFile =
+      typeof sessionId === 'string' && sessionId.length > 0
+        ? budgetStatePath(repoRoot, sessionId)
+        : null;
+
+    let names;
+    try {
+      names = readdirSync(dir);
+    } catch {
+      // No directory yet (or unreadable) — nothing to reap, not an error.
+      return { removed, kept };
+    }
+
+    for (const name of names) {
+      // Unrecognised entries are not part of this reaper's population at all:
+      // neither removed nor reported as kept.
+      if (!BUDGET_FILE_NAME_RE.test(name)) continue;
+      const file = path.join(dir, name);
+      if (file === ownFile) {
+        kept.push(file);
+        continue;
+      }
+      try {
+        if (statSync(file).mtimeMs >= cutoff) {
+          kept.push(file);
+          continue;
+        }
+        unlinkSync(file);
+        removed.push(file);
+      } catch {
+        // Vanished under us (a peer's own reaper), or permission-denied.
+        kept.push(file);
+      }
+    }
+  } catch {
+    // Unreachable in practice; the contract is "never throws", not "never fails".
+  }
+  return { removed, kept };
 }

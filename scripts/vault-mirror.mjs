@@ -327,12 +327,14 @@ if (kind !== 'learning' && kind !== 'session') {
 //
 // Deliberately OUTSIDE main(): the run event's whole contract is that it is
 // written ONCE PER RUN and that its ABSENCE is the broken-emitter signal
-// (HR-105). Three exits bypass main's normal tail — the malformed-JSON abort and
-// the filesystem-error abort inside the loop (both `process.exit`, which no
-// `finally` and no `catch` can intercept) and the top-level `main().catch`,
-// which runs in a scope where main's locals no longer exist. Keeping the
-// counters and the emitter out here is what lets all three close the run out
-// through ONE function instead of each re-deriving the payload.
+// (HR-105). Six exits bypass main's normal tail — the three PRE-LOOP aborts at
+// the top of main (missing vault-dir, non-canonical vault, missing source), the
+// malformed-JSON abort and the filesystem-error abort inside the loop (all five
+// `process.exit`, which no `finally` and no `catch` can intercept), and the
+// top-level `main().catch`, which runs in a scope where main's locals no longer
+// exist. Keeping the counters and the emitter out here is what lets all six
+// close the run out through ONE function instead of each re-deriving the
+// payload.
 const runState = {
   /** Non-blank JSONL lines the run ATTEMPTED — the denominator. */
   total: 0,
@@ -359,10 +361,12 @@ const tally = (action) => {
  * counted were the ones that vanished from the ledger, in the one shape
  * ("no record") that the docstring reserves for a broken emitter.
  *
- * @param {'malformed-json'|'filesystem-error'|'unexpected-error'} [aborted]
+ * @param {'missing-vault-dir'|'vault-not-canonical'|'missing-source'|'malformed-json'|'filesystem-error'|'unexpected-error'} [aborted]
  *   Omitted on a complete run. When present it LABELS the counters as partial:
  *   every line after the abort was never attempted, so the classes no longer
- *   partition `total`.
+ *   partition `total`. On the three PRE-LOOP values (#1151) nothing was
+ *   attempted at all — `total` is a measured 0 and the label is what separates
+ *   "never started" from "ran over an empty source".
  * @returns {Promise<void>}
  */
 async function finishRun(aborted) {
@@ -418,8 +422,16 @@ async function finishRun(aborted) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
+  // The three PRE-LOOP aborts below (#1151) close the run out through the same
+  // `finishRun` every other exit uses. They are the runs that never reached
+  // their first entry — a bad vault-dir, a wrong vault, a missing source — and
+  // until now they were the only outcomes that left NO record at all, which is
+  // the one shape the run event reserves for a broken emitter. Their counters
+  // are all `0`, and `aborted` is what makes that zero readable as "never
+  // started" rather than "ran over an empty source".
   if (!existsSync(resolve(vaultDir))) {
     process.stderr.write(`vault-mirror: vault-dir not found: ${vaultDir}\n`);
+    await finishRun('missing-vault-dir');
     process.exit(2);
   }
 
@@ -437,12 +449,14 @@ async function main() {
       process.stderr.write(
         `vault-mirror: refusing to mirror — "${vaultDir}" is not the canonical Meta-Vault (expected git origin ending in one of: ${canonicalSuffixes.join(', ')}; got ${got})\n`,
       );
+      await finishRun('vault-not-canonical');
       process.exit(2);
     }
   }
 
   if (!existsSync(resolve(source))) {
     process.stderr.write(`vault-mirror: source file not found: ${source}\n`);
+    await finishRun('missing-source');
     process.exit(2);
   }
 

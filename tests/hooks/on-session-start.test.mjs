@@ -931,11 +931,53 @@ describe('mechanical peer-detection banner (Epic #583 W3-P3)', { timeout: 15000 
     // reports, including worktrees parked elsewhere on the host.
     expect(mechanical).toContain("active in this repo's worktree set");
     expect(mechanical).not.toContain('active in same repo');
-    // Each peer is rendered `<worktree-basename>:<session-id>` so a peer in a
-    // FOREIGN worktree is distinguishable from one in this checkout. The
-    // registry-fallback path sets worktreePath = the discovery repoRoot, so
-    // the basename here is the fixture repo's own directory name.
-    expect(mechanical).toContain(`${path.basename(dir)}:peer-mech`);
+    // Each peer is rendered `<worktree-basename>:<session-id>:<mode>` so a peer
+    // in a FOREIGN worktree is distinguishable from one in this checkout, AND
+    // the operator can see what it is doing (#1151 — a `deep` peer holding the
+    // worktree set is a different decision from a `discovery` one). The
+    // registry-fallback path sets worktreePath = the discovery repoRoot, so the
+    // basename here is the fixture repo's own directory name, and `mode` is the
+    // planted entry's own `deep`.
+    expect(mechanical).toContain(`${path.basename(dir)}:peer-mech:deep`);
+  });
+
+  it('omits the mode segment when the peer records no mode (#1151 guard)', async () => {
+    const dir = await mkProjectTracked();
+    const activeDir = path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active');
+    await fs.mkdir(activeDir, { recursive: true });
+    const now = new Date().toISOString();
+    const { repoPathHash } = await import('../../scripts/lib/session-registry.mjs');
+    // The bug this pins: an UNGUARDED `:${p.mode}` renders a dangling `:` (or
+    // `:undefined`) for a peer whose source carried no mode. That is not
+    // hypothetical — sessionFromLock() passes `lock.mode` straight through, so
+    // any lock written without the field reaches the banner as undefined. An
+    // empty-string registry mode takes the SAME falsy branch and is reachable
+    // from this fixture without standing up a second worktree.
+    await fs.writeFile(
+      path.join(activeDir, 'peer-nomode.json'),
+      JSON.stringify({
+        session_id: 'peer-nomode',
+        pid: 99998,
+        repo_path_hash: repoPathHash(dir),
+        repo_name: path.basename(dir),
+        branch: 'main',
+        mode: '',
+        started_at: now,
+        last_heartbeat: now,
+        status: 'active',
+        current_wave: 0,
+      }),
+    );
+
+    const result = await runHook({ projectDir: dir, useCwd: true });
+
+    const mechanical = parseSystemMessages(result.stdout)
+      .flatMap((m) => m.systemMessage.split('\n'))
+      .find((l) => /^🔍\s+Mechanical peer-detection:/.test(l));
+    expect(mechanical).toBeDefined();
+    expect(mechanical).toContain(`${path.basename(dir)}:peer-nomode`);
+    expect(mechanical).not.toContain('peer-nomode:');
+    expect(mechanical).not.toContain('undefined');
   });
 
   it('does NOT emit the mechanical banner when discoverActiveSessions returns only self', async () => {

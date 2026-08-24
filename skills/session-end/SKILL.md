@@ -1072,6 +1072,14 @@ if (sweep) {
     - After the artefact exists, reset `overflow` to `[]` in the counter file and record the collector issue ID / note path in the Phase 6 Final Report under `### Zurückgestellt (issue-budget)`.
     - **Never exempt-by-accident:** the cap never applied to `priority::critical`, the carryover class (`[Carryover]`, SPIRAL/FAILED, `type::carryover`), or `broken-window` closure issues, so nothing on the Phase 1.65 carry-list can ever appear in `overflow[]`. The promises at Phase 1.8 ("SPIRAL / FAILED agent carryover … non-deselectable") and the Critical Rule "ALWAYS create issues for unfinished PLANNED work" stay intact by construction.
     - Fail-open: a missing or malformed counter file means "no overflow" — log a WARN and continue the close.
+    - **Then reap stale counter files (#1151):** the per-session split (#1141) writes one file per accounting session and nothing ever deleted them, so `.orchestrator/runtime/issue-budget/` grew without bound in every working copy. After the drain, sweep files older than 14 days; THIS session's file is exempt regardless of age, and the call is best-effort (it never throws, so it can never abort the close).
+
+      ```js
+      import { reapStaleBudgetFiles } from '${PLUGIN_ROOT}/scripts/lib/issue-budget.mjs';
+
+      const { removed } = reapStaleBudgetFiles({ repoRoot, sessionId: accountingSessionId });
+      if (removed.length) console.log(`issue-budget: reaped ${removed.length} stale counter file(s) (> 14 d)`);
+      ```
 
 #### Discovery Issue Creation (if discovery ran in Phase 1.5)
 

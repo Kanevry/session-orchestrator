@@ -236,6 +236,55 @@ describe('express-path.mjs CLI — input contract', () => {
     expect(readLedger()).toHaveLength(0);
   });
 
+  // The other two thirds of the EXIT_CONFIG_IO contract (#1151). The
+  // not-found branch above was the only one under test; a config that EXISTS
+  // but cannot be read, and one that reads but cannot be parsed, both reach
+  // `fail(..., EXIT_CONFIG_IO)` through different `try` blocks in loadConfig().
+  // Same bug in both: a CLI that swallowed either error would fall through to
+  // the documented default `enabled=true` and could activate a fast path that
+  // skips every inter-wave quality gate — in a repo whose unreadable config may
+  // well have said `express-path.enabled: false`. Unreadable is not absent.
+  it('exits 2 when the config path exists but cannot be READ', () => {
+    // A directory passes resolveRepoConfigPath's existsSync check and then
+    // throws EISDIR inside readFileSync — the read branch reached without
+    // depending on file modes (chmod 000 is a no-op for root, so a
+    // permissions fixture would silently pass in a root container).
+    const asDir = join(repoRoot, 'config-is-a-dir');
+    mkdirSync(asDir);
+
+    const res = runCli([
+      '--repo-root', repoRoot,
+      '--session-type', 'housekeeping',
+      '--task-count', '2',
+      '--config-file', asDir,
+    ]);
+
+    expect(res.status).toBe(2);
+    expect(res.stderr).toContain('failed to read');
+    expect(readLedger()).toHaveLength(0);
+  });
+
+  it('exits 2 when the repo CLAUDE.md exists but its Session Config does not parse', () => {
+    // Auto-resolved, no --config-file: this is the shape an operator actually
+    // hits — a repo whose own CLAUDE.md carries one bad enum value.
+    writeFileSync(
+      join(repoRoot, 'CLAUDE.md'),
+      [ '# Fixture', '', '## Session Config', '', 'enforcement: bogus', '' ].join('\n'),
+    );
+
+    const res = runCli([
+      '--repo-root', repoRoot,
+      '--session-type', 'housekeeping',
+      '--task-count', '2',
+    ]);
+
+    expect(res.status).toBe(2);
+    expect(res.stderr).toContain('failed to parse');
+    // The parser's own message rides through, so the operator sees WHICH key.
+    expect(res.stderr).toContain('enforcement');
+    expect(readLedger()).toHaveLength(0);
+  });
+
   it('still evaluates when the repo has no CLAUDE.md, omitting `enabled` from the record', () => {
     // Bug: treating an ABSENT config as an error would make the CLI unusable in
     // a fresh repo; treating it as a MEASURED `enabled: true` would fabricate an

@@ -4,8 +4,13 @@
  * Two events, deliberately BOTH:
  *
  *   - `orchestrator.vault.mirror_completed` — ONE record per JSONL entry
- *     processed (created / updated / every `skipped-*`), carrying the same
- *     `action` the CLI wrote to stdout for that entry.
+ *     processed (created / updated / every `skipped-*` EXCEPT `skipped-noop`),
+ *     carrying the same `action` the CLI wrote to stdout for that entry.
+ *     `skipped-noop` is excluded because it is the steady state of a populated
+ *     vault, not an event: emitting it made a single run write hundreds of
+ *     records that between them said nothing happened (#1151). Its count is
+ *     carried by the run event's `skipped` total and `action_breakdown`, so the
+ *     class stays measured — only its per-line locators are gone.
  *   - `orchestrator.vault.mirror_run_completed` — ONE record per CLI run,
  *     carrying the DENOMINATOR (`total` plus the per-class counts).
  *
@@ -15,7 +20,8 @@
  * indistinguishable from the ledger (`.claude/rules/host-resources.md` § HR-105,
  * "a rule you cannot falsify is not a rule"). The run event is emitted
  * unconditionally — including on every abort path, where it carries an
- * `aborted` discriminator (`malformed-json` | `filesystem-error` |
+ * `aborted` discriminator (`missing-vault-dir` | `vault-not-canonical` |
+ * `missing-source` | `malformed-json` | `filesystem-error` |
  * `unexpected-error`). So `total: 0` is a MEASURED zero, a partial count is a
  * LABELLED partial rather than a silent one, and the record's absence — and
  * nothing else — is the broken-emitter signal.
@@ -163,9 +169,13 @@ export async function emitMirrorEvent({
  * @param {Record<string, number>} [opts.actionBreakdown] — per-action counts;
  *   only actions observed at least once appear.
  * @param {boolean} opts.dryRun — whether this run wrote anything at all.
- * @param {'malformed-json'|'filesystem-error'|'unexpected-error'} [opts.aborted]
+ * @param {'missing-vault-dir'|'vault-not-canonical'|'missing-source'|'malformed-json'|'filesystem-error'|'unexpected-error'} [opts.aborted]
  *   Present ONLY when the run exited before its normal tail. OMITTED on a
- *   complete run — absent means "ran to the end", never "unknown".
+ *   complete run — absent means "ran to the end", never "unknown". The first
+ *   three values are PRE-LOOP aborts (#1151): the run never reached its first
+ *   entry, so all five counters are `0` and that zero is the point — without a
+ *   record, a mirror that never started is indistinguishable from one that was
+ *   never invoked.
  * @returns {Promise<void>}
  */
 export async function emitMirrorRunEvent({
