@@ -42,11 +42,20 @@ const DEAD_PID = 999999;
 
 let repoRoot;
 
+let origAliasFile;
+
 beforeEach(() => {
   repoRoot = mkdtempSync(join(tmpdir(), 'session-lock-test-'));
+  // #1072: acquire()/forceAcquire() record this machine's hostname in the
+  // self-alias ledger. Redirect it into the fixture so the suite never writes
+  // into the operator's real ~/.config/session-orchestrator/.
+  origAliasFile = process.env.SO_HOST_ALIASES_FILE;
+  process.env.SO_HOST_ALIASES_FILE = join(repoRoot, 'host-aliases.json');
 });
 
 afterEach(() => {
+  if (origAliasFile !== undefined) process.env.SO_HOST_ALIASES_FILE = origAliasFile;
+  else delete process.env.SO_HOST_ALIASES_FILE;
   rmSync(repoRoot, { recursive: true, force: true });
 });
 
@@ -359,7 +368,7 @@ describe('acquire() — #744 heartbeat-first liveness', () => {
     expect(result.reason).toBe('stale-heartbeat');
   });
 
-  it('case 6: checkStale().isLive is true on fresh-heartbeat + dead-PID (pidAlive no longer computed)', () => {
+  it('case 6: checkStale().isLive is true on fresh-heartbeat + dead-PID (the pid is never consulted)', () => {
     const now = new Date().toISOString();
     writeLockFile(repoRoot, {
       session_id: 'sess-744-checkstale',
@@ -373,8 +382,10 @@ describe('acquire() — #744 heartbeat-first liveness', () => {
 
     const result = checkStale({ repoRoot });
 
-    // #1137: pidAlive is retained for shape back-compat but always null.
-    expect(result.pidAlive).toBeNull();
+    // #1137 stopped computing `pidAlive`; #1151 removed the always-null stub
+    // outright. Assert ABSENCE, not null — that is what catches a reintroduced
+    // pid probe, which a `toBeNull()` would silently accept as unchanged.
+    expect(Object.hasOwn(result, 'pidAlive')).toBe(false);
     expect(result.isLive).toBe(true);
   });
 });
@@ -1065,7 +1076,7 @@ describe('checkStale', () => {
     expect(result.lock).toBeNull();
     expect(result.ageHours).toBeNull();
     expect(result.ttlExpired).toBe(false);
-    expect(result.pidAlive).toBeNull();
+    expect(Object.hasOwn(result, 'pidAlive')).toBe(false);
     expect(result.host).toBeNull();
     expect(result.sameHost).toBe(false);
   });
@@ -1093,7 +1104,7 @@ describe('checkStale', () => {
     expect(result.ageHours).toBeGreaterThan(4);
   });
 
-  it('cross-host lock: sameHost=false and pidAlive=null (never computed since #1137)', () => {
+  it('cross-host lock: sameHost=false and no pidAlive field (#1151 — the stub is gone)', () => {
     const crossHostLock = {
       session_id: 'sess-remote',
       started_at: new Date().toISOString(),
@@ -1111,11 +1122,11 @@ describe('checkStale', () => {
 
     expect(result.exists).toBe(true);
     expect(result.sameHost).toBe(false);
-    expect(result.pidAlive).toBeNull();
+    expect(Object.hasOwn(result, 'pidAlive')).toBe(false);
     expect(result.host).toBe('other-host-that-does-not-exist');
   });
 
-  it('same-host lock with dead PID: pidAlive is null (#1137 — no longer computed)', () => {
+  it('same-host lock with dead PID: no pidAlive field at all (#1151)', () => {
     const lockWithDeadPid = {
       session_id: 'sess-dead-pid',
       started_at: new Date().toISOString(),
@@ -1133,7 +1144,7 @@ describe('checkStale', () => {
 
     expect(result.exists).toBe(true);
     expect(result.sameHost).toBe(true);
-    expect(result.pidAlive).toBeNull();
+    expect(Object.hasOwn(result, 'pidAlive')).toBe(false);
   });
 });
 
@@ -1817,5 +1828,113 @@ describe('Issue #596 fault-injection — createSessionLockExclusive & acquire() 
     const onDisk = JSON.parse(originalRead(lockFile, 'utf8'));
     expect(onDisk.session_id).toBe('sess-existing-winner');
     expect(onDisk.mode).toBe('feature');
+  });
+});
+
+// ===========================================================================
+// #1072 — host identity on the session lock
+// ===========================================================================
+//
+// Bug: os.hostname() is not stable on a single machine (measured 2026-08-24 on
+// the reference host: `Mac.home` and `Bernhards-MacBook-Pro.local` ten minutes
+// apart). `lock.host === os.hostname()` therefore reported the machine's OWN
+// lock as belonging to another machine.
+
+describe('#1072 — session lock host identity', () => {
+  const localBase = hostname().replace(/\.(local|home|lan|localdomain)$/i, '').toLowerCase();
+
+  it('a newly written lock carries the additive normalised host_id', () => {
+    const result = acquire({ sessionId: 'hostid-1', mode: 'deep', repoRoot });
+
+    expect(result.ok).toBe(true);
+    // Raw host preserved — it is an on-the-wire event field.
+    expect(result.lock.host).toBe(hostname());
+    expect(result.lock.host_id).toBe(localBase);
+    expect(readLock({ repoRoot }).host_id).toBe(localBase);
+  });
+
+  it('forceAcquire writes host_id too', () => {
+    const result = forceAcquire({ sessionId: 'hostid-2', mode: 'deep', repoRoot });
+    expect(result.ok).toBe(true);
+    expect(result.lock.host_id).toBe(localBase);
+  });
+
+  it('checkStale().sameHost is true for a SUFFIX VARIANT of this hostname', () => {
+    // Before the fix this was false, so the recovery flow told the operator the
+    // lock belonged to "another machine" and refused to reclaim it.
+    mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
+    writeFileSync(join(repoRoot, LOCK_PATH), JSON.stringify({
+      session_id: 'variant-host',
+      started_at: new Date(Date.now() - 10 * 3600 * 1000).toISOString(),
+      last_heartbeat: new Date(Date.now() - 10 * 3600 * 1000).toISOString(),
+      mode: 'deep',
+      pid: DEAD_PID,
+      host: `${localBase}.home`,
+      ttl_hours: 4,
+    }, null, 2));
+
+    const stale = checkStale({ repoRoot });
+
+    expect(stale.exists).toBe(true);
+    expect(stale.sameHost).toBe(true);
+    expect(stale.host).toBe(`${localBase}.home`);
+  });
+
+  it('checkStale().sameHost stays false for a genuinely foreign host', () => {
+    mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
+    writeFileSync(join(repoRoot, LOCK_PATH), JSON.stringify({
+      session_id: 'foreign-host',
+      started_at: new Date().toISOString(),
+      last_heartbeat: new Date().toISOString(),
+      mode: 'deep',
+      pid: DEAD_PID,
+      host: 'a-different-host',
+      ttl_hours: 4,
+    }, null, 2));
+
+    expect(checkStale({ repoRoot }).sameHost).toBe(false);
+  });
+
+  it('acquire records this machine\'s hostname in the alias ledger', async () => {
+    acquire({ sessionId: 'alias-rec', mode: 'deep', repoRoot });
+    const { readHostAliases } = await import('@lib/host-identity.mjs');
+    expect(readHostAliases()).toContain(localBase);
+  });
+
+  it('prefers host_id over a divergent host, and an EMPTY host_id falls back instead of reading cross-host', () => {
+    const writeLock = (body) => {
+      mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
+      writeFileSync(join(repoRoot, LOCK_PATH), JSON.stringify({
+        session_id: 'hostid-fallback',
+        started_at: new Date(Date.now() - 10 * 3600 * 1000).toISOString(),
+        last_heartbeat: new Date(Date.now() - 10 * 3600 * 1000).toISOString(),
+        mode: 'deep',
+        pid: DEAD_PID,
+        ttl_hours: 4,
+        ...body,
+      }, null, 2));
+    };
+
+    // (a) host_id WINS over a divergent raw host — the normalised field is the
+    // authority, so a stale `host` spelling cannot drag the verdict foreign.
+    writeLock({ host_id: localBase, host: 'a-different-host' });
+    expect(checkStale({ repoRoot }).sameHost).toBe(true);
+
+    // (b) The `??` bug: an EMPTY host_id is not null/undefined, so `??` kept it
+    // and hostnamesMatch('', …) returned false — this machine read its OWN
+    // lock as cross-host, which disables stale detection entirely (PSA-003
+    // never reaps cross-host). `||` (via lockHostCandidate) falls back to
+    // `host` and the verdict is same-host again.
+    writeLock({ host_id: '', host: `${localBase}.home` });
+    expect(checkStale({ repoRoot }).sameHost).toBe(true);
+
+    // Whitespace-only is the same class of value — truthy, but no identity.
+    writeLock({ host_id: '   ', host: `${localBase}.local` });
+    expect(checkStale({ repoRoot }).sameHost).toBe(true);
+
+    // (c) The invariant the fallback must NOT widen: an empty host_id on a
+    // genuinely foreign lock still reads cross-host.
+    writeLock({ host_id: '', host: 'a-different-host' });
+    expect(checkStale({ repoRoot }).sameHost).toBe(false);
   });
 });

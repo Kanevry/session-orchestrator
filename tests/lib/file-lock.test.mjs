@@ -403,3 +403,108 @@ describe('isPidAliveOnHost', () => {
     expect(isPidAliveOnHost(DEAD_PID)).toBe(false);
   });
 });
+
+// ===========================================================================
+// #1072 — host identity is normalised, not a raw os.hostname() string
+// ===========================================================================
+//
+// Bug: os.hostname() flips spelling on a single machine (measured 2026-08-24:
+// `Mac.home` and `Bernhards-MacBook-Pro.local` ten minutes apart on the same
+// host). `existing.host === os.hostname()` then reports `cross-host`, and
+// cross-host bodies are NEVER stale by design — so a dead holder's lock
+// survived for the full acquire timeout instead of being overridden.
+
+describe('tryAcquireFileLock — #1072 host-spelling variants are same-host', () => {
+  const localBase = hostname().replace(/\.(local|home|lan|localdomain)$/i, '');
+
+  it('overrides a stale lock written under a SUFFIX VARIANT of this hostname', () => {
+    mkdirSync(join(dir, 'sub'), { recursive: true });
+    writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: DEAD_PID, host: `${localBase}.home`, acquiredAt: new Date().toISOString() }),
+    );
+    const warn = vi.fn();
+
+    const result = tryAcquireFileLock(lockPath, { staleCheck: 'pid', warn });
+
+    // Before the fix this returned { acquired:false, reason:'held' } because
+    // the body was classified cross-host and cross-host is never stale.
+    expect(result.acquired).toBe(true);
+    expect(warn).toHaveBeenCalled();
+    expect(readLockBody().pid).toBe(process.pid);
+  });
+
+  it('still refuses to override a genuinely foreign host (PSA-003 invariant intact)', () => {
+    mkdirSync(join(dir, 'sub'), { recursive: true });
+    writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: DEAD_PID, host: 'a-different-host', acquiredAt: new Date().toISOString() }),
+    );
+
+    const result = tryAcquireFileLock(lockPath, { staleCheck: 'pid' });
+
+    expect(result.acquired).toBe(false);
+    expect(result.reason).toBe('held');
+    expect(readLockBody().pid).toBe(DEAD_PID);
+  });
+
+  it('writes an additive normalised host_id alongside the raw host', () => {
+    const result = tryAcquireFileLock(lockPath, { staleCheck: 'pid' });
+    expect(result.body.host).toBe(hostname());
+    expect(result.body.host_id).toBe(localBase.toLowerCase());
+    expect(readLockBody().host_id).toBe(localBase.toLowerCase());
+  });
+});
+
+describe('releaseFileLock — #1072 owner-match survives a hostname flip', () => {
+  const localBase = hostname().replace(/\.(local|home|lan|localdomain)$/i, '');
+
+  it('releases our own lock recorded under a different spelling of this host', () => {
+    mkdirSync(join(dir, 'sub'), { recursive: true });
+    writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: process.pid, host: `${localBase}.LOCAL`, acquiredAt: new Date().toISOString() }),
+    );
+
+    // Before the fix: { ok:false, reason:'not-owner' } — a process could not
+    // release the lock it had written itself.
+    expect(releaseFileLock(lockPath)).toEqual({ ok: true });
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  it('still refuses to release a foreign host\'s lock', () => {
+    mkdirSync(join(dir, 'sub'), { recursive: true });
+    writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: process.pid, host: 'a-different-host', acquiredAt: new Date().toISOString() }),
+    );
+
+    expect(releaseFileLock(lockPath)).toEqual({ ok: false, reason: 'not-owner' });
+    expect(existsSync(lockPath)).toBe(true);
+  });
+
+  it('prefers host_id over a divergent host, and an EMPTY host_id falls back instead of reading cross-host', () => {
+    const writeBody = (body) => {
+      mkdirSync(join(dir, 'sub'), { recursive: true });
+      writeFileSync(
+        lockPath,
+        JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString(), ...body }),
+      );
+    };
+
+    // host_id wins over a divergent raw host.
+    writeBody({ host_id: localBase.toLowerCase(), host: 'a-different-host' });
+    expect(releaseFileLock(lockPath)).toEqual({ ok: true });
+
+    // The `??` bug: an empty host_id is neither null nor undefined, so `??`
+    // kept it, hostnamesMatch('', …) was false, and a process could not
+    // release the lock it had written itself.
+    writeBody({ host_id: '', host: `${localBase}.home` });
+    expect(releaseFileLock(lockPath)).toEqual({ ok: true });
+
+    // The invariant the fallback must NOT widen.
+    writeBody({ host_id: '', host: 'a-different-host' });
+    expect(releaseFileLock(lockPath)).toEqual({ ok: false, reason: 'not-owner' });
+    expect(existsSync(lockPath)).toBe(true);
+  });
+});

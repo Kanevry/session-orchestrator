@@ -157,8 +157,14 @@ Where `sessionId` is the physical raw identity for this invocation: the native h
    - Present a choice via `AskUserQuestion`:
      ```js
      // `heartbeatAgeMinutes` and `ageHours` come straight off the acquire() result (#1137);
-     // `sameHost` is not on the result — compute it first:
-     const sameHost = existingLock.host === os.hostname();
+     // `sameHost` is not on the result — compute it first. Use hostnamesMatch, NEVER a raw
+     // `===` against os.hostname(): the hostname flips spelling on a single machine
+     // (measured 2026-08-24: `Mac.home` and `Bernhards-MacBook-Pro.local` ten minutes apart),
+     // so a raw comparison labels this machine's OWN lock "another machine" (#1072).
+     // `||`, not `??` — an EMPTY-STRING host_id must fall back to `host`, or
+     // hostnamesMatch('', …) is false and this machine reads its own lock as
+     // cross-host. Production uses `lockHostCandidate()` from host-identity.mjs.
+     const sameHost = hostnamesMatch(existingLock.host_id || existingLock.host, os.hostname());
      AskUserQuestion({
        questions: [{
          question: `A stale session lock is in the way — started ${ageHours}h ago on host=${existingLock.host}${sameHost ? '' : ' (another machine)'}, its ttl=${existingLock.ttl_hours}h has expired, and its last heartbeat was ${Math.round(heartbeatAgeMinutes)} minutes ago. Reclaim it?`,
@@ -189,11 +195,11 @@ Where `sessionId` is the physical raw identity for this invocation: the native h
 
 ### Cross-host behaviour
 
-When `existingLock.host !== os.hostname()`, the lock was written on another machine and nothing local can corroborate its heartbeat (`pidAlive` is `null` everywhere since #1137 and no longer distinguishes the cases). In this case:
+When `hostnamesMatch(existingLock.host_id || existingLock.host, os.hostname())` is **false** — never a raw `existingLock.host !== os.hostname()`, which labels this machine's own lock "another machine" the moment the hostname flips spelling (#1072; mirror the Phase-1.2 snippet above) — the lock was written on another machine and nothing local can corroborate its heartbeat. `checkStale()` carries no `pidAlive` field at all (REMOVED in #1151; #1137 had left it as an always-`null` stub) — `heartbeatAgeMinutes` is the magnitude to reason from, and `isLive` the verdict. In this case:
 - For `reason === 'active'`: the recommendation is **Abort** — cross-host locks cannot be verified as dead.
 - For stale reasons: the recommendation is still **Reclaim** only if TTL is clearly expired (>2× ttl_hours). Otherwise default to **Abort**.
 - **Never auto-reclaim cross-host locks** under any circumstance — always present the AUQ and let the user decide.
-- The AUQ question text for cross-host cases should note: `"(cross-host — PID liveness cannot be verified)"`.
+- The AUQ question text for cross-host cases should note: `"(cross-host — the heartbeat cannot be corroborated locally)"`. Do NOT phrase it as PID liveness: the pid on a lock belongs to the ephemeral writer subprocess, not the session, and is never probed (#1137/#1151).
 
 ## Phase 1.2.1: Peer-Guard (Epic #583 defense-in-depth)
 

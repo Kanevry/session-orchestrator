@@ -11,6 +11,11 @@ import {
   collectPrivateInfo,
   getHostFingerprint,
   resolveSalt,
+  stableHostname,
+  hostnamesMatch,
+  lockHostCandidate,
+  recordHostAlias,
+  readHostAliases,
 } from '@lib/host-identity.mjs';
 
 describe('host-identity', () => {
@@ -225,6 +230,184 @@ describe('host-identity', () => {
       const content = await readFile(fixture, 'utf8');
       const match = content.match(/^\s*hash-salt:\s*["']?([^"'\n\r]+)["']?\s*$/m);
       expect(match[1].trim()).toBe('my-custom-salt');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Stable host identity (#1072)
+  // -------------------------------------------------------------------------
+  //
+  // The bug: os.hostname() is not stable on a single machine. Measured on the
+  // reference host 2026-08-24, ten minutes apart: `Mac.home` then
+  // `Bernhards-MacBook-Pro.local`; events.jsonl carries both (106× / 27×).
+  // Every `lock.host === os.hostname()` comparison in the lock family then
+  // fails against the machine's OWN lock.
+
+  describe('stableHostname', () => {
+    it('strips a .home suffix and lowercases (the measured spelling A)', () => {
+      expect(stableHostname('Mac.home')).toBe('mac');
+    });
+
+    it('strips a .local suffix, so the two spellings of one name converge', () => {
+      // Catches: a lock written as `Mac.home` read back as `Mac.local`
+      // classified cross-host, which disables stale detection entirely.
+      expect(stableHostname('Mac.local')).toBe('mac');
+      expect(stableHostname('Mac.home')).toBe(stableHostname('Mac.local'));
+    });
+
+    it('lowercases a bare name', () => {
+      expect(stableHostname('MAC')).toBe('mac');
+    });
+
+    it('strips .lan and .localdomain', () => {
+      expect(stableHostname('foo.lan')).toBe('foo');
+      expect(stableHostname('foo.localdomain')).toBe('foo');
+    });
+
+    it('leaves a real FQDN alone — only local-network suffixes are stripped', () => {
+      // Catches an over-eager "drop the last label" rule that would collapse
+      // two genuinely different hosts in the same domain into one identity.
+      expect(stableHostname('a.b.example.com')).toBe('a.b.example.com');
+    });
+
+    it('strips exactly ONE suffix', () => {
+      expect(stableHostname('foo.lan.local')).toBe('foo.lan');
+    });
+
+    it('is safe on empty, whitespace, and non-string input', () => {
+      expect(stableHostname('')).toBe('');
+      expect(stableHostname('   ')).toBe('');
+      expect(stableHostname(null)).toBe('');
+      expect(stableHostname(42)).toBe('');
+      // A bare suffix must not normalise away to nothing.
+      expect(stableHostname('.local')).toBe('.local');
+    });
+
+    it('defaults to the local hostname when called with no argument', () => {
+      // Documents JS default-parameter semantics: `undefined` takes the
+      // default, it does NOT mean "empty".
+      expect(stableHostname()).toBe(stableHostname(os.hostname()));
+      expect(stableHostname(undefined)).toBe(stableHostname(os.hostname()));
+    });
+  });
+
+  describe('hostnamesMatch', () => {
+    it('matches a suffix pair without consulting any ledger', () => {
+      expect(hostnamesMatch('Mac.home', 'Mac.local', { aliases: [] })).toBe(true);
+    });
+
+    it('does NOT match the two measured spellings on normalisation alone', () => {
+      // The load-bearing negative: suffix-stripping alone leaves
+      // `mac` !== `bernhards-macbook-pro`, which is why layer 2 exists.
+      expect(hostnamesMatch('Mac.home', 'Bernhards-MacBook-Pro.local', { aliases: [] })).toBe(false);
+    });
+
+    it('matches the two measured spellings ONLY when both are in the alias set', () => {
+      // THE regression test for #1072: this is the exact pair that made a
+      // session unable to reap, override, or release its own lock.
+      const aliases = ['Mac.home', 'Bernhards-MacBook-Pro'];
+      expect(hostnamesMatch('Mac.home', 'Bernhards-MacBook-Pro.local', { aliases })).toBe(true);
+      // One-sided membership is not enough — else any name could pair with a
+      // single known alias and the cross-host invariant would collapse.
+      expect(hostnamesMatch('Mac.home', 'some-other-box', { aliases })).toBe(false);
+    });
+
+    it('never matches a genuinely foreign host', () => {
+      expect(hostnamesMatch('a-different-host', 'Mac.home', { aliases: ['Mac.home'] })).toBe(false);
+      expect(hostnamesMatch('a-different-host', 'Mac.home')).toBe(false);
+    });
+
+    it('returns false when either side is empty or non-string', () => {
+      expect(hostnamesMatch('', 'mac')).toBe(false);
+      expect(hostnamesMatch('mac', undefined)).toBe(false);
+      expect(hostnamesMatch(null, null)).toBe(false);
+    });
+  });
+
+  describe('host-alias ledger', () => {
+    let origAliasFile;
+
+    beforeEach(() => {
+      origAliasFile = process.env.SO_HOST_ALIASES_FILE;
+      // MANDATORY: never let a test write into the operator's real ~/.config.
+      process.env.SO_HOST_ALIASES_FILE = path.join(tmpDir, 'host-aliases.json');
+    });
+
+    afterEach(() => {
+      if (origAliasFile !== undefined) process.env.SO_HOST_ALIASES_FILE = origAliasFile;
+      else delete process.env.SO_HOST_ALIASES_FILE;
+    });
+
+    it('records normalised names, deduplicates, and reads them back', () => {
+      expect(readHostAliases()).toEqual([]);
+      recordHostAlias('Mac.home');
+      recordHostAlias('Bernhards-MacBook-Pro.local');
+      recordHostAlias('MAC.LOCAL'); // same machine, third spelling → dedup to `mac`
+      expect(readHostAliases()).toEqual(['mac', 'bernhards-macbook-pro']);
+    });
+
+    it('writes the ledger 0o600 — it names the operator\'s machine', async () => {
+      recordHostAlias('Mac.home');
+      const { statSync } = await import('node:fs');
+      const mode = statSync(process.env.SO_HOST_ALIASES_FILE).mode & 0o777;
+      expect(mode).toBe(0o600);
+    });
+
+    it('caps the ledger and keeps the most recent names', () => {
+      for (let i = 0; i < 20; i += 1) recordHostAlias(`host-${i}`);
+      const aliases = readHostAliases();
+      expect(aliases).toHaveLength(16);
+      expect(aliases).toContain('host-19');
+      expect(aliases).not.toContain('host-0');
+    });
+
+    it('is best-effort: never throws and records nothing for an empty name', () => {
+      expect(() => recordHostAlias('')).not.toThrow();
+      expect(() => recordHostAlias(null)).not.toThrow();
+      expect(readHostAliases()).toEqual([]);
+    });
+
+    it('fails CLOSED — an unreadable/malformed ledger degrades to normalised-equal only', async () => {
+      await writeFile(process.env.SO_HOST_ALIASES_FILE, '{ not json', 'utf8');
+      expect(readHostAliases()).toEqual([]);
+      // Suffix pair still matches (normalisation needs no ledger)…
+      expect(hostnamesMatch('Mac.home', 'Mac.local')).toBe(true);
+      // …but the alias-only pair does not. A broken ledger can only refuse a
+      // match, never manufacture one.
+      expect(hostnamesMatch('Mac.home', 'Bernhards-MacBook-Pro.local')).toBe(false);
+    });
+
+    it('a recorded pair then matches through the on-disk ledger', () => {
+      recordHostAlias('Mac.home');
+      recordHostAlias('Bernhards-MacBook-Pro.local');
+      expect(hostnamesMatch('Mac.home', 'Bernhards-MacBook-Pro.local')).toBe(true);
+      expect(hostnamesMatch('Mac.home', 'a-different-host')).toBe(false);
+    });
+  });
+
+  describe('lockHostCandidate', () => {
+    it('prefers host_id over a divergent host', () => {
+      expect(lockHostCandidate({ host_id: 'mac', host: 'bernhards-macbook-pro.local' })).toBe('mac');
+    });
+
+    it('falls back to host when host_id is EMPTY, not just null/undefined', () => {
+      // The `??` bug: an empty-string host_id short-circuits to '', and
+      // hostnamesMatch('', x) is false by contract — so the machine reads its
+      // OWN lock as cross-host and stale detection switches itself off.
+      for (const empty of ['', '   ', null, undefined]) {
+        expect(lockHostCandidate({ host_id: empty, host: 'Mac.home' })).toBe('Mac.home');
+        expect(hostnamesMatch(lockHostCandidate({ host_id: empty, host: 'Mac.home' }), 'Mac.local'))
+          .toBe(true);
+      }
+    });
+
+    it('never throws and yields \'\' when there is nothing to go on', () => {
+      expect(lockHostCandidate(null)).toBe('');
+      expect(lockHostCandidate(undefined)).toBe('');
+      expect(lockHostCandidate({})).toBe('');
+      expect(lockHostCandidate({ host_id: 42, host: 0 })).toBe('');
+      // '' still never matches — the fallback widens nothing.
+      expect(hostnamesMatch(lockHostCandidate({}), 'Mac.local')).toBe(false);
     });
   });
 });

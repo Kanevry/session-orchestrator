@@ -28,6 +28,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 import { tryAcquireFileLock } from '../file-lock.mjs';
+import { hostnamesMatch, lockHostCandidate, stableHostname } from '../host-identity.mjs';
 import { nowIso, delay, parseLockBody } from './lock-body.mjs';
 
 // ---------------------------------------------------------------------------
@@ -67,7 +68,9 @@ function stagingFenceLockPathFor(repoRoot) {
 function buildStagingFenceLockBody({ holder }) {
   return {
     pid: process.pid,
+    // `host` raw + `host_id` normalised (#1072) — see buildStateLockBody.
     host: os.hostname(),
+    host_id: stableHostname(),
     acquiredAt: nowIso(),
     holder: typeof holder === 'string' && holder.length > 0 ? holder : `pid-${process.pid}`,
   };
@@ -178,7 +181,8 @@ export function releaseStagingFenceLock({ repoRoot, holder } = {}) {
 
   const ownerMatch = typeof holder === 'string' && holder.length > 0
     ? lock.holder === holder
-    : lock.pid === process.pid && lock.host === os.hostname();
+    // #1072: alias-aware host identity, not a raw os.hostname() comparison.
+    : lock.pid === process.pid && hostnamesMatch(lockHostCandidate(lock), os.hostname());
 
   if (!ownerMatch) {
     return { ok: false, reason: 'not-owner' };

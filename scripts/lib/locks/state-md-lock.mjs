@@ -41,6 +41,7 @@ import crypto from 'node:crypto';
 
 import { _parseStateMdLock } from '../config/state-md-lock.mjs';
 import { tryAcquireFileLock } from '../file-lock.mjs';
+import { hostnamesMatch, lockHostCandidate, stableHostname } from '../host-identity.mjs';
 import { nowIso, delay, parseLockBody } from './lock-body.mjs';
 
 // ---------------------------------------------------------------------------
@@ -78,7 +79,11 @@ function stateLockPathFor(repoRoot) {
 function buildStateLockBody({ holder }) {
   return {
     pid: process.pid,
+    // `host` raw + `host_id` normalised (#1072). The written body comes from
+    // tryAcquireFileLock, which carries the same pair — this keeps the shape
+    // declared here truthful about what lands on disk.
     host: os.hostname(),
+    host_id: stableHostname(),
     acquiredAt: nowIso(),
     holder: typeof holder === 'string' && holder.length > 0 ? holder : `pid-${process.pid}`,
   };
@@ -224,7 +229,9 @@ export function releaseStateLock({ repoRoot, sessionId, holder } = {}) {
   const expectedHolder = holder ?? sessionId ?? null;
   const ownerMatch = expectedHolder !== null
     ? lock.holder === expectedHolder
-    : lock.pid === process.pid && lock.host === os.hostname();
+    // #1072: alias-aware host identity — a raw comparison strands the lock as
+    // 'not-owner' once os.hostname() flips spelling mid-session.
+    : lock.pid === process.pid && hostnamesMatch(lockHostCandidate(lock), os.hostname());
 
   if (!ownerMatch) {
     return { ok: false, reason: 'not-owner' };

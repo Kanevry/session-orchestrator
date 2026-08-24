@@ -27,7 +27,9 @@
  * - Strip all absolute paths (macOS, Linux system paths, Windows)
  * - Redact IPv4 addresses
  * - Redact GitHub/GitLab URLs containing org/repo paths
- * - Replace hostname references with `host_class` label
+ * - Replace hostname references with `host_class` label — form-based for
+ *   suffixed names, PLUS value-based for this host's own suffix-stripped
+ *   `host_id` spellings (#1072 follow-up; see `redactLocalHostNames`)
  * - Redact email, git author, token patterns
  * - No free-form text from user — only structured fields
  * - Round ram/cpu to 1 GB / 10% buckets
@@ -45,6 +47,7 @@
 
 import { writeFile, mkdir } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   readLearnings,
@@ -58,6 +61,7 @@ import {
 import { findProjectRoot, resolveInstructionFile, expandTilde } from './lib/common.mjs';
 import { parseSessionConfig } from './lib/config.mjs';
 import { createSecretValueMasker } from './lib/secret-masker.mjs';
+import { stableHostname, readHostAliases } from './lib/host-identity.mjs';
 
 // Vault-relative default write target (Epic #774 — docs Public-Split removed
 // the prior in-repo generated telemetry doc in favor of the private Meta-Vault).
@@ -138,6 +142,137 @@ const SIGNED_OFF_RE = /Signed-off-by:[^\n]+/g;
 // those never appear with a .local/.lan/.home suffix.
 const HOSTNAME_RE = /\b[A-Za-z0-9]+(?:[-.][A-Za-z0-9]+)*\.(?:local|lan|home|internal|corp)\b/g;
 
+/** Marker for every host-identifying redaction — form-based AND value-based. */
+const HOSTNAME_MARKER = '<redacted-hostname>';
+
+// ---------------------------------------------------------------------------
+// Value-based host-identity redaction (#1072 follow-up)
+// ---------------------------------------------------------------------------
+//
+// HOSTNAME_RE above is FORM-based and fires only on a name that still carries a
+// `.local` / `.lan` / `.home` / `.internal` / `.corp` suffix. The session-lock
+// body's `host_id` field is exactly the suffix-STRIPPED lowercase form that
+// `stableHostname()` produces, so a `host_id` value reaching a learning passes
+// through un-redacted. Measured on the reference host 2026-08-24, before this
+// block existed:
+//
+//   anonymizeString('bernhards-macbook-pro') → 'bernhards-macbook-pro'  (no match)
+//   anonymizeString('mac')                   → 'mac'                    (no match)
+//
+// Widening HOSTNAME_RE to bare labels is NOT the fix: once the suffix is gone a
+// machine name is shape-identical to any other word, so a form rule broad
+// enough to catch it would redact ordinary prose. The discriminating
+// information is not the shape but the VALUE — and the values are known at
+// runtime: `stableHostname(os.hostname())` plus every spelling this machine has
+// recorded about ITSELF in the self-alias ledger (`readHostAliases()`, the
+// #1072 lock-identity ledger). Exact strings, case-insensitive, word-boundary
+// anchored: this host's identifiers precisely, which is the privacy contract.
+//
+// WHERE IT RUNS, AND WHY NOT BESIDE `maskSecretValues` — measured, because the
+// obvious "all value-based rules go first" placement LEAKS. A secret is an
+// opaque span nothing else owns; a hostname is routinely a SUBSTRING of a
+// larger PII span that another rule owns. Two reachable cases, measured
+// 2026-08-24 on the two orderings:
+//
+//   'bernhard@Bernhards-MacBook-Pro.local'
+//     value-first → 'bernhard@<redacted-hostname>'   ← email local-part leaks
+//     host-slot   → '<redacted-email>'
+//   '/Users/bernhards-macbook-pro/Projects/secret-client/app.js'
+//     value-first → '<redacted-path><redacted-hostname>/Projects/secret-client/app.js'
+//     host-slot   → '<redacted-path>'
+//
+// The second is the sharper one: UNIX_PATH_RE's tail class is `[^\s"'<>]*`, so
+// the ANGLE BRACKETS of an early marker truncate the path match and strand the
+// rest of the path in the output. (`[REDACTED]`, the #1025 marker, is
+// bracket-free — which is why that one is safe to run first.) Running LAST
+// among the span rules can never lose a hostname in exchange: every rule here
+// only ever replaces a span WITH the hostname inside it, so the name is gone
+// either way.
+//
+// CEILING (BV-004): on a host whose stable name is an ordinary word — a Mac
+// literally named `mac`, a Raspberry Pi named `pi` — every standalone
+// occurrence of that word in an insight is redacted too. Accepted deliberately,
+// and without a minimum-length floor: over-redaction in a PUBLIC export is the
+// cheap direction, and a length floor would be a silent hole for exactly the
+// short names that are most common. Revisit trigger: an exported document whose
+// readability is measurably degraded by this collateral.
+
+/** Optional trailing local-network suffix, so `mac.local` is consumed whole. */
+const LOCAL_SUFFIX_GROUP = '(?:\\.(?:local|lan|home|localdomain|internal|corp))?';
+
+/**
+ * Escape regex metacharacters so a hostname is matched as a literal.
+ * @param {string} s
+ * @returns {string}
+ */
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Compile one alternation over the given names, or `null` when nothing is left
+ * to match. Longest name first, because regex alternation is leftmost-first:
+ * with `mac` ahead of `mac-pro`, the shorter name would win and strand `-pro`.
+ *
+ * @param {string[]} names — raw or normalised hostnames; normalised here.
+ * @returns {RegExp|null}
+ */
+function compileHostNameRe(names) {
+  const uniq = [
+    ...new Set(names.map((n) => stableHostname(typeof n === 'string' ? n : '')).filter(Boolean)),
+  ].sort((a, b) => b.length - a.length || a.localeCompare(b));
+  if (uniq.length === 0) return null;
+  return new RegExp(`\\b(?:${uniq.map(escapeRegExp).join('|')})${LOCAL_SUFFIX_GROUP}\\b`, 'gi');
+}
+
+/**
+ * Lazily-built, process-wide alternation over THIS host's own names — the same
+ * once-per-process shape as `_secretMasker` below, for the same reason:
+ * `readHostAliases()` is a synchronous file read, and rebuilding per record
+ * would put one read on EVERY insight and EVERY evidence string.
+ *
+ * Tests either pass `names` to {@link redactLocalHostNames} directly, or
+ * re-import the module after `vi.resetModules()` to rebuild it against a
+ * stubbed `SO_HOST_ALIASES_FILE` (the shape the #1025 block in
+ * `tests/scripts/export-hw-learnings.test.mjs` already uses).
+ *
+ * @type {RegExp|null|undefined} `undefined` = not built yet; `null` = nothing to redact.
+ */
+let _localHostRe;
+
+/**
+ * Redact THIS machine's own hostnames — any recorded spelling, with or without
+ * a local-network suffix — from a free-form string.
+ *
+ * Fail-soft: a non-string passes through by reference, and an unresolvable host
+ * identity makes this the identity function. Redaction must never be the reason
+ * an export dies.
+ *
+ * @param {string} s
+ * @param {string[]} [names] — override the name set (tests). Omitted → this
+ *   host's `os.hostname()` plus the self-alias ledger, resolved once.
+ * @returns {string}
+ */
+export function redactLocalHostNames(s, names) {
+  if (typeof s !== 'string' || s === '') return s;
+
+  let re;
+  if (Array.isArray(names)) {
+    re = compileHostNameRe(names);
+  } else {
+    if (_localHostRe === undefined) {
+      try {
+        _localHostRe = compileHostNameRe([stableHostname(os.hostname()), ...readHostAliases()]);
+      } catch {
+        _localHostRe = null;
+      }
+    }
+    re = _localHostRe;
+  }
+
+  return re ? s.replace(re, HOSTNAME_MARKER) : s;
+}
+
 // ---------------------------------------------------------------------------
 // Value-based secret masking (#1025) — the SECOND half of the pipeline
 // ---------------------------------------------------------------------------
@@ -207,7 +342,13 @@ export function anonymizeString(s) {
   out = out.replace(VCS_URL_RE, '<VCS-URL>');
   for (const re of ABS_PATH_RES) out = out.replace(re, '<redacted-path>');
   out = out.replace(IPV4_RE, '<IP>');
-  out = out.replace(HOSTNAME_RE, '<redacted-hostname>');
+  // Both host rules occupy the SAME slot — after every rule that owns a span a
+  // hostname can sit inside (email domain, home directory, VCS URL), before
+  // TOKEN_RE. The value rule runs first of the two so it consumes name+suffix
+  // whole; see the "WHERE IT RUNS" measurement above for why neither may move
+  // to the front of the chain.
+  out = redactLocalHostNames(out);
+  out = out.replace(HOSTNAME_RE, HOSTNAME_MARKER);
   out = out.replace(TOKEN_RE, '<redacted-token>');
   return out;
 }

@@ -30,11 +30,26 @@
  */
 
 import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  chmodSync,
+  mkdirSync,
+  unlinkSync,
+} from 'node:fs';
 import { digestSha256WithSalt } from './crypto-digest-utils.mjs';
 import path from 'node:path';
 import os from 'node:os';
-import { SO_OS, SO_PLATFORM } from './platform.mjs';
+// NOTE (#1072 gate fix): platform.mjs is deliberately NOT imported statically.
+// Its module level computes SO_PLATFORM/SO_PLUGIN_ROOT via detectPlatform()/
+// resolvePluginRoot(), which walk the filesystem (existsSync + readFileSync of
+// package.json up the tree). session-lock.mjs now imports this module, which
+// put those import-time reads into every graph that imports session-lock —
+// including fs-mocked test graphs (tests/lib/vault-mirror/process.test.mjs went
+// red: the walk consumed the mocks' sequenced return values). The only two
+// consumers (SO_OS/SO_PLATFORM in collectFingerprint) are async — load lazily.
 
 const FINGERPRINT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const PLACEHOLDER_SALT = 'env-aware-v1-default-salt-replaced-by-owner-yaml';
@@ -98,6 +113,235 @@ export function hashHostname(hostname, salt) {
 }
 
 // ---------------------------------------------------------------------------
+// Stable host identity (GitLab #1072)
+// ---------------------------------------------------------------------------
+//
+// `os.hostname()` is NOT stable on a single machine. Measured on the reference
+// host 2026-08-24: two readings ten minutes apart returned `Mac.home` and
+// `Bernhards-MacBook-Pro.local`, and `.orchestrator/metrics/events.jsonl`
+// carries both spellings (106× / 27×). Every `lock.host === os.hostname()`
+// comparison in the lock family therefore fails against the machine's OWN lock
+// after a flip: stale detection reports `cross-host` (and cross-host locks are
+// never reaped or overridden by design, PSA-003), the reaper refuses with
+// `cross-host-requires-operator`, and release owner-match returns `not-owner`.
+//
+// Two independent layers, because one is not enough:
+//   1. `stableHostname()` normalises the SUFFIX difference (`Mac.home` vs
+//      `Mac.local` → `mac`). It cannot bridge `mac` vs `bernhards-macbook-pro`
+//      — those differ before the suffix.
+//   2. The self-alias ledger records every spelling THIS machine has presented
+//      itself under, so `hostnamesMatch()` can bridge the remaining gap. Only
+//      names the local machine wrote about itself ever enter it, which is what
+//      keeps a genuinely foreign host from ever matching.
+
+/**
+ * Suffixes stripped by {@link stableHostname}. mDNS (`.local`), the common
+ * router-assigned search domains (`.home`, `.lan`), and the POSIX default
+ * (`.localdomain`). Deliberately NOT a generic "strip the last label" rule:
+ * `a.b.example.com` is a real FQDN whose labels carry meaning.
+ */
+const LOCAL_HOST_SUFFIXES = ['.local', '.home', '.lan', '.localdomain'];
+
+/**
+ * Normalise a hostname into a comparable form: trimmed, lowercased, with ONE
+ * trailing local-network suffix removed.
+ *
+ * Never throws. A non-string, empty, or whitespace-only input yields `''`
+ * (which {@link hostnamesMatch} treats as "no identity" — it never matches).
+ *
+ * NOTE on the default: `stableHostname()` and `stableHostname(undefined)` both
+ * normalise `os.hostname()`, because that is JavaScript default-parameter
+ * semantics. Pass `''` or `null` to get the empty result.
+ *
+ * @param {string} [raw=os.hostname()]
+ * @returns {string} normalised hostname, or '' when there is nothing to normalise.
+ */
+export function stableHostname(raw = os.hostname()) {
+  if (typeof raw !== 'string') return '';
+  let name = raw.trim().toLowerCase();
+  if (name === '') return '';
+  for (const suffix of LOCAL_HOST_SUFFIXES) {
+    // `name.length > suffix.length` keeps a bare `.local` from normalising to ''.
+    if (name.endsWith(suffix) && name.length > suffix.length) {
+      name = name.slice(0, -suffix.length);
+      break; // ONE suffix only — `foo.lan.local` keeps its inner label.
+    }
+  }
+  return name;
+}
+
+/**
+ * Host-alias ledger path. `SO_HOST_ALIASES_FILE` overrides it — MANDATORY for
+ * tests, which must never write into the operator's real `~/.config`.
+ *
+ * The `.trim() || fallback` shape is deliberate: a whitespace-only env var is
+ * truthy and would otherwise short-circuit the `||` (see `.claude/rules/
+ * development.md` § Error Handling, env-var fallback whitespace trap).
+ *
+ * @returns {string}
+ */
+function _hostAliasesFile() {
+  const override = (process.env.SO_HOST_ALIASES_FILE || '').trim();
+  if (override) return override;
+  return path.join(_privateDir(), 'host-aliases.json');
+}
+
+/**
+ * Named ceiling (BV-004): a machine realistically presents 2–4 spellings of
+ * itself (`os.hostname()`, the mDNS variant, a DHCP-assigned name). 16 bounds
+ * the pathological DHCP-churn case while leaving ample headroom. Revisit if a
+ * real host is ever observed writing more than a handful of distinct names —
+ * beyond that the ledger stops being an identity record and becomes a history.
+ */
+const HOST_ALIASES_MAX = 16;
+
+/**
+ * Synchronous atomic JSON write with an explicit mode. The async twin
+ * `_writeJsonAtomic` below cannot serve the alias ledger: every caller of
+ * {@link recordHostAlias} sits on a SYNCHRONOUS lock path. `io.mjs`'s
+ * `writeJsonAtomicSync` is not reused because it offers no mode argument, and
+ * 0o600 is the whole point of a file that lives beside `host-private.json`.
+ *
+ * @param {string} filePath
+ * @param {*} data
+ * @param {number} mode
+ */
+function _writeJsonAtomicSync(filePath, data, mode) {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    // `flag: 'wx'` + `mode` on the CREATE, never a chmod after the rename.
+    // Two distinct holes closed: `wx` fails with EEXIST rather than following a
+    // pre-planted symlink at the (predictable) tmp path, so an attacker cannot
+    // redirect the write; and the mode is applied at creation, so the file is
+    // never briefly world-readable between `writeFileSync` and `chmodSync` —
+    // the window in which the ledger beside `host-private.json` was readable.
+    writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf8', mode, flag: 'wx' });
+    renameSync(tmp, filePath);
+  } catch (err) {
+    try { unlinkSync(tmp); } catch { /* best effort */ }
+    throw err;
+  }
+  // Belt-and-braces for the pre-existing-target case: `rename` keeps the
+  // SOURCE inode, so the mode above already governs — this only repairs a
+  // umask-widened mode on platforms that ignore the create mode.
+  try { chmodSync(filePath, mode); } catch { /* best effort */ }
+}
+
+/**
+ * Read the self-alias ledger. Returns normalised names.
+ *
+ * Fail-CLOSED by construction: any failure (absent file, unreadable, malformed
+ * JSON, wrong shape) yields `[]`, which reduces {@link hostnamesMatch} to plain
+ * normalised equality. A broken ledger can therefore only ever REFUSE a match
+ * that would otherwise have been made — it can never manufacture one.
+ *
+ * @returns {string[]} normalised alias names; `[]` on any failure.
+ */
+export function readHostAliases() {
+  try {
+    const parsed = JSON.parse(readFileSync(_hostAliasesFile(), 'utf8'));
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set();
+    for (const entry of parsed) {
+      const norm = typeof entry === 'string' ? stableHostname(entry) : '';
+      if (norm) seen.add(norm);
+    }
+    return [...seen];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Record the name this machine currently presents itself under, so a later
+ * reading under a DIFFERENT spelling can still be recognised as the same host.
+ *
+ * Best-effort and idempotent: never throws, never duplicates, and writes
+ * nothing when the name is already present or normalises away to ''. Callers
+ * invoke it once per session-lock acquisition — the one moment we know for a
+ * fact that the current `os.hostname()` belongs to THIS machine.
+ *
+ * @param {string} [name=stableHostname()] — raw or normalised hostname.
+ * @returns {string[]} the ledger contents after the call (`[]` on failure).
+ */
+export function recordHostAlias(name = stableHostname()) {
+  try {
+    const norm = stableHostname(typeof name === 'string' ? name : '');
+    if (!norm) return readHostAliases();
+    const current = readHostAliases();
+    if (current.includes(norm)) return current;
+    // Keep the MOST RECENT names when the cap bites — an old spelling this
+    // machine has not used in 16 renames is the safest one to forget.
+    const next = [...current, norm].slice(-HOST_ALIASES_MAX);
+    _writeJsonAtomicSync(_hostAliasesFile(), next, 0o600);
+    return next;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Decide whether two hostnames name the SAME machine.
+ *
+ * Match when the normalised forms are equal, or when BOTH appear in the
+ * self-alias set (see {@link recordHostAlias}). Requiring both sides to be in
+ * the set is what preserves the cross-host invariants: a foreign host's name
+ * was never written by this machine, so it cannot be in the ledger, so it can
+ * never match — `cross-host` stays `cross-host` (PSA-003).
+ *
+ * The ledger is read ONLY when normalised equality already failed, so the
+ * common same-host path costs no filesystem access even inside a poll loop.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @param {{ aliases?: string[] }} [opts] — inject the alias set (tests, and
+ *   callers that already hold it); omitted → read the ledger.
+ * @returns {boolean}
+ */
+export function hostnamesMatch(a, b, { aliases } = {}) {
+  const normA = stableHostname(typeof a === 'string' ? a : '');
+  const normB = stableHostname(typeof b === 'string' ? b : '');
+  if (!normA || !normB) return false;
+  if (normA === normB) return true;
+
+  const set = Array.isArray(aliases)
+    ? aliases.map((x) => (typeof x === 'string' ? stableHostname(x) : '')).filter(Boolean)
+    : readHostAliases();
+  return set.includes(normA) && set.includes(normB);
+}
+
+/**
+ * Pick the host identity to compare a lock body against: the normalised
+ * `host_id` when it carries one, else the raw pre-#1072 `host`.
+ *
+ * `||`, not `??`, and that is the whole point. `??` falls back on `null` and
+ * `undefined` only, so a lock whose `host_id` is the EMPTY STRING — what a
+ * writer produces when `os.hostname()` momentarily returns '' or whitespace —
+ * short-circuits to `''`, and `hostnamesMatch('', host)` is false by contract
+ * ("no identity never matches"). The machine then reads its OWN lock as
+ * cross-host: stale detection is disabled, the reaper refuses with
+ * `cross-host-requires-operator`, and release returns `not-owner` — the exact
+ * #1072 failure the `host_id` field was added to prevent, re-entered through
+ * the fallback operator. Falling back on '' costs nothing: an empty `host` too
+ * yields '' here, and `hostnamesMatch` still refuses it.
+ *
+ * The `.trim()` extends the same fix one step: a whitespace-only `host_id` is
+ * TRUTHY, so a bare `||` would short-circuit on it exactly as `??` does on `''`
+ * (`.claude/rules/development.md` § Error Handling, env-var fallback whitespace
+ * trap — the same shape, one domain over).
+ *
+ * @param {{ host_id?: unknown, host?: unknown }|null|undefined} lock
+ * @returns {string} raw (un-normalised, but trimmed) candidate name; '' when
+ *   neither field carries a usable value. Never throws.
+ */
+export function lockHostCandidate(lock) {
+  const id = typeof lock?.host_id === 'string' ? lock.host_id.trim() : '';
+  if (id) return id;
+  return typeof lock?.host === 'string' ? lock.host.trim() : '';
+}
+
+// ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
 
@@ -149,6 +393,7 @@ export async function resolveSalt() {
  * @param {string} [opts.salt] — override salt (tests)
  */
 export async function collectFingerprint(opts = {}) {
+  const { SO_OS, SO_PLATFORM } = await import('./platform.mjs');
   const osName = SO_OS;
   const arch = process.arch;
   const cpus = os.cpus() || [];

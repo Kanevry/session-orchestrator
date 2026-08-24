@@ -68,6 +68,7 @@ import path from 'node:path';
 import { enumerateCandidates } from './dispatcher/enumerate.mjs';
 import { readLock, isLockLive, isPidAliveOnHost, LOCK_PATH, DEFAULT_TTL_HOURS } from './session-lock.mjs';
 import { emitEvent } from './events.mjs';
+import { hostnamesMatch, lockHostCandidate } from './host-identity.mjs';
 
 const REAPED_ARCHIVE_SUBDIR = '.orchestrator/tmp/reaped-locks';
 const REAPED_EVENT = 'orchestrator.session.lock.reaped';
@@ -463,7 +464,12 @@ async function evaluateRepo(repoRoot, { nowMs, dryRun, currentSessionId, reapMod
     };
   }
 
-  const ownHost = lock.host === D.hostname();
+  // #1072: alias-aware host identity. A raw comparison classified this
+  // machine's OWN orphaned lock as cross-host after a hostname flip, so it was
+  // never reaped and every subsequent session needed operator intervention.
+  // The invariant is unchanged for a genuinely foreign host: its name was never
+  // written into this machine's self-alias ledger, so it can never match.
+  const ownHost = hostnamesMatch(lockHostCandidate(lock), D.hostname());
 
   // Invariant (c): cross-host leases are NEVER auto-reaped — only listed.
   if (!ownHost) {

@@ -590,3 +590,36 @@ describe('current-session.json orphan sweep', () => {
     expect(csArchiveFiles).toHaveLength(0);
   });
 });
+
+// ===========================================================================
+// #1072 — own-host detection is normalised, not a raw hostname string
+// ===========================================================================
+
+describe('reapRepoLock — #1072 hostname-spelling variants', () => {
+  it('REAPS a dead lock written under a suffix variant of this host', async () => {
+    const startDir = makeStartDir();
+    // Same machine, different spelling — the exact shape that made the reaper
+    // report `cross-host-requires-operator` for the machine's OWN orphan.
+    const repo = makeRepo(startDir, 'variant', lockBody({ offsetHours: 5, host: `${HOST}.local` }));
+    const { deps } = makeDeps({ hostname: `${HOST}.home` });
+
+    const out = await reapStaleLocks({ startDir, now: NOW, dryRun: false, deps });
+
+    expect(out.skipped).toHaveLength(0);
+    expect(out.reaped).toHaveLength(1);
+    expect(existsSync(lockFileOf(repo))).toBe(false);
+  });
+
+  it('still NEVER reaps a genuinely foreign host (invariant c intact)', async () => {
+    const startDir = makeStartDir();
+    const repo = makeRepo(startDir, 'foreign2', lockBody({ offsetHours: 5, host: 'a-different-host' }));
+    const { deps, emit } = makeDeps({ hostname: `${HOST}.local` });
+
+    const out = await reapStaleLocks({ startDir, now: NOW, dryRun: false, deps });
+
+    expect(out.reaped).toHaveLength(0);
+    expect(out.skipped[0].reason).toBe('cross-host-requires-operator');
+    expect(existsSync(lockFileOf(repo))).toBe(true);
+    expect(emit).not.toHaveBeenCalled();
+  });
+});

@@ -64,6 +64,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
+import { stableHostname } from '../scripts/lib/host-identity.mjs';
 if (!shouldRunHook('pre-bash-staging-fence')) process.exit(0);
 
 // ---------------------------------------------------------------------------
@@ -159,7 +160,10 @@ function appendIntent({ fenceFile, agentId, command }) {
     body = {
       agent_id: agentId,
       pid: process.pid,
+      // `host` raw + `host_id` normalised (#1072 — os.hostname() flips spelling
+      // on a single machine, so a raw value is not comparable across writes).
       host: os.hostname(),
+      host_id: stableHostname(),
       started_at: timestamp,
       staged_paths: [],
     };

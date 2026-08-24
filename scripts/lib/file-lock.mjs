@@ -12,8 +12,10 @@
  *   4. live holder OR cross-host → poll until a deadline;
  *   5. owner-guarded release.
  *
- * This module is the single home for that skeleton. It is a PURE primitive:
- * it imports ONLY scripts/lib/io.mjs (for writeJsonAtomicSync) and Node stdlib.
+ * This module is the single home for that skeleton. It is a near-PURE primitive:
+ * it imports ONLY scripts/lib/io.mjs (for writeJsonAtomicSync), the two host
+ * identity helpers from scripts/lib/host-identity.mjs (#1072 — `os.hostname()`
+ * is not stable on a single machine), and Node stdlib.
  * It does NOT import session-lock.mjs — instead `isPidAliveOnHost` is MOVED here
  * and re-exported from session-lock.mjs, so the dependency edge points
  * file-lock → io, never the reverse (no import cycle).
@@ -35,6 +37,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 import { writeJsonAtomicSync } from './io.mjs';
+import { hostnamesMatch, lockHostCandidate, stableHostname } from './host-identity.mjs';
 
 // ---------------------------------------------------------------------------
 // PID liveness (moved here from session-lock.mjs in #630)
@@ -139,7 +142,17 @@ function parseBody(raw) {
  * @returns {{ stale: boolean, reason: string }}
  */
 function isExistingStale(existing, staleCheck, staleMs, lockPath) {
-  const sameHost = existing.host === os.hostname();
+  // #1072: compare on the normalised/alias-aware identity, never on a raw
+  // `os.hostname()` string. A raw comparison reports `cross-host` for THIS
+  // machine's own lock whenever the hostname has flipped spelling since it was
+  // written, and `cross-host` disables stale detection entirely (below) — the
+  // lock then survives its holder for the full timeout. `host_id` is preferred
+  // when present because it is already normalised; `host` is the pre-#1072
+  // fallback, so old lock files need no migration. `lockHostCandidate` owns
+  // that choice for all six lock-family call sites — and falls back on an
+  // EMPTY `host_id` too, which a bare `??` would have short-circuited into a
+  // false `cross-host` verdict against this machine's own lock.
+  const sameHost = hostnamesMatch(lockHostCandidate(existing), os.hostname());
   if (!sameHost) return { stale: false, reason: 'cross-host' };
 
   if (staleCheck === 'none') return { stale: false, reason: 'live' };
@@ -294,7 +307,10 @@ export function tryAcquireFileLock(lockPath, opts = {}) {
 
   const body = {
     pid: process.pid,
+    // `host` stays the RAW hostname (on-the-wire field other readers pin);
+    // `host_id` is the additive normalised twin the comparisons above use.
     host: os.hostname(),
+    host_id: stableHostname(),
     acquiredAt: new Date().toISOString(),
     ...(meta && typeof meta === 'object' ? meta : {}),
   };
@@ -407,7 +423,9 @@ export function releaseFileLock(lockPath, opts = {}) {
   const expectedHolder = typeof holder === 'string' && holder.length > 0 ? holder : null;
   const ownerMatch = expectedHolder !== null
     ? lock.holder === expectedHolder
-    : lock.pid === process.pid && lock.host === os.hostname();
+    // #1072: a raw hostname comparison here makes a process unable to release
+    // its OWN lock after the hostname flips spelling mid-session.
+    : lock.pid === process.pid && hostnamesMatch(lockHostCandidate(lock), os.hostname());
 
   if (!ownerMatch) return { ok: false, reason: 'not-owner' };
 

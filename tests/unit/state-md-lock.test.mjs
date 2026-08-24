@@ -509,3 +509,50 @@ describe('withStateMdLock — Group E: state-md-lock.enabled short-circuit', () 
     expect(allOutput).not.toContain('short-circuit');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1072 — release owner-match survives a hostname flip
+// ---------------------------------------------------------------------------
+//
+// Bug: the PID+host fallback compared `lock.host === os.hostname()`. The
+// hostname flips spelling on a single machine (measured 2026-08-24 on the
+// reference host: `Mac.home` / `Bernhards-MacBook-Pro.local`), so a process
+// could not release the state-lock it had written itself — the lock then
+// blocked every later STATE.md write until its holder PID happened to die.
+
+describe('releaseStateLock — #1072 host-spelling variants', () => {
+  const localBase = hostname().replace(/\.(local|home|lan|localdomain)$/i, '');
+
+  it('releases our own lock recorded under a suffix variant of this hostname', () => {
+    mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
+    writeFileSync(
+      join(repoRoot, '.orchestrator', 'state.lock'),
+      JSON.stringify({
+        pid: process.pid,
+        host: `${localBase}.home`,
+        acquiredAt: new Date().toISOString(),
+        holder: `pid-${process.pid}`,
+      }, null, 2),
+    );
+
+    // No holder passed → the PID + host fallback path is the one under test.
+    expect(releaseStateLock({ repoRoot })).toEqual({ ok: true });
+    expect(existsSync(join(repoRoot, '.orchestrator', 'state.lock'))).toBe(false);
+  });
+
+  it('still refuses to release a foreign host\'s lock (PSA-003 invariant intact)', () => {
+    mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
+    writeFileSync(
+      join(repoRoot, '.orchestrator', 'state.lock'),
+      JSON.stringify({
+        pid: process.pid,
+        host: 'remote-macbook.local',
+        acquiredAt: new Date().toISOString(),
+        holder: 'remote-holder',
+      }, null, 2),
+    );
+
+    expect(releaseStateLock({ repoRoot })).toEqual({ ok: false, reason: 'not-owner' });
+    expect(existsSync(join(repoRoot, '.orchestrator', 'state.lock'))).toBe(true);
+  });
+});

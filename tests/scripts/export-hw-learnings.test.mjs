@@ -11,12 +11,13 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync } from 'node:fs';
-import { tmpdir, homedir } from 'node:os';
+import { tmpdir, homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
   anonymizeString,
   anonymizeLearning,
+  redactLocalHostNames,
   bucketRamGb,
   bucketCpuPct,
   groupByHost,
@@ -26,6 +27,7 @@ import {
   resolveDefaultOutput,
 } from '../../scripts/export-hw-learnings.mjs';
 import { CURRENT_ANONYMIZATION_VERSION } from '@lib/learnings.mjs';
+import { stableHostname, readHostAliases } from '@lib/host-identity.mjs';
 
 const GENERATED_AT = '2026-04-19T14:00:00Z';
 
@@ -742,4 +744,129 @@ describe('#1025 anonymizeLearning: secret masking precedes form anonymization', 
     expect(out.insight).not.toContain('<redacted-token>');
     expect(out.evidence).toBe('saw [REDACTED]');
   });
+});
+
+// ---------------------------------------------------------------------------
+// #1072 follow-up — value-based redaction of THIS host's own names
+// ---------------------------------------------------------------------------
+//
+// The session-lock body carries `host_id`, which is the suffix-STRIPPED
+// lowercase form `stableHostname()` produces. HOSTNAME_RE only fires on names
+// that still carry a `.local`/`.lan`/`.home`/`.internal`/`.corp` suffix, so a
+// `host_id` reaching a learning used to pass through un-redacted — measured
+// 2026-08-24: 'bernhards-macbook-pro' and 'mac' were both no-match.
+//
+// The alias set is injected two ways: `names` for the pure cases, and the
+// `SO_HOST_ALIASES_FILE` ledger + `vi.resetModules()` for the wiring cases —
+// the module's alternation is a lazy process-wide singleton, so a fresh import
+// after the stub is what rebuilds it (same shape as the #1025 block above).
+
+/** This host's own names, as the guarded suite resolves them. */
+const LOCAL_HOST_NAMES = [stableHostname(hostname()), ...readHostAliases()].filter(Boolean);
+
+describe('#1072 redactLocalHostNames: suffix-stripped host_id values', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  /** Re-import the module with a ledger fixture in place of the real one. */
+  async function importWithAliases(names) {
+    const file = join(tmp, `aliases-${randomUUID()}.json`);
+    writeFileSync(file, JSON.stringify(names));
+    vi.stubEnv('SO_HOST_ALIASES_FILE', file);
+    vi.resetModules();
+    return import('../../scripts/export-hw-learnings.mjs');
+  }
+
+  it('redacts a bare suffix-stripped machine name that HOSTNAME_RE cannot see', () => {
+    // BUG CAUGHT: the `host_id` leak. The pre-fix pipeline returned this string
+    // verbatim — no rule in it matches a bare label.
+    expect(redactLocalHostNames('lock held by bernhards-macbook-pro', ['bernhards-macbook-pro']))
+      .toBe('lock held by <redacted-hostname>');
+  });
+
+  it('consumes name + local suffix as ONE span, leaving no dangling .local', () => {
+    expect(redactLocalHostNames('on mac-pro.local now', ['mac-pro'])).toBe('on <redacted-hostname> now');
+  });
+
+  it('matches case-insensitively — the ledger is lowercase, the text is not', () => {
+    expect(redactLocalHostNames('Bernhards-MacBook-Pro reported', ['bernhards-macbook-pro']))
+      .toBe('<redacted-hostname> reported');
+  });
+
+  it('prefers the LONGEST name, so a shorter alias cannot strand a suffix', () => {
+    // bug_caught: alternation is leftmost-first — with 'mac' ordered ahead of
+    // 'mac-pro' the output would be '<redacted-hostname>-pro'.
+    expect(redactLocalHostNames('host mac-pro died', ['mac', 'mac-pro']))
+      .toBe('host <redacted-hostname> died');
+  });
+
+  it('leaves the text untouched when no host identity is resolvable', () => {
+    expect(redactLocalHostNames('bernhards-macbook-pro', [])).toBe('bernhards-macbook-pro');
+    expect(redactLocalHostNames(42, ['mac'])).toBe(42);
+  });
+
+  it('does not fire on a name merely CONTAINING an alias (word-boundary anchored)', () => {
+    expect(redactLocalHostNames('macbook and demac', ['mac'])).toBe('macbook and demac');
+  });
+
+  it('reads the alias ledger: an entry there is redacted end-to-end by anonymizeLearning', async () => {
+    // BUG CAUGHT: the wiring. `readHostAliases()` is the second identity layer
+    // (#1072) — a spelling this machine recorded about itself that differs from
+    // the CURRENT os.hostname(). Without it, only today's spelling is redacted.
+    const alias = 'zz-fixture-host';
+    const { anonymizeLearning: anonWithAlias } = await importWithAliases([alias]);
+
+    const out = anonWithAlias(
+      baseLearning({ insight: `lock host_id=${alias} stale`, evidence: `owner ${alias}.local` }),
+    );
+
+    expect(out.insight).toBe('lock host_id=<redacted-hostname> stale');
+    expect(out.evidence).toBe('owner <redacted-hostname>');
+  });
+
+  it('ORDER: an email whose domain is this host keeps nothing of its local-part', async () => {
+    // BUG CAUGHT: running the value rule at the FRONT of the chain (beside the
+    // #1025 secret masker) instead of in the hostname slot. Measured 2026-08-24:
+    // value-first yields 'bernhard@<redacted-hostname>' — the local-part leaks,
+    // because the marker's `<` is outside EMAIL_RE's domain class. Git's default
+    // author email on an unconfigured machine has exactly this shape.
+    const { anonymizeString: anon } = await importWithAliases(['zz-fixture-host']);
+
+    expect(anon('git author bernhard@zz-fixture-host.local pushed'))
+      .toBe('git author <redacted-email> pushed');
+  });
+
+  it('ORDER: a home path under this host redacts whole, with no stranded tail', async () => {
+    // BUG CAUGHT: the same misordering, sharper. UNIX_PATH_RE's tail class is
+    // [^\s"'<>], so an early marker's ANGLE BRACKETS truncate the path match.
+    // Measured 2026-08-24, value-first:
+    //   '<redacted-path><redacted-hostname>/Projects/secret-client/app.js'
+    // — the client project name survives in a PUBLIC export.
+    const { anonymizeString: anon } = await importWithAliases(['zz-fixture-host']);
+
+    expect(anon('OOM at /Users/zz-fixture-host/Projects/secret-client/app.js'))
+      .toBe('OOM at <redacted-path>');
+  });
+
+  it('CEILING (BV-004): a common word is redacted only when it IS one of this host’s names', () => {
+    // The accepted collateral, pinned in both directions. On a Mac literally
+    // named `mac` (or a Pi named `pi`) every standalone occurrence of that word
+    // goes too — deliberate: over-redaction in a PUBLIC export is the cheap
+    // direction, and a length floor would be a silent hole for exactly the
+    // short names that are most common.
+    expect(redactLocalHostNames('the mac was fine', ['mac'])).toBe('the <redacted-hostname> was fine');
+  });
+
+  it.skipIf(LOCAL_HOST_NAMES.includes('mac'))(
+    'CEILING (BV-004): the same word survives on a host NOT named that',
+    () => {
+      // The discriminator for the case above: without this, "redacts 'mac'"
+      // would be indistinguishable from a rule that redacts every word. Skipped
+      // on a host whose own stable name IS `mac` — there the redaction is
+      // correct, and the skip is the documented ceiling rather than a dodge.
+      expect(anonymizeString('the mac was fine')).toBe('the mac was fine');
+    },
+  );
 });

@@ -162,3 +162,36 @@ describe('withStagingFenceLock — acquire / timeout / error paths', { timeout: 
     await expect(withStagingFenceLock(repoRoot, 'not-a-fn')).rejects.toThrow(TypeError);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1072 — release owner-match survives a hostname flip
+// ---------------------------------------------------------------------------
+
+describe('releaseStagingFenceLock — #1072 host-spelling variants', () => {
+  const localBase = hostname().replace(/\.(local|home|lan|localdomain)$/i, '');
+
+  it('releases our own lock recorded under a suffix variant of this hostname', () => {
+    writeLock(repoRoot, {
+      pid: process.pid,
+      host: `${localBase}.LOCAL`,
+      acquiredAt: new Date().toISOString(),
+      holder: `pid-${process.pid}`,
+    });
+
+    // No holder passed → exercises the PID + host fallback.
+    expect(releaseStagingFenceLock({ repoRoot })).toEqual({ ok: true });
+    expect(existsSync(lockPath(repoRoot))).toBe(false);
+  });
+
+  it('still refuses to release a foreign host\'s lock', () => {
+    writeLock(repoRoot, {
+      pid: process.pid,
+      host: 'a-different-host',
+      acquiredAt: new Date().toISOString(),
+      holder: 'foreign-holder',
+    });
+
+    expect(releaseStagingFenceLock({ repoRoot })).toEqual({ ok: false, reason: 'not-owner' });
+    expect(existsSync(lockPath(repoRoot))).toBe(true);
+  });
+});

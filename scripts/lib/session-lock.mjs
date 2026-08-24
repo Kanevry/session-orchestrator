@@ -45,6 +45,7 @@ import crypto from 'node:crypto';
 import { classifyMode } from './exclusivity-matrix.mjs';
 import { isPidAliveOnHost } from './file-lock.mjs';
 import { writeJsonAtomicSync } from './io.mjs';
+import { hostnamesMatch, lockHostCandidate, recordHostAlias, stableHostname } from './host-identity.mjs';
 
 // isPidAliveOnHost moved into file-lock.mjs in #630 (the file-lock primitive
 // owns it so the dependency edge points file-lock → io, never the reverse).
@@ -101,11 +102,12 @@ export const OWNER_PROOF_RELPATH = '.orchestrator/runtime/lock-owner-proof.json'
 // NOT the discovery-path liveness check — since Epic #583 the discovery
 // decision tree uses heartbeat-age via {@link isLockLive} instead, because the
 // `pid` recorded on a session.lock is the *ephemeral hook subprocess* PID.
-// Same-host callers (`acquire`, `checkStale`, and the state-lock /
-// staging-fence stale-override paths, now via the file-lock primitive) use it
-// only for the short-lived stale-override path where the recorded PID IS the
-// live writer's PID. See file-lock.mjs for the full @forensic + PID-recycle
-// trade-off note.
+// NOTHING IN THIS MODULE CALLS IT any more: `acquire()` stopped consulting the
+// pid in #744/#1137 and `checkStale()` in #1151 — the re-export is a
+// compatibility surface for external importers only. The remaining production
+// callers are file-lock.mjs's own stale-override path and lock-reaper.mjs,
+// where the recorded PID IS the process being asked about. See file-lock.mjs
+// for the full @forensic + PID-recycle trade-off note.
 
 /**
  * Resolve the absolute path to the lock file.
@@ -235,13 +237,22 @@ function parseLock(raw) {
  */
 function buildLock({ sessionId, mode, ttlHours, semanticSessionId }) {
   const startedAt = nowIso();
+  // Writing a session lock is the one moment we KNOW the current os.hostname()
+  // belongs to this machine — record it so a later reading under a different
+  // spelling can still be recognised as the same host (#1072). Best-effort:
+  // recordHostAlias never throws, and a failed write only costs the alias.
+  recordHostAlias();
   const lock = {
     session_id: sessionId,
     started_at: startedAt,
     last_heartbeat: startedAt,
     mode,
     pid: process.pid,
+    // `host` stays the RAW hostname — it is an on-the-wire event field
+    // (orchestrator.session.lock.acquired) and feeds the privacy-hash contract.
+    // `host_id` is the additive normalised twin every comparison reads (#1072).
     host: os.hostname(),
+    host_id: stableHostname(),
     ttl_hours: ttlHours,
   };
   if (typeof semanticSessionId === 'string' && semanticSessionId.length > 0) {
@@ -1015,7 +1026,6 @@ export function updateHeartbeat({ repoRoot, sessionId } = {}) {
  *   ageHours: number|null,
  *   ttlExpired: boolean,
  *   heartbeatAgeMinutes: number|null,
- *   pidAlive: null,
  *   host: string|null,
  *   sameHost: boolean,
  *   isLive: boolean
@@ -1031,7 +1041,6 @@ export function checkStale({ repoRoot } = {}) {
       ageHours: null,
       ttlExpired: false,
       heartbeatAgeMinutes: null,
-      pidAlive: null,
       host: null,
       sameHost: false,
       isLive: false,
@@ -1040,17 +1049,19 @@ export function checkStale({ repoRoot } = {}) {
 
   const ageHours = lockAgeHours(lock);
   const ttlExpired = isTtlExpired(lock);
-  const sameHost = lock.host === os.hostname();
-  // `pidAlive` is retained as a field for shape back-compat but is ALWAYS null
-  // since #1137: it is no longer computed. Probing isPidAliveOnHost(lock.pid)
-  // answered a question about the ephemeral writer subprocess, not the session
-  // — measured 2026-08-23, 7 of 7 recorded pids were dead, including the lock
-  // of the session that was heartbeating at that very moment. A `false` here
-  // read as "the session is dead" and was wrong every time. Use `isLive` (and
-  // `heartbeatAgeMinutes` for the magnitude) instead. `isPidAliveOnHost` itself
-  // stays exported — file-lock.mjs and lock-reaper.mjs are legitimate callers,
-  // where the pid IS the process being asked about.
-  const pidAlive = null;
+  // #1072: alias-aware, not a raw os.hostname() comparison — this machine's
+  // hostname flips spelling, which made `sameHost` false for its own lock.
+  const sameHost = hostnamesMatch(lockHostCandidate(lock), os.hostname());
+  // NO `pidAlive` FIELD (#1151). #1137 kept it as an always-null shape stub;
+  // nothing ever read it — measured @ f0766e1, zero production readers
+  // repo-wide. Probing isPidAliveOnHost(lock.pid) answered a question about the
+  // ephemeral writer subprocess, not the session: 2026-08-23, 7 of 7 recorded
+  // pids were dead, including the lock of the session that was heartbeating at
+  // that very moment, so a `false` here read as "the session is dead" and was
+  // wrong every time. `isLive` is the verdict and `heartbeatAgeMinutes` the
+  // magnitude behind it. `isPidAliveOnHost` itself stays exported —
+  // file-lock.mjs and lock-reaper.mjs are legitimate callers, where the pid IS
+  // the process being asked about.
   // Heartbeat-based liveness (#744) — the SAME check acquire()'s
   // classifyExisting uses as its sole active gate, surfaced here so callers of
   // checkStale() (recovery-flow diagnostics) can observe it directly.
@@ -1062,7 +1073,6 @@ export function checkStale({ repoRoot } = {}) {
     ageHours,
     ttlExpired,
     heartbeatAgeMinutes: heartbeatAgeMinutes(lock),
-    pidAlive,
     host: lock.host,
     sameHost,
     isLive,

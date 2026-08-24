@@ -46,6 +46,7 @@ import os from 'node:os';
 import { listWorktrees } from './worktree/listing.mjs';
 import { readLock, isLockLive } from './session-lock.mjs';
 import { readRegistry, repoPathHash, isRegistryEntryFresh } from './session-registry.mjs';
+import { stableHostname } from './host-identity.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -66,7 +67,7 @@ export const DEFAULT_DISCOVERY_TIMEOUT_MS = 2000;
  * @param {object} lock          Parsed lock body (schema v2).
  * @param {string} worktreePath  Absolute worktree path.
  * @param {string} [branch]      Branch from worktree object (falsy → '').
- * @returns {{worktreePath:string,sessionId:string,mode:string,startedAt:string,pid:number,host:string,branch:string}}
+ * @returns {{worktreePath:string,sessionId:string,mode:string,startedAt:string,pid:number,host:string,host_id:string,branch:string}}
  */
 function sessionFromLock(lock, worktreePath, branch = '') {
   return {
@@ -76,6 +77,12 @@ function sessionFromLock(lock, worktreePath, branch = '') {
     startedAt:    lock.started_at,
     pid:          lock.pid,
     host:         lock.host,
+    // Additive normalised twin (#1072), same field the registry path emits —
+    // without it the two discovery sources returned DIFFERENT shapes, and a
+    // consumer comparing hosts silently fell back to the raw `host` for
+    // lock-sourced sessions only. Locks written before #1072 carry no
+    // `host_id`, so derive it from the raw name rather than emitting undefined.
+    host_id:      lock.host_id ?? stableHostname(lock.host),
     branch:       typeof branch === 'string' ? branch : '',
   };
 }
@@ -100,6 +107,9 @@ function sessionFromRegistryEntry(entry, repoRoot) {
     // local hostname as the default since registry entries are host-scoped
     // by design (see ~/.config/session-orchestrator/sessions/).
     host:         os.hostname(),
+    // Additive normalised twin (#1072) — `os.hostname()` is not stable on a
+    // single machine, so consumers comparing hosts need the normalised form.
+    host_id:      stableHostname(),
     branch:       typeof entry.branch === 'string' ? entry.branch : '',
   };
 }
@@ -111,7 +121,7 @@ function sessionFromRegistryEntry(entry, repoRoot) {
  * Liveness rule: heartbeat freshness via isLockLive (Epic #583, W2-I3).
  *
  * @param {string} repoRoot
- * @returns {Array<{worktreePath:string,sessionId:string,mode:string,startedAt:string,pid:number,host:string,branch:string}>}
+ * @returns {Array<{worktreePath:string,sessionId:string,mode:string,startedAt:string,pid:number,host:string,host_id:string,branch:string}>}
  */
 function readLocalSession(repoRoot) {
   const lock = readLock({ repoRoot });
@@ -167,7 +177,7 @@ function dedupeBySessionId(sessions) {
  * @param {Function} [opts.registryReader]      DI hook replacing readRegistry() for tests.
  * @param {number}   [opts.freshnessMin=15]     Registry-entry freshness threshold in minutes.
  * @param {number}   [opts.now]                 ms-since-epoch (test seam for heartbeat freshness).
- * @returns {Promise<Array<{worktreePath:string,sessionId:string,mode:string,startedAt:string,pid:number,host:string,branch:string}>>}
+ * @returns {Promise<Array<{worktreePath:string,sessionId:string,mode:string,startedAt:string,pid:number,host:string,host_id:string,branch:string}>>}
  */
 export async function discoverActiveSessions(repoRoot, opts = {}) {
   const listWorktreesFn = opts.listWorktreesImpl ?? listWorktrees;

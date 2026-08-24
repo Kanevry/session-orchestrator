@@ -163,6 +163,10 @@ describe('pre-bash-staging-fence — gate ladder G1-G6', { timeout: 15000 }, () 
     expect(body.agent_id.length).toBeGreaterThan(0);
     expect(typeof body.pid).toBe('number');
     expect(typeof body.host).toBe('string');
+    // #1072: the raw `host` is not comparable across writes (os.hostname()
+    // flips spelling on one machine), so the fence carries a normalised twin.
+    expect(typeof body.host_id).toBe('string');
+    expect(body.host_id).toBe(body.host.toLowerCase().replace(/\.(local|home|lan|localdomain)$/, ''));
     expect(typeof body.started_at).toBe('string');
     expect(Array.isArray(body.staged_paths)).toBe(true);
     expect(body.staged_paths).toHaveLength(1);
