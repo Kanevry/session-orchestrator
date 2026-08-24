@@ -754,7 +754,7 @@ describe('#1025 anonymizeLearning: secret masking precedes form anonymization', 
 // lowercase form `stableHostname()` produces. HOSTNAME_RE only fires on names
 // that still carry a `.local`/`.lan`/`.home`/`.internal`/`.corp` suffix, so a
 // `host_id` reaching a learning used to pass through un-redacted — measured
-// 2026-08-24: 'bernhards-macbook-pro' and 'mac' were both no-match.
+// 2026-08-24: 'ferdinands-macbook-pro' and 'mac' were both no-match.
 //
 // The alias set is injected two ways: `names` for the pure cases, and the
 // `SO_HOST_ALIASES_FILE` ledger + `vi.resetModules()` for the wiring cases —
@@ -782,7 +782,7 @@ describe('#1072 redactLocalHostNames: suffix-stripped host_id values', () => {
   it('redacts a bare suffix-stripped machine name that HOSTNAME_RE cannot see', () => {
     // BUG CAUGHT: the `host_id` leak. The pre-fix pipeline returned this string
     // verbatim — no rule in it matches a bare label.
-    expect(redactLocalHostNames('lock held by bernhards-macbook-pro', ['bernhards-macbook-pro']))
+    expect(redactLocalHostNames('lock held by ferdinands-macbook-pro', ['ferdinands-macbook-pro']))
       .toBe('lock held by <redacted-hostname>');
   });
 
@@ -791,7 +791,7 @@ describe('#1072 redactLocalHostNames: suffix-stripped host_id values', () => {
   });
 
   it('matches case-insensitively — the ledger is lowercase, the text is not', () => {
-    expect(redactLocalHostNames('Bernhards-MacBook-Pro reported', ['bernhards-macbook-pro']))
+    expect(redactLocalHostNames('Ferdinands-MacBook-Pro reported', ['ferdinands-macbook-pro']))
       .toBe('<redacted-hostname> reported');
   });
 
@@ -803,7 +803,7 @@ describe('#1072 redactLocalHostNames: suffix-stripped host_id values', () => {
   });
 
   it('leaves the text untouched when no host identity is resolvable', () => {
-    expect(redactLocalHostNames('bernhards-macbook-pro', [])).toBe('bernhards-macbook-pro');
+    expect(redactLocalHostNames('ferdinands-macbook-pro', [])).toBe('ferdinands-macbook-pro');
     expect(redactLocalHostNames(42, ['mac'])).toBe(42);
   });
 
@@ -829,12 +829,12 @@ describe('#1072 redactLocalHostNames: suffix-stripped host_id values', () => {
   it('ORDER: an email whose domain is this host keeps nothing of its local-part', async () => {
     // BUG CAUGHT: running the value rule at the FRONT of the chain (beside the
     // #1025 secret masker) instead of in the hostname slot. Measured 2026-08-24:
-    // value-first yields 'bernhard@<redacted-hostname>' — the local-part leaks,
+    // value-first yields 'ferdinand@<redacted-hostname>' — the local-part leaks,
     // because the marker's `<` is outside EMAIL_RE's domain class. Git's default
     // author email on an unconfigured machine has exactly this shape.
     const { anonymizeString: anon } = await importWithAliases(['zz-fixture-host']);
 
-    expect(anon('git author bernhard@zz-fixture-host.local pushed'))
+    expect(anon('git author ferdinand@zz-fixture-host.local pushed'))
       .toBe('git author <redacted-email> pushed');
   });
 

@@ -1836,7 +1836,7 @@ describe('Issue #596 fault-injection — createSessionLockExclusive & acquire() 
 // ===========================================================================
 //
 // Bug: os.hostname() is not stable on a single machine (measured 2026-08-24 on
-// the reference host: `Mac.home` and `Bernhards-MacBook-Pro.local` ten minutes
+// the reference host: `Mac.home` and `Ferdinands-MacBook-Pro.local` ten minutes
 // apart). `lock.host === os.hostname()` therefore reported the machine's OWN
 // lock as belonging to another machine.
 

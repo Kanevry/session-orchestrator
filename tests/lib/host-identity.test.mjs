@@ -239,7 +239,7 @@ describe('host-identity', () => {
   //
   // The bug: os.hostname() is not stable on a single machine. Measured on the
   // reference host 2026-08-24, ten minutes apart: `Mac.home` then
-  // `Bernhards-MacBook-Pro.local`; events.jsonl carries both (106× / 27×).
+  // `Ferdinands-MacBook-Pro.local`; events.jsonl carries both (106× / 27×).
   // Every `lock.host === os.hostname()` comparison in the lock family then
   // fails against the machine's OWN lock.
 
@@ -298,15 +298,15 @@ describe('host-identity', () => {
 
     it('does NOT match the two measured spellings on normalisation alone', () => {
       // The load-bearing negative: suffix-stripping alone leaves
-      // `mac` !== `bernhards-macbook-pro`, which is why layer 2 exists.
-      expect(hostnamesMatch('Mac.home', 'Bernhards-MacBook-Pro.local', { aliases: [] })).toBe(false);
+      // `mac` !== `ferdinands-macbook-pro`, which is why layer 2 exists.
+      expect(hostnamesMatch('Mac.home', 'Ferdinands-MacBook-Pro.local', { aliases: [] })).toBe(false);
     });
 
     it('matches the two measured spellings ONLY when both are in the alias set', () => {
       // THE regression test for #1072: this is the exact pair that made a
       // session unable to reap, override, or release its own lock.
-      const aliases = ['Mac.home', 'Bernhards-MacBook-Pro'];
-      expect(hostnamesMatch('Mac.home', 'Bernhards-MacBook-Pro.local', { aliases })).toBe(true);
+      const aliases = ['Mac.home', 'Ferdinands-MacBook-Pro'];
+      expect(hostnamesMatch('Mac.home', 'Ferdinands-MacBook-Pro.local', { aliases })).toBe(true);
       // One-sided membership is not enough — else any name could pair with a
       // single known alias and the cross-host invariant would collapse.
       expect(hostnamesMatch('Mac.home', 'some-other-box', { aliases })).toBe(false);
@@ -341,9 +341,9 @@ describe('host-identity', () => {
     it('records normalised names, deduplicates, and reads them back', () => {
       expect(readHostAliases()).toEqual([]);
       recordHostAlias('Mac.home');
-      recordHostAlias('Bernhards-MacBook-Pro.local');
+      recordHostAlias('Ferdinands-MacBook-Pro.local');
       recordHostAlias('MAC.LOCAL'); // same machine, third spelling → dedup to `mac`
-      expect(readHostAliases()).toEqual(['mac', 'bernhards-macbook-pro']);
+      expect(readHostAliases()).toEqual(['mac', 'ferdinands-macbook-pro']);
     });
 
     it('writes the ledger 0o600 — it names the operator\'s machine', async () => {
@@ -374,20 +374,20 @@ describe('host-identity', () => {
       expect(hostnamesMatch('Mac.home', 'Mac.local')).toBe(true);
       // …but the alias-only pair does not. A broken ledger can only refuse a
       // match, never manufacture one.
-      expect(hostnamesMatch('Mac.home', 'Bernhards-MacBook-Pro.local')).toBe(false);
+      expect(hostnamesMatch('Mac.home', 'Ferdinands-MacBook-Pro.local')).toBe(false);
     });
 
     it('a recorded pair then matches through the on-disk ledger', () => {
       recordHostAlias('Mac.home');
-      recordHostAlias('Bernhards-MacBook-Pro.local');
-      expect(hostnamesMatch('Mac.home', 'Bernhards-MacBook-Pro.local')).toBe(true);
+      recordHostAlias('Ferdinands-MacBook-Pro.local');
+      expect(hostnamesMatch('Mac.home', 'Ferdinands-MacBook-Pro.local')).toBe(true);
       expect(hostnamesMatch('Mac.home', 'a-different-host')).toBe(false);
     });
   });
 
   describe('lockHostCandidate', () => {
     it('prefers host_id over a divergent host', () => {
-      expect(lockHostCandidate({ host_id: 'mac', host: 'bernhards-macbook-pro.local' })).toBe('mac');
+      expect(lockHostCandidate({ host_id: 'mac', host: 'ferdinands-macbook-pro.local' })).toBe('mac');
     });
 
     it('falls back to host when host_id is EMPTY, not just null/undefined', () => {

@@ -156,7 +156,7 @@ const HOSTNAME_MARKER = '<redacted-hostname>';
 // through un-redacted. Measured on the reference host 2026-08-24, before this
 // block existed:
 //
-//   anonymizeString('bernhards-macbook-pro') → 'bernhards-macbook-pro'  (no match)
+//   anonymizeString('ferdinands-macbook-pro') → 'ferdinands-macbook-pro'  (no match)
 //   anonymizeString('mac')                   → 'mac'                    (no match)
 //
 // Widening HOSTNAME_RE to bare labels is NOT the fix: once the suffix is gone a
@@ -174,10 +174,10 @@ const HOSTNAME_MARKER = '<redacted-hostname>';
 // larger PII span that another rule owns. Two reachable cases, measured
 // 2026-08-24 on the two orderings:
 //
-//   'bernhard@Bernhards-MacBook-Pro.local'
-//     value-first → 'bernhard@<redacted-hostname>'   ← email local-part leaks
+//   'ferdinand@Ferdinands-MacBook-Pro.local'
+//     value-first → 'ferdinand@<redacted-hostname>'   ← email local-part leaks
 //     host-slot   → '<redacted-email>'
-//   '/Users/bernhards-macbook-pro/Projects/secret-client/app.js'
+//   '/Users/ferdinands-macbook-pro/Projects/secret-client/app.js'
 //     value-first → '<redacted-path><redacted-hostname>/Projects/secret-client/app.js'
 //     host-slot   → '<redacted-path>'
 //

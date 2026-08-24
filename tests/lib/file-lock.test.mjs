@@ -409,7 +409,7 @@ describe('isPidAliveOnHost', () => {
 // ===========================================================================
 //
 // Bug: os.hostname() flips spelling on a single machine (measured 2026-08-24:
-// `Mac.home` and `Bernhards-MacBook-Pro.local` ten minutes apart on the same
+// `Mac.home` and `Ferdinands-MacBook-Pro.local` ten minutes apart on the same
 // host). `existing.host === os.hostname()` then reports `cross-host`, and
 // cross-host bodies are NEVER stale by design — so a dead holder's lock
 // survived for the full acquire timeout instead of being overridden.

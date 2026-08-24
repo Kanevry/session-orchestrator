@@ -118,7 +118,7 @@ export function hashHostname(hostname, salt) {
 //
 // `os.hostname()` is NOT stable on a single machine. Measured on the reference
 // host 2026-08-24: two readings ten minutes apart returned `Mac.home` and
-// `Bernhards-MacBook-Pro.local`, and `.orchestrator/metrics/events.jsonl`
+// `Ferdinands-MacBook-Pro.local`, and `.orchestrator/metrics/events.jsonl`
 // carries both spellings (106× / 27×). Every `lock.host === os.hostname()`
 // comparison in the lock family therefore fails against the machine's OWN lock
 // after a flip: stale detection reports `cross-host` (and cross-host locks are
@@ -127,7 +127,7 @@ export function hashHostname(hostname, salt) {
 //
 // Two independent layers, because one is not enough:
 //   1. `stableHostname()` normalises the SUFFIX difference (`Mac.home` vs
-//      `Mac.local` → `mac`). It cannot bridge `mac` vs `bernhards-macbook-pro`
+//      `Mac.local` → `mac`). It cannot bridge `mac` vs `ferdinands-macbook-pro`
 //      — those differ before the suffix.
 //   2. The self-alias ledger records every spelling THIS machine has presented
 //      itself under, so `hostnamesMatch()` can bridge the remaining gap. Only

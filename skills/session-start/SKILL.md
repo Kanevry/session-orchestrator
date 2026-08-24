@@ -159,7 +159,7 @@ Where `sessionId` is the physical raw identity for this invocation: the native h
      // `heartbeatAgeMinutes` and `ageHours` come straight off the acquire() result (#1137);
      // `sameHost` is not on the result — compute it first. Use hostnamesMatch, NEVER a raw
      // `===` against os.hostname(): the hostname flips spelling on a single machine
-     // (measured 2026-08-24: `Mac.home` and `Bernhards-MacBook-Pro.local` ten minutes apart),
+     // (measured 2026-08-24: `Mac.home` and `Ferdinands-MacBook-Pro.local` ten minutes apart),
      // so a raw comparison labels this machine's OWN lock "another machine" (#1072).
      // `||`, not `??` — an EMPTY-STRING host_id must fall back to `host`, or
      // hostnamesMatch('', …) is false and this machine reads its own lock as

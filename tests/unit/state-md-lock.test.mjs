@@ -516,7 +516,7 @@ describe('withStateMdLock — Group E: state-md-lock.enabled short-circuit', () 
 //
 // Bug: the PID+host fallback compared `lock.host === os.hostname()`. The
 // hostname flips spelling on a single machine (measured 2026-08-24 on the
-// reference host: `Mac.home` / `Bernhards-MacBook-Pro.local`), so a process
+// reference host: `Mac.home` / `Ferdinands-MacBook-Pro.local`), so a process
 // could not release the state-lock it had written itself — the lock then
 // blocked every later STATE.md write until its holder PID happened to die.
 
