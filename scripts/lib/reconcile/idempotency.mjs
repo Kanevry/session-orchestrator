@@ -44,12 +44,17 @@
  * @property {string} created_at      - ISO timestamp.
  * @property {string|null} processed_at  - terminal stamp (mirrors repair store).
  * @property {string|null} superseded_by
- * @property {string|null} [outcome]  - terminal disposition, e.g. `'written'`
- *        (writer.mjs persisted the rule file) or `'already-on-disk'` (engine.mjs
- *        found a matching `.claude/rules/` provenance block before proposing —
- *        issue #484). Optional and additive: `isCandidateShape` only requires
- *        `learning_key` + `created_at`, so an older record without this field
- *        still round-trips through the store unchanged.
+ * @property {string|null} [outcome]  - terminal disposition, one of:
+ *        `'written'` (writer.mjs persisted the rule file), `'already-on-disk'`
+ *        (engine.mjs found a matching `.claude/rules/` provenance block before
+ *        proposing — issue #484), or `'rejected'` (the operator declined the
+ *        proposal in the approval AUQ and writer.mjs archived it — issue #1042).
+ *        Optional and additive: `isCandidateShape` only requires `learning_key`
+ *        + `created_at`, so an older record without this field still round-trips
+ *        through the store unchanged, and nothing BRANCHES on the value —
+ *        terminality is `processed_at` alone (see {@link isProcessed}), so a
+ *        pre-#1042 record with no `outcome` keeps behaving exactly as before
+ *        (absence reads as `'written'`, the only outcome that existed then).
  */
 
 import { mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
@@ -271,7 +276,15 @@ export function loadCandidates({ repoRoot, storePath } = {}) {
  * True iff `existing` already holds a candidate that shares `candidate`'s
  * `learning_key` AND has a terminal `processed_at` stamp. The reconcile engine
  * uses this to idempotently SKIP re-proposing a learning whose verdict is
- * already terminal. Never throws.
+ * already terminal.
+ *
+ * Deliberately OUTCOME-AGNOSTIC: `processed_at` alone decides. A rule the
+ * operator DECLINED (`outcome: 'rejected'`, issue #1042) is therefore just as
+ * terminal as one that was written — an explicit "no" is a verdict, and
+ * re-asking every run is how it gets forgotten. By the same token a pre-#1042
+ * record carrying no `outcome` at all keeps its old meaning unchanged.
+ *
+ * Never throws.
  * @param {ReconcileCandidate} candidate - the candidate under consideration.
  * @param {ReconcileCandidate[]} existing - the currently-persisted candidates.
  * @returns {boolean}
@@ -371,7 +384,7 @@ export function mergeCandidates({ candidates, repoRoot, storePath } = {}) {
  *
  * @param {Object} [params]
  * @param {string} [params.learningKey] - required; a missing/empty key is a no-op (`{written:false, stamped:null}`).
- * @param {'written'|'already-on-disk'|string} [params.outcome]
+ * @param {'written'|'already-on-disk'|'rejected'|string} [params.outcome]
  * @param {string} [params.processedAt] - ISO timestamp; defaults to `new Date().toISOString()`.
  * @param {string} [params.fallbackSlug] - used only when no existing record is found.
  * @param {string} [params.fallbackCandidateId] - used only when no existing record is found; defaults to `makeCandidateId(learningKey, fallbackSlug)`.

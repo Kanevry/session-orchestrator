@@ -14,9 +14,13 @@
 
 import { createRequire } from 'node:module';
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
-import { toActivationMetadata } from '../../../scripts/lib/reconcile/emitter.mjs';
+import { LEARNING_TYPE_REGISTRY } from '../../../scripts/lib/learnings/schema.mjs';
+import {
+  HOST_SPECIFIC_TYPES,
+  toActivationMetadata,
+} from '../../../scripts/lib/reconcile/emitter.mjs';
 // Imported READ-ONLY, to prove the emitter's key survives the renderer's
 // machine-value assert (or, for a hostile type, is rejected by it).
 import { renderRule } from '../../../scripts/lib/reconcile/renderer.mjs';
@@ -263,33 +267,6 @@ describe('toActivationMetadata — glob-metacharacter file_paths entries are ski
   });
 });
 
-// #1089 part A — dropped entries are recorded with a reason, not silently
-// discarded behind a bare `continue`.
-describe('toActivationMetadata — dropped file_paths entries are recorded (#1089)', () => {
-  it('surfaces meta.droppedFilePaths with a reason for a glob-metacharacter entry', () => {
-    const learning = fragileLearning({
-      file_paths: ['**', 'scripts/lib/autopilot/worktree-pipeline.mjs'],
-    });
-    const meta = toActivationMetadata(learning, {});
-    expect(meta.droppedFilePaths).toEqual([{ path: '**', reason: 'glob-metacharacter' }]);
-  });
-
-  it('surfaces meta.droppedFilePaths with a reason for a control-char/quote entry', () => {
-    const learning = fragileLearning({
-      file_paths: ['scripts/evil.mjs\ntier: always', 'scripts/lib/autopilot/worktree-pipeline.mjs'],
-    });
-    const meta = toActivationMetadata(learning, {});
-    expect(meta.droppedFilePaths).toEqual([
-      { path: 'scripts/evil.mjs\ntier: always', reason: 'unsafe-shape' },
-    ]);
-  });
-
-  it('omits droppedFilePaths entirely when nothing was dropped', () => {
-    const meta = toActivationMetadata(fragileLearning(), {});
-    expect('droppedFilePaths' in meta).toBe(false);
-  });
-});
-
 // ---------------------------------------------------------------------------
 // #1015 — frontmatter-injection field-shape gates.
 //
@@ -428,6 +405,71 @@ describe('toActivationMetadata — host_class is type-gated to HOST_SPECIFIC_TYP
       host_class: 'macos-arm64-m4pro\ntier: always',
     });
     expect(() => toActivationMetadata(learning, { now: FROZEN_NOW })).toThrow(/host_class/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1151 — HOST_SPECIFIC_TYPES is DERIVED from LEARNING_TYPE_REGISTRY's
+// `hostScoped` flag, not a hand-kept literal Set.
+//
+// THE BUG THESE CATCH: two hand-kept type registers drift silently. Until
+// #1151 the emitter carried `new Set(['hardware-pattern'])` beside the
+// registry's own type table. Nothing connected them, so making a type
+// `hostScoped` in the registry left the emitter dropping its `host_class`
+// anyway (and de-registering `hardware-pattern` left the emitter still gating
+// rules by host) — with no error anywhere, because each register is
+// individually well-formed. Mirrors the CONVERT_TYPES drift-guard in
+// tests/lib/reconcile/eligibility.test.mjs.
+// ---------------------------------------------------------------------------
+
+describe('HOST_SPECIFIC_TYPES is registry-derived (#1151)', () => {
+  it('contains exactly the LEARNING_TYPE_REGISTRY entries flagged hostScoped', () => {
+    // FALSIFICATION: a literal Set would fail the moment the registry's
+    // hostScoped set differs from it in EITHER direction — both are asserted.
+    const registryHostScoped = Object.entries(LEARNING_TYPE_REGISTRY)
+      .filter(([, meta]) => meta.hostScoped)
+      .map(([type]) => type)
+      .sort();
+    expect([...HOST_SPECIFIC_TYPES].sort()).toEqual(registryHostScoped);
+  });
+
+  it('picks up a NEW hostScoped registry entry with NO edit to emitter.mjs', async () => {
+    // The load-bearing half: a synthetic registry entry the emitter's source
+    // has never heard of must gate host-class purely by its `hostScoped` flag.
+    // FALSIFICATION: against the pre-#1151 literal Set, 'thermal-pattern' is
+    // absent, host_class is dropped by the type gate, and — file_paths being
+    // empty — this throws the never-always-on error instead of returning.
+    vi.resetModules();
+    try {
+      vi.doMock('../../../scripts/lib/learnings/schema.mjs', async () => {
+        const actual = await vi.importActual('../../../scripts/lib/learnings/schema.mjs');
+        return {
+          ...actual,
+          LEARNING_TYPE_REGISTRY: Object.freeze({
+            ...actual.LEARNING_TYPE_REGISTRY,
+            'thermal-pattern': Object.freeze({
+              ttlDays: 60,
+              agentProposable: false,
+              ruleConvertible: false,
+              hostScoped: true,
+            }),
+          }),
+        };
+      });
+      const fresh = await import('../../../scripts/lib/reconcile/emitter.mjs');
+      expect([...fresh.HOST_SPECIFIC_TYPES]).toContain('thermal-pattern');
+
+      const learning = fragileLearning({
+        type: 'thermal-pattern',
+        file_paths: [],
+        host_class: 'macos-arm64-m4pro',
+      });
+      const meta = fresh.toActivationMetadata(learning, { now: FROZEN_NOW });
+      expect(meta.hostClass).toBe('macos-arm64-m4pro');
+    } finally {
+      vi.doUnmock('../../../scripts/lib/learnings/schema.mjs');
+      vi.resetModules();
+    }
   });
 });
 

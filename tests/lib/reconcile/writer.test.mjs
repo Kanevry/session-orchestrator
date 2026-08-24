@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { writeApprovedRules } from '../../../scripts/lib/reconcile/writer.mjs';
+import { isProcessed } from '../../../scripts/lib/reconcile/idempotency.mjs';
 import { renderRule } from '../../../scripts/lib/reconcile/renderer.mjs';
 import { parseGlobsFrontmatter } from '../../../scripts/lib/rule-loader.mjs';
 
@@ -712,5 +713,161 @@ describe('writeApprovedRules — stamps the idempotency sidecar after a successf
     expect(result.written).toBe(0);
     expect(result.errors.length).toBeGreaterThanOrEqual(1);
     expect(existsSync(join(tmpDir, '.orchestrator', 'runtime', 'reconcile-candidates.jsonl'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Terminal sidecar stamp for an OPERATOR rejection (issue #1042)
+//
+// TV-001 — the bug these catch: AN OPERATOR REJECTION IS FORGOTTEN ON THE NEXT
+// RUN. Before this fix, a declined proposal reached only the append-only
+// rejected LOG (`_rejected_at`), which nothing reads back, while `isProcessed()`
+// judges terminality by `processed_at` in the sidecar. So the operator's "no"
+// evaporated and the identical rule was proposed again on every subsequent run.
+// The second case pins the other half: the same stamp must NOT be applied to an
+// engine-side rejection, or a learning cut by the volume brake would be
+// suppressed forever.
+// ---------------------------------------------------------------------------
+
+describe('writeApprovedRules — stamps an operator rejection terminal (#1042)', () => {
+  function storeRecords() {
+    const storePath = join(tmpDir, '.orchestrator', 'runtime', 'reconcile-candidates.jsonl');
+    if (!existsSync(storePath)) return null;
+    return readFileSync(storePath, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  }
+
+  it('marks an operator-declined proposal terminal with outcome "rejected" so isProcessed() suppresses it next run', async () => {
+    // A proposal the operator saw in the approval AUQ and unselected: the full
+    // ReconcileProposal shape (slug/path/content), joined into the rejected
+    // array per skills/session-end/phase-3-6-tail.md step 6.
+    const declined = {
+      learningKey: 'fragile-pattern/operator-said-no',
+      slug: 'fragile-pattern-operator-said-no-abc1234',
+      path: '.claude/rules/fragile-pattern-operator-said-no-abc1234.md',
+      content: '# Auto-generated rule: operator said no\n',
+      confidence: 0.85,
+      candidateId: 'rc-declined1',
+      status: 'proposed',
+    };
+
+    const result = await writeApprovedRules({ approved: [], rejected: [declined], repoRoot: tmpDir });
+
+    expect(result.archived).toBe(1);
+    expect(result.errors).toEqual([]);
+
+    // The rule file must NOT exist — a rejection writes no rule.
+    expect(existsSync(join(tmpDir, declined.path))).toBe(false);
+
+    const records = storeRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].learning_key).toBe('fragile-pattern/operator-said-no');
+    expect(records[0].outcome).toBe('rejected');
+    expect(typeof records[0].processed_at).toBe('string');
+    expect(new Date(records[0].processed_at).toISOString()).toBe(records[0].processed_at);
+
+    // Assert through the real consumer, not just the field: this is exactly the
+    // call engine.mjs makes on the next run.
+    expect(isProcessed({ learning_key: 'fragile-pattern/operator-said-no' }, records)).toBe(true);
+  });
+
+  it('does NOT stamp an engine-side rejection (capped / ineligible) — it must stay proposable', async () => {
+    const engineRejections = [
+      {
+        learningKey: 'fragile-pattern/capped-this-run',
+        type: 'fragile-pattern',
+        reason: 'capped — max-proposals-per-run (10) reached; 3 lower-confidence eligible learning(s) not proposed this run',
+        status: 'rejected',
+      },
+      {
+        learningKey: 'anti-pattern/too-young',
+        type: 'anti-pattern',
+        reason: 'learning is younger than min-rule-days',
+        status: 'rejected',
+      },
+    ];
+
+    const result = await writeApprovedRules({ approved: [], rejected: engineRejections, repoRoot: tmpDir });
+
+    expect(result.archived).toBe(2);
+    expect(result.errors).toEqual([]);
+    // No sidecar at all — nothing was stamped terminal.
+    expect(storeRecords()).toBeNull();
+  });
+
+  it('stamps only the operator-declined item when both shapes arrive in one rejected array', async () => {
+    const result = await writeApprovedRules({
+      approved: [],
+      rejected: [
+        {
+          learningKey: 'anti-pattern/engine-cut',
+          type: 'anti-pattern',
+          reason: 'capped — max-proposals-per-run (10) reached',
+          status: 'rejected',
+        },
+        {
+          learningKey: 'fragile-pattern/operator-cut',
+          slug: 'fragile-pattern-operator-cut-def5678',
+          path: '.claude/rules/fragile-pattern-operator-cut-def5678.md',
+          content: '# Auto-generated rule: operator cut\n',
+          confidence: 0.9,
+          status: 'proposed',
+        },
+      ],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.archived).toBe(2);
+    expect(result.errors).toEqual([]);
+
+    const records = storeRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].learning_key).toBe('fragile-pattern/operator-cut');
+    expect(records[0].outcome).toBe('rejected');
+  });
+
+  it('extends the existing sidecar record rather than minting a parallel one (id/created_at preserved)', async () => {
+    // Mirrors what engine.mjs merged into the store when it PROPOSED the rule,
+    // moments before the operator declined it in the AUQ.
+    const runtimeDir = join(tmpDir, '.orchestrator', 'runtime');
+    mkdirSync(runtimeDir, { recursive: true });
+    const proposedRecord = {
+      id: 'rc-proposed9',
+      schema_version: 1,
+      learning_key: 'fragile-pattern/declined-after-propose',
+      slug: 'fragile-pattern-declined-after-propose-9999999',
+      status: 'proposed',
+      reason: 'reconciliation engine proposed a conditional rule',
+      confidence: 0.91,
+      created_at: '2026-08-01T00:00:00.000Z',
+      processed_at: null,
+      superseded_by: null,
+    };
+    writeFileSync(join(runtimeDir, 'reconcile-candidates.jsonl'), JSON.stringify(proposedRecord) + '\n', 'utf8');
+
+    const result = await writeApprovedRules({
+      approved: [],
+      rejected: [
+        {
+          learningKey: 'fragile-pattern/declined-after-propose',
+          slug: 'fragile-pattern-declined-after-propose-9999999',
+          path: '.claude/rules/fragile-pattern-declined-after-propose-9999999.md',
+          content: '# Auto-generated rule: declined after propose\n',
+          confidence: 0.91,
+          status: 'proposed',
+        },
+      ],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.archived).toBe(1);
+    expect(result.errors).toEqual([]);
+
+    const records = storeRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].id).toBe('rc-proposed9'); // preserved, not re-minted
+    expect(records[0].created_at).toBe('2026-08-01T00:00:00.000Z'); // preserved
+    expect(records[0].confidence).toBe(0.91); // preserved
+    expect(records[0].outcome).toBe('rejected');
+    expect(typeof records[0].processed_at).toBe('string');
   });
 });

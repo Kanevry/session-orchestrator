@@ -59,7 +59,7 @@ export const CURRENT_ANONYMIZATION_VERSION = 1;
 
 /**
  * Type capability registry (Epic #723 I1, issue #733 Teil b) — the single
- * source of truth for every learning `type`'s TTL policy AND its two
+ * source of truth for every learning `type`'s TTL policy AND its three
  * cross-module capability axes. Before this registry existed, three modules
  * independently hand-maintained overlapping type lists that drifted out of
  * sync (`memory-proposals/schema.mjs` PROPOSAL_TYPES, `reconcile/eligibility.mjs`
@@ -76,39 +76,54 @@ export const CURRENT_ANONYMIZATION_VERSION = 1;
  *   - ruleConvertible:  may appear in `reconcile/eligibility.mjs` CONVERT_TYPES
  *                       (i.e. the reconcile engine may convert this type into a
  *                       conditional `.claude/rules/*.md` rule proposal).
+ *   - hostScoped:       this type's content is genuinely chip/OS-specific, so
+ *                       `reconcile/emitter.mjs` may copy a record's `host_class`
+ *                       through as the emitted rule's `host-class` activation
+ *                       axis (issue #1090; derived set: that module's
+ *                       HOST_SPECIFIC_TYPES). `false` for every general finding,
+ *                       whose `host_class` merely records the machine it was
+ *                       authored on and must never gate the rule.
+ *
+ * Every entry declares every axis explicitly — an omitted flag would read as
+ * `undefined` (falsy) and silently opt a new type out of a capability without
+ * anyone deciding that. Guarded by a test in
+ * `tests/lib/learnings-schema-normalization.test.mjs`.
  */
 export const LEARNING_TYPE_REGISTRY = Object.freeze({
-  'mode-selector-accuracy':      Object.freeze({ ttlDays: 30, agentProposable: true,  ruleConvertible: false }),
-  'hardware-pattern':            Object.freeze({ ttlDays: 60, agentProposable: true,  ruleConvertible: false }),
-  'fragile-file':                Object.freeze({ ttlDays: 45, agentProposable: true,  ruleConvertible: true  }),
-  'effective-sizing':            Object.freeze({ ttlDays: 45, agentProposable: true,  ruleConvertible: false }),
-  'recurring-issue':             Object.freeze({ ttlDays: 45, agentProposable: true,  ruleConvertible: true  }),
+  'mode-selector-accuracy':      Object.freeze({ ttlDays: 30, agentProposable: true,  ruleConvertible: false, hostScoped: false }),
+  // hardware-pattern is the ONLY hostScoped type today: its content IS the
+  // chip/OS, so gating the emitted rule by host-class is faithful rather than
+  // an accidental one-machine restriction (#1090).
+  'hardware-pattern':            Object.freeze({ ttlDays: 60, agentProposable: true,  ruleConvertible: false, hostScoped: true  }),
+  'fragile-file':                Object.freeze({ ttlDays: 45, agentProposable: true,  ruleConvertible: true,  hostScoped: false }),
+  'effective-sizing':            Object.freeze({ ttlDays: 45, agentProposable: true,  ruleConvertible: false, hostScoped: false }),
+  'recurring-issue':             Object.freeze({ ttlDays: 45, agentProposable: true,  ruleConvertible: true,  hostScoped: false }),
   // workflow-pattern / proven-pattern: flipped ruleConvertible false->true
   // (issue #900) — the real corpus census showed a large volume of live
   // `workflow-pattern`/`proven-pattern` records (post type-alias-normalization,
   // see LEARNING_TYPE_ALIASES below) that carried usable file_paths but were
   // structurally unconvertible before this flip.
-  'workflow-pattern':            Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true  }),
-  'proven-pattern':              Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true  }),
-  'anti-pattern':                Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true  }),
-  'autopilot-effectiveness':     Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: false }),
+  'workflow-pattern':            Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true,  hostScoped: false }),
+  'proven-pattern':              Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true,  hostScoped: false }),
+  'anti-pattern':                Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true,  hostScoped: false }),
+  'autopilot-effectiveness':     Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: false, hostScoped: false }),
   // autonomy-verdict (#683): repo/scope readiness synthesis from autopilot
   // effectiveness plus skill-judge signals. 90d matches the operational
   // autopilot-effectiveness horizon it depends on. Analyzer-only — never
   // agent-proposable.
-  'autonomy-verdict':            Object.freeze({ ttlDays: 90, agentProposable: false, ruleConvertible: false }),
+  'autonomy-verdict':            Object.freeze({ ttlDays: 90, agentProposable: false, ruleConvertible: false, hostScoped: false }),
   // domain-regression (#638): a sidecar-sourced regression flag (metric baseline→recent
   // delta) surfaced via /evolve extra-sources. 60d aligns with the moderate-decay tier
   // (hardware-pattern / default) — a regression signal should age out if it stops recurring.
-  'domain-regression':           Object.freeze({ ttlDays: 60, agentProposable: true,  ruleConvertible: false }),
-  'convention':                  Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true  }),
-  'architecture-pattern':        Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true  }),
-  'design-pattern':              Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true  }),
+  'domain-regression':           Object.freeze({ ttlDays: 60, agentProposable: true,  ruleConvertible: false, hostScoped: false }),
+  'convention':                  Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true,  hostScoped: false }),
+  'architecture-pattern':        Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true,  hostScoped: false }),
+  'design-pattern':              Object.freeze({ ttlDays: 90, agentProposable: true,  ruleConvertible: true,  hostScoped: false }),
   // fragile-pattern / stagnation-class-frequency: 0 live instances as of
   // 2026-07-02 (see reconcile/eligibility.mjs census) — CONVERT-eligible but
   // NOT agent-proposable (analyzer-synthesized classes, not agent-observed).
-  'fragile-pattern':             Object.freeze({ ttlDays: 45, agentProposable: false, ruleConvertible: true  }),
-  'stagnation-class-frequency':  Object.freeze({ ttlDays: 60, agentProposable: false, ruleConvertible: true  }),
+  'fragile-pattern':             Object.freeze({ ttlDays: 45, agentProposable: false, ruleConvertible: true,  hostScoped: false }),
+  'stagnation-class-frequency':  Object.freeze({ ttlDays: 60, agentProposable: false, ruleConvertible: true,  hostScoped: false }),
 });
 
 /**

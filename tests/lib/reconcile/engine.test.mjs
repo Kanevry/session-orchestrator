@@ -12,13 +12,14 @@
  * seam, but NEVER writes `.claude/rules/`.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, it, expect, vi } from 'vitest';
 
 import { runReconcile } from '../../../scripts/lib/reconcile/engine.mjs';
+import { writeApprovedRules } from '../../../scripts/lib/reconcile/writer.mjs';
 import { parseGlobsFrontmatter } from '../../../scripts/lib/rule-loader.mjs';
 import { normalizeDialects } from '../../../scripts/lib/learnings/schema.mjs';
 import { RECONCILE_FIXTURE } from './_fixtures.mjs';
@@ -704,6 +705,68 @@ describe('runReconcile — on-disk dedupe against .claude/rules/ provenance (iss
       const rej = run2.rejected.find((r) => r.learningKey === 'fragile-pattern/persist-case');
       expect(rej).toBeDefined();
       expect(rej.reason).toContain('already processed');
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1042 — an operator rejection must survive into the next run.
+//
+// TV-001 — the bug this catches: AN OPERATOR REJECTION IS FORGOTTEN ON THE NEXT
+// RUN. `writeApprovedRules` archived a declined proposal to the append-only
+// rejected LOG and stopped there. Nothing reads that log back, and
+// `isProcessed()` judges terminality by the sidecar's `processed_at` — so the
+// next `runReconcile` proposed the identical rule again, and the operator's
+// explicit "no" had to be repeated forever.
+//
+// This is the only test that exercises the full loop across the two modules
+// (engine proposes → writer archives the decline → engine runs again); the
+// per-module halves live in writer.test.mjs / idempotency.test.mjs.
+// ---------------------------------------------------------------------------
+
+describe('runReconcile — an operator-declined proposal is not re-proposed on the next run (#1042)', () => {
+  it('run 2 skips the learning the operator declined in run 1, and still proposes an untouched sibling', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'reconcile-engine-operator-reject-'));
+    try {
+      const learnings = [
+        eligibleLearning({ subject: 'declined-by-operator' }),
+        eligibleLearning({ subject: 'never-surfaced', file_paths: ['scripts/lib/new/sibling.mjs'] }),
+      ];
+      const args = { repoRoot, now: new Date('2026-06-25T00:00:00Z') };
+
+      // --- Run 1: both learnings are proposed and recorded in the sidecar ---
+      const run1 = await runReconcile(args, { learnings });
+      expect(run1.summary.proposed).toBe(2);
+      expect(run1.summary.written).toBe(true);
+
+      const declined = run1.proposals.find((p) => p.learningKey === 'fragile-pattern/declined-by-operator');
+      expect(declined).toBeDefined();
+
+      // --- The operator declines exactly one of them in the approval AUQ ----
+      const writeResult = await writeApprovedRules({
+        approved: [],
+        rejected: [declined],
+        repoRoot,
+        sessionId: 'session-test-1042',
+      });
+      expect(writeResult.written).toBe(0);
+      expect(writeResult.archived).toBe(1);
+      expect(writeResult.errors).toEqual([]);
+      // No rule file — a decline writes nothing to .claude/rules/.
+      expect(existsSync(join(repoRoot, declined.path))).toBe(false);
+
+      // --- Run 2: the decline must hold, without any rule file on disk ------
+      const run2 = await runReconcile(args, { learnings });
+
+      expect(run2.proposals.map((p) => p.learningKey)).toEqual(['fragile-pattern/never-surfaced']);
+      expect(run2.summary.proposed).toBe(1);
+      expect(run2.summary.alreadyMaterialized).toBe(1);
+
+      const skipped = run2.rejected.find((r) => r.learningKey === 'fragile-pattern/declined-by-operator');
+      expect(skipped).toBeDefined();
+      expect(skipped.reason).toContain('already processed');
     } finally {
       rmSync(repoRoot, { recursive: true, force: true });
     }

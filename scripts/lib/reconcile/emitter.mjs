@@ -31,7 +31,7 @@
 import { dirname } from 'node:path';
 
 import { learningKeyOf } from '../learnings/kebab.mjs';
-import { deriveExpiresAt } from '../learnings/schema.mjs';
+import { deriveExpiresAt, LEARNING_TYPE_REGISTRY } from '../learnings/schema.mjs';
 
 const DAY_MS = 86400 * 1000;
 const DESCRIPTION_MAX = 120;
@@ -85,6 +85,15 @@ const HOST_CLASS_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
  * Learning `type`s whose `host_class` is actually chip/OS-specific and may be
  * copied through into the emitted rule's activation axis (#1090).
  *
+ * DERIVED from `scripts/lib/learnings/schema.mjs`'s `LEARNING_TYPE_REGISTRY`:
+ * every type whose `hostScoped` flag is `true`. It was a hand-kept literal
+ * `new Set(['hardware-pattern'])` until #1151 — a SECOND type register beside
+ * the registry, and the two could only drift silently: a type made host-scoped
+ * in the registry would keep having its `host_class` dropped here, and a type
+ * removed there would keep gating rules by host. Same derivation pattern (and
+ * the same reason) as `CONVERT_TYPES` in `reconcile/eligibility.mjs` and
+ * `PROPOSAL_TYPES` in `memory-proposals/schema.mjs`.
+ *
  * Before this allowlist, EVERY type's `host_class` was copied through
  * unconditionally the moment it passed {@link HOST_CLASS_RE}. Measured against
  * the live corpus (12/146 learnings carrying `host_class`, all
@@ -94,17 +103,20 @@ const HOST_CLASS_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
  * do with hardware, silently restricting an otherwise-general finding (a
  * PNG-size anti-pattern, say) to one operator's one machine.
  *
- * `hardware-pattern` is `ruleConvertible: false` in
- * `scripts/lib/learnings/schema.mjs` `LEARNING_TYPE_REGISTRY` — it can never
- * reach `eligibility.mjs`'s CONVERT_TYPES allow-list today, so this set is
- * currently INERT (no live record can exercise the "copied through" branch).
- * It stays here as forward-compat: the day a type is made BOTH host-scoped
- * AND rule-convertible, this is the one place that decides it is allowed to
- * gate a rule by host.
+ * `hardware-pattern` — the registry's only `hostScoped: true` entry today — is
+ * `ruleConvertible: false` there, so it can never reach `eligibility.mjs`'s
+ * CONVERT_TYPES allow-list and this set is currently INERT (no live record can
+ * exercise the "copied through" branch). It stays as forward-compat: the day a
+ * type is made BOTH host-scoped AND rule-convertible, the registry alone
+ * decides it is allowed to gate a rule by host — no edit to this file.
  *
  * @type {ReadonlySet<string>}
  */
-const HOST_SPECIFIC_TYPES = new Set(['hardware-pattern']);
+export const HOST_SPECIFIC_TYPES = new Set(
+  Object.entries(LEARNING_TYPE_REGISTRY)
+    .filter(([, meta]) => meta.hostScoped)
+    .map(([type]) => type)
+);
 
 // Characters that make a `file_paths[]` entry unsafe to serialise as a glob.
 // The renderer emits each glob as `  - "<value>"`, so a control char (a newline
@@ -144,12 +156,6 @@ const CONTROL_CHARS_TEST_RE = new RegExp(CONTROL_CHARS_RE.source);
 // derived from. `!`, `@`, `+` are ALSO picomatch extglob prefixes, but only
 // when immediately followed by `(` (`!(...)`, `@(...)`, `+(...)`) — bare `!`
 // (e.g. a filename) is not itself unsafe and is left alone.
-//
-// Every entry this regex rejects is now recorded, not silently dropped — see
-// {@link globsFromFilePaths}'s `rejections` parameter (#1089 part A): the
-// original `continue` produced neither a WARN nor an auditable reason, so an
-// operator reviewing a proposal could not tell "no scoping info" from "scoping
-// info was silently thrown away".
 const GLOB_METACHAR_RE = /[*?[\]{}()]|[!@+](?=\()/;
 
 /**
@@ -167,27 +173,17 @@ const GLOB_METACHAR_RE = /[*?[\]{}()]|[!@+](?=\()/;
  * first occurrence.
  *
  * @param {string[]} filePaths
- * @param {{ path: string, reason: 'glob-metacharacter' | 'unsafe-shape' }[]} [rejections]
- *   optional out-array; every skipped entry is pushed here with its reason
- *   (#1089 part A) so a caller can surface "N file_paths entries were dropped
- *   and why" instead of the drop being invisible.
  * @returns {string[]}
  */
-function globsFromFilePaths(filePaths, rejections) {
+function globsFromFilePaths(filePaths) {
   const out = [];
   const seen = new Set();
   for (const raw of filePaths) {
     if (typeof raw !== 'string' || raw === '') continue;
-    if (GLOB_METACHAR_RE.test(raw)) {
-      if (Array.isArray(rejections)) rejections.push({ path: raw, reason: 'glob-metacharacter' });
-      continue;
-    }
+    if (GLOB_METACHAR_RE.test(raw)) continue;
     // #1015: frontmatter-structure guard. Skipping (never escaping) keeps this
     // idempotent and non-overlapping with the renderer's sanitiser.
-    if (CONTROL_CHARS_TEST_RE.test(raw) || UNSAFE_PATH_QUOTE_RE.test(raw)) {
-      if (Array.isArray(rejections)) rejections.push({ path: raw, reason: 'unsafe-shape' });
-      continue;
-    }
+    if (CONTROL_CHARS_TEST_RE.test(raw) || UNSAFE_PATH_QUOTE_RE.test(raw)) continue;
     const normalized = raw.replace(/\\/g, '/');
     const dir = dirname(normalized);
     const pattern = dir === '.' ? normalized : `${dir}/**`;
@@ -308,7 +304,6 @@ function computeExpiresAt(learning, ruleExpiryDays, now, minRuleDays) {
  *   autoGenerated: true,
  *   alwaysApply: false,
  *   hostClass?: string,
- *   droppedFilePaths?: { path: string, reason: 'glob-metacharacter' | 'unsafe-shape' }[],
  * }}
  * @throws {Error} when no activation axis can be produced (empty globs AND no
  *   hostClass) — the never-always-on invariant. When `host_class` WAS present
@@ -325,10 +320,7 @@ export function toActivationMetadata(learning, { ruleExpiryDays, now, minRuleDay
   }
 
   const filePaths = Array.isArray(learning.file_paths) ? learning.file_paths : [];
-  // #1089 part A: every skipped file_paths entry is now recorded with a reason
-  // instead of vanishing behind a bare `continue` — see {@link globsFromFilePaths}.
-  const droppedFilePaths = [];
-  const globs = globsFromFilePaths(filePaths, droppedFilePaths);
+  const globs = globsFromFilePaths(filePaths);
 
   // #1015: `host_class` is copied straight into an UNQUOTED `host-class:`
   // frontmatter line by the renderer, so its SHAPE is load-bearing. Reject a
@@ -418,13 +410,6 @@ export function toActivationMetadata(learning, { ruleExpiryDays, now, minRuleDay
 
   if (hostClass !== undefined) {
     metadata.hostClass = hostClass;
-  }
-
-  // #1089 part A: present only when something was actually dropped — absence
-  // (not an empty array) is the "nothing to report" signal, matching the
-  // conditional-presence pattern `hostClass` already uses above.
-  if (droppedFilePaths.length > 0) {
-    metadata.droppedFilePaths = droppedFilePaths;
   }
 
   return metadata;

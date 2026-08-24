@@ -265,13 +265,23 @@ describe('isProcessed', () => {
   // TV-003 consolidation: the three former cases shared one setup and differed
   // only in the existing record's (learning_key, processed_at) pair — merged into
   // a table with no assertion lost. isProcessed is true iff BOTH halves match.
+  //
+  // #1042 added the `outcome` dimension: terminality is `processed_at` ALONE,
+  // never the outcome value. The two rows that matter are the last two — a
+  // record stamped `'rejected'` (the operator declined the proposal) must read
+  // as terminal, or the next run re-proposes the rule he just refused; and a
+  // pre-#1042 record with NO `outcome` field must keep reading as terminal
+  // exactly as before (back-compat: absence means 'written').
   it.each([
-    ['same key + terminal processed_at', 'fragile-pattern/zx-imports', '2026-06-21T12:00:00.000Z', true],
-    ['same key but still live', 'fragile-pattern/zx-imports', null, false],
-    ['different key, terminal', 'anti-pattern/other', '2026-06-21T12:00:00.000Z', false],
-  ])('%s → %s', (_label, existingKey, processedAt, expected) => {
+    ['same key + terminal processed_at, no outcome (pre-#1042 record)', 'fragile-pattern/zx-imports', '2026-06-21T12:00:00.000Z', undefined, true],
+    ['same key but still live', 'fragile-pattern/zx-imports', null, undefined, false],
+    ['different key, terminal', 'anti-pattern/other', '2026-06-21T12:00:00.000Z', 'written', false],
+    ['same key + terminal, outcome "written"', 'fragile-pattern/zx-imports', '2026-06-21T12:00:00.000Z', 'written', true],
+    ['same key + terminal, outcome "rejected" (#1042)', 'fragile-pattern/zx-imports', '2026-06-21T12:00:00.000Z', 'rejected', true],
+  ])('%s → %s', (_label, existingKey, processedAt, outcome, expected) => {
     const cand = candidate({ learning_key: 'fragile-pattern/zx-imports' });
-    const existing = [candidate({ learning_key: existingKey, processed_at: processedAt })];
-    expect(isProcessed(cand, existing)).toBe(expected);
+    const existingRecord = candidate({ learning_key: existingKey, processed_at: processedAt });
+    if (outcome !== undefined) existingRecord.outcome = outcome;
+    expect(isProcessed(cand, [existingRecord])).toBe(expected);
   });
 });

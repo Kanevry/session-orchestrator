@@ -14,7 +14,10 @@
  *    tmp+rename write → stamp the idempotency sidecar terminal via
  *    `markCandidateProcessed` (issue #484 point 1) so a later reconcile run's
  *    `isProcessed()` check does not re-propose the same learning.
- *  - For each rejected proposal: JSONL-append to `.orchestrator/reconcile.rejected.log`.
+ *  - For each rejected proposal: JSONL-append to `.orchestrator/reconcile.rejected.log`,
+ *    and — for an OPERATOR rejection only (see {@link isOperatorRejection}) —
+ *    stamp the idempotency sidecar terminal with `outcome: 'rejected'` (issue
+ *    #1042) so the operator's "no" survives into the next run.
  *  - Never throws — all failures are collected into errors[] and returned.
  *
  * Path-safety:
@@ -222,6 +225,42 @@ function frontmatterRefusalReason(content) {
   return `rule fails the never-always-on invariant: ${problems.join('; ')}`;
 }
 
+/**
+ * True iff a rejected item is an OPERATOR rejection — a proposal that was
+ * rendered, surfaced in the approval AUQ and then declined — as opposed to an
+ * engine-side rejection (ineligible, `capped — max-proposals-per-run`, or
+ * already-materialized).
+ *
+ * The distinction decides whether the item gets a TERMINAL sidecar stamp, so it
+ * has to be conservative in a specific direction. A false negative costs
+ * nothing beyond today's behaviour (the learning is simply re-proposed next
+ * run); a false positive would stamp an engine rejection terminal and thereby
+ * permanently suppress a learning that was only capped by the volume brake or
+ * not yet mature enough — silently, and with no way back short of editing the
+ * sidecar by hand.
+ *
+ * The discriminator is the rendered `content`: `engine.mjs` pushes its own
+ * rejections as `{learningKey, type, reason, status:'rejected'}` — they never
+ * reach the renderer, so they never carry `content`/`slug`/`path` — while the
+ * proposals the operator declines are full `ReconcileProposal` records whose
+ * `content` is the very rule text the AUQ showed him.
+ *
+ * CEILING (BV-004): this reads an implicit signal, not an explicit marker,
+ * because the one production caller (`skills/session-end/phase-3-6-tail.md`
+ * step 6/7) concatenates engine rejections and operator-declined proposals into
+ * ONE `rejected` array and marks neither. Revisit if that caller starts passing
+ * rendered content on engine-side rejections, or if it gains an explicit
+ * operator-rejection flag — then key on the flag instead.
+ *
+ * @param {WriterRejectedItem & {content?: unknown, learningKey?: unknown}} item
+ * @returns {boolean}
+ */
+function isOperatorRejection(item) {
+  if (!item || typeof item !== 'object') return false;
+  if (typeof item.content !== 'string' || item.content.length === 0) return false;
+  return typeof item.learningKey === 'string' && item.learningKey.length > 0;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -238,11 +277,22 @@ function frontmatterRefusalReason(content) {
  */
 
 /**
+ * A record in the `rejected` array. Two shapes arrive here through the same
+ * array (see {@link isOperatorRejection}):
+ *   - an ENGINE rejection — `{learningKey, type, reason, status:'rejected'}`;
+ *   - an OPERATOR-declined proposal — a full `ReconcileProposal`, i.e. the
+ *     engine shape PLUS `slug`/`path`/`content`/`confidence`/`candidateId`.
+ * Only the latter gets a terminal sidecar stamp.
+ *
  * @typedef {Object} WriterRejectedItem
  * @property {string} [learningKey]
  * @property {string} [type]
  * @property {string} [reason]
  * @property {string} [status]
+ * @property {string} [slug]        - operator-declined proposals only.
+ * @property {string} [content]     - operator-declined proposals only; THE discriminator.
+ * @property {number} [confidence]  - operator-declined proposals only.
+ * @property {string} [candidateId] - operator-declined proposals only.
  */
 
 /**
@@ -429,6 +479,33 @@ export async function writeApprovedRules({ approved, rejected = [], repoRoot, se
               const line = JSON.stringify(archiveRecord) + '\n';
               appendFileSync(rejectedLogPath, line, 'utf8');
               archived++;
+
+              // Stamp the idempotency sidecar for an OPERATOR rejection
+              // (issue #1042): the rejected log is an append-only AUDIT trail —
+              // nothing reads it back — so without this stamp `isProcessed()`
+              // finds no terminal verdict for the learning and the next run
+              // re-proposes the exact rule the operator just declined. Same
+              // shape and same single writer as the approved path above; only
+              // `outcome` differs. Engine-side rejections are deliberately NOT
+              // stamped (see `isOperatorRejection`) — a capped or not-yet-mature
+              // learning must stay proposable. Best-effort and gated on a
+              // successful append, mirroring the approved path.
+              if (isOperatorRejection(item)) {
+                const stampResult = markCandidateProcessed({
+                  learningKey: item.learningKey,
+                  outcome: 'rejected',
+                  processedAt: rejectedAt,
+                  fallbackSlug: item.slug,
+                  fallbackCandidateId: item.candidateId,
+                  fallbackConfidence: item.confidence,
+                  repoRoot,
+                });
+                if (!stampResult.written) {
+                  errors.push(
+                    `sidecar-stamp failed for rejected "${item.learningKey}" — the rejection was archived but the idempotency sidecar was not updated, so a later run may re-propose it`,
+                  );
+                }
+              }
             } catch (err) {
               const msg = err && err.message ? err.message : String(err);
               const key = (item && item.learningKey) ? item.learningKey : '<unknown>';

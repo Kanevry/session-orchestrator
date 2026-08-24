@@ -116,6 +116,18 @@ describe('normalizeDialects — type alias resolution (#900)', () => {
     );
     expect(danglingTargets).toEqual([]);
   });
+
+  it('every LEARNING_TYPE_REGISTRY entry declares an explicit boolean hostScoped (#1151)', () => {
+    // FALSIFICATION: a new entry added without the `hostScoped` axis reads as
+    // `undefined` — falsy — so `reconcile/emitter.mjs`'s registry-derived
+    // HOST_SPECIFIC_TYPES silently opts it out of the host-class activation
+    // axis with nobody having decided that. The registry is the SSOT only if
+    // every entry answers every axis.
+    const missing = Object.entries(LEARNING_TYPE_REGISTRY)
+      .filter(([, meta]) => typeof meta.hostScoped !== 'boolean')
+      .map(([type]) => type);
+    expect(missing).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
