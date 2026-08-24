@@ -20,11 +20,15 @@
  * by the time this probe fires. Gating on "no live lock" would make the
  * banner structurally silent forever. Instead:
  *
- *   - `lastLedgerAt`      = `completed_at` of the last PARSEABLE, GENUINE
- *                           (non-backfill-stub) `sessions.jsonl` record
- *                           (scanned from EOF backward, skipping malformed
- *                           lines) — see "Backfill-stub self-erasure fix"
- *                           below for the stub-skip logic and its fallback.
+ *   - `lastLedgerAt`      = the NEWEST instant any PARSEABLE `sessions.jsonl`
+ *                           record proves the ledger was alive at — a genuine
+ *                           record contributes its `completed_at` (or, absent
+ *                           one, its `started_at`), a backfill stub
+ *                           contributes ONLY its `started_at`. See
+ *                           "Backfill-stub self-erasure fix" below for why the
+ *                           stub's `completed_at` is excluded, and "#1125 —
+ *                           newest-across-all, not genuine-first" for why the
+ *                           two kinds are maxed rather than ranked.
  *   - `cutoff`            = the CURRENT session's `session.lock`
  *                           `started_at` (via `readLock()`); when no lock is
  *                           readable, `cutoff = now` (all events count).
@@ -58,24 +62,50 @@
  * inflate `deltaHours` for perfectly healthy, promptly-closed sessions
  * (a session's own mid-session events would newly count as "after" the
  * anchor), reintroducing false positives on the opposite side. (a) is
- * chosen: `lastLedgerEntry()` skips any record `isBackfillStub()` flags and
- * keeps searching backward for a GENUINE `completed_at`. Stub recognition
- * uses EITHER marker (OR, not AND) deliberately — both are set by the same
- * producer today, but requiring both would silently stop matching the day a
- * future backfill variant drops one of them while keeping the other; OR
+ * chosen: a stub's `completed_at` is NEVER an anchor candidate. Stub
+ * recognition uses EITHER marker (OR, not AND) deliberately — both are set by
+ * the same producer today, but requiring both would silently stop matching the
+ * day a future backfill variant drops one of them while keeping the other; OR
  * degrades gracefully (still catches it), AND does not.
  *
- * All-stub fallback (deliberately NOT null): when NO genuine record exists
- * anywhere in the file — every record is a backfill stub — this is a
- * STRONGER signal of the close-through gap than an ordinary stale ledger,
- * not a weaker one: no session has EVER genuinely closed. The module's
- * usual fail-quiet convention (null on missing/empty/ambiguous input) does
- * not extend to "we have data but all of it is synthetic" — that state IS
- * the failure this banner exists to catch, so `lastLedgerEntry()` instead
- * anchors on the newest stub's `started_at` (grounded in the real
- * `orchestrator.session.started` event in the common case — see
- * `synthesizeRecord()` — unlike that same stub's fabricated `completed_at`)
- * and flags the result `stubFallback: true` for callers that want to say so.
+ * #1125 — newest-across-ALL records, not genuine-first: excluding the stub's
+ * `completed_at` (above) is correct; excluding the whole STUB from the anchor
+ * search was not. The original implementation scanned from EOF backward and
+ * returned the first GENUINE record it met, reaching the stub `started_at`
+ * fallback only when no genuine record existed ANYWHERE. That is a PRIORITY
+ * ORDER, and it lets an OLD genuine record outrank a NEWER stub: whenever the
+ * most recent ledger activity is a stub, the anchor fell back to a stale
+ * genuine `completed_at` and the reported gap ballooned by the difference.
+ * Measured in the vault repo 2026-08-22 (issue #1125): a 173h `alert` — the
+ * probe's TOP severity — against a ledger whose newest records were from the
+ * same day, contradicted by three independent counter-measurements (231 of 233
+ * records carrying `completed_at`, newest `2026-08-22T16:23Z`;
+ * `backfill-abandoned-sessions.mjs --dry-run` finding 0 to backfill; all 15
+ * sessions since 2026-08-15 closed). A permanent top-severity false alarm
+ * trains exactly the looking-away this probe exists to prevent, so it is a
+ * defect of the same class as a missed gap, not a cosmetic one.
+ *
+ * The anchor is therefore the MAXIMUM over every record's own contribution:
+ *   - GENUINE record → its `completed_at`; or, when that field is absent or
+ *     unparseable, its `started_at` as a floor.
+ *   - BACKFILL STUB  → its `started_at` ONLY (never the fabricated
+ *     `completed_at` — that is the axis-(a) rule above).
+ * A stub written for an abandoned session still PROVES the ledger was alive at
+ * that instant: that session IS recorded (as abandoned), so activity around it
+ * is not evidence of an unrecorded close-through. Taking a MAX can only move
+ * the anchor FORWARD relative to the genuine-only anchor, so it never
+ * re-introduces axis (b)'s inflation of `deltaHours`.
+ *
+ * Stub-anchored reporting (deliberately NOT null): when the winning anchor is a
+ * stub's `started_at` — either because every record is a stub (no session has
+ * EVER genuinely closed, a STRONGER close-through signal than an ordinary stale
+ * ledger) or merely because the newest ledger activity happens to be a stub —
+ * the result carries `stubFallback: true` so the message can say the anchor is
+ * a stub `started_at` (grounded in the real `orchestrator.session.started`
+ * event in the common case — see `synthesizeRecord()`) rather than imply a
+ * measured close. The module's usual fail-quiet convention (null on
+ * missing/empty/ambiguous input) does not extend to "we have data but all of it
+ * is synthetic" — that state IS the failure this banner exists to catch.
  *
  * Severity: warn above `2 × DEFAULT_TTL_HOURS` (8h, imported from
  * `session-lock.mjs` rather than duplicated), alert above 24h.
@@ -158,57 +188,92 @@ function isBackfillStub(record) {
 }
 
 /**
- * Scan `sessions.jsonl` lines from EOF backward and return the anchor
- * instant to measure ledger staleness against. Malformed or non-conforming
- * lines (bad JSON, non-object) are skipped, not treated as fatal.
+ * Parse one record field into an anchor candidate. Returns `null` when the
+ * field is absent, not a string, or not a parseable timestamp.
  *
- * Two passes, in priority order:
- *   1. GENUINE — the last (by position) record that is NOT `isBackfillStub()`
- *      and carries a valid `completed_at`. This is the trustworthy case:
- *      `completed_at` was written by the real session-end path.
- *   2. STUB-FALLBACK — only reached when the loop above finds no genuine
- *      record at all (every record is a stub, or the file has none). Anchors
- *      on the newest-by-position stub's `started_at` instead of its
- *      `completed_at` — see the module-header design note for why. Flags
- *      `stubFallback: true` on the returned object; omitted (`undefined`) on
- *      the genuine path so existing callers checking `ledger.ms`/`ledger.iso`
- *      see no behavioural change.
+ * @param {unknown} value
+ * @returns {{iso: string, ms: number}|null}
+ */
+function tsCandidate(value) {
+  if (typeof value !== 'string') return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? { iso: value, ms } : null;
+}
+
+/**
+ * Keep whichever of the two candidates is newer. A `null` candidate never
+ * displaces a real one. On an exact tie the LATER-seen candidate wins, which
+ * (with the forward scan in `lastLedgerEntry()`) preserves the previous
+ * "nearest-EOF record wins" tie-break.
+ *
+ * @param {{iso: string, ms: number}|null} current
+ * @param {{iso: string, ms: number}|null} candidate
+ * @returns {{iso: string, ms: number}|null}
+ */
+function keepNewer(current, candidate) {
+  if (candidate === null) return current;
+  if (current === null) return candidate;
+  return candidate.ms >= current.ms ? candidate : current;
+}
+
+/**
+ * Scan all `sessions.jsonl` lines and return the anchor instant to measure
+ * ledger staleness against: the NEWEST instant any record proves the ledger
+ * was alive at. Malformed or non-conforming lines (bad JSON, non-object) are
+ * skipped, not treated as fatal.
+ *
+ * Which timestamp each record kind contributes, and why (full reasoning in the
+ * module header, "#1125 — newest-across-ALL records"):
+ *   - GENUINE (`!isBackfillStub()`) → `completed_at`, written by the real
+ *     session-end path; falling back to `started_at` when `completed_at` is
+ *     absent or unparseable, so a truncated/in-flight record still contributes
+ *     the coverage it does prove. Taking the newer of the two can only move the
+ *     anchor forward, never backward, so it does not inflate `deltaHours`.
+ *   - BACKFILL STUB → `started_at` ONLY. Its `completed_at` may be the backfill
+ *     RUN's own wall-clock rather than a measurement of when the session ended
+ *     (see `synthesizeRecord()`), and anchoring on that would let a backfill run
+ *     retroactively erase a real multi-day gap.
+ *
+ * The two kinds are MAXED, not ranked: an older genuine record must not outrank
+ * a newer stub (that priority order was the #1125 false-alert defect). When the
+ * winning candidate is a stub's `started_at`, `stubFallback: true` is set on the
+ * result so the caller can say the anchor is a stub start, not a measured close;
+ * the key is omitted (`undefined`) on the genuine path.
  *
  * @param {string[]} lines
  * @returns {{iso: string, ms: number, stubFallback?: true}|null}
  */
 function lastLedgerEntry(lines) {
-  let newestStub = null; // newest-by-position stub with a parseable started_at
+  let newestGenuine = null; // newest genuine completed_at (or started_at floor)
+  let newestStub = null; // newest stub started_at
 
-  for (let i = lines.length - 1; i >= 0; i--) {
+  for (const line of lines) {
     let record;
     try {
-      record = JSON.parse(lines[i]);
+      record = JSON.parse(line);
     } catch {
       continue;
     }
     if (!record || typeof record !== 'object') continue;
 
     if (isBackfillStub(record)) {
-      // Never anchor on a stub's completed_at (it may be the backfill run's
-      // own wall-clock) — remember it only as a fallback candidate, and only
-      // the first (nearest-EOF, i.e. newest-by-position) one seen.
-      if (newestStub === null && typeof record.started_at === 'string') {
-        const startedMs = Date.parse(record.started_at);
-        if (Number.isFinite(startedMs)) newestStub = { iso: record.started_at, ms: startedMs };
-      }
+      newestStub = keepNewer(newestStub, tsCandidate(record.started_at));
       continue;
     }
 
-    if (typeof record.completed_at !== 'string') continue;
-    const ms = Date.parse(record.completed_at);
-    if (!Number.isFinite(ms)) continue;
-    return { iso: record.completed_at, ms };
+    let own = tsCandidate(record.completed_at);
+    const started = tsCandidate(record.started_at);
+    // `completed_at` is the normal anchor and wins ties; `started_at` only
+    // takes over when it is genuinely newer or `completed_at` is unusable.
+    if (started !== null && (own === null || started.ms > own.ms)) own = started;
+    newestGenuine = keepNewer(newestGenuine, own);
   }
 
-  // No genuine record anywhere — see module-header "All-stub fallback" note:
-  // this is a stronger alarm signal than null, not a null-worthy absence.
-  return newestStub ? { iso: newestStub.iso, ms: newestStub.ms, stubFallback: true } : null;
+  if (newestGenuine === null && newestStub === null) return null;
+
+  const stubWins = newestGenuine === null || (newestStub !== null && newestStub.ms > newestGenuine.ms);
+  if (stubWins) return { iso: newestStub.iso, ms: newestStub.ms, stubFallback: true };
+  return { iso: newestGenuine.iso, ms: newestGenuine.ms };
 }
 
 /**
@@ -282,7 +347,7 @@ function resolveCutoffMs(repoRoot, nowMs) {
  * event exists, the foreign event is not after the last ledger entry, or the
  * resulting gap is under the warn threshold. Never throws.
  *
- * When the anchor comes from the all-stub fallback (`ledger.stubFallback`),
+ * When the newest anchor is a backfill stub (`ledger.stubFallback`),
  * `lastLedgerAt` is a STUB's `started_at`, not a genuine `completed_at` — the
  * message says so explicitly rather than implying a real close was measured.
  *
@@ -327,11 +392,13 @@ export function checkSessionsStaleness({ repoRoot, now = Date.now() } = {}) {
 
     const severity = deltaHours > ALERT_THRESHOLD_HOURS ? 'alert' : 'warn';
 
-    // stubFallback (see lastLedgerEntry()): every sessions.jsonl record is a
-    // backfill stub — ledger.iso is a STUB's started_at, not a measured
-    // completed_at. Say so explicitly rather than implying a real close.
+    // stubFallback (see lastLedgerEntry()): the newest anchor in sessions.jsonl
+    // is a backfill stub — ledger.iso is that STUB's started_at, not a measured
+    // completed_at. Say so explicitly rather than implying a real close. (The
+    // wording deliberately does NOT claim "stub-only": since #1125 a stub can
+    // win the anchor while older genuine records exist.)
     const ledgerDescription = ledger.stubFallback
-      ? `last sessions.jsonl entry is backfill-stub-only — newest stub started_at ${ledger.iso}`
+      ? `newest sessions.jsonl entry is a backfill stub — its started_at ${ledger.iso}`
       : `last sessions.jsonl entry ${ledger.iso}`;
 
     const base =

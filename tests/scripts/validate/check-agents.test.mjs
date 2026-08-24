@@ -134,6 +134,26 @@ color: blue
 ---
 `;
 
+// The bug this fixture names (#1029): an agent file whose description silently
+// LOSES 96% of its text is green today. This is `agents/eval-judge.md`'s exact
+// pre-fix shape — an UNQUOTED scalar whose ` #803` opens a YAML comment, so
+// js-yaml returns 51 of 1,180 characters (measured 2026-08-24) and the agent
+// picker sees only the stub. Every other rule in the gate passed on it: the
+// block is valid YAML, `description` is present and is not a block scalar.
+//
+// Load-bearing detail — the text BEFORE the ` #` carries no `: `, and the
+// `<example>Context: ` that would make the block unparseable sits AFTER it.
+// That is precisely why the defect hid: the comment swallows the invalid part,
+// so the Check-6 js-yaml parse rule never fires. Moving the hash later would
+// turn this into a parse-error fixture and stop testing the truncation rule.
+const TRUNCATED_DESC_AGENT = `---
+name: truncated-desc
+description: Use this agent during the /eval Skill Phase 3 (Epic #803, issue #810) to judge a record slice. <example>Context: user "judge" assistant "judged"</example>
+model: inherit
+color: blue
+---
+`;
+
 const NO_COLLISION_PASS = '  PASS: no color collisions among dispatchable agents';
 
 // ---------------------------------------------------------------------------
@@ -180,6 +200,27 @@ const RULE_CASES = [
     agents: { 'bad-desc.md': BLOCK_SCALAR_AGENT },
     expected: { status: 1, missing: [], echoed: [] },
     expectStdout: ['  FAIL: bad-desc.md: description must be an inline string, not a YAML block scalar'],
+  },
+  {
+    name: 'description truncated by an unquoted ` #` FAILs with the parsed-vs-raw lengths (#1029)',
+    agents: { 'truncated-desc.md': TRUNCATED_DESC_AGENT },
+    expected: { status: 1, missing: [], echoed: [] },
+    expectStdout: [
+      "  FAIL: truncated-desc.md: description is silently truncated by an unquoted ' #' — YAML parses 51 of 154 chars",
+      'quote the description',
+    ],
+  },
+  {
+    name: 'a QUOTED description containing ` #` parses in full and is NOT flagged (#1029)',
+    agents: {
+      'quoted-hash.md': agentMd({
+        name: 'quoted-hash',
+        description:
+          'Use this agent during the /eval Skill Phase 3 (Epic #803, issue #810) to judge a record slice. <example>Context: user "judge" assistant "judged"</example>',
+      }),
+    },
+    expected: { status: 0, missing: [], echoed: [] },
+    forbidStdout: ['silently truncated'],
   },
 
   // --- model: aliases, full IDs, and rejected shapes (#768) ---

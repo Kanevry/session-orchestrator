@@ -268,6 +268,70 @@ describe('findScopeCollisions — negative cases (#1020)', () => {
   });
 });
 
+describe('findScopeCollisions — stage 3b middle-segment disjointness (#1130)', () => {
+  const pair = (a, b) =>
+    findScopeCollisions([{ id: 'A', files: [a] }, { id: 'B', files: [b] }], { knownFiles: [] });
+
+  // BUG (#1130, reproduced 2026-08-24 @ f0766e1): stage 3b decided on literal
+  // PREFIX containment + one recursive entry + suffix compatibility, and never
+  // looked at the segments in between. `scripts/**\/reconcile/*.mjs` vs
+  // `scripts/**\/learnings/*.mjs` satisfies all three — shared `scripts/`
+  // prefix, both recursive, both `.mjs` — and was reported
+  // `{ok:false, kind:'glob-prefix'}` although `reconcile` and `learnings` are
+  // disjoint literal segments that no single path can occupy at once. The
+  // control `scripts/lib/reconcile/**` vs `scripts/lib/learnings/**` returned
+  // ok:true only because prefix containment already failed there, so the very
+  // same plan passed or failed on where the `**` sat. No test in this file or
+  // in tests/lib/scope-gate.test.mjs exercised a differing MIDDLE segment.
+  it('does not flag two globs whose middle literal segments differ', () => {
+    expect(pair('scripts/**/reconcile/*.mjs', 'scripts/**/learnings/*.mjs')).toEqual({
+      ok: true,
+      collisions: [],
+      duplicateIds: [],
+    });
+  });
+
+  // BUG: over-correcting into a wildcard middle would be a FALSE NEGATIVE — a
+  // missed collision, i.e. the #1020 incident class the whole gate exists to
+  // prevent. `scripts/**\/*/*.mjs` genuinely covers every file
+  // `scripts/**\/reconcile/*.mjs` covers, so the pair must stay a collision:
+  // only two PLAIN literals may prove disjointness, never a `*` opposite one.
+  it('still flags a differing segment when the other side is a wildcard', () => {
+    const result = pair('scripts/**/reconcile/*.mjs', 'scripts/**/*/*.mjs');
+    expect(result.ok).toBe(false);
+    expect(result.collisions[0].kind).toBe('glob-prefix');
+  });
+
+  // BUG: an equality-blind implementation (comparing "is there a literal at
+  // this position" rather than "do the literals DISAGREE") would report two
+  // identical middles as disjoint and wave through the exact double-claim of
+  // #1020. The second pair reaches stage 3b (stage 1 exits early on the byte-
+  // identical one), so it is the one that actually exercises the new code.
+  it('still flags globs that agree on the middle segment', () => {
+    expect(pair('scripts/**/reconcile/*.mjs', 'scripts/**/reconcile/*.mjs').ok).toBe(false);
+    const viaStage3b = pair('scripts/*/reconcile/*.mjs', 'scripts/**/reconcile/*.mjs');
+    expect(viaStage3b.ok).toBe(false);
+    expect(viaStage3b.collisions[0].kind).toBe('glob-prefix');
+  });
+
+  // BUG: pins the documented BV-004 ceiling so a later reader does not mistake
+  // it for an oversight and "fix" it into a false negative. A brace segment is
+  // treated as "could match anything", so this pair still reports a collision.
+  // (In today's dialect pathMatchesPattern ESCAPES `{}` — the braces are
+  // literal text — so the over-approximation is strictly conservative.)
+  it('over-approximates a brace segment rather than proving it disjoint', () => {
+    expect(pair('scripts/**/{reconcile,x}/*.mjs', 'scripts/**/learnings/*.mjs').ok).toBe(false);
+  });
+
+  // NO TEST for the trailing-slash case (`tests/` vs `tests/lib/*.mjs`), which
+  // the new segment check could have regressed by reading the trailing EMPTY
+  // segment as a literal: 'stage 3 … treats a trailing-slash directory prefix
+  // as recursive' above already goes RED on exactly that mutation (measured
+  // 2026-08-24 — dropping the `/` → `**` normalization in scopeEntrySegments
+  // turned it and nothing else red). A second assertion here would be the
+  // sibling case `.claude/rules/test-value.md` TV-004 forbids.
+});
+
 describe('findScopeCollisions — duplicate ids and fail-closed input (#1020)', () => {
   // BUG: two plan records sharing an id are a malformed plan, not two agents
   // fighting over a file. Folding them into `collisions` would emit a

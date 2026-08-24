@@ -993,6 +993,90 @@ function literalScopeSuffix(entry) {
 }
 
 /**
+ * Segments of a scope entry, with the implicit recursion of a trailing `/` made
+ * EXPLICIT as a `**` segment (`tests/` → `['tests', '**']`).
+ *
+ * Load-bearing: {@link pathMatchesPattern} matches a `dir/` prefix with
+ * `startsWith`, i.e. at ANY depth. Splitting `tests/` naively yields a trailing
+ * EMPTY segment, which {@link globsDisagreeOnLiteralSegment} would then compare
+ * against `lib` as if the entry ended there — turning `tests/` vs
+ * `tests/lib/*.mjs` into a false "disjoint".
+ *
+ * @param {string} entry
+ * @returns {string[]}
+ */
+function scopeEntrySegments(entry) {
+  const segs = entry.split('/');
+  if (segs.length > 1 && segs[segs.length - 1] === '') segs[segs.length - 1] = '**';
+  return segs;
+}
+
+/**
+ * Is this segment a PLAIN literal — one that can only match the byte-identical
+ * path segment? Deliberately conservative: `*`, `**`, `?`, `{a,b}` and `[...]`
+ * all count as "could match anything", and an empty segment does too.
+ * @param {string} seg
+ * @returns {boolean}
+ */
+function isPlainLiteralSegment(seg) {
+  return seg.length > 0 && !/[*?{}[\]]/.test(seg);
+}
+
+/**
+ * Do two glob entries carry PLAIN LITERAL segments that DISAGREE at an aligned
+ * position? If so no path can satisfy both, and the pair is disjoint however
+ * much literal prefix and suffix they share (#1130).
+ *
+ * Alignment is exact — and only within the two scans below. Every segment that
+ * is not `**` consumes EXACTLY ONE path segment (`*` compiles to `[^/]*`, which
+ * never crosses `/`; `?`/`{}`/`[]` are regex-ESCAPED by
+ * {@link pathMatchesPattern}, so they are literal text). `**` is the only
+ * variable-width segment, so each scan walks inward from one end and STOPS at
+ * the first `**` on either side — past that wall, positions no longer
+ * correspond. That is why the #1130 pair is decided from the TAIL:
+ * `scripts/**\/reconcile/*.mjs` vs `scripts/**\/learnings/*.mjs` share the
+ * `scripts` head and the `*.mjs` tail, and `reconcile` vs `learnings` is the
+ * first aligned position inward from the tail.
+ *
+ * CEILING (BV-004) — literal-vs-literal ONLY. A `{a,b}`, `?` or `[...]` segment
+ * is treated as "could match anything" and proves nothing, so
+ * `scripts/**\/{reconcile,x}/*.mjs` vs `scripts/**\/learnings/*.mjs` still
+ * reports a collision even though this dialect escapes braces into literal
+ * text. That over-approximation is the SAFE direction for a collision gate (a
+ * reported non-collision costs a coordinator one re-plan; a missed one is the
+ * #1020 incident). Revisit only if {@link pathMatchesPattern} gains real brace
+ * or char-class expansion — then those segments become enumerable and can be
+ * compared set-wise instead of being waved through.
+ *
+ * @param {string} x
+ * @param {string} y
+ * @returns {boolean} true when the two entries provably cannot match one path
+ */
+function globsDisagreeOnLiteralSegment(x, y) {
+  const xs = scopeEntrySegments(x);
+  const ys = scopeEntrySegments(y);
+  const isWall = (seg) => seg.includes('**');
+  const disagree = (a, b) =>
+    isPlainLiteralSegment(a) && isPlainLiteralSegment(b) && a !== b;
+
+  // Scan inward from the HEAD, stopping at the first `**` wall.
+  for (let k = 0; k < xs.length && k < ys.length; k++) {
+    if (isWall(xs[k]) || isWall(ys[k])) break;
+    if (disagree(xs[k], ys[k])) return true;
+  }
+  // Scan inward from the TAIL, same wall rule. Independent of the head scan:
+  // either end can carry the deciding literal, and #1130's does not sit at the
+  // head (both entries begin `scripts/**`).
+  for (let k = 0; k < xs.length && k < ys.length; k++) {
+    const xv = xs[xs.length - 1 - k];
+    const yv = ys[ys.length - 1 - k];
+    if (isWall(xv) || isWall(yv)) break;
+    if (disagree(xv, yv)) return true;
+  }
+  return false;
+}
+
+/**
  * Normalize the `agentScopes` input of {@link findScopeCollisions} into
  * `{id, declaredId, files}` records. Never throws; malformed members are
  * repaired rather than dropped.
@@ -1072,6 +1156,12 @@ function classifyEntryCollision(x, y, expand) {
   ) {
     return null;
   }
+  // Prefix + suffix say nothing about the MIDDLE, so `scripts/**\/reconcile/
+  // *.mjs` vs `scripts/**\/learnings/*.mjs` passed every check above and was
+  // reported as a collision (#1130, reproduced 2026-08-24 @ f0766e1). One
+  // aligned pair of DISAGREEING plain literals settles it — see the ceiling
+  // note on the helper for what it deliberately does not decide.
+  if (globsDisagreeOnLiteralSegment(x, y)) return null;
   return 'glob-prefix';
 }
 

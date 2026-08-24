@@ -228,6 +228,37 @@ function formatBytes(bytes) {
 }
 
 /**
+ * Untracked is not the same as disposable. Three classes of untracked file
+ * under .orchestrator/ are load-bearing, so they are removed from the candidate
+ * set ENTIRELY rather than merely downgraded: a finding an operator must not
+ * act on is noise, and `fixable: true` routes it to the batch-work lane where
+ * acting on it is precisely what happens.
+ *
+ *   `.backfilled-*.marker` — the TOCTOU idempotency guards written by
+ *       scripts/lib/session-close-backfill.mjs (`markerName()`). The file's
+ *       EXISTENCE is the whole state: delete one and the next backfill pass
+ *       re-runs for that session id and duplicates its record. Age is the
+ *       NORMAL condition of a marker whose session closed months ago.
+ *   `*.jsonl` — append-only telemetry ledgers (audit, autopilot,
+ *       vault-staleness, repair-candidates). They ARE the history every metric
+ *       is computed from; mtime says when the ledger last grew, never whether
+ *       its contents are still needed.
+ *   `*.log` — append-only diagnostic logs (reconcile.rejected.log and
+ *       siblings). Same argument as the ledgers.
+ *
+ * Everything else stays reportable: stray `*.json` scratch, `research/*.md`,
+ * abandoned run directories, and the 147 MB of test-run captures this check was
+ * built for.
+ *
+ * @param {string} name basename of the candidate file
+ * @returns {boolean}
+ */
+function isRetainedArtifact(name) {
+  if (name.startsWith('.backfilled-') && name.endsWith('.marker')) return true;
+  return name.endsWith('.jsonl') || name.endsWith('.log');
+}
+
+/**
  * H3 — Aged orchestrator artifacts.
  *
  * Measured 5/6. Largest observed: 184 MB under .orchestrator/, of which
@@ -244,6 +275,12 @@ function formatBytes(bytes) {
  *      `.orchestrator/steering/*.md` are read at runtime by hooks and skills;
  *      their age is a sign of stability, not decay. Proposing them for
  *      "pruning" is proposing to delete source.
+ *
+ *   3. Untracked is not the same as disposable. Three classes are untracked BY
+ *      DESIGN and load-bearing, and are excluded outright (see
+ *      `isRetainedArtifact`). Measured in this repo 2026-08-24: 24 of the 25
+ *      reported candidates were one of those three, so the finding was 96%
+ *      unactionable while carrying `fixable: true`.
  *
  * @param {string} repoRoot
  * @param {number} ageDays
@@ -298,6 +335,8 @@ export function checkStaleArtifacts(repoRoot, ageDays = DEFAULT_ARTIFACT_AGE_DAY
         // walk, not the reportable subset.
         scanned++;
         if (tracked.has(full)) continue;
+        // Untracked BY DESIGN and load-bearing — never a pruning candidate.
+        if (isRetainedArtifact(e.name)) continue;
         try {
           const st = statSync(full);
           if (st.mtimeMs < cutoff) {
@@ -318,14 +357,15 @@ export function checkStaleArtifacts(repoRoot, ageDays = DEFAULT_ARTIFACT_AGE_DAY
   // (Phase 4), which routes fixable findings to "safe batch work" instead of
   // the operator Q&A — prose guidance to the coordinator, not an automatic
   // deletion run; `grep -rn "fixable" scripts/ skills/ hooks/` finds no other
-  // reader than the `mechanical` count below. With tracked paths excluded the
-  // claim is now true: every reported path is an untracked artifact.
+  // reader than the `mechanical` count below. With tracked paths AND the
+  // retained classes excluded the claim is now true: every reported path is an
+  // untracked artifact whose deletion loses nothing but disk.
   return {
     check: 'stale-artifacts',
     fixable: true,
     agedFiles: aged,
     agedBytes,
-    message: `${aged} untracked file(s) under .orchestrator/ older than ${ageDays}d${agedBytes > 0 ? ` (${formatBytes(agedBytes)} total)` : ''} — candidates for pruning`,
+    message: `${aged} untracked file(s) under .orchestrator/ older than ${ageDays}d${agedBytes > 0 ? ` (${formatBytes(agedBytes)} total)` : ''} — candidates for pruning (idempotency markers + ledgers excluded)`,
   };
 }
 

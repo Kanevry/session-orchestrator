@@ -141,8 +141,14 @@ if [ -f "$CLAUDE_SETTINGS" ]; then
         fi
     fi
 
-    # Count enabled plugins
-    plugin_count=$(grep -c ': true' "$CLAUDE_SETTINGS" 2>/dev/null || echo "0")
+    # Count enabled plugins.
+    # `|| true` rather than `|| echo "0"`: grep -c ALREADY prints 0 on no-match and
+    # still exits 1, so an echo fallback appends a second line — the capture becomes
+    # "0\n0", which every numeric test downstream rejects (bash-harness-pitfalls.md §1).
+    plugin_count=$(grep -c ': true' "$CLAUDE_SETTINGS" 2>/dev/null || true)
+    # Empty (not "0") is the distinguishable failure: grep printed nothing at all,
+    # i.e. the file was unreadable — a state grep's own "0" can never represent.
+    plugin_count=${plugin_count:-0}
     echo "  Enabled plugins: $plugin_count"
 fi
 echo ""

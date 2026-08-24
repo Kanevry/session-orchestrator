@@ -318,16 +318,20 @@ describe('checkSessionsStaleness — additional coverage (F-G, W4 fix pass)', ()
 });
 
 describe('checkSessionsStaleness — backfill-stub self-erasure fix (isBackfillStub / stub-fallback)', () => {
-  it('anchors on the GENUINE record, not a near-now backfill stub sitting after it in the file', () => {
+  it('never anchors on a stub completed_at: a near-now stub for an OLDER session leaves the genuine anchor standing', () => {
     // Genuine record 10h before the foreign event (over WARN_THRESHOLD_HOURS=8).
-    // A backfill stub sits AFTER it (EOF-nearer) with a completed_at only 15min
-    // before the foreign event — if the stub were used as the anchor instead
-    // of being skipped, deltaHours would collapse to ~0.25h (under threshold)
-    // and the banner would go silent, exactly the measured #906 defect
-    // (92.51h -> 0.61h via one stub write).
+    // A backfill stub sits AFTER it in the file (EOF-nearer, the real append
+    // shape: today's backfill run writing a record for an older abandoned
+    // session) and carries a completed_at only 15min before the foreign event.
+    // That completed_at is the BACKFILL RUN's wall-clock, not a measured close
+    // — if it were used as the anchor, deltaHours would collapse to ~0.25h
+    // (under threshold) and the banner would go silent, exactly the measured
+    // #906 defect (92.51h -> 0.61h via one stub write). The stub's started_at
+    // (its only legitimate contribution, #1125) predates the genuine record, so
+    // the genuine completed_at must remain the newest anchor.
     writeSessions(tmpRepo, [
       sessionLine('2026-01-01T00:00:00.000Z'),
-      stubLine({ startedAt: '2026-01-01T08:00:00.000Z', completedAt: '2026-01-01T09:45:00.000Z' }),
+      stubLine({ startedAt: '2025-12-31T20:00:00.000Z', completedAt: '2026-01-01T09:45:00.000Z' }),
     ]);
     writeEvents(tmpRepo, [eventLine('2026-01-01T10:00:00.000Z')]);
     const now = Date.parse('2026-01-01T12:00:00.000Z');
@@ -342,10 +346,10 @@ describe('checkSessionsStaleness — backfill-stub self-erasure fix (isBackfillS
   it.each([
     ['status:abandoned alone (no _backfill_source)', { statusAbandoned: true, backfillSource: null }],
     ['_backfill_source alone (status not abandoned)', { statusAbandoned: false, backfillSource: 'events-jsonl' }],
-  ])('recognises a stub carrying only "%s" and still anchors on the earlier genuine record', (_label, markerOpts) => {
+  ])('recognises a stub carrying only "%s" and still refuses its completed_at as the anchor', (_label, markerOpts) => {
     writeSessions(tmpRepo, [
       sessionLine('2026-01-01T00:00:00.000Z'),
-      stubLine({ startedAt: '2026-01-01T08:00:00.000Z', completedAt: '2026-01-01T09:45:00.000Z', ...markerOpts }),
+      stubLine({ startedAt: '2025-12-31T20:00:00.000Z', completedAt: '2026-01-01T09:45:00.000Z', ...markerOpts }),
     ]);
     writeEvents(tmpRepo, [eventLine('2026-01-01T10:00:00.000Z')]);
     const now = Date.parse('2026-01-01T12:00:00.000Z');
@@ -371,6 +375,83 @@ describe('checkSessionsStaleness — backfill-stub self-erasure fix (isBackfillS
     expect(result.lastLedgerAt).toBe('2026-01-02T00:00:00.000Z');
     expect(result.severity).toBe('warn');
     expect(result.deltaHours).toBe(20);
+  });
+});
+
+describe('checkSessionsStaleness — #1125 anchor is the newest across ALL records, not genuine-first', () => {
+  // The bug (TV-001): the pre-#1125 `lastLedgerEntry()` scanned from EOF
+  // backward and RETURNED on the first genuine record, reaching a stub only
+  // when no genuine record existed anywhere. That priority order let an OLD
+  // genuine `completed_at` outrank a NEWER stub `started_at`, so whenever the
+  // most recent ledger activity was a stub the anchor fell back to the stale
+  // genuine record. Measured in the vault repo 2026-08-22: a 173h `alert`
+  // against a ledger that was current the same day. The first fixture below is
+  // that shape — the current code returns the 173h banner for it; the fixed
+  // code returns null.
+  const NOW = '2026-08-22T17:00:00.000Z';
+  const FOREIGN_EVENT = '2026-08-22T16:30:00.000Z'; // 30min before NOW → pre-cutoff, counted
+  const STALE_GENUINE = '2026-08-15T11:30:00.000Z'; // exactly 173h before FOREIGN_EVENT
+  const BACKFILL_RUN_CLOCK = '2026-08-22T16:45:00.000Z'; // stub completed_at — never an anchor
+
+  it('is silent when a NEWER stub covers the recent activity and only an OLD genuine record exists (the #1125 false alert)', () => {
+    // Fixture self-check: the genuine record really is 173h behind the foreign
+    // event, so a green here cannot come from an accidentally-narrow gap.
+    expect((Date.parse(FOREIGN_EVENT) - Date.parse(STALE_GENUINE)) / 3600000).toBe(173);
+
+    writeSessions(tmpRepo, [
+      sessionLine(STALE_GENUINE),
+      // Backfill stub for a session that started 1h ago — the ledger demonstrably
+      // recorded activity at 16:00, so the 16:30 event is covered, not orphaned.
+      stubLine({ startedAt: '2026-08-22T16:00:00.000Z', completedAt: BACKFILL_RUN_CLOCK }),
+    ]);
+    writeEvents(tmpRepo, [eventLine(FOREIGN_EVENT)]);
+    expect(checkSessionsStaleness({ repoRoot: tmpRepo, now: Date.parse(NOW) })).toBe(null);
+  });
+
+  it('still fires when the newest record IS the stale one: stub started_at 173h back, no newer record', () => {
+    writeSessions(tmpRepo, [
+      // Only a stub, and its start is 173h behind the foreign event. Its
+      // completed_at sits 15min before that event — if the stub's completed_at
+      // were admitted as an anchor, this would collapse to 0.25h and go silent.
+      stubLine({ startedAt: STALE_GENUINE, completedAt: BACKFILL_RUN_CLOCK }),
+    ]);
+    writeEvents(tmpRepo, [eventLine(FOREIGN_EVENT)]);
+    const result = checkSessionsStaleness({ repoRoot: tmpRepo, now: Date.parse(NOW) });
+    expect(result).not.toBe(null);
+    expect(result.severity).toBe('alert');
+    expect(result.lastLedgerAt).toBe(STALE_GENUINE);
+    expect(result.lastForeignEventAt).toBe(FOREIGN_EVENT);
+    expect(result.deltaHours).toBe(173);
+    expect(result.stubFallback).toBe(true);
+  });
+
+  it('reports WHICH kind anchored: a stub winning over an older genuine record is named a stub, not "stub-only"', () => {
+    writeSessions(tmpRepo, [
+      sessionLine(STALE_GENUINE), // genuine records DO exist — this is not the all-stub path
+      stubLine({ startedAt: '2026-08-21T10:30:00.000Z', completedAt: BACKFILL_RUN_CLOCK }), // 30h before the event
+    ]);
+    writeEvents(tmpRepo, [eventLine(FOREIGN_EVENT)]);
+    const result = checkSessionsStaleness({ repoRoot: tmpRepo, now: Date.parse(NOW) });
+    expect(result).not.toBe(null);
+    expect(result.stubFallback).toBe(true);
+    expect(result.lastLedgerAt).toBe('2026-08-21T10:30:00.000Z');
+    expect(result.deltaHours).toBe(30);
+    expect(result.severity).toBe('alert');
+    expect(result.message).toContain('newest sessions.jsonl entry is a backfill stub — its started_at 2026-08-21T10:30:00.000Z');
+    expect(result.message).not.toContain('stub-only');
+  });
+
+  it('uses a genuine record\'s started_at as an anchor floor when it carries no completed_at', () => {
+    writeSessions(tmpRepo, [
+      sessionLine('2026-01-01T00:00:00.000Z'),
+      // Genuine (no stub markers) but no completed_at — a truncated/in-flight
+      // write. Its started_at still proves the ledger was alive at 09:00, so the
+      // 10:00 event is 1h behind, not 10h. Ignoring it produced a false warn.
+      JSON.stringify({ session_id: 'main-no-completed-at', session_type: 'deep', started_at: '2026-01-01T09:00:00.000Z' }),
+    ]);
+    writeEvents(tmpRepo, [eventLine('2026-01-01T10:00:00.000Z')]);
+    const now = Date.parse('2026-01-01T12:00:00.000Z');
+    expect(checkSessionsStaleness({ repoRoot: tmpRepo, now })).toBe(null);
   });
 });
 

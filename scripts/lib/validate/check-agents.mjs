@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import { ALLOWED_MODEL_ALIASES, MODEL_ID_RE } from '../agent-frontmatter.mjs';
 import { extractInitialFrontmatter } from './frontmatter-block.mjs';
+import { parseFrontmatterDescription } from '../description-surface.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -136,6 +137,57 @@ function parseToolsValue(toolsVal) {
   return v.split(',').map((t) => t.trim()).filter(Boolean);
 }
 
+/**
+ * Detect a `description:` whose YAML-PARSED value is a silently truncated
+ * PREFIX of what the file actually says (#1029).
+ *
+ * An unquoted (plain) YAML scalar ends at the first ` #`: everything from there
+ * on is a comment. The block still parses, so every other rule in this gate
+ * stays green while the agent picker receives a stub — `agents/eval-judge.md`
+ * shipped 51 of 1,180 characters (96% dropped, measured 2026-08-24) and nothing
+ * complained. This is the concrete case the Check-6 preamble describes in prose.
+ *
+ * Detected by COMPARISON, never by pattern: the parsed value must be a strict
+ * prefix of the raw scalar AND the dropped tail must open a comment. A
+ * legitimately quoted description whose text merely contains `#` parses in full
+ * (parsed === raw, no length gap) and is never flagged; a quoted description
+ * carrying YAML escapes diverges from its raw form and fails the prefix test.
+ *
+ * Raw extraction is delegated to `parseFrontmatterDescription` (the sibling
+ * measurement probe already owns it, block scalars and quote-stripping included)
+ * rather than re-derived from a fourth regex here.
+ *
+ * @param {string} content - the agent file's raw content
+ * @param {Record<string, unknown>} data - the parsed frontmatter mapping
+ * @param {string} frontmatter - the frontmatter block's inner text
+ * @returns {{ parsedLength: number, rawLength: number } | null} null when intact
+ */
+function detectDescriptionTruncation(content, data, frontmatter) {
+  if (!hasField(frontmatter, 'description')) return null;
+
+  // A `description:` key whose WHOLE value is a comment (`description: #803 …`)
+  // parses to null — a 0-character description, the same defect at 100% loss.
+  const parsedValue =
+    typeof data?.description === 'string'
+      ? data.description
+      : data?.description === null || data?.description === undefined
+        ? ''
+        : null;
+  if (parsedValue === null) return null;
+
+  const rawField = parseFrontmatterDescription(content);
+  // Block scalars carry no comment semantics and are rejected outright by the
+  // inline-string rule below — not this rule's business.
+  if (!rawField || rawField.isBlockScalar) return null;
+
+  const raw = rawField.raw;
+  if (raw.length <= parsedValue.length) return null;
+  if (!raw.startsWith(parsedValue)) return null;
+  if (!/(^|\s)#/.test(raw.slice(parsedValue.length))) return null;
+
+  return { parsedLength: parsedValue.length, rawLength: raw.length };
+}
+
 // ============================================================================
 // Check 6: Agent .md files have valid YAML frontmatter
 // ============================================================================
@@ -225,6 +277,20 @@ if (mdFiles.length === 0) {
       continue;
     }
     parseable++;
+
+    // ------------------------------------------------------------------
+    // Prefix-truncation rule (#1029) — the ` #` case the preamble above names.
+    // Runs BEFORE the field rules: a description truncated to a stub still
+    // satisfies every one of them, so this is the only place the loss shows up.
+    // ------------------------------------------------------------------
+    const truncated = detectDescriptionTruncation(content, parsedFm.data, frontmatter);
+    if (truncated) {
+      fail(
+        `${agentName}: description is silently truncated by an unquoted ' #' — YAML parses ` +
+          `${truncated.parsedLength} of ${truncated.rawLength} chars and reads the rest as a comment; ` +
+          `quote the description (double-quoted, escaping any " inside) so the full text parses`,
+      );
+    }
 
     // ------------------------------------------------------------------
     // Required fields check

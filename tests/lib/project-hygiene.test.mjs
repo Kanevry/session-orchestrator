@@ -132,7 +132,7 @@ describe('checkStaleArtifacts', () => {
     // False-positive boundary: the CURRENT session writes into .orchestrator/.
     // Flagging its own live files would fire on every single session.
     mkdirSync(join(root, '.orchestrator', 'metrics'), { recursive: true });
-    writeFileSync(join(root, '.orchestrator', 'metrics', 'now.jsonl'), '{}');
+    writeFileSync(join(root, '.orchestrator', 'metrics', 'now.json'), '{}');
     expect(checkStaleArtifacts(root, 30)).toBeNull();
   });
 
@@ -140,7 +140,7 @@ describe('checkStaleArtifacts', () => {
     // Bug this catches: observed 592 files and 147 MB of test-run captures
     // accumulating for seven weeks with nothing ever pruning them.
     mkdirSync(join(root, '.orchestrator', 'metrics'), { recursive: true });
-    const old = join(root, '.orchestrator', 'metrics', 'ancient.jsonl');
+    const old = join(root, '.orchestrator', 'metrics', 'ancient.json');
     writeFileSync(old, '{}');
     const longAgo = Date.now() / 1000 - 90 * 24 * 60 * 60;
     utimesSync(old, longAgo, longAgo);
@@ -158,7 +158,7 @@ describe('checkStaleArtifacts', () => {
     // (11 MB claimed, 0.68 MB actually reclaimable). An operator who follows
     // the finding frees a fraction of what it promised.
     mkdirSync(join(root, '.orchestrator', 'metrics'), { recursive: true });
-    const old = join(root, '.orchestrator', 'metrics', 'ancient.jsonl');
+    const old = join(root, '.orchestrator', 'metrics', 'ancient.json');
     writeFileSync(old, 'x'.repeat(2048));
     const young = join(root, '.orchestrator', 'metrics', 'fresh.bin');
     writeFileSync(young, 'y'.repeat(5 * 1024 * 1024));
@@ -184,7 +184,7 @@ describe('checkStaleArtifacts', () => {
     writeFileSync(trackedSource, 'z'.repeat(4096));
     gitIn(['add', '--', '.orchestrator/policy/schema.json']);
     gitIn(['commit', '-q', '-m', 'add policy schema']);
-    const untrackedArtifact = join(root, '.orchestrator', 'metrics', 'old.jsonl');
+    const untrackedArtifact = join(root, '.orchestrator', 'metrics', 'old.json');
     writeFileSync(untrackedArtifact, '{}');
 
     const longAgo = Date.now() / 1000 - 90 * 24 * 60 * 60;
@@ -229,7 +229,7 @@ describe('checkStaleArtifacts', () => {
     const notARepo = mkdtempSync(join(tmpdir(), 'so-hygiene-nogit-'));
     try {
       mkdirSync(join(notARepo, '.orchestrator'), { recursive: true });
-      const old = join(notARepo, '.orchestrator', 'old.jsonl');
+      const old = join(notARepo, '.orchestrator', 'old.json');
       writeFileSync(old, '{}');
       const longAgo = Date.now() / 1000 - 90 * 24 * 60 * 60;
       utimesSync(old, longAgo, longAgo);
@@ -246,6 +246,44 @@ describe('checkStaleArtifacts', () => {
     } finally {
       rmSync(notARepo, { recursive: true, force: true });
     }
+  });
+
+  it('never proposes deleting idempotency markers or append-only ledgers', () => {
+    // Bug this catches: today the check proposes deleting idempotency markers
+    // whose deletion causes duplicate backfills. A `.backfilled-*.marker` is the
+    // TOCTOU guard of scripts/lib/session-close-backfill.mjs — its EXISTENCE is
+    // the entire state, so an aged marker is a HEALTHY marker, and removing one
+    // makes the next backfill pass re-run for that session id. Ledgers and logs
+    // are append-only history for the same reason. Measured in this repo
+    // 2026-08-24: 24 of 25 reported candidates were markers, *.jsonl ledgers or
+    // *.log files — every one of them carrying `fixable: true`.
+    mkdirSync(join(root, '.orchestrator', 'metrics'), { recursive: true });
+    const marker = join(root, '.orchestrator', 'metrics', '.backfilled-x.marker');
+    const ledger = join(root, '.orchestrator', 'metrics', 'events.jsonl');
+    const log = join(root, '.orchestrator', 'reconcile.rejected.log');
+    const scratch = join(root, '.orchestrator', 'foo.json');
+    writeFileSync(marker, '');
+    writeFileSync(ledger, '{"a":1}\n');
+    writeFileSync(log, 'rejected\n');
+    writeFileSync(scratch, '{}');
+    const longAgo = Date.now() / 1000 - 90 * 24 * 60 * 60;
+    for (const f of [marker, ledger, log, scratch]) utimesSync(f, longAgo, longAgo);
+
+    const result = checkStaleArtifacts(root, 30);
+    expect(result).not.toBeNull();
+    // Only the scratch json is a candidate. agedBytes proves the exclusion is a
+    // real removal from the set, not a message-level downgrade: the ledger and
+    // log bytes are absent from the total too.
+    expect(result.agedFiles).toBe(1);
+    expect(result.agedBytes).toBe(2);
+    expect(result.message).toContain('1 untracked file');
+    // The count change has to be explainable from the banner alone.
+    expect(result.message).toContain('idempotency markers + ledgers excluded');
+
+    // Corollary: a repo whose ONLY aged files are load-bearing must produce no
+    // banner at all — not a zero-count one.
+    rmSync(scratch);
+    expect(checkStaleArtifacts(root, 30)).toBeNull();
   });
 });
 
@@ -343,7 +381,7 @@ describe('checkProjectHygiene', () => {
     writeFileSync(join(root, 'package.json'), '{"name":"x"}');
     commitN(55);
     mkdirSync(join(root, '.orchestrator'), { recursive: true });
-    const old = join(root, '.orchestrator', 'old.jsonl');
+    const old = join(root, '.orchestrator', 'old.json');
     writeFileSync(old, '{}');
     const longAgo = Date.now() / 1000 - 90 * 24 * 60 * 60;
     utimesSync(old, longAgo, longAgo);
