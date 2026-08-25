@@ -312,12 +312,23 @@ function evaluateSignals(state, alreadyEmitted, latestWave) {
 }
 
 /**
+ * Poll delay.
+ *
+ * The timer is deliberately NOT `unref()`d: it is the only handle this process
+ * holds, so an unref'd timer drains the event loop and node exits 0 the instant
+ * the first tick is scheduled — a monitor that supervises nothing while looking
+ * like a clean shutdown (it has already emitted `tail.started` and writes
+ * nothing to stderr). Measured 2026-08-25 on the unref'd variant:
+ * `node scripts/lib/convergence-monitor.mjs --tail --interval=1` returned
+ * exit 0 after 47 ms instead of running until SIGTERM. This is the mechanism
+ * behind #980 (convergence-monitor never fires) — the same defect A1 measured
+ * in `scripts/lib/wave-transcript-tail.mjs`, which this sleep() was copied to.
+ *
  * @param {number} ms
  */
 function sleep(ms) {
   return new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    t.unref?.();
+    setTimeout(resolve, ms);
   });
 }
 

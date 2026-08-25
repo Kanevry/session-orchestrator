@@ -91,18 +91,20 @@ The quality-gate loop resolves gate commands via three-level precedence (explici
 - **No privilege escalation:** The fixer-agent dispatch happens within the same session's effective permissions. A developer with permission to commit to the repo already has permission to execute arbitrary code via any other file (e.g., `package.json` scripts, `.husky/` hooks, test files). Session Config `*-command` is **not** a new attack surface — it is equivalent to the existing commit-review trust model.
 - **Bounded scope:** Commands are only read and executed during inter-wave Quality-Gate runs with `verification-auto-fix.enabled: true` (default `false`). A repo without that flag enabled never parses Session Config commands at all.
 
-**The four command-bearing surfaces (sanctioned):**
+**The five command-bearing surfaces (sanctioned):**
 
 1. `test-command` — Quality-Gate test runner.
 2. `typecheck-command` — Quality-Gate typecheck runner.
 3. `lint-command` — Quality-Gate lint runner.
 4. `custom-phases[].command` (#637) — repo-declared deterministic close/housekeeping phases run at session-end Phase 2.5 via Bash with exit-code gating. Same VCS-trust-anchor model as the trio above: any change is commit-gated and visible in `git log`. As defense-in-depth, `scripts/lib/config/custom-phases.mjs` additionally rejects shell metacharacters in `command`/`review`/`name` and drops the offending record with a WARN.
+5. `agent-mapping.<role>` (#1150) — not a command string, but a **dispatch target**, which is the same trust class. A value of the shape `<channel>:<target>` (e.g. `impl: cursor:composer-2.5`) routes that wave role to a foreign binary spawned via Bash, instead of to a native `Agent()` subagent. `scripts/lib/config.mjs` restricts the channel to a known list and rejects an empty target, but it cannot vouch for what the binary does.
 
 **Operator audit checklist:**
 
 1. **Review Session Config drift** as part of standard code review. Any PR that modifies a command-bearing key MUST show the before/after — unexpected values are an audit opportunity.
-2. **Watch for unexpected Session Config keys.** If a PR introduces a new command-bearing entry outside the documented set (`lint-command`, `typecheck-command`, `test-command`, and `custom-phases[].command`), investigate — these are the surfaces `scripts/parse-config.mjs` parses into executable commands.
-3. **Treat Session Config like code.** A malicious Session Config change is equivalent to a malicious code change. Rely on your existing VCS review process; do not add extra gates for Session Config specifically.
+2. **Watch for unexpected Session Config keys.** If a PR introduces a new command-bearing entry outside the documented set (`lint-command`, `typecheck-command`, `test-command`, `custom-phases[].command`, and `agent-mapping.<role>`), investigate — these are the surfaces `scripts/parse-config.mjs` parses into executable commands.
+3. **An `agent-mapping` role changing from a bare agent name to `cursor:*` MUST show before/after** and cite the foreign-dispatch trust boundary in the review: it moves that wave role from a native subagent (which the whole hook chain — scope guard, destructive-command guard, `SubagentStop` telemetry — observes) to a Bash-spawned binary that none of those hooks see.
+4. **Treat Session Config like code.** A malicious Session Config change is equivalent to a malicious code change. Rely on your existing VCS review process; do not add extra gates for Session Config specifically.
 
 Cross-references: `scripts/lib/qg-command-drift-banner.mjs` (session-start banner for `*-command` drift) · `scripts/lib/quality-gate.mjs` (`runQualityGateWithRetry`) · `.claude/rules/quality-gates-autofix.md` (auto-fix loop behaviour).
 

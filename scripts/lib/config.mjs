@@ -235,23 +235,56 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   if (agentMapping !== null) {
     // Validate role keys against canonical list from skills/_shared/config-reading.md
     const ALLOWED_ROLES = ['impl', 'test', 'db', 'ui', 'security', 'compliance', 'docs', 'perf'];
+    // Dispatch channels a mapping value may name via a `<channel>:<target>`
+    // prefix (#1150). Without a colon the value is a plain agent name and is
+    // dispatched natively, exactly as before.
+    //   impl: code-implementer      → native Agent dispatch (unchanged)
+    //   impl: cursor:composer-2.5   → foreign model over the Cursor channel
+    // An unknown prefix is a typo or a channel this build cannot route, and
+    // must fail loudly: silently accepting it would dispatch to an agent that
+    // does not exist, which surfaces only as an empty wave much later.
+    const KNOWN_CHANNELS = ['cursor', 'session-orchestrator'];
+    // Accumulate every defect, then report once. A config with two bad entries
+    // must name BOTH — throwing on the first one makes the operator re-run the
+    // parse per defect, and each re-run hides the ones behind it.
     const invalidKeys = [];
+    const valueProblems = [];
     for (const [k, v] of Object.entries(agentMapping)) {
       if (!ALLOWED_ROLES.includes(k)) {
         invalidKeys.push(k);
         continue;
       }
       if (typeof v !== 'string' || v === '') {
-        throw new Error(
-          `config.mjs: agent-mapping role '${k}' has invalid value '${v}' (expected non-empty string)`
-        );
+        valueProblems.push(`role '${k}' has invalid value '${v}' (expected non-empty string)`);
+        continue;
+      }
+      const colonIdx = v.indexOf(':');
+      if (colonIdx !== -1) {
+        const channel = v.slice(0, colonIdx).trim();
+        const target = v.slice(colonIdx + 1).trim();
+        if (!KNOWN_CHANNELS.includes(channel)) {
+          valueProblems.push(
+            `role '${k}' names unknown channel '${channel}' in value '${v}' ` +
+              `(known channels: ${KNOWN_CHANNELS.join(', ')}; a value without ':' is a plain agent name)`
+          );
+        } else if (target === '') {
+          valueProblems.push(
+            `role '${k}' has channel '${channel}' but no target in value '${v}' ` +
+              `(expected '${channel}:<model-or-agent>')`
+          );
+        }
       }
     }
+    const problems = [];
     if (invalidKeys.length > 0) {
-      throw new Error(
-        `config.mjs: agent-mapping contains invalid role key(s): ${invalidKeys.join(', ')} ` +
-          `(allowed: ${ALLOWED_ROLES.join(', ')})`
+      problems.push(
+        `invalid role key(s): ${invalidKeys.join(', ')} (allowed: ${ALLOWED_ROLES.join(', ')})`
       );
+    }
+    problems.push(...valueProblems);
+    if (problems.length > 0) {
+      // Still fail loud — only the reporting shape changed, never the verdict.
+      throw new Error(`config.mjs: agent-mapping ${problems.join('; ')}`);
     }
   }
   const enforcementGates = _coerceBoolObject(kv, 'enforcement-gates');

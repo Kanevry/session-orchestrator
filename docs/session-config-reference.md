@@ -75,10 +75,31 @@ Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `agents-per-wave` | integer or integer with overrides | `6` | Maximum parallel subagents per wave. Supports session-type overrides: `6 (deep: 18)` outputs `{"default": 6, "deep": 18}`. Plain integers remain plain. The override key names a session type but does **not** create one: there is no `session-type:` Session Config key — `parseSessionConfig()` emits none, so writing one into a repo's `## Session Config` block is inert prose. The session type comes from the `/session` argument (default `deep`, see `commands/session.md`) and is persisted to STATE.md frontmatter as `session-type:`, which is the only live read (`scripts/print-applicable-rules.mjs` rule mode-gating). |
-| `agent-mapping` | object | null | Optional mapping of role keys to agent names for explicit agent binding. Keys: `impl`, `test`, `db`, `ui`, `security`, `compliance`, `docs`, `perf`. Example: `{ impl: code-editor, test: test-specialist }`. Overrides auto-discovery when present. |
+| `agent-mapping` | object | null | Optional mapping of role keys to agent names for explicit agent binding. Keys: `impl`, `test`, `db`, `ui`, `security`, `compliance`, `docs`, `perf`. Example: `{ impl: code-editor, test: test-specialist }`. Overrides auto-discovery when present. Values may carry a channel prefix — see § `agent-mapping` values below. |
 | `waves` | integer | `5` | Number of execution waves for feature and deep sessions. |
 | `recent-commits` | integer | `20` | Number of recent commits to display during session start git analysis. |
 | `special` | string | none | Repo-specific instructions. Freeform text that the orchestrator reads and follows during sessions. |
+
+### `agent-mapping` values — channel prefixes (#1150)
+
+A mapping value has three forms, distinguished by the colon:
+
+| Value form | Meaning | Dispatch |
+|---|---|---|
+| `<project-agent>` (no colon) | An agent file under `<state-dir>/agents/<name>.md` | Agent tool, unchanged |
+| `session-orchestrator:<plugin-agent>` | A plugin agent shipped by this repo | Agent tool, unchanged |
+| `cursor:<model>` | A **foreign model** over the Cursor channel (`cursor-agent`) | Coordinator-direct via `dispatchForeign()` — **not** the Agent tool |
+
+```
+agent-mapping: { impl: cursor:composer-2.5, test: cursor:cursor-grok-4.6-high, security: security-reviewer }
+```
+
+**Unknown channels fail loud.** `scripts/lib/config.mjs` parses this key and throws on any prefix outside `cursor` / `session-orchestrator` (`agent-mapping role '<k>' names unknown channel '<c>' …`), and on a prefix with an empty target. Silently accepting a typo would dispatch to an agent that does not exist and surface only as an empty wave, much later. A value without a colon is a plain agent name and is never channel-parsed.
+
+**Where the rest of the contract lives** — deliberately not here, so one place owns it:
+
+- **Model selection** (which model for which role, and why): the account-switch routing SSOT, ADR-002 / `tools/routing/routing.yaml`. Working defaults are `composer-2.5` for foreign impl and `cursor-grok-4.6-high` for review / test-writing / judgment roles.
+- **Dispatch contract** (detached worktree, the `never_foreign` role lock, the filesystem-measured verdict, the MANDATORY Claude semantic diff-review before merge-back, wall-clock timeout instead of `maxTurns`, and the `orchestrator.foreign_dispatch.completed` event that replaces the hook-chain telemetry a foreign run cannot emit): `skills/wave-executor/wave-loop.md` § Third branch: foreign-model dispatch.
 
 ## VCS & Infrastructure
 

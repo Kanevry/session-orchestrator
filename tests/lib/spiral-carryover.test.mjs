@@ -207,30 +207,25 @@ describe('findExistingCarryover (gitlab)', () => {
     expect(args).toContain('type:carryover');
   });
 
-  it('returns exists:false when glab returns an empty array', async () => {
-    setCliResponses([{ ok: true, stdout: '[]' }]);
-    const res = await findExistingCarryover({ taskHash: 'deadbeef', vcs: 'gitlab' });
-    expect(res).toEqual({ exists: false });
-  });
-
-  it('returns exists:false when no issue body contains the marker', async () => {
-    const fakeList = [
-      { iid: 1, web_url: 'u1', description: 'no marker here' },
-      { iid: 2, web_url: 'u2', description: '<!-- task-hash: 99999999 -->' },
-    ];
-    setCliResponses([{ ok: true, stdout: JSON.stringify(fakeList) }]);
-    const res = await findExistingCarryover({ taskHash: 'abc12345', vcs: 'gitlab' });
-    expect(res).toEqual({ exists: false });
-  });
-
-  it('fails open (returns exists:false, does not throw) when glab CLI errors', async () => {
-    setCliResponses([{ ok: false, stderr: 'glab: not authenticated' }]);
-    const res = await findExistingCarryover({ taskHash: 'abc12345', vcs: 'gitlab' });
-    expect(res).toEqual({ exists: false });
-  });
-
-  it('fails open when glab returns non-JSON stdout', async () => {
-    setCliResponses([{ ok: true, stdout: '<<not json>>' }]);
+  // Four former tests, one table: each differs only in what `glab` returns and
+  // all four assert the same fail-open miss. A dedup lookup that THROWS on any
+  // of these rows aborts the carryover write it was only meant to guard.
+  it.each([
+    { why: 'glab returns an empty array', response: { ok: true, stdout: '[]' } },
+    {
+      why: 'no issue body contains the marker',
+      response: {
+        ok: true,
+        stdout: JSON.stringify([
+          { iid: 1, web_url: 'u1', description: 'no marker here' },
+          { iid: 2, web_url: 'u2', description: '<!-- task-hash: 99999999 -->' },
+        ]),
+      },
+    },
+    { why: 'the glab CLI errors', response: { ok: false, stderr: 'glab: not authenticated' } },
+    { why: 'glab returns non-JSON stdout', response: { ok: true, stdout: '<<not json>>' } },
+  ])('returns exists:false without throwing when $why', async ({ response }) => {
+    setCliResponses([response]);
     const res = await findExistingCarryover({ taskHash: 'abc12345', vcs: 'gitlab' });
     expect(res).toEqual({ exists: false });
   });
@@ -1019,6 +1014,74 @@ describe('createSpiralCarryoverIssue — default resolveRepoSpecFn wires the REA
     expect(glabCalls).toHaveLength(2);
     expect(glabCalls[0][1]).not.toContain('-R');
     expect(glabCalls[1][1]).not.toContain('-R');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1105 — structural VITEST guard: repoRoot-less issue-create must not charge
+// the ambient working-copy issue-budget ledger. Uses a synthetic mkdtemp
+// fixture as the only ledger root that may be written.
+// ---------------------------------------------------------------------------
+
+describe('createSpiralCarryoverIssue — VITEST ambient-ledger guard (#1105)', () => {
+  it('refuses repoRoot-less issue-create under VITEST and charges only an explicit synthetic repoRoot', async () => {
+    const sandbox = mkdtempSync(path.join(tmpdir(), 'spiral-carryover-guard-'));
+    const decoy = mkdtempSync(path.join(tmpdir(), 'spiral-carryover-guard-decoy-'));
+    try {
+      vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'vitest-guard-raw');
+      setCliResponses([
+        { ok: true, stdout: '[]' },
+        { ok: true, stdout: 'https://gitlab.example.com/g/p/-/issues/88\n' },
+      ]);
+
+      const refused = await createSpiralCarryoverIssueReal({
+        taskDescription: 'repoRoot-less must not charge ambient ledger',
+        kind: 'SPIRAL',
+        context: 'ctx',
+        vcs: 'gitlab',
+        resolveRepoSpecFn: () => undefined,
+      });
+
+      expect(refused).toEqual({
+        created: false,
+        skipped: 'error',
+        error:
+          'spiral-carryover: refusing to charge the issue-budget ledger at the ambient ' +
+          'repo root under VITEST — pass an explicit synthetic repoRoot',
+      });
+      const createCalls = execFileSync.mock.calls.filter(
+        ([, args]) => args[0] === 'issue' && (args[1] === 'create' || args[1] === 'new'),
+      );
+      expect(createCalls).toHaveLength(0);
+      expect(existsSync(path.join(sandbox, '.orchestrator', 'runtime'))).toBe(false);
+      expect(existsSync(path.join(decoy, '.orchestrator', 'runtime'))).toBe(false);
+
+      execFileSync.mockClear();
+      setCliResponses([
+        { ok: true, stdout: '[]' },
+        { ok: true, stdout: 'https://gitlab.example.com/g/p/-/issues/89\n' },
+      ]);
+
+      const allowed = await createSpiralCarryoverIssueReal({
+        repoRoot: sandbox,
+        taskDescription: 'explicit synthetic repoRoot is charged here only',
+        kind: 'SPIRAL',
+        context: 'ctx',
+        vcs: 'gitlab',
+        resolveRepoSpecFn: () => undefined,
+      });
+
+      expect(allowed.created).toBe(true);
+      expect(readBudgetState(sandbox, 'vitest-guard-raw')).toMatchObject({
+        sessionId: 'vitest-guard-raw',
+        exempt: 1,
+      });
+      expect(existsSync(path.join(decoy, '.orchestrator', 'runtime'))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(sandbox, { recursive: true, force: true });
+      rmSync(decoy, { recursive: true, force: true });
+    }
   });
 });
 

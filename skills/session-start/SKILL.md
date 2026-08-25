@@ -1218,7 +1218,7 @@ After user alignment:
 
 - **NEVER make assumptions** about code state based on memory or docs — always verify in actual files
 - **NEVER skip the Q&A phase** — the user MUST confirm direction before wave planning
-- **ALWAYS use `run_in_background: false`** for parallel subagent work — wait for completion
+- **ALWAYS verify parallel subagent work against the started set**, never against the launch ack — `run_in_background: true` is allowed and recommended for wave dispatch (`skills/wave-executor/wave-loop.md § Started-Set Verification`); skills that need every result before their next phase (persona-panel, discovery, test-runner, session-end) keep `false` and say why
 - **ALWAYS check `.env` or `.env.local`** for VCS host, API keys, and service URLs
 - **ALWAYS present options with pros/cons and a clear recommendation** — never just list facts
 - **ALWAYS update VCS issue status** when claiming work — use the issue update command per the "Common CLI Commands" section of the gitlab-ops skill

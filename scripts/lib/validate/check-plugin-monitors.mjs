@@ -13,7 +13,8 @@
  *   7. Each name is unique within the array
  *   8. Array contains an entry named "ecosystem-health"
  *   9. Array contains an entry named "convergence-monitor"
- *  10. The 2 referenced watcher scripts exist on filesystem
+ *  10. Array contains an entry named "wave-transcript-tail" (#1114)
+ *  11. The 3 referenced watcher scripts exist on filesystem
  *
  * Path resolution note:
  *   experimental.monitors value "./monitors/monitors.json" is repo-root-relative
@@ -50,11 +51,16 @@ let failed = 0;
 function pass(msg) { console.log(`  PASS: ${msg}`); passed += 1; }
 function fail(msg) { console.log(`  FAIL: ${msg}`); failed += 1; }
 
-const REQUIRED_MONITOR_NAMES = ['ecosystem-health', 'convergence-monitor'];
+const REQUIRED_MONITOR_NAMES = [
+  'ecosystem-health',
+  'convergence-monitor',
+  'wave-transcript-tail',
+];
 const REQUIRED_FIELDS = ['name', 'command', 'description'];
 const REQUIRED_SCRIPTS = [
   'scripts/lib/ecosystem-health.mjs',
   'scripts/lib/convergence-monitor.mjs',
+  'scripts/lib/wave-transcript-tail.mjs',
 ];
 
 // ---------------------------------------------------------------------------
@@ -177,7 +183,7 @@ if (dups.length === 0) {
 }
 
 // ---------------------------------------------------------------------------
-// Checks 8-9: required monitor names present
+// Checks 8-10: required monitor names present
 // ---------------------------------------------------------------------------
 
 for (const required of REQUIRED_MONITOR_NAMES) {
@@ -189,7 +195,7 @@ for (const required of REQUIRED_MONITOR_NAMES) {
 }
 
 // ---------------------------------------------------------------------------
-// Check 10: referenced watcher scripts exist on disk
+// Check 11: referenced watcher scripts exist on disk
 // ---------------------------------------------------------------------------
 
 for (const scriptRel of REQUIRED_SCRIPTS) {

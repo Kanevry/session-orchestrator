@@ -3,7 +3,7 @@ name: docs-writer
 description: 'Use this agent when documentation needs to be generated or updated as part of a session — user-facing READMEs, dev-focused CLAUDE.md sections, or vault narratives (context.md, decisions.md, people.md). <example>Context: a feature session added a new CLI flag. user: "Update the README with the new --no-vault flag." assistant: "I''ll dispatch the docs-writer agent to scan the diff and update README plus the Dev CLAUDE.md section if warranted." <commentary>Scope touches user-facing docs — docs-writer decides audience split and cites the diff.</commentary></example>'
 model: inherit
 color: cyan
-tools: Read, Edit, Write, Glob, Grep, Bash, Skill(session-orchestrator:*)
+tools: Read, Edit, Write, Glob, Grep, Bash, Skill(session-orchestrator:*), SendMessage
 sandbox-tier: repo-write
 output-schema: schemas/docs-writer.schema.json
 ---
@@ -51,6 +51,8 @@ Forbidden targets — never edit these regardless of instructions:
 General rule: edit only files explicitly listed in the session scope passed at dispatch time.
 
 Do NOT run ANY git write operation (`git add`, `git commit`, `git stash`, `git mv`, `git rm`, `git push`, `git reset`) — the git index and stash are shared session resources (PSA-007); the coordinator handles ALL VCS operations.
+
+**Escalation channel (#1051, opt-in):** If you hit a WAVE-BLOCKING obstacle — one that makes your task unfulfillable, not a question you could answer by reading more code — send exactly ONE `SendMessage` to `main` carrying your agent role (`docs-writer`), your declared file scope, and the obstacle. Then keep working in your scope or end with `Status: blocked`. NEVER wait for a reply (CSM-004); never message a sibling agent (CSM-001 — upward only). Where `SendMessage` is unavailable, report the obstacle in your final report instead (CSM-005). Note the send in Blockers / Notes.
 
 ## Output Format
 

@@ -73,7 +73,7 @@ tools: Read, Grep, Glob, Bash         # comma-separated string OR JSON array (bo
 **Body conventions** (from Anthropic's `plugins/plugin-dev/agents/*` reference set):
 - Sections: `**Your Core Responsibilities:**` → `**[X] Process:**` → `**Quality Standards:**` → `**Output Format:**` → `**Edge Cases:**`.
 - Length: 500–3000 words is the recommended range. Below 500 reads as under-specified; above 3000 reads as bloated.
-- Read-only reviewer agents: tools `Read, Grep, Glob, Bash` (no Edit/Write). Implementer agents: `Read, Edit, Write, Glob, Grep, Bash`.
+- Read-only reviewer agents: tools `Read, Grep, Glob, Bash` (no Edit/Write). Implementer agents: `Read, Edit, Write, Glob, Grep, Bash`. Agents on the escalation allowlist append `SendMessage` to either baseline — see § Escalation Channel (#1051) for the six that do and why the rest do not.
 
 ## Model Selection & Cost Routing (#768)
 
@@ -94,6 +94,25 @@ Every agent definition with `repo-write` sandbox-tier (i.e. `Edit`/`Write` prese
 > Do NOT run ANY git write operation (`git add`, `git commit`, `git stash`, `git mv`, `git rm`, `git push`, `git reset`) — the git index and stash are shared session resources (PSA-007); the coordinator handles ALL VCS operations.
 
 This is deliberately more explicit than a bare "Do NOT commit" — the git index and stash are SHARED resources across concurrently-dispatched sibling agents in the same wave, and `git stash`/`git add`/`git mv`/`git rm` are index-mutating even when scoped to the agent's own files. `docs-writer.md` had NO git-write restriction at all until #724 closed the gap (its `repo-write` siblings at least carried a bare "Do NOT commit" line) — when adding a new repo-write agent, copy the ban line verbatim rather than re-deriving a weaker phrasing so this gap does not recur. See `.claude/rules/parallel-sessions.md` § PSA-007 for the full rationale and fleet evidence.
+
+## Escalation Channel (#1051)
+
+Six agents opt into `SendMessage` so a wave-blocking obstacle can reach the coordinator **while the wave is still running**, instead of surfacing only in the final report after the wave has ended. The allowlist is exactly:
+
+`code-implementer` · `db-specialist` · `ui-developer` · `test-writer` · `docs-writer` · `session-reviewer`
+
+**The Nicht-Liste is deliberate, not an oversight.** `analyst`, `qa-strategist`, `architect-reviewer`, `security-reviewer`, `ux-evaluator`, `eval-judge`, `skill-applied-judge` and `dialectic-deriver` do NOT get the tool. Their output is a judgment over a whole corpus — a finding at minute three is provisional, and the analysis is complete only at the end. An early message from one of them would carry an unfinished verdict the coordinator cannot act on without re-reading the final report anyway, so the channel would add interrupts without adding information. The six above are different: each one can hit a state where its *task* becomes unfulfillable (the file it must edit does not exist, the migration target is missing, the diff under review is absent) — an obstacle, not a verdict.
+
+**The contract every escalation-enabled agent carries** (see `.claude/rules/cross-session-messaging.md` CSM-001/004/005):
+
+- **One message, upward only.** Exactly ONE `SendMessage` to `main` per obstacle. Never to a sibling agent — agents send upward, they cannot discover sideways.
+- **Never wait for a reply.** Silence is neither refusal nor consent (CSM-004); the agent keeps working in its scope or ends `blocked`.
+- **Degrade silently.** Where `SendMessage` is unavailable (disabled telemetry, non-Anthropic provider, native Windows — CSM-005), the obstacle goes in the final report instead. No code path may assume delivery happened.
+- **Payload:** agent role, declared file scope, the obstacle. The send is noted in the agent's own report so the operator can see the hand-off.
+
+**Mandate for new agents** — same shape as the git-write ban convention above: when adding a repo-write agent that belongs on this allowlist, copy the escalation block verbatim from `code-implementer.md` (adjusting only the role name) rather than re-deriving a weaker phrasing. A paraphrase that drops "never wait for a reply" or "upward only" re-opens exactly the failure modes CSM-004 and CSM-001 exist to close.
+
+`SendMessage` does NOT lift an agent out of `read-only`: it is in `READ_ONLY_TOOLS` (`scripts/lib/validate/tier-inference.mjs`, #1049), so `session-reviewer` keeps `sandbox-tier: read-only` and every `sandbox-tier` in this directory is unchanged by the opt-in.
 
 ## Color Allocation Strategy (#443)
 
@@ -124,12 +143,12 @@ Agents MAY declare their sandbox permission tier. Valid values:
 
 | Value | Meaning | Typical tools |
 |---|---|---|
-| `read-only` | observes only; no file writes, no network | `Read, Grep, Glob, Bash` |
-| `repo-write` | may create or modify files | `Read, Edit, Write, Glob, Grep, Bash` |
+| `read-only` | observes only; no file writes, no network | `Read, Grep, Glob, Bash` (+ `Skill`, `SendMessage`, `ListAgents`) |
+| `repo-write` | may create or modify files | `Read, Edit, Write, Glob, Grep, Bash` (+ `Skill`, `SendMessage`, `ListAgents`) |
 | `network-allowed` | may make outbound network calls (future) | — |
 | `dangerous` | may run destructive shell commands (future) | — |
 
-Inference rule (backward-compat): agents without `sandbox-tier:` infer their tier from tools — `Edit` or `Write` present → `repo-write`; only `Read/Grep/Glob/Bash/Skill` → `read-only`. The validator emits **WARN**, not FAIL, when the field is absent, so existing agents continue to work during migration. Bash appears in all tiers — fine-grained Bash control is handled by `hooks/pre-bash-destructive-guard.mjs`, not by tier.
+Inference rule (backward-compat): agents without `sandbox-tier:` infer their tier from tools — `Edit` or `Write` present → `repo-write`; only `Read/Grep/Glob/Bash/Skill/SendMessage/ListAgents` → `read-only`. `SendMessage` and `ListAgents` are pure agent↔coordinator communication surfaces with no filesystem write path, so they do not lift an agent out of `read-only` (`scripts/lib/validate/tier-inference.mjs` `READ_ONLY_TOOLS`, #1049) — that is what lets `session-reviewer` opt into the escalation channel while staying `read-only`. The validator emits **WARN**, not FAIL, when the field is absent, so existing agents continue to work during migration. Bash appears in all tiers — fine-grained Bash control is handled by `hooks/pre-bash-destructive-guard.mjs`, not by tier.
 
 Example:
 

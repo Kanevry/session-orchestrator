@@ -44,7 +44,7 @@ Every harness creates friction. The goal is not minimum friction — it is usefu
 - Silent partial completion (STATUS line requirement forces explicit reporting)
 - Untracked carryover work (session-end plan verification catches unresolved tasks)
 
-The harness does not hope agents self-correct. It detects stagnation patterns — pagination-spiral, turn-key-repetition, error-echo — classifies them into the Error-Class Taxonomy defined in `circuit-breaker.md`, and re-scopes mechanically. Review logic lives in `wave-loop.md` § "Review Agent Outputs".
+The harness does not hope agents self-correct. It detects stagnation patterns — pagination-spiral, turn-key-repetition, error-echo (read by the coordinator during post-wave review), plus psa007-git-write and status-partial (detected live by the transcript tailer, recorded with `source: "tail"`) — classifies error-echo into the Error-Class Taxonomy defined in `circuit-breaker.md`, and re-scopes mechanically. Review logic lives in `wave-loop.md` § "Review Agent Outputs"; the tailer's start and its silence-is-not-success caveat live in the same file, step 2.0-bis.
 
 ## Platform Note
 
@@ -479,7 +479,7 @@ An opt-in bounded-concurrency cursor-based pull loop that replaces the default P
 
 ## Anti-Patterns
 
-- **NEVER** run `run_in_background: true` during waves — you lose coordination ability
+- **NEVER** count launch acks as completions — verify the started set against `agent-<id>.meta.json` sidecars and completions against task-notifications (`wave-loop.md § Started-Set Verification`). `run_in_background: true` is ALLOWED and RECOMMENDED for wave dispatch: measured 2026-08-22 (v2.1.239), under blocking dispatch the coordinator was 143 s incapable of acting between an agent's mid-run escalation and its own next turn — escalation latency equals the batch's remaining runtime. Background dispatch returns turns to the coordinator between agent completions; a running agent received a queued message mid-run and answered ~9 min before its final report.
 - **NEVER** skip inter-wave review — quality degrades exponentially
 - **NEVER** let agents commit independently — coordinator commits at session end
 - **NEVER** continue to next wave if previous wave has unresolved failures

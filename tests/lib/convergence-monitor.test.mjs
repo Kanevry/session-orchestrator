@@ -20,6 +20,10 @@
  * 1-4 below go red (they would return a wave number instead of `null`).
  */
 
+import { spawn } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { classify } from '@lib/convergence-monitor.mjs';
 
@@ -80,4 +84,26 @@ describe('convergence-monitor classify — event-type gate (#966)', () => {
     classify({ event: 'orchestrator.wave.completed', wave_number: 1, counts: { passed: 99 } }, state);
     expect(state.get(1).testPassed).toBeNull();
   });
+
+  it('keeps the tail loop alive instead of draining the event loop', () => {
+    // Bug (measured 2026-08-25, #980): the poll timer was `unref()`d and is the
+    // ONLY handle this process holds, so node exits 0 the moment the first tick
+    // is scheduled — after `tail.started` is already on stdout and with an empty
+    // stderr. The monitor then supervises NOTHING while looking like a clean
+    // shutdown, which is why no convergence signal was ever observed.
+    // Hermetic: CLAUDE_PLUGIN_ROOT points at an empty tmpdir, so the child finds
+    // no events.jsonl and can only poll — it neither reads nor writes anything
+    // real. Falsification: restore `t.unref?.()` in sleep() and this goes red.
+    const repo = mkdtempSync(join(tmpdir(), 'cm-live-'));
+    const child = spawn(
+      process.execPath,
+      [join(import.meta.dirname, '../../scripts/lib/convergence-monitor.mjs'), '--tail', '--interval=1'],
+      { env: { ...process.env, CLAUDE_PLUGIN_ROOT: repo }, stdio: 'ignore' },
+    );
+    let exitedEarly = false;
+    child.on('exit', () => { exitedEarly = true; });
+    return new Promise((r) => setTimeout(r, 2500))
+      .then(() => { expect(exitedEarly).toBe(false); })
+      .finally(() => { child.kill('SIGKILL'); });
+  }, 15_000);
 });

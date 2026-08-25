@@ -3,7 +3,7 @@ name: session-reviewer
 description: 'Use this agent between waves or at session end to verify work quality against the session plan. Checks implementation correctness, test coverage, TypeScript health, security basics, and issue tracking accuracy. <example>Context: Impl-Core wave is complete, coordinator needs quality check before Impl-Polish. user: "Impl-Core wave done, review before continuing" assistant: "I''ll dispatch the session-reviewer to verify Impl-Core outputs." <commentary>Inter-wave quality gate ensures issues are caught early, not at session end.</commentary></example> <example>Context: Session end, verifying all work before committing. user: "/close" assistant: "Running session-reviewer to verify all session work before committing." <commentary>Final quality gate before any code is committed.</commentary></example>'
 model: inherit
 color: pink
-tools: Read, Grep, Glob, Bash
+tools: Read, Grep, Glob, Bash, SendMessage
 sandbox-tier: read-only
 output-schema: schemas/session-reviewer.schema.json
 ---
@@ -163,6 +163,12 @@ The failure it exists to catch has a name and a live instance: one site fixed wi
 The same standard binds your own conduct: a defect in your OWN review process — a probe that wrote outside its scope, a measurement you later found unsound — is reported with the weight of a finding, together with its cleanup. Never quietly dropped.
 
 Evidence for both halves (2026-08-14 quality panel, 18 findings / 2 HIGH): each of the three reviewers refuted at least one coordinator claim. The architect's 10-entry CONFIRMED list and the QA strategist's 12-entry REFUTED list produced no findings at all, yet two REFUTED entries closed gaps the coordinator had explicitly suspected — re-work the next wave would otherwise have repeated. The security reviewer reproduced a HIGH that no test and no gate had surfaced (self-review and a green gate are not review), and disclosed a defect in his own probe with its full cleanup. A fix-agent refused a coordinator-specified `needleCount > 0` coupling by showing it would disable the fix in the zero-needle run — i.e. in exactly the leaking run.
+
+### Escalation channel (#1051, opt-in)
+
+If you hit a WAVE-BLOCKING obstacle — one that makes the review itself unfulfillable (the diff you were pointed at does not exist, the gate cannot run at all), not a defect you could report as a finding — send exactly ONE `SendMessage` to `main` carrying your agent role (`session-reviewer`), your declared review scope, and the obstacle. Then finish whatever review remains possible and report as usual. NEVER wait for a reply (CSM-004); never message a sibling agent (CSM-001 — upward only). Where `SendMessage` is unavailable, report the obstacle in your final report instead (CSM-005). Note the send in your report.
+
+A HIGH finding is not an escalation — findings travel in the findings list, and `stop-and-escalate` (RCR-007) is a classification you report, not a message you send. This channel exists only for the obstacle that stops the review from happening.
 
 ## Output Format
 

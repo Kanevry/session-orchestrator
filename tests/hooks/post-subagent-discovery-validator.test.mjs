@@ -146,7 +146,11 @@ function stopPayload(transcriptPath, extra = {}) {
 }
 
 describe('post-subagent-discovery-validator hook', () => {
-  it('DISABLED (default): SubagentStop with a bare claim → exit 0, NO event written', () => {
+  it('DISABLED (default): SubagentStop with a bare claim → exit 0, NO event and NO stdout', () => {
+    // Merged from two tests that spawned the hook on the same DISABLED path and
+    // asserted one output channel each. Both channels must stay silent: an
+    // event write leaks a violation the operator never opted into, and a stdout
+    // write feeds additionalContext back to a subagent under a disabled gate.
     writeClaudeMd(CLAUDE_MD_DISABLED);
     const transcript = writeTranscript(['We confirmed 4 of 4 callers opt-in to the new API.']);
 
@@ -154,6 +158,7 @@ describe('post-subagent-discovery-validator hook', () => {
 
     expect(result.status).toBe(0);
     expect(readEvents()).toEqual([]);
+    expect(result.stdout.trim()).toBe('');
   });
 
   it('ENABLED + claim WITH an adjacent grep block → exit 0, NO violation', () => {
@@ -267,33 +272,31 @@ describe('post-subagent-discovery-validator hook', () => {
     expect(readEvents()).toEqual([]);
   });
 
-  it('session_id precedence: event uses parent_session_id when both ids present (FIX 2)', () => {
+  // FIX 2 — session_id precedence. Two former tests differing only in which ids
+  // the payload carries: the event must be filed under the COORDINATOR's
+  // session, so a violation lands in the ledger the operator reads rather than
+  // under a per-subagent id nothing queries.
+  it.each([
+    {
+      why: 'parent_session_id wins when both ids are present',
+      ids: { parent_session_id: 'main-2026-05-27-deep-3', session_id: 'sub-agent-999' },
+      expected: 'main-2026-05-27-deep-3',
+    },
+    {
+      why: 'session_id is used when parent_session_id is absent',
+      ids: { session_id: 'sub-agent-only-777' },
+      expected: 'sub-agent-only-777',
+    },
+  ])('session_id precedence: $why (FIX 2)', ({ ids, expected }) => {
     writeClaudeMd(CLAUDE_MD_ENABLED);
     const transcript = writeTranscript(['Result: 4 of 4 callers opt-in. No grep was run.']);
 
-    const result = runHook(
-      stopPayload(transcript, {
-        parent_session_id: 'main-2026-05-27-deep-3',
-        session_id: 'sub-agent-999',
-      })
-    );
+    const result = runHook(stopPayload(transcript, ids));
 
     expect(result.status).toBe(0);
     const events = readEvents();
     expect(events).toHaveLength(1);
-    expect(events[0].session_id).toBe('main-2026-05-27-deep-3');
-  });
-
-  it('session_id falls back to session_id when parent_session_id is absent', () => {
-    writeClaudeMd(CLAUDE_MD_ENABLED);
-    const transcript = writeTranscript(['Result: 4 of 4 callers opt-in. No grep was run.']);
-
-    const result = runHook(stopPayload(transcript, { session_id: 'sub-agent-only-777' }));
-
-    expect(result.status).toBe(0);
-    const events = readEvents();
-    expect(events).toHaveLength(1);
-    expect(events[0].session_id).toBe('sub-agent-only-777');
+    expect(events[0].session_id).toBe(expected);
   });
 
   // -------------------------------------------------------------------------
@@ -373,34 +376,65 @@ describe('post-subagent-discovery-validator hook', () => {
   });
 
   // -------------------------------------------------------------------------
-  // (c) additionalContext feed-back (#666 — v2.1.163+)
+  // (c) additionalContext feed-back (#666 — v2.1.163+) and the channel split
   //
-  // On a violation the hook MUST emit hookSpecificOutput.additionalContext to
-  // stdout so the warning is fed back inline to the SUBAGENT that just stopped
-  // — not to the coordinator. Verified in the shipped binary (Claude Code
-  // 2.1.241, 2026-08-23); the delivery note at the hook's hookSpecificOutput
-  // write carries the quoted schema text and the `agentId ? … : …` selector.
-  // The assertions below therefore pin the CHANNEL (hookEventName +
-  // non-empty additionalContext), which is what this hook controls.
+  // On a violation the hook writes THREE times, to TWO different recipients:
+  //   1. events.jsonl `discovery_validator_violation`  → the coordinator
+  //   2. the stderr WARN                               → the coordinator
+  //   3. stdout hookSpecificOutput.additionalContext   → the STOPPING SUBAGENT
+  //
+  // (3) does NOT reach the coordinator. Verified in the shipped binary (Claude
+  // Code 2.1.241, 2026-08-23): the SubagentStop schema reads "additionalContext
+  // is non-error feedback delivered to the subagent; the subagent continues so
+  // it can act on it", and the emitter selects with `i.agentId ? … : …`. The
+  // delivery note at the hook's hookSpecificOutput write carries the full
+  // quote. PSA-006 makes REJECTING an unverified claim the coordinator's duty,
+  // so (1) + (2) are the rule's only enforcement path.
+  //
+  // TV-001, the bug the three-channel test below catches: a refactor that
+  // "consolidates" the warning into additionalContext alone — a plausible
+  // cleanup, since all three carry the identical warnText — would silently
+  // delete both coordinator-visible signals while leaving every stdout
+  // assertion in this file green. Pinning stderr alongside stdout + the event
+  // makes that refactor RED. Before this test, `expect(...stderr...)` appeared
+  // ZERO times in this file (measured 2026-08-25, `grep -n "expect(.*stderr"`
+  // → no matches), so channel (2) was entirely unasserted.
+  //
   // On a clean path (no violation) stdout must be empty.
   // -------------------------------------------------------------------------
 
-  it('ENABLED + violation → stdout has hookSpecificOutput.hookEventName="SubagentStop" and non-empty additionalContext', () => {
+  it('ENABLED + violation → all three channels fire: events.jsonl + stderr WARN (coordinator) and stdout additionalContext (subagent)', () => {
     writeClaudeMd(CLAUDE_MD_ENABLED);
     const transcript = writeTranscript(['4 of 4 callers opt-in to the helper. No grep was run.']);
 
     const result = runHook(stopPayload(transcript));
 
     expect(result.status).toBe(0);
-    // events.jsonl write still happens (additive — not replaced by additionalContext)
-    expect(readEvents()).toHaveLength(1);
-    // stdout carries the hookSpecificOutput JSON
+
+    // (1) coordinator channel — events.jsonl write still happens (additive,
+    //     never replaced by additionalContext)
+    const events = readEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].event).toBe('discovery_validator_violation');
+    expect(events[0].claim_text).toBe(
+      '4 of 4 callers opt-in to the helper. No grep was run.'
+    );
+
+    // (2) coordinator channel — the stderr WARN naming the rule and the agent
+    expect(result.stderr).toContain('PSA-006');
+    expect(result.stderr).toContain('discovery');
+
+    // (3) subagent channel — stdout carries the hookSpecificOutput JSON
     const out = JSON.parse(result.stdout);
     expect(out.hookSpecificOutput.hookEventName).toBe('SubagentStop');
     expect(typeof out.hookSpecificOutput.additionalContext).toBe('string');
     expect(out.hookSpecificOutput.additionalContext.length).toBeGreaterThan(0);
     // must not set decision:"block" (non-blocking always)
     expect(out.decision).toBeUndefined();
+
+    // Same finding on both routes: the subagent's copy is the coordinator's
+    // WARN verbatim. Collapsing (2) into (3) therefore cannot stay green.
+    expect(result.stderr).toContain(out.hookSpecificOutput.additionalContext);
   });
 
   it('ENABLED + violation → additionalContext mentions PSA-006 and the agent name', () => {
@@ -533,27 +567,6 @@ describe('post-subagent-discovery-validator hook', () => {
     expect(result.status).toBe(0);
     expect(readEvents()).toEqual([]);
     expect(result.stdout.trim()).toBe('');
-  });
-
-  it('DISABLED → stdout is empty (no additionalContext)', () => {
-    writeClaudeMd(CLAUDE_MD_DISABLED);
-    const transcript = writeTranscript(['4 of 4 callers opt-in to the helper.']);
-
-    const result = runHook(stopPayload(transcript));
-
-    expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe('');
-  });
-
-  it('ENABLED + violation → additionalContext kept under 10k chars (well within limit)', () => {
-    writeClaudeMd(CLAUDE_MD_ENABLED);
-    const transcript = writeTranscript(['4 of 4 callers opt-in to the helper. No grep.']);
-
-    const result = runHook(stopPayload(transcript));
-
-    expect(result.status).toBe(0);
-    const out = JSON.parse(result.stdout);
-    expect(out.hookSpecificOutput.additionalContext.length).toBeLessThan(10_000);
   });
 
   // -------------------------------------------------------------------------

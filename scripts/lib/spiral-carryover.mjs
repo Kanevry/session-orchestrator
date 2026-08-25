@@ -85,6 +85,27 @@ function isIssueCreateArgv(cmd, args) {
 }
 
 /**
+ * Under vitest, a `repoRoot` that resolves to the ambient working copy is almost
+ * always the default-parameter leak (#1105): the test meant to pass a synthetic
+ * `mkdtemp` root but did not, and the issue-budget ledger would be charged in
+ * the operator's real tree. Production keeps the cwd default unchanged; this
+ * gate only fires when `process.env.VITEST` is set.
+ *
+ * @param {string} budgetRoot — ledger root about to be passed to `chargeIssueBudget`
+ * @returns {string|null} refusal message, or null when charging may proceed
+ */
+function refuseAmbientLedgerUnderVitest(budgetRoot) {
+  if (!process.env.VITEST) return null;
+  if (path.resolve(budgetRoot) === path.resolve(process.cwd())) {
+    return (
+      'spiral-carryover: refusing to charge the issue-budget ledger at the ambient ' +
+      'repo root under VITEST — pass an explicit synthetic repoRoot'
+    );
+  }
+  return null;
+}
+
+/**
  * Run a CLI command and return { ok, stdout, stderr }. Never throws.
  *
  * ISSUE-BUDGET GATE (both Node producers funnel through here): before shelling
@@ -134,6 +155,10 @@ function runCli(cmd, args, repoRoot) {
       const budgetRoot = (typeof repoRoot === 'string' && repoRoot.trim())
         ? repoRoot
         : (resolveProjectDir() || process.cwd());
+      const vitestLedgerRefusal = refuseAmbientLedgerUnderVitest(budgetRoot);
+      if (vitestLedgerRefusal) {
+        return { ok: false, stdout: '', stderr: vitestLedgerRefusal, budgetBlocked: true };
+      }
       // The harness exports CLAUDE_CODE_SESSION_ID (measured 2026-08-21: it is
       // present in the Bash tool environment this module runs in). There is no
       // CLAUDE_SESSION_ID — reading that name made this whole block dead code

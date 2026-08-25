@@ -30,6 +30,19 @@
  * Why read the transcript: the SubagentStop stdin payload has NO output_text
  * field. The agent's text lives in `input.transcript_path`.
  *
+ * Output channels — THREE writes, TWO different recipients:
+ *   - `discovery_validator_violation` in .orchestrator/metrics/events.jsonl,
+ *     and the stderr WARN → the COORDINATOR's only copy of the finding. PSA-006
+ *     makes REJECTING the unverified claim his duty, so these two are the
+ *     channels that carry the rule's enforcement path.
+ *   - stdout `hookSpecificOutput.additionalContext` → the STOPPING SUBAGENT
+ *     (which continues and may self-correct), NOT the coordinator — a hook is
+ *     structurally unable to address him. See the measured delivery note at the
+ *     hookSpecificOutput write below for the shipped-binary evidence.
+ *   All three are pinned together by the "all three channels fire" test in
+ *   tests/hooks/post-subagent-discovery-validator.test.mjs — do not collapse
+ *   the coordinator-visible pair into additionalContext.
+ *
  * Exit codes: 0 always (informational, never blocking).
  */
 

@@ -77,21 +77,78 @@ namespace we own. The validator + regex live in `scripts/lib/events-schema.mjs`
 | `orchestrator.secret_masker.applied` | `scripts/vault-mirror.mjs` (beside the vault-mirror run) | once per vault-mirror run, unconditionally. Payload carries `channel: 'vault-mirror'`. **Undocumented until 2026-08-23, at which point it had over a thousand records** — and that omission actively misled: a census grepping event NAMES for `board\|mirror` returns 0 and reads as "the mirror emits nothing", while run-level presence was in fact already observable through THIS event's payload. Grep the `channel`, not the name |
 | `orchestrator.probes.completed` | `scripts/lib/session-start-probes.mjs` (`runSessionStartProbes`), called from `hooks/on-session-start.mjs` | once per SessionStart, after the Phase-4 measurement probes run. **This event is the whole point of #1073:** the 18 module-backed probes had **zero** mechanical callers across `hooks/`, npm scripts, CI and husky — their only caller was prose in `skills/session-start/SKILL.md` — and across the 336 session starts recorded up to 2026-08-23 there was **no banner event at all**, so whether they ever ran was unfalsifiable (`.claude/rules/host-resources.md` § HR-105). **Payload:** `total`, `ran`, `warned`, `skipped`, `errored`, `timed_out`, `duration_ms`, and `probes` — one `{id, outcome, reason?}` per probe — `reason` travels whenever one was recorded, because `module-absent` (a permanently dead entry) must be distinguishable from `network-probe-opt-in` (the intended default); `outcome` ∈ `ran-clean`\|`ran-warn`\|`ran-alert`\|`skipped`\|`timeout`\|`error`. Two invariants are asserted by tests: `total === probes.length` and `ran + skipped + errored + timed_out === total`. **The count is 18, not the 19 Phase 4 appears to list:** four Phase-4 items are prose-only measurements with no module and no entry function (SSOT freshness, quality baseline, Pencil design status, plugin freshness) — 22 measurements, 18 wireable probes. **Network probes (`ci-status`, `mirror-issues`) are excluded by default** and appear as `outcome: 'skipped', reason: 'network-probe-opt-in'` — never omitted, because omitting them would rebuild the defect one layer down. Opt in with `SO_PROBES_INCLUDE_NETWORK=1`. The grounds are measured, not assumed: `hooks/hooks.json` gives the WHOLE SessionStart hook `timeout: 5` seconds while each network probe carries its own 8 s CLI timeout, so one slow network probe alone exceeds the hook's entire budget and takes the started-event and the banner down with it; warm-and-authenticated best case measured 520 ms / 498 ms, paid on every start of every repo. **Budget:** `PROBE_BUDGET_MS = 2000`; measured median against this repo **968 ms** (5 runs, 855–1104), 130–229 ms in a fresh tmp repo. Revisit trigger: median past HALF the budget, or any single probe past the budget → move the slow probes off the hook's critical path, do NOT raise the number. **Named ceiling:** the deadline is enforced at await points, so it is hard for async/network probes and advisory for the two that shell out synchronously (`project-hygiene`, `tests-src-ratio`). Escape hatch: `SO_DISABLE_STARTUP_PROBES=1`. **Deliberately NOT gated on `enable-host-banner: false`** — that preference governs DISPLAY; gating the RUN on it would rebuild exactly the unfalsifiable blind spot this event removes |
 | `orchestrator.express_path.evaluated` | `scripts/lib/express-path.mjs` (`evaluateExpressPath`, emit in `_emitEvaluated`; name const `EXPRESS_PATH_EVENT`) | once per Phase-8.5 evaluation — **on refusal as well as activation**. Until #1119 this was unrecordable twice over: `scripts/lib/config.mjs` discarded the `express-path` key **even when the block was present** (synthetic probe: 88 keys emitted, none of them this one), and the decision lived only in `skills/session-start/phase-8-5-express-path.md` prose, so it fired only when a coordinator read that prose. Ledger evidence, measured 2026-08-23 @ `34321bc` (a count, so read it as history, not as state): **0** express events at that point, against 22 of the last 30 sessions running with no wave at all — every one of them `housekeeping`, the exact population the path targets. **Payload:** `activated` (always, boolean), `reasons` (always — the BLOCKING codes on refusal, the satisfied ones on activation; nothing short-circuits, so a refusal names every blocker and a reader can tell whether trimming the issue list alone would have helped). **Optional, absent-is-not-zero:** `enabled`, `session_type`, `task_count`, `parallel_agents_required`, plus `session_id`/`semantic_session_id` via `sessionAttribution`. An unmeasured `sessionType` or `taskCount` fails CLOSED (`reasons: ['session-type-unknown','task-count-unknown']`) — defaulting unknown scope to 0 would activate a gate-skipping path on data nobody supplied. **Four inputs, not three:** activation condition 3 carries two clauses (`≤ 3 issues` AND no parallel agents), which both condition matrices list as a non-activating row. **A missing `repoRoot` SKIPS the emit with a stderr WARN** rather than falling through to `SO_PROJECT_DIR` — that is the wave-1 incident of this session (a probe with an unexported var wrote a synthetic record into the real fleet ledger) made structurally impossible; a regression test reproduces it. `events.mjs` is imported lazily so `config.mjs`'s 48-file import graph does not gain `platform.mjs`, which runs filesystem walk-ups at module load |
+| `orchestrator.foreign_dispatch.completed` | `scripts/lib/wave-executor/foreign-dispatch.mjs` (`dispatchForeign`, via `emitEvent(..., {repoRoot})` + `sessionAttribution(repoRoot)`) | once per foreign-model dispatch (#1150) — the replacement for `SubagentStop` telemetry, which cannot fire for a Bash-spawned `cursor-agent` child (no hook in the chain sees it). **Payload:** `model`, `role`, `ok`, `exit_code`, `timed_out`, `duration_s`, `changed_files` (count, tracked-modified ∪ untracked-new — `git diff` alone is blind to new files), `reason` (present on every refusal — `never-foreign-role`, `empty-diff`, `channel-unavailable`, `unsafe-*` — and on the failure classes of a completed run, so no failure class is reasonless), `hook_tampering` (tri-state: `true` = the child repointed/rewrote the shared `.git` hooks path, invalidates the run regardless of `ok`; `false` = fingerprint matched; absent/`null` = not measured, never read as clean), plus `session_id`/`semantic_session_id` via `sessionAttribution` (omitted, never fabricated, without a readable `session.lock`). Emitted on refusals too (`ok:false`), so a blocked dispatch is a record, not a silence |
 
 Non-orchestrator names still present in the stream: `tmux-layout.{invoked,completed,degraded}`
-(tmux-layout skill) and `stagnation_detected` — the latter is **defined but has never fired**:
-measured 2026-08-23 @ `4f6404e`, 0 records in a 28 496-line ledger, and `grep -rn` over
-`scripts/ hooks/ commands/` finds exactly ONE match, a READER (`compute-grounding-injection.sh`).
-Its only writer is coordinator prose (`skills/wave-executor/wave-loop.md`, the `stagnation_detected` block), so it is not
-"an event that does not fire" but an event that was never wired (#1114). (`grounding_injected` was migrated to
-the dotted `orchestrator.grounding.injected` in #611 — see the catalog above.)
+(tmux-layout skill) and `stagnation_detected`. The latter keeps its legacy bare name
+deliberately — it predates the `orchestrator.` convention, and renaming it in the same change
+that wired its first producer would have stacked a breaking stream change on top of a behaviour
+change (#1114). (`grounding_injected` WAS migrated, to the dotted
+`orchestrator.grounding.injected` in #611 — see the catalog above.)
+
+### `stagnation_detected` — two producers, one schema (#1114)
+
+| Producer | `source` | Trigger |
+|---|---|---|
+| Coordinator prose, `skills/wave-executor/wave-loop.md` § "Review Agent Outputs" | `"coordinator"` | post-wave review, per agent, when a stagnation pattern fires. Routed through `scripts/emit-event.mjs` / `emitEvent()` like every other event — the hand-rolled `>>` append it used to prescribe is gone |
+| `scripts/lib/wave-transcript-tail.mjs`, run as the `wave-transcript-tail` monitor (`monitors/monitors.json`, `when: on-skill-invoke:wave-executor`) | `"tail"` | live, while the wave runs: tails the own session's subagent transcripts and matches three executable regexes |
+
+**Payload:** `session` (the **SEMANTIC** session id — the value that matches
+`sessions.jsonl.session_id`, e.g. `main-2026-08-24-session-1`, measured 2026-08-25; this is the
+join key `skills/session-end/metrics-collection.md` filters on, `.session == $sid` where `$sid` is
+`$SESSION_ID`. A raw UUID here would join to nothing. The `session_id` / `semantic_session_id` pair
+that `sessionAttribution()` contributes is additive provenance beside it, and is OMITTED rather
+than fabricated when no `session.lock` is readable — so `session` is the field consumers rely on),
+`wave`, `agent`,
+`pattern`, `source`, `file` (project-relative path, or `null` when not applicable), `occurrences`.
+`pattern` ∈ `pagination-spiral` | `turn-key-repetition` | `error-echo` | `psa007-git-write` |
+`status-partial` — the first two are coordinator-only, the last two tail-only, and `error-echo` is
+produced by BOTH, so `source` is the only thing that tells those two records apart. `source` ∈
+`coordinator` | `tail` and is **additive**: a consumer that does not read it behaves unchanged.
+**Optional, absent-is-not-zero:** `error_class` (`edit-format-friction` | `scope-denied` |
+`command-blocked` | `other`) is present on `error-echo` ONLY and omitted for every other pattern —
+an absent field means "no class applies", never `"other"`. **`occurrences` is an
+AGGREGATION-WINDOW counter, not a fixed value.** Monitor output is rate-limited, so a key emits
+once when it reaches its threshold (`3` for `error-echo` and the two coordinator threshold
+patterns, `1` for the single-shot `psa007-git-write` / `status-partial`) and then RE-EMITS only
+every further `RE_EMIT_EVERY = 10` hits, carrying the running total. A single-shot detector that
+fires 21 times therefore produces `occurrences` `1`, `11`, `21` — three records, pinned by the
+`toEqual([1, 11, 21])` assertion in `tests/lib/wave-transcript-tail.test.mjs`. Read a value above the threshold as "this many hits
+so far in this window", never as "this many new hits". `agent_id` (tail-produced
+records only, additive): the per-dispatch agent id from the transcript filename — needed because
+`agent` carries the agent TYPE and a wave routinely runs several agents of one type (measured
+2026-08-25: 2 `Explore` in one wave), so restart-dedup keyed on type alone would suppress a
+sibling's genuine first finding. Coordinator-produced records omit it.
+
+**Measured before wiring — read as history, not as state.** 0 records in this repo's 30 785-line
+ledger (`grep -c '"stagnation_detected"' .orchestrator/metrics/events.jsonl` → 0, exit 1;
+2026-08-25 @ `ebce189`), and 0 across 97 816 event lines in 19 repos (asserted, source W1/D3
+2026-08-25 — re-measure before citing it further). That zero is the denominator the wiring is
+judged against (`.claude/rules/host-resources.md` § HR-105: a class at 0% is either genuinely rare
+or silently broken, and the two look identical from outside). Until #1114 the event had no
+producer at all — its only mechanical reference across `scripts/ hooks/ commands/` was a READER,
+`scripts/compute-grounding-injection.sh:88`, which filters on `error_class` + `file` and degrades
+correctly on records carrying neither. If the ledger still reads 0 after the tailer has observed
+five waves, that is a finding about the repo, not about the emitter.
+
+**Dated caveat — records written before `FIXTURE_CONTEXT_RE` are not reproducible.** The
+`psa007-git-write` record emitted 2026-08-25 ~05:01 was a false positive: a sibling agent seeding a
+test fixture in a `mktemp -d` scratch repo, whose index is not the shared one PSA-007 protects.
+`isGitWrite()` gained the fixture-context exclusion (`scripts/lib/wave-transcript-tail.mjs`) after
+that record was written, so replaying the same transcript against today's detector yields no hit.
+Read pre-exclusion `psa007-git-write` records as artefacts of the older detector — the ledger line
+stands as history and is not retracted, but it is not evidence about current behaviour. The same
+five 2026-08-25 04:59–05:01 records also carry the RAW session uuid in `session` (a bare
+`06461b1a-…` where the semantic `main-2026-08-25-session-N` belongs), which is the pre-fix shape —
+they join to no `sessions.jsonl` row and will not appear in a per-session roll-up.
 
 ## Consumers
 
 - `scripts/lib/convergence-monitor.mjs` — tails events.jsonl; reads `event_type ?? event`.
 - `scripts/lib/tmux-layout/telemetry-stats.mjs` — filters `event.startsWith('tmux-layout.')`.
 - `scripts/lib/events-rotation.mjs` — size-based archival.
-- `skills/session-end/metrics-collection.md` — jq roll-ups (incl. `orchestrator.grounding.injected`).
+- `skills/session-end/metrics-collection.md` — jq roll-ups (incl. `orchestrator.grounding.injected` and `stagnation_detected` → `stagnation_events`).
+- `scripts/compute-grounding-injection.sh` — filters `stagnation_detected` on `error_class` + `file` to build each agent's edit-friction history; ignores records carrying neither (which is every `psa007-git-write` / `status-partial` record).
 
 Renaming an existing event name is a breaking change to the stream + these
 consumers — verify with `grep` (PSA-006) and update consumers in lockstep.

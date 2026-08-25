@@ -138,11 +138,14 @@ Before assigning tasks to waves, discover available agents for this session:
    - Role keys: `impl`, `test`, `db`, `ui`, `security`, `compliance`, `docs`, `perf`
    - Example: `agent-mapping: { impl: code-editor, test: test-specialist, db: database-architect }`
    - If present, these explicit mappings take priority over auto-matching
+   - A value MAY carry a channel prefix: `session-orchestrator:<plugin-agent>` or `cursor:<model>` (foreign model, #1150). An unknown prefix is rejected fail-loud by `scripts/lib/config.mjs` at parse time — see `docs/session-config-reference.md` § `agent-mapping` values.
 
    **Validation:** If `agent-mapping` specifies an agent name, verify the agent exists:
    - For project agents: check `<state-dir>/agents/<name>.md` exists
    - For plugin agents: check the agent is registered (contains `:` separator)
-   - If the agent doesn't exist: warn the user and fall back to auto-discovery for that role
+   - For `cursor:<model>` (foreign channel): the existence check is on the CHANNEL, not the model — `cursor-agent` on `PATH` and logged in (`cursor-agent status`). The model string is free-form and is validated only at dispatch time, because the model catalogue lives outside this repo.
+   - If the agent doesn't exist — or the cursor channel is unavailable (binary missing / not logged in) — warn the user and fall back to auto-discovery for that role (same fallback shape in both cases; never hard-fail the plan)
+   - **Two constraints the plan must carry into the wave, both owned by `skills/wave-executor/wave-loop.md` § Third branch: foreign-model dispatch** (one place owns the contract — do not restate it here): a `cursor:<model>` mapping is INERT for any `never_foreign` role (impl-core, security-review, migration, release, secrets, incident, refactor-crosscut — the adapter refuses it), and every foreign run requires a MANDATORY Claude semantic diff-review before merge-back. Plan the review as work, not as a formality.
 
 3. **Build Agent Registry** (resolution priority):
    - **Priority 1**: Project agents (from `<state-dir>/agents/` — see Platform Note) — matched by name
