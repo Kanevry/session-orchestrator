@@ -21,6 +21,7 @@ import {
   rmSync,
   lstatSync,
   existsSync,
+  readFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -141,7 +142,7 @@ describe('scripts/cursor-install.mjs integration', () => {
     // stdout should contain SKIP lines and zero new LINK lines for .mdc files
     const skipCount = (second.stdout.match(/SKIP:/g) ?? []).length;
     const linkCount = (second.stdout.match(/LINK:/g) ?? []).length;
-    expect(skipCount).toBe(MDC_COUNT);
+    expect(skipCount).toBeGreaterThanOrEqual(MDC_COUNT);
     expect(linkCount).toBe(0);
   });
 
@@ -172,5 +173,20 @@ describe('scripts/cursor-install.mjs integration', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Done!');
+  });
+
+  it('links commands and writes hooks.json into the target project', () => {
+    const target = join(tmp, 'surface-check');
+    mkdirSync(target, { recursive: true });
+
+    const result = runCursorInstall([target]);
+
+    expect(result.status).toBe(0);
+    expect(existsSync(join(target, '.cursor', 'commands', 'session.md'))).toBe(true);
+    expect(existsSync(join(target, '.cursor', 'hooks.json'))).toBe(true);
+    const hooks = JSON.parse(readFileSync(join(target, '.cursor', 'hooks.json'), 'utf8'));
+    expect(hooks.version).toBe(1);
+    expect(hooks.hooks.beforeShellExecution[0].command).toContain('cursor-hook-bridge.mjs');
+    expect(hooks.hooks.beforeShellExecution[0].command).toContain('--event beforeShellExecution');
   });
 });

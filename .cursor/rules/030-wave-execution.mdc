@@ -56,7 +56,7 @@ For each wave in the session plan:
 
 ### Step 1: Write Scope Manifest
 
-Write `.cursor/wave-scope.json` before each wave. Set `enforcement: warn` — Cursor's afterFileEdit hook is post-hoc (warns only, cannot block):
+Write `.cursor/wave-scope.json` before each wave. Set `enforcement: warn` unless `.cursor/hooks.json` is installed — then `preToolUse` can block via `cursor-hook-bridge.mjs`. `afterFileEdit` remains post-hoc (cannot unwrite):
 
 ```json
 {

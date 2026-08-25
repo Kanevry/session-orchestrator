@@ -6,6 +6,14 @@ alwaysApply: false
 
 # Session Workflow
 
+This rule is an index, not the procedure. Canonical skills:
+
+- `/session` → Read `commands/session.md`, then `skills/session-start/SKILL.md`
+- `/go` → Read `commands/go.md`, then `skills/wave-executor/SKILL.md`
+- `/close` → Read `commands/close.md`, then `skills/session-end/SKILL.md`
+
+Cursor has no Skill tool. Follow those files exactly. The summary below is not a substitute.
+
 Three-phase workflow: Start -> Execute -> Close.
 
 ## Phase 1: Session Start (`/session [type]`)
