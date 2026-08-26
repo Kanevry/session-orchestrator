@@ -9,6 +9,7 @@ paths:
 learning-key: anti-pattern/vi-restoreallmocks-doesn-t-clear-vi-fn-call-history-from-a-vi-mock-factory
 confidence: 0.85
 expires-at: 2026-10-24
+evidence-digest: sha256-v1:3787d673de8bf44035a0cccff2621b74e9bc7f24104191777a899ef535d3e124
 ---
 
 # Auto-generated rule: vi.restoreAllMocks() doesn't clear vi.fn() call-history from a vi.mock() factory
@@ -23,6 +24,9 @@ tests/lib/autopilot/mr-draft.test.mjs Gap-3 describe blocks: 'derives the -R spe
 - learning-key: `anti-pattern/vi-restoreallmocks-doesn-t-clear-vi-fn-call-history-from-a-vi-mock-factory`
 - learning-id: `980150b3-4635-47df-ad55-cf398c017392`
 - source-session: `main-2026-07-26-deep-1`
+- evidence-digest: `sha256-v1:3787d673de8bf44035a0cccff2621b74e9bc7f24104191777a899ef535d3e124`
+- evidence-recorded-at: 2026-07-26T00:00:00.000Z
+- evidence-digest-input: learning-key \n learning-id \n source-session \n evidence-recorded-at \n confidence \n <the `## Evidence` block above, verbatim UTF-8, LF-joined, no trailing newline>
 - confidence: 0.85
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695)
 - expires-at: 2026-10-24

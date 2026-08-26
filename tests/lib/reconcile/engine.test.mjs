@@ -18,7 +18,7 @@ import { join } from 'node:path';
 
 import { describe, it, expect, vi } from 'vitest';
 
-import { runReconcile } from '../../../scripts/lib/reconcile/engine.mjs';
+import { runReconcile, resolveEffectiveTargets } from '../../../scripts/lib/reconcile/engine.mjs';
 import { writeApprovedRules } from '../../../scripts/lib/reconcile/writer.mjs';
 import { parseGlobsFrontmatter } from '../../../scripts/lib/rule-loader.mjs';
 import { normalizeDialects } from '../../../scripts/lib/learnings/schema.mjs';
@@ -769,6 +769,107 @@ describe('runReconcile — an operator-declined proposal is not re-proposed on t
       expect(skipped.reason).toContain('already processed');
     } finally {
       rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveEffectiveTargets (#1099) — checks 1 + 2 of the baseline no-op path.
+//
+// TV-001 — the bug this block catches: `reconcile.targets` had ZERO consumers,
+// so `baseline` was never resolved against anything. Once it IS wired, the
+// dangerous outcome is not a failed write — it is the operator being asked, in
+// the approval AUQ, to approve a write to a destination that cannot exist. The
+// AUQ is upstream of the writer, so this filter has to run upstream of the AUQ.
+//
+// Pure function, no disk: the caller passes the already-3-tier-resolved
+// `plan-baseline-path` (SO_BASELINE_PATH env > owner.yaml paths.baseline-path >
+// committed value), which `scripts/lib/config.mjs` produced.
+// ---------------------------------------------------------------------------
+
+describe('resolveEffectiveTargets (#1099)', () => {
+  it('passes a resolvable absolute baseline root through unchanged', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(resolveEffectiveTargets({ targets: ['repo-local', 'baseline'], baselineRoot: '/tmp/some-baseline' })).toEqual({
+        targets: ['repo-local', 'baseline'],
+        baselineRoot: '/tmp/some-baseline',
+        dropped: [],
+        reason: null,
+      });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each([
+    { why: 'unresolvable on all three tiers (absent)', baselineRoot: undefined, needle: 'no baseline path is configured' },
+    { why: 'unresolvable on all three tiers (empty)', baselineRoot: '   ', needle: 'no baseline path is configured' },
+    // CLAUDE.md § Session Config ships exactly this literal as plan-baseline-path.
+    { why: 'the committed placeholder was never overridden', baselineRoot: 'OVERRIDE-IN-owner.yaml', needle: 'placeholder' },
+    { why: 'a relative path (nothing to anchor it on)', baselineRoot: 'projects-baseline', needle: 'not an absolute path' },
+  ])('drops baseline and WARNs when $why', ({ baselineRoot, needle }) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const out = resolveEffectiveTargets({ targets: ['repo-local', 'baseline'], baselineRoot });
+
+      expect(out.targets).toEqual(['repo-local']);
+      expect(out.baselineRoot).toBe(null);
+      expect(out.dropped).toEqual(['baseline']);
+      expect(out.reason).toContain(needle);
+
+      // Exactly ONE warn — the operator gets one attributable line, not a storm.
+      expect(warn).toHaveBeenCalledTimes(1);
+      const msg = String(warn.mock.calls[0][0]);
+      expect(msg).toContain('baseline');
+      expect(msg).toContain('SO_BASELINE_PATH');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('leaves an empty target list when baseline was the ONLY declared target', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const out = resolveEffectiveTargets({ targets: ['baseline'], baselineRoot: '' });
+      // NOT ['repo-local']: silently redirecting a baseline-only write into the
+      // repo would give the operator a destination he never asked for.
+      expect(out.targets).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('never touches the baseline tiers when baseline is not requested', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(resolveEffectiveTargets({ targets: ['repo-local'], baselineRoot: 'OVERRIDE-IN-owner.yaml' })).toEqual({
+        targets: ['repo-local'],
+        baselineRoot: null,
+        dropped: [],
+        reason: null,
+      });
+      expect(resolveEffectiveTargets({}).targets).toEqual(['repo-local']);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('expands a leading ~ before judging absoluteness', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const out = resolveEffectiveTargets({ targets: ['baseline'], baselineRoot: '~/Projects/projects-baseline' });
+      expect(out.targets).toEqual(['baseline']);
+      expect(out.reason).toBe(null);
+      // The value is expanded, not passed through with the tilde intact — a
+      // literal '~' would become a directory named '~' at the writer.
+      expect(out.baselineRoot.startsWith('~')).toBe(false);
+      expect(out.baselineRoot.endsWith('/Projects/projects-baseline')).toBe(true);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
     }
   });
 });

@@ -11,6 +11,7 @@ paths:
 learning-key: anti-pattern/a-file-wide-tocontain-in-a-test-that-judges-one-block-passes-for-states-the-block-never-reaches
 confidence: 0.9
 expires-at: 2026-10-28
+evidence-digest: sha256-v1:769d65f77714bef003d00a76256506b251c44854b948fbde039b51eb843b63a4
 ---
 
 # Auto-generated rule: a file-wide toContain in a test that judges one block passes for states the block never reaches
@@ -25,6 +26,9 @@ Two assertions in the same CI-gate test were green against exactly the state the
 - learning-key: `anti-pattern/a-file-wide-tocontain-in-a-test-that-judges-one-block-passes-for-states-the-block-never-reaches`
 - learning-id: `1652166b-b67b-4ff3-9ee8-6c2268629cb3`
 - source-session: `feat-instruction-ablation-2026-07-30-deep-1`
+- evidence-digest: `sha256-v1:769d65f77714bef003d00a76256506b251c44854b948fbde039b51eb843b63a4`
+- evidence-recorded-at: 2026-07-30T00:00:00.000Z
+- evidence-digest-input: learning-key \n learning-id \n source-session \n evidence-recorded-at \n confidence \n <the `## Evidence` block above, verbatim UTF-8, LF-joined, no trailing newline>
 - confidence: 0.9
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695)
 - expires-at: 2026-10-28

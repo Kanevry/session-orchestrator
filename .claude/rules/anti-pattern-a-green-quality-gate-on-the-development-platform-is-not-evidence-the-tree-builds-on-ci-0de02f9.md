@@ -13,6 +13,7 @@ paths:
 learning-key: anti-pattern/a-green-quality-gate-on-the-development-platform-is-not-evidence-the-tree-builds-on-ci
 confidence: 0.9
 expires-at: 2026-10-28
+evidence-digest: sha256-v1:531c06011986ab945a08d3022af73e0f741b0034fef88eaabfd3c11297298652
 ---
 
 # Auto-generated rule: a green quality gate on the development platform is not evidence the tree builds on CI
@@ -27,6 +28,9 @@ The local full gate reported 541/541 three times on a tree the Linux CI runner c
 - learning-key: `anti-pattern/a-green-quality-gate-on-the-development-platform-is-not-evidence-the-tree-builds-on-ci`
 - learning-id: `79734024-70ac-4a3b-8c18-a79d8d44dc92`
 - source-session: `feat-instruction-ablation-2026-07-30-deep-1`
+- evidence-digest: `sha256-v1:531c06011986ab945a08d3022af73e0f741b0034fef88eaabfd3c11297298652`
+- evidence-recorded-at: 2026-07-30T00:00:00.000Z
+- evidence-digest-input: learning-key \n learning-id \n source-session \n evidence-recorded-at \n confidence \n <the `## Evidence` block above, verbatim UTF-8, LF-joined, no trailing newline>
 - confidence: 0.9
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695)
 - expires-at: 2026-10-28

@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -159,5 +159,149 @@ describe('mcp-server.sh session_metrics — torn-write tolerance', () => {
     expect(text).toContain('session-beta-002');
     expect(text).not.toContain('session-ghost-999');
     expect(text).not.toBe('No metrics found (file is empty)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// .mcp.json entrypoint — plugin-root resolution + fail-loud
+// (GH Kanevry/session-orchestrator#64)
+//
+// The bug: `.mcp.json` resolved the plugin root as
+//   ${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}}
+// CODEX_PLUGIN_ROOT is session-orchestrator's OWN compatibility export (set
+// only inside hooks/hooks-codex.json command strings), never a variable Codex
+// hands to an MCP child — so on Codex the git fallback was the only live layer.
+// Launched from $HOME (not a git repo) the substitution yielded "", the path
+// became literally "/scripts/mcp-server.sh", and bash exited 127 with 0 bytes
+// on stdout. The client reports that as "connection closed: initialize
+// response" with nothing to act on.
+//
+// These tests spawn the REAL command+args read out of .mcp.json (never a
+// hand-copied string — a hand-typed copy under a census title is a green tick
+// with no coverage) from a NON-git temp dir with every plugin-root variable
+// removed from the environment.
+//
+// The invariant under test is "never silent": the process must either complete
+// the handshake or name itself on stderr. Both old failure modes (missing
+// script, missing jq) produced 0 bytes on stdout and no product name anywhere.
+// ---------------------------------------------------------------------------
+
+const DIAGNOSTIC_MARKER = 'session-orchestrator: cannot locate the plugin root';
+
+/** Env vars every resolution layer consults — removed so the test controls them. */
+const PLUGIN_ROOT_VARS = [
+  'CLAUDE_PLUGIN_ROOT',
+  'CODEX_PLUGIN_ROOT',
+  'PLUGIN_ROOT',
+  'CURSOR_RULES_DIR',
+  'PI_PLUGIN_ROOT',
+  'SO_PLATFORM',
+];
+
+/**
+ * Spawn the MCP server exactly as a client would: the `command` and `args` are
+ * read from .mcp.json, so a future edit to that string is exercised here.
+ *
+ * @param {string} cwd            Working directory for the child.
+ * @param {Record<string,string>} [extraEnv] Vars to set (all PLUGIN_ROOT_VARS
+ *   are deleted first, then these are applied).
+ */
+function runMcpJsonEntrypoint(cwd, extraEnv = {}) {
+  const raw = readFileSync(join(repoRoot, '.mcp.json'), 'utf8');
+  const entry = JSON.parse(raw).mcpServers?.['session-orchestrator'];
+
+  // Vacuum guard: an empty/renamed entry must fail the test, not silently
+  // reduce it to spawning nothing.
+  expect(entry, '.mcp.json has no mcpServers["session-orchestrator"] entry').toBeTruthy();
+  expect(typeof entry.command).toBe('string');
+  expect(Array.isArray(entry.args)).toBe(true);
+  expect(entry.args.length).toBeGreaterThan(0);
+
+  const env = { ...process.env };
+  for (const key of PLUGIN_ROOT_VARS) delete env[key];
+  Object.assign(env, extraEnv);
+
+  const input = `${JSON.stringify({ jsonrpc: '2.0', id: 'gh64', method: 'initialize', params: {} })}\n`;
+  return spawnSync(entry.command, entry.args, {
+    input,
+    encoding: 'utf8',
+    cwd,
+    env,
+    timeout: 30_000,
+  });
+}
+
+/** The core invariant: never 0 bytes on stdout with no named diagnostic on stderr. */
+function expectNotSilent(result) {
+  const silent = result.stdout.trim() === '' && !result.stderr.includes(DIAGNOSTIC_MARKER);
+  expect(
+    silent,
+    `MCP entrypoint failed silently — stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`,
+  ).toBe(false);
+}
+
+describe('.mcp.json entrypoint — plugin-root resolution (GH#64)', () => {
+  let outsideRepo;
+
+  beforeEach(() => {
+    // A temp dir with no git repository anywhere in its ancestry — the
+    // reporter's situation (client launched from $HOME).
+    outsideRepo = mkdtempSync(join(tmpdir(), 'mcp-no-git-'));
+    const probe = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: outsideRepo,
+      encoding: 'utf8',
+    });
+    // Precondition, not an assertion about the fix: if this dir were inside a
+    // git tree the test would prove nothing.
+    expect(probe.status).not.toBe(0);
+  });
+
+  afterEach(() => {
+    rmSync(outsideRepo, { recursive: true, force: true });
+  });
+
+  it('never fails silently from a non-git cwd with no plugin-root variable set', () => {
+    const result = runMcpJsonEntrypoint(outsideRepo);
+    expectNotSilent(result);
+
+    if (result.stdout.trim().length > 0) {
+      // A resolvable install (npm/npx) — the handshake must be a real one.
+      const firstLine = result.stdout.split('\n').find((l) => l.trim().length > 0);
+      expect(JSON.parse(firstLine).result.serverInfo.name).toBe('session-orchestrator');
+    } else {
+      // No install reachable — then the operator gets an actionable diagnostic
+      // naming the variable to set, not an opaque "connection closed".
+      expect(result.stderr).toContain(DIAGNOSTIC_MARKER);
+      expect(result.stderr).toContain('CLAUDE_PLUGIN_ROOT');
+      expect(result.stderr).toContain('CODEX_PLUGIN_ROOT');
+      expect(result.status).not.toBe(0);
+    }
+  });
+
+  it("honours Codex's native PLUGIN_ROOT from a non-git cwd", () => {
+    // The old args string named CLAUDE_PLUGIN_ROOT and CODEX_PLUGIN_ROOT only;
+    // Codex's own variable was absent, so a client that DID export it still
+    // fell through to the git fallback and died outside a repo.
+    const result = runMcpJsonEntrypoint(outsideRepo, { PLUGIN_ROOT: repoRoot });
+    expectNotSilent(result);
+
+    const firstLine = result.stdout.split('\n').find((l) => l.trim().length > 0);
+    const parsed = JSON.parse(firstLine);
+    expect(parsed.id).toBe('gh64');
+    expect(parsed.result.serverInfo.name).toBe('session-orchestrator');
+  });
+
+  it('rejects a plugin-root variable pointing at a directory without the server script', () => {
+    // Load-bearing for every external user: `git rev-parse --show-toplevel`
+    // legitimately returns THEIR project root, which has no
+    // scripts/mcp-server.sh. Without the -f guard the entrypoint exec's a
+    // nonexistent path and dies with 0 bytes — the GH#64 signature again.
+    const result = runMcpJsonEntrypoint(outsideRepo, { CLAUDE_PLUGIN_ROOT: outsideRepo });
+    expectNotSilent(result);
+
+    if (result.stdout.trim().length === 0) {
+      expect(result.stderr).toContain(DIAGNOSTIC_MARKER);
+      expect(result.status).not.toBe(0);
+    }
   });
 });

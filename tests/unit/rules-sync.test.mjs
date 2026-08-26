@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -682,5 +682,93 @@ describe('CLI — happy path with real plugin root', () => {
       exists = false;
     }
     expect(exists).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1060 — two rival vendoring paths wrote the same target file.
+//
+// Before the fix, `/bootstrap` vendored .claude/rules/parallel-sessions.md by a
+// literal `cp` from templates/_shared/rules/ (PSA-001..006), while
+// `/bootstrap --sync-rules` vendored the SAME target from rules/always-on/
+// (PSA-001..004). Running bootstrap and then --sync-rules silently downgraded a
+// consumer repo by two rules, with no error and no diff the operator would see.
+//
+// These tests pin the invariant that broke: whatever the canonical rules/ copy
+// delivers must never carry FEWER PSA codes than the bootstrap path used to.
+// ---------------------------------------------------------------------------
+
+// PSA codes the pre-#1060 bootstrap path (templates/_shared/rules/) delivered.
+const BOOTSTRAP_PSA_FLOOR = [
+  'PSA-001',
+  'PSA-002',
+  'PSA-003',
+  'PSA-004',
+  'PSA-005',
+  'PSA-006',
+];
+
+// The mechanical contract floor asserted by the harness audit's c7.3
+// `parallel-sessions-rules` check (scripts/lib/harness-audit/categories/category7.mjs).
+const HARNESS_AUDIT_PSA_FLOOR = ['PSA-001', 'PSA-002', 'PSA-003', 'PSA-004'];
+
+const REAL_PLUGIN_ROOT = fileURLToPath(new URL('../../', import.meta.url));
+
+/** @param {string} text @returns {string[]} sorted unique PSA codes found in text */
+function psaCodes(text) {
+  return [...new Set(text.match(/PSA-00\d/g) ?? [])].sort();
+}
+
+describe('syncRules — #1060 bootstrap-then-sync must not reduce PSA coverage', () => {
+  it('vendors every PSA code the bootstrap path used to deliver', () => {
+    const repoRoot = tmp();
+
+    // Bootstrap Step 3a — now itself a rules-sync call (skills/bootstrap/*-template.md).
+    const bootstrap = syncRules({ pluginRoot: REAL_PLUGIN_ROOT, repoRoot });
+    expect(bootstrap.errors).toEqual([]);
+
+    const target = join(repoRoot, '.claude', 'rules', 'parallel-sessions.md');
+    const afterBootstrap = psaCodes(readFileSync(target, 'utf8'));
+
+    // `/bootstrap --sync-rules` over the same repo — the second writer in #1060.
+    const resync = syncRules({ pluginRoot: REAL_PLUGIN_ROOT, repoRoot });
+    expect(resync.errors).toEqual([]);
+
+    const afterResync = psaCodes(readFileSync(target, 'utf8'));
+
+    // The regression: the re-sync silently REMOVED PSA codes from the target.
+    for (const code of afterBootstrap) {
+      expect(afterResync).toContain(code);
+    }
+
+    // And the absolute floor — the canonical copy may never fall below what the
+    // deleted templates/_shared/rules/ copy delivered, nor below the audit floor.
+    for (const code of BOOTSTRAP_PSA_FLOOR) {
+      expect(afterResync).toContain(code);
+    }
+    for (const code of HARNESS_AUDIT_PSA_FLOOR) {
+      expect(afterResync).toContain(code);
+    }
+  });
+
+  it('leaves no second writer to .claude/rules/ in the bootstrap templates', () => {
+    // Catches the reintroduction of a literal `cp` into .claude/rules/. Such a
+    // copy bypasses the pre-write validator AND lands a file with no
+    // `<!-- source: session-orchestrator plugin ... -->` header — which the next
+    // --sync-rules classifies as a repo-private override and preserves forever,
+    // so the plugin can never update that rule again.
+    const CP_INTO_RULES = /^\s*cp\s+.*\.claude\/rules/m;
+
+    for (const rel of ['skills/bootstrap/_shared-template.md', 'skills/bootstrap/fast-template.md']) {
+      const body = readFileSync(join(REAL_PLUGIN_ROOT, rel), 'utf8');
+      expect(body, `${rel} must not cp into .claude/rules/`).not.toMatch(CP_INTO_RULES);
+      expect(body, `${rel} must vendor rules via rules-sync.mjs`).toContain('rules-sync.mjs');
+    }
+
+    // The rival source directory itself must stay gone.
+    expect(
+      existsSync(join(REAL_PLUGIN_ROOT, 'templates/_shared/rules/parallel-sessions.md')),
+      'templates/_shared/rules/parallel-sessions.md was deleted in #1060 — do not restore it',
+    ).toBe(false);
   });
 });

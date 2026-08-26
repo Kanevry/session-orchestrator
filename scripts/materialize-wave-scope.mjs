@@ -9,9 +9,13 @@
  * each bare `files` array first, then writes the complete record array as the
  * aggregate sidecar consumed by validate-wave-scope's --assert-disjoint and
  * --union modes.
+ *
+ * After the aggregate is published, per-agent declarations left behind by an
+ * earlier materialization of the SAME wave are reconciled away (#1103) — but
+ * only against a proven session owner. See {@link reconcileOrphans}.
  */
 
-import { readFileSync, unlinkSync } from 'node:fs';
+import { readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeJsonAtomicSync } from './lib/io.mjs';
@@ -27,7 +31,12 @@ Required:
                       Positive wave number used in filescopes/wave-N/.
 
 Options:
-  --json              Emit {ok, aggregatePath, perAgentPaths} to stdout.
+  --session <id>      This session's id (session_id or its semantic twin). Used
+                      ONLY to prove ownership before an orphaned per-agent
+                      declaration of the same wave is removed (#1103). Without
+                      it, orphans are reported and RETAINED, never deleted.
+  --json              Emit {ok, aggregatePath, perAgentPaths, removedOrphans,
+                      retainedOrphans} to stdout.
   -h, --help          Show this help and exit 0.
 
 Output:
@@ -43,6 +52,12 @@ Writes:
   <state-dir>/filescopes/wave-N/<id>.json       Bare string[] for each record
   <state-dir>/filescopes/wave-N.scopes.json     Aggregate [{id, files}, ...]
 
+Removes (only with a proven owner — see --session):
+  <state-dir>/filescopes/wave-N/<stale-id>.json Per-agent declarations of this
+                      wave whose id is absent from the new record array. An
+                      orphan that cannot be proven owned is named on stderr and
+                      LEFT IN PLACE; that is a WARN, never a failure.
+
 Exit codes:
   0  All declaration files and the aggregate sidecar were written.
   1  Usage or input validation error; no write was attempted.
@@ -55,11 +70,12 @@ class WriteError extends Error {}
 
 /**
  * @param {string[]} argv
- * @returns {{ stateDir: string, wave: number, json: boolean, help: boolean }}
+ * @returns {{ stateDir: string, wave: number, session: string|null, json: boolean, help: boolean }}
  */
 export function parseCliArgs(argv) {
   let stateDir;
   let waveRaw;
+  let session = null;
   let json = false;
   let help = false;
 
@@ -73,7 +89,7 @@ export function parseCliArgs(argv) {
       help = true;
       continue;
     }
-    if (arg === '--state-dir' || arg === '--wave') {
+    if (arg === '--state-dir' || arg === '--wave' || arg === '--session') {
       const value = argv[index + 1];
       if (value === undefined || value.startsWith('--')) {
         throw new InputError(`${arg} requires a value`);
@@ -81,6 +97,12 @@ export function parseCliArgs(argv) {
       if (arg === '--state-dir') {
         if (stateDir !== undefined) throw new InputError('--state-dir may be specified only once');
         stateDir = value;
+      } else if (arg === '--session') {
+        if (session !== null) throw new InputError('--session may be specified only once');
+        // An empty or whitespace-only id proves nothing and must not be read as
+        // an owner: it would make every orphan deletable by any caller.
+        if (value.trim().length === 0) throw new InputError('--session must be a non-empty id');
+        session = value.trim();
       } else {
         if (waveRaw !== undefined) throw new InputError('--wave may be specified only once');
         waveRaw = value;
@@ -91,7 +113,7 @@ export function parseCliArgs(argv) {
     throw new InputError(`unknown argument: ${arg}`);
   }
 
-  if (help) return { stateDir: '', wave: 0, json, help: true };
+  if (help) return { stateDir: '', wave: 0, session, json, help: true };
   if (stateDir === undefined) throw new InputError('--state-dir is required');
   if (waveRaw === undefined) throw new InputError('--wave is required');
   if (stateDir.length === 0 || /[\0\r\n]/.test(stateDir)) {
@@ -103,7 +125,7 @@ export function parseCliArgs(argv) {
 
   const wave = Number(waveRaw);
   if (!Number.isSafeInteger(wave)) throw new InputError('--wave must be a safe positive integer');
-  return { stateDir, wave, json, help: false };
+  return { stateDir, wave, session, json, help: false };
 }
 
 /**
@@ -183,6 +205,141 @@ export function validateScopeRecords(value) {
   return value;
 }
 
+
+/**
+ * Read the session ids the sibling manifest `<state-dir>/wave-scope.json`
+ * declares for this state directory (#1123 wrote both `session` — the raw
+ * `session_id` — and its human-readable twin `semantic_session`).
+ *
+ * A caller may legitimately hold either spelling, so BOTH are returned and a
+ * match against either proves ownership. Any failure to read or parse the
+ * manifest returns an empty list, which the caller must treat as "ownership NOT
+ * established" — never as "no owner, therefore mine".
+ *
+ * @param {string} stateDir
+ * @param {typeof readFileSync} [readFile]
+ * @returns {string[]}
+ */
+export function manifestSessionIds(stateDir, readFile = readFileSync) {
+  let manifest;
+  try {
+    manifest = JSON.parse(readFile(resolve(stateDir, 'wave-scope.json'), 'utf8'));
+  } catch {
+    return [];
+  }
+  if (!isRecord(manifest)) return [];
+  return ['session', 'semantic_session']
+    .map((key) => manifest[key])
+    .filter((value) => typeof value === 'string' && value.trim().length > 0)
+    .map((value) => value.trim());
+}
+
+/**
+ * Reconcile per-agent declarations left behind by an earlier materialization of
+ * the SAME wave (#1103).
+ *
+ * The write loop is a pure upsert over the new id set, so a file whose id was
+ * dropped from the plan survives: it is in no aggregate — `--assert-disjoint`
+ * and `--union` cannot see it — while every by-id consumer (FILE-SCOPE
+ * injection, the Learnings-Index, `--assert-subset`) still reads it. A live
+ * scope claim with zero aggregate coverage.
+ *
+ * ## Why this is NOT a directory wipe
+ *
+ * The wave number is not a session-unique key: two sessions sharing one working
+ * copy both call their first wave `wave-1` and both resolve to
+ * `<state-dir>/filescopes/wave-1/`. Clearing the directory would convert a
+ * stale-read bug into cross-session data loss — the class
+ * `.claude/rules/parallel-sessions.md` PSA-003 forbids by name ("Did I create
+ * this file? If not, it is not mine to touch"). So removal needs a two-part
+ * test, and only the second part is about the file:
+ *
+ *   1. the id is absent from the new record array (it is an orphan), AND
+ *   2. this invocation can PROVE it owns the state directory — `sessionId`
+ *      matches an id the sibling manifest declares.
+ *
+ * Failing (2) is not an error and never blocks: the orphan is returned in
+ * `retained` WITH its reason so the caller can name the file. A silent skip is
+ * the one outcome forbidden here, because it is byte-identical to a clean run.
+ *
+ * ## Named ceiling (BV-004)
+ *
+ * Bounded by WHEN materialization runs, not by what it inspects: a session that
+ * re-materializes wave N *while its own agents are still in flight* would delete
+ * the scope files those agents are reading. That is safe today only because
+ * `skills/wave-executor/wave-loop.md` § Scope Manifest 3.2 places
+ * (re-)materialization strictly PRE-dispatch, so no reader exists yet. REVISIT
+ * TRIGGER: any caller that materializes a wave after its dispatch has begun — a
+ * mid-wave scope amendment, a repair pass reusing the same wave number, or a
+ * dispatch loop that re-runs the materializer per agent. Ownership does not
+ * protect against that case; the ordering does.
+ *
+ * @param {object} params
+ * @param {string} params.scopeDir           `<state-dir>/filescopes/wave-N`
+ * @param {string[]} params.keepIds          ids present in the new record array
+ * @param {string[]} params.ownerIds         session ids the manifest declares
+ * @param {string|null} params.sessionId     this invocation's session id
+ * @param {typeof readdirSync} [params.readDir]
+ * @param {typeof unlinkSync} [params.removeFile]
+ * @returns {{removed: string[], retained: Array<{file: string, reason: string}>}}
+ */
+export function reconcileOrphans({
+  scopeDir,
+  keepIds,
+  ownerIds,
+  sessionId,
+  readDir = readdirSync,
+  removeFile = unlinkSync,
+}) {
+  let entries;
+  try {
+    entries = readDir(scopeDir, { withFileTypes: true });
+  } catch {
+    // No directory yet (first materialization) or unreadable — nothing to
+    // reconcile. Not a failure: the aggregate is already published.
+    return { removed: [], retained: [] };
+  }
+
+  // Case-INSENSITIVE keep set. validateScopeRecords already rejects two ids that
+  // differ only in case within one input, so this cannot hide a real orphan —
+  // but on a case-insensitive filesystem `A2.json` and `a2.json` are ONE file,
+  // and deleting the "orphan" would delete the declaration just written.
+  const keep = new Set(keepIds.map((id) => `${id}.json`.toLowerCase()));
+  const orphans = [];
+  for (const entry of entries) {
+    if (typeof entry?.isFile === 'function' && !entry.isFile()) continue;
+    const name = typeof entry === 'string' ? entry : entry?.name;
+    if (typeof name !== 'string' || !name.endsWith('.json')) continue;
+    if (keep.has(name.toLowerCase())) continue;
+    orphans.push(name);
+  }
+  if (orphans.length === 0) return { removed: [], retained: [] };
+
+  const proven = typeof sessionId === 'string' && sessionId.length > 0 && ownerIds.includes(sessionId);
+  if (!proven) {
+    const reason = sessionId === null || sessionId === undefined
+      ? 'no --session given, so this state directory has no provable owner'
+      : ownerIds.length === 0
+        ? 'wave-scope.json declares no session, so ownership cannot be established'
+        : `wave-scope.json is owned by a different session (${ownerIds.join(' / ')})`;
+    return { removed: [], retained: orphans.map((file) => ({ file, reason })) };
+  }
+
+  const removed = [];
+  const retained = [];
+  for (const file of orphans) {
+    try {
+      removeFile(resolve(scopeDir, file));
+      removed.push(file);
+    } catch (error) {
+      // A failed unlink leaves a live orphan behind — report it, never throw:
+      // the aggregate is already published and the materialization succeeded.
+      retained.push({ file, reason: `could not remove: ${error instanceof Error ? error.message : String(error)}` });
+    }
+  }
+  return { removed, retained };
+}
+
 /**
  * Materialize validated declarations in their required write order.
  *
@@ -193,10 +350,22 @@ export function validateScopeRecords(value) {
  * has succeeded.
  *
  * @param {Array<{id: string, files: string[]}>} records
- * @param {{ stateDir: string, wave: number, writeJson?: typeof writeJsonAtomicSync }} options
- * @returns {{ aggregatePath: string, perAgentPaths: string[] }}
+ * @param {{ stateDir: string, wave: number, session?: string|null,
+ *          writeJson?: typeof writeJsonAtomicSync,
+ *          readDir?: typeof readdirSync, removeFile?: typeof unlinkSync,
+ *          readFile?: typeof readFileSync }} options
+ * @returns {{ aggregatePath: string, perAgentPaths: string[],
+ *             removedOrphans: string[], retainedOrphans: Array<{file: string, reason: string}> }}
  */
-export function materializeWaveScope(records, { stateDir, wave, writeJson = writeJsonAtomicSync }) {
+export function materializeWaveScope(records, {
+  stateDir,
+  wave,
+  session = null,
+  writeJson = writeJsonAtomicSync,
+  readDir = readdirSync,
+  removeFile = unlinkSync,
+  readFile = readFileSync,
+}) {
   const scopeDir = resolve(stateDir, 'filescopes', `wave-${wave}`);
   const aggregatePath = resolve(stateDir, 'filescopes', `wave-${wave}.scopes.json`);
   const perAgentPaths = records.map(({ id }) => resolve(scopeDir, `${id}.json`));
@@ -220,7 +389,21 @@ export function materializeWaveScope(records, { stateDir, wave, writeJson = writ
   if (!aggregateResult?.ok) {
     throw new WriteError(`cannot write aggregate declaration ${aggregatePath}: ${aggregateResult?.error ?? 'unknown write failure'}`);
   }
-  return { aggregatePath, perAgentPaths };
+
+  // #1103 — strictly AFTER the aggregate write. The aggregate is this command's
+  // publication marker (see the write-order note above), so reconciling before
+  // it would remove a live declaration while the run could still fail and leave
+  // no aggregate at all — deleting coverage that nothing replaced.
+  const { removed, retained } = reconcileOrphans({
+    scopeDir,
+    keepIds: records.map(({ id }) => id),
+    ownerIds: manifestSessionIds(stateDir, readFile),
+    sessionId: session,
+    readDir,
+    removeFile,
+  });
+
+  return { aggregatePath, perAgentPaths, removedOrphans: removed, retainedOrphans: retained };
 }
 
 /**
@@ -256,10 +439,24 @@ export function main() {
       return;
     }
     const records = validateScopeRecords(readStdinJson());
-    const { aggregatePath, perAgentPaths } = materializeWaveScope(records, args);
+    const { aggregatePath, perAgentPaths, removedOrphans, retainedOrphans } =
+      materializeWaveScope(records, args);
+
+    // stderr carries ONLY the anomalous cases. Measured constraint, not taste:
+    // the corpus pins byte-empty stderr on this command's success path
+    // (tests/scripts/materialize-wave-scope.test.mjs and
+    // tests/integration/wave-scope-producer.test.mjs), and a wave with no
+    // orphans IS the success path. Both lists always reach --json.
+    for (const file of removedOrphans) {
+      process.stderr.write(`materialize-wave-scope: removed orphaned declaration ${file} (id absent from this wave's records)\n`);
+    }
+    for (const { file, reason } of retainedOrphans) {
+      process.stderr.write(`materialize-wave-scope: WARN orphaned declaration ${file} RETAINED — ${reason}\n`);
+    }
+
     process.stdout.write(
       args.json
-        ? `${JSON.stringify({ ok: true, aggregatePath, perAgentPaths })}\n`
+        ? `${JSON.stringify({ ok: true, aggregatePath, perAgentPaths, removedOrphans, retainedOrphans })}\n`
         : `${aggregatePath}\n`,
     );
   } catch (error) {

@@ -14,6 +14,7 @@ host-class: macos-arm64
 learning-key: anti-pattern/validate-config-cli-exit-code-is-not-a-schema-gate-under-enforcement-warn
 confidence: 0.9
 expires-at: 2026-10-07
+evidence-digest: sha256-v1:dd1a129d6a1f04919fadc7125d826e06a5ef5177959d89b0d98f7e8d2ade5311
 ---
 
 # Auto-generated rule: validate-config CLI exit code is not a schema gate under enforcement:warn
@@ -28,6 +29,9 @@ tests/docs/setup-config-examples.test.mjs pins the contract empirically: malform
 - learning-key: `anti-pattern/validate-config-cli-exit-code-is-not-a-schema-gate-under-enforcement-warn`
 - learning-id: `3b80997d-6d36-41a8-94ad-6fffb898adee`
 - source-session: `main-2026-07-09-session-1`
+- evidence-digest: `sha256-v1:dd1a129d6a1f04919fadc7125d826e06a5ef5177959d89b0d98f7e8d2ade5311`
+- evidence-recorded-at: 2026-07-09T00:00:00.000Z
+- evidence-digest-input: learning-key \n learning-id \n source-session \n evidence-recorded-at \n confidence \n <the `## Evidence` block above, verbatim UTF-8, LF-joined, no trailing newline>
 - confidence: 0.9
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695)
 - expires-at: 2026-10-07

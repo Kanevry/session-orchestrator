@@ -36,8 +36,9 @@
  *   - Verify non-scanned file extensions (e.g. .yaml) are not processed
  */
 
-import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { listRepoFiles } from './repo-files.mjs';
 
 const pluginRoot = process.argv[2];
 if (!pluginRoot) {
@@ -86,26 +87,6 @@ const SCAN_ROOTS = [
 
 const SCAN_EXTENSIONS = ['.md', '.mjs', '.js', '.ts'];
 
-/**
- * Recursively walk a directory and return all file paths with the allowed extensions.
- * @param {string} dir
- * @returns {string[]}
- */
-function walk(dir) {
-  const results = [];
-  if (!existsSync(dir)) return results;
-  for (const name of readdirSync(dir)) {
-    const full = join(dir, name);
-    const st = statSync(full);
-    if (st.isDirectory()) {
-      results.push(...walk(full));
-    } else if (SCAN_EXTENSIONS.some((ext) => name.endsWith(ext))) {
-      results.push(full);
-    }
-  }
-  return results;
-}
-
 const violations = [];
 
 for (const rel of SCAN_ROOTS) {
@@ -114,7 +95,17 @@ for (const rel of SCAN_ROOTS) {
     pass(`${rel}/ does not exist yet (no scan needed)`);
     continue;
   }
-  const files = walk(absDir);
+  // The index, not the filesystem (#1143). This walk carried NO exclusion set
+  // — not even `node_modules` — while SCAN_EXTENSIONS covers .mjs/.js/.ts, so
+  // a vendored copy of the very package this canary forbids (a gitignored
+  // `skills/playwright-driver/node_modules/@playwright/mcp`) would be read as
+  // repo source and fail a BLOCKING gate on someone else's code.
+  // Honest scope note: unlike the other scanners migrated with it, this one is
+  // NOT exposed to the `.claude/worktrees/` case — measured 2026-08-26, its
+  // three SCAN_ROOTS are fixed deep subdirectories that a worktree cannot land
+  // in, and on-disk vs index counts were identical (2/2, 3/3, 2/2). The
+  // gitignored-vendored-tree case above is the reason it moved.
+  const files = listRepoFiles(pluginRoot, { dirs: [rel], exts: SCAN_EXTENSIONS });
   let fileViolations = 0;
   for (const file of files) {
     const text = readFileSync(file, 'utf8');

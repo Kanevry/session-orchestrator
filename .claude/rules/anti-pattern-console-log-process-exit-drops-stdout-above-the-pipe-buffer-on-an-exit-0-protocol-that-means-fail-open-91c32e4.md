@@ -11,6 +11,7 @@ paths:
 learning-key: anti-pattern/console-log-process-exit-drops-stdout-above-the-pipe-buffer-on-an-exit-0-protocol-that-means-fail-open
 confidence: 0.95
 expires-at: 2026-10-27
+evidence-digest: sha256-v1:cd1258d2a680637e6a6ad3f09bef503c45339a5700aada0fb0c8de25452d6e8f
 ---
 
 # Auto-generated rule: console.log + process.exit() drops stdout above the pipe buffer — on an exit-0 protocol that means fail-open
@@ -25,6 +26,9 @@ Node stdout is ASYNC on a pipe (macOS). Anything past the 64 KiB kernel pipe buf
 - learning-key: `anti-pattern/console-log-process-exit-drops-stdout-above-the-pipe-buffer-on-an-exit-0-protocol-that-means-fail-open`
 - learning-id: `6cf829ba-64d1-4942-aa67-2fb106dfa5b0`
 - source-session: `main-2026-07-29-deep-1`
+- evidence-digest: `sha256-v1:cd1258d2a680637e6a6ad3f09bef503c45339a5700aada0fb0c8de25452d6e8f`
+- evidence-recorded-at: 2026-07-29T00:00:00.000Z
+- evidence-digest-input: learning-key \n learning-id \n source-session \n evidence-recorded-at \n confidence \n <the `## Evidence` block above, verbatim UTF-8, LF-joined, no trailing newline>
 - confidence: 0.95
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695)
 - expires-at: 2026-10-27

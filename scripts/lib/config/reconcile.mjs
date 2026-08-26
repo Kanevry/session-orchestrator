@@ -25,6 +25,76 @@ import { matchBlockHeader } from './block-header.mjs';
  */
 
 /**
+ * CLOSED set of valid `reconcile.targets` members.
+ *
+ * At module scope on purpose: `targets` has TWO parse sites (the bracket-list
+ * branch and the bare-scalar `case 'targets'`), whereas `mode` has one. An
+ * inline literal duplicated across two sites is a second register that drifts —
+ * the shape mirrors `VALID_MODES` below, hoisted because the duplication is real.
+ *
+ * `global` is documented-but-unimplemented and is deliberately NOT a member:
+ * admitting a value nothing implements is the same defect class as the
+ * unvalidated pass-through this constant replaces.
+ */
+const VALID_TARGETS = Object.freeze(['repo-local', 'baseline']);
+
+/** Fallback when every declared target was dropped (mirrors the `defaults` object). */
+const DEFAULT_TARGETS = Object.freeze(['repo-local']);
+
+/**
+ * Report dropped `reconcile.targets` members on stderr.
+ *
+ * stderr, NEVER stdout: `scripts/lib/config.mjs` consumers parse this parser's
+ * downstream output as JSON, so a diagnostic on stdout would corrupt it.
+ *
+ * Prior art for "make an attributable drop VISIBLE, not merely recorded":
+ * `warnDroppedStoreRecords` in `scripts/lib/reconcile/engine.mjs`.
+ *
+ * @param {string[]} dropped
+ */
+function warnUnknownTargets(dropped) {
+  try {
+    console.warn(
+      `⚠️  reconcile.targets: dropped unknown value(s) ${dropped.map((d) => JSON.stringify(d)).join(', ')} — ` +
+        `valid targets are ${VALID_TARGETS.join(' | ')}. The unknown value is IGNORED (no rule is ` +
+        `written for it); if every declared target was dropped, the parser falls back to ` +
+        `[${DEFAULT_TARGETS.join(', ')}].`,
+    );
+  } catch {
+    // A diagnostic must never become the failure it reports on.
+  }
+}
+
+/**
+ * Keep only {@link VALID_TARGETS} members, de-duplicated, order-preserving.
+ *
+ * Rejection is DROP + WARN, never a throw — not even under `enforcement: strict`:
+ *  (a) this module's stated contract ("Tolerant parser: malformed values silently
+ *      fall back to defaults") is obeyed by every other key here; making one key
+ *      throw is an internal inconsistency;
+ *  (b) `_parseReconcile` runs from `scripts/lib/config.mjs` at session-start, so a
+ *      throw would fail session-start on a config typo;
+ *  (c) the SILENCE was the defect, not the tolerance — the WARN closes it.
+ *
+ * Fail-loud belongs one layer up (`claude-md-drift-check` Check 6 could ERROR on
+ * an unknown value); that is deliberately NOT bundled here.
+ *
+ * @param {string[]} items
+ * @returns {string[]}
+ */
+function filterTargets(items) {
+  const kept = [];
+  const dropped = [];
+  for (const item of items) {
+    if (VALID_TARGETS.includes(item)) kept.push(item);
+    else dropped.push(item);
+  }
+  if (dropped.length > 0) warnUnknownTargets(dropped);
+  const uniq = [...new Set(kept)];
+  return uniq.length > 0 ? uniq : [...DEFAULT_TARGETS];
+}
+
+/**
  * Parse the top-level `reconcile:` YAML block from markdown content.
  *
  * Defaults:
@@ -32,8 +102,13 @@ import { matchBlockHeader } from './block-header.mjs';
  *   reconcile.mode:              'warn'  — advisory only; rules NEVER auto-applied,
  *                                          every write is operator-AUQ-gated (enum: off|warn)
  *   reconcile.targets:           ['repo-local']
- *                                         — where approved rules are written;
- *                                           repo-local = `.claude/rules/` in v1
+ *                                         — where approved rules are written.
+ *                                           CLOSED enum, see {@link VALID_TARGETS}:
+ *                                           repo-local = `.claude/rules/` in this repo;
+ *                                           baseline   = `<baselineRoot>/proposals/`
+ *                                           (issue #1099). An unknown member is DROPPED
+ *                                           with a stderr WARN — see {@link filterTargets}
+ *                                           for why a drop and not a throw.
  *   reconcile.rule-expiry-days:  null    — CRITICAL: must default to null so the
  *                                          reconcile engine (`emitter.mjs`
  *                                          `computeExpiresAt`) falls back to per-type
@@ -132,7 +207,7 @@ export function _parseReconcile(content) {
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
-      if (items.length > 0) targets = items;
+      if (items.length > 0) targets = filterTargets(items);
       continue;
     }
 
@@ -206,7 +281,7 @@ export function _parseReconcile(content) {
       // targets inline-list with no brackets (e.g. targets: repo-local) — single value
       case 'targets': {
         if (v && !v.startsWith('[')) {
-          targets = [v];
+          targets = filterTargets([v]);
         }
         break;
       }

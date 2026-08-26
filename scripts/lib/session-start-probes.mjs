@@ -211,18 +211,13 @@ export const PROBES = [
     spec: local('./instruction-budget-guard.mjs'),
     fn: 'checkInstructionBudget',
     network: false,
-    // This probe counts the always-on directive corpus under `.claude/rules/`.
-    // Without that directory there is no corpus and the probe returns `null`
-    // anyway — but it reaches that `null` through `rule-loader.loadApplicableRules`,
-    // which writes `[rule-loader] Cannot read rulesDir …` to STDERR three times
-    // per call on the way. Two pinned tests in
-    // `tests/hooks/on-session-start.test.mjs` assert this hook writes NOTHING to
-    // stderr, and they are right to: a SessionStart hook's stderr is operator-
-    // visible noise. Skipping on the absent directory keeps the same answer
-    // without the noise, and records WHY it was skipped instead of reporting a
-    // clean corpus that was never measured.
-    precondition: ({ repoRoot }) =>
-      existsSync(path.join(repoRoot, '.claude', 'rules')) ? null : 'no-rules-dir',
+    // No precondition (#1132): this probe counts the always-on directive
+    // corpus under `.claude/rules/`, and a repo without that directory has an
+    // empty corpus — a legitimate measured answer, not a declined measurement.
+    // A `no-rules-dir` precondition used to sit here purely to dodge a stderr
+    // side-effect in `rule-loader.loadApplicableRules`; that side-effect is now
+    // category-gated at its source, so the precondition suppressed nothing and
+    // cost a misleading `skipped: 'no-rules-dir'` record.
     args: ({ repoRoot }) => ({ repoRoot }),
   },
   {

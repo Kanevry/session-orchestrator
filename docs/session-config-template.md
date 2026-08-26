@@ -410,7 +410,7 @@ Opt-in config foundation for the FA3 (#696) advisory rule-proposal delivery at s
 reconcile:
   enabled: false                 # opt-in; FA3 reads this to gate session-end Phase 3.6.8
   mode: warn                     # off | warn — advisory only; rules NEVER auto-applied (#696)
-  targets: [repo-local]          # where approved rules are written; repo-local = .claude/rules/ in v1
+  targets: [repo-local]          # closed enum: repo-local = .claude/rules/ · baseline = <plan-baseline-path>/proposals/ (#1099)
   rule-expiry-days: null         # null = per-type TTL (default 60d); set positive integer for flat override (#697)
   confidence-floor: 0.5          # float 0.0..1.0 — min learning confidence for rule proposal eligibility
   min-rule-days: 7               # #741.1 — floor for emitted rule expires-at: max(derived, now + N days); prevents born-dead rules
@@ -425,6 +425,7 @@ Field semantics:
 - **`confidence-floor`** — learnings below this confidence level are not eligible for rule proposals. Default 0.5 matches `memory.proposals.confidence-floor`.
 - **`min-rule-days`** — floor window (days) applied to a proposed rule's `expires-at` so a near-dead or already-elapsed natural expiry never produces a born-dead rule. Positive integer; malformed or ≤0 falls back to 7 (issue #741.1).
 - **`min-insight-chars`** — opt-in minimum insight length gating the eligibility placeholder-insight check; rejects a learning whose trimmed insight is shorter than N characters before rule conversion. Integer ≥ 0; `0` disables the check (issue #741.2).
+- **`targets`** — CLOSED enum, `repo-local` | `baseline` (issue #1099). `repo-local` writes `<repoRoot>/.claude/rules/<slug>.md`; `baseline` writes `<baselineRoot>/proposals/<slug>.md`, where `<baselineRoot>` is `plan-baseline-path` resolved host-locally (`SO_BASELINE_PATH` env > `owner.yaml` `paths.baseline-path` > committed value). Both are AUQ-gated and advisory — the baseline write commits nothing in that repo. An unknown member is dropped with a stderr WARN naming it and the valid set; `global` is documented-but-unimplemented and is NOT a member. A `baseline` target whose root is unresolvable, is still an `OVERRIDE-IN-…` placeholder, is not absolute, or does not exist on disk degrades to a no-op with a WARN — the root is never created.
 
 Read by: `scripts/lib/config/reconcile.mjs` (parser), `skills/session-end/SKILL.md` Phase 3.6.8 (FA3 delivery). FA2 engine: `scripts/lib/reconcile/`.
 

@@ -101,6 +101,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
+import { expandTilde } from '../common.mjs';
 import { learningKeyOf } from '../learnings/kebab.mjs';
 import { migrateLegacyLearning, normalizeLearning } from '../learnings/schema.mjs';
 import { filterEligible } from './eligibility.mjs';
@@ -249,6 +250,91 @@ function warnDroppedStoreRecords(skipped) {
   } catch {
     // A diagnostic must never become the failure it reports on.
   }
+}
+
+/**
+ * Session Config placeholder convention: a path key whose committed value is a
+ * marker that MUST be overridden host-locally (this repo ships
+ * `plan-baseline-path: OVERRIDE-IN-owner.yaml` in CLAUDE.md — or AGENTS.md on
+ * Codex CLI — § Session Config).
+ * Treating the marker as a real path would create `./OVERRIDE-IN-owner.yaml/`.
+ */
+const PLACEHOLDER_PATH_RE = /^OVERRIDE-IN-/;
+
+/**
+ * Report that the `baseline` write-target was dropped for this run.
+ *
+ * stderr, never stdout — `scripts/lib/config.mjs` consumers parse stdout as JSON.
+ * Same posture as {@link warnDroppedStoreRecords}: an attributable drop must be
+ * VISIBLE, and a diagnostic must never become the failure it reports on.
+ *
+ * @param {string} reason
+ */
+function warnBaselineTargetDropped(reason) {
+  try {
+    console.warn(
+      `⚠️  reconcile: target "baseline" DROPPED for this run — ${reason}. ` +
+        `Resolution order is SO_BASELINE_PATH env > owner.yaml paths.baseline-path > ` +
+        `committed plan-baseline-path. No baseline proposal is surfaced in the approval ` +
+        `AUQ and nothing is written outside this repo; every other target is unaffected.`,
+    );
+  } catch {
+    // A diagnostic must never become the failure it reports on.
+  }
+}
+
+/**
+ * Decide which reconcile targets can ACTUALLY be written this run (issue #1099).
+ *
+ * Two of the three no-op checks live here, upstream of both the approval AUQ and
+ * the writer, because the important half is not the refused write — it is that
+ * **the operator must never be asked to approve a write to a destination that
+ * cannot exist.** A `baseline` target whose root is unresolvable, is still the
+ * committed placeholder, or is not absolute is therefore dropped from the
+ * effective list BEFORE proposals are surfaced. The third check (the root does
+ * not exist on disk) belongs to `writer.mjs`, the only layer holding the
+ * filesystem at write time.
+ *
+ * Pure and never-throws: it resolves nothing from disk and reads no env — the
+ * caller passes the already-resolved `baselineRoot` (`config['plan-baseline-path']`,
+ * which `scripts/lib/config.mjs` has already run through the full 3-tier chain).
+ *
+ * @param {{targets?: unknown, baselineRoot?: unknown}} [opts]
+ * @returns {{targets: string[], baselineRoot: string|null, dropped: string[], reason: string|null}}
+ *   `targets` — the effective list; `baselineRoot` — the ~-expanded root, or null
+ *   when `baseline` is not in play; `dropped`/`reason` — the audit trail.
+ */
+export function resolveEffectiveTargets({ targets, baselineRoot } = {}) {
+  const declared = Array.isArray(targets) ? targets.filter((t) => typeof t === 'string' && t.length > 0) : [];
+  const list = [...new Set(declared.length > 0 ? declared : ['repo-local'])];
+
+  if (!list.includes('baseline')) {
+    return { targets: list, baselineRoot: null, dropped: [], reason: null };
+  }
+
+  const raw = typeof baselineRoot === 'string' ? baselineRoot.trim() : '';
+  const expanded = raw === '' ? '' : expandTilde(raw);
+
+  let reason = null;
+  if (raw === '') {
+    reason = 'no baseline path is configured on any tier';
+  } else if (PLACEHOLDER_PATH_RE.test(raw)) {
+    reason = `the committed placeholder "${raw}" was never overridden host-locally`;
+  } else if (!isAbsolute(expanded)) {
+    reason = `"${raw}" is not an absolute path after ~-expansion`;
+  }
+
+  if (reason === null) {
+    return { targets: list, baselineRoot: expanded, dropped: [], reason: null };
+  }
+
+  warnBaselineTargetDropped(reason);
+  return {
+    targets: list.filter((t) => t !== 'baseline'),
+    baselineRoot: null,
+    dropped: ['baseline'],
+    reason,
+  };
 }
 
 /**

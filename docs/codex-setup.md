@@ -115,8 +115,11 @@ After installation and hook review, start a fresh task. Session Orchestrator exp
 | Config file | `CLAUDE.md` | `AGENTS.md` |
 | Task tracking | TaskCreate/TaskUpdate | Text-based checklists |
 | Hook root | `$CLAUDE_PLUGIN_ROOT` | native `${PLUGIN_ROOT}` plus `CODEX_PLUGIN_ROOT` compatibility export |
+| MCP server root | `$CLAUDE_PLUGIN_ROOT`, injected into the server process | resolved by `.mcp.json` itself — Codex expands no root variable inside `mcpServers.args` and injects none into the MCP child's environment |
 
 Both platforms share session history and learnings through `.orchestrator/metrics/`.
+
+`CODEX_PLUGIN_ROOT` is **session-orchestrator's own compatibility export, not a variable Codex provides.** The hook wrapper in `hooks/hooks-codex.json` assigns it from Codex's native `${PLUGIN_ROOT}` so that shared code (`scripts/lib/plugin-root.mjs`) can read one name on every harness. Nothing outside a hook command string sets it — in particular an MCP server started by Codex inherits neither `CODEX_PLUGIN_ROOT` nor `PLUGIN_ROOT`. That is why `.mcp.json` resolves the plugin root on its own instead of relying on a harness-provided variable: it tries `CLAUDE_PLUGIN_ROOT`, `CODEX_PLUGIN_ROOT`, `PLUGIN_ROOT`, then `git rev-parse --show-toplevel`, and finally asks Node to resolve the installed `session-orchestrator` package (which reaches `resolvePluginRoot()` and with it the `CURSOR_RULES_DIR` / `PI_PLUGIN_ROOT` roots too). Each candidate must actually contain `scripts/mcp-server.sh` before it is used.
 
 ## Platform Limitations
 
@@ -140,3 +143,7 @@ codex plugin list --available --json
 - **Other pre-public plugin/config/cache/hook-state residue is suspected:** this state is unsupported. Do not modify private Codex files. File an issue with `codex --version`, `codex plugin list --available --json`, and `codex plugin marketplace list --json` output so the public recovery path can be diagnosed.
 - **Agent dispatch fails:** verify Codex multi-agent support and inspect the bundled or project-level role TOMLs.
 - **Hooks report that Node is unavailable:** expose Node 24+ on the Codex hook PATH or set `SO_NODE_BIN` to the absolute Node executable.
+- **`MCP startup failed: handshaking with MCP server failed: connection closed: initialize response`:** the MCP entrypoint could not locate the plugin, or could not run. Read the server's **stderr** — since GH#64 it names itself. Two diagnostics exist:
+  - `session-orchestrator: cannot locate the plugin root` — no plugin-root variable was set, the working directory was outside any git checkout, and Node could not resolve an installed `session-orchestrator` package. This is the common case when Codex is started from `$HOME`. Fix: add `CODEX_PLUGIN_ROOT` (or `CLAUDE_PLUGIN_ROOT`) pointing at the plugin directory to that server's `env` block in your MCP configuration, or start Codex from inside the session-orchestrator checkout. Do not expect Codex to supply the variable — see the note under *Key Differences* above.
+  - `session-orchestrator: 'jq' not found in PATH` — the plugin was found but `jq` is missing. Fix: install `jq` and restart Codex. (Before GH#64 this case wrote a JSON-RPC error to *stdout* with `id: null`, which is not a valid `initialize` response either, so a missing `jq` and a missing plugin were indistinguishable from the client side.)
+- **The MCP tools answer `Error: not inside a git repository`:** expected, not a failure. The handshake succeeded; `session_config` and `session_metrics` read the *project* you are working in, so they need Codex's working directory to be inside a git repository. Start Codex from the project, or `cd` into it.

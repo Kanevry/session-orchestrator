@@ -2,7 +2,10 @@
   "mcpServers": {
     "session-orchestrator": {
       "command": "bash",
-      "args": ["-c", "exec bash \"${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}}/scripts/mcp-server.sh\""]
+      "args": [
+        "-c",
+        "r=\"\"; for c in \"$CLAUDE_PLUGIN_ROOT\" \"$CODEX_PLUGIN_ROOT\" \"$PLUGIN_ROOT\" \"$(git rev-parse --show-toplevel 2>/dev/null)\"; do if [ -n \"$c\" ] && [ -f \"$c/scripts/mcp-server.sh\" ]; then r=\"$c\"; break; fi; done; if [ -z \"$r\" ]; then r=\"$(NODE_PATH=\"$(npm root -g 2>/dev/null)\" node -e 'import(require(`node:url`).pathToFileURL(require.resolve(`session-orchestrator/scripts/lib/plugin-root.mjs`))).then(m=>process.stdout.write(m.resolvePluginRoot()))' 2>/dev/null)\"; fi; if [ -n \"$r\" ] && [ -f \"$r/scripts/mcp-server.sh\" ]; then exec bash \"$r/scripts/mcp-server.sh\"; fi; { echo \"session-orchestrator: cannot locate the plugin root — the MCP server did not start.\"; echo \"  Tried: CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT:-(unset)}, CODEX_PLUGIN_ROOT=${CODEX_PLUGIN_ROOT:-(unset)}, PLUGIN_ROOT=${PLUGIN_ROOT:-(unset)}, git rev-parse --show-toplevel (cwd=$PWD), node resolve of session-orchestrator/scripts/lib/plugin-root.mjs.\"; echo \"  Fix: set CLAUDE_PLUGIN_ROOT (Claude Code) or CODEX_PLUGIN_ROOT (Codex CLI) to the plugin directory in this server's env block, or start the client from inside the session-orchestrator checkout.\"; echo \"  Note: CODEX_PLUGIN_ROOT is session-orchestrator's own compatibility export, not a variable Codex provides. See docs/codex-setup.md § Troubleshooting.\"; } >&2; exit 1"
+      ]
     }
   }
 }

@@ -18,7 +18,14 @@
  *   G1 tool filter — only Bash is gated.
  *   G2 command is a non-empty string.
  *   G3 matcher — `gh|glab … issue create|new` only. PR/MR creation passes.
+ *      Verb-resolved since #1145, so a wrapped (`nohup`), absolute-path or
+ *      env-prefixed create is seen; a `--help` invocation is not (it creates
+ *      nothing).
  *   G4 config — `issue-budget` from CLAUDE.md/AGENTS.md. `mode: off` → allow.
+ *   G3b bulk — a create inside a shell LOOP body creates an unknowable number
+ *      of issues (#1145). `strict` → deny; `warn` → allow with an explicit
+ *      undercount notice. See the block comment above formatLoopDenyReason for
+ *      why not "charge 1".
  *   G5 exemption — priority::critical / carryover class / broken-window /
  *      the overflow collector itself bypass the cap unconditionally, keeping
  *      the session-end promises at SKILL.md:319 and :1113 intact.
@@ -40,14 +47,15 @@
  *        which would throw away the deny envelope entirely (#906).
  */
 
-import { readStdin, emitAllow, emitDeny } from '../scripts/lib/io.mjs';
+import { readStdin, emitAllow, emitDeny, emitWarn } from '../scripts/lib/io.mjs';
 import { resolveProjectDir } from '../scripts/lib/platform.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
-import { isIssueCreate, extractTitle } from './_lib/vcs-create-matcher.mjs';
+import { isIssueCreate, isLoopedIssueCreate, extractTitle } from './_lib/vcs-create-matcher.mjs';
 import {
   loadIssueBudgetConfig,
   resolveIssueBudgetSessionId,
   chargeIssueBudget,
+  classifyExemption,
   formatBlockReason,
 } from '../scripts/lib/issue-budget.mjs';
 
@@ -106,6 +114,68 @@ async function resolveSessionId(input, projectDir) {
   return resolveIssueBudgetSessionId(nativeRawId, currentSession);
 }
 
+/**
+ * THE CHOICE (#1145) — stated once, so the loop behaviour is explicit rather
+ * than emergent.
+ *
+ * `for t in a b c; do glab issue create --title $t; done` is textually ONE
+ * create statement that files THREE issues. Three answers were available and
+ * none is obviously right:
+ *
+ *   charge 1  — the ledger then carries a number it KNOWS is wrong.
+ *               `for i in $(seq 1 50)` files 50 issues against a count of 1, so
+ *               the cap stays nominally armed while actually uncapped. That is
+ *               strictly worse than the pre-#1145 miss, because the pre-fix
+ *               state at least did not LOOK accounted.
+ *   charge N  — not computable at hook time. The word list can be
+ *               `$(cat backlog.txt)`, `"$@"`, or a glob; this hook runs BEFORE
+ *               the shell expands any of them.
+ *   deny      — CHOSEN. A quantity gate that cannot count the quantity must
+ *               refuse, not guess. It is fully recoverable: unrolling the loop
+ *               into separate create calls charges each one correctly, and the
+ *               deny reason says exactly that. Denying costs one round-trip;
+ *               guessing costs the cap its credibility.
+ *
+ * The choice is mode-scoped, because `mode` is the operator's declared
+ * enforcement level and this gate has no standing to exceed it:
+ *   strict → deny;  warn → allow + an explicit undercount notice;  off → allow.
+ * The exemption classes (priority::critical, carryover, broken-window) are
+ * checked FIRST and pass through untouched, so session-end's "those are never
+ * deferred" promise survives a looped carryover sweep.
+ *
+ * NAMED CEILING (BV-004): a loop is detected by `do`/`done` in command position
+ * (see `isLoopedIssueCreate`), so an UNROLLED bulk create — 50 create statements
+ * chained with `&&` — is not a "loop" and is charged 50, correctly. Revisit this
+ * choice if the overflow triage of a per-session counter file
+ * (`.orchestrator/runtime/issue-budget/<hash>.json`) shows operators routinely
+ * hitting this deny on loops over a KNOWN literal word list; the cheap answer
+ * then is to count that list, never to fall back to "charge 1".
+ *
+ * Deliberately NOT `formatBlockReason`: that text promises "parked as overflow
+ * entry #N … nothing is lost", which would be false here — an uncountable bulk
+ * request is not parked, it is handed back whole.
+ *
+ * @param {{ "max-per-session": number }} config
+ * @returns {string}
+ */
+function formatLoopDenyReason(config) {
+  return [
+    'issue-budget: this command creates an UNKNOWN number of issues — refusing to guess.',
+    'The `issue create` call sits inside a shell loop body (`do … done`), so the cap cannot',
+    'charge it honestly: the word list is expanded by the shell AFTER this hook runs, so',
+    '`for i in $(seq 1 50)` would file 50 issues against a count of 1.',
+    '',
+    'Nothing was parked as overflow, because nothing is lost: re-issue the create calls as',
+    'SEPARATE commands and each one is counted normally against the cap',
+    `(${config['max-per-session']} per session).`,
+    '',
+    'Exempt from the cap even inside a loop: priority::critical, the carryover class',
+    '(SPIRAL/FAILED, [Carryover]), and broken-window closure issues.',
+    'To change the enforcement level, edit `issue-budget.mode` in the Session Config:',
+    '`warn` reports without blocking, `off` disables the gate.',
+  ].join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -129,6 +199,17 @@ async function main() {
   // G4 — config.
   const config = loadIssueBudgetConfig(projectDir);
   if (config.mode === 'off') return emitAllow();
+
+  // G3b — bulk creation whose multiplicity is not computable (#1145). The
+  // exemption is asked FIRST, through the same classifier chargeIssueBudget
+  // uses, so a looped carryover sweep keeps its unconditional pass.
+  const uncountableBulk =
+    isLoopedIssueCreate(command) && !classifyExemption(command).exempt;
+  if (uncountableBulk && config.mode === 'strict') {
+    // Nothing is charged and nothing is parked — the command is handed back
+    // whole, which is what makes unrolling it the correct next action.
+    return emitDeny(formatLoopDenyReason(config));
+  }
 
   const sessionId = await resolveSessionId(input, projectDir);
 
@@ -169,6 +250,20 @@ async function main() {
     // operator gets the first line as the systemMessage headline. Under exit 0
     // a stderr write would only reach the debug log — dead, but alive-looking.
     emitDeny(formatBlockReason(verdict));
+  }
+
+  // A PERMITTED bulk create is charged ONCE, which is an undercount by
+  // construction. `mode: warn` means "report, do not block", so the report has
+  // to name the undercount out loud — a silent 1-for-N is the exact failure the
+  // deny above exists to prevent, and `warn` must not reintroduce it quietly.
+  // emitWarn, not stderr: under exit 0 stderr reaches only the debug log (#916).
+  if (uncountableBulk && verdict.decision === 'allow') {
+    return emitWarn(
+      `pre-bash-issue-budget: bulk create inside a loop body charged as 1 ` +
+        `(${verdict.count}/${verdict.max}) — the real number of issues this files is not ` +
+        `knowable before the shell expands the word list, so the count is an UNDERCOUNT. ` +
+        `Set \`issue-budget.mode: strict\` to deny this shape instead.`,
+    );
   }
 
   // 'allow' / 'off'

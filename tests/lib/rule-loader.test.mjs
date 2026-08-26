@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { loadApplicableRules, parseGlobsFrontmatter } from '@lib/rule-loader.mjs';
@@ -1169,4 +1169,94 @@ describe('parseGlobsFrontmatter — paths: alias (#795)', () => {
 
     expect(result.globs).toEqual(['a/**']);
   });
+});
+
+// ---------------------------------------------------------------------------
+// #1132 — a missing rules directory is not a diagnosable error
+// ---------------------------------------------------------------------------
+
+/** Run `fn` with stderr captured; returns its value plus everything written. */
+function captureStderr(fn) {
+  const captured = [];
+  const original = process.stderr.write;
+  process.stderr.write = (chunk) => {
+    captured.push(String(chunk));
+    return true;
+  };
+  let result;
+  try {
+    result = fn();
+  } finally {
+    process.stderr.write = original;
+  }
+  return { result, stderr: captured.join('') };
+}
+
+const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+
+describe('loadApplicableRules — readdir failure categories (#1132)', () => {
+  // BUG: a repo without `.claude/rules/` is the NORMAL state of every repo
+  // that has not adopted the rules layer, yet each call wrote a diagnostic to
+  // stderr for it. `instruction-budget-guard.mjs` calls this loader three
+  // times unconditionally, so ONE session-start probe run emitted the same
+  // non-finding three times — which is what made the callers' stderr unusable
+  // as a signal. No existing test asserts the channel stays silent here; the
+  // suite only ever asserted the CONTENT of stderr lines it wanted.
+  it('is silent and returns [] when rulesDir does not exist (ENOENT)', () => {
+    const parent = makeTmpRulesDir();
+    const missing = join(parent, 'never-created');
+
+    const { result, stderr } = captureStderr(() =>
+      loadApplicableRules({ rulesDir: missing, scopePaths: [] }),
+    );
+
+    expect(result).toEqual([]);
+    expect(stderr).toBe('');
+  });
+
+  // BUG: same non-finding, second shape. A plain FILE where the rules
+  // directory would be also means "not adopted", and readdirSync reports that
+  // as ENOTDIR, not ENOENT — a fix gated on ENOENT alone leaves it noisy.
+  it('is silent and returns [] when a file sits at rulesDir (ENOTDIR)', () => {
+    const parent = makeTmpRulesDir();
+    const asFile = join(parent, 'rules');
+    writeFileSync(asFile, 'a file, not a directory\n', 'utf8');
+
+    const { result, stderr } = captureStderr(() =>
+      loadApplicableRules({ rulesDir: asFile, scopePaths: [] }),
+    );
+
+    expect(result).toEqual([]);
+    expect(stderr).toBe('');
+  });
+
+  // BUG (the other direction): muting the whole catch block instead of
+  // separating the categories would swallow a REAL fault — a rules directory
+  // this process may not read would come back as a clean empty corpus with
+  // nothing said anywhere. This test is what keeps the fix a category split
+  // rather than a channel mute.
+  it.skipIf(isRoot || process.platform === 'win32')(
+    'still writes the diagnostic when rulesDir is unreadable (EACCES)',
+    () => {
+      const parent = makeTmpRulesDir();
+      const locked = join(parent, 'locked');
+      mkdirSync(locked);
+      writeFileSync(join(locked, 'a.md'), '# A\n', 'utf8');
+      chmodSync(locked, 0o000);
+
+      let captured;
+      try {
+        captured = captureStderr(() =>
+          loadApplicableRules({ rulesDir: locked, scopePaths: [] }),
+        );
+      } finally {
+        // Restore before afterEach's rmSync, which cannot recurse into 0o000.
+        chmodSync(locked, 0o755);
+      }
+
+      expect(captured.result).toEqual([]);
+      expect(captured.stderr).toContain('Cannot read rulesDir');
+      expect(captured.stderr).toContain(locked);
+    },
+  );
 });

@@ -194,7 +194,6 @@ describe('bootstrap baseline-fetch bridge (#629 spawn-near behavior)', () => {
       '.claude/rules/development.md': '# Development\n\nbody\n',
       '.claude/rules/security.md': '# Security\n\nbody\n',
       '.claude/rules/testing.md': '# Testing\n\nbody\n',
-      '.claude/rules/parallel-sessions.md': '# Parallel Sessions\n\nbody\n',
     };
     writeFetchBaselineStub(pluginFixture, successfulBodies);
 
@@ -248,5 +247,50 @@ ${bashBlock}
       fetched_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/),
       files: manifestPaths.filter((rulePath) => rulePath in successfulBodies),
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1060 — the S99 baseline-fetch manifest is a THIRD writer to
+// .claude/rules/, and it must not target a rule that rules/ owns universally.
+//
+// rules-sync.mjs distinguishes "plugin-owned" from "repo-private" purely by
+// whether line 1 starts with PLUGIN_HEADER_PREFIX. The baseline project's copy
+// of a rule carries no such header. If S99 fetches it over the copy rules-sync
+// just vendored, the next `/bootstrap --sync-rules` reads a headerless first
+// line, classifies the target as a repo-private override, and lands it in
+// preserved[] — permanently. The plugin can then never update that rule again.
+//
+// The degradation is silent and irreversible, which is why it needs a pin
+// rather than a note: removing the entry once is not self-enforcing.
+// ---------------------------------------------------------------------------
+describe('bootstrap baseline-fetch bridge (#1060 no rival writer to plugin-owned rules)', () => {
+  it('omits parallel-sessions.md — a headerless baseline copy would permanently mark it repo-private', () => {
+    const manifestPaths = extractRulesManifestPaths(extractBaselineFetchBashBlock());
+
+    expect(
+      manifestPaths,
+      'S99 must not fetch .claude/rules/parallel-sessions.md — rules/always-on/ owns it (issue #1060)',
+    ).not.toContain('.claude/rules/parallel-sessions.md');
+
+    // The general invariant the specific case is an instance of: no S99 entry
+    // may collide with a UNIVERSAL (untagged) rules/_index.md entry, because
+    // rules-sync vendors those to every consumer repo unconditionally.
+    // Archetype-tagged entries are deliberately still allowed here — rules/
+    // only delivers them on an archetype match, so S99 remains their fallback.
+    const indexBody = readFileSync(path.join(repoRoot, 'rules', '_index.md'), 'utf8');
+    const universalBasenames = [...indexBody.matchAll(/^-\s+`([^`]+\.md)`([^\n]*)$/gm)]
+      .filter(([, , tail]) => !/\[archetypes:/.test(tail))
+      .map(([, relPath]) => relPath.split('/').pop());
+
+    expect(universalBasenames.length, 'expected rules/_index.md to declare universal entries').toBeGreaterThan(0);
+
+    const collisions = manifestPaths.filter((p) =>
+      universalBasenames.includes(p.split('/').pop()),
+    );
+    expect(
+      collisions,
+      `S99 manifest collides with universal rules/_index.md entries: ${collisions.join(', ')}`,
+    ).toEqual([]);
   });
 });

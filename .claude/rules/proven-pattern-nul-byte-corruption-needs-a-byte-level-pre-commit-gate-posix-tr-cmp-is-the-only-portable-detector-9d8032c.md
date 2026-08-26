@@ -11,6 +11,7 @@ paths:
 learning-key: proven-pattern/nul-byte-corruption-needs-a-byte-level-pre-commit-gate-posix-tr-cmp-is-the-only-portable-detector
 confidence: 0.8
 expires-at: 2026-10-25
+evidence-digest: sha256-v1:04f15b685ad735969f003ac951d6afabbc640d78a061cd9fda1db4f9e434d7d8
 ---
 
 # Auto-generated rule: NUL-byte corruption needs a byte-level pre-commit gate; POSIX tr|cmp is the only portable detector
@@ -25,6 +26,9 @@ NUL bytes written into a source file survive BOTH vitest and eslint (parsers sto
 - learning-key: `proven-pattern/nul-byte-corruption-needs-a-byte-level-pre-commit-gate-posix-tr-cmp-is-the-only-portable-detector`
 - learning-id: `d2783369-b7d7-414c-9ea7-ba1f463ae9f4`
 - source-session: `main-2026-07-27-session-1`
+- evidence-digest: `sha256-v1:04f15b685ad735969f003ac951d6afabbc640d78a061cd9fda1db4f9e434d7d8`
+- evidence-recorded-at: 2026-07-27T00:00:00.000Z
+- evidence-digest-input: learning-key \n learning-id \n source-session \n evidence-recorded-at \n confidence \n <the `## Evidence` block above, verbatim UTF-8, LF-joined, no trailing newline>
 - confidence: 0.8
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695)
 - expires-at: 2026-10-25

@@ -34,7 +34,7 @@ import {
   matchesBypass,
 } from '../../hooks/_lib/vcs-create-matcher.mjs';
 
-import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
+import { expectDeny, expectAllow, expectWarn } from '../_helpers/hook-decision.mjs';
 // The counter file is one-per-session since #1141 (`.orchestrator/runtime/
 // issue-budget/<sha256(sessionId)[0..16]>.json`). The test asks the production
 // helper for the path instead of re-spelling the layout — a hand-written path
@@ -553,6 +553,145 @@ describe('exemptions', { timeout: 30000 }, () => {
       stdin: bashPayload('glab issue create --title "[Discovery] dead export" --label "type::discovery,priority::low"'),
     });
     expectDeny(r);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Compound + wrapped statements — the forms that were allowed with NO
+// accounting at all (#1145)
+// ---------------------------------------------------------------------------
+//
+// THE BUG (TV-001), measured end-to-end against this hook on 2026-08-26 with
+// `max-per-session: 1, mode: strict`:
+//
+//   A) glab issue create --title a                → allow, count 1
+//   B) glab issue create --title b                → DENY ("cap reached — 1/1")
+//   C) for t in a b c; do glab issue create …done → allow, exit 0, NO accounting
+//   D) { glab issue create --title d; }           → allow, exit 0, NO accounting
+//
+// C and D are not "cap circumvented"; for those command forms the cap had never
+// existed. `isIssueCreate()` was likewise false for `if …; then glab issue
+// create; fi`, `( glab issue create )`, `nohup glab issue create`, and
+// `/opt/homebrew/bin/glab issue create`.
+//
+// These assert the ACCOUNTING, not just the matcher verdict — a matcher unit
+// test cannot tell whether the counter file was actually written, and the whole
+// defect is a counter that reads 0 while issues exist.
+
+/** The session's counter state, or `null` when no counter file was written. */
+async function readCount(dir, sessionId = 'budget-session-001') {
+  try {
+    return JSON.parse(await fs.readFile(budgetStatePath(dir, sessionId), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+describe('compound + wrapped create statements (#1145)', { timeout: 30000 }, () => {
+  // D, and the three shapes measured false alongside it. Each files exactly one
+  // issue, so each must be charged exactly one.
+  it.each([
+    ['brace group (form D)', '{ glab issue create --title d; }'],
+    ['if/then branch', 'if true; then glab issue create --title e; fi'],
+    ['spaced subshell', '( glab issue create --title f )'],
+    ['nohup wrapper', 'nohup glab issue create --title g'],
+    ['absolute path', '/opt/homebrew/bin/glab issue create --title h'],
+    ['leading env assignment', 'GITLAB_HOST=example.test glab issue create --title i'],
+  ])('%s is allowed AND charged exactly 1', async (_label, command) => {
+    const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 3\n  mode: strict' });
+    const r = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expectAllow(r);
+    expect((await readCount(dir))?.count).toBe(1);
+  });
+
+  // The gate has to bite on the compound form too, not merely count it: a shape
+  // that is counted but never denied is a ledger, not a cap.
+  it('a compound create is DENIED once the cap is spent', async () => {
+    const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 1\n  mode: strict' });
+    await fill(dir, 1);
+    const r = await runHook({ projectDir: dir, stdin: bashPayload('{ glab issue create --title d; }') });
+    expectDeny(r);
+    const state = await readCount(dir);
+    expect(state.count).toBe(1); // the blocked creation is not counted …
+    expect(state.overflow).toHaveLength(1); // … it is parked, per the standing promise
+  });
+
+  // Form C. The decision and its reasoning live in the block comment above
+  // `formatLoopDenyReason` in the hook: charging 1 for an N-issue loop would
+  // leave the cap nominally armed and actually uncapped, and N is not
+  // computable before the shell expands the word list — so a quantity gate that
+  // cannot count the quantity refuses instead of guessing.
+  it('form C — a loop create is DENIED in strict mode, and nothing is charged', async () => {
+    const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 3\n  mode: strict' });
+    const r = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('for t in a b c; do glab issue create --title "$t"; done'),
+    });
+    expectDeny(r);
+    expect(r.stdout).toContain('UNKNOWN number of issues');
+    expect(r.stdout).toContain('SEPARATE commands');
+    // Not parked either — the command is handed back whole, so the deny text
+    // must not promise an overflow entry that does not exist.
+    expect(await readCount(dir)).toBeNull();
+  });
+
+  // The deny is bounded by the operator's declared enforcement level, and the
+  // undercount it permits there must be stated out loud rather than emerge.
+  it('form C under mode: warn is charged 1 with an explicit UNDERCOUNT notice', async () => {
+    const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 3\n  mode: warn' });
+    const r = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('for t in a b c; do glab issue create --title "$t"; done'),
+    });
+    // expectWarn, not expectAllow: allow-with-notice rides ONE `systemMessage`
+    // envelope on stdout (#916), and the helper's key-set assertion is what
+    // proves the notice did not regress into a deny.
+    expectWarn(r, ['UNDERCOUNT', 'charged as 1']);
+    expect((await readCount(dir))?.count).toBe(1);
+  });
+
+  // The exemption promise outranks the bulk deny: session-end may sweep
+  // carryover issues in a loop, and those are never deferred.
+  it('an exempt loop create is not denied', async () => {
+    const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 0\n  mode: strict' });
+    const r = await runHook({
+      projectDir: dir,
+      stdin: bashPayload(
+        'for t in a b; do glab issue create --title "$t" --label "priority::critical"; done',
+      ),
+    });
+    expectAllow(r);
+    expect((await readCount(dir))?.exempt).toBe(1);
+  });
+
+  // An UNROLLED bulk create is not a loop and must still be charged per call —
+  // the named ceiling, asserted so it is visibly a decision rather than a gap.
+  it('unrolled chained creates are charged per statement, not denied', async () => {
+    const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 3\n  mode: strict' });
+    for (const t of ['a', 'b']) {
+      expectAllow(await runHook({
+        projectDir: dir,
+        stdin: bashPayload(`glab issue create --title ${t}`),
+      }));
+    }
+    expect((await readCount(dir))?.count).toBe(2);
+  });
+
+  // THE SECURITY HALF. The widening must not make a NON-creating command charge
+  // the cap: every one of these creates nothing, so a counter file must not
+  // exist at all afterwards.
+  it.each([
+    ['glab issue list', 'glab issue list'],
+    ['create --help (creates nothing — prints help)', 'glab issue create --help'],
+    ['the words inside an echo', 'echo "glab issue create"'],
+    ['a grep for the words', 'grep -rn "glab issue create" docs/'],
+    ['mr create — a different kind', 'glab mr create --title x'],
+    ['a loop that creates no issue', 'for t in a b; do echo "$t"; done'],
+  ])('near-miss: %s is not counted', async (_label, command) => {
+    const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 1\n  mode: strict' });
+    const r = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expectAllow(r);
+    expect(await readCount(dir)).toBeNull();
   });
 });
 

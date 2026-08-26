@@ -107,8 +107,8 @@
  *   | 2 | repo module failed to load             | ALLOW + GUARD INACTIVE on stderr | #992/#993: a broken module must never brick the session — but never SILENTLY, or a crash is indistinguishable from `emitAllow` |
  *   | 3 | stdin empty / not JSON                 | ALLOW               | not a real hook call; denying here blocks every dispatch on a harness quirk |
  *   | 4 | `tool_name` is not the dispatch tool   | ALLOW               | not our tool |
- *   | 5 | prompt carries no scope marker         | ALLOW               | 105 of 147 real prompts (71.4 %) have none. Non-extractable ≠ violation; denying these would deny 7 dispatches in 10 |
- *   | 6 | scope block present but unparseable    | ALLOW               | same reason as 5 — the parser is the fragile part, so its failures must resolve to the harmless side |
+ *   | 5 | prompt carries no scope marker         | ALLOW + COUNT       | 105 of 147 real prompts (71.4 %) have none. Non-extractable ≠ violation; denying these would deny 7 dispatches in 10. #1092: the allow now carries a counter-only record, so it is no longer byte-identical to "the guard never ran" |
+ *   | 6 | scope block present but unparseable    | ALLOW + COUNT       | same reason as 5 — the parser is the fragile part, so its failures must resolve to the harmless side. Counted under a DISTINCT class from row 5 |
  *   | 7 | ledger unreadable / corrupt            | WARN + ALLOW + SELF-HEAL | loss of state is not evidence of a violation; loud so it gets noticed. The verdict now CARRIES a fresh ledger, so the corruption is repaired on the spot — without it the guard stayed OFF for the whole remaining wave, visible only in one `systemMessage` |
  *   | 8 | `git ls-files` failed                  | ALLOW (degraded)    | glob-vs-glob expansion degrades, concrete collisions are still found. A git outage is not a scope violation |
  *   | 9 | `findScopeCollisions` → not evaluable   | WARN + ALLOW        | the library says "not evaluable". Denying on a verdict with no witness is an assertion without evidence |
@@ -241,6 +241,13 @@ const MAX_PATH_CHARS = 120;
 const MAX_LEDGER_AGENTS = 64;
 
 /**
+ * Scope-signal classes (#1092). Counter-only — see {@link bumpSignalCounter}.
+ */
+const SIGNAL_MARKER_ABSENT = 'marker-absent';
+const SIGNAL_UNPARSEABLE = 'unparseable';
+const SIGNAL_EXTRACTED = 'extracted';
+
+/**
  * Blind-fallback liveness bound — see § Liveness for the measurement, the named
  * ceiling and the revisit trigger. Only reached when the transcript carries NO
  * evidence for that agent.
@@ -321,12 +328,74 @@ async function bootstrap() {
 // Scope extraction — the fragile part, so every failure resolves to ALLOW
 // ---------------------------------------------------------------------------
 
+/** The marker vocabulary, shared by both declaration shapes below. */
+const SCOPE_TERMS = 'DATEI[- ]SCOPE|FILE[- ]SCOPE|FILE SCOPE|DEIN SCOPE|SCOPE \\(|FILES? IN SCOPE';
+
 /**
- * Markers that introduce a file-scope block in a dispatch prompt. Measured
- * coverage: 42 of 147 archived prompts (28.6 %) carry one of these. The other
- * 71.4 % are matrix row 5 — allowed, not denied.
+ * SHAPE 1 (highest precedence) — a marker near the START of a line, followed by
+ * a fenced block. This is the form `skills/wave-executor/wave-loop.md` § Scope
+ * Manifest specifies. Measured coverage: 42 of 147 archived prompts (28.6 %)
+ * carry one of these; the other 71.4 % are matrix row 5 — allowed, not denied.
+ *
+ * ## The 80-char window is NOT widened, and that is a measurement (#1092)
+ *
+ * The obvious repair for "the marker sits at column 210…506 of its line" is to
+ * widen the window. Measured 2026-08-26 over 4452 real first-record subagent
+ * prompts under `~/.claude/projects/ * / * /subagents/agent-*.jsonl` (709 of them
+ * this repo's own), comparing this regex against `^.{0,600}`:
+ *
+ *   window 80  → 701 marker hits, 267 prompts yield ≥1 extracted path
+ *   window 600 → 810 marker hits, 267 prompts yield ≥1 extracted path
+ *   of the 102 prompts the wider window newly matches, 12 have any fenced block
+ *   after the marker at all, and 0 yield a single path. In THIS repo: +34 newly
+ *   matched, 0 with a fence, 0 paths.
+ *
+ * So widening recovers NOTHING and costs something real: it reclassifies 102
+ * prompts from "no marker" to "marker present but unparseable", which is
+ * precisely the distinction the signal counter below exists to record. Worse,
+ * most of what it newly matches is a CITATION, not a declaration — "quote the
+ * exact command, the file scope, the result", "outside your file scope",
+ * "File-Scope-Disjunktheit". A citation is not a declaration; reading the first
+ * hit in a region as one is the recorded failure of `parseEpicRef` (#1112).
+ *
+ * The real miss class is a different SHAPE, handled by {@link INLINE_SCOPE_DECL}.
  */
-const SCOPE_MARKER = /^.{0,80}(DATEI[- ]SCOPE|FILE[- ]SCOPE|FILE SCOPE|DEIN SCOPE|SCOPE \(|FILES? IN SCOPE)/im;
+const SCOPE_MARKER = new RegExp(`^.{0,80}(${SCOPE_TERMS})`, 'im');
+
+/**
+ * SHAPE 2 (lower precedence) — the measured miss class: a declaration written
+ * INLINE, mid-sentence, with its paths comma-separated on the same line rather
+ * than in a fenced block:
+ *
+ *   "…Max 25 turns. Edit ONLY your FILE-SCOPE: scripts/a.mjs, scripts/b.mjs"
+ *
+ * What separates this from a citation is not WHERE it sits but that it
+ * INTRODUCES something — the marker is followed by an optional short qualifier
+ * and/or parenthetical and then a declaration operator (`:` or an em/en dash).
+ * A bare hyphen is deliberately NOT an operator: it would admit
+ * "File-Scope-Planung". Anchored declaration shapes with precedence, rather than
+ * a narrower search space, is the fix #1112's learning prescribes.
+ *
+ * The tail window before the operator is 2 characters, and that is measured
+ * too: at 24 it admitted \`File-Scope-Disjunktheit: a.mjs, b.mjs\` — a compound
+ * NOUN reading as a declaration. A dash-introduced qualifier
+ * (\`FILE-SCOPE — exactly these:\`) is allowed explicitly instead of by window
+ * width, so widening the window is never the way to admit one.
+ *
+ * Measured 2026-08-26 on this repo's 709 subagent prompts: 136 yield paths
+ * today; this shape recovers 9 more, all of them genuine wave file scopes.
+ * Host-wide the same operator test admits 41 additional marker hits and its
+ * one false extraction (`[".filter"]`) is a prose fragment, which is why the
+ * fenced shape keeps precedence and this one runs only when that found nothing.
+ */
+const INLINE_SCOPE_DECL = new RegExp(`(${SCOPE_TERMS})`, 'ig');
+const INLINE_DECL_OPERATOR = /^[^\n(:—–]{0,2}(\([^)\n]{0,80}\))?\s*(?:[—–][^\n:]{0,30})?\s*(:|—|–)/;
+
+/** Separators a coordinator uses between paths in an inline declaration. */
+const INLINE_SCOPE_SEPARATOR = /[,;·]| und | and | sowie /;
+
+/** Bound the inline scan; a prompt naming the vocabulary this often is prose. */
+const MAX_INLINE_MARKER_SCANS = 8;
 
 /**
  * A plausible repo-relative path. Deliberately strict — a false ACCEPT here
@@ -427,36 +496,103 @@ export function promoteDirEntries(files, known) {
 }
 
 /**
- * Extract the declared file scope from a dispatch prompt.
+ * Accept the segments that survive `looksLikeRepoPath`, normalised and deduped
+ * with order preserved. Shared by both declaration shapes.
  *
- * Strategy: find a scope marker line, take the FIRST fenced block after it, and
- * accept only lines that survive `looksLikeRepoPath`. Returns `[]` when nothing
- * is confidently extractable — which the caller treats as ALLOW (matrix rows
- * 5 and 6), never as an empty scope that could collide.
- *
- * @param {string} prompt
- * @returns {string[]} repo-relative paths/globs, normalised, deduped, order preserved
+ * @param {string[]} segments
+ * @returns {string[]}
  */
-export function extractScopeFromPrompt(prompt) {
-  if (typeof prompt !== 'string' || prompt.length === 0) return [];
-  const markerMatch = SCOPE_MARKER.exec(prompt);
-  if (markerMatch === null) return [];
-
-  const after = prompt.slice(markerMatch.index + markerMatch[0].length);
-  // First fenced block after the marker. Non-greedy body; tolerates a language tag.
-  const fence = /```[^\n]*\n([\s\S]*?)```/.exec(after);
-  if (fence === null) return [];
-
+function collectScopePaths(segments) {
   const out = [];
   const seen = new Set();
-  for (const rawLine of fence[1].split('\n')) {
-    const cleaned = normalizeScopeEntry(cleanScopeLine(rawLine));
+  for (const raw of segments) {
+    // A trailing sentence period is punctuation, never part of a path
+    // (measured: "docs/events-schema.md." at the end of an inline declaration).
+    const cleaned = normalizeScopeEntry(cleanScopeLine(raw).replace(/\.$/, ''));
     if (!looksLikeRepoPath(cleaned)) continue;
     if (seen.has(cleaned)) continue;
     seen.add(cleaned);
     out.push(cleaned);
   }
   return out;
+}
+
+/**
+ * SHAPE 2 extraction — see {@link INLINE_SCOPE_DECL}. Reports whether a
+ * DECLARATION (not a citation) was seen at all, so the caller can tell matrix
+ * row 5 from row 6 even when no path survives.
+ *
+ * @param {string} prompt
+ * @returns {{seen: boolean, files: string[]}}
+ */
+function extractInlineScopeDeclaration(prompt) {
+  INLINE_SCOPE_DECL.lastIndex = 0;
+  let seen = false;
+  let match;
+  let scans = 0;
+  while ((match = INLINE_SCOPE_DECL.exec(prompt)) !== null && scans < MAX_INLINE_MARKER_SCANS) {
+    scans++;
+    const after = prompt.slice(match.index + match[0].length);
+    const operator = INLINE_DECL_OPERATOR.exec(after);
+    if (operator === null) continue;   // a citation, not a declaration
+    seen = true;
+    const line = after.slice(operator[0].length).split('\n')[0];
+    const files = collectScopePaths(line.split(INLINE_SCOPE_SEPARATOR));
+    if (files.length > 0) return { seen: true, files };
+  }
+  return { seen, files: [] };
+}
+
+/**
+ * Classify the scope signal a dispatch prompt carries, and extract it.
+ *
+ * Precedence, deliberately: SHAPE 1 (line-leading marker + fenced block, the
+ * documented form) first; SHAPE 2 (inline comma-separated declaration) only
+ * when SHAPE 1 produced nothing. The status is what makes a no-signal ALLOW
+ * distinguishable after the fact:
+ *
+ *   `marker-absent`  — no declaration of any recognised shape (matrix row 5)
+ *   `unparseable`    — a declaration is present but no path survived (row 6)
+ *   `extracted`      — `files` is non-empty
+ *
+ * @param {string} prompt
+ * @returns {{status: 'marker-absent'|'unparseable'|'extracted', files: string[]}}
+ */
+export function extractScopeSignal(prompt) {
+  if (typeof prompt !== 'string' || prompt.length === 0) return { status: SIGNAL_MARKER_ABSENT, files: [] };
+
+  const markerMatch = SCOPE_MARKER.exec(prompt);
+  if (markerMatch !== null) {
+    const after = prompt.slice(markerMatch.index + markerMatch[0].length);
+    // First fenced block after the marker. Non-greedy body; tolerates a language tag.
+    const fence = /```[^\n]*\n([\s\S]*?)```/.exec(after);
+    if (fence !== null) {
+      const files = collectScopePaths(fence[1].split('\n'));
+      if (files.length > 0) return { status: SIGNAL_EXTRACTED, files };
+    }
+  }
+
+  const inline = extractInlineScopeDeclaration(prompt);
+  if (inline.files.length > 0) return { status: SIGNAL_EXTRACTED, files: inline.files };
+  return {
+    status: markerMatch !== null || inline.seen ? SIGNAL_UNPARSEABLE : SIGNAL_MARKER_ABSENT,
+    files: [],
+  };
+}
+
+/**
+ * Extract the declared file scope from a dispatch prompt. Returns `[]` when
+ * nothing is confidently extractable — which the caller treats as ALLOW (matrix
+ * rows 5 and 6), never as an empty scope that could collide.
+ *
+ * Thin wrapper over {@link extractScopeSignal}: callers that only need the paths
+ * (and the tests that pin them) keep the original signature.
+ *
+ * @param {string} prompt
+ * @returns {string[]} repo-relative paths/globs, normalised, deduped, order preserved
+ */
+export function extractScopeFromPrompt(prompt) {
+  return extractScopeSignal(prompt).files;
 }
 
 /**
@@ -717,6 +853,56 @@ function clipPath(p) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Record that ONE dispatch carried a given scope-signal class (#1092).
+ *
+ * ## Why this exists
+ *
+ * The no-signal path returned `{action: 'allow'}` with no `ledger` field, and
+ * the caller only writes `if (verdict.ledger)` — so nothing was written
+ * anywhere. Correct operation ("this agent legitimately has no scope") and total
+ * absence ("the coordinator injected nothing, or the marker never matched")
+ * produced BYTE-IDENTICAL evidence. Measured 2026-08-26 over 709 of this repo's
+ * subagent prompts: 136 yield paths, 47 carry a line-leading marker with no
+ * fenced block, 59 carry marker + fence but no surviving path. Without a counter
+ * none of those three classes is distinguishable from "the guard never ran".
+ *
+ * ## What it is NOT
+ *
+ * This is a SEND-SIDE counter. It observes what the COORDINATOR PUT IN THE
+ * PROMPT at dispatch time — never what the agent received, parsed, or obeyed. A
+ * non-zero `extracted` proves a scope was written into the prompt; it proves
+ * nothing about delivery or about the agent honouring it. Whether the injected
+ * block actually reached the agent's context is a RECEIVE-side question that
+ * only the subagent transcript can answer, and no number here may be read as
+ * that proof.
+ *
+ * Counter ONLY: no prompt text, no paths, no agent ids. The ledger is a shared
+ * working-copy artefact, and a scope-signal tally must not become a second,
+ * unreviewed copy of prompt content.
+ *
+ * Scoped to the wave, like `agents`: a new `waveKey` starts a fresh tally
+ * rather than accumulating across waves.
+ *
+ * @param {object|null} ledger    previously recorded wave state
+ * @param {string} waveKey
+ * @param {'marker-absent'|'unparseable'|'extracted'} status
+ * @returns {{'marker-absent': number, unparseable: number, extracted: number}}
+ */
+export function bumpSignalCounter(ledger, waveKey, status) {
+  const carried = (ledger !== null && ledger?.waveKey === waveKey && ledger.scopeSignals !== null
+    && typeof ledger.scopeSignals === 'object' && !Array.isArray(ledger.scopeSignals))
+    ? ledger.scopeSignals
+    : {};
+  const next = {};
+  for (const key of [SIGNAL_MARKER_ABSENT, SIGNAL_UNPARSEABLE, SIGNAL_EXTRACTED]) {
+    const prior = carried[key];
+    next[key] = Number.isSafeInteger(prior) && prior >= 0 ? prior : 0;
+  }
+  next[status] += 1;
+  return next;
+}
+
+/**
  * @typedef {{action: 'allow'|'deny'|'warn', reason?: string, suggestion?: string,
  *            ledger?: object|null, note?: string}} Verdict
  */
@@ -743,14 +929,35 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
   const toolInput = input?.tool_input;
   if (toolInput === null || typeof toolInput !== 'object') return { action: 'allow' };
 
-  const files = extractScopeFromPrompt(toolInput.prompt);
+  const at = typeof nowIso === 'string' ? nowIso : new Date().toISOString();
+
+  const signal = extractScopeSignal(toolInput.prompt);
+  const files = signal.files;
+  const priorAgents = (ledger !== null && ledger?.waveKey === waveKey && Array.isArray(ledger.agents))
+    ? ledger.agents
+    : [];
+
   // Rows 5 + 6: nothing confidently extractable → allow. Non-extractable is not
   // a violation, and denying here would deny ~7 dispatches in 10.
-  if (files.length === 0) return { action: 'allow' };
+  //
+  // #1092: the ALLOW now CARRIES a counter so it leaves a trace. Before this,
+  // "no scope in the prompt" and "the guard never ran" were indistinguishable
+  // after the fact. `agents` is carried through UNCHANGED — this dispatch
+  // declared no scope, so it adds no scope claim to the wave.
+  if (files.length === 0) {
+    return {
+      action: 'allow',
+      ledger: {
+        waveKey,
+        updated: at,
+        agents: priorAgents,
+        scopeSignals: bumpSignalCounter(ledger, waveKey, signal.status),
+      },
+    };
+  }
 
   const id = agentIdOf(toolInput);
   const desc = agentDescOf(toolInput);
-  const at = typeof nowIso === 'string' ? nowIso : new Date().toISOString();
   const self = { id, desc, files, at };
 
   // Row 7: ledger existed but was unparseable. Terminal warn — decided here and
@@ -760,7 +967,7 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
   if (ledgerCorrupt) {
     return {
       action: 'warn',
-      ledger: { waveKey, updated: at, agents: [self] },
+      ledger: { waveKey, updated: at, agents: [self], scopeSignals: bumpSignalCounter(null, waveKey, signal.status) },
       note:
         `${HOOK_NAME}: wave dispatch ledger was unreadable — scope-disjointness NOT checked for ` +
         `"${id}"; the ledger has been reset, so the next dispatch is checked again.`,
@@ -792,6 +999,7 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
     waveKey,
     updated: at,
     agents: [...others, self].slice(-MAX_LEDGER_AGENTS),
+    scopeSignals: bumpSignalCounter(ledger, waveKey, signal.status),
   };
 
   const collisions = Array.isArray(verdictLib?.collisions) ? verdictLib.collisions : [];
@@ -844,7 +1052,12 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
     const kept = others.filter((a) => !finishedIds.has(a.id));
     return {
       action: 'allow',
-      ledger: { waveKey, updated: at, agents: [...kept, self].slice(-MAX_LEDGER_AGENTS) },
+      ledger: {
+        waveKey,
+        updated: at,
+        agents: [...kept, self].slice(-MAX_LEDGER_AGENTS),
+        scopeSignals: nextLedger.scopeSignals,
+      },
     };
   }
 

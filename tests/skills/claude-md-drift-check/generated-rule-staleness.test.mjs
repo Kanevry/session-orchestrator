@@ -448,3 +448,87 @@ describe('generated-rule-staleness — rule without learning-key skipped silentl
     expect(staleWarnings).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1101: a rule carrying a valid evidence-digest is SELF-CONTAINED — its
+// provenance resolves from its own bytes, so a missing (gitignored)
+// learnings.jsonl must not make it warn.
+// ---------------------------------------------------------------------------
+
+const VALID_DIGEST = `sha256-v1:${'a1b2c3d4'.repeat(8)}`;
+
+/**
+ * Same shape as `writeGeneratedRule`, plus an `evidence-digest` frontmatter
+ * scalar appended AFTER `expires-at` — exactly where the renderer puts it.
+ */
+function writeSealedRule(rulesDir, filename, learningKey, digest, expiresAt = '2099-12-31') {
+  const content = [
+    '---',
+    'auto-generated: true',
+    'globs: ["src/**/*.ts"]',
+    `learning-key: ${learningKey}`,
+    `expires-at: ${expiresAt}`,
+    `evidence-digest: ${digest}`,
+    '---',
+    '# Generated rule',
+    '',
+    '## Evidence',
+    'Measured once, sealed here.',
+    '',
+  ].join('\n');
+  writeFileSync(join(rulesDir, filename), content, 'utf8');
+}
+
+describe('generated-rule-staleness — evidence-digest makes a rule self-contained (#1101)', () => {
+  /**
+   * Bug this catches: the #1101 regression itself. learnings.jsonl is
+   * gitignored, so this IS the fresh-clone case — every sealed generated rule
+   * warning again because the checker still demands a jsonl lookup.
+   */
+  it('does not warn for a digest-bearing rule when learnings.jsonl is entirely absent', () => {
+    const rulesDir = makeRulesDir();
+    writeSealedRule(rulesDir, 'sealed.md', 'fragile-pattern/some-key', VALID_DIGEST);
+
+    const { stdout } = runChecker(vault);
+    const json = parseJson(stdout);
+    const stale = json.warnings.filter((w) => w.check === 'generated-rule-staleness');
+    expect(stale).toHaveLength(0);
+    expect(json.checks_run).toContain('generated-rule-staleness');
+  });
+
+  /**
+   * Bug this catches: the digest branch degrading into "any evidence-digest:
+   * key at all silences the warning". A truncated, hand-typed or
+   * wrong-algorithm value must NOT count as provenance — otherwise the seal
+   * can be forged with six characters.
+   */
+  it('still warns when the evidence-digest is malformed and no jsonl entry exists', () => {
+    const rulesDir = makeRulesDir();
+    writeSealedRule(rulesDir, 'bogus.md', 'fragile-pattern/some-key', 'sha256-v1:deadbeef');
+
+    const { stdout } = runChecker(vault);
+    const stale = parseJson(stdout).warnings.filter(
+      (w) => w.check === 'generated-rule-staleness',
+    );
+    expect(stale).toHaveLength(1);
+    expect(stale[0].extracted).toBe('fragile-pattern/some-key');
+  });
+
+  /**
+   * Bug this catches: the `storedExpiresAt` nuance. A digest-only rule has no
+   * jsonl entry, so `knownKeys.get(key)` is undefined; if that undefined is
+   * still consulted the expiry gate silently skips and an EXPIRED sealed rule
+   * never surfaces again. The rule file is authoritative for its own expiry.
+   */
+  it('still applies the expiry gate to a digest-only rule using its own frontmatter', () => {
+    const rulesDir = makeRulesDir();
+    writeSealedRule(rulesDir, 'expired.md', 'fragile-pattern/some-key', VALID_DIGEST, '2020-01-01');
+
+    const { stdout } = runChecker(vault);
+    const stale = parseJson(stdout).warnings.filter(
+      (w) => w.check === 'generated-rule-staleness',
+    );
+    expect(stale).toHaveLength(1);
+    expect(stale[0].message).toMatch(/expired on 2020-01-01/);
+  });
+});

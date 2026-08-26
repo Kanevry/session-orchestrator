@@ -649,10 +649,55 @@ export function tokenizeCommand(command) {
 }
 
 /**
+ * Shell RESERVED WORDS and grouping tokens that bash recognises ONLY in COMMAND
+ * POSITION — the first word of a statement (#1145). Everywhere else they are
+ * ordinary arguments (`echo do`, `git commit -m then`), which is exactly why the
+ * drop below is position-gated rather than a blanket text filter.
+ *
+ * Two classes, both dropped, for the same reason:
+ *   - OPENERS (`{`, `(`, `!`, `if`, `elif`, `then`, `else`, `while`, `until`,
+ *     `do`) are followed by a COMMAND. Dropping one moves verb resolution
+ *     towards the real command — the identical safety argument WRAPPER_UNWRAP
+ *     makes for a transparent wrapper: a dropped token is a reserved word, never
+ *     an interpreter, so this cannot turn a match into a miss.
+ *   - CLOSERS (`}`, `)`, `fi`, `done`, `esac`) end one. In command position they
+ *     are the whole segment, which then filters out as empty.
+ *
+ * Deliberately NOT listed:
+ *   - `for` / `select` / `case` / `in` / `function` — followed by a NAME or WORD,
+ *     never a command. Dropping them would invent a verb (`for t in a` → `t`)
+ *     where the truthful answer is "this segment has no command".
+ *   - `time` — a reserved word AND an external binary, already classified as a
+ *     transparent wrapper in WRAPPER_UNWRAP. One classification per token, in
+ *     one table: a second entry here would fork the wrapper-vs-keyword decision
+ *     the way `VERB_PREFIXES` once forked WRAPPER_UNWRAP (#991).
+ *
+ * NAMED CEILING (BV-004): only a STANDALONE token is dropped. bash requires
+ * whitespace around `{` / `}`, so brace groups are always covered; a subshell
+ * written WITHOUT the space (`(rm -rf /)`) lexes as the glued word `(rm` and is
+ * not reached — the pre-#1145 behaviour, unchanged. Peeling the paren off the
+ * token TEXT would mutate a token five consumers read positionally, which is a
+ * larger contract change than this defect justifies. Revisit if a glued-paren
+ * form shows up in a real overflow triage or guard-bypass measurement.
+ */
+const COMMAND_POSITION_KEYWORDS = new Set([
+  '{', '(', '!', 'if', 'elif', 'then', 'else', 'while', 'until', 'do',
+  '}', ')', 'fi', 'done', 'esac',
+]);
+
+/**
  * Split a tokenized command into chained segments on shell control operators
  * (`;`, `&&`, `||`, `|`, `&`) and on newline separators (#981). Only UNQUOTED
  * single-token operators split; an operator that arrived inside quotes stays
  * part of its segment.
+ *
+ * A segment additionally has its COMMAND-POSITION reserved words stripped
+ * (#1145) — see {@link COMMAND_POSITION_KEYWORDS}. Without this the first token
+ * of a compound statement is `do` / `then` / `{` / `(` and NEVER the command,
+ * so every consumer that reads a segment head saw a keyword: measured against
+ * the live issue-budget guard with `max-per-session: 1, mode: strict`,
+ * `for t in a b c; do glab issue create …; done` and `{ glab issue create …; }`
+ * were allowed with NO accounting at all, while the plain form denied at 1/1.
  *
  * The newline separator is checked by its `operator` field as well as its text,
  * so the split survives a future change to that token's spelling. Because a
@@ -676,6 +721,13 @@ function splitSegments(tokens) {
     if (!tok.quoted && (tok.operator === 'newline' || operators.has(tok.text))) {
       segments.push(current);
       current = [];
+      continue;
+    }
+    // Reserved word in COMMAND POSITION (`current` still empty) → drop it, so
+    // the NEXT token becomes the segment head and is itself judged in command
+    // position (`do { rm …` peels both). A keyword anywhere else is an ordinary
+    // argument and is kept verbatim (#1145).
+    if (current.length === 0 && !tok.quoted && COMMAND_POSITION_KEYWORDS.has(tok.text)) {
       continue;
     }
     current.push(tok);
@@ -763,6 +815,24 @@ export const WRAPPER_UNWRAP = new Map([
   }],
   ['command', {}],
   ['nohup', {}],
+  // `exec cmd args` REPLACES the shell with `cmd` — it delegates to a real verb
+  // and never executes a command STRING, so by the #982 classification it is a
+  // TRANSPARENT wrapper, not an interpreter (contrast `su -c`, which is in
+  // SHELL_EXEC_INTERPRETERS for exactly the opposite reason). `-a NAME` is the
+  // one value-taking flag; `-c` (clear environment) and `-l` are BOOLEANS here
+  // — despite the spelling, `exec -c` carries no payload, so it must NOT reach
+  // DASH_C_SHELLS, and it does not: that set is keyed on the RESOLVED verb.
+  // Redirect-only `exec > file` keeps working. Measured both namespaces: on the
+  // RAW segment the wrapper consumes `exec` and the redirect operator resolves
+  // as the verb (`>`, previously `exec`); on scope-gate's paren-peeled,
+  // redirect-stripped projection the segment exhausts in wrappers and yields
+  // `verb: null, index: -1` — the shape a bare `sudo` already produced. Neither
+  // is `rm`/`tee`/`sed`/`dd`, and a redirect target is read from the redirect
+  // token stream rather than from the verb, so detection is unaffected:
+  // measured `extractBashWriteTargets('exec > src/out.ts')` → `['src/out.ts']`.
+  ['exec', {
+    argFlags: new Set(['-a']),
+  }],
   // `-o FILE` is the BSD/GNU `time` report destination and it TRUNCATES without
   // `-a` (BSD time(1): "If file exists and the -a flag is not specified, the
   // file will be overwritten"). With an empty spec the operand was read as the

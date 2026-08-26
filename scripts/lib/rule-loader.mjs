@@ -490,7 +490,20 @@ export function loadApplicableRules({
   try {
     entries = readdirSync(rulesDir);
   } catch (err) {
-    process.stderr.write(`[rule-loader] Cannot read rulesDir ${rulesDir}: ${err.message}\n`);
+    // Category separation, not channel muting (`.claude/rules/development.md`
+    // § Guard & Threshold Design). An absent `.claude/rules/` (ENOENT), or a
+    // plain file sitting where that directory would be (ENOTDIR), is the
+    // NORMAL state of every repo that has not adopted the rules layer — a
+    // legitimate empty corpus, not a diagnosable fault. Diagnosing it made
+    // every stderr guard around the callers unusable: `instruction-budget-
+    // guard.mjs` calls this function three times unconditionally, so ONE probe
+    // run emitted the same non-finding three times (#1132).
+    // EACCES/EPERM — and anything else — stay genuinely diagnosable and keep
+    // the line. Both branches still `return []`, so no caller's control flow
+    // changes; only the side effect is gated.
+    if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') {
+      process.stderr.write(`[rule-loader] Cannot read rulesDir ${rulesDir}: ${err.message}\n`);
+    }
     return [];
   }
 

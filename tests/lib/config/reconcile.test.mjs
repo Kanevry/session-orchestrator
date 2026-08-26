@@ -19,7 +19,7 @@
  * All expected values are hardcoded literals; no filesystem access, fully synchronous.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { _parseReconcile } from '@lib/config/reconcile.mjs';
 
 // ---------------------------------------------------------------------------
@@ -39,6 +39,16 @@ const DEFAULTS = {
 
 const withDefaults = (overrides) => ({ ...DEFAULTS, ...overrides });
 const block = (...lines) => ['reconcile:', ...lines].join('\n') + '\n';
+
+// The parser now WARNs on a dropped targets member (#1099). Silence it by
+// default so the table rows stay readable; the dedicated WARN test below reads
+// the spy's calls instead of the terminal.
+beforeEach(() => {
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('_parseReconcile', () => {
   it.each([
@@ -65,8 +75,19 @@ describe('_parseReconcile', () => {
     { why: 'parses mode: warn', content: block('  mode: warn'), expected: withDefaults({ mode: 'warn' }) },
     { why: 'parses rule-expiry-days: 30 as integer 30', content: block('  rule-expiry-days: 30'), expected: withDefaults({ 'rule-expiry-days': 30 }) },
     { why: 'parses confidence-floor: 0.8', content: block('  confidence-floor: 0.8'), expected: withDefaults({ 'confidence-floor': 0.8 }) },
-    { why: 'parses targets inline list [repo-local, global]', content: block('  targets: [repo-local, global]'), expected: withDefaults({ targets: ['repo-local', 'global'] }) },
+    { why: 'parses targets inline list [repo-local, baseline]', content: block('  targets: [repo-local, baseline]'), expected: withDefaults({ targets: ['repo-local', 'baseline'] }) },
     { why: 'parses targets as a single unbracketed value', content: block('  targets: repo-local'), expected: withDefaults({ targets: ['repo-local'] }) },
+    { why: 'parses baseline as a single unbracketed value (#1099)', content: block('  targets: baseline'), expected: withDefaults({ targets: ['baseline'] }) },
+
+    // ── targets is a CLOSED enum (#1099) ─────────────────────────────────────
+    // TV-001 — the bug these catch: an unknown `targets` value used to be passed
+    // through verbatim by BOTH parse sites. `global` is documented-but-
+    // unimplemented, so a repo declaring it got a config value that every
+    // consumer would either ignore silently or try to write to.
+    { why: 'drops an unknown targets member from the bracket list (global is unimplemented)', content: block('  targets: [repo-local, global]'), expected: withDefaults({ targets: ['repo-local'] }) },
+    { why: 'drops an unknown targets member given as a bare scalar', content: block('  targets: global'), expected: DEFAULTS },
+    { why: 'falls back to the default when EVERY declared target is unknown', content: block('  targets: [nope, alsonope]'), expected: DEFAULTS },
+    { why: 'de-duplicates a repeated target', content: block('  targets: [baseline, baseline]'), expected: withDefaults({ targets: ['baseline'] }) },
     { why: 'parses min-rule-days: 14 as integer 14', content: block('  min-rule-days: 14'), expected: withDefaults({ 'min-rule-days': 14 }) },
     { why: 'parses min-insight-chars: 40 as integer 40', content: block('  min-insight-chars: 40'), expected: withDefaults({ 'min-insight-chars': 40 }) },
     // 0 is an explicit opt-out, NOT a malformed value — must survive the >0 guard
@@ -136,5 +157,38 @@ describe('_parseReconcile', () => {
     },
   ])('$why', ({ content, expected }) => {
     expect(_parseReconcile(content)).toEqual(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The DROP must be AUDIBLE (#1099 acceptance criterion 3).
+//
+// TV-001 — the bug this catches: dropping an unknown target SILENTLY is the same
+// defect class as passing it through. The operator wrote `targets: [global]`,
+// gets `[repo-local]`, and without a WARN has no way to learn that his declared
+// destination was never honoured. The rows above pin the VALUE; this pins that
+// the drop is attributable — it names the rejected value AND the valid set.
+// ---------------------------------------------------------------------------
+
+describe('_parseReconcile — unknown targets member is dropped AUDIBLY', () => {
+  it('WARNs on stderr naming the rejected value and the valid set', () => {
+    _parseReconcile(block('  targets: [repo-local, global]'));
+
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    const msg = String(console.warn.mock.calls[0][0]);
+    expect(msg).toContain('reconcile.targets');
+    expect(msg).toContain('global');
+    expect(msg).toContain('repo-local');
+    expect(msg).toContain('baseline');
+  });
+
+  it('does not WARN when every declared target is valid', () => {
+    _parseReconcile(block('  targets: [repo-local, baseline]'));
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it('never throws on an unknown value — the tolerant-parser contract holds', () => {
+    expect(() => _parseReconcile(block('  targets: [../../etc/passwd]'))).not.toThrow();
+    expect(_parseReconcile(block('  targets: [../../etc/passwd]')).targets).toEqual(['repo-local']);
   });
 });

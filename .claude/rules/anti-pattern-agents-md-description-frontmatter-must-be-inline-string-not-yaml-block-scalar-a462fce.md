@@ -11,6 +11,7 @@ paths:
 learning-key: anti-pattern/agents-md-description-frontmatter-must-be-inline-string-not-yaml-block-scalar
 confidence: 0.9
 expires-at: 2026-11-19
+evidence-digest: sha256-v1:205f3b0c92f560ac2bbd7da4f88c9cb1a1ae04ddf693157b4e6602b4b134d691
 ---
 
 # Auto-generated rule: agents/*.md description frontmatter must be inline string, not YAML block scalar (>)
@@ -43,6 +44,9 @@ grepping for "Check 11" and finding nothing should look at `agent-frontmatter.mj
 - learning-key: `anti-pattern/agents-md-description-frontmatter-must-be-inline-string-not-yaml-block-scalar`
 - learning-id: `agent-md-description-must-be-inline-string`
 - source-session: `main-2026-05-23-0852-deep`
+- evidence-digest: `sha256-v1:205f3b0c92f560ac2bbd7da4f88c9cb1a1ae04ddf693157b4e6602b4b134d691`
+- evidence-recorded-at: 
+- evidence-digest-input: learning-key \n learning-id \n source-session \n evidence-recorded-at \n confidence \n <the `## Evidence` block above, verbatim UTF-8, LF-joined, no trailing newline>
 - confidence: 0.9
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695)
 - expires-at: 2026-11-19

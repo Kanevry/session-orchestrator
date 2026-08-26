@@ -11,6 +11,7 @@ paths:
 learning-key: anti-pattern/a-protocol-migration-census-keyed-on-the-payload-misses-every-consumer-that-pins-only-the-channel
 confidence: 0.9
 expires-at: 2026-10-27
+evidence-digest: sha256-v1:4df42f7e3cd0805ce390fc5520a6e0b866b18a7b6c8295e7d669de6a6424346d
 ---
 
 # Auto-generated rule: a protocol-migration census keyed on the PAYLOAD misses every consumer that pins only the CHANNEL
@@ -25,6 +26,9 @@ When migrating an output protocol, grepping for the payload field name enumerate
 - learning-key: `anti-pattern/a-protocol-migration-census-keyed-on-the-payload-misses-every-consumer-that-pins-only-the-channel`
 - learning-id: `a22ce14f-4666-4b91-99be-c680e9903907`
 - source-session: `main-2026-07-29-deep-1`
+- evidence-digest: `sha256-v1:4df42f7e3cd0805ce390fc5520a6e0b866b18a7b6c8295e7d669de6a6424346d`
+- evidence-recorded-at: 2026-07-29T00:00:00.000Z
+- evidence-digest-input: learning-key \n learning-id \n source-session \n evidence-recorded-at \n confidence \n <the `## Evidence` block above, verbatim UTF-8, LF-joined, no trailing newline>
 - confidence: 0.9
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695)
 - expires-at: 2026-10-27

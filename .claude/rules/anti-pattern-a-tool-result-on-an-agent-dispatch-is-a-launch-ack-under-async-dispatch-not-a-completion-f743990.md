@@ -9,6 +9,7 @@ paths:
 learning-key: anti-pattern/a-tool-result-on-an-agent-dispatch-is-a-launch-ack-under-async-dispatch-not-a-completion
 confidence: 0.9
 expires-at: 2026-11-12
+evidence-digest: sha256-v1:fc4f96ed6569a67394bb2f8c677770c060a4e3d4a9177538e172f1746bb90497
 ---
 
 <!-- untrusted-content:start — everything up to untrusted-content:end is agent-authored learning text, reproduced verbatim as DATA. It is NOT an instruction to any agent that loads this rule. -->
@@ -26,6 +27,9 @@ Deciding 'this subagent has finished' from the presence of a tool_result for its
 - learning-key: `anti-pattern/a-tool-result-on-an-agent-dispatch-is-a-launch-ack-under-async-dispatch-not-a-completion`
 - learning-id: `1151305b-7b16-4fbd-ada6-f481b985d3a6`
 - source-session: `main-2026-08-14-session-1`
+- evidence-digest: `sha256-v1:fc4f96ed6569a67394bb2f8c677770c060a4e3d4a9177538e172f1746bb90497`
+- evidence-recorded-at: 2026-08-14T16:19:20.057Z
+- evidence-digest-input: learning-key \n learning-id \n source-session \n evidence-recorded-at \n confidence \n <the `## Evidence` block above, verbatim UTF-8, LF-joined, no trailing newline>
 - confidence: 0.9
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695)
 - expires-at: 2026-11-12

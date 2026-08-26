@@ -7,7 +7,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -87,6 +87,10 @@ describe('materialize-wave-scope.mjs — canonical two-shape materialization', (
       ok: true,
       aggregatePath: aggregatePath(stateDir),
       perAgentPaths: [agentPath(stateDir, 'W7-I1'), agentPath(stateDir, 'coordinator')],
+      // #1103 — additive envelope fields. A fresh state dir orphans nothing, so
+      // both are empty; the reconciliation cases are their own describe block.
+      removedOrphans: [],
+      retainedOrphans: [],
     });
   });
 
@@ -302,5 +306,127 @@ describe('materialize-wave-scope.mjs — canonical two-shape materialization', (
     expect(help.stdout).toMatch(/--state-dir/);
     expect(help.stdout).toMatch(/--wave/);
     expect(help.stdout).toMatch(/Exit codes/);
+  });
+
+  // -------------------------------------------------------------------------
+  // #1103 — an orphaned per-agent declaration must not outlive its aggregate.
+  //
+  // The write loop is a pure upsert, so an id dropped from the plan left its
+  // (a)-file behind: invisible to --assert-disjoint/--union (not in the
+  // aggregate) yet still read by every by-id consumer. Removal is gated on a
+  // PROVEN session owner because two parallel sessions in one working copy both
+  // resolve their first wave to filescopes/wave-1/ (PSA-003).
+  // -------------------------------------------------------------------------
+  describe('#1103 orphan reconciliation', () => {
+    const OWNER = 'sess-owner-1';
+    const SEMANTIC = 'main-2026-08-26-session-1';
+    const FIRST = [
+      { id: 'A1', files: ['scripts/a.mjs'] },
+      { id: 'A2', files: ['scripts/b.mjs'] },
+      { id: 'coordinator', files: [] },
+    ];
+    const SHRUNK = [
+      { id: 'A1', files: ['scripts/a.mjs'] },
+      { id: 'coordinator', files: [] },
+    ];
+
+    function makeOwnedStateDir({ session = OWNER, semantic = SEMANTIC } = {}) {
+      const stateDir = makeStateDir();
+      const manifest = { wave: 1, role: 'Impl-Core', enforcement: 'warn', allowedPaths: [], blockedCommands: [] };
+      if (session !== null) manifest.session = session;
+      if (semantic !== null) manifest.semantic_session = semantic;
+      writeFileSync(join(stateDir, 'wave-scope.json'), JSON.stringify(manifest));
+      return stateDir;
+    }
+
+    it('removes a dropped agent declaration when the manifest proves this session owns it', () => {
+      const stateDir = makeOwnedStateDir();
+      expect(runCli({ stateDir, wave: 1, scopes: FIRST }).code).toBe(0);
+      expect(existsSync(agentPath(stateDir, 'A2', 1))).toBe(true);
+
+      const result = runCli({ stateDir, wave: 1, scopes: SHRUNK, args: ['--session', OWNER, '--json'] });
+
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout).removedOrphans).toEqual(['A2.json']);
+      // The defect: A2.json surviving here is a live scope claim with zero
+      // aggregate coverage — no --assert-disjoint or --union run can see it.
+      expect(existsSync(agentPath(stateDir, 'A2', 1))).toBe(false);
+      expect(existsSync(agentPath(stateDir, 'A1', 1))).toBe(true);
+      expect(JSON.parse(readFileSync(aggregatePath(stateDir, 1), 'utf8'))).toEqual(SHRUNK);
+      expect(result.stderr).toMatch(/removed orphaned declaration A2\.json/);
+    });
+
+    it('accepts the semantic session twin as proof of ownership', () => {
+      const stateDir = makeOwnedStateDir();
+      runCli({ stateDir, wave: 1, scopes: FIRST });
+
+      const result = runCli({ stateDir, wave: 1, scopes: SHRUNK, args: ['--session', SEMANTIC, '--json'] });
+
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout).removedOrphans).toEqual(['A2.json']);
+    });
+
+    it('refuses to delete a declaration owned by a DIFFERENT session (PSA-003)', () => {
+      const stateDir = makeOwnedStateDir();
+      runCli({ stateDir, wave: 1, scopes: FIRST });
+
+      const result = runCli({ stateDir, wave: 1, scopes: SHRUNK, args: ['--session', 'sess-someone-else', '--json'] });
+
+      expect(result.code).toBe(0);
+      // A blind directory wipe would destroy a parallel session's wave-1 scope
+      // here — the whole reason reconciliation is ownership-gated.
+      expect(existsSync(agentPath(stateDir, 'A2', 1))).toBe(true);
+      expect(JSON.parse(result.stdout).removedOrphans).toEqual([]);
+      expect(JSON.parse(result.stdout).retainedOrphans).toEqual([
+        { file: 'A2.json', reason: expect.stringContaining('different session') },
+      ]);
+    });
+
+    it('NAMES an orphan it cannot prove ownership of instead of skipping it silently', () => {
+      const stateDir = makeOwnedStateDir();
+      runCli({ stateDir, wave: 1, scopes: FIRST });
+
+      const noSession = runCli({ stateDir, wave: 1, scopes: SHRUNK, args: ['--json'] });
+
+      expect(noSession.code).toBe(0);
+      // A silent skip is byte-identical to a clean run — the failure mode #1103
+      // is about. The file must be named on BOTH channels.
+      expect(noSession.stderr).toMatch(/WARN orphaned declaration A2\.json RETAINED/);
+      expect(JSON.parse(noSession.stdout).retainedOrphans).toEqual([
+        { file: 'A2.json', reason: expect.stringContaining('no --session') },
+      ]);
+      expect(existsSync(agentPath(stateDir, 'A2', 1))).toBe(true);
+    });
+
+    it('cannot establish ownership from a manifest that declares no session', () => {
+      const stateDir = makeOwnedStateDir({ session: null, semantic: null });
+      runCli({ stateDir, wave: 1, scopes: FIRST });
+
+      const result = runCli({ stateDir, wave: 1, scopes: SHRUNK, args: ['--session', OWNER, '--json'] });
+
+      expect(existsSync(agentPath(stateDir, 'A2', 1))).toBe(true);
+      expect(JSON.parse(result.stdout).retainedOrphans[0].reason).toMatch(/declares no session/);
+    });
+
+    it('keeps stderr byte-empty on a re-materialization that orphans nothing', () => {
+      const stateDir = makeOwnedStateDir();
+      runCli({ stateDir, wave: 1, scopes: FIRST });
+
+      // Regression guard for the additive-stderr trap: an unconditional WARN on
+      // the success path breaks every expect(stderr).toBe('') assertion in the
+      // corpus, including tests/integration/wave-scope-producer.test.mjs:62.
+      const result = runCli({ stateDir, wave: 1, scopes: FIRST, args: ['--session', OWNER] });
+
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe('');
+    });
+
+    it('rejects an empty --session rather than treating it as a proven owner', () => {
+      const stateDir = makeOwnedStateDir();
+      const result = runCli({ stateDir, wave: 1, scopes: SHRUNK, args: ['--session', '   '] });
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toMatch(/--session must be a non-empty id/);
+    });
   });
 });

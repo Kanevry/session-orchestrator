@@ -1,10 +1,12 @@
 /**
  * writer.mjs — FA3 writer seam for the Reconciliation Engine (Epic #693, issue #696).
  *
- * Persists APPROVED reconciliation rule proposals to `.claude/rules/` AFTER
- * operator approval. This is the one and only module that writes `.claude/rules/`
- * on behalf of the engine — the FA2 engine/renderer NEVER touch the filesystem
- * for rule files.
+ * Persists APPROVED reconciliation rule proposals AFTER operator approval, to
+ * every target named in `opts.targets` (issue #1099 — `repo-local` ⇒
+ * `<repoRoot>/.claude/rules/`, `baseline` ⇒ `<baselineRoot>/proposals/`; the
+ * CLOSED table is {@link TARGET_DIRS}, and a target with no row writes nothing).
+ * This is the one and only module that writes rule files on behalf of the engine
+ * — the FA2 engine/renderer NEVER touch the filesystem for rule files.
  *
  * Responsibilities:
  *  - Acquire a per-write file lock (`.orchestrator/rules.lock`) to serialise
@@ -20,11 +22,18 @@
  *    #1042) so the operator's "no" survives into the next run.
  *  - Never throws — all failures are collected into errors[] and returned.
  *
- * Path-safety:
- *  - `validatePathInsideProject(item.path, repoRoot, {canonicalizeRoot:true})` is
+ * Path-safety (re-anchored per target in #1099, NOT widened):
+ *  - `validatePathInsideProject(<rel>, <target root>, {canonicalizeRoot:true})` is
  *    the primary guard (two-phase lexical + realpath, CWE-22 defence).
- *  - Additional assertion: resolved path must be inside `<repoRoot>/.claude/rules/`.
- *  - Both guards must pass; failure skips the record and pushes an error string.
+ *  - Additional assertion: the resolved path must be inside that target's fixed
+ *    subdirectory. Anchored on `repoRoot` — the pre-#1099 hardcoding — it would
+ *    reject every baseline path, which is why re-anchoring is the fix.
+ *  - For `leaf: 'slug'` targets the filename is derived from `item.slug`, never
+ *    from `item.path`, and must match {@link SLUG_RE}. `slug` is
+ *    `kebab()`-produced (`[a-z0-9-]` only), so that branch has no
+ *    attacker-controllable path component at all.
+ *  - All applicable guards must pass; failure skips the (item, target) pair and
+ *    pushes an error string.
  *
  * Atomic write strategy (rule files):
  *  - Write content to `<target>.XXXXXXXX.tmp` via `writeFileSync`, then
@@ -45,7 +54,7 @@
  * @module reconcile/writer
  */
 
-import { mkdirSync, writeFileSync, renameSync, appendFileSync, realpathSync } from 'node:fs';
+import { mkdirSync, writeFileSync, renameSync, appendFileSync, realpathSync, statSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 
@@ -67,19 +76,220 @@ const RULES_DIR_REL = path.join('.claude', 'rules');
 /** Rejected-proposals log for rules declined by the operator (repo-relative). */
 const REJECTED_LOG_REL = path.join('.orchestrator', 'reconcile.rejected.log');
 
+/**
+ * CLOSED write-target table (issue #1099).
+ *
+ * A target with NO ROW HERE writes NOTHING — the absence of a row IS the
+ * refusal, so adding a target stays a deliberate, reviewable act rather than a
+ * fall-through. `global` is documented-but-unimplemented upstream (see
+ * `VALID_TARGETS` in `scripts/lib/config/reconcile.mjs`) and deliberately has no
+ * row here either.
+ *
+ * Per row:
+ *  - `root`   — which key of the caller-supplied roots map anchors the write.
+ *  - `subdir` — the fixed subdirectory under that root. NEVER caller-supplied.
+ *  - `leaf`   — where the FILENAME comes from:
+ *      `'path'` → `item.path` (repo-local). This is the pre-#1099 contract and
+ *        stays: the three live path-traversal tests in
+ *        `tests/lib/reconcile/writer.test.mjs` are the standing proof that its
+ *        guard bites, and switching repo-local to slug-derivation would make
+ *        `item.path` unreachable and silently retire them.
+ *      `'slug'` → `item.slug` (baseline). `slug` comes from `deriveSlug`
+ *        (`renderer.mjs`), which is `kebab()`-produced and therefore
+ *        `[a-z0-9-]`-only — so the baseline branch has NO attacker-controllable
+ *        path component at all. {@link SLUG_RE} re-asserts that here rather than
+ *        trusting the upstream derivation.
+ *  - `requireExistingRoot` — when true the root must ALREADY exist as a
+ *        directory and is NEVER created. A typo'd baseline path must not
+ *        silently mint a whole directory tree that looks like a successful write.
+ */
+const TARGET_DIRS = Object.freeze({
+  'repo-local': Object.freeze({
+    root: 'repoRoot',
+    subdir: RULES_DIR_REL,
+    leaf: 'path',
+    requireExistingRoot: false,
+  }),
+  baseline: Object.freeze({
+    root: 'baselineRoot',
+    subdir: 'proposals',
+    leaf: 'slug',
+    requireExistingRoot: true,
+  }),
+});
+
+/** Default target set — byte-identical to the pre-#1099 behaviour. */
+const DEFAULT_TARGETS = Object.freeze(['repo-local']);
+
+/**
+ * The only shape a slug-derived filename may take. Mirrors exactly what
+ * `kebab()` (`scripts/lib/learnings/kebab.mjs`) can produce: lowercase
+ * alphanumerics and hyphens, never a leading hyphen. `.`, `..`, `/`, `\` and
+ * every absolute form are unrepresentable, so a crafted slug cannot traverse.
+ */
+const SLUG_RE = /^[a-z0-9][a-z0-9-]*$/;
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the absolute rules directory for the given repoRoot. Used both for
- * the per-proposal assertion and for mkdirSync.
+ * Normalise the caller's target list: strings only, de-duplicated,
+ * order-preserving.
  *
- * @param {string} repoRoot
- * @returns {string}
+ * OMITTED (`undefined`/non-array) ⇒ {@link DEFAULT_TARGETS} — the pre-#1099
+ * back-compat path. An EXPLICIT empty array ⇒ stays empty, and that distinction
+ * is load-bearing rather than pedantic: `resolveEffectiveTargets`
+ * (`engine.mjs`) returns `[]` when `targets: [baseline]` was declared and the
+ * baseline root turned out unusable. Defaulting that `[]` back to
+ * `['repo-local']` would silently redirect a baseline-only write INTO this repo
+ * — the operator asked for one destination and would get a different one.
+ * Nothing is written for an empty list; the caller sees one `errors[]` entry
+ * rather than a success-shaped no-op.
+ *
+ * @param {unknown} targets
+ * @returns {string[]}
  */
-function rulesAbsDir(repoRoot) {
-  return path.resolve(repoRoot, RULES_DIR_REL);
+function normalizeTargets(targets) {
+  if (!Array.isArray(targets)) return [...DEFAULT_TARGETS];
+  return [...new Set(targets.filter((t) => typeof t === 'string' && t.length > 0))];
+}
+
+/**
+ * @typedef {Object} PreparedTarget
+ * @property {boolean} ok    - false ⇒ every write to this target is skipped.
+ * @property {string}  [dir] - canonical absolute directory writes land in.
+ * @property {string}  [root]- canonical absolute root the confinement anchors on.
+ * @property {object}  [spec]- the {@link TARGET_DIRS} row.
+ */
+
+/**
+ * Prepare ONE write target: resolve its root, refuse a missing or non-existent
+ * root, create only the fixed subdirectory, and run the parent-symlink
+ * hardening check.
+ *
+ * Runs once per distinct target rather than once per batch (pre-#1099 it was a
+ * single `rulesDirSafe` boolean): with two targets a symlinked `.claude/rules/`
+ * must disqualify repo-local WITHOUT also disqualifying baseline, and vice
+ * versa.
+ *
+ * @param {string} target
+ * @param {{repoRoot?: string, baselineRoot?: string}} roots
+ * @param {string[]} errors - mutated in place with any refusal reason.
+ * @returns {PreparedTarget}
+ */
+function prepareTarget(target, roots, errors) {
+  const spec = TARGET_DIRS[target];
+  if (!spec) {
+    errors.push(
+      `target "${target}": no row in the write-target table — nothing written (known targets: ${Object.keys(TARGET_DIRS).join(', ')})`,
+    );
+    return { ok: false };
+  }
+
+  const root = roots[spec.root];
+  if (typeof root !== 'string' || root.length === 0) {
+    errors.push(`target "${target}": no ${spec.root} supplied — skipped (no-op, not a failure)`);
+    return { ok: false };
+  }
+
+  if (spec.requireExistingRoot) {
+    let isDir;
+    try {
+      isDir = statSync(root).isDirectory();
+    } catch {
+      isDir = false;
+    }
+    if (!isDir) {
+      errors.push(
+        `target "${target}": root "${root}" does not exist as a directory — skipped; a non-existent root is NEVER created (a typo would otherwise mint a directory tree that looks like a successful write)`,
+      );
+      return { ok: false };
+    }
+  }
+
+  let canonRoot = root;
+  try {
+    canonRoot = realpathSync(root);
+  } catch {
+    /* ENOENT/EACCES: fall back to the lexical root */
+  }
+  const expectedDir = path.resolve(canonRoot, spec.subdir);
+
+  // Parent-directory symlink hardening (#697 security follow-up, re-anchored per
+  // target in #1099): if the subdir is itself a pre-planted symlink to a
+  // directory outside its root, a lexically-safe leaf path would still be
+  // written through it. Requires local FS write access to exploit (below the VCS
+  // trust boundary) but the guard is one cheap call. mkdir creates ONLY the
+  // fixed subdir — the root's own existence was decided above.
+  try {
+    mkdirSync(path.resolve(root, spec.subdir), { recursive: true });
+    const realDir = realpathSync(path.resolve(root, spec.subdir));
+    if (realDir !== expectedDir && !realDir.startsWith(expectedDir + path.sep)) {
+      errors.push(
+        `path-confinement: ${spec.subdir}/ resolves outside "${root}" (symlinked dir) — all approved writes to target "${target}" skipped`,
+      );
+      return { ok: false };
+    }
+  } catch {
+    /* mkdir/realpath failure — per-item writes will surface errors normally */
+  }
+
+  return { ok: true, dir: expectedDir, root: canonRoot, spec };
+}
+
+/**
+ * Resolve the absolute write target for ONE (item, target) pair.
+ *
+ * Both leaf strategies end in the SAME two guards — `validatePathInsideProject`
+ * (two-phase lexical + realpath, CWE-22 defence) plus a belt-and-braces
+ * `startsWith` assertion — anchored on the PER-TARGET root. Anchoring them on
+ * `repoRoot` (the pre-#1099 hardcoding) would reject every baseline path, so
+ * re-anchoring is what keeps this a re-aim rather than a widening.
+ *
+ * @param {WriterApprovedItem} item
+ * @param {string} target
+ * @param {PreparedTarget} prep
+ * @param {{repoRoot?: string, baselineRoot?: string}} roots
+ * @param {string[]} errors - mutated in place with any refusal reason.
+ * @returns {string|null} absolute destination path, or null when refused.
+ */
+function resolveDest(item, target, prep, roots, errors) {
+  const spec = prep.spec;
+  const root = roots[spec.root];
+
+  /** @type {string} */
+  let candidateRel;
+
+  if (spec.leaf === 'slug') {
+    const slug = item.slug;
+    if (typeof slug !== 'string' || !SLUG_RE.test(slug)) {
+      errors.push(
+        `slug-safety: target "${target}" derives its filename from item.slug, and ${JSON.stringify(slug)} is not a bare kebab slug (${SLUG_RE}) — skipped`,
+      );
+      return null;
+    }
+    candidateRel = path.join(spec.subdir, `${slug}.md`);
+  } else {
+    if (!item || typeof item.path !== 'string' || item.path.length === 0) {
+      errors.push(`approved item missing path: ${JSON.stringify(item)}`);
+      return null;
+    }
+    candidateRel = item.path;
+  }
+
+  const pathResult = validatePathInsideProject(candidateRel, root, { canonicalizeRoot: true });
+  if (!pathResult.ok) {
+    errors.push(`path-safety (${pathResult.reason}): "${candidateRel}" [target ${target}] — skipped`);
+    return null;
+  }
+
+  const absPath = pathResult.realPath ?? pathResult.lexicalPath;
+  if (!absPath.startsWith(prep.dir + path.sep) && absPath !== prep.dir) {
+    errors.push(`path-confinement: "${candidateRel}" resolves outside ${spec.subdir}/ [target ${target}] — skipped`);
+    return null;
+  }
+  return absPath;
 }
 
 /**
@@ -157,7 +367,15 @@ function writeTextAtomic(destPath, content) {
  * caller may still write a document with no frontmatter.
  *
  * CEILING (BV-004): the marker set is a fixed three-key list, not a schema
- * lookup. Revisit if the renderer gains a fourth provenance key, or if a second
+ * lookup — and the renderer HAS since gained a fourth provenance key
+ * (`evidence-digest: sha256-v1:<hex>`). That key is deliberately NOT in the
+ * marker set, and the ceiling did not need raising, because this gate is
+ * POSITIVE-KEY-ONLY: it asks whether the required keys are PRESENT, never
+ * whether an unknown key appeared. A new renderer key therefore passes
+ * untouched by construction — pinned by the `evidence-digest` case in
+ * `tests/lib/reconcile/writer.test.mjs`. Add a key to the marker set only when
+ * its ABSENCE should refuse a write; adding `evidence-digest` there would refuse
+ * every document rendered before the key existed. Revisit if a second
  * non-reconcile caller of `writeApprovedRules` appears — today there is exactly
  * one production caller and it passes renderer output.
  *
@@ -268,7 +486,10 @@ function isOperatorRejection(item) {
 /**
  * @typedef {Object} WriterApprovedItem
  * @property {string} slug     - kebab-case slug (from renderer.mjs / engine.mjs).
+ *   THE filename source for every target whose {@link TARGET_DIRS} row declares
+ *   `leaf: 'slug'` (today: `baseline`).
  * @property {string} path     - repo-relative rule path (`.claude/rules/<slug>.md`).
+ *   THE filename source for `leaf: 'path'` targets (today: `repo-local`).
  * @property {string} content  - full rendered markdown content.
  * @property {string} [learningKey]
  * @property {number} [confidence]
@@ -303,22 +524,45 @@ function isOperatorRejection(item) {
  */
 
 /**
- * Persist approved reconciliation rule proposals to `.claude/rules/` and
+ * Persist approved reconciliation rule proposals to every requested target and
  * archive rejected proposals to the rejected log.
  *
  * NEVER throws — all per-item failures are collected into `errors[]`.
  *
+ * Targets (issue #1099): `targets` names the {@link TARGET_DIRS} rows to write.
+ * Omitted ⇒ `['repo-local']` ⇒ byte-identical to the pre-#1099 behaviour. One
+ * approved proposal written to two targets counts TWICE in `written` (it is a
+ * file count, not a proposal count) and stamps the idempotency sidecar ONCE.
+ *
+ * `baselineRoot` ABSENT IS NOT AN ERROR — it is the documented no-op path: a
+ * `baseline` target with no root, a root that is a placeholder, or a root that
+ * does not exist on disk each skip that target with an `errors[]` entry while
+ * every other target still writes. The caller is expected to have dropped
+ * `baseline` from `targets` upstream in that case (see `resolveEffectiveTargets`
+ * in `scripts/lib/reconcile/engine.mjs`); this layer is the second line, held
+ * here because it is the only layer holding the filesystem at write time.
+ *
  * @param {Object}                opts
- * @param {WriterApprovedItem[]}  opts.approved   - proposals approved by the operator.
- * @param {WriterRejectedItem[]}  [opts.rejected]  - proposals declined by the operator.
- * @param {string}                opts.repoRoot   - absolute repo root path.
- * @param {string}                [opts.sessionId] - current session id (informational; unused in v1).
+ * @param {WriterApprovedItem[]}  opts.approved     - proposals approved by the operator.
+ * @param {WriterRejectedItem[]}  [opts.rejected]   - proposals declined by the operator.
+ * @param {string}                opts.repoRoot     - absolute repo root path.
+ * @param {string}                [opts.baselineRoot] - absolute projects-baseline root; absent ⇒ no-op for the `baseline` target.
+ * @param {string[]}              [opts.targets]    - target ids; default `['repo-local']`.
+ * @param {string}                [opts.sessionId]  - current session id (informational; unused in v1).
  * @returns {Promise<WriteApprovedRulesResult>}
  */
-export async function writeApprovedRules({ approved, rejected = [], repoRoot, sessionId: _sessionId }) {
+export async function writeApprovedRules({
+  approved,
+  rejected = [],
+  repoRoot,
+  baselineRoot,
+  targets,
+  sessionId: _sessionId,
+}) {
   // Defensive: coerce inputs
   const approvedItems = Array.isArray(approved) ? approved : [];
   const rejectedItems = Array.isArray(rejected) ? rejected : [];
+  const effectiveTargets = normalizeTargets(targets);
 
   if (approvedItems.length === 0 && rejectedItems.length === 0) {
     return { written: 0, archived: 0, errors: [] };
@@ -342,85 +586,64 @@ export async function writeApprovedRules({ approved, rejected = [], repoRoot, se
       let written = 0;
       let archived = 0;
 
-      const rulesDir = rulesAbsDir(repoRoot);
+      const roots = { repoRoot, baselineRoot };
       // Shared stamp for every candidate this batch writes — mirrors `rejectedAt`
       // below (step 2), one timestamp per invocation rather than one per item.
       const approvedAt = new Date().toISOString();
 
-      // Parent-directory symlink hardening (#697 security follow-up): if
-      // `.claude/rules/` is itself a pre-planted symlink to a directory outside
-      // the repo, a lexically-safe leaf path would still be written through it.
-      // Resolve the directory's realpath once and refuse all writes if it
-      // escapes the canonical repo root. Requires local FS write access to
-      // exploit (below the VCS trust boundary) but the guard is one cheap call.
-      let rulesDirSafe = true;
-      try {
-        mkdirSync(rulesDir, { recursive: true });
-        let canonRoot = repoRoot;
-        try { canonRoot = realpathSync(repoRoot); } catch { /* fall back to lexical */ }
-        const expectedRulesDir = path.resolve(canonRoot, RULES_DIR_REL);
-        const realRulesDir = realpathSync(rulesDir);
-        if (realRulesDir !== expectedRulesDir && !realRulesDir.startsWith(expectedRulesDir + path.sep)) {
-          errors.push('path-confinement: .claude/rules/ resolves outside the repo (symlinked dir) — all approved writes skipped');
-          rulesDirSafe = false;
+      // Per-target pre-flight — root resolution, existence refusal, subdir
+      // creation and parent-symlink hardening, once per DISTINCT target rather
+      // than once per batch or once per item.
+      /** @type {Map<string, PreparedTarget>} */
+      const prepared = new Map();
+      if (approvedItems.length > 0) {
+        if (effectiveTargets.length === 0) {
+          errors.push(
+            `no write target in effect — ${approvedItems.length} approved proposal(s) not written (an explicitly empty \`targets\` is honoured, never defaulted back to repo-local)`,
+          );
         }
-      } catch { /* mkdir/realpath failure — per-item writes will surface errors normally */ }
+        for (const target of effectiveTargets) {
+          prepared.set(target, prepareTarget(target, roots, errors));
+        }
+      }
 
       // ── Step 1: write approved rule files ──────────────────────────────────
       for (const item of approvedItems) {
-        if (!rulesDirSafe) break;
-        // Guard: item must have a path string
-        if (!item || typeof item.path !== 'string' || item.path.length === 0) {
-          errors.push(`approved item missing path: ${JSON.stringify(item)}`);
-          continue;
-        }
-
-        // Primary path-safety guard (two-phase lexical + realpath, CWE-22 defence)
-        const pathResult = validatePathInsideProject(item.path, repoRoot, { canonicalizeRoot: true });
-        if (!pathResult.ok) {
-          errors.push(`path-safety (${pathResult.reason}): "${item.path}" — skipped`);
-          continue;
-        }
-
-        // Resolve the absolute write target from the validated lexical path
-        const absPath = pathResult.realPath ?? pathResult.lexicalPath;
-
-        // Defense-in-depth: assert the resolved path is inside .claude/rules/.
-        // Canonicalize repoRoot the same way validatePathInsideProject does
-        // (opts.canonicalizeRoot:true) so the prefix check is consistent on
-        // platforms where os.tmpdir() has a symlink (e.g. macOS /var → /private/var).
-        let canonRoot = repoRoot;
-        try { canonRoot = realpathSync(repoRoot); } catch { /* ENOENT/EACCES: fall back to lexical */ }
-        const resolvedRulesDir = path.resolve(canonRoot, RULES_DIR_REL);
-        if (!absPath.startsWith(resolvedRulesDir + path.sep) && absPath !== resolvedRulesDir) {
-          errors.push(`path-confinement: "${item.path}" resolves outside .claude/rules/ — skipped`);
-          continue;
-        }
+        // Item-level guards run ONCE, before any target loop: content is a
+        // property of the proposal, not of where it lands.
 
         // Guard: content must be a string
-        if (typeof item.content !== 'string') {
-          errors.push(`approved item "${item.path}" has non-string content — skipped`);
+        if (!item || typeof item.content !== 'string') {
+          const label = item && typeof item.path === 'string' ? item.path : `slug=${item && item.slug}`;
+          errors.push(`approved item "${label}" has non-string content — skipped`);
           continue;
         }
 
-        // Structural content gate (#1015) — runs BEFORE any mkdir/tmp-file
-        // creation, so a refused write leaves no `.tmp` residue behind.
+        // Structural content gate (#1015) — runs BEFORE any tmp-file creation,
+        // so a refused write leaves no `.tmp` residue behind.
         const refusal = frontmatterRefusalReason(item.content);
         if (refusal !== null) {
-          errors.push(`content-structure: "${item.path}" — ${refusal} — skipped`);
+          const label = typeof item.path === 'string' ? item.path : `slug=${item.slug}`;
+          errors.push(`content-structure: "${label}" — ${refusal} — skipped`);
           continue;
         }
 
-        // Ensure .claude/rules/ exists and write atomically
         let writeOk = false;
-        try {
-          mkdirSync(rulesDir, { recursive: true });
-          writeTextAtomic(absPath, item.content);
-          written++;
-          writeOk = true;
-        } catch (err) {
-          const msg = err && err.message ? err.message : String(err);
-          errors.push(`write failed "${item.path}": ${msg}`);
+        for (const target of effectiveTargets) {
+          const prep = prepared.get(target);
+          if (!prep || !prep.ok) continue;
+
+          const absPath = resolveDest(item, target, prep, roots, errors);
+          if (absPath === null) continue;
+
+          try {
+            writeTextAtomic(absPath, item.content);
+            written++;
+            writeOk = true;
+          } catch (err) {
+            const msg = err && err.message ? err.message : String(err);
+            errors.push(`write failed "${absPath}" [target ${target}]: ${msg}`);
+          }
         }
 
         // Stamp the idempotency sidecar (issue #484 point 1): once a rule
@@ -441,7 +664,7 @@ export async function writeApprovedRules({ approved, rejected = [], repoRoot, se
           });
           if (!stampResult.written) {
             errors.push(
-              `sidecar-stamp failed for "${item.path}" (learningKey=${item.learningKey}) — rule file was written but the idempotency sidecar was not updated`,
+              `sidecar-stamp failed for "${item.path ?? item.slug}" (learningKey=${item.learningKey}) — rule file was written but the idempotency sidecar was not updated`,
             );
           }
         }

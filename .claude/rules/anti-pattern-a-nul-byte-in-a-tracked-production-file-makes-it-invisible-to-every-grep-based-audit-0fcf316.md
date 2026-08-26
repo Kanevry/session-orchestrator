@@ -11,6 +11,7 @@ paths:
 learning-key: anti-pattern/a-nul-byte-in-a-tracked-production-file-makes-it-invisible-to-every-grep-based-audit
 confidence: 0.9
 expires-at: 2026-10-27
+evidence-digest: sha256-v1:19eaab9beccbd5185e2d3556e387ba8fa09c28c56ecb5820ae9c3bc74a4801ac
 ---
 
 # Auto-generated rule: a NUL byte in a tracked production file makes it invisible to every grep-based audit
@@ -25,6 +26,9 @@ Claude Code grep (ugrep -I) skips binary files SILENTLY — exit 1, no output, n
 - learning-key: `anti-pattern/a-nul-byte-in-a-tracked-production-file-makes-it-invisible-to-every-grep-based-audit`
 - learning-id: `b42c42b9-4422-43f7-94dc-77021268fa86`
 - source-session: `main-2026-07-29-deep-1`
+- evidence-digest: `sha256-v1:19eaab9beccbd5185e2d3556e387ba8fa09c28c56ecb5820ae9c3bc74a4801ac`
+- evidence-recorded-at: 2026-07-29T00:00:00.000Z
+- evidence-digest-input: learning-key \n learning-id \n source-session \n evidence-recorded-at \n confidence \n <the `## Evidence` block above, verbatim UTF-8, LF-joined, no trailing newline>
 - confidence: 0.9
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695)
 - expires-at: 2026-10-27

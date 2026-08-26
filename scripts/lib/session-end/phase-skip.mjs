@@ -37,6 +37,10 @@
  *   ('config-gate' | 'proposals.jsonl' | 'sweep-dry-run' | 'auto-dream-signal' |
  *    'skill-invocations.jsonl' | 'auto-dialectic-signal' | 'reconcile-dry-run' |
  *    'learnings.jsonl' | 'probe-error').
+ * @property {string[]} [targets] - 3.6.8 only, RUN decisions only: the effective
+ *   reconcile write-targets (issue #1099). Additive — absent on every other phase.
+ * @property {string|null} [baselineRoot] - 3.6.8 only, RUN decisions only: the
+ *   resolved projects-baseline root, or null when `baseline` is not in effect.
  *
  * @typedef {Object} TailPlan
  * @property {PhaseDecision[]} plan
@@ -51,7 +55,7 @@ import { sweepExpiredLearnings } from '../learnings/expiry-sweep.mjs';
 import { shouldDispatchAutoDream } from '../auto-dream.mjs';
 import { shouldDispatchAutoDialectic } from '../auto-dialectic.mjs';
 import { readSkillInvocations } from '../skill-invocations-schema.mjs';
-import { runReconcile } from '../reconcile/engine.mjs';
+import { runReconcile, resolveEffectiveTargets } from '../reconcile/engine.mjs';
 import { resolveMemoryDir } from '../memory-paths.mjs';
 
 // ---------------------------------------------------------------------------
@@ -259,6 +263,14 @@ async function decideAutoDialectic({ repoRoot, cfg }) {
  * with `dryRun: true` (SKIPs the candidate-sidecar merge — no write) and the
  * operator confidence-floor delivery gate. 0 proposals above floor → skip.
  * runReconcile never throws; an engine `error` is treated fail-open (run).
+ *
+ * Target resolution (#1099) happens HERE — the layer where config → host-path
+ * resolution already lives — and deliberately only on the RUN branch: a WARN
+ * about an unusable baseline root in a session that had nothing to propose
+ * anyway would fire on almost every session and teach the operator to ignore it
+ * (`.claude/rules/host-resources.md` § HR-101). A `baseline` target that cannot
+ * be written is dropped BEFORE the coordinator surfaces the approval AUQ, so the
+ * operator is never asked to approve a write to a destination that cannot exist.
  */
 async function decideReconcile({ repoRoot, cfg }) {
   const phase = '3.6.8';
@@ -292,7 +304,26 @@ async function decideReconcile({ repoRoot, cfg }) {
         'reconcile-dry-run',
       );
     }
-    return mkRun(phase, `${surfaced.length} proposal(s) above confidence floor`, 'reconcile-dry-run');
+    const { targets, baselineRoot } = resolveEffectiveTargets({
+      targets: cfg?.reconcile?.targets,
+      baselineRoot: cfg?.['plan-baseline-path'],
+    });
+    if (targets.length === 0) {
+      return mkSkip(
+        phase,
+        `${surfaced.length} proposal(s) above floor but no writable target remains`,
+        'config-gate',
+      );
+    }
+    return {
+      ...mkRun(
+        phase,
+        `${surfaced.length} proposal(s) above confidence floor → targets: ${targets.join(', ')}`,
+        'reconcile-dry-run',
+      ),
+      targets,
+      baselineRoot,
+    };
   } catch (err) {
     return mkProbeError(phase, err);
   }

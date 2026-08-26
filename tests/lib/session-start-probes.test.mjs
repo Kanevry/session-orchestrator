@@ -359,3 +359,50 @@ describe('the built-in registry', () => {
     expect(PROBE_BUDGET_MS).toBeGreaterThan(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1132 — the instruction-budget probe on a repo without `.claude/rules/`
+// ---------------------------------------------------------------------------
+
+describe('the instruction-budget probe on a repo with no .claude/rules (#1132)', () => {
+  // BUG: this entry carried a `no-rules-dir` precondition, so on the NORMAL
+  // state of every repo that has not adopted the rules layer the telemetry
+  // recorded `skipped: 'no-rules-dir'` — a measurement claimed as DECLINED
+  // that would in fact have run and returned a legitimate empty corpus. The
+  // precondition existed only to dodge a stderr side-effect in rule-loader,
+  // which is now category-gated at its source. Re-adding it (or any other
+  // precondition here) turns `ran-*` back into `skipped` and the outcome
+  // column lies about what was measured.
+  //
+  // The stderr assertion below is the other half: it pins the side-effect
+  // through the REAL caller chain (runner → checkInstructionBudget →
+  // loadApplicableRules ×3), which is where the three duplicate lines per
+  // probe run actually came from.
+  it('runs the probe, records no skip, and writes nothing to stderr', async () => {
+    const dir = await mkTmp();
+    const entry = PROBES.find((p) => p.id === 'instruction-budget');
+    expect(entry).toBeDefined();
+
+    const { calls, emit } = captureEmit();
+
+    const captured = [];
+    const originalWrite = process.stderr.write;
+    process.stderr.write = (chunk) => {
+      captured.push(String(chunk));
+      return true;
+    };
+    let out;
+    try {
+      out = await runSessionStartProbes({ repoRoot: dir }, { probes: [entry], emit });
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+
+    expect(captured.join('')).toBe('');
+    expect(out.results).toHaveLength(1);
+    expect(out.results[0].id).toBe('instruction-budget');
+    expect(out.results[0].outcome).toMatch(/^ran-/);
+    expect(out.results[0].reason).toBeUndefined();
+    expect(calls[0].payload.skipped).toBe(0);
+  });
+});

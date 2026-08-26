@@ -9,6 +9,7 @@ paths:
 learning-key: anti-pattern/prose-presence-pin-tests-mechanically-identifiable-no-product-import-no-spawn-fs-only-and-safely-deletable-in-bulk
 confidence: 0.9
 expires-at: 2026-10-25
+evidence-digest: sha256-v1:e2c7dd39c023bf95be868d7bdac095e21adf068acd9dfbcad610c196bf176329
 ---
 
 # Auto-generated rule: prose-presence pin tests: mechanically identifiable (no product import + no spawn + fs-only) and safely deletable in bulk
@@ -23,6 +24,9 @@ Test files that import zero product code, spawn no process, and only readFileSyn
 - learning-key: `anti-pattern/prose-presence-pin-tests-mechanically-identifiable-no-product-import-no-spawn-fs-only-and-safely-deletable-in-bulk`
 - learning-id: `f46ab2a5-fe55-46ac-a4ca-b73a57b6fc0c`
 - source-session: `main-2026-07-27-session-1`
+- evidence-digest: `sha256-v1:e2c7dd39c023bf95be868d7bdac095e21adf068acd9dfbcad610c196bf176329`
+- evidence-recorded-at: 2026-07-27T00:00:00.000Z
+- evidence-digest-input: learning-key \n learning-id \n source-session \n evidence-recorded-at \n confidence \n <the `## Evidence` block above, verbatim UTF-8, LF-joined, no trailing newline>
 - confidence: 0.9
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695)
 - expires-at: 2026-10-25

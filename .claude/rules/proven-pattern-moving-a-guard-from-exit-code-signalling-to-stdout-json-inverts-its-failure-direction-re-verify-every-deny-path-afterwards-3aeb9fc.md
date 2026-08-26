@@ -11,6 +11,7 @@ paths:
 learning-key: proven-pattern/moving-a-guard-from-exit-code-signalling-to-stdout-json-inverts-its-failure-direction-re-verify-every-deny-path-afterwards
 confidence: 0.9
 expires-at: 2026-10-27
+evidence-digest: sha256-v1:360adbea6fce9fa4f81455e7b528487ac94ad15ba8255af1977687514adf633c
 ---
 
 # Auto-generated rule: moving a guard from exit-code signalling to stdout-JSON inverts its failure direction — re-verify every deny path afterwards
@@ -25,6 +26,9 @@ exit 2 blocks regardless of what stdout did, so bugs in the payload path were ha
 - learning-key: `proven-pattern/moving-a-guard-from-exit-code-signalling-to-stdout-json-inverts-its-failure-direction-re-verify-every-deny-path-afterwards`
 - learning-id: `ed5ad563-dc22-4759-83c3-308afe5e37c8`
 - source-session: `main-2026-07-29-deep-1`
+- evidence-digest: `sha256-v1:360adbea6fce9fa4f81455e7b528487ac94ad15ba8255af1977687514adf633c`
+- evidence-recorded-at: 2026-07-29T00:00:00.000Z
+- evidence-digest-input: learning-key \n learning-id \n source-session \n evidence-recorded-at \n confidence \n <the `## Evidence` block above, verbatim UTF-8, LF-joined, no trailing newline>
 - confidence: 0.9
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695)
 - expires-at: 2026-10-27

@@ -13,6 +13,7 @@ paths:
 learning-key: recurring-issue/session-registry-fresh-claim-files-must-be-age-gated
 confidence: 0.9
 expires-at: 2026-10-01
+evidence-digest: sha256-v1:3d3060c12222a35d35acb475c02e5eb78b0394ff87f477263f0ad155babd8fac
 ---
 
 # Auto-generated rule: session-registry-fresh-claim-files-must-be-age-gated
@@ -46,6 +47,9 @@ nothing but this rule and that one test says otherwise.
 - learning-key: `recurring-issue/session-registry-fresh-claim-files-must-be-age-gated`
 - learning-id: `0e7b2bc7-4eef-4b9c-875d-d151af713e7d`
 - source-session: `main-2026-07-03-session-1`
+- evidence-digest: `sha256-v1:3d3060c12222a35d35acb475c02e5eb78b0394ff87f477263f0ad155babd8fac`
+- evidence-recorded-at: 
+- evidence-digest-input: learning-key \n learning-id \n source-session \n evidence-recorded-at \n confidence \n <the `## Evidence` block above, verbatim UTF-8, LF-joined, no trailing newline>
 - confidence: 0.9
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695)
 - expires-at: 2026-10-01

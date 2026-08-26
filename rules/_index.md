@@ -30,7 +30,7 @@ baseline project type (`nextjs-saas`, `express-service`, `docker-service`,
 
 ## always-on (vendored to every consumer repo)
 
-- `always-on/parallel-sessions.md` — PSA-001/002/003/004 multi-session discipline
+- `always-on/parallel-sessions.md` — PSA-001..007 multi-session discipline (detect / pause / destructive-ops / commit / STATE.md lock / grep-verification / subagent git-write ban)
 - `always-on/commit-discipline.md` — atomic commits, stage-by-name, no `git add .`
 - `always-on/npm-quality-gates.md` — the typecheck + test + lint triad before commit
 

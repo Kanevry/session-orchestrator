@@ -726,3 +726,138 @@ describe('extractRedirectTargets — redirect union walks both readings (HIGH-2)
     ]);
   });
 });
+
+describe('splitChainSegments — compound statements hid the command verb (#1145)', () => {
+  /** Token texts of the first segment whose resolved verb is `want`, else null. */
+  const headOf = (command, want) => {
+    for (const seg of splitChainSegments(tokenizeCommand(command))) {
+      if (resolveSegmentVerb(seg).verb === want) return seg.map((t) => t.text);
+    }
+    return null;
+  };
+
+  // THE BUG. `splitSegments` split on `; && || | & \n` but not on shell keywords,
+  // so the first token of a `do …` / `then …` / `{ …` / `( …` statement was the
+  // KEYWORD and never the command. Measured 2026-08-23 against the live
+  // issue-budget guard (`max-per-session: 1, mode: strict`): the plain form
+  // denied at 1/1 while `for … do glab issue create … done` and
+  // `{ glab issue create …; }` were allowed with NO accounting at all — the cap
+  // had never existed for the form actually typed for bulk creation.
+  //
+  // Asserted on the TOKEN HEAD, not only on the resolved verb: the vcs-create
+  // matcher keys on `tokens.slice(0, 3)`, so a fix that moved only the verb
+  // would leave that consumer exactly as blind as before.
+  it.each([
+    ['for-loop body', 'for t in a b c; do glab issue create --title $t; done'],
+    ['brace group', '{ glab issue create --title d; }'],
+    ['if/then branch', 'if true; then glab issue create --title e; fi'],
+    ['else branch', 'if false; then true; else glab issue create --title e2; fi'],
+    ['subshell', '( glab issue create --title f )'],
+    ['while body', 'while read t; do glab issue create --title $t; done'],
+  ])('exposes the create verb at the segment head — %s', (_label, command) => {
+    const head = headOf(command, 'glab');
+    expect(head).not.toBeNull();
+    expect(head.slice(0, 3)).toEqual(['glab', 'issue', 'create']);
+  });
+
+  // Position gate. bash recognises a reserved word ONLY in command position;
+  // everywhere else it is an ordinary argument. A blanket text filter would eat
+  // it — silently deleting an rm operand named `do`, a `--title` value, or a
+  // commit message word, which reaches consumers as a WRONG argument list
+  // rather than as a parse failure.
+  it('keeps a keyword that is an ARGUMENT, not a command-position reserved word', () => {
+    const segs = splitChainSegments(tokenizeCommand('git commit -m do && echo then'));
+    expect(segs.map((s) => s.map((t) => t.text))).toEqual([
+      ['git', 'commit', '-m', 'do'],
+      ['echo', 'then'],
+    ]);
+  });
+
+  // Quoting gate, mirroring the vcs-create matcher's own `"glab issue create"`
+  // precedent: `"do" glab issue create` runs a binary literally NAMED `do`. If
+  // the drop ignored `quoted`, that segment's head would become
+  // `glab issue create` and the issue-budget cap would count — and deny — a
+  // command that creates no issue at all.
+  it('does not drop a QUOTED keyword in command position', () => {
+    const segs = splitChainSegments(tokenizeCommand('"do" glab issue create'));
+    expect(segs).toHaveLength(1);
+    expect(segs[0].map((t) => t.text)).toEqual(['do', 'glab', 'issue', 'create']);
+  });
+
+  // `exec cmd` REPLACES the shell with cmd — a transparent wrapper by the #982
+  // classification, so it belongs in WRAPPER_UNWRAP. Without the row the verb
+  // stays `exec` and every verb-keyed consumer is blind to the real command.
+  it('unwraps `exec` to the real verb', () => {
+    expect(resolveSegmentVerb(tokenizeCommand('exec glab issue create --title i')).verb)
+      .toBe('glab');
+  });
+
+  // The OTHER half of that classification, and the reason `exec` is not in
+  // SHELL_EXEC_INTERPRETERS: it execs an argv, it never executes a command
+  // STRING. Listing it as an interpreter would turn this inert quoted literal
+  // into a match — the exact wrapper-vs-interpreter error the #982 learning
+  // names (`su` is an interpreter for the opposite reason).
+  it('treats `exec` as a wrapper, not an interpreter — a quoted literal stays inert', () => {
+    expect(commandMatchesBlocked('exec "rm -rf /etc"', 'rm -rf')).toBe(false);
+  });
+});
+
+describe('splitChainSegments — destructive-guard direction (#1145)', () => {
+  // STRICTER direction. `parseRmTargets` / `commandHasRecursiveForceRm` in
+  // hooks/pre-bash-destructive-guard.mjs skip any segment whose verb is not
+  // `rm`, so a loop-hidden `rm -rf` contributed NO operands at all: the guard
+  // never judged the paths, it only fell back to its unparseable-command
+  // fail-closed. Now the operands are visible and the path allowlist decides,
+  // exactly as it does for the plain form.
+  it.each([
+    ['for-loop body', 'for f in a; do rm -rf /etc/passwd; done'],
+    ['brace group', '{ rm -rf /etc/passwd; }'],
+    ['if/then branch', 'if true; then rm -rf /etc/passwd; fi'],
+    ['exec wrapper', 'exec rm -rf /etc/passwd'],
+  ])('makes a compound-hidden rm and its operands visible — %s', (_label, command) => {
+    const rmSegs = splitChainSegments(tokenizeCommand(command))
+      .filter((s) => resolveSegmentVerb(s).verb === 'rm');
+    expect(rmSegs).toHaveLength(1);
+    const { index } = resolveSegmentVerb(rmSegs[0]);
+    expect(rmSegs[0].slice(index + 1).map((t) => t.text)).toEqual(['-rf', '/etc/passwd']);
+  });
+
+  // NO-LOSS direction — the load-bearing half. Dropping a token REMOVES it from
+  // the skeleton `unquotedSegmentMatch` tests, so a blocked pattern that used to
+  // match across the keyword would silently stop matching and the rule would
+  // never fire at all. Verified against every pattern class in
+  // .orchestrator/policy/blocked-commands.json that a compound form can carry.
+  it.each([
+    ['rm -rf', 'for f in a; do rm -rf /etc/passwd; done'],
+    ['rm -rf', '{ rm -rf /etc/passwd; }'],
+    ['rm -rf', '( rm -rf /etc/passwd )'],
+    ['rm -rf', 'while read x; do rm -rf /etc/passwd; done'],
+    ['git push --force', 'for b in main; do git push --force; done'],
+    ['git reset --hard', '{ git reset --hard; }'],
+    ['git clean -fd', 'if true; then git clean -fd; fi'],
+    ['git checkout --', 'for f in a; do git checkout -- src/; done'],
+    ['git stash', '{ git stash; }'],
+  ])('still matches %s inside a compound statement', (pattern, command) => {
+    expect(commandMatchesBlocked(command, pattern)).toBe(true);
+  });
+
+  // Deliberately NOT in the no-loss table above: the fake-regression run showed
+  // this row going RED with the keyword drop disabled, i.e. it was never a
+  // preserved match — it is a NEWLY caught one, and the fix is what catches it.
+  // The quoted-payload guard only fires when the segment VERB is an interpreter;
+  // with the head token stuck at `then`, `psql` never reached verb position and
+  // the SQL rules had no reach into any compound statement at all.
+  // (`eine Fake-Regression beweist nichts, wenn die Mutation die benannte
+  // Verteidigung verfehlt` — the mutation bit, so the name had to change.)
+  it('newly reaches an interpreter payload hidden in a compound statement', () => {
+    expect(commandMatchesBlocked('if true; then psql -c "DROP TABLE users"; fi', 'DROP TABLE'))
+      .toBe(true);
+  });
+
+  // Direction guard for the false-positive side: a keyword-looking word inside
+  // QUOTED data is not a command, and stripping must not have turned it into
+  // one. `echo "… rm -rf …"` was allowed before and must stay allowed.
+  it('keeps an inert quoted destructive literal inert', () => {
+    expect(commandMatchesBlocked('echo "rm -rf /etc"; echo done', 'rm -rf')).toBe(false);
+  });
+});

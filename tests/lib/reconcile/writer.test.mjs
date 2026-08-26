@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -869,5 +869,304 @@ describe('writeApprovedRules — stamps an operator rejection terminal (#1042)',
     expect(records[0].confidence).toBe(0.91); // preserved
     expect(records[0].outcome).toBe('rejected');
     expect(typeof records[0].processed_at).toBe('string');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BASELINE WRITE TARGET (#1099)
+//
+// TV-001 — the bug this whole block catches: `reconcile.targets` had ZERO
+// consumers. Every approved rule landed in `<repoRoot>/.claude/rules/` no matter
+// what the operator declared, so a learning could never cross the repo boundary
+// into the shared baseline. These tests go through the REAL `writeApprovedRules`
+// call — not through the helpers in isolation — because the only defect class
+// that matters here is one on the code path that actually touches disk.
+//
+// The baseline root is ALWAYS a fresh mkdtemp under os.tmpdir(). The operator's
+// real projects-baseline checkout is never a test fixture.
+// ---------------------------------------------------------------------------
+
+describe('writeApprovedRules — baseline target (#1099)', () => {
+  let baselineRoot;
+
+  beforeEach(() => {
+    baselineRoot = mkdtempSync(join(tmpdir(), 'reconcile-baseline-'));
+  });
+
+  afterEach(() => {
+    rmSync(baselineRoot, { recursive: true, force: true });
+  });
+
+  it('writes one file per proposal under <baselineRoot>/proposals/ when targets: [baseline]', async () => {
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'sound', path: '.claude/rules/sound.md', content: soundRuleDoc() }],
+      repoRoot: tmpDir,
+      baselineRoot,
+      targets: ['baseline'],
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.written).toBe(1);
+
+    const dest = join(baselineRoot, 'proposals', 'sound.md');
+    expect(existsSync(dest)).toBe(true);
+    expect(readFileSync(dest, 'utf8')).toBe(soundRuleDoc());
+
+    // targets: [baseline] means baseline ONLY — the repo copy must not appear.
+    expect(existsSync(join(tmpDir, '.claude', 'rules', 'sound.md'))).toBe(false);
+  });
+
+  it('writes to BOTH targets when both are declared, and stamps the sidecar exactly once', async () => {
+    const result = await writeApprovedRules({
+      approved: [
+        {
+          slug: 'sound',
+          path: '.claude/rules/sound.md',
+          content: soundRuleDoc(),
+          learningKey: 'fragile-pattern/x',
+        },
+      ],
+      repoRoot: tmpDir,
+      baselineRoot,
+      targets: ['repo-local', 'baseline'],
+    });
+
+    expect(result.errors).toEqual([]);
+    // `written` is a FILE count, not a proposal count.
+    expect(result.written).toBe(2);
+    expect(existsSync(join(tmpDir, '.claude', 'rules', 'sound.md'))).toBe(true);
+    expect(existsSync(join(baselineRoot, 'proposals', 'sound.md'))).toBe(true);
+
+    const storePath = join(tmpDir, '.orchestrator', 'runtime', 'reconcile-candidates.jsonl');
+    const lines = readFileSync(storePath, 'utf8').trim().split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+  });
+
+  it('the filename comes from item.slug, NOT from item.path', async () => {
+    // A repo-local path that says one thing and a slug that says another: the
+    // baseline leaf must follow the slug, which is the only kebab-derived,
+    // non-attacker-controllable component the proposal carries.
+    await writeApprovedRules({
+      approved: [{ slug: 'from-the-slug', path: '.claude/rules/from-the-path.md', content: soundRuleDoc() }],
+      repoRoot: tmpDir,
+      baselineRoot,
+      targets: ['baseline'],
+    });
+
+    expect(readdirSync(join(baselineRoot, 'proposals'))).toEqual(['from-the-slug.md']);
+  });
+
+  it('omitting targets is byte-identical to the pre-#1099 behaviour (repo-local only)', async () => {
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'sound', path: '.claude/rules/sound.md', content: soundRuleDoc() }],
+      repoRoot: tmpDir,
+      baselineRoot,
+      // targets deliberately omitted
+    });
+
+    expect(result.written).toBe(1);
+    expect(result.errors).toEqual([]);
+    expect(existsSync(join(tmpDir, '.claude', 'rules', 'sound.md'))).toBe(true);
+    expect(existsSync(join(baselineRoot, 'proposals'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BASELINE NO-OP PATHS (#1099 acceptance criterion 2)
+//
+// TV-001 — the bug these catch: a baseline root that is absent or not on disk
+// (the fresh-clone / CI case, which is the COMMON case on any host that has not
+// cloned projects-baseline) must degrade to a no-op with an audit trail. The
+// specific failure to prevent is `mkdir -p` on a typo'd root: it would mint a
+// whole directory tree that looks exactly like a successful write.
+// ---------------------------------------------------------------------------
+
+describe('writeApprovedRules — baseline no-op paths (#1099)', () => {
+  it('does NOT create a non-existent baseline root, and reports the skip', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'reconcile-nobase-'));
+    const missingRoot = join(parent, 'never-cloned-baseline');
+
+    try {
+      const result = await writeApprovedRules({
+        approved: [{ slug: 'sound', path: '.claude/rules/sound.md', content: soundRuleDoc() }],
+        repoRoot: tmpDir,
+        baselineRoot: missingRoot,
+        targets: ['repo-local', 'baseline'],
+      });
+
+      // THE assertion: no directory tree was minted under the typo'd root.
+      expect(existsSync(missingRoot)).toBe(false);
+      // The other target is unaffected — one bad root does not fail the batch.
+      expect(result.written).toBe(1);
+      expect(existsSync(join(tmpDir, '.claude', 'rules', 'sound.md'))).toBe(true);
+      expect(result.errors.some((e) => e.includes('does not exist as a directory'))).toBe(true);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('degrades to a no-op when baselineRoot is absent entirely', async () => {
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'sound', path: '.claude/rules/sound.md', content: soundRuleDoc() }],
+      repoRoot: tmpDir,
+      targets: ['baseline'],
+      // baselineRoot deliberately omitted
+    });
+
+    expect(result.written).toBe(0);
+    expect(result.errors.some((e) => e.includes('no baselineRoot supplied'))).toBe(true);
+    // Crucially: it did NOT silently fall back to writing into the repo.
+    expect(existsSync(join(tmpDir, '.claude', 'rules', 'sound.md'))).toBe(false);
+  });
+
+  it('an EXPLICIT empty targets list writes nowhere — it is never defaulted back to repo-local', async () => {
+    // TV-001: `resolveEffectiveTargets` returns [] when `targets: [baseline]` was
+    // declared and the root turned out unusable. Defaulting [] to ['repo-local']
+    // would silently redirect a baseline-only write INTO this repo — the operator
+    // asked for one destination and would get a different one.
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'sound', path: '.claude/rules/sound.md', content: soundRuleDoc() }],
+      repoRoot: tmpDir,
+      targets: [],
+    });
+
+    expect(result.written).toBe(0);
+    expect(existsSync(join(tmpDir, '.claude', 'rules', 'sound.md'))).toBe(false);
+    expect(result.errors.some((e) => e.includes('no write target in effect'))).toBe(true);
+  });
+
+  it('an unknown target has no row in the table and therefore writes nothing', async () => {
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'sound', path: '.claude/rules/sound.md', content: soundRuleDoc() }],
+      repoRoot: tmpDir,
+      targets: ['global'],
+    });
+
+    expect(result.written).toBe(0);
+    expect(result.errors.some((e) => e.includes('no row in the write-target table'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SLUG PATH-TRAVERSAL (#1099 acceptance criterion 5) — MANDATORY security test
+//
+// TV-001 — the bug this catches: the baseline branch derives its FILENAME from
+// `item.slug`. `deriveSlug` is kebab-produced today, but the writer must not
+// depend on an upstream derivation staying that way — a crafted slug reaching
+// `path.join(subdir, slug + '.md')` unchecked would escape `<root>/proposals/`.
+// ---------------------------------------------------------------------------
+
+describe('writeApprovedRules — crafted slug is refused by SLUG_RE (MANDATORY security test)', () => {
+  let baselineRoot;
+
+  beforeEach(() => {
+    baselineRoot = mkdtempSync(join(tmpdir(), 'reconcile-slugsec-'));
+  });
+
+  afterEach(() => {
+    rmSync(baselineRoot, { recursive: true, force: true });
+  });
+
+  it.each([
+    { why: 'relative traversal', slug: '../../evil', escapee: 'evil.md' },
+    { why: 'absolute path', slug: '/tmp/evil', escapee: 'evil.md' },
+    { why: 'nested separator', slug: 'sub/evil', escapee: 'evil.md' },
+    { why: 'dot-prefixed', slug: '.evil', escapee: '.evil.md' },
+    { why: 'uppercase (not kebab-producible)', slug: 'Evil', escapee: 'Evil.md' },
+    { why: 'leading hyphen (not kebab-producible)', slug: '-evil', escapee: '-evil.md' },
+    { why: 'empty string', slug: '', escapee: '.md' },
+  ])('refuses a $why slug and writes nothing', async ({ slug, escapee }) => {
+    const result = await writeApprovedRules({
+      approved: [{ slug, path: '.claude/rules/decoy.md', content: soundRuleDoc() }],
+      repoRoot: tmpDir,
+      baselineRoot,
+      targets: ['baseline'],
+    });
+
+    expect(result.written).toBe(0);
+    expect(result.errors.some((e) => e.startsWith('slug-safety:'))).toBe(true);
+    // Nothing escaped the confinement zone, in either direction.
+    expect(existsSync(join(baselineRoot, escapee))).toBe(false);
+    expect(existsSync(join(tmpDir, escapee))).toBe(false);
+    const proposals = join(baselineRoot, 'proposals');
+    expect(existsSync(proposals) ? readdirSync(proposals) : []).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-target symlink hardening (#1099) — the check is per (target, root) pair.
+//
+// TV-001 — the bug this catches: pre-#1099 the parent-symlink hardening was ONE
+// batch-wide `rulesDirSafe` boolean with a `break`. Kept that way, a symlinked
+// `.claude/rules/` would have silently disqualified the BASELINE writes too —
+// one target's compromised directory cancelling a wholly unrelated one.
+// ---------------------------------------------------------------------------
+
+describe('writeApprovedRules — symlinked target dir disqualifies only that target', () => {
+  it('a symlinked .claude/rules/ blocks repo-local while baseline still writes', async () => {
+    const baselineRoot = mkdtempSync(join(tmpdir(), 'reconcile-symlink-'));
+    const outside = mkdtempSync(join(tmpdir(), 'reconcile-outside-'));
+    try {
+      rmSync(join(tmpDir, '.claude', 'rules'), { recursive: true, force: true });
+      symlinkSync(outside, join(tmpDir, '.claude', 'rules'), 'dir');
+
+      const result = await writeApprovedRules({
+        approved: [{ slug: 'sound', path: '.claude/rules/sound.md', content: soundRuleDoc() }],
+        repoRoot: tmpDir,
+        baselineRoot,
+        targets: ['repo-local', 'baseline'],
+      });
+
+      expect(result.errors.some((e) => e.startsWith('path-confinement:'))).toBe(true);
+      expect(existsSync(join(outside, 'sound.md'))).toBe(false);
+      // …and the unrelated target was NOT cancelled by it.
+      expect(result.written).toBe(1);
+      expect(existsSync(join(baselineRoot, 'proposals', 'sound.md'))).toBe(true);
+    } finally {
+      rmSync(baselineRoot, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G3 cross-agent invariant — `evidence-digest` passes the structural gate.
+//
+// TV-001 — the bug this catches: `frontmatterRefusalReason` is POSITIVE-KEY-ONLY
+// (it asks whether required keys are PRESENT, never whether an unknown key
+// appeared). If it ever gained unknown-key rejection, the renderer's
+// `evidence-digest: sha256-v1:<hex>` scalar would make EVERY rendered proposal
+// unwritable — a total outage of the write path, visible nowhere else. This test
+// asserts the invariant from the WRITER's side; the renderer's owner asserts the
+// same fact from the other side. Two owners, one invariant, zero shared files.
+// ---------------------------------------------------------------------------
+
+describe('writeApprovedRules — a digest-bearing document passes the structural gate (G3)', () => {
+  it('writes a rule carrying evidence-digest without refusal', async () => {
+    const content = [
+      '---',
+      'auto-generated: true',
+      'alwaysApply: false',
+      'description: a benign description',
+      'globs:',
+      '  - "scripts/lib/x/**"',
+      'learning-key: fragile-pattern/x',
+      'confidence: 0.8',
+      'expires-at: 2099-09-30',
+      `evidence-digest: sha256-v1:${'a'.repeat(64)}`,
+      '---',
+      '',
+      '# Auto-generated rule: x',
+      '',
+    ].join('\n');
+
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'digest', path: '.claude/rules/digest.md', content }],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.written).toBe(1);
+    expect(readFileSync(join(tmpDir, '.claude', 'rules', 'digest.md'), 'utf8')).toContain('evidence-digest:');
   });
 });

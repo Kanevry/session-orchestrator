@@ -122,6 +122,7 @@
 import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { join, isAbsolute, relative } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { isGitToplevel } from './repo-files.mjs';
 
 // ---------------------------------------------------------------------------
 // argv
@@ -184,8 +185,31 @@ const CARVE_OUT_MARKER = '// integrity-anchor:';
 const MAGIC_COMMENT = '// @test-value-bans-allowed';
 const MAGIC_COMMENT_SCAN_LINES = 5;
 
-/** B2 heuristic: how many toContain/toMatch calls make a .md-reading file suspect. */
+/** B2 heuristic: how many toContain/toMatch calls make a .md read suspect. */
 const PROSE_ASSERT_THRESHOLD = 3;
+
+/** A line that reads a `.md` file — the B2 trigger. */
+const MD_READ_CALL = /readFileSync\(/;
+const MD_READ_TARGET = /\.md\b/;
+
+/** A prose assertion — the B2 population. */
+const PROSE_ASSERT = /\.(?:toContain|toMatch)\(/g;
+
+/**
+ * Count prose assertions in `lines[from, to)`.
+ * @param {string[]} lines
+ * @param {number} from inclusive
+ * @param {number} to exclusive
+ * @returns {number}
+ */
+function countProseAsserts(lines, from, to) {
+  let n = 0;
+  for (let i = from; i < to; i++) {
+    const m = lines[i].match(PROSE_ASSERT);
+    if (m) n += m.length;
+  }
+  return n;
+}
 
 const B1_PATTERNS = [
   {
@@ -341,6 +365,62 @@ function trackedTestFiles() {
     .filter(Boolean)
     .map((rel) => rel.replace(/\\/g, '/'))
     .filter((rel) => /^tests\/.*\.test\.mjs$/.test(rel));
+}
+
+/**
+ * Line ranges this commit actually ADDS or CHANGES, per repo-relative path,
+ * from `git diff --cached -U0`.
+ *
+ * Why (#1148, HR-101): `--stdin` scopes the scan to staged FILES, not staged
+ * LINES. Touching one line of a 1400-line test file therefore surfaced every
+ * pre-existing finding in it — a warning that fires on work the committer did
+ * not do, which teaches the committer to ignore the warning. The repo-wide
+ * census is not lost by this: the CI job `test-value-bans` runs the scanner
+ * unscoped over `$CI_PROJECT_DIR` (.gitlab-ci.yml), so an old prose pin is
+ * still reported there — just not at the moment someone edits a neighbouring
+ * line.
+ *
+ * Returns `null` when there is no index to consult (not a git top level, git
+ * absent, command failed). A null gate is INERT, never empty: failing open is
+ * the only safe direction for an advisory that must not invent silence.
+ *
+ * @returns {Map<string, Array<[number, number]>> | null}
+ */
+function stagedLineRanges() {
+  if (!isGitToplevel(repoRoot)) return null;
+  let out;
+  try {
+    out = execFileSync('git', ['diff', '--cached', '-U0', '--no-color'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch {
+    return null;
+  }
+  /** @type {Map<string, Array<[number, number]>>} */
+  const ranges = new Map();
+  /** @type {string | null} */
+  let current = null;
+  for (const line of out.split('\n')) {
+    if (line.startsWith('+++ ')) {
+      // The POST-image path: a rename stages under its new name, and a
+      // deletion stages as /dev/null (no post-image lines to judge).
+      const target = line.slice(4).trim();
+      current = target === '/dev/null' ? null : target.replace(/^b\//, '').replace(/\\/g, '/');
+      if (current && !ranges.has(current)) ranges.set(current, []);
+      continue;
+    }
+    if (!current || !line.startsWith('@@')) continue;
+    const m = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (!m) continue;
+    const start = Number(m[1]);
+    const count = m[2] === undefined ? 1 : Number(m[2]);
+    if (count === 0) continue; // pure deletion — no post-image line exists
+    ranges.get(current).push([start, start + count - 1]);
+  }
+  return ranges;
 }
 
 /** Newline-separated paths from stdin (staged-only mode). */
@@ -641,18 +721,44 @@ function scanContent(relPath, content, denyHooks = new Set()) {
   });
 
   // --- B2: suspected prose pin -------------------------------------------
-  const mdReadLine = lines.findIndex((l) => /readFileSync\(/.test(l) && /\.md\b/.test(l));
-  if (mdReadLine !== -1) {
-    const proseAsserts = (content.match(/\.(?:toContain|toMatch)\(/g) ?? []).length;
-    if (proseAsserts >= PROSE_ASSERT_THRESHOLD) {
+  // ONE finding per .md read, counted over the population that read can reach
+  // (#1148). v1 reported the line of the FIRST .md read beside a WHOLE-FILE
+  // assert count — two different populations with no causal relation, so the
+  // reported location was never the location of anything counted.
+  // Live proof: tests/unit/vault-mirror.test.mjs was filed at :1077 on
+  // 2026-08-23 and reported :1415 three days later with the same 52 asserts.
+  // Nothing happened at line 1077; the first .md read simply moved 338 lines.
+  //
+  // A read's population = its enclosing it()/test() block when it has one,
+  // else the whole file — a module-scope read IS visible file-wide, so there
+  // the file is the causally correct scope, not a fallback.
+  // Ceiling (BV-004): testBlocks() segments it()/test() only, so a read at
+  // describe() scope also counts file-wide. That over-includes in the same
+  // direction v1 always did; revisit if a describe-scoped .md read is ever
+  // reported with a count no single test could produce.
+  {
+    const blocks = testBlocks(lines);
+    /** Segments already reported — a block holding two .md reads reports once. */
+    const reportedSegments = new Set();
+    lines.forEach((line, idx) => {
+      if (!MD_READ_CALL.test(line) || !MD_READ_TARGET.test(line)) return;
+      const block = blocks.find((b) => idx >= b.start && idx < b.end);
+      const key = block ? `block:${block.start}` : 'file';
+      if (reportedSegments.has(key)) return;
+      const [from, to] = block ? [block.start, block.end] : [0, lines.length];
+      const proseAsserts = countProseAsserts(lines, from, to);
+      if (proseAsserts < PROSE_ASSERT_THRESHOLD) return;
+      reportedSegments.add(key);
       findings.push({
         file: relPath,
-        line: mdReadLine + 1,
+        line: idx + 1,
         ban: 'B2-prose-pin-suspected',
-        match: `readFileSync on .md + ${proseAsserts} toContain/toMatch asserts`,
+        match: `readFileSync on .md + ${proseAsserts} toContain/toMatch asserts in ${
+          block ? 'this test' : 'this file'
+        }`,
         hint: B2_HINT,
       });
-    }
+    });
   }
 
   // --- B3: bare exit-code allow assertion on a deny-capable hook ----------
@@ -748,23 +854,59 @@ for (const rel of candidates) {
   findings.push(...scanContent(rel, content, denyHooks));
 }
 
+// Under --stdin (the pre-commit path) judge only the lines this commit
+// touches; without it (the CI path) keep the repo-wide census. See
+// stagedLineRanges() for why the two paths differ.
+const stagedScope = flags.has('--stdin') ? stagedLineRanges() : null;
+let suppressed = 0;
+const reported = stagedScope
+  ? findings.filter((f) => {
+      const ranges = stagedScope.get(f.file);
+      const inHunk = Boolean(ranges) && ranges.some(([a, b]) => f.line >= a && f.line <= b);
+      if (!inHunk) suppressed++;
+      return inHunk;
+    })
+  : findings;
+
 const counts = {
-  'B1-exact-count': findings.filter((f) => f.ban === 'B1-exact-count').length,
-  'B2-prose-pin-suspected': findings.filter((f) => f.ban === 'B2-prose-pin-suspected').length,
-  'B3-bare-hook-exit-code': findings.filter((f) => f.ban === 'B3-bare-hook-exit-code').length,
+  'B1-exact-count': reported.filter((f) => f.ban === 'B1-exact-count').length,
+  'B2-prose-pin-suspected': reported.filter((f) => f.ban === 'B2-prose-pin-suspected').length,
+  'B3-bare-hook-exit-code': reported.filter((f) => f.ban === 'B3-bare-hook-exit-code').length,
   'B4-hook-decision-contract-copy': findings.filter(
     (f) => f.ban === 'B4-hook-decision-contract-copy',
   ).length,
-  'B5-date-time-bomb': findings.filter((f) => f.ban === 'B5-date-time-bomb').length,
+  'B5-date-time-bomb': reported.filter((f) => f.ban === 'B5-date-time-bomb').length,
 };
 
 if (jsonMode) {
-  console.log(JSON.stringify({ advisory: true, scanned, counts, findings }, null, 2));
-} else if (findings.length === 0) {
-  if (!quiet) console.log(`check-test-value-bans: 0 findings across ${scanned} test file(s) — advisory`);
+  console.log(
+    JSON.stringify(
+      {
+        advisory: true,
+        scanned,
+        counts,
+        stagedScope: { applied: stagedScope !== null, suppressed },
+        findings: reported,
+      },
+      null,
+      2,
+    ),
+  );
+} else if (reported.length === 0) {
+  if (!quiet) {
+    console.log(`check-test-value-bans: 0 findings across ${scanned} test file(s) — advisory`);
+    // Never suppress silently: an empty result that had findings behind it is
+    // a different fact from an empty result that did not (HR-106).
+    if (stagedScope !== null && suppressed > 0) {
+      console.log(
+        `  (${suppressed} pre-existing finding(s) outside this commit's staged hunks not shown — ` +
+          'the CI job test-value-bans reports the repo-wide census)',
+      );
+    }
+  }
 } else {
-  console.log(`check-test-value-bans: ${findings.length} advisory finding(s) across ${scanned} test file(s)`);
-  for (const f of findings) {
+  console.log(`check-test-value-bans: ${reported.length} advisory finding(s) across ${scanned} test file(s)`);
+  for (const f of reported) {
     console.log(`  ${f.ban}  ${f.file}:${f.line}  ${f.match}`);
   }
   if (counts['B1-exact-count'] > 0) console.log(`  B1 hint: ${B1_HINT}`);
@@ -772,6 +914,12 @@ if (jsonMode) {
   if (counts['B3-bare-hook-exit-code'] > 0) console.log(`  B3 hint: ${B3_HINT}`);
   if (counts['B4-hook-decision-contract-copy'] > 0) console.log(`  B4 hint: ${B4_HINT}`);
   if (counts['B5-date-time-bomb'] > 0) console.log(`  B5 hint: ${B5_HINT}`);
+  if (stagedScope !== null && suppressed > 0) {
+    console.log(
+      `  (${suppressed} pre-existing finding(s) outside this commit's staged hunks not shown — ` +
+        'the CI job test-value-bans reports the repo-wide census)',
+    );
+  }
   console.log('  (advisory — this check never blocks; see .claude/rules/testing.md § Lint-Enforceable Test Bans)');
 }
 

@@ -62,10 +62,11 @@
  * Verified against glab 1.91.0 / gh 2.86.0 (2026-08-15).
  */
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { listRepoFiles } from './repo-files.mjs';
 
 /** Directories walked for documentation. Mirrors check-vcs-repo-flag.mjs. */
 const SCAN_DIRS = Object.freeze([
@@ -80,8 +81,6 @@ const SCAN_DIRS = Object.freeze([
 ]);
 
 /** Never descend into these. */
-const EXCLUDED_DIRS = Object.freeze(['node_modules', '.git', 'dist', 'build', 'coverage']);
-
 /** Fence languages whose body is shell. Anything else is prose. */
 const SHELL_LANGS = Object.freeze(new Set(['bash', 'sh', 'shell', 'console', 'zsh']));
 
@@ -296,28 +295,6 @@ function probeHelp(bin, group, cache) {
   return entry;
 }
 
-/**
- * Recursively collect `.md` files.
- *
- * @param {string} directory
- * @param {string[]} acc
- * @returns {string[]}
- */
-function walk(directory, acc = []) {
-  if (!existsSync(directory)) return acc;
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    if (entry.isSymbolicLink()) continue;
-    if (EXCLUDED_DIRS.includes(entry.name)) continue;
-    const fullPath = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      walk(fullPath, acc);
-      continue;
-    }
-    if (entry.isFile() && path.extname(entry.name) === '.md') acc.push(fullPath);
-  }
-  return acc;
-}
-
 /** @param {string} text @returns {string} */
 function clampSnippet(text) {
   const flat = text.replace(/\s+/g, ' ').trim();
@@ -358,13 +335,20 @@ export function inspectDocCliCommands(pluginRoot) {
   /** @type {string[]} */
   let files;
   try {
-    files = SCAN_DIRS.flatMap((dir) => walk(path.join(pluginRoot, dir)));
-    for (const entry of readdirSync(pluginRoot, { withFileTypes: true })) {
-      if (entry.isFile() && path.extname(entry.name) === '.md') {
-        files.push(path.join(pluginRoot, entry.name));
-      }
-    }
-    files.sort();
+    // The index, not the filesystem (#1143). A `readdirSync` walk cannot see
+    // `.gitignore`, so every ignored artefact under a scan root entered this
+    // census as if it were documentation: measured 2026-08-26 on a clean
+    // checkout with NO worktree present, 4 such files —  `.claude/STATE.md`
+    // (per-session mutable state) and three gitignored `docs/specs/*.md`. A
+    // worktree under this repo's own `.claude/worktrees/` convention would
+    // add a complete second copy of every scanned doc on top of that.
+    // One enumeration covers both populations this check has always scanned:
+    // the SCAN_DIRS subtrees, and the repo-root `.md` files at depth 0.
+    const scanDirs = new Set(SCAN_DIRS);
+    files = listRepoFiles(pluginRoot, { exts: ['.md'] }).filter((absolute) => {
+      const segments = path.relative(pluginRoot, absolute).split(path.sep);
+      return segments.length === 1 || scanDirs.has(segments[0]);
+    });
   } catch (error) {
     findings.push({
       kind: 'tool-error',

@@ -50,13 +50,25 @@
  *  14. B4's systemMessage arm loses its deny-capable-hook scope gate → the plain
  *      `systemMessage` output of operator-steer / the session-start banner
  *      false-positives, since that key is overloaded (warn carrier vs plain out).
+ *  15. B2 regresses to a WHOLE-FILE assert count reported at the FIRST .md
+ *      read's line (#1148) — two populations with no causal relation. The
+ *      reported location then drifts without the finding changing (filed
+ *      2026-08-23 as tests/unit/vault-mirror.test.mjs:1077, reported :1415
+ *      three days later with the same 52 asserts; nothing happened at line
+ *      1077, the first .md read moved 338 lines), AND every later .md read in
+ *      the file is masked because findIndex stops at the first.
+ *  16. The --stdin (pre-commit) path reports findings on lines this commit
+ *      does not touch (#1148) — editing one line of a long test file surfaces
+ *      every pre-existing finding in it, so the warning is about work the
+ *      committer did not do and gets trained away. The unscoped CI job
+ *      `test-value-bans` is what keeps the repo-wide census.
  *
  * Fixtures are written into tmpdirs at runtime: a committed fixture file
  * carrying ban signatures would be flagged by the check's own repo-wide scan.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -598,5 +610,160 @@ describe('check-test-value-bans — CLI contract', () => {
 
     expect(res.status).toBe(2);
     expect(res.stderr).toContain('Unknown flag');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1148 — B2 counts the population it reports, and --stdin judges staged lines
+// ---------------------------------------------------------------------------
+
+describe('check-test-value-bans — B2 counts the population it reports (#1148)', () => {
+  it('emits one finding per .md read, at that read, counting only its own test (bug 15)', () => {
+    const src = [
+      "it('a', () => {", //                                  1
+      "  const doc = readFileSync('docs/a.md', 'utf8');", //  2
+      "  expect(doc).toContain('x1');", //                    3
+      "  expect(doc).toContain('x2');", //                    4
+      "  expect(doc).toContain('x3');", //                    5
+      '});', //                                               6
+      "it('b', () => {", //                                   7
+      "  const doc = readFileSync('docs/b.md', 'utf8');", //  8
+      '  expect(doc).toMatch(/y1/);', //                      9
+      '  expect(doc).toMatch(/y2/);', //                     10
+      '  expect(doc).toMatch(/y3/);', //                     11
+      '  expect(doc).toMatch(/y4/);', //                     12
+      '});',
+      '',
+    ].join('\n');
+
+    const { json } = scan({ 'tests/two-reads.test.mjs': src });
+    const b2 = json.findings.filter((f) => f.ban === 'B2-prose-pin-suspected');
+
+    // v1 emitted ONE finding: line 2, count 7 (the whole file). Both numbers
+    // described something no single assertion belongs to, and the read at
+    // line 8 was invisible because findIndex stops at the first match.
+    expect(b2.map((f) => f.line)).toEqual([2, 8]);
+    expect(b2[0].match).toContain('3 toContain/toMatch asserts');
+    expect(b2[1].match).toContain('4 toContain/toMatch asserts');
+  });
+
+  it('does not flag a file whose asserts only reach the threshold when summed (bug 15)', () => {
+    // Four .md-reading tests, two prose asserts each: 8 file-wide, so v1
+    // flagged it — at the first read's line, for assertions living in three
+    // other tests. No single read reaches PROSE_ASSERT_THRESHOLD, so no read
+    // is a suspected pin.
+    const block = (i) =>
+      [
+        "it('t" + i + "', () => {",
+        "  const doc = readFileSync('docs/" + i + ".md', 'utf8');",
+        "  expect(doc).toContain('one');",
+        "  expect(doc).toContain('two');",
+        '});',
+      ].join('\n');
+    const src = [0, 1, 2, 3].map(block).join('\n') + '\n';
+
+    const { json } = scan({ 'tests/spread.test.mjs': src });
+    expect(json.counts['B2-prose-pin-suspected']).toBe(0);
+  });
+
+  it('counts file-wide for a module-scope read, where the file IS that read’s scope', () => {
+    const src = [
+      "const doc = readFileSync('docs/guide.md', 'utf8');", // 1 — module scope
+      "it('a', () => {",
+      "  expect(doc).toContain('x1');",
+      "  expect(doc).toContain('x2');",
+      '});',
+      "it('b', () => {",
+      "  expect(doc).toContain('x3');",
+      '});',
+      '',
+    ].join('\n');
+
+    const { json } = scan({ 'tests/module-read.test.mjs': src });
+    const b2 = json.findings.filter((f) => f.ban === 'B2-prose-pin-suspected');
+
+    expect(b2).toHaveLength(1);
+    expect(b2[0].line).toBe(1);
+    expect(b2[0].match).toContain('3 toContain/toMatch asserts in this file');
+  });
+});
+
+/**
+ * An ISOLATED tmpdir git repository. Nothing here can reach this working copy:
+ * every git call is cwd-pinned to the tmpdir, and `tests/setup/scrub-git-env.mjs`
+ * strips GIT_DIR / GIT_WORK_TREE from the suite environment for exactly this
+ * reason. Same pattern as tests/lib/validate/check-untracked-test-deps.test.mjs.
+ * @param {Record<string, string>} files committed as the base revision
+ * @returns {{root: string, git: (...args: string[]) => string, write: (rel: string, body: string) => void}}
+ */
+function gitFixture(files) {
+  const root = mkdtempSync(join(tmpdir(), 'so-tvb-git-'));
+  tmpDirs.push(root);
+  const git = (...args) =>
+    execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  const write = (rel, body) => {
+    mkdirSync(join(root, rel, '..'), { recursive: true });
+    writeFileSync(join(root, rel), body);
+  };
+  git('init', '-q', '-b', 'main');
+  git('config', 'user.email', 'fixture@example.invalid');
+  git('config', 'user.name', 'Fixture');
+  git('config', 'commit.gpgsign', 'false');
+  for (const [rel, body] of Object.entries(files)) write(rel, body);
+  git('add', '-A');
+  git('-c', 'core.hooksPath=/dev/null', 'commit', '-q', '-m', 'base');
+  return { root, git, write };
+}
+
+describe('check-test-value-bans — --stdin judges staged LINES, not staged files (#1148)', () => {
+  const banLine = (i) => 'expect(Object.keys(reg' + i + ')).toHaveLength(' + (i + 2) + ');';
+  const base = [banLine(0), '// filler', '// filler', '// filler', ''].join('\n');
+  const REL = 'tests/staged.test.mjs';
+
+  /** Base revision committed, then ONE new line staged far below line 1. */
+  function stagedFixture() {
+    const fx = gitFixture({ [REL]: base });
+    fx.write(REL, base + banLine(9) + '\n');
+    fx.git('add', '-A');
+    return fx;
+  }
+
+  it('reports the finding inside the staged hunk and suppresses the pre-existing one (bug 16)', () => {
+    const { root } = stagedFixture();
+
+    const res = spawnSync(process.execPath, [SCRIPT, root, '--stdin', '--json'], {
+      encoding: 'utf8',
+      input: REL,
+      timeout: 20_000,
+    });
+    const json = JSON.parse(res.stdout);
+
+    expect(json.stagedScope).toEqual({ applied: true, suppressed: 1 });
+    expect(json.findings).toHaveLength(1);
+    expect(json.findings[0].line).toBe(5); // the staged line — not line 1
+  });
+
+  it('keeps the repo-wide census when --stdin is absent (the CI path is untouched)', () => {
+    const { root } = stagedFixture();
+
+    const res = spawnSync(process.execPath, [SCRIPT, root, '--json'], {
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    const json = JSON.parse(res.stdout);
+
+    expect(json.stagedScope).toEqual({ applied: false, suppressed: 0 });
+    expect(json.findings.map((f) => f.line)).toEqual([1, 5]);
+  });
+
+  it('leaves the gate inert outside a git working tree (fail open, never silent)', () => {
+    // The tmpdir fixtures every other test in this file uses are NOT git
+    // checkouts. A gate that returned an empty scope there instead of null
+    // would silently zero the whole suite — and, on a non-git export, the
+    // pre-commit hook with it.
+    const { json } = scan({ 'tests/nogit.test.mjs': banLine(0) + '\n' });
+
+    expect(json.stagedScope).toEqual({ applied: false, suppressed: 0 });
+    expect(json.counts['B1-exact-count']).toBe(1);
   });
 });

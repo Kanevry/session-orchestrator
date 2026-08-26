@@ -570,8 +570,9 @@ describe('pre-task-scope-disjoint — import safety (isMain)', () => {
     // The other half: the guard must not be so wide that the module stops
     // loading. Every export the tests below reach for has to be there.
     const mod = await import(pathToFileURL(HOOK).href);
-    for (const name of ['decide', 'extractScopeFromPrompt', 'listTrackedFiles',
-      'normalizeScopeEntry', 'promoteDirEntries', 'buildTranscriptIndex', 'makeFinishedProbe']) {
+    for (const name of ['decide', 'extractScopeFromPrompt', 'extractScopeSignal', 'listTrackedFiles',
+      'normalizeScopeEntry', 'promoteDirEntries', 'buildTranscriptIndex', 'makeFinishedProbe',
+      'bumpSignalCounter']) {
       expect(typeof mod[name]).toBe('function');
     }
   });
@@ -697,5 +698,143 @@ describe('pre-task-scope-disjoint — fake regression (proves the guard bites)',
     );
     expect(leaked.stdout).not.toContain('"permissionDecision":"deny"');
     expect(() => expectDeny(leaked, 'scripts/foo.mjs')).toThrow();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// #1092 — the scope marker missed the real prompts, and the resulting ALLOW
+// left no trace. Measured 2026-08-26 over 709 of this repo's own subagent
+// prompts: widening the 80-char window adds 34 marker hits and 0 extracted
+// paths, while the inline comma-separated declaration shape recovers 9.
+// ---------------------------------------------------------------------------
+describe('pre-task-scope-disjoint — scope signal shapes and counters (#1092)', () => {
+  /** @type {any} */ let mod;
+  async function load() { mod ??= await import(pathToFileURL(HOOK).href); return mod; }
+
+  it('extracts an INLINE comma-separated declaration written mid-sentence', async () => {
+    const { extractScopeSignal } = await load();
+    // The measured miss class: 7 of 15 transcripts of a real prior session put
+    // "FILE-SCOPE" at column 210…506 with the paths inline, not fenced. The
+    // fenced-only extractor returned [] and the dispatch went unchecked.
+    const prompt = 'Du bist C2. Max 25 turns. Do NOT commit (PSA-007). '
+      + 'Edit ONLY your FILE-SCOPE: scripts/lib/reconcile/emitter.mjs, scripts/lib/reconcile/renderer.mjs, '
+      + 'tests/lib/reconcile/emitter.test.mjs.\n\nMach die Arbeit.';
+
+    expect(extractScopeSignal(prompt)).toEqual({
+      status: 'extracted',
+      files: [
+        'scripts/lib/reconcile/emitter.mjs',
+        'scripts/lib/reconcile/renderer.mjs',
+        'tests/lib/reconcile/emitter.test.mjs',
+      ],
+    });
+  });
+
+  it('reads a CITATION of the vocabulary as no declaration at all', async () => {
+    const { extractScopeSignal } = await load();
+    // The direction a widened window fails in: these are the prompts the
+    // 600-char window newly matches. Inventing scope from prose could DENY a
+    // legitimate dispatch — the one direction this hook must not fail in.
+    // Asserting the STATUS here would be wrong and the first draft of this test
+    // was: shape 1's line-leading window already matches these (they are short
+    // lines), so the honest classification is 'unparseable' — a marker matched
+    // and no path survived. What must hold is the direction that can do damage:
+    // ZERO paths, because an invented entry could DENY a legitimate dispatch.
+    for (const prose of [
+      'Every count MUST quote the exact command you ran, the file scope, the result, and HEAD SHA.',
+      'Nenne, ob sich Datei-Scopes ueberschneiden (wichtig fuer File-Scope-Disjunktheit).',
+      'Das Nachbardokument (Zeile 349, nicht dein Scope) skopiert bereits korrekt.',
+      // The one MY change could break: a compound noun followed by a colon and
+      // real paths. At a 24-char operator tail this harvested both files.
+      'Pruefe (File-Scope-Disjunktheit: scripts/a.mjs, scripts/b.mjs) vor der Welle.',
+      // ... and a citation whose sentence genuinely continues with a path.
+      'Beachte deinen File-Scope und lies zuerst scripts/lib/scope-gate.mjs dazu.',
+    ]) {
+      expect(extractScopeSignal(prose).files).toEqual([]);
+    }
+  });
+
+  it('keeps the fenced shape ahead of the inline shape when both are present', async () => {
+    const { extractScopeSignal } = await load();
+    const prompt = 'Edit ONLY your FILE-SCOPE: scripts/wrong.mjs\n\n'
+      + '## DEIN DATEI-SCOPE\n```\nscripts/right.mjs\n```\n';
+
+    // Precedence is the whole point: the documented line-leading + fenced form
+    // wins, so adding shape 2 cannot silently re-point an existing extraction.
+    expect(extractScopeSignal(prompt).files).toEqual(['scripts/right.mjs']);
+  });
+
+  it('classifies a marker with an unusable block as unparseable, not absent', async () => {
+    const { extractScopeSignal } = await load();
+    const prompt = '## FILE-SCOPE\n```\nsiehe die Wellenplanung im Vault\n```\n';
+
+    // Row 6 vs row 5. Collapsing them is exactly what makes "the coordinator
+    // injected nothing" indistinguishable from "the parser gave up".
+    expect(extractScopeSignal(prompt)).toEqual({ status: 'unparseable', files: [] });
+  });
+
+  it('records a counter on the no-signal ALLOW instead of leaving no trace', async () => {
+    const { decide } = await load();
+    const base = { ledger: null, ledgerCorrupt: false, waveKey: 's1|w2|k', knownFiles: [],
+      collide: () => ({ ok: true, collisions: [], duplicateIds: [] }), nowIso: '2026-08-26T00:00:00.000Z' };
+    const call = (prompt) => decide({ ...base, input: { tool_name: 'Agent', tool_input: { description: 'A', prompt } } });
+
+    const absent = call('Mach die Arbeit, keine Datei genannt.');
+    const unparseable = call('## FILE-SCOPE\n```\nsiehe Wellenplan\n```\n');
+    const extracted = call('## FILE-SCOPE\n```\nscripts/a.mjs\n```\n');
+
+    // The defect: all three previously returned { action: 'allow' } with NO
+    // ledger field, so main() wrote nothing and the three cases were
+    // byte-identical to the guard never having run.
+    expect(absent.action).toBe('allow');
+    expect(absent.ledger.scopeSignals).toEqual({ 'marker-absent': 1, unparseable: 0, extracted: 0 });
+    expect(unparseable.ledger.scopeSignals).toEqual({ 'marker-absent': 0, unparseable: 1, extracted: 0 });
+    expect(extracted.ledger.scopeSignals).toEqual({ 'marker-absent': 0, unparseable: 0, extracted: 1 });
+  });
+
+  it('counts only — no prompt text, no paths, no agent ids leak into the tally', async () => {
+    const { decide } = await load();
+    const verdict = decide({
+      input: { tool_name: 'Agent', tool_input: { description: 'Secret-Agent', prompt: 'nothing scoped here' } },
+      ledger: null, ledgerCorrupt: false, waveKey: 's1|w2|k', knownFiles: [],
+      collide: () => ({ ok: true, collisions: [], duplicateIds: [] }), nowIso: '2026-08-26T00:00:00.000Z',
+    });
+
+    // The ledger is a shared working-copy artefact; a scope-signal tally must
+    // not become a second, unreviewed copy of prompt content.
+    expect(Object.keys(verdict.ledger.scopeSignals).sort()).toEqual(['extracted', 'marker-absent', 'unparseable']);
+    for (const v of Object.values(verdict.ledger.scopeSignals)) expect(typeof v).toBe('number');
+    expect(JSON.stringify(verdict.ledger)).not.toContain('nothing scoped here');
+  });
+
+  it('does not erase the wave\'s recorded agents when a no-scope dispatch is counted', async () => {
+    const { decide } = await load();
+    const prior = { waveKey: 's1|w2|k', updated: '2026-08-26T00:00:00.000Z',
+      agents: [{ id: 'A1', desc: 'A1', files: ['scripts/a.mjs'], at: '2026-08-26T00:00:00.000Z' }] };
+
+    const verdict = decide({
+      input: { tool_name: 'Agent', tool_input: { description: 'A2', prompt: 'no scope in this prompt' } },
+      ledger: prior, ledgerCorrupt: false, waveKey: 's1|w2|k', knownFiles: [],
+      collide: () => ({ ok: true, collisions: [], duplicateIds: [] }), nowIso: '2026-08-26T00:01:00.000Z',
+    });
+
+    // Writing a FRESH ledger on the counting path would drop A1's scope claim
+    // and disable collision detection for the rest of the wave — a far worse
+    // bug than the missing counter it was added to fix.
+    expect(verdict.ledger.agents).toEqual(prior.agents);
+    expect(verdict.ledger.scopeSignals['marker-absent']).toBe(1);
+  });
+
+  it('carries the tally forward across dispatches of the same wave and resets on a new one', async () => {
+    const { bumpSignalCounter } = await load();
+    const first = bumpSignalCounter(null, 'w2', 'marker-absent');
+    const second = bumpSignalCounter({ waveKey: 'w2', scopeSignals: first }, 'w2', 'extracted');
+
+    expect(second).toEqual({ 'marker-absent': 1, unparseable: 0, extracted: 1 });
+    // A tally that accumulated across waves would report last wave's coverage
+    // as this wave's.
+    expect(bumpSignalCounter({ waveKey: 'w2', scopeSignals: second }, 'w3', 'extracted'))
+      .toEqual({ 'marker-absent': 0, unparseable: 0, extracted: 1 });
   });
 });

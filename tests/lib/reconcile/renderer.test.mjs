@@ -11,13 +11,19 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import yaml from 'js-yaml';
 
-import { deriveSlug, renderRule } from '../../../scripts/lib/reconcile/renderer.mjs';
+import {
+  EVIDENCE_DIGEST_RE,
+  deriveSlug,
+  renderRule,
+} from '../../../scripts/lib/reconcile/renderer.mjs';
+import { writeApprovedRules } from '../../../scripts/lib/reconcile/writer.mjs';
+import { verifyDocument } from '../../../scripts/backfill-evidence-digest.mjs';
 import { toActivationMetadata } from '../../../scripts/lib/reconcile/emitter.mjs';
 import { loadApplicableRules, parseGlobsFrontmatter } from '../../../scripts/lib/rule-loader.mjs';
 import {
@@ -554,5 +560,91 @@ describe('renderRule — description containing ": " is real-YAML-safe (#1041)',
     const { content } = renderRule(learning, metadata);
     expect(content).toContain(`description: ${metadata.description}`);
     expect(metadata.description).not.toContain(':');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1101 — the evidence digest: a seal the rule file carries, not a pointer
+// ---------------------------------------------------------------------------
+
+describe('renderRule — evidence-digest (#1101)', () => {
+  /**
+   * Bug this catches: the renderer's `EVIDENCE_DIGEST_RE` and the LITERAL COPY
+   * in `skills/claude-md-drift-check/checker.mjs` drift apart. They are two
+   * copies on purpose (the checker is a standalone skill script), and a
+   * divergence is silent in both directions: a checker regex that is stricter
+   * re-warns on the whole sealed corpus in every fresh clone, and one that is
+   * looser accepts a digest shape the renderer never emits.
+   */
+  it('pins the checker\'s literal copy of EVIDENCE_DIGEST_RE equal to the renderer\'s', () => {
+    const checkerSrc = readFileSync(
+      join(process.cwd(), 'skills/claude-md-drift-check/checker.mjs'),
+      'utf8',
+    );
+    const m = /const EVIDENCE_DIGEST_RE = (\/[^\n]*\/);/.exec(checkerSrc);
+    expect(m, 'checker.mjs must declare a literal EVIDENCE_DIGEST_RE').not.toBeNull();
+    expect(m[1]).toBe(String(EVIDENCE_DIGEST_RE));
+  });
+
+  /**
+   * Bug this catches: the new frontmatter key trips a downstream reader and
+   * every future rule silently fails to land. `writer.mjs`'s
+   * `frontmatterRefusalReason` was verified positive-key-only, so the flat
+   * scalar should pass untouched — this asserts that from the RENDERER's side.
+   * (Its owner asserts the same invariant from the writer's side: two tests,
+   * two owners, one fact, zero shared files.)
+   */
+  it('renders a document the real writer accepts and lands on disk', async () => {
+    const repoRoot = makeRulesDir();
+    const learning = fragileLearning();
+    const rendered = renderRule(learning, toActivationMetadata(learning));
+    expect(rendered.content).toMatch(/^evidence-digest: sha256-v1:[0-9a-f]{64}$/m);
+
+    const result = await writeApprovedRules({
+      approved: [{ ...rendered, learningKey: 'fragile-pattern/zx-imports', confidence: 0.8 }],
+      repoRoot,
+      sessionId: 'test-session',
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.written).toBe(1);
+  });
+
+  /**
+   * Bug this catches: the digest stops covering the evidence bytes — e.g. a
+   * refactor that hashes the raw `learning.evidence` array instead of the
+   * RENDERED block, or reorders the canonical components. Then a tampered
+   * `## Evidence` section still verifies and the seal is decorative.
+   *
+   * Also the acceptance demonstration: verification runs from the document
+   * STRING alone. No learnings.jsonl is read anywhere in this test.
+   */
+  it('verifies offline from the document alone, and breaks on a one-byte evidence edit', () => {
+    const learning = fragileLearning();
+    const { content } = renderRule(learning, toActivationMetadata(learning));
+
+    expect(verifyDocument(content).ok).toBe(true);
+
+    const tampered = content.replace('pipeline #5835 hang', 'pipeline #5836 hang');
+    expect(tampered).not.toBe(content);
+    const bad = verifyDocument(tampered);
+    expect(bad.ok).toBe(false);
+    expect(bad.reason).toMatch(/digest mismatch/);
+  });
+
+  /**
+   * Bug this catches: an unavailable `created_at` leaking a placeholder into the
+   * hashed input — `String(undefined)` hashes the literal text `undefined`, and
+   * any substituted date would make the digest a reference masquerading as
+   * evidence, which is the exact failure #1101 exists to close. The three
+   * backfilled rules whose learning-key no longer resolves depend on this.
+   */
+  it('emits an EMPTY evidence-recorded-at when created_at is absent — never a stand-in', () => {
+    const learning = fragileLearning({ created_at: undefined });
+    const { content } = renderRule(learning, toActivationMetadata(learning));
+
+    expect(content).toContain('- evidence-recorded-at: \n');
+    expect(content).not.toMatch(/- evidence-recorded-at:.*(undefined|null|NaN)/);
+    // The seal is still self-consistent with the empty component.
+    expect(verifyDocument(content).ok).toBe(true);
   });
 });

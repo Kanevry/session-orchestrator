@@ -11,6 +11,7 @@ paths:
 learning-key: fragile-file/quality-gate-wrapper-needs-large-output-buffer-and-env-isolation
 confidence: 0.85
 expires-at: 2026-10-01
+evidence-digest: sha256-v1:e10337c3d1c15b62247d0cb94210108f6be02f44bbc2d1ac04e6575d0a7e56cd
 ---
 
 # Auto-generated rule: quality-gate-wrapper-needs-large-output-buffer-and-env-isolation
@@ -42,6 +43,9 @@ buffer half IS fixed structurally (`RUN_CHECK_MAX_BUFFER_BYTES = 64 * 1024 * 102
 - learning-key: `fragile-file/quality-gate-wrapper-needs-large-output-buffer-and-env-isolation`
 - learning-id: `70c9c7b7-d8f3-4363-b170-0b8973d52df3`
 - source-session: `main-2026-07-03-session-1`
+- evidence-digest: `sha256-v1:e10337c3d1c15b62247d0cb94210108f6be02f44bbc2d1ac04e6575d0a7e56cd`
+- evidence-recorded-at: 
+- evidence-digest-input: learning-key \n learning-id \n source-session \n evidence-recorded-at \n confidence \n <the `## Evidence` block above, verbatim UTF-8, LF-joined, no trailing newline>
 - confidence: 0.85
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695)
 - expires-at: 2026-10-01

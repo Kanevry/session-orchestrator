@@ -27,6 +27,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { DETECTORS } from './dead-bridge-detectors.mjs';
 import * as corpus from './dead-bridge-corpus.mjs';
+import { listRepoFiles } from './repo-files.mjs';
 
 const DEFAULT_EXTS = ['.mjs', '.md'];
 
@@ -90,10 +91,31 @@ function walk(absDir, exts) {
  * }}
  */
 export function buildRepoContext(pluginRoot) {
+  /**
+   * Enumerate `absDir` from the git INDEX when it lies inside the plugin
+   * root, falling back to the raw walk otherwise (#1143). The walk cannot see
+   * `.gitignore`, so a worktree created under this repo's own
+   * `.claude/worktrees/` convention — or any vendored/generated tree, since
+   * this walk carries no exclusion set at all — enters the detector corpus as
+   * repository content. A detector then reads a PEER checkout's copy of a
+   * skill or rule file and counts it as an independent bridge.
+   *
+   * The containment guard matters: a corpus entry outside the root has no
+   * index to consult, and an `ls-files` pathspec of `../..` is an error, not
+   * an empty answer.
+   * @param {string} absDir
+   * @param {string[] | null} exts
+   * @returns {string[]}
+   */
+  const listUnder = (absDir, exts) => {
+    const rel = path.relative(pluginRoot, absDir);
+    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return walk(absDir, exts);
+    return listRepoFiles(pluginRoot, { dirs: [rel], exts });
+  };
   return {
     pluginRoot,
-    listMdFiles: (absDir) => walk(absDir, ['.md']),
-    listFiles: (absDir, exts = DEFAULT_EXTS) => walk(absDir, exts),
+    listMdFiles: (absDir) => listUnder(absDir, ['.md']),
+    listFiles: (absDir, exts = DEFAULT_EXTS) => listUnder(absDir, exts),
     readText: (absPath) => readFileSync(absPath, 'utf8'),
     exists: (absPath) => existsSync(absPath),
   };

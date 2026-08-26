@@ -66,11 +66,87 @@ import {
 /**
  * Short, stable SHA-1 prefix (first 7 hex chars) of an input string.
  *
+ * Slug-collision helper ONLY. Deliberately NOT reused for the evidence digest
+ * below (#1101): 7 hex chars of SHA-1 is a namespacing device, not a tamper
+ * seal, and conflating the two would let a slug change read as a seal break.
+ *
  * @param {string} input
  * @returns {string}
  */
 function shortHash(input) {
   return createHash('sha1').update(String(input)).digest('hex').slice(0, 7);
+}
+
+/**
+ * Shape of the `evidence-digest` frontmatter scalar (#1101).
+ *
+ * `sha256-v1:` names BOTH the algorithm and the canonical-input version, so a
+ * future change to the input recipe bumps the prefix rather than silently
+ * invalidating every seal on disk.
+ *
+ * A LITERAL COPY of this regex lives in `skills/claude-md-drift-check/checker.mjs`
+ * (Check 8). The checker is a standalone skill script; importing across the
+ * skill/script boundary would be new coupling for one 30-character literal.
+ * `tests/lib/reconcile/renderer.test.mjs` pins the two copies equal.
+ */
+export const EVIDENCE_DIGEST_RE = /^sha256-v1:[0-9a-f]{64}$/;
+
+/**
+ * Shape of the `evidence-recorded-at` provenance value — an ISO-8601 instant.
+ *
+ * A learning's `created_at` is machine-written by the learnings store, but it
+ * reaches this renderer on an agent-authored record, and it lands on a body
+ * line OUTSIDE an inline-code span. A value carrying a newline could forge a
+ * sibling provenance line, so a non-conforming value is treated as ABSENT (the
+ * empty-string digest component) rather than interpolated. Declining to record
+ * an unusable timestamp is the same posture as the three backfill cases whose
+ * `created_at` is genuinely unavailable — an invented date would make the
+ * digest a reference masquerading as evidence.
+ */
+const EVIDENCE_RECORDED_AT_RE = /^\d{4}-\d{2}-\d{2}T[0-9:.]+(?:Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * Compute the `sha256-v1:` evidence digest from its six canonical components.
+ *
+ * ── Why this is EVIDENCE and not a REFERENCE (#1101) ─────────────────────────
+ * `.orchestrator/metrics/learnings.jsonl` is gitignored, so in a fresh clone a
+ * rule's `learning-key` resolves to nothing and its provenance is unverifiable.
+ * The last component here is the RENDERED `## Evidence` block itself — so a
+ * reader holding only the `.md` file re-reads its own `## Evidence` section,
+ * re-joins the five header fields from its own `## Provenance` block, hashes,
+ * and compares. `learnings.jsonl` is never consulted.
+ *
+ * The input is the six components joined with `\n`, UTF-8, **no trailing
+ * newline**. Order is fixed and versioned by the `sha256-v1:` prefix.
+ *
+ * @param {object} parts
+ * @param {string} parts.learningKey
+ * @param {string} parts.learningId - the same `'n/a'` fallback the body emits.
+ * @param {string} parts.sourceSession - ditto.
+ * @param {string} parts.evidenceRecordedAt - the learning's `created_at`, or
+ *   `''` when absent/unusable. NEVER a substituted or invented date.
+ * @param {string} parts.confidence - `String(metadata.confidence)`.
+ * @param {string} parts.evidenceBlock - the EXACT string written to
+ *   `## Evidence`, verbatim.
+ * @returns {string} `sha256-v1:<64 lowercase hex>`
+ */
+export function computeEvidenceDigest({
+  learningKey,
+  learningId,
+  sourceSession,
+  evidenceRecordedAt,
+  confidence,
+  evidenceBlock,
+}) {
+  const canonical = [
+    String(learningKey ?? ''),
+    String(learningId ?? ''),
+    String(sourceSession ?? ''),
+    String(evidenceRecordedAt ?? ''),
+    String(confidence ?? ''),
+    String(evidenceBlock ?? ''),
+  ].join('\n');
+  return `sha256-v1:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
 }
 
 /**
@@ -330,7 +406,6 @@ export function renderRule(learning, metadata) {
   fm.push(`learning-key: ${metadata.learningKey}`);
   fm.push(`confidence: ${metadata.confidence}`);
   fm.push(`expires-at: ${metadata.expiresAt}`);
-  fm.push('---');
 
   // ── Body (free markdown; does not affect frontmatter parsing) ────────────
   // Both provenance values are rendered INSIDE an inline-code span below, which
@@ -349,6 +424,28 @@ export function renderRule(learning, metadata) {
       })
     : 'n/a';
 
+  // ── Evidence digest (#1101) ──────────────────────────────────────────────
+  // Rendered ONCE and reused, so the hashed bytes and the written bytes are the
+  // same string by construction rather than by two calls agreeing.
+  const evidenceBlock = renderEvidence(learning.evidence);
+  const evidenceRecordedAt =
+    typeof learning.created_at === 'string' && EVIDENCE_RECORDED_AT_RE.test(learning.created_at)
+      ? learning.created_at
+      : '';
+  const evidenceDigest = computeEvidenceDigest({
+    learningKey: metadata.learningKey,
+    learningId,
+    sourceSession,
+    evidenceRecordedAt,
+    confidence: String(metadata.confidence),
+    evidenceBlock,
+  });
+  // Appended AFTER `expires-at` on purpose: every key BEFORE it keeps its byte
+  // position, so the frontmatter of an existing rule stays byte-stable and the
+  // digest is purely additive.
+  fm.push(`evidence-digest: ${evidenceDigest}`);
+  fm.push('---');
+
   // The untrusted region (H1 + insight + Evidence) is FRAMED: the envelope
   // states, in machine-generated text the record cannot forge, that everything
   // inside is agent-authored data rather than an instruction to the reading
@@ -362,7 +459,7 @@ export function renderRule(learning, metadata) {
     insight,
     '',
     '## Evidence',
-    renderEvidence(learning.evidence),
+    evidenceBlock,
     '',
     UNTRUSTED_END,
     '',
@@ -371,6 +468,11 @@ export function renderRule(learning, metadata) {
     `- learning-key: \`${metadata.learningKey}\``,
     `- learning-id: \`${learningId}\``,
     `- source-session: \`${sourceSession}\``,
+    // #1101: the seal, its one un-derivable input, and the recipe to re-check
+    // both — everything an offline reader needs, in the file itself.
+    `- evidence-digest: \`${evidenceDigest}\``,
+    `- evidence-recorded-at: ${evidenceRecordedAt}`,
+    '- evidence-digest-input: learning-key \\n learning-id \\n source-session \\n evidence-recorded-at \\n confidence \\n <the `## Evidence` block above, verbatim UTF-8, LF-joined, no trailing newline>',
     `- confidence: ${metadata.confidence}`,
     '- generated-by: reconciliation-engine (Epic #693 FA2 / #695)',
     `- expires-at: ${metadata.expiresAt}`,

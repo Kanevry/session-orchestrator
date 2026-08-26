@@ -384,12 +384,19 @@ After the auto-dialectic nudge decision is made (Phase 3.6.7), and when the reco
      approved,
      rejected: [...rejected, ...operatorRejected],
      repoRoot: process.cwd(),
+     // #1099 — FORWARD BOTH. `decideReconcile()` already resolved them onto its
+     // RUN decision (`scripts/lib/session-end/phase-skip.mjs`, `targets` +
+     // `baselineRoot`); dropping them here silently pins every session to
+     // repo-local writes no matter what `reconcile.targets` says. Absent
+     // `baselineRoot` is the documented no-op path, not an error.
+     targets: decision.targets,
+     baselineRoot: decision.baselineRoot,
      sessionId,
    });
    // writeResult = { written: number, archived: number, errors: string[] }
    ```
 
-   `writeApprovedRules` is lock-serialised (via `withFileLock` on `.orchestrator/rules.lock`) and writes each approved proposal to `.claude/rules/<slug>.md`. Rejected proposals (engine-rejected + operator-rejected) are archived to `.orchestrator/reconcile.rejected.log` with reason `user-declined` for operator-rejected and the engine's own audit reason for engine-rejected.
+   `writeApprovedRules` is lock-serialised (via `withFileLock` on `.orchestrator/rules.lock`) and writes each approved proposal to the directory its target names — `.claude/rules/<slug>.md` for `repo-local`, `<baselineRoot>/proposals/<slug>.md` for `baseline`. Each target's write root is confined separately; the leaf comes from the renderer-minted `slug`, never from a caller-supplied path. Rejected proposals (engine-rejected + operator-rejected) are archived to `.orchestrator/reconcile.rejected.log` with reason `user-declined` for operator-rejected and the engine's own audit reason for engine-rejected.
 
 8. Log outcome for Phase 6 Final Report: `reconcile: ${surfaced.length} surfaced → ${approved.length} approved (written: ${writeResult.written}), ${operatorRejected.length} operator-declined${writeResult.errors.length > 0 ? `, ${writeResult.errors.length} write-errors (see sweep.log)` : ''}`.
 

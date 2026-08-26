@@ -40,9 +40,18 @@ text_content() {
 # ---------------------------------------------------------------------------
 # Verify jq is available (fatal — we cannot parse JSON without it)
 # ---------------------------------------------------------------------------
+# The diagnostic goes to STDERR, never stdout. A `{"id":null,"error":...}` line
+# on stdout is NOT a valid `initialize` response, so the client reports the same
+# opaque "connection closed: initialize response" it reports when the script
+# cannot be found at all — the two failure modes were indistinguishable
+# (GH Kanevry/session-orchestrator#64). A named, actionable stderr line keeps
+# them apart. Same shape as hooks/run-node.sh's Node-missing diagnostic.
 if ! command -v jq >/dev/null 2>&1; then
-  # Emit a single error and exit; without jq we cannot operate
-  printf '{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"jq is required but not found in PATH"}}\n'
+  {
+    echo "session-orchestrator: 'jq' not found in PATH — the MCP server did not start."
+    echo "  Fix: install jq (macOS: brew install jq · Debian/Ubuntu: apt-get install jq), then restart the client."
+    echo "  (MCP server shells do not source ~/.zshrc, so a jq that works in your terminal can still be invisible here.)"
+  } >&2
   exit 1
 fi
 
