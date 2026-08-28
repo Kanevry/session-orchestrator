@@ -1,0 +1,58 @@
+# ADR 0013: Worktree-Auto-Promotion Is a Process Boundary, Not a Live Migration
+
+> Status: Accepted · session main-2026-08-28-session-2 (Wave 5) · issue #1069
+> Source: `scripts/lib/session-transition.mjs` module header (`leaveSourceRoot`); `scripts/lib/session-end/worktree-cleanup.mjs` (`detectAutoPromotedWorktree`); `docs/events-schema.md` § `orchestrator.session.root_left`; ADR-0008; ADR-0009.
+> Project-instruction file resolution: this repo's root context file is `CLAUDE.md` on Claude Code / Cursor IDE and `AGENTS.md` on Codex CLI — transparent aliases per [skills/_shared/instruction-file-resolution.md](../../skills/_shared/instruction-file-resolution.md).
+
+## Context
+
+Worktree-Auto-Promotion (ADR-0008, ADR-0009, issues #574/#575) creates a sibling worktree via `enterWorktree()` when the operator accepts the PROMOTION_OFFER AUQ, and both prior ADRs were written on an implicit assumption: that the SAME session identity continues, unbroken, from the old root into the new worktree. Neither ADR names the assumption, and neither is wrong about anything it does say — but the assumption itself was never true in the implementation, and the gap it left open was a live defect, not a theoretical one.
+
+Before this session, `enterWorktree()` was called and session-start Phase 0.5 then "exits Phase 0 immediately" — no lock release, no registry deregistration on the OLD root. Measured 2026-08-28 at session start: **zero** `deregisterSelf` / `release(` call sites across `skills/session-start/SKILL.md` and `skills/_shared/parallel-aware-auq.md`. The consequence is a **phantom peer**: the abandoned session-registry entry keeps reading FRESH to `detectPeers()` for `freshnessMin=15` minutes, and is only removed by `sweepZombies()` after `thresholdMin=60` — so the promoted-away root advertises a peer that no longer exists for **up to an hour**, and the abandoned `session.lock` blocks or skews every exclusivity decision made against that root until its own TTL lapses (`DEFAULT_TTL_HOURS = 4`, `scripts/lib/session-lock.mjs`).
+
+A second, related gap: `scripts/lib/session-end/worktree-cleanup.mjs`'s `detectAutoPromotedWorktree()` identified a promoted worktree by comparing the CURRENT session's id against the worktree's directory basename (`<repo-name>-<sessionId>/`). That comparison implicitly assumed the session running inside the promoted worktree still carries the id `enterWorktree()` used to name it — which is exactly the identity-continuity assumption this ADR rejects. Once rejected, that detection path can never match again (see Decision below), and Phase 4a auto-promoted-worktree cleanup would have gone silently dead the moment the fix below landed, had it not been paired with a second key (the promotion marker; see Consequences).
+
+The operator decision made 2026-08-28, recorded verbatim in the `session-transition.mjs` module header, is the one this ADR formalizes: **"Prozessgrenze, not live migration."**
+
+## Decision
+
+**Worktree-Auto-Promotion is a process boundary. The source session ends, in the old root, exactly as any other session ends. A new, independent session starts in the destination worktree. Nothing is transferred between them.**
+
+Concretely, on the PROMOTION_OFFER "Worktree anlegen + starten" outcome:
+
+1. `enterWorktree()` creates the destination worktree (unchanged from ADR-0008/0009).
+2. **Before exiting the current phase**, the coordinator calls `leaveSourceRoot({ repoRoot, sessionId, semanticSessionId, reason })` from `scripts/lib/session-transition.mjs`. This function runs, in order:
+   - `deregisterSelf()` — removes the OLD root's session-registry entry, closing the phantom-peer window at its source instead of waiting out the 15/60-minute sweep windows.
+   - Lock release, reusing the SAME ownership rules `hooks/on-session-end.mjs` applies: `readLockDetailed()` to distinguish an absent lock from an unparseable one, an exact raw `lock.session_id === sessionId` compare BEFORE any proof is loaded, then `loadOwnerProof()` handed to `release()` as the second identity factor (#987/#989). A lock owned by a DIFFERENT session is never touched — the function returns `{ ok: false, reason: 'lock-session-mismatch:<owner>' }` and removes nothing.
+   - `orchestrator.session.root_left` — emitted into the OLD root's event stream, payload `source_root_hash` + `source_root_basename` (`repoPathHash()` — the SAME hash the registry keys entries by), **never an absolute path** (this payload also travels over the optional Clank webhook with no redaction).
+3. The current phase exits immediately. **The destination worktree's own session-start runs Phase 1 onward from scratch** — its own raw physical `session_id`, its own `session.lock` acquisition, its own semantic label. It does not inherit, inspect, or reference anything the source session held.
+
+`leaveSourceRoot()` never throws. A failure (`{ ok: false, reason }`) is reported by the caller as a stderr WARN (`parallel-aware: leaveSourceRoot: <reason>`) and the promotion continues regardless — the destination worktree already exists at that point, so aborting the promotion here would leave exactly the two-live-roots state the call exists to prevent.
+
+## Rejected Alternative: Live Migration
+
+A live migration — transferring lock ownership from the old root to the new worktree via an explicit hand-off protocol — was considered and rejected. `session.lock` is a **single-writer** primitive (`scripts/lib/session-lock.mjs`, issue #330): its entire contract is "one live claim per root, verified by ownership proof". A hand-off protocol necessarily has a window in which BOTH roots hold a claim on their respective locks simultaneously — the old root not yet released, the new root already acquired — which is precisely the two-live-roots state PSA-002/PSA-005 exist to prevent, engineered directly into the mechanism meant to prevent it. A migration protocol would also need to define what happens to in-flight STATE.md writes, wave-scope manifests, and telemetry counters attributed to the old session id — none of which have a well-defined "this is now that session" semantics. Ending the old session and starting a genuinely new one sidesteps all of it: every artifact keeps the identity it was written under, and the new worktree's provenance is exactly as legible as any other fresh session's.
+
+## Consequences
+
+**Session identity does not survive promotion — plan detection accordingly.** The destination worktree's semantic session id is NEVER equal to the id that named the worktree directory (`<repo-name>-<sessionId>/` from `enterWorktree()`'s ORIGINAL caller-side id) once a second session-start cycle has run inside it, because that second cycle mints its own id via `resolveSemanticSessionId()`. Any code that detects "is this an auto-promoted worktree?" by comparing the CURRENT session's id against something recorded from the OLD session is comparing two different sessions' ids and will never match post-#1069.
+
+**Phase 4a is the direct consumer of this constraint, and needed a second detection key because of it.** `detectAutoPromotedWorktree()`'s pre-existing basename comparison (`path.basename(repoRoot) === '<repo-name>-<sessionId>'` against the CURRENT session id) is exactly the broken comparison described above — it can only match when the CURRENT session id happens to equal the id used to CREATE the worktree, which after this ADR's process-boundary model is never true for a #1069-promoted worktree. The fix: `enterWorktree()` now writes `.orchestrator/promoted-from.json` (`PROMOTION_MARKER_RELPATH`) at creation time, recording `source_session_id`, `branch`, `source_root_hash`, `source_root_basename`, `promoted_at`. `detectAutoPromotedWorktree()` tries this marker FIRST (`source: 'marker'`) and only falls back to the legacy basename comparison (`source: 'basename'`) for worktrees created before the marker existed. The marker is keyed on RECORDED fact, not on id coincidence — which is exactly what survives a process boundary that a live comparison cannot. See `skills/session-end/SKILL.md` § Phase 4a and `scripts/lib/session-end/worktree-cleanup.mjs`.
+
+**ADR-0008 and ADR-0009 are partially superseded, not wrong.** Both describe the cleanup ORDERING (0008) and the PATH LAYOUTS (0009) correctly and those decisions stand unchanged. What they got ahead of themselves on is the detection MECHANISM for identifying a promoted worktree, which both describe (or assume) as "compare the current session id against the recorded/expected id" — a description that was accurate for the code as it existed when they were written, and stopped being the FULL story once #1069 made a second detection key structurally necessary. Both carry a dated superseded-in-part note pointing here.
+
+**`leaveSourceRoot` is currently prose-wired only, at four sites**, and this is a NAMED, TRACKED gap rather than a silent one: `skills/session-start/SKILL.md` (two call sites, Phase 0.5 and Phase 1.2.1), `skills/_shared/parallel-aware-auq.md`, `skills/_shared/parallel-aware-preamble.md`. `scripts/lib/validate/check-unwired-features.mjs` carries an explicit allowlist entry recording this as a "prose-only consumer" — the worktree promotion is a coordinator action taken from skill prose, not a script, so no `.mjs` caller will ever appear in a static import graph. **Follow-up:** a mechanical hook (e.g. a `PreCompact`/`Stop`-adjacent check that the promotion AUQ path was actually followed by an event emission) is the named next step; until it lands, correctness depends on the coordinator prose being followed, which is the same trust model every other AUQ-driven skill step in this repo already carries.
+
+**What stays unchanged:** the `#490` durableCommit ordering invariant (Phase 4a still runs after commit+push); the sibling-flat path layout (`<basePath>/<repo-name>-<sessionId>/`, ADR-0009); the PSA-003 destructive-action safeguards on worktree removal; the Hybrid Cleanup Pattern (clean → auto-remove, dirty → AUQ).
+
+## References
+
+- Issue #1069 — "EnterWorktree/CwdChanged als eindeutigen Ein-Root-Übergang modellieren"
+- Issue #1067 — `so/<sessionId>` promotion-branch creation + reuse
+- `scripts/lib/session-transition.mjs` — `leaveSourceRoot()` (authoritative implementation)
+- `scripts/lib/session-end/worktree-cleanup.mjs` — `detectAutoPromotedWorktree()`, `PROMOTION_MARKER_RELPATH`
+- `docs/events-schema.md` § `orchestrator.session.root_left`, § `orchestrator.session.lock.released`
+- ADR-0008 — worktree-cleanup ordering (superseded in part by this ADR)
+- ADR-0009 — worktree path-layouts (superseded in part by this ADR)
+- `scripts/lib/validate/check-unwired-features.mjs` — `leaveSourceRoot` prose-only-consumer allowlist entry
+- `.claude/rules/parallel-sessions.md` — PSA-002 (scope-overlap pause), PSA-005 (mechanical lock/STATE.md protection)

@@ -1,5 +1,12 @@
 # ADR 0008: Worktree-Cleanup Ordering — Phase 4a Runs After Phase 4 Commit+Push
 
+> **Superseded in part by ADR-0013 (2026-08-28).** The commit+push ORDERING decided below still
+> stands unchanged. What changed: issue #1069 established that a promoted worktree runs a
+> BRAND-NEW session with its own id, so the detection algorithm described at "Detect:" below (a
+> plain id/basename comparison) is no longer the FULL detection mechanism — a marker written at
+> creation time is now tried first. See ADR-0013 for the process-boundary model and the
+> superseded claims marked inline below.
+>
 > Status: Accepted · session main-2026-05-27-deep-3 · issues #574 #575
 > Source: `skills/session-end/SKILL.md` § Phase 4a ordering rationale; `scripts/lib/session-end/worktree-cleanup.mjs`; issue #490 (durableCommit ordering invariant); CLAUDE.md "Auto-promoted worktree cleanup is Hybrid Pattern" critical gotcha.
 > Project-instruction file resolution: this repo's root context file is `CLAUDE.md` on Claude Code / Cursor IDE and `AGENTS.md` on Codex CLI — transparent aliases per [skills/_shared/instruction-file-resolution.md](../../skills/_shared/instruction-file-resolution.md).
@@ -38,7 +45,7 @@ The invariant is: `sessions.jsonl` + STATE.md must be pushed to origin (durable)
 
 The Hybrid Cleanup Pattern applied by Phase 4a is:
 
-- **Detect:** `detectAutoPromotedWorktree(repoRoot, sessionId, opts)` from `scripts/lib/session-end/worktree-cleanup.mjs`. Uses `parseSessionId()` (never a custom regex) to identify semantic-format session IDs; UUID-format sessions return `null` immediately and skip Phase 4a entirely. Derives the main-checkout root from `git worktree list --porcelain` (not from `path.basename(repoRoot)`) to avoid the basename-self-compare structural impossibility surfaced in the W3 T2 finding during this session.
+- **Detect:** `detectAutoPromotedWorktree(repoRoot, sessionId, opts)` from `scripts/lib/session-end/worktree-cleanup.mjs`. Uses `parseSessionId()` (never a custom regex) to identify semantic-format session IDs; UUID-format sessions return `null` immediately and skip Phase 4a entirely. Derives the main-checkout root from `git worktree list --porcelain` (not from `path.basename(repoRoot)`) to avoid the basename-self-compare structural impossibility surfaced in the W3 T2 finding during this session. **Superseded in part (ADR-0013, #1069):** this describes only the LEGACY basename key, now tried second. Since a promoted worktree's session ends and a NEW session starts inside it (process boundary), the CURRENT session's id can no longer be compared against anything — a `.orchestrator/promoted-from.json` marker written at `enterWorktree()` time is tried FIRST.
 - **Clean path:** `isWorktreeClean(wtPath, opts)` — passes iff `git status --porcelain` is empty AND `git status --short --branch` contains no `ahead` indicator. If clean: `git worktree remove <wtPath>` (no `--force`), log WARN. Auto-remove without user confirmation is safe here because no uncommitted, untracked, or unpushed work exists.
 - **Dirty path:** AUQ with three options — `Behalten (Recommended)` / `Löschen` / `Manuell`. Calling `git worktree remove --force` on a dirty worktree without explicit operator confirmation would violate PSA-003 (destructive action safeguards, `.claude/rules/parallel-sessions.md`). The dirty state may contain uncommitted work from another session or unmerged commits the operator has not reviewed.
 
@@ -61,7 +68,7 @@ All git invocations in Phase 4a use the injection-safe arg-array form (`execFile
 
 **Known limitations:**
 
-- Phase 4a cannot remove a worktree that was created by a different session (wrong `sessionId` → `detectAutoPromotedWorktree` returns `null`). Orphaned worktrees from crashed sessions are the domain of `scripts/gc-stale-worktrees.mjs`, not Phase 4a.
+- Phase 4a cannot remove a worktree that was created by a different session (wrong `sessionId` → `detectAutoPromotedWorktree` returns `null`). Orphaned worktrees from crashed sessions are the domain of `scripts/gc-stale-worktrees.mjs`, not Phase 4a. **Superseded (ADR-0013, #1069):** "created by a different session" is now the EXPECTED case for every #1069-promoted worktree — the marker key makes this a non-limitation for marker-detected worktrees; it still applies verbatim to the legacy basename fallback.
 - The `git worktree remove` command (no `--force`) will fail if the worktree has untracked files git cannot prune. In that edge case, the error is surfaced to the operator; `/close` does not abort silently.
 
 ## References

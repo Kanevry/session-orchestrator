@@ -74,13 +74,18 @@ const PROMOTION_MARKER_GIT_PATH = PROMOTION_MARKER_RELPATH.split(path.sep).join(
  * True for the ONE porcelain line the promotion marker itself produces:
  * `?? .orchestrator/promoted-from.json`.
  *
- * Why this exists: `.orchestrator/` is only PARTLY gitignored in this repo
- * (`.orchestrator/metrics/*.jsonl`, `session.lock`, … are; the directory is
- * not — `git check-ignore .orchestrator/promoted-from.json` exits 1). So the
- * marker we write ourselves shows up as an untracked file and would make every
- * promoted worktree read "dirty" — turning the Phase 4a clean path
- * (auto-remove) into a permanent operator AUQ. Repos that gitignore
- * `.orchestrator/` wholesale never see the line at all. A third shape exists —
+ * Why this exists: in THIS repo `.gitignore` already lists
+ * `.orchestrator/promoted-from.json` explicitly (`git check-ignore
+ * .orchestrator/promoted-from.json` exits 0), so the marker never reaches
+ * `git status --porcelain` here at all — this exemption is redundant
+ * belt-and-braces for the repo that ships it. It earns its keep in CONSUMER
+ * repos: `.orchestrator/` is commonly only PARTLY gitignored there
+ * (`.orchestrator/metrics/*.jsonl`, `session.lock`, … but not the bare
+ * directory, and not necessarily this file), and on a worktree whose branch
+ * predates that ignore line being added, the marker would show up as an
+ * untracked file and make every promoted worktree read "dirty" — turning the
+ * Phase 4a clean path (auto-remove) into a permanent operator AUQ. Repos that
+ * gitignore `.orchestrator/` wholesale never see the line at all. A third shape exists —
  * the directory untracked AND un-ignored, where git collapses everything into
  * one `?? .orchestrator/` line — and is deliberately NOT matched here:
  * discounting a whole directory could hide operator work, and such a worktree

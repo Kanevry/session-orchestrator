@@ -843,7 +843,12 @@ Auto-promoted sibling worktrees are created by `enterWorktree()` during the Phas
 
 > **Authoritative impl:** `scripts/lib/session-end/worktree-cleanup.mjs` — `detectAutoPromotedWorktree(repoRoot, sessionId, opts)`. Import and call; do NOT re-implement from this doc.
 >
-> Algorithm: parse `sessionId` via `parseSessionId()`; return `null` immediately for UUID-format sessions (never auto-promoted). Derive the MAIN checkout root from the first `worktree ` entry of `git worktree list --porcelain` (NOT `path.basename(repoRoot)` — the promoted worktree's basename IS the comparison target). If `repoRoot` resolves to the main checkout, return `null`. Otherwise compare `path.basename(repoRoot)` against `<main-repo-name>-<sessionId>`; on match return `{ wtPath, sessionId, branch }`, else `null`. All git invocation is via the injection-safe `opts.execFileFn` (default `execFileSync` with an args array — #577 HARDEN-001).
+> Two keys, tried in this order:
+>
+> 1. **Marker (primary).** Reads `<repoRoot>/.orchestrator/promoted-from.json` (`PROMOTION_MARKER_RELPATH`), written by `enterWorktree()` at creation time with `branch`, `source_session_id`, `source_root_hash`, `source_root_basename`, `promoted_at`. Accepted when the file parses, carries a non-empty `branch` + `source_session_id`, and the worktree's current branch (`git branch --show-current`) either matches the recorded one or cannot be read at all — an unverifiable branch never triggers auto-removal by itself, since that is gated separately by `isWorktreeClean()`, which fails closed on any git error. On match returns `{ wtPath, sessionId: marker.source_session_id, branch: marker.branch, source: 'marker' }`. This is the only key that survives the #1069 process boundary: since #1069 the session that RUNS in the promoted worktree is a brand-new session with its own id (see ADR-0013), so the current session's id appears in neither the worktree's directory name nor its branch — key 2 below can never match a #1069-promoted worktree.
+> 2. **Basename (legacy fallback).** Parse `sessionId` via `parseSessionId()`; return `null` immediately for UUID-format sessions (never auto-promoted). Derive the MAIN checkout root from the first `worktree ` entry of `git worktree list --porcelain` (NOT `path.basename(repoRoot)` — the promoted worktree's basename IS the comparison target). If `repoRoot` resolves to the main checkout, return `null`. Otherwise compare `path.basename(repoRoot)` against `<main-repo-name>-<sessionId>` (the CURRENT session id); on match return `{ wtPath, sessionId, branch: parsed.branch, source: 'basename' }` — still correct for worktrees created before the marker existed. Returns `null` on no match.
+>
+> All git invocation is via the injection-safe `opts.execFileFn` (default `execFileSync` with an args array — #577 HARDEN-001).
 
 ### Clean-check
 
@@ -855,7 +860,7 @@ A worktree is clean iff ALL three conditions hold:
 
 > **Authoritative impl:** `scripts/lib/session-end/worktree-cleanup.mjs` — `isWorktreeClean(wtPath, opts)`. Import and call; do NOT re-implement from this doc.
 >
-> Algorithm: run `git status --porcelain`; if non-empty → dirty (`false`). Else run `git status --short --branch`; if it matches `/\bahead\b/` → unpushed (`false`). Otherwise `true`. On ANY git error → `false` (conservative PSA-003 default: never auto-remove a worktree we could not verify). Git invocation is via the injection-safe `opts.execFileFn` (default `execFileSync` with an args array — #577 HARDEN-001).
+> Algorithm: run `git status --porcelain`; filter blank lines, then discount EXACTLY the one untracked line the promotion marker itself produces (`?? .orchestrator/promoted-from.json` — in a repo where `.orchestrator/` is only partly gitignored, or on a worktree whose branch predates the ignore line, the marker `enterWorktree()` writes would otherwise make every promoted worktree read "dirty"; a modified/staged/renamed/conflicted marker still counts as dirty). If any lines remain → dirty (`false`). Else run `git status --short --branch`; if it matches `/\bahead\b/` → unpushed (`false`). Otherwise `true`. On ANY git error → `false` (conservative PSA-003 default: never auto-remove a worktree we could not verify). Git invocation is via the injection-safe `opts.execFileFn` (default `execFileSync` with an args array — #577 HARDEN-001).
 
 ### Clean path: auto-remove + WARN (PRD §3 P3 Gherkin row 2)
 

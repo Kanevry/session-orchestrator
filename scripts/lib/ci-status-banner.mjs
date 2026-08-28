@@ -92,7 +92,9 @@ function jsonTypeOf(value) {
  * `gh repo view`, a literal `null`, and an empty `glab` stdout ALL already
  * returned `null` with a warn — nothing crashed, and
  * `tests/lib/ci-status-banner.test.mjs` § "error containment" pinned it. So
- * this does not fix a crash; the `.semgrep.yml` header claiming one is wrong.
+ * this does not fix a crash — the outer catch already turned non-JSON output
+ * into a warn + `null`. The rule this helper closes is lexical
+ * (`json-parse-untrusted-input`, see below), not a crash it prevents.
  *
  * What it does fix is the message. The raw parse error (`Unexpected token
  * '<'`) named neither the CLI nor the request, and this banner spawns four

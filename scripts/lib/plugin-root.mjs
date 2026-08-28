@@ -188,7 +188,7 @@ function _walkUp(startDir) {
  * Measured 2026-08-28 on codex-cli 0.141.0 and Claude Code: an installed
  * plugin is COPIED (not symlinked) to
  * `<base>/plugins/cache/<marketplace>/<plugin-name>/<version>/`, e.g.
- * `~/.codex/plugins/cache/local/session-orchestrator/3.22.0+codex.20260822193811/`
+ * `~/.codex/plugins/cache/local/session-orchestrator/<version>+codex.<stamp>/`
  * and `~/.claude/plugins/cache/session-orchestrator/session-orchestrator/3.13.0/`.
  *
  * Cursor is deliberately absent: no cache layout was measured for it on this
@@ -227,7 +227,7 @@ function _pluginCacheBases() {
  * **mtime**, not by semver. That reads as "the copy the client installed most
  * recently", which is the intent, and it keeps this resolver free of a semver
  * parser — a lexical sort would already be wrong today (`3.9.0` sorts above
- * `3.22.0`). Revisit if a client starts pre-seeding caches it never launches.
+ * `3.10.0`). Revisit if a client starts pre-seeding caches it never launches.
  *
  * Equal-mtime tiebreak: the comparison is STRICTLY greater, so on a tie the
  * FIRST candidate in scan order wins — bases in `_pluginCacheBases()` order

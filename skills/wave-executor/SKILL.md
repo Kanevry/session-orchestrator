@@ -192,6 +192,8 @@ Read and follow `wave-loop.md` in this skill directory for the complete wave exe
 
 The coordinator (you) is responsible for updating per-task mission status in STATE.md as tasks progress through the wave. Use `setMissionStatus(stateContent, taskId, status)` from `scripts/lib/state-md.mjs` and write the result back to STATE.md immediately.
 
+**`taskId` grammar (enforced).** `setMissionStatus` refuses any `taskId` outside `[a-z][a-z0-9]*(?:-[a-z0-9]+)*-\d+` — lowercase segments joined by single hyphens, ending in a bare digit run. Accepted: `m-1`, `docs-2`, `w2-1`, `w2-a-10`. Refused (`refused: 'id-grammar'`): `w2-a10` (digits fused onto a letter segment), `w3-p2` (no trailing bare-digit segment), `W3-I1` (uppercase), `Docs_2` (underscore). A refused write returns `{ written: false, reason: 'id-grammar' }` from `setMissionStatusOnDisk` and logs a stderr WARN naming the rejected id — nothing is written to STATE.md on refusal, so mint ids matching this grammar from the start rather than relying on the refusal to catch a typo.
+
 **Per-task transition rules (coordinator fires these, NOT wave-loop.md):**
 
 | Transition | When to fire |

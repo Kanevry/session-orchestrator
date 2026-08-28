@@ -1,5 +1,11 @@
 # ADR 0009: Worktree Path-Layouts — Two Functions, Two Layouts, No Unification
 
+> **Superseded in part by ADR-0013 (2026-08-28).** The path-LAYOUT decisions below (sibling-flat
+> vs 2-level nested) still stand unchanged. What changed: issue #1069 established that a promoted
+> worktree's session ends and a NEW session starts inside it — so `detectAutoPromotedWorktree()`
+> can no longer identify a promoted worktree from its path basename ALONE, per the claim marked
+> inline below. See ADR-0013 for the process-boundary model.
+>
 > Status: Accepted · session main-2026-05-27-deep-3 · issues #574 #580
 > Source: `scripts/lib/autopilot/worktree-pipeline.mjs` module-header comment + `enterWorktree()` / `setupWorktree()`; `skills/_shared/parallel-aware-preamble.md` § PROMOTION_OFFER outcome-handling; "Parallel-Aware Sessions" (#568; archived in the private Meta-Vault) §3 P3 layout requirement.
 > Project-instruction file resolution: this repo's root context file is `CLAUDE.md` on Claude Code / Cursor IDE and `AGENTS.md` on Codex CLI — transparent aliases per [skills/_shared/instruction-file-resolution.md](../../skills/_shared/instruction-file-resolution.md).
@@ -51,7 +57,7 @@ The `opts.$` / `opts.execFileFn` seam split is preserved as the canonical patter
 
 **What the path-layout split enables:**
 
-- `detectAutoPromotedWorktree()` can identify a promoted worktree purely from its path basename without maintaining any additional state or registry. The naming contract (`<repoName>-<sessionId>`) is self-describing.
+- `detectAutoPromotedWorktree()` can identify a promoted worktree purely from its path basename without maintaining any additional state or registry. The naming contract (`<repoName>-<sessionId>`) is self-describing. **Superseded (ADR-0013, #1069):** true only for the legacy fallback path today. A #1069-promoted worktree runs a session with a DIFFERENT id than the one that named it, so the basename comparison can never match it — `enterWorktree()` now ALSO writes a `.orchestrator/promoted-from.json` marker (additional state, tried first) precisely because the basename alone stopped being sufficient.
 - `gc-stale-worktrees.mjs` can scan for per-story worktrees under `~/.so-worktrees/<repoBasename>/` without risk of matching promoted-session worktrees (different root, different naming pattern).
 - Neither function needs to be aware of the other's callers, layout rules, or GC policy.
 

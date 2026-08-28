@@ -605,9 +605,9 @@ webhooks:
     url: https://gitlab.example.com/hooks/pipeline
 ```
 
-Read by: `scripts/lib/webhook-url.mjs`, hooks that emit events (`hooks/on-stop.mjs`, `hooks/on-subagent-stop.mjs`).
+Measured: `scripts/lib/webhook-url.mjs` (`resolveWebhookUrl`) is the only reader of this `webhooks:` block, and it currently has **zero callers repo-wide** (`grep -rn "webhook-url" scripts/ hooks/` outside itself and one exemption comment in `check-unwired-features.mjs`) — the block is unreachable at HEAD; follow-up issue pending.
 
-The internal Clank Event Bus uses two separate env vars (`CLANK_EVENT_SECRET`, `CLANK_EVENT_URL`) — both required for the fire-and-forget POST.
+What actually fires a webhook today is a **separate** mechanism: `scripts/lib/events.mjs`'s `emitEvent()` reads `CLANK_EVENT_SECRET` + `CLANK_EVENT_URL` directly from the environment (never from this Session Config block) and, when both are set, fire-and-forget POSTs every emitted event to the internal Clank Event Bus. Every hook that calls `emitEvent()` — which is most of `hooks/` — participates in that path; none of them reads `webhooks:` here.
 
 ## Hook Runtime Profile (env-only, not config)
 

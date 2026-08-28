@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.23.0] - 2026-08-28
+
 Two commits today (1 `feat`, 1 `fix`; 64 files, +4,971/−184) close Waves 3 and 4 of the
 resumed session, plus eight items carried forward from Wave 2 (`36aa605`, 2026-08-26,
 never previously changelogged). No `BREAKING CHANGE:` footer and no `!` subject. The
@@ -41,6 +43,14 @@ only — every resume looked foreign — and call sites that needed a repo root 
 - **A Cursor `.mdc` parity guard that reads the directory, not a fixed list (#1093).**
   Catches bare `PID=`/`${VAR}` IDs a name-sampling guard had missed; `priority::` swept
   across all 5 files.
+- **The old root now formally leaves before the new one claims it, wired at all four
+  promotion sites (#1069).** `scripts/lib/session-transition.mjs` → `leaveSourceRoot()`:
+  `deregisterSelf()` → lock-release (reusing `on-session-end`'s ownership rules) →
+  `orchestrator.session.root_left` (carries `source_root_hash`/`source_root_basename`,
+  never an absolute path — the payload also travels over the optional webhook). Review
+  found the Phase-1.2.1 promotion site had been missing the call; it is now wired at
+  session-start Phase 0.5, Phase 1.2.1, and both `parallel-aware-*` docs. A real
+  `git worktree` two-root integration test goes phantom-peer red → green.
 
 ### Fixed
 
@@ -71,8 +81,9 @@ only — every resume looked foreign — and call sites that needed a repo root 
 - **Two rival vendoring paths wrote the same rule file (#1060).** `rules/` is now sole SSOT
   for PSA-001..007; `templates/_shared/rules/` is deleted.
 - **`parseSessionId` accepted only UUIDv4; Codex mints v7 (#66/#1091).**
-  `scripts/lib/session-id.mjs` now accepts RFC-9562 v1–8 (`UUID_RE`, deprecated alias
-  `UUID_V4_RE`, additive `version` field). Every SessionStart had minted a fresh v4; a
+  `scripts/lib/session-id.mjs` now accepts RFC-9562 v1–8 (`UUID_RE`, additive `version`
+  field — see `### Removed` below for the alias this superseded). Every SessionStart had
+  minted a fresh v4; a
   resumed/compacted thread read its own lock as a foreign session. `hooks/on-stop.mjs` and
   `hooks/on-session-end.mjs` now apply the writer's acceptance rule, closing a lock-leak via
   non-UUID stdin ids.
@@ -97,6 +108,43 @@ only — every resume looked foreign — and call sites that needed a repo root 
 - **`enterWorktree` failed with `already used by worktree` when the source branch was
   checked out (#1067).** `scripts/lib/autopilot/worktree-pipeline.mjs` now creates
   `so/<sessionId>` from that branch and returns `branch`/`promotedFrom`.
+- **Phase 4a auto-promoted-worktree cleanup was dead under the #1069 process boundary.**
+  Since the promoted worktree runs as a brand-new session with its own id,
+  `detectAutoPromotedWorktree()`'s basename match against the CURRENT session id could
+  never fire post-#1069. `enterWorktree()` now writes `.orchestrator/promoted-from.json`
+  (source-root hash + basename, source session id, branch) at creation time;
+  `detectAutoPromotedWorktree()` tries this marker FIRST (`source: 'marker'`), falling back
+  to the legacy basename match (`source: 'basename'`) for pre-marker worktrees.
+  `isWorktreeClean()` discounts exactly the marker's own untracked line so the marker never
+  reads as dirty by itself. Re-promoting onto an existing `so/<sessionId>` branch now reuses
+  it (`reusedBranch: true`) or reports a typed refusal, instead of failing outright. See
+  ADR-0013.
+- **`.mcp.json`'s bash bootstrap had silently drifted from `resolvePluginRoot()`'s tier
+  order.** The shell mirror now matches the same five env tiers in the same order, tests
+  `package.json`'s `name` field via `node -e JSON.parse(...)` instead of a substring `grep`
+  (which had matched `session-orchestrator-fork`), and ties the newest-by-mtime cache scan
+  to the same strict `-nt` comparison as the JS side. Two drift tests pin JS and shell
+  staying in sync.
+- **`ci-status-banner.mjs` escaped control bytes in the JSON preview but not in the
+  parse-error message.** `JSON.stringify()` alone is not enough — V8 quotes the raw
+  offending input inside `SyntaxError.message`, carrying control bytes straight to the
+  terminal. `escapeControlBytes()` now covers both the preview AND `err.message`;
+  `parseCliJson()` also gained a shape-gate against `null`/`[]`/a bare `"ok"` string, all of
+  which parse as valid JSON but are not the object/array shape callers expect.
+- **A refused mission-status write warned on only 1 of 5 call paths.**
+  `setMissionStatusDetailed()` now reports the refusal reason (e.g. `id-grammar`) to every
+  caller, and the on-disk wrapper emits the stderr WARN on all 5 paths instead of the one it
+  happened to cover before.
+- **`check-unwired-features` exempted itself from its own edge census via its allowlist
+  string, hiding a real orphan behind it.** The `SELF_REL` self-reference correctly
+  contributes zero edges by design, but the same code path was masking that
+  `scripts/lib/webhook-url.mjs` has zero callers repo-wide — genuinely unreachable, not a
+  false positive. Follow-up issue pending to wire it in or remove it.
+- **Three load-sensitive tests hardened with margin instead of being disabled.**
+  `tests/scripts/validate-plugin.test.mjs`'s child-process timeout moved from 30s to 120s (a
+  killed child returns `status: null`, which had read as a different failure than a real
+  one) plus a matching `hookTimeout` bump, and two further spawn-timeout assertions gained
+  the same discriminating margin between contention and a genuine failure.
 
 ### Changed
 
@@ -106,13 +154,20 @@ only — every resume looked foreign — and call sites that needed a repo root 
   numbering.
 - **Session end events carry `semantic_session_id`; backfill event + supersede (#1068).**
   `orchestrator.session.ended` / `.stopped` carry `semantic_session_id` (omitted when
-  unknown). A new `orchestrator.session.backfill` event records each backfill outcome. A
+  unknown). A new `orchestrator.session.backfill_completed` event records each backfill outcome. A
   completed record may now supersede an `abandoned` stub (append-only, `supersedes` marker).
   Readers preferring the newest record are a follow-up.
 - **`.semgrep.yml` regains two taint-mode rules (#1129).** `json-parse-untrusted-input` and
   `prototype-pollution-object-assign` aimed at this repo's real trust boundary (hook stdin,
   child-process stdout); 27 rules total. `unsafe-llm-output-rendering` stays excluded with a
   measured reason (no DOM code).
+
+### Removed
+
+- **`UUID_V4_RE` removed** from `scripts/lib/session-id.mjs` — deprecated alias of
+  `UUID_RE` with zero importers repo-wide (measured @ 7daa3d2; hits in
+  `tests/telemetry/anon-id.test.mjs` and `server/ingest/validate.mjs` are unrelated local
+  constants of the same name). Use `UUID_RE`, any RFC 9562 version 1–8.
 
 ### Notes
 
