@@ -182,7 +182,9 @@ async function decideAutoDream({ repoRoot, cfg, platform, memoryDir }) {
     if (!isClaudePlatform(platform)) {
       return mkSkip(phase, 'non-Claude-Code platform (memory dir unavailable)', 'config-gate');
     }
-    const dir = memoryDir ?? resolveMemoryDir();
+    // #1071: same root as the `repoRoot` handed to shouldDispatchAutoDream below —
+    // a cwd-derived memory dir made the two halves of this decision disagree.
+    const dir = memoryDir ?? resolveMemoryDir(repoRoot);
     const dec = await shouldDispatchAutoDream({
       repoRoot,
       memoryDir: dir,
@@ -363,7 +365,7 @@ export function buildSkippedReport(plan) {
  * @param {object}  args.config     Parsed Session Config object (from parse-config.mjs).
  * @param {string|null} [args.sessionId] Current session id (for the 3.6.6 judged-set filter).
  * @param {string}  [args.platform] Platform id ('claude' | 'codex' | 'cursor' | …).
- * @param {string}  [args.memoryDir] Optional Auto-Dream memory dir override (default resolveMemoryDir()).
+ * @param {string}  [args.memoryDir] Optional Auto-Dream memory dir override (default resolveMemoryDir(repoRoot)).
  * @returns {Promise<TailPlan>}
  */
 export async function planTailPhases({ repoRoot, config, sessionId, platform, memoryDir } = {}) {

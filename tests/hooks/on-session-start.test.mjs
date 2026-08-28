@@ -1359,3 +1359,128 @@ describe('telemetry-consent nudge (#1138)', { timeout: 15000 }, () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Host-wide registry census feeds the semantic n-increment (#1066 AC1)
+// ---------------------------------------------------------------------------
+//
+// The registry stores the two identity forms in SEPARATE fields: `session_id`
+// is the RAW id (a UUID on Claude Code) and `semantic_session_id` is the label.
+// `resolveSemanticSessionId()` counts only semantic candidates, so a census
+// that projects `session_id` alone made the host-wide registry contribute
+// NOTHING to numbering — a second session on the same host (typically in a
+// DIFFERENT repo, which is why the local worktree-lock source cannot see it)
+// re-minted `-1` and collided with the live label.
+//
+// Contract pinned here is the "Minimal" one: the semantic id is a best-effort
+// monotonic LABEL; ownership stays (raw session_id, owner proof). The two forms
+// are never interchangeable — hence the raw-id assertion in the first test.
+describe('registry census → semantic n-increment (#1066)', { timeout: 15000 }, () => {
+  const todayUtc = () => new Date().toISOString().slice(0, 10);
+
+  /**
+   * Pin the fixture's branch so the seeded label is byte-identical to what the
+   * hook derives. `git init` honours the host's `init.defaultBranch`, which is
+   * not ours to assume — and SEMANTIC_ID_RE only accepts a lowercase branch.
+   */
+  function pinBranch(dir, branch) {
+    const r = spawnSync('git', ['branch', '-M', branch], { cwd: dir, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`git branch -M failed: ${r.stderr}`);
+    return branch;
+  }
+
+  /**
+   * Seed one host-wide registry entry for a DIFFERENT repo: `repo_path_hash` is
+   * deliberately absent, so `discoverActiveSessions()`'s own registry fallback
+   * (which filters on a matching repo hash) drops it. Whatever numbering effect
+   * the entry has can therefore only come from the hook's registry census.
+   */
+  async function seedRegistryEntry(name, entry) {
+    const activeDir = path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active');
+    await fs.mkdir(activeDir, { recursive: true });
+    const now = new Date().toISOString();
+    await fs.writeFile(
+      path.join(activeDir, `${name}.json`),
+      JSON.stringify({
+        pid: 99999,
+        repo_name: 'other-repo',
+        started_at: now,
+        last_heartbeat: now,
+        status: 'active',
+        current_wave: 0,
+        ...entry,
+      }),
+    );
+  }
+
+  async function readSessionFile(projectDir) {
+    return JSON.parse(
+      await fs.readFile(path.join(projectDir, '.orchestrator', 'current-session.json'), 'utf8'),
+    );
+  }
+
+  it('mints session-2 when a host-wide registry entry holds session-1 under a UUID session_id', async () => {
+    // The bug: `session-1` minted a second time on the same host, because the
+    // peer's label lived in `semantic_session_id` while the census read the
+    // UUID `session_id` — which resolveSemanticSessionId drops.
+    const dir = await mkProjectTracked();
+    const branch = pinBranch(dir, 'so1066');
+    await seedRegistryEntry('peer-cross-repo', {
+      session_id: 'aaaaaaaa-1111-4111-8111-111111111111',
+      semantic_session_id: `${branch}-${todayUtc()}-session-1`,
+      branch,
+      mode: 'session',
+    });
+
+    const stdinUuid = 'bbbbbbbb-2222-4222-8222-222222222222';
+    const result = await runHook({
+      projectDir: dir,
+      useCwd: true,
+      stdin: JSON.stringify({ session_id: stdinUuid }),
+    });
+
+    expect(result.code).toBe(0);
+    const session = await readSessionFile(dir);
+    expect(session.semantic_session_id).toBe(`${branch}-${todayUtc()}-session-2`);
+    // AC4 — the two identity forms are never interchangeable: the label moved,
+    // the ownership key is still the raw id from stdin.
+    expect(session.session_id).toBe(stdinUuid);
+  });
+
+  it('counts a registry entry whose raw session_id is itself semantic (Codex/Cursor)', async () => {
+    // The bug this guards: a census that reads ONLY `semantic_session_id` stops
+    // counting peers that write a semantic raw id and carry no separate label.
+    const dir = await mkProjectTracked();
+    const branch = pinBranch(dir, 'so1066');
+    await seedRegistryEntry('peer-semantic-raw', {
+      session_id: `${branch}-${todayUtc()}-session-4`,
+      branch,
+      mode: 'session',
+    });
+
+    const result = await runHook({ projectDir: dir, useCwd: true });
+
+    expect(result.code).toBe(0);
+    const session = await readSessionFile(dir);
+    expect(session.semantic_session_id).toBe(`${branch}-${todayUtc()}-session-5`);
+  });
+
+  it('ignores a legacy v1 entry with no semantic_session_id instead of crashing the census', async () => {
+    // The bug: a v1 entry (UUID raw id, no label) that makes the census throw
+    // silently drops semantic_session_id to null for the WHOLE session, because
+    // deriveSemanticCandidate swallows every failure. It must instead be
+    // skipped — contributing no candidate and no phantom bump.
+    const dir = await mkProjectTracked();
+    const branch = pinBranch(dir, 'so1066');
+    await seedRegistryEntry('peer-legacy-v1', {
+      session_id: 'cccccccc-3333-4333-8333-333333333333',
+      branch,
+    });
+
+    const result = await runHook({ projectDir: dir, useCwd: true });
+
+    expect(result.code).toBe(0);
+    const session = await readSessionFile(dir);
+    expect(session.semantic_session_id).toBe(`${branch}-${todayUtc()}-session-1`);
+  });
+});

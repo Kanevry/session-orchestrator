@@ -11,6 +11,8 @@
  *   3. Remaining Claude, Codex, Cursor, and Pi compatibility roots
  *   4. Walk up from import.meta.url looking for package.json whose name === "session-orchestrator"
  *   5. Walk up from process.cwd() looking for the same marker
+ *   6. Scan the client plugin caches (marketplace install, no env, cwd outside
+ *      any checkout — GH Kanevry/session-orchestrator#64)
  *
  * Throws PluginRootResolutionError when all resolution levels fail.
  *
@@ -18,7 +20,8 @@
  * roots retain their legacy Claude → Codex → Cursor → Pi order.
  */
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -157,6 +160,86 @@ function _walkUp(startDir) {
   return null;
 }
 
+/**
+ * Base directories under which a client keeps its plugin cache.
+ *
+ * Measured 2026-08-28 on codex-cli 0.141.0 and Claude Code: an installed
+ * plugin is COPIED (not symlinked) to
+ * `<base>/plugins/cache/<marketplace>/<plugin-name>/<version>/`, e.g.
+ * `~/.codex/plugins/cache/local/session-orchestrator/3.22.0+codex.20260822193811/`
+ * and `~/.claude/plugins/cache/session-orchestrator/session-orchestrator/3.13.0/`.
+ *
+ * Cursor is deliberately absent: no cache layout was measured for it on this
+ * host (`~/.cursor/plugins/cache` did not exist), and a guessed path would
+ * resolve nothing while implying coverage. Add it once a real install is seen.
+ *
+ * @returns {string[]} Absolute base directories, most-specific client first
+ */
+function _pluginCacheBases() {
+  const home = os.homedir();
+  const codexHome = (process.env.CODEX_HOME || '').trim() || path.join(home, '.codex');
+  return [codexHome, path.join(home, '.claude')];
+}
+
+/**
+ * Scan the client plugin caches for an installed copy of this plugin.
+ *
+ * This is the only level that can succeed for a marketplace install launched
+ * outside any checkout. Measured 2026-08-28 by probing a registered MCP server
+ * from `/tmp` (codex-cli 0.141.0): the child process received NO plugin-root
+ * environment variable (`CLAUDE_PLUGIN_ROOT`, `CODEX_PLUGIN_ROOT`,
+ * `PLUGIN_ROOT` and `CODEX_HOME` were all unset), its `PWD` was the launch
+ * directory, and `HOME` was set — so every earlier level is blind while the
+ * installed copy sits at a well-known path under `HOME`.
+ * See GH Kanevry/session-orchestrator#64.
+ *
+ * Ceiling (BV-004): among valid candidates the newest wins by directory
+ * **mtime**, not by semver. That reads as "the copy the client installed most
+ * recently", which is the intent, and it keeps this resolver free of a semver
+ * parser — a lexical sort would already be wrong today (`3.9.0` sorts above
+ * `3.22.0`). Revisit if a client starts pre-seeding caches it never launches.
+ *
+ * @param {string[]} tried  Diagnostic accumulator, appended to on failure
+ * @returns {string|null} Absolute path to the newest cached plugin copy
+ */
+function _scanPluginCaches(tried) {
+  const bases = _pluginCacheBases();
+  let best = null;
+  let bestMtimeMs = -1;
+
+  for (const base of bases) {
+    const cacheDir = path.join(base, 'plugins', 'cache');
+    if (!_isDir(cacheDir)) continue;
+
+    let marketplaces;
+    try { marketplaces = readdirSync(cacheDir); } catch { continue; }
+
+    for (const marketplace of marketplaces) {
+      const pluginDir = path.join(cacheDir, marketplace, 'session-orchestrator');
+      if (!_isDir(pluginDir)) continue;
+
+      let versions;
+      try { versions = readdirSync(pluginDir); } catch { continue; }
+
+      for (const version of versions) {
+        const candidate = path.join(pluginDir, version);
+        // The directory NAME is not proof — a foreign package may sit under a
+        // `session-orchestrator/` marketplace folder. The package.json marker is.
+        if (!_isPluginRoot(candidate)) continue;
+        let mtimeMs;
+        try { mtimeMs = statSync(candidate).mtimeMs; } catch { continue; }
+        if (mtimeMs > bestMtimeMs) { bestMtimeMs = mtimeMs; best = candidate; }
+      }
+    }
+  }
+
+  if (!best) {
+    const globs = bases.map((base) => path.join(base, 'plugins', 'cache', '*', 'session-orchestrator', '*'));
+    tried.push(`plugin caches (${globs.join(', ')}) — no package.json{name:session-orchestrator} found`);
+  }
+  return best;
+}
+
 // ---------------------------------------------------------------------------
 // resolvePluginRoot
 // ---------------------------------------------------------------------------
@@ -171,6 +254,7 @@ function _walkUp(startDir) {
  *   4. Walk up from import.meta.url (the location of this file) looking for a
  *      package.json with name "session-orchestrator"
  *   5. Walk up from process.cwd() looking for the same marker
+ *   6. Scan the client plugin caches for the newest installed copy
  *
  * @param {string} [platformHint] Optional compatibility hint for wrapper callers
  * @returns {string} Absolute path to the plugin root
@@ -200,11 +284,17 @@ export function resolvePluginRoot(platformHint) {
   if (byCwd) return byCwd;
   tried.push(`walk from cwd (${process.cwd()}) — no package.json{name:session-orchestrator} found`);
 
+  // Level 8: client plugin caches — the marketplace-install case, where no env
+  // var is provided and the cwd is outside every checkout (#64).
+  const byPluginCache = _scanPluginCaches(tried);
+  if (byPluginCache) return byPluginCache;
+
   throw new PluginRootResolutionError(
     'Could not resolve session-orchestrator plugin root. ' +
     'Set PLUGIN_ROOT, CLAUDE_PLUGIN_ROOT, CODEX_PLUGIN_ROOT, CURSOR_RULES_DIR, or PI_PLUGIN_ROOT ' +
-    'to the plugin directory, or ensure a package.json with name "session-orchestrator" exists in an ' +
-    'ancestor of the cwd or this script. Attempted: ' + tried.join('; '),
+    'to the plugin directory, ensure a package.json with name "session-orchestrator" exists in an ' +
+    'ancestor of the cwd or this script, or (re)install the plugin through your client\'s marketplace ' +
+    'so a cached copy exists. Attempted: ' + tried.join('; '),
     tried,
   );
 }

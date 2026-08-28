@@ -24,11 +24,32 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { isRoot } from '../_helpers/perms.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+/**
+ * Deterministic, RFC-9562-shaped UUID for a readable fixture label.
+ *
+ * WHY the fixture ids below are UUIDs and not plain slugs (#1091 / Kanevry#66):
+ * `resolveSessionId()` now accepts a stdin `session_id` only when it parses as
+ * a UUID — mirroring the writer in `hooks/on-session-start.mjs`, which is what
+ * keys every artifact this hook then refreshes (the host-registry entry and
+ * `session.lock`). A slug fixture would be DROPPED by the hook, so each
+ * "refreshed / not refreshed" assertion below would pass because the id
+ * resolved to `null` rather than because the ownership compare it names held.
+ *
+ * Derived from sha256(label) so the value is stable across runs, and shaped
+ * `…-4xxx-8xxx-…` (version 4, variant `10xx`) so it satisfies `UUID_RE` in
+ * `scripts/lib/session-id.mjs`.
+ */
+function U(label) {
+  const h = crypto.createHash('sha256').update(String(label)).digest('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
 
 const HOOK = path.resolve(import.meta.dirname, '../../hooks/on-stop.mjs');
 const EVENTS_REL = path.join('.orchestrator', 'metrics', 'events.jsonl');
@@ -213,13 +234,13 @@ describe('Stop event with session_id', { timeout: 15000 }, () => {
     const dir = await track(await mkGitDir());
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ session_id: 'sess-abc123' }),
+      stdin: JSON.stringify({ session_id: U('sess-abc123') }),
     });
 
     const record = await readLastEvent(dir);
     expect(record).toMatchObject({
       event: 'orchestrator.session.stopped',
-      session_id: 'sess-abc123',
+      session_id: U('sess-abc123'),
       duration_ms: 0,
       wave: 0,
     });
@@ -280,8 +301,8 @@ describe('hook_event_name discriminator', { timeout: 15000 }, () => {
     },
     {
       name: 'Stop',
-      input: { hook_event_name: 'Stop', session_id: 'sess-xyz' },
-      expected: { event: 'orchestrator.session.stopped', session_id: 'sess-xyz' },
+      input: { hook_event_name: 'Stop', session_id: U('sess-xyz') },
+      expected: { event: 'orchestrator.session.stopped', session_id: U('sess-xyz') },
     },
   ])('routes an explicit $name payload to its event record', async ({ input, expected }) => {
     const dir = await track(await mkGitDir());
@@ -313,7 +334,7 @@ describe('git info unavailable', { timeout: 15000 }, () => {
     const dir = await track(await mkTmpDir());
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ session_id: 'no-git' }),
+      stdin: JSON.stringify({ session_id: U('no-git') }),
     });
     const record = await readLastEvent(dir);
     expect(record.event).toBe('orchestrator.session.stopped');
@@ -340,7 +361,7 @@ describe('git info available — populated branch/commit', { timeout: 15000 }, (
     expect(committed).toBe(true); // guard: git must be available in this env
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ session_id: 'git-positive' }),
+      stdin: JSON.stringify({ session_id: U('git-positive') }),
     });
     const record = await readLastEvent(dir);
     expect(record.event).toBe('orchestrator.session.stopped');
@@ -364,7 +385,7 @@ describe('webhook — CLANK_EVENT_SECRET set', { timeout: 15000 }, () => {
     const dir = await track(await mkGitDir());
     const result = await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ session_id: 'webhook-test' }),
+      stdin: JSON.stringify({ session_id: U('webhook-test') }),
       env: {
         CLANK_EVENT_SECRET: 'test-secret-token',
         // Point to localhost port nobody listens on — connection refused
@@ -375,7 +396,7 @@ describe('webhook — CLANK_EVENT_SECRET set', { timeout: 15000 }, () => {
     expect(result.code).toBe(0);
     expect(await readLastEvent(dir)).toMatchObject({
       event: 'orchestrator.session.stopped',
-      session_id: 'webhook-test',
+      session_id: U('webhook-test'),
     });
   });
 });
@@ -439,7 +460,7 @@ describe('heartbeat-failed observability breadcrumb', { timeout: 15000 }, () => 
     // rewrite something; then lock down the directory so the write fails.
     const activeDir = path.join(badRegistryDir, 'active');
     await fs.mkdir(activeDir, { recursive: true });
-    const sessionId = 'fail-deregister-test';
+    const sessionId = U('fail-deregister-test');
     await fs.writeFile(
       path.join(activeDir, `${sessionId}.json`),
       JSON.stringify({ session_id: sessionId, last_heartbeat: new Date().toISOString(), started_at: new Date().toISOString() }),
@@ -465,7 +486,7 @@ describe('heartbeat-failed observability breadcrumb', { timeout: 15000 }, () => 
     await fs.mkdir(badRegistryDir, { recursive: true });
     const activeDir = path.join(badRegistryDir, 'active');
     await fs.mkdir(activeDir, { recursive: true });
-    const sessionId = 'fail-deregister-log-test';
+    const sessionId = U('fail-deregister-log-test');
     await fs.writeFile(
       path.join(activeDir, `${sessionId}.json`),
       JSON.stringify({ session_id: sessionId, last_heartbeat: new Date().toISOString(), started_at: new Date().toISOString() }),
@@ -499,7 +520,7 @@ describe('heartbeat-failed observability breadcrumb', { timeout: 15000 }, () => 
     await fs.mkdir(badRegistryDir, { recursive: true });
     const activeDir = path.join(badRegistryDir, 'active');
     await fs.mkdir(activeDir, { recursive: true });
-    const sessionId = 'fail-deregister-stderr-test';
+    const sessionId = U('fail-deregister-stderr-test');
     await fs.writeFile(
       path.join(activeDir, `${sessionId}.json`),
       JSON.stringify({ session_id: sessionId, last_heartbeat: new Date().toISOString(), started_at: new Date().toISOString() }),
@@ -541,17 +562,17 @@ describe('heartbeat-failed observability breadcrumb', { timeout: 15000 }, () => 
 describe('session registry heartbeat (#1047)', { timeout: 15000 }, () => {
   it('keeps and refreshes the entry after one turn when session_id comes via stdin', async () => {
     const dir = await track(await mkGitDir());
-    await writeHeartbeat('stop-via-stdin', { ageMinutes: 5 });
-    const before = await readEntry('stop-via-stdin');
+    await writeHeartbeat(U('stop-via-stdin'), { ageMinutes: 5 });
+    const before = await readEntry(U('stop-via-stdin'));
 
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ session_id: 'stop-via-stdin' }),
+      stdin: JSON.stringify({ session_id: U('stop-via-stdin') }),
     });
 
     // (A) the entry still exists — RED under the pre-#1047 deregisterSelf wiring
-    expect(await registryFiles()).toContain('stop-via-stdin.json');
-    const after = await readEntry('stop-via-stdin');
+    expect(await registryFiles()).toContain(`${U('stop-via-stdin')}.json`);
+    const after = await readEntry(U('stop-via-stdin'));
     // (B) last_heartbeat moved forward — distinguishes "wired the heartbeat"
     //     from merely "deleted the delete"
     expect(Date.parse(after.last_heartbeat)).toBeGreaterThan(Date.parse(before.last_heartbeat));
@@ -561,18 +582,18 @@ describe('session registry heartbeat (#1047)', { timeout: 15000 }, () => {
 
   it('refreshes via the .orchestrator/current-session.json fallback when stdin has no session_id', async () => {
     const dir = await track(await mkGitDir());
-    await writeHeartbeat('stop-via-fallback', { ageMinutes: 5 });
-    const before = await readEntry('stop-via-fallback');
+    await writeHeartbeat(U('stop-via-fallback'), { ageMinutes: 5 });
+    const before = await readEntry(U('stop-via-fallback'));
     await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
     await fs.writeFile(
       path.join(dir, '.orchestrator', 'current-session.json'),
-      JSON.stringify({ session_id: 'stop-via-fallback', source: 'generated' }),
+      JSON.stringify({ session_id: U('stop-via-fallback'), source: 'generated' }),
     );
 
     await runHook({ projectDir: dir, stdin: '' });
 
-    expect(await registryFiles()).toContain('stop-via-fallback.json');
-    const after = await readEntry('stop-via-fallback');
+    expect(await registryFiles()).toContain(`${U('stop-via-fallback')}.json`);
+    const after = await readEntry(U('stop-via-fallback'));
     expect(Date.parse(after.last_heartbeat)).toBeGreaterThan(Date.parse(before.last_heartbeat));
   });
 
@@ -592,60 +613,62 @@ describe('session registry heartbeat (#1047)', { timeout: 15000 }, () => {
     // Without the breadcrumb this loss would be permanently invisible.
     const result = await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ session_id: 'never-registered' }),
+      stdin: JSON.stringify({ session_id: U('never-registered') }),
     });
     expect(result.code).toBe(0);
     expect(result.stderr).toBe('');
-    expect(await readEntry('never-registered').catch(() => null)).toBeNull();
+    expect(await readEntry(U('never-registered')).catch(() => null)).toBeNull();
 
     const missing = (await readSweepLog()).find((e) => e.event === 'heartbeat-missing');
     expect(missing).toMatchObject({
       event: 'heartbeat-missing',
-      session_id: 'never-registered',
+      session_id: U('never-registered'),
     });
 
     const record = await readLastEvent(dir);
-    expect(record.session_id).toBe('never-registered');
+    expect(record.session_id).toBe(U('never-registered'));
   });
 
   it('refreshes only its own entry, leaving peer heartbeats byte-identical', async () => {
     const dir = await track(await mkGitDir());
-    await writeHeartbeat('self', { ageMinutes: 5 });
+    await writeHeartbeat(U('self'), { ageMinutes: 5 });
     await writeHeartbeat('peer-one', { ageMinutes: 5 });
     await writeHeartbeat('peer-two', { ageMinutes: 5 });
     const peerOneBefore = await readEntry('peer-one');
 
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ session_id: 'self' }),
+      stdin: JSON.stringify({ session_id: U('self') }),
     });
 
-    // All three survive — the pre-#1047 wiring removed 'self'.
-    expect((await registryFiles()).sort()).toEqual(['peer-one.json', 'peer-two.json', 'self.json']);
+    // All three survive — the pre-#1047 wiring removed the ending session's own entry.
+    expect((await registryFiles()).sort()).toEqual(
+      [`${U('self')}.json`, 'peer-one.json', 'peer-two.json'].sort(),
+    );
     expect(await readEntry('peer-one')).toEqual(peerOneBefore);
-    const self = await readEntry('self');
+    const self = await readEntry(U('self'));
     expect(Date.parse(self.last_heartbeat)).toBeGreaterThan(Date.parse(peerOneBefore.last_heartbeat));
   });
 
   it('prefers stdin session_id over current-session.json fallback', async () => {
     const dir = await track(await mkGitDir());
-    await writeHeartbeat('stdin-wins', { ageMinutes: 5 });
-    await writeHeartbeat('fallback-loses', { ageMinutes: 5 });
-    const fallbackBefore = await readEntry('fallback-loses');
+    await writeHeartbeat(U('stdin-wins'), { ageMinutes: 5 });
+    await writeHeartbeat(U('fallback-loses'), { ageMinutes: 5 });
+    const fallbackBefore = await readEntry(U('fallback-loses'));
     await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
     await fs.writeFile(
       path.join(dir, '.orchestrator', 'current-session.json'),
-      JSON.stringify({ session_id: 'fallback-loses' }),
+      JSON.stringify({ session_id: U('fallback-loses') }),
     );
 
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ session_id: 'stdin-wins' }),
+      stdin: JSON.stringify({ session_id: U('stdin-wins') }),
     });
 
     // Only the stdin id is refreshed; the fallback entry is untouched.
-    expect(await readEntry('fallback-loses')).toEqual(fallbackBefore);
-    const stdinWins = await readEntry('stdin-wins');
+    expect(await readEntry(U('fallback-loses'))).toEqual(fallbackBefore);
+    const stdinWins = await readEntry(U('stdin-wins'));
     expect(Date.parse(stdinWins.last_heartbeat)).toBeGreaterThan(Date.parse(fallbackBefore.last_heartbeat));
   });
 });
@@ -679,7 +702,7 @@ describe('SubagentStop stdout — additionalContext slot (#666)', { timeout: 150
     const dir = await track(await mkGitDir());
     const result = await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'Stop', session_id: 'ts-test' }),
+      stdin: JSON.stringify({ hook_event_name: 'Stop', session_id: U('ts-test') }),
     });
 
     const out = JSON.parse(result.stdout);
@@ -711,7 +734,7 @@ describe('terminalSequence guaranteed on handleStop() throw (#666 F2)', { timeou
 
     const result = await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'Stop', session_id: 'ts-throw-test' }),
+      stdin: JSON.stringify({ hook_event_name: 'Stop', session_id: U('ts-throw-test') }),
     });
     // Exit code must stay 0 (informational hook never blocks)
     expect(result.code).toBe(0);
@@ -776,7 +799,7 @@ describe('session lock heartbeat-refresh on Stop (Epic #583 W5-F1c)', { timeout:
 
   it('refreshes last_heartbeat when stdin session_id matches the lock owner', async () => {
     const dir = await track(await mkGitDir());
-    const sessionId = 'stop-refreshes-heartbeat';
+    const sessionId = U('stop-refreshes-heartbeat');
     await writeLock(dir, sessionId);
     // Snapshot the heartbeat BEFORE Stop.
     const beforePath = path.join(dir, '.orchestrator', 'session.lock');
@@ -812,7 +835,7 @@ describe('session lock heartbeat-refresh on Stop (Epic #583 W5-F1c)', { timeout:
     // Run on-stop with a DIFFERENT session_id — updateHeartbeat must no-op.
     const result = await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ session_id: 'impostor-session' }),
+      stdin: JSON.stringify({ session_id: U('impostor-session') }),
     });
     expect(result.code).toBe(0);
 
@@ -829,7 +852,7 @@ describe('session lock heartbeat-refresh on Stop (Epic #583 W5-F1c)', { timeout:
     // No lock pre-written.
     const result = await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ session_id: 'no-lock-to-release' }),
+      stdin: JSON.stringify({ session_id: U('no-lock-to-release') }),
     });
     expect(result.code).toBe(0);
     // Hook still writes the stop event.
@@ -839,7 +862,7 @@ describe('session lock heartbeat-refresh on Stop (Epic #583 W5-F1c)', { timeout:
 
   it('uses current-session.json fallback when stdin lacks session_id', async () => {
     const dir = await track(await mkGitDir());
-    const sessionId = 'fallback-heartbeat-via-current-session';
+    const sessionId = U('fallback-heartbeat-via-current-session');
     await writeLock(dir, sessionId);
 
     // Write current-session.json so the resolver picks it up.
@@ -929,7 +952,7 @@ describe('missing node_modules — graceful degradation (GH#63)', { timeout: 300
     const res = await runSandboxHook({
       sandbox,
       projectDir,
-      stdin: JSON.stringify({ session_id: 'nodeps-core' }),
+      stdin: JSON.stringify({ session_id: U('nodeps-core') }),
     });
 
     expect(res.code).toBe(0);
@@ -943,7 +966,7 @@ describe('missing node_modules — graceful degradation (GH#63)', { timeout: 300
     // Degraded, not dead: the hook still does its job (event + terminalSequence).
     expect(await readLastEvent(projectDir)).toMatchObject({
       event: 'orchestrator.session.stopped',
-      session_id: 'nodeps-core',
+      session_id: U('nodeps-core'),
     });
     expect(typeof JSON.parse(res.stdout).terminalSequence).toBe('string');
   });
@@ -1022,5 +1045,98 @@ describe('hooks static-import guard (GH#63 recurrence class)', () => {
     )).toEqual([]);
     // The dynamic form the fix uses must NOT be flagged.
     expect(staticThirdPartyImports("const { $ } = await import('zx');\n")).toEqual([]);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// #1068 AC1 — the turn-end event carries the attested semantic id
+// ---------------------------------------------------------------------------
+
+describe('Stop event — semantic_session_id (#1068)', { timeout: 15000 }, () => {
+  /** Seed .orchestrator/current-session.json exactly as on-session-start writes it. */
+  async function seedCurrentSession(dir, { sessionId, semanticSessionId }) {
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'current-session.json'),
+      JSON.stringify({
+        session_id: sessionId,
+        ...(semanticSessionId === undefined ? {} : { semantic_session_id: semanticSessionId }),
+        source: 'stdin',
+        timestamp: new Date().toISOString(),
+      }),
+    );
+  }
+
+  // TV-001 — the bug: `resolveSessionId()` read only `session_id` out of
+  // current-session.json and dropped the `semantic_session_id` sitting beside
+  // it, so `session.stopped` was unjoinable to the semantic-keyed ledger even
+  // though the mapping was already on disk one line away.
+  it('carries the semantic id from current-session.json for the recorded session', async () => {
+    const dir = await track(await mkGitDir());
+    await seedCurrentSession(dir, {
+      sessionId: U('stop-sem-attested'),
+      semanticSessionId: 'main-2026-08-28-session-9',
+    });
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: U('stop-sem-attested') }),
+    });
+
+    const record = await readLastEvent(dir);
+    expect(record.session_id).toBe(U('stop-sem-attested'));
+    expect(record.semantic_session_id).toBe('main-2026-08-28-session-9');
+  });
+
+  // TV-001 — the contamination bug (#863 defect (c), same shape one hook over):
+  // current-session.json is repo-global, so a turn-end from a DIFFERENT window
+  // must not stamp the recorded peer's semantic identity onto its own event.
+  it('omits the key when the stopping session is not the recorded one', async () => {
+    const dir = await track(await mkGitDir());
+    await seedCurrentSession(dir, {
+      sessionId: U('stop-sem-peer'),
+      semanticSessionId: 'main-2026-08-28-session-9',
+    });
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: U('stop-sem-foreign') }),
+    });
+
+    const record = await readLastEvent(dir);
+    expect(record.session_id).toBe(U('stop-sem-foreign'));
+    expect(Object.prototype.hasOwnProperty.call(record, 'semantic_session_id')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1091 / Kanevry#66 — the stdin session_id must parse as a UUID
+// ---------------------------------------------------------------------------
+
+describe('Stop event — stdin id is UUID-gated, mirroring the writer (#1091)', { timeout: 15000 }, () => {
+  // TV-001 — the bug: any non-empty stdin string was passed through as the
+  // registry/lock key, while on-session-start.mjs only ever registers a UUID.
+  // The heartbeat then addressed a key nothing had written: the real entry went
+  // un-refreshed every turn and aged into the zombie sweep while the session was
+  // still live, and the only visible trace was a `heartbeat-missing` breadcrumb
+  // naming an id that exists nowhere else.
+  it('refreshes the entry recorded at SessionStart when the harness passes a NON-UUID stdin id', async () => {
+    const dir = await track(await mkGitDir());
+    const started = U('stop-uuid-gate');
+    await writeHeartbeat(started, { ageMinutes: 5 });
+    const before = await readEntry(started);
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'current-session.json'),
+      JSON.stringify({ session_id: started, source: 'generated-uuid' }),
+    );
+
+    await runHook({ projectDir: dir, stdin: JSON.stringify({ session_id: 'not-a-uuid' }) });
+
+    const after = await readEntry(started);
+    expect(Date.parse(after.last_heartbeat)).toBeGreaterThan(Date.parse(before.last_heartbeat));
+    const record = await readLastEvent(dir);
+    expect(record.session_id).toBe(started);
   });
 });

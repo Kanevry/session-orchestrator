@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -723,4 +723,57 @@ describe('edge cases', () => {
     // normalizeSession should have applied the `type` → `session_type` alias
     expect(signals.recentSessions[0].session_type).toBe('feature');
   });
+});
+
+// ---------------------------------------------------------------------------
+// #1071 — repoRoot binds every path; process.cwd() is only the default
+// ---------------------------------------------------------------------------
+//
+// The bug: with no repoRoot parameter, the three default paths (and the backlog
+// scan) resolved against the ambient working directory. Called from a worktree,
+// `buildLiveSignals` returned `recentSessions: []` for a checkout holding 245
+// session records, and selectMode scored a session it had no data about.
+// process.cwd() is mocked to a real-but-empty tmp dir so this test's red state
+// is deterministic and never depends on the live repo's own STATE.md.
+
+describe('#1071 — repoRoot binds STATE.md / sessions.jsonl / bootstrap.lock', () => {
+  it('reads all three from repoRoot while process.cwd() points at a different tree', async () => {
+    writeFixture('.claude/STATE.md', VALID_STATE_MD);
+    writeFixture('.orchestrator/metrics/sessions.jsonl', `${makeSession('deep')}\n`);
+    writeFixture('.orchestrator/bootstrap.lock', LOCK_CONTENTS);
+
+    const elsewhere = mkdtempSync(join(tmpdir(), 'bls-cwd-'));
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(elsewhere);
+
+    try {
+      const signals = await buildLiveSignals({
+        repoRoot: sandbox,
+        _scanBacklog: nullScanBacklog,
+      });
+
+      expect(signals.recommendedMode).toBe('deep');
+      expect(signals.recentSessions).toHaveLength(1);
+      expect(signals.bootstrapLock['tier']).toBe('deep');
+    } finally {
+      cwdSpy.mockRestore();
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('forwards repoRoot to scanBacklog so VCS detection answers about the same repo', async () => {
+    let capturedOpts;
+    const capturingScan = async (opts) => {
+      capturedOpts = opts;
+      return null;
+    };
+
+    await buildLiveSignals({ repoRoot: sandbox, _scanBacklog: capturingScan });
+
+    expect(capturedOpts.repoRoot).toBe(sandbox);
+  });
+
+  // No separate "explicit absolute path wins over repoRoot" test: the existing
+  // branch-1..6 cases already pass absolute sandbox paths, so any regression
+  // that joined repoRoot onto a caller-supplied absolute path (e.g. `join()`
+  // instead of `resolve()`) turns THOSE red first. TV-004 — do not add a sibling.
 });

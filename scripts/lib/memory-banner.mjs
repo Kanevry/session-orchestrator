@@ -308,7 +308,7 @@ async function countMemoryFiles(dir) {
  *
  * @param {object} args
  * @param {string} args.repoRoot — absolute path
- * @param {string} [args.memoryDir] — defaults to `resolveMemoryDir()`
+ * @param {string} [args.memoryDir] — defaults to `resolveMemoryDir(repoRoot)`
  * @param {string} [args.learningsPath] — defaults to `<repoRoot>/.orchestrator/metrics/learnings.jsonl`
  * @param {Date}   [args.now] — injectable clock for tests
  * @param {{enabled?: boolean, 'half-life-days'?: number, 'floor-factor'?: number}} [args.evolveDecay]
@@ -326,9 +326,12 @@ export async function readBannerInputs({ repoRoot, memoryDir, learningsPath, now
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
     throw new TypeError('readBannerInputs: repoRoot is required (absolute path)');
   }
+  // #1071: bind the memory dir to the SAME root as learnings/sessions/peer-cards
+  // below. Called with no argument it derived from the ambient `process.cwd()`,
+  // which reported `0 memory files` beside a 245-session count from `repoRoot`.
   const memDir = typeof memoryDir === 'string' && memoryDir.length > 0
     ? memoryDir
-    : resolveMemoryDir();
+    : resolveMemoryDir(repoRoot);
   const learningsFile = typeof learningsPath === 'string' && learningsPath.length > 0
     ? learningsPath
     : path.join(repoRoot, '.orchestrator', 'metrics', 'learnings.jsonl');

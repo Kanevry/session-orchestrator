@@ -16,7 +16,8 @@
  * JSONL format (`.orchestrator/metrics/events.jsonl`) — emitted via the canonical
  * `emitEvent()` so the JSONL record and the optional Clank webhook always carry the
  * SAME dotted event name (was: bare `stop`/`subagent_stop` in JSONL vs dotted in webhook):
- *   Stop:        {"timestamp":<ISO>,"event":"orchestrator.session.stopped","session_id":"...","wave":<int>,"branch":"...","commit":"...","duration_ms":<int>}
+ *   Stop:        {"timestamp":<ISO>,"event":"orchestrator.session.stopped","session_id":"...","semantic_session_id":"...","wave":<int>,"branch":"...","commit":"...","duration_ms":<int>}
+ *                (`session_id` / `semantic_session_id` are omitted when unresolvable — #1068 AC1.)
  *   SubagentStop: {"timestamp":<ISO>,"event":"orchestrator.agent.stopped","agent":"<name>"}
  */
 
@@ -29,6 +30,7 @@ if (!shouldRunHook('on-stop')) process.exit(0);
 
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
+import { parseSessionId } from '../scripts/lib/session-id.mjs';
 import { heartbeat, logSweepEvent } from '../scripts/lib/session-registry.mjs';
 import { updateHeartbeat } from '../scripts/lib/session-lock.mjs';
 
@@ -216,17 +218,39 @@ async function readWaveNumber(projectRoot) {
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve this session's id. Stdin payload wins. If Claude Code did not pass
- * one (Codex / Cursor paths, or older harnesses), fall back to
- * `.orchestrator/current-session.json` which on-session-start.mjs writes.
+ * Resolve this session's id + its attested semantic id. A stdin payload id wins
+ * ONLY when it parses as a UUID. If Claude Code did not pass one (Codex /
+ * Cursor paths, or older harnesses) — or passed something that is not a UUID —
+ * fall back to `.orchestrator/current-session.json` which on-session-start.mjs
+ * writes.
+ *
+ * #1091 / Kanevry#66 — WRITER/READER SYMMETRY, same defect class as
+ * `hooks/on-session-end.mjs`: `on-session-start.mjs` accepts a stdin raw id
+ * only when `parseSessionId(fromStdin)?.format === 'uuid'` and otherwise mints
+ * a `randomUUID()`, so every artifact this hook then addresses by id (the host
+ * registry entry, `session.lock`) is keyed by a UUID. Passing a non-UUID stdin
+ * string through meant `heartbeat()` and `updateHeartbeat()` addressed a key
+ * that was never written: the registry entry silently went un-refreshed (and
+ * aged into the zombie sweep) while the lock heartbeat no-oped on an ownership
+ * mismatch.
+ *
+ * `semanticSessionId` (#1068 AC1) is read from the SAME file and is deliberately
+ * gated on the resolved id BEING the recorded one — `current-session.json` is a
+ * single repo-global file describing whichever session most recently ran
+ * SessionStart, so an unrelated window's turn-end must not inherit a live
+ * peer's semantic identity (the #863 defect (c) contamination shape, mirrored
+ * here from `hooks/on-session-end.mjs`).
  *
  * @param {object|null} input
  * @param {string} projectRoot
- * @returns {Promise<string|null>}
+ * @returns {Promise<{sessionId: string|null, semanticSessionId: string|null}>}
  */
 async function resolveSessionId(input, projectRoot) {
   const fromStdin = input?.session_id ?? input?.sessionId ?? null;
-  if (typeof fromStdin === 'string' && fromStdin.length > 0) return fromStdin;
+  let sessionId = parseSessionId(fromStdin)?.format === 'uuid' ? fromStdin : null;
+
+  let recordedId = null;
+  let semanticSessionId = null;
   try {
     const raw = await fs.readFile(
       path.join(projectRoot, '.orchestrator', 'current-session.json'),
@@ -234,10 +258,20 @@ async function resolveSessionId(input, projectRoot) {
     );
     const parsed = JSON.parse(raw);
     if (typeof parsed.session_id === 'string' && parsed.session_id.length > 0) {
-      return parsed.session_id;
+      recordedId = parsed.session_id;
+    }
+    if (typeof parsed.semantic_session_id === 'string' && parsed.semantic_session_id.length > 0) {
+      semanticSessionId = parsed.semantic_session_id;
     }
   } catch { /* missing or unparseable is fine */ }
-  return null;
+
+  if (sessionId === null) sessionId = recordedId;
+
+  const isRecordedSession = sessionId !== null && sessionId === recordedId;
+  return {
+    sessionId,
+    semanticSessionId: isRecordedSession ? semanticSessionId : null,
+  };
 }
 
 /**
@@ -250,7 +284,7 @@ async function handleStop(input) {
   const wave = await readWaveNumber(projectRoot);
   const { commit, branch } = await gitInfo(projectRoot);
 
-  const sessionId = await resolveSessionId(input, projectRoot);
+  const { sessionId, semanticSessionId } = await resolveSessionId(input, projectRoot);
 
   // v3.1.0 multi-session registry (#169), corrected in #1047 — REFRESH the
   // registry entry here; never remove it.
@@ -323,8 +357,13 @@ async function handleStop(input) {
   // Single emission path: emitEvent writes the canonical {timestamp, event, ...payload}
   // JSONL record AND fires the optional Clank webhook with the SAME event name — no
   // more bare-`stop` (JSONL) vs dotted-`stopped` (webhook) divergence.
+  // #1068 AC1 — carry the attested semantic id alongside the raw UUID so a
+  // turn-end outcome is joinable by identity from events.jsonl alone. Omitted
+  // (never `""`/`null`) when unattested: an unresolved identity stays visibly
+  // unresolved rather than becoming a guessed id.
   await emitEvent('orchestrator.session.stopped', {
     ...(sessionId !== null ? { session_id: sessionId } : {}),
+    ...(semanticSessionId !== null ? { semantic_session_id: semanticSessionId } : {}),
     wave,
     ...(branch !== null ? { branch } : {}),
     ...(commit !== null ? { commit } : {}),

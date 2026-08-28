@@ -28,7 +28,18 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { telemetryIsolationEnv } from '../_helpers/telemetry-isolation.mjs';
+
+/**
+ * Deterministic, RFC-9562-shaped UUID for a readable fixture label — the hook
+ * accepts a stdin `session_id` only when it parses as a UUID (#1091), and a
+ * slug fixture would make the ownership compare this test names unreachable.
+ */
+function U(label) {
+  const h = crypto.createHash('sha256').update(String(label)).digest('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
 
 const HOOK = path.resolve(import.meta.dirname, '../../hooks/on-session-end.mjs');
 const EVENTS_REL = path.join('.orchestrator', 'metrics', 'events.jsonl');
@@ -104,13 +115,13 @@ async function runHook({ projectDir, stdin = '' }) {
 describe('on-session-end.mjs — lock.released breadcrumb (#952)', { timeout: 15000 }, () => {
   it('writes an orchestrator.session.lock.released record when it deletes its OWN lock', async () => {
     const dir = await mkProject();
-    await seedLock(dir, { sessionId: 'sess-released', semanticSessionId: 'sem-released' });
+    await seedLock(dir, { sessionId: U('sess-released'), semanticSessionId: 'sem-released' });
 
     const result = await runHook({
       projectDir: dir,
       stdin: JSON.stringify({
         hook_event_name: 'SessionEnd',
-        session_id: 'sess-released',
+        session_id: U('sess-released'),
         reason: 'clear',
       }),
     });
@@ -124,8 +135,8 @@ describe('on-session-end.mjs — lock.released breadcrumb (#952)', { timeout: 15
     const released = events.filter((e) => e.event === 'orchestrator.session.lock.released');
     expect(released).toHaveLength(1);
     expect(released[0]).toEqual(expect.objectContaining({
-      session_id: 'sess-released',
-      lock_session_id: 'sess-released',
+      session_id: U('sess-released'),
+      lock_session_id: U('sess-released'),
       end_reason: 'clear',
       caller: 'on-session-end',
       outcome: 'deleted',

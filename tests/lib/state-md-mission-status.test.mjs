@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   parseStateMd,
   parseMissionStatus,
@@ -8,8 +11,29 @@ import {
 } from '@lib/state-md.mjs';
 import {
   parseMissionStatusStrict,
+  recoverFrontmatterMissionStatusDetailed,
+  setMissionStatusOnDisk,
   MISSION_STATUS_VALUES,
 } from '@lib/state-md/mission-status.mjs';
+
+/** Builds a STATE.md with an empty registry and the given `## Mission Status` lines. */
+function stateWithBodyLines(...bodyLines) {
+  return `---
+schema-version: 1
+status: active
+mission-status: []
+---
+
+## Mission Status
+${bodyLines.join('\n')}
+`;
+}
+
+/** `recoverFrontmatterMissionStatusDetailed` fed from a STATE.md string. */
+function recoverFrom(contents) {
+  const parsed = parseStateMd(contents);
+  return recoverFrontmatterMissionStatusDetailed(parsed.frontmatter, parsed.body);
+}
 
 /**
  * Minimal valid STATE.md fixture (no mission-status key).
@@ -343,40 +367,47 @@ mission-status: []
     ]);
   });
 
+  // Rewritten for #1104: these four cases pinned the ALL-OR-NOTHING abort ("keeps an
+  // empty registry when the body contains %s"). The contract is now per line — the
+  // unreadable line is skipped, its canonical sibling still recovers — so each case
+  // carries a healthy sibling (`m-7`) whose survival is the actual assertion.
   it.each([
-    ['prose', 'manual review required'],
-    ['pipe-bearing status', '- m-1: completed|testing (updated 2026-08-20T00:00:00.000Z)'],
-    ['unsafe mission ID', '- m_1: completed (updated 2026-08-20T00:00:00.000Z)'],
-    ['non-writer timestamp', '- m-1: completed (updated yesterday)'],
-  ])('keeps an empty registry when the body contains %s', (_label, bodyLine) => {
-    const contents = `---
-schema-version: 1
-status: active
-mission-status: []
----
-
-## Mission Status
-${bodyLine}
-`;
+    ['prose', 'manual review required', 'non-canonical'],
+    ['pipe-bearing status', '- m-4: completed|testing (updated 2026-08-20T00:00:00.000Z)', 'unsafe-status'],
+    ['unsafe mission ID', '- m_1: completed (updated 2026-08-20T00:00:00.000Z)', 'non-canonical'],
+    ['non-writer timestamp', '- m-4: completed (updated yesterday)', 'non-canonical'],
+  ])('skips %s and still recovers the canonical sibling', (_label, bodyLine, reason) => {
+    const contents = stateWithBodyLines(
+      '- m-7: brainstormed (updated 2026-08-20T00:00:00.000Z)',
+      bodyLine
+    );
     const out = setMissionStatus(contents, 'm-2', 'completed');
 
-    expect(parseMissionStatus(parseStateMd(out).frontmatter)).toEqual([]);
+    expect(parseMissionStatus(parseStateMd(out).frontmatter)).toEqual([
+      { id: 'm-7', status: 'brainstormed' },
+      { id: 'm-2', status: 'completed' },
+    ]);
+    // Skipped means SKIPPED, never fabricated: the bad line contributes no entry.
+    expect(recoverFrom(contents).skipped).toEqual([{ line: bodyLine, reason }]);
   });
 
-  it('keeps an empty registry when canonical body bullets duplicate an ID', () => {
-    const contents = `---
-schema-version: 1
-status: active
-mission-status: []
----
-
-## Mission Status
-- m-1: brainstormed (updated 2026-08-20T00:00:00.000Z)
-- m-1: validated (updated 2026-08-20T00:00:00.000Z)
-`;
+  it('skips only the duplicate bullet and keeps the first occurrence', () => {
+    // The FIRST bullet wins because `setMissionStatus` (in-place replace) and
+    // `readMissionStatus` both operate on the first matching bullet — a recovery
+    // that preferred the last would disagree with both readers on the same file.
+    const contents = stateWithBodyLines(
+      '- m-1: brainstormed (updated 2026-08-20T00:00:00.000Z)',
+      '- m-1: validated (updated 2026-08-20T00:00:00.000Z)'
+    );
     const out = setMissionStatus(contents, 'm-2', 'completed');
 
-    expect(parseMissionStatus(parseStateMd(out).frontmatter)).toEqual([]);
+    expect(parseMissionStatus(parseStateMd(out).frontmatter)).toEqual([
+      { id: 'm-1', status: 'brainstormed' },
+      { id: 'm-2', status: 'completed' },
+    ]);
+    expect(recoverFrom(contents).skipped).toEqual([
+      { line: '- m-1: validated (updated 2026-08-20T00:00:00.000Z)', reason: 'duplicate-id' },
+    ]);
   });
 
   it('updates the body when frontmatter carries no mission-status array', () => {
@@ -656,5 +687,226 @@ describe('setMissionStatus — one flow item does not disable the document (#111
     expect(frontmatter['custom-extension']).toBe('keep-me');
     expect(frontmatter['schema-version']).toBe(1);
     expect(frontmatter.status).toBe('active');
+  });
+});
+
+// ─── #1104: one unreadable body line no longer freezes the registry ──────────
+//
+// TV-001 — the bugs these catch:
+//
+// (a) `recoverFrontmatterMissionStatus` aborted the WHOLE section at the first
+//     non-canonical line (`if (match === null) return frontmatter`). Census over
+//     all 16 host-local `<repo>/.claude/STATE.md` (2026-08-21, issue #1104):
+//     exactly ONE repo carried the #1084 shape (frontmatter `[]` + body entries),
+//     and its bullets were hand-written — `- m-1 D1 ADR-Delta: completed`, no
+//     `(updated <ISO>)`. So the recovery served 0 of the 1 file it was built for,
+//     and every canonical sibling below that line was lost with it.
+//
+// (b) `setMissionStatus` gated `taskId` on `typeof taskId === 'string'` while the
+//     recovery required `[a-z][a-z0-9]*(-[a-z0-9]+)*-\d+`. The writer therefore
+//     produced body lines its own recovery could never read back (measured in the
+//     issue: `- Docs_2: in-dev (updated …)` beside `- m-1: completed (…)`, with
+//     `fm: []`), and the resulting freeze was indistinguishable from "nothing to do".
+
+const LEGACY_HANDWRITTEN_BULLET = '- m-1 D1 ADR-Delta: completed';
+
+describe('recovery skips per line instead of abandoning the section (#1104)', () => {
+  it('recovers the canonical entry beside a hand-written legacy bullet', () => {
+    const contents = stateWithBodyLines(
+      LEGACY_HANDWRITTEN_BULLET,
+      '- m-7: brainstormed (updated 2026-08-20T00:00:00.000Z)'
+    );
+
+    const out = setMissionStatus(contents, 'm-7', 'completed');
+
+    // Before #1104 this was `[]`: the legacy line on row 1 aborted the merge.
+    expect(parseMissionStatus(parseStateMd(out).frontmatter)).toEqual([
+      { id: 'm-7', status: 'completed' },
+    ]);
+    // The legacy line is left in the body verbatim — skipped, never rewritten.
+    expect(out).toContain(LEGACY_HANDWRITTEN_BULLET);
+  });
+
+  it('reports the skipped line and its reason through the detailed export', () => {
+    const detailed = recoverFrom(
+      stateWithBodyLines(
+        LEGACY_HANDWRITTEN_BULLET,
+        '- m-7: brainstormed (updated 2026-08-20T00:00:00.000Z)'
+      )
+    );
+
+    expect(detailed.skipped).toEqual([
+      { line: LEGACY_HANDWRITTEN_BULLET, reason: 'non-canonical' },
+    ]);
+    expect(parseMissionStatus(detailed.frontmatter)).toEqual([
+      { id: 'm-7', status: 'brainstormed' },
+    ]);
+  });
+
+  it('reports an empty skip list when every body line is canonical', () => {
+    // The discriminator the issue asks for: "declined N lines" must not look like
+    // "nothing to do". A clean body reports `[]`, a dirty one reports the lines.
+    const detailed = recoverFrom(
+      stateWithBodyLines('- m-7: brainstormed (updated 2026-08-20T00:00:00.000Z)')
+    );
+
+    expect(detailed.skipped).toEqual([]);
+  });
+
+  it('reports a shape-valid but impossible timestamp as invalid-timestamp', () => {
+    // Distinct from `non-canonical`: this line MATCHES the writer regex — only
+    // `Date` refutes it. Collapsing the two reasons would hide which half failed.
+    const line = '- m-4: completed (updated 2026-02-30T00:00:00.000Z)';
+    const detailed = recoverFrom(stateWithBodyLines(line));
+
+    expect(detailed.skipped).toEqual([{ line, reason: 'invalid-timestamp' }]);
+    expect(parseMissionStatus(detailed.frontmatter)).toEqual([]);
+  });
+});
+
+describe('setMissionStatus refuses an id its own recovery cannot read (#1104)', () => {
+  it.each([
+    ['an underscore id from the issue census', 'Docs_2'],
+    ['an uppercase id', 'M-1'],
+    ['an id with no numeric suffix', 'docs'],
+    ['the id this module\'s docblock wrongly advertised until #1104', 'w2-a10'],
+  ])('returns contents unchanged for %s', (_label, taskId) => {
+    const contents = stateWithBodyLines(
+      '- m-7: brainstormed (updated 2026-08-20T00:00:00.000Z)'
+    );
+
+    // Before #1104: a body line `- Docs_2: in-dev (updated …)` was written, which
+    // then poisoned the recovery of every OTHER line in the same section.
+    expect(setMissionStatus(contents, taskId, 'in-dev')).toBe(contents);
+  });
+
+  // The gate is the grammar, not a freeze — and the docblock's example list is
+  // now load-bearing, because a coordinator that copies a rejected example gets
+  // a silent no-op instead of a bad line. Measured 2026-08-28: `w2-a10` (the
+  // example the docblock carried until #1104) is REJECTED — hence its row above.
+  it.each([['m-1'], ['docs-2'], ['w2-1'], ['w2-a-10']])(
+    'writes %s — every id the docblock advertises',
+    (taskId) => {
+      const contents = stateWithBodyLines(
+        '- m-7: brainstormed (updated 2026-08-20T00:00:00.000Z)'
+      );
+      const out = setMissionStatus(contents, taskId, 'in-dev');
+
+      expect(readMissionStatus(out, taskId)).toBe('in-dev');
+    }
+  );
+});
+
+describe('setMissionStatusOnDisk warns about skipped body lines (#1104)', () => {
+  const roots = [];
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    while (roots.length > 0) rmSync(roots.pop(), { recursive: true, force: true });
+  });
+
+  function seedRepo(contents) {
+    const root = mkdtempSync(join(tmpdir(), 'so-mission-status-1104-'));
+    roots.push(root);
+    mkdirSync(join(root, '.claude'), { recursive: true });
+    writeFileSync(join(root, '.claude', 'STATE.md'), contents, 'utf8');
+    return root;
+  }
+
+  it('emits one stderr WARN naming the count and the first reason', async () => {
+    // Option 3 at the seam: the pure recovery cannot report, so the layer that
+    // already does I/O must — otherwise a declined recovery is byte-identical to
+    // a clean one, which is the silence this issue is about.
+    const root = seedRepo(
+      stateWithBodyLines(
+        LEGACY_HANDWRITTEN_BULLET,
+        '- m-7: brainstormed (updated 2026-08-20T00:00:00.000Z)'
+      )
+    );
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+
+    const result = await setMissionStatusOnDisk(root, 'm-7', 'completed');
+
+    const warns = stderr.mock.calls
+      .map(([chunk]) => String(chunk))
+      .filter((line) => line.includes('mission-status recovery skipped'));
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain('skipped 1 body line(s)');
+    expect(warns[0]).toContain('non-canonical');
+    expect(warns[0]).toContain(LEGACY_HANDWRITTEN_BULLET);
+
+    // The WARN reports, it never blocks: the write still lands.
+    expect(result.written).toBe(true);
+    expect(parseMissionStatus(parseStateMd(readFileSync(result.path, 'utf8')).frontmatter)).toEqual(
+      [{ id: 'm-7', status: 'completed' }]
+    );
+  });
+
+  it('stays silent when every body line is canonical', async () => {
+    const root = seedRepo(
+      stateWithBodyLines('- m-7: brainstormed (updated 2026-08-20T00:00:00.000Z)')
+    );
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+
+    await setMissionStatusOnDisk(root, 'm-7', 'completed');
+
+    expect(
+      stderr.mock.calls
+        .map(([chunk]) => String(chunk))
+        .filter((line) => line.includes('mission-status recovery skipped'))
+    ).toEqual([]);
+  });
+});
+
+// ─── Flow-style frontmatter must never fold into `id` (#1104, 2026-08-22) ────
+//
+// TV-001 — the bug: session main-2026-08-22-session-3 wrote its 21 entries in
+// flow style; the FIRST `updateFrontmatterFields` (for `current-wave`) folded
+// each whole record into the `id` value —
+//   - { id: "m-1, task: \"…\", wave: 1, status: validated}" }
+// — after which `setMissionStatus(c, 'm-1', …)` no longer found `m-1`, appended
+// a new entry each time, and left 42 entries (21 with `status: undefined`).
+// Verbatim fixture from the issue comment, including the NO-SPACE `- {id:` form
+// the existing #1111 regression block does not exercise (it uses `- { id: `).
+
+const STATE_FLOW_STYLE_VERBATIM = `---
+schema-version: 1
+status: active
+mission-status:
+  - {id: m-1, task: "Klaeren ob PreToolUse auf AskUserQuestion feuert", wave: 1, status: validated}
+---
+
+## Mission Status
+
+- m-1: validated (updated 2026-08-22T00:00:00.000Z)
+`;
+
+describe('flow-style mission-status survives the first frontmatter write (#1104)', () => {
+  it('keeps id, task, wave and status as separate fields', () => {
+    const out = setMissionStatus(STATE_FLOW_STYLE_VERBATIM, 'm-1', 'completed');
+    const items = parseMissionStatus(parseStateMd(out).frontmatter);
+
+    expect(items).toEqual([
+      {
+        id: 'm-1',
+        task: 'Klaeren ob PreToolUse auf AskUserQuestion feuert',
+        wave: 1,
+        status: 'completed',
+      },
+    ]);
+  });
+
+  it('updates in place instead of appending a second entry for the same id', () => {
+    // The silent data growth: 21 status writes produced 42 entries because the
+    // mangled id never matched again.
+    let out = STATE_FLOW_STYLE_VERBATIM;
+    for (const status of ['in-dev', 'testing', 'completed']) {
+      out = setMissionStatus(out, 'm-1', status);
+    }
+    const items = parseMissionStatus(parseStateMd(out).frontmatter);
+
+    expect(items).toHaveLength(1);
+    expect(items[0].status).toBe('completed');
+    expect(items.flatMap((e) => Object.keys(e)).filter((k) => k.startsWith('{'))).toEqual([]);
   });
 });

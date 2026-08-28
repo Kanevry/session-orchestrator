@@ -36,6 +36,11 @@
  *   - No-throw: every path returns a structured `{ action, ... }` result; the
  *     hook must never be pushed past its teardown timeout by an exception.
  *   - Dedupe: never double-write a session already present in sessions.jsonl.
+ *   - Supersede (#1068 AC3/AC4): the ONE exception to that dedupe — an
+ *     authoritative `state-md-completed` record may be appended for an identity
+ *     whose only entry is a backfilled `abandoned` STUB, carrying
+ *     `supersedes: <stub id>`. Append-only: the stub is kept verbatim and
+ *     readers take the NEWEST record for an id as the canonical one.
  *   - Liveness guard: never backfill over a FOREIGN live session.lock (PSA).
  *   - TOCTOU marker: an atomic `openSync(..., 'wx')` claim file keyed by the
  *     final id serialises concurrent backfill attempts (mirrors the
@@ -51,6 +56,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 import { appendJsonl as defaultAppendJsonl } from './common.mjs';
+import { parseSessionId } from './session-id.mjs';
 import { readLock as defaultReadLock, isLockLive as defaultIsLockLive, DEFAULT_TTL_HOURS } from './session-lock.mjs';
 import { validateSession as defaultValidateSession } from './session-schema/validator.mjs';
 import { serializeSessionLineChecked as defaultSerialize } from './session-schema.mjs';
@@ -60,8 +66,6 @@ import { parseStateMd as defaultParseStateMd } from './state-md/yaml-parser.mjs'
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** session_type enum accepted by the schema — lock.mode is coerced against it. */
 const VALID_SESSION_TYPES = new Set(['feature', 'deep', 'housekeeping']);
@@ -79,9 +83,22 @@ const BACKFILL_LOG_REL = ['.orchestrator', 'metrics', 'session-close-backfill.lo
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** True when `s` is a canonical UUID (v4-shaped). */
+/**
+ * True when `s` is an RFC 9562 UUID session id (any version 1-8, variant `10xx`).
+ *
+ * Delegates to `parseSessionId()` so the repo has exactly ONE UUID contract
+ * (`UUID_RE` in `scripts/lib/session-id.mjs`). This module previously carried a
+ * private, LOOSER copy that constrained neither the version nor the variant
+ * nibble, so a 36-char lookalike such as
+ * `xxxxxxxx-xxxx-0xxx-cxxx-xxxxxxxxxxxx` was classified as a harness UUID here
+ * while `hooks/on-session-start.mjs` — which gates on `parseSessionId()` —
+ * rejected it. The disagreement is exactly the ID-bridge this module depends
+ * on: a value the writer refused to use as a raw id was still treated here as
+ * one, sending the record down the UUID branch (lock-bridge + synthetic-id
+ * mint) instead of the semantic branch.
+ */
 export function isUuid(s) {
-  return typeof s === 'string' && UUID_RE.test(s);
+  return parseSessionId(s)?.format === 'uuid';
 }
 
 /** Filesystem-safe marker filename for an arbitrary session id. */
@@ -234,8 +251,12 @@ function isCandidateDeadByAge({ relaxDeadByAge, assumeDeadBeforeMs, lastEventMs,
  * `status: completed` backfill below reuses this exact synthesis, just with
  * a different terminal status and provenance tag). Defaults reproduce the
  * original `backfillAbandonedSession` behaviour exactly for existing callers.
+ *
+ * `supersedes` (#1068 AC3, default `null`) stamps the id of the backfill STUB
+ * this record replaces. It is emitted only when non-null, so every existing
+ * record shape is byte-identical to before.
  */
-function synthesizeRecord({ recordId, synthetic, gathered, nowMs, status = 'abandoned', backfillSource = 'events-jsonl' }) {
+function synthesizeRecord({ recordId, synthetic, gathered, nowMs, status = 'abandoned', backfillSource = 'events-jsonl', supersedes = null }) {
   const startedIso = canonicalIso(gathered.startedAt, gathered.earliestMs ?? nowMs);
   const startedMs = Date.parse(startedIso);
   // completed_at is events-attested, never the backfill-run wall-clock (#914 R1).
@@ -302,27 +323,99 @@ function synthesizeRecord({ recordId, synthetic, gathered, nowMs, status = 'aban
   if (inferred) record._session_type_inferred = true;
   if (synthetic) record._synthetic_session_id = true;
   if (completedEstimated) record._completed_at_estimated = true;
+  // #1068 AC3/AC4 — forensic supersede marker. sessions.jsonl is append-only,
+  // so the stub itself cannot be stamped `superseded_by`; the FORWARD pointer
+  // lives on the newer record instead, and the stub survives verbatim (AC4:
+  // "historische Stub-Provenance bleibt erhalten"). Readers resolve one
+  // canonical state per id by taking the NEWEST record for that id.
+  if (typeof supersedes === 'string' && supersedes.length > 0) record.supersedes = supersedes;
   return record;
+}
+
+/**
+ * Terminal statuses that mark a ledger record as a BACKFILLED STUB rather than
+ * an authoritative close (#1068 AC3).
+ *
+ * `abandoned` is the only member today: it is what `backfillAbandonedSession`
+ * writes when a session never reached `/close`, i.e. a reconstruction, never a
+ * self-reported outcome. `completed` is deliberately NOT a member — including
+ * the `state-md-completed` backfill, whose status IS the session's own truth
+ * claim. That exclusion is also what makes supersede idempotent: the record
+ * appended by a supersede is `completed`, so a second run classifies it as
+ * canonical and skips instead of superseding its own predecessor forever.
+ */
+const BACKFILL_STUB_STATUSES = new Set(['abandoned']);
+
+/**
+ * True when a sessions.jsonl record is a backfilled STUB — reconstructed
+ * provenance (`_backfill_source`) AND a stub status. Both are required: a
+ * hand-written `abandoned` record with no backfill provenance is somebody's
+ * deliberate statement and is never superseded on our own initiative.
+ *
+ * @param {unknown} record
+ * @returns {boolean}
+ */
+function isBackfillStub(record) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return false;
+  if (typeof record._backfill_source !== 'string') return false;
+  return BACKFILL_STUB_STATUSES.has(record.status);
+}
+
+/**
+ * Classify what sessions.jsonl already holds for this identity (#1068 AC3/AC4).
+ *
+ * Reads the (small) sessions.jsonl exactly once and returns one of:
+ *   { kind: 'absent' }                                — nothing recorded yet
+ *   { kind: 'canonical', matchedId }                  — an authoritative record exists
+ *   { kind: 'stub', matchedId, stubId }               — only a backfilled stub exists
+ *
+ * "Newest wins" is the reading rule: sessions.jsonl is APPEND-ONLY, so a
+ * superseding record can never rewrite the stub in place — it is appended
+ * after it, and the LAST record for an id is therefore the current one. This
+ * function reads the same way (last match, not first), so a stub that has
+ * already been superseded classifies as `canonical` and is never superseded
+ * twice.
+ *
+ * @param {Function} readFileSync
+ * @param {string} sessionsPath
+ * @param {{recordId: string, sessionId: string|null}} ids
+ */
+function classifyExisting(readFileSync, sessionsPath, { recordId, sessionId }) {
+  const sessionRecords = readJsonlSafe(readFileSync, sessionsPath);
+  // Both keys count: the semantic record id, and — defensively — a prior record
+  // keyed directly by the UUID.
+  const uuidKey = isUuid(sessionId) ? sessionId : null;
+  const byId = (id) =>
+    id === null ? [] : sessionRecords.filter((r) => r && r.session_id === id);
+  // Key preference is UNCHANGED from the pre-#1068 dedupe: the semantic
+  // recordId wins whenever any record carries it, and the UUID key is only the
+  // defensive fallback.
+  const semanticMatches = byId(recordId);
+  const matches = semanticMatches.length > 0 ? semanticMatches : byId(uuidKey);
+  if (matches.length === 0) return { kind: 'absent' };
+
+  const newest = matches[matches.length - 1];
+  if (isBackfillStub(newest)) {
+    return { kind: 'stub', matchedId: newest.session_id, stubId: newest.session_id };
+  }
+  return { kind: 'canonical', matchedId: newest.session_id };
 }
 
 /**
  * Dedupe against sessions.jsonl. Returns a `skipped-already-recorded` result
  * when `recordId` (or a UUID `sessionId` written directly as a key) is already
- * present, else `null`. Reads the (small) sessions.jsonl exactly once.
+ * present, else `null`.
+ *
+ * HARD dedupe by design — it is the guard for `backfillAbandonedSession`, whose
+ * output is itself a stub: replacing one stub with another buys nothing and
+ * would re-append on every SessionEnd. The supersede path (#1068 AC3) belongs
+ * to the AUTHORITATIVE writer only; see `classifyExisting` + its use in
+ * `backfillCompletedFromStateMd`.
  */
 function checkAlreadyRecorded(readFileSync, sessionsPath, { recordId, sessionId }) {
-  const sessionRecords = readJsonlSafe(readFileSync, sessionsPath);
-  const existingIds = new Set(
-    sessionRecords.map((r) => (r && typeof r.session_id === 'string' ? r.session_id : null)).filter(Boolean)
-  );
-  if (existingIds.has(recordId)) {
-    return { action: 'skipped-already-recorded', sessionId: recordId };
-  }
-  // Defensive: a prior record keyed directly by the UUID also counts.
-  if (isUuid(sessionId) && existingIds.has(sessionId)) {
-    return { action: 'skipped-already-recorded', sessionId };
-  }
-  return null;
+  const existing = classifyExisting(readFileSync, sessionsPath, { recordId, sessionId });
+  if (existing.kind === 'absent') return null;
+  return { action: 'skipped-already-recorded', sessionId: existing.matchedId };
 }
 
 // ---------------------------------------------------------------------------
@@ -652,7 +745,9 @@ export async function backfillAbandonedSession({
  *
  * Never throws. Returns one of:
  *   { action: 'backfilled', sessionId, record }              — written to disk
+ *   { action: 'superseded', sessionId, record, supersedes }   — written, replacing a stub (#1068 AC3)
  *   { action: 'would-backfill', sessionId, record }           — dryRun only
+ *   { action: 'would-supersede', sessionId, record, supersedes } — dryRun only
  *   { action: 'skipped-no-state-md' }                — no STATE.md at any candidate path
  *   { action: 'skipped-unparseable-state-md' }        — frontmatter did not parse
  *   { action: 'skipped-not-completed', status }       — STATE.md status isn't 'completed'
@@ -720,10 +815,21 @@ export async function backfillCompletedFromStateMd({
         return { action: 'skipped-no-session-id' };
       }
 
-      // -- Dedupe against sessions.jsonl ----------------------------------------
+      // -- Dedupe, or SUPERSEDE a backfill stub (#1068 AC3) ---------------------
+      // This is the authoritative writer of the pair: STATE.md's own
+      // `status: completed` is the session's truth claim about itself, and it
+      // arrives with an identity-complete key (the semantic id). When the only
+      // thing on file for that identity is a reconstructed `abandoned` stub,
+      // the stub is a measurement this record refutes — so we append the fuller
+      // record (carrying `supersedes: <stub id>`) instead of skipping. An
+      // authoritative record already on file still short-circuits exactly as
+      // before.
       const sessionsPath = path.join(repoRoot, ...SESSIONS_REL);
-      const dupe = checkAlreadyRecorded(readFileSync, sessionsPath, { recordId, sessionId: recordId });
-      if (dupe) return dupe;
+      const existing = classifyExisting(readFileSync, sessionsPath, { recordId, sessionId: recordId });
+      if (existing.kind === 'canonical') {
+        return { action: 'skipped-already-recorded', sessionId: existing.matchedId };
+      }
+      const supersedes = existing.kind === 'stub' ? existing.stubId : null;
 
       // -- Derive whatever is derivable from events.jsonl (never STATE.md body) -
       const eventsPath = path.join(repoRoot, ...EVENTS_REL);
@@ -738,6 +844,7 @@ export async function backfillCompletedFromStateMd({
         nowMs,
         status: 'completed',
         backfillSource: 'state-md-completed',
+        supersedes,
       });
       let validated;
       try {
@@ -748,7 +855,12 @@ export async function backfillCompletedFromStateMd({
       }
 
       if (dryRun) {
-        return { action: 'would-backfill', sessionId: recordId, record: validated };
+        return {
+          action: supersedes ? 'would-supersede' : 'would-backfill',
+          sessionId: recordId,
+          record: validated,
+          ...(supersedes ? { supersedes } : {}),
+        };
       }
 
       // -- TOCTOU marker — atomic create-or-fail, own namespace so a concurrent
@@ -770,7 +882,12 @@ export async function backfillCompletedFromStateMd({
       } catch (err) {
         return { action: 'error', error: `append: ${err?.message ?? String(err)}`, sessionId: recordId };
       }
-      return { action: 'backfilled', sessionId: recordId, record: validated };
+      return {
+        action: supersedes ? 'superseded' : 'backfilled',
+        sessionId: recordId,
+        record: validated,
+        ...(supersedes ? { supersedes } : {}),
+      };
     } catch (err) {
       // Absolute backstop — the hook must never see an exception from here.
       return { action: 'error', error: err?.message ?? String(err) };

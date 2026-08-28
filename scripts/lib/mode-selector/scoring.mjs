@@ -82,6 +82,47 @@ export function safeBootstrapLock(signals) {
     : null;
 }
 
+/**
+ * Read a session record's completion rate, tolerating both the shape
+ * `sessions.jsonl` actually writes and the legacy flat one.
+ *
+ * Production records nest it: `{effectiveness: {completion_rate: 0.77, …}}`,
+ * with top-level `completion_rate` present but `null` (measured 2026-08-28 over
+ * `.orchestrator/metrics/sessions.jsonl`: 281 records, 0 with a non-null
+ * top-level `completion_rate`, 182 with a nested one). Reading only the flat
+ * field therefore made every average 0 in production — see #1071.
+ *
+ * Precedence mirrors `completionOf()` in
+ * `scripts/lib/evolve/autopilot-effectiveness.mjs`: nested canonical fields
+ * first, flat legacy fields as a backward-compatible fallback for
+ * hand-written/pre-nesting records.
+ *
+ * @param {unknown} session
+ * @returns {number} completion rate, or 0 when unknown
+ */
+function completionRateOf(session) {
+  if (session === null || typeof session !== 'object') return 0;
+  const eff = (session.effectiveness !== null && typeof session.effectiveness === 'object')
+    ? session.effectiveness
+    : {};
+  const raw =
+    eff.completion_rate ?? eff.completion_ratio ?? session.completion_rate ?? session.completion_ratio;
+  return typeof raw === 'number' && !Number.isNaN(raw) ? raw : 0;
+}
+
+/**
+ * Mean completion rate across a session slice. Unknown values contribute 0 and
+ * the divisor stays the slice length — an incomplete slice can never inflate
+ * the average past the >= 0.9 bonus threshold.
+ *
+ * @param {any[]} sessions
+ * @returns {number}
+ */
+function avgCompletionRate(sessions) {
+  if (sessions.length === 0) return 0;
+  return sessions.reduce((sum, s) => sum + completionRateOf(s), 0) / sessions.length;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -107,9 +148,7 @@ export function computeDelta(candidateMode, signals) {
       (s) => typeof s === 'object' && s !== null && s.session_type === candidateMode,
     );
     if (allMatch) {
-      const avgCompletion =
-        last3.reduce((sum, s) => sum + (typeof s.completion_rate === 'number' ? s.completion_rate : 0), 0) /
-        3;
+      const avgCompletion = avgCompletionRate(last3);
       trendBonus = avgCompletion >= 0.9 ? 0.15 : 0.075;
     }
   }
@@ -151,9 +190,7 @@ export function computeDelta(candidateMode, signals) {
         (s) => typeof s === 'object' && s !== null && s.session_type === otherMode,
       );
       if (allOther) {
-        const avgCompletion =
-          last3.reduce((sum, s) => sum + (typeof s.completion_rate === 'number' ? s.completion_rate : 0), 0) /
-          3;
+        const avgCompletion = avgCompletionRate(last3);
         if (avgCompletion >= 0.9) {
           penalty += 0.10;
           break; // only one other dominant mode possible

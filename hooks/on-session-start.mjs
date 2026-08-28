@@ -414,6 +414,10 @@ async function resolveSessionId(input, projectRoot) {
  *
  * Returns the candidate string on success, null on any failure. Never throws.
  *
+ * Contract (#1066, "Minimal"): the semantic id is a best-effort, host-wide
+ * monotonic LABEL, never an ownership key — ownership stays `(raw session_id,
+ * owner proof)`, and the two identity forms are never interchangeable.
+ *
  * Used by both branches of resolveSessionId() so the semantic_session_id
  * field on the session.lock is consistently populated regardless of whether
  * the SessionStart stdin payload provided a UUID (Claude Code) or nothing
@@ -424,7 +428,7 @@ async function resolveSessionId(input, projectRoot) {
  */
 async function deriveSemanticCandidate({ projectRoot, mode }) {
   try {
-    const { resolveSemanticSessionId } = await import('../scripts/lib/session-id.mjs');
+    const { resolveSemanticSessionId, parseSessionId } = await import('../scripts/lib/session-id.mjs');
     const { discoverActiveSessions } = await import('../scripts/lib/session-discovery.mjs');
     const { execSync } = await import('node:child_process');
 
@@ -452,10 +456,28 @@ async function deriveSemanticCandidate({ projectRoot, mode }) {
       discoverActiveSessions(projectRoot).catch(() => []),
       readRegistry().catch(() => []),
     ]);
-    const registrySessions = registryEntries.map((r) => ({
-      sessionId: r.session_id,
-      mode: r.mode ?? 'session',
-    }));
+
+    // Registry census (#1066 AC1): the registry keeps the two identity forms in
+    // SEPARATE fields — `session_id` is the RAW id (a UUID on Claude Code) and
+    // `semantic_session_id` is the label. resolveSemanticSessionId counts only
+    // semantic candidates, so projecting `session_id` alone made the host-wide
+    // registry contribute NOTHING to the n-increment, and two sessions on one
+    // host could mint the same label. Preference order per entry:
+    //   1. `semantic_session_id`, when it parses as semantic;
+    //   2. `session_id`, ONLY when it itself parses as semantic (Codex/Cursor
+    //      may write a semantic raw id).
+    // A legacy v1 entry (no `semantic_session_id`, UUID `session_id`) matches
+    // neither and is dropped — a UUID is never reintroduced as a candidate.
+    const semanticLabelOf = (entry) => {
+      for (const candidate of [entry?.semantic_session_id, entry?.session_id]) {
+        if (parseSessionId(candidate)?.format === 'semantic') return candidate;
+      }
+      return null;
+    };
+    const registrySessions = registryEntries.flatMap((r) => {
+      const label = semanticLabelOf(r);
+      return label === null ? [] : [{ sessionId: label, mode: r.mode ?? 'session' }];
+    });
     const activeSessions = [...localSessions, ...registrySessions];
 
     return await resolveSemanticSessionId({

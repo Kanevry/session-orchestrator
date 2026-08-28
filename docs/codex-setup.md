@@ -180,6 +180,26 @@ codex plugin list --available --json
 - **Agent dispatch fails:** verify Codex multi-agent support and inspect the bundled or project-level role TOMLs.
 - **Hooks report that Node is unavailable:** expose Node 24+ on the Codex hook PATH or set `SO_NODE_BIN` to the absolute Node executable.
 - **`MCP startup failed: handshaking with MCP server failed: connection closed: initialize response`:** the MCP entrypoint could not locate the plugin, or could not run. Read the server's **stderr** — since GH#64 it names itself. Two diagnostics exist:
-  - `session-orchestrator: cannot locate the plugin root` — no plugin-root variable was set, the working directory was outside any git checkout, and Node could not resolve an installed `session-orchestrator` package. This is the common case when Codex is started from `$HOME`. Fix: add `CODEX_PLUGIN_ROOT` (or `CLAUDE_PLUGIN_ROOT`) pointing at the plugin directory to that server's `env` block in your MCP configuration, or start Codex from inside the session-orchestrator checkout. Do not expect Codex to supply the variable — see the note under *Key Differences* above.
+  - `session-orchestrator: cannot locate the plugin root` — no plugin-root variable was set, the working directory was outside any git checkout, no cached copy of the plugin was found, and Node could not resolve an installed `session-orchestrator` package. Fix: reinstall the plugin so a cached copy exists (see *Where the plugin actually lives* below), or add `CODEX_PLUGIN_ROOT` (or `CLAUDE_PLUGIN_ROOT`) pointing at the plugin directory to that server's `env` block. Do not expect Codex to supply the variable — see the note under *Key Differences* above.
   - `session-orchestrator: 'jq' not found in PATH` — the plugin was found but `jq` is missing. Fix: install `jq` and restart Codex. (Before GH#64 this case wrote a JSON-RPC error to *stdout* with `id: null`, which is not a valid `initialize` response either, so a missing `jq` and a missing plugin were indistinguishable from the client side.)
 - **The MCP tools answer `Error: not inside a git repository`:** expected, not a failure. The handshake succeeded; `session_config` and `session_metrics` read the *project* you are working in, so they need Codex's working directory to be inside a git repository. Start Codex from the project, or `cd` into it.
+
+### Where the plugin actually lives (measured 2026-08-28, codex-cli 0.141.0)
+
+Three facts explain why launching Codex from `$HOME` used to kill the MCP server before `initialize` (GH Kanevry/session-orchestrator#64), and none of them is guessable from the docs:
+
+1. **Codex copies the plugin; it does not run it from your clone.** A marketplace install lands at `<CODEX_HOME>/plugins/cache/<marketplace>/<plugin>/<version>/` — measured here as `~/.codex/plugins/cache/local/session-orchestrator/3.22.0+codex.20260822193811/`, a full self-contained tree with its own `.mcp.json`, `package.json` and `scripts/mcp-server.sh`. Claude Code uses the same shape under `~/.claude/plugins/cache/`.
+2. **The MCP child gets no plugin-root variable and no working directory of its own.** Probing a registered MCP server launched from `/tmp` showed `PWD=/private/tmp` (the launch directory, verbatim) and `CLAUDE_PLUGIN_ROOT`, `CODEX_PLUGIN_ROOT`, `PLUGIN_ROOT` and `CODEX_HOME` **all unset**; `codex mcp list` prints `Env: -` and `Cwd: -` for the entry. `HOME` *is* set. So from `$HOME` — not a git repository — every locator the entrypoint had was blind, and `$(git rev-parse --show-toplevel)` collapsed the path to `/scripts/mcp-server.sh`.
+3. **Codex does not expand `${...}` in the registered command, and the registration is a snapshot.** `codex mcp list` shows the launch string verbatim, `${CLAUDE_PLUGIN_ROOT:-…}` and all — bash expands it, not Codex. It comes from the *cached* `.mcp.json`, taken at install time: a fix committed to this repo reaches an existing install only after a reinstall.
+
+The entrypoint therefore scans those cache roots itself, matching on `package.json` `"name": "session-orchestrator"` rather than on the directory name, and preferring the most recently installed copy. A directory that merely *sits* under a `session-orchestrator/` marketplace folder is rejected.
+
+**If your install predates this fix, reinstall — the fix cannot reach a cached copy on its own:**
+
+```bash
+codex plugin marketplace add Kanevry/session-orchestrator
+codex mcp list | grep session-orchestrator   # the launch string should mention plugins/cache
+```
+
+The 0.144.4 minimum-version caveat above still stands: everything in this section was measured on **0.141.0**, below the documented minimum, and has not been re-verified on 0.144.4+ or on the reporter's 0.149.0-alpha.4.3.
+

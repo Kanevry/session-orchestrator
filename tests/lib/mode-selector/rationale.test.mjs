@@ -4,10 +4,13 @@ import { buildPassthroughRationale } from '@lib/mode-selector/rationale.mjs';
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+// Production shape: `sessions.jsonl` nests the rate under `effectiveness`
+// (#1071). buildPassthroughRationale reads only `session_type`, so the shape is
+// inert here — it stays nested so no fixture in this suite teaches the flat one.
 const threeSessions = (mode, completionRate = 1.0) => [
-  { session_type: mode, completion_rate: completionRate },
-  { session_type: mode, completion_rate: completionRate },
-  { session_type: mode, completion_rate: completionRate },
+  { session_type: mode, effectiveness: { completion_rate: completionRate } },
+  { session_type: mode, effectiveness: { completion_rate: completionRate } },
+  { session_type: mode, effectiveness: { completion_rate: completionRate } },
 ];
 
 // ---------------------------------------------------------------------------

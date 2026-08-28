@@ -6,7 +6,8 @@
  *   - parseSessionId(id): { format: 'semantic'|'uuid', ...fields, raw } | null
  *   - DEFAULT_SESSION_ID_SOURCES — the default `sources` array (see below)
  *   - SEMANTIC_ID_RE — source-of-truth regex for semantic session IDs
- *   - UUID_V4_RE     — regex for UUID-v4 format session IDs
+ *   - UUID_RE        — regex for RFC 9562 UUID session IDs (any version 1–8)
+ *   - UUID_V4_RE     — deprecated alias of UUID_RE (kept for importers)
  *
  * Closes #572 — Epic #568 Phase 2.1 (Parallel-Aware Sessions Semantic ID)
  * Closes #585 — Epic #583 W2-I2 (history-aware n-increment) per audit
@@ -67,14 +68,33 @@ import { parseStateMd } from './state-md/yaml-parser.mjs';
 export const SEMANTIC_ID_RE = /^([a-z0-9._/-]+)-(\d{4}-\d{2}-\d{2})-([a-z-]+)-(\d+)$/;
 
 /**
- * Regex for UUID-v4 session IDs.
+ * Regex for RFC 9562 UUID session IDs — ANY version 1–8, variant `10xx`.
  *
- * Matches: 8-4-4-4-12 hex digits, version nibble = '4', variant nibble in {8,9,a,b}.
- * Case-insensitive to accept both uppercase and lowercase hex.
+ * Matches: 8-4-4-4-12 hex digits, version nibble in [1-8], variant nibble in
+ * {8,9,a,b}. Case-insensitive to accept both uppercase and lowercase hex.
+ *
+ * Why the version nibble is a RANGE and not the literal `4` (Kanevry#66 / #1091):
+ * Claude Code mints UUIDv4 session ids, but Codex CLI mints UUIDv7. Pinning `4`
+ * made `parseSessionId()` return `null` for every Codex session, so
+ * `hooks/on-session-start.mjs` fell through to a freshly generated
+ * `randomUUID()` and every later hook in that session missed the lock.
+ *
+ * The structure stays strict on purpose: the dash/length layout and the
+ * variant nibble are what discriminate a real UUID from a 36-char lookalike,
+ * so only the version nibble is widened. Version `0` (nil UUID) and `9`..`f`
+ * (unassigned / max UUID) remain rejected — RFC 9562 defines 1–8.
  *
  * @type {RegExp}
  */
-export const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * @deprecated Use {@link UUID_RE}. Retained as an alias so no importer breaks;
+ * the name is a misnomer since Kanevry#66 — the pattern accepts any RFC 9562
+ * version 1–8, not only v4.
+ * @type {RegExp}
+ */
+export const UUID_V4_RE = UUID_RE;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -344,8 +364,12 @@ export const DEFAULT_SESSION_ID_SOURCES = Object.freeze([
  *   1. Semantic: `<branch>-<YYYY-MM-DD>-<mode>-<n>`
  *      Returns `{ format: 'semantic', branch, date, mode, n, raw }`.
  *
- *   2. UUID-v4: `xxxxxxxx-xxxx-4xxx-[89ab]xxx-xxxxxxxxxxxx`
- *      Returns `{ format: 'uuid', uuid, raw }`.
+ *   2. RFC 9562 UUID, any version 1–8, variant `10xx`:
+ *      `xxxxxxxx-xxxx-[1-8]xxx-[89ab]xxx-xxxxxxxxxxxx`
+ *      Returns `{ format: 'uuid', uuid, version, raw }`, where `version` is the
+ *      version nibble as an integer (4 for Claude Code's v4 ids, 7 for Codex
+ *      CLI's v7 ids). Callers that only branch on `format` are unaffected —
+ *      `version` is additive (Kanevry#66 / #1091).
  *
  * Returns `null` for any input that is not a non-empty string or does not
  * match either known format. Never throws.
@@ -356,7 +380,7 @@ export const DEFAULT_SESSION_ID_SOURCES = Object.freeze([
  *
  * @param {unknown} id - The session ID to parse.
  * @returns {{ format: 'semantic', branch: string, date: string, mode: string, n: number, raw: string }
- *           | { format: 'uuid', uuid: string, raw: string }
+ *           | { format: 'uuid', uuid: string, version: number, raw: string }
  *           | null}
  */
 export function parseSessionId(id) {
@@ -375,9 +399,10 @@ export function parseSessionId(id) {
     };
   }
 
-  // Try UUID-v4.
-  if (UUID_V4_RE.test(id)) {
-    return { format: 'uuid', uuid: id, raw: id };
+  // Try RFC 9562 UUID (any version 1–8). Index 14 is the version nibble, and
+  // UUID_RE has already constrained it to [1-8], so Number() cannot be NaN.
+  if (UUID_RE.test(id)) {
+    return { format: 'uuid', uuid: id, version: Number(id[14]), raw: id };
   }
 
   return null;
@@ -418,9 +443,9 @@ export function parseSessionId(id) {
  *   cannot assign the same n. The #952 collision was NOT a concurrency defect —
  *   the lock held; the candidate set was incomplete.
  *
- * UUID-v4 entries (in any source) are silently dropped (parseSessionId returns
- * format:'uuid' which the filter excludes). Malformed semantic-looking IDs are
- * also dropped (SEMANTIC_ID_RE rejects them).
+ * UUID entries of ANY version (in any source) are silently dropped
+ * (parseSessionId returns format:'uuid' which the filter excludes). Malformed
+ * semantic-looking IDs are also dropped (SEMANTIC_ID_RE rejects them).
  *
  * @param {object} opts
  * @param {string} opts.branch - Current git branch (e.g. "main", "feature/foo").

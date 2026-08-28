@@ -230,7 +230,12 @@ async function modeSelector() {
   // `backlogLimit` is intentionally NOT passed: the window default lives once,
   // in backlog-scan.mjs (`DEFAULT_BACKLOG_LIMIT`). The hand-written 50 that
   // stood here under-read this repo's own backlog and hid its critical issues.
+  // `repoRoot` is passed EXPLICITLY (#1071) rather than left to the helper's
+  // cwd default: this driver already reads learnings.jsonl and sessions.jsonl
+  // relative to the invocation directory, and an implicit default is the seam
+  // where those two roots silently drift apart.
   const signals = await buildLiveSignals({
+    repoRoot: process.cwd(),
     learnings: surfacedLearnings,
   });
   return selectMode(signals);

@@ -206,7 +206,7 @@ describe('on-stop.mjs — Stop branch', { timeout: 20000 }, () => {
     const result = await runHook({
       hookPath: HOOKS.stop,
       projectDir: dir,
-      stdin: { hook_event_name: 'Stop', session_id: 'test-123' },
+      stdin: { hook_event_name: 'Stop', session_id: '11111111-2222-4333-8444-555555555555' },
     });
     expect(result.code).toBe(0);
   });
@@ -222,7 +222,7 @@ describe('on-stop.mjs — Stop branch', { timeout: 20000 }, () => {
     await runHook({
       hookPath: HOOKS.stop,
       projectDir: dir,
-      stdin: { hook_event_name: 'Stop', session_id: 'test-123' },
+      stdin: { hook_event_name: 'Stop', session_id: '11111111-2222-4333-8444-555555555555' },
     });
 
     const events = await readEvents(dir);
@@ -241,7 +241,7 @@ describe('on-stop.mjs — Stop branch', { timeout: 20000 }, () => {
     await runHook({
       hookPath: HOOKS.stop,
       projectDir: dir,
-      stdin: { hook_event_name: 'Stop', session_id: 'test-123' },
+      stdin: { hook_event_name: 'Stop', session_id: '11111111-2222-4333-8444-555555555555' },
     });
 
     const events = await readEvents(dir);
@@ -262,13 +262,13 @@ describe('on-stop.mjs — Stop branch', { timeout: 20000 }, () => {
     await runHook({
       hookPath: HOOKS.stop,
       projectDir: dir,
-      stdin: { hook_event_name: 'Stop', session_id: 'test-123' },
+      stdin: { hook_event_name: 'Stop', session_id: '11111111-2222-4333-8444-555555555555' },
     });
 
     const events = await readEvents(dir);
     const stopEvent = events.find((e) => e.event === 'orchestrator.session.stopped');
     expect(stopEvent).toBeDefined();
-    expect(stopEvent.session_id).toBe('test-123');
+    expect(stopEvent.session_id).toBe('11111111-2222-4333-8444-555555555555');
   });
 });
 

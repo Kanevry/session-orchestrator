@@ -548,6 +548,42 @@ export async function runStoryPipeline(context, opts = {}) {
 const ENTER_WORKTREE_BRANCH_RE = /^[a-zA-Z0-9._/-]+$/;
 
 /**
+ * Set of branch names currently checked out by ANY worktree of `repoRoot` (#1067).
+ *
+ * Deliberately NOT `listWorktrees()` from `../worktree/listing.mjs`: that helper
+ * runs `git worktree list --porcelain` in `process.cwd()` (it has no repo
+ * parameter), and `enterWorktree` takes `repoRoot` explicitly precisely to avoid
+ * CWD drift (#219) — so reusing it would query whichever repo the process
+ * happens to sit in. Its `$` seam also has a different shape (`$({cwd})` returns
+ * the tag) than `enterWorktree`'s (`exec` IS the tag), so the two cannot share
+ * one injected executor. Only the `branch` lines are parsed here; `HEAD`,
+ * `detached`, `bare` and `locked` records carry nothing this decision needs.
+ *
+ * @param {Function} exec      zx-like template-tag executor (the DI seam).
+ * @param {string} repoRoot    Absolute path to the source git repository.
+ * @returns {Promise<Set<string>>} Branch names without the `refs/heads/` prefix.
+ *   Empty on git failure — the caller then behaves exactly as it did before this
+ *   check existed, so a broken listing degrades to git's own loud
+ *   `already used by worktree` error rather than to a silent wrong branch.
+ */
+async function listCheckedOutBranches(exec, repoRoot) {
+  let stdout;
+  try {
+    const result = await exec`git -C ${repoRoot} worktree list --porcelain`;
+    stdout = String(result?.stdout ?? '');
+  } catch {
+    return new Set();
+  }
+
+  const branches = new Set();
+  for (const rawLine of stdout.split('\n')) {
+    const match = /^branch refs\/heads\/(.+)$/.exec(rawLine.trimEnd());
+    if (match) branches.add(match[1]);
+  }
+  return branches;
+}
+
+/**
  * Create a sibling git worktree for Worktree-Auto-Promotion (#574, Epic #568 P3.1).
  *
  * Path layout: `<basePath>/<basename(repoRoot)>-<sessionId>/`
@@ -573,10 +609,18 @@ const ENTER_WORKTREE_BRANCH_RE = /^[a-zA-Z0-9._/-]+$/;
  * check as `setupWorktree` (CWE-23 / SEC-013 defence-in-depth). Throws
  * `WorktreeBoundaryError` if the computed path escapes `basePath`.
  *
- * Branch handling: if the branch already exists (verified via
- * `git rev-parse --verify <branch>`), use `git worktree add <wtPath> <branch>`
- * (reuse). Otherwise use `git worktree add -b <branch> <wtPath>` (create new).
- * This differs from `setupWorktree`, which always passes `-b`.
+ * Branch handling — three cases, decided in this order (#1067):
+ *  1. `<branch>` is already checked out by ANY worktree of `repoRoot` (the
+ *     normal session-start Phase 0.5 case, where `branch` is the CURRENT HEAD):
+ *     git refuses a second checkout of the same branch
+ *     (`fatal: '<branch>' is already used by worktree at '<repoRoot>'`). Treat
+ *     `<branch>` as a START POINT only and create a fresh promotion branch
+ *     `so/<sessionId>` at it: `git worktree add -b so/<sessionId> <wtPath> <branch>`.
+ *     The source branch and the source worktree are left untouched.
+ *  2. `<branch>` exists but is not checked out (verified via
+ *     `git rev-parse --verify <branch>`): `git worktree add <wtPath> <branch>`.
+ *  3. `<branch>` does not exist: `git worktree add -b <branch> <wtPath>`.
+ * Cases 2/3 differ from `setupWorktree`, which always passes `-b`.
  *
  * @param {object} params
  * @param {string} params.basePath  - Parent directory where the new worktree goes (absolute).
@@ -585,7 +629,11 @@ const ENTER_WORKTREE_BRANCH_RE = /^[a-zA-Z0-9._/-]+$/;
  * @param {string} params.repoRoot  - Path to the source git repository (passed explicitly to avoid CWD drift per #219).
  * @param {object} [opts]
  * @param {Function} [opts.$]       - zx-like template-tag executor (DI seam); falls back to lazy `await import('zx')`.
- * @returns {Promise<{ wtPath: string, reused: boolean }>}
+ * @returns {Promise<{ wtPath: string, reused: boolean, branch?: string, promotedFrom?: string }>}
+ *   `branch` is the branch the new worktree actually landed on — equal to the
+ *   `branch` param except in case 1 above, where it is `so/<sessionId>` and
+ *   `promotedFrom` carries the requested source branch. Both fields are absent
+ *   on the `reused: true` path (no branch was chosen — the worktree pre-existed).
  * @throws {TypeError} when any required param is missing or fails validation.
  * @throws {WorktreeBoundaryError} when the computed worktree path escapes `basePath`.
  */
@@ -686,28 +734,50 @@ export async function enterWorktree({ basePath, sessionId, branch, repoRoot } = 
   }
 
   // -------------------------------------------------------------------------
-  // Step 5: Detect whether branch already exists, then `git worktree add`.
+  // Step 5: Is `branch` already checked out elsewhere? (#1067)
+  //
+  // Phase 0.5 passes the CURRENT HEAD as `branch`, so in the normal promotion
+  // case it is checked out by `repoRoot` itself and git would refuse a second
+  // checkout. Then `branch` is only a start point and the worktree lands on a
+  // fresh `so/<sessionId>`; the source branch/worktree stay untouched.
   // -------------------------------------------------------------------------
-  let branchExists = false;
-  try {
-    await exec`git -C ${repoRoot} rev-parse --verify ${branch}`;
-    branchExists = true;
-  } catch {
-    // Branch does not exist — fall through to create-new path with `-b`.
+  const checkedOutBranches = await listCheckedOutBranches(exec, repoRoot);
+  const promoted = checkedOutBranches.has(branch);
+  const targetBranch = promoted ? `so/${sessionId}` : branch;
+
+  // -------------------------------------------------------------------------
+  // Step 6: Detect whether branch already exists, then `git worktree add`.
+  // A branch that a worktree has checked out exists by construction, so the
+  // rev-parse probe is skipped on the promotion path.
+  // -------------------------------------------------------------------------
+  let branchExists = promoted;
+  if (!promoted) {
+    try {
+      await exec`git -C ${repoRoot} rev-parse --verify ${branch}`;
+      branchExists = true;
+    } catch {
+      // Branch does not exist — fall through to create-new path with `-b`.
+    }
   }
 
-  if (branchExists) {
+  if (promoted) {
+    await exec`git -C ${repoRoot} worktree add -b ${targetBranch} ${wtPath} ${branch}`;
+  } else if (branchExists) {
     await exec`git -C ${repoRoot} worktree add ${wtPath} ${branch}`;
   } else {
     await exec`git -C ${repoRoot} worktree add -b ${branch} ${wtPath}`;
   }
 
   // -------------------------------------------------------------------------
-  // Step 6: WARN to stderr (PRD §3 P3 Gherkin row-1 + #574 DoD).
+  // Step 7: WARN to stderr (PRD §3 P3 Gherkin row-1 + #574 DoD).
   // -------------------------------------------------------------------------
   console.warn(
-    `enterWorktree: created sibling worktree at ${wtPath} (branch=${branch}, sessionId=${sessionId})`,
+    promoted
+      ? `enterWorktree: created sibling worktree at ${wtPath} (branch=${targetBranch}, promoted from ${branch}, sessionId=${sessionId})`
+      : `enterWorktree: created sibling worktree at ${wtPath} (branch=${branch}, sessionId=${sessionId})`,
   );
 
-  return { wtPath, reused: false };
+  return promoted
+    ? { wtPath, reused: false, branch: targetBranch, promotedFrom: branch }
+    : { wtPath, reused: false, branch };
 }

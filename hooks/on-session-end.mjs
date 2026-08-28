@@ -10,7 +10,8 @@
  * `session.started` had no terminal partner.
  *
  * JSONL format (`.orchestrator/metrics/events.jsonl`):
- *   {"timestamp":<ISO>,"event":"orchestrator.session.ended","session_id":"...","reason":"<reason>","duration_ms":<int>}
+ *   {"timestamp":<ISO>,"event":"orchestrator.session.ended","session_id":"...","semantic_session_id":"...","reason":"<reason>","duration_ms":<int>}
+ *   (`session_id` / `semantic_session_id` are omitted when unresolvable — #1068 AC1.)
  *
  * Exit codes: 0 always (informational hook — must never block session teardown).
  * stdin: optional JSON { hook_event_name:"SessionEnd", session_id?, reason?, cwd? }.
@@ -40,6 +41,7 @@ import {
   loadOwnerProof,
   OWNER_PROOF_RELPATH,
 } from '../scripts/lib/session-lock.mjs';
+import { parseSessionId } from '../scripts/lib/session-id.mjs';
 import { deregisterSelf, logSweepEvent } from '../scripts/lib/session-registry.mjs';
 import { readConfigFile, parseSessionConfig } from '../scripts/lib/config.mjs';
 import { flush } from '../scripts/lib/telemetry/sync.mjs';
@@ -77,11 +79,26 @@ async function readStdinJson() {
 }
 
 /**
- * Resolve this session's id + duration + semantic id. Stdin session_id wins;
- * otherwise fall back to `.orchestrator/current-session.json` (written by
- * on-session-start.mjs). duration_ms is only computed when the ENDING session
- * is the one recorded in current-session.json — never fabricated for a
- * mismatched / unknown session.
+ * Resolve this session's id + duration + semantic id. A stdin session_id wins
+ * ONLY when it parses as a UUID; otherwise fall back to
+ * `.orchestrator/current-session.json` (written by on-session-start.mjs).
+ * duration_ms is only computed when the ENDING session is the one recorded in
+ * current-session.json — never fabricated for a mismatched / unknown session.
+ *
+ * #1091 / Kanevry#66 — WRITER/READER SYMMETRY. `on-session-start.mjs`
+ * (`resolveSessionId`, :316-317) accepts a stdin raw id only when
+ * `parseSessionId(fromStdin)?.format === 'uuid'` and otherwise mints a
+ * `randomUUID()`; `current-session.json`, `session.lock` and the host registry
+ * are therefore ALWAYS keyed by a UUID. This reader used to accept ANY
+ * non-empty stdin string, so a harness that passed a non-UUID id
+ * (`{"session_id":"not-a-uuid"}`) resolved a key that matches nothing written
+ * at start: the raw-ID ownership compare below (:330) fails, the lock is
+ * neither released nor reconciled, and it LEAKS until its TTL expires. Same
+ * for `deregisterSelf()`, whose registry file is named after the id
+ * `registerSelf()` used. Mirroring the writer's rule here makes the fallback
+ * (which reads exactly those artifacts) the single source of the identity.
+ * The ownership compare itself stays an exact string `===` — this changes
+ * WHICH id is compared, never HOW.
  *
  * `semanticSessionId` is read from current-session.json (present since #587):
  * it is the SEMANTIC id (`<branch>-<date>-<mode>-<n>`) that sessions.jsonl is
@@ -103,7 +120,8 @@ async function readStdinJson() {
  */
 async function resolveSession(input, projectRoot) {
   const fromStdin = input?.session_id ?? input?.sessionId ?? null;
-  let sessionId = (typeof fromStdin === 'string' && fromStdin.length > 0) ? fromStdin : null;
+  // UUID-only, exactly as the writer decides it (see the docblock above).
+  let sessionId = parseSessionId(fromStdin)?.format === 'uuid' ? fromStdin : null;
 
   let recordedId = null;
   let semanticSessionId = null;
@@ -249,6 +267,46 @@ async function flushTelemetry(projectRoot) {
   } catch { /* observability is best-effort */ }
 }
 
+/**
+ * #1068 AC2 — emit ONE canonically queryable outcome per backfill attempt.
+ *
+ * Until now a backfill result reached exactly one place:
+ * `.orchestrator/metrics/session-close-backfill.log`, a side-log no lifecycle
+ * consumer reads and no staleness/integrity check joins against. The event
+ * stream is where every other lifecycle fact already lives, so the outcome goes
+ * there too — carrying IDENTITY (`session_id` raw UUID + the record id the
+ * backfill acted on + the attested semantic id), ACTION, and, when the action
+ * was an error, its REASON. The side-log is unchanged and remains the verbose
+ * copy; this is the queryable one.
+ *
+ * `kind` distinguishes the two backfill classes, which share the log file and
+ * would otherwise be indistinguishable in aggregate: `'abandoned'`
+ * (`backfillAbandonedSession`) vs `'state-md-completed'`
+ * (`backfillCompletedFromStateMd`).
+ *
+ * Every id key is OMITTED when unknown — never `""`, never a guess (#1068 AC1).
+ * Best-effort throughout: observability must never block teardown.
+ *
+ * @param {'abandoned'|'state-md-completed'} kind
+ * @param {{action?: string, sessionId?: string|null, supersedes?: string, error?: string}|null|undefined} result
+ * @param {{sessionId: string|null, semanticSessionId: string|null}} ids
+ * @returns {Promise<void>}
+ */
+async function emitBackfillOutcome(kind, result, { sessionId, semanticSessionId }) {
+  try {
+    const recordId = typeof result?.sessionId === 'string' ? result.sessionId : null;
+    await emitEvent('orchestrator.session.backfill', {
+      kind,
+      action: typeof result?.action === 'string' ? result.action : 'unknown',
+      ...(sessionId !== null ? { session_id: sessionId } : {}),
+      ...(semanticSessionId !== null ? { semantic_session_id: semanticSessionId } : {}),
+      ...(recordId !== null ? { record_id: recordId } : {}),
+      ...(typeof result?.supersedes === 'string' ? { supersedes: result.supersedes } : {}),
+      ...(typeof result?.error === 'string' ? { reason: result.error } : {}),
+    });
+  } catch { /* observability is best-effort */ }
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -263,8 +321,20 @@ async function main() {
 
   // Single emission path: emitEvent writes the canonical {timestamp, event, ...payload}
   // JSONL record AND fires the optional Clank webhook with the SAME event name.
+  //
+  // #1068 AC1 — the terminal event carries the raw UUID *and* the semantic id
+  // whenever the latter is ATTESTED, so a lifecycle outcome is joinable by
+  // identity from events.jsonl alone (previously only `session.lock.acquired`
+  // carried both, and only ~1/3 of sessions emit one). The key is OMITTED, never
+  // written as `""` or `null`, when `resolveSession()` could not attest it —
+  // "identity unresolved" must stay visibly unresolved rather than become a
+  // guessed id (#1068 AC1's explicit "niemals eine geratene ID"). Note the
+  // attestation bar is the #863 defect (c) guard inside `resolveSession()`: an
+  // ending session that is NOT the one current-session.json describes resolves
+  // `semanticSessionId: null` and therefore emits no key here.
   await emitEvent('orchestrator.session.ended', {
     ...(sessionId !== null ? { session_id: sessionId } : {}),
+    ...(semanticSessionId !== null ? { semantic_session_id: semanticSessionId } : {}),
     reason,
     duration_ms: durationMs,
   });
@@ -283,7 +353,8 @@ async function main() {
   //     historical migration CLI) is NEVER passed here: a foreign lock that is live
   //     at hook-time is, by definition, a real active session, not stale history.
   try {
-    await backfillAbandonedSession({ repoRoot: projectRoot, sessionId, semanticSessionId });
+    const res = await backfillAbandonedSession({ repoRoot: projectRoot, sessionId, semanticSessionId });
+    await emitBackfillOutcome('abandoned', res, { sessionId, semanticSessionId });
   } catch { /* best-effort — never block teardown */ }
 
   // (a2) #429 — STATE.md `status: completed` self-heal. Orthogonal to (a)
@@ -295,7 +366,8 @@ async function main() {
   //      no-op on the overwhelmingly common path (STATE.md status is
   //      'active'/'paused'/'idle', or the record already exists).
   try {
-    await backfillCompletedFromStateMd({ repoRoot: projectRoot });
+    const res = await backfillCompletedFromStateMd({ repoRoot: projectRoot });
+    await emitBackfillOutcome('state-md-completed', res, { sessionId, semanticSessionId });
   } catch { /* best-effort — never block teardown */ }
 
   // (b) Deterministic lock release — ONLY a lock whose raw/native session_id
@@ -399,7 +471,7 @@ async function main() {
             await emitEvent('orchestrator.session.lock.released', {
               session_id: sessionId,
               lock_session_id: lock.session_id,
-              semantic_session_id: semanticSessionId,
+              ...(semanticSessionId !== null ? { semantic_session_id: semanticSessionId } : {}),
               end_reason: reason,
               caller: 'on-session-end',
               outcome: benignAlreadyGone ? 'already-gone' : 'deleted',

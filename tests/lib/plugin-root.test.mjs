@@ -17,7 +17,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertErrorShape } from '../_helpers/assert-error-shape.mjs';
 
@@ -37,6 +37,36 @@ function makeTmpPluginDir(name = 'session-orchestrator') {
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name }), 'utf8');
   return dir;
+}
+
+/**
+ * Run `resolvePluginRoot()` in a child process against an isolated copy of the
+ * module, with a synthetic HOME so the scan of the client plugin caches cannot
+ * see the machine's real ones.
+ *
+ * @param {string} modulePath  Absolute path to the isolated plugin-root.mjs copy
+ * @param {string} cwd         Working directory for the child (must not sit inside a checkout)
+ * @param {string} home        Synthetic HOME the child should see
+ * @returns {{ok: true, root: string} | {ok: false, name: string, triedPaths: string[]}}
+ */
+function runIsolatedResolve(modulePath, cwd, home) {
+  const script = `
+    import { resolvePluginRoot } from ${JSON.stringify(pathToFileURL(modulePath).href)};
+    try {
+      console.log(JSON.stringify({ ok: true, root: resolvePluginRoot() }));
+    } catch (error) {
+      console.log(JSON.stringify({ ok: false, name: error.name, triedPaths: error.triedPaths }));
+    }
+  `;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd,
+    env: { PATH: process.env.PATH, HOME: home, CODEX_HOME: '' },
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    throw new Error(`isolated resolve exited ${result.status}: ${result.stderr}`);
+  }
+  return JSON.parse(result.stdout.trim());
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +363,47 @@ describe('resolvePluginRoot — walk-from-cwd (Level 5)', () => {
   });
 });
 
+describe('resolvePluginRoot — plugin-cache scan (Level 8, GH Kanevry/session-orchestrator#64)', () => {
+  // The bug this catches: a marketplace install is COPIED into the client's
+  // plugin cache and launched with NO plugin-root env var and NO cwd override
+  // (measured 2026-08-28, codex-cli 0.141.0). Every other level is blind in
+  // that shape, so the MCP server died before answering `initialize`.
+  it('resolves a cached copy by its package.json marker, not by its directory name', () => {
+    const sandbox = mkdtempSync(path.join(os.tmpdir(), 'plugin-root-cache-'));
+
+    try {
+      const isolatedModule = path.join(sandbox, 'plugin-root.mjs');
+      copyFileSync(fileURLToPath(new URL('../../scripts/lib/plugin-root.mjs', import.meta.url)), isolatedModule);
+
+      // Layout measured on codex-cli 0.141.0 and Claude Code:
+      // <HOME>/.codex/plugins/cache/<marketplace>/<plugin>/<version>/
+      const cachedHome = path.join(sandbox, 'cached-home');
+      const cached = path.join(
+        cachedHome, '.codex', 'plugins', 'cache', 'local', 'session-orchestrator', '3.22.0+codex.20260822193811',
+      );
+      mkdirSync(cached, { recursive: true });
+      writeFileSync(path.join(cached, 'package.json'), JSON.stringify({ name: 'session-orchestrator' }), 'utf8');
+
+      // Same directory name, foreign package — the name is not the proof.
+      const decoyHome = path.join(sandbox, 'decoy-home');
+      const decoy = path.join(
+        decoyHome, '.codex', 'plugins', 'cache', 'other', 'session-orchestrator', '9.9.9',
+      );
+      mkdirSync(decoy, { recursive: true });
+      writeFileSync(path.join(decoy, 'package.json'), JSON.stringify({ name: 'not-session-orchestrator' }), 'utf8');
+
+      expect(runIsolatedResolve(isolatedModule, sandbox, cachedHome)).toEqual({ ok: true, root: cached });
+
+      const rejected = runIsolatedResolve(isolatedModule, sandbox, decoyHome);
+      expect(rejected.ok).toBe(false);
+      expect(rejected.name).toBe('PluginRootResolutionError');
+      expect(rejected.triedPaths.join('\n')).toContain('plugin caches');
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('resolvePluginRoot — all-fail-throws-named-error', () => {
   // We need to test the throw path. The only way to make all levels fail is:
   // - env vars unset (levels 1+2+3 skip)
@@ -393,6 +464,13 @@ describe('resolvePluginRoot — all-fail-throws-named-error', () => {
         cwd: isolatedDir,
         env: {
           ...process.env,
+          // Point HOME at the empty sandbox: Level 8 scans
+          // <HOME>/.codex|.claude/plugins/cache/*/session-orchestrator/*, and
+          // the real HOME on a developer machine usually HAS a cached copy —
+          // without this the test would resolve instead of throwing, and it
+          // would pass or fail depending on the host rather than the code.
+          HOME: isolatedDir,
+          CODEX_HOME: '',
           SO_PLATFORM: 'codex',
           PLUGIN_ROOT: `  ${missingNative}  `,
           CLAUDE_PLUGIN_ROOT: '   ',

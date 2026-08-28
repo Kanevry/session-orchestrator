@@ -1,52 +1,92 @@
-# Semgrep ruleset — session-orchestrator
+# Semgrep ruleset — session-orchestrator (27 rules)
 #
 # PROVENANCE: vendored 2026-08-22 from projects-baseline
 # templates/shared/.semgrep.yml (64 rules, baseline copy dated 2026-04-25).
 #
 # WHY THIS FILE IS NOT A VERBATIM COPY. The baseline ruleset targets web apps
-# with user-supplied input. This repo is a CLI/agent harness: 1102 .mjs files,
-# no HTTP surface, no browser, no end-user request path. Five rules fire here
-# purely on that context mismatch. They were REMOVED rather than carried and
+# with user-supplied input. This repo is a CLI/agent harness: 1140 tracked .mjs
+# files, no HTTP surface, no browser, no end-user request path. Rules that fire
+# here purely on that context mismatch were REMOVED rather than carried and
 # ignored, because a scanner that is red on noise trains people to skip it —
 # the same failure mode .claude/rules/host-resources.md HR-101 names for
 # warnings ("a signal may only warn if it is rare").
 #
-# Measured 2026-08-22 @ 141d418, `semgrep scan` over scripts/ hooks/ skills/,
-# 474 files scanned, 78 findings — ALL from these five, ALL false positives:
+# EXCLUDED WITH REASON — measured, never inferred.
 #
-#   41x baseline-path-traversal-join    path.join(SO_PROJECT_DIR, 'CLAUDE.md')
-#                                       — second argument is a literal, not input.
-#   21x raw-error-to-client             return { error: err.message } from an
-#                                       internal function to its own caller.
-#                                       SEC-009 governs HTTP responses to end
-#                                       users; there is no client here.
-#   10x baseline-redos-user-regex       new RegExp(re.source, flags) rebuilding a
-#                                       literal RegExp declared in the same
-#                                       module — never a user-supplied pattern.
-#    5x baseline-dynamic-hash-algorithm crypto.createHash('sha256') — the
-#                                       algorithm IS the literal the rule wants.
-#    1x console-log-production          `no-console` is deliberately OFF here
-#                                       (eslint.config.js:38, development.md).
+# (a) Five removed as measured false positives. Measured 2026-08-22 @ 141d418,
+#     `semgrep scan` over scripts/ hooks/ skills/, 474 files scanned, 78
+#     findings — ALL from these five, ALL false positives:
 #
-# Re-enable any of them the moment this repo grows the surface it assumes:
-# an HTTP endpoint, a browser bundle, or a user-supplied regex/path.
+#       41x baseline-path-traversal-join    path.join(SO_PROJECT_DIR, 'CLAUDE.md')
+#                                           — second argument is a literal, not input.
+#       21x raw-error-to-client             return { error: err.message } from an
+#                                           internal function to its own caller.
+#                                           SEC-009 governs HTTP responses to end
+#                                           users; there is no client here.
+#       10x baseline-redos-user-regex       new RegExp(re.source, flags) rebuilding a
+#                                           literal RegExp declared in the same
+#                                           module — never a user-supplied pattern.
+#        5x baseline-dynamic-hash-algorithm crypto.createHash('sha256') — the
+#                                           algorithm IS the literal the rule wants.
+#        1x console-log-production          `no-console` is deliberately OFF here
+#                                           (eslint.config.js:38, development.md).
 #
-# The remaining 25 rules produce ZERO findings today. That is the point: they
-# cost nothing now and bite on the next regression. Present and load-bearing
-# for a repo that shells out constantly: unsafe-command-injection,
-# unsafe-shell-spawn, tob-unsafe-child-process, unsafe-eval,
-# math-random-security, unsafe-llm-output-eval.
+#     Re-enable any of them the moment this repo grows the surface it assumes:
+#     an HTTP endpoint, a browser bundle, or a user-supplied regex/path.
 #
-# NOT PRESENT, and this file previously claimed they were (measured 2026-08-23):
-#   json-parse-untrusted-input          removed by `paths: include: **/src/`
-#   prototype-pollution-object-assign   removed by `paths: include: **/src/`
-#   unsafe-llm-output-rendering         removed by `paths: include: **/src/`
-# None of the three is inapplicable here — all three were dropped by a path
-# filter naming a directory this repo does not have. Re-pointing that filter at
-# scripts/ hooks/ skills/ would make them live; that is an open decision, not a
-# settled exclusion. A fourth, unsafe-llm-prompt-injection, IS correctly absent:
-# it matches anthropic/openai SDK calls fed from req.body, and this repo has
-# neither an HTTP request path nor those SDK call sites.
+# (b) Two absent because the call site does not exist here — an absence of
+#     capability, not a path filter:
+#
+#       unsafe-llm-prompt-injection   matches anthropic/openai SDK calls fed from
+#                                     req.body / req.query. This repo has neither
+#                                     an HTTP request path nor those SDK calls.
+#       unsafe-llm-output-rendering   matches `$EL.innerHTML = $VAR`. No DOM or
+#                                     browser code here: 0 innerHTML code sites
+#                                     across scripts/ hooks/ skills/ agents/
+#                                     commands/ monitors/ pi/ (*.mjs/*.js/*.ts),
+#                                     no src/, and the only two tracked .tsx
+#                                     files are templates/nextjs-minimal/
+#                                     scaffolding — outside every scanned
+#                                     directory and themselves innerHTML-free.
+#                                     Measured 2026-08-28 @ 4950990.
+#     Revisit trigger for the second: this repo ships browser-rendered output
+#     (an HTML report page, a web UI) — then re-add it pointed at that tree.
+#
+# RE-SCOPED 2026-08-28 (#1129), not excluded: json-parse-untrusted-input and
+# prototype-pollution-object-assign. Both were missing only because the baseline
+# copy filters them to `paths: include: **/src/` and this repo has no src/ — a
+# filter naming a directory that does not exist is an accident that looks like a
+# decision. Both are back, re-pointed at this repo's real trust boundary and
+# rewritten for it (the baseline patterns pin their source to req.body/req.query
+# and match 0 sites here). See the comment block above their definitions for the
+# pattern rationale, the taint-mode reason, and the sink that was measured away.
+#
+# CURRENT FINDINGS. Measured 2026-08-28 @ 4950990, `semgrep scan --config
+# .semgrep.yml --metrics=off` over the seven directories the CI job scans
+# (scripts/ hooks/ skills/ agents/ commands/ monitors/ pi/), 488 files scanned,
+# 27 rules → 25 findings:
+#
+#       7x csv-without-sanitize          3x unsafe-fetch-user-url
+#       6x unsafe-command-injection      3x unsafe-shell-spawn
+#       3x json-parse-untrusted-input    2x math-random-security
+#       1x unsafe-eval                   0x the remaining 20 rules
+#
+#     This corrects the previous header, which claimed "the remaining 25 rules
+#     produce ZERO findings today". That was false: the same command over the
+#     same tree at this SHA returned 22 findings BEFORE #1129 re-added anything.
+#     Nothing gated on them because .gitlab-ci.yml:319 gates on findings NEW
+#     since --baseline-commit — which is a different statement from "there are
+#     none", and the difference is exactly what the false claim hid.
+#
+#     The 3 json-parse-untrusted-input hits are that rule's first true positives
+#     here: scripts/lib/ci-status-banner.mjs:213, :235, :453 parse `glab`/`gh`
+#     stdout with no try/catch, on the session-start banner path — an empty or
+#     non-JSON stdout throws out of the banner.
+#
+#     Zero-finding rules are kept deliberately: they cost nothing now and bite on
+#     the next regression. Load-bearing for a repo that shells out constantly:
+#     unsafe-command-injection, unsafe-shell-spawn, tob-unsafe-child-process,
+#     unsafe-eval, math-random-security, unsafe-llm-output-eval.
 #
 # Drift check against the baseline. NOTE the indent normalisation: the baseline
 # indents rules by two spaces, this file does not. A recipe pinned to '^  - id:'
@@ -56,9 +96,9 @@
 #            | sed -E 's/^[[:space:]]*- id: //' | sort; }
 #   comm -23 <(norm ~/Projects/projects-baseline/templates/shared/.semgrep.yml) \
 #            <(norm .semgrep.yml)
-#   → measured 2026-08-23 @ 4f6404e: 64 baseline / 25 here / 39 removed / 0 added.
-#     Only the five above are explained; the other 34 are not.
-
+#   → measured 2026-08-28 @ 4950990: 64 baseline / 27 here / 37 removed / 0 added.
+#     Seven of the 37 are explained above ((a) five + (b) two). The other 30 are
+#     still unaccounted for — that is a known gap, not a settled exclusion.
 rules:
 - id: unsafe-fetch-user-url
   patterns:
@@ -581,3 +621,80 @@ rules:
     owasp: A03:2021
     confidence: HIGH
     source: trail-of-bits-adapted
+# RE-SCOPED 2026-08-28 (#1129). The two rules below were absent from this file
+# not because they are inapplicable, but because the baseline copy carries
+# `paths: include: - "**/src/"` and this repo has no `src/` directory. A path
+# filter pointing at a directory that does not exist is not an exclusion — it is
+# an accident that looks like one. The baseline patterns themselves are also
+# wrong here: both pin their untrusted source to `req.body`/`req.query`/
+# `req.params`, and this repo has no HTTP request path (0 matches, measured
+# 2026-08-28 @ 4950990). So the filter was re-pointed AND the patterns were
+# rewritten around THIS repo's actual trust boundary: the output of a child
+# process, hook stdin, and fetch response bodies.
+#
+# Both are taint-mode: the dominant shape here is `const raw = <untrusted>;`
+# followed by `JSON.parse(raw)` two lines down, which no syntactic pattern
+# reaches. Named ceiling (BV-004): the source list is enumerated, not
+# exhaustive — chunk-accumulated `process.stdin.on('data')` reads are NOT a
+# source, because the accumulator shape (`chunks.join('')`) is indistinguishable
+# from any other join. Revisit trigger: a hook parses stdin via chunk
+# accumulation WITHOUT a try/catch and it escapes to production.
+#
+# prototype-pollution-object-assign carries ONLY the Object.assign sink. An
+# object-spread sink was written, measured, and DROPPED — with evidence, not by
+# path filter, which is the whole point of #1129:
+#   - 22 of 22 findings it produced came from spreads; zero from Object.assign.
+#   - Object spread has no true-positive capacity for CWE-1321. Spread copies own
+#     enumerable properties, so a `__proto__` key from JSON.parse becomes an own
+#     data property and the prototype chain is untouched. Object.assign copies
+#     with [[Set]] semantics, which invokes the Object.prototype `__proto__`
+#     setter and DOES replace the target's prototype. Measured 2026-08-28:
+#       {...JSON.parse('{"__proto__":{"polluted":true}}')}      -> proto changed? false
+#       Object.assign({}, JSON.parse('{"__proto__":{...}}'))    -> proto changed? true, .polluted true
+#   A sink with zero true-positive capacity and 22 false positives is the exact
+#   HR-101 shape this file already refuses ("a signal may only warn if it is rare").
+- id: json-parse-untrusted-input
+  mode: taint
+  pattern-sources:
+  - pattern: $X.stdout
+  - pattern: readFileSync(0, ...)
+  - pattern: await $R.text(...)
+  pattern-sinks:
+  - patterns:
+    - pattern: JSON.parse($SINK, ...)
+    - pattern-not-inside: try { ... } catch($E) { ... }
+    - pattern-not-inside: $SCHEMA.parse(JSON.parse(...), ...)
+    - pattern-not-inside: $SCHEMA.safeParse(JSON.parse(...), ...)
+  message: 'JSON.parse() on untrusted input with no guard (CWE-502). Subagent, hook and CLI output is
+    untrusted input: a child process that dies, prints a warning banner, or returns an empty stdout makes
+    this throw, and an unguarded throw at a hook/CLI boundary takes the whole invocation down. Wrap the
+    parse in try/catch, or validate the result with a schema — `schema.parse(JSON.parse(input))`.'
+  languages:
+  - typescript
+  - javascript
+  severity: WARNING
+  metadata:
+    category: security
+    cwe: 'CWE-502: Deserialization of Untrusted Data'
+    owasp: A08:2021
+    confidence: MEDIUM
+- id: prototype-pollution-object-assign
+  mode: taint
+  pattern-sources:
+  - pattern: JSON.parse(...)
+  pattern-sinks:
+  - pattern: Object.assign($TARGET, $SINK, ...)
+  message: 'Prototype pollution risk: a JSON.parse() result is merged into an existing object via Object.assign
+    (CWE-1321). Object.assign copies with [[Set]] semantics, so a payload key `__proto__` invokes the
+    Object.prototype setter and REPLACES the target''s prototype chain with attacker-controlled data.
+    Validate the parsed value with a schema before merging, or build a fresh object from an explicit
+    allowlist of keys.'
+  languages:
+  - typescript
+  - javascript
+  severity: ERROR
+  metadata:
+    category: security
+    cwe: 'CWE-1321: Improperly Controlled Modification of Object Prototype Attributes'
+    owasp: A03:2021
+    confidence: MEDIUM

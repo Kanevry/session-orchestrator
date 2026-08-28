@@ -795,3 +795,27 @@ describe('readBannerInputs contract', () => {
     expect(result.stats.daysSinceCleanup).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group I — #1071 memory identity: the memory dir follows repoRoot
+// ---------------------------------------------------------------------------
+//
+// The bug: `readBannerInputs` resolved learnings, sessions and peer-cards from
+// the caller's `repoRoot` but the memory dir from the ambient `process.cwd()`
+// (`resolveMemoryDir()` with no argument). Run from a worktree, the banner
+// printed `0 memory files` beside a 245-session count taken from repoRoot —
+// one line describing two different projects. Nothing was red: the count was
+// correct for the cwd it silently used.
+
+describe('readBannerInputs — memory dir identity (#1071)', () => {
+  it('resolves the default memory dir from repoRoot, not from process.cwd()', async () => {
+    vi.mocked(surfaceTopN).mockResolvedValue([]);
+    vi.mocked(readDreamSignals).mockResolvedValue({ lastCleanupAt: null });
+    vi.mocked(readPeerCards).mockResolvedValue({ user: null, agent: null });
+
+    // memoryDir deliberately OMITTED — this is the defaulting path under test.
+    await readBannerInputs({ repoRoot: '/some/repo' });
+
+    expect(resolveMemoryDir).toHaveBeenCalledWith('/some/repo');
+  });
+});

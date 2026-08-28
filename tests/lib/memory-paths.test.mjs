@@ -92,3 +92,26 @@ describe('resolveMemoryDir', () => {
     expect(dir).toContain('-a-b');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1071 — explicit project identity: the memory dir must follow repoRoot
+// ---------------------------------------------------------------------------
+//
+// The bug this catches: `readBannerInputs({repoRoot})` reads sessions,
+// learnings and peer-cards from the passed repoRoot but resolved the MEMORY
+// dir from the ambient `process.cwd()`. Invoked from a worktree (or any
+// subdirectory), the banner printed `0 memory files` next to a 245-session
+// count taken from the primary checkout — two numbers about two different
+// projects on one line. A cwd-only `resolveMemoryDir()` cannot express that
+// difference at all, so nothing downstream could detect it.
+
+describe('resolveMemoryDir(repoRoot) — #1071', () => {
+  it('encodes the passed repoRoot, not process.cwd()', () => {
+    // cwd deliberately points at a DIFFERENT root than the argument: the two
+    // must not be confusable, or this assertion could pass by accident.
+    vi.spyOn(process, 'cwd').mockReturnValue('/tmp/some-worktree');
+    expect(resolveMemoryDir('/Users/x/project.git')).toBe(
+      '/home/fixed/.claude/projects/-Users-x-project-git/memory'
+    );
+  });
+});

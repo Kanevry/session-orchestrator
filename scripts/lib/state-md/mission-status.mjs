@@ -11,6 +11,15 @@
  * delegate to the pure helpers above and route the read+write cycle through
  * `writeStateMd` from frontmatter-mutators.mjs, which acquires
  * `.orchestrator/state.lock` for mechanical serialization (PSA-004).
+ *
+ * #1104 resolved the two remaining recovery limits with **Option 1 (skip-and-warn)
+ * + Option 2 (id gate)**: body recovery now skips the individual lines it cannot
+ * parse instead of abandoning the section at the first one, reports them through
+ * `recoverFrontmatterMissionStatusDetailed`, and `setMissionStatusOnDisk` — the
+ * layer that already does I/O, so the pure contract above survives — turns a
+ * non-empty skip list into one stderr WARN. `setMissionStatus` refuses a task id
+ * the recovery grammar cannot read, so the writer stops manufacturing the very
+ * lines the recovery has to skip.
  */
 
 import { parseStateMd, serializeStateMd } from './yaml-parser.mjs';
@@ -21,11 +30,21 @@ const WRITER_TIMESTAMP_SOURCE = '\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d
 const WRITER_TIMESTAMP_RE = new RegExp(`^${WRITER_TIMESTAMP_SOURCE}$`);
 
 /**
- * Task-ID grammar, shared by the body writer/recovery regex below and the
- * frontmatter validator in `parseMissionStatusStrict`. ONE source on purpose:
+ * Task-ID grammar, shared by THREE surfaces on purpose: the body writer's own
+ * `taskId` gate in `setMissionStatus` (#1104 Option 2), the body recovery regex
+ * below, and the frontmatter validator in `parseMissionStatusStrict`. ONE source:
  * a reader whose ID grammar is narrower than the writer's drops entries the
  * writer just produced — the two-surface divergence class this module exists to
- * close (#960/#1084). Accepts `m-1`, `docs-2`, `w2-a10`; rejects `M-1`, `m1`.
+ * close (#960/#1084/#1104). Accepts `m-1`, `docs-2`, `w2-1`, `w2-a-10`; rejects
+ * `M-1`, `m1`, `Docs_2`, `docs`.
+ *
+ * The example list is measured, not asserted: this docblock advertised `w2-a10`
+ * until #1104, and the grammar rejects it — every segment but the last must be
+ * separated by `-`, so `a10` is not a segment boundary. Harmless while the
+ * grammar only gated the READER; load-bearing since `setMissionStatus` gates its
+ * `taskId` on it, where a wrong example buys a silent no-op. Pinned by
+ * `tests/lib/state-md-mission-status.test.mjs` ("refuses an id its own recovery
+ * cannot read").
  */
 const MISSION_STATUS_ID_SOURCE = '[a-z][a-z0-9]*(?:-[a-z0-9]+)*-\\d+';
 const MISSION_STATUS_ID_RE = new RegExp(`^${MISSION_STATUS_ID_SOURCE}$`);
@@ -301,6 +320,8 @@ function syncFrontmatterMissionStatus(frontmatter, taskId, status) {
 }
 
 /**
+ * `recoverFrontmatterMissionStatus` with the lines it declined attached.
+ *
  * Mirrors body-only task IDs into the frontmatter `mission-status` registry as
  * partial `{ id, status }` entries. This is a SUPERSET merge: existing entries are
  * never rewritten or reordered, so their full metadata (`task`, `wave`) survives —
@@ -313,45 +334,75 @@ function syncFrontmatterMissionStatus(frontmatter, taskId, status) {
  * #1084 one write later — measured m-1/m-2/m-3 in the body against `[m-1]` in the
  * frontmatter.
  *
- * The section parse stays strict and all-or-nothing: any nonblank line that is not a
- * unique canonical writer bullet (unsafe ID, pipe, malformed timestamp, duplicate,
- * prose) aborts the whole merge rather than fabricating entries from an ambiguous
- * body. Known limitation: one foreign-but-writer-accepted ID (e.g. `Docs_2`) or a
- * hand-written legacy bullet without a timestamp therefore suppresses the merge for
- * the whole file, silently.
+ * **#1104 decision — Option 1 (skip-and-warn) + Option 2 (id gate).** The parse was
+ * all-or-nothing until #1104: ONE nonblank line that was not a unique canonical
+ * writer bullet aborted the whole merge. Measured over all 16 host-local
+ * `<repo>/.claude/STATE.md` (2026-08-21), exactly one repo carried the #1084 shape,
+ * and its bullets were hand-written (`- m-1 D1 ADR-Delta: completed`, no
+ * `(updated <ISO>)`), so the abort fired on line 1 and the class the recovery was
+ * built for was served 0 of 1.
+ * The abort is now per LINE: a line that does not parse is skipped and reported here,
+ * every other line still recovers. Nothing is ever fabricated — a skipped line
+ * contributes no entry, exactly as before. Option 2 is the other half, in
+ * `setMissionStatus`: the writer now refuses an id its own recovery cannot read, so
+ * the writer can no longer manufacture the lines this function has to skip.
+ *
+ * Option 3 (WARN) is honoured at the seam rather than here: this function stays pure,
+ * and `setMissionStatusOnDisk` — which already does I/O — turns a non-empty `skipped`
+ * into ONE stderr WARN. That is what makes "recovery declined N lines" distinguishable
+ * from "nothing to do", the third #1104 acceptance criterion.
+ *
+ * `skipped` reasons, in evaluation order per line:
+ * - `non-canonical` — not a writer bullet at all: prose, an id outside
+ *   `MISSION_STATUS_ID_SOURCE` (`Docs_2`, `m_1`), or a timestamp of the wrong SHAPE
+ *   (`(updated yesterday)`). This is the legacy hand-written class.
+ * - `unsafe-status` — canonical shape, but the status is empty or carries a `|`,
+ *   which the block-seq serializer cannot round-trip.
+ * - `invalid-timestamp` — right shape, not a real instant (e.g. `2026-02-30T…`).
+ * - `duplicate-id` — a SECOND bullet for an id already recovered from this section.
+ *   The FIRST wins, matching `setMissionStatus`/`readMissionStatus`, which both
+ *   operate on the first matching bullet.
  *
  * @param {object} frontmatter
  * @param {string} body
- * @returns {object}
+ * @returns {{ frontmatter: object, skipped: Array<{line: string, reason: string}> }}
  */
-function recoverFrontmatterMissionStatus(frontmatter, body) {
+export function recoverFrontmatterMissionStatusDetailed(frontmatter, body) {
   if (frontmatter === null || typeof frontmatter !== 'object' || Array.isArray(frontmatter)) {
-    return frontmatter;
+    return { frontmatter, skipped: [] };
   }
   const raw = frontmatter['mission-status'];
-  if (!Array.isArray(raw) || typeof body !== 'string') return frontmatter;
+  if (!Array.isArray(raw) || typeof body !== 'string') return { frontmatter, skipped: [] };
 
   const lines = body.split('\n');
   const section = findMissionStatusSection(lines);
-  if (section === null) return frontmatter;
+  if (section === null) return { frontmatter, skipped: [] };
 
   const entries = [];
   const ids = new Set();
+  const skipped = [];
   for (let i = section.headingIdx + 1; i < section.sectionEnd; i++) {
     const line = lines[i];
     if (line.trim() === '') continue;
 
     const match = CANONICAL_MISSION_STATUS_ENTRY_RE.exec(line);
-    if (match === null) return frontmatter;
+    if (match === null) {
+      skipped.push({ line, reason: 'non-canonical' });
+      continue;
+    }
+    // A status can never contain `\n` here — `line` came out of a `\n` split.
     const [, id, status, timestamp] = match;
-    if (
-      status.length === 0 ||
-      status.includes('|') ||
-      status.includes('\n') ||
-      !isWriterTimestamp(timestamp) ||
-      ids.has(id)
-    ) {
-      return frontmatter;
+    if (status.length === 0 || status.includes('|')) {
+      skipped.push({ line, reason: 'unsafe-status' });
+      continue;
+    }
+    if (!isWriterTimestamp(timestamp)) {
+      skipped.push({ line, reason: 'invalid-timestamp' });
+      continue;
+    }
+    if (ids.has(id)) {
+      skipped.push({ line, reason: 'duplicate-id' });
+      continue;
     }
     ids.add(id);
     entries.push({ id, status });
@@ -363,8 +414,21 @@ function recoverFrontmatterMissionStatus(frontmatter, body) {
       .map((e) => e.id)
   );
   const added = entries.filter((e) => !known.has(e.id));
-  if (added.length === 0) return frontmatter;
-  return { ...frontmatter, 'mission-status': [...raw, ...added] };
+  if (added.length === 0) return { frontmatter, skipped };
+  return { frontmatter: { ...frontmatter, 'mission-status': [...raw, ...added] }, skipped };
+}
+
+/**
+ * The merge result alone — see `recoverFrontmatterMissionStatusDetailed` for the
+ * contract. Internal callers that cannot report skipped lines (the pure
+ * `setMissionStatus` path) use this shape.
+ *
+ * @param {object} frontmatter
+ * @param {string} body
+ * @returns {object}
+ */
+function recoverFrontmatterMissionStatus(frontmatter, body) {
+  return recoverFrontmatterMissionStatusDetailed(frontmatter, body).frontmatter;
 }
 
 function serializeMissionStatusUpdate(frontmatter, body) {
@@ -388,19 +452,31 @@ function serializeMissionStatusUpdate(frontmatter, body) {
  * live writer and the reader sat on different surfaces and drifted apart in both
  * directions. A legacy empty registry is recovered from canonical body bullets as
  * partial `{ id, status }` entries, which lets frontmatter readers classify the work
- * without fabricated metadata. Ambiguous legacy bodies remain empty; other unmatched
- * populated entries remain update-only. See `syncFrontmatterMissionStatus`.
+ * without fabricated metadata. Since #1104 that recovery skips only the lines it cannot
+ * parse instead of abandoning the whole section; other unmatched populated entries remain
+ * update-only. See `syncFrontmatterMissionStatus` and
+ * `recoverFrontmatterMissionStatusDetailed`.
+ *
+ * **#1104 Option 2 — `taskId` is gated on the reader's own grammar**
+ * (`MISSION_STATUS_ID_SOURCE`: lowercase alphanumeric segments joined by `-`, ending in
+ * `-<digits>` — `m-1`, `docs-2`, `w2-1`; NOT `M-1`, `m1`, `Docs_2`, `w2-a10`). Until #1104 this
+ * gate was `typeof taskId === 'string'`, so the writer produced body lines
+ * (`- Docs_2: in-dev (updated …)`) that its OWN recovery could never read back — the
+ * mechanism behind "setMissionStatus in a loop seeds only the body". A non-conforming id
+ * now returns `contents` unchanged rather than writing an unreadable line: refusing to
+ * write is recoverable, writing a line no reader accepts is not.
  *
  * Pure function — no I/O. Returns original `contents` unchanged on bad input.
  *
  * @param {string} contents - Current STATE.md file contents (string)
- * @param {string} taskId - Task identifier (e.g. 'm-1', 'docs-2')
+ * @param {string} taskId - Task identifier matching `MISSION_STATUS_ID_SOURCE` (e.g. 'm-1', 'docs-2')
  * @param {string} status - One of: brainstormed | validated | in-dev | testing | completed
  * @returns {string}
  */
 export function setMissionStatus(contents, taskId, status) {
   if (typeof contents !== 'string') return contents;
   if (!taskId || typeof taskId !== 'string') return contents;
+  if (!MISSION_STATUS_ID_RE.test(taskId)) return contents;
   if (!status || typeof status !== 'string') return contents;
   const parsed = parseStateMd(contents);
   if (parsed === null) return contents;
@@ -491,7 +567,8 @@ export function readMissionStatus(contents, taskId) {
     if (match) return match[1];
   }
 
-  // Reader-only legacy compatibility. Recovery remains canonical and all-or-nothing.
+  // Reader-only legacy compatibility. Recovery still accepts canonical bullets only —
+  // since #1104 it skips the others per line instead of abandoning the section.
   const legacyEntryRe = new RegExp(`^-\\s+${escapedId}:\\s+(\\S+)`);
   for (let i = section.headingIdx + 1; i < section.sectionEnd; i++) {
     const match = legacyEntryRe.exec(lines[i]);
@@ -525,6 +602,13 @@ export async function writeMissionStatusOnDisk(repoRoot, missionStatusArray, opt
  * Lock-guarded `setMissionStatus` — sets or replaces a single task entry in
  * the `## Mission Status` body section under the state-lock.
  *
+ * This is the #1104 Option-3 seam: `recoverFrontmatterMissionStatus` is pure and
+ * cannot report the body lines it skipped, so the wrapper that already does I/O
+ * emits ONE stderr WARN naming the count and the first reason. Without it a
+ * declined recovery is byte-identical to "nothing to recover" — the silence the
+ * issue's third acceptance criterion is about. It never blocks the write: the
+ * skipped lines are pre-existing body content, not a defect in THIS write.
+ *
  * @param {string|undefined} repoRoot
  * @param {string} taskId
  * @param {string} status   brainstormed | validated | in-dev | testing | completed
@@ -534,7 +618,30 @@ export async function writeMissionStatusOnDisk(repoRoot, missionStatusArray, opt
 export async function setMissionStatusOnDisk(repoRoot, taskId, status, opts = {}) {
   return writeStateMd(
     repoRoot,
-    (contents) => setMissionStatus(contents, taskId, status),
+    (contents) => {
+      if (typeof taskId === 'string' && !MISSION_STATUS_ID_RE.test(taskId)) {
+        // The pure setMissionStatus() below refuses this id by returning contents
+        // unchanged; without this line the refusal is indistinguishable from a
+        // successful write (W2 review F1). Grammar: MISSION_STATUS_ID_SOURCE.
+        process.stderr.write(
+          `⚠ setMissionStatusOnDisk: taskId "${taskId}" does not match the mission-status id grammar — nothing written\n`
+        );
+      }
+      const parsed = typeof contents === 'string' ? parseStateMd(contents) : null;
+      if (parsed !== null) {
+        const { skipped } = recoverFrontmatterMissionStatusDetailed(
+          parsed.frontmatter,
+          parsed.body
+        );
+        if (skipped.length > 0) {
+          process.stderr.write(
+            `⚠ setMissionStatusOnDisk: mission-status recovery skipped ${skipped.length} ` +
+              `body line(s) — first: ${skipped[0].reason} (${skipped[0].line.trim()})\n`
+          );
+        }
+      }
+      return setMissionStatus(contents, taskId, status);
+    },
     opts
   );
 }

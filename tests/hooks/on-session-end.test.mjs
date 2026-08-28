@@ -15,8 +15,29 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
+import crypto from 'node:crypto';
 import { permsEnforced } from '../_helpers/perms.mjs';
 import { telemetryIsolationEnv } from '../_helpers/telemetry-isolation.mjs';
+
+/**
+ * Deterministic, RFC-9562-shaped UUID for a readable fixture label.
+ *
+ * WHY the fixture ids below are UUIDs and not plain slugs (#1091 / Kanevry#66):
+ * `resolveSession()` now accepts a stdin `session_id` only when it parses as a
+ * UUID — mirroring the writer in `hooks/on-session-start.mjs`. A slug fixture
+ * would therefore be DROPPED by the hook, and every ownership assertion below
+ * ("released / not released", "deregistered / not") would pass because the id
+ * resolved to `null`, not because the compare it names did its job — an
+ * assert-nothing test wearing the old test's name.
+ *
+ * Derived from sha256(label) so the value is stable across runs, and shaped
+ * `…-4xxx-8xxx-…` (version 4, variant `10xx`) so it satisfies `UUID_RE` in
+ * `scripts/lib/session-id.mjs`.
+ */
+function U(label) {
+  const h = crypto.createHash('sha256').update(String(label)).digest('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
 
 const HOOK = path.resolve(import.meta.dirname, '../../hooks/on-session-end.mjs');
 const EVENTS_REL = path.join('.orchestrator', 'metrics', 'events.jsonl');
@@ -198,7 +219,7 @@ describe('on-session-end.mjs — SessionEnd event', { timeout: 15000 }, () => {
     const dir = await mkProject();
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-1', reason: 'clear' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('sess-1'), reason: 'clear' }),
     });
     const record = await readLastEvent(dir);
     expect(record.event).toBe('orchestrator.session.ended');
@@ -208,7 +229,7 @@ describe('on-session-end.mjs — SessionEnd event', { timeout: 15000 }, () => {
     const dir = await mkProject();
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-1', reason: 'logout' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('sess-1'), reason: 'logout' }),
     });
     const record = await readLastEvent(dir);
     expect(record.reason).toBe('logout');
@@ -218,7 +239,7 @@ describe('on-session-end.mjs — SessionEnd event', { timeout: 15000 }, () => {
     const dir = await mkProject();
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-1' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('sess-1') }),
     });
     const record = await readLastEvent(dir);
     expect(record.reason).toBe('other');
@@ -228,29 +249,29 @@ describe('on-session-end.mjs — SessionEnd event', { timeout: 15000 }, () => {
     const dir = await mkProject();
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-explicit' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('sess-explicit') }),
     });
     const record = await readLastEvent(dir);
-    expect(record.session_id).toBe('sess-explicit');
+    expect(record.session_id).toBe(U('sess-explicit'));
   });
 
   it('falls back to current-session.json session_id when stdin omits it', async () => {
     const dir = await mkProject();
-    await seedCurrentSession(dir, { sessionId: 'recorded-1', timestamp: new Date(Date.now() - 5000).toISOString() });
+    await seedCurrentSession(dir, { sessionId: U('recorded-1'), timestamp: new Date(Date.now() - 5000).toISOString() });
     await runHook({
       projectDir: dir,
       stdin: JSON.stringify({ hook_event_name: 'SessionEnd', reason: 'exit' }),
     });
     const record = await readLastEvent(dir);
-    expect(record.session_id).toBe('recorded-1');
+    expect(record.session_id).toBe(U('recorded-1'));
   });
 
   it('computes duration_ms when the ending session is the recorded one', async () => {
     const dir = await mkProject();
-    await seedCurrentSession(dir, { sessionId: 'sess-dur', timestamp: new Date(Date.now() - 5000).toISOString() });
+    await seedCurrentSession(dir, { sessionId: U('sess-dur'), timestamp: new Date(Date.now() - 5000).toISOString() });
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-dur' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('sess-dur') }),
     });
     const record = await readLastEvent(dir);
     expect(record.duration_ms).toBeGreaterThanOrEqual(4000);
@@ -259,10 +280,10 @@ describe('on-session-end.mjs — SessionEnd event', { timeout: 15000 }, () => {
 
   it('duration_ms is 0 when ending session differs from recorded session', async () => {
     const dir = await mkProject();
-    await seedCurrentSession(dir, { sessionId: 'OTHER', timestamp: new Date(Date.now() - 5000).toISOString() });
+    await seedCurrentSession(dir, { sessionId: U('OTHER'), timestamp: new Date(Date.now() - 5000).toISOString() });
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-mismatch' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('sess-mismatch') }),
     });
     const record = await readLastEvent(dir);
     expect(record.duration_ms).toBe(0);
@@ -272,7 +293,7 @@ describe('on-session-end.mjs — SessionEnd event', { timeout: 15000 }, () => {
     const dir = await mkProject();
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-nofile' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('sess-nofile') }),
     });
     const record = await readLastEvent(dir);
     expect(record.duration_ms).toBe(0);
@@ -293,20 +314,20 @@ describe('on-session-end.mjs — SessionEnd event', { timeout: 15000 }, () => {
     await fs.writeFile(path.join(od, 'current-session.json'), '{ not valid json');
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-x' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('sess-x') }),
     });
     const record = await readLastEvent(dir);
     expect(record.event).toBe('orchestrator.session.ended');
-    expect(record.session_id).toBe('sess-x');
+    expect(record.session_id).toBe(U('sess-x'));
     expect(record.duration_ms).toBe(0);
   });
 
   it('degrades to duration_ms 0 when recorded timestamp is a non-string', async () => {
     const dir = await mkProject();
-    await seedCurrentSession(dir, { sessionId: 'sess-ts', timestamp: 123456 });
+    await seedCurrentSession(dir, { sessionId: U('sess-ts'), timestamp: 123456 });
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-ts' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('sess-ts') }),
     });
     const record = await readLastEvent(dir);
     expect(record.duration_ms).toBe(0);
@@ -322,16 +343,16 @@ describe('on-session-end.mjs — deterministic lock release (#724)', { timeout: 
     const dir = await mkProject();
     // Lock recorded under an older UUID but the same semantic id — seedLock
     // defaults last_heartbeat to now, so this lock is LIVE.
-    await seedLock(dir, { sessionId: 'old-uuid', semanticSessionId: 'sem-shared' });
+    await seedLock(dir, { sessionId: U('old-uuid'), semanticSessionId: 'sem-shared' });
     await seedCurrentSession(dir, {
-      sessionId: 'new-uuid',
+      sessionId: U('new-uuid'),
       timestamp: new Date().toISOString(),
       semanticSessionId: 'sem-shared',
     });
 
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'new-uuid' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('new-uuid') }),
     });
 
     // The semantic session id is NOT unique — the same id was observed twice in
@@ -352,14 +373,14 @@ describe('on-session-end.mjs — deterministic lock release (#724)', { timeout: 
   it('preserves a FOREIGN live lock and still emits session.ended (backfill/release are best-effort)', async () => {
     const dir = await mkProject();
     await seedLock(dir, {
-      sessionId: 'other',
+      sessionId: U('other'),
       semanticSessionId: 'other-sem',
       lastHeartbeat: new Date().toISOString(),
     });
 
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'mine', reason: 'logout' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('mine'), reason: 'logout' }),
     });
 
     expect(await lockExists(dir)).toBe(true);
@@ -511,7 +532,7 @@ describe('on-session-end.mjs — dead-by-age relaxation does NOT leak into the h
     ]);
     // A DIFFERENT session's lock, heartbeat = right now → live at hook-time.
     await seedLock(dir, {
-      sessionId: 'foreign-fresh',
+      sessionId: U('foreign-fresh'),
       semanticSessionId: 'foreign-fresh-sem',
       lastHeartbeat: new Date().toISOString(),
     });
@@ -548,7 +569,7 @@ describe('on-session-end.mjs — hardened release path (#724 Wave 3)', { timeout
     // rotation racing ahead of current-session.json's semantic bridge).
     // last_heartbeat is far past the 4h default TTL — a dead lease.
     await seedLock(dir, {
-      sessionId: 'old-rotated-uuid',
+      sessionId: U('old-rotated-uuid'),
       lastHeartbeat: new Date(Date.now() - 5 * 3600_000).toISOString(),
     });
     // No current-session.json seeded at all — semanticSessionId resolves to
@@ -556,7 +577,7 @@ describe('on-session-end.mjs — hardened release path (#724 Wave 3)', { timeout
 
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'new-rotated-uuid', reason: 'clear' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('new-rotated-uuid'), reason: 'clear' }),
     });
 
     // The reconciliation fallback archive-moved the dead orphaned lease even
@@ -577,7 +598,7 @@ describe('on-session-end.mjs — hardened release path (#724 Wave 3)', { timeout
     // test process's own pid — a process can always signal itself) so
     // reapRepoLock's own-host-pid-alive invariant (b) skips the reap.
     await seedLock(dir, {
-      sessionId: 'old-rotated-uuid-pid-alive',
+      sessionId: U('old-rotated-uuid-pid-alive'),
       lastHeartbeat: new Date(Date.now() - 5 * 3600_000).toISOString(),
     });
     const lockPath = path.join(dir, LOCK_REL);
@@ -587,7 +608,7 @@ describe('on-session-end.mjs — hardened release path (#724 Wave 3)', { timeout
 
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'new-rotated-uuid-pid-alive', reason: 'clear' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('new-rotated-uuid-pid-alive'), reason: 'clear' }),
     });
 
     // Never reaped — the lease survives untouched.
@@ -601,7 +622,7 @@ describe('on-session-end.mjs — hardened release path (#724 Wave 3)', { timeout
 
   it.skipIf(!permsEnforced())('emits a breadcrumb when release() fails despite a matched ownership (fs-error)', { timeout: 15000 }, async () => {
     const dir = await mkProject();
-    await seedLock(dir, { sessionId: 'sess-own-fail', semanticSessionId: 'sem-own-fail' });
+    await seedLock(dir, { sessionId: U('sess-own-fail'), semanticSessionId: 'sem-own-fail' });
     // Pre-create metrics/ BEFORE locking down .orchestrator/ so the primary
     // session.ended emitEvent() write (which needs to mkdir the metrics/
     // directory on first use) is unaffected by the permission change below.
@@ -616,7 +637,7 @@ describe('on-session-end.mjs — hardened release path (#724 Wave 3)', { timeout
     try {
       await runHook({
         projectDir: dir,
-        stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-own-fail', reason: 'clear' }),
+        stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('sess-own-fail'), reason: 'clear' }),
       });
 
       // The unlink failed — the lock must still be on disk (nothing silently lost).
@@ -624,7 +645,7 @@ describe('on-session-end.mjs — hardened release path (#724 Wave 3)', { timeout
       const events = await readAllEvents(dir);
       const breadcrumb = events.find((e) => e.event === 'orchestrator.session.lock.release_failed');
       expect(breadcrumb).toBeDefined();
-      expect(breadcrumb.session_id).toBe('sess-own-fail');
+      expect(breadcrumb.session_id).toBe(U('sess-own-fail'));
       expect(breadcrumb.reason).toBe('fs-error');
     } finally {
       // Restore write permission so afterEach's recursive rm can clean up.
@@ -634,11 +655,11 @@ describe('on-session-end.mjs — hardened release path (#724 Wave 3)', { timeout
 
   it('happy path unchanged: an owned live lock releases normally with no reconciliation and no failure breadcrumb', async () => {
     const dir = await mkProject();
-    await seedLock(dir, { sessionId: 'sess-happy', semanticSessionId: 'sem-happy' });
+    await seedLock(dir, { sessionId: U('sess-happy'), semanticSessionId: 'sem-happy' });
 
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'sess-happy', reason: 'clear' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('sess-happy'), reason: 'clear' }),
     });
 
     expect(await lockExists(dir)).toBe(false);
@@ -660,13 +681,13 @@ describe('on-session-end.mjs — semantic-id contamination guard (#863)', { time
     // current-session.json reflects session B — the CURRENTLY recorded
     // session, still live right now (e.g. a second open window/tab).
     await seedCurrentSession(dir, {
-      sessionId: 'uuid-b',
+      sessionId: U('uuid-b'),
       timestamp: new Date().toISOString(),
       semanticSessionId: 'sem-b',
     });
     // B's own lock — genuinely live.
     await seedLock(dir, {
-      sessionId: 'uuid-b',
+      sessionId: U('uuid-b'),
       semanticSessionId: 'sem-b',
       lastHeartbeat: new Date().toISOString(),
     });
@@ -675,7 +696,7 @@ describe('on-session-end.mjs — semantic-id contamination guard (#863)', { time
     // this has nothing to do with B.
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'uuid-a', reason: 'clear' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('uuid-a'), reason: 'clear' }),
     });
 
     // B's live lock must survive untouched — A's termination is unrelated.
@@ -687,7 +708,7 @@ describe('on-session-end.mjs — semantic-id contamination guard (#863)', { time
     // The lock stores the semantic id directly in session_id; no separate
     // semantic_session_id field (the shape observed on-disk in this repo).
     // Its own id ('sem-b') differs from the CURRENT recorded session_id
-    // ('new-id-b') — a rotation-shaped divergence, but without the strict
+    // (U('new-id-b')) — a rotation-shaped divergence, but without the strict
     // semantic_session_id field the strict comparison can't recognise it.
     await seedLock(dir, {
       sessionId: 'sem-b',
@@ -695,7 +716,7 @@ describe('on-session-end.mjs — semantic-id contamination guard (#863)', { time
       lastHeartbeat: new Date().toISOString(),
     });
     await seedCurrentSession(dir, {
-      sessionId: 'new-id-b',
+      sessionId: U('new-id-b'),
       timestamp: new Date().toISOString(),
       semanticSessionId: 'sem-b',
     });
@@ -704,7 +725,7 @@ describe('on-session-end.mjs — semantic-id contamination guard (#863)', { time
     // session ending (not an omitted-stdin ambiguity).
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'new-id-b', reason: 'clear' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('new-id-b'), reason: 'clear' }),
     });
 
     // Fallback-only match on a LIVE lock — never released.
@@ -719,14 +740,14 @@ describe('on-session-end.mjs — semantic-id contamination guard (#863)', { time
       lastHeartbeat: new Date(Date.now() - 5 * 3600_000).toISOString(), // stale
     });
     await seedCurrentSession(dir, {
-      sessionId: 'new-id-c',
+      sessionId: U('new-id-c'),
       timestamp: new Date().toISOString(),
       semanticSessionId: 'sem-c',
     });
 
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'new-id-c', reason: 'clear' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('new-id-c'), reason: 'clear' }),
     });
 
     expect(await lockExists(dir)).toBe(false);
@@ -808,7 +829,7 @@ describe('on-session-end.mjs — unreadable/corrupt lock surfaces as read_anomal
 
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'whoever' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('whoever') }),
     });
 
     const events = await readAllEvents(dir);
@@ -834,7 +855,7 @@ describe('on-session-end.mjs — unreadable/corrupt lock surfaces as read_anomal
 
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'whoever' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('whoever') }),
     });
 
     const events = await readAllEvents(dir);
@@ -858,19 +879,19 @@ describe('on-session-end.mjs — semantic mismatch preserves stale-lock reconcil
     // The strict semantic field matches, but the raw/native session IDs differ.
     // A stale lease remains eligible for reaper cleanup, never direct release.
     await seedLock(dir, {
-      sessionId: 'old-uuid-strict-stale',
+      sessionId: U('old-uuid-strict-stale'),
       semanticSessionId: 'sem-shared-strict-stale',
       lastHeartbeat: new Date(Date.now() - 5 * 3600_000).toISOString(),
     });
     await seedCurrentSession(dir, {
-      sessionId: 'new-uuid-strict-stale',
+      sessionId: U('new-uuid-strict-stale'),
       timestamp: new Date().toISOString(),
       semanticSessionId: 'sem-shared-strict-stale',
     });
 
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'new-uuid-strict-stale' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('new-uuid-strict-stale') }),
     });
 
     expect(await lockExists(dir)).toBe(false);
@@ -891,17 +912,17 @@ describe('on-session-end.mjs — raw-ID ownership boundary (#1085)', { timeout: 
     const dir = await mkProject();
     // The ending session's native ID is not the lock's native ID. Its semantic
     // ID and persisted proof happen to match, which must remain insufficient.
-    await seedLock(dir, { sessionId: 'old-uuid-987', semanticSessionId: 'sem-987' });
+    await seedLock(dir, { sessionId: U('old-uuid-987'), semanticSessionId: 'sem-987' });
     await seedOwnerProofFromLock(dir);
     await seedCurrentSession(dir, {
-      sessionId: 'new-uuid-987',
+      sessionId: U('new-uuid-987'),
       timestamp: new Date().toISOString(),
       semanticSessionId: 'sem-987',
     });
 
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'new-uuid-987', reason: 'clear' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('new-uuid-987'), reason: 'clear' }),
     });
 
     // The live lock and its proof remain for TTL/reaper reconciliation; neither
@@ -918,17 +939,17 @@ describe('on-session-end.mjs — raw-ID ownership boundary (#1085)', { timeout: 
     // by a DIFFERENT process one millisecond apart from our genesis proof —
     // the exact foreign same-day collision signature. pid/host still match
     // (same machine), so started_at alone carries the discrimination.
-    await seedLock(dir, { sessionId: 'old-uuid-987-f', semanticSessionId: 'sem-987-f' });
+    await seedLock(dir, { sessionId: U('old-uuid-987-f'), semanticSessionId: 'sem-987-f' });
     await seedOwnerProofFromLock(dir, { startedAtOffsetMs: 1 });
     await seedCurrentSession(dir, {
-      sessionId: 'new-uuid-987-f',
+      sessionId: U('new-uuid-987-f'),
       timestamp: new Date().toISOString(),
       semanticSessionId: 'sem-987-f',
     });
 
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'new-uuid-987-f', reason: 'clear' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('new-uuid-987-f'), reason: 'clear' }),
     });
 
     // Foreign lease survives untouched — proof mismatch keeps the
@@ -996,7 +1017,7 @@ describe('on-session-end.mjs — host-registry deregistration (#1047)', { timeou
 
   it('removes the registry entry at session end', async () => {
     const dir = await mkProject();
-    const sessionId = 'end-dereg-uuid-1';
+    const sessionId = U('end-dereg-uuid-1');
     const entryPath = await seedRegistryEntry(registryDir, sessionId);
     expect(await exists(entryPath)).toBe(true);
 
@@ -1012,8 +1033,8 @@ describe('on-session-end.mjs — host-registry deregistration (#1047)', { timeou
 
   it('removes only its own entry, leaving a peer entry byte-identical', async () => {
     const dir = await mkProject();
-    const mine = 'end-dereg-uuid-2';
-    const peer = 'end-dereg-peer-9';
+    const mine = U('end-dereg-uuid-2');
+    const peer = U('end-dereg-peer-9');
     const minePath = await seedRegistryEntry(registryDir, mine);
     const peerPath = await seedRegistryEntry(registryDir, peer);
     const peerBefore = await fs.readFile(peerPath, 'utf8');
@@ -1030,7 +1051,7 @@ describe('on-session-end.mjs — host-registry deregistration (#1047)', { timeou
 
   it('resolves the session id from current-session.json when stdin carries none', async () => {
     const dir = await mkProject();
-    const sessionId = 'end-dereg-fallback-3';
+    const sessionId = U('end-dereg-fallback-3');
     await seedCurrentSession(dir, { sessionId, timestamp: new Date().toISOString() });
     const entryPath = await seedRegistryEntry(registryDir, sessionId);
 
@@ -1298,7 +1319,7 @@ describe('on-session-end.mjs — flush time budget (#1138)', { timeout: 20000 },
   it('runs the flush AFTER the lifecycle event and the lock release', async () => {
     const dir = await mkProject();
     const home = await mkFakeHome();
-    const sessionId = 'end-flush-order-1';
+    const sessionId = U('end-flush-order-1');
     await seedLock(dir, { sessionId });
     await seedOwnerProofFromLock(dir);
 
@@ -1315,5 +1336,169 @@ describe('on-session-end.mjs — flush time budget (#1138)', { timeout: 20000 },
       .toBeGreaterThan(names.indexOf('orchestrator.session.ended'));
     expect(names.indexOf('orchestrator.telemetry.flush'))
       .toBeGreaterThan(names.indexOf('orchestrator.session.lock.released'));
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// #1091 / Kanevry#66 — the stdin session_id must parse as a UUID
+// ---------------------------------------------------------------------------
+
+describe('on-session-end.mjs — stdin id is UUID-gated, mirroring the writer (#1091)', { timeout: 15000 }, () => {
+  // TV-001 — the bug: `resolveSession()` used to accept ANY non-empty stdin
+  // string as the release-comparison key, while `on-session-start.mjs` accepts
+  // one only when `parseSessionId()` says `uuid` (and otherwise mints its own).
+  // A harness that passes `{"session_id":"not-a-uuid"}` therefore ended with a
+  // key that matches nothing written at start: the raw-ID compare fails, the
+  // lock is neither released nor reconciled (it is LIVE, so the reaper declines
+  // it), and it survives until its TTL — a leak invisible to every other signal,
+  // since the hook exits 0 and still writes session.ended.
+  it('releases the lock recorded at SessionStart when the harness passes a NON-UUID stdin id', async () => {
+    const dir = await mkProject();
+    const started = U('leak-guard-uuid');
+    // What SessionStart wrote for this session: a UUID-keyed live lock plus the
+    // current-session.json that names it.
+    await seedLock(dir, { sessionId: started, semanticSessionId: 'sem-leak-guard' });
+    await seedCurrentSession(dir, {
+      sessionId: started,
+      timestamp: new Date().toISOString(),
+      semanticSessionId: 'sem-leak-guard',
+    });
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: 'not-a-uuid', reason: 'clear' }),
+    });
+
+    expect(await lockExists(dir)).toBe(false);
+    const released = (await readAllEvents(dir))
+      .filter((e) => e.event === 'orchestrator.session.lock.released');
+    expect(released).toHaveLength(1);
+    // Released under the id SessionStart actually used — not the stdin string.
+    expect(released[0].session_id).toBe(started);
+  });
+
+  // TV-001 — the bug: a UUID **version** pin. Claude Code mints v4, Codex CLI
+  // mints v7; a `[4]`-pinned regex in either `session-id.mjs` or this hook
+  // silently drops every Codex session's stdin id, which lands back on the same
+  // leak as above for the whole platform.
+  it('accepts a UUIDv7 stdin id and releases the v7-owned lock', async () => {
+    const dir = await mkProject();
+    const v7 = '01920000-1111-7222-8333-444444444444';
+    // No current-session.json: the stdin id is the ONLY source here, so a
+    // rejected v7 resolves to null and nothing is released.
+    await seedLock(dir, { sessionId: v7, semanticSessionId: 'sem-v7' });
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: v7, reason: 'clear' }),
+    });
+
+    expect(await lockExists(dir)).toBe(false);
+    const released = (await readAllEvents(dir))
+      .filter((e) => e.event === 'orchestrator.session.lock.released');
+    expect(released).toHaveLength(1);
+    expect(released[0].session_id).toBe(v7);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1068 AC1 — the terminal event carries the attested semantic id
+// ---------------------------------------------------------------------------
+
+describe('on-session-end.mjs — semantic_session_id on session.ended (#1068)', { timeout: 15000 }, () => {
+  // TV-001 — the bug: the terminal event carried the harness UUID alone, while
+  // sessions.jsonl is keyed by the SEMANTIC id, so no consumer could join a
+  // lifecycle END to its ledger row unless the session also happened to emit a
+  // `lock.acquired` (measured: ~1/3 of sessions do).
+  it('carries semantic_session_id when current-session.json attests it for THIS session', async () => {
+    const dir = await mkProject();
+    const id = U('sem-attested');
+    await seedCurrentSession(dir, {
+      sessionId: id,
+      timestamp: new Date().toISOString(),
+      semanticSessionId: 'main-2026-08-28-session-9',
+    });
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: id, reason: 'clear' }),
+    });
+
+    const record = await readLastEvent(dir);
+    expect(record.session_id).toBe(id);
+    expect(record.semantic_session_id).toBe('main-2026-08-28-session-9');
+  });
+
+  // TV-001 — the bug the OMISSION prevents: an unattested identity written as
+  // `""`/`null` is indistinguishable from an attested empty one downstream, and
+  // #1068 AC1 requires "identity-unresolved" to stay visibly unresolved.
+  it('omits the key entirely when no semantic id is known', async () => {
+    const dir = await mkProject();
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('sem-unknown'), reason: 'clear' }),
+    });
+
+    const record = await readLastEvent(dir);
+    expect(Object.prototype.hasOwnProperty.call(record, 'semantic_session_id')).toBe(false);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// #1068 AC2 — every backfill attempt has a canonically queryable outcome
+// ---------------------------------------------------------------------------
+
+describe('on-session-end.mjs — backfill outcome events (#1068 AC2)', { timeout: 15000 }, () => {
+  // TV-001 — the bug: a backfill result reached ONLY
+  // `.orchestrator/metrics/session-close-backfill.log`, a side-log nothing
+  // joins against. The whole outcome — including "skipped, a foreign lock was
+  // live" — was invisible in the event stream every other lifecycle fact lives
+  // in, so no consumer could ask "did the backfill run, and what did it decide?"
+  // A dead emit here is also indistinguishable from a healthy run by every
+  // other signal (the hook exits 0 and still writes session.ended), so only a
+  // test that OBSERVES the line can fail when it stops existing.
+  it('emits one queryable outcome per backfill class, carrying identity + action', async () => {
+    const dir = await mkProject();
+    const id = U('backfill-outcome');
+    await seedCurrentSession(dir, {
+      sessionId: id,
+      timestamp: new Date().toISOString(),
+      semanticSessionId: 'main-2026-08-28-session-7',
+    });
+    // A record already on file for that semantic id → the abandoned path takes
+    // its dedupe branch, which is exactly the outcome that used to be invisible.
+    await seedSessions(dir, [{
+      session_id: 'main-2026-08-28-session-7',
+      session_type: 'deep',
+      started_at: '2026-08-28T09:00:00.000Z',
+      completed_at: '2026-08-28T10:00:00.000Z',
+      total_waves: 1,
+      waves: [{ wave: 1, role: 'coordinator' }],
+      agent_summary: { complete: 1, partial: 0, failed: 0, spiral: 0 },
+      total_agents: 1,
+      total_files_changed: 2,
+    }]);
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: id, reason: 'clear' }),
+    });
+
+    const outcomes = (await readAllEvents(dir))
+      .filter((e) => e.event === 'orchestrator.session.backfill');
+    expect(outcomes.map((e) => e.kind)).toEqual(['abandoned', 'state-md-completed']);
+    expect(outcomes[0]).toEqual(expect.objectContaining({
+      kind: 'abandoned',
+      action: 'skipped-already-recorded',
+      session_id: id,
+      semantic_session_id: 'main-2026-08-28-session-7',
+      record_id: 'main-2026-08-28-session-7',
+    }));
+    // The STATE.md path has no STATE.md in this fixture — a real, reportable
+    // outcome rather than silence.
+    expect(outcomes[1].action).toBe('skipped-no-state-md');
   });
 });

@@ -7,7 +7,8 @@
  *  - Group A: parseSessionId — dual-format (semantic + UUID + null-guards)
  *  - Group B: resolveSemanticSessionId — happy paths from PRD §3 P2 Gherkin rows
  *  - Group C: resolveSemanticSessionId — backward-compat / mixed UUID + semantic
- *  - Group D: SEMANTIC_ID_RE and UUID_V4_RE regex validation
+ *  - Group D: SEMANTIC_ID_RE and UUID_RE regex validation
+ *  - Group D3: RFC 9562 UUID versions v1–v8 accepted (Kanevry#66 / #1091)
  *  - Group E: history-aware n-increment (#585) — sessions.jsonl + STATE.md sources
  *  - Group F: events.jsonl mint-ledger source (#952)
  *  - Group G: the sources[] extension point (#956)
@@ -277,52 +278,60 @@ describe('Group D — SEMANTIC_ID_RE regex validation', () => {
 // ---------------------------------------------------------------------------
 // Group D2 — AP2: parseSessionId strict-UUID rejection (#596 + #599)
 //
-// Verifies that the strict UUID_V4_RE (version nibble = '4', variant in
+// Verifies that the strict UUID_RE (version nibble in [1-8], variant in
 // {8,9,a,b}) causes parseSessionId to return null. The block contains TWO
 // distinct case classes — do NOT conflate them (the pre-#599 comment did):
 //
 //   (a) DISCRIMINATING cases — a LOOSE pattern like /^[a-f0-9-]{36}$/i (the
 //       looser alternative used by the test-side assertion regex in
 //       tests/hooks/on-session-start.test.mjs) would WRONGLY accept these, but
-//       the STRICT UUID_V4_RE rejects them. These are the load-bearing cases
+//       the STRICT UUID_RE rejects them. These are the load-bearing cases
 //       against a loosening mutation: '36 dashes' (length 36 + only chars in
-//       the loose class), the wrong VERSION nibble (1 not 4), and the wrong
-//       VARIANT nibble (c not in {8,9,a,b}). Each was verified to satisfy the
-//       loose regex while parseSessionId still returns null.
+//       the loose class), an OUT-OF-RANGE version nibble (0 or 9, outside the
+//       RFC 9562 range 1-8), and the wrong VARIANT nibble (c not in {8,9,a,b}).
+//       Each was verified to satisfy the loose regex while parseSessionId
+//       still returns null.
 //
 //   (b) The former GENERAL negative-input cases (empty string, plaintext) were
 //       REMOVED (TV-002b): by this block's own analysis they fail ANY plausible
 //       regex, do not discriminate strict-vs-loose, and duplicate Group A's
 //       null-input contract tests verbatim.
 //
-// Surviving mutation: if UUID_V4_RE is loosened to /^[a-f0-9-]{36}$/i, the
-// '36 dashes', wrong-version, and wrong-variant cases would wrongly return a
-// non-null result → expect(result).toBeNull() FAILS.
+// Surviving mutation: if UUID_RE is loosened to /^[a-f0-9-]{36}$/i, the
+// '36 dashes', out-of-range-version, and wrong-variant cases would wrongly
+// return a non-null result → expect(result).toBeNull() FAILS.
 // ---------------------------------------------------------------------------
 
 describe('Group D2 — AP2: parseSessionId strict-UUID negative cases', () => {
-  // DISCRIMINATING — loose /^[a-f0-9-]{36}$/i accepts, strict UUID_V4_RE rejects.
+  // DISCRIMINATING — loose /^[a-f0-9-]{36}$/i accepts, strict UUID_RE rejects.
   it('returns null for 36 consecutive dashes (false-positive for loose /^[a-f0-9-]{36}$/i)', () => {
     // A loose regex /^[a-f0-9-]{36}$/i would accept this because '-' is in its
-    // character class and total length is 36. UUID_V4_RE rejects it because the
+    // character class and total length is 36. UUID_RE rejects it because the
     // segment structure ([0-9a-f]{8}-…) is not satisfied.
     const result = parseSessionId('-'.repeat(36));
 
     expect(result).toBeNull();
   });
 
-  it('returns null for a non-v4 UUID (version nibble = 1, not 4)', () => {
-    // UUID version nibble is the 13th character: '1' here vs required '4'.
-    // The strict UUID_V4_RE requires the third group to start with '4'.
-    // A loose /^[a-f0-9-]{36}$/i would wrongly accept this.
-    const result = parseSessionId('12345678-1234-1234-1234-123456789012');
+  // Kanevry#66 / #1091: the former case here used version nibble '1' and
+  // asserted null "because it is not v4". That premise is now FALSE — v1 is a
+  // legal RFC 9562 version and UUID_RE accepts it. The version nibble is still
+  // a bounded RANGE though, so these two cases pin the boundary the widening
+  // must NOT overshoot. Both carry a VALID variant nibble ('8'), so the version
+  // nibble is the only thing that can reject them — a lazy widening to
+  // [0-9a-f] turns both non-null.
+  it.each([
+    ['0', '12345678-1234-0234-8234-123456789012'], // nil-UUID version, below the range
+    ['9', '12345678-1234-9234-8234-123456789012'], // unassigned version, above the range
+  ])('returns null for an out-of-range UUID version nibble = %s (RFC 9562 defines 1-8)', (_v, id) => {
+    const result = parseSessionId(id);
 
     expect(result).toBeNull();
   });
 
   it('#599: returns null for a wrong-VARIANT UUID (variant nibble = c, not in {8,9,a,b})', () => {
     // Version nibble is '4' (correct), but the variant nibble (first char of the
-    // 4th group) is 'c' — UUID_V4_RE requires it to be one of {8,9,a,b}. This is
+    // 4th group) is 'c' — UUID_RE requires it to be one of {8,9,a,b}. This is
     // ONLY rejected by the strict variant guard: the loose /^[a-f0-9-]{36}$/i
     // would wrongly accept it (verified: loose.test === true). The existing
     // empty-string and 'not a valid id!!' cases below are killed by NON-regex
@@ -331,6 +340,71 @@ describe('Group D2 — AP2: parseSessionId strict-UUID negative cases', () => {
     const result = parseSessionId('12345678-1234-4234-c234-123456789012');
 
     expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group D3 — RFC 9562 acceptance across versions (Kanevry#66 / GitLab #1091)
+//
+// The nameable bug (TV-001): Codex CLI mints UUIDv7 session ids. The regex
+// pinned the version nibble to the literal '4', so parseSessionId returned
+// null for EVERY Codex session — hooks/on-session-start.mjs then fell through
+// to a freshly generated randomUUID() and every later hook in that session
+// missed the lock. No existing case in this file feeds a v7 id: Group A's UUID
+// case is v4, and the only other UUID fixtures (Group C, line ~224) are
+// asserted to NOT raise n, an expectation that holds whether they parse as
+// 'uuid' or as null — so they cannot discriminate this change either way.
+//
+// Fake-regression, MEASURED (not reasoned) at HEAD 4950990 by running both
+// patterns over these exact fixtures before the table was written:
+//   old /…-4[0-9a-f]{3}-…/  vs  new /…-[1-8][0-9a-f]{3}-…/
+//   v4 550e8400-…-41d4-a716-…    true  | true
+//   v7 017f22e2-79b0-7cc3-…      FALSE | true   ← the bug, red on the old regex
+// The `version` assertions additionally kill an implementation that widens the
+// regex but forgets the field, or reads the wrong offset (index 13 is a dash →
+// Number('-') is NaN, so a toBe(7) would fail).
+// ---------------------------------------------------------------------------
+
+describe('Group D3 — RFC 9562 UUID versions + semantic parity (Kanevry#66)', () => {
+  // Full-object toEqual per row — branch-free (testing.md: cyclomatic
+  // complexity 1) and tighter than field-by-field asserts, because it also
+  // fails on an UNEXPECTED extra field.
+  it.each([
+    [
+      'v4 (Claude Code mints these)',
+      '550e8400-e29b-41d4-a716-446655440000',
+      {
+        format: 'uuid',
+        uuid: '550e8400-e29b-41d4-a716-446655440000',
+        version: 4,
+        raw: '550e8400-e29b-41d4-a716-446655440000',
+      },
+    ],
+    [
+      'v7 (Codex CLI mints these — the Kanevry#66 bug)',
+      '017f22e2-79b0-7cc3-98c4-dc0c0c07398f',
+      {
+        format: 'uuid',
+        uuid: '017f22e2-79b0-7cc3-98c4-dc0c0c07398f',
+        version: 7,
+        raw: '017f22e2-79b0-7cc3-98c4-dc0c0c07398f',
+      },
+    ],
+    [
+      'a semantic id (unchanged by the widening)',
+      'main-2026-05-27-deep-1',
+      {
+        format: 'semantic',
+        branch: 'main',
+        date: '2026-05-27',
+        mode: 'deep',
+        n: 1,
+        raw: 'main-2026-05-27-deep-1',
+      },
+    ],
+    ['neither format', 'not-a-uuid', null],
+  ])('parses %s', (_label, input, expected) => {
+    expect(parseSessionId(input)).toEqual(expected);
   });
 });
 

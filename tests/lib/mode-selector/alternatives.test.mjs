@@ -18,7 +18,7 @@ describe('hasActiveSignals', () => {
   });
 
   it('returns true when recentSessions is non-empty', () => {
-    expect(hasActiveSignals({ recentSessions: [{ session_type: 'feature', completion_rate: 1.0 }] })).toBe(true);
+    expect(hasActiveSignals({ recentSessions: [{ session_type: 'feature', effectiveness: { completion_rate: 1.0 } }] })).toBe(true);
   });
 
   it('returns true when bootstrapLock is a non-null object', () => {
@@ -39,7 +39,7 @@ describe('buildAlternatives', () => {
   });
 
   it('returns [] when active signals make all modes score the same (single session, no trend)', () => {
-    const signals = { recentSessions: [{ session_type: 'feature', completion_rate: 1.0 }] };
+    const signals = { recentSessions: [{ session_type: 'feature', effectiveness: { completion_rate: 1.0 } }] };
     const alts = buildAlternatives('feature', signals);
     // Single session cannot produce trend bonus, all modes score 0.5 — but filter confidence >= 0.1
     // means all are included; however, all are equal. Just verify it has entries and all >= 0.1.
@@ -52,9 +52,9 @@ describe('buildAlternatives', () => {
     const signals = {
       bootstrapLock: { tier: 'standard' },
       recentSessions: [
-        { session_type: 'feature', completion_rate: 1.0 },
-        { session_type: 'feature', completion_rate: 1.0 },
-        { session_type: 'feature', completion_rate: 1.0 },
+        { session_type: 'feature', effectiveness: { completion_rate: 1.0 } },
+        { session_type: 'feature', effectiveness: { completion_rate: 1.0 } },
+        { session_type: 'feature', effectiveness: { completion_rate: 1.0 } },
       ],
     };
     const alts = buildAlternatives('feature', signals);
@@ -67,9 +67,9 @@ describe('buildAlternatives', () => {
     const signals = {
       bootstrapLock: { tier: 'standard' },
       recentSessions: [
-        { session_type: 'feature', completion_rate: 1.0 },
-        { session_type: 'feature', completion_rate: 1.0 },
-        { session_type: 'feature', completion_rate: 1.0 },
+        { session_type: 'feature', effectiveness: { completion_rate: 1.0 } },
+        { session_type: 'feature', effectiveness: { completion_rate: 1.0 } },
+        { session_type: 'feature', effectiveness: { completion_rate: 1.0 } },
       ],
     };
     expect(buildAlternatives('feature', signals).length).toBeLessThanOrEqual(3);
@@ -87,9 +87,9 @@ describe('buildAlternatives', () => {
     const signals = {
       bootstrapLock: { tier: 'standard' },
       recentSessions: [
-        { session_type: 'feature', completion_rate: 1.0 },
-        { session_type: 'feature', completion_rate: 1.0 },
-        { session_type: 'feature', completion_rate: 1.0 },
+        { session_type: 'feature', effectiveness: { completion_rate: 1.0 } },
+        { session_type: 'feature', effectiveness: { completion_rate: 1.0 } },
+        { session_type: 'feature', effectiveness: { completion_rate: 1.0 } },
       ],
     };
     const alts = buildAlternatives('feature', signals);

@@ -86,30 +86,52 @@ describe('computeDelta', () => {
     expect(computeDelta('feature', { learnings: null, recentSessions: null })).toBe(0);
   });
 
-  it('trend bonus +0.15 when last 3 sessions match mode and avgCompletion >= 0.9', () => {
+  // #1071: production `sessions.jsonl` records nest the rate under
+  // `effectiveness`; top-level `completion_rate` is null on every record
+  // (measured 2026-08-28: 281 records, 0 non-null flat, 182 nested). The
+  // nested shape below is therefore the REAL input; the one flat case that
+  // remains is kept deliberately, to pin the legacy fallback.
+  it('trend bonus +0.15 from the LEGACY flat completion_rate shape (backward compat)', () => {
     const sessions = [
       { session_type: 'feature', completion_rate: 1.0 },
       { session_type: 'feature', completion_rate: 1.0 },
       { session_type: 'feature', completion_rate: 1.0 },
     ];
+    // No `effectiveness` key anywhere → context-pressure stays inactive, so the
+    // trend bonus is the whole delta.
     expect(computeDelta('feature', { recentSessions: sessions })).toBe(0.15);
+  });
+
+  it('trend bonus +0.15 from the PRODUCTION nested effectiveness shape (#1071)', () => {
+    const nested = (rate) => [
+      { session_type: 'deep', effectiveness: { completion_rate: rate } },
+      { session_type: 'deep', effectiveness: { completion_rate: rate } },
+      { session_type: 'deep', effectiveness: { completion_rate: rate } },
+    ];
+    // candidateMode 'deep' isolates the trend branch: at low context pressure
+    // only 'feature' picks up the +0.05 nudge, so the delta IS the bonus.
+    // Before #1071 both cases read 0 and collapsed onto the 0.075 branch.
+    expect(computeDelta('deep', { recentSessions: nested(1.0) })).toBe(0.15);
+    expect(computeDelta('deep', { recentSessions: nested(0.5) })).toBe(0.075);
   });
 
   it('trend bonus +0.075 when last 3 match but avgCompletion < 0.9', () => {
     const sessions = [
-      { session_type: 'feature', completion_rate: 0.7 },
-      { session_type: 'feature', completion_rate: 0.8 },
-      { session_type: 'feature', completion_rate: 0.7 },
+      { session_type: 'feature', effectiveness: { completion_rate: 0.7 } },
+      { session_type: 'feature', effectiveness: { completion_rate: 0.8 } },
+      { session_type: 'feature', effectiveness: { completion_rate: 0.7 } },
     ];
-    expect(computeDelta('feature', { recentSessions: sessions })).toBe(0.075);
+    // 0.075 trend + 0.05 low-context-pressure nudge (#332), which the presence
+    // of an `effectiveness` object unlocks for candidateMode 'feature'.
+    expect(computeDelta('feature', { recentSessions: sessions })).toBe(0.125);
   });
 
-  it('no trend bonus when fewer than 3 recent sessions', () => {
+  it('no trend bonus when fewer than 3 recent sessions (only the pressure nudge remains)', () => {
     const sessions = [
-      { session_type: 'feature', completion_rate: 1.0 },
-      { session_type: 'feature', completion_rate: 1.0 },
+      { session_type: 'feature', effectiveness: { completion_rate: 1.0 } },
+      { session_type: 'feature', effectiveness: { completion_rate: 1.0 } },
     ];
-    expect(computeDelta('feature', { recentSessions: sessions })).toBe(0);
+    expect(computeDelta('feature', { recentSessions: sessions })).toBe(0.05);
   });
 
   it('tier alignment bonus +0.10 when bootstrapLock.tier maps to candidateMode', () => {
@@ -135,21 +157,24 @@ describe('computeDelta', () => {
 
   it('conflict penalty -0.10 when last 3 sessions trend to a different mode at high completion', () => {
     const sessions = [
-      { session_type: 'deep', completion_rate: 1.0 },
-      { session_type: 'deep', completion_rate: 1.0 },
-      { session_type: 'deep', completion_rate: 1.0 },
+      { session_type: 'deep', effectiveness: { completion_rate: 1.0 } },
+      { session_type: 'deep', effectiveness: { completion_rate: 1.0 } },
+      { session_type: 'deep', effectiveness: { completion_rate: 1.0 } },
     ];
-    // candidateMode = feature → other mode deep dominates → penalty -0.10
-    expect(computeDelta('feature', { recentSessions: sessions })).toBe(-0.10);
+    // candidateMode = feature → other mode deep dominates → penalty -0.10,
+    // plus the +0.05 low-pressure nudge → -0.05. Unreachable before #1071:
+    // the nested rate read as 0, so the >= 0.9 gate never opened.
+    expect(computeDelta('feature', { recentSessions: sessions })).toBe(-0.05);
   });
 
   it('no conflict penalty when conflicting trend completion < 0.9', () => {
     const sessions = [
-      { session_type: 'deep', completion_rate: 0.8 },
-      { session_type: 'deep', completion_rate: 0.8 },
-      { session_type: 'deep', completion_rate: 0.8 },
+      { session_type: 'deep', effectiveness: { completion_rate: 0.8 } },
+      { session_type: 'deep', effectiveness: { completion_rate: 0.8 } },
+      { session_type: 'deep', effectiveness: { completion_rate: 0.8 } },
     ];
-    expect(computeDelta('feature', { recentSessions: sessions })).toBe(0);
+    // No penalty; the +0.05 low-pressure nudge is the whole delta.
+    expect(computeDelta('feature', { recentSessions: sessions })).toBe(0.05);
   });
 
   it('carryover penalty -0.10 when carryoverRatio >= 0.2 and candidateMode != deep', () => {
@@ -178,9 +203,9 @@ describe('scoreMode', () => {
     const signals = {
       bootstrapLock: { tier: 'standard' },
       recentSessions: [
-        { session_type: 'feature', completion_rate: 1.0 },
-        { session_type: 'feature', completion_rate: 1.0 },
-        { session_type: 'feature', completion_rate: 1.0 },
+        { session_type: 'feature', effectiveness: { completion_rate: 1.0 } },
+        { session_type: 'feature', effectiveness: { completion_rate: 1.0 } },
+        { session_type: 'feature', effectiveness: { completion_rate: 1.0 } },
       ],
       learnings: [
         { type: 'effective-sizing', subject: 'feature scope', confidence: 0.9 },
@@ -198,25 +223,25 @@ describe('scoreMode', () => {
       bootstrapLock: { tier: 'deep' },           // -0.10 tier penalty
       carryoverRatio: 0.3,                         // -0.10 carryover penalty
       recentSessions: [
-        { session_type: 'deep', completion_rate: 1.0 },
-        { session_type: 'deep', completion_rate: 1.0 },
-        { session_type: 'deep', completion_rate: 1.0 },
+        { session_type: 'deep', effectiveness: { completion_rate: 1.0 } },
+        { session_type: 'deep', effectiveness: { completion_rate: 1.0 } },
+        { session_type: 'deep', effectiveness: { completion_rate: 1.0 } },
       ],                                            // -0.10 trend penalty
     };
     const score = scoreMode('feature', signals);
     expect(score).toBeGreaterThanOrEqual(0.0);
-    expect(score).toBe(0.2);  // 0.5 - 0.10 - 0.10 - 0.10 = 0.2
+    // 0.5 - 0.10 tier - 0.10 carryover - 0.10 trend + 0.05 low-pressure = 0.25
+    expect(score).toBe(0.25);
   });
 
-  it('result is rounded to 2 decimal places (partial trend bonus 0.075 → score 0.57)', () => {
+  it('result is rounded to 2 decimal places (trend 0.075 + pressure 0.05 → score 0.63)', () => {
     const sessions = [
-      { session_type: 'feature', completion_rate: 0.7 },
-      { session_type: 'feature', completion_rate: 0.8 },
-      { session_type: 'feature', completion_rate: 0.7 },
+      { session_type: 'feature', effectiveness: { completion_rate: 0.7 } },
+      { session_type: 'feature', effectiveness: { completion_rate: 0.8 } },
+      { session_type: 'feature', effectiveness: { completion_rate: 0.7 } },
     ];
-    // delta = +0.075 → 0.5 + 0.075 = 0.575 in IEEE-754, but JS float arithmetic
-    // gives 0.574999... → round2 → 0.57.
+    // delta = +0.075 trend +0.05 pressure = 0.125 → 0.625 → round2 → 0.63.
     const score = scoreMode('feature', { recentSessions: sessions });
-    expect(score).toBe(0.57);
+    expect(score).toBe(0.63);
   });
 });

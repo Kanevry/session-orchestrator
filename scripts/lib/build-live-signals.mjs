@@ -10,7 +10,8 @@
  *  - Synchronous file I/O for STATE.md / sessions.jsonl / bootstrap.lock.
  *    The async wrapper exists only because `scanBacklog` is async.
  *  - Logging is NOT this helper's job — silent graceful-null on every error.
- *  - Paths are resolved absolutely from process.cwd() if relative.
+ *  - Relative paths resolve against `opts.repoRoot` (which itself defaults to
+ *    process.cwd()); an explicit ABSOLUTE path always wins over the root.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -32,9 +33,16 @@ import { scanBacklog, DEFAULT_BACKLOG_LIMIT } from './backlog-scan.mjs';
  * null/[] value to the Signals object.
  *
  * @param {object} [opts]
- * @param {string} [opts.statePath]      — defaults to '.claude/STATE.md'
- * @param {string} [opts.sessionsPath]   — defaults to '.orchestrator/metrics/sessions.jsonl'
- * @param {string} [opts.lockPath]       — defaults to '.orchestrator/bootstrap.lock'
+ * @param {string} [opts.repoRoot]       — absolute project root every relative
+ *   path below resolves against, and the root forwarded to `scanBacklog`.
+ *   Defaults to `process.cwd()`. Without it (#1071) a caller running from a
+ *   worktree or a subdirectory silently read a DIFFERENT repo's STATE.md and
+ *   sessions.jsonl than the one it was reporting on — measured as
+ *   `recentSessions: []` against a checkout holding 245 session records.
+ *   An explicit absolute `statePath`/`sessionsPath`/`lockPath` still wins.
+ * @param {string} [opts.statePath]      — defaults to '<repoRoot>/.claude/STATE.md'
+ * @param {string} [opts.sessionsPath]   — defaults to '<repoRoot>/.orchestrator/metrics/sessions.jsonl'
+ * @param {string} [opts.lockPath]       — defaults to '<repoRoot>/.orchestrator/bootstrap.lock'
  * @param {Array}  [opts.learnings]      — pre-surfaced top-N learnings; defaults to []
  * @param {number} [opts.backlogLimit]   — passed to scanBacklog; defaults to
  *   `DEFAULT_BACKLOG_LIMIT` from backlog-scan.mjs (never a local copy of that
@@ -46,15 +54,24 @@ import { scanBacklog, DEFAULT_BACKLOG_LIMIT } from './backlog-scan.mjs';
  * @returns {Promise<import('./mode-selector.mjs').Signals>}
  */
 export async function buildLiveSignals(opts = {}) {
+  const repoRoot =
+    typeof opts.repoRoot === 'string' && opts.repoRoot.length > 0
+      ? opts.repoRoot
+      : process.cwd();
+  // `resolve(root, p)` returns `p` unchanged when `p` is absolute — explicit
+  // per-file overrides therefore keep precedence over repoRoot.
   const statePath = resolve(
+    repoRoot,
     typeof opts.statePath === 'string' ? opts.statePath : '.claude/STATE.md'
   );
   const sessionsPath = resolve(
+    repoRoot,
     typeof opts.sessionsPath === 'string'
       ? opts.sessionsPath
       : '.orchestrator/metrics/sessions.jsonl'
   );
   const lockPath = resolve(
+    repoRoot,
     typeof opts.lockPath === 'string' ? opts.lockPath : '.orchestrator/bootstrap.lock'
   );
   const learnings = Array.isArray(opts.learnings) ? opts.learnings : [];
@@ -137,7 +154,9 @@ export async function buildLiveSignals(opts = {}) {
   let backlog = null;
 
   try {
-    backlog = await _scan({ limit: backlogLimit });
+    // `repoRoot` is forwarded so VCS detection and the `-R` host-pinning spec
+    // inside scanBacklog answer about the SAME repo the signals describe.
+    backlog = await _scan({ limit: backlogLimit, repoRoot });
   } catch {
     // Branch 6: scanBacklog threw — backlog stays null
   }

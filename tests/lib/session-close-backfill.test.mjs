@@ -964,3 +964,142 @@ describe('backfillCompletedFromStateMd — #429', () => {
     expect(readSessions()).toHaveLength(0);
   });
 });
+
+
+// ---------------------------------------------------------------------------
+// #1068 AC3/AC4 — supersede a backfill stub with the identity-complete record
+// ---------------------------------------------------------------------------
+
+describe('backfillCompletedFromStateMd — supersedes a backfill stub (#1068 AC3/AC4)', () => {
+  const SEMANTIC = 'main-2026-05-27-session-1';
+  const COMPLETED_FRONTMATTER = {
+    'schema-version': 1,
+    'session-type': 'deep',
+    branch: 'main',
+    issues: [],
+    started_at: STARTED_AT,
+    status: 'completed',
+    'current-wave': 3,
+    'total-waves': 3,
+    session: SEMANTIC,
+  };
+
+  /** The exact stub `backfillAbandonedSession` writes for this identity. */
+  function abandonedStub() {
+    return {
+      session_id: SEMANTIC,
+      session_type: 'deep',
+      started_at: STARTED_AT,
+      completed_at: '2026-05-27T15:00:00.000Z',
+      total_waves: 0,
+      waves: [],
+      agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+      total_agents: 0,
+      total_files_changed: 0,
+      status: 'abandoned',
+      effectiveness: { carryover: null },
+      _backfill_source: 'events-jsonl',
+      _backfill_incomplete_fields: ['total_waves', 'waves', 'agent_summary', 'total_agents', 'total_files_changed'],
+    };
+  }
+
+  // TV-001 — the bug: before #1068 the dedupe was unconditional, so the FIRST
+  // record for an identity was canonical forever. A session whose SessionEnd
+  // hook reconstructed an `abandoned` stub could never be corrected by the
+  // later authoritative `status: completed` proof, and every downstream
+  // consumer kept reading the stub's zeroes as the session's outcome.
+  it('appends the completed record for an identity whose only entry is an abandoned stub', async () => {
+    writeStateMd(COMPLETED_FRONTMATTER);
+    seedSessions([abandonedStub()]);
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      {
+        timestamp: '2026-05-27T14:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: SEMANTIC,
+        mode: 'deep',
+      },
+      { timestamp: '2026-05-27T17:00:00.000Z', event: 'orchestrator.session.ended', session_id: UUID, reason: 'clear' },
+    ]);
+
+    const res = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+
+    expect(res.action).toBe('superseded');
+    expect(res.supersedes).toBe(SEMANTIC);
+
+    const recorded = readSessions();
+    expect(recorded).toHaveLength(2);
+    // AC4 — the stub survives VERBATIM: append-only, provenance preserved.
+    expect(recorded[0]).toEqual(abandonedStub());
+    // The newest record is the canonical one, and it names what it replaces.
+    expect(recorded[1].status).toBe('completed');
+    expect(recorded[1].supersedes).toBe(SEMANTIC);
+    expect(recorded[1]._backfill_source).toBe('state-md-completed');
+    expect(() => validateSession(recorded[1])).not.toThrow();
+  });
+
+  // TV-001 — the bug this second test catches is the one the fix itself could
+  // introduce: a supersede that keeps firing. The record appended above is a
+  // backfill too, so a predicate keyed on `_backfill_source` alone re-classifies
+  // it as a stub on the next run. Measured with exactly that mutation: the
+  // second run returns `skipped-marker-exists`, i.e. the only thing left
+  // standing between a mis-classification and an unbounded supersede chain is
+  // the TOCTOU marker FILE — a `.orchestrator/metrics/` artifact any cleanup
+  // sweep may remove. The status half of the predicate is what makes the
+  // termination a property of the data instead of the filesystem.
+  it('does not supersede again once the stub has been superseded (no unbounded chain)', async () => {
+    writeStateMd(COMPLETED_FRONTMATTER);
+    seedSessions([abandonedStub()]);
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+    ]);
+
+    const first = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+    expect(first.action).toBe('superseded');
+    expect(readSessions()).toHaveLength(2);
+
+    const second = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+
+    expect(second.action).toBe('skipped-already-recorded');
+    expect(second.sessionId).toBe(SEMANTIC);
+    expect(readSessions()).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1091 follow-up — ONE UUID contract (isUuid delegates to parseSessionId)
+// ---------------------------------------------------------------------------
+
+describe('isUuid — one UUID contract with scripts/lib/session-id.mjs (#1091)', () => {
+  // A 36-char lookalike with the right layout but an RFC-9562-INVALID variant
+  // nibble (`c`, i.e. not one of 8/9/a/b). The module's former private regex
+  // constrained neither version nor variant and accepted it; the writer in
+  // hooks/on-session-start.mjs never did.
+  const VARIANT_C_LOOKALIKE = '11111111-2222-4333-c444-555555555555';
+
+  it('rejects a lookalike whose variant nibble is `c`', () => {
+    expect(isUuid(VARIANT_C_LOOKALIKE)).toBe(false);
+    // Control: the same string with a valid variant nibble IS accepted, so the
+    // assertion above pins the variant check and not the whole layout.
+    expect(isUuid('11111111-2222-4333-8444-555555555555')).toBe(true);
+  });
+
+  // TV-001 — the observable consequence, not just the predicate: a rejected
+  // lookalike takes the SEMANTIC branch (the id keys the record directly)
+  // instead of the UUID branch (lock-bridge lookup, then a synthetic
+  // `<branch>-<date>-abandoned-<sha8>` mint). The two produce different
+  // sessions.jsonl keys for the same input, which is exactly the class of
+  // divergence a second UUID regex creates.
+  it('routes a variant-`c` id down the semantic branch, keying the record by the id itself', async () => {
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+    ]);
+
+    const res = await backfillAbandonedSession({ repoRoot, sessionId: VARIANT_C_LOOKALIKE, now: NOW_MS });
+
+    expect(res.action).toBe('backfilled');
+    expect(res.sessionId).toBe(VARIANT_C_LOOKALIKE);
+    expect(res.record._synthetic_session_id).toBeUndefined();
+  });
+});
