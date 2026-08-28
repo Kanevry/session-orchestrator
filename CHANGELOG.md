@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Two commits today (1 `feat`, 1 `fix`; 64 files, +4,971/−184) close Waves 3 and 4 of the
+resumed session, plus eight items carried forward from Wave 2 (`36aa605`, 2026-08-26,
+never previously changelogged). No `BREAKING CHANGE:` footer and no `!` subject. The
+pattern repeats across both waves: a guard, sanitizer, or census that already existed but
+checked the wrong population or stopped short of the surface it needed to reach — a parity
+guard sampling five rule files by name instead of reading the directory, a sanitizer whose
+findings never reached stderr, a byte-count drifting 338 lines from the line it cited, a
+tracked directory hiding an untracked hook beside it.
+
+### Added
+
+- **Eight core rules ship as sanitized copies, with a report-only leak scanner (#1098).**
+  `rules/always-on/` holds sanitized copies of `ask-via-tool`, `build-value`,
+  `loop-and-monitor` and five more; `scanVendoringLeaks()` now reaches stderr as one line
+  per finding in both CLIs, folded into `validate-vendored-rules` with a rule-ID census.
+- **Session Config fails loud on an unparsable line (#1097).** `collectUnparsableLines`
+  gates warn/strict via one `htmlCommentSkipper` shared by extractor and classifier — a
+  commented-out `enforcement: strict` had been reading as live config.
+- **A read-only protection-audit CLI, with a runbook naming the order (#1079).** States
+  the required sequence; never flips a setting itself.
+- **The scope guard now emits `orchestrator.wave_dispatch.scope_checked` (#1092).** Closes
+  the ledger half that never recorded a signal-free ALLOW.
+- **`/journey-audit` — a user-facing product audit as a repeatable skill (#1161).** Skill,
+  command and manifest template; skill/command counts measured at 48/28.
+- **A Cursor `.mdc` parity guard that reads the directory, not a fixed list (#1093).**
+  Catches bare `PID=`/`${VAR}` IDs a name-sampling guard had missed; `priority::` swept
+  across all 5 files.
+
+### Fixed
+
+- **Six onboarding contradictions + a `cursor-install` TARGET guard (#1078).** First
+  production diff authored by a foreign model (composer-2.5) under mandatory Claude review.
+- **Amber is now a documented normal state (#1062).** `docs/ci-setup.md` names it instead
+  of leaving it an unexplained CI color.
+- **A tracked directory no longer hides an untracked hook beside it (#1158).**
+  `hooksPathIsTracked` now requires a GIT-tracked file directly under `core.hooksPath`.
+- **`probe-stale` collapses to one vocabulary term (#1159).** A record older than 7 days
+  is `probe-stale`, severity `warn`, never a live finding; the registry remap is gone.
+- **The scope-cap saw operators, not shell keywords (#1145).** `splitSegments` now splits
+  on keywords too, so `for t in a b c; do glab issue create; done` no longer slips a
+  compound-statement head past the cap.
+- **A missing `.claude/rules/` was misdiagnosed as a loop (#1132).** `err.code` now
+  separates silent `ENOENT`/`ENOTDIR` from loud `EACCES`; the repeat was caller fan-out.
+- **Two probes measured the wrong population (#1143/#1148).** One counted a whole file and
+  cited a line that had already drifted 338 lines from the finding; both scanners read the
+  filesystem instead of the git index, censoring 5 gitignored files as documentation.
+- **Generated rules now self-verify offline (#1101).** Each carries a sha256 seal over its
+  own Evidence block instead of a learning-key into a gitignored file; 23 rules sealed,
+  fresh-clone warnings 23 → 0.
+- **`reconcile.targets` had zero consumers (#1099).** Now wired through with a closed enum,
+  visible rejection of unknowns, and per-target path confinement.
+- **Orphaned wave-scope files survived re-materialization (#1103).** Reconciled by
+  ownership proof now, never a blind directory wipe — two parallel sessions can share one
+  wave-N directory (PSA-003).
+- **Two rival vendoring paths wrote the same rule file (#1060).** `rules/` is now sole SSOT
+  for PSA-001..007; `templates/_shared/rules/` is deleted.
+
+### Notes
+
+Two of this session's diffs were authored by foreign models under the #1150 adapter —
+#1078 by composer-2.5, #1093 by grok-4.6 — each passing mandatory Claude review before
+landing. First production use of the foreign-dispatch path.
+
 ## [3.22.0] - 2026-08-22
 
 Twenty commits (12 `fix`, 5 `docs`, 2 `feat`, 1 `chore`; 150 files, +17,312/−2,575), no

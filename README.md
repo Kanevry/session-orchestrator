@@ -72,8 +72,8 @@ Everything else is opt-in. See [`docs/session-config-template.md`](docs/session-
 
 ## What you get
 
-- **45 skills** for the session lifecycle (start, plan, execute, close, evolve), discovery, vault sync, MCP authoring, debugging, brainstorming, plan grilling, persona panels, cross-repo dispatch, learning→rule reconciliation, session-process eval, audits, and more
-- **24 slash commands** (`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/grill`, `/evolve`, `/autopilot`, `/dispatcher`, `/reconcile`, `/eval`, `/test`, `/debug`, …)
+- **48 skills** for the session lifecycle (start, plan, execute, close, evolve), discovery, vault sync, MCP authoring, debugging, brainstorming, plan grilling, persona panels, cross-repo dispatch, learning→rule reconciliation, session-process eval, audits, and more
+- **28 slash commands** (`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/grill`, `/evolve`, `/autopilot`, `/dispatcher`, `/reconcile`, `/eval`, `/test`, `/debug`, …)
 - **15 typed subagents** (code-implementer, test-writer, security-reviewer, session-reviewer, qa-strategist, architect-reviewer, …)
 - **10 hook event types** enforcing scope, blocking destructive commands, gating templates-first, capturing telemetry — full on Claude Code; experimental, post-hoc, or bridged on the other platforms ([Platform support](#platform-support))
 - **10,000+ vitest tests** run on every commit ([telemetry methodology](docs/telemetry/telemetry-claims.md))
@@ -167,7 +167,7 @@ The design goal is engineering quality: every wave exits verified, every unfinis
 
 | Feature | Claude Code | Codex CLI | Cursor IDE | Pi |
 |---|---|---|---|---|
-| All 24 commands | Native slash commands | Native plugin commands | Rules-based (.mdc) | Prompt templates |
+| All 28 commands | Native slash commands | Native plugin commands | Rules-based (.mdc) | Prompt templates |
 | Parallel agents | Agent tool | Multi-agent roles | Sequential only | Sequential (parallel planned) |
 | Session persistence | `.claude/STATE.md` | `.codex/STATE.md` | `.cursor/STATE.md` | `.pi/STATE.md` |
 | Scope enforcement | PreToolUse hooks | Unavailable — pending a real `apply_patch` adapter | `afterFileEdit` (post-hoc) | `tool_call` bridge |
