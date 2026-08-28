@@ -48,6 +48,55 @@ async function execWithTimeout(cmd, args, opts = {}) {
 }
 
 /**
+ * Parse CLI stdout as JSON, degrading an unparseable payload onto this module's
+ * documented failure channel instead of a bare `SyntaxError` (CWE-502).
+ *
+ * The throw IS that channel, not an escape from it: every call site runs under
+ * `checkCiStatus`'s outer catch, whose comment already names "unparseable
+ * output" as a case it converts to `console.warn` + `null`. Measured
+ * 2026-08-28 at 30940cb, BEFORE this helper existed: an HTML login page from
+ * `gh repo view`, a literal `null`, and an empty `glab` stdout ALL already
+ * returned `null` with a warn — nothing crashed, and
+ * `tests/lib/ci-status-banner.test.mjs` § "error containment" pinned it. So
+ * this does not fix a crash; the `.semgrep.yml` header claiming one is wrong.
+ *
+ * What it does fix is the message. The raw parse error (`Unexpected token
+ * '<'`) named neither the CLI nor the request, and this banner spawns four
+ * different subprocesses — an operator reading that line at session-start
+ * could not tell which one returned garbage, which is the same
+ * "could not read looks like nothing to report" class #1022/#1039 attacked.
+ * Guarding at the parse also satisfies the `json-parse-untrusted-input` rule,
+ * which keys on a LEXICALLY enclosing try/catch and cannot see the outer one.
+ *
+ * Ceiling (BV-004): the payload preview is clamped to 120 characters. An
+ * unbounded one would bury the session-start banner it is printed beside — a
+ * paginated HTML error page is the realistic worst case. Revisit if a CLI
+ * starts emitting a diagnostic that needs more than one line to identify.
+ *
+ * @param {string} stdout  Raw child-process stdout (untrusted)
+ * @param {string} label   The command that produced it, for the failure message
+ * @returns {unknown} The parsed value
+ * @throws {Error} Named parse failure carrying a bounded payload preview
+ */
+function parseCliJson(stdout, label) {
+  const raw = String(stdout ?? '');
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    const preview = raw.trim().slice(0, 120);
+    const reason = err instanceof Error ? err.message : String(err);
+    // `cause` preserves the original for a debugger; the reason is ALSO
+    // inlined into the message because the outer catch reads `err.message`
+    // only — a cause-only wrapper would lose it on the operator-facing line.
+    throw new Error(
+      `${label} returned unparseable JSON (${reason}) — ` +
+        (preview ? `got: ${preview}` : 'got: (empty stdout)'),
+      { cause: err },
+    );
+  }
+}
+
+/**
  * The one failure this probe can produce that the frozen
  * `REMOTE_RESOLUTION_REASONS` set has no member for: the async timeout race
  * every subprocess here runs under has no counterpart in the SYNCHRONOUS
@@ -210,7 +259,7 @@ async function glabApi(apiPath, repoRoot, deps = {}) {
     args,
     { cwd: repoRoot, timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS, execFile: deps.execFile },
   );
-  return JSON.parse(result.stdout);
+  return parseCliJson(result.stdout, `glab api ${apiPath}`);
 }
 
 /**
@@ -232,7 +281,7 @@ async function ghApi(apiPath, repoRoot, deps = {}) {
     args,
     { cwd: repoRoot, timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS, execFile: deps.execFile },
   );
-  return JSON.parse(result.stdout);
+  return parseCliJson(result.stdout, `gh api ${apiPath}`);
 }
 
 /**
@@ -450,7 +499,10 @@ async function checkGithub(repoRoot, deps = {}) {
     repoViewArgs,
     { cwd: repoRoot, timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS, execFile: deps.execFile },
   );
-  const { nameWithOwner } = JSON.parse(repoViewResult.stdout);
+  const { nameWithOwner } = parseCliJson(
+    repoViewResult.stdout,
+    `gh ${repoViewArgs.join(' ')}`,
+  );
 
   const data = await ghApi(
     `repos/${nameWithOwner}/commits/HEAD/check-runs`,
@@ -516,12 +568,19 @@ async function checkGithub(repoRoot, deps = {}) {
  *     or >= 2 remotes with no preference match) — a benign, measured absence
  *   - Required CLI (glab / gh) not in PATH
  *   - Any CLI invocation times out
- *   - JSON parse failure on CLI output
  *
  * Also returns `null`, but with a `console.warn` trace, when the VCS-detection
- * QUERY ITSELF failed (`git` not on PATH, `git remote -v` erroring) or when a
- * present CLI rejected its invocation. `null` alone cannot express "could not
- * read" — see the outer catch and Step 1 for why the warn channel carries it.
+ * QUERY ITSELF failed (`git` not on PATH, `git remote -v` erroring), when a
+ * present CLI rejected its invocation, or when a CLI returned output this
+ * module could not parse (see {@link parseCliJson}). `null` alone cannot
+ * express "could not read" — see the outer catch and Step 1 for why the warn
+ * channel carries it.
+ *
+ * The unparseable-output case was listed above as SILENT until 2026-08-28.
+ * That was never the behaviour — it has always fallen through to the outer
+ * catch's warn branch (measured at 30940cb). The drift survived because the
+ * one test covering it asserted only the `null` and let the file-wide
+ * `console.warn` spy swallow the rest.
  *
  * @param {{
  *   repoRoot?: string,

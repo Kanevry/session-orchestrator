@@ -64,11 +64,13 @@
 # CURRENT FINDINGS. Measured 2026-08-28 @ 4950990, `semgrep scan --config
 # .semgrep.yml --metrics=off` over the seven directories the CI job scans
 # (scripts/ hooks/ skills/ agents/ commands/ monitors/ pi/), 488 files scanned,
-# 27 rules → 25 findings:
+# 27 rules → 25 findings at 4950990; 22 at HEAD after the three
+# json-parse-untrusted-input hits were routed through a guarded parser
+# (scripts/lib/ci-status-banner.mjs, W3-P6a 2026-08-28):
 #
 #       7x csv-without-sanitize          3x unsafe-fetch-user-url
 #       6x unsafe-command-injection      3x unsafe-shell-spawn
-#       3x json-parse-untrusted-input    2x math-random-security
+#       0x json-parse-untrusted-input    2x math-random-security
 #       1x unsafe-eval                   0x the remaining 20 rules
 #
 #     This corrects the previous header, which claimed "the remaining 25 rules
@@ -78,10 +80,12 @@
 #     since --baseline-commit — which is a different statement from "there are
 #     none", and the difference is exactly what the false claim hid.
 #
-#     The 3 json-parse-untrusted-input hits are that rule's first true positives
-#     here: scripts/lib/ci-status-banner.mjs:213, :235, :453 parse `glab`/`gh`
-#     stdout with no try/catch, on the session-start banner path — an empty or
-#     non-JSON stdout throws out of the banner.
+#     The 3 json-parse-untrusted-input hits were that rule's first true positives
+#     here: scripts/lib/ci-status-banner.mjs parsed `glab`/`gh` stdout with no
+#     ENCLOSING try/catch (the rule is lexical). Measured 2026-08-28: the function-
+#     level catch in checkCiStatus already turned a non-JSON stdout into warn+null,
+#     so nothing ever threw out of the banner; the real gap was a warn that named
+#     neither the CLI nor the request. Fixed via parseCliJson() — 0 hits at HEAD.
 #
 #     Zero-finding rules are kept deliberately: they cost nothing now and bite on
 #     the next regression. Load-bearing for a repo that shells out constantly:

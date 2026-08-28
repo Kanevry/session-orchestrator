@@ -152,9 +152,10 @@ After learnings are written (Phase 3.6), determine whether to emit a **manual-ca
    ```javascript
    import { shouldDispatchAutoDream } from '${PLUGIN_ROOT}/scripts/lib/auto-dream.mjs';
    import { resolveMemoryDir } from '${PLUGIN_ROOT}/scripts/lib/memory-paths.mjs';
-   const memoryDir = resolveMemoryDir();
+   const repoRoot = process.cwd();
+   const memoryDir = resolveMemoryDir(repoRoot);
    const decision = await shouldDispatchAutoDream({
-     repoRoot: process.cwd(),
+     repoRoot,
      memoryDir,
      threshold: config['memory-cleanup-threshold'] ?? 5,
      softLimit: config['memory-cleanup-soft-limit'] ?? 180,

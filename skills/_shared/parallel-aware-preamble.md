@@ -153,7 +153,7 @@ The skill consuming the preamble translates the outcome:
 |---------|--------|
 | `PASS_THROUGH` | Continue immediately. No AUQ. Pre-P1.3 behavior. |
 | `EXCLUSIVE_BLOCKED` | Fire Exclusive-Conflict AUQ from `parallel-aware-auq.md`. Block until user response. On "Abbrechen": exit cleanly. On "Andere Session beenden": surface to user (preamble does NOT kill other session). On "Warten": pause Phase 0; re-run preamble on user retry. |
-| `PROMOTION_OFFER` | Fire Promotion AUQ from `parallel-aware-auq.md`. On "Worktree anlegen": call enterWorktree() from worktree-pipeline.mjs (see parallel-aware-auq.md outcome-handling). On "Manuell": append Deviation (`Worktree-Auto-Promotion declined; running in-place alongside session_id=<peer.sessionId>`) and continue. On "Abbrechen": exit. |
+| `PROMOTION_OFFER` | Fire Promotion AUQ from `parallel-aware-auq.md`. On "Worktree anlegen": call enterWorktree() from worktree-pipeline.mjs, then — BEFORE exiting Phase 0 — `leaveSourceRoot({ repoRoot, sessionId, semanticSessionId, reason: 'worktree-promotion' })` from `session-transition.mjs` (see parallel-aware-auq.md outcome-handling). The promotion is a process boundary, not a live migration (#1069): the old root is deregistered and its lock released BEFORE the new worktree's own Phase 1.2 acquires — never both roots owning at once. On "Manuell": append Deviation (`Worktree-Auto-Promotion declined; running in-place alongside session_id=<peer.sessionId>`) and continue. On "Abbrechen": exit. |
 
 ## Phase 1b Peer-Guard (defense-in-depth)
 
@@ -169,7 +169,9 @@ The guard is a SOFT-GATE — operator can override, but the warning is mandatory
 findPeers(repoRoot, { mySessionId }) → peer = peers.find((p) => p.source === 'state-md') →
   peer === null  →  safe to write STATE.md; continue Phase 1b normally.
   peer !== null  →  fire Promotion AUQ (parallel-aware-auq.md "Promotion" block).
-                    On "Worktree anlegen": enterWorktree() → continue in sibling.
+                    On "Worktree anlegen": enterWorktree() → leaveSourceRoot(this root)
+                                           → continue in sibling (process boundary,
+                                             old root released before the new acquire).
                     On "Manuell": appendDeviationOnDisk() + continue in-place.
                     On "Abbrechen": exit cleanly.
 ```

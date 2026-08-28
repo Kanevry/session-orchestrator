@@ -47,9 +47,10 @@ function makeTmpPluginDir(name = 'session-orchestrator') {
  * @param {string} modulePath  Absolute path to the isolated plugin-root.mjs copy
  * @param {string} cwd         Working directory for the child (must not sit inside a checkout)
  * @param {string} home        Synthetic HOME the child should see
+ * @param {Record<string, string>} [extraEnv]  Env overrides applied last (e.g. CODEX_HOME)
  * @returns {{ok: true, root: string} | {ok: false, name: string, triedPaths: string[]}}
  */
-function runIsolatedResolve(modulePath, cwd, home) {
+function runIsolatedResolve(modulePath, cwd, home, extraEnv = {}) {
   const script = `
     import { resolvePluginRoot } from ${JSON.stringify(pathToFileURL(modulePath).href)};
     try {
@@ -60,7 +61,7 @@ function runIsolatedResolve(modulePath, cwd, home) {
   `;
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
     cwd,
-    env: { PATH: process.env.PATH, HOME: home, CODEX_HOME: '' },
+    env: { PATH: process.env.PATH, HOME: home, CODEX_HOME: '', ...extraEnv },
     encoding: 'utf8',
   });
   if (result.status !== 0) {
@@ -398,6 +399,17 @@ describe('resolvePluginRoot — plugin-cache scan (Level 8, GH Kanevry/session-o
       expect(rejected.ok).toBe(false);
       expect(rejected.name).toBe('PluginRootResolutionError');
       expect(rejected.triedPaths.join('\n')).toContain('plugin caches');
+
+      // Bug this catches (TV-001): a whitespace-only CODEX_HOME. `||` and the
+      // shell's `${X:-…}` both fire on unset/empty ONLY, so an unTRIMMED
+      // fallback keeps the spaces and the scan globs `"   "/plugins/cache/*` —
+      // a relative path that matches nothing, and the marketplace-install case
+      // (#64) silently stops resolving. Nothing else in this suite covers
+      // CODEX_HOME with a non-empty falsy-looking value; the sibling cases all
+      // pass `''`. `.mcp.json`'s bash bootstrap carries the same trim, and
+      // this is the module half of that agreed contract.
+      expect(runIsolatedResolve(isolatedModule, sandbox, cachedHome, { CODEX_HOME: '   ' }))
+        .toEqual({ ok: true, root: cached });
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }

@@ -16,6 +16,13 @@ guard sampling five rule files by name instead of reading the directory, a sanit
 findings never reached stderr, a byte-count drifting 338 lines from the line it cited, a
 tracked directory hiding an untracked hook beside it.
 
+One `feat` commit (session-2, `30940cb`, 2026-08-28; 39 files, +2,475/−405) closes Wave 2
+with three GitHub-mirror fixes and a session-identity cluster at the process boundary. No
+`BREAKING CHANGE:` footer and no `!` subject. The through-line: identifiers the platforms
+mint (UUIDv7, semantic session ids) were rejected or dropped by readers built for UUIDv4
+only — every resume looked foreign — and call sites that needed a repo root passed
+`undefined` instead, so fail-open paths ran on every invocation.
+
 ### Added
 
 - **Eight core rules ship as sanitized copies, with a report-only leak scanner (#1098).**
@@ -63,6 +70,49 @@ tracked directory hiding an untracked hook beside it.
   wave-N directory (PSA-003).
 - **Two rival vendoring paths wrote the same rule file (#1060).** `rules/` is now sole SSOT
   for PSA-001..007; `templates/_shared/rules/` is deleted.
+- **`parseSessionId` accepted only UUIDv4; Codex mints v7 (#66/#1091).**
+  `scripts/lib/session-id.mjs` now accepts RFC-9562 v1–8 (`UUID_RE`, deprecated alias
+  `UUID_V4_RE`, additive `version` field). Every SessionStart had minted a fresh v4; a
+  resumed/compacted thread read its own lock as a foreign session. `hooks/on-stop.mjs` and
+  `hooks/on-session-end.mjs` now apply the writer's acceptance rule, closing a lock-leak via
+  non-UUID stdin ids.
+- **phase-3-7a called `updateFrontmatterFieldsOnDisk(undefined, …)` (#65/#1036).**
+  `skills/session-end/phase-3-7a-recommendations.md` requires a repo root; every `/close`
+  took the fail-open path — 0 of 5 recommendation fields were ever written. The snippet now
+  binds `repoRoot` via `git rev-parse --show-toplevel`; the catch logs the cause.
+- **Codex MCP launch resolved to `/scripts/mcp-server.sh` from non-git cwd (#64).** Codex
+  copies a marketplace plugin to
+  `~/.codex/plugins/cache/<marketplace>/session-orchestrator/<version>/` and starts the MCP
+  child with no plugin-root env var. `.mcp.json` and `scripts/lib/plugin-root.mjs` gained a
+  plugin-cache scan tier (name-matched `package.json`, newest by mtime). Codex snapshots
+  `.mcp.json` at install time — existing installs need a reinstall.
+- **`scoring.mjs` read a flat `completion_rate` 0 of 281 records carry (#1071).** The value
+  lives under `effectiveness`, so the high-completion bonus was unreachable.
+  `resolveMemoryDir`/`buildLiveSignals` now take an explicit `repoRoot` instead of
+  `process.cwd()`.
+- **mission-status recovery aborted on the first non-canonical body line (#1104).**
+  `scripts/lib/state-md/mission-status.mjs` now skips per line, reports skipped lines
+  (`recoverFrontmatterMissionStatusDetailed`). `setMissionStatus` refuses ids outside the
+  grammar with a stderr WARN from the on-disk wrapper.
+- **`enterWorktree` failed with `already used by worktree` when the source branch was
+  checked out (#1067).** `scripts/lib/autopilot/worktree-pipeline.mjs` now creates
+  `so/<sessionId>` from that branch and returns `branch`/`promotedFrom`.
+
+### Changed
+
+- **Host-registry census counts `semantic_session_id` (#1066).** `hooks/on-session-start.mjs`
+  falls back to `session_id` only when it is itself semantic. Before, only UUIDs were
+  projected — the n-increment discards them — so the registry contributed nothing to
+  numbering.
+- **Session end events carry `semantic_session_id`; backfill event + supersede (#1068).**
+  `orchestrator.session.ended` / `.stopped` carry `semantic_session_id` (omitted when
+  unknown). A new `orchestrator.session.backfill` event records each backfill outcome. A
+  completed record may now supersede an `abandoned` stub (append-only, `supersedes` marker).
+  Readers preferring the newest record are a follow-up.
+- **`.semgrep.yml` regains two taint-mode rules (#1129).** `json-parse-untrusted-input` and
+  `prototype-pollution-object-assign` aimed at this repo's real trust boundary (hook stdin,
+  child-process stdout); 27 rules total. `unsafe-llm-output-rendering` stays excluded with a
+  measured reason (no DOM code).
 
 ### Notes
 

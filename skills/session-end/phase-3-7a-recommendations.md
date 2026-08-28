@@ -21,7 +21,7 @@ try {
   // repoRoot is REQUIRED — updateFrontmatterFieldsOnDisk calls requireRepoRoot()
   // and THROWS on undefined (scripts/lib/state-md/frontmatter-mutators.mjs).
   // Resolve it explicitly; there is no implicit cwd fallback by design (PSA
-  // parallel-session CWD drift). Passing `undefined` here sends every close down
+  // parallel-session CWD drift). Passing an undefined repoRoot here sends every close down
   // the fail-open catch below and silently omits all 5 fields (GitLab #1036).
   const repoRoot = execSync('git rev-parse --show-toplevel', {encoding: 'utf8'}).trim();
 

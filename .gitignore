@@ -149,3 +149,6 @@ evals/instruction-ablation/results/
 sig-audit.json
 sig-audit.err
 .semgrep_logs/
+
+# wave-transcript-tail singleton lock (#1114) — host-local, carries the hostname
+.orchestrator/wave-transcript-tail.lock

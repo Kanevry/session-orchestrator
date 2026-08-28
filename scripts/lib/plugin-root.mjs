@@ -5,19 +5,28 @@
  * provides a deterministic, testable resolution strategy so hook handlers and
  * scripts never silently fall back to an empty path or wrong directory.
  *
- * Fallback order (stops at first success):
- *   1. PLUGIN_ROOT native env var
- *   2. Compatibility root matching explicit SO_PLATFORM
- *   3. Remaining Claude, Codex, Cursor, and Pi compatibility roots
- *   4. Walk up from import.meta.url looking for package.json whose name === "session-orchestrator"
- *   5. Walk up from process.cwd() looking for the same marker
- *   6. Scan the client plugin caches (marketplace install, no env, cwd outside
- *      any checkout — GH Kanevry/session-orchestrator#64)
+ * TIER ORDER — SINGLE SOURCE OF TRUTH (stops at first success):
+ *   1.   PLUGIN_ROOT native env var
+ *   2-5. Compatibility roots: the one matching an explicit SO_PLATFORM first,
+ *        then the rest in legacy Claude → Codex → Cursor → Pi order
+ *   6.   Walk up from import.meta.url looking for package.json whose
+ *        name === "session-orchestrator"
+ *   7.   Walk up from process.cwd() looking for the same marker
+ *   8.   Scan the client plugin caches (marketplace install, no env, cwd outside
+ *        any checkout — GH Kanevry/session-orchestrator#64)
+ *
+ * `.mcp.json`'s bash bootstrap MIRRORS this order and cites this block. It
+ * cannot reproduce tier 6 (a shell has no `import.meta.url`), so it implements:
+ * env tiers → `git rev-parse --show-toplevel` (its analogue of tier 7) →
+ * `node -e resolvePluginRoot()` (which runs THIS function, tiers 1-8) → its own
+ * cache scan, reachable only when the module is not node-resolvable at all.
+ * Before 2026-08-28 the shell scanned the caches BEFORE the node tier, so a host
+ * with both a global npm install and a marketplace cache copy had the shell
+ * pick the cache while this function picked the npm copy. When either side's
+ * order changes, change both — the shell is the mirror, this list is the
+ * original.
  *
  * Throws PluginRootResolutionError when all resolution levels fail.
- *
- * Backward compat: without native or explicit platform inputs, compatibility
- * roots retain their legacy Claude → Codex → Cursor → Pi order.
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -173,6 +182,14 @@ function _walkUp(startDir) {
  * host (`~/.cursor/plugins/cache` did not exist), and a guessed path would
  * resolve nothing while implying coverage. Add it once a real install is seen.
  *
+ * `CODEX_HOME` is TRIMMED before the emptiness test, not merely defaulted.
+ * `||` and shell `${X:-…}` both fire on unset/empty only, so a whitespace-only
+ * value passes straight through and the scan globs a nonsense base
+ * (`.claude/rules/development.md` § Env-var fallback whitespace trap).
+ * `.mcp.json`'s bash bootstrap carries the same trim for the same reason —
+ * before 2026-08-28 it used `${CODEX_HOME:-$HOME/.codex}` and diverged from here on
+ * exactly that input.
+ *
  * @returns {string[]} Absolute base directories, most-specific client first
  */
 function _pluginCacheBases() {
@@ -247,14 +264,9 @@ function _scanPluginCaches(tried) {
 /**
  * Resolve the absolute path to the session-orchestrator plugin directory.
  *
- * Fallback order:
- *   1. Trimmed native PLUGIN_ROOT when it is an existing directory
- *   2. Compatibility root matching a valid explicit SO_PLATFORM
- *   3. Remaining compatibility roots in legacy order
- *   4. Walk up from import.meta.url (the location of this file) looking for a
- *      package.json with name "session-orchestrator"
- *   5. Walk up from process.cwd() looking for the same marker
- *   6. Scan the client plugin caches for the newest installed copy
+ * Tier order is defined ONCE in this file's top docblock (§ TIER ORDER) and
+ * mirrored by `.mcp.json`'s bash bootstrap. Do not restate it here — a second
+ * copy is what let the two drift.
  *
  * @param {string} [platformHint] Optional compatibility hint for wrapper callers
  * @returns {string} Absolute path to the plugin root

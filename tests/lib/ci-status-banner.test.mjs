@@ -599,6 +599,40 @@ describe('checkCiStatus — error containment', () => {
 
     expect(result).toBeNull();
   });
+
+  // Bug this catches (TV-001): an expired `gh` auth makes `gh repo view` print
+  // an HTML login page on stdout with exit 0. The banner already survived that
+  // — measured at 30940cb, it returned null — but the warn read
+  // `Unexpected token '<', "<!DOCTYPE "... is not valid JSON`, which names
+  // NEITHER the CLI nor the request. This banner spawns four different
+  // subprocesses (git remote -v, git rev-parse, gh repo view, gh api), so that
+  // line left an operator unable to tell which one returned garbage — the same
+  // "could not read is indistinguishable from nothing to report" class as
+  // #1022. The sibling test above covers the glab path's null; this one covers
+  // the GitHub path AND the identification the warn channel owes.
+  //
+  // Goes red if `parseCliJson`'s try/catch is removed: the outer catch still
+  // returns null, so only the message discriminates.
+  it('names the failing gh command when its stdout is not JSON', async () => {
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITHUB_ORIGIN),
+      // gh with an expired session: an HTML login page, exit 0.
+      { cmd: 'gh', stdout: '<!DOCTYPE html><html><body>Sign in to GitHub</body></html>' },
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    expect(result).toBeNull();
+    expect(warnSpy.mock.calls).toHaveLength(1);
+    const [message] = warnSpy.mock.calls[0];
+    expect(message).toContain('gh repo view --json nameWithOwner');
+    expect(message).toContain('returned unparseable JSON');
+    // The payload preview is what proves WHICH garbage came back.
+    expect(message).toContain('<!DOCTYPE html>');
+  });
 });
 
 // ── Test 15: #1065 GitLab API target — no ambient project lookup ─────────────

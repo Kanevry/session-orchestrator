@@ -311,7 +311,7 @@ semgrep:
       BASE="${CI_MERGE_REQUEST_DIFF_BASE_SHA:-${CI_COMMIT_BEFORE_SHA:-}}";
       if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
         echo "[semgrep] no usable baseline ref - scanning the full tree in REPORT-ONLY mode.";
-        echo "[semgrep] This is NOT a pass: the 27 findings triaged in #1127 are expected here.";
+        echo "[semgrep] This is NOT a pass: pre-existing findings are expected here (measured 25 on 2026-08-28 @ 30940cb — re-measure before trusting this number).";
         semgrep scan --config .semgrep.yml --metrics=off scripts/ hooks/ skills/ agents/ commands/ monitors/ pi/ || true;
         echo "[semgrep] RESULT: REPORTED (exit 0). Nothing was gated - no baseline to diff against.";
       else
