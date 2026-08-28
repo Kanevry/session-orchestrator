@@ -155,7 +155,7 @@ For each planned item:
 grep -rn 'console\.log\|debugger\|TODO: remove' --include='*.ts' --include='*.tsx' src/
 ```
 
-Do NOT commit if any check fails. Fix quick issues (<2 min) inline. For longer fixes, create a `priority:high` issue.
+Do NOT commit if any check fails. Fix quick issues (<2 min) inline. For longer fixes, create a `priority::high` issue.
 
 ### Step 3: Commit and Push
 

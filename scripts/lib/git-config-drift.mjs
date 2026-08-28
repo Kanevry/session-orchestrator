@@ -55,14 +55,26 @@
  *
  * `hooks-path` is no longer in that bucket (#1158, 2026-08-28): a
  * `core.hooksPath` outside `.husky/_` is accepted when the repo DECLARES it —
- * `git ls-files -- <hooksPath>` returns at least one tracked file, the same
- * "declared beats guessed" shape `isFixtureHost` already applies to the
- * remote finding. A tracked `.githooks/pre-commit` with
- * `core.hooksPath=.githooks` is a deliberate setup, not drift, and stops
- * flagging without any config key. An untracked or out-of-repo hooksPath
- * still flags exactly as before — that is still the incident class this
- * probe exists for (a fixture that rewrote hooksPath to somewhere nothing is
- * tracked).
+ * `git ls-files -- <hooksPath>` returns at least one TRACKED file DIRECTLY
+ * under the hooksPath whose BASENAME is a real git hook name (see
+ * `GIT_HOOK_NAMES`, sourced from `git help hooks`), the same "declared beats
+ * guessed" shape `isFixtureHost` already applies to the remote finding. A
+ * tracked `.githooks/pre-commit` with `core.hooksPath=.githooks` is a
+ * deliberate setup, not drift, and stops flagging without any config key. An
+ * untracked or out-of-repo hooksPath still flags exactly as before — that is
+ * still the incident class this probe exists for (a fixture that rewrote
+ * hooksPath to somewhere nothing is tracked).
+ *
+ * **Narrowed 2026-08-28 (review, #1158/#1159 N1):** the first cut of this
+ * acceptance rule asked only "does `git ls-files` return anything at all
+ * under the hooksPath" — which accepted `core.hooksPath=scripts` the moment
+ * ANY file under `scripts/` was tracked, including an UNTRACKED executable
+ * literally named `pre-commit` planted alongside ordinary tracked source
+ * (measured exploit: `git ls-files -- scripts` returns 456 tracked files in
+ * this repo, none of them a hook, and the old check accepted it on count
+ * alone). `hooksPathIsTracked` now requires a tracked file DIRECTLY under the
+ * hooksPath whose basename git itself would invoke as a hook — a tracked
+ * directory of unrelated source no longer counts as a declaration.
  *
  * ## Fail-open is forbidden here
  *
@@ -126,7 +138,8 @@ export const DEGRADED_REASONS = Object.freeze([
  *  - `local-gpgsign`    — a local `commit.gpgsign` differing from the global.
  *  - `fixture-remote`   — a remote URL on a reserved/fixture host.
  *  - `hooks-path`       — a local `core.hooksPath` not pointing at `.husky/_`
- *    and not declared (tracked) by the repo — see `hooksPathIsTracked`.
+ *    and not DECLARED by the repo — no tracked file directly under it is a
+ *    real git hook name; see `hooksPathIsTracked` / `GIT_HOOK_NAMES`.
  *
  * @type {readonly ['ambient-git-env','local-identity','local-gpgsign','fixture-remote','hooks-path']}
  */
@@ -194,6 +207,45 @@ const FIXTURE_HOSTS = Object.freeze([
 
 /** The only `core.hooksPath` this repo expects, matched as a path tail. */
 const EXPECTED_HOOKS_PATH_TAIL = '.husky/_';
+
+/**
+ * Every hook name git itself recognizes under a `core.hooksPath` directory.
+ * Source: `git help hooks`. A tracked file below a declared hooksPath whose
+ * BASENAME is not one of these is not a hook git will ever invoke — accepting
+ * it as a "declaration" would accept an arbitrary tracked file, which is the
+ * #1158 review finding this list closes (see the module header's Narrowed
+ * note).
+ */
+const GIT_HOOK_NAMES = Object.freeze([
+  'applypatch-msg',
+  'pre-applypatch',
+  'post-applypatch',
+  'pre-commit',
+  'pre-merge-commit',
+  'prepare-commit-msg',
+  'commit-msg',
+  'post-commit',
+  'pre-rebase',
+  'post-checkout',
+  'post-merge',
+  'pre-push',
+  'pre-receive',
+  'update',
+  'proc-receive',
+  'post-receive',
+  'post-update',
+  'reference-transaction',
+  'push-to-checkout',
+  'pre-auto-gc',
+  'post-rewrite',
+  'sendemail-validate',
+  'fsmonitor-watchman',
+  'p4-changelist',
+  'p4-prepare-changelist',
+  'p4-post-changelist',
+  'p4-pre-submit',
+  'post-index-change',
+]);
 
 /**
  * Build the filtered child environment. See {@link GIT_ENV_ALLOWLIST}.
@@ -325,28 +377,50 @@ function hooksPathIsExpected(value) {
 }
 
 /**
+ * @param {string} pathspec repo-relative hooksPath (posix separators, no
+ *   trailing slash) already resolved to sit inside `repoRoot`
+ * @param {string} trackedLine one line of `git ls-files` output (repo-relative;
+ *   git prints `/`-separated paths even on Windows, but this normalizes `\`
+ *   too in case a future caller feeds it something else)
+ * @returns {boolean} true when `trackedLine` sits DIRECTLY under `pathspec`
+ *   (not in a nested subdirectory) and its basename is a recognized git hook
+ *   name — see {@link GIT_HOOK_NAMES}. A tracked file two levels deep, or a
+ *   tracked file with an unrelated name, is deliberately NOT a declaration.
+ */
+function isDeclaredHookFile(pathspec, trackedLine) {
+  const line = String(trackedLine ?? '').replace(/\\/g, '/');
+  const slash = line.lastIndexOf('/');
+  const dir = slash === -1 ? '' : line.slice(0, slash);
+  const base = slash === -1 ? line : line.slice(slash + 1);
+  return dir === pathspec && GIT_HOOK_NAMES.includes(base);
+}
+
+/**
  * @param {string} value a `core.hooksPath` value that already failed
  *   {@link hooksPathIsExpected}
  * @param {{repoRoot: string, env: Record<string,string|undefined>, timeoutMs: number, spawn: Function}} ctx
  *   the same context {@link runGitConfig} uses — same filtered env, same `-C`
  *   seam, so this query cannot be redirected any more than the config read can
- * @returns {boolean} true when the path is DECLARED by the repo — `git
- *   ls-files -- <path>` returns at least one tracked file under it. An
- *   absolute value is resolved relative to `repoRoot` first; a value outside
- *   the repo root can never be tracked and returns `false` without spawning
- *   git. Any spawn failure (missing git, timeout, non-zero exit) also
- *   returns `false` — this helper only ever WIDENS acceptance, so a query it
- *   cannot answer must fall back to "not declared", never the reverse.
+ * @returns {boolean} true when the path is DECLARED as a hook by the repo:
+ *   `git ls-files -- <path>` returns at least one TRACKED file DIRECTLY under
+ *   it whose basename is a real git hook name (#1158 review — a tracked
+ *   directory of ordinary source files is not itself a declaration; see
+ *   {@link GIT_HOOK_NAMES} / {@link isDeclaredHookFile}). An absolute value is
+ *   resolved relative to `repoRoot` first; a value outside the repo root can
+ *   never be tracked and returns `false` without spawning git. Any spawn
+ *   failure (missing git, timeout, non-zero exit) also returns `false` — this
+ *   helper only ever WIDENS acceptance, so a query it cannot answer must fall
+ *   back to "not declared", never the reverse.
  */
 function hooksPathIsTracked(value, ctx) {
   const raw = String(value ?? '').trim();
   if (raw === '') return false;
 
-  let pathspec = raw.replace(/\\/g, '/');
+  let pathspec = raw.replace(/\\/g, '/').replace(/\/+$/, '');
   if (isAbsolute(raw)) {
     const rel = relative(ctx.repoRoot, raw);
     if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return false; // outside repo root
-    pathspec = rel.replace(/\\/g, '/');
+    pathspec = rel.replace(/\\/g, '/').replace(/\/+$/, '');
   }
 
   const res = ctx.spawn('git', ['-C', ctx.repoRoot, 'ls-files', '--', pathspec], {
@@ -358,7 +432,9 @@ function hooksPathIsTracked(value, ctx) {
 
   if (res?.error || res?.signal) return false;
   if (typeof res?.status !== 'number' || res.status !== 0) return false;
-  return String(res?.stdout ?? '').trim() !== '';
+
+  const lines = String(res?.stdout ?? '').split('\n').filter((l) => l.length > 0);
+  return lines.some((line) => isDeclaredHookFile(pathspec, line));
 }
 
 /**

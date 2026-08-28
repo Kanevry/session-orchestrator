@@ -278,3 +278,73 @@ custom-phases:
     expect(JSON.parse(res.stdout).waves).toBe(5);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1097 review — the gate's three remaining branches
+// ---------------------------------------------------------------------------
+
+describe('#1097 gate — enforcement fallback, truncation tail, control characters', () => {
+  let sandbox;
+  beforeEach(() => {
+    sandbox = mkdtempSync(join(tmpdir(), 'pc-gate-'));
+    execFileSync('git', ['init', '-q'], { cwd: sandbox });
+  });
+  afterEach(() => {
+    rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  it('an out-of-vocabulary enforcement value is rejected by the parser, never read as strict', () => {
+    // The bug: `enforcement: banana` reaching the #1097 gate and being treated
+    // as an unknown-but-usable value. It never gets there — parseSessionConfig
+    // rejects the enum first — and the point of pinning that is the DIRECTION:
+    // the failure is a named parse error, not a silent downgrade and not the
+    // strict-refusal path firing on a value nobody wrote.
+    writeFileSync(
+      join(sandbox, 'CLAUDE.md'),
+      MALFORMED_BLOCK.replace('__ENFORCEMENT__', 'banana'),
+    );
+    const res = spawnParseConfig(sandbox);
+
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain("enforcement must be strict|warn|off, got 'banana'");
+    // NOT the strict-refusal message — that path must stay unreachable here.
+    expect(res.stderr).not.toContain('refusing to emit config');
+    expect(res.stdout).toBe('');
+  });
+
+  it('names at most 20 lines and counts the rest in a tail line', () => {
+    // The bug: an unbounded per-line loop before an immediate process.exit —
+    // Node's stderr is async on a pipe, so the tail is the thing that survives
+    // truncation and tells the operator the list was cut, not complete.
+    const prose = Array.from({ length: 25 }, (_, i) => `prose line number ${i + 1}`).join('\n');
+    writeFileSync(
+      join(sandbox, 'CLAUDE.md'),
+      `## Session Config\n\nenforcement: warn\nwaves: 5\n${prose}\n`,
+    );
+    const res = spawnParseConfig(sandbox);
+
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain('and 5 more unparsable line(s)');
+    expect(res.stderr).toContain('prose line number 20');
+    expect(res.stderr).not.toContain('prose line number 21');
+    // The total is reported in full even though the list is clipped.
+    expect(res.stderr).toContain('25 unparsable line(s)');
+  });
+
+  it('neutralises control characters so a reported line cannot rewrite the report', () => {
+    // The bug: the text is copied verbatim out of the file being reported as
+    // malformed, then printed after a `WARN … line N:` prefix. An ESC/CR
+    // sequence erases that prefix and rewrites the operator's terminal line —
+    // the defect report becoming the vehicle for hiding the defect.
+    writeFileSync(
+      join(sandbox, 'CLAUDE.md'),
+      '## Session Config\n\nenforcement: warn\nwaves: 5\n\x1b[2Kprose\rHIDDEN\n',
+    );
+    const res = spawnParseConfig(sandbox);
+
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain('?[2Kprose?HIDDEN');
+    expect(res.stderr).not.toContain('\x1b');
+    expect(res.stderr).not.toContain('\r');
+  });
+});

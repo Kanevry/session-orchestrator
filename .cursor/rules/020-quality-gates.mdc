@@ -69,7 +69,7 @@ grep -rn 'console\.log\|debugger\|TODO: remove' \
 **Rules**:
 - Do NOT commit if any check fails
 - Fix quick issues (<2 min) inline
-- For longer fixes: create a `priority:high` issue and exclude affected files from commit
+- For longer fixes: create a `priority::high` issue and exclude affected files from commit
 
 ## Variant 4: Per-File
 

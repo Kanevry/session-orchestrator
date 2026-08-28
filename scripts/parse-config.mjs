@@ -133,8 +133,12 @@ try {
 const unparsableLines = collectUnparsableLines(content);
 
 if (unparsableLines.length > 0) {
-  // An out-of-vocabulary enforcement value is the validator's finding to
-  // report, not this gate's to act on — fall back to the documented default.
+  // Belt-and-braces, not a live branch: `parseSessionConfig` already REFUSES
+  // an out-of-vocabulary enforcement value above (measured: `enforcement:
+  // banana` exits 1 with "must be strict|warn|off" and never reaches here), so
+  // `config.enforcement` is one of the three by the time this line runs. The
+  // fallback exists for the direction that matters if that ever loosens — an
+  // unknown value must degrade to `warn`, never arm the `strict` refusal.
   const enforcement = ENFORCEMENT_VALUES.has(config.enforcement) ? config.enforcement : 'warn';
 
   if (enforcement !== 'off') {

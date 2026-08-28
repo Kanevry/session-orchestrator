@@ -131,7 +131,8 @@ export function findSessionConfigBlock(content, { occurrence = 'first' } = {}) {
 /**
  * Extract the raw ## Session Config block lines from markdown content.
  * - CRLF-tolerant
- * - Skips code fence lines (``` alone on a line)
+ * - Skips code fence lines (``` alone or with an info string)
+ * - Skips lines inside a multi-line `<!-- … -->` block (`htmlCommentSkipper`)
  * - Strips trailing whitespace from each line
  * @param {string} content
  * @returns {string[]} lines of the Session Config block
@@ -140,6 +141,7 @@ export function _extractConfigSection(content) {
   const lines = content.split(/\r?\n/);
   const result = [];
   let inSection = false;
+  const skipHtmlComment = htmlCommentSkipper();
 
   for (const rawLine of lines) {
     const line = rawLine.replace(/\r$/, '');
@@ -152,6 +154,10 @@ export function _extractConfigSection(content) {
     if (inSection) {
       // Next ## header closes the section
       if (/^## /.test(line)) break;
+      // Commented-out config is documentation, not config (#1097 review).
+      // Shared with `collectUnparsableLines` so the two accept-sets cannot
+      // drift — see `htmlCommentSkipper`.
+      if (skipHtmlComment(line)) continue;
       // Skip code fences — opener WITH an info string included (#1097).
       // The old predicate was `line.trim() === '```'`, which skips a bare
       // fence but lets ```` ```yaml ```` through as a config line. Harmless
@@ -176,6 +182,74 @@ export function _extractConfigSection(content) {
  */
 function isCodeFence(line) {
   return /^\s*(?:```|~~~)/.test(line);
+}
+
+/**
+ * THE multi-line `<!-- … -->` state machine for the Session Config block —
+ * the one place that knows whether a line is commented-out documentation.
+ *
+ * Exported-by-use (same argument as `_matchKVLine`): `_extractConfigSection`
+ * feeds `_parseKV`, and `collectUnparsableLines` classifies — so both call this
+ * and their accept-sets are identical BY CONSTRUCTION. They were not, and the
+ * divergence ran in exactly the dangerous direction: the collector skipped
+ * commented blocks while the extractor read them, so
+ *
+ *     persistence: true
+ *     <!--
+ *     enforcement: strict
+ *     -->
+ *
+ * yielded a LIVE `enforcement: strict` (measured: `_parseKV` returned it) that
+ * `collectUnparsableLines` reported as a clean block — and `parse-config.mjs`
+ * branches its own #1097 gate on `config.enforcement`. Commenting a key out is
+ * the most ordinary way to disable it; it must not arm the strictest path.
+ *
+ * Returns a fresh closure per call — it carries per-document state, so a shared
+ * instance would leak an unterminated comment from one document into the next.
+ *
+ * Ceiling (deliberate): the opener must be at the START of a line
+ * (`/^\s*<!--/`). A comment opened mid-line (`waves: 5 <!--`) therefore does
+ * NOT swallow the following lines — which keeps every single-line trailing
+ * `<!-- … -->` on a heading or key line behaving exactly as before, the form
+ * this repo's own convention encourages. Revisit if a fleet CLAUDE.md is ever
+ * measured opening a multi-line comment after a value.
+ *
+ * @returns {(line: string) => boolean} true when the line is inside (or opens)
+ *   a multi-line HTML comment and must be ignored by both consumers.
+ */
+function htmlCommentSkipper() {
+  let inComment = false;
+  return function skipHtmlComment(line) {
+    if (inComment) {
+      if (line.includes('-->')) inComment = false;
+      return true;
+    }
+    if (/^\s*<!--/.test(line) && !line.includes('-->')) {
+      inComment = true;
+      return true;
+    }
+    return false;
+  };
+}
+
+/**
+ * Replace C0/C1 control characters with `?` before a line is handed to a
+ * reporter.
+ *
+ * `collectUnparsableLines` returns text taken verbatim from a file that is
+ * itself the thing being reported as malformed, and its only consumer prints
+ * it on stderr after a `WARN unparsable Session Config line N:` prefix. A
+ * planted `\x1b[2K…\r` erases that prefix and rewrites the operator's terminal
+ * line — the report of a defect becoming the vehicle for hiding it. Sanitising
+ * at the SOURCE (rather than at the one printer) means every future consumer
+ * inherits the safe form.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function sanitizeReportText(text) {
+  // eslint-disable-next-line no-control-regex -- the control chars ARE the target
+  return text.replace(/[\u0000-\u001F\u007F-\u009F]/g, '?');
 }
 
 /**
@@ -293,11 +367,16 @@ const COMMENT_RE = /^\s*(?:#|<!--|>)/;
  * shape a broken key can take once the six forms above are excluded.
  *
  * Line numbers are 1-based and count from the START OF THE DOCUMENT, not from
- * the block — they are for an operator opening the file at that line.
+ * the block — they are for an operator opening the file at that line. The text
+ * is run through `sanitizeReportText`, because it is quoted straight into a
+ * terminal by the one consumer that prints it.
  *
- * Additive by construction: `_extractConfigSection` and `_parseKV` are
- * untouched by this function, so every existing consumer keeps its byte-exact
- * behaviour and only callers that ASK for the report can be surprised by it.
+ * The accept-set is shared with the reader, not merely aligned with it: the
+ * `#`/`>` and blank/fence forms are literal here, and the multi-line HTML
+ * comment goes through the same `htmlCommentSkipper` call `_extractConfigSection`
+ * makes. A form the reader accepts but the classifier does not is noise; a form
+ * the READER accepts and the classifier waves through as documentation is the
+ * live-commented-out-key defect this shape exists to make unreachable.
  *
  * @param {string} content — full markdown document
  * @returns {Array<{ line: number, text: string }>} empty when the block is
@@ -309,7 +388,7 @@ export function collectUnparsableLines(content) {
   const lines = content.split(/\r?\n/);
   const unparsable = [];
   let inSection = false;
-  let inHtmlComment = false;
+  const skipHtmlComment = htmlCommentSkipper();
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].replace(/\r$/, '');
@@ -322,14 +401,9 @@ export function collectUnparsableLines(content) {
     if (/^## /.test(line)) break;
 
     // A multi-line HTML comment: everything up to `-->` is documentation.
-    if (inHtmlComment) {
-      if (line.includes('-->')) inHtmlComment = false;
-      continue;
-    }
-    if (/^\s*<!--/.test(line) && !line.includes('-->')) {
-      inHtmlComment = true;
-      continue;
-    }
+    // Same call, same order, as `_extractConfigSection` — that shared call is
+    // what makes the two accept-sets identical rather than merely similar.
+    if (skipHtmlComment(line)) continue;
 
     if (!line.trim()) continue;
     if (isCodeFence(line)) continue;
@@ -338,7 +412,7 @@ export function collectUnparsableLines(content) {
     if (NESTED_BLOCK_HEADER_RE.test(line)) continue;
     if (LIST_ITEM_RE.test(line)) continue;
 
-    unparsable.push({ line: i + 1, text: line.trim() });
+    unparsable.push({ line: i + 1, text: sanitizeReportText(line.trim()) });
   }
 
   return unparsable;

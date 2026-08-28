@@ -179,7 +179,9 @@ node "$PLUGIN_ROOT/scripts/lib/rules-sync.mjs" --repo-root "$REPO_ROOT"
 cp "$PLUGIN_ROOT/templates/_shared/loop.md" "$REPO_ROOT/.claude/loop.md"
 ```
 
-The command prints a JSON report (`written` / `skipped` / `preserved` / `errors` / `warnings`) and exits non-zero on any error. At fast tier `.orchestrator/bootstrap.lock` does not exist yet (Step 5 writes it), so archetype-scoped entries report `archetype-unknown` and are skipped — the always-on rules vendor regardless.
+The command prints a JSON report (`written` / `skipped` / `preserved` / `errors` / `warnings` / `sanitizer`) and exits non-zero on any error. At fast tier `.orchestrator/bootstrap.lock` does not exist yet (Step 5 writes it), so archetype-scoped entries report `archetype-unknown` and are skipped — the always-on rules vendor regardless.
+
+Surface `errors[]` and `sanitizer[]` to the operator. `sanitizer[]` (issue #1098) carries `{file, line, kind, text}` records for citations that read fine inside the plugin repo and dangle once vendored (`repo-local-path`, `unresolvable-see-also`); the CLI also prints each to stderr as `rules-sync: sanitizer <kind> <file>:<line> — <text>`. **Report it, do not act on it automatically** — it never rewrites content and never changes the exit code, so a human decides whether the citation is a leak.
 
 Why: PSA-003 destructive-command safeguards require every consumer repo to carry the parallel-sessions rule. See issue #155. The `loop.md` vendor gives bare `/loop` a repo-aware maintenance prompt (issue #633 Hebel 3).
 

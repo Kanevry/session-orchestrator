@@ -353,19 +353,35 @@ describe('the built-in registry', () => {
     expect(missing).toEqual([]);
   });
 
-  // BUG (#1159 wiring): vault-staleness-banner now returns a third shape,
-  // `{severity:'info', kind:'probe-stale'}`, when its last record is older than
-  // MAX_RECORD_AGE_DAYS. The default severityOf maps everything except warn/alert
-  // to 'ok' and defaultRender drops 'ok' — so the "probe has not run for N days"
-  // banner would be built and never rendered. Only a registry-level mapping test
-  // catches that: the banner module's own tests cannot see the consumer.
-  it('renders the vault-staleness probe-stale shape instead of swallowing it', () => {
-    const probe = PROBES.find((p) => p.id === 'vault-staleness');
-    expect(typeof probe.severityOf).toBe('function');
-    expect(probe.severityOf({ severity: 'info', kind: 'probe-stale', message: 'x' })).toBe('warn');
-    expect(probe.severityOf({ severity: 'alert', message: 'x' })).toBe('alert');
-    expect(probe.severityOf({ severity: 'warn', message: 'x' })).toBe('warn');
-    expect(probe.severityOf(null)).toBe('ok');
+  // BUG (#1159 wiring; contract changed by the #1158/#1159 review's N3
+  // single-vocabulary fix): vault-staleness-banner USED TO return a third
+  // shape, `{severity:'info', kind:'probe-stale'}`, that the registry had to
+  // remap to `'warn'` by hand — the default severityOf() maps everything but
+  // warn/alert to 'ok', so without the remap the "probe has not run for N
+  // days" banner would build and never render. The banner module now returns
+  // `severity: 'warn'` directly for that shape (kind still carries the
+  // demotion meaning), so the registry entry carries NO custom severityOf —
+  // this test asserts that AND exercises the real runner against the exact
+  // shape checkVaultStaleness now produces, so a regression back to a
+  // distinct 'info' value (which the default WOULD remap to 'ok', silent) is
+  // caught here rather than only inside the banner module's own tests, which
+  // cannot see the consumer.
+  it('has no custom severityOf for vault-staleness, and the default renders its probe-stale shape', async () => {
+    const registryProbe = PROBES.find((p) => p.id === 'vault-staleness');
+    expect(registryProbe.severityOf).toBeUndefined();
+
+    const dir = await mkTmp();
+    const { emit } = captureEmit();
+    const fake = await fakeProbe(
+      dir,
+      'vault-staleness',
+      `export function probe() { return { severity: 'warn', kind: 'probe-stale', message: 'probe has not run for 47 days' }; }`,
+    );
+
+    const out = await runSessionStartProbes({ repoRoot: dir }, { probes: [fake], emit });
+
+    expect(out.results[0]).toMatchObject({ id: 'vault-staleness', outcome: 'ran-warn' });
+    expect(out.bannerLines).toContain('probe has not run for 47 days');
   });
 
   it('has a unique id per entry and a sane default budget', () => {

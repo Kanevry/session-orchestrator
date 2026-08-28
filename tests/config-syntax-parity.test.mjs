@@ -74,3 +74,32 @@ describe('#1097 — the four Session Config syntax forms normalize identically',
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1097 review — a commented-out key is not live config
+// ---------------------------------------------------------------------------
+
+describe('#1097 review — commented-out keys reach neither the config nor the report', () => {
+  const FIXTURE = 'html-comment';
+
+  it('ignores keys inside a multi-line <!-- … --> block', () => {
+    // The bug: `_extractConfigSection` read the commented lines while
+    // `collectUnparsableLines` skipped them, so the fixture's commented
+    // `enforcement: strict` / `waves: 99` won LAST-MATCH over the live values
+    // above them — and the block still reported clean. Commenting a key out is
+    // the ordinary way to disable it; it must never arm the strictest path.
+    const config = parseSessionConfig(fixtureText(FIXTURE), HERMETIC);
+    expect(config.enforcement).toBe('warn');
+    expect(config.waves).toBe(5);
+    // Live keys around the comment are unaffected.
+    expect(config.vcs).toBe('gitlab');
+    expect(config['test-command']).toBe('npm test');
+  });
+
+  it('reports no unparsable line for the same fixture', () => {
+    // Silence here is only honest because the commented keys are genuinely
+    // gone from the KV map — the assertion above is what makes this one mean
+    // "agreed", rather than "both blind".
+    expect(collectUnparsableLines(fixtureText(FIXTURE))).toEqual([]);
+  });
+});

@@ -6,10 +6,16 @@
  * Preserves local rules (files without the plugin source header).
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateRuleContent } from './validate-vendored-rules.mjs';
+import { validateRuleContent, scanVendoringLeaks } from './validate-vendored-rules.mjs';
+
+// The vendoring sanitizer (issue #1098) lives in validate-vendored-rules.mjs —
+// it has that module's shape ("judge one rule file → findings") and its
+// standalone CLI needs it too. Re-exported here so importers that predate the
+// move (and this file's own tests) keep resolving it from rules-sync.mjs.
+export { scanVendoringLeaks };
 
 // Exported (issue #722 Epic A Wave 2) for external consumers (e.g. tests).
 // NOT imported by validate-vendored-rules.mjs — that module imports
@@ -156,141 +162,6 @@ function resolveArchetype(repoRoot, explicitArchetype) {
  */
 function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/**
- * Path roots that exist in THIS plugin repo but are not part of what a
- * consumer repo receives. A rule that cites `scripts/lib/foo.mjs` reads fine
- * here and dangles the moment the file is vendored.
- *
- * Deliberately a small, named list rather than "every top-level directory":
- * the detector below additionally requires the cited path to resolve to a real
- * FILE inside pluginRoot, which is what separates a plugin-internal citation
- * from a consumer-repo path that merely shares a prefix (`docs/api.md`,
- * `tests/` as a generic directory reference, `scripts/smoke-test.ts` in a code
- * sample). Revisit if the plugin grows another top-level source directory that
- * rules cite.
- */
-const REPO_LOCAL_PATH_ROOTS = ['scripts', 'hooks', 'skills', 'docs', 'tests'];
-
-// Leading boundary excludes `react-hooks/exhaustive-deps` and
-// `templates/shared/hooks/x.sh` — a root only counts at a token boundary.
-const REPO_LOCAL_PATH_RE = new RegExp(
-  `(?<![\\w./-])((?:${REPO_LOCAL_PATH_ROOTS.join('|')})/[\\w./-]*\\w)`,
-  'g',
-);
-
-const MD_REFERENCE_RE = /[\w][\w.-]*\.md/g;
-
-/**
- * `*.md` names a `## See Also` section may legitimately cite even though
- * `rules/_index.md` does not register them: they are project-root instruction
- * files every consumer repo has, not rules that travel through the sync.
- */
-const NON_RULE_MD_REFERENCES = new Set(['CLAUDE.md', 'AGENTS.md', 'README.md']);
-
-/**
- * 1-based line number of `index` within `content`.
- * @param {string} content
- * @param {number} index
- * @returns {number}
- */
-function lineOf(content, index) {
-  return content.slice(0, index).split('\n').length;
-}
-
-/**
- * Extracts the body of the trailing `## See Also` section, with the offset at
- * which it starts. Returns null when the file has no such section.
- * @param {string} content
- * @returns {{ body: string, offset: number } | null}
- */
-function extractSeeAlso(content) {
-  const m = /^##\s+See Also\s*$/m.exec(content);
-  if (!m) return null;
-  const start = m.index + m[0].length;
-  const next = /^##\s+/m.exec(content.slice(start));
-  const end = next !== null ? start + next.index : content.length;
-  return { body: content.slice(start, end), offset: start };
-}
-
-/**
- * Report-only vendoring sanitizer (issue #1098).
- *
- * Scans one rule file for the two ways a rule that reads correctly INSIDE this
- * plugin repo breaks once it is vendored into a consumer repo:
- *
- *   - `repo-local-path` — a `scripts/…`, `hooks/…`, `skills/…`, `docs/…` or
- *     `tests/…` citation that resolves to a real file under `pluginRoot`. The
- *     consumer has no such file, so the citation dangles.
- *   - `unresolvable-see-also` — a `## See Also` entry naming a `*.md` rule that
- *     `rules/_index.md` does not register, so it is never vendored alongside.
- *
- * **This function never rewrites content.** Silent stripping would change the
- * meaning of a rule at vendoring time, invisibly to both the author and the
- * consumer; the finding is reported and a human decides. `@your-org/*`
- * placeholders are deliberately NOT flagged — they are the documented
- * placeholder convention for consumer-supplied package scopes, not a leak.
- *
- * @param {object} opts
- * @param {string} opts.content - raw rule file content (never modified)
- * @param {string} opts.relPath - manifest-relative path, used as `file`
- * @param {string} opts.pluginRoot - repo root the repo-local check resolves against
- * @param {Set<string>|null} [opts.manifestBasenames] - basenames registered in
- *   `rules/_index.md`; when null the `unresolvable-see-also` check is skipped
- * @returns {Array<{file: string, line: number, kind: 'repo-local-path'|'unresolvable-see-also', text: string}>}
- */
-export function scanVendoringLeaks({ content, relPath, pluginRoot, manifestBasenames = null }) {
-  const findings = [];
-
-  REPO_LOCAL_PATH_RE.lastIndex = 0;
-  const seenPaths = new Set();
-  let m;
-  while ((m = REPO_LOCAL_PATH_RE.exec(content)) !== null) {
-    const token = m[1];
-    if (seenPaths.has(token)) continue;
-    let isFile;
-    try {
-      const abs = join(pluginRoot, token);
-      isFile = existsSync(abs) && statSync(abs).isFile();
-    } catch {
-      isFile = false;
-    }
-    if (!isFile) continue;
-    seenPaths.add(token);
-    findings.push({
-      file: relPath,
-      line: lineOf(content, m.index),
-      kind: 'repo-local-path',
-      text: token,
-    });
-  }
-
-  if (manifestBasenames) {
-    const seeAlso = extractSeeAlso(content);
-    if (seeAlso) {
-      const ownBasename = basename(relPath);
-      const seenRefs = new Set();
-      MD_REFERENCE_RE.lastIndex = 0;
-      let r;
-      while ((r = MD_REFERENCE_RE.exec(seeAlso.body)) !== null) {
-        const ref = r[0];
-        const refBase = basename(ref);
-        if (refBase === ownBasename || seenRefs.has(refBase)) continue;
-        if (NON_RULE_MD_REFERENCES.has(refBase)) continue;
-        if (manifestBasenames.has(refBase)) continue;
-        seenRefs.add(refBase);
-        findings.push({
-          file: relPath,
-          line: lineOf(content, seeAlso.offset + r.index),
-          kind: 'unresolvable-see-also',
-          text: ref,
-        });
-      }
-    }
-  }
-
-  return findings;
 }
 
 /**
@@ -596,6 +467,13 @@ if (isMain) {
   const result = syncRules({ pluginRoot, repoRoot, dryRun, archetype, categories });
 
   process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+
+  // Vendoring sanitizer (issue #1098) — surfaced on stderr so the operator sees
+  // it without parsing the JSON envelope. Report-only by construction: it never
+  // enters errors[] and never changes the exit code below.
+  for (const f of result.sanitizer) {
+    process.stderr.write(`rules-sync: sanitizer ${f.kind} ${f.file}:${f.line} — ${f.text}\n`);
+  }
 
   if (result.errors.length > 0) {
     process.exit(1);

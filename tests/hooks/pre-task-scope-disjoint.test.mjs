@@ -186,6 +186,14 @@ describe('pre-task-scope-disjoint — the case the hook exists for', () => {
 
     const denied = dispatch(dir, 'Agent B', ['scripts/foo.mjs']);
     expectDeny(denied, ['Agent B', 'Agent A', 'scripts/foo.mjs', 'concrete']);
+
+    // Bug caught: the deny branch's `ledger_result` literal is asserted
+    // nowhere else — only 'allow' and 'no-scope' are pinned (see the #1092
+    // event tests below). A typo'd literal here would ship unnoticed,
+    // reproducing the unfalsifiable-which-agent defect this event exists to
+    // close, one layer up.
+    const events = scopeEvents(dir);
+    expect(events[events.length - 1].ledger_result).toBe('deny');
   });
 
   it('DENIES a glob that collides with a sibling concrete path (string-disjoint, expansion-equal)', () => {
@@ -291,6 +299,13 @@ describe('pre-task-scope-disjoint — degradation matrix', () => {
     const dir = makeProjectDir();
     writeFileSync(path.join(dir, LEDGER_REL), '{ this is not json');
     expectWarn(dispatch(dir, 'Agent A', ['scripts/foo.mjs']), ['ledger was unreadable', 'reset']);
+
+    // Bug caught: the corrupt-ledger warn's `ledger_result` literal is
+    // unverified elsewhere — a typo would misreport a bookkeeping fault as a
+    // clean 'allow' in the ledger telemetry, hiding exactly the outage this
+    // warn exists to surface.
+    const events = scopeEvents(dir);
+    expect(events[events.length - 1].ledger_result).toBe('warn-ledger-corrupt');
   });
 
   it('SELF-HEALS the corrupt ledger, so the wave is checked again from the next dispatch', () => {
@@ -369,6 +384,13 @@ describe('pre-task-scope-disjoint — liveness: a FINISHED agent no longer binds
 
     expectAllow(dispatch(dir, 'L2 extract redactSpans primitive', ['scripts/lib/redact.mjs'], { transcriptPath }));
     expectAllow(dispatch(dir, 'Fix CP11 standalone-vendoring break', ['scripts/lib/redact.mjs'], { transcriptPath }));
+
+    // Bug caught: the allow-finished branch's `ledger_result` literal is
+    // unverified elsewhere — a typo would collapse this liveness-repair path
+    // into an indistinguishable plain 'allow' in the ledger telemetry, losing
+    // the one signal that tells the two apart after the fact.
+    const events = scopeEvents(dir);
+    expect(events[events.length - 1].ledger_result).toBe('allow-finished');
   });
 
   it('ALLOWS the repair pass for an ASYNC agent whose task-notification says completed', () => {
@@ -862,6 +884,51 @@ describe('pre-task-scope-disjoint — scope signal shapes and counters (#1092)',
     // as this wave's.
     expect(bumpSignalCounter({ waveKey: 'w2', scopeSignals: second }, 'w3', 'extracted'))
       .toEqual({ 'marker-absent': 0, unparseable: 0, extracted: 1 });
+  });
+
+  it('marks ledger_result as warn-not-evaluable when the collision library throws (matrix row 9)', async () => {
+    // Bug caught: 4 of 6 `ledger_result` literals ('allow'/'no-scope' are
+    // pinned by the tests below) were never asserted anywhere — a typo'd
+    // literal on THIS branch would silently misreport an UNVERIFIED
+    // disjointness check as a clean decision in the ledger telemetry, exactly
+    // the "assertion without evidence" matrix row 9 exists to avoid trusting.
+    const { decide } = await load();
+    const verdict = decide({
+      input: { tool_name: 'Agent', tool_input: { description: 'A', prompt: '## FILE-SCOPE\n```\nscripts/a.mjs\n```\n' } },
+      ledger: null,
+      ledgerCorrupt: false,
+      waveKey: 's1|w2|k',
+      knownFiles: [],
+      collide: () => { throw new Error('scope-gate blew up'); },
+      nowIso: '2026-08-26T00:00:00.000Z',
+    });
+
+    expect(verdict.action).toBe('warn');
+    expect(verdict.telemetry.ledger_result).toBe('warn-not-evaluable');
+  });
+
+  it('clamps agent_id to 120 chars in the telemetry payload for a long dispatch description', async () => {
+    // Bug caught: MAX_AGENT_ID_CHARS (120) truncation (`id.slice(0,
+    // MAX_AGENT_ID_CHARS)`) is applied to every telemetry record but never
+    // exercised — a dropped `.slice()` call or an off-by-one bound would let
+    // an oversized agent_id back into the stdout-clamped event payload
+    // unnoticed (§ stdout discipline).
+    const { decide } = await load();
+    const longDesc = 'A'.repeat(300);
+    const verdict = decide({
+      input: {
+        tool_name: 'Agent',
+        tool_input: { description: longDesc, subagent_type: 'code-implementer', prompt: 'no scope in this prompt' },
+      },
+      ledger: null,
+      ledgerCorrupt: false,
+      waveKey: 's1|w2|k',
+      knownFiles: [],
+      collide: () => ({ ok: true, collisions: [], duplicateIds: [] }),
+      nowIso: '2026-08-26T00:00:00.000Z',
+    });
+
+    expect(verdict.telemetry.agent_id.length).toBe(120);
   });
 });
 // ---------------------------------------------------------------------------

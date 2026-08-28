@@ -509,3 +509,100 @@ describe('rules/_index.md census — every registered rule is vendorable', () =>
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Vendoring sanitizer via the standalone CLI (#1098 review — module placement)
+//
+// scanVendoringLeaks() has this module's exact shape ("judge one rule file →
+// findings"), but it lived in rules-sync.mjs, where only a full sync could
+// reach it: the standalone validator could not report a vendoring leak at all,
+// although docs/rule-authoring.md describes the two beside each other.
+// ---------------------------------------------------------------------------
+
+/**
+ * A plugin root whose `rules/always-on/` holds one rule (body supplied by the
+ * caller), a registered sibling, and a real `scripts/lib/helper.mjs` for the
+ * repo-local probe to resolve against.
+ */
+function sanitizerFixture(body) {
+  const root = tmp();
+  mkdirSync(join(root, 'rules', 'always-on'), { recursive: true });
+  mkdirSync(join(root, 'scripts', 'lib'), { recursive: true });
+  writeFileSync(join(root, 'scripts', 'lib', 'helper.mjs'), 'export const x = 1;\n');
+  writeFileSync(
+    join(root, 'rules', '_index.md'),
+    [
+      '# Rules Library — Canonical Index',
+      '',
+      '## always-on (vendored to every consumer repo)',
+      '',
+      '- `always-on/sample.md` — the rule under test',
+      '- `always-on/sibling.md` — a registered sibling',
+      '',
+    ].join('\n'),
+  );
+  const header = (n) => `<!-- source: session-orchestrator plugin (canonical: rules/always-on/${n}) -->\n`;
+  writeFileSync(join(root, 'rules', 'always-on', 'sample.md'), header('sample.md') + body);
+  writeFileSync(join(root, 'rules', 'always-on', 'sibling.md'), header('sibling.md') + '# Sibling\n');
+  return root;
+}
+
+describe('validate-vendored-rules CLI — --plugin-root enables the vendoring sanitizer', () => {
+  const LEAKY_BODY = [
+    '# Sample Rule',
+    '',
+    'See `scripts/lib/helper.mjs` for the implementation.',
+    '',
+    '## See Also',
+    '',
+    'sibling.md · never-vendored.md',
+    '',
+  ].join('\n');
+
+  it('reports findings under a `sanitizer` key in --json mode', () => {
+    const root = sanitizerFixture(LEAKY_BODY);
+    const { stdout, status } = runCLI([
+      '--dir', join(root, 'rules', 'always-on'),
+      '--plugin-root', root,
+      '--json',
+    ]);
+    const parsed = JSON.parse(stdout);
+
+    expect(parsed.sanitizer).toEqual([
+      { file: 'sample.md', line: 4, kind: 'repo-local-path', text: 'scripts/lib/helper.mjs' },
+      { file: 'sample.md', line: 8, kind: 'unresolvable-see-also', text: 'never-vendored.md' },
+    ]);
+    // Report-only: `sibling.md` is registered so it is not a finding, and the
+    // sanitizer moves neither the violation counts nor the exit code.
+    expect(parsed.errorCount).toBe(0);
+    expect(status).toBe(0);
+  });
+
+  it('prints findings as stderr lines in non-JSON mode, exit code unchanged', () => {
+    const root = sanitizerFixture(LEAKY_BODY);
+    const { stderr, status } = runCLI([
+      '--dir', join(root, 'rules', 'always-on'),
+      '--plugin-root', root,
+    ]);
+
+    expect(stderr).toContain(
+      'validate-vendored-rules: sanitizer repo-local-path sample.md:4 — scripts/lib/helper.mjs',
+    );
+    expect(stderr).toContain(
+      'validate-vendored-rules: sanitizer unresolvable-see-also sample.md:8 — never-vendored.md',
+    );
+    expect(status).toBe(0);
+  });
+
+  it('omits the scan entirely without --plugin-root (opt-in, no behaviour change)', () => {
+    const root = sanitizerFixture(LEAKY_BODY);
+    const { stdout, stderr, status } = runCLI([
+      '--dir', join(root, 'rules', 'always-on'),
+      '--json',
+    ]);
+
+    expect(JSON.parse(stdout).sanitizer).toEqual([]);
+    expect(stderr).not.toContain('sanitizer');
+    expect(status).toBe(0);
+  });
+});

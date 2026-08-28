@@ -247,3 +247,54 @@ describe('_extractConfigSection code-fence tolerance (#1097)', () => {
     expect(lines).toContain('persistence: true');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1097 review: the reader and the classifier share ONE accept-set
+// ---------------------------------------------------------------------------
+
+describe('multi-line HTML comments are documentation on BOTH sides', () => {
+  const COMMENTED = [
+    '## Session Config',
+    '',
+    'persistence: true',
+    '<!--',
+    'enforcement: strict',
+    '-->',
+    '',
+    '```yaml',
+    'vcs: github',
+    '```',
+    '',
+    '## Next',
+  ].join('\n');
+
+  it('does not read a commented-out key as live config', () => {
+    // The bug: `enforcement: strict` inside <!-- --> reached _parseKV as a LIVE
+    // value (measured) while collectUnparsableLines called the same block
+    // clean — and parse-config.mjs branches its own #1097 gate on
+    // config.enforcement, so a commented-out key armed the strictest path.
+    const kv = _parseKV(_extractConfigSection(COMMENTED));
+    expect(kv.has('enforcement')).toBe(false);
+    expect(kv.get('persistence')).toBe('true');
+    expect(kv.get('vcs')).toBe('github');
+  });
+
+  it('reports no unparsable line for that same block', () => {
+    // The other half of the divergence: whatever the reader ignores, the
+    // classifier must ignore too — silence here is only correct because the
+    // key above is genuinely gone, not merely unread.
+    expect(collectUnparsableLines(COMMENTED)).toEqual([]);
+  });
+
+  it('leaves a single-line trailing <!-- … --> on a key line untouched', () => {
+    // This repo's own convention decorates headings and keys with
+    // `<!-- consistency:exempt:… -->`. The multi-line skip anchors its opener
+    // at line start precisely so it cannot swallow the rest of such a block.
+    const doc =
+      '## Session Config\n\npersistence: true <!-- consistency:exempt:x -->\nwaves: 5\n';
+    const kv = _parseKV(_extractConfigSection(doc));
+    expect(kv.get('persistence')).toBe('true <!-- consistency:exempt:x -->');
+    expect(kv.get('waves')).toBe('5');
+    expect(collectUnparsableLines(doc)).toEqual([]);
+  });
+});

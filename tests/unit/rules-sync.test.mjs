@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, statSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, statSync, existsSync, copyFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -957,5 +957,160 @@ describe('syncRules — the always-on library vendors clean (issue #1098 AC)', (
     expect(result.errors).toEqual([]);
     expect(result.sanitizer).toEqual([]);
     expect(result.written.sort()).toEqual(liveAlwaysOnBasenames().sort());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Review fixpass (#1098 W4) — the sanitizer had to REACH an operator, and the
+// path-existence probe had to stay inside the plugin root.
+// ---------------------------------------------------------------------------
+
+/**
+ * Copies the three modules the rules-sync CLI loads into `<dir>/scripts/lib/`,
+ * so a spawned CLI resolves its pluginRoot to `dir` (it derives it from the
+ * script's own location) and the sanitizer scans a FIXTURE corpus rather than
+ * the live one. Only these three: they import nothing outside `scripts/lib/`.
+ */
+function makeSpawnablePluginRoot(dir) {
+  const libDir = join(dir, 'scripts', 'lib');
+  mkdirSync(libDir, { recursive: true });
+  for (const name of ['rules-sync.mjs', 'validate-vendored-rules.mjs', 'rule-loader.mjs']) {
+    copyFileSync(fileURLToPath(new URL(`../../scripts/lib/${name}`, import.meta.url)), join(libDir, name));
+  }
+  // realpathSync: on macOS `mkdtemp` hands back /var/... while the child's
+  // own `import.meta.url` resolves to /private/var/..., and rules-sync's
+  // isMain check compares the two. Without this the CLI silently no-ops.
+  return realpathSync(join(libDir, 'rules-sync.mjs'));
+}
+
+describe('rules-sync CLI — sanitizer findings reach the operator on stderr (#1098 review)', () => {
+  it('prints one stderr line per finding and leaves the exit code at 0', () => {
+    // Before this fix the sanitizer was built, returned in the JSON envelope,
+    // and read by nobody: no stderr line, no exit-code contribution, and both
+    // bootstrap templates still told the coordinator to surface a 5-key
+    // envelope. A silent report is indistinguishable from no report.
+    const pluginRoot = tmp();
+    const repoRoot = tmp();
+    const script = makeSpawnablePluginRoot(pluginRoot);
+    mkdirSync(join(pluginRoot, 'rules', 'always-on'), { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'rules', '_index.md'),
+      '# Index\n\n## always-on (vendored)\n\n- `always-on/sample.md` — under test\n',
+    );
+    writeFileSync(
+      join(pluginRoot, 'rules', 'always-on', 'sample.md'),
+      [
+        '<!-- source: session-orchestrator plugin (canonical: rules/always-on/sample.md) -->',
+        '# Sample Rule',
+        '',
+        'See `scripts/lib/rule-loader.mjs` for the loader.',
+        '',
+        '## See Also',
+        '',
+        'never-vendored.md',
+        '',
+      ].join('\n'),
+    );
+
+    const result = spawnSync(process.execPath, [script, '--repo-root', repoRoot], {
+      encoding: 'utf8',
+      timeout: 20000,
+    });
+    if (result.error) throw result.error;
+
+    expect(result.stderr).toContain(
+      'rules-sync: sanitizer repo-local-path rules/always-on/sample.md:4 — scripts/lib/rule-loader.mjs',
+    );
+    expect(result.stderr).toContain(
+      'rules-sync: sanitizer unresolvable-see-also rules/always-on/sample.md:8 — never-vendored.md',
+    );
+    // Report-only: the file was written and the exit code is untouched.
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).written).toContain('sample.md');
+  });
+});
+
+describe('syncRules — See-Also resolvability is judged against the FULL manifest (#1098 review)', () => {
+  it('does not flag a cross-category sibling when --categories narrows the sync', () => {
+    // The code comment says the manifest set must come from the full _index.md
+    // rather than `selectedCategories`; nothing measured it. Narrowing to
+    // opt-in-stack must NOT turn an always-on sibling into a phantom leak —
+    // that sibling vendors on every consumer repo, it is simply not part of
+    // THIS run's selection.
+    const pluginRoot = tmp();
+    const repoRoot = tmp();
+    mkdirSync(join(pluginRoot, 'rules', 'always-on'), { recursive: true });
+    mkdirSync(join(pluginRoot, 'rules', 'opt-in-stack'), { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'rules', '_index.md'),
+      [
+        '# Rules Library — Canonical Index',
+        '',
+        '## always-on (vendored to every consumer repo)',
+        '',
+        '- `always-on/sibling.md` — the cross-category citation target',
+        '',
+        '## opt-in-stack (vendored on request)',
+        '',
+        '- `opt-in-stack/backend.md` — the rule under test',
+        '',
+      ].join('\n'),
+    );
+    const header = '<!-- source: session-orchestrator plugin (canonical: rules/%s) -->\n';
+    writeFileSync(
+      join(pluginRoot, 'rules', 'always-on', 'sibling.md'),
+      header.replace('%s', 'always-on/sibling.md') + '# Sibling\n\nContent.\n',
+    );
+    writeFileSync(
+      join(pluginRoot, 'rules', 'opt-in-stack', 'backend.md'),
+      header.replace('%s', 'opt-in-stack/backend.md') +
+        '# Backend\n\nContent.\n\n## See Also\n\nsibling.md\n',
+    );
+
+    const result = syncRules({ pluginRoot, repoRoot, categories: ['opt-in-stack'] });
+
+    expect(result.errors).toEqual([]);
+    expect(result.written).toEqual(['backend.md']);
+    expect(result.sanitizer).toEqual([]);
+  });
+});
+
+describe('scanVendoringLeaks — the existence probe stays inside pluginRoot (#1098 review)', () => {
+  it('never stats a `..` traversal token, so a file outside the root is not a finding', () => {
+    // REPO_LOCAL_PATH_RE's character class admits `..`, so a rule citing
+    // `scripts/../../secret.txt` previously resolved OUTSIDE pluginRoot,
+    // passed existsSync + isFile(), and was reported as a vendoring leak —
+    // a rule file deciding which host paths get stat'd.
+    const outside = tmp();
+    const pluginRoot = join(outside, 'plugin');
+    mkdirSync(pluginRoot, { recursive: true });
+    writeFileSync(join(outside, 'secret.txt'), 'not yours to stat\n');
+
+    const findings = scanVendoringLeaks({
+      content: 'Cited: `scripts/../../secret.txt` — outside the plugin root.\n',
+      relPath: 'rules/always-on/sample.md',
+      pluginRoot,
+      manifestBasenames: null,
+    });
+
+    expect(findings).toEqual([]);
+  });
+
+  it('still reports an in-root citation reached through a `..` segment', () => {
+    // Containment must reject escapes, not every `..`: a token that dips out
+    // and back in still resolves inside the root and is still a real leak.
+    const pluginRoot = tmp();
+    mkdirSync(join(pluginRoot, 'scripts', 'lib'), { recursive: true });
+    mkdirSync(join(pluginRoot, 'docs'), { recursive: true });
+    writeFileSync(join(pluginRoot, 'docs', 'guide.md'), '# Guide\n');
+
+    const findings = scanVendoringLeaks({
+      content: 'Cited: `scripts/lib/../../docs/guide.md`.\n',
+      relPath: 'rules/always-on/sample.md',
+      pluginRoot,
+      manifestBasenames: null,
+    });
+
+    expect(findings.map((f) => f.kind)).toEqual(['repo-local-path']);
   });
 });

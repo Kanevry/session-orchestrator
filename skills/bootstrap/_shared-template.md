@@ -28,7 +28,9 @@ node "$PLUGIN_ROOT/scripts/lib/rules-sync.mjs" --repo-root "$REPO_ROOT"
 cp "$PLUGIN_ROOT/templates/_shared/loop.md" "$REPO_ROOT/.claude/loop.md"
 ```
 
-The command prints a JSON report (`written` / `skipped` / `preserved` / `errors` / `warnings`) and exits non-zero on any error. Surface `errors[]` to the operator; a non-empty `preserved[]` is normal and means a repo-private rule was left alone.
+The command prints a JSON report (`written` / `skipped` / `preserved` / `errors` / `warnings` / `sanitizer`) and exits non-zero on any error. Surface `errors[]` to the operator; a non-empty `preserved[]` is normal and means a repo-private rule was left alone.
+
+Also surface `sanitizer[]` (issue #1098) — `{file, line, kind, text}` records for citations that read fine inside the plugin repo and dangle once vendored (`repo-local-path`, `unresolvable-see-also`). The CLI additionally prints each one to stderr as `rules-sync: sanitizer <kind> <file>:<line> — <text>`. **Report it to the operator; do not act on it automatically** — the sanitizer never rewrites content and never changes the exit code, because silently stripping a citation would change a rule's meaning at vendoring time. A human decides whether the citation is a leak.
 
 Archetype-scoped entries in `rules/_index.md` resolve from `.orchestrator/bootstrap.lock`, which does not exist yet at this step — they report `archetype-unknown` and are skipped. The always-on rules (including `parallel-sessions.md`) are universal and vendor regardless. Re-run `/bootstrap --sync-rules` after the lock is written to pick up the archetype-scoped ones.
 

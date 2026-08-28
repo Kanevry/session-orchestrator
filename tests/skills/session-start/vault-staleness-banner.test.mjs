@@ -11,10 +11,13 @@
  *     defaults to `Date.now()`) is the clock seam for the record-age gate.
  *   - Returns null on: missing file, empty file, malformed last line, missing
  *     `findings` array, stale_count <= 0.
- *   - Returns {severity: 'info', kind: 'probe-stale', message, ageDays,
+ *   - Returns {severity: 'warn', kind: 'probe-stale', message, ageDays,
  *     timestamp} when stale_count > 0 AND record.timestamp is a parseable
  *     date older than MAX_RECORD_AGE_DAYS (7) relative to `now` — the probe
  *     has not run since, so the recorded findings are not current (#1159).
+ *     `severity` stays 'warn' (not a distinct 'info' value) so a consumer
+ *     reading only `severity` still renders it; `kind` carries the demotion
+ *     meaning (N3, #1158/#1159 review — one vocabulary, not two).
  *   - Otherwise returns {severity, message, staleCount, maxDeltaHours,
  *     timestamp} when stale_count > 0. Severity is 'warn' when max
  *     delta_hours <= 48, 'alert' when max delta_hours > 48. A missing or
@@ -234,10 +237,13 @@ describe('checkVaultStaleness — banner classification (#319)', () => {
 // ---------------------------------------------------------------------------
 
 describe('checkVaultStaleness — record-age gate (#1159)', () => {
-  it('returns kind: "probe-stale" (not "warn") when the last record is 47 days old', () => {
+  it('returns kind: "probe-stale" with severity "warn" (single-vocabulary N3) when the last record is 47 days old', () => {
     // Bug this catches: pre-#1159, a stale record's age was never checked —
     // a 47-day-old probe run with stale_count=14 was re-reported as a
-    // CURRENT "warn"/"alert" finding on every session start.
+    // CURRENT "warn"/"alert" finding on every session start. Post-#1159/N3,
+    // `severity` stays 'warn' (not a distinct 'info' value the registry had
+    // to remap by hand) — `kind: 'probe-stale'` is what carries the
+    // demotion, so a consumer reading only `severity` still renders it.
     const repo = makeRepo();
     const rec = record({
       timestamp: '2026-01-01T00:00:00Z',
@@ -249,7 +255,7 @@ describe('checkVaultStaleness — record-age gate (#1159)', () => {
     const now = Date.parse(rec.timestamp) + 47 * MS_PER_DAY;
     const result = checkVaultStaleness({ repoRoot: repo, now });
     expect(result).not.toBeNull();
-    expect(result.severity).toBe('info');
+    expect(result.severity).toBe('warn');
     expect(result.kind).toBe('probe-stale');
     expect(result.ageDays).toBe(47);
     expect(result.timestamp).toBe('2026-01-01T00:00:00Z');

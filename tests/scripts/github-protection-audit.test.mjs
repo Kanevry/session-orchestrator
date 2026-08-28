@@ -156,6 +156,61 @@ describe('auditGithubBranchProtection — the #1079 live scenario', () => {
   });
 });
 
+describe('auditGithubBranchProtection — no-required-status-checks, asserted PRESENT', () => {
+  it('fires no-required-status-checks when the protection response omits required_status_checks entirely', async () => {
+    // Bug caught: the #1079 live-scenario test above asserts this finding is
+    // ABSENT when checks ARE configured (`.not.toContain`) — but nothing
+    // asserted the POSITIVE case, so an inverted `.length === 0` (or the
+    // branch simply deleted) would ship silently: the finding would never
+    // fire for ANY repo, and the whole audit would go quietly blind to the
+    // one gap GitLab #1079 names ("a push can land with a red or absent CI
+    // run").
+    const noStatusChecksStdout = JSON.stringify({
+      enforce_admins: { enabled: true },
+      allow_force_pushes: { enabled: false },
+    });
+    const execFile = makeGhRouter({
+      repoView: async () => ({ stdout: REPO_VIEW_STDOUT, stderr: '' }),
+      authStatus: async () => ({ stdout: "github.com\n  - Token scopes: 'gist'\n", stderr: '' }),
+      protection: async () => ({ stdout: noStatusChecksStdout, stderr: '' }),
+    });
+
+    const result = await auditGithubBranchProtection(
+      { repoRoot: '/tmp/irrelevant' },
+      { execFile, resolveRepoSpec: () => REPO_SPEC, resolveRepoHost: () => REPO_HOST },
+    );
+
+    expect(result.degraded).toBeUndefined();
+    expect(result.required_status_checks).toBeNull();
+    expect(result.findings.map((f) => f.id)).toContain('no-required-status-checks');
+  });
+});
+
+describe('auditGithubBranchProtection — degraded reasons for a broken `gh repo view` (2 of 6 DEGRADED_REASONS)', () => {
+  it.each([
+    ['{}', 'parse-error'],
+    ['not json', 'query-failed'],
+  ])('gh repo view returning %j degrades to %j', async (repoViewStdout, expectedReason) => {
+    // Bug caught: `parse-error` (valid JSON, unusable shape — missing
+    // nameWithOwner/defaultBranchRef) and `query-failed` (JSON.parse THROWS on
+    // genuinely invalid JSON, caught by the outer classifyFailure) are two of
+    // the six DEGRADED_REASONS with no test reaching them at all — a swapped
+    // or dropped return in either branch would ship unnoticed.
+    const execFile = makeGhRouter({
+      repoView: async () => ({ stdout: repoViewStdout, stderr: '' }),
+      authStatus: async () => { throw new Error('auth status must not run when repo view already failed'); },
+      protection: async () => { throw new Error('protection must not run when repo view already failed'); },
+    });
+
+    const result = await auditGithubBranchProtection(
+      { repoRoot: '/tmp/irrelevant' },
+      { execFile, resolveRepoSpec: () => REPO_SPEC, resolveRepoHost: () => REPO_HOST },
+    );
+
+    expect(result.degraded).toBe(expectedReason);
+  });
+});
+
 describe('auditGithubBranchProtection — degraded (query could not be answered)', () => {
   it('a thrown gh invocation (ENOENT) degrades to cli-missing, never crashes or reports clean', async () => {
     const execFile = makeExecStub(async () => {

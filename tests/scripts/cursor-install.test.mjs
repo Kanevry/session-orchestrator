@@ -21,6 +21,7 @@ import {
   rmSync,
   lstatSync,
   existsSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -188,6 +189,28 @@ describe('scripts/cursor-install.mjs integration', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('ERROR: Target directory does not exist:');
     expect(result.stderr).toContain(missingTarget);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 6b — TARGET exists but is a FILE, not a directory: the `||` in
+  // `!existsSync(TARGET) || !statSync(TARGET).isDirectory()` was only ever
+  // exercised via its LEFT operand (a path that doesn't exist at all). A
+  // regular file satisfies `existsSync` but fails `.isDirectory()`, so the
+  // guard must still short-circuit to the same clean exit-1 path rather than
+  // falling through to `mkdirSync(path.join(TARGET, '.cursor', 'rules'), ...)`
+  // — which would throw ENOTDIR with a raw stack trace on a file target,
+  // never reaching this script's own error message at all.
+  // -------------------------------------------------------------------------
+
+  it('TARGET that exists but is a FILE (not a directory): exits 1 with the same clean stderr message as a missing target', () => {
+    const fileTarget = join(tmp, 'not-a-directory.txt');
+    writeFileSync(fileTarget, 'not a directory');
+
+    const result = runCursorInstall([fileTarget]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('ERROR: Target directory does not exist:');
+    expect(result.stderr).toContain(fileTarget);
   });
 
   // -------------------------------------------------------------------------

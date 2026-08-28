@@ -191,6 +191,96 @@ describe('checkGitConfigDrift — detection', () => {
     const result = checkGitConfigDrift({ repoRoot: dir, env: NO_ENV });
     expect(result?.findings.map((f) => f.kind)).toEqual(['hooks-path']);
   });
+
+  it.skipIf(!GIT_AVAILABLE)(
+    'still flags core.hooksPath=scripts when the tracked files there are ordinary source, not a hook (#1158 review N1 exploit)',
+    () => {
+      // The bug this catches: `hooksPathIsTracked` used to accept ANY tracked
+      // file anywhere under the hooksPath, so `core.hooksPath=scripts` +
+      // ordinary tracked source (nothing hook-shaped at all) — or the same
+      // directory carrying an UNTRACKED executable literally named
+      // `pre-commit` planted alongside it — was silently accepted as
+      // "declared". `git ls-files -- scripts` returning 456 tracked files in
+      // the real repo, none of them a hook, is exactly this shape at scale.
+      // Reverting the hook-name requirement turns this test red — see the
+      // agent's EVIDENCE section.
+      const dir = makeRepo();
+      mkdirSync(join(dir, 'scripts'), { recursive: true });
+      writeFileSync(join(dir, 'scripts', 'ordinary.mjs'), 'export const x = 1;\n', 'utf8');
+      execFileSync('git', ['-C', dir, 'add', 'scripts/ordinary.mjs']);
+      // Deliberately UNTRACKED — the exploit plants a hook-named file without
+      // ever staging it, betting the old check counted tracked SIBLINGS.
+      writeFileSync(join(dir, 'scripts', 'pre-commit'), '#!/bin/sh\nexit 0\n', 'utf8');
+      setLocal(dir, 'core.hooksPath', 'scripts');
+
+      const result = checkGitConfigDrift({ repoRoot: dir, env: NO_ENV });
+      expect(result?.findings.map((f) => f.kind)).toEqual(['hooks-path']);
+    },
+  );
+
+  it.skipIf(!GIT_AVAILABLE)(
+    'accepts a tracked pre-commit nested only ONE level under the hooksPath, not two',
+    () => {
+      // Pins the "DIRECTLY under" half of the contract: a tracked hook-named
+      // file in a nested subdirectory of the hooksPath is not a hook git will
+      // ever invoke from that hooksPath, so it must not count as a
+      // declaration either.
+      const dir = makeRepo();
+      mkdirSync(join(dir, '.githooks', 'nested'), { recursive: true });
+      writeFileSync(join(dir, '.githooks', 'nested', 'pre-commit'), '#!/bin/sh\nexit 0\n', 'utf8');
+      execFileSync('git', ['-C', dir, 'add', '.githooks/nested/pre-commit']);
+      setLocal(dir, 'core.hooksPath', '.githooks');
+
+      const result = checkGitConfigDrift({ repoRoot: dir, env: NO_ENV });
+      expect(result?.findings.map((f) => f.kind)).toEqual(['hooks-path']);
+    },
+  );
+
+  it.skipIf(!GIT_AVAILABLE)(
+    'flags an absolute core.hooksPath outside repoRoot without spawning git ls-files (#1158 review N1 qa gap)',
+    () => {
+      // The bug this catches: an absolute hooksPath pointing outside the repo
+      // (e.g. a fixture-rewritten `/etc/passwd`) must be rejected purely from
+      // the path comparison — spawning `git ls-files` on it would be both
+      // wasted work and, on some pathspecs, a way to leak unrelated
+      // filesystem structure into the query.
+      const dir = makeRepo();
+      setLocal(dir, 'core.hooksPath', '/etc/passwd');
+
+      const lsFilesCalls = [];
+      const spy = (cmd, args, opts) => {
+        if (Array.isArray(args) && args.includes('ls-files')) lsFilesCalls.push(args);
+        return spawnSync(cmd, args, opts);
+      };
+
+      const result = checkGitConfigDrift({ repoRoot: dir, env: NO_ENV }, { spawn: spy });
+      expect(result?.findings.map((f) => f.kind)).toEqual(['hooks-path']);
+      expect(lsFilesCalls).toEqual([]);
+    },
+  );
+
+  it('flags core.hooksPath when the ls-files exec seam fails — never silently accepted (#1158 review N1)', () => {
+    // The bug this catches: hooksPathIsTracked must fall back to "not
+    // declared" (never "declared") on any spawn failure — a corrupt .git or a
+    // failing exec seam must widen acceptance in exactly ZERO directions.
+    // Fully injected: no real git process runs, so this test needs no
+    // GIT_AVAILABLE gate.
+    const spawn = (_cmd, args) => {
+      if (Array.isArray(args) && args.includes('ls-files')) {
+        return { error: Object.assign(new Error('spawn git EIO'), { code: 'EIO' }) };
+      }
+      if (Array.isArray(args) && args.includes('--global')) {
+        return { status: 0, stdout: '' };
+      }
+      if (Array.isArray(args) && args.includes('--local')) {
+        return { status: 0, stdout: 'core.hooksPath\nscripts\0' };
+      }
+      return { status: 0, stdout: '' };
+    };
+
+    const result = checkGitConfigDrift({ repoRoot: '/anywhere', env: NO_ENV }, { spawn });
+    expect(result?.findings.map((f) => f.kind)).toEqual(['hooks-path']);
+  });
 });
 
 describe('checkGitConfigDrift — ambient git environment', () => {

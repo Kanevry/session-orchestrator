@@ -35,7 +35,7 @@
  */
 
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
-import { join, resolve, relative } from 'node:path';
+import { join, resolve, relative, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -238,6 +238,200 @@ function getTargetFileList(targetRoot) {
 }
 
 // ---------------------------------------------------------------------------
+// Vendoring sanitizer (issue #1098)
+//
+// Lives here rather than in rules-sync.mjs because it has this module's exact
+// shape — "judge one rule file, return findings" — and because rules-sync.mjs
+// already imports from here, so the move adds no import edge and no cycle.
+// rules-sync.mjs re-exports `scanVendoringLeaks` for its existing importers.
+// ---------------------------------------------------------------------------
+
+/**
+ * Path roots that exist in the PLUGIN repo but are not part of what a consumer
+ * repo receives. A rule that cites `scripts/lib/foo.mjs` reads fine here and
+ * dangles the moment the file is vendored.
+ *
+ * Deliberately a small, named list rather than "every top-level directory":
+ * the detector below additionally requires the cited path to resolve to a real
+ * FILE inside pluginRoot, which is what separates a plugin-internal citation
+ * from a consumer-repo path that merely shares a prefix (`docs/api.md`,
+ * `tests/` as a generic directory reference, `scripts/smoke-test.ts` in a code
+ * sample). Revisit if the plugin grows another top-level source directory that
+ * rules cite.
+ */
+const REPO_LOCAL_PATH_ROOTS = ['scripts', 'hooks', 'skills', 'docs', 'tests'];
+
+// Leading boundary excludes `react-hooks/exhaustive-deps` and
+// `templates/shared/hooks/x.sh` — a root only counts at a token boundary.
+const REPO_LOCAL_PATH_RE = new RegExp(
+  `(?<![\\w./-])((?:${REPO_LOCAL_PATH_ROOTS.join('|')})/[\\w./-]*\\w)`,
+  'g',
+);
+
+const MD_REFERENCE_RE = /[\w][\w.-]*\.md/g;
+
+/**
+ * `*.md` names a `## See Also` section may legitimately cite even though
+ * `rules/_index.md` does not register them: they are project-root instruction
+ * files every consumer repo has, not rules that travel through the sync.
+ */
+const NON_RULE_MD_REFERENCES = new Set(['CLAUDE.md', 'AGENTS.md', 'README.md']);
+
+/**
+ * 1-based line number of `index` within `content`.
+ * @param {string} content
+ * @param {number} index
+ * @returns {number}
+ */
+function lineOf(content, index) {
+  return content.slice(0, index).split('\n').length;
+}
+
+/**
+ * Extracts the body of the trailing `## See Also` section, with the offset at
+ * which it starts. Returns null when the file has no such section.
+ * @param {string} content
+ * @returns {{ body: string, offset: number } | null}
+ */
+function extractSeeAlso(content) {
+  const m = /^##\s+See Also\s*$/m.exec(content);
+  if (!m) return null;
+  const start = m.index + m[0].length;
+  const next = /^##\s+/m.exec(content.slice(start));
+  const end = next !== null ? start + next.index : content.length;
+  return { body: content.slice(start, end), offset: start };
+}
+
+/**
+ * True when `token` (a repo-relative path taken from rule prose) stays inside
+ * `pluginRoot` once resolved. `REPO_LOCAL_PATH_RE`'s character class admits
+ * `..`, so `scripts/../../../../etc/passwd` reaches this function; without the
+ * containment check its `statSync` would walk outside the plugin root and
+ * report a host file as a vendoring leak. Same shape as
+ * `git-config-drift.mjs`'s `hooksPathIsTracked` containment guard.
+ * @param {string} pluginRoot
+ * @param {string} token
+ * @returns {boolean}
+ */
+function tokenStaysInside(pluginRoot, token) {
+  const abs = resolve(pluginRoot, token);
+  const rel = relative(resolve(pluginRoot), abs);
+  return rel !== '' && !rel.startsWith('..') && !/^([a-zA-Z]:)?[\\/]/.test(rel);
+}
+
+/**
+ * Report-only vendoring sanitizer (issue #1098).
+ *
+ * Scans one rule file for the two ways a rule that reads correctly INSIDE this
+ * plugin repo breaks once it is vendored into a consumer repo:
+ *
+ *   - `repo-local-path` — a `scripts/…`, `hooks/…`, `skills/…`, `docs/…` or
+ *     `tests/…` citation that resolves to a real file under `pluginRoot`. The
+ *     consumer has no such file, so the citation dangles.
+ *   - `unresolvable-see-also` — a `## See Also` entry naming a `*.md` rule that
+ *     `rules/_index.md` does not register, so it is never vendored alongside.
+ *
+ * **This function never rewrites content.** Silent stripping would change the
+ * meaning of a rule at vendoring time, invisibly to both the author and the
+ * consumer; the finding is reported and a human decides. `@your-org/*`
+ * placeholders are deliberately NOT flagged — they are the documented
+ * placeholder convention for consumer-supplied package scopes, not a leak.
+ *
+ * @param {object} opts
+ * @param {string} opts.content - raw rule file content (never modified)
+ * @param {string} opts.relPath - manifest-relative path, used as `file`
+ * @param {string} opts.pluginRoot - repo root the repo-local check resolves against
+ * @param {Set<string>|null} [opts.manifestBasenames] - basenames registered in
+ *   `rules/_index.md`; when null the `unresolvable-see-also` check is skipped
+ * @returns {Array<{file: string, line: number, kind: 'repo-local-path'|'unresolvable-see-also', text: string}>}
+ */
+export function scanVendoringLeaks({ content, relPath, pluginRoot, manifestBasenames = null }) {
+  const findings = [];
+
+  REPO_LOCAL_PATH_RE.lastIndex = 0;
+  const seenPaths = new Set();
+  let m;
+  while ((m = REPO_LOCAL_PATH_RE.exec(content)) !== null) {
+    const token = m[1];
+    if (seenPaths.has(token)) continue;
+    let isFile;
+    try {
+      // Containment first: never stat a path that escapes pluginRoot.
+      if (!tokenStaysInside(pluginRoot, token)) continue;
+      const abs = join(pluginRoot, token);
+      isFile = existsSync(abs) && statSync(abs).isFile();
+    } catch {
+      isFile = false;
+    }
+    if (!isFile) continue;
+    seenPaths.add(token);
+    findings.push({
+      file: relPath,
+      line: lineOf(content, m.index),
+      kind: 'repo-local-path',
+      text: token,
+    });
+  }
+
+  if (manifestBasenames) {
+    const seeAlso = extractSeeAlso(content);
+    if (seeAlso) {
+      const ownBasename = basename(relPath);
+      const seenRefs = new Set();
+      MD_REFERENCE_RE.lastIndex = 0;
+      let r;
+      while ((r = MD_REFERENCE_RE.exec(seeAlso.body)) !== null) {
+        const ref = r[0];
+        const refBase = basename(ref);
+        if (refBase === ownBasename || seenRefs.has(refBase)) continue;
+        if (NON_RULE_MD_REFERENCES.has(refBase)) continue;
+        if (manifestBasenames.has(refBase)) continue;
+        seenRefs.add(refBase);
+        findings.push({
+          file: relPath,
+          line: lineOf(content, seeAlso.offset + r.index),
+          kind: 'unresolvable-see-also',
+          text: ref,
+        });
+      }
+    }
+  }
+
+  return findings;
+}
+
+/**
+ * Reads `<pluginRoot>/rules/_index.md` and returns the set of rule basenames it
+ * registers, for `scanVendoringLeaks()`'s `unresolvable-see-also` check.
+ * Returns `null` when the manifest is absent or unreadable — the caller then
+ * skips that check rather than reporting every See-Also entry as a leak.
+ *
+ * The bullet shape is the one `rules-sync.mjs`'s `parseIndex()` parses; it is
+ * matched here with a local regex rather than imported, because `rules-sync.mjs`
+ * imports from THIS module and an import back would create a module-load cycle
+ * (same reasoning as the `PLUGIN_HEADER_PREFIX` copy above).
+ *
+ * @param {string} pluginRoot
+ * @returns {Set<string>|null}
+ */
+export function readManifestBasenames(pluginRoot) {
+  const indexPath = join(pluginRoot, 'rules', '_index.md');
+  let indexContent;
+  try {
+    indexContent = readFileSync(indexPath, 'utf8');
+  } catch {
+    return null;
+  }
+  const names = new Set();
+  const bulletRe = /^-\s+`([^`]+\.md)`/gm;
+  let m;
+  while ((m = bulletRe.exec(indexContent)) !== null) {
+    names.add(basename(m[1]));
+  }
+  return names;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -396,13 +590,21 @@ export function validateRuleContent({ content, relPath, targetRoot = null, requi
  * Validates every `*.md` rule file under `dir`, recursively (skips dotfiles
  * and `_index.md`).
  *
+ * When `pluginRoot` is given, every scanned file is additionally passed through
+ * `scanVendoringLeaks()` and the findings are collected into the additive
+ * `sanitizer[]` array (issue #1098). Report-only, exactly as in `syncRules()`:
+ * a finding contributes to neither `errorCount` nor `warnCount`, so it can
+ * never change this function's `ok` verdict or its CLI's exit code.
+ *
  * @param {object} opts
  * @param {string} opts.dir - absolute path to a directory of rule files
  * @param {string|null} [opts.targetRoot] - forwarded to validateRuleContent
  * @param {boolean} [opts.requireProvenance] - forwarded to validateRuleContent
- * @returns {{ ok: boolean, files: Array<{ file: string, violations: RuleViolation[] }>, errorCount: number, warnCount: number }}
+ * @param {string|null} [opts.pluginRoot] - when provided, enables the vendoring
+ *   sanitizer scan against this plugin root
+ * @returns {{ ok: boolean, files: Array<{ file: string, violations: RuleViolation[] }>, errorCount: number, warnCount: number, sanitizer: Array<{file: string, line: number, kind: string, text: string}> }}
  */
-export function validateRulesDir({ dir, targetRoot = null, requireProvenance = false }) {
+export function validateRulesDir({ dir, targetRoot = null, requireProvenance = false, pluginRoot = null }) {
   function collectRuleFiles(absDir) {
     const files = [];
     for (const entry of readdirSync(absDir, { withFileTypes: true })) {
@@ -420,8 +622,11 @@ export function validateRulesDir({ dir, targetRoot = null, requireProvenance = f
   const entries = collectRuleFiles(dir).sort();
 
   const files = [];
+  const sanitizer = [];
   let errorCount = 0;
   let warnCount = 0;
+
+  const manifestBasenames = pluginRoot ? readManifestBasenames(pluginRoot) : null;
 
   for (const name of entries) {
     const filePath = join(dir, name);
@@ -432,9 +637,15 @@ export function validateRulesDir({ dir, targetRoot = null, requireProvenance = f
       else if (v.severity === 'warn') warnCount++;
     }
     files.push({ file: name, violations });
+
+    if (pluginRoot) {
+      sanitizer.push(
+        ...scanVendoringLeaks({ content, relPath: name, pluginRoot, manifestBasenames }),
+      );
+    }
   }
 
-  return { ok: errorCount === 0, files, errorCount, warnCount };
+  return { ok: errorCount === 0, files, errorCount, warnCount, sanitizer };
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -480,13 +691,17 @@ if (isMain) {
 
   if (args.includes('--help') || args.includes('-h')) {
     process.stdout.write(
-      'Usage: validate-vendored-rules.mjs --dir <rulesDir> [--target-root <repo>] [--require-provenance] [--json] [--mode hard|warn]\n',
+      'Usage: validate-vendored-rules.mjs --dir <rulesDir> [--target-root <repo>] [--plugin-root <dir>] [--require-provenance] [--json] [--mode hard|warn]\n',
     );
     process.exit(0);
   }
 
   const dirArg = getArg('--dir');
   const targetRoot = getArg('--target-root') ?? null;
+  // Enables the report-only vendoring sanitizer (#1098). Never affects the
+  // exit code — findings are surfaced, the operator decides.
+  const pluginRootArg = getArg('--plugin-root');
+  const pluginRoot = pluginRootArg ? resolve(pluginRootArg) : null;
   const requireProvenance = args.includes('--require-provenance');
   const jsonOutput = args.includes('--json');
   const mode = getArg('--mode') ?? 'hard';
@@ -510,16 +725,23 @@ if (isMain) {
 
   let result;
   try {
-    result = validateRulesDir({ dir, targetRoot, requireProvenance });
+    result = validateRulesDir({ dir, targetRoot, requireProvenance, pluginRoot });
   } catch (err) {
     process.stderr.write(`validate-vendored-rules: error: failed to read --dir ${dir}: ${err.message}\n`);
     process.exit(2);
   }
 
   if (jsonOutput) {
-    process.stdout.write(JSON.stringify({ mode, dir, targetRoot, requireProvenance, ...result }, null, 2) + '\n');
+    process.stdout.write(
+      JSON.stringify({ mode, dir, targetRoot, pluginRoot, requireProvenance, ...result }, null, 2) + '\n',
+    );
   } else {
     process.stdout.write(formatSummary(result, dir) + '\n');
+    for (const f of result.sanitizer) {
+      process.stderr.write(
+        `validate-vendored-rules: sanitizer ${f.kind} ${f.file}:${f.line} — ${f.text}\n`,
+      );
+    }
   }
 
   const exitCode = result.errorCount > 0 && mode === 'hard' ? 1 : 0;

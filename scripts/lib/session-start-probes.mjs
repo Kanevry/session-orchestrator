@@ -157,12 +157,16 @@ export const PROBES = [
     fn: 'checkVaultStaleness',
     network: false,
     args: ({ repoRoot }) => ({ repoRoot }),
-    // #1159: the probe now returns a THIRD shape, `{severity:'info', kind:'probe-stale'}`,
-    // when its last record is older than MAX_RECORD_AGE_DAYS. The default severityOf maps
-    // anything but warn/alert to 'ok' and defaultRender drops 'ok' — so without this
-    // mapping the "your probe has not run for N days" banner would be built and never shown.
-    severityOf: (r) =>
-      r?.kind === 'probe-stale' ? 'warn' : r?.severity === 'alert' ? 'alert' : r?.severity === 'warn' ? 'warn' : 'ok',
+    // No custom severityOf needed (#1159 single-vocabulary fix, N3 in the
+    // #1158/#1159 review): the probe's THIRD shape — `{severity:'warn',
+    // kind:'probe-stale'}` when its last record is older than
+    // MAX_RECORD_AGE_DAYS — now carries `severity: 'warn'` directly, so the
+    // module-level default severityOf() below (which reads `result.severity`
+    // verbatim) already renders it. The registry previously remapped a
+    // distinct `severity: 'info'` value by hand; that second vocabulary is
+    // gone from the source, so the remap is gone here too. See
+    // vault-staleness-banner.mjs's header for the "one vocabulary, not two"
+    // rationale.
   },
   {
     id: 'ci-status',

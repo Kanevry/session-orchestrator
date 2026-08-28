@@ -173,8 +173,8 @@ PRD saved to [path]. Ready for your review.
 ### Auto-Prioritize
 
 Score each issue by three factors:
-1. **Technical dependencies** (highest weight) — blocking issues get `priority:critical` or `priority:high`. DB schema before API, API before frontend.
-2. **Business value** (medium weight) — core MVP = `priority:high`, nice-to-haves = `priority:medium/low`.
+1. **Technical dependencies** (highest weight) — blocking issues get `priority::critical` or `priority::high`. DB schema before API, API before frontend.
+2. **Business value** (medium weight) — core MVP = `priority::high`, nice-to-haves = `priority::medium/low`.
 3. **Risk** (tiebreaker) — unknowns or external dependencies bump priority up one level.
 
 Labels: `priority:<level>`, `type:feature/enhancement/chore`, `status:ready`, `area:<inferred>`. For `new`: add `appetite:<1w|2w|6w>`.

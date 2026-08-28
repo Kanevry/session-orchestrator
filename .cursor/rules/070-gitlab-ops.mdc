@@ -58,12 +58,17 @@ gh repo view --json nameWithOwner -q '.nameWithOwner'
 
 ## Common CLI Commands
 
-**Directive:** every repo-scoped `glab` invocation names host + project path explicitly (`glab -R <host>/<group>/<project> ...` or `glab api --hostname "$GITLAB_HOST" "projects/${ENCODED_PROJECT_PATH}/..."`). Without `-R` / the encoded endpoint the target is whatever the ambient cwd remote happens to be.
+**Directive:** every repo-scoped `glab` invocation names the project explicitly via `-R` (or, for `glab api`, pins the host with `--hostname` and encodes the project path into the endpoint). Without `-R` / the encoded endpoint the target is whatever the ambient cwd remote happens to be.
+
+`glab -R` accepts `<OWNER>/<REPO>` or a nested `<GROUP>/<SUBGROUP>/.../<REPO>` — both resolve against the DEFAULT configured GitLab host (`glab config get host`), never a bare `<host>/<group>/<project>` slash-path: `glab issue list --help` documents only `OWNER/REPO`, `GROUP/NAMESPACE/REPO`, or "full URL or Git URL" for `-R`/`--repo`. To target a non-default host, pass the full remote URL (`https://<host>/<group>/<project>` or `git@<host>:<group>/<project>.git`) as `-R`'s value instead — `glab` has no bare host-prefixed short form. `gh -R`/`--repo` is NOT symmetric here: it genuinely documents `[HOST/]OWNER/REPO` (`gh issue list --help`), so a 3-segment host-prefixed spec is valid for `gh` but not for `glab`.
 
 ### GitLab (glab)
 
 ```bash
-# Issues
+# Non-default GitLab host: pass a full URL to -R (glab has no bare HOST/GROUP/PROJECT form)
+glab issue list -R https://<host>/<group>/<project> --per-page 50
+
+# Issues (default configured host — glab config get host)
 glab issue list -R <OWNER>/<REPO> --per-page 50                            # All open issues
 glab issue list -R <OWNER>/<REPO> --label "status:ready" --per-page 10     # Ready to work on
 glab issue list -R <OWNER>/<REPO> --label "priority::high" --per-page 10   # High priority
@@ -92,7 +97,10 @@ glab api --hostname "$GITLAB_HOST" "projects/${ENCODED_PROJECT_PATH}/milestones?
 ### GitHub (gh)
 
 ```bash
-# Issues
+# Non-default host (GHE): gh -R genuinely accepts [HOST/]OWNER/REPO
+gh issue list -R <HOST>/<OWNER>/<REPO> --limit 50
+
+# Issues (default configured host)
 gh issue list -R <OWNER>/<REPO> --limit 50                                 # All open issues
 gh issue list -R <OWNER>/<REPO> --label "status:ready" --limit 10          # Ready to work on
 gh issue list -R <OWNER>/<REPO> --label "priority::high" --limit 10        # High priority
