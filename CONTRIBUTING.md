@@ -467,13 +467,15 @@ Session Orchestrator supports Claude Code, Codex CLI, Cursor IDE, and Pi. When c
 |----------|----------|-------|
 | Plugin manifests | `.claude-plugin/`, `.codex-plugin/` | Platform-specific, separate files |
 | Skills | `skills/` | Shared — one SKILL.md serves all platforms |
-| Commands | `commands/` | Shared — Claude Code native, Codex via AGENTS.md, Cursor via rules |
+| Commands | `commands/` | Shared — Claude Code native, Codex via AGENTS.md, Cursor via `.cursor/commands/` |
 | Hooks (Claude Code) | `hooks/hooks.json` | Uses `$CLAUDE_PLUGIN_ROOT` |
 | Hooks (Codex) | `hooks/hooks-codex.json` | Uses native `${PLUGIN_ROOT}`; wrapper exports `CODEX_PLUGIN_ROOT` and `SO_PLATFORM=codex` |
-| Hooks (Cursor) | `hooks/hooks-cursor.json` | Reference; configure in Cursor Settings |
+| Hooks (Cursor) | `hooks/hooks-cursor.json` + `.cursor/hooks.json` | Live via `scripts/lib/cursor-hook-bridge.mjs` |
 | Hooks (Pi) | `hooks/hooks-pi.json` | Installed via `scripts/pi-install.mjs` |
 | Extension (Pi) | `pi/extensions/session-orchestrator.ts` | Pi manifest lives in the `package.json` `pi` key |
 | Rules (Cursor) | `.cursor/rules/*.mdc` | Cursor-native format, one per skill |
+| Commands (Cursor) | `.cursor/commands/*.md` | Generated from `commands/` by `scripts/generate-cursor-adapter.mjs` |
+| Skills (Cursor) | `.cursor/skills/<name>/SKILL.md` | Generated wrappers pointing at canonical `skills/` |
 | Agents (Claude Code) | `agents/` | Markdown format |
 | Agents (Codex) | `.codex-plugin/agents/` | TOML format |
 | Node.js scripts | `scripts/` | Shared — use `detectPlatform()` from `scripts/lib/platform.mjs` |
@@ -507,7 +509,8 @@ Session Orchestrator supports Claude Code, Codex CLI, Cursor IDE, and Pi. When c
 | `scripts/validate-wave-scope.mjs` | Validate wave-scope.json before enforcement hooks consume it |
 | `scripts/token-audit.sh` | Cross-project token efficiency audit |
 | `scripts/codex-install.mjs` | Validate and install through Codex's public marketplace/add/list lifecycle |
-| `scripts/cursor-install.mjs` | Install Cursor rules via symlinks |
+| `scripts/cursor-install.mjs` | Install Cursor rules, commands, skills, and `.cursor/hooks.json` |
+| `scripts/generate-cursor-adapter.mjs` | Generate `.cursor/commands` and `.cursor/skills` wrappers (`--check` in validate-plugin) |
 | `scripts/lib/platform.mjs` | Platform detection and platform-specific root/state/config resolvers |
 | `scripts/lib/common.mjs` | Shared ESM utilities — die(), warn(), findProjectRoot(), resolvePluginRoot(), makeTmpPath(), utcTimestamp() |
 | `scripts/lib/worktree.mjs` | Git worktree helpers for isolated agent work |

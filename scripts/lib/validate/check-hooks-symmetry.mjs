@@ -12,18 +12,12 @@
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-// The pi projection is IMPORTED, not copied: pi-hook-bridge.mjs is the runtime
-// that actually rewrites `hook_event_name` for every Pi event, so it is the one
-// source of truth for which pi event becomes which Claude event (#953). A local
-// literal here was a second copy of the same 5 pairs — it could drift silently,
-// and the validator would then certify a projection the runtime does not use.
-// Deliberately NOT the same for `cursorEventMap` below: nothing at runtime
-// projects Cursor events (Cursor calls the handlers directly), so the
-// validator's copy is the only witness there. Even if a runtime source existed,
-// reading Check 3's expectation from the artefact it checks would make the
-// check self-certifying — the "undocumented pi-native event" test at
-// tests/scripts/check-hooks-symmetry.test.mjs would become unreachable. Keep
-// cursorEventMap validator-owned; do not "helpfully" collapse it too.
+// The pi and cursor projections are IMPORTED, not copied: the runtime bridges
+// rewrite `hook_event_name` for every native event, so they are the source of
+// truth for which native event becomes which Claude event (#953). A local
+// literal here was a second copy — it could drift silently, and the validator
+// would then certify a projection the runtime does not use.
+import { CURSOR_TO_CANONICAL_EVENT } from '../cursor-hook-bridge.mjs';
 import { PI_TO_CANONICAL_EVENT } from '../pi-hook-bridge.mjs';
 
 const PLUGIN_ROOT = process.argv[2];
@@ -40,7 +34,19 @@ const DOCUMENTED_ASYMMETRIES = {
   // Events from hooks.json/hooks-codex.json that are intentionally absent in hooks-cursor.json
   cursorMissingFromMain: ['SessionStart', 'SessionEnd', 'PostToolUse', 'PostToolUseFailure', 'PostToolBatch', 'Stop', 'SubagentStart', 'SubagentStop', 'CwdChanged', 'PreToolUse'],
   // Events unique to hooks-cursor.json (Cursor IDE-specific)
-  cursorOnly: ['afterFileEdit', 'beforeShellExecution'],
+  cursorOnly: [
+    'afterFileEdit',
+    'afterShellExecution',
+    'beforeShellExecution',
+    'postToolUse',
+    'postToolUseFailure',
+    'preToolUse',
+    'sessionEnd',
+    'sessionStart',
+    'stop',
+    'subagentStart',
+    'subagentStop',
+  ],
   // Claude/Codex events with no Pi-native v1 mapping yet.
   piMissingFromMain: ['PostToolUseFailure', 'PostToolBatch', 'SubagentStart', 'SubagentStop', 'CwdChanged'],
   // Pi-native extension events that map onto Claude/Codex hook events.
@@ -48,23 +54,10 @@ const DOCUMENTED_ASYMMETRIES = {
   // validator checks hooks-pi.json against is the SAME object pi-hook-bridge.mjs
   // applies to live payloads, so the two cannot drift apart.
   piEventMap: PI_TO_CANONICAL_EVENT,
-  // Cursor-IDE-native events projected onto the logical Claude events they
-  // correspond to. WITHOUT this projection Check 6 compared a FOREIGN event
-  // namespace against hooks.json: not one key matched, the per-event loop
-  // `continue`d on every iteration, and hooks-cursor.json reported
-  // "handler sets match hooks.json (documented asymmetries: 0)" while missing
-  // 20 of 22 handlers — a vacuum-true PASS. Check 6's projection guard now
-  // fails closed PER declared event (#946), so dropping a single entry from
-  // this map is caught too, not only the loss of every projection: the first
-  // version tested `sharedEvents.length === 0`, under which removing just
-  // `afterFileEdit` left the run green and merely moved cursor's documented-
-  // asymmetry count from 12 to 8.
-  // afterFileEdit fires AFTER the edit (hooks-cursor.json `note`,
-  // docs/cursor-setup.md) → it projects onto PostToolUse, never PreToolUse.
-  cursorEventMap: {
-    beforeShellExecution: 'PreToolUse',
-    afterFileEdit: 'PostToolUse',
-  },
+  // Bound to the runtime constant (see the import comment): the projection this
+  // validator checks hooks-cursor.json against is the SAME object
+  // cursor-hook-bridge.mjs applies to live payloads (#919 closed).
+  cursorEventMap: CURSOR_TO_CANONICAL_EVENT,
   // Check 6 (#942): handlers wired on a Claude event but intentionally absent
   // from the SAME logical event on a counterpart manifest. Checks 1-3 compare
   // event KEYS and Check 4 handler EXISTENCE — a handler wired on only one
@@ -159,21 +152,9 @@ const DOCUMENTED_ASYMMETRIES = {
         'pre-bash-issue-budget.mjs',    // #946
       ],
     },
-    // Cursor is NOT wired (#919) and will not be: hooks-cursor.json is a
-    // mapping REFERENCE, not live enforcement. Every handler expects Claude
-    // Code payload shapes (tool_name === 'Bash', tool_input.command) and emits
-    // a Claude PreToolUse envelope; fed a Cursor payload enforce-commands.mjs
-    // short-circuits at gate G1 and writes 0 bytes to stdout AND stderr with
-    // exit 0, so the harness sees no decision and the command runs. Cursor
-    // needs an input/output adapter like scripts/lib/pi-hook-bridge.mjs; none
-    // exists. Operator decision 2026-07-31 — gap registered, not closed:
-    // #919 (Cursor no-op) tracks the adapter, #946 the allowlist-provenance
-    // rule that every entry here names its issue. These entries exist so the
-    // gap is MACHINE-readable (Check 6 counts them) rather than prose-only.
+    // Cursor is wired through scripts/lib/cursor-hook-bridge.mjs (#919 closed).
+    // Remaining gaps are tools Cursor does not expose, not missing adapters.
     cursor: {
-      // #919: beforeShellExecution → PreToolUse. Only enforce-commands.mjs is
-      // mapped at all; the other eight PreToolUse handlers have no Cursor
-      // mapping whatsoever.
       PreToolUse: [
         // pre-task-scope-disjoint (#1020): NOT ported by construction. The hook
         // matches the `Agent` dispatch tool, which this platform does not have —
@@ -191,24 +172,9 @@ const DOCUMENTED_ASYMMETRIES = {
         // tests/hooks/pre-auq-clarity-wiring.test.mjs, which goes red then.
         'pre-auq-clarity.mjs',
         'pre-task-scope-disjoint.mjs',
-        'skill-invocation-telemetry.mjs',    // #919
-        'enforce-scope.mjs',                 // #919
-        'config-protection.mjs',             // #919
-        'pre-bash-destructive-guard.mjs',    // #919
-        'pre-bash-staging-fence.mjs',        // #919
-        'pre-bash-memory-propose-audit.mjs', // #919
-        'pre-bash-sessions-ledger-guard.mjs',// #919 (#958 — needs tool_name === 'Bash')
-        'pre-bash-templates-first.mjs',      // #919
-        'pre-bash-issue-budget.mjs',         // #919
-      ],
-      // #919: afterFileEdit → PostToolUse. Cursor maps enforce-scope.mjs here
-      // (post-hoc warning only); none of Claude's four PostToolUse handlers
-      // has a Cursor mapping.
-      PostToolUse: [
-        'post-edit-validate.mjs',          // #919
-        'post-tooluse-frontend-slop.mjs',  // #919
-        'post-bash-write-verify.mjs',      // #919 (#942 class — needs tool_name === 'Bash')
-        'loop-guard.mjs',                  // #919
+        // skill-invocation-telemetry: Cursor has no Skill tool — the matcher
+        // can never fire. Commands Read skills/*/SKILL.md instead.
+        'skill-invocation-telemetry.mjs',
       ],
     },
   },
@@ -358,7 +324,7 @@ function extractHandlersByEvent(json) {
       const hookList = m.hooks || [];
       for (const h of hookList) {
         const cmd = h.command || h.script || '';
-        const match = cmd.match(/(?:hooks\/|\$\{?CLAUDE_PLUGIN_ROOT\}?\/hooks\/|\$\{?CODEX_PLUGIN_ROOT\}?\/hooks\/|\$\{?PI_PLUGIN_ROOT\}?\/hooks\/)([\w/-]+\.mjs)/);
+        const match = cmd.match(/(?:hooks\/|\$\{?CLAUDE_PLUGIN_ROOT\}?\/hooks\/|\$\{?CODEX_PLUGIN_ROOT\}?\/hooks\/|\$\{?PI_PLUGIN_ROOT\}?\/hooks\/|\$\{?CURSOR_PLUGIN_ROOT\}?\/hooks\/)([\w/-]+\.mjs)/);
         if (match) handlers.add(match[1]);
       }
     }

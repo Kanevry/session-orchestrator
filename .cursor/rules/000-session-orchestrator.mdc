@@ -8,6 +8,14 @@ alwaysApply: true
 
 You have Session Orchestrator capabilities. This plugin provides structured session management for development work.
 
+Native Cursor surface (this repo and `scripts/cursor-install.mjs` targets):
+- Slash commands: `.cursor/commands/*.md` — type `/session`, `/go`, `/close`
+- Skills: `.cursor/skills/<name>/SKILL.md` wrappers that point at canonical `skills/<name>/SKILL.md`
+- Hooks: `.cursor/hooks.json` → `scripts/lib/cursor-hook-bridge.mjs`
+
+**There is no Skill tool on Cursor.** When a command says to invoke a skill, Read `skills/<name>/SKILL.md` and follow it. Supporting files (`soul.md`, phase docs) live in that same directory.
+
+
 ## Platform Context
 
 - Platform: Cursor IDE (SO_PLATFORM=cursor)

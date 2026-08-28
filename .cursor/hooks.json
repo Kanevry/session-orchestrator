@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "sh hooks/run-node.sh scripts/lib/cursor-hook-bridge.mjs --event sessionStart"
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "sh hooks/run-node.sh scripts/lib/cursor-hook-bridge.mjs --event sessionEnd"
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "sh hooks/run-node.sh scripts/lib/cursor-hook-bridge.mjs --event beforeShellExecution"
+      }
+    ],
+    "afterShellExecution": [
+      {
+        "command": "sh hooks/run-node.sh scripts/lib/cursor-hook-bridge.mjs --event afterShellExecution"
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "sh hooks/run-node.sh scripts/lib/cursor-hook-bridge.mjs --event preToolUse"
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "sh hooks/run-node.sh scripts/lib/cursor-hook-bridge.mjs --event postToolUse"
+      }
+    ],
+    "afterFileEdit": [
+      {
+        "command": "sh hooks/run-node.sh scripts/lib/cursor-hook-bridge.mjs --event afterFileEdit"
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "command": "sh hooks/run-node.sh scripts/lib/cursor-hook-bridge.mjs --event postToolUseFailure"
+      }
+    ],
+    "stop": [
+      {
+        "command": "sh hooks/run-node.sh scripts/lib/cursor-hook-bridge.mjs --event stop"
+      }
+    ],
+    "subagentStart": [
+      {
+        "command": "sh hooks/run-node.sh scripts/lib/cursor-hook-bridge.mjs --event subagentStart"
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": "sh hooks/run-node.sh scripts/lib/cursor-hook-bridge.mjs --event subagentStop"
+      }
+    ]
+  }
+}

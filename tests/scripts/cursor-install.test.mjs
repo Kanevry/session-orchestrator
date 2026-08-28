@@ -22,6 +22,7 @@ import {
   lstatSync,
   existsSync,
   writeFileSync,
+  readFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -34,8 +35,6 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SCRIPT = join(REPO_ROOT, 'scripts', 'cursor-install.mjs');
 const SOURCE_RULES_DIR = join(REPO_ROOT, '.cursor', 'rules');
-const HOOKS_DIR = join(REPO_ROOT, 'hooks');
-const ENFORCE_HOOK_FILES = readdirSync(HOOKS_DIR).filter((f) => f.startsWith('enforce-'));
 
 // Count .mdc files in the source repo once — used for floor/ceiling assertions.
 const MDC_COUNT = readdirSync(SOURCE_RULES_DIR).filter((f) => f.endsWith('.mdc')).length;
@@ -144,7 +143,7 @@ describe('scripts/cursor-install.mjs integration', () => {
     // stdout should contain SKIP lines and zero new LINK lines for .mdc files
     const skipCount = (second.stdout.match(/SKIP:/g) ?? []).length;
     const linkCount = (second.stdout.match(/LINK:/g) ?? []).length;
-    expect(skipCount).toBe(MDC_COUNT);
+    expect(skipCount).toBeGreaterThanOrEqual(MDC_COUNT);
     expect(linkCount).toBe(0);
   });
 
@@ -215,18 +214,18 @@ describe('scripts/cursor-install.mjs integration', () => {
 
   // -------------------------------------------------------------------------
   // Test 7 — next-steps banner names enforce-* hook files that exist in hooks/
-  // -------------------------------------------------------------------------
-
-  it('next-steps banner names enforce-* hook files that exist in hooks/', () => {
-    const target = join(tmp, 'hooks-banner-check');
+  it('links commands and writes hooks.json into the target project', () => {
+    const target = join(tmp, 'surface-check');
     mkdirSync(target, { recursive: true });
 
     const result = runCursorInstall([target]);
 
     expect(result.status).toBe(0);
-    expect(ENFORCE_HOOK_FILES.length).toBeGreaterThan(0);
-    for (const hookFile of ENFORCE_HOOK_FILES) {
-      expect(result.stdout).toContain(hookFile);
-    }
+    expect(existsSync(join(target, '.cursor', 'commands', 'session.md'))).toBe(true);
+    expect(existsSync(join(target, '.cursor', 'hooks.json'))).toBe(true);
+    const hooks = JSON.parse(readFileSync(join(target, '.cursor', 'hooks.json'), 'utf8'));
+    expect(hooks.version).toBe(1);
+    expect(hooks.hooks.beforeShellExecution[0].command).toContain('cursor-hook-bridge.mjs');
+    expect(hooks.hooks.beforeShellExecution[0].command).toContain('--event beforeShellExecution');
   });
 });

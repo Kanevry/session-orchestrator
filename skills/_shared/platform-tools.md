@@ -70,7 +70,7 @@ Lifecycle: `spawn_agent` (launch, one per wave task) → `list_agents` (enumerat
 - **session-reviewer** — quality review; spawn as a separate agent rather than reviewing in the main session
 
 **On Cursor IDE:**
-No native Agent() tool or typed agent roles inside the Composer session — wave tasks run sequentially there, and `agents-per-wave` is ignored. This is a statement about the IDE session only: coordinator-side foreign dispatch to Cursor models via the headless `cursor-agent` CLI does exist (`scripts/lib/wave-executor/foreign-dispatch.mjs`, #1150 — detached worktree, filesystem-measured result, `orchestrator.foreign_dispatch.completed` telemetry, mandatory Claude review, `NEVER_FOREIGN_ROLES` lock). Measured 2026-08-25 on `cursor-agent 2026.08.11-e8db854`.
+No native Agent() tool or typed agent roles inside the Composer session — wave tasks run sequentially there, and `agents-per-wave` is ignored. This is a statement about the IDE session only: coordinator-side foreign dispatch to Cursor models via the headless `cursor-agent` CLI does exist (`scripts/lib/wave-executor/foreign-dispatch.mjs`, #1150 — detached worktree, filesystem-measured result, `orchestrator.foreign_dispatch.completed` telemetry, mandatory Claude review, `NEVER_FOREIGN_ROLES` lock). Measured 2026-08-25 on `cursor-agent 2026.08.11-e8db854`. Slash commands live in `.cursor/commands/`. There is no Skill tool — Read `skills/<name>/SKILL.md` instead.
 
 **On Pi:**
 No Session Orchestrator Pi subagent dispatcher exists in v1. Execute wave tasks sequentially in the active Pi session. Treat `agents-per-wave` as advisory until the SDK-based dispatcher lands.
