@@ -419,23 +419,25 @@ export function recoverFrontmatterMissionStatusDetailed(frontmatter, body) {
 }
 
 /**
- * The merge result alone — see `recoverFrontmatterMissionStatusDetailed` for the
- * contract. Internal callers that cannot report skipped lines (the pure
- * `setMissionStatus` path) use this shape.
+ * Serialize a mission-status update, carrying the recovery's skipped lines out
+ * with it.
+ *
+ * Returns `skipped` rather than discarding it (and rather than leaving the
+ * caller to re-run the recovery to see it): before 2026-08-28
+ * `setMissionStatusOnDisk` called `recoverFrontmatterMissionStatusDetailed` a
+ * SECOND time purely to read `skipped`, so the same body was parsed twice per
+ * write and the two results could disagree the moment either input drifted.
  *
  * @param {object} frontmatter
  * @param {string} body
- * @returns {object}
+ * @returns {{ contents: string, skipped: Array<{line: string, reason: string}> }}
  */
-function recoverFrontmatterMissionStatus(frontmatter, body) {
-  return recoverFrontmatterMissionStatusDetailed(frontmatter, body).frontmatter;
-}
-
 function serializeMissionStatusUpdate(frontmatter, body) {
-  return serializeStateMd({
-    frontmatter: recoverFrontmatterMissionStatus(frontmatter, body),
-    body,
-  });
+  const recovered = recoverFrontmatterMissionStatusDetailed(frontmatter, body);
+  return {
+    contents: serializeStateMd({ frontmatter: recovered.frontmatter, body }),
+    skipped: recovered.skipped,
+  };
 }
 
 /**
@@ -474,12 +476,43 @@ function serializeMissionStatusUpdate(frontmatter, body) {
  * @returns {string}
  */
 export function setMissionStatus(contents, taskId, status) {
-  if (typeof contents !== 'string') return contents;
-  if (!taskId || typeof taskId !== 'string') return contents;
-  if (!MISSION_STATUS_ID_RE.test(taskId)) return contents;
-  if (!status || typeof status !== 'string') return contents;
+  return setMissionStatusDetailed(contents, taskId, status).contents;
+}
+
+/**
+ * `setMissionStatus` with the outcome attached — the same relationship
+ * `recoverFrontmatterMissionStatusDetailed` has to its merge-only view, and for
+ * the same reason: a pure function cannot report, and a caller that only sees
+ * `contents` cannot tell a refusal from a no-op.
+ *
+ * There are FIVE ways this function declines to write, and until 2026-08-28
+ * `setMissionStatusOnDisk` could only name ONE of them — it re-tested
+ * `MISSION_STATUS_ID_RE` itself and warned on the grammar case alone. The other
+ * four (`contents` not a string, a missing/non-string `taskId`, a
+ * missing/non-string `status`, STATE.md that does not parse) returned `contents`
+ * unchanged, which `writeStateMd` reports as `written: false` — byte-identical
+ * to "the file already said that". Re-deriving the reason at the seam is what
+ * made four of five invisible; the reason now travels with the result.
+ *
+ * `refused` is OMITTED (not `null`) on the success path, so `'refused' in out`
+ * is the discriminator and no caller has to compare against a sentinel.
+ *
+ * @param {string} contents
+ * @param {string} taskId
+ * @param {string} status
+ * @returns {{
+ *   contents: string,
+ *   refused?: 'bad-contents'|'bad-id'|'id-grammar'|'bad-status'|'unparseable',
+ *   skipped: Array<{line: string, reason: string}>,
+ * }}
+ */
+export function setMissionStatusDetailed(contents, taskId, status) {
+  if (typeof contents !== 'string') return { contents, refused: 'bad-contents', skipped: [] };
+  if (!taskId || typeof taskId !== 'string') return { contents, refused: 'bad-id', skipped: [] };
+  if (!MISSION_STATUS_ID_RE.test(taskId)) return { contents, refused: 'id-grammar', skipped: [] };
+  if (!status || typeof status !== 'string') return { contents, refused: 'bad-status', skipped: [] };
   const parsed = parseStateMd(contents);
-  if (parsed === null) return contents;
+  if (parsed === null) return { contents, refused: 'unparseable', skipped: [] };
 
   // Computed once so every return path below emits the same synced frontmatter.
   const frontmatter = syncFrontmatterMissionStatus(parsed.frontmatter, taskId, status);
@@ -599,49 +632,70 @@ export async function writeMissionStatusOnDisk(repoRoot, missionStatusArray, opt
 }
 
 /**
+ * Why each refusal declined to write, in the words an operator can act on.
+ *
+ * A closed map rather than an inline ternary chain: adding a refusal to
+ * `setMissionStatusDetailed` without a message here yields `undefined` in the
+ * WARN, which is loud in a test — the fail-toward-visible direction.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+const REFUSAL_REASONS = Object.freeze({
+  'bad-contents': 'STATE.md contents were not a string',
+  'bad-id': 'taskId was missing or not a string',
+  'id-grammar': 'taskId does not match the mission-status id grammar',
+  'bad-status': 'status was missing or not a string',
+  unparseable: 'STATE.md could not be parsed',
+});
+
+/**
  * Lock-guarded `setMissionStatus` — sets or replaces a single task entry in
  * the `## Mission Status` body section under the state-lock.
  *
- * This is the #1104 Option-3 seam: `recoverFrontmatterMissionStatus` is pure and
- * cannot report the body lines it skipped, so the wrapper that already does I/O
- * emits ONE stderr WARN naming the count and the first reason. Without it a
- * declined recovery is byte-identical to "nothing to recover" — the silence the
- * issue's third acceptance criterion is about. It never blocks the write: the
- * skipped lines are pre-existing body content, not a defect in THIS write.
+ * This is the #1104 Option-3 seam: the recovery is pure and cannot report the
+ * body lines it skipped, so the wrapper that already does I/O emits ONE stderr
+ * WARN naming the count and the first reason. Without it a declined recovery is
+ * byte-identical to "nothing to recover" — the silence the issue's third
+ * acceptance criterion is about. It never blocks the write: the skipped lines
+ * are pre-existing body content, not a defect in THIS write.
+ *
+ * The refusal WARN is the same seam applied to the OTHER silence. It used to
+ * re-test `MISSION_STATUS_ID_RE` here and so covered 1 of the 5 ways
+ * `setMissionStatus` declines; it now reads `refused` off
+ * `setMissionStatusDetailed` and covers all five. Exactly ONE line is written
+ * per call: a refusal means nothing was written, so the skipped-lines report
+ * would describe a merge that did not happen.
+ *
+ * `reason` is added to the result on a refusal, matching how `writeStateMd`
+ * already reports its own declines (`reason: 'size-ceiling'`).
  *
  * @param {string|undefined} repoRoot
  * @param {string} taskId
  * @param {string} status   brainstormed | validated | in-dev | testing | completed
  * @param {object} [opts]
- * @returns {Promise<{ written: boolean, path: string, contents: string|null }>}
+ * @returns {Promise<{ written: boolean, path: string, contents: string|null, reason?: string }>}
  */
 export async function setMissionStatusOnDisk(repoRoot, taskId, status, opts = {}) {
-  return writeStateMd(
+  let refused;
+  const result = await writeStateMd(
     repoRoot,
     (contents) => {
-      if (typeof taskId === 'string' && !MISSION_STATUS_ID_RE.test(taskId)) {
-        // The pure setMissionStatus() below refuses this id by returning contents
-        // unchanged; without this line the refusal is indistinguishable from a
-        // successful write (W2 review F1). Grammar: MISSION_STATUS_ID_SOURCE.
+      const outcome = setMissionStatusDetailed(contents, taskId, status);
+      refused = outcome.refused;
+      if (outcome.refused) {
         process.stderr.write(
-          `⚠ setMissionStatusOnDisk: taskId "${taskId}" does not match the mission-status id grammar — nothing written\n`
+          `⚠ setMissionStatusOnDisk: ${REFUSAL_REASONS[outcome.refused]} ` +
+            `(reason: ${outcome.refused}, taskId: ${JSON.stringify(taskId)}) — nothing written\n`
+        );
+      } else if (outcome.skipped.length > 0) {
+        process.stderr.write(
+          `⚠ setMissionStatusOnDisk: mission-status recovery skipped ${outcome.skipped.length} ` +
+            `body line(s) — first: ${outcome.skipped[0].reason} (${outcome.skipped[0].line.trim()})\n`
         );
       }
-      const parsed = typeof contents === 'string' ? parseStateMd(contents) : null;
-      if (parsed !== null) {
-        const { skipped } = recoverFrontmatterMissionStatusDetailed(
-          parsed.frontmatter,
-          parsed.body
-        );
-        if (skipped.length > 0) {
-          process.stderr.write(
-            `⚠ setMissionStatusOnDisk: mission-status recovery skipped ${skipped.length} ` +
-              `body line(s) — first: ${skipped[0].reason} (${skipped[0].line.trim()})\n`
-          );
-        }
-      }
-      return setMissionStatus(contents, taskId, status);
+      return outcome.contents;
     },
     opts
   );
+  return refused ? { ...result, written: false, reason: refused } : result;
 }

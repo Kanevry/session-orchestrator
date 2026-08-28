@@ -152,3 +152,6 @@ sig-audit.err
 
 # wave-transcript-tail singleton lock (#1114) — host-local, carries the hostname
 .orchestrator/wave-transcript-tail.lock
+
+# worktree-promotion marker written by enterWorktree (#1069/#1067) — per-worktree fact, not source
+.orchestrator/promoted-from.json

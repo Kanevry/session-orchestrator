@@ -13,6 +13,7 @@ import {
   parseMissionStatusStrict,
   recoverFrontmatterMissionStatusDetailed,
   setMissionStatusOnDisk,
+  setMissionStatusDetailed,
   MISSION_STATUS_VALUES,
 } from '@lib/state-md/mission-status.mjs';
 
@@ -842,6 +843,45 @@ describe('setMissionStatusOnDisk warns about skipped body lines (#1104)', () => 
     );
   });
 
+  // Bug this catches (TV-001): the recovery's merge short-circuits — `if
+  // (added.length === 0) return { frontmatter, skipped }` — and the WHOLE
+  // point of #1104's Option 3 is that the report survives that early return.
+  // A body where EVERY bullet is non-canonical is precisely that case (the
+  // measured #1104 shape: one repo, all bullets hand-written), and it is the
+  // one where an operator most needs the line, because the frontmatter comes
+  // back byte-identical and nothing else says why. RED if the WARN is ever
+  // gated on `added.length` — a plausible "only report when we changed
+  // something" refactor.
+  it('reports skipped lines even when the merge adds nothing at all', async () => {
+    const NON_CANONICAL = [
+      '- m-1 D1 ADR-Delta: completed',
+      '- m-2: done yesterday',
+      '* m-3: completed (updated 2026-08-20T00:00:00.000Z)',
+    ];
+    const contents = stateWithBodyLines(...NON_CANONICAL);
+
+    // Pure half: every line declined, frontmatter untouched.
+    const { frontmatter, skipped } = recoverFrontmatterMissionStatusDetailed(
+      parseStateMd(contents).frontmatter,
+      parseStateMd(contents).body
+    );
+    expect(skipped).toHaveLength(NON_CANONICAL.length);
+    expect(frontmatter['mission-status']).toEqual(
+      parseStateMd(contents).frontmatter['mission-status']
+    );
+
+    // Seam half: the wrapper still says so.
+    const root = seedRepo(contents);
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    await setMissionStatusOnDisk(root, 'm-9', 'completed');
+
+    const warns = stderr.mock.calls
+      .map(([chunk]) => String(chunk))
+      .filter((line) => line.includes('mission-status recovery skipped'));
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain(`skipped ${NON_CANONICAL.length} body line(s)`);
+  });
+
   it('stays silent when every body line is canonical', async () => {
     const root = seedRepo(
       stateWithBodyLines('- m-7: brainstormed (updated 2026-08-20T00:00:00.000Z)')
@@ -908,5 +948,87 @@ describe('flow-style mission-status survives the first frontmatter write (#1104)
     expect(items).toHaveLength(1);
     expect(items[0].status).toBe('completed');
     expect(items.flatMap((e) => Object.keys(e)).filter((k) => k.startsWith('{'))).toEqual([]);
+  });
+});
+
+// ─── every refusal names itself (2026-08-28, W4 panel ARCH-MED-5) ────────────
+//
+// Bug this catches (TV-001): `setMissionStatus` declines to write in FIVE ways,
+// and the on-disk wrapper could name exactly ONE — it re-derived the reason by
+// re-testing `MISSION_STATUS_ID_RE` itself. The other four returned `contents`
+// unchanged, which `writeStateMd` reports as `written: false`: byte-identical
+// to "the file already said that". Re-deriving at the seam is WHY four of five
+// were invisible, so the reason now travels with the result
+// (`setMissionStatusDetailed`) instead of being guessed again downstream.
+
+describe('setMissionStatusDetailed names every refusal path', () => {
+  const VALID = `---\nschema-version: 1\nmission-status: []\n---\n\n## Mission Status\n\n`;
+
+  it.each([
+    ['bad-contents', null, 'm-1', 'in-dev'],
+    ['bad-id', VALID, '', 'in-dev'],
+    ['bad-id', VALID, undefined, 'in-dev'],
+    ['id-grammar', VALID, 'Docs_2', 'in-dev'],
+    ['id-grammar', VALID, 'm1', 'in-dev'],
+    ['bad-status', VALID, 'm-1', ''],
+    ['unparseable', 'no frontmatter here at all', 'm-1', 'in-dev'],
+  ])('refuses with %s', (reason, contents, taskId, status) => {
+    const out = setMissionStatusDetailed(contents, taskId, status);
+
+    expect(out.refused).toBe(reason);
+    // A refusal never rewrites: the merge-only view is the identity here, which
+    // is exactly what made it indistinguishable from a no-op write.
+    expect(out.contents).toBe(contents);
+    expect(setMissionStatus(contents, taskId, status)).toBe(contents);
+  });
+
+  it('omits `refused` entirely on the success path', () => {
+    const out = setMissionStatusDetailed(VALID, 'm-1', 'in-dev');
+    expect('refused' in out).toBe(false);
+    expect(readMissionStatus(out.contents, 'm-1')).toBe('in-dev');
+  });
+});
+
+describe('setMissionStatusOnDisk warns on every refusal path (#1104 follow-up)', () => {
+  const roots = [];
+  afterEach(() => {
+    vi.restoreAllMocks();
+    while (roots.length > 0) rmSync(roots.pop(), { recursive: true, force: true });
+  });
+
+  /** @param {string|null} contents  null ⇒ leave STATE.md absent */
+  function seed(contents) {
+    const root = mkdtempSync(join(tmpdir(), 'so-mission-refusal-'));
+    roots.push(root);
+    mkdirSync(join(root, '.claude'), { recursive: true });
+    if (contents !== null) writeFileSync(join(root, '.claude', 'STATE.md'), contents, 'utf8');
+    return root;
+  }
+
+  const SEEDED = `---\nschema-version: 1\nmission-status: []\n---\n\n## Mission Status\n\n`;
+
+  // `bad-contents` is unreachable through this wrapper by construction —
+  // `writeStateMd` always hands the transformer a string — so the four the
+  // wrapper CAN reach are enumerated here and the fifth is covered purely above.
+  it.each([
+    ['bad-id', SEEDED, '', 'in-dev'],
+    ['id-grammar', SEEDED, 'Docs_2', 'in-dev'],
+    ['bad-status', SEEDED, 'm-1', ''],
+    ['unparseable', null, 'm-1', 'in-dev'],
+  ])('writes one WARN naming %s and reports written:false', async (reason, contents, taskId, status) => {
+    const root = seed(contents);
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+
+    const result = await setMissionStatusOnDisk(root, taskId, status);
+
+    const warns = stderr.mock.calls
+      .map(([chunk]) => String(chunk))
+      .filter((line) => line.includes('setMissionStatusOnDisk:'));
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain(`reason: ${reason}`);
+    expect(warns[0]).toContain('nothing written');
+
+    expect(result.written).toBe(false);
+    expect(result.reason).toBe(reason);
   });
 });

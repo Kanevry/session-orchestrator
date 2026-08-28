@@ -47,6 +47,40 @@ async function execWithTimeout(cmd, args, opts = {}) {
   ]);
 }
 
+/** C0 controls plus DEL — matching them is the POINT, hence the disable. */
+// eslint-disable-next-line no-control-regex
+const CONTROL_BYTE_RE = /[\u0000-\u001f\u007f]/g;
+
+/**
+ * Replace every C0/DEL control byte with its printable `\uXXXX` escape.
+ *
+ * `JSON.stringify` covers the payload preview, but NOT `SyntaxError.message` —
+ * V8 quotes the offending input INTO that message verbatim, so an ANSI/CR
+ * payload reached the operator's terminal through the error text even after
+ * the preview was escaped. Both halves go through here.
+ *
+ * @param {unknown} text
+ * @returns {string}
+ */
+function escapeControlBytes(text) {
+  return String(text).replace(
+    CONTROL_BYTE_RE,
+    (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
+}
+
+/**
+ * Name a parsed JSON value's type WITHOUT quoting any of its content.
+ *
+ * @param {unknown} value
+ * @returns {'null'|'array'|'object'|'string'|'number'|'boolean'|'undefined'}
+ */
+function jsonTypeOf(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return /** @type {any} */ (typeof value);
+}
+
 /**
  * Parse CLI stdout as JSON, degrading an unparseable payload onto this module's
  * documented failure channel instead of a bare `SyntaxError` (CWE-502).
@@ -73,27 +107,64 @@ async function execWithTimeout(cmd, args, opts = {}) {
  * paginated HTML error page is the realistic worst case. Revisit if a CLI
  * starts emitting a diagnostic that needs more than one line to identify.
  *
+ * The preview is emitted through `JSON.stringify`, not raw. It comes from a
+ * subprocess whose stdout this module does not control and lands in a
+ * `console.warn` beside the session-start banner: a payload carrying ANSI
+ * escapes, a `\r`, or a bare newline could otherwise repaint or overwrite the
+ * lines around it. `JSON.stringify` escapes every control byte and quotes the
+ * result, so the preview stays exactly one line of printable text.
+ *
+ * `expect` closes the second half of the same gap: valid JSON of the WRONG
+ * SHAPE parsed fine and escaped this named channel entirely. Measured
+ * 2026-08-28 at 7daa3d2 — a `gh repo view` that printed `null` reached
+ * `const { nameWithOwner } = …` and threw a bare
+ * `TypeError: Cannot destructure property 'nameWithOwner' of 'null'`, which
+ * names neither the CLI nor the request; a `glab api …/pipelines` that printed
+ * `null` was swallowed by `!Array.isArray(pipelines) → return null`, silent.
+ * Both now fail as the SAME named error the parse failure produces.
+ *
  * @param {string} stdout  Raw child-process stdout (untrusted)
  * @param {string} label   The command that produced it, for the failure message
+ * @param {'object'|'array'} [expect]  Required shape; omit to accept any JSON
  * @returns {unknown} The parsed value
- * @throws {Error} Named parse failure carrying a bounded payload preview
+ * @throws {Error} Named parse/shape failure carrying a bounded payload preview
  */
-function parseCliJson(stdout, label) {
+function parseCliJson(stdout, label, expect) {
   const raw = String(stdout ?? '');
+  // Bounded (BV-004: 120 chars — a paginated HTML error page is the realistic
+  // worst case) AND escaped, so it can never break the line it is printed on.
+  const preview = raw.trim().slice(0, 120);
+  const shown = preview
+    ? `got: ${escapeControlBytes(JSON.stringify(preview))}`
+    : 'got: (empty stdout)';
+
+  let parsed;
   try {
-    return JSON.parse(raw);
+    parsed = JSON.parse(raw);
   } catch (err) {
-    const preview = raw.trim().slice(0, 120);
-    const reason = err instanceof Error ? err.message : String(err);
+    const reason = escapeControlBytes(err instanceof Error ? err.message : String(err));
     // `cause` preserves the original for a debugger; the reason is ALSO
     // inlined into the message because the outer catch reads `err.message`
     // only — a cause-only wrapper would lose it on the operator-facing line.
     throw new Error(
-      `${label} returned unparseable JSON (${reason}) — ` +
-        (preview ? `got: ${preview}` : 'got: (empty stdout)'),
+      `${label} returned unparseable JSON (${reason}) — ${shown}`,
       { cause: err },
     );
   }
+
+  // A shape mismatch reports the JSON TYPE, never the payload. The parse
+  // succeeded, so the bytes add nothing an operator can act on — and
+  // `tests/lib/ci-status-banner.test.mjs` § "unexpected benign pipeline
+  // metadata" pins that a well-formed-but-wrong-shaped API body must not have
+  // its contents echoed anywhere. A type name carries no body content.
+  const actual = jsonTypeOf(parsed);
+  if (expect === 'array' && actual !== 'array') {
+    throw new Error(`${label} returned JSON of an unexpected shape — expected an array, got ${actual}`);
+  }
+  if (expect === 'object' && actual !== 'object') {
+    throw new Error(`${label} returned JSON of an unexpected shape — expected an object, got ${actual}`);
+  }
+  return parsed;
 }
 
 /**
@@ -250,16 +321,17 @@ async function getHeadSha(repoRoot, deps = {}) {
  * @param {string} apiPath
  * @param {string} repoRoot
  * @param {{ execFile?: Function, timeoutMs?: number, repoHost: string }} deps
+ * @param {'object'|'array'} [expect]  Required payload shape (see `parseCliJson`)
  * @returns {Promise<unknown>}
  */
-async function glabApi(apiPath, repoRoot, deps = {}) {
+async function glabApi(apiPath, repoRoot, deps = {}, expect = undefined) {
   const args = ['api', apiPath, '--hostname', deps.repoHost];
   const result = await execWithTimeout(
     'glab',
     args,
     { cwd: repoRoot, timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS, execFile: deps.execFile },
   );
-  return parseCliJson(result.stdout, `glab api ${apiPath}`);
+  return parseCliJson(result.stdout, `glab api ${apiPath}`, expect);
 }
 
 /**
@@ -271,9 +343,10 @@ async function glabApi(apiPath, repoRoot, deps = {}) {
  * @param {string} apiPath
  * @param {string} repoRoot
  * @param {{ execFile?: Function, timeoutMs?: number, repoHost?: string }} deps
+ * @param {'object'|'array'} [expect]  Required payload shape (see `parseCliJson`)
  * @returns {Promise<unknown>}
  */
-async function ghApi(apiPath, repoRoot, deps = {}) {
+async function ghApi(apiPath, repoRoot, deps = {}, expect = undefined) {
   const args = ['api', apiPath];
   if (deps.repoHost) args.push('--hostname', deps.repoHost);
   const result = await execWithTimeout(
@@ -281,7 +354,7 @@ async function ghApi(apiPath, repoRoot, deps = {}) {
     args,
     { cwd: repoRoot, timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS, execFile: deps.execFile },
   );
-  return parseCliJson(result.stdout, `gh api ${apiPath}`);
+  return parseCliJson(result.stdout, `gh api ${apiPath}`, expect);
 }
 
 /**
@@ -325,13 +398,17 @@ async function checkGitlab(repoRoot, now, deps = {}) {
   const currentSha = await getHeadSha(repoRoot, deps);
   const apiDeps = { ...deps, repoHost: project.host };
   const projectPath = `projects/${project.encodedProjectPath}`;
+  // `'array'` is load-bearing, not decoration: before it, a `glab api` that
+  // returned valid JSON of the wrong shape (`null`, `"ok"`, an object) fell
+  // into `!Array.isArray(pipelines) → return null` — a SILENT no-op an operator
+  // reads as "nothing to report". It now raises the same named error an
+  // unparseable payload does, so the outer catch warns.
   const pipelines = await glabApi(
     `${projectPath}/pipelines?order_by=updated_at&sort=desc&per_page=15`,
     repoRoot,
     apiDeps,
+    'array',
   );
-
-  if (!Array.isArray(pipelines)) return null;
 
   const currentPipeline = pipelines.find((p) => p.sha === currentSha);
 
@@ -361,6 +438,7 @@ async function checkGitlab(repoRoot, now, deps = {}) {
         `${projectPath}/pipelines/${currentPipeline.id}/jobs`,
         repoRoot,
         apiDeps,
+        'array',
       );
       if (Array.isArray(jobs)) {
         const softFailed = jobs
@@ -428,6 +506,7 @@ async function checkGitlab(repoRoot, now, deps = {}) {
         `${projectPath}/pipelines/${currentPipeline.id}/jobs`,
         repoRoot,
         apiDeps,
+        'array',
       );
       if (Array.isArray(jobs)) {
         const failedJob = jobs.find((j) => j.status === 'failed');
@@ -499,15 +578,22 @@ async function checkGithub(repoRoot, deps = {}) {
     repoViewArgs,
     { cwd: repoRoot, timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS, execFile: deps.execFile },
   );
+  // `'object'` before the destructuring: a `gh repo view` that printed `null`
+  // (or a bare string, or an array) used to throw a bare
+  // `TypeError: Cannot destructure property 'nameWithOwner' of 'null'`, whose
+  // message names neither the CLI nor the request — the exact identification
+  // failure this helper exists to fix.
   const { nameWithOwner } = parseCliJson(
     repoViewResult.stdout,
     `gh ${repoViewArgs.join(' ')}`,
+    'object',
   );
 
   const data = await ghApi(
     `repos/${nameWithOwner}/commits/HEAD/check-runs`,
     repoRoot,
     deps,
+    'object',
   );
 
   const checkRuns = data.check_runs;

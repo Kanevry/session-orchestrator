@@ -178,7 +178,13 @@ describe('runSessionStartProbes — fail-open', () => {
       expect.objectContaining({ id: 'fine', outcome: 'ran-clean' }),
     ]);
     // The run must actually RETURN at the budget, not merely label the probe.
-    expect(elapsed).toBeLessThan(3000);
+    // Ceiling raised 3000 → 5000 (BV-004): the assertion's INTENT is "returns
+    // at the 150ms budget instead of waiting out the hung probe" — the HANGS
+    // fixture returns a promise that NEVER resolves, so without the budget
+    // this run does not return at all and any finite bound falsifies it.
+    // 3000 was additionally measuring node startup under contention and
+    // tripped at CPU 100% while passing in isolation.
+    expect(elapsed).toBeLessThan(5000);
     expect(calls[0].payload.timed_out).toBe(1);
     // A timeout is never folded into the clean count.
     expect(calls[0].payload.ran).toBe(1);

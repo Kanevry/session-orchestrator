@@ -633,7 +633,121 @@ describe('checkCiStatus — error containment', () => {
     // The payload preview is what proves WHICH garbage came back.
     expect(message).toContain('<!DOCTYPE html>');
   });
+
+  // Bug this catches (TV-001): the preview is raw stdout from a subprocess this
+  // module does not control, printed into a `console.warn` that sits beside the
+  // session-start banner. Interpolated verbatim, a payload carrying ANSI escapes
+  // and a CR could repaint or overwrite the lines around it — a CLI answer
+  // choosing what the operator's terminal shows. `JSON.stringify` escapes every
+  // control byte, so the preview is one line of printable text. RED without it:
+  // the raw ESC and CR reach the warn.
+  it('escapes control bytes in the payload preview instead of printing them raw', async () => {
+    const hostile = '\u001b[2J\u001b[H\rCI: all green{';
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITHUB_ORIGIN),
+      { ...ghRepoViewResponse, stdout: hostile },
+    ]);
+
+    const result = await checkCiStatus({ repoRoot: '/fake/repo', now: NOW }, { execFile: mockExecFile });
+
+    expect(result).toBeNull();
+    const [message] = warnSpy.mock.calls[0];
+    expect(message).toContain('returned unparseable JSON');
+    // The bytes are reported, but as escape SEQUENCES, never as control bytes.
+    // eslint-disable-next-line no-control-regex -- matching control bytes is the assertion
+    expect(message).not.toMatch(/[\u0000-\u001f]/);
+    expect(message).toContain('\\u001b[2J');
+    expect(message).toContain('\\r');
+  });
+
+  // ── wrong SHAPE, not wrong syntax (2026-08-28, W4 panel SEC-LOW-2) ─────────
+  //
+  // Bug this catches (TV-001): the two tests above cover payloads that fail to
+  // PARSE. A payload that parses cleanly into the wrong TYPE escaped the named
+  // channel entirely, and did so differently at each of the three call sites:
+  //
+  //   `gh repo view` → `null`  reached `const { nameWithOwner } = …` and threw
+  //     a bare `TypeError: Cannot destructure property 'nameWithOwner' of
+  //     'null'` — an operator-facing line naming neither CLI nor request.
+  //   `gh api …/check-runs` → `null` reached `data.check_runs` and threw the
+  //     same bare TypeError one frame later.
+  //   `glab api …/pipelines` → any non-array was swallowed by
+  //     `!Array.isArray(pipelines) → return null`: SILENT, indistinguishable
+  //     from "no CI to report".
+  //
+  // TV-004: the HTML row is asserted here only for `gh api`, the one label the
+  // two tests above do not already cover. Re-running HTML through `glab api`
+  // and `gh repo view` would duplicate them.
+  it.each([
+    ['glab api', 'pipelines', 'null', 'expected an array, got null'],
+    ['glab api', 'pipelines', '"ok"', 'expected an array, got string'],
+    ['gh api', 'check-runs', 'null', 'expected an object, got null'],
+    ['gh api', 'check-runs', '[]', 'expected an object, got array'],
+    ['gh api', 'check-runs', '"ok"', 'expected an object, got string'],
+    ['gh api', 'check-runs', '<!DOCTYPE html><html>Sign in</html>', 'returned unparseable JSON'],
+    ['gh repo view', 'nameWithOwner', 'null', 'expected an object, got null'],
+    ['gh repo view', 'nameWithOwner', '[]', 'expected an object, got array'],
+    ['gh repo view', 'nameWithOwner', '"ok"', 'expected an object, got string'],
+  ])('names %s (%s) when its stdout is %s', async (site, _what, payload, fragment) => {
+    const result = await runWithStdout(site, payload);
+
+    expect(result).toBeNull();
+    expect(warnSpy.mock.calls).toHaveLength(1);
+    const [message] = warnSpy.mock.calls[0];
+    // The identification the warn channel owes: WHICH subprocess answered.
+    expect(message).toContain(site);
+    expect(message).toContain(fragment);
+  });
+
+  // The other half of the same gate, and the reason the grid above has no
+  // `['glab api', …, '[]', …]` row: on the array site an empty array is a
+  // LEGITIMATE answer ("this project has no pipelines"), not a shape failure.
+  // A gate that warned here would fire on a correct response.
+  it('treats an empty pipelines array as a real answer, not a shape failure', async () => {
+    const result = await runWithStdout('glab api', '[]');
+
+    expect(result).toEqual(expect.objectContaining({
+      status: 'unknown',
+      details: expect.objectContaining({ reason: 'no-pipeline-for-head-sha' }),
+    }));
+    expect(warnSpy.mock.calls).toHaveLength(0);
+  });
 });
+
+/**
+ * Drive `checkCiStatus` to the point where ONE named subprocess returns
+ * `stdout`, and stub every earlier call with a valid response.
+ *
+ * @param {'glab api'|'gh api'|'gh repo view'} site
+ * @param {string} stdout  Raw payload the site's CLI should print
+ */
+function runWithStdout(site, stdout) {
+  const opts = { repoRoot: '/fake/repo', now: NOW };
+  if (site === 'glab api') {
+    return checkCiStatus(opts, {
+      execFile: makeExecFileMock([
+        gitRemoteResponse(GITLAB_ORIGIN),
+        gitRevParseResponse(HEAD_SHA),
+        { ...glabPipelinesResponse([]), stdout },
+      ]),
+    });
+  }
+  if (site === 'gh repo view') {
+    return checkCiStatus(opts, {
+      execFile: makeExecFileMock([
+        gitRemoteResponse(GITHUB_ORIGIN),
+        { ...ghRepoViewResponse, stdout },
+      ]),
+    });
+  }
+  return checkCiStatus(opts, {
+    execFile: makeExecFileMock([
+      gitRemoteResponse(GITHUB_ORIGIN),
+      ghRepoViewResponse,
+      { ...ghCheckRunsResponse([]), stdout },
+    ]),
+  });
+}
 
 // ── Test 15: #1065 GitLab API target — no ambient project lookup ─────────────
 
@@ -730,8 +844,17 @@ describe('checkCiStatus — #1065 GitLab API target', () => {
   });
 
   // Bug: an API response containing benign metadata but no pipeline array could
-  // escape as a result or warning, exposing implementation-only sentinel data.
-  it('returns no result and logs nothing for unexpected benign pipeline metadata', async () => {
+  // escape as a result, exposing implementation-only sentinel data.
+  //
+  // The silence half of this test was itself a defect and was inverted on
+  // 2026-08-28 (W4 panel, QA-LOW). `glab api …/pipelines` returning valid JSON
+  // of the wrong shape is a QUERY FAILURE — the CLI answered, and the module
+  // could not read the answer — so collapsing it onto a bare `null` restored
+  // exactly the "could not ask" == "nothing to report" confusion #1039 fixed
+  // one layer up. It now warns. What must still NOT escape is the payload:
+  // the shape error names the JSON TYPE only, which is why the sentinel
+  // assertion below is unchanged and still discriminating.
+  it('warns without echoing the payload for unexpected benign pipeline metadata', async () => {
     const benignMetadataSentinel = 'benign-pipeline-metadata-sentinel';
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITLAB_ORIGIN),
@@ -754,7 +877,9 @@ describe('checkCiStatus — #1065 GitLab API target', () => {
     );
 
     expect(result).toBeNull();
-    expect(warnSpy.mock.calls).toHaveLength(0);
+    expect(warnSpy.mock.calls).toHaveLength(1);
+    expect(warnSpy.mock.calls[0][0]).toContain('returned JSON of an unexpected shape');
+    expect(warnSpy.mock.calls[0][0]).toContain('expected an array, got object');
     expect(JSON.stringify([result, warnSpy.mock.calls])).not.toContain(benignMetadataSentinel);
   });
 });

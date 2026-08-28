@@ -7,7 +7,6 @@
  *   - DEFAULT_SESSION_ID_SOURCES — the default `sources` array (see below)
  *   - SEMANTIC_ID_RE — source-of-truth regex for semantic session IDs
  *   - UUID_RE        — regex for RFC 9562 UUID session IDs (any version 1–8)
- *   - UUID_V4_RE     — deprecated alias of UUID_RE (kept for importers)
  *
  * Closes #572 — Epic #568 Phase 2.1 (Parallel-Aware Sessions Semantic ID)
  * Closes #585 — Epic #583 W2-I2 (history-aware n-increment) per audit
@@ -87,14 +86,6 @@ export const SEMANTIC_ID_RE = /^([a-z0-9._/-]+)-(\d{4}-\d{2}-\d{2})-([a-z-]+)-(\
  * @type {RegExp}
  */
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-/**
- * @deprecated Use {@link UUID_RE}. Retained as an alias so no importer breaks;
- * the name is a misnomer since Kanevry#66 — the pattern accepts any RFC 9562
- * version 1–8, not only v4.
- * @type {RegExp}
- */
-export const UUID_V4_RE = UUID_RE;
 
 // ---------------------------------------------------------------------------
 // Internal helpers

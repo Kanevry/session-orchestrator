@@ -575,7 +575,10 @@ describe('evaluateLeakageGate', () => {
       ok: true,
       detail: expect.stringMatching(/^\d+ packed entries, 0 leaks$/),
     });
-  });
+    // 60s, not the 5s default: this spawns a REAL `npm pack --dry-run` over the
+    // whole working tree. Measured tripping the default under CPU 100% while
+    // passing in isolation — a load threshold, not a correctness one.
+  }, 60_000);
 });
 
 describe('evaluateRemoteHeadParity', () => {

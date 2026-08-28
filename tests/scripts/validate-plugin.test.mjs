@@ -35,7 +35,13 @@ function run(args = []) {
   return spawnSync('node', [SCRIPT, ...args], {
     encoding: 'utf8',
     cwd: REPO_ROOT,
-    timeout: 30_000,
+    // 120s, not 30s: the validator forks ~21 grandchild processes, and a
+    // 30s wall-clock budget is a LOAD threshold, not a correctness one — it
+    // was measured tripping at CPU 100% while passing in isolation. A spawn
+    // timeout kills the child and leaves `status: null`, which reads as a
+    // validator failure rather than as contention (hence the `r.error`
+    // assertion at the first use site).
+    timeout: 120_000,
   });
 }
 
@@ -47,11 +53,18 @@ describe('validate-plugin.mjs — current repo plugin', () => {
   // Spawn once per describe — the heavy validator forks ~21 grandchild
   // processes; re-spawning per it() flakes under loaded-runner contention.
   let r;
+  // 120s hook timeout: vitest's default `hookTimeout` is 30s, which caps the
+  // spawn budget above no matter how high it is set. Both numbers have to move
+  // together or the hook aborts first with "Hook timed out".
   beforeAll(() => {
     r = run([REPO_ROOT]);
-  });
+  }, 120_000);
 
   it('exits 0 when run against the current repo plugin', () => {
+    // Discriminates contention from a real failure: on a spawn timeout the
+    // child is killed, `status` is null, and "expected null to be 0" names
+    // the wrong defect. `error` carries ETIMEDOUT/ENOENT.
+    expect(r.error).toBeUndefined();
     expect(r.status).toBe(0);
   });
 

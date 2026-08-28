@@ -21,7 +21,15 @@
  *     string.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { readFileSync } from 'node:fs';
+import {
+  readFileSync,
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  realpathSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -117,6 +125,9 @@ describe('detectAutoPromotedWorktree() — #575 P3.2 detection', () => {
       wtPath: '/tmp/parent/myrepo-main-2026-05-27-deep-2',
       sessionId: 'main-2026-05-27-deep-2',
       branch: 'main',
+      // #1069: which KEY matched is part of the contract — a silent switch to
+      // the legacy key is what made Phase 4a dead in the first place.
+      source: 'basename',
     });
   });
 
@@ -216,6 +227,33 @@ describe('isWorktreeClean() — #575 P3.2 clean-check', () => {
     expect(result).toBe(false);
   });
 
+  // The marker `enterWorktree()` writes lives in `.orchestrator/`, which this
+  // repo only PARTLY gitignores — so it surfaces as an untracked file. Left
+  // unfiltered it would make EVERY promoted worktree dirty and turn the Phase 4a
+  // clean path (auto-remove) into a permanent AUQ. Table: the one line that is
+  // discounted, beside the near-misses that must still count as dirty.
+  const porcelainCases = [
+    ['bare untracked marker', '?? .orchestrator/promoted-from.json\n', true],
+    ['quoted untracked marker', '?? ".orchestrator/promoted-from.json"\n', true],
+    [
+      'marker beside real untracked work',
+      '?? .orchestrator/promoted-from.json\n?? notes.md\n',
+      false,
+    ],
+    ['MODIFIED marker (not untracked)', ' M .orchestrator/promoted-from.json\n', false],
+    ['STAGED marker (not untracked)', 'A  .orchestrator/promoted-from.json\n', false],
+    ['a DIFFERENT untracked file in .orchestrator/', '?? .orchestrator/other.json\n', false],
+    ['a path merely ENDING in the marker name', '?? nested/promoted-from.json\n', false],
+  ];
+
+  it.each(porcelainCases)('porcelain: %s', (_label, porcelain, expectedClean) => {
+    setExecResponses([
+      { ok: true, stdout: porcelain },
+      { ok: true, stdout: '## main...origin/main\n' },
+    ]);
+    expect(isWorktreeClean('/tmp/marker-wt')).toBe(expectedClean);
+  });
+
   it('returns false on git error (conservative PSA-003 default)', () => {
     setExecResponses([{ ok: false, stderr: 'fatal: not a git repository' }]);
     const result = isWorktreeClean('/tmp/error-wt');
@@ -292,5 +330,152 @@ describe('Phase 4a SKILL.md structure — #575 P3.2 documentation contract', () 
     const p4aBlock = content.slice(p4aIdx, p5Idx);
     expect(p4aBlock).toContain('parseSessionId');
     expect(p4aBlock).toContain('scripts/lib/session-id.mjs');
+  });
+});
+
+// ===========================================================================
+// Group 4 — marker-keyed detection across the #1069 process boundary
+//
+// The bug this group pins: since #1069 the session that RUNS in the promoted
+// worktree is a NEW session with its OWN id, and since #1067 the worktree sits
+// on `so/<sourceSessionId>`. The legacy key compares
+// `basename(repoRoot) === <mainRepoName>-<CURRENT sessionId>`, which can then
+// never hold — so Phase 4a was dead code in exactly the configuration it was
+// written for. The marker written by `enterWorktree()` is the recorded fact
+// that survives the boundary.
+//
+// Real files, real fs (only `node:child_process` is mocked) — the marker is a
+// filesystem contract, and a mocked reader would pin the mock, not the format.
+// ===========================================================================
+
+describe('detectAutoPromotedWorktree() — promotion marker (#1069 boundary)', () => {
+  const MARKER_RELPATH = join('.orchestrator', 'promoted-from.json');
+  const SOURCE_ID = 'main-2026-08-28-session-2';
+  const OTHER_ID = 'main-2026-08-28-session-9'; // the NEW session's id — never in the path
+  let tmpRoot;
+  let wtPath;
+
+  beforeEach(() => {
+    tmpRoot = realpathSync(mkdtempSync(join(tmpdir(), 'wt-cleanup-marker-')));
+    // Directory name deliberately carries the SOURCE id, so the legacy key can
+    // only ever match for SOURCE_ID and never for OTHER_ID.
+    wtPath = join(tmpRoot, `myrepo-${SOURCE_ID}`);
+    mkdirSync(join(wtPath, '.orchestrator'), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  /** Write a raw marker payload (string written verbatim — corrupt cases too). */
+  function writeMarker(raw) {
+    writeFileSync(join(wtPath, MARKER_RELPATH), raw, 'utf8');
+  }
+
+  const validMarker = () =>
+    JSON.stringify({
+      source_root_hash: 'a'.repeat(64),
+      source_root_basename: 'myrepo',
+      source_session_id: SOURCE_ID,
+      branch: `so/${SOURCE_ID}`,
+      promoted_at: '2026-08-28T09:00:00.000Z',
+    });
+
+  it('detects the worktree from the marker when the CURRENT session id differs (#1069)', () => {
+    writeMarker(validMarker());
+    // Only one git call is expected: `git branch --show-current`.
+    setExecResponses([{ ok: true, stdout: `so/${SOURCE_ID}\n` }]);
+
+    const result = detectAutoPromotedWorktree(wtPath, OTHER_ID);
+
+    expect(result).toEqual({
+      wtPath,
+      sessionId: SOURCE_ID,
+      branch: `so/${SOURCE_ID}`,
+      source: 'marker',
+    });
+    // The command actually issued — an args ARRAY, never a shell string (#577).
+    expect(execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['-C', wtPath, 'branch', '--show-current'],
+      expect.objectContaining({ encoding: 'utf8' }),
+    );
+  });
+
+  it('accepts the marker when the branch cannot be read at all (git error / detached HEAD)', () => {
+    // Conservative in the SAFE direction: detection says "promoted", and the
+    // destructive step stays gated by isWorktreeClean(), which fails closed.
+    writeMarker(validMarker());
+    setExecResponses([{ ok: false, stderr: 'fatal: not a git repository' }]);
+
+    expect(detectAutoPromotedWorktree(wtPath, OTHER_ID)).toMatchObject({
+      source: 'marker',
+      branch: `so/${SOURCE_ID}`,
+    });
+  });
+
+  // Table: every way a marker can fail to be usable. All of them must fall
+  // through to the legacy key — which, with the CURRENT session id differing
+  // from the directory name, yields null. None of them may throw.
+  const unusableMarkers = [
+    ['corrupt JSON', '{ not json at all'],
+    ['empty file', ''],
+    ['JSON array (wrong container)', '[]'],
+    ['JSON null', 'null'],
+    ['missing branch', JSON.stringify({ source_session_id: SOURCE_ID })],
+    ['empty branch', JSON.stringify({ source_session_id: SOURCE_ID, branch: '' })],
+    ['missing source_session_id', JSON.stringify({ branch: `so/${SOURCE_ID}` })],
+    ['non-string branch', JSON.stringify({ source_session_id: SOURCE_ID, branch: 42 })],
+  ];
+
+  it.each(unusableMarkers)('falls back to the legacy key on an unusable marker: %s', (_label, raw) => {
+    writeMarker(raw);
+    // The legacy key runs and issues its own `git worktree list --porcelain`.
+    setExecResponses([
+      { ok: true, stdout: `worktree ${join(tmpRoot, 'myrepo')}\n\nworktree ${wtPath}\n` },
+    ]);
+
+    expect(() => detectAutoPromotedWorktree(wtPath, OTHER_ID)).not.toThrow();
+  });
+
+  it('falls back to the legacy key when the worktree sits on a DIFFERENT branch than the marker records', () => {
+    // A stale marker copied into an unrelated checkout must not hijack detection.
+    writeMarker(validMarker());
+    setExecResponses([
+      { ok: true, stdout: 'feature/unrelated\n' }, // branch --show-current
+      { ok: true, stdout: `worktree ${join(tmpRoot, 'myrepo')}\n\nworktree ${wtPath}\n` },
+    ]);
+
+    // Legacy key: basename is `myrepo-<SOURCE_ID>`, current id is OTHER_ID → no match.
+    expect(detectAutoPromotedWorktree(wtPath, OTHER_ID)).toBeNull();
+  });
+
+  it('legacy key still works (and is labelled) when the marker is absent', () => {
+    // No marker written at all — the pre-#1069 same-session case.
+    setExecResponses([
+      { ok: true, stdout: `worktree ${join(tmpRoot, 'myrepo')}\n\nworktree ${wtPath}\n` },
+    ]);
+
+    expect(detectAutoPromotedWorktree(wtPath, SOURCE_ID)).toEqual({
+      wtPath,
+      sessionId: SOURCE_ID,
+      branch: 'main',
+      source: 'basename',
+    });
+  });
+
+  it('marker wins over the legacy key when BOTH would match', () => {
+    // Same directory, same session id — the marker still decides, and reports
+    // the branch the worktree is really on (`so/…`), not the session label's
+    // branch component (`main`) the legacy key infers.
+    writeMarker(validMarker());
+    setExecResponses([{ ok: true, stdout: `so/${SOURCE_ID}\n` }]);
+
+    expect(detectAutoPromotedWorktree(wtPath, SOURCE_ID)).toEqual({
+      wtPath,
+      sessionId: SOURCE_ID,
+      branch: `so/${SOURCE_ID}`,
+      source: 'marker',
+    });
   });
 });

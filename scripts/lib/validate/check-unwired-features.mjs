@@ -289,10 +289,11 @@ const PARSER_PATHS = Object.freeze([
 ]);
 
 /**
- * Declared-but-unread keys accepted on purpose. Key = full dotted path,
- * value = REASON naming the real consumer. See the header for the contract:
- * an empty reason, a key that left every config surface, and a key that got
- * wired are all reported so the list stays short and true.
+ * Declared-but-unread keys accepted on purpose. Key = full dotted path (S1/S2)
+ * or module path relative to the plugin root (S4), value = REASON naming the
+ * real consumer. See the header for the contract: an empty reason, a key that
+ * left every config surface, and a key that got wired are all reported so the
+ * list stays short and true.
  */
 const ALLOWLIST = Object.freeze({
   'auto-skill-dispatch':
@@ -303,6 +304,13 @@ const ALLOWLIST = Object.freeze({
     'dedicated reader outside the parser layer — scripts/lib/instruction-budget-guard.mjs parses this block itself (S2 exemption only; S1 evidence is real)',
   webhooks:
     'dedicated reader outside the parser layer — scripts/lib/webhook-url.mjs resolves these URLs env-first (S2 exemption only; S1 evidence is real)',
+  // S4 entry (module path, not a config key). The prose-only state is REAL and
+  // recorded here BY NAME rather than left anonymous among the ~50-module S4
+  // backlog, where a per-module expectation cannot be reviewed. Named callers
+  // let a reviewer check the four sites; the self-draining `allowlist-stale`
+  // rule reports this entry the day a .mjs caller makes it reachable.
+  [path.join('scripts', 'lib', 'session-transition.mjs')]:
+    'prose-only consumer — leaveSourceRoot() is called by 4 skill prose sites (skills/session-start/SKILL.md:45 + :229, skills/_shared/parallel-aware-auq.md, skills/_shared/parallel-aware-preamble.md); the worktree promotion is a coordinator action, not a script (#1069)',
 });
 
 /**
@@ -760,12 +768,21 @@ export function collectUnreachableLibraryModules(pluginRoot) {
   const modules = absolute.map((file) => {
     const body = readFileSync(file, 'utf8');
     const lines = body.split('\n');
+    const relative = path.relative(pluginRoot, file);
     return {
-      relative: path.relative(pluginRoot, file),
+      relative,
       base: path.basename(file),
       entrypoint: isCliEntrypoint(body),
       exports: collectExportedSymbols(body),
-      mentions: mentionedModuleTokens(lines),
+      // This file contributes NO edges — the S4 counterpart of the SELF_REL
+      // exclusion the S1/S2 corpus already applies, and for the identical
+      // reason. Every S4 `ALLOWLIST` key is a module path written here as a
+      // string literal, so counting it as a mention marks the allowlisted
+      // module reachable, S4 stops reporting it, and the entry is then reported
+      // `allowlist-stale` — the check silently blinding itself to exactly the
+      // module an operator flagged. Measured 2026-08-28 on the first S4
+      // allowlist entry: 52 → 51 unreachable modules plus one bogus stale line.
+      mentions: relative === SELF_REL ? new Set() : mentionedModuleTokens(lines),
     };
   });
 

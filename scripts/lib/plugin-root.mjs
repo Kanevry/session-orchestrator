@@ -16,15 +16,28 @@
  *        any checkout — GH Kanevry/session-orchestrator#64)
  *
  * `.mcp.json`'s bash bootstrap MIRRORS this order and cites this block. It
- * cannot reproduce tier 6 (a shell has no `import.meta.url`), so it implements:
- * env tiers → `git rev-parse --show-toplevel` (its analogue of tier 7) →
- * `node -e resolvePluginRoot()` (which runs THIS function, tiers 1-8) → its own
- * cache scan, reachable only when the module is not node-resolvable at all.
- * Before 2026-08-28 the shell scanned the caches BEFORE the node tier, so a host
- * with both a global npm install and a marketplace cache copy had the shell
- * pick the cache while this function picked the npm copy. When either side's
- * order changes, change both — the shell is the mirror, this list is the
- * original.
+ * implements: tiers 1-5 in this exact env order → `git rev-parse
+ * --show-toplevel` (its analogue of tier 7) → `node -e resolvePluginRoot()`
+ * (which runs THIS function, tiers 1-8) → its own cache scan, reachable only
+ * when the module is not node-resolvable at all.
+ *
+ * THE ONE REMAINING DIVERGENCE, stated exactly: **tier 6** — a shell has no
+ * `import.meta.url`, so the walk up from this file's own location has no
+ * analogue there. Everything else is mirrored byte-for-byte in behaviour: the
+ * env list AND its order, the `CODEX_HOME` trim (see `_pluginCacheBases`), the
+ * `package.json{name === "session-orchestrator"}` test (the shell runs the same
+ * `JSON.parse` via `node -e`, not a substring `grep` — a `grep` matched
+ * `"name": "session-orchestrator-fork"` that this function rejects), and the
+ * newest-wins-by-mtime tiebreak (`[ "$c" -nt "$r" ]` is strict, exactly like
+ * the `>` below).
+ *
+ * Two divergences that existed until 2026-08-28 and no longer do: the shell
+ * scanned the caches BEFORE the node tier (a host with both a global npm
+ * install and a marketplace cache copy had the shell pick the cache while this
+ * function picked the npm copy), and its env list read `CLAUDE_PLUGIN_ROOT,
+ * CODEX_PLUGIN_ROOT, PLUGIN_ROOT` — a different tier-1 winner, and no
+ * `CURSOR_RULES_DIR`/`PI_PLUGIN_ROOT` at all. When either side's order changes,
+ * change both — the shell is the mirror, this list is the original.
  *
  * Throws PluginRootResolutionError when all resolution levels fail.
  */
@@ -215,6 +228,15 @@ function _pluginCacheBases() {
  * recently", which is the intent, and it keeps this resolver free of a semver
  * parser — a lexical sort would already be wrong today (`3.9.0` sorts above
  * `3.22.0`). Revisit if a client starts pre-seeding caches it never launches.
+ *
+ * Equal-mtime tiebreak: the comparison is STRICTLY greater, so on a tie the
+ * FIRST candidate in scan order wins — bases in `_pluginCacheBases()` order
+ * (`CODEX_HOME` before `~/.claude`), then `readdirSync` order within each. Two
+ * cache copies sharing an mtime to the millisecond means the same content
+ * installed twice, so the choice is arbitrary rather than wrong; what matters
+ * is that it is DETERMINISTIC and identical to `.mcp.json`'s `[ "$c" -nt "$r" ]`,
+ * which is also strict. Untested by design — a test would pin an arbitrary
+ * choice as a contract.
  *
  * @param {string[]} tried  Diagnostic accumulator, appended to on failure
  * @returns {string|null} Absolute path to the newest cached plugin copy

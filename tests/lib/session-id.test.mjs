@@ -257,12 +257,16 @@ describe('Group C — resolveSemanticSessionId: backward-compat and mixed', () =
 // regex cases below earn their place. Only the DISCRIMINATING inputs remain:
 //
 //   REMOVED (TV-002b): 'SEMANTIC_ID_RE matches a canonical semantic id' and
-//   'UUID_V4_RE matches a valid UUID-v4'. Both were strictly weaker duplicates
+//   'UUID_RE matches a valid UUID'. Both were strictly weaker duplicates
 //   of Group A cases on the SAME input strings — Group A's first test parses
 //   'main-2026-05-27-deep-1' into all six fields (impossible unless the regex
 //   matches) and its UUID test parses '550e8400-…-446655440000' into
-//   format:'uuid' (impossible unless UUID_V4_RE matches). No mutation kills the
+//   format:'uuid' (impossible unless UUID_RE matches). No mutation kills the
 //   removed pair while leaving Group A green.
+//
+//   The names above are historical: the `UUID_V4_RE` alias was a misnomer
+//   (the pattern accepts RFC 9562 versions 1–8) and was removed once a
+//   repo-wide grep showed zero importers.
 // ---------------------------------------------------------------------------
 
 describe('Group D — SEMANTIC_ID_RE regex validation', () => {

@@ -295,7 +295,7 @@ async function flushTelemetry(projectRoot) {
 async function emitBackfillOutcome(kind, result, { sessionId, semanticSessionId }) {
   try {
     const recordId = typeof result?.sessionId === 'string' ? result.sessionId : null;
-    await emitEvent('orchestrator.session.backfill', {
+    await emitEvent('orchestrator.session.backfill_completed', {
       kind,
       action: typeof result?.action === 'string' ? result.action : 'unknown',
       ...(sessionId !== null ? { session_id: sessionId } : {}),

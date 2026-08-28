@@ -44,6 +44,12 @@ async function runHook({ projectDir, env = {}, stdin = null, registryDir = null,
         CLANK_EVENT_URL: '',
         // Isolate session registry writes to the per-test directory (#168).
         ...(registryDir ? { SO_SESSION_REGISTRY_DIR: registryDir } : {}),
+        // Scrub the operator's own session id. The live Claude Code environment
+        // exports CLAUDE_CODE_SESSION_ID (#1123), and `...process.env` above
+        // would hand the hook a REAL id from the surrounding session — which is
+        // exactly the input several tests below claim to control. `undefined`
+        // removes the key from the child env (node skips undefined entries).
+        CLAUDE_CODE_SESSION_ID: undefined,
         // #1138 — the hook reads the host's telemetry consent record to decide
         // whether to inject the consent nudge. It never WRITES it, so there is
         // no data hazard here; the hazard is determinism, because stdout would
@@ -410,12 +416,27 @@ describe('multi-session registry (#168)', { timeout: 15000 }, () => {
     expect(parsed.source).toBe('generated-uuid');
   });
 
-  it('preserves a valid UUID-v4 supplied through the sessionId alias', async () => {
+  // The harness does not promise v4. `parseSessionId`'s UUID_RE accepts any
+  // RFC 9562 version 1–8, and the start path must pass whatever it is through
+  // VERBATIM — into current-session.json AND into the session.lock, which is
+  // the file every peer-detection consumer keys on. Before this case, no
+  // UUIDv7 ever reached the start path in any test, so a version re-pin to v4
+  // (regenerating the id instead of preserving it) would have gone unnoticed.
+  it.each([
+    ['v4', '550e8400-e29b-41d4-a716-446655440004'],
+    ['v7', '017f22e2-79b0-7cc3-98c4-dc0c0c07398f'],
+  ])('preserves a valid UUID-%s supplied through the sessionId alias', async (_version, stdinUuid) => {
     const dir = await mkProjectTracked();
-    const stdinUuid = '550e8400-e29b-41d4-a716-446655440004';
     await runHook({ projectDir: dir, stdin: JSON.stringify({ sessionId: stdinUuid }) });
+
     const raw = await fs.readFile(path.join(dir, '.orchestrator', 'current-session.json'), 'utf8');
     expect(JSON.parse(raw)).toMatchObject({ session_id: stdinUuid, source: 'stdin' });
+
+    const lockRaw = await fs.readFile(path.join(dir, '.orchestrator', 'session.lock'), 'utf8');
+    const lock = JSON.parse(lockRaw);
+    expect(lock.session_id).toBe(stdinUuid);
+    // The semantic label is derived independently and must never be the raw id.
+    expect(lock.semantic_session_id).not.toBe(stdinUuid);
   });
 
   it('filters self out of detected peers — peer_count is 0 on a clean registry', async () => {
@@ -1447,40 +1468,40 @@ describe('registry census → semantic n-increment (#1066)', { timeout: 15000 },
     expect(session.session_id).toBe(stdinUuid);
   });
 
-  it('counts a registry entry whose raw session_id is itself semantic (Codex/Cursor)', async () => {
-    // The bug this guards: a census that reads ONLY `semantic_session_id` stops
-    // counting peers that write a semantic raw id and carry no separate label.
+  // Both rows share one shape (seed one registry entry, run the hook with no
+  // stdin, assert the minted semantic_session_id) and differ only in the
+  // entry's fields and the resulting session-N — merged per TV-004/testing.md
+  // rather than kept as two near-identical bodies.
+  it.each([
+    [
+      // The bug this guards: a census that reads ONLY `semantic_session_id`
+      // stops counting peers that write a semantic raw id and carry no
+      // separate label.
+      'counts a registry entry whose raw session_id is itself semantic (Codex/Cursor)',
+      'peer-semantic-raw',
+      (branch) => ({ session_id: `${branch}-${todayUtc()}-session-4`, branch, mode: 'session' }),
+      5,
+    ],
+    [
+      // The bug: a v1 entry (UUID raw id, no label) that makes the census
+      // throw silently drops semantic_session_id to null for the WHOLE
+      // session, because deriveSemanticCandidate swallows every failure. It
+      // must instead be skipped — contributing no candidate and no phantom
+      // bump.
+      'ignores a legacy v1 entry with no semantic_session_id instead of crashing the census',
+      'peer-legacy-v1',
+      (branch) => ({ session_id: 'cccccccc-3333-4333-8333-333333333333', branch }),
+      1,
+    ],
+  ])('%s', async (_label, entryName, buildEntry, expectedN) => {
     const dir = await mkProjectTracked();
     const branch = pinBranch(dir, 'so1066');
-    await seedRegistryEntry('peer-semantic-raw', {
-      session_id: `${branch}-${todayUtc()}-session-4`,
-      branch,
-      mode: 'session',
-    });
+    await seedRegistryEntry(entryName, buildEntry(branch));
 
     const result = await runHook({ projectDir: dir, useCwd: true });
 
     expect(result.code).toBe(0);
     const session = await readSessionFile(dir);
-    expect(session.semantic_session_id).toBe(`${branch}-${todayUtc()}-session-5`);
-  });
-
-  it('ignores a legacy v1 entry with no semantic_session_id instead of crashing the census', async () => {
-    // The bug: a v1 entry (UUID raw id, no label) that makes the census throw
-    // silently drops semantic_session_id to null for the WHOLE session, because
-    // deriveSemanticCandidate swallows every failure. It must instead be
-    // skipped — contributing no candidate and no phantom bump.
-    const dir = await mkProjectTracked();
-    const branch = pinBranch(dir, 'so1066');
-    await seedRegistryEntry('peer-legacy-v1', {
-      session_id: 'cccccccc-3333-4333-8333-333333333333',
-      branch,
-    });
-
-    const result = await runHook({ projectDir: dir, useCwd: true });
-
-    expect(result.code).toBe(0);
-    const session = await readSessionFile(dir);
-    expect(session.semantic_session_id).toBe(`${branch}-${todayUtc()}-session-1`);
+    expect(session.semantic_session_id).toBe(`${branch}-${todayUtc()}-session-${expectedN}`);
   });
 });

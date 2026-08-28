@@ -189,6 +189,21 @@ describe('check-unwired-features — declared-but-unread census', () => {
     expect(result.summary.consumerFiles).toBeGreaterThan(100);
     expect(result.findings.filter((f) => f.kind === 'allowlist-missing-reason')).toEqual([]);
     expect(result.findings.filter((f) => f.kind === 'allowlist-stale')).toEqual([]);
+
+    // #1069 ARCH-MED-2 — `leaveSourceRoot()` is wired by SKILL prose only. That
+    // state is RECORDED as a named allowlist line (with its four callers) rather
+    // than left anonymous inside the ~50-module S4 backlog, where no reviewer can
+    // check a per-module expectation. Two ways this row goes red, both wanted:
+    // drop the entry and the module reappears below; wire a real .mjs caller and
+    // the `allowlist-stale` assertion above fires instead.
+    const s4 = result.findings
+      .filter((f) => f.kind === 'unreachable-library-module')
+      .map((f) => f.key);
+    expect(s4).not.toContain(join('scripts', 'lib', 'session-transition.mjs'));
+    // Vacuum guard: an empty S4 census would satisfy the line above for the
+    // wrong reason (`.claude/rules/host-resources.md` HR-105 — a class at 0%
+    // is either genuinely rare or silently broken, and the two look alike).
+    expect(s4.length).toBeGreaterThan(10);
   });
 });
 

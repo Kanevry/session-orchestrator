@@ -36,6 +36,11 @@ import { acquire, release, buildLockOwnerProof } from '../session-lock.mjs';
 import { emitEvent } from '../events.mjs';
 import { main as gcMain } from '../../gc-stale-worktrees.mjs';
 import { SEMANTIC_ID_RE } from '../session-id.mjs';
+import { repoPathHash } from '../session-registry.mjs';
+// Marker location is owned by its READER (session-end Phase 4a) — importing the
+// constant from there keeps writer and reader on one string. The dependency runs
+// heavy→lean (this pipeline → the dependency-free cleanup helper), never back.
+import { PROMOTION_MARKER_RELPATH } from '../session-end/worktree-cleanup.mjs';
 
 // ---------------------------------------------------------------------------
 // Type definitions
@@ -548,7 +553,27 @@ export async function runStoryPipeline(context, opts = {}) {
 const ENTER_WORKTREE_BRANCH_RE = /^[a-zA-Z0-9._/-]+$/;
 
 /**
- * Set of branch names currently checked out by ANY worktree of `repoRoot` (#1067).
+ * Raised when the promotion branch `so/<sessionId>` is already checked out by
+ * another worktree. Refusing is the point: adopting a foreign target worktree
+ * would put two sessions on one branch (PSA-002 territory), so the caller gets
+ * the conflicting path by name instead of a silent takeover.
+ */
+export class WorktreePromotionBranchError extends Error {
+  /**
+   * @param {string} message
+   * @param {{branch: string, checkedOutAt: string}} detail
+   */
+  constructor(message, { branch, checkedOutAt } = {}) {
+    super(message);
+    this.name = 'WorktreePromotionBranchError';
+    this.branch = branch;
+    this.checkedOutAt = checkedOutAt;
+  }
+}
+
+/**
+ * Map of branch name → worktree path for every branch currently checked out by
+ * ANY worktree of `repoRoot` (#1067).
  *
  * Deliberately NOT `listWorktrees()` from `../worktree/listing.mjs`: that helper
  * runs `git worktree list --porcelain` in `process.cwd()` (it has no repo
@@ -561,7 +586,8 @@ const ENTER_WORKTREE_BRANCH_RE = /^[a-zA-Z0-9._/-]+$/;
  *
  * @param {Function} exec      zx-like template-tag executor (the DI seam).
  * @param {string} repoRoot    Absolute path to the source git repository.
- * @returns {Promise<Set<string>>} Branch names without the `refs/heads/` prefix.
+ * @returns {Promise<Map<string, string>>} Branch names (without the
+ *   `refs/heads/` prefix) → the worktree path that has them checked out.
  *   Empty on git failure — the caller then behaves exactly as it did before this
  *   check existed, so a broken listing degrades to git's own loud
  *   `already used by worktree` error rather than to a silent wrong branch.
@@ -572,15 +598,86 @@ async function listCheckedOutBranches(exec, repoRoot) {
     const result = await exec`git -C ${repoRoot} worktree list --porcelain`;
     stdout = String(result?.stdout ?? '');
   } catch {
-    return new Set();
+    return new Map();
   }
 
-  const branches = new Set();
+  const branches = new Map();
+  let currentPath = null;
   for (const rawLine of stdout.split('\n')) {
-    const match = /^branch refs\/heads\/(.+)$/.exec(rawLine.trimEnd());
-    if (match) branches.add(match[1]);
+    const line = rawLine.trimEnd();
+    const wtMatch = /^worktree (.+)$/.exec(line);
+    if (wtMatch) {
+      currentPath = wtMatch[1];
+      continue;
+    }
+    const branchMatch = /^branch refs\/heads\/(.+)$/.exec(line);
+    if (branchMatch) branches.set(branchMatch[1], currentPath ?? '');
   }
   return branches;
+}
+
+/**
+ * Does `<ref>` resolve in `repoRoot`? Wraps `git rev-parse --verify --quiet`.
+ *
+ * @param {Function} exec
+ * @param {string} repoRoot
+ * @param {string} ref
+ * @returns {Promise<boolean>} false on any git failure (the ref is absent, or
+ *   git could not be asked — both lead to the create-new path, whose failure
+ *   mode is git's own loud error rather than a silent wrong checkout).
+ */
+async function refExists(exec, repoRoot, ref) {
+  try {
+    await exec`git -C ${repoRoot} rev-parse --verify --quiet ${ref}`;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Record, inside the freshly created worktree, that it was auto-promoted —
+ * and from where. Best-effort: a failure to write the marker degrades Phase 4a
+ * detection to the legacy basename key, it never fails the promotion itself.
+ *
+ * No absolute source path is stored: `source_root_hash` is `repoPathHash()`, the
+ * same stable SHA-256 the session registry uses to correlate repos without
+ * exposing the operator's filesystem layout.
+ *
+ * @param {object} params
+ * @param {string} params.wtPath        Freshly created worktree.
+ * @param {string} params.sourceRoot    Resolved source checkout.
+ * @param {string} params.sessionId     Session label the worktree was created for.
+ * @param {string} params.branch        Branch the worktree actually landed on.
+ * @returns {boolean} true when the marker was written.
+ */
+function writePromotionMarker({ wtPath, sourceRoot, sessionId, branch }) {
+  try {
+    const markerPath = path.join(wtPath, PROMOTION_MARKER_RELPATH);
+    fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+    fs.writeFileSync(
+      markerPath,
+      JSON.stringify(
+        {
+          source_root_hash: repoPathHash(sourceRoot),
+          source_root_basename: path.basename(sourceRoot),
+          source_session_id: sessionId,
+          branch,
+          promoted_at: new Date().toISOString(),
+        },
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+    return true;
+  } catch (err) {
+    console.warn(
+      `enterWorktree: could not write promotion marker in ${wtPath} (${err.message}) — ` +
+        'session-end Phase 4a falls back to basename detection',
+    );
+    return false;
+  }
 }
 
 /**
@@ -617,6 +714,13 @@ async function listCheckedOutBranches(exec, repoRoot) {
  *     `<branch>` as a START POINT only and create a fresh promotion branch
  *     `so/<sessionId>` at it: `git worktree add -b so/<sessionId> <wtPath> <branch>`.
  *     The source branch and the source worktree are left untouched.
+ *     If `so/<sessionId>` ALREADY exists (a worktree directory was removed but
+ *     its branch survived), it is REUSED — `git worktree add <wtPath>
+ *     so/<sessionId>`, `reusedBranch: true` in the return — because `-b` would
+ *     abort with `fatal: a branch named 'so/<sessionId>' already exists`.
+ *     If it exists AND is checked out by some worktree, this throws
+ *     `WorktreePromotionBranchError` naming that path: adopting a foreign
+ *     target worktree is refused, never silently taken over.
  *  2. `<branch>` exists but is not checked out (verified via
  *     `git rev-parse --verify <branch>`): `git worktree add <wtPath> <branch>`.
  *  3. `<branch>` does not exist: `git worktree add -b <branch> <wtPath>`.
@@ -629,13 +733,22 @@ async function listCheckedOutBranches(exec, repoRoot) {
  * @param {string} params.repoRoot  - Path to the source git repository (passed explicitly to avoid CWD drift per #219).
  * @param {object} [opts]
  * @param {Function} [opts.$]       - zx-like template-tag executor (DI seam); falls back to lazy `await import('zx')`.
- * @returns {Promise<{ wtPath: string, reused: boolean, branch?: string, promotedFrom?: string }>}
+ * Every freshly created worktree also gets a `.orchestrator/promoted-from.json`
+ * marker (see {@link PROMOTION_MARKER_RELPATH}) so session-end Phase 4a can
+ * still recognise it after the #1069 process boundary hands the worktree to a
+ * session with a different id. Marker writing is best-effort and never fails
+ * the promotion.
+ *
+ * @returns {Promise<{ wtPath: string, reused: boolean, branch?: string, promotedFrom?: string, reusedBranch?: true }>}
  *   `branch` is the branch the new worktree actually landed on — equal to the
  *   `branch` param except in case 1 above, where it is `so/<sessionId>` and
- *   `promotedFrom` carries the requested source branch. Both fields are absent
- *   on the `reused: true` path (no branch was chosen — the worktree pre-existed).
+ *   `promotedFrom` carries the requested source branch. `reusedBranch` is
+ *   present (and `true`) only when an existing `so/<sessionId>` was checked out
+ *   rather than created. All three are absent on the `reused: true` path (no
+ *   branch was chosen — the worktree pre-existed).
  * @throws {TypeError} when any required param is missing or fails validation.
  * @throws {WorktreeBoundaryError} when the computed worktree path escapes `basePath`.
+ * @throws {WorktreePromotionBranchError} when `so/<sessionId>` is checked out elsewhere.
  */
 export async function enterWorktree({ basePath, sessionId, branch, repoRoot } = {}, opts = {}) {
   // -------------------------------------------------------------------------
@@ -746,10 +859,32 @@ export async function enterWorktree({ basePath, sessionId, branch, repoRoot } = 
   const targetBranch = promoted ? `so/${sessionId}` : branch;
 
   // -------------------------------------------------------------------------
-  // Step 6: Detect whether branch already exists, then `git worktree add`.
-  // A branch that a worktree has checked out exists by construction, so the
-  // rev-parse probe is skipped on the promotion path.
+  // Step 6: Decide the `git worktree add` argv.
+  //
+  // On the promotion path the target is `so/<sessionId>`, which can be in any
+  // of THREE states — and only the first was handled before:
+  //   (a) absent           → create it at `<branch>`: `add -b so/<id> <wt> <branch>`
+  //   (b) exists, free     → REUSE it: `add <wt> so/<id>`. This is the survivor
+  //       of a worktree whose directory was removed while its branch stayed
+  //       behind (`git worktree remove` does not delete the branch); `-b` would
+  //       abort Phase 0.5 with `fatal: a branch named 'so/<id>' already exists`.
+  //   (c) exists, checked out elsewhere → REFUSE. Adopting a foreign target
+  //       worktree is exactly what Phase 0.5 must not do.
   // -------------------------------------------------------------------------
+  let reusedBranch = false;
+  if (promoted) {
+    const checkedOutAt = checkedOutBranches.get(targetBranch);
+    if (checkedOutAt !== undefined) {
+      throw new WorktreePromotionBranchError(
+        `enterWorktree: promotion branch '${targetBranch}' is already checked out at '${checkedOutAt}' — refusing to adopt a foreign worktree`,
+        { branch: targetBranch, checkedOutAt },
+      );
+    }
+    reusedBranch = await refExists(exec, repoRoot, `refs/heads/${targetBranch}`);
+  }
+
+  // A branch that a worktree has checked out exists by construction, so the
+  // source-branch rev-parse probe is skipped on the promotion path.
   let branchExists = promoted;
   if (!promoted) {
     try {
@@ -760,13 +895,27 @@ export async function enterWorktree({ basePath, sessionId, branch, repoRoot } = 
     }
   }
 
-  if (promoted) {
+  if (promoted && reusedBranch) {
+    await exec`git -C ${repoRoot} worktree add ${wtPath} ${targetBranch}`;
+  } else if (promoted) {
     await exec`git -C ${repoRoot} worktree add -b ${targetBranch} ${wtPath} ${branch}`;
   } else if (branchExists) {
     await exec`git -C ${repoRoot} worktree add ${wtPath} ${branch}`;
   } else {
     await exec`git -C ${repoRoot} worktree add -b ${branch} ${wtPath}`;
   }
+
+  // -------------------------------------------------------------------------
+  // Step 6b: Record the promotion FACT inside the new worktree (#1069 boundary).
+  // Session-end Phase 4a runs in a session whose id is NOT this one, so nothing
+  // in the path or the branch identifies the worktree to it — the marker does.
+  // -------------------------------------------------------------------------
+  writePromotionMarker({
+    wtPath,
+    sourceRoot: resolvedRepoRoot,
+    sessionId,
+    branch: targetBranch,
+  });
 
   // -------------------------------------------------------------------------
   // Step 7: WARN to stderr (PRD §3 P3 Gherkin row-1 + #574 DoD).
@@ -777,7 +926,12 @@ export async function enterWorktree({ basePath, sessionId, branch, repoRoot } = 
       : `enterWorktree: created sibling worktree at ${wtPath} (branch=${branch}, sessionId=${sessionId})`,
   );
 
-  return promoted
-    ? { wtPath, reused: false, branch: targetBranch, promotedFrom: branch }
-    : { wtPath, reused: false, branch };
+  if (promoted) {
+    const result = { wtPath, reused: false, branch: targetBranch, promotedFrom: branch };
+    // Present only when it happened, so the common shape stays byte-identical
+    // for every existing consumer and strict-equality pin.
+    if (reusedBranch) result.reusedBranch = true;
+    return result;
+  }
+  return { wtPath, reused: false, branch };
 }

@@ -17,7 +17,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, readFileSync, utimesSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertErrorShape } from '../_helpers/assert-error-shape.mjs';
 
@@ -410,6 +410,47 @@ describe('resolvePluginRoot — plugin-cache scan (Level 8, GH Kanevry/session-o
       // this is the module half of that agreed contract.
       expect(runIsolatedResolve(isolatedModule, sandbox, cachedHome, { CODEX_HOME: '   ' }))
         .toEqual({ ok: true, root: cached });
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('resolvePluginRoot — plugin cache: newest wins by mtime', () => {
+  // Bug this catches (TV-001): the cache scan keeps the FIRST valid candidate
+  // unless a later one is strictly newer. The sibling test above proves only
+  // that a valid copy beats an invalid one — with a single valid candidate,
+  // dropping the mtime comparison entirely (`best = candidate` unconditionally,
+  // or keeping the first unconditionally) is invisible. Two VALID copies in the
+  // same cache is the real marketplace shape (an upgrade leaves the old version
+  // directory behind), and the intent stated in the docblock is "the copy the
+  // client installed most recently" — not the first `readdirSync` returns.
+  //
+  // `utimesSync` sets the mtimes explicitly: writing one after the other gives
+  // sub-millisecond deltas that `readdirSync` order can mask.
+  it('prefers the more recently installed of two valid cached copies', () => {
+    const sandbox = mkdtempSync(path.join(os.tmpdir(), 'plugin-root-mtime-'));
+    try {
+      const isolatedModule = path.join(sandbox, 'plugin-root.mjs');
+      copyFileSync(fileURLToPath(new URL('../../scripts/lib/plugin-root.mjs', import.meta.url)), isolatedModule);
+
+      const home = path.join(sandbox, 'home');
+      const cacheDir = path.join(home, '.codex', 'plugins', 'cache', 'local', 'session-orchestrator');
+      const older = path.join(cacheDir, '3.21.0');
+      const newer = path.join(cacheDir, '3.22.0');
+      for (const dir of [older, newer]) {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'session-orchestrator' }), 'utf8');
+      }
+
+      utimesSync(older, new Date('2026-01-01T00:00:00Z'), new Date('2026-01-01T00:00:00Z'));
+      utimesSync(newer, new Date('2026-08-01T00:00:00Z'), new Date('2026-08-01T00:00:00Z'));
+      expect(runIsolatedResolve(isolatedModule, sandbox, home)).toEqual({ ok: true, root: newer });
+
+      // Swap the timestamps: the ANSWER must follow the mtime, not the name.
+      // Without this half, a lexical or readdir-order tiebreak also passes.
+      utimesSync(older, new Date('2026-09-01T00:00:00Z'), new Date('2026-09-01T00:00:00Z'));
+      expect(runIsolatedResolve(isolatedModule, sandbox, home)).toEqual({ ok: true, root: older });
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }

@@ -87,10 +87,13 @@ describe('computeDelta', () => {
   });
 
   // #1071: production `sessions.jsonl` records nest the rate under
-  // `effectiveness`; top-level `completion_rate` is null on every record
-  // (measured 2026-08-28: 281 records, 0 non-null flat, 182 nested). The
-  // nested shape below is therefore the REAL input; the one flat case that
-  // remains is kept deliberately, to pin the legacy fallback.
+  // `effectiveness`. The top-level `completion_rate` key is ABSENT — not
+  // present-but-null, as an earlier revision of this comment claimed.
+  // Measured 2026-08-28 @ 7daa3d2 over `.orchestrator/metrics/sessions.jsonl`
+  // (281 records): `hasTopLevelKey: 0`, `nested: 182`, and 99 records with no
+  // completion rate in either shape. The nested shape below is therefore the
+  // REAL input; the one flat case that remains is kept deliberately, to pin
+  // the legacy fallback.
   it('trend bonus +0.15 from the LEGACY flat completion_rate shape (backward compat)', () => {
     const sessions = [
       { session_type: 'feature', completion_rate: 1.0 },
@@ -124,6 +127,22 @@ describe('computeDelta', () => {
     // 0.075 trend + 0.05 low-context-pressure nudge (#332), which the presence
     // of an `effectiveness` object unlocks for candidateMode 'feature'.
     expect(computeDelta('feature', { recentSessions: sessions })).toBe(0.125);
+  });
+
+  // The DIVISOR is the contract, not the numerator. 99 of the 281 production
+  // records carry no completion rate in either shape (measured 2026-08-28 @
+  // 7daa3d2), so "average over the KNOWN values" would let a single 1.0 session
+  // beside two unknowns score a perfect 1.0 and hand out the >= 0.9 trend bonus
+  // on one data point. Unknown contributes 0 AND still counts in the divisor.
+  it('averages over the FULL slice length, not over the known values only', () => {
+    const sessions = [
+      { session_type: 'deep', effectiveness: { completion_rate: 1.0 } },
+      { session_type: 'deep' }, // no rate in either shape — like 99 real records
+      { session_type: 'deep' },
+    ];
+    // 1.0 / 3 = 0.333… → below 0.9 → the weak trend bonus, never the strong one.
+    // candidateMode 'deep' isolates the trend branch (no low-pressure nudge).
+    expect(computeDelta('deep', { recentSessions: sessions })).toBe(0.075);
   });
 
   it('no trend bonus when fewer than 3 recent sessions (only the pressure nudge remains)', () => {

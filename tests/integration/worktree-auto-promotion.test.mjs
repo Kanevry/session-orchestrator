@@ -27,6 +27,8 @@ import {
   mkdtempSync,
   rmSync,
   writeFileSync,
+  readFileSync,
+  existsSync,
   mkdirSync,
   realpathSync as realRealpathSync,
 } from 'node:fs';
@@ -37,7 +39,13 @@ import { execFileSync } from 'node:child_process';
 import {
   enterWorktree,
   WorktreeBoundaryError,
+  WorktreePromotionBranchError,
 } from '@lib/autopilot/worktree-pipeline.mjs';
+import {
+  detectAutoPromotedWorktree,
+  isWorktreeClean,
+  PROMOTION_MARKER_RELPATH,
+} from '@lib/session-end/worktree-cleanup.mjs';
 
 // ---------------------------------------------------------------------------
 // DI factory — copied from tests/lib/autopilot/worktree-pipeline.test.mjs
@@ -57,6 +65,11 @@ import {
  * @param {string} [opts.worktreeList]    - stdout returned for `git worktree list
  *   --porcelain` (verbatim porcelain text; default '' = no worktree records).
  * @returns {ReturnType<typeof vi.fn>}
+ *
+ * NOTE on `rev-parse`: a bare `mockImplementation` that RESOLVES everything
+ * means "every ref exists" — which, since the `so/<sessionId>` three-state fix,
+ * routes the promotion path into branch-REUSE. Tests that want the create-new
+ * arm must therefore reject rev-parse explicitly (`throwOnMatch: /rev-parse/`).
  */
 function makeMockDollar({ throwOnCalls = [], throwOnMatch = null, worktreeList = '' } = {}) {
   let callCount = 0;
@@ -277,6 +290,8 @@ describe('enterWorktree — source branch already checked out (#1067)', () => {
     // fix the SUT emitted exactly that invalid `worktree add <wtPath> main`.
     const $mock = makeMockDollar({
       worktreeList: porcelainListing([{ path: repoRoot, branch: 'main' }]),
+      // `so/<id>` does not exist yet → the create-new arm.
+      throwOnMatch: /rev-parse/,
     });
 
     const result = await enterWorktree(
@@ -286,14 +301,18 @@ describe('enterWorktree — source branch already checked out (#1067)', () => {
 
     const wtPath = path.join(basePath, `myrepo-${VALID_SESSION_ID}`);
 
-    // 2 calls: worktree list + worktree add. A branch a worktree has checked
-    // out exists by construction, so the rev-parse probe is skipped.
-    expect($mock.mock.calls.length).toBe(2);
+    // 3 calls: worktree list + the `so/<id>` existence probe + worktree add.
+    // The SOURCE branch is not probed — a branch a worktree has checked out
+    // exists by construction.
+    expect($mock.mock.calls.length).toBe(3);
     expect(reconstructCommand($mock.mock.calls[0])).toBe(
       `git -C ${repoRoot} worktree list --porcelain`,
     );
-    // Exact argv — `main` is only the START POINT; the checkout lands on so/<id>.
     expect(reconstructCommand($mock.mock.calls[1])).toBe(
+      `git -C ${repoRoot} rev-parse --verify --quiet refs/heads/so/${VALID_SESSION_ID}`,
+    );
+    // Exact argv — `main` is only the START POINT; the checkout lands on so/<id>.
+    expect(reconstructCommand($mock.mock.calls[2])).toBe(
       `git -C ${repoRoot} worktree add -b so/${VALID_SESSION_ID} ${wtPath} main`,
     );
 
@@ -309,6 +328,7 @@ describe('enterWorktree — source branch already checked out (#1067)', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const $mock = makeMockDollar({
       worktreeList: porcelainListing([{ path: repoRoot, branch: 'main' }]),
+      throwOnMatch: /rev-parse/,
     });
 
     await enterWorktree(
@@ -643,6 +663,216 @@ describe('enterWorktree — real git repository (#1067)', () => {
       expect(git(result.wtPath, ['rev-parse', 'HEAD']).trim()).toBe(
         git(repoRoot, ['rev-parse', 'HEAD']).trim(),
       );
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// `so/<sessionId>` already exists — three states, one table
+//
+// The bug: `git worktree remove` deletes the DIRECTORY, not the branch. A
+// second promotion for the same session id then ran `worktree add -b so/<id>`
+// against a branch that already existed and died with
+// `fatal: a branch named 'so/<id>' already exists` — straight out of Phase 0.5,
+// where the operator has no repair path in front of him.
+// ---------------------------------------------------------------------------
+
+describe('enterWorktree — promotion branch so/<sessionId> already exists', () => {
+  const promoBranch = () => `so/${VALID_SESSION_ID}`;
+
+  const states = [
+    {
+      name: '(a) absent → creates it at the source branch',
+      otherWorktrees: [],
+      revParseRejects: true,
+      expectedAddArgv: (wtPath) => `worktree add -b ${promoBranch()} ${wtPath} main`,
+      expectReusedBranch: undefined,
+    },
+    {
+      name: '(b) exists but checked out nowhere → REUSES it (no -b)',
+      otherWorktrees: [],
+      revParseRejects: false,
+      expectedAddArgv: (wtPath) => `worktree add ${wtPath} ${promoBranch()}`,
+      expectReusedBranch: true,
+    },
+  ];
+
+  it.each(states)('$name', async ({ otherWorktrees, revParseRejects, expectedAddArgv, expectReusedBranch }) => {
+    const $mock = makeMockDollar({
+      worktreeList: porcelainListing([
+        { path: repoRoot, branch: 'main' },
+        ...otherWorktrees,
+      ]),
+      ...(revParseRejects ? { throwOnMatch: /rev-parse/ } : {}),
+    });
+
+    const result = await enterWorktree(
+      { basePath, sessionId: VALID_SESSION_ID, branch: 'main', repoRoot },
+      { $: $mock },
+    );
+
+    const wtPath = path.join(basePath, `myrepo-${VALID_SESSION_ID}`);
+    const addCall = reconstructCommand($mock.mock.calls.at(-1));
+    expect(addCall).toBe(`git -C ${repoRoot} ${expectedAddArgv(wtPath)}`);
+    expect(result.branch).toBe(promoBranch());
+    expect(result.promotedFrom).toBe('main');
+    expect(result.reusedBranch).toBe(expectReusedBranch);
+  });
+
+  it('(c) checked out by ANOTHER worktree → refuses with WorktreePromotionBranchError', async () => {
+    const foreignWt = path.join(basePath, 'someone-elses-worktree');
+    const $mock = makeMockDollar({
+      worktreeList: porcelainListing([
+        { path: repoRoot, branch: 'main' },
+        { path: foreignWt, branch: `so/${VALID_SESSION_ID}` },
+      ]),
+    });
+
+    const thrown = await enterWorktree(
+      { basePath, sessionId: VALID_SESSION_ID, branch: 'main', repoRoot },
+      { $: $mock },
+    ).catch((e) => e);
+
+    expect(thrown).toBeInstanceOf(WorktreePromotionBranchError);
+    expect(thrown.name).toBe('WorktreePromotionBranchError');
+    // The operator must be told WHERE — a refusal he cannot act on is a dead end.
+    expect(thrown.message).toContain(foreignWt);
+    expect(thrown.branch).toBe(`so/${VALID_SESSION_ID}`);
+    expect(thrown.checkedOutAt).toBe(foreignWt);
+
+    // Refusal means refusal: no worktree was added, no directory created.
+    const issued = $mock.mock.calls.map((c) => reconstructCommand(c));
+    expect(issued.some((c) => c.includes('worktree add'))).toBe(false);
+    expect(existsSync(path.join(basePath, `myrepo-${VALID_SESSION_ID}`))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Promotion marker — the fact that survives the #1069 process boundary
+// ---------------------------------------------------------------------------
+
+describe('enterWorktree — promotion marker (#1069)', () => {
+  function readMarker(wtPath) {
+    return JSON.parse(readFileSync(path.join(wtPath, PROMOTION_MARKER_RELPATH), 'utf8'));
+  }
+
+  it('writes .orchestrator/promoted-from.json recording branch, session label and a HASHED source root', async () => {
+    const $mock = makeMockDollar({
+      worktreeList: porcelainListing([{ path: repoRoot, branch: 'main' }]),
+      throwOnMatch: /rev-parse/,
+    });
+
+    const result = await enterWorktree(
+      { basePath, sessionId: VALID_SESSION_ID, branch: 'main', repoRoot },
+      { $: $mock },
+    );
+
+    const marker = readMarker(result.wtPath);
+    expect(marker.branch).toBe(`so/${VALID_SESSION_ID}`);
+    expect(marker.source_session_id).toBe(VALID_SESSION_ID);
+    expect(marker.source_root_basename).toBe('myrepo');
+    expect(marker.source_root_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(Date.parse(marker.promoted_at)).not.toBeNaN();
+    // No absolute path may appear in the payload — the hash exists precisely so
+    // the operator's filesystem layout never lands in a shippable file.
+    expect(JSON.stringify(marker)).not.toContain(repoRoot);
+    expect(JSON.stringify(marker)).not.toContain(basePath);
+  });
+
+  it('records the plain branch (not so/…) when no promotion happened', async () => {
+    const $mock = makeMockDollar(); // nothing checked out → non-promotion path
+    const result = await enterWorktree(
+      { basePath, sessionId: VALID_SESSION_ID, branch: 'existing-branch', repoRoot },
+      { $: $mock },
+    );
+    expect(readMarker(result.wtPath).branch).toBe('existing-branch');
+  });
+
+  it('does NOT write a marker on the reuse path (no branch was chosen)', async () => {
+    const wtPath = path.join(basePath, `myrepo-${VALID_SESSION_ID}`);
+    mkdirSync(wtPath, { recursive: true });
+    writeFileSync(path.join(wtPath, '.git'), 'gitdir: /tmp/elsewhere');
+
+    await enterWorktree(
+      { basePath, sessionId: VALID_SESSION_ID, branch: 'feat/x', repoRoot },
+      { $: makeMockDollar() },
+    );
+
+    expect(existsSync(path.join(wtPath, PROMOTION_MARKER_RELPATH))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Real-git proof: enterWorktree → marker → session-end Phase 4a detection
+//
+// The mocked suites above cannot prove the round trip, because the thing under
+// test is a file written by one module and read by another across a process
+// boundary. This runs the real zx executor, the real git, and the real
+// `detectAutoPromotedWorktree` with a session id that appears NOWHERE in the
+// worktree's path or branch — the #1069 situation, verbatim.
+// ---------------------------------------------------------------------------
+
+describe('enterWorktree → detectAutoPromotedWorktree round trip (real git, #1069)', () => {
+  it(
+    'a session with a DIFFERENT id still detects the worktree, via the marker',
+    { timeout: 20_000 },
+    async () => {
+      const git = (cwd, args) =>
+        execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+
+      git(repoRoot, ['init', '-q']);
+      git(repoRoot, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
+      git(repoRoot, ['config', 'user.email', 'test@example.invalid']);
+      git(repoRoot, ['config', 'user.name', 'Test']);
+      git(repoRoot, ['config', 'commit.gpgsign', 'false']);
+      writeFileSync(path.join(repoRoot, 'README.md'), '# fixture\n');
+      // Reproduce THIS repo's `.orchestrator/` shape: partly tracked, so git
+      // does NOT collapse the directory into a single `?? .orchestrator/` line
+      // and the marker surfaces as its own untracked entry. That is the exact
+      // configuration in which an unfiltered marker would make every promoted
+      // worktree read dirty.
+      mkdirSync(path.join(repoRoot, '.orchestrator'), { recursive: true });
+      writeFileSync(path.join(repoRoot, '.orchestrator', 'keep.json'), '{}\n');
+      git(repoRoot, ['add', 'README.md', '.orchestrator/keep.json']);
+      git(repoRoot, ['commit', '-q', '-m', 'init']);
+
+      // Real zx executor — the production call shape.
+      const result = await enterWorktree({
+        basePath,
+        sessionId: VALID_SESSION_ID,
+        branch: 'main',
+        repoRoot,
+      });
+
+      const marker = JSON.parse(
+        readFileSync(path.join(result.wtPath, PROMOTION_MARKER_RELPATH), 'utf8'),
+      );
+      expect(marker.branch).toBe(`so/${VALID_SESSION_ID}`);
+      expect(git(result.wtPath, ['branch', '--show-current']).trim()).toBe(marker.branch);
+
+      // The #1069 boundary: session-end runs under a session id that never
+      // touched this worktree. The legacy basename key CANNOT match it.
+      const newSessionId = 'main-2026-08-28-session-9';
+      expect(path.basename(result.wtPath)).not.toContain(newSessionId);
+
+      const detected = detectAutoPromotedWorktree(result.wtPath, newSessionId);
+      expect(detected).toEqual({
+        wtPath: result.wtPath,
+        sessionId: VALID_SESSION_ID,
+        branch: `so/${VALID_SESSION_ID}`,
+        source: 'marker',
+      });
+
+      // Same call from the MAIN checkout must stay null — the marker lives only
+      // in the promoted worktree, so the source repo is never a cleanup target.
+      expect(detectAutoPromotedWorktree(repoRoot, newSessionId)).toBeNull();
+
+      // …and the marker must not cost Phase 4a its clean path. Real git, real
+      // porcelain: the ONLY untracked entry is the marker we just wrote.
+      expect(git(result.wtPath, ['status', '--porcelain'])).toBe(
+        '?? .orchestrator/promoted-from.json\n',
+      );
+      expect(isWorktreeClean(result.wtPath)).toBe(true);
     },
   );
 });

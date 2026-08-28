@@ -1488,7 +1488,7 @@ describe('on-session-end.mjs — backfill outcome events (#1068 AC2)', { timeout
     });
 
     const outcomes = (await readAllEvents(dir))
-      .filter((e) => e.event === 'orchestrator.session.backfill');
+      .filter((e) => e.event === 'orchestrator.session.backfill_completed');
     expect(outcomes.map((e) => e.kind)).toEqual(['abandoned', 'state-md-completed']);
     expect(outcomes[0]).toEqual(expect.objectContaining({
       kind: 'abandoned',

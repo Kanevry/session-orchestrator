@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -289,6 +289,80 @@ describe('.mcp.json entrypoint — plugin-root resolution (GH#64)', () => {
     const parsed = JSON.parse(firstLine);
     expect(parsed.id).toBe('gh64');
     expect(parsed.result.serverInfo.name).toBe('session-orchestrator');
+  });
+
+  // ── the MIRROR half of the plugin-root contract (2026-08-28, W4 panel) ─────
+  //
+  // Bug this catches (TV-001): `.mcp.json`'s bash bootstrap and
+  // `resolvePluginRoot()` are two independent implementations of ONE tier
+  // order, and nothing compared them. Measured at 7daa3d2 they disagreed on
+  // tier 1 — the shell tried `CLAUDE_PLUGIN_ROOT` first, the module tries
+  // `PLUGIN_ROOT` first — so a host exporting both resolved to a DIFFERENT
+  // plugin copy depending on which side asked. `plugin-root.test.mjs:405-411`
+  // pins the module half of this contract and says so; this is the other half.
+  //
+  // Both roots below are valid to BOTH sides (a directory, containing
+  // `scripts/mcp-server.sh`), so the assertion can only be satisfied by
+  // matching precedence — not by one side rejecting a root the other accepted.
+  it('agrees with resolvePluginRoot() on which env var wins', () => {
+    const rootA = join(outsideRepo, 'root-a');
+    const rootB = join(outsideRepo, 'root-b');
+    for (const [root, marker] of [[rootA, 'ROOT-A'], [rootB, 'ROOT-B']]) {
+      mkdirSync(join(root, 'scripts'), { recursive: true });
+      // Stands in for the real server: prints which root the bootstrap exec'd.
+      writeFileSync(join(root, 'scripts', 'mcp-server.sh'), `echo ${marker}\n`, 'utf8');
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'session-orchestrator' }), 'utf8');
+    }
+
+    const both = { PLUGIN_ROOT: rootA, CLAUDE_PLUGIN_ROOT: rootB };
+
+    const shell = runMcpJsonEntrypoint(outsideRepo, both);
+    expect(shell.stdout.trim()).toBe('ROOT-A');
+
+    const moduleEnv = { ...process.env, ...both };
+    for (const key of ['CODEX_PLUGIN_ROOT', 'CURSOR_RULES_DIR', 'PI_PLUGIN_ROOT', 'SO_PLATFORM']) {
+      delete moduleEnv[key];
+    }
+    const module = spawnSync(
+      process.execPath,
+      ['--input-type=module', '-e',
+        `import { resolvePluginRoot } from ${JSON.stringify(new URL('../../scripts/lib/plugin-root.mjs', import.meta.url).href)};`
+        + ' process.stdout.write(resolvePluginRoot());'],
+      { cwd: outsideRepo, env: moduleEnv, encoding: 'utf8' },
+    );
+    expect(module.stdout.trim()).toBe(rootA);
+  });
+
+  // Bug this catches (TV-001): `||` and the shell's `${X:-…}` both fire on
+  // unset/EMPTY only, so a whitespace-only `CODEX_HOME` passes straight through
+  // and the cache scan globs `"   "/plugins/cache/*` — a relative path matching
+  // nothing, which silently kills the marketplace-install case (#64). The
+  // module trims (`_pluginCacheBases`), and `plugin-root.test.mjs:405-411` says
+  // in so many words that `.mcp.json` "carries the same trim … this is the
+  // module half of that agreed contract". Nothing tested the shell half.
+  //
+  // Observable without reading the string: the failure diagnostic prints the
+  // base it scanned. PATH is reduced to node + /bin so `npm` and `git` are
+  // absent and every earlier tier is forced to fail — otherwise a host with a
+  // global install resolves and this test proves nothing.
+  it('trims a whitespace-only CODEX_HOME before scanning the plugin caches', () => {
+    const sandboxHome = join(outsideRepo, 'sandbox-home');
+    const binDir = join(outsideRepo, 'bin');
+    mkdirSync(sandboxHome, { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    symlinkSync(process.execPath, join(binDir, 'node'));
+
+    const result = runMcpJsonEntrypoint(outsideRepo, {
+      HOME: sandboxHome,
+      CODEX_HOME: '   ',
+      PATH: `${binDir}:/bin`,
+    });
+
+    // Precondition: every tier really did fail, so the diagnostic is the output.
+    expect(result.stderr).toContain(DIAGNOSTIC_MARKER);
+    expect(result.stderr).toContain(join(sandboxHome, '.codex', 'plugins', 'cache'));
+    // RED without the trim: the scanned base is the literal spaces.
+    expect(result.stderr).not.toContain('   /plugins/cache');
   });
 
   it('rejects a plugin-root variable pointing at a directory without the server script', () => {

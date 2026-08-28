@@ -86,11 +86,14 @@ export function safeBootstrapLock(signals) {
  * Read a session record's completion rate, tolerating both the shape
  * `sessions.jsonl` actually writes and the legacy flat one.
  *
- * Production records nest it: `{effectiveness: {completion_rate: 0.77, …}}`,
- * with top-level `completion_rate` present but `null` (measured 2026-08-28 over
- * `.orchestrator/metrics/sessions.jsonl`: 281 records, 0 with a non-null
- * top-level `completion_rate`, 182 with a nested one). Reading only the flat
- * field therefore made every average 0 in production — see #1071.
+ * Production records nest it: `{effectiveness: {completion_rate: 0.77, …}}`.
+ * The top-level `completion_rate` key is ABSENT — not present-but-null, which
+ * an earlier revision of this comment claimed. Measured 2026-08-28 @ 7daa3d2
+ * over `.orchestrator/metrics/sessions.jsonl` (281 records):
+ * `jq -s '{hasTopLevelKey: ([.[]|select(has("completion_rate"))]|length), …}'`
+ * → `hasTopLevelKey: 0`, `nested: 182`, and 99 records carrying NO completion
+ * rate in either shape. Reading only the flat field therefore made every
+ * average 0 in production — see #1071.
  *
  * Precedence mirrors `completionOf()` in
  * `scripts/lib/evolve/autopilot-effectiveness.mjs`: nested canonical fields
@@ -114,6 +117,13 @@ function completionRateOf(session) {
  * Mean completion rate across a session slice. Unknown values contribute 0 and
  * the divisor stays the slice length — an incomplete slice can never inflate
  * the average past the >= 0.9 bonus threshold.
+ *
+ * The divisor is the load-bearing half, not the numerator: 99 of the 281
+ * records in production carry no completion rate in EITHER shape (measured
+ * 2026-08-28 @ 7daa3d2), so a divisor of "known values only" would let a single
+ * 1.0 session beside two unknowns score a perfect 1.0 and hand out the trend
+ * bonus on one data point. Pinned by the divisor test in
+ * `tests/lib/mode-selector/scoring.test.mjs`.
  *
  * @param {any[]} sessions
  * @returns {number}
