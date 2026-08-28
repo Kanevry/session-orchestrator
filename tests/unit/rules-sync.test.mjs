@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { syncRules } from '@lib/rules-sync.mjs';
+import { syncRules, scanVendoringLeaks } from '@lib/rules-sync.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -646,6 +646,28 @@ describe('CLI — missing --repo-root', { timeout: 30000 }, () => {
 // CLI integration — happy path
 // ---------------------------------------------------------------------------
 
+/**
+ * Basenames registered under `## always-on` in the LIVE rules/_index.md.
+ *
+ * Derived, never hand-typed: three assertions below used to carry a literal
+ * `3`, which turned "the library grew" into a red test (issue #1098 added 8
+ * entries and broke all three). A count that describes the corpus has to be
+ * read from the corpus.
+ * @returns {string[]}
+ */
+function liveAlwaysOnBasenames() {
+  const index = readFileSync(
+    fileURLToPath(new URL('../../rules/_index.md', import.meta.url)),
+    'utf8',
+  );
+  const start = /^##\s+always-on\b[^\n]*$/m.exec(index);
+  if (!start) return [];
+  const rest = index.slice(start.index + start[0].length);
+  const next = /^##\s+/m.exec(rest);
+  const body = next ? rest.slice(0, next.index) : rest;
+  return [...body.matchAll(/^-\s+`always-on\/([^`]+\.md)`/gm)].map((m) => m[1]);
+}
+
 describe('CLI — happy path with real plugin root', () => {
   it('exits 0 and outputs valid JSON with written array', () => {
     const repoRoot = tmp();
@@ -661,8 +683,9 @@ describe('CLI — happy path with real plugin root', () => {
     expect(Array.isArray(parsed.skipped)).toBe(true);
     expect(Array.isArray(parsed.preserved)).toBe(true);
     expect(Array.isArray(parsed.errors)).toBe(true);
-    // Real plugin has 3 always-on rules
-    expect(parsed.written).toHaveLength(3);
+    // Count comes from rules/_index.md, not from a literal — see
+    // liveAlwaysOnBasenames() for why.
+    expect(parsed.written.sort()).toEqual(liveAlwaysOnBasenames().sort());
     expect(parsed.errors).toHaveLength(0);
   });
 
@@ -672,7 +695,7 @@ describe('CLI — happy path with real plugin root', () => {
     expect(status).toBe(0);
 
     const parsed = JSON.parse(stdout);
-    expect(parsed.written).toHaveLength(3);
+    expect(parsed.written.sort()).toEqual(liveAlwaysOnBasenames().sort());
 
     // No files should have been created
     let exists = true;
@@ -770,5 +793,169 @@ describe('syncRules — #1060 bootstrap-then-sync must not reduce PSA coverage',
       existsSync(join(REAL_PLUGIN_ROOT, 'templates/_shared/rules/parallel-sessions.md')),
       'templates/_shared/rules/parallel-sessions.md was deleted in #1060 — do not restore it',
     ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Vendoring sanitizer (issue #1098)
+//
+// Bug class this covers: a rule that reads correctly INSIDE this plugin repo
+// (it cites `scripts/lib/x.mjs`, or a `## See Also` sibling that lives only in
+// `.claude/rules/`) is vendored verbatim into a consumer repo, where both
+// citations dangle. Before #1098 nothing reported that, and — the harder half —
+// nothing guaranteed the report stays a REPORT: a sanitizer that "helpfully"
+// stripped the offending text would silently change a rule's meaning at
+// vendoring time, invisible to author and consumer alike.
+// ---------------------------------------------------------------------------
+
+/**
+ * Fake plugin root carrying ONE always-on rule whose body is supplied by the
+ * caller, plus a real `scripts/lib/fake-helper.mjs` file so the repo-local
+ * probe has something to resolve against.
+ */
+function makeSanitizerPluginRoot(dir, ruleBody) {
+  mkdirSync(join(dir, 'rules', 'always-on'), { recursive: true });
+  mkdirSync(join(dir, 'scripts', 'lib'), { recursive: true });
+  writeFileSync(join(dir, 'scripts', 'lib', 'fake-helper.mjs'), 'export const x = 1;\n');
+  writeFileSync(
+    join(dir, 'rules', '_index.md'),
+    [
+      '# Rules Library — Canonical Index',
+      '',
+      '## always-on (vendored to every consumer repo)',
+      '',
+      '- `always-on/sample.md` — the rule under test',
+      '- `always-on/sibling.md` — a registered sibling, so See-Also to it resolves',
+      '',
+    ].join('\n'),
+  );
+  const header = '<!-- source: session-orchestrator plugin (canonical: rules/always-on/%s) -->\n';
+  writeFileSync(join(dir, 'rules', 'always-on', 'sample.md'), header.replace('%s', 'sample.md') + ruleBody);
+  writeFileSync(
+    join(dir, 'rules', 'always-on', 'sibling.md'),
+    header.replace('%s', 'sibling.md') + '# Sibling\n\nContent.\n',
+  );
+  return dir;
+}
+
+describe('syncRules — vendoring sanitizer reports without altering content', () => {
+  it('reports a planted repo-local path and still writes the file byte-for-byte unchanged', () => {
+    const pluginRoot = tmp();
+    const repoRoot = tmp();
+    const body = [
+      '# Sample Rule',
+      '',
+      'See `scripts/lib/fake-helper.mjs` for the implementation.',
+      '',
+    ].join('\n');
+    makeSanitizerPluginRoot(pluginRoot, body);
+
+    const result = syncRules({ pluginRoot, repoRoot });
+
+    // The finding is reported, with the exact citation and its line.
+    const leaks = result.sanitizer.filter((f) => f.kind === 'repo-local-path');
+    expect(leaks).toEqual([
+      {
+        file: 'rules/always-on/sample.md',
+        line: 4, // provenance header is line 1, '# Sample Rule' line 2
+        kind: 'repo-local-path',
+        text: 'scripts/lib/fake-helper.mjs',
+      },
+    ]);
+
+    // …and it is a REPORT, not a rewrite: the write happened, no error was
+    // raised, and the bytes on the target are identical to the source. Compared
+    // against the source file read from disk rather than against the `body`
+    // string, so the assertion cannot be satisfied by a sanitizer that mangles
+    // BOTH sides identically.
+    expect(result.errors).toEqual([]);
+    expect(result.written).toContain('sample.md');
+    const src = readFileSync(join(pluginRoot, 'rules', 'always-on', 'sample.md'), 'utf8');
+    const written = readFileSync(join(repoRoot, '.claude', 'rules', 'sample.md'), 'utf8');
+    expect(written).toBe(src);
+    expect(written).toContain('scripts/lib/fake-helper.mjs');
+  });
+
+  it('does NOT report a path that merely shares a plugin root prefix but resolves to no plugin file', () => {
+    // The naive form of this probe is a prefix grep for `docs/`/`tests/`/…,
+    // which floods the report with consumer-repo paths and code samples —
+    // enough noise that a real leak is never read. The probe therefore requires
+    // the citation to resolve to an actual FILE under pluginRoot.
+    const pluginRoot = tmp();
+    const repoRoot = tmp();
+    const body = [
+      '# Sample Rule',
+      '',
+      'Document the event catalog in `docs/api.md`; `tests/` may import SDKs directly.',
+      'Package scope placeholders such as `@your-org/http-client` are the documented convention.',
+      'An eslint directive like `react-hooks/exhaustive-deps` is not a path at all.',
+      '',
+    ].join('\n');
+    makeSanitizerPluginRoot(pluginRoot, body);
+
+    const result = syncRules({ pluginRoot, repoRoot });
+
+    expect(result.sanitizer.filter((f) => f.kind === 'repo-local-path')).toEqual([]);
+  });
+
+  it('reports an unresolvable See-Also citation and stays silent on a registered one', () => {
+    const pluginRoot = tmp();
+    const repoRoot = tmp();
+    const body = [
+      '# Sample Rule',
+      '',
+      'Body.',
+      '',
+      '## See Also',
+      '',
+      'sibling.md · never-vendored.md · CLAUDE.md',
+      '',
+    ].join('\n');
+    makeSanitizerPluginRoot(pluginRoot, body);
+
+    const result = syncRules({ pluginRoot, repoRoot });
+
+    const seeAlso = result.sanitizer.filter((f) => f.kind === 'unresolvable-see-also');
+    // `sibling.md` is registered in _index.md; `CLAUDE.md` is a project-root
+    // instruction file every consumer has, not a rule that travels through the
+    // sync. Only `never-vendored.md` dangles.
+    expect(seeAlso.map((f) => f.text)).toEqual(['never-vendored.md']);
+    expect(seeAlso[0].file).toBe('rules/always-on/sample.md');
+    expect(result.errors).toEqual([]);
+  });
+
+  it('scanVendoringLeaks() is pure — it returns findings and never touches the input string', () => {
+    const pluginRoot = tmp();
+    makeSanitizerPluginRoot(pluginRoot, '# x\n');
+    const content = 'See `scripts/lib/fake-helper.mjs`.\n';
+    const before = String(content);
+
+    const findings = scanVendoringLeaks({
+      content,
+      relPath: 'rules/always-on/sample.md',
+      pluginRoot,
+      manifestBasenames: new Set(['sample.md']),
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(content).toBe(before);
+  });
+});
+
+describe('syncRules — the always-on library vendors clean (issue #1098 AC)', () => {
+  it('reports 0 repo-local paths and 0 unresolvable See-Also citations for always-on', () => {
+    // Measures the LIVE rules/ library on purpose: the acceptance criterion of
+    // #1098 is a property of that corpus, not of a fixture. Scoped to
+    // `always-on` because that is the category the issue registered; the
+    // archetype-scoped categories carry pre-existing findings that are reported,
+    // never fixed silently.
+    const pluginRoot = fileURLToPath(new URL('../..', import.meta.url));
+    const repoRoot = tmp();
+
+    const result = syncRules({ pluginRoot, repoRoot, categories: ['always-on'] });
+
+    expect(result.errors).toEqual([]);
+    expect(result.sanitizer).toEqual([]);
+    expect(result.written.sort()).toEqual(liveAlwaysOnBasenames().sort());
   });
 });

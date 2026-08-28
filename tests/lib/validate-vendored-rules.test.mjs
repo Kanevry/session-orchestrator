@@ -430,3 +430,82 @@ describe('PLUGIN_HEADER_PREFIX identity guard', () => {
     expect(() => expect(wrongValue).toBe(PLUGIN_HEADER_PREFIX)).toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Live-library census (issue #1098).
+//
+// Bug class: a rule added to rules/ WITHOUT the provenance header is rejected
+// by syncRules()'s pre-write gate and never reaches a consumer repo — and the
+// only trace is one entry in the JSON `errors[]` array that nobody reads. The
+// operator sees a plausible `written[]` list and concludes the sync worked.
+// That is exactly how the 8 core rules #1098 registered would have failed.
+//
+// The population is READ FROM rules/_index.md, never hand-typed: a parity test
+// whose list is typed by the author is a green tick with no coverage — it
+// cannot fail for the file the author forgot.
+// ---------------------------------------------------------------------------
+
+const RULES_LIBRARY_ROOT = fileURLToPath(new URL('../../rules', import.meta.url));
+
+/**
+ * Every `<category>/<file>.md` bullet registered in the live rules/_index.md.
+ * @returns {string[]}
+ */
+function registeredRuleEntries() {
+  const index = readFileSync(join(RULES_LIBRARY_ROOT, '_index.md'), 'utf8');
+  return [...index.matchAll(/^-\s+`([\w-]+\/[^`]+\.md)`/gm)].map((m) => m[1]);
+}
+
+describe('rules/_index.md census — every registered rule is vendorable', () => {
+  it('registers at least the three pre-#1098 always-on rules (census parser sanity)', () => {
+    // Without this, a regex that silently matched nothing would make the census
+    // below vacuously green.
+    const entries = registeredRuleEntries();
+    expect(entries).toContain('always-on/parallel-sessions.md');
+    expect(entries).toContain('always-on/commit-discipline.md');
+    expect(entries).toContain('always-on/npm-quality-gates.md');
+    expect(entries.length).toBeGreaterThan(3);
+  });
+
+  it('every registered entry exists on disk and passes requireProvenance with zero errors', () => {
+    const failures = [];
+    for (const entry of registeredRuleEntries()) {
+      const abs = join(RULES_LIBRARY_ROOT, entry);
+      let content;
+      try {
+        content = readFileSync(abs, 'utf8');
+      } catch {
+        failures.push(`${entry}: registered in _index.md but missing on disk`);
+        continue;
+      }
+      const { violations } = validateRuleContent({
+        content,
+        relPath: `rules/${entry}`,
+        requireProvenance: true,
+      });
+      for (const v of violations.filter((x) => x.severity === 'error')) {
+        failures.push(`${entry}: ${v.rule}`);
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it('registers the eight core rules issue #1098 named', () => {
+    // Deliberately named, unlike the census above: the AC of #1098 is that
+    // THESE eight reach a consumer repo. Dropping one from _index.md silently
+    // stops vendoring it, with no other signal anywhere.
+    const entries = registeredRuleEntries();
+    for (const name of [
+      'verification-before-completion',
+      'test-value',
+      'build-value',
+      'receiving-review',
+      'ask-via-tool',
+      'bash-harness-pitfalls',
+      'cross-session-messaging',
+      'loop-and-monitor',
+    ]) {
+      expect(entries).toContain(`always-on/${name}.md`);
+    }
+  });
+});

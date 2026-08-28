@@ -47,10 +47,22 @@
  *  - a `.git/config` written AFTER this probe ran. It is a session-start
  *    snapshot, not a watcher.
  *
- * **Revisit trigger:** if an operator reports a standing false positive on a
- * deliberate local override, add an explicit allow-list (a `[sessionOrchestrator]`
+ * **Revisit trigger (identity / remote / gpgsign only):** if an operator
+ * reports a standing false positive on a deliberate local override of one of
+ * those three, add an explicit allow-list (a `[sessionOrchestrator]`
  * local-config key naming the accepted keys) — do NOT widen or delete a rule,
  * which would re-open the exact hole the probe was built to close.
+ *
+ * `hooks-path` is no longer in that bucket (#1158, 2026-08-28): a
+ * `core.hooksPath` outside `.husky/_` is accepted when the repo DECLARES it —
+ * `git ls-files -- <hooksPath>` returns at least one tracked file, the same
+ * "declared beats guessed" shape `isFixtureHost` already applies to the
+ * remote finding. A tracked `.githooks/pre-commit` with
+ * `core.hooksPath=.githooks` is a deliberate setup, not drift, and stops
+ * flagging without any config key. An untracked or out-of-repo hooksPath
+ * still flags exactly as before — that is still the incident class this
+ * probe exists for (a fixture that rewrote hooksPath to somewhere nothing is
+ * tracked).
  *
  * ## Fail-open is forbidden here
  *
@@ -77,6 +89,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { isAbsolute, relative } from 'node:path';
 
 /** Default timeout in ms for each `git config` invocation. */
 export const DEFAULT_TIMEOUT_MS = 5000;
@@ -112,7 +125,8 @@ export const DEGRADED_REASONS = Object.freeze([
  *    global identity. The costliest entry of the incident.
  *  - `local-gpgsign`    — a local `commit.gpgsign` differing from the global.
  *  - `fixture-remote`   — a remote URL on a reserved/fixture host.
- *  - `hooks-path`       — a local `core.hooksPath` not pointing at `.husky/_`.
+ *  - `hooks-path`       — a local `core.hooksPath` not pointing at `.husky/_`
+ *    and not declared (tracked) by the repo — see `hooksPathIsTracked`.
  *
  * @type {readonly ['ambient-git-env','local-identity','local-gpgsign','fixture-remote','hooks-path']}
  */
@@ -311,6 +325,43 @@ function hooksPathIsExpected(value) {
 }
 
 /**
+ * @param {string} value a `core.hooksPath` value that already failed
+ *   {@link hooksPathIsExpected}
+ * @param {{repoRoot: string, env: Record<string,string|undefined>, timeoutMs: number, spawn: Function}} ctx
+ *   the same context {@link runGitConfig} uses — same filtered env, same `-C`
+ *   seam, so this query cannot be redirected any more than the config read can
+ * @returns {boolean} true when the path is DECLARED by the repo — `git
+ *   ls-files -- <path>` returns at least one tracked file under it. An
+ *   absolute value is resolved relative to `repoRoot` first; a value outside
+ *   the repo root can never be tracked and returns `false` without spawning
+ *   git. Any spawn failure (missing git, timeout, non-zero exit) also
+ *   returns `false` — this helper only ever WIDENS acceptance, so a query it
+ *   cannot answer must fall back to "not declared", never the reverse.
+ */
+function hooksPathIsTracked(value, ctx) {
+  const raw = String(value ?? '').trim();
+  if (raw === '') return false;
+
+  let pathspec = raw.replace(/\\/g, '/');
+  if (isAbsolute(raw)) {
+    const rel = relative(ctx.repoRoot, raw);
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return false; // outside repo root
+    pathspec = rel.replace(/\\/g, '/');
+  }
+
+  const res = ctx.spawn('git', ['-C', ctx.repoRoot, 'ls-files', '--', pathspec], {
+    encoding: 'utf8',
+    timeout: ctx.timeoutMs,
+    env: filteredGitEnv(ctx.env),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  if (res?.error || res?.signal) return false;
+  if (typeof res?.status !== 'number' || res.status !== 0) return false;
+  return String(res?.stdout ?? '').trim() !== '';
+}
+
+/**
  * Build the degraded result. Distinct from `null` on purpose — see the header.
  *
  * @param {string} reason
@@ -439,12 +490,14 @@ export function checkGitConfigDrift(opts = {}, deps = {}) {
         continue;
       }
 
-      if (lower === 'core.hookspath' && !hooksPathIsExpected(value)) {
+      if (lower === 'core.hookspath' && !hooksPathIsExpected(value) && !hooksPathIsTracked(value, ctx)) {
         findings.push({
           kind: 'hooks-path',
           key,
           value,
-          detail: `core.hooksPath=${value} zeigt nicht auf ${EXPECTED_HOOKS_PATH_TAIL} — Husky-Hooks laufen nicht.`,
+          detail:
+            `core.hooksPath=${value} zeigt nicht auf ${EXPECTED_HOOKS_PATH_TAIL} und ist im Repo ` +
+            `nicht als getrackter Pfad deklariert — Hooks laufen möglicherweise nicht.`,
         });
       }
     }

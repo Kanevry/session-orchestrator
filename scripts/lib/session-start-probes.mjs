@@ -157,6 +157,12 @@ export const PROBES = [
     fn: 'checkVaultStaleness',
     network: false,
     args: ({ repoRoot }) => ({ repoRoot }),
+    // #1159: the probe now returns a THIRD shape, `{severity:'info', kind:'probe-stale'}`,
+    // when its last record is older than MAX_RECORD_AGE_DAYS. The default severityOf maps
+    // anything but warn/alert to 'ok' and defaultRender drops 'ok' — so without this
+    // mapping the "your probe has not run for N days" banner would be built and never shown.
+    severityOf: (r) =>
+      r?.kind === 'probe-stale' ? 'warn' : r?.severity === 'alert' ? 'alert' : r?.severity === 'warn' ? 'warn' : 'ok',
   },
   {
     id: 'ci-status',

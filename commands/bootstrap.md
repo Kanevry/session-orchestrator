@@ -6,7 +6,7 @@ argument-hint: "[--upgrade <tier>]"
 
 # Bootstrap
 
-**TL;DR — for first-time users:** Run `/bootstrap` with no flags. The skill auto-detects the right tier (fast/standard/deep) from your repo, recommends one with a one-line reason, and asks **a single confirmation question**. Bestätigen → fertig. Keine weiteren Schritte.
+**TL;DR — for first-time users:** Run `/bootstrap` with no flags. The skill auto-detects the right tier (fast/standard/deep) from your repo, recommends one with a one-line reason, then walks a **fixed questionnaire** — tier/stack (1–2 prompts), owner persona (5), dispatcher autonomy (1); **7–9 prompts** on a first-run full bootstrap. Bestätigen → fertig. Keine weiteren Schritte.
 
 The flags below cover special cases (re-adopting an existing repo, upgrading a tier, syncing rules). If you don't recognize the case in the description, you don't need the flag.
 
@@ -22,7 +22,7 @@ This is the path 95 % of users want.
 
 | Invocation | Behavior |
 |------------|----------|
-| `/bootstrap` | Auto-detect tier (fast / standard / deep) from repo context. Present recommendation via `AskUserQuestion` with options to confirm or override. At most ONE question in the normal case. Then scaffold files + commit. |
+| `/bootstrap` | Auto-detect tier (fast / standard / deep) from repo context. Present recommendation via `AskUserQuestion` with options to confirm or override. Tier/stack: 1–2 questions; first-run full bootstrap adds owner interview (5, `owner-interview.mjs`) + dispatcher-autonomy capture (1). Then scaffold files + commit. |
 
 What the user sees:
 

@@ -8,8 +8,8 @@
 
 | Path | Purpose |
 |------|---------|
-| `skills/` | 44 user-facing skills (+ `_shared/` internal) |
-| `commands/` | 24 slash-commands (e.g. `/session`, `/close`, `/go`, `/plan`, `/test`, `/portfolio`, `/dispatcher`, `/eval`) |
+| `skills/` | 48 user-facing skills (+ `_shared/` internal) |
+| `commands/` | 28 slash-commands (e.g. `/session`, `/close`, `/go`, `/plan`, `/test`, `/portfolio`, `/dispatcher`, `/eval`) |
 | `agents/` | 15 sub-agent definitions (YAML frontmatter + Markdown body, + `schemas/` subdirectory) |
 | `hooks/` | Hook event matchers + handlers (15 matcher entries / 20 plugin-wired handler files [21 on-disk; the 21st is Husky-wired — see Inventory below], 10 distinct events) |
 | `.orchestrator/policy/` | Runtime policy: `blocked-commands.json` (14 rules) |
@@ -27,8 +27,8 @@
 
 ## Inventory (canonical)
 
-- **Skills:** 44 user-facing skills (`skills/` has 45 dirs but `_shared/` is internal docs, not a skill)
-- **Commands:** 24 (`/session`, `/close`, `/go`, `/plan`, `/evolve`, `/discovery`, `/bootstrap`, `/autopilot`, `/autopilot-multi`, `/dispatcher`, `/repo-audit`, `/harness-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/reconcile`, `/eval`, `/spinout`)
+- **Skills:** 48 user-facing skills (`skills/` has 49 dirs but `_shared/` is internal docs, not a skill) — measured 2026-08-28
+- **Commands:** 28 — measured 2026-08-28 (`/session`, `/close`, `/go`, `/plan`, `/evolve`, `/discovery`, `/bootstrap`, `/autopilot`, `/autopilot-multi`, `/dispatcher`, `/repo-audit`, `/harness-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/reconcile`, `/eval`, `/spinout`, `/contract-version-bump`, `/eli5`, `/journey-audit`, `/release`)
 - **Agents:** 15 (`code-implementer`, `test-writer`, `ui-developer`, `db-specialist`, `security-reviewer`, `session-reviewer`, `docs-writer`, `architect-reviewer`, `qa-strategist`, `analyst`, `ux-evaluator`, `dialectic-deriver`, `memory-proposal-collector`, `skill-applied-judge`, `eval-judge`)
 - **Hook event matchers / handlers:** 15 matcher entries / 20 plugin-wired handler files (21 on-disk). The 21st, `hooks/wave-scope-commit-guard.mjs`, is intentionally NOT a plugin hook — it is wired as the repository's Git pre-commit guard via Husky (`.husky/pre-commit:64`), because it guards git index/commit state (staged-path scope + cross-agent staging-fence) rather than a plugin lifecycle event (#821, supersedes the #801 unwired-on-disk framing). Counting basis: "plugin-wired" = distinct `.mjs` filenames referenced inside `hooks/hooks.json`; "Husky-wired" = referenced inside `.husky/pre-commit`; "on-disk" = `ls hooks/*.mjs`. 10 distinct events: SessionStart, SessionEnd, PreToolUse (×3: Skill + Edit\|Write\|MultiEdit + Bash), PostToolUse (×3: Edit\|Write + Edit\|Write\|MultiEdit + `*`), Stop, SubagentStop, PostToolUseFailure, PostToolBatch (×2: wave-signal + operator-steer), SubagentStart, CwdChanged.
 

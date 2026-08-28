@@ -6,7 +6,7 @@
  * Preserves local rules (files without the plugin source header).
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
 import { join, basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateRuleContent } from './validate-vendored-rules.mjs';
@@ -159,6 +159,141 @@ function escapeRegex(s) {
 }
 
 /**
+ * Path roots that exist in THIS plugin repo but are not part of what a
+ * consumer repo receives. A rule that cites `scripts/lib/foo.mjs` reads fine
+ * here and dangles the moment the file is vendored.
+ *
+ * Deliberately a small, named list rather than "every top-level directory":
+ * the detector below additionally requires the cited path to resolve to a real
+ * FILE inside pluginRoot, which is what separates a plugin-internal citation
+ * from a consumer-repo path that merely shares a prefix (`docs/api.md`,
+ * `tests/` as a generic directory reference, `scripts/smoke-test.ts` in a code
+ * sample). Revisit if the plugin grows another top-level source directory that
+ * rules cite.
+ */
+const REPO_LOCAL_PATH_ROOTS = ['scripts', 'hooks', 'skills', 'docs', 'tests'];
+
+// Leading boundary excludes `react-hooks/exhaustive-deps` and
+// `templates/shared/hooks/x.sh` — a root only counts at a token boundary.
+const REPO_LOCAL_PATH_RE = new RegExp(
+  `(?<![\\w./-])((?:${REPO_LOCAL_PATH_ROOTS.join('|')})/[\\w./-]*\\w)`,
+  'g',
+);
+
+const MD_REFERENCE_RE = /[\w][\w.-]*\.md/g;
+
+/**
+ * `*.md` names a `## See Also` section may legitimately cite even though
+ * `rules/_index.md` does not register them: they are project-root instruction
+ * files every consumer repo has, not rules that travel through the sync.
+ */
+const NON_RULE_MD_REFERENCES = new Set(['CLAUDE.md', 'AGENTS.md', 'README.md']);
+
+/**
+ * 1-based line number of `index` within `content`.
+ * @param {string} content
+ * @param {number} index
+ * @returns {number}
+ */
+function lineOf(content, index) {
+  return content.slice(0, index).split('\n').length;
+}
+
+/**
+ * Extracts the body of the trailing `## See Also` section, with the offset at
+ * which it starts. Returns null when the file has no such section.
+ * @param {string} content
+ * @returns {{ body: string, offset: number } | null}
+ */
+function extractSeeAlso(content) {
+  const m = /^##\s+See Also\s*$/m.exec(content);
+  if (!m) return null;
+  const start = m.index + m[0].length;
+  const next = /^##\s+/m.exec(content.slice(start));
+  const end = next !== null ? start + next.index : content.length;
+  return { body: content.slice(start, end), offset: start };
+}
+
+/**
+ * Report-only vendoring sanitizer (issue #1098).
+ *
+ * Scans one rule file for the two ways a rule that reads correctly INSIDE this
+ * plugin repo breaks once it is vendored into a consumer repo:
+ *
+ *   - `repo-local-path` — a `scripts/…`, `hooks/…`, `skills/…`, `docs/…` or
+ *     `tests/…` citation that resolves to a real file under `pluginRoot`. The
+ *     consumer has no such file, so the citation dangles.
+ *   - `unresolvable-see-also` — a `## See Also` entry naming a `*.md` rule that
+ *     `rules/_index.md` does not register, so it is never vendored alongside.
+ *
+ * **This function never rewrites content.** Silent stripping would change the
+ * meaning of a rule at vendoring time, invisibly to both the author and the
+ * consumer; the finding is reported and a human decides. `@your-org/*`
+ * placeholders are deliberately NOT flagged — they are the documented
+ * placeholder convention for consumer-supplied package scopes, not a leak.
+ *
+ * @param {object} opts
+ * @param {string} opts.content - raw rule file content (never modified)
+ * @param {string} opts.relPath - manifest-relative path, used as `file`
+ * @param {string} opts.pluginRoot - repo root the repo-local check resolves against
+ * @param {Set<string>|null} [opts.manifestBasenames] - basenames registered in
+ *   `rules/_index.md`; when null the `unresolvable-see-also` check is skipped
+ * @returns {Array<{file: string, line: number, kind: 'repo-local-path'|'unresolvable-see-also', text: string}>}
+ */
+export function scanVendoringLeaks({ content, relPath, pluginRoot, manifestBasenames = null }) {
+  const findings = [];
+
+  REPO_LOCAL_PATH_RE.lastIndex = 0;
+  const seenPaths = new Set();
+  let m;
+  while ((m = REPO_LOCAL_PATH_RE.exec(content)) !== null) {
+    const token = m[1];
+    if (seenPaths.has(token)) continue;
+    let isFile;
+    try {
+      const abs = join(pluginRoot, token);
+      isFile = existsSync(abs) && statSync(abs).isFile();
+    } catch {
+      isFile = false;
+    }
+    if (!isFile) continue;
+    seenPaths.add(token);
+    findings.push({
+      file: relPath,
+      line: lineOf(content, m.index),
+      kind: 'repo-local-path',
+      text: token,
+    });
+  }
+
+  if (manifestBasenames) {
+    const seeAlso = extractSeeAlso(content);
+    if (seeAlso) {
+      const ownBasename = basename(relPath);
+      const seenRefs = new Set();
+      MD_REFERENCE_RE.lastIndex = 0;
+      let r;
+      while ((r = MD_REFERENCE_RE.exec(seeAlso.body)) !== null) {
+        const ref = r[0];
+        const refBase = basename(ref);
+        if (refBase === ownBasename || seenRefs.has(refBase)) continue;
+        if (NON_RULE_MD_REFERENCES.has(refBase)) continue;
+        if (manifestBasenames.has(refBase)) continue;
+        seenRefs.add(refBase);
+        findings.push({
+          file: relPath,
+          line: lineOf(content, seeAlso.offset + r.index),
+          kind: 'unresolvable-see-also',
+          text: ref,
+        });
+      }
+    }
+  }
+
+  return findings;
+}
+
+/**
  * Syncs canonical rules from the plugin's rules/ library into a consumer repo.
  *
  * When `validate` is true (the default — issue #722 Epic A Wave 2),
@@ -188,6 +323,19 @@ function escapeRegex(s) {
  * at least one concrete bullet entry. This keeps `/bootstrap --sync-rules`
  * ready for future opt-in categories without requiring CLI changes.
  *
+ * Vendoring sanitizer (issue #1098): every source file that reaches the write
+ * decision is additionally scanned by `scanVendoringLeaks()`, and its findings
+ * are collected into the additive `sanitizer[]` array. This runs in
+ * **report-only mode, always** — it never rewrites content, never skips a
+ * write, and never contributes to `errors[]`. That default is deliberate and
+ * matches the existing CLI contract: `rules-sync.mjs`'s exit code is driven by
+ * `errors[]` alone, so adding `sanitizer[]` extends the JSON envelope without
+ * changing any exit code or write decision an existing caller depends on.
+ * Silent stripping was rejected outright — it would change a rule's meaning at
+ * vendoring time, invisibly to author and consumer alike. There is no opt-out
+ * flag because the scan is read-only and free relative to the file read it
+ * piggybacks on.
+ *
  * @param {{
  *   pluginRoot: string,
  *   repoRoot: string,
@@ -202,7 +350,8 @@ function escapeRegex(s) {
  *   skipped: Array<string|{file: string, reason: string}>,
  *   preserved: string[],
  *   errors: Array<{file: string, reason: string}>,
- *   warnings: Array<{file: string, reason: string}>
+ *   warnings: Array<{file: string, reason: string}>,
+ *   sanitizer: Array<{file: string, line: number, kind: string, text: string}>
  * }}
  */
 export function syncRules({
@@ -219,20 +368,21 @@ export function syncRules({
   const preserved = [];
   const errors = [];
   const warnings = [];
+  const sanitizer = [];
 
   if (!pluginRoot || typeof pluginRoot !== 'string') {
     errors.push({ file: '_index.md', reason: 'pluginRoot not provided' });
-    return { written, skipped, preserved, errors, warnings };
+    return { written, skipped, preserved, errors, warnings, sanitizer };
   }
   if (!repoRoot || typeof repoRoot !== 'string') {
     errors.push({ file: '_index.md', reason: 'repoRoot not provided' });
-    return { written, skipped, preserved, errors, warnings };
+    return { written, skipped, preserved, errors, warnings, sanitizer };
   }
 
   const indexPath = join(pluginRoot, 'rules', '_index.md');
   if (!existsSync(indexPath)) {
     errors.push({ file: '_index.md', reason: `_index.md not found at ${indexPath}` });
-    return { written, skipped, preserved, errors, warnings };
+    return { written, skipped, preserved, errors, warnings, sanitizer };
   }
 
   let indexContent;
@@ -240,13 +390,21 @@ export function syncRules({
     indexContent = readFileSync(indexPath, 'utf8');
   } catch (err) {
     errors.push({ file: '_index.md', reason: `failed to read _index.md: ${err.message}` });
-    return { written, skipped, preserved, errors, warnings };
+    return { written, skipped, preserved, errors, warnings, sanitizer };
   }
 
   const selectedCategories = Array.isArray(categories)
     ? categories
     : listManifestCategories(indexContent);
   const entries = parseIndex(indexContent, selectedCategories);
+
+  // Resolvability for the See-Also sanitizer is judged against the FULL
+  // manifest, not `selectedCategories`: an archetype-scoped rule is a
+  // legitimate citation target in every repo whose archetype matches, so
+  // narrowing this to the current selection would report false leaks.
+  const manifestBasenames = new Set(
+    parseIndex(indexContent, listManifestCategories(indexContent)).map((e) => basename(e.relPath)),
+  );
 
   if (entries.length === 0) {
     // No sources resolved — could be empty categories or malformed index
@@ -256,7 +414,7 @@ export function syncRules({
         reason: `no sources resolved for category '${cat}' in _index.md`,
       });
     }
-    return { written, skipped, preserved, errors, warnings };
+    return { written, skipped, preserved, errors, warnings, sanitizer };
   }
 
   const targetDir = join(repoRoot, '.claude', 'rules');
@@ -303,6 +461,13 @@ export function syncRules({
       errors.push({ file: relPath, reason: `failed to read source: ${err.message}` });
       continue;
     }
+
+    // Vendoring sanitizer (issue #1098) — report-only, never mutates
+    // srcContent. Deliberately placed BEFORE the validation gate so a file
+    // that fails validation still reports its leaks in one pass.
+    sanitizer.push(
+      ...scanVendoringLeaks({ content: srcContent, relPath, pluginRoot, manifestBasenames }),
+    );
 
     // Pre-write validation gate (issue #722 Epic A Wave 2). Runs BEFORE the
     // existsSync(targetPath) write-decision branch below, so a validation
@@ -376,7 +541,7 @@ export function syncRules({
     }
   }
 
-  return { written, skipped, preserved, errors, warnings };
+  return { written, skipped, preserved, errors, warnings, sanitizer };
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────

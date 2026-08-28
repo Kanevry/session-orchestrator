@@ -162,6 +162,35 @@ describe('checkGitConfigDrift — detection', () => {
 
     expect(checkGitConfigDrift({ repoRoot: dir, env: NO_ENV })).toBeNull();
   });
+
+  it.skipIf(!GIT_AVAILABLE)('accepts a tracked .githooks/ declared via core.hooksPath (#1158)', () => {
+    // The bug this catches: a repo that deliberately tracks its hooks under a
+    // non-Husky directory (a tracked .githooks/pre-commit, the agents/vault
+    // shape from the linked incident) reported a PERMANENT false positive,
+    // because only the literal '.husky/_' tail was ever accepted. Reverting
+    // the hooksPathIsTracked fix turns this test red — see EVIDENCE.
+    const dir = makeRepo();
+    mkdirSync(join(dir, '.githooks'), { recursive: true });
+    writeFileSync(join(dir, '.githooks', 'pre-commit'), '#!/bin/sh\nexit 0\n', 'utf8');
+    execFileSync('git', ['-C', dir, 'add', '.githooks/pre-commit']);
+    setLocal(dir, 'core.hooksPath', '.githooks');
+
+    expect(checkGitConfigDrift({ repoRoot: dir, env: NO_ENV })).toBeNull();
+  });
+
+  it.skipIf(!GIT_AVAILABLE)('still flags core.hooksPath=.githooks when the directory is untracked', () => {
+    // Discriminates "declared" from "merely named .githooks" — an untracked
+    // path is exactly the incident shape (a fixture rewrote hooksPath) this
+    // probe exists to catch, and the tracked-path acceptance above must not
+    // widen into accepting it.
+    const dir = makeRepo();
+    mkdirSync(join(dir, '.githooks'), { recursive: true });
+    writeFileSync(join(dir, '.githooks', 'pre-commit'), '#!/bin/sh\nexit 0\n', 'utf8');
+    setLocal(dir, 'core.hooksPath', '.githooks');
+
+    const result = checkGitConfigDrift({ repoRoot: dir, env: NO_ENV });
+    expect(result?.findings.map((f) => f.kind)).toEqual(['hooks-path']);
+  });
 });
 
 describe('checkGitConfigDrift — ambient git environment', () => {

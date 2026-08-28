@@ -119,6 +119,13 @@
  *   |13 | liveness probe throws / no evidence at all | treat as IN FLIGHT | keeps row 11 biting; the blind case is bounded by `IN_FLIGHT_TTL_MS`, never unbounded |
  *   |14 | ledger lock not acquirable in `LEDGER_LOCK_TIMEOUT_MS` | run UNLOCKED (degraded) | the lock removes the read-modify-write race (below); failing to take it must not deny, so the cycle degrades to the pre-lock behaviour |
  *
+ * Every row that reaches a verdict from `decide()` — 5–11 and 13–14 — also
+ * leaves an event record (§ Observability), so "which row fired" is answerable
+ * after the fact and not only in the moment. Rows 1–4 emit nothing (no decision
+ * was made), and neither do the two crash rows 2 and 12: a hook that fell over
+ * cannot describe itself, which is precisely why the GUARD INACTIVE banner on
+ * stderr is the signal there.
+ *
  * Rows 7 and 9 use `emitWarn`, which calls `process.exit(0)` and NEVER RETURNS.
  * That is why `decide()` below is a PURE function returning a verdict object and
  * this module emits exactly ONCE, at the end. Warning from inside the checking
@@ -136,6 +143,26 @@
  * `withFileLock()` (`scripts/lib/file-lock.mjs`, the same primitive behind the
  * PSA-005 STATE.md lock), with a dead-PID stale override and a short timeout;
  * on timeout it degrades to the unlocked cycle (row 14) rather than denying.
+ *
+ * ## Observability — the ledger half of #1092
+ *
+ * Every dispatch DECISION also appends one `orchestrator.wave_dispatch.scope_checked`
+ * record to `<projectDir>/.orchestrator/metrics/events.jsonl`. The reason it
+ * exists is matrix rows 5/6: the no-signal ALLOW used to be byte-identical to
+ * "the guard never ran", and the in-ledger counter added first is a WAVE tally —
+ * it cannot say WHICH dispatch carried a scope. Payload: `wave` (omitted, never
+ * `0`, when unknown), `agent_id`, `declared_path_count`, `injected`, `shape`,
+ * `signal`, `ledger_result`, `collision_count`, `hook`, plus `session_id` /
+ * `semantic_session_id` when a session lock is readable.
+ *
+ * WHAT IT PROVES: this hook SAW (or did not see) a `FILE-SCOPE` declaration in
+ * the prompt the coordinator handed to the dispatch tool, and what the guard
+ * then decided. WHAT IT DOES NOT PROVE: that the block reached the agent's
+ * context, or that the agent read it. That is a RECEIVE-side question and the
+ * platform exposes no prompt-assembly boundary to answer it — the open half of
+ * #1092, with its revisit trigger in `docs/scope-collision-guard.md` § 4.2.
+ * NOTHING derived from the prompt BODY is in the payload: counts and enums
+ * only, no paths (#1092 acceptance criterion 3).
  *
  * ## stdout discipline
  *
@@ -246,6 +273,27 @@ const MAX_LEDGER_AGENTS = 64;
 const SIGNAL_MARKER_ABSENT = 'marker-absent';
 const SIGNAL_UNPARSEABLE = 'unparseable';
 const SIGNAL_EXTRACTED = 'extracted';
+
+/**
+ * Which declaration SHAPE produced the extracted paths (#1092). `none` means no
+ * shape yielded a path — the `marker-absent` AND the `unparseable` case alike,
+ * which is why the event carries `signal` beside `shape`: `shape` says which
+ * parser won, `signal` says whether a declaration was there at all.
+ */
+const SHAPE_FENCED = 'fenced';
+const SHAPE_INLINE = 'inline';
+const SHAPE_NONE = 'none';
+
+/** The per-dispatch observability record (#1092) — see § Observability. */
+const SCOPE_EVENT = 'orchestrator.wave_dispatch.scope_checked';
+
+/**
+ * Clamp for the one free-form string the event carries (`agent_id`, built from
+ * the coordinator's own `description`). A dispatch description is a label, but
+ * nothing enforces that, so the ledger line is bounded like every other payload
+ * in this file (§ stdout discipline).
+ */
+const MAX_AGENT_ID_CHARS = 120;
 
 /**
  * Blind-fallback liveness bound — see § Liveness for the measurement, the named
@@ -555,11 +603,20 @@ function extractInlineScopeDeclaration(prompt) {
  *   `unparseable`    — a declaration is present but no path survived (row 6)
  *   `extracted`      — `files` is non-empty
  *
+ * `shape` names the parser that WON — `fenced` (SHAPE 1), `inline` (SHAPE 2), or
+ * `none` when neither produced a path. It is deliberately NOT a second spelling
+ * of `status`: a prompt carrying a fenced block whose lines are prose is
+ * `{status: 'unparseable', shape: 'none'}`, and collapsing the two would lose
+ * exactly the row-5/row-6 distinction the counter exists for.
+ *
  * @param {string} prompt
- * @returns {{status: 'marker-absent'|'unparseable'|'extracted', files: string[]}}
+ * @returns {{status: 'marker-absent'|'unparseable'|'extracted',
+ *            shape: 'fenced'|'inline'|'none', files: string[]}}
  */
 export function extractScopeSignal(prompt) {
-  if (typeof prompt !== 'string' || prompt.length === 0) return { status: SIGNAL_MARKER_ABSENT, files: [] };
+  if (typeof prompt !== 'string' || prompt.length === 0) {
+    return { status: SIGNAL_MARKER_ABSENT, shape: SHAPE_NONE, files: [] };
+  }
 
   const markerMatch = SCOPE_MARKER.exec(prompt);
   if (markerMatch !== null) {
@@ -568,14 +625,15 @@ export function extractScopeSignal(prompt) {
     const fence = /```[^\n]*\n([\s\S]*?)```/.exec(after);
     if (fence !== null) {
       const files = collectScopePaths(fence[1].split('\n'));
-      if (files.length > 0) return { status: SIGNAL_EXTRACTED, files };
+      if (files.length > 0) return { status: SIGNAL_EXTRACTED, shape: SHAPE_FENCED, files };
     }
   }
 
   const inline = extractInlineScopeDeclaration(prompt);
-  if (inline.files.length > 0) return { status: SIGNAL_EXTRACTED, files: inline.files };
+  if (inline.files.length > 0) return { status: SIGNAL_EXTRACTED, shape: SHAPE_INLINE, files: inline.files };
   return {
     status: markerMatch !== null || inline.seen ? SIGNAL_UNPARSEABLE : SIGNAL_MARKER_ABSENT,
+    shape: SHAPE_NONE,
     files: [],
   };
 }
@@ -799,6 +857,26 @@ export function waveKeyOf(projectDir, sessionId, readFn) {
 }
 
 /**
+ * The wave NUMBER out of a `waveKeyOf()` key, for the telemetry record (#1092).
+ *
+ * Returns `null` — never `0` — when the key carries the `w?` fallback or a
+ * non-positive value, so the caller can OMIT the field. `.claude/rules/host-
+ * resources.md` § HR-105 in one line: an invented `wave: 0` would read as a real
+ * wave in every later query, exactly like the `wave_number` contract the
+ * quality-gate event already follows (`docs/events-schema.md`).
+ *
+ * @param {string} waveKey
+ * @returns {number|null}
+ */
+function waveNumberOf(waveKey) {
+  if (typeof waveKey !== 'string') return null;
+  const seg = waveKey.split('|')[1];
+  if (typeof seg !== 'string' || !seg.startsWith('w')) return null;
+  const n = Number(seg.slice(1));
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/**
  * Tracked files, for glob expansion inside `findScopeCollisions`. The library is
  * pure and must not spawn — supplying this is precisely the hook's job.
  * Returns `[]` on any git failure (matrix row 8: degrade, never deny).
@@ -904,7 +982,7 @@ export function bumpSignalCounter(ledger, waveKey, status) {
 
 /**
  * @typedef {{action: 'allow'|'deny'|'warn', reason?: string, suggestion?: string,
- *            ledger?: object|null, note?: string}} Verdict
+ *            ledger?: object|null, note?: string, telemetry?: object}} Verdict
  */
 
 /**
@@ -933,9 +1011,28 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
 
   const signal = extractScopeSignal(toolInput.prompt);
   const files = signal.files;
+  const id = agentIdOf(toolInput);
   const priorAgents = (ledger !== null && ledger?.waveKey === waveKey && Array.isArray(ledger.agents))
     ? ledger.agents
     : [];
+
+  // #1092 — the observability record this dispatch will leave in the ledger.
+  // BUILT here, EMITTED by the caller: `decide()` is a pure function (§ stdout
+  // discipline), and an `await` inside it would put an I/O failure on the
+  // decision path. Counter-shaped by construction — a count, three enums and the
+  // agent id, never a path, never a byte of the prompt (issue #1092 acceptance
+  // criterion 3). `wave` is omitted rather than zeroed when unknown.
+  const wave = waveNumberOf(waveKey);
+  const telemetryFor = (ledgerResult, collisionCount = 0) => ({
+    ...(wave === null ? {} : { wave }),
+    agent_id: id.slice(0, MAX_AGENT_ID_CHARS),
+    declared_path_count: files.length,
+    injected: files.length > 0,
+    shape: signal.shape,
+    signal: signal.status,
+    ledger_result: ledgerResult,
+    collision_count: collisionCount,
+  });
 
   // Rows 5 + 6: nothing confidently extractable → allow. Non-extractable is not
   // a violation, and denying here would deny ~7 dispatches in 10.
@@ -947,6 +1044,7 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
   if (files.length === 0) {
     return {
       action: 'allow',
+      telemetry: telemetryFor('no-scope'),
       ledger: {
         waveKey,
         updated: at,
@@ -956,7 +1054,6 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
     };
   }
 
-  const id = agentIdOf(toolInput);
   const desc = agentDescOf(toolInput);
   const self = { id, desc, files, at };
 
@@ -967,6 +1064,7 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
   if (ledgerCorrupt) {
     return {
       action: 'warn',
+      telemetry: telemetryFor('warn-ledger-corrupt'),
       ledger: { waveKey, updated: at, agents: [self], scopeSignals: bumpSignalCounter(null, waveKey, signal.status) },
       note:
         `${HOOK_NAME}: wave dispatch ledger was unreadable — scope-disjointness NOT checked for ` +
@@ -1014,6 +1112,7 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
   if (verdictLib?.ok !== true && collisions.length === 0 && duplicateIds.length === 0) {
     return {
       action: 'warn',
+      telemetry: telemetryFor('warn-not-evaluable'),
       ledger: nextLedger,
       note:
         `${HOOK_NAME}: scope collision check not evaluable for "${id}" — dispatch allowed, ` +
@@ -1026,7 +1125,7 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
   // this guard, and re-denying it would block an innocent third agent.
   const mine = collisions.filter((c) => c?.a === id || c?.b === id);
 
-  if (mine.length === 0) return { action: 'allow', ledger: nextLedger };
+  if (mine.length === 0) return { action: 'allow', telemetry: telemetryFor('allow'), ledger: nextLedger };
 
   // § Liveness — the review's HIGH finding. A collision with an agent that has
   // ALREADY FINISHED is a sequential repair pass, not a race. The probe is called
@@ -1052,6 +1151,7 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
     const kept = others.filter((a) => !finishedIds.has(a.id));
     return {
       action: 'allow',
+      telemetry: telemetryFor('allow-finished', mine.length),
       ledger: {
         waveKey,
         updated: at,
@@ -1089,7 +1189,7 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
 
   // Deliberately NOT persisting the ledger on deny: the dispatch did not happen,
   // so recording it would make the retry-after-fix look like a duplicate.
-  return { action: 'deny', reason, suggestion };
+  return { action: 'deny', telemetry: telemetryFor('deny', mine.length), reason, suggestion };
 }
 
 // ---------------------------------------------------------------------------
@@ -1175,6 +1275,26 @@ async function main() {
     // race window returns, which is exactly the pre-lock behaviour — strictly
     // better than blocking the dispatch on a lock-file problem.
     verdict = cycle();
+  }
+
+  // #1092 — one ledger line per dispatch DECISION, awaited BEFORE the terminal
+  // emit: `emitAllow`/`emitDeny`/`emitWarn` all call `process.exit()`, which
+  // discards a pending append (the same ordering `hooks/enforce-scope.mjs`
+  // documents at its own event site). Best-effort in BOTH directions — the
+  // import is dynamic so a checkout without `scripts/lib/events.mjs` degrades to
+  // silence instead of crashing (§ Import safety), and the catch guarantees a
+  // failed write cannot change the verdict or the exit code.
+  if (verdict.telemetry) {
+    try {
+      const { emitEvent, sessionAttribution } = await import(
+        pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'events.mjs')).href
+      );
+      await emitEvent(
+        SCOPE_EVENT,
+        { hook: HOOK_NAME, ...verdict.telemetry, ...sessionAttribution(projectDir) },
+        { repoRoot: projectDir }
+      );
+    } catch { /* observability is best-effort — it never blocks the decision */ }
   }
 
   if (verdict.action === 'deny') return emitDeny(verdict.reason, verdict.suggestion);

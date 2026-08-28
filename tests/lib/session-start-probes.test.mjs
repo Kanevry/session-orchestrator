@@ -353,6 +353,21 @@ describe('the built-in registry', () => {
     expect(missing).toEqual([]);
   });
 
+  // BUG (#1159 wiring): vault-staleness-banner now returns a third shape,
+  // `{severity:'info', kind:'probe-stale'}`, when its last record is older than
+  // MAX_RECORD_AGE_DAYS. The default severityOf maps everything except warn/alert
+  // to 'ok' and defaultRender drops 'ok' — so the "probe has not run for N days"
+  // banner would be built and never rendered. Only a registry-level mapping test
+  // catches that: the banner module's own tests cannot see the consumer.
+  it('renders the vault-staleness probe-stale shape instead of swallowing it', () => {
+    const probe = PROBES.find((p) => p.id === 'vault-staleness');
+    expect(typeof probe.severityOf).toBe('function');
+    expect(probe.severityOf({ severity: 'info', kind: 'probe-stale', message: 'x' })).toBe('warn');
+    expect(probe.severityOf({ severity: 'alert', message: 'x' })).toBe('alert');
+    expect(probe.severityOf({ severity: 'warn', message: 'x' })).toBe('warn');
+    expect(probe.severityOf(null)).toBe('ok');
+  });
+
   it('has a unique id per entry and a sane default budget', () => {
     const ids = PROBES.map((p) => p.id);
     expect(new Set(ids).size).toBe(ids.length);

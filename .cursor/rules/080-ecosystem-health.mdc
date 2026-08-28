@@ -72,10 +72,10 @@ Detect the VCS platform per the VCS Auto-Detection section of the gitlab-ops rul
 
 ```bash
 # GitLab
-glab pipeline list --per-page 3
+glab pipeline list -R <OWNER>/<REPO> --per-page 3
 
 # GitHub
-gh run list --limit 3
+gh run list -R <OWNER>/<REPO> --limit 3
 ```
 
 Report each run with: status (success/failed/pending), branch, and timestamp.
@@ -94,17 +94,17 @@ Skip this section.
 
 For each repo in `cross-repos`:
 
-1. Resolve project ID or owner/repo slug (see gitlab-ops Dynamic Project Resolution)
-2. Query open issues with `priority:critical` or `priority:high` labels (limit 5 per repo)
+1. Select host + encoded project path, or the GitHub `owner/repo` slug (see gitlab-ops Canonical Project Identity)
+2. Query open issues with `priority::critical` or `priority::high` labels (limit 5 per repo)
 3. Collect and report results across all configured repos
 
 ```bash
 # GitLab
-glab api "projects/<PROJECT_ID>/issues?labels=priority:critical,priority:high&state=opened&per_page=5"
+glab api --hostname "$GITLAB_HOST" "projects/${ENCODED_PROJECT_PATH}/issues?labels=priority::critical,priority::high&state=opened&per_page=5"
 
 # GitHub
-gh issue list --repo <owner/repo> --label "priority:critical" --limit 5
-gh issue list --repo <owner/repo> --label "priority:high" --limit 5
+gh issue list -R <OWNER>/<REPO> --label "priority::critical" --limit 5
+gh issue list -R <OWNER>/<REPO> --label "priority::high" --limit 5
 ```
 
 ---

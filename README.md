@@ -52,6 +52,8 @@ That is the whole loop. `/plan` and `/evolve` extend it (see [Lifecycle](#lifecy
 
 ## Quick Start
 
+Run `/bootstrap` in your project repo first — it writes `.orchestrator/bootstrap.lock`, which session-start requires before `/session` will run.
+
 Add a `## Session Config` section to your project's `CLAUDE.md` (Claude Code and Cursor IDE) or `AGENTS.md` (Codex CLI and Pi) — see [instruction-file-resolution](skills/_shared/instruction-file-resolution.md) for which file each platform reads. The smallest valid config is seven fields:
 
 ```yaml

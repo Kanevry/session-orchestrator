@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -182,5 +182,99 @@ vault-integration:
     const parsed = JSON.parse(out);
     expect(parsed['vault-integration'].mode).toBe('warn');
     expect(parsed['vault-integration'].enabled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1097 — an unparsable line inside `## Session Config` is never silent
+// ---------------------------------------------------------------------------
+//
+// The bug these two tests catch: a key the parser cannot read is absent from
+// the KV map, so every consumer applies its own default — `false` for booleans.
+// A typo'd `vault-integration` block therefore produces the byte-identical
+// stdout of a deliberately DISABLED one, and the only trace anywhere is a
+// feature that quietly does nothing (fleet evidence: a repo whose vault mirror
+// sat at `skipped-vault-disabled` for two months with the key in its CLAUDE.md).
+//
+// stderr on the success path is why these use spawnSync: execFileSync surfaces
+// stderr only when the exit code is non-zero, so the warn case would look clean
+// through the runners above.
+
+function spawnParseConfig(cwd) {
+  const res = spawnSync('node', [SCRIPT], {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+}
+
+const MALFORMED_BLOCK = `## Session Config
+
+persistence: true
+enforcement: __ENFORCEMENT__
+waves: 5
+this line is prose where a key belongs
+`;
+
+describe('#1097 unparsable Session Config lines fail loud, never silently default', () => {
+  let sandbox;
+  beforeEach(() => {
+    sandbox = mkdtempSync(join(tmpdir(), 'pc-unparsable-'));
+    execFileSync('git', ['init', '-q'], { cwd: sandbox });
+  });
+  afterEach(() => {
+    rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  it('enforcement: warn — names the line on stderr and still emits config (exit 0)', () => {
+    writeFileSync(join(sandbox, 'CLAUDE.md'), MALFORMED_BLOCK.replace('__ENFORCEMENT__', 'warn'));
+    const res = spawnParseConfig(sandbox);
+
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain('this line is prose where a key belongs');
+    // The line NUMBER is the point — an operator has to be able to open the
+    // file at the defect, not go hunting for the text.
+    expect(res.stderr).toMatch(/line 6:/);
+    // warn degrades to the old behaviour on stdout: the JSON is unchanged.
+    expect(JSON.parse(res.stdout).waves).toBe(5);
+  });
+
+  it('enforcement: strict — refuses with a non-zero exit and emits no config', () => {
+    writeFileSync(join(sandbox, 'CLAUDE.md'), MALFORMED_BLOCK.replace('__ENFORCEMENT__', 'strict'));
+    const res = spawnParseConfig(sandbox);
+
+    expect(res.status).not.toBe(0);
+    expect(res.stderr).toContain('this line is prose where a key belongs');
+    expect(res.stdout).toBe('');
+  });
+
+  it('stays byte-silent on a well-formed block (no new noise on the success path)', () => {
+    // The guard against the opposite failure: a warning that fires on healthy
+    // input is a warning operators learn to ignore. Every accepted form —
+    // comment, nested block, list item, fenced wrapper — must pass unremarked.
+    writeFileSync(
+      join(sandbox, 'CLAUDE.md'),
+      `## Session Config
+
+\`\`\`yaml
+# a comment
+persistence: true
+enforcement: warn
+waves: 5
+cross-repos: [a, b]
+vault-integration:
+  enabled: true
+  mode: warn
+custom-phases:
+  - name: demo
+    command: node scripts/demo.mjs
+\`\`\`
+`
+    );
+    const res = spawnParseConfig(sandbox);
+    expect(res.status).toBe(0);
+    expect(res.stderr).toBe('');
+    expect(JSON.parse(res.stdout).waves).toBe(5);
   });
 });

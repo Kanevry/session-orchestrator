@@ -36,7 +36,7 @@ Session Orchestrator is a Claude Code and Codex plugin that brings structured, w
 
 #### Claude Code
 
-Claude Code installs plugins through slash commands inside a running session. There is no `claude plugin` shell CLI — run these commands in the Claude Code prompt:
+Claude Code also has a `claude plugin` shell CLI (`claude plugin --help` lists subcommands). For end-user installation, use the slash commands inside a running session — run these in the Claude Code prompt:
 
 **From GitHub (recommended for end users):**
 
@@ -992,7 +992,7 @@ Enforcement levels (configured via `enforcement`):
 
 ### Prerequisites
 
-Scope and command enforcement hooks require `jq` to be installed. If `jq` is not available, hooks degrade gracefully — all operations are allowed with a warning to stderr. Install `jq` for enforcement to be active:
+The enforcement hooks (`hooks/enforce-scope.mjs`, `hooks/enforce-commands.mjs`) do not call `requireJq()` — they run without `jq`. `jq` is required by `scripts/validate-plugin.mjs` and by the wave-scope shell snippets in `skills/wave-executor/` (e.g. deriving `blockedCommands` and reading Session Config). Install `jq` when you run those tools or snippets:
 
 - **macOS**: `brew install jq`
 - **Ubuntu/Debian**: `sudo apt-get install jq`

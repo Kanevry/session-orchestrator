@@ -14,6 +14,20 @@ project-level Job Token allowlists are explicitly configured — an admin action
 in the foreign project that cannot be scripted from here. The fix is a deploy
 token or PAT stored as the masked CI variable `SCHEMA_DRIFT_TOKEN`.
 
+> **Current decision (2026-08-28, #1062): amber is the accepted normal state.**
+> `glab variable list` on this project returns zero CI variables — no
+> `SCHEMA_DRIFT_TOKEN` is set — so every pipeline runs the job to exit 3
+> (`NOT VERIFIED`) and `pipeline-gate` prints the amber line. This is a
+> deliberate operator choice, not a defect: the job is correctly fail-loud
+> (exit taxonomy below), the vendored schema is compared manually at each
+> baseline refresh (#1100), and no token is rotated for a check that runs
+> against a private project of our own. Session-start's CI banner keeps
+> reporting the soft failure on purpose (`allow_failure` jobs are invisible
+> at pipeline level, which is what that banner exists to surface). Revisit
+> trigger: the first time a vendored-schema drift ships unnoticed, or when
+> the baseline gains a public mirror — then set the token (Option A below)
+> and flip `SCHEMA_DRIFT_OPTIONAL` at both sites.
+
 ### Required CI variable
 
 | Variable | Type | Mask | Protect | Value |

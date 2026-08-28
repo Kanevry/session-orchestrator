@@ -11,7 +11,7 @@
  *
  * Exit codes:
  *   0 — success
- *   1 — source rules not found
+ *   1 — source rules not found, or TARGET is not an existing directory
  */
 
 import { existsSync, mkdirSync, readdirSync, symlinkSync, statSync, lstatSync } from 'node:fs';
@@ -31,6 +31,11 @@ const SO_ROOT = path.dirname(SCRIPT_DIR);
 // ---------------------------------------------------------------------------
 
 const TARGET = process.argv[2] ?? process.cwd();
+
+if (!existsSync(TARGET) || !statSync(TARGET).isDirectory()) {
+  process.stderr.write(`ERROR: Target directory does not exist: ${TARGET}\n`);
+  process.exit(1);
+}
 
 // ---------------------------------------------------------------------------
 // Print banner
@@ -108,6 +113,6 @@ process.stdout.write('\n');
 process.stdout.write('Next steps:\n');
 process.stdout.write("  1. Ensure CLAUDE.md (or AGENTS.md on Codex CLI) has a '## Session Config' section\n");
 process.stdout.write('  2. (Optional) Configure hooks in Cursor Settings > Hooks:\n');
-process.stdout.write(`     - afterFileEdit:          ${SO_ROOT}/hooks/enforce-scope.sh\n`);
-process.stdout.write(`     - beforeShellExecution:   ${SO_ROOT}/hooks/enforce-commands.sh\n`);
+process.stdout.write(`     - afterFileEdit:          ${SO_ROOT}/hooks/enforce-scope.mjs\n`);
+process.stdout.write(`     - beforeShellExecution:   ${SO_ROOT}/hooks/enforce-commands.mjs\n`);
 process.stdout.write('  3. Open your project in Cursor and type /session to start!\n');

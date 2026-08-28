@@ -25,87 +25,93 @@ Session Config overrides:
 - `vcs: github|gitlab` -- force a specific platform
 - `gitlab-host: <host>` -- override auto-detected GitLab host
 
-## Dynamic Project Resolution
+## Canonical Project Identity
 
-Never hardcode project IDs. Resolve at runtime.
+GitLab REST endpoints accept a URL-encoded `namespace/project` path. Select the GitLab host and project path explicitly; never derive a numeric project ID from `glab repo view`, a search query, or `:id` placeholders. Those forms can resolve through the ambient working directory or a stale search result and target another project after a rename, fork, or scaffold.
 
-### Current Project
+Set the identity once per operation sequence and reuse the encoded identifier without encoding it again:
 
 ```bash
-# GitLab — numeric project ID
-glab repo view --output json | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])"
-
-# GitHub — owner/name
-gh repo view --json nameWithOwner -q '.nameWithOwner'
+GITLAB_HOST="<selected GitLab hostname>"
+GROUP_PATH="<selected group path>"
+PROJECT_NAME="<selected project name>"
+PROJECT_PATH="$GROUP_PATH/$PROJECT_NAME"
+ENCODED_PROJECT_PATH="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$PROJECT_PATH")"
 ```
 
-### Cross-Project Queries
+For a link target in another project, use the same path-first shape instead of a numeric ID:
 
 ```bash
-# GitLab — resolve by name
-glab api "projects?search=<project-name>" | python3 -c "import json,sys; [print(p['id'], p['path_with_namespace']) for p in json.load(sys.stdin)]"
+TARGET_PROJECT_PATH="<target namespace>/<target project>"
+TARGET_ENCODED_PROJECT_PATH="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$TARGET_PROJECT_PATH")"
+```
 
-# GitHub — resolve repo details
-gh api "repos/<owner>/<name>" --jq '.full_name'
+Pass `--hostname "$GITLAB_HOST"` to every `glab api` call. The endpoint itself then pins the project, including directly after creating a repository when the current directory does not yet identify the new project.
+
+GitHub continues to use an `owner/repo` slug; `gh repo` takes it positionally and rejects `-R`:
+
+```bash
+gh repo view --json nameWithOwner -q '.nameWithOwner'
 ```
 
 ---
 
 ## Common CLI Commands
 
+**Directive:** every repo-scoped `glab` invocation names host + project path explicitly (`glab -R <host>/<group>/<project> ...` or `glab api --hostname "$GITLAB_HOST" "projects/${ENCODED_PROJECT_PATH}/..."`). Without `-R` / the encoded endpoint the target is whatever the ambient cwd remote happens to be.
+
 ### GitLab (glab)
 
 ```bash
 # Issues
-glab issue list --per-page 50                              # All open issues
-glab issue list --label "status:ready" --per-page 10       # Filtered by label
-glab issue list --label "priority:high" --per-page 10      # High priority
-glab issue list --closed --per-page 10                     # Recently closed
-glab issue view <IID>                                      # View issue details
-glab issue view <IID> --comments                           # With comments
-glab issue create --title "title" --label "priority:high,status:ready"
-glab issue update <IID> --label "status:in-progress"
-glab issue close <IID>
-glab issue note <IID> -m "Comment text"                    # Add comment
+glab issue list -R <OWNER>/<REPO> --per-page 50                            # All open issues
+glab issue list -R <OWNER>/<REPO> --label "status:ready" --per-page 10     # Ready to work on
+glab issue list -R <OWNER>/<REPO> --label "priority::high" --per-page 10   # High priority
+glab issue list -R <OWNER>/<REPO> --closed --per-page 10                   # Recently closed
+glab issue view -R <OWNER>/<REPO> <IID>                                    # View issue details
+glab issue view -R <OWNER>/<REPO> <IID> --comments                         # With comments
+glab issue create -R <OWNER>/<REPO> --title "title" --label "priority::high,status:ready"
+glab issue update -R <OWNER>/<REPO> <IID> --label "status:in-progress"
+glab issue close -R <OWNER>/<REPO> <IID>
+glab issue note -R <OWNER>/<REPO> <IID> -m "Comment text"                  # Add comment
 
 # MRs
-glab mr list                                               # Open MRs
-glab mr create --fill --draft                              # Create draft MR
-glab mr merge <MR_IID>                                     # Merge MR
+glab mr list -R <OWNER>/<REPO>                                             # Open MRs
+glab mr create -R <OWNER>/<REPO> --fill --draft                            # Create draft MR
+glab mr merge -R <OWNER>/<REPO> <MR_IID>                                   # Merge MR
 
 # Pipelines
-glab pipeline list --per-page 5                            # Recent pipelines
-glab pipeline status <ID>                                  # Pipeline details
+glab pipeline list -R <OWNER>/<REPO> --per-page 5                          # Recent pipelines
+glab pipeline status -R <OWNER>/<REPO> <ID>                                # Pipeline details
 
-# API (reads host from git remote automatically)
-PROJECT_ID=$(glab repo view --output json | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
-glab api "projects/$PROJECT_ID/issues?state=opened&per_page=50"
-glab api "projects/$PROJECT_ID/milestones?state=active"
+# API (no --repo exists here — the encoded endpoint and explicit host identify the target)
+glab api --hostname "$GITLAB_HOST" "projects/${ENCODED_PROJECT_PATH}/issues?state=opened&per_page=50"
+glab api --hostname "$GITLAB_HOST" "projects/${ENCODED_PROJECT_PATH}/milestones?state=active"
 ```
 
 ### GitHub (gh)
 
 ```bash
 # Issues
-gh issue list --limit 50                                   # All open issues
-gh issue list --label "status:ready" --limit 10            # Filtered by label
-gh issue list --label "priority:high" --limit 10           # High priority
-gh issue list --state closed --limit 10                    # Recently closed
-gh issue view <NUMBER>                                     # View issue details
-gh issue view <NUMBER> --comments                          # With comments
-gh issue create --title "title" --label "priority:high,status:ready"
-gh issue edit <NUMBER> --add-label "status:in-progress"
-gh issue close <NUMBER>
-gh issue comment <NUMBER> --body "Comment text"            # Add comment
+gh issue list -R <OWNER>/<REPO> --limit 50                                 # All open issues
+gh issue list -R <OWNER>/<REPO> --label "status:ready" --limit 10          # Ready to work on
+gh issue list -R <OWNER>/<REPO> --label "priority::high" --limit 10        # High priority
+gh issue list -R <OWNER>/<REPO> --state closed --limit 10                  # Recently closed
+gh issue view -R <OWNER>/<REPO> <NUMBER>                                   # View issue details
+gh issue view -R <OWNER>/<REPO> <NUMBER> --comments                        # With comments
+gh issue create -R <OWNER>/<REPO> --title "title" --label "priority::high,status:ready"
+gh issue edit -R <OWNER>/<REPO> <NUMBER> --add-label "status:in-progress"
+gh issue close -R <OWNER>/<REPO> <NUMBER>
+gh issue comment -R <OWNER>/<REPO> <NUMBER> --body "Comment text"          # Add comment
 
 # PRs
-gh pr list --state open                                    # Open PRs
-gh pr create --fill --draft                                # Create draft PR
-gh pr merge <NUMBER>                                       # Merge PR
+gh pr list -R <OWNER>/<REPO> --state open                                  # Open PRs
+gh pr create -R <OWNER>/<REPO> --fill --draft                              # Create draft PR
+gh pr merge -R <OWNER>/<REPO> <NUMBER>                                     # Merge PR
 
 # Workflows (CI)
-gh run list --limit 5                                      # Recent workflow runs
-gh run view <RUN_ID>                                       # Run details
+gh run list -R <OWNER>/<REPO> --limit 5                                    # Recent workflow runs
+gh run view -R <OWNER>/<REPO> <RUN_ID>                                     # Run details
 
 # API
 gh api "repos/{owner}/{repo}/issues?state=open&per_page=50"
@@ -120,20 +126,22 @@ These are known differences from `gh` that cause frequent mistakes:
 
 | Quirk | Correct | Wrong |
 |-------|---------|-------|
-| Listing closed issues | `glab issue list --closed` | `glab issue list --state closed` |
+| Listing closed issues | `glab issue list -R <OWNER>/<REPO> --closed` | `glab issue list -R <OWNER>/<REPO> --state closed` |
 | Confirmations | glab has NO `--yes` flag | Do not pass `--yes` |
-| Comprehensive listing | `glab issue list --per-page 100` | Default per-page is small |
+| Comprehensive listing | `glab issue list -R <OWNER>/<REPO> --per-page 100` | Default per-page is small |
 | Pagination flag | `--per-page N` (glab) | `--limit N` (that is gh syntax) |
 
 ---
 
 ## Label Taxonomy
 
+**`priority::<level>` is canonical** (scoped double colon). `area:` / `type:` / `status:` / `from:` stay single-colon.
+
 ### Priority Labels
-- `priority:critical` -- blocking production or users
-- `priority:high` -- important, schedule this sprint
-- `priority:medium` -- plan for next sprint
-- `priority:low` -- backlog, nice-to-have
+- `priority::critical` -- blocking production or users
+- `priority::high` -- important, schedule this sprint
+- `priority::medium` -- plan for next sprint
+- `priority::low` -- backlog, nice-to-have
 
 ### Status Labels
 - `status:ready` -- defined, ready to pick up
@@ -212,7 +220,7 @@ Relates to #ORIGINAL_IID
 ## [Discovery] <finding title>
 
 **Probe:** <probe_name>
-**Severity:** <priority:critical|high|medium|low>
+**Severity:** <priority::critical|high|medium|low>
 **Category:** <code|infra|ui|arch|session|audit|vault|feature>
 
 ### Finding
@@ -237,7 +245,7 @@ Relates to #ORIGINAL_IID
 - [ ] Quality gates pass after fix
 ```
 
-Labels for discovery findings: `type:discovery`, `priority:<level>`, `area:<inferred>`, `status:ready`
+Labels for discovery findings: `type:discovery`, `priority::<level>`, `area:<inferred>`, `status:ready`
 
 
 

@@ -129,6 +129,24 @@ Two structural rules keep this matrix honest, both recorded in the hook header:
 - `decide()` is a **pure function returning a verdict**; the module emits exactly once, at the end. `emitWarn`/`emitDeny` call `process.exit(0)` and never return, so a warn emitted from inside the checking flow would terminate the process before a later collision could be denied — and would skip the lock's release `finally`.
 - Row 9's discriminator is **not** `ok !== true`. `ok` means *disjoint*, so `ok === false` is the normal result of a real collision; "not evaluable" is `ok === false` with BOTH result arrays empty. Reading `ok` as evaluability would turn every genuine collision into a warn, i.e. an allow — the exact fail-open the hook exists to prevent.
 
+### 4.2 Observability — one record per dispatch decision (#1092)
+
+Every dispatch that reaches a verdict also appends one `orchestrator.wave_dispatch.scope_checked` record to `<projectDir>/.orchestrator/metrics/events.jsonl` (payload contract: [`docs/events-schema.md`](events-schema.md)). It is built inside `decide()` as `verdict.telemetry` and emitted by `main()` — awaited **before** the terminal `emitAllow`/`emitDeny`/`emitWarn`, each of which calls `process.exit()` and would discard a pending append — inside a `try/catch`, so a failed write can never change the verdict or the exit code.
+
+Why it exists: the in-ledger `scopeSignals` counter (§ 4.1, rows 5/6) is a **wave tally**. It answers "how many dispatches of this wave carried a scope", never "which agent was dispatched unscoped" — and a wave in which the injection step was skipped entirely still produces a plausible-looking tally. The per-dispatch record makes the individual dispatch falsifiable (`.claude/rules/host-resources.md` § HR-105).
+
+**What the event proves:** the hook SAW — or did not see — a `FILE-SCOPE` declaration in the prompt the coordinator handed to the dispatch tool, which declaration shape parsed it (`shape`), whether any path survived (`injected`, `declared_path_count`), and which matrix row decided (`ledger_result`, `collision_count`). That is the **send** side, measured at the PreToolUse boundary.
+
+**What it does not prove:** that the block reached the agent's context, or that the model read it. Those are **receive**-side facts, and this hook observes the tool payload, not the assembled prompt. A record reading `injected: true` is therefore evidence about the coordinator's dispatch, never about the agent's obedience — reading it as the latter rebuilds exactly the false confidence § 2.2 warns about. The counterpart signal on the receive side remains the agent's own behaviour (`enforce-scope` at write time) and the W5 verification pass.
+
+**Payload discipline.** Counts and closed enums only, plus `agent_id` (the coordinator's own dispatch description, clamped) and the optional session attribution: no prompt body, no declared path, no glob. Issue #1092's acceptance criterion 3 is the rule, and the reason is concrete — this record also travels over the optional Clank Event-Bus webhook with no redaction, and paths under `01-projects/` carry private project slugs.
+
+**Revisit-Trigger** (verbatim from issue #1092, for the transport half this section deliberately does NOT close):
+
+> Implement when the platform exposes a stable prompt-assembly hook or when a coordinator-owned digest event can be proven against the real dispatched transcript.
+
+Until then the issue's remaining acceptance criteria — a scope-file **digest** proven to have reached the prompt assembler, and an omitted/malformed injection turning an end-to-end probe red while materializer, disjointness, union and subset checks stay green — are not satisfiable by any mechanism inside this repo, because no observable boundary carries the final prompt.
+
 ## 5. The liveness probe
 
 A ledger with no notion of completion denies the wrong thing. Measured over 38 archived transcripts of this repo (346 `Agent` dispatch blocks; hook header, 2026-08-14): 0 of 4 same-batch overlaps and **2 of 2 cross-dispatch overlaps** would have been denied — and both cross-dispatch pairs were legitimate **sequential repair passes** (a dispatch and its later fix). Because a deny deliberately does not persist the ledger, the re-dispatch would have met the same stale record: a permanent block.
@@ -166,7 +184,7 @@ Complete list of what this guard does **not** see, or sees only approximately:
 - The other agent has finished, but the ledger still binds it → the transcript carried no evidence (§ 5) and you are inside the TTL window. Delete `.orchestrator/wave-dispatch-scopes.json`; the next dispatch rebuilds it.
 - The `waveKey` names an older wave → the `<session>|w?|?` fallback (limit 5). Check that `<state-dir>/wave-scope.json` exists and is readable, then delete the ledger.
 
-**A dispatch was NOT denied and should have been.** Work down the allow rows: is `FILE-SCOPE` present in the prompt with a fenced block right after it (rows 5/6)? Is the hook armed at all (`GUARD INACTIVE` on stderr = row 2)? Did a `systemMessage` warning appear (rows 7/9)? Cross-check the same scopes through the CLI, which does not depend on prose:
+**A dispatch was NOT denied and should have been.** Start at the ledger line, which now says which row fired without re-running anything: `jq -c 'select(.event=="orchestrator.wave_dispatch.scope_checked")' .orchestrator/metrics/events.jsonl | tail` — `injected:false` with `signal:"marker-absent"` is row 5 (no declaration in the prompt at all, i.e. the injection step, not the guard), `signal:"unparseable"` is row 6 (a declaration the parser could not use), `ledger_result:"allow-finished"` is row 10a (the collision was real but its partner had finished), and NO record at all for a dispatch you watched happen means the hook never ran or crashed before deciding (§ 4.2). Then work down the allow rows: is `FILE-SCOPE` present in the prompt with a fenced block right after it (rows 5/6)? Is the hook armed at all (`GUARD INACTIVE` on stderr = row 2)? Did a `systemMessage` warning appear (rows 7/9)? Cross-check the same scopes through the CLI, which does not depend on prose:
 
 ```bash
 node scripts/validate-wave-scope.mjs --assert-disjoint "$WAVE_SCOPES_SIDECAR" < <state-dir>/wave-scope.json

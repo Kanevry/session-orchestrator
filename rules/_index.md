@@ -33,6 +33,14 @@ baseline project type (`nextjs-saas`, `express-service`, `docker-service`,
 - `always-on/parallel-sessions.md` — PSA-001..007 multi-session discipline (detect / pause / destructive-ops / commit / STATE.md lock / grep-verification / subagent git-write ban)
 - `always-on/commit-discipline.md` — atomic commits, stage-by-name, no `git add .`
 - `always-on/npm-quality-gates.md` — the typecheck + test + lint triad before commit
+- `always-on/verification-before-completion.md` — VBC-001..005: no completion claim without fresh, quoted verification evidence
+- `always-on/receiving-review.md` — RCR-001..009: the 6-step review-handling pattern, four-class finding triage, push-back posture
+- `always-on/ask-via-tool.md` — AUQ-001..006: route before you ask; structured options over prose question lists
+- `always-on/test-value.md` — TV-001..005: name the bug a test catches, or do not write it; deletion is a feature
+- `always-on/build-value.md` — BV-001..004: the seven-rung build ladder, the four protections never simplified away
+- `always-on/cross-session-messaging.md` — CSM-001..005: messaging is transport, not shared state; no permission laundering
+- `always-on/loop-and-monitor.md` — LM-001..008: routing between `/goal`, Workflows, Channels, Monitor, `/loop`, and Routines
+- `always-on/bash-harness-pitfalls.md` — six false-green shell-harness failure classes (path-scoped via its own `globs:`/`paths:` frontmatter)
 
 ## opt-in-stack (vendored on match)
 

@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import {
   _extractConfigSection,
   _parseKV,
+  collectUnparsableLines,
 } from '@lib/config/section-extractor.mjs';
 
 // ---------------------------------------------------------------------------
@@ -169,5 +170,80 @@ describe('_parseKV', () => {
       expect(kv.get('persistence')).toBe('true');
       expect(kv.get('plan-baseline-path')).toBe('~/Projects/foo');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// collectUnparsableLines (#1097)
+// ---------------------------------------------------------------------------
+
+describe('collectUnparsableLines', () => {
+  it('reports a prose line inside the block with its 1-based document line number', () => {
+    // The bug: this line contributes nothing to the KV map, and its keys — if
+    // it was meant to be one — fall back to defaults with no error anywhere.
+    const content = '# Title\n\n## Session Config\n\npersistence: true\nthis is not config\n';
+    expect(collectUnparsableLines(content)).toEqual([{ line: 6, text: 'this is not config' }]);
+  });
+
+  it('reports a key/value line whose colon is missing (the silent-default shape)', () => {
+    const content = '## Session Config\n\npersistence true\n';
+    expect(collectUnparsableLines(content)).toEqual([{ line: 3, text: 'persistence true' }]);
+  });
+
+  it('accepts every legitimate construct without reporting it', () => {
+    const content = [
+      '## Session Config',
+      '',
+      '```yaml',
+      '# a yaml comment',
+      '<!-- an html comment -->',
+      '> a blockquote note',
+      'persistence: true',
+      '- **waves:** 5',
+      '- vcs: gitlab',
+      'cross-repos: [a, b]',
+      'vault-integration:',
+      '  enabled: true',
+      'custom-phases:',
+      '  - name: demo',
+      '    command: node x.mjs',
+      'audiences:',
+      '  - user',
+      '```',
+      '',
+    ].join('\n');
+    expect(collectUnparsableLines(content)).toEqual([]);
+  });
+
+  it('does not read past the closing ## heading', () => {
+    const content = '## Session Config\npersistence: true\n## Notes\nprose after the block\n';
+    expect(collectUnparsableLines(content)).toEqual([]);
+  });
+
+  it('tolerates a multi-line HTML comment inside the block', () => {
+    const content = '## Session Config\n<!--\nprose inside a comment\n-->\npersistence: true\n';
+    expect(collectUnparsableLines(content)).toEqual([]);
+  });
+
+  it('returns empty for content without a Session Config block', () => {
+    expect(collectUnparsableLines('# Title\n\nsome prose\n')).toEqual([]);
+    expect(collectUnparsableLines('')).toEqual([]);
+    expect(collectUnparsableLines(null)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1097: the fence-skip covers an info-string opener
+// ---------------------------------------------------------------------------
+
+describe('_extractConfigSection code-fence tolerance (#1097)', () => {
+  it('skips a ```yaml opener, not only a bare fence', () => {
+    // Before #1097 the predicate was `line.trim() === '```'`, so ```yaml
+    // survived into the line list — invisible while unmatched lines were
+    // dropped silently, a false "unparsable" report once they are named.
+    const content = '## Session Config\n```yaml\npersistence: true\n```\n';
+    const lines = _extractConfigSection(content);
+    expect(lines).not.toContain('```yaml');
+    expect(lines).toContain('persistence: true');
   });
 });

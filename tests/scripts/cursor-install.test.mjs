@@ -33,6 +33,8 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SCRIPT = join(REPO_ROOT, 'scripts', 'cursor-install.mjs');
 const SOURCE_RULES_DIR = join(REPO_ROOT, '.cursor', 'rules');
+const HOOKS_DIR = join(REPO_ROOT, 'hooks');
+const ENFORCE_HOOK_FILES = readdirSync(HOOKS_DIR).filter((f) => f.startsWith('enforce-'));
 
 // Count .mdc files in the source repo once — used for floor/ceiling assertions.
 const MDC_COUNT = readdirSync(SOURCE_RULES_DIR).filter((f) => f.endsWith('.mdc')).length;
@@ -172,5 +174,36 @@ describe('scripts/cursor-install.mjs integration', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Done!');
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 6 — non-existent TARGET: exit 1 with clear stderr message
+  // -------------------------------------------------------------------------
+
+  it('non-existent TARGET: exits 1 and prints a clear stderr message', () => {
+    const missingTarget = join(tmp, 'does-not-exist');
+
+    const result = runCursorInstall([missingTarget]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('ERROR: Target directory does not exist:');
+    expect(result.stderr).toContain(missingTarget);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 7 — next-steps banner names enforce-* hook files that exist in hooks/
+  // -------------------------------------------------------------------------
+
+  it('next-steps banner names enforce-* hook files that exist in hooks/', () => {
+    const target = join(tmp, 'hooks-banner-check');
+    mkdirSync(target, { recursive: true });
+
+    const result = runCursorInstall([target]);
+
+    expect(result.status).toBe(0);
+    expect(ENFORCE_HOOK_FILES.length).toBeGreaterThan(0);
+    for (const hookFile of ENFORCE_HOOK_FILES) {
+      expect(result.stdout).toContain(hookFile);
+    }
   });
 });

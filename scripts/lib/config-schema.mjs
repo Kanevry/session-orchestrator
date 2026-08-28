@@ -8,7 +8,15 @@
  * Never throws. Never mutates input.
  */
 
-const ENFORCEMENT_VALUES = new Set(['strict', 'warn', 'off']);
+/**
+ * The values `enforcement:` accepts. Exported (#1097) so the gates that BRANCH
+ * on enforcement — `scripts/parse-config.mjs`'s unparsable-line gate is the
+ * first — read the same Set the validator judges against, instead of re-typing
+ * the literal `'strict'` beside a schema that could later add a mode.
+ *
+ * @type {Set<string>}
+ */
+export const ENFORCEMENT_VALUES = new Set(['strict', 'warn', 'off']);
 // Exported (issue #836) so cross-layer mode-vocabulary parity tests can use
 // this Set as the single source of truth for "the modes a Session Config
 // `*.mode` key accepts" — rather than re-deriving a duplicate literal list

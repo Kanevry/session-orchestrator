@@ -18,6 +18,8 @@ pi install npm:session-orchestrator
 
 This is the primary install path — the package is published to npm (since v3.16.0, 2026-07-19) and carries the `pi-package` keyword for the [Pi packages gallery](https://pi.dev/packages) index; no local checkout required. The dev-fallback options below remain available for working against a local checkout.
 
+The short git form documented for Pi packages (`pi install git:github.com/user/repo`) is **unverified against this repo as of 2026-08-28** — the `pi` CLI was not installed on the verifying host (`which pi` → not found), so no install attempt could be made. The npm form above remains the only measured, documented install path; do not elevate the `git:` short form to this guide or to README until it has been run against this repo and the result dated.
+
 ### Option 2: Project-local registration (dev fallback)
 
 ```bash

@@ -152,14 +152,80 @@ export function _extractConfigSection(content) {
     if (inSection) {
       // Next ## header closes the section
       if (/^## /.test(line)) break;
-      // Skip standalone code fences
-      if (line.trim() === '```') continue;
+      // Skip code fences — opener WITH an info string included (#1097).
+      // The old predicate was `line.trim() === '```'`, which skips a bare
+      // fence but lets ```` ```yaml ```` through as a config line. Harmless
+      // while an unmatched line was silently dropped; a false "unparsable"
+      // report the moment `collectUnparsableLines` below started naming them —
+      // and the fenced form is what one fleet repo actually writes.
+      if (isCodeFence(line)) continue;
       // Strip trailing whitespace and collect
       result.push(line.replace(/\s+$/, ''));
     }
   }
 
   return result;
+}
+
+/**
+ * True when `line` is a fenced-code-block delimiter — a bare ``` / ~~~ or an
+ * opener carrying an info string (```yaml).
+ *
+ * @param {string} line
+ * @returns {boolean}
+ */
+function isCodeFence(line) {
+  return /^\s*(?:```|~~~)/.test(line);
+}
+
+/**
+ * THE key/value predicate for a Session Config line — the one place that knows
+ * which of the two accepted spellings a line is in.
+ *
+ * Exported-by-use rather than by name: `_parseKV` builds the map from it and
+ * `collectUnparsableLines` decides "this line carries a key" from it, so the
+ * accept-set of the two can never drift. A classifier with its own regex would
+ * eventually report a line the map DID parse (noise) or stay silent on one it
+ * did not (the #1097 defect, unchanged).
+ *
+ * Format 1: `- **key:** value`
+ * Format 2: `key: value`, incl. the YAML list-item form `- key: value` (#497)
+ *   and any leading indentation (sub-keys of a nested block land here too).
+ *
+ * @param {string} line
+ * @returns {{ key: string, value: string } | null} null when the line carries
+ *   no key/value pair in either format.
+ */
+function _matchKVLine(line) {
+  let key;
+  let value;
+
+  // Format 1: - **key:** value
+  const fmt1 = line.match(/^\s*-\s+\*\*([^*:]+):\*\*\s*(.*)/);
+  if (fmt1) {
+    key = fmt1[1].trim();
+    value = fmt1[2].trim();
+  } else {
+    // Format 2: key: value — supports both plain "key: value" and
+    // YAML list-item form "- key: value" (issue #497). Key starts with
+    // letter; rest is alphanum/hyphen/underscore.
+    const fmt2 = line.match(/^\s*(?:-\s+)?([a-zA-Z][a-zA-Z0-9_-]+):\s+(.*)/);
+    if (!fmt2) return null;
+    key = fmt2[1].trim();
+    value = fmt2[2].trim();
+  }
+
+  if (!key) return null;
+
+  // Strip inline YAML comment (matches block-parser behaviour in _parseVaultSync etc.)
+  value = value.replace(/\s+#.*$/, '').trim();
+
+  // Strip surrounding double quotes from value
+  if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
+    value = value.slice(1, -1);
+  }
+
+  return { key, value };
 }
 
 /**
@@ -176,39 +242,9 @@ export function _parseKV(lines) {
 
   for (const line of lines) {
     if (!line.trim()) continue;
-
-    let key;
-    let value;
-
-    // Format 1: - **key:** value
-    const fmt1 = line.match(/^\s*-\s+\*\*([^*:]+):\*\*\s*(.*)/);
-    if (fmt1) {
-      key = fmt1[1].trim();
-      value = fmt1[2].trim();
-    } else {
-      // Format 2: key: value — supports both plain "key: value" and
-      // YAML list-item form "- key: value" (issue #497). Key starts with
-      // letter; rest is alphanum/hyphen/underscore.
-      const fmt2 = line.match(/^\s*(?:-\s+)?([a-zA-Z][a-zA-Z0-9_-]+):\s+(.*)/);
-      if (fmt2) {
-        key = fmt2[1].trim();
-        value = fmt2[2].trim();
-      } else {
-        continue;
-      }
-    }
-
-    if (!key) continue;
-
-    // Strip inline YAML comment (matches block-parser behaviour in _parseVaultSync etc.)
-    value = value.replace(/\s+#.*$/, '').trim();
-
-    // Strip surrounding double quotes from value
-    if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
-      value = value.slice(1, -1);
-    }
-
-    allPairs.push([key, value]);
+    const match = _matchKVLine(line);
+    if (!match) continue;
+    allPairs.push([match.key, match.value]);
   }
 
   // Last match wins: build the map by iterating in order
@@ -217,4 +253,93 @@ export function _parseKV(lines) {
     kv.set(k, v);
   }
   return kv;
+}
+
+// ---------------------------------------------------------------------------
+// Fail-loud: lines inside the block that carry no meaning (#1097)
+// ---------------------------------------------------------------------------
+
+/**
+ * A line that opens a nested block: `vault-integration:` with no value, in any
+ * of the four fleet spellings (column-zero, `- key:`, `**key:**`, `- **key:**`)
+ * and at any indent. Deliberately NOT imported from block-header.mjs: that
+ * matcher answers "does this line open the block for THIS key" for a known key,
+ * while here the key is unknown by construction.
+ */
+const NESTED_BLOCK_HEADER_RE = /^\s*(?:-\s+)?(?:\*\*)?[a-zA-Z][a-zA-Z0-9_.-]*:(?:\*\*)?\s*$/;
+
+/** A YAML sequence element that is not a `key: value` pair (`  - some-value`). */
+const LIST_ITEM_RE = /^\s*-\s+\S/;
+
+/** Documentation, not config: `# yaml comment` and `<!-- html -->` / `> quote`. */
+const COMMENT_RE = /^\s*(?:#|<!--|>)/;
+
+/**
+ * Collect the lines inside `## Session Config` that carry no meaning for any
+ * parser — the fail-loud half of #1097.
+ *
+ * The measured defect this exists to end: a key the extractor cannot read is
+ * simply absent from the KV map, and every consumer then applies its DEFAULT.
+ * For a boolean that default is `false`, so a mis-spelled `vault-integration`
+ * block reads exactly like a deliberately disabled one — no error, anywhere, in
+ * any log (fleet evidence: a repo whose vault mirror sat at
+ * `skipped-vault-disabled` for two months with the key present in its CLAUDE.md).
+ *
+ * A line is accounted for — and therefore NOT reported — when it is:
+ *   blank · a code fence · a `#`/`<!--`/`>` documentation line · a key/value
+ *   pair in either accepted format (`_matchKVLine`) · a nested-block header
+ *   (`key:` with no value) · a bare YAML list element (`- value`).
+ * Everything else is prose sitting where config is expected, which is the only
+ * shape a broken key can take once the six forms above are excluded.
+ *
+ * Line numbers are 1-based and count from the START OF THE DOCUMENT, not from
+ * the block — they are for an operator opening the file at that line.
+ *
+ * Additive by construction: `_extractConfigSection` and `_parseKV` are
+ * untouched by this function, so every existing consumer keeps its byte-exact
+ * behaviour and only callers that ASK for the report can be surprised by it.
+ *
+ * @param {string} content — full markdown document
+ * @returns {Array<{ line: number, text: string }>} empty when the block is
+ *   well-formed, absent, or the content is not a string.
+ */
+export function collectUnparsableLines(content) {
+  if (typeof content !== 'string' || content === '') return [];
+
+  const lines = content.split(/\r?\n/);
+  const unparsable = [];
+  let inSection = false;
+  let inHtmlComment = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\r$/, '');
+
+    if (isSessionConfigHeading(line)) {
+      inSection = true;
+      continue;
+    }
+    if (!inSection) continue;
+    if (/^## /.test(line)) break;
+
+    // A multi-line HTML comment: everything up to `-->` is documentation.
+    if (inHtmlComment) {
+      if (line.includes('-->')) inHtmlComment = false;
+      continue;
+    }
+    if (/^\s*<!--/.test(line) && !line.includes('-->')) {
+      inHtmlComment = true;
+      continue;
+    }
+
+    if (!line.trim()) continue;
+    if (isCodeFence(line)) continue;
+    if (COMMENT_RE.test(line)) continue;
+    if (_matchKVLine(line)) continue;
+    if (NESTED_BLOCK_HEADER_RE.test(line)) continue;
+    if (LIST_ITEM_RE.test(line)) continue;
+
+    unparsable.push({ line: i + 1, text: line.trim() });
+  }
+
+  return unparsable;
 }

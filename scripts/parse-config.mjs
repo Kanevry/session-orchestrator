@@ -9,6 +9,11 @@
  * Output: Single JSON object to stdout with ALL config fields (defaults applied).
  * Exit codes: 0 success, 1 error (message to stderr)
  *
+ * Unparsable lines inside `## Session Config` (#1097) are reported per line on
+ * stderr under `enforcement: warn` (the default) and refuse the run under
+ * `enforcement: strict`; `off` is silent. stdout is unchanged for any
+ * well-formed block — a warning never alters the emitted JSON.
+ *
  * Environment:
  *   SO_CONFIG_FILE             — override filename (e.g. "AGENTS.md") resolved from project root
  *   SO_SKIP_CONFIG_VALIDATION  — set to "1" to bypass validate-config.mjs
@@ -19,6 +24,8 @@ import { spawnSync } from 'node:child_process';
 import { join, dirname, resolve, parse as parsePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseSessionConfig } from './lib/config.mjs';
+import { collectUnparsableLines } from './lib/config/section-extractor.mjs';
+import { ENFORCEMENT_VALUES } from './lib/config-schema.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -106,6 +113,60 @@ try {
 } catch (err) {
   process.stderr.write(`parse-config.mjs: Parse error: ${err.message}\n`);
   process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// Unparsable-line gate (#1097) — never a silent default
+// ---------------------------------------------------------------------------
+//
+// A line inside `## Session Config` that no parser can read is simply absent
+// from the KV map, and every consumer then applies its own default — `false`
+// for the booleans. A broken key therefore reads exactly like a deliberately
+// disabled feature, in every log, forever. This gate is the only place that
+// difference is ever stated out loud.
+//
+// It runs BEFORE the validator so a malformed block is reported in terms of the
+// FILE (line number + text) rather than in terms of the defaults it silently
+// produced. `off` stays silent by definition — that is what turning enforcement
+// off means; `warn` (the default) reports and proceeds; `strict` refuses.
+
+const unparsableLines = collectUnparsableLines(content);
+
+if (unparsableLines.length > 0) {
+  // An out-of-vocabulary enforcement value is the validator's finding to
+  // report, not this gate's to act on — fall back to the documented default.
+  const enforcement = ENFORCEMENT_VALUES.has(config.enforcement) ? config.enforcement : 'warn';
+
+  if (enforcement !== 'off') {
+    // Ceiling: 20 named lines. A whole prose section pasted into the block is
+    // one defect, not 200, and the strict path below exits immediately after
+    // writing — Node's stderr is async on a pipe, so an unbounded list is the
+    // write-then-exit truncation class this repo has already paid for once.
+    // Revisit if a legitimate config block ever carries >20 broken lines.
+    const SHOWN = 20;
+    for (const { line, text } of unparsableLines.slice(0, SHOWN)) {
+      process.stderr.write(
+        `parse-config.mjs: WARN unparsable Session Config line ${line}: ${text}\n`,
+      );
+    }
+    if (unparsableLines.length > SHOWN) {
+      process.stderr.write(
+        `parse-config.mjs: WARN … and ${unparsableLines.length - SHOWN} more unparsable line(s)\n`,
+      );
+    }
+    process.stderr.write(
+      `parse-config.mjs: ${unparsableLines.length} unparsable line(s) in ${configFile} — ` +
+        'those keys fall back to their defaults, which for booleans is `false`.\n',
+    );
+  }
+
+  if (enforcement === 'strict') {
+    process.stderr.write(
+      'parse-config.mjs: enforcement: strict — refusing to emit config parsed from an ' +
+        'unparsable Session Config block.\n',
+    );
+    process.exit(1);
+  }
 }
 
 // jq -n produces pretty-printed JSON without a trailing newline — match that format

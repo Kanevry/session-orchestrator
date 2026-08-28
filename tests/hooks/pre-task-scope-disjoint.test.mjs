@@ -141,12 +141,34 @@ function writeTranscript(dir, rows) {
 
 /** Run a hook binary with a payload on stdin. Returns the spawnSync result. */
 function runHook(stdin, { hook = HOOK, cwd = REPO_ROOT } = {}) {
+  // A live Claude Code session exports CLAUDE_CODE_SESSION_ID into the ambient
+  // env, so a spawned hook inherits the OPERATOR's real session id — any
+  // assertion about session attribution would then pass for the wrong reason,
+  // and differently on CI (where the var is absent). Scrub it here, once.
+  const env = { ...process.env };
+  delete env.CLAUDE_CODE_SESSION_ID;
   return spawnSync(process.execPath, [hook], {
     input: stdin,
     encoding: 'utf8',
     cwd,
+    env,
     timeout: 20_000,
   });
+}
+
+/**
+ * The `orchestrator.wave_dispatch.scope_checked` records a spawned dispatch left
+ * in ITS OWN project dir (#1092). The hook pins `emitEvent` to `repoRoot:
+ * projectDir`, so a test can never append to this repo's real ledger.
+ */
+function scopeEvents(projectDir) {
+  const file = path.join(projectDir, '.orchestrator', 'metrics', 'events.jsonl');
+  if (!existsSync(file)) return [];
+  return readFileSync(file, 'utf8')
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .map((line) => JSON.parse(line))
+    .filter((rec) => rec.event === 'orchestrator.wave_dispatch.scope_checked');
 }
 
 /** Dispatch `id` with `files` into `projectDir`. */
@@ -723,6 +745,7 @@ describe('pre-task-scope-disjoint — scope signal shapes and counters (#1092)',
 
     expect(extractScopeSignal(prompt)).toEqual({
       status: 'extracted',
+      shape: 'inline',
       files: [
         'scripts/lib/reconcile/emitter.mjs',
         'scripts/lib/reconcile/renderer.mjs',
@@ -771,7 +794,10 @@ describe('pre-task-scope-disjoint — scope signal shapes and counters (#1092)',
 
     // Row 6 vs row 5. Collapsing them is exactly what makes "the coordinator
     // injected nothing" indistinguishable from "the parser gave up".
-    expect(extractScopeSignal(prompt)).toEqual({ status: 'unparseable', files: [] });
+    // `shape: 'none'` is the load-bearing half: a fenced block WAS present, so a
+    // shape field that merely mirrored the status would report 'fenced' here and
+    // an event consumer would read a parsed scope where none survived.
+    expect(extractScopeSignal(prompt)).toEqual({ status: 'unparseable', shape: 'none', files: [] });
   });
 
   it('records a counter on the no-signal ALLOW instead of leaving no trace', async () => {
@@ -836,5 +862,87 @@ describe('pre-task-scope-disjoint — scope signal shapes and counters (#1092)',
     // as this wave's.
     expect(bumpSignalCounter({ waveKey: 'w2', scopeSignals: second }, 'w3', 'extracted'))
       .toEqual({ 'marker-absent': 0, unparseable: 0, extracted: 1 });
+  });
+});
+// ---------------------------------------------------------------------------
+// #1092 — the LEDGER half: one telemetry record per dispatch decision.
+//
+// The in-ledger counter (above) is a WAVE tally: it says how many dispatches of
+// this wave carried a scope, never WHICH one did. These tests pin the per-
+// dispatch record — and the boundary the issue's acceptance criterion 3 draws
+// around its payload.
+// ---------------------------------------------------------------------------
+describe('pre-task-scope-disjoint — per-dispatch scope_checked event (#1092)', () => {
+  const EVENT = 'orchestrator.wave_dispatch.scope_checked';
+
+  it(`emits ONE ${EVENT} for a fenced FILE-SCOPE block, with no path string in the payload`, () => {
+    // Bug caught: a dispatch whose FILE-SCOPE block WAS injected and parsed left
+    // no per-dispatch trace at all — the wave counter said "3 extracted" while
+    // nothing said which three agents those were, so "agent W3-P7 dispatched
+    // unscoped" was unfalsifiable after the fact (HR-105). Second bug, in the
+    // other direction: an observability record that copies the scope INTO the
+    // ledger turns telemetry into a second, unreviewed copy of prompt content —
+    // and this payload also travels over the optional Clank webhook.
+    const dir = makeProjectDir();
+    expectAllow(dispatch(dir, 'W3-P7', ['scripts/lib/alpha.mjs', 'tests/lib/alpha.test.mjs']));
+
+    const events = scopeEvents(dir);
+    expect(events).toHaveLength(1);
+    const [ev] = events;
+
+    expect(ev.injected).toBe(true);
+    expect(ev.shape).toBe('fenced');
+    expect(ev.signal).toBe('extracted');
+    expect(ev.declared_path_count).toBe(2);
+    expect(ev.ledger_result).toBe('allow');
+    expect(ev.collision_count).toBe(0);
+    expect(ev.agent_id).toBe('W3-P7 (code-implementer)');
+    expect(ev.hook).toBe('pre-task-scope-disjoint');
+
+    // Acceptance criterion 3: no prompt body, no declared path, in any field.
+    const line = JSON.stringify(ev);
+    expect(line).not.toContain('scripts/lib/alpha.mjs');
+    expect(line).not.toContain('tests/lib/alpha.test.mjs');
+    expect(line).not.toContain('Mach die Arbeit');
+  });
+
+  it('emits the ABSENT case too — injected:false, shape:none — and does not change the verdict', () => {
+    // Bug caught: the case worth measuring is the one that produces NO scope
+    // (71.4 % of real prompts, matrix row 5). Emitting only on the extracted
+    // path would rebuild the original defect one layer up: a wave with zero
+    // injections and a wave whose hook never ran would again be identical in the
+    // ledger. `expectAllow` re-pins the decision channel EMPTY, so the added
+    // telemetry is proven not to have moved the verdict.
+    const dir = makeProjectDir();
+    const payload = JSON.stringify({
+      hook_event_name: 'PreToolUse', tool_name: 'Agent', session_id: 's1', cwd: dir,
+      tool_input: { description: 'Freeform', subagent_type: 'explore', prompt: 'Research the topic and report back.' },
+    });
+
+    expectAllow(runHook(payload));
+
+    const events = scopeEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0].injected).toBe(false);
+    expect(events[0].shape).toBe('none');
+    expect(events[0].signal).toBe('marker-absent');
+    expect(events[0].declared_path_count).toBe(0);
+    expect(events[0].ledger_result).toBe('no-scope');
+  });
+
+  it('still DENIES a real collision when the event write itself fails', () => {
+    // Bug caught: an un-caught `await emitEvent(...)` on the decision path turns
+    // a full disk, a read-only mount or a clobbered metrics path into an
+    // unchecked dispatch — the hook's `main().catch` allows on any throw (matrix
+    // row 12), so a telemetry fault would silently disarm the one case this hook
+    // exists for. Here `.orchestrator/metrics` is a FILE, so emitEvent's
+    // recursive mkdir throws; the deny must survive it.
+    const dir = makeProjectDir();
+    writeFileSync(path.join(dir, '.orchestrator', 'metrics'), 'not a directory');
+
+    expectAllow(dispatch(dir, 'Agent A', ['scripts/foo.mjs']));
+    expectDeny(dispatch(dir, 'Agent B', ['scripts/foo.mjs']), ['Agent B', 'Agent A', 'scripts/foo.mjs']);
+    // ...and nothing was written where a file already sat.
+    expect(readFileSync(path.join(dir, '.orchestrator', 'metrics'), 'utf8')).toBe('not a directory');
   });
 });
