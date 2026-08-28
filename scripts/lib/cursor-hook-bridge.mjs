@@ -278,6 +278,13 @@ export function runCursorHookCommand(hook, payload, options) {
   env.SO_PLATFORM = 'cursor';
   if (typeof payload.cwd === 'string') env.CURSOR_PROJECT_DIR = payload.cwd;
 
+  // `hook.command` is a shell line from the repo-committed hooks.json, so a
+  // shell is the intended interpreter — the same commit-gated trust class as
+  // the `*-command` keys run by scripts/lib/quality-gate.mjs (see
+  // .claude/rules/security.md § Session Config Command Trust). Nothing here
+  // interpolates user or payload input into the command string; the payload
+  // travels on stdin.
+  // nosemgrep: unsafe-shell-spawn
   const result = spawnSync(command, {
     shell: true,
     cwd,
