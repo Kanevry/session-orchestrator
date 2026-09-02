@@ -51,7 +51,7 @@
  * hooks.json wiring is managed separately (W3-C4 scope).
  */
 
-import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
@@ -61,6 +61,7 @@ if (!shouldRunHook('post-tool-batch-wave-signal')) process.exit(0);
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { findScopeFile } from '../scripts/lib/scope-gate.mjs';
+import { atomicMutateJson } from './_lib/atomic-json.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -91,32 +92,6 @@ function readStdinJson() {
     process.stdin.on('error', () => { clearTimeout(timer); resolve(null); });
     process.stdin.resume();
   });
-}
-
-/**
- * Atomic read-modify-write of a JSON file via temp + rename.
- * Reads the existing file (or starts with `defaultValue` when absent),
- * applies `mutate`, writes to a tmp file, then renames over the original.
- * Atomic on POSIX (same-filesystem rename). Best-effort on Windows.
- *
- * @param {string} filePath
- * @param {object} defaultValue — used when the file does not exist or is unparseable
- * @param {function(object): object} mutate — synchronous pure transformer
- */
-async function atomicMutateJson(filePath, defaultValue, mutate) {
-  let current = defaultValue;
-  try {
-    const raw = await readFile(filePath, 'utf8');
-    current = JSON.parse(raw);
-  } catch {
-    // File absent or unparseable — start from defaultValue.
-  }
-
-  const updated = mutate(current);
-  const tmp = `${filePath}.tmp-ptb-${process.pid}-${Date.now()}`;
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(tmp, JSON.stringify(updated, null, 2) + '\n', 'utf8');
-  await rename(tmp, filePath);
 }
 
 /**
@@ -275,10 +250,16 @@ async function main() {
 
   const sessionFile = path.join(SO_PROJECT_DIR, '.orchestrator', 'current-session.json');
 
-  await atomicMutateJson(sessionFile, {}, (current) => ({
+  const lastBatchResult = await atomicMutateJson(sessionFile, {}, (current) => ({
     ...current,
     last_batch: lastBatch,
-  }));
+  }), 'ptb');
+  // Non-ENOENT failure only drops this turn's last_batch signal — the
+  // heartbeat refresh and wave-lifecycle logic below are independent and
+  // must still run (a throw here would silently skip both).
+  if (!lastBatchResult.ok) {
+    console.error(`post-tool-batch-wave-signal: last_batch write skipped (${lastBatchResult.reason})`);
+  }
 
   // ----------------------------------------------------------------------
   // Heartbeat refresh (Epic #583 W3-P3, wires W2-I3 OQ2).
@@ -340,11 +321,14 @@ async function main() {
         && waveNumber > 0
         && await ownsSessionFile(input, sessionFile)
       ) {
-        await atomicMutateJson(sessionFile, {}, (current) => ({
+        const waveResult = await atomicMutateJson(sessionFile, {}, (current) => ({
           ...current,
           last_wave: maxWave(current?.last_wave, waveNumber),
           last_wave_completed: maxWave(current?.last_wave_completed, waveNumber),
-        }));
+        }), 'ptb');
+        if (!waveResult.ok) {
+          console.error(`post-tool-batch-wave-signal: last_wave write skipped (${waveResult.reason})`);
+        }
       }
     } catch { /* best-effort — hook must remain non-blocking */ }
   } else if (waveSignal === null) {
@@ -424,7 +408,7 @@ async function main() {
           // that session's own SessionStart takes over the file. Revisit if the
           // ledger shows repeated started{N} for one wave in a shared checkout.
           if (await ownsSessionFile(input, sessionFile)) {
-            await atomicMutateJson(sessionFile, {}, (current) => ({
+            const markResult = await atomicMutateJson(sessionFile, {}, (current) => ({
               ...current,
               last_wave: maxWave(current?.last_wave, wave),
               ...(Math.max(lastWave, lastWaveCompleted) > 0
@@ -435,7 +419,10 @@ async function main() {
                   ),
                 }
                 : {}),
-            }));
+            }), 'ptb');
+            if (!markResult.ok) {
+              console.error(`post-tool-batch-wave-signal: last_wave mark skipped (${markResult.reason})`);
+            }
           }
         }
       }

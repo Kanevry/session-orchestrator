@@ -67,6 +67,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { listRepoFiles } from './repo-files.mjs';
+import { SHELL_LANGS, forEachLine } from './markdown-fences.mjs';
 
 /** Directories walked for documentation. Mirrors check-vcs-repo-flag.mjs. */
 const SCAN_DIRS = Object.freeze([
@@ -81,8 +82,6 @@ const SCAN_DIRS = Object.freeze([
 ]);
 
 /** Never descend into these. */
-/** Fence languages whose body is shell. Anything else is prose. */
-const SHELL_LANGS = Object.freeze(new Set(['bash', 'sh', 'shell', 'console', 'zsh']));
 
 /** The CLIs this check knows how to interrogate. */
 const BINS = Object.freeze(['gh', 'glab']);
@@ -204,44 +203,23 @@ export function extractCandidates(body) {
   const candidates = [];
   /** @type {{line: number, text: string}[]} */
   const shellLines = [];
-  /** @type {{marker: string, length: number, shell: boolean} | null} */
-  let fence = null;
 
-  const lines = body.split('\n');
-  for (let index = 0; index < lines.length; index += 1) {
-    const raw = lines[index];
-    const fenceMatch = raw.match(/^\s*(`{3,}|~{3,})\s*([A-Za-z0-9_+-]*)/);
-    if (fenceMatch) {
-      const marker = fenceMatch[1][0];
-      const length = fenceMatch[1].length;
-      const lang = fenceMatch[2].toLowerCase();
-      if (fence === null) {
-        fence = { marker, length, shell: SHELL_LANGS.has(lang) };
-        continue;
-      }
-      // A closing fence uses the same char, is at least as long, and has no info string.
-      if (marker === fence.marker && length >= fence.length && lang === '') {
-        fence = null;
-        continue;
-      }
-      // Otherwise it is fence content (a nested fence inside a wider one).
-    }
-
-    if (fence !== null) {
-      if (!fence.shell) continue;
+  forEachLine(body, (raw, { lineNumber, inFence, lang }) => {
+    if (inFence) {
+      if (!SHELL_LANGS.has(lang)) return;
       const stripped = raw.replace(/^\s*[$❯>]\s+/, '');
-      if (/^\s*#/.test(stripped)) continue;
-      shellLines.push({ line: index + 1, text: stripped });
-      continue;
+      if (/^\s*#/.test(stripped)) return;
+      shellLines.push({ line: lineNumber, text: stripped });
+      return;
     }
 
     for (const span of raw.matchAll(/`([^`]+)`/g)) {
       const text = span[1].trim();
       if (/^(?:gh|glab)\s/.test(text)) {
-        candidates.push({ line: index + 1, text, channel: 'inline-span' });
+        candidates.push({ line: lineNumber, text, channel: 'inline-span' });
       }
     }
-  }
+  });
 
   for (const entry of joinContinuations(shellLines)) {
     candidates.push({ line: entry.line, text: entry.text, channel: 'shell-fence' });

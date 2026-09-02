@@ -29,7 +29,6 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 
 import { emitEvent, sessionAttribution } from '../events.mjs';
 import { parseStateMd, parseMissionStatus } from '../state-md.mjs';
@@ -43,6 +42,7 @@ import { matchesModuloRedaction } from '../vault-mirror/process.mjs';
 import { readConfigFile, parseSessionConfig } from '../config.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
 import { createSecretValueMasker } from '../secret-masker.mjs';
+import { expandTilde } from '../common.mjs';
 
 /** Frontmatter sentinel that identifies generator-owned narrative files. */
 export const GENERATOR_MARKER = 'session-orchestrator-vault-status-narrative@1';
@@ -62,23 +62,6 @@ const SECTION_TITLES = {
 };
 
 // ── Raw section extraction ──────────────────────────────────────────────────────
-
-/**
- * Expand a leading `~` to the current user's home directory.
- *
- * NOTE: deferred shared-helper extraction. The same `expandHome` pattern lives in
- * other vault-status modules; W2 forbids introducing a shared new file, so this is
- * inlined here. Consolidate into a shared util in a follow-up wave.
- *
- * @param {string} p
- * @returns {string}
- */
-function expandHome(p) {
-  if (typeof p !== 'string' || p.length === 0) return p;
-  if (p === '~') return os.homedir();
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
-  return p;
-}
 
 /**
  * Match an ATX markdown heading line. Returns `{ level, text }` or null.
@@ -795,7 +778,7 @@ async function runNarrativeMirror(opts) {
     return { result: { action: 'skipped-vault-disabled' } };
   }
 
-  const vaultDir = path.resolve(expandHome(rawVaultDir));
+  const vaultDir = path.resolve(expandTilde(rawVaultDir));
   const candidateSlug = subjectToSlug(repoName) || 'unknown';
   // Loose-match against existing 01-projects/ folders before minting a new
   // slug (issue #829 Finding 3) — see resolveLooseSlug for the ambiguity

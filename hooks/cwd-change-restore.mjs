@@ -24,7 +24,6 @@
  * Exit codes: 0 always (informational, never blocking).
  */
 
-import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
@@ -32,6 +31,7 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 if (!shouldRunHook('cwd-change-restore')) process.exit(0);
 
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
+import { atomicMutateJson } from './_lib/atomic-json.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -71,32 +71,6 @@ function readStdinJson() {
   });
 }
 
-/**
- * Atomic read-modify-write of a JSON file via temp + rename.
- * Reads the existing file (or starts with `defaultValue` when absent),
- * applies `mutate`, writes to a tmp file, then renames over the original.
- * Atomic on POSIX (same-filesystem rename). Best-effort on Windows.
- *
- * @param {string} filePath
- * @param {object} defaultValue — used when the file does not exist or is unparseable
- * @param {function(object): object} mutate — synchronous pure transformer
- */
-async function atomicMutateJson(filePath, defaultValue, mutate) {
-  let current = defaultValue;
-  try {
-    const raw = await readFile(filePath, 'utf8');
-    current = JSON.parse(raw);
-  } catch {
-    // File absent or unparseable — start from defaultValue.
-  }
-
-  const updated = mutate(current);
-  const tmp = `${filePath}.tmp-cwd-${process.pid}-${Date.now()}`;
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(tmp, JSON.stringify(updated, null, 2) + '\n', 'utf8');
-  await rename(tmp, filePath);
-}
-
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -117,14 +91,20 @@ async function main() {
 
   const sessionFile = path.join(SO_PROJECT_DIR, '.orchestrator', 'current-session.json');
 
-  await atomicMutateJson(sessionFile, {}, (current) => {
+  const result = await atomicMutateJson(sessionFile, {}, (current) => {
     const existing = Array.isArray(current.cwd_changes)
       ? current.cwd_changes
       : [];
     // Append the new record and cap at MAX_ENTRIES (keep most-recent).
     const updated = [...existing, record].slice(-MAX_ENTRIES);
     return { ...current, cwd_changes: updated };
-  });
+  }, 'cwd');
+  // Nothing else depends on this write — a non-ENOENT read/parse failure
+  // just means the record is dropped this turn. Diagnostic only (stderr),
+  // matches the hook's own "never blocking" contract.
+  if (!result.ok) {
+    console.error(`cwd-change-restore: atomicMutateJson skipped write (${result.reason})`);
+  }
 }
 
 // Exit 0 always — informational hook must never block Claude.

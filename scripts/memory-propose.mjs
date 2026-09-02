@@ -46,6 +46,8 @@ import { dirname, join, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { isWaveAgentContext, WAVE_AGENT_ENV_VAR, WAVE_AGENT_ENV_VALUE } from './lib/wave-context.mjs';
+import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
+import { readLockDetailed } from './lib/session-lock.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants & defaults
@@ -367,9 +369,11 @@ if (!dryRun && (currentWaveRaw === undefined || currentWaveRaw === null || curre
 // trusted (#1177 FX1) — since #1123 both writers stamp the binding, so a
 // binding-less manifest is a peer's or a stale artefact.
 //
-// The session binding compares `manifest.semantic_session` against STATE.md's
-// `session` field — both are the SEMANTIC label. `manifest.session` is the raw
-// UUID, which STATE.md does not carry; comparing those two never matches.
+// The session binding compares `manifest.semantic_session` — the SEMANTIC label
+// — against the semantic id looked up in `session.lock`, and that lookup is only
+// honoured when this PROCESS's own raw session id equals the lock's raw
+// `session_id` (#1188). STATE.md's `session` field is NOT a witness here: it is
+// written by the lock owner, so under a peer's lock both "sides" name the peer.
 
 /** @returns {string|undefined} */
 function resolveRunningWaveId() {
@@ -386,7 +390,36 @@ function resolveRunningWaveId() {
         // manifest whose `semantic_session` was also absent-but-present-in-the
         // -comparison — adopting a foreign coordinator's wave number as its own.
         const mineSide = manifest?.semantic_session;
-        const oursSide = frontmatter['session'];
+        // #1188 — STATE.md is a working-copy artefact of the LOCK OWNER, not a
+        // process-local witness: when a peer holds the lock the peer wrote BOTH
+        // STATE.md and the manifest, so the two "independent" sides agree about
+        // the PEER. Same class as #1177 FX1; same shape as attributionForRecord
+        // (scripts/lib/events.mjs): the lock is a raw->semantic LOOKUP,
+        // authorised by a process-local match on the RAW id. Measured
+        // 2026-09-02: a wave-agent process carries the COORDINATOR's raw uuid in
+        // CLAUDE_CODE_SESSION_ID and no semantic id at all, so comparing the
+        // process-local id against `semantic_session` directly never matches.
+        // CEILING (BV-004): a harness exporting no session id (Codex CLI,
+        // Cursor) resolves no process-local id -> binding unprovable ->
+        // current-wave + 1 fallback with a stderr line. REVISIT if that fallback
+        // rate is measured non-trivial in events.jsonl.
+        const lock = readLockDetailed({ repoRoot: process.cwd() });
+        const processLocal = readProcessLocalSessionIds();
+        const lockRaw =
+          lock.status === 'ok' ? String(lock.lock.session_id ?? '').trim() : '';
+        const authorised = lockRaw !== '' && processLocal.includes(lockRaw);
+        const oursSide = authorised ? (lock.lock.semantic_session_id ?? '') : '';
+        if (!authorised) {
+          // A SILENT non-match is the exact failure mode this fix exists to make
+          // visible: without this line, a proposal bucketed by the fallback is
+          // indistinguishable from one bucketed by a trusted manifest.
+          process.stderr.write(
+            `⚠ memory-propose: session binding unprovable (session.lock ${lock.status}` +
+              `${lockRaw ? `, raw ${lockRaw}` : ''}; process-local ids: ` +
+              `${processLocal.length > 0 ? processLocal.join(', ') : 'none'}) — ` +
+              'ignoring wave-scope.json, falling back to current-wave + 1\n',
+          );
+        }
         const mine =
           typeof mineSide === 'string' && mineSide.length > 0 &&
           typeof oursSide === 'string' && oursSide.length > 0 &&

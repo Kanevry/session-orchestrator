@@ -397,7 +397,11 @@ describe('buildBatch — window selection', () => {
   it('scopes invocations to the last session record and honors its session_type', () => {
     seedMetrics({
       sessions: [
-        { session_type: 'deep', started_at: '2026-07-20T09:00:00.000Z', completed_at: '2026-07-20T13:30:00.000Z' },
+        // session_id is required for the record to survive readCanonicalSessions'
+        // #1167 collapse (id-less records cannot be deduplicated and are dropped) —
+        // every production record carries one (REQUIRED_FIELDS), so this fixture
+        // matches what the writer actually emits.
+        { session_id: 's-deep', session_type: 'deep', started_at: '2026-07-20T09:00:00.000Z', completed_at: '2026-07-20T13:30:00.000Z' },
       ],
       invocations: [
         { timestamp: '2026-07-20T08:00:00.000Z', skill: 'session-orchestrator:plan' }, // before window → dropped
@@ -438,6 +442,56 @@ describe('buildBatch — window selection', () => {
 
     expect(record.anon_id).toBe('(generated on first send)');
     expect(existsSync(statePath)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildBatch — #1186 canonical dedupe (readCanonicalSessions, not raw tail)
+// ---------------------------------------------------------------------------
+
+describe('buildBatch — #1186 canonical dedupe', () => {
+  it('picks the true most-recent session even when a stale duplicate re-append is the last physical line', () => {
+    seedMetrics({
+      sessions: [
+        // s-A's first (stale) write.
+        { session_id: 's-A', session_type: 'housekeeping', started_at: '2026-07-20T05:00:00.000Z', completed_at: '2026-07-20T05:10:00.000Z' },
+        // s-B — the actual most-recently-completed session in the ledger.
+        { session_id: 's-B', session_type: 'deep', started_at: '2026-07-20T09:00:00.000Z', completed_at: '2026-07-20T13:30:00.000Z' },
+        // s-A re-appended (e.g. a crash-recovery rewrite) — physically the
+        // LAST line in the file, but its completed_at is still older than s-B's.
+        { session_id: 's-A', session_type: 'housekeeping', started_at: '2026-07-20T05:00:00.000Z', completed_at: '2026-07-20T05:12:00.000Z' },
+      ],
+    });
+
+    const { record } = buildBatch({ env: {}, metricsDir, statePath, now: NOW, persist: false });
+
+    // Pre-#1186 buildBatch read `sessions[sessions.length - 1]` — the raw last
+    // LINE — which is s-A's stale re-append, not the session that actually
+    // completed most recently.
+    expect(record.session_type).toBe('deep');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shouldDailyFlush — #1186 canonical dedupe (readCanonicalSessions tail)
+// ---------------------------------------------------------------------------
+
+describe('shouldDailyFlush — #1186 canonical dedupe', () => {
+  it('is due when the true most-recently-completed session outranks a stale duplicate at the tail', () => {
+    const nowMs = Date.parse(NOW);
+    seedMetrics({
+      sessions: [
+        // The real most-recent completion, ahead of the last flush.
+        { session_id: 's-recent', completed_at: '2026-07-19T20:00:00.000Z' },
+        // A stale re-append of an OLDER session, sitting last in the file —
+        // pre-#1186 this raw-last-line record (older than last_flush_at) hid
+        // s-recent's completion from the catch-up check entirely.
+        { session_id: 's-old', completed_at: '2026-07-18T00:00:00.000Z' },
+      ],
+    });
+    seedState({ schema_version: 1, last_flush_at: '2026-07-19T00:00:00.000Z' });
+
+    expect(shouldDailyFlush({ statePath, queuePath, metricsDir, now: nowMs })).toBe(true);
   });
 });
 

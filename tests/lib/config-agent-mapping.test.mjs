@@ -117,3 +117,44 @@ describe('agent-mapping channel values (#1150)', () => {
     expect(() => mapping('foo: gpt:bar')).toThrow(/invalid role key/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ssh channel (#1160)
+// ---------------------------------------------------------------------------
+
+const HOSTS_BLOCK = ['remote-hosts:', '  - alias: m5', '    roles-allowed: [test, ui, perf]', ''].join(
+  '\n'
+);
+
+describe('agent-mapping ssh channel (#1160)', () => {
+  // Bug: `ssh` missing from KNOWN_CHANNELS makes the whole offload channel
+  // unconfigurable — the value throws "unknown channel 'ssh'" even though the
+  // host is declared right above it.
+  it('accepts ssh:<alias> when the alias is declared in remote-hosts', () => {
+    const parsed = parseSessionConfig(HOSTS_BLOCK + CONFIG_HEADER + '- **agent-mapping:** { test: ssh:m5 }\n');
+    expect(parsed['agent-mapping']).toEqual({ test: 'ssh:m5' });
+    expect(parsed['remote-hosts'].map((h) => h.alias)).toEqual(['m5']);
+  });
+
+  // Bug: an undeclared alias is accepted at parse time and reaches argv as
+  // `-H nope`, so the failure lands at ssh-connect time inside a dispatched
+  // wave instead of at config-parse time. The message must name the host AND
+  // what was declared, or the operator cannot tell a typo from a missing block.
+  it('throws naming the undeclared host and the declared aliases', () => {
+    const bad = () =>
+      parseSessionConfig(HOSTS_BLOCK + CONFIG_HEADER + '- **agent-mapping:** { test: ssh:nope }\n');
+    expect(bad).toThrow(/ssh host 'nope'/);
+    expect(bad).toThrow(/not declared in remote-hosts/);
+    expect(bad).toThrow(/declared: m5/);
+  });
+
+  it("reports 'none' when no remote-hosts block exists at all", () => {
+    expect(() => mapping('test: ssh:m5')).toThrow(/declared: none/);
+  });
+
+  // Bug: the ssh row is added to the branch but not to KNOWN_CHANNELS' error
+  // text, so an operator who typo'd the channel is never told ssh is an option.
+  it('lists ssh among the known channels in the unknown-channel error', () => {
+    expect(() => mapping('impl: sshh:m5')).toThrow(/known channels: [^)]*ssh/);
+  });
+});

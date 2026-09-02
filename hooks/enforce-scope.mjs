@@ -9,10 +9,12 @@
  *   G1  tool filter — only Edit/Write/MultiEdit are gated
  *   G2  file_path present + string
  *   G3  wave-scope.json exists
- *   G3b (#1123) the manifest belongs to THIS session — a manifest that
+ *   G3b (#1123, #1194) the manifest belongs to THIS session — a manifest that
  *       PROVABLY names another live session in this shared working copy is not
  *       ours to enforce; allow + emit one event. Runs AFTER the parse so a
- *       corrupt manifest still fails closed.
+ *       corrupt manifest still fails closed. Identity is PROCESS-LOCAL only
+ *       (hook payload + CLAUDE_CODE_SESSION_ID), never the repo-global
+ *       `session.lock` — see the gate's own block for why.
  *   G4  path-guard gate enabled
  *   G5  enforcement != "off"
  *   G5b (#792) allowlist-first: an EXPLICIT absolute allowedPaths entry that
@@ -102,8 +104,10 @@ let readJson;
 let classifyEmptyScope;
 let suggestForEmptyScope;
 let sessionStartedAtMs;
-// #1123 — "is this manifest even mine?" (G3b).
-let readOwnSessionIds;
+// #1123 — "is this manifest even mine?" (G3b). Process-local identity only
+// (#1194): the repo-global `session.lock` tier is shared by every session in the
+// checkout and would classify a peer's manifest as ours.
+let readProcessLocalSessionIds;
 let classifyManifestSession;
 
 const PLUGIN_ROOT = path.resolve(import.meta.dirname, '..');
@@ -180,7 +184,7 @@ async function bootstrap() {
   ({ findScopeFile, pathMatchesPattern, suggestForScopeViolation } = modules.hardening);
   ({ readJson } = modules.common);
   ({ classifyEmptyScope, suggestForEmptyScope, sessionStartedAtMs } = modules.scopeGate);
-  ({ readOwnSessionIds, classifyManifestSession } = modules.sessionIdentity);
+  ({ readProcessLocalSessionIds, classifyManifestSession } = modules.sessionIdentity);
 }
 
 async function main() {
@@ -251,13 +255,38 @@ async function main() {
   // without a `session` field is `'unknown'` and stays enforced: only what is
   // PROVABLY foreign is treated as foreign.
   //
+  // IDENTITY TIER (#1194): `readProcessLocalSessionIds` — the hook payload and
+  // `CLAUDE_CODE_SESSION_ID` — and deliberately NOT `readOwnSessionIds`, whose
+  // third tier is the repo-global `session.lock`. That lock is ONE file shared
+  // by every session in the checkout, so unioning it made a peer's manifest
+  // match a peer-written lock id and classify as `'own'`: Gate 7 then denied the
+  // second session's legitimate writes — the exact lockout G3b exists to end.
+  // A better signal REPLACES a worse one (`host-resources.md` § HR-102).
+  //
+  // The trade this buys, accepted rather than hidden: a session that wrote a
+  // PEER's id into its OWN manifest (it lost the `bootstrapLock()` race, so
+  // `sessionAttribution()` handed it the peer's lock id) now reads `'foreign'`
+  // and its own guard stands down. The defense is on the WRITER side — the
+  // manifest writer must omit the `session` keys when the lock does not name it
+  // (`skills/wave-executor/wave-loop.md` § Scope Manifest, "Verify the binding
+  // names YOU before you write it") — not on this reader.
+  //
+  // CEILING (BV-004): on a harness that exports no session env var and puts no
+  // `session_id` in the hook payload (Codex CLI, Cursor today), both tiers are
+  // empty, so G3b is permanently `'unknown'` = enforce = pre-#1123 behaviour
+  // there. Revisit when Codex/Cursor hook payloads carry a session id.
+  //
   // ACCEPTED RESIDUAL, named rather than hidden: `session` is a plain field in a
   // file any process in this working copy can write, so writing a foreign id
   // into it switches this guard off for that manifest. That is the SAME power
   // `enforcement: "off"` already grants in the same file — this gate adds no new
   // authority, and the manifest is the coordinator's own artefact either way.
   {
-    const ownIds = readOwnSessionIds(projectRoot, { hookInput: input });
+    // `new Set(...)` is load-bearing: `readProcessLocalSessionIds` returns a
+    // string[], and `classifyManifestSession` does `ownIds instanceof Set ?
+    // ownIds : new Set()` — a bare array would silently become EMPTY, making
+    // every manifest read `unknown`.
+    const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
     const { verdict, manifestIds } = classifyManifestSession(scope, ownIds);
     if (verdict === 'foreign') {
       // Observability only, and deliberately NOT emitWarn: this branch is hit on

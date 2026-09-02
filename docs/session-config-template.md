@@ -381,6 +381,29 @@ Security: `command` and `review` reject shell metacharacters; records failing va
 
 Read by: `scripts/lib/config/custom-phases.mjs`, `skills/session-end/SKILL.md` Phase 2.5.
 
+## Remote Hosts (#1160)
+
+Opt-in declaration of ssh-reachable hosts that heavy wave roles may be OFFLOADED to instead of shrinking the wave under local resource pressure. Declaring a host does not enable anything by itself: the wave resource gate only routes a wave to a host when the wave role is offloadable AND the coordinator supplies a readiness witness. Absent/empty ⇒ `[]` ⇒ everything runs locally, exactly as before.
+
+```yaml
+remote-hosts:
+  - alias: m5                          # required, SAFE slug ([A-Za-z0-9._-]); reaches argv as `-H <alias>`
+    roles-allowed: [test, ui, perf]    # subset of test|ui|perf (default: all three)
+    repo-path: ~/Projects/Alice     # optional SAFE path (default: null)
+    claude-path: ~/.local/bin/claude   # optional SAFE path (default: null)
+```
+
+Field semantics:
+- **`alias`** — the ssh destination as configured on this host. Required; a record without it is dropped with a stderr WARN.
+- **`roles-allowed`** — the `agent-mapping` roles this host accepts. `test`, `ui` and `perf` only — impl, db, security, compliance and docs work never leaves the local host. Unknown entries are filtered with a WARN; a record left with an empty list is dropped.
+- **`repo-path` / `claude-path`** — where the checkout and the `claude` binary live on the remote host, when they differ from the defaults the dispatch adapter assumes.
+
+A declared alias is also what an `agent-mapping` value of the form `<role>: ssh:<alias>` is validated against — naming an undeclared host is a parse error, not a runtime surprise.
+
+The gate never probes the network. Without a readiness witness no host counts as ready and the decision stays local (fail toward local).
+
+Read by: `scripts/lib/config/remote-hosts.mjs`, `scripts/lib/wave-resource-gate.mjs`.
+
 ## Evolve Extra Sources (#638)
 
 Opt-in EXTRA learning sources for `/evolve`. A `domain-regression` measurement (e.g. an eval-learn harness) runs OUT-OF-BAND and writes a sidecar JSON; `/evolve` then READS each declared sidecar and emits a `domain-regression` learning candidate per persistent regression flag. `/evolve` NEVER runs the measurement itself — this is a strict read-only consumption contract. Absent/empty ⇒ `[]` ⇒ no extra sources are read.
@@ -816,6 +839,13 @@ custom-phases:
     command: npm run eval:aggregate     # required; run verbatim — no record interpolation
     mode: hard                          # warn | hard | off (default: warn)
     review: docs/eval/last-run.md       # optional SAFE path read after the command (default: null)
+
+# Remote hosts — ssh-reachable offload targets for heavy roles (#1160)
+remote-hosts:
+  - alias: m5                          # required, SAFE slug; reaches argv as `-H <alias>`
+    roles-allowed: [test, ui, perf]    # subset of test|ui|perf (default: all three)
+    repo-path: ~/Projects/Alice     # optional SAFE path (default: null)
+    claude-path: ~/.local/bin/claude   # optional SAFE path (default: null)
 
 # Evolve extra-sources — opt-in EXTRA /evolve learning sources (#638)
 evolve:

@@ -636,6 +636,42 @@ describe('#834 — sessionTailN excludes abandoned phantom sessions', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #1186 — the recent-sessions window reads via readCanonicalSessions, so a
+// duplicated `session_id` (crash-recovery re-append, or the #1068
+// stub/supersede pair) counts ONCE toward sessionTailN, not once per LINE.
+// ---------------------------------------------------------------------------
+
+describe('#1186 — canonical dedupe in the recent-sessions window', () => {
+  it('a duplicated session_id counts once toward sessionTailN and keeps the newest fields', async () => {
+    // Same session_id appended twice (the #1167 duplicate-line class this
+    // repo's own ledger has measured) — an earlier, stale write followed by
+    // the corrected one — plus one distinct session.
+    const stale = JSON.parse(makeSessionWithId('dup-1'));
+    stale.session_type = 'housekeeping';
+    const fresh = JSON.parse(makeSessionWithId('dup-1'));
+    fresh.session_type = 'deep';
+    const lines = [JSON.stringify(stale), JSON.stringify(fresh), makeSessionWithId('other-1')];
+    const sessionsPath = writeFixture('sessions.jsonl', lines.join('\n'));
+
+    const signals = await buildLiveSignals({
+      statePath: sandboxPath('.claude/STATE.md'),
+      sessionsPath,
+      lockPath: sandboxPath('bootstrap.lock'),
+      sessionTailN: 10,
+      _scanBacklog: nullScanBacklog,
+    });
+
+    // Pre-#1186 the raw reader parsed every line unconditionally: 3 entries in
+    // the window for 2 physical sessions. The window must hold exactly 2, and
+    // the surviving 'dup-1' record must carry its NEWEST session_type — the
+    // #1167 "last record wins" rule, not "first appearance wins".
+    expect(signals.recentSessions).toHaveLength(2);
+    const dup = signals.recentSessions.find((s) => s.session_id === 'dup-1');
+    expect(dup.session_type).toBe('deep');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Edge cases
 // ---------------------------------------------------------------------------
 

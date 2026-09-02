@@ -60,6 +60,7 @@ import { pathToFileURL } from 'node:url';
 import { emitEvent, sessionAttribution } from './events.mjs';
 import { tryAcquireFileLock, releaseFileLock } from './file-lock.mjs';
 import { readLock, isLockLive } from './session-lock.mjs';
+import { resolveSubagentSidecar } from '../../hooks/_lib/subagent-paths.mjs';
 
 const DEFAULT_INTERVAL_S = 2;
 const EVENTS_FILE_REL = '.orchestrator/metrics/events.jsonl';
@@ -606,13 +607,32 @@ function mayCarrySignal(line) {
 }
 
 /**
- * @param {string} subagentsDir
+ * Read the agent TYPE from the sidecar `agent-<id>.meta.json` the harness
+ * writes next to the subagent transcript. `agentId` here comes from a
+ * `readdirSync()` filename match (tailLoop below), not from untrusted stdin —
+ * but it is validated through the SAME consolidated derivation (#1196) as the
+ * hook-side copies for consistency: an id readdirSync happened to list that
+ * fails `{1,64}`/charset/`'unknown'` short-circuits to the honest `'unknown'`
+ * return, same as any other lookup failure.
+ *
+ * `projectsDir`/`sessionId` reconstruct the PARENT transcript path
+ * (`<projectsDir>/<sessionId>.jsonl`) that `resolveSubagentSidecar()` expects —
+ * the real on-disk location of the coordinator's own transcript, sibling of
+ * the `subagents/` directory this function reads from.
+ *
+ * @param {string} projectsDir
+ * @param {string} sessionId
  * @param {string} agentId
  * @returns {string}
  */
-function readAgentType(subagentsDir, agentId) {
+function readAgentType(projectsDir, sessionId, agentId) {
+  const sidecar = resolveSubagentSidecar({
+    transcriptPath: join(projectsDir, `${sessionId}.jsonl`),
+    agentId,
+  });
+  if (sidecar === null) return 'unknown';
   try {
-    const meta = JSON.parse(readFileSync(join(subagentsDir, `agent-${agentId}.meta.json`), 'utf8'));
+    const meta = JSON.parse(readFileSync(sidecar.meta, 'utf8'));
     const t = meta?.agentType;
     return typeof t === 'string' && t ? t : 'unknown';
   } catch {
@@ -705,7 +725,7 @@ async function tailLoop({ intervalS }) {
       offsets.set(file, tick.offset);
       if (tick.lines.length === 0) continue;
       const agentId = file.slice('agent-'.length, -'.jsonl'.length);
-      if (!agentTypes.has(agentId)) agentTypes.set(agentId, readAgentType(subagentsDir, agentId));
+      if (!agentTypes.has(agentId)) agentTypes.set(agentId, readAgentType(projectsDir, sessionId, agentId));
       for (const line of tick.lines) {
         if (!mayCarrySignal(line)) continue;
         let rec;

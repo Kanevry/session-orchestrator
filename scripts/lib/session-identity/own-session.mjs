@@ -196,7 +196,13 @@ export function readProcessLocalSessionIds({ env = process.env, hookInput = null
  *
  * @param {unknown} scope — parsed wave-scope manifest (any shape; a non-object
  *   simply yields no ids, hence `'unknown'`).
- * @param {Set<string>} ownIds — from {@link readOwnSessionIds}.
+ * @param {Set<string>} ownIds — from EITHER producer, depending on what is
+ *   being judged: {@link readOwnSessionIds} when every id this process could
+ *   legitimately claim counts, or `new Set(`{@link readProcessLocalSessionIds}
+ *   `(...))` when the lock tier would match vacuously — which is the case for a
+ *   wave-scope manifest in a checkout shared by two sessions (#1194). Note the
+ *   latter returns a `string[]`: a bare array is NOT a Set and folds to the
+ *   empty set below, yielding `'unknown'` for every manifest.
  * @returns {{ verdict: 'own'|'foreign'|'unknown', manifestIds: string[] }}
  */
 export function classifyManifestSession(scope, ownIds) {

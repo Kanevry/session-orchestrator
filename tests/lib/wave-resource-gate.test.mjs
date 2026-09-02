@@ -557,3 +557,170 @@ describe('evaluateWaveResourceGate — heavy-repo preflight cap (#60)', () => {
     expect(result.reasons.some((r) => r.includes('HR-004'))).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// offload decision (#1160)
+// ---------------------------------------------------------------------------
+//
+// The gate answers WHERE a wave runs, not only how big it is. When local
+// pressure would shrink a heavy role, a declared+ready remote host takes the
+// wave at full size instead. The gate never probes the network: readiness is a
+// witness the coordinator injects, and its absence means "stay local".
+
+const M5 = { alias: 'm5', 'roles-allowed': ['test', 'ui', 'perf'], 'repo-path': null, 'claude-path': null };
+const PERF_ONLY = { alias: 'perfbox', 'roles-allowed': ['perf'], 'repo-path': null, 'claude-path': null };
+
+/** Two soft signals → warn → reduce, the pressure every offload test starts from. */
+const PRESSURE = { ramFreeGb: 3.0, peerSessions: 6 };
+
+describe('evaluateWaveResourceGate — offload decision (#1160)', () => {
+  test('routes a Quality wave to a ready host at FULL plannedAgents instead of reducing', async () => {
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig({ 'remote-hosts': [M5] }),
+      plannedAgents: 6,
+      waveRole: 'Quality',
+      probeOverride: makeOverride(PRESSURE),
+      remoteReady: { m5: true },
+    });
+    expect(result.decision).toBe('offload');
+    expect(result.agents).toBe(6);
+    expect(result.host).toBe('m5');
+    expect(result.reasons.some((r) => r.includes("routed to host 'm5'"))).toBe(true);
+  });
+
+  // Bug: an Impl-Core wave offloaded because the role filter defaulted to
+  // "offloadable unless denied" — impl work must never leave the local host.
+  test('does NOT offload Impl-Core under the same pressure', async () => {
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig({ 'remote-hosts': [M5] }),
+      plannedAgents: 6,
+      waveRole: 'Impl-Core',
+      probeOverride: makeOverride(PRESSURE),
+      remoteReady: { m5: true },
+    });
+    expect(result.decision).toBe('reduce');
+    expect(result.agents).toBe(3);
+    expect(result.host).toBeUndefined();
+  });
+
+  // isNeverForeignRole is case-sensitive over lowercase entries; a wave role
+  // arrives capitalised, so a missing .toLowerCase() would let 'Release' through.
+  test('never offloads a NEVER_FOREIGN role even when it maps to an offloadable name', async () => {
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig({ 'remote-hosts': [M5] }),
+      plannedAgents: 4,
+      waveRole: 'Release',
+      probeOverride: makeOverride(PRESSURE),
+      remoteReady: { m5: true },
+    });
+    expect(result.decision).toBe('reduce');
+    expect(result.host).toBeUndefined();
+  });
+
+  test('stays local when no host is declared', async () => {
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig({ 'remote-hosts': [] }),
+      plannedAgents: 6,
+      waveRole: 'Quality',
+      probeOverride: makeOverride(PRESSURE),
+      remoteReady: { m5: true },
+    });
+    expect(result.decision).toBe('reduce');
+    expect(result.host).toBeUndefined();
+  });
+
+  // Bug: offloading without a witness sends the wave to a host nobody checked;
+  // the whole wave then fails at ssh-connect time. Absent witness ⇒ local.
+  test('stays local when no readiness witness is supplied', async () => {
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig({ 'remote-hosts': [M5] }),
+      plannedAgents: 6,
+      waveRole: 'Quality',
+      probeOverride: makeOverride(PRESSURE),
+    });
+    expect(result.decision).toBe('reduce');
+    expect(result.host).toBeUndefined();
+  });
+
+  // Bug: role matching against the WAVE role instead of the mapped agent-mapping
+  // role — 'perfbox' would then never match anything, or match everything.
+  test('coordinator-direct offloads only to a host whose roles-allowed carries the mapped role', async () => {
+    const critical = makeOverride({ ramFreeGb: 1.0 }); // below critical → coordinator-direct
+    const uiWave = await evaluateWaveResourceGate({
+      config: makeConfig({ 'remote-hosts': [PERF_ONLY] }),
+      plannedAgents: 4,
+      waveRole: 'UI',
+      probeOverride: critical,
+      remoteReady: { perfbox: true },
+    });
+    expect(uiWave.decision).toBe('coordinator-direct');
+    expect(uiWave.agents).toBe(0);
+
+    const perfWave = await evaluateWaveResourceGate({
+      config: makeConfig({ 'remote-hosts': [PERF_ONLY] }),
+      plannedAgents: 4,
+      waveRole: 'Perf',
+      probeOverride: critical,
+      remoteReady: { perfbox: true },
+    });
+    expect(perfWave.decision).toBe('offload');
+    expect(perfWave.agents).toBe(4);
+    expect(perfWave.host).toBe('perfbox');
+  });
+
+  // Bug: running offload BEFORE the heavy-repo cap restores plannedAgents and
+  // lets a heavy repo exceed its HR-004 ceiling by way of a remote host.
+  test('the heavy-repo cap binds the offloaded agent count', async () => {
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig({ 'remote-hosts': [M5], 'heavy-repo': true, 'agents-per-wave': 2 }),
+      plannedAgents: 6,
+      waveRole: 'Quality',
+      probeOverride: makeOverride(PRESSURE),
+      remoteReady: { m5: true },
+    });
+    expect(result.agents).toBeLessThanOrEqual(2);
+  });
+
+  test('resource-awareness: false proceeds locally with no host key', async () => {
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig({ 'resource-awareness': false, 'remote-hosts': [M5] }),
+      plannedAgents: 6,
+      waveRole: 'Quality',
+      probeOverride: makeOverride(PRESSURE),
+      remoteReady: { m5: true },
+    });
+    expect(result.decision).toBe('proceed');
+    expect(result.agents).toBe(6);
+    expect(result.host).toBeUndefined();
+  });
+
+  test('consults probeFn only for aliases the remoteReady map does not answer', async () => {
+    const seen = [];
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig({ 'remote-hosts': [M5] }),
+      plannedAgents: 6,
+      waveRole: 'Quality',
+      probeOverride: makeOverride(PRESSURE),
+      probeFn: async (alias) => {
+        seen.push(alias);
+        return true;
+      },
+    });
+    expect(seen).toEqual(['m5']);
+    expect(result.decision).toBe('offload');
+    expect(result.host).toBe('m5');
+  });
+
+  // Bug (HR-106): formatGateReport dropped `host`, so an offload line was
+  // indistinguishable from a proceed line — same decision word, same count.
+  test('formatGateReport renders the host on an offload decision', () => {
+    const out = formatGateReport({
+      decision: 'offload',
+      agents: 6,
+      host: 'm5',
+      reasons: ['two soft signals'],
+      measurements: { ramFreeGb: 3, cpuLoadPct: 30, concurrentSessions: 1 },
+    });
+    expect(out).toContain('Decision: offload — agents: 6 @ m5');
+  });
+});

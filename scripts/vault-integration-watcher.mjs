@@ -31,11 +31,10 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { getCrossRepoProjects, getConfinementRoot } from './lib/config/cross-repo.mjs';
 import { validatePathInsideProject } from './lib/path-utils.mjs';
 import { resolveRepoSpec, redactUrlCredentials } from './lib/vcs-repo-spec.mjs';
+import { expandTilde } from './lib/common.mjs';
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 
@@ -332,9 +331,8 @@ async function main() {
   // Load the config-driven repo list before doing any glab work
   const watcherRoot = getConfinementRoot();
   // Home-expand each entry before confinement, matching sibling scripts (W4-Q2 LOW).
-  const expandHome = (p) => (p.startsWith('~/') ? join(homedir(), p.slice(2)) : p);
   const flipRepos = (await getCrossRepoProjects()).filter((r) => {
-    const guard = validatePathInsideProject(expandHome(r), watcherRoot);
+    const guard = validatePathInsideProject(expandTilde(r), watcherRoot);
     if (!guard.ok) {
       process.stderr.write(
         `vault-integration-watcher: WARN rejecting confined-path violation for ${JSON.stringify(r)} (reason: ${guard.reason})\n`

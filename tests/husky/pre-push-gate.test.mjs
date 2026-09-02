@@ -32,11 +32,20 @@
  *   7. package.json `quality-gate` flipped to a non-blocking variant
  *      (incremental ends in an unconditional exit 0) → hook still "runs a
  *      gate" but can never block; behavioral tests 1-6 would stay green
+ *   8. (#C10) SCRATCH push to an unconfigured raw URL (e.g. the remote-offload
+ *      tool's SSH sync target) still runs the full ~74s gate — the hook never
+ *      read $1/$2 before #C10, so gating was indiscriminate of push target.
+ *      Proven red on the unmodified hook (quoted in the #C10 report): a push
+ *      to `ssh://user@host/path` — not a configured remote — ran the gate and
+ *      could block on it.
+ *   9. (#C10) a PUBLISH push — a configured remote NAME, or a URL-form push
+ *      whose URL matches a configured remote (`git push https://github.com/...`)
+ *      — is misread as scratch and skips the gate it needs.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -62,11 +71,71 @@ afterEach(() => {
 });
 
 /**
+ * The `quality-gate` npm script used by the `args`-driven (#C10) fixture repo
+ * below. Writes an ABSOLUTE sentinel path from `GATE_RAN_FILE` rather than a
+ * relative `touch gate-ran`: a non-scratch run executes this INSIDE the
+ * hook's own cloned temp tree (`git clone --no-hardlinks`, deleted by the
+ * hook's own cleanup trap before this function returns), so a relative
+ * sentinel would never be observable from the fixture repo dir.
+ */
+const GATE_PROBE_SRC = "import { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.GATE_RAN_FILE, 'ran');\n";
+
+/**
  * Run the real hook in a tmp dir with a stubbed `quality-gate` npm script.
  * The stub writes a `gate-ran` sentinel (so tests can assert whether the gate
  * was invoked at all) and exits with the configured code.
+ *
+ * `args`, when given, is passed as argv after HOOK_PATH — git's own pre-push
+ * invocation shape (`$1`=remote name-or-URL, `$2`=remote URL, #C10). The
+ * scratch-vs-publish check that reads them needs REAL `git remote` state to
+ * query, so an `args` run builds a real tmp git repo (remotes added via
+ * `git remote add`, mirroring makeRepo() in pre-push-tracked-tree.test.mjs)
+ * instead of the bare non-git tmp dir the argv-less path below uses. The
+ * argv-less path is UNCHANGED — the bug class this locks in is a divergence
+ * between the two.
  */
-function runPrePush({ stdin, gateExit = 0, env = {}, withGateScript = true } = {}) {
+function runPrePush({ stdin, gateExit = 0, env = {}, withGateScript = true, args, remotes = {} } = {}) {
+  if (args) {
+    const dir = mkdtempSync(join(tmpdir(), 'so-pre-push-remote-'));
+    tmpDirs.push(dir);
+    const gateRanFile = join(mkdtempSync(join(tmpdir(), 'so-pre-push-sentinel-')), 'gate-ran');
+
+    execFileSync('git', ['init', '-q', dir]);
+    execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@example.com']);
+    execFileSync('git', ['-C', dir, 'config', 'user.name', 'Test']);
+    execFileSync('git', ['-C', dir, 'config', 'commit.gpgsign', 'false']);
+    for (const [name, url] of Object.entries(remotes)) {
+      execFileSync('git', ['-C', dir, 'remote', 'add', name, url]);
+    }
+    mkdirSync(join(dir, 'scripts'), { recursive: true });
+    writeFileSync(join(dir, 'scripts', 'run-quality-gate.mjs'), '// stub\n');
+    writeFileSync(join(dir, 'gate-probe.mjs'), GATE_PROBE_SRC);
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({
+        name: 'pre-push-remote-fixture',
+        version: '0.0.0',
+        private: true,
+        scripts: { 'quality-gate': `node gate-probe.mjs && exit ${gateExit}` },
+      }),
+    );
+    execFileSync('git', ['-C', dir, 'add', '-A']);
+    execFileSync('git', ['-C', dir, 'commit', '-q', '-m', 'fixture']);
+    const sha = execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+    const childEnv = { ...process.env };
+    delete childEnv.SKIP_QUALITY_GATE;
+    Object.assign(childEnv, { GATE_RAN_FILE: gateRanFile }, env);
+    const res = spawnSync('sh', [HOOK_PATH, ...args], {
+      cwd: dir,
+      input: stdin ?? `refs/heads/feat/x ${sha} refs/heads/feat/x ${ZERO_SHA}\n`,
+      encoding: 'utf8',
+      timeout: 60_000,
+      env: childEnv,
+    });
+    return { res, gateRan: existsSync(gateRanFile) };
+  }
+
   const dir = mkdtempSync(join(tmpdir(), 'so-pre-push-'));
   tmpDirs.push(dir);
   if (withGateScript) {
@@ -176,5 +245,51 @@ describe('.husky/pre-push — full quality gate (#932)', () => {
 
     expect(script).toContain('scripts/run-quality-gate.mjs');
     expect(script).toMatch(/--variant full-gate(\s|$)/);
+  });
+
+  it('gates a PUBLISH push to a configured remote NAME (origin)', { timeout: 60_000 }, () => {
+    // bug_caught: #9 — a configured remote name must never be misread as
+    // scratch, or a real publish push loses its gate entirely.
+    const originUrl = 'https://example.com/origin-fixture.git';
+    const { res, gateRan } = runPrePush({
+      args: ['origin', originUrl],
+      remotes: { origin: originUrl },
+      gateExit: 0,
+    });
+
+    expect(gateRan).toBe(true);
+    expect(res.status).toBe(0);
+  });
+
+  it('skips the gate as a SCRATCH push for an unconfigured raw URL', { timeout: 60_000 }, () => {
+    // bug_caught: #8 — proven red on the unmodified hook (quoted in the #C10
+    // report): before the hook read $1/$2 at all, this exact push shape ran
+    // the full gate and could block on it (gateExit=2 here would BLOCK the
+    // push if the gate ran at all — it must not run).
+    const scratchUrl = 'ssh://user@host/path';
+    const { res, gateRan } = runPrePush({
+      args: [scratchUrl, scratchUrl],
+      gateExit: 2,
+    });
+
+    expect(gateRan).toBe(false);
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain('scratch push');
+  });
+
+  it('still gates a PUBLISH push made BY URL when the URL matches a configured remote (github)', { timeout: 60_000 }, () => {
+    // bug_caught: #9, the ceiling case (CEILINGS #5) — $1 and $2 are both the
+    // URL form (no remote NAME on the command line) when a push targets a
+    // remote directly by URL. The github remote's own URL must still gate,
+    // or every URL-form publish push reads as scratch.
+    const githubUrl = 'https://github.com/Kanevry/session-orchestrator.git';
+    const { res, gateRan } = runPrePush({
+      args: [githubUrl, githubUrl],
+      remotes: { github: githubUrl },
+      gateExit: 0,
+    });
+
+    expect(gateRan).toBe(true);
+    expect(res.status).toBe(0);
   });
 });

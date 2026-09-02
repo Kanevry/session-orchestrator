@@ -9,13 +9,16 @@
  *     Regex-metacharacters in `key` are escaped defensively.
  *   hasBlockHeader(content, key) — multiline presence variant for whole-file
  *     PRESENCE guards; true when ANY line opens the block for `key`.
+ *   matchBlockHeaderDetailed(line, key) — indent + inline-value variant (#1185):
+ *     matches everything matchBlockHeader does PLUS an indented header and/or
+ *     a header carrying an inline value; returns `{indent, value}` or `null`.
  *
  * Expected values are hardcoded literals — no regex is re-derived in the test
  * (testing.md anti-pattern #3 / #4 avoided). Behaviour, not implementation.
  */
 
 import { describe, it, expect } from 'vitest';
-import { matchBlockHeader, hasBlockHeader } from '@lib/config/block-header.mjs';
+import { matchBlockHeader, hasBlockHeader, matchBlockHeaderDetailed } from '@lib/config/block-header.mjs';
 
 // ---------------------------------------------------------------------------
 // matchBlockHeader — positives (the four accepted forms × trailing whitespace)
@@ -154,5 +157,80 @@ describe('hasBlockHeader — absent', () => {
   it('is false on non-string content', () => {
     expect(hasBlockHeader(null, 'dispatcher-autonomy')).toBe(false);
     expect(hasBlockHeader(undefined, 'dispatcher-autonomy')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matchBlockHeaderDetailed — indent + inline-value capture (#1185)
+// ---------------------------------------------------------------------------
+
+describe('matchBlockHeaderDetailed — inline value capture (matchBlockHeader cannot express this)', () => {
+  it('captures an inline value on a header line — matchBlockHeader rejects this line entirely', () => {
+    const line = 'health-endpoints: [{name: "API", url: "https://a/health"}]';
+    expect(matchBlockHeaderDetailed(line, 'health-endpoints')).toEqual({
+      indent: 0,
+      value: '[{name: "API", url: "https://a/health"}]',
+    });
+    // The exact line matchBlockHeaderDetailed captures a value from is a
+    // documented NO-MATCH for the plain matcher (module docblock).
+    expect(matchBlockHeader(line, 'health-endpoints')).toBe(false);
+  });
+
+  it('reports value: null for a bare header — no value on the line', () => {
+    expect(matchBlockHeaderDetailed('health-endpoints:', 'health-endpoints')).toEqual({
+      indent: 0,
+      value: null,
+    });
+  });
+
+  it('reports value: null for a bare header with only trailing whitespace', () => {
+    expect(matchBlockHeaderDetailed('health-endpoints:   ', 'health-endpoints')).toEqual({
+      indent: 0,
+      value: null,
+    });
+  });
+});
+
+describe('matchBlockHeaderDetailed — indentation distinguishes a nested header from a top-level one', () => {
+  it('reports indent: 0 for a top-level header', () => {
+    expect(matchBlockHeaderDetailed('health-endpoints:', 'health-endpoints')).toEqual({
+      indent: 0,
+      value: null,
+    });
+  });
+
+  it('reports the exact indent width for a header nested under a parent block', () => {
+    // The shape ecosystem-health: / health-endpoints: nests at 2 spaces.
+    expect(matchBlockHeaderDetailed('  health-endpoints:', 'health-endpoints')).toEqual({
+      indent: 2,
+      value: null,
+    });
+  });
+
+  it('a different indent width is reported distinctly — not clamped to a boolean', () => {
+    expect(matchBlockHeaderDetailed('    health-endpoints:', 'health-endpoints')).toEqual({
+      indent: 4,
+      value: null,
+    });
+  });
+});
+
+describe('matchBlockHeaderDetailed — trailing inline comment behaves as before (#1174 HEADER_RE parity)', () => {
+  // health-endpoints.mjs's pre-#1185 private HEADER_RE captured everything
+  // after the colon RAW, with no comment-stripping — the shared matcher
+  // reproduces that byte-for-byte so the migration is behaviour-preserving.
+  it('captures a trailing comment as raw value text — no stripping', () => {
+    expect(matchBlockHeaderDetailed('health-endpoints:  # note', 'health-endpoints')).toEqual({
+      indent: 0,
+      value: '# note',
+    });
+  });
+
+  // Negative-lock precedent: tests/lib/config/bold-block-header-adoption.test.mjs
+  // "negative-lock: inline comment on the header line yields all-defaults".
+  // Introducing matchBlockHeaderDetailed must not loosen matchBlockHeader's own
+  // contract for its 40 existing block-scanning callers.
+  it('matchBlockHeader itself is untouched — still rejects a header with an inline comment', () => {
+    expect(matchBlockHeader('eval:  # opt-in harness', 'eval')).toBe(false);
   });
 });

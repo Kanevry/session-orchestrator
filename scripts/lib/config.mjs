@@ -72,6 +72,7 @@ import { _parseEval } from './config/eval.mjs';
 import { _parseMemory } from './config/memory.mjs';
 import { _parseReconcile } from './config/reconcile.mjs';
 import { _parseCustomPhases } from './config/custom-phases.mjs';
+import { _parseRemoteHosts } from './config/remote-hosts.mjs';
 import { _parseEvolve, _parseEvolveDecay } from './config/evolve.mjs';
 import { _parseSkillEvolution } from './config/skill-evolution.mjs';
 import { _parseDispatcherAutonomy, resolveDispatcherAutonomy } from './config/dispatcher-autonomy.mjs';
@@ -237,6 +238,11 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   // follow-up (see docs/session-config-reference.md). This wires the parser + value only.
   const worktreeCleanup = _coerceEnum(kv, 'worktree-cleanup', 'default', ['default', 'aggressive']);
 
+  // remote-hosts: opt-in ssh-reachable hosts heavy roles may be offloaded to (#1160).
+  // Parsed HERE, before agent-mapping, because the `ssh:<alias>` channel below
+  // validates its target against the declared aliases. Defaults to [].
+  const remoteHosts = _parseRemoteHosts(mdContent);
+
   // Object fields
   const agentMapping = _coerceObject(kv, 'agent-mapping');
   if (agentMapping !== null) {
@@ -247,10 +253,11 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     // dispatched natively, exactly as before.
     //   impl: code-implementer      → native Agent dispatch (unchanged)
     //   impl: cursor:composer-2.5   → foreign model over the Cursor channel
+    //   test: ssh:m5                → same Claude, another host (#1160)
     // An unknown prefix is a typo or a channel this build cannot route, and
     // must fail loudly: silently accepting it would dispatch to an agent that
     // does not exist, which surfaces only as an empty wave much later.
-    const KNOWN_CHANNELS = ['cursor', 'session-orchestrator'];
+    const KNOWN_CHANNELS = ['cursor', 'session-orchestrator', 'ssh'];
     // Accumulate every defect, then report once. A config with two bad entries
     // must name BOTH — throwing on the first one makes the operator re-run the
     // parse per defect, and each re-run hides the ones behind it.
@@ -278,6 +285,15 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
           valueProblems.push(
             `role '${k}' has channel '${channel}' but no target in value '${v}' ` +
               `(expected '${channel}:<model-or-agent>')`
+          );
+        } else if (channel === 'ssh' && !remoteHosts.some((h) => h.alias === target)) {
+          // An ssh target is a host ALIAS, and the only place aliases are declared
+          // is the remote-hosts: block. An undeclared alias would reach argv as
+          // `-H <target>` and fail at connect time, one wave too late.
+          const declared = remoteHosts.map((h) => h.alias).join(', ') || 'none';
+          valueProblems.push(
+            `role '${k}' names ssh host '${target}' which is not declared in remote-hosts: ` +
+              `(declared: ${declared})`
           );
         }
       }
@@ -549,6 +565,7 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     'wave-reviewers': waveReviewers,
     'persona-gate-wave': personaGateWave,
     'custom-phases': customPhases,
+    'remote-hosts': remoteHosts,
     'evolve.extra-sources': evolveExtraSources,
     'evolve.decay': evolveDecay,
   };

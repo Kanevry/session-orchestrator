@@ -1033,17 +1033,25 @@ describe('Section G — running-wave stamping (#1166)', () => {
   // stamped wave is read off stdout. Each row names the bug it rules out.
   it.each([
     {
-      // FALSIFICATION: restoring `waveId = 'W' + currentWaveRaw` makes this W1.
-      label: '(a) an OWN manifest saying wave 2 wins over current-wave+1',
+      // FALSIFICATION: restoring `waveId = 'W' + currentWaveRaw` makes this W1;
+      // dropping the manifest binding entirely makes it W2 (the fallback). The
+      // wave is deliberately 5, not 2, so neither degenerate path can pass.
+      label: '(a) an OWN manifest saying wave 5 wins over current-wave+1',
       manifest: {
-        wave: 2,
+        wave: 5,
         role: 'Impl-Core',
         session: '11111111-2222-3333-4444-555555555555',
         semantic_session: 'test-session-2026-05-23',
         allowedPaths: [],
       },
+      // #1188 — ownership is proven by the lock lookup, not by STATE.md.
+      lock: {
+        session_id: '11111111-2222-3333-4444-555555555555',
+        semantic_session_id: 'test-session-2026-05-23',
+      },
+      env: { CLAUDE_CODE_SESSION_ID: '11111111-2222-3333-4444-555555555555' },
       stateMd: ACTIVE_STATE_MD.replace('current-wave: 2', 'current-wave: 1'),
-      expected: 'W2',
+      expected: 'W5',
     },
     {
       label: '(b) no wave-scope.json at all → falls back to current-wave+1',
@@ -1108,10 +1116,16 @@ describe('Section G — running-wave stamping (#1166)', () => {
         .replace('session: test-session-2026-05-23\n', ''),
       expected: 'W2',
     },
-  ])('$label', async ({ manifest, stateMd, expected }) => {
+  ])('$label', async ({ manifest, stateMd, expected, lock, env }) => {
     const dir = setupTmpRepo({ stateMd });
     [manifest].filter(Boolean).forEach((m) => writeWaveScope(dir, m));
-    const { code, stdout } = await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV_G);
+    if (lock) writeLock(dir, lock);
+    const { code, stdout } = await runCli(dir, VALID_ARGS, {
+      // CLAUDE_CODE_SESSION_ID='' keeps every non-(a) row deterministic: the
+      // real runner may export the coordinator's own id, which must not
+      // accidentally authorise a fixture lock.
+      extraEnv: { SO_WAVE_AGENT: '1', CLAUDE_CODE_SESSION_ID: '', ...(env ?? {}) },
+    });
     expect(code).toBe(0);
     expect(parseJSON(stdout).wave).toBe(expected);
   });
@@ -1178,5 +1192,97 @@ describe('Section G — running-wave stamping (#1166)', () => {
     expect(result.status).toBe('rejected-wrong-context');
     expect(result.detail).toContain('current-wave');
     expect(existsSync(join(dir, '.orchestrator', 'metrics', 'proposals.jsonl'))).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // #1188 — the session binding is a LOCK LOOKUP, not a STATE.md comparison
+  // -------------------------------------------------------------------------
+  //
+  // Bug class (#1177 FX1): `.claude/STATE.md` is a working-copy artefact of the
+  // LOCK OWNER. When a peer holds the lock, the peer wrote BOTH STATE.md and
+  // wave-scope.json, so the two "independent" sides agree about the PEER and
+  // this session adopts the peer's wave number. The fix mirrors
+  // `attributionForRecord` (scripts/lib/events.mjs): the lock is a raw→semantic
+  // LOOKUP, authorised by a process-local match on the RAW id.
+
+  const OWN_RAW = 'aaaaaaaa-1111-2222-3333-444444444444';
+  const PEER_RAW = '99999999-8888-7777-6666-555555555555';
+
+  /** Write `<tmp>/.orchestrator/session.lock` with the minimum parseLock shape. */
+  function writeLock(dir, { session_id, semantic_session_id }) {
+    writeFileSync(
+      join(dir, '.orchestrator', 'session.lock'),
+      JSON.stringify({
+        session_id,
+        semantic_session_id,
+        started_at: '2026-05-23T12:49:07.000Z',
+        mode: 'deep',
+        pid: process.pid,
+        host: 'test-host',
+        ttl_hours: 8,
+      }),
+      'utf8',
+    );
+  }
+
+  it("(k) does NOT adopt a peer coordinator's wave when lock+STATE.md both name the peer", async () => {
+    // FALSIFICATION: with `oursSide = frontmatter['session']` this stamps W7 —
+    // STATE.md and the manifest were both written by the PEER, so they agree.
+    const dir = setupTmpRepo({
+      stateMd: ACTIVE_STATE_MD
+        .replace('current-wave: 2', 'current-wave: 1')
+        .replace('session: test-session-2026-05-23', 'session: peer-session-2026-09-02'),
+    });
+    writeLock(dir, { session_id: PEER_RAW, semantic_session_id: 'peer-session-2026-09-02' });
+    writeWaveScope(dir, {
+      wave: 7,
+      session: PEER_RAW,
+      semantic_session: 'peer-session-2026-09-02',
+    });
+    const { code, stdout, stderr } = await runCli(dir, VALID_ARGS, {
+      extraEnv: { SO_WAVE_AGENT: '1', CLAUDE_CODE_SESSION_ID: OWN_RAW },
+    });
+    expect(code).toBe(0);
+    expect(parseJSON(stdout).wave).toBe('W2'); // current-wave + 1, NOT the peer's W7
+    expect(stderr).toContain('session binding unprovable');
+  });
+
+  it("(l) binds to the manifest when the process-local id equals the lock's raw id", async () => {
+    // FALSIFICATION: dropping the lock lookup (always '') makes this W2.
+    const dir = setupTmpRepo({
+      stateMd: ACTIVE_STATE_MD.replace('current-wave: 2', 'current-wave: 1'),
+    });
+    writeLock(dir, { session_id: OWN_RAW, semantic_session_id: 'test-session-2026-05-23' });
+    writeWaveScope(dir, {
+      wave: 5,
+      session: OWN_RAW,
+      semantic_session: 'test-session-2026-05-23',
+    });
+    const { code, stdout } = await runCli(dir, VALID_ARGS, {
+      extraEnv: { SO_WAVE_AGENT: '1', CLAUDE_CODE_SESSION_ID: OWN_RAW },
+    });
+    expect(code).toBe(0);
+    expect(parseJSON(stdout).wave).toBe('W5');
+  });
+
+  it('(m) falls back with a stderr line when no process-local id is exported', async () => {
+    // A harness that exports no session id (Codex CLI, Cursor) cannot prove the
+    // binding — the fallback must be VISIBLE, not silent.
+    const dir = setupTmpRepo({
+      stateMd: ACTIVE_STATE_MD.replace('current-wave: 2', 'current-wave: 1'),
+    });
+    writeLock(dir, { session_id: OWN_RAW, semantic_session_id: 'test-session-2026-05-23' });
+    writeWaveScope(dir, {
+      wave: 5,
+      session: OWN_RAW,
+      semantic_session: 'test-session-2026-05-23',
+    });
+    const { code, stdout, stderr } = await runCli(dir, VALID_ARGS, {
+      // '' is trimmed away by readProcessLocalSessionIds → no process-local id.
+      extraEnv: { SO_WAVE_AGENT: '1', CLAUDE_CODE_SESSION_ID: '' },
+    });
+    expect(code).toBe(0);
+    expect(parseJSON(stdout).wave).toBe('W2');
+    expect(stderr).toContain('session binding unprovable');
   });
 });

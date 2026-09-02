@@ -20,6 +20,7 @@ import { parseStateMd, parseRecommendations } from './state-md.mjs';
 import { normalizeSession, tailRealSessions } from './session-schema.mjs';
 import { parseBootstrapLock } from './bootstrap-lock-freshness.mjs';
 import { scanBacklog, DEFAULT_BACKLOG_LIMIT } from './backlog-scan.mjs';
+import { readCanonicalSessions } from './sessions-canonical.mjs';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -113,29 +114,31 @@ export async function buildLiveSignals(opts = {}) {
   let recentSessions = [];
 
   try {
-    if (existsSync(sessionsPath)) {
-      const raw = readFileSync(sessionsPath, 'utf8');
-      const lines = raw
-        .split('\n')
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0);
-      // #834: parse ALL lines (not just the naive last-N) before windowing —
-      // `status: 'abandoned'` phantom stubs must be filtered out BEFORE the
-      // tail is taken, or sessionTailN silently means "last N LINES" instead
-      // of "last N REAL sessions". tailRealSessions() does the filter + tail.
-      const parsed = [];
-      for (const line of lines) {
-        try {
-          const obj = JSON.parse(line);
-          parsed.push(normalizeSession(obj));
-        } catch {
-          // Branch 4: skip malformed lines silently
-        }
-      }
-      recentSessions = tailRealSessions(parsed, sessionTailN);
-    }
+    // #1186: readCanonicalSessions applies the #1167 newest-wins-per-`session_id`
+    // / attestable-`supersedes` collapse BEFORE the tail is taken. The raw read
+    // this replaced parsed every line unconditionally (malformed lines skipped
+    // on JSON.parse failure only), so a duplicated `session_id` — a
+    // crash-recovery re-append, or the #1068 abandoned-stub/supersede pair —
+    // counted as TWO entries toward `sessionTailN`, silently narrowing the
+    // REAL window by however many duplicates sat in the file's tail.
+    //
+    // Behavioural change: a well-formed record with NO `session_id` (never
+    // legitimate per REQUIRED_FIELDS, but possible on a hand-edited or
+    // pre-schema legacy line) is now DROPPED rather than counted — it cannot
+    // be deduplicated by identity, so `canonicalizeSessions` excludes it (see
+    // sessions-canonical.mjs's own contract). Missing-file / unreadable-file
+    // handling (ENOENT vs EACCES/EISDIR, #1188) is delegated to the shared
+    // reader; both still degrade to `[]` here, matching Branch 3's contract.
+    const canonical = readCanonicalSessions({ filePath: sessionsPath });
+    const parsed = canonical.map((obj) => normalizeSession(obj));
+    // #834: `status: 'abandoned'` phantom stubs must still be filtered out
+    // BEFORE the tail is taken, or sessionTailN silently means "last N LINES"
+    // instead of "last N REAL sessions". tailRealSessions() does the filter +
+    // tail.
+    recentSessions = tailRealSessions(parsed, sessionTailN);
   } catch {
-    // Branch 3: file unreadable — recentSessions stays []
+    // Branch 3: file unreadable — recentSessions stays [] (readCanonicalSessions
+    // itself never throws, but the graceful-null contract is kept as a backstop).
   }
 
   // --- Branch 5: bootstrap.lock ---

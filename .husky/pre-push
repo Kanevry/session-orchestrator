@@ -63,6 +63,16 @@
 #      temperament: every second added here raises the pull toward
 #      SKIP_QUALITY_GATE, which is why the bypass stays named and loud rather
 #      than being removed.
+#   5. ONE UNLISTED PUBLISH HOST (#C10). The scratch-vs-publish check below
+#      trusts exactly two signals: a configured remote NAME/URL, and the
+#      literal substring `github.com` or the host of `origin`'s URL. A URL
+#      push to a THIRD real publish endpoint this repo has never configured
+#      here — a second GitHub org, an unregistered self-hosted mirror — reads
+#      as scratch and skips the gate. Not closable without enumerating every
+#      publish endpoint, which is exactly the config surface BV-001 forbids
+#      adding on spec.
+#      Revisit trigger: a real push to an unlisted publish host that should
+#      have gated.
 #
 # Two things keep the cost from turning into a reflex `--no-verify`:
 #   - a delete-only push changes no code and is skipped BEFORE any clone happens;
@@ -164,6 +174,64 @@ for git_var in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | grep -E 
   unset "$git_var"
 done
 unset git_var git_env_keep
+
+# ---------------------------------------------------------------------------
+# PUBLISH push vs. SCRATCH push (#C10) — read BEFORE the ref loop, right after
+# the git-env scrub above (this block's own `git remote` calls must sit below
+# that scrub, same reasoning as the materialisation `git` calls further down).
+# ---------------------------------------------------------------------------
+# git invokes pre-push with $1 = the remote NAME (or its URL, when pushed BY
+# URL) and $2 = the remote URL — this hook never read either until now
+# (`rg -n '\$1|\$2' .husky/pre-push` found only a local function's own args,
+# in link_node_modules()). A SCRATCH push — a raw, unconfigured URL such as
+# the remote-offload tool's SSH sync target — publishes nothing: gating it
+# buys no safety and costs the full quality gate on every sync. (The offload
+# tool has since been fixed upstream to push with --no-verify; this check is
+# defense-in-depth and precedent, not the primary fix.)
+#
+# Empty $1 (every hand invocation, every pre-#C10 test) takes neither branch
+# below and leaves so_scratch=0 — NOT scratch, so existing behaviour is
+# unchanged: it still fails TOWARD gating.
+so_scratch=0
+if [ -n "$1" ]; then
+  if git remote 2>/dev/null | grep -qFx -- "$1"; then
+    so_scratch=0
+  else
+    # $1 names no configured remote — candidate scratch. Two escape hatches
+    # keep a URL-form publish push (`git push https://github.com/...`, where
+    # $1 is never a remote NAME) gated anyway — see CEILINGS #5 for what
+    # they deliberately do not cover.
+    so_scratch=1
+    for so_remote in $(git remote 2>/dev/null); do
+      so_remote_url=$(git remote get-url --all "$so_remote" 2>/dev/null) || so_remote_url=''
+      if printf '%s\n' "$so_remote_url" | grep -qFx -- "$2"; then
+        so_scratch=0
+        break
+      fi
+    done
+    if [ "$so_scratch" -eq 1 ]; then
+      case "$2" in
+        (*github.com*) so_scratch=0 ;;
+      esac
+    fi
+    if [ "$so_scratch" -eq 1 ]; then
+      so_origin_url=$(git remote get-url origin 2>/dev/null) || so_origin_url=''
+      if [ -n "$so_origin_url" ]; then
+        so_origin_host=$(printf '%s\n' "$so_origin_url" | sed -n 's#.*://##; s#.*@##; s#[:/].*##p')
+        case "$2" in
+          (*"$so_origin_host"*) so_scratch=0 ;;
+        esac
+      fi
+    fi
+  fi
+fi
+
+if [ "$so_scratch" -eq 1 ]; then
+  so_target_host=$(printf '%s\n' "$2" | sed -n 's#.*://##; s#.*@##; s#[:/].*##p')
+  echo "pre-push: scratch push to ${so_target_host:-<unknown host>} (not a configured remote) — quality gate skipped; publish remotes (origin, github) still gated." >&2
+  exit 0
+fi
+unset so_scratch so_remote so_remote_url so_origin_url so_origin_host so_target_host
 
 # git feeds one line per pushed ref on stdin:
 #   <local_ref> <local_sha> <remote_ref> <remote_sha>

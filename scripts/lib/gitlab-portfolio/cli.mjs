@@ -31,25 +31,13 @@ import { readFile } from 'node:fs/promises';
 import { readConfigFile, parseSessionConfig } from '../config.mjs';
 import { parseFrontmatter } from '../vault-mirror/utils.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
+import { expandTilde } from '../common.mjs';
 
 import { discoverVaultRepos } from './vcs-detect.mjs';
 import { fetchIssuesMultiRepo, summarizeRepo } from './aggregator.mjs';
 import { renderPortfolio, writePortfolio } from './markdown-writer.mjs';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-/**
- * Expand a leading `~` to os.homedir().
- *
- * @param {string} p
- * @returns {string}
- */
-function expandHome(p) {
-  if (typeof p === 'string' && p.startsWith('~')) {
-    return path.join(os.homedir(), p.slice(1));
-  }
-  return p;
-}
 
 /**
  * Print a human-readable summary line to stdout.
@@ -214,9 +202,9 @@ EXIT CODES
   const vaultIntegration = config['vault-integration'] ?? {};
   const configVaultDir = vaultIntegration['vault-dir'];
   const resolvedVaultDir = optVaultDir
-    ? expandHome(optVaultDir)
+    ? expandTilde(optVaultDir)
     : configVaultDir
-      ? expandHome(configVaultDir)
+      ? expandTilde(configVaultDir)
       : null;
 
   if (!resolvedVaultDir) {

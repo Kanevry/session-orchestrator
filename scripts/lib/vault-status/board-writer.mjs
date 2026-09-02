@@ -59,6 +59,7 @@ import { validatePathInsideProject } from '../path-utils.mjs';
 import { enumerateCandidates } from '../dispatcher/enumerate.mjs';
 import { atomicWriteWithBackup } from '../io.mjs';
 import { withBoardLock } from './board-lock.mjs';
+import { expandTilde } from '../common.mjs';
 
 /** Frontmatter sentinel that identifies generator-owned board files. */
 export const GENERATOR_MARKER = 'session-orchestrator-active-sessions@1';
@@ -182,29 +183,13 @@ const nameSlot = (repo) => `n:${foldKey(repo)}`;
 // ── Path helpers ────────────────────────────────────────────────────────────────
 
 /**
- * Expand a leading `~` to the current user's home directory. Inlined here on
- * purpose — the shared helper is private elsewhere, and a shared
- * `vault-write-guard.mjs` extraction is deferred to a later epic (W2 forbids a
- * new shared file in this slice).
- *
- * @param {string} p
- * @returns {string}
- */
-function expandHome(p) {
-  if (typeof p !== 'string' || p.length === 0) return p;
-  if (p === '~') return os.homedir();
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
-  return p;
-}
-
-/**
  * Resolve the board file path from a vault directory.
  *
  * @param {string} vaultDir — absolute or `~`-prefixed vault root
  * @returns {string} `<vaultDir>/01-projects/_active-sessions.md`
  */
 export function resolveBoardPath(vaultDir) {
-  return path.join(expandHome(vaultDir), '01-projects', '_active-sessions.md');
+  return path.join(expandTilde(vaultDir), '01-projects', '_active-sessions.md');
 }
 
 // ── Formatting helpers ───────────────────────────────────────────────────────────
@@ -894,7 +879,7 @@ async function mirrorBoardInner({ repoRoot, repos, explicitStatus, now = new Dat
   }
 
   // Safety: the resolved vault dir must live under $HOME.
-  const expandedVault = expandHome(vaultDir);
+  const expandedVault = expandTilde(vaultDir);
   const home = os.homedir();
   const inHome = validatePathInsideProject(expandedVault, home);
   if (!inHome.ok) {

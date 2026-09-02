@@ -23,6 +23,7 @@ import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { getCrossRepoProjects, getConfinementRoot } from './lib/config/cross-repo.mjs';
 import { validatePathInsideProject } from './lib/path-utils.mjs';
+import { expandTilde } from './lib/common.mjs';
 
 const COMMIT_MSG = 'chore(orchestrator): Promote vault-integration to strict mode — refs #305';
 
@@ -52,18 +53,6 @@ const noBaseline = args.includes('--no-baseline');
 
 const repoIdx = args.indexOf('--repo');
 const singleRepo = repoIdx !== -1 && args[repoIdx + 1] ? args[repoIdx + 1] : null;
-
-// ---------------------------------------------------------------------------
-// Path resolution
-// ---------------------------------------------------------------------------
-
-/** Expand leading ~ to the user's home directory. */
-function expandHome(p) {
-  if (p.startsWith('~/')) {
-    return join(homedir(), p.slice(2));
-  }
-  return p;
-}
 
 // ---------------------------------------------------------------------------
 // Vault-integration mode replacement
@@ -424,7 +413,7 @@ async function main() {
 
   if (singleRepo) {
     // Single-repo mode
-    const absRepo = expandHome(singleRepo);
+    const absRepo = expandTilde(singleRepo);
     const singleRoot = getConfinementRoot();
     const singleGuard = validatePathInsideProject(absRepo, singleRoot);
     if (!singleGuard.ok) {
@@ -449,7 +438,7 @@ async function main() {
 
     const batchRoot = getConfinementRoot();
     for (const rawPath of eligibleRepos) {
-      const absRepo = expandHome(rawPath);
+      const absRepo = expandTilde(rawPath);
       const guard = validatePathInsideProject(absRepo, batchRoot);
       if (!guard.ok) {
         process.stderr.write(
@@ -469,7 +458,7 @@ async function main() {
         (p) => p === 'projects-baseline' || p.endsWith('/projects-baseline')
       );
       if (baselineEntry) {
-        const baselineRepoDir = expandHome(
+        const baselineRepoDir = expandTilde(
           baselineEntry.startsWith('~') || baselineEntry.startsWith('/')
             ? baselineEntry
             : `~/Projects/${baselineEntry}`

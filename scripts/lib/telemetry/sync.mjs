@@ -39,6 +39,7 @@ import { ensureAnonId } from './anon-id.mjs';
 import { peekAll, enqueue, clear, queueStats } from './queue.mjs';
 import { loadOwnerConfig } from '../owner-yaml.mjs';
 import { readJsonlFile } from '../io.mjs';
+import { readCanonicalSessions } from '../sessions-canonical.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -94,14 +95,50 @@ function defaultSender({ env, timeoutMs }) {
 // ---------------------------------------------------------------------------
 
 /**
+ * The canonical (#1167-deduplicated) session record most recently WRITTEN to
+ * the ledger — ranked by `completed_at` (falling back to `started_at` when
+ * absent), the closest analogue to "the last line of the file" once the reader
+ * no longer trusts append order.
+ *
+ * `readCanonicalSessions` reorders its output to "first appearance of each
+ * surviving id" (see sessions-canonical.mjs's own docstring) — it is NOT
+ * append order — so a raw `records[records.length - 1]` (the pre-#1186 read)
+ * silently picks the WRONG session once a `session_id` duplicate or a
+ * `supersedes` collapse reshuffles the array. A record with neither timestamp
+ * sorts last and is never chosen over a dated one.
+ *
+ * @param {Array<object>} records — canonical session records.
+ * @returns {object|null}
+ */
+function mostRecentSession(records) {
+  let best = null;
+  let bestTs = '';
+  for (const rec of records) {
+    if (!rec || typeof rec !== 'object') continue;
+    const ts =
+      typeof rec.completed_at === 'string' && rec.completed_at
+        ? rec.completed_at
+        : typeof rec.started_at === 'string'
+          ? rec.started_at
+          : '';
+    if (ts && ts > bestTs) {
+      best = rec;
+      bestTs = ts;
+    }
+  }
+  return best;
+}
+
+/**
  * Build ONE whitelist-projected usage-ping record from the local JSONL streams.
  *
- * Reads `<metricsDir>/sessions.jsonl` + `<metricsDir>/skill-invocations.jsonl`
- * (metricsDir defaults to `<cwd>/.orchestrator/metrics`). The LAST sessions.jsonl
- * record defines the session window: skill-invocations whose `timestamp >=` its
- * `started_at` are included. When no session record exists, the ping falls back
- * to `session_type: 'other'`, `duration_bucket: '<15m'`, and the invocations of
- * the last 24 hours.
+ * Reads `<metricsDir>/sessions.jsonl` (via `readCanonicalSessions`, #1186 — the
+ * #1167 newest-wins-per-`session_id` / `supersedes` collapse) +
+ * `<metricsDir>/skill-invocations.jsonl`. The most-recently-written CANONICAL
+ * session record (`mostRecentSession`, above) defines the session window:
+ * skill-invocations whose `timestamp >=` its `started_at` are included. When no
+ * session record exists, the ping falls back to `session_type: 'other'`,
+ * `duration_bucket: '<15m'`, and the invocations of the last 24 hours.
  *
  * anon-ID handling (persist=true, the send path): `ensureAnonId` runs on the
  * telemetry.json record; a created/rotated ID is persisted via
@@ -137,10 +174,10 @@ export function buildBatch({
     const dir = metricsDir || path.join(process.cwd(), '.orchestrator', 'metrics');
     const nowIso = now || new Date().toISOString();
 
-    const sessions = readJsonlFile(path.join(dir, 'sessions.jsonl'), { skipInvalid: true });
+    const sessions = readCanonicalSessions({ filePath: path.join(dir, 'sessions.jsonl') });
     const invocations = readJsonlFile(path.join(dir, 'skill-invocations.jsonl'), { skipInvalid: true });
 
-    const sessionRecord = sessions.length > 0 ? sessions[sessions.length - 1] : null;
+    const sessionRecord = mostRecentSession(sessions);
 
     let windowInvocations;
     let sessionForPing;
@@ -331,8 +368,8 @@ export function shouldDailyFlush({ statePath, queuePath, metricsDir, now = Date.
     if (count > 0) return true;
 
     // (b) Catch-up: a session completed after the last successful flush.
-    //     Reuses buildBatch's reader — same file, same skipInvalid tolerance,
-    //     no second parser.
+    //     Reuses buildBatch's reader (#1186: readCanonicalSessions +
+    //     mostRecentSession) — same file, same #1167 dedupe, no second parser.
     //
     //     Deliberate simplification (named ceiling): this parses the WHOLE
     //     sessions.jsonl to look at its last record. At the observed ledger size
@@ -340,8 +377,8 @@ export function shouldDailyFlush({ statePath, queuePath, metricsDir, now = Date.
     //     and it only runs once the 24h gate above has already passed. Revisit
     //     with a tail-read if any repo's sessions.jsonl passes ~10 MB.
     const dir = metricsDir || path.join(process.cwd(), '.orchestrator', 'metrics');
-    const sessions = readJsonlFile(path.join(dir, 'sessions.jsonl'), { skipInvalid: true });
-    const last = sessions.length > 0 ? sessions[sessions.length - 1] : null;
+    const sessions = readCanonicalSessions({ filePath: path.join(dir, 'sessions.jsonl') });
+    const last = mostRecentSession(sessions);
     const completedMs = Date.parse(last?.completed_at);
     return !Number.isNaN(completedMs) && completedMs > lastMs;
   } catch {

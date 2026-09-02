@@ -31,6 +31,11 @@
  *
  * The two `**` markers are independent (`**key:` and `key:**` both match),
  * mirroring the tolerant #823 vault-integration regex.
+ *
+ * `matchBlockHeaderDetailed` (#1185) is a SEPARATE, additive matcher below for
+ * parsers that need what this contract deliberately rejects — an indented
+ * (nested) header and/or an inline value. It does not change the contract
+ * above; `matchBlockHeader`/`hasBlockHeader` keep exactly this behaviour.
  */
 
 /**
@@ -71,6 +76,56 @@ function blockHeaderRe(key) {
 export function matchBlockHeader(line, key) {
   if (typeof line !== 'string' || typeof key !== 'string' || key === '') return false;
   return blockHeaderRe(key).test(line);
+}
+
+/**
+ * Build the indent-aware, inline-value-capturing block-header regex for a key.
+ * A strict SUPERSET of `blockHeaderRe`: it additionally matches an ARBITRARY
+ * leading indent (group 1) and an optional inline value trailing the colon
+ * (group 2) — the two things `matchBlockHeader` deliberately rejects (a
+ * nested sub-key, and a header carrying a value, per the module docblock).
+ *
+ * @param {string} key
+ * @returns {RegExp}
+ */
+function detailedBlockHeaderRe(key) {
+  return new RegExp(
+    '^(\\s*)(?:-\\s+)?(?:\\*\\*)?' + escapeRegExp(key) + ':(?:\\*\\*)?(?:[ \\t]+(.*))?$'
+  );
+}
+
+/**
+ * Indent + inline-value variant of `matchBlockHeader` (#1185). Additive —
+ * `matchBlockHeader`/`hasBlockHeader` are unchanged and every existing caller
+ * keeps its current behaviour untouched.
+ *
+ * Built for parsers whose header can be NESTED under a parent block (e.g.
+ * `health-endpoints:` one level under `ecosystem-health:`) and/or carry an
+ * INLINE value (`health-endpoints: [{name: …}]`) on the same line — exactly
+ * the two forms `matchBlockHeader` treats as "not a top-level block-opener".
+ * This is a separate, purpose-built matcher, not a relaxed replacement: a
+ * caller that only needs the boolean top-level check keeps using
+ * `matchBlockHeader`.
+ *
+ * The captured value is RAW text, never comment-stripped — `key:  # note`
+ * reports `value: '# note'`, exactly as the pre-#1185 `health-endpoints.mjs`
+ * `HEADER_RE` did. A caller that needs comment semantics strips them itself
+ * (as `health-endpoints.mjs` already does for its block BODY via its own
+ * `stripComment()` — only the header line's raw capture moved here).
+ *
+ * @param {string} line — a single line (callers strip the trailing `\n`)
+ * @param {string} key — the literal block key
+ * @returns {{indent: number, value: string|null}|null} `null` on no match;
+ *   `value` is `null` for a bare header (`key:`, optionally trailing
+ *   whitespace only), else the trimmed text following the colon.
+ */
+export function matchBlockHeaderDetailed(line, key) {
+  if (typeof line !== 'string' || typeof key !== 'string' || key === '') return null;
+  const m = line.match(detailedBlockHeaderRe(key));
+  if (!m) return null;
+  const indent = m[1].length;
+  const trimmed = (m[2] ?? '').trim();
+  return { indent, value: trimmed === '' ? null : trimmed };
 }
 
 /**

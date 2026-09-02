@@ -244,5 +244,9 @@ describe('readProcessLocalSessionIds (#1177 FX1)', () => {
     // (written by the suite's own helper) and it must not appear in the result.
     writeLock({ session_id: 'LOCK-UUID', semantic_session_id: 'lock-label' });
     expect(readProcessLocalSessionIds({ env: { CLAUDE_CODE_SESSION_ID: 'ENV' } })).toEqual(['ENV']);
+    // And with NO other tier to mask a reintroduced lock read: still empty.
+    // This is the contract enforce-scope G3b depends on (#1194) — a lock tier
+    // sneaking back would make a peer-owned lock self-confirming there.
+    expect(readProcessLocalSessionIds({ env: {}, hookInput: null })).toEqual([]);
   });
 });

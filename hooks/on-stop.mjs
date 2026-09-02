@@ -41,6 +41,7 @@ import {
 } from 'node:fs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
+import { AGENT_ID_RE, resolveSubagentSidecar } from './_lib/subagent-paths.mjs';
 // #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
 if (!shouldRunHook('on-stop')) process.exit(0);
 
@@ -505,10 +506,13 @@ async function handleSubagentStop(input) {
   // Sidecar-derived fields. Every derivation is individually wrapped: a failure
   // omits its own field and nothing else, and this function must never throw —
   // a throw here would skip the emit and lose the record that already works.
-  const sidecarBase = resolveSidecarBase(input?.transcript_path, agentId);
-  if (sidecarBase !== null) {
-    const transcriptPath = `${sidecarBase}.jsonl`;
-    const metaPath = `${sidecarBase}.meta.json`;
+  // Consolidated derivation (#1196): hooks/_lib/subagent-paths.mjs now also
+  // rejects the literal 'unknown' agentId — this file's own AGENT_ID_RE-only
+  // check (above, for the emitted `agent_id` field) never did.
+  const sidecar = resolveSubagentSidecar({ transcriptPath: input?.transcript_path, agentId });
+  if (sidecar !== null) {
+    const transcriptPath = sidecar.transcript;
+    const metaPath = sidecar.meta;
 
     let transcriptFound = false;
     try {
@@ -561,9 +565,6 @@ async function handleSubagentStop(input) {
 // ---------------------------------------------------------------------------
 // SubagentStop payload derivations (#1190)
 // ---------------------------------------------------------------------------
-
-/** Real agent ids are hex-ish tokens; anything else is rejected, not sanitised. */
-const AGENT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**
  * Harness tool-use ids, measured on-disk 2026-09-02 in a real sidecar meta.json:
@@ -650,26 +651,6 @@ function firstNonEmptyString(input, keys) {
     if (typeof v === 'string' && v.trim()) return v.trim();
   }
   return null;
-}
-
-/**
- * Extension-less path of the stopping agent's sidecar pair, derived from the
- * PARENT transcript path the harness sends on stdin:
- * `<dir>/<parent-basename>/subagents/agent-<agent_id>` (+ `.jsonl` / `.meta.json`).
- * Shape verified against live transcripts — same derivation as
- * `hooks/subagent-telemetry.mjs` `resolveSubagentTranscriptPath()`.
- *
- * @param {unknown} parentTranscriptPath
- * @param {string|null} agentId
- * @returns {string|null} null when underivable (never the parent path)
- */
-function resolveSidecarBase(parentTranscriptPath, agentId) {
-  if (typeof parentTranscriptPath !== 'string' || !parentTranscriptPath.trim()) return null;
-  if (typeof agentId !== 'string' || !AGENT_ID_RE.test(agentId)) return null;
-  const dir = path.dirname(parentTranscriptPath);
-  const base = path.basename(parentTranscriptPath).replace(/\.jsonl$/i, '');
-  if (!base || base === '.' || base === '..') return null;
-  return path.join(dir, base, 'subagents', `agent-${agentId}`);
 }
 
 /**

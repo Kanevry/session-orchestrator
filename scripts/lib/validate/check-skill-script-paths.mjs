@@ -17,8 +17,8 @@
  * 4 of those 7 sat inside fenced code blocks — synthetic example paths
  * (`scripts/example.mjs`, `scripts/lib/a.mjs`) in a snippet demonstrating a
  * command's argument shape. A fenced snippet is an illustration of a FORM, not
- * a claim that a file exists, so the fence tracker (lifted from
- * `check-doc-cli-commands.mjs § extractCandidates`) silences them structurally
+ * a claim that a file exists, so the shared fence tracker
+ * (`./markdown-fences.mjs`, #1181) silences them structurally
  * rather than by allowlist.
  *
  * ## Annotation, and why placement is a rule rather than a convenience
@@ -58,6 +58,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { listRepoFiles } from './repo-files.mjs';
+import { forEachLine } from './markdown-fences.mjs';
 
 /** Documentation roots whose prose is treated as a claim about the repo. */
 export const SCAN_DIRS = Object.freeze(['skills', 'commands', 'agents']);
@@ -85,9 +86,11 @@ export function classifyAnnotation(payload) {
 /**
  * Split a markdown body into citations and annotations, both OUTSIDE fences.
  *
- * The fence automaton mirrors `check-doc-cli-commands.mjs § extractCandidates`:
- * a fence opens on ``` / ~~~ with an optional info string and closes on the
- * same character, at least as long, with no info string.
+ * The fence automaton is `./markdown-fences.mjs` (#1181 — one tracker
+ * shared with `check-doc-cli-commands.mjs` and
+ * `check-vcs-repo-flag.mjs`): a fence opens on ``` / ~~~ with an optional
+ * info string and closes on the same character, at least as long, with no
+ * info string.
  *
  * Two properties are load-bearing because the automaton fails OPEN:
  *
@@ -111,59 +114,40 @@ export function extractCitations(lines) {
   const citations = [];
   /** @type {Map<number, {ok: boolean, class: string, raw: string}>} */
   const annotations = new Map();
-  /** @type {{marker: string, length: number} | null} */
-  let fence = null;
-  /** 1-based line of the currently open fence's opener. */
-  let fenceOpenedAt = 0;
 
   /**
    * Read one line as prose.
    *
    * @param {string} raw the line
-   * @param {number} index its 0-based position
+   * @param {number} lineNumber its 1-based position
    */
-  const collect = (raw, index) => {
+  const collect = (raw, lineNumber) => {
     const annotation = raw.match(ANNOTATION_RE);
     if (annotation) {
-      annotations.set(index + 1, { ...classifyAnnotation(annotation[1]), raw: annotation[0] });
+      annotations.set(lineNumber, { ...classifyAnnotation(annotation[1]), raw: annotation[0] });
     }
     for (const hit of raw.matchAll(CITATION_RE)) {
-      citations.push({ line: index + 1, path: hit[0] });
+      citations.push({ line: lineNumber, path: hit[0] });
     }
   };
 
-  for (let index = 0; index < lines.length; index += 1) {
-    const raw = lines[index];
-    // A blockquoted fence is still a fence — strip the `>` chain before
-    // detection so the quoted example's body stays fenced.
-    const stripped = raw.replace(/^(?:\s*>)+\s?/, '');
-    const fenceMatch = stripped.match(/^\s*(`{3,}|~{3,})\s*([A-Za-z0-9_+-]*)/);
-    if (fenceMatch) {
-      const marker = fenceMatch[1][0];
-      const length = fenceMatch[1].length;
-      const lang = fenceMatch[2];
-      if (fence === null) {
-        fence = { marker, length };
-        fenceOpenedAt = index + 1;
-        continue;
-      }
-      if (marker === fence.marker && length >= fence.length && lang === '') {
-        fence = null;
-        continue;
-      }
-      // Otherwise it is fence content (a nested fence inside a wider one).
-    }
-    if (fence !== null) continue;
+  // A blockquoted fence is still a fence — the shared tracker strips the `>`
+  // chain before detection so the quoted example's body stays fenced.
+  const { unbalancedFenceLine } = forEachLine(
+    lines.join('\n'),
+    (raw, { lineNumber, inFence }) => {
+      if (inFence) return;
+      collect(raw, lineNumber);
+    },
+    { stripBlockquotes: true },
+  );
 
-    collect(raw, index);
-  }
-
-  if (fence === null) return { citations, annotations, unbalancedFence: null };
+  if (unbalancedFenceLine === null) return { citations, annotations, unbalancedFence: null };
 
   // EOF with the fence still open: never swallow silently. Re-read the tail as
   // prose so the citations the defect hid are reported alongside it.
-  for (let index = fenceOpenedAt; index < lines.length; index += 1) collect(lines[index], index);
-  return { citations, annotations, unbalancedFence: { line: fenceOpenedAt } };
+  for (let index = unbalancedFenceLine; index < lines.length; index += 1) collect(lines[index], index + 1);
+  return { citations, annotations, unbalancedFence: { line: unbalancedFenceLine } };
 }
 
 /**

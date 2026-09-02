@@ -84,10 +84,9 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 
-import { die, utcTimestamp } from './lib/common.mjs';
+import { die, utcTimestamp, expandTilde } from './lib/common.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 import {
   SCRIPT_NAME,
@@ -148,13 +147,6 @@ Exit codes:
   3  --apply needs merge decisions (see structured awaiting-merge-decision records)
 `;
   process.stderr.write(usage);
-}
-
-function expandHome(p) {
-  if (typeof p !== 'string' || p.length === 0) return p;
-  if (p === '~') return os.homedir();
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
-  return p;
 }
 
 async function isDir(p) {
@@ -222,8 +214,8 @@ async function main() {
   const isDryRun = !isApply;
   const isJson = parsed.values.json === true;
 
-  const sourceRoot = path.resolve(expandHome(parsed.values.source ?? DEFAULT_SOURCE));
-  const canonicalRoot = path.resolve(expandHome(parsed.values.canonical ?? DEFAULT_CANONICAL));
+  const sourceRoot = path.resolve(expandTilde(parsed.values.source ?? DEFAULT_SOURCE));
+  const canonicalRoot = path.resolve(expandTilde(parsed.values.canonical ?? DEFAULT_CANONICAL));
 
   // Parse --resolve flags into a Map<relPath, "src"|"dst"|"skip">
   const resolutions = new Map();

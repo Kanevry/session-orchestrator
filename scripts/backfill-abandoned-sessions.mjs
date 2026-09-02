@@ -56,12 +56,31 @@ const SESSION_ENDED = 'orchestrator.session.ended';
  */
 export const SESSION_START_LIMIT = 25;
 
-/** Read a JSONL file into parsed objects; missing → []; malformed lines skipped. */
+/**
+ * Read a JSONL file into parsed objects; MISSING (ENOENT) → `[]` silently,
+ * UNREADABLE (EACCES/EISDIR/…) → `[]` with a stderr WARN (#1188); malformed
+ * lines skipped.
+ */
 function readJsonl(filePath) {
   let raw;
   try {
     raw = fs.readFileSync(filePath, 'utf8');
-  } catch {
+  } catch (err) {
+    // #1188 — ENOENT and EACCES/EISDIR are different facts: a missing ledger is
+    // the ordinary fresh-repo case; an UNREADABLE one previously read as "no
+    // records" and made every downstream count silently wrong. Same split as
+    // readLockDetailed (session-lock.mjs § absent vs unreadable).
+    if (!err || err.code !== 'ENOENT') {
+      process.stderr.write(
+        `⚠ backfill-abandoned-sessions: cannot read ${filePath} ` +
+          `(${err?.code ?? '?'}: ${err?.message ?? String(err)}) — ` +
+          'treating as EMPTY, counts below are floors\n',
+      );
+    }
+    // CEILING (BV-004): still [] rather than throw — this runs on the
+    // SessionStart path (SESSION_START_LIMIT), where a permissions fault must
+    // not crash the session start. REVISIT if the warn rate in events.jsonl
+    // shows masked corruption.
     return [];
   }
   const out = [];

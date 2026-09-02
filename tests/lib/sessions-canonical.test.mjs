@@ -11,7 +11,7 @@
  * Fixtures are written to a tmp dir — NEVER the live .orchestrator store.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -208,8 +208,43 @@ describe('readCanonicalSessions — read path', () => {
     ]);
   });
 
-  it('returns [] for a missing ledger', () => {
-    expect(readCanonicalSessions({ repoRoot })).toEqual([]);
+  it('returns [] SILENTLY when the ledger is absent (ENOENT)', () => {
+    // #1188 — a fresh repo has no ledger; that is ordinary, not an anomaly, so
+    // the WARN below must NOT fire here (a warn on the ordinary path is noise
+    // that trains the operator to ignore the real one).
+    const seen = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      seen.push(String(chunk));
+      return true;
+    });
+    try {
+      expect(readCanonicalSessions({ repoRoot })).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(seen).toEqual([]);
+  });
+
+  it('returns [] with a stderr warning when the ledger path is a DIRECTORY (EISDIR)', () => {
+    // Bug (#1188): `catch { return [] }` conflated ENOENT with EACCES/EISDIR, so
+    // an UNREADABLE ledger read as "no sessions" and every downstream count was
+    // silently wrong with no signal anywhere.
+    // FALSIFICATION: restoring the bare `catch { return [] }` leaves `seen` empty.
+    fs.mkdirSync(ledgerPath(), { recursive: true });
+    const seen = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      seen.push(String(chunk));
+      return true;
+    });
+    let out;
+    try {
+      out = readCanonicalSessions({ repoRoot });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(out).toEqual([]);
+    expect(seen.join('')).toContain('EISDIR');
+    expect(seen.join('')).toContain('readCanonicalSessions');
   });
 
   it('accepts an explicit filePath', () => {

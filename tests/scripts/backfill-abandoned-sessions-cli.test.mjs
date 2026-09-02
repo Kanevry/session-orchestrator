@@ -573,3 +573,41 @@ describe('backfill-abandoned-sessions — #1167 duplicate-stub root cause', () =
     expect(raw).not.toContain('backfill_completed');
   });
 });
+
+// ---------------------------------------------------------------------------
+// (g) ledger read errors — ENOENT vs EISDIR/EACCES (#1188)
+// ---------------------------------------------------------------------------
+//
+// Bug: `readJsonl`'s `catch { return [] }` conflated a MISSING ledger (the
+// ordinary fresh-repo case) with an UNREADABLE one. An unreadable events.jsonl
+// read as "no candidates" and the run reported a clean 0 — every count silently
+// wrong, with no signal anywhere. This runs on the SessionStart path, so the
+// verdict is WARN + [], never a throw.
+
+describe('backfill-abandoned-sessions CLI — unreadable vs absent ledger (#1188)', () => {
+  it('returns [] SILENTLY when the ledger is absent (ENOENT)', () => {
+    // A fresh repo has no events.jsonl; that is ordinary, not an anomaly, so the
+    // WARN must NOT fire here (noise on the ordinary path trains the operator to
+    // ignore the real signal).
+    mkdirSync(join(tmp, '.orchestrator', 'metrics'), { recursive: true });
+
+    const r = runCli(['--repo-root', tmp, '--json']);
+
+    expect(r.status).toBe(0);
+    expect(summaryOf(r).total).toBe(0);
+    expect(r.stderr).not.toMatch(/cannot read/);
+  });
+
+  it('returns [] with a stderr warning when the ledger path is a DIRECTORY (EISDIR)', () => {
+    // FALSIFICATION: restoring the bare `catch { return [] }` leaves stderr
+    // empty while the summary still reports a clean total of 0.
+    mkdirSync(metricsFile('events.jsonl'), { recursive: true });
+
+    const r = runCli(['--repo-root', tmp, '--json']);
+
+    expect(r.status).toBe(0);
+    expect(summaryOf(r).total).toBe(0);
+    expect(r.stderr).toMatch(/cannot read/);
+    expect(r.stderr).toMatch(/EISDIR/);
+  });
+});

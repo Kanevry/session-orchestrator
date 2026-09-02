@@ -51,6 +51,7 @@ import { deregisterSelf, logSweepEvent } from '../scripts/lib/session-registry.m
 import { readConfigFile, parseSessionConfig } from '../scripts/lib/config.mjs';
 import { flush } from '../scripts/lib/telemetry/sync.mjs';
 import { attemptLockReconciliation } from './_lib/lock-reconcile.mjs';
+import { atomicMutateJson } from './_lib/atomic-json.mjs';
 
 // ---------------------------------------------------------------------------
 // stdin reading (inline — SessionEnd hooks exit 0 always, never deny)
@@ -357,42 +358,6 @@ async function emitBackfillOutcome(kind, result, { sessionId, semanticSessionId 
 }
 
 /**
- * Atomic read-modify-write of a JSON file: read (tolerating an absent or
- * unparseable file), apply `mutate`, write a tmp file, rename over the
- * original. Atomic on POSIX (same-filesystem rename), best-effort on Windows.
- *
- * Mirrors the helper in `hooks/post-tool-batch-wave-signal.mjs` — the two hooks
- * are the only writers of the `last_wave_completed` marker and must persist it
- * the same way.
- *
- * Why a local copy rather than `scripts/lib/io.mjs`: that module DOES export
- * atomic writers (`writeJsonAtomic` at :765, `atomicWriteWithBackup` at :923)
- * and this hook already imports from it — but neither has a READ-MODIFY-WRITE
- * form, which is the whole point here (the marker must be merged into whatever
- * else current-session.json already carries). Three sibling hooks keep the same
- * private copy for the same reason: `cwd-change-restore.mjs:84`,
- * `post-tool-failure-corrective-context.mjs:86`, and
- * `post-tool-batch-wave-signal.mjs:87`. Lifting an RMW variant into io.mjs and
- * collapsing the four copies is a follow-up, not part of this fix.
- *
- * @param {string} filePath
- * @param {object} defaultValue used when the file is absent/unparseable
- * @param {function(object): object} mutate synchronous pure transformer
- */
-async function atomicMutateJson(filePath, defaultValue, mutate) {
-  let current = defaultValue;
-  try {
-    current = JSON.parse(await fs.readFile(filePath, 'utf8'));
-  } catch { /* absent or unparseable — start from defaultValue */ }
-
-  const updated = mutate(current);
-  const tmp = `${filePath}.tmp-ose-${process.pid}-${Date.now()}`;
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(tmp, JSON.stringify(updated, null, 2) + '\n', 'utf8');
-  await fs.rename(tmp, filePath);
-}
-
-/**
  * Emit the FINAL `orchestrator.wave.completed` of the session (#1193).
  *
  * `hooks/post-tool-batch-wave-signal.mjs` closes wave N-1 only at an N-1→N
@@ -496,13 +461,18 @@ async function emitFinalWaveCompleted(
 
     // Monotone, exactly as the batch hook's `maxWave()` — the mark may only
     // ever rise, whichever of the three writers gets here last (W4c Q3-MED-3).
-    await atomicMutateJson(sessionFile, {}, (current) => ({
+    const markResult = await atomicMutateJson(sessionFile, {}, (current) => ({
       ...current,
       last_wave_completed: Number.isInteger(current?.last_wave_completed)
         && current.last_wave_completed > lastWave
         ? current.last_wave_completed
         : lastWave,
-    }));
+    }), 'ose');
+    // The wave.completed EVENT above already fired regardless — this only
+    // withholds the shared-file high-water mark on a non-ENOENT failure.
+    if (!markResult.ok) {
+      console.error(`on-session-end: last_wave_completed mark skipped (${markResult.reason})`);
+    }
   } catch { /* best-effort — a SessionEnd hook must never block teardown */ }
 }
 

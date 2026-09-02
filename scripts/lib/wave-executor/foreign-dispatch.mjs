@@ -165,7 +165,7 @@ const SAFE_RUN_ID = /^[A-Za-z0-9._-]+$/;
  * @param {unknown} runId
  * @returns {boolean} true when the id is safe to use as a path segment.
  */
-function isSafeRunId(runId) {
+export function isSafeRunId(runId) {
   const s = String(runId ?? '');
   if (s === '.' || s === '..') return false; // admitted by SAFE_RUN_ID, still an escape
   return SAFE_RUN_ID.test(s);
@@ -330,7 +330,7 @@ export const MEASUREMENT_EXCLUDES = Object.freeze(['node_modules']);
  * @returns {Promise<{capture: string, exitCode: number|null, signal: string|null,
  *   timerFired: boolean, killSignals: string[], errorCode: string|null}>}
  */
-function runChild(cmd, args, options, { spawnFn, timeoutMs, killGraceMs }) {
+export function runChild(cmd, args, options, { spawnFn, timeoutMs, killGraceMs }) {
   return new Promise((resolve) => {
     /** @type {string[]} */
     const killSignals = [];

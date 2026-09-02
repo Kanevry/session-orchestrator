@@ -24,7 +24,6 @@
  * hooks.json wiring is managed separately (W3-C4 scope).
  */
 
-import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import path from 'node:path';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
@@ -32,6 +31,7 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 if (!shouldRunHook('post-tool-failure-corrective-context')) process.exit(0);
 
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
+import { atomicMutateJson } from './_lib/atomic-json.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -72,35 +72,6 @@ function readStdinJson() {
     process.stdin.on('error', () => { clearTimeout(timer); resolve(null); });
     process.stdin.resume();
   });
-}
-
-/**
- * Atomic read-modify-write of a JSON file.
- * Reads the existing file (or starts with `defaultValue` when absent),
- * applies `mutate`, writes to a tmp file, renames over the original.
- *
- * @param {string} filePath
- * @param {object} defaultValue — used when the file does not exist
- * @param {function(object): object} mutate — pure transformer
- */
-async function atomicMutateJson(filePath, defaultValue, mutate) {
-  let current = defaultValue;
-  try {
-    const raw = await readFile(filePath, 'utf8');
-    current = JSON.parse(raw);
-  } catch {
-    // File absent or unparseable — start from defaultValue.
-  }
-
-  const updated = mutate(current);
-  const tmp = `${filePath}.tmp-ptf-${process.pid}-${Date.now()}`;
-  await mkdir(path.dirname(filePath), { recursive: true });
-  await writeFile(tmp, JSON.stringify(updated, null, 2) + '\n', 'utf8');
-
-  // Rename is atomic on POSIX (same-filesystem). On Windows this is best-effort
-  // via the fs.rename syscall (may fail if target is locked — swallowed by
-  // the catch in main()).
-  await rename(tmp, filePath);
 }
 
 // ---------------------------------------------------------------------------
@@ -210,14 +181,20 @@ async function main() {
 
   const sessionFile = path.join(SO_PROJECT_DIR, '.orchestrator', 'current-session.json');
 
-  await atomicMutateJson(sessionFile, {}, (current) => {
+  const result = await atomicMutateJson(sessionFile, {}, (current) => {
     const existing = Array.isArray(current.corrective_context)
       ? current.corrective_context
       : [];
     // Append the new note and cap at MAX_ENTRIES (keep most-recent).
     const updated = [...existing, note].slice(-MAX_ENTRIES);
     return { ...current, corrective_context: updated };
-  });
+  }, 'ptf');
+  // additionalContext below is derived from `note` in-memory, independent of
+  // whether the write landed — a non-ENOENT read/parse failure only means
+  // this turn's note is not persisted to current-session.json.
+  if (!result.ok) {
+    console.error(`post-tool-failure-corrective-context: atomicMutateJson skipped write (${result.reason})`);
+  }
 
   // Surface corrective context to Claude via additionalContext on the next turn.
   // PostToolUseFailure hookSpecificOutput shape per CC docs:

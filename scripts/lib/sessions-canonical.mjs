@@ -394,7 +394,8 @@ export function countSessionsInJsonl(raw) {
  *
  * Synchronous by design — every consumer of the ledger in this repo reads it
  * with `readFileSync`, and the file is small (286 records / ~0.5 MB at the
- * time of writing). A missing/unreadable file yields `[]`; each malformed line
+ * time of writing). A MISSING file (ENOENT) yields `[]` silently; an UNREADABLE
+ * one (EACCES/EISDIR/…) yields `[]` with a stderr WARN (#1188); each malformed line
  * is skipped rather than aborting the whole read (same posture as the readers
  * in `session-close-backfill.mjs` and `backfill-abandoned-sessions.mjs`).
  *
@@ -413,7 +414,21 @@ export function readCanonicalSessions({ repoRoot, filePath } = {}) {
   let raw;
   try {
     raw = fs.readFileSync(resolved, 'utf8');
-  } catch {
+  } catch (err) {
+    // #1188 — ENOENT and EACCES/EISDIR are different facts: a missing ledger is
+    // the ordinary fresh-repo case; an UNREADABLE one previously read as "no
+    // sessions" and made every downstream count silently wrong. Same split as
+    // readLockDetailed (session-lock.mjs § absent vs unreadable).
+    if (!err || err.code !== 'ENOENT') {
+      process.stderr.write(
+        `⚠ readCanonicalSessions: cannot read ${resolved} ` +
+          `(${err?.code ?? '?'}: ${err?.message ?? String(err)}) — ` +
+          'treating as EMPTY, counts below are floors\n',
+      );
+    }
+    // CEILING (BV-004): still [] rather than throw — SessionStart callers must
+    // not crash on a transient permissions fault. REVISIT if the warn rate in
+    // events.jsonl shows masked corruption.
     return [];
   }
 

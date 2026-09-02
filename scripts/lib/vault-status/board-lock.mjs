@@ -37,11 +37,11 @@
  * No external deps — Node stdlib + `file-lock.mjs`.
  */
 
-import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
 import { withFileLock } from '../file-lock.mjs';
+import { expandTilde } from '../common.mjs';
 
 /** Default acquire budget: short — the critical section is a read + a rename. */
 const DEFAULT_TIMEOUT_MS = 5000;
@@ -64,36 +64,6 @@ const DEFAULT_POLL_MS = 50;
 const DEFAULT_STALE_MS = 60_000;
 
 /**
- * Expand a leading `~` to the user's home directory.
- *
- * Private copy on purpose — but the census the earlier version of this comment
- * gave ("4 sibling copies") undercounted, and it undercounted the DANGEROUS
- * shape out of existence. Measured 2026-09-02
- * (`grep -rn "function expandHome\|const expandHome" scripts/ hooks/` → 8 hits,
- * this file included), in THREE non-equivalent shapes:
- *   - full (`~`, `~/`, type guard) — 5 copies: `vault-consolidate.mjs`,
- *     `vault-status/narrative-mirror.mjs`, `vault-status/board-writer.mjs`,
- *     `dispatcher/enumerate.mjs`, and this one.
- *   - `~/`-only (bare `~` left unexpanded, no type guard) — 2 copies:
- *     `promote-vault-strict.mjs`, `vault-integration-watcher.mjs`.
- *   - `p.slice(1)` on ANY `~` prefix — 1 copy: `gitlab-portfolio/cli.mjs`,
- *     where `~someuser` resolves to `<home>/someuser`, i.e. wrong rather than
- *     merely unexpanded. That divergence is the reason the count matters.
- * Consolidation target when it happens: `scripts/lib/path-utils.mjs` (exists).
- * Not done here — a cross-cutting refactor across 8 call sites is outside this
- * file's scope; tracked as a follow-up.
- *
- * @param {string} p
- * @returns {string}
- */
-function expandHome(p) {
-  if (typeof p !== 'string' || p.length === 0) return p;
-  if (p === '~') return os.homedir();
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
-  return p;
-}
-
-/**
  * Resolve the board lock path for a vault directory.
  *
  * `<vaultDir>/.orchestrator/board.lock` — deliberately NOT beside the board in
@@ -101,11 +71,16 @@ function expandHome(p) {
  * `.orchestrator/*.lock`, and `vault-sync` walks `.md` files only, so the lock
  * is invisible to both the vault's VCS and its validator.
  *
+ * Home-expansion is `expandTilde` from `../common.mjs` — the consolidation the
+ * comment above once deferred (issue #1182): 8 inline `expandHome` copies in
+ * 3 non-equivalent shapes, one of them (`gitlab-portfolio/cli.mjs`) actively
+ * wrong on `~user/x`. All 8 call sites now import the shared helper.
+ *
  * @param {string} vaultDir — absolute or `~`-prefixed vault root.
  * @returns {string} absolute lock path.
  */
 export function boardLockPathFor(vaultDir) {
-  return path.join(expandHome(vaultDir), '.orchestrator', 'board.lock');
+  return path.join(expandTilde(vaultDir), '.orchestrator', 'board.lock');
 }
 
 /**

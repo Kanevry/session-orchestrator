@@ -53,9 +53,16 @@
  * Never throws: a broken config key must not take down every session-start.
  *
  * Consumers: `scripts/lib/config.mjs` (`health-endpoints`, `ecosystem-health`).
+ *
+ * The header line itself (indent + optional inline value) is matched via the
+ * shared `matchBlockHeaderDetailed()` (#1185) rather than a private regex —
+ * this was the one parser in `scripts/lib/config/` whose header needed BOTH
+ * arbitrary indent (nested under `ecosystem-health:`) AND an inline value
+ * (Form A/C), which the plain `matchBlockHeader()` contract deliberately
+ * excludes. See `scripts/lib/config/block-header.mjs` for the shared matcher.
  */
 
-import { matchBlockHeader } from './block-header.mjs';
+import { matchBlockHeader, matchBlockHeaderDetailed } from './block-header.mjs';
 import { _coerceBoolean } from './coercers.mjs';
 
 /**
@@ -65,9 +72,6 @@ import { _coerceBoolean } from './coercers.mjs';
  * key/value regex with key `https`, which is why the check must come first.
  */
 const URL_SCALAR_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
-
-/** Header line for `health-endpoints:`, tolerant of `- ` / `**` decorations. */
-const HEADER_RE = /^(\s*)(?:-\s+)?(?:\*\*)?health-endpoints:(?:\*\*)?(?:[ \t]+(.*))?$/;
 
 /**
  * Strip a trailing YAML comment. Only a `#` PRECEDED BY WHITESPACE counts, so a
@@ -314,11 +318,11 @@ export function _parseHealthEndpoints(content) {
   const lines = content.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].replace(/\r$/, '');
-    const m = line.match(HEADER_RE);
+    const m = matchBlockHeaderDetailed(line, 'health-endpoints');
     if (!m) continue;
 
-    const headerIndent = m[1].length;
-    const inline = (m[2] ?? '').trim();
+    const headerIndent = m.indent;
+    const inline = m.value ?? '';
     const result = inline !== ''
       ? parseInlineValue(inline)
       : parseBlock(lines, i + 1, headerIndent);

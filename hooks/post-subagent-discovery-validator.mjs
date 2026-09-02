@@ -70,6 +70,7 @@ import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { resolveSubagentSidecar } from './_lib/subagent-paths.mjs';
 import { appendJsonl } from '../scripts/lib/common.mjs';
 import { eventsFilePath } from '../scripts/lib/events.mjs';
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
@@ -519,40 +520,23 @@ function firstNonEmptyString(input, keys, fallback) {
 }
 
 /**
- * Resolve the STOPPING SUBAGENT's own transcript path (#1191).
+ * Resolve the STOPPING SUBAGENT's own sidecar pair (#1191, #1196).
  *
- * Precedence: an explicit `agent_transcript_path` from the harness, else the
- * derived `<dir>/<base>/subagents/agent-<agent_id>.jsonl` sibling of the parent
- * transcript. Returns null when the derivation is impossible — the caller must
- * then scan NOTHING. Falling back to `input.transcript_path` is the defect this
+ * Thin wrapper over the consolidated derivation —
+ * `hooks/_lib/subagent-paths.mjs` `resolveSubagentSidecar()` — which now ALSO
+ * containment-checks the `agent_transcript_path` override this file used to
+ * return unvalidated (see that module's header divergence table). Returns
+ * null when the derivation is impossible — the caller must then scan
+ * NOTHING. Falling back to `input.transcript_path` is the defect this
  * function exists to remove: that path is the coordinator's transcript.
- *
- * `agentId` is charset-restricted (not sanitised) before interpolation, so no
- * payload value can traverse out of the `subagents/` directory — same contract
- * as `resolveSubagentTranscriptPath()` in hooks/subagent-telemetry.mjs.
  *
  * @param {object} input — SubagentStop stdin payload
  * @param {string|null} agentId
- * @returns {string|null}
+ * @returns {{base: string, transcript: string, meta: string}|null}
  */
 function resolveAgentTranscriptPath(input, agentId) {
-  const explicit = firstNonEmptyString(input, ['agent_transcript_path'], null);
-  if (explicit !== null) return explicit;
-
-  const parent = input.transcript_path;
-  if (typeof parent !== 'string' || !parent.trim()) return null;
-  // Length-bounded at 64 to match `AGENT_ID_RE` in hooks/on-stop.mjs, which
-  // clamps the IDENTICAL value and states why: an unbounded id lands verbatim
-  // in the ledger event below and travels the optional Clank webhook (Q2-F8).
-  if (typeof agentId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(agentId)) return null;
-  // 'unknown' is the no-usable-id fallback — it names no file.
-  if (agentId === 'unknown') return null;
-
-  const dir = path.dirname(parent);
-  const base = path.basename(parent).replace(/\.jsonl$/i, '');
-  if (!base || base === '.' || base === '..') return null;
-
-  return path.join(dir, base, 'subagents', `agent-${agentId}.jsonl`);
+  const agentTranscriptPath = firstNonEmptyString(input, ['agent_transcript_path'], null);
+  return resolveSubagentSidecar({ transcriptPath: input.transcript_path, agentId, agentTranscriptPath });
 }
 
 /**
@@ -568,12 +552,10 @@ const AGENT_TYPE_META_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
  * next to the subagent transcript. Used only when the stdin payload omits
  * `agent_type` — the reason `agent` read `"unknown"` on ~91% of events.
  *
- * @param {string} agentTranscriptPath
+ * @param {string} metaPath — `resolveSubagentSidecar(...).meta`
  * @returns {Promise<string|null>}
  */
-async function readAgentTypeFromMeta(agentTranscriptPath) {
-  const metaPath = agentTranscriptPath.replace(/\.jsonl$/i, '.meta.json');
-  if (metaPath === agentTranscriptPath) return null;
+async function readAgentTypeFromMeta(metaPath) {
   try {
     const meta = JSON.parse(await fs.readFile(metaPath, 'utf8'));
     const t = meta?.agentType;
@@ -644,16 +626,16 @@ async function main() {
   // #1191: scan the SUBAGENT's own transcript, never the parent. No agent_id
   // (or no derivable path) → scan nothing and record nothing.
   const agentId = firstNonEmptyString(input, ['agent_id', 'subagent_id'], null);
-  const agentTranscriptPath = resolveAgentTranscriptPath(input, agentId);
-  if (agentTranscriptPath === null) return;
+  const sidecar = resolveAgentTranscriptPath(input, agentId);
+  if (sidecar === null) return;
 
-  const text = await readTranscriptTail(agentTranscriptPath);
+  const text = await readTranscriptTail(sidecar.transcript);
   const { violations, undatedVerified } = findViolations(text);
   if (violations.length === 0) return;
 
   const agentForDedup =
     firstNonEmptyString(input, ['agent_type', 'subagent_type'], null) ??
-    (await readAgentTypeFromMeta(agentTranscriptPath));
+    (await readAgentTypeFromMeta(sidecar.meta));
   const agent = agentForDedup ?? 'unknown';
   // session_id precedence: parent_session_id first, mirroring the sibling hook
   // hooks/subagent-telemetry.mjs (firstNonEmptyString(['parent_session_id',

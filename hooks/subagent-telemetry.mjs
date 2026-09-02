@@ -85,6 +85,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { appendSubagent } from '../scripts/lib/subagents-schema.mjs';
 import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
+import { resolveSubagentSidecar } from './_lib/subagent-paths.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -489,38 +490,22 @@ function extractTranscriptUsage(transcriptPath) {
  * Derive the path of the subagent's OWN transcript from the parent transcript
  * path the harness sends on stdin (#949).
  *
- * The `transcript_path` in a SubagentStop payload is the PARENT session
- * transcript — `<transcriptDir>/<parent_session_id>.jsonl`. Alongside it the
- * harness maintains one file per real Task subagent at
- * `<transcriptDir>/<parent_session_id>/subagents/agent-<agent_id>.jsonl`
- * (plus an `agent-<agent_id>.meta.json` carrying `agentType`). Verified against
- * live transcripts on 2026-07-31.
- *
- * Returns null — never the parent path — when the derivation is not possible.
- * Falling back to `transcript_path` IS the #949 defect: it makes every stop
- * inherit the parent's running token totals, so the caller must record null
- * instead (an honest absence).
- *
- * The agent_id is charset-restricted before it is interpolated into a path.
- * Real ids are hex-ish tokens (e.g. `a60348a01ca982b4c`); anything else is
- * rejected rather than sanitised, so no payload value can traverse out of the
- * `subagents/` directory.
+ * Thin wrapper over the consolidated derivation (#1196) —
+ * `hooks/_lib/subagent-paths.mjs` `resolveSubagentSidecar()` — which now
+ * applies a `{1,64}` bound to `agentId` (STRICTER than this file's prior
+ * unbounded `+` charset check; see that module's header for the full
+ * divergence table). Returns null — never the parent path — when the
+ * derivation is not possible. Falling back to `transcript_path` IS the #949
+ * defect: it makes every stop inherit the parent's running token totals, so
+ * the caller must record null instead (an honest absence).
  *
  * @param {string|undefined|null} parentTranscriptPath — stdin `transcript_path`
  * @param {string} agentId — the stopping agent's id
  * @returns {string|null} absolute candidate path, or null when underivable
  */
 function resolveSubagentTranscriptPath(parentTranscriptPath, agentId) {
-  if (typeof parentTranscriptPath !== 'string' || !parentTranscriptPath.trim()) return null;
-  if (typeof agentId !== 'string' || !/^[A-Za-z0-9_-]+$/.test(agentId)) return null;
-  // 'unknown' is the no-usable-id fallback — it names no file.
-  if (agentId === 'unknown') return null;
-
-  const dir = path.dirname(parentTranscriptPath);
-  const base = path.basename(parentTranscriptPath).replace(/\.jsonl$/i, '');
-  if (!base || base === '.' || base === '..') return null;
-
-  return path.join(dir, base, 'subagents', `agent-${agentId}.jsonl`);
+  const sidecar = resolveSubagentSidecar({ transcriptPath: parentTranscriptPath, agentId });
+  return sidecar === null ? null : sidecar.transcript;
 }
 
 /**

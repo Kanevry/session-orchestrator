@@ -82,6 +82,7 @@ import {
   RECOMMENDED_MARKERS,
   isRecommendedOption,
 } from './schema.mjs';
+import { scanFenceBlocks } from '../validate/markdown-fences.mjs';
 
 // ---------------------------------------------------------------------------
 // Korpus-Abgrenzung
@@ -330,42 +331,17 @@ function lineOfOffset(starts, offset) {
 }
 
 /**
- * Zaun-Anker. **Zeilenanfangs-verankert** — ohne den Anker schließt
+ * Zerlegt eine Markdown-Datei in Code-Zaun-Blöcke. **Zeilenanfangs- UND
+ * -ende-verankert** (`{ wholeLine: true }`, gemeinsamer Zaun-Tracker
+ * `../validate/markdown-fences.mjs`, #1181) — ohne den Anker schließt
  * `skills/discovery/SKILL.md:373` seinen eigenen Block mitten im Fragetext
  * (Falle 1).
- */
-export const FENCE_LINE_PATTERN = /^[ \t]*(`{3,}|~{3,})[ \t]*([^\s`~]*)[ \t]*$/u;
-
-/**
- * Zerlegt eine Markdown-Datei in Code-Zaun-Blöcke.
  *
  * @param {string} content
  * @returns {Array<{openLine: number, closeLine: number, lang: string, bodyLines: string[], bodyStartLine: number}>}
  */
 export function fencesOf(content) {
-  const lines = content.split('\n');
-  const fences = [];
-  let open = null;
-  for (let i = 0; i < lines.length; i++) {
-    const m = FENCE_LINE_PATTERN.exec(lines[i]);
-    if (!m) continue;
-    if (open === null) {
-      open = { marker: m[1][0], len: m[1].length, lang: m[2] || '', startIdx: i };
-      continue;
-    }
-    // Ein schließender Zaun muss dasselbe Zeichen und mindestens dieselbe
-    // Länge haben — sonst beendet ein ```js-Zaun einen ````-Block.
-    if (m[1][0] !== open.marker || m[1].length < open.len || m[2]) continue;
-    fences.push({
-      openLine: open.startIdx + 1,
-      closeLine: i + 1,
-      lang: open.lang,
-      bodyLines: lines.slice(open.startIdx + 1, i),
-      bodyStartLine: open.startIdx + 2,
-    });
-    open = null;
-  }
-  return fences;
+  return scanFenceBlocks(content, { wholeLine: true });
 }
 
 // ---------------------------------------------------------------------------

@@ -1216,6 +1216,36 @@ Read by: `scripts/lib/config/custom-phases.mjs` (parser), `skills/session-end/SK
 - `archive-closed-prds` (#782, Epic #774) — `node scripts/archive-closed-prds.mjs --apply` — archives `docs/prd/` PRDs (defaults).
 - `archive-closed-plans` (#786) — `… --apply --prd-dir docs/plans --vault-subdir 01-projects/session-orchestrator/plans` — archives `docs/plans/` executable-plan artefacts of closed features/Epics. The plan's tracking `#NNN` (inline in the plan's `Source:` header, see `skills/write-executable-plan/`) is the anchor this phase reads; a plan with no `#NNN` is never archived (fail-closed `no-epic-ref`).
 
+## Remote Hosts (#1160)
+
+Opt-in declaration of ssh-reachable hosts a heavy wave role may be OFFLOADED to instead of shrinking the wave under local resource pressure. This key only DECLARES: it never probes a host, never dispatches, and never changes a wave by itself. Absent/empty ⇒ `[]` ⇒ every wave stays local, exactly as before.
+
+**Parser gotcha:** like every other block-shaped Session Config key, the `remote-hosts:` key-line itself MUST NOT carry an inline comment — see § Parser Gotcha: No-Inline-Comment Block Headers (top of this file). A trailing `# comment` on that exact line means the parser never enters the block and `remote-hosts` silently resolves to `[]`.
+
+```yaml
+remote-hosts:
+  - alias: m5                          # required, SAFE slug; reaches argv as `-H <alias>`
+    roles-allowed: [test, ui, perf]    # subset of test|ui|perf (default: all three)
+    repo-path: ~/Projects/Alice     # optional; SAFE path; default null
+    claude-path: ~/.local/bin/claude   # optional; SAFE path; default null
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `remote-hosts` | list | `[]` | The declared hosts, in preference order — the gate takes the FIRST host that accepts the role and is witnessed ready. |
+| `alias` | string | — (required) | ssh destination as configured on this host. Must match `^[A-Za-z0-9._-]+$`; it reaches argv as `-H <alias>`. A record missing or failing this is dropped with a stderr WARN. |
+| `roles-allowed` | string[] | `[test, ui, perf]` | The `agent-mapping` roles this host accepts. Entries outside `test` / `ui` / `perf` are filtered with a WARN; a record whose list is empty after filtering is dropped. `impl`, `db`, `security`, `compliance` and `docs` work never leaves the local host. |
+| `repo-path` | string \| null | `null` | Checkout location on the remote host. SAFE-path validated (`^[A-Za-z0-9._~/-]+$`); an unsafe value drops the whole record with a WARN. |
+| `claude-path` | string \| null | `null` | `claude` binary location on the remote host. Same validation as `repo-path`. |
+
+**Two enums, never conflated.** `roles-allowed` holds `agent-mapping` roles (`test`, `ui`, `perf`) — NOT wave roles (`Impl-Core`, `Quality`, …). The wave→role translation is `OFFLOADABLE_WAVE_ROLES` in `scripts/lib/wave-resource-gate.mjs`; a wave role absent from that map is local-only by default.
+
+**Placement contract.** The gate applies its offload arm only after the HR-004 heavy-repo cap, and only when the resource verdict was `reduce` or `coordinator-direct`. It does NOT probe the network: the coordinator supplies a readiness witness (`remoteReady: { m5: true }`, or an async `probeFn`). With no witness, no host counts as ready and the decision stays local — the gate fails toward local, never toward an unverified host. A role in `NEVER_FOREIGN_ROLES` (`scripts/lib/wave-executor/foreign-dispatch.mjs`) is never offloaded regardless.
+
+**agent-mapping interaction.** A declared alias is what an `agent-mapping` value of the form `<role>: ssh:<alias>` validates against; naming an undeclared host throws at parse time, naming the `ssh` channel with no target throws as for any other channel.
+
+Read by: `scripts/lib/config/remote-hosts.mjs` (parser), `scripts/lib/config.mjs` (`ssh:` channel validation), `scripts/lib/wave-resource-gate.mjs` (placement).
+
 ## Evolve Extra Sources (#638)
 
 Opt-in EXTRA learning sources for `/evolve`. A domain measurement (e.g. an eval-learn regression harness) runs OUT-OF-BAND and writes a sidecar JSON of regression flags; `/evolve` then READS each declared sidecar and emits a `domain-regression` learning candidate per flag that has persisted across ≥2 consecutive sessions. This is a strict **read-only consumption contract**: `/evolve` never runs the domain measurement — it only consumes the sidecar output. Absent/empty ⇒ `[]` ⇒ no extra sources are read; existing `/evolve` runs are unaffected.

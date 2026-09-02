@@ -29,12 +29,12 @@
  */
 
 import { readdirSync, existsSync } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 import { getConfinementRoot, getCrossRepoProjects } from '../config/cross-repo.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
 import { readLock, isLockLive } from '../session-lock.mjs';
+import { expandTilde } from '../common.mjs';
 
 /**
  * @typedef {Object} Candidate
@@ -95,21 +95,6 @@ function shouldDescendInto(name) {
   // Dot-directories (.git, .claude, .orchestrator, .venv, …) hold no host repos.
   if (name.startsWith('.')) return false;
   return true;
-}
-
-/**
- * Expand a leading `~` to the current user's home directory. Mirrors the helper
- * in board-writer.mjs (a shared extraction is deferred to a later epic). Used to
- * normalise config-declared cross-repo paths that may begin with `~/`.
- *
- * @param {string} p
- * @returns {string}
- */
-function expandHome(p) {
-  if (typeof p !== 'string' || p.length === 0) return p;
-  if (p === '~') return os.homedir();
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
-  return p;
 }
 
 /**
@@ -322,7 +307,7 @@ export async function enumerateCandidates({ startDir, now, deps } = {}) {
   if (Array.isArray(declared)) {
     for (const raw of declared) {
       if (typeof raw !== 'string' || raw.length === 0) continue;
-      const expanded = expandHome(raw);
+      const expanded = expandTilde(raw);
       const abs = path.resolve(expanded);
       // Confinement-filter against the same root as the FS scan.
       const guard = validatePathInsideProjectFn(abs, root);

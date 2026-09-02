@@ -8,6 +8,25 @@
  */
 
 import { probe, evaluate } from './resource-probe.mjs';
+import { isNeverForeignRole } from './wave-executor/foreign-dispatch.mjs';
+
+/**
+ * Wave roles that may run on a declared remote host, mapped to the
+ * `agent-mapping` role a host must list in its `roles-allowed` (#1160).
+ *
+ * Two enums meet here: the WAVE role ("Quality", "Impl-Core") on the left, the
+ * agent-mapping role ("test", "ui", "perf") on the right. Anything absent from
+ * this map is local-only — the default is "do not offload", so a wave role added
+ * later never becomes offloadable by accident.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+export const OFFLOADABLE_WAVE_ROLES = Object.freeze({
+  quality: 'test',
+  test: 'test',
+  ui: 'ui',
+  perf: 'perf',
+});
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -87,11 +106,82 @@ async function extractMeasurements(opts) {
  *
  * @param {{ramFreeGb: number, ramAvailableGb?: number|null, cpuLoadPct: number, cpuLoad5mPct?: number|null, concurrentSessions: number}} measurements
  * @param {object} opts - Same opts shape as evaluateWaveResourceGate
- * @returns {{decision: string, agents: number, reasons: string[], measurements: object}}
+ * @returns {Promise<{decision: string, agents: number, reasons: string[], measurements: object, host?: string}>}
  */
-function applyDecisionRules(measurements, opts) {
+async function applyDecisionRules(measurements, opts) {
   const result = computeResourceDecision(measurements, opts);
-  return applyHeavyRepoCap(result, opts);
+  // Order is load-bearing: the heavy-repo cap is a STATIC property of the repo
+  // and only ever lowers; offload is a PLACEMENT answer to live pressure. Running
+  // offload last means a capped wave that gets offloaded still respects HR-004,
+  // and never the reverse.
+  return applyOffloadDecision(applyHeavyRepoCap(result, opts), opts);
+}
+
+/**
+ * #1160 offload placement. When the resource rules want to SHRINK the wave
+ * (`reduce`) or take it away entirely (`coordinator-direct`), and the repo
+ * declares a remote host that accepts this wave role, route the wave to that
+ * host at its full planned agent count instead of shrinking it.
+ *
+ * The gate does NOT probe the network — a placement decision must stay a pure
+ * function of its inputs. The caller supplies a readiness WITNESS:
+ *   - `opts.remoteReady` — `{ [alias]: boolean }`, e.g. built from the
+ *     SessionStart `Offload m5: ready=yes` banner or `remoteDoctor()`.
+ *   - `opts.probeFn` — `async (alias) => boolean`, consulted only for hosts the
+ *     `remoteReady` map does not already answer for. Default `null`.
+ * With neither supplied NO host is ready and the decision stays `reduce` /
+ * `coordinator-direct` — the gate fails toward local, never toward a host it
+ * cannot vouch for.
+ *
+ * @param {{decision: string, agents: number, reasons: string[], measurements: object}} result
+ * @param {object} opts - Same opts shape as evaluateWaveResourceGate
+ * @returns {Promise<{decision: string, agents: number, reasons: string[], measurements: object, host?: string}>}
+ */
+async function applyOffloadDecision(result, opts) {
+  if (result.decision !== 'reduce' && result.decision !== 'coordinator-direct') return result;
+
+  const { config, plannedAgents, waveRole, remoteReady, probeFn = null } = opts;
+  const hosts = config?.['remote-hosts'];
+  if (!Array.isArray(hosts) || hosts.length === 0) return result;
+
+  const role = String(waveRole ?? '').trim().toLowerCase();
+  if (isNeverForeignRole(role)) return result;
+  const mappedRole = OFFLOADABLE_WAVE_ROLES[role];
+  if (mappedRole === undefined) return result;
+
+  const ready = remoteReady && typeof remoteReady === 'object' ? remoteReady : {};
+  // First fit in DECLARATION order — the operator's order is the preference order.
+  let host;
+  for (const h of hosts) {
+    if (!Array.isArray(h?.['roles-allowed']) || !h['roles-allowed'].includes(mappedRole)) continue;
+    let isReady = ready[h.alias] === true;
+    if (!isReady && ready[h.alias] === undefined && typeof probeFn === 'function') {
+      isReady = (await probeFn(h.alias)) === true;
+    }
+    if (isReady) {
+      host = h;
+      break;
+    }
+  }
+  if (host === undefined) return result;
+
+  // The wave runs at its planned size again — but never above the HR-004 static
+  // ceiling, which is a property of the REPO and holds wherever the wave runs.
+  // Restoring plannedAgents unconditionally here would let a heavy repo exceed
+  // its own cap by way of a remote host.
+  const cap = config?.['heavy-repo'] === true ? resolveApwCap(config['agents-per-wave']) : null;
+  const agents = cap === null ? plannedAgents : Math.min(plannedAgents, cap);
+
+  return {
+    decision: 'offload',
+    agents,
+    host: host.alias,
+    reasons: [
+      ...result.reasons,
+      `offload: ${role} routed to host '${host.alias}' instead of reducing to ${result.agents}`,
+    ],
+    measurements: result.measurements,
+  };
 }
 
 /**
@@ -243,7 +333,13 @@ function computeResourceDecision(measurements, opts) {
  * @param {string} opts.waveRole - e.g. "Impl-Core", "Quality"
  * @param {object} [opts.probeOverride] - {ramFreeGb, cpuLoadPct, cpuLoad5mPct?, concurrentSessions}
  *   for testing; when omitted, calls resource-probe
- * @returns {Promise<{decision: "proceed"|"reduce"|"coordinator-direct", agents: number, reasons: string[], measurements: object}>}
+ * @param {Record<string, boolean>} [opts.remoteReady] - #1160 readiness witness per
+ *   declared host alias. The gate never probes the network itself; without a witness
+ *   no host counts as ready and the decision stays local.
+ * @param {(alias: string) => Promise<boolean>} [opts.probeFn] - optional async witness,
+ *   consulted only for aliases absent from `remoteReady`. Default null.
+ * @returns {Promise<{decision: "proceed"|"reduce"|"coordinator-direct"|"offload", agents: number, reasons: string[], measurements: object, host?: string}>}
+ *   `host` is present only on an `offload` decision — the declared alias the wave runs on.
  */
 export async function evaluateWaveResourceGate(opts) {
   const { config, plannedAgents } = opts;
@@ -280,11 +376,11 @@ export async function evaluateWaveResourceGate(opts) {
 
 /**
  * Format a gate result into a short multi-line coordinator progress string.
- * @param {{decision: string, agents: number, reasons: string[], measurements: object}} result
+ * @param {{decision: string, agents: number, reasons: string[], measurements: object, host?: string}} result
  * @returns {string}
  */
 export function formatGateReport(result) {
-  const { decision, agents, reasons, measurements } = result;
+  const { decision, agents, reasons, measurements, host } = result;
   const lines = reasons.map((r) => `  - ${r}`);
   const m = measurements;
   // Prefer the macOS available-RAM figure in the banner when present (#667):
@@ -297,6 +393,9 @@ export function formatGateReport(result) {
     Object.keys(m).length > 0
       ? ` (${ramStr}, CPU ${m.cpuLoadPct ?? '?'}%, sessions ${m.concurrentSessions ?? '?'})`
       : '';
-  lines.push(`Decision: ${decision} — agents: ${agents}${measStr}`);
+  // An `offload` decision without its host in the banner is unreadable: the agent
+  // count did not shrink, so the line would look identical to `proceed` (HR-106).
+  const agentsStr = decision === 'offload' && host ? `${agents} @ ${host}` : `${agents}`;
+  lines.push(`Decision: ${decision} — agents: ${agentsStr}${measStr}`);
   return lines.join('\n');
 }

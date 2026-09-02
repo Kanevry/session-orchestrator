@@ -1076,11 +1076,14 @@ describe('empty allowedPaths — classified deny reason (#1057)', { timeout: 150
 // own identity all keep the pre-#1123 behaviour, which is why most cases below
 // are "still denies".
 //
-// Identity resolves as the UNION of every source this process carries — hook
-// payload (`session_id` + `parent_session_id`), `CLAUDE_CODE_SESSION_ID`, and
-// `session.lock`. Narrowing it below what the process carries is the silent
-// failure the last two "still denies" pin: the session's OWN manifest reads
-// foreign and enforcement switches itself off for the whole wave.
+// Identity is PROCESS-LOCAL since #1194 — the hook payload (`session_id` +
+// `parent_session_id`) and `CLAUDE_CODE_SESSION_ID`, and explicitly NOT the
+// repo-global `session.lock`. Two sessions in one checkout share that one lock,
+// so unioning it made a peer's manifest match a peer-written lock id, classify
+// as `own`, and Gate 7 denied the second session's writes — the very lockout
+// this gate exists to end. The two tests naming #1194 pin both halves: what the
+// lock may no longer decide, and what a peer-naming manifest now costs its own
+// writer.
 
 /** Write `.orchestrator/session.lock` with a session id into a tracked project. */
 async function writeSessionLock(dir, fields) {
@@ -1213,15 +1216,18 @@ describe('foreign-session manifest (#1123)', { timeout: 15000 }, () => {
     expect(await readEvents(dir)).toEqual([]);
   });
 
-  it('a manifest built from a PEER-owned lock does not disarm the session that wrote it', async () => {
-    // The bug (qa, HIGH): WRITER identity and READER identity are different
-    // reads. The manifest's `session` comes from `sessionAttribution()` = the
-    // repo-global `session.lock`; a session that lost the acquire race
-    // (`bootstrapLock()` reason `active` — the lock keeps the PEER's id) writes
-    // that peer id into its OWN manifest. With the tiers gated, the payload id
-    // won, the lock was never read, the session's own manifest classified
-    // foreign, and its write gate switched itself off for the whole wave.
-    // Union semantics keep the lock ids in the own-set → own → deny stands.
+  it('a manifest naming a PEER is foreign even when the LOCK agrees with the manifest (#1194)', async () => {
+    // Inverted deliberately at #1194, and the trade is named rather than hidden.
+    // BEFORE: the own-set unioned the repo-global `session.lock`, so a manifest
+    // whose `session` came from that same lock always matched → `own` → deny.
+    // That protected the writer that lost the `bootstrapLock()` race and stamped
+    // the PEER's id into its own manifest — but it cost far more: two sessions
+    // in one checkout share ONE lock, so the PEER's manifest also matched and
+    // Gate 7 denied the other session every write (#1194 = the #1082 lockout).
+    // AFTER: identity is process-local, so this reads foreign and the guard of a
+    // session that wrote a peer id into its own manifest stands down. ACCEPTED —
+    // the defense moved to the WRITER, which must omit the `session` keys when
+    // the lock does not name it (`wave-loop.md` § Scope Manifest).
     const dir = await mkProjectTracked({ ...PEER_SCOPE, session: 'PEER-UUID-1111' });
     await writeSessionLock(dir, { session_id: 'PEER-UUID-1111' });
     const result = await runHook({
@@ -1233,8 +1239,35 @@ describe('foreign-session manifest (#1123)', { timeout: 15000 }, () => {
       }),
       env: { CLAUDE_CODE_SESSION_ID: null },
     });
-    expectDeny(result, ['not in allowed paths']);
-    expect(await readEvents(dir)).toEqual([]);
+    expectAllow(result);
+  });
+
+  it('classifies a PEER-owned lock as foreign when the payload names THIS session (#1194)', async () => {
+    // The bug (#1194): G3b resolved identity via `readOwnSessionIds()`, which
+    // UNIONS the repo-global `session.lock`. Two sessions in one checkout share
+    // that lock, so the peer's manifest matched the peer's lock id, classified
+    // as `own`, and Gate 7 denied the second session's legitimate writes — the
+    // very lockout #1123 was built to end. Process-local identity only: the
+    // payload says OWN-UUID-2222, the manifest says PEER-UUID-1111 → foreign.
+    const dir = await mkProjectTracked({ ...PEER_SCOPE, semantic_session: undefined });
+    await writeSessionLock(dir, { session_id: 'PEER-UUID-1111' });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        session_id: 'OWN-UUID-2222',
+        tool_name: 'Edit',
+        tool_input: { file_path: path.join(dir, 'README.md') },
+      }),
+      // Explicitly NULLed: live Claude Code exports CLAUDE_CODE_SESSION_ID into
+      // the spawned test process, which would otherwise add a real ambient id.
+      env: { CLAUDE_CODE_SESSION_ID: null },
+    });
+    expectAllow(result);
+
+    const events = (await readEvents(dir))
+      .filter((e) => e.event === 'orchestrator.scope.foreign_session_ignored');
+    expect(events).toHaveLength(1);
+    expect(events[0].own_session).toEqual(['OWN-UUID-2222']);
   });
 
   it('still DENIES a LEGACY manifest that carries no session field', async () => {
@@ -1266,10 +1299,16 @@ describe('foreign-session manifest (#1123)', { timeout: 15000 }, () => {
     expect(await readEvents(dir)).toEqual([]);
   });
 
-  it('resolves identity from session.lock when no env var is exported', async () => {
-    // The bug: without the lock fallback the gate is dead code on every harness
-    // that exports no session env var (Codex CLI, Cursor) — precisely the
-    // platforms where the #1082 lockout is hardest to diagnose.
+  it('IGNORES session.lock entirely — no env var and no payload id means enforce (#1194)', async () => {
+    // The bug this pins: reading the shared `session.lock` to resolve OUR
+    // identity is self-confirming in a shared checkout — a peer-owned lock made
+    // the peer's manifest read `own` and locked the other session out (#1194).
+    // The lock below names OWN-UUID-2222 and must change nothing.
+    //
+    // CEILING (BV-004), accepted: on a harness with neither tier (Codex CLI,
+    // Cursor today publish no session env var and no payload `session_id`) G3b
+    // is permanently `unknown` = enforce = pre-#1123 behaviour. Revisit when
+    // Codex/Cursor hook payloads carry a session id.
     const dir = await mkProjectTracked(PEER_SCOPE);
     await writeSessionLock(dir, {
       session_id: 'OWN-UUID-2222',
@@ -1280,7 +1319,8 @@ describe('foreign-session manifest (#1123)', { timeout: 15000 }, () => {
       stdin: editPayload(path.join(dir, 'README.md')),
       env: { CLAUDE_CODE_SESSION_ID: null },
     });
-    expectAllow(result);
+    expectDeny(result, ['not in allowed paths']);
+    expect(await readEvents(dir)).toEqual([]);
   });
 
   it('still FAILS CLOSED on a corrupt manifest whose raw bytes name a peer', async () => {

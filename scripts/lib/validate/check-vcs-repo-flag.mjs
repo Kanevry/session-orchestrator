@@ -194,6 +194,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { SHELL_LANGS, forEachLine } from './markdown-fences.mjs';
 
 /** Directories whose content is scanned. Root-level `*.md` is added separately. */
 const SCAN_DIRS = Object.freeze([
@@ -223,9 +224,6 @@ const DOC_EXTENSIONS = Object.freeze(['.md']);
 
 /** Code extensions (comment + string-literal rules apply). */
 const CODE_EXTENSIONS = Object.freeze(['.mjs', '.js', '.cjs']);
-
-/** Fence languages whose body is shell. Anything else is prose. */
-const SHELL_LANGS = Object.freeze(new Set(['bash', 'sh', 'shell', 'console', 'zsh']));
 
 /**
  * Real top-level subcommands, harvested from `gh --help` / `glab --help`
@@ -576,33 +574,13 @@ export function scanMarkdown(relative, body, tally) {
   const findings = [];
   /** @type {{line: number, text: string}[]} */
   const shellLines = [];
-  /** @type {{marker: string, length: number, shell: boolean} | null} */
-  let fence = null;
 
-  const lines = body.split('\n');
-  for (let index = 0; index < lines.length; index += 1) {
-    const raw = lines[index];
-    const fenceMatch = raw.match(/^\s*(`{3,}|~{3,})\s*([A-Za-z0-9_+-]*)/);
-    if (fenceMatch) {
-      const marker = fenceMatch[1][0];
-      const length = fenceMatch[1].length;
-      const lang = fenceMatch[2].toLowerCase();
-      if (fence === null) {
-        fence = { marker, length, shell: SHELL_LANGS.has(lang) };
-        continue;
-      }
-      // A closing fence uses the same char, is at least as long, and has no info string.
-      if (marker === fence.marker && length >= fence.length && lang === '') {
-        fence = null;
-        continue;
-      }
-      // Otherwise it is fence content (a nested fence inside a wider one).
-    }
-    if (fence === null || !fence.shell) continue;
+  forEachLine(body, (raw, { lineNumber, inFence, lang }) => {
+    if (!inFence || !SHELL_LANGS.has(lang)) return;
     const stripped = raw.replace(/^\s*[$❯>]\s+/, '');
-    if (/^\s*#/.test(stripped)) continue;
-    shellLines.push({ line: index + 1, text: stripped });
-  }
+    if (/^\s*#/.test(stripped)) return;
+    shellLines.push({ line: lineNumber, text: stripped });
+  });
 
   for (const entry of joinContinuations(shellLines)) {
     for (const hit of extractBareInvocations(entry.text, tally)) {
