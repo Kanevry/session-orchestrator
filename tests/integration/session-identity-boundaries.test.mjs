@@ -23,7 +23,6 @@ import { pathToFileURL } from 'node:url';
 import { expectAllow } from '../_helpers/hook-decision.mjs';
 import { budgetStatePath } from '../../scripts/lib/issue-budget.mjs';
 import { enterWorktree } from '../../scripts/lib/autopilot/worktree-pipeline.mjs';
-import { leaveSourceRoot } from '../../scripts/lib/session-transition.mjs';
 import { registerSelf, readRegistry } from '../../scripts/lib/session-registry.mjs';
 import { findPeers } from '../../scripts/lib/peer-discovery.mjs';
 import { acquire, writeOwnerProof, readLock } from '../../scripts/lib/session-lock.mjs';
@@ -365,8 +364,8 @@ describe('worktree promotion is a process boundary, not a live migration (#1069)
     rmSync(basePath, { recursive: true, force: true });
   });
 
-  it('leaves no phantom peer and no second live lock behind in the source root', async () => {
-    // -- 1. Source session start ---------------------------------------------
+  /** Source-session start: registry entry + owned lock + owner proof. */
+  const startSourceSession = async () => {
     await registerSelf({
       sessionId: PROMOTION_SOURCE_RAW_ID,
       projectRoot: sourceRoot,
@@ -383,13 +382,35 @@ describe('worktree promotion is a process boundary, not a live migration (#1069)
     });
     expect(sourceLock.ok).toBe(true);
     expect(writeOwnerProof({ repoRoot: sourceRoot, lock: sourceLock.lock }).ok).toBe(true);
+  };
+
+  it('leaves no phantom peer and no second live lock behind in the source root', async () => {
+    // -- 1. Source session start ---------------------------------------------
+    await startSourceSession();
+
+    // Premise check — the phantom IS visible before the switch. Without this
+    // the assertions below could pass against an empty registry and prove nothing.
+    const worktreeStubPre = async () => [
+      { path: sourceRoot, branch: 'main', head: WORKTREE_HEAD },
+    ];
+    const before = await findPeers(sourceRoot, {
+      mySessionId: PROMOTION_DEST_RAW_ID,
+      listWorktreesImpl: worktreeStubPre,
+    });
+    expect(before.peers.map((p) => p.sessionId)).toContain(PROMOTION_SOURCE_RAW_ID);
 
     // -- 2. Worktree switch — real git through the production zx path ---------
+    // ONE call (#1170): the departure is a mechanical step of enterWorktree,
+    // not a second call the coordinator prose has to remember. The bug this
+    // pins: revert the leaveSourceRoot() call inside enterWorktree and the
+    // source lock + registry entry survive here, exactly as they did while the
+    // teardown lived only in skill prose.
     const wt = await enterWorktree({
       basePath,
       sessionId: PROMOTION_SEMANTIC_ID,
       branch: 'main',
       repoRoot: sourceRoot,
+      rawSessionId: PROMOTION_SOURCE_RAW_ID,
     });
     expect(wt.reused).toBe(false);
     // #1067: `main` is checked out by sourceRoot, so the promotion lands on so/<id>.
@@ -397,36 +418,23 @@ describe('worktree promotion is a process boundary, not a live migration (#1069)
     expect(wt.promotedFrom).toBe('main');
     expect(existsSync(path.join(wt.wtPath, '.git'))).toBe(true);
 
-    const worktreeStub = async () => [
-      { path: sourceRoot, branch: 'main', head: WORKTREE_HEAD },
-    ];
-
-    // Premise check — the phantom IS visible before the teardown. Without this
-    // the assertions below could pass against an empty registry and prove nothing.
-    const before = await findPeers(sourceRoot, {
-      mySessionId: PROMOTION_DEST_RAW_ID,
-      listWorktreesImpl: worktreeStub,
-    });
-    expect(before.peers.map((p) => p.sessionId)).toContain(PROMOTION_SOURCE_RAW_ID);
-
-    // -- 3. Source session end (the process boundary) -------------------------
-    const left = await leaveSourceRoot({
-      repoRoot: sourceRoot,
-      sessionId: PROMOTION_SOURCE_RAW_ID,
-      semanticSessionId: PROMOTION_SEMANTIC_ID,
-      reason: 'worktree-promotion',
-    });
+    // -- 3. The source root is already gone — no second call ------------------
     // The observable comes first deliberately: the phantom peer is the bug,
-    // `left.steps` is only the teardown's own report of it.
+    // `wt.left.steps` is only the teardown's own report of it.
     const after = await findPeers(sourceRoot, {
       mySessionId: PROMOTION_DEST_RAW_ID,
-      listWorktreesImpl: worktreeStub,
+      listWorktreesImpl: worktreeStubPre,
     });
     expect(after.peers.map((p) => p.sessionId)).not.toContain(PROMOTION_SOURCE_RAW_ID);
     expect(await readRegistry()).toEqual([]);
     expect(readLock({ repoRoot: sourceRoot })).toBeNull();
-    expect(left.ok).toBe(true);
-    expect(left.steps).toEqual({ deregistered: true, released: true, emitted: true });
+    // Full clean teardown carries NO `reason` key (leaveSourceRoot returns
+    // `{ ok, steps }` then) — pinned exactly so a silently degraded departure
+    // reported as success cannot pass here.
+    expect(wt.left).toEqual({
+      ok: true,
+      steps: { deregistered: true, released: true, emitted: true },
+    });
 
     // -- 4. Destination session start, with its OWN identity ------------------
     await registerSelf({
@@ -449,5 +457,127 @@ describe('worktree promotion is a process boundary, not a live migration (#1069)
     expect(readLock({ repoRoot: sourceRoot })).toBeNull();
     expect(readLock({ repoRoot: wt.wtPath })?.session_id).toBe(PROMOTION_DEST_RAW_ID);
     expect((await readRegistry()).map((e) => e.session_id)).toEqual([PROMOTION_DEST_RAW_ID]);
+  });
+
+  it('creates the worktree but leaves a foreign source root untouched, without throwing', async () => {
+    // The bug (TV-001): a promotion driven with the WRONG raw id must not tear
+    // down a root it does not own — and must not abort the promotion either.
+    // A throw here would strand the session between two roots; a silent
+    // teardown would unregister a session that is still running in `sourceRoot`.
+    await startSourceSession();
+
+    const wt = await enterWorktree({
+      basePath,
+      sessionId: PROMOTION_SEMANTIC_ID,
+      branch: 'main',
+      repoRoot: sourceRoot,
+      rawSessionId: PROMOTION_DEST_RAW_ID, // not the owner of sourceRoot's lock
+    });
+
+    // The promotion itself still succeeded.
+    expect(wt.reused).toBe(false);
+    expect(existsSync(path.join(wt.wtPath, '.git'))).toBe(true);
+
+    // The departure did not happen, and says so.
+    expect(wt.left.ok).toBe(false);
+    expect(wt.left.reason.startsWith('lock-session-mismatch:')).toBe(true);
+    expect(wt.left.reason).toBe(`lock-session-mismatch:${PROMOTION_SOURCE_RAW_ID}`);
+    expect(wt.left.steps).toEqual({ deregistered: false, released: false, emitted: false });
+    expect(warnSpy.mock.calls.flat().some(
+      (m) => typeof m === 'string' && m.includes('enterWorktree: leaveSourceRoot: lock-session-mismatch:'),
+    )).toBe(true);
+
+    // The foreign root is exactly as it was.
+    expect(readLock({ repoRoot: sourceRoot })?.session_id).toBe(PROMOTION_SOURCE_RAW_ID);
+    expect((await readRegistry()).map((e) => e.session_id)).toEqual([PROMOTION_SOURCE_RAW_ID]);
+  });
+
+  it('refuses loudly when rawSessionId is passed but unusable, and stays silent when it is omitted', async () => {
+    // The bug (TV-001): `if (typeof rawSessionId !== 'string' || !length) return`
+    // treated NOT PASSED and PASSED-BUT-UNUSABLE as one case. The documented
+    // derivation is `readLock({ repoRoot }).session_id`, which is `null` whenever
+    // the source lock is missing or unreadable — so a real caller silently got
+    // the pre-#1170 behaviour back: promotion succeeds, source root never
+    // deregistered, phantom owner (#1069), nothing on stderr.
+    await startSourceSession();
+
+    const unusable = await enterWorktree({
+      basePath,
+      sessionId: PROMOTION_SEMANTIC_ID,
+      branch: 'main',
+      repoRoot: sourceRoot,
+      rawSessionId: null, // what readLock() returns when the lock is unreadable
+    });
+
+    expect(unusable.reused).toBe(false);
+    expect(existsSync(path.join(unusable.wtPath, '.git'))).toBe(true);
+    expect(unusable.left).toEqual({ ok: false, reason: 'raw-session-id-unusable' });
+    const unusableWarns = warnSpy.mock.calls.flat().filter(
+      (m) => typeof m === 'string' && m.includes('enterWorktree: rawSessionId unusable'),
+    );
+    expect(unusableWarns).toHaveLength(1);
+    expect(unusableWarns[0]).toContain('(null)');
+    expect(unusableWarns[0]).toContain('readLock({ repoRoot }).session_id');
+
+    // The source root is untouched — the refusal did not tear anything down.
+    expect(readLock({ repoRoot: sourceRoot })?.session_id).toBe(PROMOTION_SOURCE_RAW_ID);
+    expect((await readRegistry()).map((e) => e.session_id)).toEqual([PROMOTION_SOURCE_RAW_ID]);
+
+    // And the OMITTED case stays byte-identical to pre-#1170: the autopilot
+    // callers pass no rawSessionId at all and must not start seeing a WARN or a
+    // `left` key. Pinning the SILENCE is the point — without it, "warn on
+    // unusable" is one refactor away from warning on every autopilot worktree.
+    warnSpy.mockClear();
+    const omitted = await enterWorktree({
+      basePath,
+      sessionId: PROMOTION_SEMANTIC_ID,
+      branch: 'main',
+      repoRoot: sourceRoot,
+    });
+    expect(omitted.reused).toBe(true); // same path — created by the call above
+    expect(omitted).not.toHaveProperty('left');
+    expect(warnSpy.mock.calls.flat().some(
+      (m) => typeof m === 'string' && m.includes('enterWorktree: rawSessionId unusable'),
+    )).toBe(false);
+  });
+
+  it('reports the idempotent departure on the reused-worktree path', async () => {
+    // The bug (TV-001): the reuse early-return skipped the teardown entirely
+    // before #1170, so a re-entered promotion left the source root live. The
+    // second call must still report a departure — `already-gone` when the
+    // first call already removed everything.
+    await startSourceSession();
+
+    const first = await enterWorktree({
+      basePath,
+      sessionId: PROMOTION_SEMANTIC_ID,
+      branch: 'main',
+      repoRoot: sourceRoot,
+      rawSessionId: PROMOTION_SOURCE_RAW_ID,
+    });
+    expect(first.reused).toBe(false);
+
+    const second = await enterWorktree({
+      basePath,
+      sessionId: PROMOTION_SEMANTIC_ID,
+      branch: 'main',
+      repoRoot: sourceRoot,
+      rawSessionId: PROMOTION_SOURCE_RAW_ID,
+    });
+    expect(second.reused).toBe(true);
+    expect(second.wtPath).toBe(first.wtPath);
+    expect(second.left).toEqual({
+      ok: true,
+      steps: { deregistered: false, released: false, emitted: true },
+      reason: 'already-gone',
+    });
+    // And it does so QUIETLY. `already-gone` is the benign idempotent-rerun
+    // outcome (ok: true), so it must not reach console.warn — a WARN here reads
+    // like a failed teardown on a path where nothing failed, and would train
+    // the operator to ignore the line that DOES matter
+    // (`lock-session-mismatch:*`, pinned by the test above).
+    expect(warnSpy.mock.calls.flat().some(
+      (m) => typeof m === 'string' && m.includes('enterWorktree: leaveSourceRoot:'),
+    )).toBe(false);
   });
 });

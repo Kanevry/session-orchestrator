@@ -32,6 +32,28 @@
  *   - Lock takes precedence over registry (more detail per session); registry
  *     supplements missing per-worktree entries (e.g., when the hook ran but
  *     the prose Phase 1.2 acquire was skipped).
+ *   - A live local session.lock does NOT supersede same-repo registry entries
+ *     with a different raw session_id (GH#67 candidate fix, measured 2026-09-02
+ *     and NOT adopted): the session lock is advisory, so a second session can
+ *     and demonstrably does run in the same working copy without holding it.
+ *     Filtering those entries out hides genuine same-working-copy peers — the
+ *     #1085 semantic-alias boundary (tests/integration/session-identity-
+ *     boundaries.test.mjs) and 7 peer-discovery cases pin exactly that
+ *     visibility. Any GH#67 fix must discriminate finished-but-fresh entries
+ *     some other way; do not re-attempt lock-ownership supersession here.
+ *     See ADR-0014 (docs/adr/0014-peer-visibility-under-advisory-lock.md) for
+ *     the annotate-never-filter decision and the 9-test refutation of the
+ *     filtering alternative.
+ *   - The adopted GH#67 shape is therefore ADDITIVE ANNOTATION, never a filter.
+ *     Registry-sourced sessions carry `registryOnly: true` plus
+ *     `lockSuperseded` / `lockOwnerId`. `lockSuperseded: true` means: a LIVE
+ *     lock at this repoRoot is owned by a different raw session_id than this
+ *     registry entry. It is a HINT, not a verdict — the lock is advisory, so
+ *     the entry may still be a live session that lost the acquire race (#1085
+ *     contract). Consumers deciding a worktree-PROMOTION_OFFER downgrade such
+ *     a peer to an advisory line (GH#67); consumers counting or displaying
+ *     peers keep it. Lock-sourced sessions carry none of the three fields, so
+ *     their objects stay byte-identical to the pre-GH#67 shape.
  *
  * Timeout + A1 fallback:
  *   - listWorktrees() is raced against DEFAULT_DISCOVERY_TIMEOUT_MS (2 s).
@@ -93,10 +115,24 @@ function sessionFromLock(lock, worktreePath, branch = '') {
  * does not record per-worktree paths — only repo-path-hashes. Branch is
  * passed through from the registry entry when available.
  *
+ * GH#67 annotation (additive, never a filter — see the module header): every
+ * registry-sourced session carries `registryOnly: true` and the pair
+ * `lockSuperseded` / `lockOwnerId`. `lockSuperseded: true` says a LIVE lock at
+ * this repoRoot is owned by a DIFFERENT raw session_id than this entry — a
+ * HINT that the entry may be a finished-but-still-fresh task (the GH#67 case:
+ * Codex emits no SessionEnd, so the registry entry outlives the task by up to
+ * `freshnessMin`). It is not a verdict: the lock is advisory, so the entry may
+ * equally be a live session that never acquired it (#1085). Consumers deciding
+ * a worktree PROMOTION_OFFER downgrade such a peer to an advisory line;
+ * consumers counting or displaying peers keep it unchanged.
+ *
  * @param {object} entry    Registry entry.
  * @param {string} repoRoot Discovery repoRoot (used as worktreePath fallback).
+ * @param {object} [ctx]
+ * @param {string|null} [ctx.lockOwnerId] Raw session_id owning a LIVE lock at
+ *   repoRoot, or null when there is no live local lock.
  */
-function sessionFromRegistryEntry(entry, repoRoot) {
+function sessionFromRegistryEntry(entry, repoRoot, { lockOwnerId = null } = {}) {
   return {
     worktreePath: repoRoot,
     sessionId:    entry.session_id,
@@ -111,6 +147,11 @@ function sessionFromRegistryEntry(entry, repoRoot) {
     // single machine, so consumers comparing hosts need the normalised form.
     host_id:      stableHostname(),
     branch:       typeof entry.branch === 'string' ? entry.branch : '',
+    // GH#67 additive annotation (see the JSDoc above). Lock-sourced sessions
+    // deliberately carry none of these three fields.
+    registryOnly: true,
+    lockSuperseded: lockOwnerId !== null && entry.session_id !== lockOwnerId,
+    lockOwnerId,
   };
 }
 
@@ -177,7 +218,10 @@ function dedupeBySessionId(sessions) {
  * @param {Function} [opts.registryReader]      DI hook replacing readRegistry() for tests.
  * @param {number}   [opts.freshnessMin=15]     Registry-entry freshness threshold in minutes.
  * @param {number}   [opts.now]                 ms-since-epoch (test seam for heartbeat freshness).
- * @returns {Promise<Array<{worktreePath:string,sessionId:string,mode:string,startedAt:string,pid:number,host:string,host_id:string,branch:string}>>}
+ * @returns {Promise<Array<{worktreePath:string,sessionId:string,mode:string,startedAt:string,pid:number,host:string,host_id:string,branch:string,registryOnly?:boolean,lockSuperseded?:boolean,lockOwnerId?:string|null}>>}
+ *   The last three fields appear ONLY on registry-sourced sessions (GH#67
+ *   annotation — see `sessionFromRegistryEntry`); lock-sourced sessions omit
+ *   them entirely.
  */
 export async function discoverActiveSessions(repoRoot, opts = {}) {
   const listWorktreesFn = opts.listWorktreesImpl ?? listWorktrees;
@@ -232,10 +276,20 @@ export async function discoverActiveSessions(repoRoot, opts = {}) {
   try {
     const allEntries = await registryReaderFn();
     const myRepoHash = repoPathHash(repoRoot);
+    // GH#67: who (if anyone) holds a LIVE lock at this repoRoot right now.
+    // Read once, outside the map — it is a property of the repo, not of an
+    // entry. A stale lock proves nothing, so it yields null.
+    const localLock = readLock({ repoRoot });
+    const lockOwnerId = (
+      localLock
+      && isLockLive(localLock, nowMs)
+      && typeof localLock.session_id === 'string'
+      && localLock.session_id
+    ) ? localLock.session_id : null;
     registrySessions = allEntries
       .filter((e) => e && e.repo_path_hash === myRepoHash)
       .filter((e) => isRegistryEntryFresh(e, { freshnessMin, now: nowMs }))
-      .map((e) => sessionFromRegistryEntry(e, repoRoot));
+      .map((e) => sessionFromRegistryEntry(e, repoRoot, { lockOwnerId }));
   } catch {
     // Registry read failure → keep going with lock-only results.
     registrySessions = [];

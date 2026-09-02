@@ -104,7 +104,9 @@ describe('emit-event.mjs CLI — happy path', () => {
 
     const record = JSON.parse(readFileSync(out, 'utf8').trim().split('\n')[0]);
     expect(record.event).toBe('test.no.payload');
-    expect(Object.keys(record).sort()).toEqual(['event', 'timestamp']);
+    // #1177 added the third producer-owned key. Updated deliberately: the point
+    // of the assertion is "no payload keys leak in", not the literal pair.
+    expect(Object.keys(record).sort()).toEqual(['event', 'schema_version', 'timestamp']);
   });
 
   it('--json prints a structured success object to stdout', () => {
@@ -154,6 +156,21 @@ describe('emit-event.mjs CLI — user/input errors (exit 1)', () => {
     const result = JSON.parse(res.stdout.trim());
     expect(result.ok).toBe(false);
     expect(result.error).toContain('--type is required');
+  });
+});
+
+describe('emit-event.mjs CLI — schema rejection (exit 1)', () => {
+  // Bug this catches: a malformed orchestrator.* event name is written to the
+  // ledger and the CLI reports success (exit 0), so the bad record is only
+  // discovered by a downstream reader — or reported as a system error (exit 2),
+  // which tells a shell caller to retry an input error that can never succeed.
+  it('an orchestrator.* type violating the naming convention exits 1 and writes nothing', () => {
+    const out = join(tmpDir, 'events.jsonl');
+    // Two segments only — ORCHESTRATOR_EVENT_RE requires >= 3.
+    const res = runCli(['--type', 'orchestrator.bad', '--file', out]);
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain('invalid event');
+    expect(existsSync(out)).toBe(false);
   });
 });
 

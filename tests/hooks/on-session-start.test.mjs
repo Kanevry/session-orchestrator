@@ -1015,6 +1015,145 @@ describe('mechanical peer-detection banner (Epic #583 W3-P3)', { timeout: 15000 
     // No mechanical-peer banner — discoverActiveSessions returns only self.
     expect(mechanical).toBeUndefined();
   });
+
+  // -------------------------------------------------------------------------
+  // GH#67 — supersession marker on registry-only peers
+  // -------------------------------------------------------------------------
+  //
+  // Bug class this pins: a registry entry that a finished task left behind
+  // (SessionEnd never ran, heartbeat still fresh) is indistinguishable in the
+  // banner from a genuinely live peer, so the operator coordinates with a
+  // session that no longer exists. discoverActiveSessions() annotates such an
+  // entry (`registryOnly` + `lockSuperseded`); until this change the hook threw
+  // the annotation away. The COUNT must stay honest (HR-106, #1085: the lock is
+  // advisory, so a superseded entry may still be a live peer) — the marker is
+  // additive only.
+
+  /** Plant a fresh registry entry for `dir` under the isolated registry dir. */
+  async function plantRegistryPeer(dir, sessionId, extra = {}) {
+    const activeDir = path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active');
+    await fs.mkdir(activeDir, { recursive: true });
+    const now = new Date().toISOString();
+    const { repoPathHash } = await import('../../scripts/lib/session-registry.mjs');
+    await fs.writeFile(
+      path.join(activeDir, `${sessionId}.json`),
+      JSON.stringify({
+        session_id: sessionId,
+        pid: 99997,
+        repo_path_hash: repoPathHash(dir),
+        repo_name: path.basename(dir),
+        branch: 'main',
+        mode: 'deep',
+        started_at: now,
+        last_heartbeat: now,
+        status: 'active',
+        current_wave: 0,
+        ...extra,
+      }),
+    );
+  }
+
+  /**
+   * Plant a LIVE session.lock owned by a foreign raw session id. bootstrapLock()
+   * leaves it alone (acquire → reason 'active', different id → no force), so the
+   * hook sees it as a lock-sourced peer AND as the lock owner that supersedes
+   * registry entries carrying a different id.
+   */
+  async function plantForeignLock(dir, sessionId) {
+    const now = new Date().toISOString();
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'session.lock'),
+      JSON.stringify({
+        session_id: sessionId,
+        semantic_session_id: sessionId,
+        started_at: now,
+        last_heartbeat: now,
+        mode: 'deep',
+        pid: 99996,
+        host: os.hostname(),
+        ttl_hours: 4,
+      }),
+    );
+  }
+
+  function mechanicalLines(stdout) {
+    return parseSystemMessages(stdout).flatMap((m) => m.systemMessage.split('\n'));
+  }
+
+  /**
+   * A SessionStart hook surfaces only the FIRST stdout JSON object (HR-106), so
+   * `mechanicalLines()` — which unions across every object — would stay green if
+   * the banner or its GH#67 explanation were emitted as a SECOND object nobody
+   * ever sees. Pin the single envelope alongside every content assertion.
+   */
+  function expectSingleEnvelope(stdout) {
+    const objects = stdout.split('\n').filter((l) => l.trim().startsWith('{'));
+    expect(objects).toHaveLength(1);
+  }
+
+  it('marks a registry-only peer superseded by this root\'s live lock, without changing the count (GH#67)', async () => {
+    const dir = await mkProjectTracked();
+    await plantRegistryPeer(dir, 'peer-superseded');
+    // The hook's own bootstrapLock() writes the live lock here, owned by this
+    // session's raw id — a different id than the planted registry entry.
+    const result = await runHook({ projectDir: dir, useCwd: true });
+
+    expectSingleEnvelope(result.stdout);
+    const lines = mechanicalLines(result.stdout);
+    const mechanical = lines.find((l) => /^🔍\s+Mechanical peer-detection:/.test(l));
+    expect(mechanical).toBeDefined();
+    // Count is HONEST: the superseded entry is still one peer.
+    expect(mechanical).toContain("1 active in this repo's worktree set");
+    expect(mechanical).toContain('peer-superseded:deep [registry-only, superseded]');
+    // The explanation rides the SAME systemMessage (HR-106: one JSON object).
+    expect(lines.some((l) => l.includes('GH#67'))).toBe(true);
+
+    const evt = (await readEvents(dir)).find((e) => e.event === 'orchestrator.session.started');
+    expect(evt.peers_superseded).toBe(1);
+  });
+
+  it('does NOT mark a lock-sourced peer (GH#67)', async () => {
+    const dir = await mkProjectTracked();
+    await plantForeignLock(dir, 'peer-locked');
+
+    const result = await runHook({ projectDir: dir, useCwd: true });
+
+    expectSingleEnvelope(result.stdout);
+    const lines = mechanicalLines(result.stdout);
+    const mechanical = lines.find((l) => /^🔍\s+Mechanical peer-detection:/.test(l));
+    expect(mechanical).toBeDefined();
+    expect(mechanical).toContain('peer-locked');
+    // A lock-sourced peer carries none of the three GH#67 fields, so it must
+    // render byte-identically to the pre-GH#67 banner.
+    expect(mechanical).not.toContain('registry-only');
+
+    const evt = (await readEvents(dir)).find((e) => e.event === 'orchestrator.session.started');
+    expect(evt.peers_superseded).toBe(0);
+  });
+
+  it('mixed peers: counts both, marks only the superseded registry one (GH#67)', async () => {
+    const dir = await mkProjectTracked();
+    // The foreign lock is BOTH a lock-sourced peer and the live lock owner that
+    // supersedes the registry entry with a different id.
+    await plantForeignLock(dir, 'peer-locked');
+    await plantRegistryPeer(dir, 'peer-superseded');
+
+    const result = await runHook({ projectDir: dir, useCwd: true });
+
+    expectSingleEnvelope(result.stdout);
+    const lines = mechanicalLines(result.stdout);
+    const mechanical = lines.find((l) => /^🔍\s+Mechanical peer-detection:/.test(l));
+    expect(mechanical).toBeDefined();
+    expect(mechanical).toContain("2 active in this repo's worktree set");
+    expect(mechanical).toContain('peer-superseded:deep [registry-only, superseded]');
+    expect(mechanical).toContain('peer-locked:deep,');
+    // Exactly ONE marker for two peers.
+    expect(mechanical.match(/registry-only/g)).toHaveLength(1);
+
+    const evt = (await readEvents(dir)).find((e) => e.event === 'orchestrator.session.started');
+    expect(evt.peers_superseded).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

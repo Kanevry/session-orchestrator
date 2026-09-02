@@ -588,7 +588,7 @@ describe('vault-mirror secret-masker telemetry (#1025)', () => {
     });
     // Counts only — the payload must never carry text that could be a needle.
     expect(Object.keys(masking[0]).sort()).toEqual(
-      ['channel', 'dry_run', 'event', 'hits', 'needle_count', 'records', 'timestamp'].sort(),
+      ['channel', 'dry_run', 'event', 'hits', 'needle_count', 'records', 'schema_version', 'timestamp'].sort(),
     );
   });
 });

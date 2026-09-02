@@ -195,3 +195,75 @@ describe('category1 — Session Discipline', () => {
     });
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// #1167 — "growth" is measured in SESSIONS, not LINES
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('category1 c1.2 sessions-jsonl-growth counts identities (#1167)', () => {
+  let d;
+
+  beforeEach(() => {
+    d = mkdtempSync(join(tmpdir(), 'cat1-1167-'));
+    _resetWarnFlags();
+  });
+
+  afterEach(() => {
+    rmSync(d, { recursive: true, force: true });
+  });
+
+  /**
+   * Bug this catches: the ledger is append-only, so one physical session can
+   * occupy two lines — the semantic abandoned stub plus the synthetic-id stub
+   * written for the same session by the second backfill writer (identical
+   * `started_at` + `completed_at`). A repo whose only two lines are ONE
+   * duplicated session scored the growth check as passing; measuring
+   * identities makes it fail, which is what "growth" was meant to prove.
+   */
+  const STARTED = '2026-09-01T08:00:00.000Z';
+  const COMPLETED = '2026-09-01T09:00:00.000Z';
+
+  const DUP_STUB = JSON.stringify({
+    session_id: 'main-2026-09-01-session-23',
+    session_type: 'deep',
+    status: 'abandoned',
+    started_at: STARTED,
+    completed_at: COMPLETED,
+  });
+  const DUP_SYNTHETIC = JSON.stringify({
+    session_id: 'main-2026-09-01-abandoned-2f4f776e',
+    session_type: 'deep',
+    _synthetic_session_id: true,
+    status: 'abandoned',
+    started_at: STARTED,
+    completed_at: COMPLETED,
+  });
+  const NORMAL = JSON.stringify({
+    session_id: 'main-2026-09-02-session-1',
+    session_type: 'feature',
+    status: 'completed',
+    started_at: '2026-09-02T08:00:00.000Z',
+    completed_at: '2026-09-02T09:00:00.000Z',
+  });
+
+  it('reports 2 sessions for a 3-line ledger holding one duplicate pair', () => {
+    scaffold(d, '.orchestrator/metrics/sessions.jsonl',
+      [DUP_STUB, DUP_SYNTHETIC, NORMAL].join('\n') + '\n');
+
+    const check = runCategory1(d).find((c) => c.check_id === 'sessions-jsonl-growth');
+    expect(check.status).toBe('pass');
+    expect(check.evidence.sessionCount).toBe(2);
+    // Well-formedness stays a per-LINE property on purpose.
+    expect(check.evidence.lineCount).toBe(3);
+  });
+
+  it('fails when the only two lines are one duplicated session', () => {
+    scaffold(d, '.orchestrator/metrics/sessions.jsonl',
+      [DUP_STUB, DUP_SYNTHETIC].join('\n') + '\n');
+
+    const check = runCategory1(d).find((c) => c.check_id === 'sessions-jsonl-growth');
+    expect(check.status).toBe('fail');
+    expect(check.evidence.sessionCount).toBe(1);
+    expect(check.evidence.lineCount).toBe(2);
+  });
+});

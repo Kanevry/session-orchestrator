@@ -27,6 +27,7 @@ import { resolveMemoryDir } from './memory-paths.mjs';
 import { readDreamSignals } from './auto-dream.mjs';
 import { readPeerCards } from './peer-cards/reader.mjs';
 import { surfaceTopN, decayOptsFromConfig } from './learnings/surface.mjs';
+import { countSessionsInJsonl } from './sessions-canonical.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -259,19 +260,30 @@ export function _formatBanner(inputs) {
 // ---------------------------------------------------------------------------
 
 /**
- * Count lines (newline-terminated entries) in a JSONL file. Missing files
- * resolve to 0; read errors resolve to 0. Empty trailing lines are not
- * counted, matching the JSONL convention.
+ * Count DISTINCT physical sessions in `sessions.jsonl` — the "sessions ever"
+ * stat. Missing files resolve to 0; read errors resolve to 0.
+ *
+ * Identities, not lines (#1167). `sessions.jsonl` is append-only, so one
+ * physical session can occupy two lines (an abandoned stub plus the
+ * authoritative record that supersedes it, or the systemic double-stub pair
+ * from the two backfill writers). Counting lines inflated this stat by exactly
+ * the number of duplicates — 286 lines for 275 sessions in this repo, measured
+ * 2026-09-02.
+ *
+ * The abandoned-session semantic is DELIBERATELY unchanged: an abandoned
+ * session is a real session and still counts. Only DUPLICATE records of ONE
+ * physical session collapse — see `sessions-canonical.mjs`, which is not a
+ * phantom filter.
  *
  * @param {string} filePath
  * @returns {Promise<number>}
  */
-async function countJsonlLines(filePath) {
+async function countSessionIdentities(filePath) {
   if (!existsSync(filePath)) return 0;
   try {
-    const raw = await readFile(filePath, 'utf8');
-    if (raw.length === 0) return 0;
-    return raw.split('\n').filter((l) => l.length > 0).length;
+    // Counting rule (blank/malformed lines, id-less records) lives in
+    // `countSessionsInJsonl`; only the async read is local.
+    return countSessionsInJsonl(await readFile(filePath, 'utf8'));
   } catch {
     return 0;
   }
@@ -378,7 +390,7 @@ export async function readBannerInputs({ repoRoot, memoryDir, learningsPath, now
     // computed the same way, so we re-derive locally to keep this dependency
     // surface lean and explicit.
     const sessionsPath = path.join(repoRoot, '.orchestrator', 'metrics', 'sessions.jsonl');
-    const sessionsEver = await countJsonlLines(sessionsPath);
+    const sessionsEver = await countSessionIdentities(sessionsPath);
 
     let daysSinceCleanup = null;
     if (typeof signals?.lastCleanupAt === 'string' && signals.lastCleanupAt.length > 0) {

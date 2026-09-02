@@ -37,6 +37,7 @@ import { emitEvent } from '../events.mjs';
 import { main as gcMain } from '../../gc-stale-worktrees.mjs';
 import { SEMANTIC_ID_RE } from '../session-id.mjs';
 import { repoPathHash } from '../session-registry.mjs';
+import { leaveSourceRoot } from '../session-transition.mjs';
 // Marker location is owned by its READER (session-end Phase 4a) — importing the
 // constant from there keeps writer and reader on one string. The dependency runs
 // heavy→lean (this pipeline → the dependency-free cleanup helper), never back.
@@ -731,6 +732,21 @@ function writePromotionMarker({ wtPath, sourceRoot, sessionId, branch }) {
  * @param {string} params.sessionId - Semantic session-ID matching SEMANTIC_ID_RE.
  * @param {string} params.branch    - Branch name (existing or new) matching ENTER_WORKTREE_BRANCH_RE.
  * @param {string} params.repoRoot  - Path to the source git repository (passed explicitly to avoid CWD drift per #219).
+ * @param {string} [params.rawSessionId] - The RAW (physical) session id that owns
+ *   the SOURCE root's `session.lock` and registry entry. Optional. When it is a
+ *   non-empty string, the source root is LEFT mechanically (#1170): after the
+ *   destination worktree provably exists, `leaveSourceRoot()` runs and its
+ *   result is reported as `left` in the return value. OMITTING it (strictly
+ *   `undefined`) preserves the pre-#1170 behaviour exactly — no teardown, no
+ *   `left` key, no WARN. Passing something UNUSABLE (`null`, `''`, a non-string —
+ *   `readLock({ repoRoot }).session_id` returns `null` on a missing/unreadable
+ *   lock, which is how this happens in practice) is NOT the same case: it WARNs
+ *   and reports `left: { ok: false, reason: 'raw-session-id-unusable' }`, because
+ *   a silent skip there is the phantom-owner state of #1069. NOT the semantic
+ *   `sessionId` above, which is a naming key, never an ownership key.
+ * @param {string} [params.reason='worktree-promotion'] - Departure reason
+ *   recorded verbatim in the `orchestrator.session.root_left` payload. Only used
+ *   when `rawSessionId` is given.
  * @param {object} [opts]
  * @param {Function} [opts.$]       - zx-like template-tag executor (DI seam); falls back to lazy `await import('zx')`.
  * Every freshly created worktree also gets a `.orchestrator/promoted-from.json`
@@ -739,18 +755,27 @@ function writePromotionMarker({ wtPath, sourceRoot, sessionId, branch }) {
  * session with a different id. Marker writing is best-effort and never fails
  * the promotion.
  *
- * @returns {Promise<{ wtPath: string, reused: boolean, branch?: string, promotedFrom?: string, reusedBranch?: true }>}
+ * @returns {Promise<{ wtPath: string, reused: boolean, branch?: string, promotedFrom?: string, reusedBranch?: true, left?: { ok: boolean, steps: object, reason?: string } }>}
  *   `branch` is the branch the new worktree actually landed on — equal to the
  *   `branch` param except in case 1 above, where it is `so/<sessionId>` and
  *   `promotedFrom` carries the requested source branch. `reusedBranch` is
  *   present (and `true`) only when an existing `so/<sessionId>` was checked out
  *   rather than created. All three are absent on the `reused: true` path (no
- *   branch was chosen — the worktree pre-existed).
+ *   branch was chosen — the worktree pre-existed). `left` is present on BOTH
+ *   success exits — and ONLY — when `rawSessionId` was supplied (including when
+ *   it was supplied unusable, where it reports the refusal).
  * @throws {TypeError} when any required param is missing or fails validation.
  * @throws {WorktreeBoundaryError} when the computed worktree path escapes `basePath`.
  * @throws {WorktreePromotionBranchError} when `so/<sessionId>` is checked out elsewhere.
  */
-export async function enterWorktree({ basePath, sessionId, branch, repoRoot } = {}, opts = {}) {
+export async function enterWorktree({
+  basePath,
+  sessionId,
+  branch,
+  repoRoot,
+  rawSessionId,
+  reason = 'worktree-promotion',
+} = {}, opts = {}) {
   // -------------------------------------------------------------------------
   // Step 1: Input validation (TypeError on any malformed param).
   // -------------------------------------------------------------------------
@@ -840,10 +865,61 @@ export async function enterWorktree({ basePath, sessionId, branch, repoRoot } = 
   }
 
   // -------------------------------------------------------------------------
+  // Step 3b: The source-root departure (#1170), as a MECHANICAL step.
+  //
+  // Before #1170 this was skill PROSE at four sites: `enterWorktree()` created
+  // the destination and the coordinator was trusted to call `leaveSourceRoot()`
+  // afterwards. A step that only exists in prose is a step that is sometimes
+  // skipped — and skipping it is exactly the phantom-peer / double-live-lock
+  // state #1069 was filed about.
+  //
+  // Ordering is load-bearing and only runs on a proven-existing destination:
+  // every throw above leaves the source root untouched, because a departure
+  // from a root whose successor does not exist strands the session with no
+  // live root at all. `leaveSourceRoot()` never throws, so a failed teardown
+  // WARNs and is reported in `left` — it never fails the promotion.
+  // -------------------------------------------------------------------------
+  const departSourceRoot = async (result) => {
+    // NOT PASSED and PASSED-BUT-UNUSABLE are different callers with different
+    // bugs, and collapsing them re-opened #1069 silently. `undefined` is the
+    // documented opt-out (the autopilot callers, which own no source session):
+    // byte-identical pre-#1170 behaviour, no `left`, no WARN.
+    if (rawSessionId === undefined) return result;
+    // Anything else falsy or non-string means a caller INTENDED to depart and
+    // handed us something unusable. The documented derivation is
+    // `readLock({ repoRoot }).session_id`, which is `null` whenever the lock is
+    // missing or unreadable — so the realistic failure lands here, and before
+    // this branch it returned early with nothing on stderr: promotion succeeds,
+    // source root never deregistered, phantom owner (#1069).
+    if (typeof rawSessionId !== 'string' || rawSessionId.length === 0) {
+      const shown = rawSessionId === null
+        ? 'null'
+        : typeof rawSessionId === 'string' ? 'empty string' : typeof rawSessionId;
+      console.warn(
+        `enterWorktree: rawSessionId unusable (${shown}) — source root NOT departed; ` +
+          'read it via readLock({ repoRoot }).session_id',
+      );
+      result.left = { ok: false, reason: 'raw-session-id-unusable' };
+      return result;
+    }
+    const left = await leaveSourceRoot({
+      repoRoot,
+      sessionId: rawSessionId,
+      semanticSessionId: sessionId,
+      reason,
+    });
+    if (left.ok !== true) {
+      console.warn(`enterWorktree: leaveSourceRoot: ${left.reason ?? 'unknown'}`);
+    }
+    result.left = left;
+    return result;
+  };
+
+  // -------------------------------------------------------------------------
   // Step 4: Idempotency — reuse if worktree already exists with .git.
   // -------------------------------------------------------------------------
   if (fs.existsSync(wtPath) && fs.existsSync(path.join(wtPath, '.git'))) {
-    return { wtPath, reused: true };
+    return await departSourceRoot({ wtPath, reused: true });
   }
 
   // -------------------------------------------------------------------------
@@ -931,7 +1007,7 @@ export async function enterWorktree({ basePath, sessionId, branch, repoRoot } = 
     // Present only when it happened, so the common shape stays byte-identical
     // for every existing consumer and strict-equality pin.
     if (reusedBranch) result.reusedBranch = true;
-    return result;
+    return await departSourceRoot(result);
   }
-  return { wtPath, reused: false, branch };
+  return await departSourceRoot({ wtPath, reused: false, branch });
 }

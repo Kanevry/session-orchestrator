@@ -100,7 +100,16 @@ function _ageHoursFrom(startedAt, nowMs) {
 /**
  * Map one discoverActiveSessions entry into a provenance-tagged peer.
  *
- * @param {{worktreePath:string,sessionId:string,mode:string,startedAt:string,pid:number,host:string,branch:string}} s
+ * GH#67 pass-through: `registryOnly` / `lockSuperseded` / `lockOwnerId` are
+ * threaded through UNCHANGED when the upstream entry carries them (registry-
+ * sourced sessions only). Absent stays absent, so a lock-sourced peer object is
+ * byte-identical to the pre-GH#67 shape. `lockSuperseded: true` is a HINT that
+ * a LIVE lock at that repoRoot is owned by a different raw session_id — not a
+ * verdict that the peer is dead (the lock is advisory, #1085). Consumers
+ * deciding a worktree PROMOTION_OFFER downgrade such a peer to an advisory
+ * line; consumers counting or displaying peers keep it.
+ *
+ * @param {{worktreePath:string,sessionId:string,mode:string,startedAt:string,pid:number,host:string,branch:string,registryOnly?:boolean,lockSuperseded?:boolean,lockOwnerId?:string|null}} s
  * @param {number} nowMs
  * @returns {object}
  */
@@ -118,6 +127,10 @@ function _peerFromDiscovered(s, nowMs) {
     worktreePath: s.worktreePath,
   };
   if (ageHours !== undefined) peer.ageHours = ageHours;
+  // GH#67 — additive, absent-stays-absent.
+  if (s.registryOnly !== undefined) peer.registryOnly = s.registryOnly;
+  if (s.lockSuperseded !== undefined) peer.lockSuperseded = s.lockSuperseded;
+  if (s.lockOwnerId !== undefined) peer.lockOwnerId = s.lockOwnerId;
   return peer;
 }
 
@@ -189,7 +202,12 @@ function _discoveredSelfSessionId(mySessionId, repoRoot) {
  *   per-source — only the fields the originating surface can supply are emitted
  *   (no field is advertised that the implementation does not set):
  *     - source 'discovered' (from discoverActiveSessions — lock + registry unified):
- *         { source, sessionId, mode|null, host, pid, worktreePath, ageHours? }
+ *         { source, sessionId, mode|null, host, pid, worktreePath, ageHours?,
+ *           registryOnly?, lockSuperseded?, lockOwnerId? }
+ *       The last three appear ONLY on registry-sourced entries (GH#67
+ *       annotation, passed through verbatim — see `_peerFromDiscovered`).
+ *       `lockSuperseded` is a HINT, never a liveness verdict: no peer is
+ *       dropped on account of it, because the session lock is advisory.
  *     - source 'state-md' (from checkPeerStateMd):
  *         { source, sessionId, mode|null, currentWave, reason, ageHours? }
  */

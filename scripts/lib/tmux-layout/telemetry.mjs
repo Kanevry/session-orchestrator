@@ -19,6 +19,7 @@ import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 
 import { findProjectRoot } from '../common.mjs';
+import { stampEventSchemaVersion, validateEventRecord } from '../events-schema.mjs';
 
 /**
  * Path FRAGMENT joined against a resolved repo root at write time — NOT a
@@ -58,11 +59,22 @@ export function emit(eventType, payload = {}, { repoRoot } = {}) {
     const eventsPath = path.join(repoRoot || findProjectRoot(), ...EVENTS_REL);
     const dir = path.dirname(eventsPath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const record = {
+    // `stampEventSchemaVersion()` rather than an inline `schema_version:` —
+    // one stamper for the whole ledger (#1177). It is additive (stamps only
+    // when absent), so a payload that carries its own version still wins, and
+    // it is pure (no fs), so the sync write path below is unaffected.
+    const record = stampEventSchemaVersion({
       event: eventType,
       timestamp: new Date().toISOString(),
       ...payload,
-    };
+    });
+    // Same schema contract as emitEvent() (#1177), enforced here too because
+    // this is the ONE remaining raw writer of events.jsonl. Kept synchronous on
+    // purpose — withTelemetry() wraps sync layout code; validateEventRecord() is
+    // pure (no fs), so conformance costs no async hop. An invalid record is
+    // DROPPED rather than written: telemetry is best-effort by contract, and a
+    // malformed line would outlive this process in the shared ledger.
+    if (!validateEventRecord(record).valid) return;
     appendFileSync(eventsPath, JSON.stringify(record) + '\n');
   } catch {
     // Best-effort — swallow all errors. Telemetry must not block layout.

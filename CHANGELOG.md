@@ -7,6 +7,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A new blocking validator catches dead script paths cited in skill/command/agent prose
+  (#1176).** `scripts/lib/validate/check-skill-script-paths.mjs` scans `skills/`, `commands/`
+  and `agents/` for `scripts/**.mjs` citations that neither exist nor carry a same-line/
+  line-above `<!-- path-check: planned #<iid> | historical | example -->` marker; fenced code
+  blocks are skipped as illustrative shape, not a claim. Measured 2026-09-02 @ `c3ab480`: 237
+  distinct citations, 7 dead, 4 of the 7 inside fences.
+- **`events.jsonl` records are now schema-versioned and validated before they are written
+  (#1177).** `emitEvent()` stamps every record `schema_version: 1` (never overwriting a
+  caller-supplied value) and runs `validateEventRecord()` BEFORE the append and BEFORE any
+  webhook POST — an invalid record throws `EventValidationError` and produces neither.
+  `scripts/emit-event.mjs` maps that to exit `1` (I/O failures keep exit `2`);
+  `scripts/lib/tmux-layout/telemetry.mjs` stamps + validates synchronously and drops invalid
+  lines. The read path stays lenient — the 33k+ pre-#1177 records without the field remain
+  valid.
+- **A canonical reader collapses `sessions.jsonl`'s append-only duplication (#1167).**
+  `scripts/lib/sessions-canonical.mjs` applies newest-wins per `session_id`, drops any record a
+  later `supersedes` pointer refutes, and narrowly collapses the systemic double-stub class
+  (two `abandoned` records sharing an exact `started_at`/`completed_at` pair, one synthetic).
+  The startup/CLI backfill path (`scripts/backfill-abandoned-sessions.mjs`) now also emits
+  `orchestrator.session.backfill_completed` per record — previously only the SessionEnd hook
+  did — and stamps `raw_session_id`; `hooks/on-session-end.mjs`'s backfill gained a second
+  UUID→semantic bridge via the `session.ended` event for sessions that lost the
+  lock-acquire race.
+- **A vault-scoped lock protects the shared live-status board's read-modify-write (#1180).**
+  `scripts/lib/vault-status/board-lock.mjs` wraps `sweepBoard()`'s merge in a cross-repo mutex
+  (mtime-based staleness — the vault dir can be synced cross-host, so a recorded pid isn't
+  probeable); fail-open on acquire timeout or fs-error (one stderr WARN, then runs unlocked)
+  since a board update is best-effort telemetry. `.gitignore` gained `state.lock` and
+  `rules.lock`.
+- **A GitLab Project Access Token recipe for the schema-drift CI job (#1175).**
+  `docs/ci-setup.md` documents Option A (Project Access Token, recommended) and Option B
+  (personal PAT) for `SCHEMA_DRIFT_TOKEN`. Activation is blocked on the documented
+  vendor-ahead drift tracked in #531: the token is provisioned but the CI/CD variable is not
+  yet set upstream.
+
+### Fixed
+
+- **A live local `session.lock` no longer hides a same-working-copy registry peer (GH#67).**
+  Registry-sourced entries in `scripts/lib/session-discovery.mjs` / `peer-discovery.mjs` now
+  carry additive `registryOnly` / `lockSuperseded` / `lockOwnerId` annotations instead of
+  being filtered out — `lockSuperseded: true` is a HINT (the lock is advisory, so the entry
+  may still be a live session that lost the acquire race), never a verdict. Only
+  PROMOTION_OFFER decisions downgrade such a peer to advisory; peer-count and display
+  consumers keep it. Lock-sourced sessions carry none of the three fields, so their shape
+  stays byte-identical to pre-GH#67.
+- **Worktree-promotion teardown is now mechanical, not skill prose (#1170).**
+  `enterWorktree()` takes an optional `rawSessionId`; when given, it calls `leaveSourceRoot()`
+  on the OLD root after the destination provably exists and records the outcome on
+  `result.left`. Before #1170, four promotion call sites relied on coordinator prose to
+  release the source root — measured zero `deregisterSelf`/`release(` call sites across the
+  affected skill docs, so the abandoned registry entry advertised a phantom peer for up to an
+  hour.
+- **`memory.propose` filed wave-N+1 proposals into the wave-N quota bucket (#1166).**
+  `scripts/memory-propose.mjs` now resolves the RUNNING wave from `<state-dir>/wave-scope.json`
+  first (when present and unbound or bound to this session), falling back to `STATE.md
+  current-wave + 1` only when no usable manifest exists — `current-wave` itself always
+  records the JUST-COMPLETED wave.
+- **`health-endpoints` silently dropped the wizard's own nested-block output (#1174).** The
+  key was read off the flat KV map via `_coerceList`, which bails to `null` on any `{` and
+  cannot see a nested YAML block at all. `scripts/lib/config/health-endpoints.mjs` now parses
+  it content-scoped, accepting inline object arrays, the nested block form (top-level or
+  under `ecosystem-health:`), and a bare URL list; `ecosystem-health`'s own valueless
+  block-header form is now read as a fallback when the scalar key is absent.
+- **`emitEvent()`'s automatic session/semantic-session fill now requires a process-local
+  witness (#1177).** `CLAUDE_CODE_SESSION_ID` (or the hook-input session id) must exactly
+  equal the lock's raw `session_id` before `session_id`/`semantic_session_id` are
+  auto-filled — STATE.md is never treated as a witness. `wave` is filled the same way, only
+  from a `wave-scope.json` manifest bound to this same session, and is coerced to an integer.
+  See `docs/events-schema.md` § Correlation keys.
+- **The memory banner's "sessions ever" stat now counts distinct sessions, not JSONL lines
+  (#1167).** `sessions.jsonl` is append-only, so one physical session can occupy two lines;
+  on this repo the stat drops from 286 lines to 275 sessions. Five readers now go through
+  the canonical collapse: cold-start detection, the memory banner, harness-audit Category 1,
+  evolve's autopilot-effectiveness/verdict, and autopilot's id-set guard.
+- **`check-skill-script-paths` no longer goes blind past an unbalanced code fence (#1176).**
+  An unclosed/unbalanced fence now reports as its own `unbalanced-fence` finding instead of
+  silently absorbing the rest of the file as "inside a fence"; a fence opened inside a
+  blockquote is now recognised as a fence too.
+- **`sessions-canonical.mjs`'s `supersedes` collapse now requires an attestable join key
+  (#1167).** A `supersedes` pointer on an abandoned record is honoured only when it can be
+  matched to the record it claims to supersede; rule ordering was fixed so a superseded
+  record's synthetic double-stub twin is collapsed too. A new `keepUnidentified` option lets
+  callers retain records the canonicalizer could not confidently classify instead of
+  dropping them.
+- **`memory.propose` no longer trusts an unbound `wave-scope.json` (#1177).** A manifest
+  without a `semantic_session` binding is a peer's or a stale artefact, not this session's
+  own — it is now ignored with a stderr note instead of adopted; an unreadable/malformed
+  manifest also WARNs on stderr before falling back to `current-wave + 1`, rather than
+  failing silently.
+- **The vault-status board lock's stale-override is now surfaced, not silent (#1180).**
+  `onLockOutcome` reports a `staleOverride` reason when the lock was force-acquired past a
+  stale holder, and `sweepBoard()`'s board event now records it too — distinguishing "the
+  mutex worked as designed" from "a slow host looked like a crash".
+
 ## [3.23.0] - 2026-08-28
 
 Two commits today (1 `feat`, 1 `fix`; 64 files, +4,971/−184) close Waves 3 and 4 of the

@@ -278,3 +278,89 @@ describe('emitEvent output conforms to events-schema validateEventRecord', () =>
     expect(validateEventRecord(record)).toEqual({ valid: true, errors: [] });
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1177 — schema_version stamping + pre-write validation
+// ---------------------------------------------------------------------------
+
+describe('emitEvent — schema_version + validation (#1177)', () => {
+  let tmpDir;
+  const origClaudeProjectDir = process.env.CLAUDE_PROJECT_DIR;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(path.join(tmpdir(), 'so-events-schema-'));
+    delete process.env.CLANK_EVENT_SECRET;
+    delete process.env.CLANK_EVENT_URL;
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+    if (origClaudeProjectDir === undefined) delete process.env.CLAUDE_PROJECT_DIR;
+    else process.env.CLAUDE_PROJECT_DIR = origClaudeProjectDir;
+    delete process.env.CLANK_EVENT_SECRET;
+    delete process.env.CLANK_EVENT_URL;
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  // Bug: records land in the ledger with no version marker, so a future schema
+  // change cannot tell a v1 record from a v2 one — the migration has nothing to
+  // branch on and every historical record becomes ambiguous.
+  it('stamps schema_version: 1 on the emitted record', async () => {
+    const { emitEvent, eventsFilePath } = await importEventsWithDir(tmpDir);
+    await emitEvent('orchestrator.session.started', { session_id: 's1' });
+    const record = JSON.parse((await readFile(eventsFilePath(), 'utf8')).trim());
+    expect(record.schema_version).toBe(1);
+  });
+
+  // Bug: the producer overwrites a caller-supplied schema_version, so a caller
+  // replaying/migrating records cannot pin their own version — the stamp must be
+  // additive, not authoritative.
+  it('does not overwrite a caller-supplied schema_version', async () => {
+    const { emitEvent, eventsFilePath } = await importEventsWithDir(tmpDir);
+    await emitEvent('orchestrator.session.started', { schema_version: 99 });
+    const record = JSON.parse((await readFile(eventsFilePath(), 'utf8')).trim());
+    expect(record.schema_version).toBe(99);
+  });
+
+  // Bug: a malformed orchestrator.* name is appended to the shared ledger and
+  // only fails at read time. Validation must happen BEFORE any side effect, so
+  // an invalid record leaves no line at all.
+  it('rejects an invalid orchestrator.* name and writes no line', async () => {
+    const { emitEvent, eventsFilePath } = await importEventsWithDir(tmpDir);
+    const { EventValidationError } = await import('@lib/events-schema.mjs');
+    await expect(emitEvent('orchestrator.bad', {})).rejects.toBeInstanceOf(EventValidationError);
+    // No file, and therefore no line — mkdir/appendFile never ran.
+    await expect(access(eventsFilePath())).rejects.toThrow();
+  });
+
+  it('an invalid record fires no webhook POST', async () => {
+    process.env.CLANK_EVENT_SECRET = 'sek';
+    process.env.CLANK_EVENT_URL = 'https://events.example.com';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () => new Response('{}', { status: 200 })
+    );
+    const { emitEvent } = await importEventsWithDir(tmpDir);
+    await expect(emitEvent('orchestrator.bad', {})).rejects.toThrow();
+    await new Promise(r => setImmediate(r));
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  // Bug: schema_version leaks into the webhook envelope, changing a published
+  // wire format an external consumer parses. The version describes the JSONL
+  // record only — the POST body stays { event_type, source, payload }.
+  it('webhook body carries the raw payload without schema_version', async () => {
+    process.env.CLANK_EVENT_SECRET = 'sek';
+    process.env.CLANK_EVENT_URL = 'https://events.example.com';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () => new Response('{}', { status: 200 })
+    );
+    const { emitEvent } = await importEventsWithDir(tmpDir);
+    await emitEvent('orchestrator.session.stopped', { session_id: 's1' });
+    await new Promise(r => setImmediate(r));
+    const [, init] = fetchSpy.mock.calls[0];
+    const body = JSON.parse(init.body);
+    expect(body.payload).toEqual({ session_id: 's1' });
+    expect(Object.keys(body).sort()).toEqual(['event_type', 'payload', 'source']);
+  });
+});

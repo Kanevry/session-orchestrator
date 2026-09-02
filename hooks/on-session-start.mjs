@@ -125,6 +125,30 @@ function shortSessionId(id) {
 }
 
 /**
+ * GH#67 — render the provenance marker for ONE mechanically-detected peer.
+ *
+ * `discoverActiveSessions()` annotates registry-sourced peers additively
+ * (`registryOnly` / `lockSuperseded` / `lockOwnerId`); lock-sourced peers carry
+ * none of the three, so they render byte-identically to the pre-GH#67 banner.
+ *
+ * `lockSuperseded: true` means a LIVE lock at THIS root is held by a different
+ * raw session_id than the registry entry — the common cause is a finished task
+ * whose SessionEnd never ran, leaving a fresh-but-orphaned registry record.
+ * It is a HINT, never a verdict: the session lock is advisory, so the entry may
+ * equally be a live peer that lost the acquire race (#1085). The marker is
+ * therefore purely additive — it never removes the peer, and never changes the
+ * count or the WARN decision (HR-106).
+ *
+ * @param {{registryOnly?:boolean, lockSuperseded?:boolean, lockOwnerId?:string|null}} peer
+ * @returns {string} '' for a lock-sourced peer, else a bracketed marker.
+ */
+function supersessionMarker(peer) {
+  if (!peer || peer.registryOnly !== true) return '';
+  if (peer.lockSuperseded === true) return ' [registry-only, superseded]';
+  return ' [registry-only]';
+}
+
+/**
  * Queue the ONE `additionalContext` string for the single end-of-hook flush.
  * Last writer wins; there is deliberately no accumulation, because every
  * character here costs context on every session start.
@@ -738,6 +762,11 @@ async function main() {
   } catch { /* hook must remain non-blocking */ }
 
   let peers = [];
+  // GH#67 consumer half — how many mechanically-detected peers were registry-
+  // sourced entries that a LIVE lock at this root supersedes. Counted for the
+  // session.started payload below; NEVER subtracted from any peer count
+  // (HR-106: the banner reports the number the verdict judged).
+  let mechanicalPeersSuperseded = 0;
   try {
     await sweepZombies().catch(() => ({ removed: [], logged: 0 }));
     try {
@@ -839,6 +868,7 @@ async function main() {
       const { discoverActiveSessions } = await import('../scripts/lib/session-discovery.mjs');
       const allActive = await discoverActiveSessions(projectRoot);
       const mechanicalPeers = allActive.filter((s) => s.sessionId !== sessionId);
+      mechanicalPeersSuperseded = mechanicalPeers.filter((p) => p.lockSuperseded === true).length;
       if (mechanicalPeers.length > 0) {
         // #1137 part 1 — say WHERE, not just how many. discoverActiveSessions()
         // walks EVERY path `git worktree list` reports, which includes worktrees
@@ -862,11 +892,14 @@ async function main() {
             // a lock written without the field yields undefined here, while
             // sessionFromRegistryEntry() always defaults it to 'session'.
             const mode = typeof p.mode === 'string' && p.mode.length > 0 ? `:${p.mode}` : '';
-            return `${where}:${shortSessionId(p.sessionId)}${mode}`;
+            return `${where}:${shortSessionId(p.sessionId)}${mode}${supersessionMarker(p)}`;
           })
           .join(', ');
         const overflow = mechanicalPeers.length > 3 ? ` +${mechanicalPeers.length - 3} more` : '';
         pushBanner(`🔍 Mechanical peer-detection: ${mechanicalPeers.length} active in this repo's worktree set (${summary}${overflow})`);
+        if (mechanicalPeersSuperseded > 0) {
+          pushBanner(`   ${mechanicalPeersSuperseded} of them registry-only and superseded by this root's live lock — likely a finished task without SessionEnd (GH#67). Still counted above: the session lock is advisory.`);
+        }
       }
     } catch { /* best effort — banner is informational, never blocks */ }
   }
@@ -914,6 +947,10 @@ async function main() {
     branch,
     session_id: sessionId,
     peer_count: peers.length,
+    // GH#67 — additive: how many mechanically-detected peers a live lock at
+    // this root supersedes. `peer_count` is deliberately unchanged; this field
+    // makes the supersession rate measurable instead of inferred (HR-105).
+    peers_superseded: mechanicalPeersSuperseded,
   };
   if (bannerData) {
     payload.host_class = bannerData.host.host_class;

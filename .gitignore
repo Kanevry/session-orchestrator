@@ -61,6 +61,12 @@ coverage/
 .orchestrator/STATE.md
 # Issue #330: distributed session-lock
 .orchestrator/session.lock
+# Issue #1180: per-repo mutexes — STATE.md write-lock (scripts/lib/locks/state-md-lock.mjs)
+# and the reconcile rules lock (scripts/lib/reconcile/writer.mjs). Runtime state,
+# never committable. NOTE: .orchestrator/bootstrap.lock is a deliberately TRACKED
+# marker and must stay out of this list.
+.orchestrator/state.lock
+.orchestrator/rules.lock
 # Issue #1020: per-dispatch scope ledger written by hooks/pre-task-scope-disjoint.mjs
 .orchestrator/wave-dispatch-scopes.json
 .orchestrator/wave-dispatch-scopes.lock

@@ -153,18 +153,33 @@ function collectSessionEvents(events, { sessionId, semanticSessionId }) {
 
   let mode = null;
   let semanticFromLock = null;
+  // #1167 — the SECOND semantic bridge. `orchestrator.session.ended` carries
+  // `semantic_session_id` alongside the raw UUID since #1068 AC1, but nothing
+  // read it: a session that LOST the lock-acquire race emits no lock.acquired,
+  // so the lock bridge above resolved null and the caller fell through to the
+  // synthetic-id mint — writing a SECOND `abandoned` stub for a session the
+  // SessionEnd hook had already recorded under its semantic id. Measured
+  // 2026-09-02 @ c3ab480: 8 such duplicate pairs in sessions.jsonl.
+  let semanticFromEvents = null;
 
-  // First pass — lock.acquired bridges the UUID set + carries mode + semantic.
+  // First pass — bridge the UUID set + carry mode + semantic id. lock.acquired
+  // is the original bridge; session.ended is the #1167 addition.
   for (const ev of events) {
-    if (ev.event !== EVENT_LOCK_ACQUIRED) continue;
+    const isLock = ev.event === EVENT_LOCK_ACQUIRED;
+    const isEnded = ev.event === EVENT_ENDED && typeof ev.semantic_session_id === 'string';
+    if (!isLock && !isEnded) continue;
     const matchesUuid = isUuid(sessionId) && ev.session_id === sessionId;
     const matchesSemantic =
       (semanticSessionId && ev.semantic_session_id === semanticSessionId) ||
       (!isUuid(sessionId) && sessionId && ev.semantic_session_id === sessionId);
     if (!matchesUuid && !matchesSemantic) continue;
     if (typeof ev.session_id === 'string') uuids.add(ev.session_id);
-    if (typeof ev.mode === 'string') mode = ev.mode;
-    if (typeof ev.semantic_session_id === 'string') semanticFromLock = ev.semantic_session_id;
+    if (isLock) {
+      if (typeof ev.mode === 'string') mode = ev.mode;
+      if (typeof ev.semantic_session_id === 'string') semanticFromLock = ev.semantic_session_id;
+    } else {
+      semanticFromEvents = ev.semantic_session_id;
+    }
   }
 
   // Second pass — started + terminal timestamps from every matched UUID.
@@ -200,7 +215,18 @@ function collectSessionEvents(events, { sessionId, semanticSessionId }) {
     }
   }
 
-  return { uuids, mode, semanticFromLock, startedAt, branch, project, lastTerminalMs, earliestMs, lastEventMs };
+  return {
+    uuids,
+    mode,
+    semanticFromLock,
+    semanticFromEvents,
+    startedAt,
+    branch,
+    project,
+    lastTerminalMs,
+    earliestMs,
+    lastEventMs,
+  };
 }
 
 /**
@@ -256,7 +282,7 @@ function isCandidateDeadByAge({ relaxDeadByAge, assumeDeadBeforeMs, lastEventMs,
  * this record replaces. It is emitted only when non-null, so every existing
  * record shape is byte-identical to before.
  */
-function synthesizeRecord({ recordId, synthetic, gathered, nowMs, status = 'abandoned', backfillSource = 'events-jsonl', supersedes = null }) {
+function synthesizeRecord({ recordId, synthetic, gathered, nowMs, status = 'abandoned', backfillSource = 'events-jsonl', supersedes = null, rawSessionId = null }) {
   const startedIso = canonicalIso(gathered.startedAt, gathered.earliestMs ?? nowMs);
   const startedMs = Date.parse(startedIso);
   // completed_at is events-attested, never the backfill-run wall-clock (#914 R1).
@@ -329,6 +355,13 @@ function synthesizeRecord({ recordId, synthetic, gathered, nowMs, status = 'aban
   // "historische Stub-Provenance bleibt erhalten"). Readers resolve one
   // canonical state per id by taking the NEWEST record for that id.
   if (typeof supersedes === 'string' && supersedes.length > 0) record.supersedes = supersedes;
+  // #1167 — the harness UUID this record was reconstructed from, when known.
+  // Additive and optional (the schema validates unknown keys pass-through, see
+  // session-schema/validator.mjs `_validateOptionalFields`): it is the ONLY key
+  // that lets a reader join a semantic record back to its raw uuid. Measured
+  // 2026-09-02 @ c3ab480: 0 of 286 existing records carry it, which is exactly
+  // why the two backfill writers could not see each other's work.
+  if (typeof rawSessionId === 'string' && rawSessionId.length > 0) record.raw_session_id = rawSessionId;
   return record;
 }
 
@@ -535,8 +568,11 @@ export async function backfillAbandonedSession({
 
       // -- Resolve a deferred id from the lock bridge or a synthetic mint ------
       if (recordId === null) {
-        if (gathered.semanticFromLock) {
-          recordId = gathered.semanticFromLock;
+        // Prefer the lock bridge (it also carries `mode`), then the #1167
+        // session.ended bridge. Only when NEITHER attests a semantic id do we
+        // mint a synthetic one — that fallback was the duplicate-stub source.
+        if (gathered.semanticFromLock || gathered.semanticFromEvents) {
+          recordId = gathered.semanticFromLock || gathered.semanticFromEvents;
         } else {
           // No semantic bridge — mint a synthetic id. Both components are STABLE
           // across re-runs so dedupe/marker suppress a double write (idempotency
@@ -619,7 +655,13 @@ export async function backfillAbandonedSession({
       }
 
       // -- Synthesize + validate (round-trip gate) BEFORE any disk mutation ---
-      const record = synthesizeRecord({ recordId, synthetic, gathered, nowMs });
+      const record = synthesizeRecord({
+        recordId,
+        synthetic,
+        gathered,
+        nowMs,
+        rawSessionId: isUuid(sessionId) ? sessionId : null,
+      });
       let validated;
       try {
         validated = validateSession(record);
@@ -845,6 +887,13 @@ export async function backfillCompletedFromStateMd({
         status: 'completed',
         backfillSource: 'state-md-completed',
         supersedes,
+        // #1167 — the abandoned path stamps this; so must the authoritative
+        // one, or the join key exists on exactly the weaker half of the pair.
+        // `gathered.uuids` is bridged from lock.acquired / session.ended, so it
+        // normally holds EXACTLY the one uuid this semantic id ran under. Two
+        // (or zero) means the bridge is ambiguous — omit rather than guess, the
+        // same fail-quiet posture as `isUuid(sessionId) ? sessionId : null`.
+        rawSessionId: gathered.uuids?.size === 1 ? [...gathered.uuids][0] : null,
       });
       let validated;
       try {

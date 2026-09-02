@@ -1357,3 +1357,147 @@ describe('Group J — checkLiveForeignSession CLI entry (#908)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group K — GH#67 registry-only annotation (additive; NEVER a filter)
+//
+// The bug: a finished Codex task emits no SessionEnd, so its registry entry
+// stays fresh for up to `freshnessMin`. A NEW task that owns
+// .orchestrator/session.lock then sees the old raw id as a plain
+// `source: 'discovered'` peer and raises a false worktree PROMOTION_OFFER.
+// The entry must STAY visible (the lock is advisory — a second session
+// provably runs in the same working copy without holding it, #1085), so the
+// fix is an annotation the PROMOTION_OFFER consumer reads, not a filter.
+// Each test below names the wrong answer it rules out.
+// ---------------------------------------------------------------------------
+
+describe('Group K — GH#67 registry-only peers annotated against the live local lock', () => {
+  const LOCK_OWNER_B = 'sess-K-lock-owner-B';
+  const REGISTRY_A = 'sess-K-registry-A';
+
+  // K1–K4 differ only in the lock state at repoRoot; the registry entry, the
+  // call and the assertion shape are identical, so they are one table. Each
+  // row names the wrong answer it rules out.
+  it.each([
+    {
+      // Catches: dropping A (the NO-GO filter, would hide a genuine peer) AND
+      // emitting A unannotated (the GH#67 false PROMOTION_OFFER).
+      label: 'K1: live lock owned by B → A still visible, annotated lockSuperseded',
+      lock: (now) => lockBody({
+        session_id: LOCK_OWNER_B,
+        last_heartbeat: new Date(now).toISOString(),
+      }),
+      mySessionId: null,
+      registryHeartbeatOffsetMs: 14 * 60 * 1000,
+      expected: { lockSuperseded: true, lockOwnerId: LOCK_OWNER_B },
+    },
+    {
+      // Catches: annotating on "a lock exists" instead of "a DIFFERENT id owns
+      // it" — which would flag every peer, including the lock holder itself.
+      // No worktrees → the lock is not read as a lock-sourced session, so the
+      // registry entry for the same id survives dedupe and can be inspected.
+      label: 'K2: the live lock owner is its OWN registry entry → lockSuperseded false',
+      lock: (now) => lockBody({
+        session_id: REGISTRY_A,
+        last_heartbeat: new Date(now).toISOString(),
+      }),
+      mySessionId: 'C',
+      registryHeartbeatOffsetMs: 0,
+      expected: { lockSuperseded: false, lockOwnerId: REGISTRY_A },
+    },
+    {
+      // Catches: a truthiness bug that reads "no lock" as "some other owner".
+      label: 'K3: no lock at repoRoot → lockSuperseded false, lockOwnerId null',
+      lock: null,
+      mySessionId: null,
+      registryHeartbeatOffsetMs: 0,
+      expected: { lockSuperseded: false, lockOwnerId: null },
+    },
+    {
+      // Catches: annotating from a lock file's mere EXISTENCE rather than from
+      // isLockLive — a 5h-old lease under ttl_hours: 4 owns nothing.
+      label: 'K4: STALE lock owned by B → lockSuperseded false (a dead lease proves nothing)',
+      lock: (now) => lockBody({
+        session_id: LOCK_OWNER_B,
+        ttl_hours: 4,
+        started_at: new Date(now - 6 * 60 * 60 * 1000).toISOString(),
+        last_heartbeat: new Date(now - 5 * 60 * 60 * 1000).toISOString(),
+      }),
+      mySessionId: null,
+      registryHeartbeatOffsetMs: 0,
+      expected: { lockSuperseded: false, lockOwnerId: null },
+    },
+  ])('$label', async ({ lock, mySessionId, registryHeartbeatOffsetMs, expected }) => {
+    const now = Date.now();
+    const locks = [lock].filter(Boolean);
+    locks.forEach((build) => writeLock(repoRoot, build(now)));
+
+    const result = await findPeers(repoRoot, {
+      mySessionId,
+      now,
+      listWorktreesImpl: () => [],
+      registryReader: async () => [regEntry({
+        session_id: REGISTRY_A,
+        last_heartbeat: new Date(now - registryHeartbeatOffsetMs).toISOString(),
+      })],
+    });
+
+    const discovered = result.peers.filter((p) => p.source === 'discovered');
+    expect(discovered).toHaveLength(1);
+    expect(discovered[0].sessionId).toBe(REGISTRY_A);
+    expect(discovered[0].registryOnly).toBe(true);
+    expect(discovered[0].lockSuperseded).toBe(expected.lockSuperseded);
+    expect(discovered[0].lockOwnerId).toBe(expected.lockOwnerId);
+  });
+
+  it('K5: two live lock-sourced peers + one registry-only → only the registry-only one carries the flags', async () => {
+    // Catches: leaking the annotation onto lock-sourced peers (their object
+    // shape is pinned byte-identical to the pre-GH#67 one) and, in the other
+    // direction, dropping either genuinely-live peer.
+    const now = Date.now();
+    const worktreeB = mkdtempSync(join(tmpdir(), 'peer-discovery-wt-'));
+    try {
+      writeLock(repoRoot, lockBody({
+        session_id: 'sess-K5-lock-A',
+        last_heartbeat: new Date(now).toISOString(),
+      }));
+      writeLock(worktreeB, lockBody({
+        session_id: 'sess-K5-lock-B',
+        last_heartbeat: new Date(now).toISOString(),
+      }));
+
+      const result = await findPeers(repoRoot, {
+        mySessionId: null,
+        now,
+        listWorktreesImpl: () => [
+          { path: repoRoot, branch: 'main', head: 'aaa' },
+          { path: worktreeB, branch: 'feat', head: 'bbb' },
+        ],
+        registryReader: async () => [
+          regEntry({ session_id: 'sess-K5-lock-A', last_heartbeat: new Date(now).toISOString() }),
+          regEntry({ session_id: 'sess-K5-lock-B', last_heartbeat: new Date(now).toISOString() }),
+          regEntry({ session_id: REGISTRY_A, last_heartbeat: new Date(now).toISOString() }),
+        ],
+      });
+
+      const discovered = result.peers.filter((p) => p.source === 'discovered');
+      expect(discovered.map((p) => p.sessionId).sort()).toEqual(
+        ['sess-K5-lock-A', 'sess-K5-lock-B', REGISTRY_A].sort(),
+      );
+
+      for (const id of ['sess-K5-lock-A', 'sess-K5-lock-B']) {
+        const peer = discovered.find((p) => p.sessionId === id);
+        expect(peer.registryOnly).toBeUndefined();
+        expect(peer.lockSuperseded).toBeUndefined();
+        expect(peer.lockOwnerId).toBeUndefined();
+      }
+
+      const registryOnly = discovered.find((p) => p.sessionId === REGISTRY_A);
+      expect(registryOnly.registryOnly).toBe(true);
+      expect(registryOnly.lockSuperseded).toBe(true);
+      expect(registryOnly.lockOwnerId).toBe('sess-K5-lock-A');
+    } finally {
+      rmSync(worktreeB, { recursive: true, force: true });
+    }
+  });
+});

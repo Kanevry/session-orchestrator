@@ -58,6 +58,7 @@ import { readConfigFile, parseSessionConfig } from '../config.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
 import { enumerateCandidates } from '../dispatcher/enumerate.mjs';
 import { atomicWriteWithBackup } from '../io.mjs';
+import { withBoardLock } from './board-lock.mjs';
 
 /** Frontmatter sentinel that identifies generator-owned board files. */
 export const GENERATOR_MARKER = 'session-orchestrator-active-sessions@1';
@@ -729,6 +730,10 @@ export const BOARD_EVENT = 'orchestrator.vault.board_written';
  * @param {number} [opts.reposSwept] — candidates {@link enumerateCandidates}
  *   returned, on the {@link sweepBoard} path only.
  * @param {number} [opts.durationMs]
+ * @param {{ locked: boolean, reason?: string, stale_override?: string, waited_ms: number }} [opts.lock]
+ *   — board-lock outcome, present only when the lock was actually attempted
+ *   (i.e. not on the early no-op guards, not on dry-run). Never carries the lock
+ *   PATH — that is a `$HOME`-rooted string, the CP1 shape this payload keeps out.
  * @returns {Promise<void>}
  */
 /**
@@ -765,7 +770,7 @@ function telemetrySafePath(outputPath) {
   return base.length > 0 ? base : undefined;
 }
 
-async function emitBoardEvent({ repoRoot, caller, action, path: outputPath, rows, reposSwept, durationMs }) {
+async function emitBoardEvent({ repoRoot, caller, action, path: outputPath, rows, reposSwept, durationMs, lock }) {
   // Refuse the SO_PROJECT_DIR fallback instead of guessing a destination.
   // Without an explicit repoRoot, `emitEvent` resolves `eventsFilePath(undefined)`
   // and writes into whatever tree the ambient env points at — so `mirrorBoard()`
@@ -798,6 +803,12 @@ async function emitBoardEvent({ repoRoot, caller, action, path: outputPath, rows
         ...(Number.isFinite(rows) ? { rows } : {}),
         ...(Number.isFinite(reposSwept) ? { repos_swept: reposSwept } : {}),
         ...(Number.isFinite(durationMs) ? { duration_ms: durationMs } : {}),
+        // Lock diagnostics (absent on every path that never took the lock: the
+        // early no-op guards and dry-run). `lock.locked === false` marks a
+        // fail-open unlocked write; `lock.stale_override` marks an acquire that
+        // aged out someone else's lock — the observable behind board-lock's
+        // DEFAULT_STALE_MS revisit trigger.
+        ...(lock && typeof lock === 'object' ? { lock } : {}),
         // #1147: join key parity with the sibling `narrative_mirrored` event,
         // which has carried attribution since #1073. Without it a board record
         // cannot be joined to the session that wrote it. Both keys are OMITTED
@@ -851,7 +862,10 @@ async function emitBoardEvent({ repoRoot, caller, action, path: outputPath, rows
  *   `owner.yaml`, whose `paths.vault-dir` override (if set) wins over the fixture value
  *   and bleeds into the assertion (issue #783). Production callers omit this — the
  *   default (real owner.yaml resolution) is the correct host-local behavior there.
- * @returns {Promise<{ result: { action: string, path?: string }, rows?: number }>}
+ * @returns {Promise<{ result: { action: string, path?: string }, rows?: number,
+ *   lock?: { locked: boolean, reason?: string, stale_override?: string, waited_ms: number } }>}
+ *   `lock` is present only on the locked path (absent on the early no-op guards
+ *   and on dry-run, which deliberately takes no lock).
  *   `rows` is present only once the render was reached — see
  *   {@link emitBoardEvent}'s `rows` contract. The public {@link mirrorBoard}
  *   wrapper unwraps `result` so the caller-visible return shape is unchanged.
@@ -934,132 +948,171 @@ async function mirrorBoardInner({ repoRoot, repos, explicitStatus, now = new Dat
 
   const outputPath = resolveBoardPath(vaultDir);
 
-  // Read the EXISTING generator-owned board (if any) to:
-  //   1. preserve its `created:` — otherwise every render differs on `created:`
-  //      and the noop-skip in writeBoard would never fire.
-  //   2. recover the prior per-repo status — drives the `closed` derivation for
-  //      repos NOT in this update (idempotent merge: their rows are re-derived).
-  // Both maps are keyed by {@link foldKey}(repo) — case-insensitively folded
-  // (issue #719) — so two prior rows differing only by case (e.g.
-  // `some-repo` vs `Some-Repo`, the same physical directory on a
-  // case-insensitive-preserving filesystem like APFS) collapse to ONE entry
-  // instead of coexisting as duplicates. The row OBJECTS keep their original
-  // `repo` string untouched, so `renderBoard` still displays true casing.
-  const fsReadFile = fs?.readFileSync ?? readFileSync;
-  const fsExists = fs?.existsSync ?? existsSync;
-  let createdIso;
-  const priorStatusByRepo = new Map();   // LEGACY rows only — see collectRows contract
-  const priorStatusByKey = new Map();    // boardKey → status (authoritative since #871)
-  const preservedRows = new Map(); // merge slot (see hashSlot/nameSlot) → prior row
-  if (fsExists(outputPath)) {
-    let existing;
-    try {
-      existing = fsReadFile(outputPath, 'utf8');
-    } catch {
-      existing = null;
-    }
-    if (existing) {
-      const fm = parseFrontmatter(existing);
-      if (fm && fm['_generator'] === GENERATOR_MARKER) {
-        if (fm['created']) createdIso = fm['created'];
-        for (const prior of parseBoardRows(existing)) {
-          // Dual-key slotting (#871): a keyed row owns its own hash slot; a
-          // legacy (6-column) row falls back to its folded display name. Two
-          // keyed rows can only collide when they resolve to the SAME path, so
-          // the heartbeat-preference resolution below is now reached almost
-          // exclusively by legacy rows — which is precisely the case it was
-          // written for (#719).
-          const key = prior.key ? hashSlot(prior.key) : nameSlot(prior.repo);
-          const collidingPrior = preservedRows.get(key);
-          if (collidingPrior) {
-            // Collision WITHIN parseBoardRows output — two prior rows fold to
-            // the same key with no fresh row in play yet (that upsert happens
-            // below). Prefer the row with the most-recent `heartbeat` rather
-            // than silently last-in-file-order. Guard: if either heartbeat is
-            // unparsable, fall through to last-written-wins (the pre-#719
-            // default) by NOT skipping the overwrite below.
-            const collidingTs = Date.parse(collidingPrior.heartbeat ?? '');
-            const priorTs = Date.parse(prior.heartbeat ?? '');
-            if (Number.isFinite(collidingTs) && Number.isFinite(priorTs) && collidingTs > priorTs) {
-              // The already-preserved row is strictly newer — keep it, skip
-              // this older colliding row entirely.
-              continue;
+  // Everything below — the two reads of the existing board, the merge, and the
+  // write — is ONE read-modify-write over a file shared by every repo on the
+  // host (issue #1180). Serialise it on the vault-scoped board lock so a
+  // concurrent sweepBoard() from another repo cannot compute its merge from a
+  // base we are about to replace. Fail-open: withBoardLock runs the closure
+  // unlocked (with a WARN) rather than let a contended lock abort the phase.
+  const mergeAndWrite = async () => {
+    // Read the EXISTING generator-owned board (if any) to:
+    //   1. preserve its `created:` — otherwise every render differs on `created:`
+    //      and the noop-skip in writeBoard would never fire.
+    //   2. recover the prior per-repo status — drives the `closed` derivation for
+    //      repos NOT in this update (idempotent merge: their rows are re-derived).
+    // Both maps are keyed by {@link foldKey}(repo) — case-insensitively folded
+    // (issue #719) — so two prior rows differing only by case (e.g.
+    // `some-repo` vs `Some-Repo`, the same physical directory on a
+    // case-insensitive-preserving filesystem like APFS) collapse to ONE entry
+    // instead of coexisting as duplicates. The row OBJECTS keep their original
+    // `repo` string untouched, so `renderBoard` still displays true casing.
+    const fsReadFile = fs?.readFileSync ?? readFileSync;
+    const fsExists = fs?.existsSync ?? existsSync;
+    let createdIso;
+    const priorStatusByRepo = new Map();   // LEGACY rows only — see collectRows contract
+    const priorStatusByKey = new Map();    // boardKey → status (authoritative since #871)
+    const preservedRows = new Map(); // merge slot (see hashSlot/nameSlot) → prior row
+    if (fsExists(outputPath)) {
+      let existing;
+      try {
+        existing = fsReadFile(outputPath, 'utf8');
+      } catch {
+        existing = null;
+      }
+      if (existing) {
+        const fm = parseFrontmatter(existing);
+        if (fm && fm['_generator'] === GENERATOR_MARKER) {
+          if (fm['created']) createdIso = fm['created'];
+          for (const prior of parseBoardRows(existing)) {
+            // Dual-key slotting (#871): a keyed row owns its own hash slot; a
+            // legacy (6-column) row falls back to its folded display name. Two
+            // keyed rows can only collide when they resolve to the SAME path, so
+            // the heartbeat-preference resolution below is now reached almost
+            // exclusively by legacy rows — which is precisely the case it was
+            // written for (#719).
+            const key = prior.key ? hashSlot(prior.key) : nameSlot(prior.repo);
+            const collidingPrior = preservedRows.get(key);
+            if (collidingPrior) {
+              // Collision WITHIN parseBoardRows output — two prior rows fold to
+              // the same key with no fresh row in play yet (that upsert happens
+              // below). Prefer the row with the most-recent `heartbeat` rather
+              // than silently last-in-file-order. Guard: if either heartbeat is
+              // unparsable, fall through to last-written-wins (the pre-#719
+              // default) by NOT skipping the overwrite below.
+              const collidingTs = Date.parse(collidingPrior.heartbeat ?? '');
+              const priorTs = Date.parse(prior.heartbeat ?? '');
+              if (Number.isFinite(collidingTs) && Number.isFinite(priorTs) && collidingTs > priorTs) {
+                // The already-preserved row is strictly newer — keep it, skip
+                // this older colliding row entirely.
+                continue;
+              }
             }
+            if (prior.key) {
+              priorStatusByKey.set(prior.key, prior.status);
+            } else {
+              // LEGACY rows only. Seeding this map from keyed rows too would let
+              // repo B (never seen, same basename) inherit repo A's terminal
+              // status through the name fallback in collectRows — reintroducing
+              // the identity collision #871 exists to remove, one layer down.
+              priorStatusByRepo.set(foldKey(prior.repo), prior.status);
+            }
+            preservedRows.set(key, prior);
           }
-          if (prior.key) {
-            priorStatusByKey.set(prior.key, prior.status);
-          } else {
-            // LEGACY rows only. Seeding this map from keyed rows too would let
-            // repo B (never seen, same basename) inherit repo A's terminal
-            // status through the name fallback in collectRows — reintroducing
-            // the identity collision #871 exists to remove, one layer down.
-            priorStatusByRepo.set(foldKey(prior.repo), prior.status);
-          }
-          preservedRows.set(key, prior);
         }
       }
     }
-  }
 
-  const rows = await collectRows({ repos: repoList, now, priorStatusByRepo, priorStatusByKey });
+    const rows = await collectRows({ repos: repoList, now, priorStatusByRepo, priorStatusByKey });
 
-  // TTL-staleness re-derivation for PRESERVED rows (issue #829 Finding 2).
-  // Without this pass, a preserved `in-progress` row (a repo NOT in this
-  // update) is copied forward FOREVER — a crashed/never-closed session's row
-  // never flips even after its heartbeat has aged well past the lock's TTL,
-  // because `collectRows` only re-derives status for repos actually IN
-  // `repoList`. Re-derive staleness for every preserved row here, BEFORE the
-  // freshly-derived `rows` are upserted over it below (fresh data always
-  // wins regardless of this pass — a live lock or an explicit-closed update
-  // always takes precedence over the TTL flip).
-  //
-  // Board rows carry only a raw `heartbeat` string, never the lock's own
-  // `ttl_hours` (that field is not part of the rendered board) — so this
-  // reuses the shared {@link DEFAULT_TTL_HOURS} constant rather than the
-  // per-lock TTL {@link isLockLive} uses when a live lock object is in hand.
-  // Rows with an unparseable/absent heartbeat are left UNCHANGED (fail-open,
-  // never crash on a malformed prior board).
-  const nowMs = now instanceof Date ? now.getTime() : Date.now();
-  const ttlMs = DEFAULT_TTL_HOURS * 3600 * 1000;
-  const staleRederivedRows = new Map();
-  for (const [key, row] of preservedRows) {
-    if (row.status === STATUS_IN_PROGRESS) {
-      const heartbeatMs = Date.parse(row.heartbeat ?? '');
-      if (Number.isFinite(heartbeatMs) && (nowMs - heartbeatMs) >= ttlMs) {
-        staleRederivedRows.set(key, { ...row, status: STATUS_FORCE_CLOSED });
-        continue;
+    // TTL-staleness re-derivation for PRESERVED rows (issue #829 Finding 2).
+    // Without this pass, a preserved `in-progress` row (a repo NOT in this
+    // update) is copied forward FOREVER — a crashed/never-closed session's row
+    // never flips even after its heartbeat has aged well past the lock's TTL,
+    // because `collectRows` only re-derives status for repos actually IN
+    // `repoList`. Re-derive staleness for every preserved row here, BEFORE the
+    // freshly-derived `rows` are upserted over it below (fresh data always
+    // wins regardless of this pass — a live lock or an explicit-closed update
+    // always takes precedence over the TTL flip).
+    //
+    // Board rows carry only a raw `heartbeat` string, never the lock's own
+    // `ttl_hours` (that field is not part of the rendered board) — so this
+    // reuses the shared {@link DEFAULT_TTL_HOURS} constant rather than the
+    // per-lock TTL {@link isLockLive} uses when a live lock object is in hand.
+    // Rows with an unparseable/absent heartbeat are left UNCHANGED (fail-open,
+    // never crash on a malformed prior board).
+    const nowMs = now instanceof Date ? now.getTime() : Date.now();
+    const ttlMs = DEFAULT_TTL_HOURS * 3600 * 1000;
+    const staleRederivedRows = new Map();
+    for (const [key, row] of preservedRows) {
+      if (row.status === STATUS_IN_PROGRESS) {
+        const heartbeatMs = Date.parse(row.heartbeat ?? '');
+        if (Number.isFinite(heartbeatMs) && (nowMs - heartbeatMs) >= ttlMs) {
+          staleRederivedRows.set(key, { ...row, status: STATUS_FORCE_CLOSED });
+          continue;
+        }
       }
+      staleRederivedRows.set(key, row);
     }
-    staleRederivedRows.set(key, row);
-  }
 
-  // Idempotent merge: keep prior (TTL-rederived) rows for repos NOT in this
-  // update, then upsert the freshly-derived rows over them so repeated writes
-  // stay stable. A freshly-derived row ALWAYS wins over a preserved row in the
-  // same slot — that is what collapses a live row over a stale preserved one.
-  //
-  // Dual-key upsert (#871). A naive switch from the folded name to the path
-  // key would make the two key spaces DISJOINT: the fresh row would never
-  // overwrite the legacy row, the legacy row would become immortal (the sweep
-  // skips `frei` candidates and the TTL pass only rewrites `status`, never
-  // removes a row), and the board would grow a permanent duplicate per repo.
-  // So a fresh row first claims its hash slot; if that slot is new, it ADOPTS
-  // the legacy name slot for the same folded name — one board write converts
-  // the row, and the migration is complete for that repo.
-  const merged = new Map(staleRederivedRows);
-  for (const row of rows) {
-    const slot = row.key ? hashSlot(row.key) : nameSlot(row.repo);
-    if (row.key && !merged.has(slot)) {
-      // First keyed write for this repo — take over its legacy row rather than
-      // rendering a second one beside it.
-      merged.delete(nameSlot(row.repo));
+    // Idempotent merge: keep prior (TTL-rederived) rows for repos NOT in this
+    // update, then upsert the freshly-derived rows over them so repeated writes
+    // stay stable. A freshly-derived row ALWAYS wins over a preserved row in the
+    // same slot — that is what collapses a live row over a stale preserved one.
+    //
+    // Dual-key upsert (#871). A naive switch from the folded name to the path
+    // key would make the two key spaces DISJOINT: the fresh row would never
+    // overwrite the legacy row, the legacy row would become immortal (the sweep
+    // skips `frei` candidates and the TTL pass only rewrites `status`, never
+    // removes a row), and the board would grow a permanent duplicate per repo.
+    // So a fresh row first claims its hash slot; if that slot is new, it ADOPTS
+    // the legacy name slot for the same folded name — one board write converts
+    // the row, and the migration is complete for that repo.
+    const merged = new Map(staleRederivedRows);
+    for (const row of rows) {
+      const slot = row.key ? hashSlot(row.key) : nameSlot(row.repo);
+      if (row.key && !merged.has(slot)) {
+        // First keyed write for this repo — take over its legacy row rather than
+        // rendering a second one beside it.
+        merged.delete(nameSlot(row.repo));
+      }
+      merged.set(slot, row);
     }
-    merged.set(slot, row);
-  }
 
-  const content = renderBoard([...merged.values()], { now, createdIso });
+    const content = renderBoard([...merged.values()], { now, createdIso });
 
-  return { result: writeBoard({ outputPath, content, dryRun, fs }), rows: merged.size };
+    return { result: writeBoard({ outputPath, content, dryRun, fs }), rows: merged.size };
+  };
+
+  // dry-run never touches disk (writeBoard guard 1) — so it must not create a
+  // lock file in the operator's vault either. Nothing to serialise.
+  if (dryRun) return await mergeAndWrite();
+
+  // The lock outcome is diagnostic, and until now it went nowhere: `withBoardLock`
+  // has exposed `onLockOutcome` since #1180, and NO production caller passed one
+  // (measured 2026-09-02: `grep -rn onLockOutcome scripts hooks` → board-lock.mjs
+  // and its test, nothing else). So the two states that silently weaken the mutex —
+  // a fail-open unlocked write, and a stale-override that can override a LIVE
+  // writer (see board-lock's DEFAULT_STALE_MS § CEILING) — were unobservable in
+  // aggregate, which is exactly what the revisit trigger needs. Capture it here and
+  // ride it out on the ONE board_written event rather than adding a second event.
+  let lockOutcome;
+  const acquireStartedAt = Date.now();
+  const inner = await withBoardLock(expandedVault, mergeAndWrite, {
+    onLockOutcome: (o) => {
+      // Called exactly once, strictly BEFORE `fn` — so the elapsed time is the
+      // acquire wait, not the merge. `lockPath` is deliberately DROPPED: it is
+      // `<vault>/.orchestrator/board.lock` under $HOME, i.e. the CP1 (OS username)
+      // shape `telemetrySafePath` exists to keep out of the payload.
+      lockOutcome = {
+        locked: o?.locked === true,
+        ...(typeof o?.reason === 'string' ? { reason: o.reason } : {}),
+        ...(typeof o?.staleOverride === 'string' ? { stale_override: o.staleOverride } : {}),
+        waited_ms: Date.now() - acquireStartedAt,
+      };
+    },
+  });
+
+  return lockOutcome === undefined ? inner : { ...inner, lock: lockOutcome };
 }
 
 /**
@@ -1095,7 +1148,7 @@ export async function mirrorBoard(opts = {}) {
   // throws exactly as it did before this wrapper existed.
   const { repoRoot, caller = 'mirrorBoard', reposSwept } = opts;
 
-  const { result, rows } = await mirrorBoardInner(opts);
+  const { result, rows, lock } = await mirrorBoardInner(opts);
 
   await emitBoardEvent({
     repoRoot,
@@ -1105,6 +1158,7 @@ export async function mirrorBoard(opts = {}) {
     rows,
     reposSwept,
     durationMs: Date.now() - startedAt,
+    lock,
   });
 
   return result;

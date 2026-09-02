@@ -18,6 +18,7 @@
  *   Section D — happy path (exit 0 + exit 1 quota): 3 tests
  *   Section E — wrong-context env-var guard (#543 H3, exit 3): 3 tests
  *   Section F — --dry-run validate-only, no write (#741.3): 10 tests
+ *   Section G — running-wave stamping (#1166): 11 tests
  *
  * Env-var convention (#543 H3 / #544 M2):
  *   The `runCli` helper deletes SO_WAVE_AGENT from the child env by default,
@@ -493,11 +494,15 @@ describe('Section D — happy path and quota', () => {
     expect(result.status).toBe('queued');
   });
 
-  it('stdout.wave equals "W2" matching STATE.md current-wave=2', async () => {
+  // #1166 — STATE.md `current-wave` is the JUST-COMPLETED wave (wave-loop.md
+  // § 3a). With no wave-scope.json present the CLI falls back to +1, so
+  // current-wave=2 stamps W3. This assertion previously read 'W2' — the
+  // off-by-one #1166 fixed.
+  it('stdout.wave equals "W3" when STATE.md current-wave=2 (completed) and no wave-scope.json', async () => {
     const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
     const { stdout } = await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV);
     const result = parseJSON(stdout);
-    expect(result.wave).toBe('W2');
+    expect(result.wave).toBe('W3');
   });
 
   it('stdout.position equals "1/5" on first proposal', async () => {
@@ -523,13 +528,14 @@ describe('Section D — happy path and quota', () => {
     expect(line.subject).toBe('Test subject for CLI integration');
   });
 
-  it('proposals.jsonl line contains wave_id matching the STATE.md wave', async () => {
+  // #1166 — see the 'W3' rationale above; this assertion previously read 'W2'.
+  it('proposals.jsonl line contains wave_id for the RUNNING wave (current-wave 2 + 1)', async () => {
     const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
     await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV);
     const jsonlPath = join(dir, '.orchestrator', 'metrics', 'proposals.jsonl');
     const contents = readFileSync(jsonlPath, 'utf8');
     const line = JSON.parse(contents.trim().split('\n')[0]);
-    expect(line.wave_id).toBe('W2');
+    expect(line.wave_id).toBe('W3');
   });
 
   it('stdout.position advances on the second proposal in the same repo', async () => {
@@ -767,11 +773,12 @@ describe('Section F — --dry-run (validate-only, no write; #741.3)', () => {
     expect(result.subject).toBe('Test subject for CLI integration');
   });
 
-  it('stdout.wave equals "W2" under --dry-run when STATE.md current-wave=2 is present', async () => {
+  // #1166 — see the 'W3' rationale in Section D; this assertion previously read 'W2'.
+  it('stdout.wave equals "W3" under --dry-run when STATE.md current-wave=2 is present', async () => {
     const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
     const { stdout } = await runCli(dir, [...VALID_ARGS, '--dry-run'], WAVE_AGENT_ENV);
     const result = parseJSON(stdout);
-    expect(result.wave).toBe('W2');
+    expect(result.wave).toBe('W3');
   });
 
   it('exits 0 with "dry-run-ok" under --dry-run even with NO SO_WAVE_AGENT and NO STATE.md (coordinator context)', async () => {
@@ -1000,5 +1007,176 @@ describe('Section G — --file-paths (#900 C)', () => {
     // FALSIFICATION: unconditionally setting record.file_paths (even to []
     // or undefined-serialized-as-null) would make this key present.
     expect('file_paths' in line).toBe(false);
+  });
+});
+
+// ===========================================================================
+// Section G — running-wave stamping (#1166)
+// ===========================================================================
+//
+// Bug: proposals were stamped `W<current-wave>`, but wave-loop.md § 3a writes
+// STATE.md `current-wave` = the JUST-COMPLETED wave. A proposal filed during
+// wave N+1 therefore landed in the W<N> quota bucket. The coordinator's
+// `<state-dir>/wave-scope.json` carries the RUNNING wave and is preferred;
+// `current-wave + 1` is the fallback when no usable manifest exists.
+
+describe('Section G — running-wave stamping (#1166)', () => {
+  const WAVE_AGENT_ENV_G = { extraEnv: { SO_WAVE_AGENT: '1' } };
+
+  /** Write `<tmp>/.claude/wave-scope.json` — the same state-dir STATE.md lives in. */
+  function writeWaveScope(dir, manifest) {
+    writeFileSync(join(dir, '.claude', 'wave-scope.json'), JSON.stringify(manifest), 'utf8');
+  }
+
+  // (a)–(d) + (g) share one shape: STATE.md says current-wave=1 (the
+  // JUST-COMPLETED wave), a manifest may or may not lie beside it, and the
+  // stamped wave is read off stdout. Each row names the bug it rules out.
+  it.each([
+    {
+      // FALSIFICATION: restoring `waveId = 'W' + currentWaveRaw` makes this W1.
+      label: '(a) an OWN manifest saying wave 2 wins over current-wave+1',
+      manifest: {
+        wave: 2,
+        role: 'Impl-Core',
+        session: '11111111-2222-3333-4444-555555555555',
+        semantic_session: 'test-session-2026-05-23',
+        allowedPaths: [],
+      },
+      stateMd: ACTIVE_STATE_MD.replace('current-wave: 2', 'current-wave: 1'),
+      expected: 'W2',
+    },
+    {
+      label: '(b) no wave-scope.json at all → falls back to current-wave+1',
+      manifest: null,
+      stateMd: ACTIVE_STATE_MD.replace('current-wave: 2', 'current-wave: 1'),
+      expected: 'W2',
+    },
+    {
+      label: '(c) a manifest bound to a FOREIGN session is ignored → fallback',
+      manifest: {
+        wave: 4,
+        semantic_session: 'some-other-session-2026-01-01',
+        session: '99999999-8888-7777-6666-555555555555',
+      },
+      stateMd: ACTIVE_STATE_MD.replace('current-wave: 2', 'current-wave: 1'),
+      expected: 'W2',
+    },
+    {
+      // Bug (#1177 FX1): an UNBOUND manifest used to be trusted as "legacy",
+      // so a peer's or a stale binding-less wave-scope.json filed THIS
+      // session's proposals into a foreign quota bucket. Since #1123 both
+      // writers stamp the binding, so unbound is never own.
+      // FALSIFICATION: restoring `if (unbound || mine)` makes this W3.
+      label: '(d) an UNBOUND (no session keys) manifest is NOT trusted → fallback',
+      manifest: { wave: 3, role: 'Impl-Core', allowedPaths: [] },
+      stateMd: ACTIVE_STATE_MD.replace('current-wave: 2', 'current-wave: 1'),
+      expected: 'W2',
+    },
+    {
+      // L4: a non-integer wave on an OWN manifest must not stamp 'W2.5' /
+      // 'WNaN' — Number.isInteger gates it, the fallback takes over.
+      label: '(h) OWN manifest with a fractional wave (2.5) → fallback',
+      manifest: {
+        wave: 2.5,
+        session: '11111111-2222-3333-4444-555555555555',
+        semantic_session: 'test-session-2026-05-23',
+      },
+      stateMd: ACTIVE_STATE_MD.replace('current-wave: 2', 'current-wave: 1'),
+      expected: 'W2',
+    },
+    {
+      label: '(i) OWN manifest with a non-numeric wave ("abc") → fallback',
+      manifest: {
+        wave: 'abc',
+        session: '11111111-2222-3333-4444-555555555555',
+        semantic_session: 'test-session-2026-05-23',
+      },
+      stateMd: ACTIVE_STATE_MD.replace('current-wave: 2', 'current-wave: 1'),
+      expected: 'W2',
+    },
+    {
+      // The bug: `manifest?.semantic_session === frontmatter['session']` is
+      // TRUE when both are `undefined`. A STATE.md without a `session` key
+      // therefore adopted the wave number of whichever manifest happened to lie
+      // in the state-dir — including a foreign coordinator's. The manifest here
+      // is BOUND (a raw `session` uuid makes it non-legacy) but carries NO
+      // `semantic_session`, which is exactly the `undefined === undefined` case.
+      label: '(g) STATE.md without a `session` key never adopts a bound manifest',
+      manifest: { wave: 7, session: '99999999-8888-7777-6666-555555555555' },
+      stateMd: ACTIVE_STATE_MD
+        .replace('current-wave: 2', 'current-wave: 1')
+        .replace('session: test-session-2026-05-23\n', ''),
+      expected: 'W2',
+    },
+  ])('$label', async ({ manifest, stateMd, expected }) => {
+    const dir = setupTmpRepo({ stateMd });
+    [manifest].filter(Boolean).forEach((m) => writeWaveScope(dir, m));
+    const { code, stdout } = await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV_G);
+    expect(code).toBe(0);
+    expect(parseJSON(stdout).wave).toBe(expected);
+  });
+
+  it('(j) says on stderr that an unbound manifest was ignored', async () => {
+    // Without the line, a proposal bucketed by the fallback is indistinguishable
+    // from one bucketed by a trusted manifest — the operator gets no signal that
+    // a binding-less wave-scope.json is lying in the state-dir (#1177 FX1).
+    const dir = setupTmpRepo({
+      stateMd: ACTIVE_STATE_MD.replace('current-wave: 2', 'current-wave: 1'),
+    });
+    writeWaveScope(dir, { wave: 3, role: 'Impl-Core', allowedPaths: [] });
+    const { code, stdout, stderr } = await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV_G);
+    expect(code).toBe(0);
+    expect(parseJSON(stdout).wave).toBe('W2');
+    expect(stderr).toContain('wave-scope.json unbound');
+  });
+
+  it('(f) WARNs on stderr when the manifest is malformed, then falls back', async () => {
+    // The bug: `catch { /* fall through */ }` swallowed the parse error, so a
+    // CORRUPT coordinator manifest was indistinguishable from no manifest at
+    // all — the proposal landed in the +1 bucket with no signal anywhere.
+    const dir = setupTmpRepo({
+      stateMd: ACTIVE_STATE_MD.replace('current-wave: 2', 'current-wave: 1'),
+    });
+    writeFileSync(join(dir, '.claude', 'wave-scope.json'), '{ not json', 'utf8');
+    const { code, stdout, stderr } = await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV_G);
+    expect(code).toBe(0);
+    expect(parseJSON(stdout).wave).toBe('W2'); // the fallback still happens
+    expect(stderr).toContain('wave-scope.json');
+    expect(stderr).toContain('falling back to current-wave + 1');
+  });
+
+  it('(g) does NOT adopt a bound manifest when STATE.md carries no `session`', async () => {
+    // The bug: `manifest?.semantic_session === frontmatter['session']` is TRUE
+    // when both are `undefined`. A STATE.md without a `session` key therefore
+    // adopted the wave number of whichever manifest happened to lie in the
+    // state-dir — including a foreign coordinator's.
+    const dir = setupTmpRepo({
+      stateMd: ACTIVE_STATE_MD
+        .replace('current-wave: 2', 'current-wave: 1')
+        .replace('session: test-session-2026-05-23\n', ''),
+    });
+    // BOUND (a raw `session` uuid makes it non-legacy) but carrying NO
+    // `semantic_session` — so the old comparison was `undefined === undefined`.
+    writeWaveScope(dir, {
+      wave: 7,
+      session: '99999999-8888-7777-6666-555555555555',
+    });
+    const { code, stdout } = await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV_G);
+    expect(code).toBe(0);
+    expect(parseJSON(stdout).wave).toBe('W2'); // fallback, NOT the manifest's W7
+  });
+
+  it('(e) exits 3 rejected-wrong-context when current-wave is non-numeric and no manifest resolves', async () => {
+    // FALSIFICATION: an unguarded `Number(...) + 1` would stamp 'WNaN', which
+    // store.mjs accepts (it matches /^[A-Za-z0-9_-]+$/) and silently writes.
+    const dir = setupTmpRepo({
+      stateMd: ACTIVE_STATE_MD.replace('current-wave: 2', 'current-wave: not-a-number'),
+    });
+    const { code, stdout } = await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV_G);
+    expect(code).toBe(3);
+    const result = parseJSON(stdout);
+    expect(result.status).toBe('rejected-wrong-context');
+    expect(result.detail).toContain('current-wave');
+    expect(existsSync(join(dir, '.orchestrator', 'metrics', 'proposals.jsonl'))).toBe(false);
   });
 });

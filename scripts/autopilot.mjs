@@ -47,6 +47,7 @@ import { selectMode } from './lib/mode-selector.mjs';
 import { probe, evaluate, DEFAULT_RESOURCE_THRESHOLDS } from './lib/resource-probe.mjs';
 import { detectPeers } from './lib/session-registry.mjs';
 import { normalizeSession } from './lib/session-schema.mjs';
+import { readCanonicalSessions } from './lib/sessions-canonical.mjs';
 
 // ---------------------------------------------------------------------------
 // CLI-level flag extraction
@@ -174,17 +175,29 @@ const branch = detectBranch();
 const SESSIONS_JSONL_PATH = resolve('.orchestrator/metrics/sessions.jsonl');
 
 /**
- * Count the number of non-empty lines in sessions.jsonl. Returns 0 if missing.
- * @returns {number}
+ * Set of the DISTINCT session identities currently recorded in sessions.jsonl.
+ * Empty set when the file is missing or unreadable.
+ *
+ * Identities, not lines (#1167): the ledger is append-only, so one physical
+ * session can occupy two lines (an abandoned stub plus the authoritative
+ * record that supersedes it, or the systemic double-stub pair). The
+ * pre/post comparison below asks "did the session I just spawned record
+ * itself?", and a raw line count answers that question wrong in BOTH
+ * directions — a duplicate pair looks like two sessions, while a supersede
+ * append (+1 line, −1 stub) leaves a canonical COUNT unchanged. Comparing the
+ * id SETS is immune to both.
+ *
+ * @returns {Set<string>}
  */
-function countSessionLines() {
-  if (!existsSync(SESSIONS_JSONL_PATH)) return 0;
-  try {
-    const raw = readFileSync(SESSIONS_JSONL_PATH, 'utf8');
-    return raw.split('\n').filter((l) => l.trim().length > 0).length;
-  } catch {
-    return 0;
+function readSessionIds() {
+  if (!existsSync(SESSIONS_JSONL_PATH)) return new Set();
+  const ids = new Set();
+  for (const rec of readCanonicalSessions({ filePath: SESSIONS_JSONL_PATH })) {
+    if (typeof rec.session_id === 'string' && rec.session_id.length > 0) {
+      ids.add(rec.session_id);
+    }
   }
+  return ids;
 }
 
 /**
@@ -249,7 +262,7 @@ async function modeSelector() {
  * @returns {Promise<{session_id: string, agent_summary?: object, effectiveness?: object}>}
  */
 async function sessionRunner({ mode, autopilotRunId }) {
-  const preCount = countSessionLines();
+  const preIds = readSessionIds();
 
   await new Promise((res, rej) => {
     const childStdio = hasVerbose
@@ -281,8 +294,9 @@ async function sessionRunner({ mode, autopilotRunId }) {
     });
   });
 
-  const postCount = countSessionLines();
-  if (postCount === preCount) {
+  const postIds = readSessionIds();
+  const appeared = [...postIds].some((id) => !preIds.has(id));
+  if (!appeared) {
     throw new Error('no session record appended');
   }
 

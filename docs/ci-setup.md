@@ -28,11 +28,92 @@ token or PAT stored as the masked CI variable `SCHEMA_DRIFT_TOKEN`.
 > the baseline gains a public mirror — then set the token (Option A below)
 > and flip `SCHEMA_DRIFT_OPTIONAL` at both sites.
 
+### Activation status (measured 2026-09-02)
+
+**Update, same day:** the token below was **revoked** — an unused credential is a
+liability per SEC-005's secrets-lifecycle discipline, and leaving a live,
+never-set-as-a-CI-variable token sitting in `infrastructure/projects-baseline`
+served no purpose once the control run below had already answered the
+question it was minted for. Re-minting it (same `glab api --method POST … --input -`
+recipe as Option A step 1) is now **Step 0** of the re-activation sequence
+below, not an assumed-still-valid token.
+
+A Project Access Token was provisioned today, scoped exactly as Option A
+below recommends:
+
+- **Name:** `session-orchestrator-ci-schema-drift`
+- **Project:** `infrastructure/projects-baseline` (id 52) — the TARGET repo,
+  not this one
+- **Scopes:** `read_repository`
+- **Access level:** Reporter (20)
+- **Expires:** 2027-09-01
+
+The masked `SCHEMA_DRIFT_TOKEN` CI variable on this project (id 74) was set
+with that token, then **removed again**. A control run with the token set
+confirmed the clone step authenticates correctly — but the drift check itself
+then failed for a real, already-known reason:
+`skills/vault-sync/validator.mjs`'s `vaultNoteTypeSchema` enum carries
+`peer-card` and `board`, and the canonical `infrastructure/projects-baseline`
+source does not have either yet. This is the documented vendor-ahead state
+(`scripts/sync-vault-schema.mjs` header, "Vendor-ahead state (2026-05-23,
+#503, I5)") and tracked as upstream-sync-debt in issue #531 (#503 itself is
+closed). With the variable set and `SCHEMA_DRIFT_OPTIONAL` still `"true"`,
+this exit-1 `DRIFT` is a **hard** failure — it is not in
+`allow_failure.exit_codes: [3]` — so leaving the variable set today would turn
+the next push red for a fact already tracked in #531, not for a new defect.
+The variable was removed rather than left set; activation stays blocked until
+the canonical enum gains both values.
+
+**Re-activation sequence once #531 lands upstream:**
+
+0. **Re-mint the token** — it was revoked (see § Activation status above). Run
+   the same `glab api --method POST … --input -` recipe as Option A step 1,
+   against the TARGET project (id 52), and copy the response's `token` field
+   immediately — it is shown exactly once.
+1. `read -rs TOKEN` at the prompt (no echo), then pipe it into `glab variable
+   set` rather than passing it as a `--value` argument — a value passed on the
+   command line is visible to any other process on the host via `ps`, while
+   stdin is not:
+
+   ```bash
+   read -rs TOKEN
+   printf '%s' "$TOKEN" | glab variable set SCHEMA_DRIFT_TOKEN \
+     -R infrastructure/session-orchestrator --masked
+   ```
+
+   **Not** `--protected`: `.gate-rules` (`.gitlab-ci.yml:74`) runs the job
+   on every branch and every MR pipeline, and a protected-only variable would
+   silently reproduce the exit-5 `UNAVAILABLE` failure on every unprotected
+   branch. (`glab variable set --help` documents stdin piping directly —
+   `cat file.txt | glab variable set SERVER_TOKEN` — but no `-`/dash value
+   for `--value`; the flag only accepts a literal string, so omitting it
+   entirely and piping the value is the only way to keep the token off argv.)
+2. Push an ordinary commit and read the `schema-drift-check` job log for
+   `RESULT: IN-SYNC` — and confirm the job DURATION is well over 20 seconds
+   (see the pipeline-6815 warning above). A fast "success" is the exit-3
+   soft-skip in disguise, not a real run.
+3. Flip `SCHEMA_DRIFT_OPTIONAL` to `"false"` at **both** sites —
+   `schema-drift-check` and `pipeline-gate` — in one commit.
+   `tests/ci/schema-drift-check.test.mjs` already asserts the two values are
+   equal, so no test edit is needed to enforce the flip.
+4. Local counter-probe before trusting the pipeline: clone
+   `infrastructure/projects-baseline` with the token, make a throwaway copy of
+   `packages/zod-schemas/src/vault-frontmatter.ts` with one field
+   deliberately edited, then run
+   `node scripts/sync-vault-schema.mjs --check --canonical <path-to-edited-copy>`
+   — expect exit 1 with a diff naming the edited field. That confirms the
+   check diffs real content rather than passing on a broken comparison.
+
+Per `.claude/rules/security.md` § SEC-005, this token's lifecycle belongs in
+`.claude/docs/SECRETS-INVENTORY.md` once one exists — that file is not present
+in this repo (measured 2026-09-02: no `.claude/docs/` directory tracked), so
+the inventory is not adopted here and this section remains the sole record.
+
 ### Required CI variable
 
 | Variable | Type | Mask | Protect | Value |
 |---|---|---|---|---|
-| `SCHEMA_DRIFT_TOKEN` | Variable | Yes | Optional | deploy token or PAT (see below) |
+| `SCHEMA_DRIFT_TOKEN` | Variable | Yes | No | Project Access Token or PAT — see Option A/B below |
 
 If `SCHEMA_DRIFT_TOKEN` is **not set**, the job prints a `NOT VERIFIED` notice
 and exits **3** — which `allow_failure.exit_codes` renders as an amber *warning*,
@@ -76,6 +157,18 @@ a schema diff that does not exist. Only 3 is listed in
 outcome also prints its own `[schema-drift] RESULT: <STATE>` line, so the job log
 answers "what happened" without the reader having to know this table.
 
+**Caveat — a second, narrower exit-3 collision (do not change the YAML for
+it).** `scripts/sync-vault-schema.mjs` has its own exit 3, for a different
+condition: malformed sentinel comments in `validator.mjs` (only one of
+`begin`/`end` present). If `--check` ever hit that branch, it would return
+exit 3 from the tool itself — and `allow_failure.exit_codes: [3]` reads the
+shell's final exit code, not which tool produced it, so a genuine tooling
+defect (broken sentinels) would render as the same amber "no token, declared
+optional" warning that the missing-token guard produces. This is a caveat to
+note, not a blocker: the sentinels are intact today, and the fix — if it is
+ever needed — is giving `sync-vault-schema.mjs`'s malformed-sentinel case a
+distinct exit code, not a change here.
+
 **After completing the token setup below, change `SCHEMA_DRIFT_OPTIONAL` to
 `"false"` in `.gitlab-ci.yml`** — in **both** places: the `schema-drift-check`
 job and `pipeline-gate`. One flag, two enforcement points;
@@ -98,35 +191,93 @@ not the accidental side effect of an unset CI variable.
 > exactly this failure — pipeline 6815 reported SUCCESS in 17 s having checked
 > nothing (issue #933).
 
-### Option A — Deploy Token (recommended, least-privilege)
+### Option A — Project Access Token (recommended — works with the current clone URL)
 
-1. Open `infrastructure/projects-baseline` on your GitLab instance.
-2. Go to **Settings → Repository → Deploy tokens**.
-3. Click **Add token**:
-   - **Name:** `session-orchestrator-ci-schema-drift`
-   - **Expires at:** set a reminder (e.g. 1 year); rotate before expiry
-   - **Scopes:** check `read_repository` only
-4. Copy the generated token value (shown once).
-5. Open `session-orchestrator` on GitLab.
-6. Go to **Settings → CI/CD → Variables → Add variable**:
-   - **Key:** `SCHEMA_DRIFT_TOKEN`
-   - **Value:** paste the deploy token
-   - **Type:** Variable
-   - **Masked:** Yes
-   - **Protected:** Optional (enable if you only need it on protected branches)
-7. Save.
+GitLab resolves a **deploy token** by its own fixed username
+(`gitlab+deploy-token-<n>`, or a custom username if one was set at creation).
+The job's clone step hardcodes the login as `oauth2:${SCHEMA_DRIFT_TOKEN}`
+(`.gitlab-ci.yml` ~:652) — `oauth2` is the username GitLab expects for a
+Personal or Project Access Token, not for a deploy token. A deploy token's
+value paired with that hardcoded username fails authentication at clone time
+and surfaces as exit 5 `UNAVAILABLE`, which reads as a network/credential
+problem rather than "wrong username" (see the demoted Deploy Token option
+below). Tokens with **PAT semantics** — GitLab accepts any username alongside
+the token value — authenticate correctly with this clone URL: a Personal
+Access Token, or, least-privilege, a **Project Access Token** scoped to the
+TARGET project (`infrastructure/projects-baseline`). A Project Access Token
+is preferred over a personal PAT for the same reason the deploy token used to
+be recommended: it belongs to the project, not a person, and survives staff
+changes.
+
+1. Create the token via API against the TARGET project (id 52) — GitLab has
+   no path to create a Project Access Token FOR a project from outside that
+   project's own Settings UI, so use `glab api`:
+
+   ```bash
+   glab api --hostname "$GITLAB_HOST" -X POST "projects/52/access_tokens" \
+     -H 'Content-Type: application/json' --input - <<'JSON'
+   {"name":"session-orchestrator-ci-schema-drift","scopes":["read_repository"],"access_level":20,"expires_at":"2027-09-01"}
+   JSON
+   ```
+
+   `--input -` plus the explicit `Content-Type: application/json` header is
+   required because the payload has a nested type (`scopes` is a JSON array),
+   which `glab api`'s `-f`/`-F` flag form cannot express. `access_level: 20`
+   is Reporter — the lowest access level that can read repository content.
+   `expires_at` is an operator choice, not a fixed value; the token created
+   for this document's own dry run (2026-09-02) was set 1 year out
+   (`2027-09-01`) — rotate before expiry.
+
+2. The response's `token` field holds the token value and is **shown exactly
+   once** — copy it immediately; GitLab will not display it again.
+
+3. Store it in `session-orchestrator` CI/CD variables as `SCHEMA_DRIFT_TOKEN`.
+   Prefer stdin over `--value` — a value passed as a command-line argument is
+   visible to other processes on the host (`ps`), while stdin is not:
+
+   ```bash
+   read -rs TOKEN
+   printf '%s' "$TOKEN" | glab variable set SCHEMA_DRIFT_TOKEN \
+     -R infrastructure/session-orchestrator --masked
+   ```
+
+   **Masked:** Yes. **Not** `--protected` — `.gate-rules` (`.gitlab-ci.yml:74`)
+   runs the job on every branch and every MR pipeline, so a protected-only
+   variable would silently be absent everywhere the job actually needs it.
 
 ### Option B — Personal Access Token (fallback)
 
-Use this if a deploy token is not available for the target project.
+The same PAT-semantics reasoning from Option A applies: a personal PAT
+authenticates under any username, so it works with the hardcoded `oauth2:`
+clone login. Use this only if you cannot create a Project Access Token on
+`infrastructure/projects-baseline` (e.g. you lack Owner/Maintainer there).
 
 1. Go to your GitLab profile → **Access Tokens**.
 2. Create a token with scope `read_repository` and a reasonable expiry.
 3. Store it in `session-orchestrator` CI/CD variables as `SCHEMA_DRIFT_TOKEN`
-   (Masked: Yes) — same steps 5–7 above.
+   (Masked: Yes, **not** Protected — see Option A step 3 above).
 
-Note: a PAT is scoped to the creating user's access; prefer a deploy token so
-the CI credential survives staff changes.
+A personal PAT is tied to the creating user's account and access; prefer the
+Project Access Token in Option A so the CI credential survives staff changes.
+
+### Deploy Token — does not work with the current clone URL
+
+This was the previously recommended option; it is demoted here because, as
+the job is written today, it does not authenticate. GitLab deploy tokens
+authenticate under their OWN username (`gitlab+deploy-token-<n>`, or a custom
+username set at creation) — never as `oauth2`. The job's clone step hardcodes
+`oauth2:${SCHEMA_DRIFT_TOKEN}` (`.gitlab-ci.yml` ~:652), so a deploy token's
+value paired with the wrong username fails authentication at clone time. This
+job reports that as exit 5 `UNAVAILABLE` — read as a network/credential-scope
+problem, when the actual cause is the username mismatch.
+
+To use a deploy token instead of Option A, `.gitlab-ci.yml`'s clone step would
+need to stop hardcoding `oauth2` — either read the deploy token's own username
+from a second CI variable and interpolate it into the clone URL, or create the
+deploy token with a custom username of `oauth2` if the GitLab instance allows
+choosing one. Neither change is made in this repo; that edit is out of this
+document's scope. Option A avoids needing it at all, by using a token whose
+username requirement (any username) already matches the hardcoded login.
 
 ### Verification path
 
@@ -162,8 +313,12 @@ Documenting it here for completeness:
   `infrastructure/session-orchestrator`.
 - Once the allowlist entry is saved, the job can use `CI_JOB_TOKEN` directly
   and `SCHEMA_DRIFT_TOKEN` is not needed.
-- Issue #279 chose the deploy-token path because it requires no admin action
-  in the foreign project and works immediately after variable creation.
+- Issue #279 chose the token-variable path over this allowlist because it
+  requires no admin action in the foreign project and works immediately after
+  variable creation. The original choice was a deploy token; as documented in
+  Option A above, a deploy token does not actually authenticate with this
+  job's hardcoded `oauth2:` clone login, so a Project Access Token (or PAT)
+  is the variant that delivers on that original reasoning.
 
 ## `pipeline-gate` — the fan-in job
 

@@ -91,6 +91,32 @@ describe('emit()', () => {
     expect(new Date(records[0].timestamp).toISOString()).toBe(records[0].timestamp);
   });
 
+  // Bug this catches: the ONE raw events.jsonl writer left in the codebase keeps
+  // emitting unversioned records after emitEvent() started stamping them, so the
+  // ledger silently carries two record shapes and a version-branching reader
+  // mis-handles every tmux-layout line.
+  it('stamps schema_version: 1 on the written record (#1177)', () => {
+    emit('tmux-layout.invoked', { layout: 'default' }, { repoRoot: tmpDir });
+    const records = readEventsFile();
+    expect(records).toHaveLength(1);
+    expect(records[0].schema_version).toBe(1);
+  });
+
+  // Bug this catches: the DROP branch (`if (!validateEventRecord(record).valid)
+  // return;`) is the only thing keeping a malformed line out of the SHARED
+  // ledger, where it would outlive this process and break every reader. Remove
+  // the branch and this emit writes an orchestrator-domain event with two
+  // segments — exactly the shape emitEvent() rejects.
+  it('DROPS a record that fails validateEventRecord and writes no line', () => {
+    emit('orchestrator.bad', { layout: 'default' }, { repoRoot: tmpDir });
+    expect(readEventsFile()).toEqual([]);
+
+    // Control: the same call with a conformant name DOES write, so the
+    // assertion above pins the validator and not a broken write path.
+    emit('orchestrator.tmux.invoked', { layout: 'default' }, { repoRoot: tmpDir });
+    expect(readEventsFile().map((r) => r.event)).toEqual(['orchestrator.tmux.invoked']);
+  });
+
   it('never throws when the events.jsonl directory is read-only (EACCES)', () => {
     // We test the "best-effort / never throws" contract by temporarily making
     // the .orchestrator/metrics directory read-only so appendFileSync throws EACCES.

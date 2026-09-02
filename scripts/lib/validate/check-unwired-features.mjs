@@ -304,13 +304,6 @@ const ALLOWLIST = Object.freeze({
     'dedicated reader outside the parser layer — scripts/lib/instruction-budget-guard.mjs parses this block itself (S2 exemption only; S1 evidence is real)',
   webhooks:
     'dedicated reader outside the parser layer — scripts/lib/webhook-url.mjs resolves these URLs env-first (S2 exemption only; S1 evidence is real)',
-  // S4 entry (module path, not a config key). The prose-only state is REAL and
-  // recorded here BY NAME rather than left anonymous among the ~50-module S4
-  // backlog, where a per-module expectation cannot be reviewed. Named callers
-  // let a reviewer check the four sites; the self-draining `allowlist-stale`
-  // rule reports this entry the day a .mjs caller makes it reachable.
-  [path.join('scripts', 'lib', 'session-transition.mjs')]:
-    'prose-only consumer — leaveSourceRoot() is called by 4 skill prose sites (skills/session-start/SKILL.md:45 + :229, skills/_shared/parallel-aware-auq.md, skills/_shared/parallel-aware-preamble.md); the worktree promotion is a coordinator action, not a script (#1069)',
 });
 
 /**

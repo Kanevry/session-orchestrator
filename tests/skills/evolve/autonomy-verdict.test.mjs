@@ -494,3 +494,39 @@ describe('autonomy-verdict — readinessConfidence() exact value (R4)', () => {
     expect(rec.confidence).toBe(0.69);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1167 — the duplicate-identity collapse is inherited from groupByMode()
+// ---------------------------------------------------------------------------
+
+describe('autonomy-verdict — summarizeAutopilot() duplicate collapse (#1167)', () => {
+  /**
+   * Bug this catches: `n_autopilot_sessions` is the readiness gate
+   * (`hasAutopilotEffectivenessEvidence`). A `supersedes` pair — the
+   * backfilled stub plus the authoritative record that refutes it — is two
+   * ledger records for ONE physical session, and both survive the #834
+   * phantom filter. Counting both would let ONE autopilot session satisfy an
+   * evidence bar of two, and would skew every weighted mean below it.
+   */
+  it('counts a supersedes pair as ONE autopilot session', () => {
+    const runs = [makeRun('r1')];
+    const base = {
+      session_type: 'feature',
+      autopilot_run_id: 'r1',
+      started_at: '2026-09-01T08:00:00.000Z',
+      completed_at: '2026-09-01T09:00:00.000Z',
+      effectiveness: { completion_rate: 0.9, carryover_ratio: 0.1 },
+    };
+    const sessions = [
+      { ...base, session_id: 'main-2026-09-01-abandoned-2f4f776e' },
+      {
+        ...base,
+        session_id: 'main-2026-09-01-session-23',
+        supersedes: 'main-2026-09-01-abandoned-2f4f776e',
+      },
+    ];
+
+    const summary = summarizeAutopilot(runs, sessions);
+    expect(summary.n_autopilot_sessions).toBe(1);
+  });
+});

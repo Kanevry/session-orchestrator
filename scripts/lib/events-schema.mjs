@@ -12,6 +12,54 @@
  * Pure functions, no filesystem access — safe to import anywhere.
  */
 
+/**
+ * Current events.jsonl record schema version (#1177). Mirrors
+ * `subagents-schema.mjs § CURRENT_SCHEMA_VERSION`.
+ *
+ * Records written before #1177 carry NO `schema_version` key at all; an absent
+ * key therefore reads as "pre-versioned", never as version 0. Stamping is
+ * strictly additive — see `stampEventSchemaVersion()`.
+ */
+export const CURRENT_SCHEMA_VERSION = 1;
+
+/**
+ * Thrown by `emitEvent()` when a record fails `validateEventRecord()`.
+ *
+ * Carries the individual validator messages so a CLI/hook caller can surface
+ * them without re-running the validator.
+ */
+export class EventValidationError extends Error {
+  /**
+   * @param {string} message — human-readable summary.
+   * @param {string[]} [errors=[]] — the validator's individual error strings.
+   * @param {string} [eventType] — the offending event name, when known.
+   */
+  constructor(message, errors = [], eventType) {
+    super(message);
+    this.name = 'EventValidationError';
+    this.errors = errors;
+    this.eventType = eventType;
+  }
+}
+
+/**
+ * Return a shallow copy of `record` with `schema_version` stamped to
+ * `CURRENT_SCHEMA_VERSION` — but ONLY when the field is absent
+ * (`undefined`/`null`). An existing value is never overwritten, so a caller
+ * (or a migration re-writing historical records) keeps authority over its own
+ * version field.
+ *
+ * @param {object} record
+ * @returns {object} shallow copy, `schema_version` guaranteed present.
+ */
+export function stampEventSchemaVersion(record) {
+  const out = { ...record };
+  if (out.schema_version === undefined || out.schema_version === null) {
+    out.schema_version = CURRENT_SCHEMA_VERSION;
+  }
+  return out;
+}
+
 /** ISO-8601 UTC timestamp with trailing Z (e.g. 2026-05-28T14:35:13.123Z). */
 const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
 

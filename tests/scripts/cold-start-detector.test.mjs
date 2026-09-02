@@ -298,3 +298,66 @@ describe('detectColdStart — lock parsing edge cases', () => {
     expect(result).toEqual({ shouldEmit: false, reason: 'lock-no-timestamp' });
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// #1167 — the silence threshold counts SESSIONS, not LINES
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('detectColdStart — duplicate ledger records (#1167)', () => {
+  /**
+   * Bug this catches: `sessions.jsonl` is append-only, so ONE physical session
+   * can occupy two lines — the semantic stub written by `on-session-end.mjs`
+   * plus the synthetic-id stub written by `backfill-abandoned-sessions.mjs`
+   * for the same session (identical `started_at` + `completed_at`, 8 such
+   * pairs measured in this repo on 2026-09-02). Counting lines makes a repo
+   * with ONE real session look like it has two, so a `silence-after-sessions`
+   * floor of 2 silences the cold-start nudge that should still fire.
+   */
+  const STARTED = '2026-09-01T08:00:00.000Z';
+  const COMPLETED = '2026-09-01T09:00:00.000Z';
+  const DUP_PAIR_PLUS_ONE = [
+    JSON.stringify({
+      session_id: 'main-2026-09-01-session-23',
+      status: 'abandoned',
+      started_at: STARTED,
+      completed_at: COMPLETED,
+    }),
+    JSON.stringify({
+      session_id: 'main-2026-09-01-abandoned-2f4f776e',
+      _synthetic_session_id: true,
+      status: 'abandoned',
+      started_at: STARTED,
+      completed_at: COMPLETED,
+    }),
+    JSON.stringify({
+      session_id: 'main-2026-09-02-session-1',
+      status: 'completed',
+      started_at: '2026-09-02T08:00:00.000Z',
+      completed_at: '2026-09-02T09:00:00.000Z',
+    }),
+  ].join('\n') + '\n';
+
+  it('counts a duplicate stub pair as ONE session (3 lines → 2 sessions)', async () => {
+    writeLock({ bootstrappedAt: HOURS_AGO(48) });
+    writeSessions(DUP_PAIR_PLUS_ONE);
+
+    // Floor 2: 2 identities >= 2 → silence, and the reason quotes the identity
+    // count. A line count would say 3 here.
+    const silenced = await detectColdStart({
+      repoRoot: repo,
+      silenceAfterSessions: 2,
+      now: NOW_MS,
+    });
+    expect(silenced.shouldEmit).toBe(false);
+    expect(silenced.reason).toBe('sessions-floor-met (2 >= 2)');
+
+    // Floor 3: 2 identities < 3 → still emit. Under a raw line count (3 >= 3)
+    // the banner would be wrongly silenced.
+    const emitted = await detectColdStart({
+      repoRoot: repo,
+      silenceAfterSessions: 3,
+      now: NOW_MS,
+    });
+    expect(emitted.shouldEmit).toBe(true);
+  });
+});

@@ -25,6 +25,7 @@ import { join } from 'node:path';
 
 import {
   readOwnSessionIds,
+  readProcessLocalSessionIds,
   classifyManifestSession,
 } from '../../../scripts/lib/session-identity/own-session.mjs';
 
@@ -207,5 +208,41 @@ describe('classifyManifestSession (#1123)', () => {
     const r = classifyManifestSession({ session: 'PEER' }, new Set());
     expect(r.verdict).toBe('unknown');
     expect(r.manifestIds).toEqual(['PEER']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readProcessLocalSessionIds (#1177 FX1)
+// ---------------------------------------------------------------------------
+//
+// The bug this function exists to prevent: `readOwnSessionIds()` includes the
+// `session.lock` tier, so using it to judge the LOCK ITSELF matches vacuously —
+// a peer-owned lock reads as `own` 100% of the time. This sibling reads the
+// process-local tiers ONLY, and never touches the working copy.
+
+describe('readProcessLocalSessionIds (#1177 FX1)', () => {
+  it('returns the hook payload ids and the env id, in tier order', () => {
+    expect(
+      readProcessLocalSessionIds({
+        env: { CLAUDE_CODE_SESSION_ID: 'ENV' },
+        hookInput: { session_id: 'HOOK', parent_session_id: 'PARENT' },
+      }),
+    ).toEqual(['HOOK', 'PARENT', 'ENV']);
+  });
+
+  it('returns [] when neither tier resolves — never a phantom id', () => {
+    expect(readProcessLocalSessionIds({ env: {}, hookInput: null })).toEqual([]);
+  });
+
+  it('drops a whitespace-only env id (truthy but matches nothing)', () => {
+    expect(readProcessLocalSessionIds({ env: { CLAUDE_CODE_SESSION_ID: '   ' } })).toEqual([]);
+  });
+
+  it('ignores a live session.lock in the cwd — only the env tier answers', () => {
+    // The bug: reading the lock here makes the lock self-confirming, which is
+    // exactly the peer-attribution defect (#1177 FX1). tmp carries a real lock
+    // (written by the suite's own helper) and it must not appear in the result.
+    writeLock({ session_id: 'LOCK-UUID', semantic_session_id: 'lock-label' });
+    expect(readProcessLocalSessionIds({ env: { CLAUDE_CODE_SESSION_ID: 'ENV' } })).toEqual(['ENV']);
   });
 });

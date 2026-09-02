@@ -1284,8 +1284,15 @@ describe('on-session-end.mjs — mechanical telemetry flush (#1138)', { timeout:
     });
 
     const [ev] = await flushEvents(dir);
-    // timestamp + event come from emitEvent; the hook adds exactly two keys.
-    expect(Object.keys(ev).sort()).toEqual(['event', 'outcome', 'reason', 'timestamp']);
+    // timestamp + event + schema_version come from emitEvent (#1177 added the
+    // third producer key); the hook adds exactly two of its own.
+    expect(Object.keys(ev).sort()).toEqual([
+      'event',
+      'outcome',
+      'reason',
+      'schema_version',
+      'timestamp',
+    ]);
   });
 });
 

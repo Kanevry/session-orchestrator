@@ -61,6 +61,7 @@ import { _parseAutoDream } from './config/auto-dream.mjs';
 import { _parseStateMdLock } from './config/state-md-lock.mjs';
 import { _parseHandoverGate } from './config/handover-gate.mjs';
 import { _parseIssueBudget } from './config/issue-budget.mjs';
+import { _parseHealthEndpoints, _parseEcosystemHealthBlockEnabled } from './config/health-endpoints.mjs';
 import { _parseBrokenWindow } from './config/broken-window.mjs';
 import { _parseSlopcheck } from './config/slopcheck.mjs';
 import { _parseDiscoveryValidator } from './config/discovery-validator.mjs';
@@ -198,7 +199,14 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
 
   // Boolean fields
   const persistence = _coerceBoolean(kv, 'persistence', true);
-  const ecosystemHealth = _coerceBoolean(kv, 'ecosystem-health', false);
+  // ecosystem-health has TWO spellings and only the scalar one reaches `kv`:
+  // the wizard writes a valueless `ecosystem-health:` header opening a block,
+  // which carries no `key: value` pair and is therefore invisible to the KV
+  // map (#1174). Scalar wins when present; otherwise the block form decides.
+  const ecosystemHealth =
+    _getVal(kv, 'ecosystem-health', undefined) !== undefined
+      ? _coerceBoolean(kv, 'ecosystem-health', false)
+      : (_parseEcosystemHealthBlockEnabled(mdContent) ?? false);
   const discoveryOnClose = _coerceBoolean(kv, 'discovery-on-close', false);
   const reasoningOutput = _coerceBoolean(kv, 'reasoning-output', false);
   const groundingCheck = _coerceBoolean(kv, 'grounding-check', true);
@@ -214,7 +222,6 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   const ssotFiles = _coerceList(kv, 'ssot-files', undefined);
   const discoveryProbes = _coerceList(kv, 'discovery-probes', '[all]');
   const discoveryExcludePaths = _coerceList(kv, 'discovery-exclude-paths', '[]');
-  const healthEndpoints = _coerceList(kv, 'health-endpoints', undefined);
   const worktreeExclude = _coerceList(
     kv,
     'worktree-exclude',
@@ -442,6 +449,10 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   const evolveDecay = _parseEvolveDecay(mdContent);
 
   // persona-gate-wave: opt-in mid-wave persona-panel hook (#458). Returns null when absent.
+  // health-endpoints: content-scoped (NOT _coerceList, which bails to null on
+  // any '{' and cannot see the wizard's nested block form at all) — #1174.
+  const healthEndpoints = _parseHealthEndpoints(mdContent);
+
   const personaGateWave = _parsePersonaGateWave(mdContent);
   if (personaGateWave !== null && personaGateWave.enabled === true && personaGateWave.mode === 'off') {
     process.stderr.write(

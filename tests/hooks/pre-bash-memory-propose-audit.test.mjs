@@ -485,12 +485,14 @@ describe('G7 — events.jsonl append', { timeout: 15000 }, () => {
 
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
-    // All 7 keys exactly per the hook's event shape.
+    // All 8 keys exactly per the hook's event shape (#1177 added the
+    // producer-owned schema_version alongside timestamp + event).
     expect(Object.keys(events[0]).sort()).toEqual([
       'argv_truncated',
       'cwd',
       'event',
       'exit_code',
+      'schema_version',
       'session_id',
       'timestamp',
       'wave',

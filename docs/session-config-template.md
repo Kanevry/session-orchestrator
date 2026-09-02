@@ -66,7 +66,7 @@ mirror: github                         # auto-push to mirror after every commit 
 cross-repos: [related-repo-1]          # repos under ~/Projects/ to snapshot at session-start
 pencil: path/to/design.pen             # design-code alignment input
 ecosystem-health: true                 # toggle health-endpoint probes
-health-endpoints:
+health-endpoints:                      # nested block form — content-scoped parse, see reference doc (#1174)
   - { name: API, url: https://api.example.com/health }
 issue-limit: 50                        # max issues fetched at session-start
 stale-branch-days: 7                   # branch-age threshold for stale flag

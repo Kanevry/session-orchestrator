@@ -318,6 +318,16 @@ runCheck('check-vcs-repo-flag.mjs');
 process.stdout.write('\n');
 runCheck('check-doc-cli-commands.mjs');
 
+// BLOCKING (#1176): a `scripts/**.mjs` path cited in skills/, commands/ or
+// agents/ prose that does not exist. Unlike the WARN-only check above, the
+// oracle is this repository's own filesystem — no version skew of a foreign
+// binary can red an unrelated commit, so a finding is always a real defect.
+// A deliberately absent path is annotated in place:
+// `<!-- path-check: planned #<iid> | historical | example -->`, honoured on the
+// citation's own line or the line immediately above.
+process.stdout.write('\n');
+if (runCheck('check-skill-script-paths.mjs') !== 0) checkFailed = 1;
+
 // WARN-only: a state-mutating `git` call in tests/ that names no target resolves
 // its destination from the ambient cwd (or an inherited GIT_DIR) — the 2026-08-19
 // incident, where fixture commits, a fixture remote and a fixture identity landed

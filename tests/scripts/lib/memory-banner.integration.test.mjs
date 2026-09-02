@@ -483,22 +483,25 @@ describe('memory-banner integration (#505)', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Group VIII (#541) — countJsonlLines genuine behavior
+  // Group VIII (#541, revised #1167) — countSessionIdentities genuine behavior
   //
-  // The internal `countJsonlLines` helper (memory-banner.mjs:268-277) counts
-  // NON-EMPTY LINES by splitting on '\n' and filtering. It does NOT JSON.parse.
-  // These tests exercise that contract indirectly via readBannerInputs.stats.
+  // The internal helper counts DISTINCT SESSIONS, not lines: id-bearing
+  // records go through `canonicalizeSessions`, records without a `session_id`
+  // are un-dedupable and counted as-is. A line that does not parse is the one
+  // thing NOT counted — it cannot be attributed to any session. (Pre-#1167 the
+  // helper never parsed at all and counted every non-empty line, which
+  // inflated "sessions ever" by one per duplicate record.)
   //
-  // Falsification: swapping the split-and-filter for a per-line `JSON.parse`
-  // (or for `JSON.parse(raw)`) would throw on `{not valid` and the catch
-  // block would resolve to 0 — breaking the "count = 4" assertion.
+  // Falsification: a `JSON.parse(raw)` over the whole file (rather than
+  // per-line) still throws on `{not valid` and the catch block resolves to 0,
+  // breaking the "count = 3" assertion below.
   // ─────────────────────────────────────────────────────────────────────────
 
-  describe('Group VIII: countJsonlLines counts non-empty lines (no JSON-parse)', () => {
-    it('counts every non-empty line including malformed JSON (mixed valid/malformed/blank)', async () => {
+  describe('Group VIII: countSessionIdentities counts sessions, tolerating malformed lines', () => {
+    it('counts parseable records and skips a malformed line (mixed valid/malformed/blank)', async () => {
       // 5 lines total — 4 non-empty (3 valid + 1 malformed), 1 blank.
-      // Production splits on '\n' and filters length > 0 → count = 4.
-      // If a future refactor inserts JSON.parse, the catch block fires → 0.
+      // 3 parseable, none carrying a session_id → un-dedupable → count = 3.
+      // A whole-file JSON.parse would throw → the catch block resolves to 0.
       const sessionsPath = join(tmpRepo, '.orchestrator', 'metrics', 'sessions.jsonl');
       mkdirSync(join(tmpRepo, '.orchestrator', 'metrics'), { recursive: true });
       writeFileSync(
@@ -513,7 +516,7 @@ describe('memory-banner integration (#505)', () => {
         now: new Date('2026-05-23T12:00:00Z'),
       });
 
-      expect(inputs.stats.sessionsEver).toBe(4);
+      expect(inputs.stats.sessionsEver).toBe(3);
     });
 
     it('returns 0 sessionsEver when sessions.jsonl is missing entirely', async () => {
@@ -611,5 +614,75 @@ describe('memory-banner integration (#505)', () => {
         ].join('\n'),
       );
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// #1167 — "sessions ever" counts SESSIONS, not LINES
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('memory-banner "sessions ever" (#1167)', () => {
+  let tmpRepo;
+  let tmpMemoryDir;
+
+  beforeEach(() => {
+    tmpRepo = mkdtempSync(join(tmpdir(), 'mb-1167-repo-'));
+    tmpMemoryDir = mkdtempSync(join(tmpdir(), 'mb-1167-mem-'));
+  });
+
+  afterEach(() => {
+    rmSync(tmpRepo, { recursive: true, force: true });
+    rmSync(tmpMemoryDir, { recursive: true, force: true });
+  });
+
+  /**
+   * Bug this catches: one physical session can occupy TWO lines in the
+   * append-only ledger — the semantic abandoned stub plus the synthetic-id
+   * stub written for the same session by the second backfill writer
+   * (identical `started_at` + `completed_at`). The banner reported "sessions
+   * ever" from a raw line count, so it over-reported by one per duplicate
+   * (286 lines vs 275 sessions in this repo, measured 2026-09-02).
+   *
+   * The abandoned-session semantic is UNCHANGED on purpose: both records here
+   * are `status: 'abandoned'` and the surviving one still counts.
+   */
+  it('counts a duplicate stub pair as ONE session (3 lines → 2 sessions ever)', async () => {
+    const started = '2026-09-01T08:00:00.000Z';
+    const completed = '2026-09-01T09:00:00.000Z';
+    const dir = join(tmpRepo, '.orchestrator', 'metrics');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'sessions.jsonl'),
+      [
+        JSON.stringify({
+          session_id: 'main-2026-09-01-session-23',
+          status: 'abandoned',
+          started_at: started,
+          completed_at: completed,
+        }),
+        JSON.stringify({
+          session_id: 'main-2026-09-01-abandoned-2f4f776e',
+          _synthetic_session_id: true,
+          status: 'abandoned',
+          started_at: started,
+          completed_at: completed,
+        }),
+        JSON.stringify({
+          session_id: 'main-2026-09-02-session-1',
+          status: 'completed',
+          started_at: '2026-09-02T08:00:00.000Z',
+          completed_at: '2026-09-02T09:00:00.000Z',
+        }),
+      ].join('\n') + '\n',
+      'utf8',
+    );
+
+    const inputs = await readBannerInputs({
+      repoRoot: tmpRepo,
+      memoryDir: tmpMemoryDir,
+      now: new Date('2026-09-02T12:00:00Z'),
+    });
+
+    expect(inputs.stats.sessionsEver).toBe(2);
   });
 });

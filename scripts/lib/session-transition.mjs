@@ -134,7 +134,7 @@ export const LOCK_RELEASED_EVENT = 'orchestrator.session.lock.released';
  *   lock owned by someone else, an unparseable lock, a registry entry pinned to
  *   a different root, a registry unlink that failed, a contradictory owner
  *   proof, or a filesystem error. Callers WARN on it and continue; see the
- *   `parallel-aware: leaveSourceRoot: <reason>` contract in
+ *   `enterWorktree: leaveSourceRoot: <reason>` contract in
  *   `skills/_shared/parallel-aware-auq.md`.
  *
  *   `reason` is present whenever something other than a full clean teardown

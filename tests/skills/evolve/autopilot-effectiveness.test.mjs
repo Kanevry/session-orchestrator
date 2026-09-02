@@ -447,3 +447,60 @@ describe('autopilot-effectiveness — #835: nested effectiveness metrics', () =>
     expect(out[0].evidence.carryover_delta).toBeCloseTo(-0.1, 3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1167 — duplicate records of ONE physical session must bucket once
+// ---------------------------------------------------------------------------
+
+describe('groupByMode — duplicate-identity collapse (#1167)', () => {
+  /**
+   * Bug this catches: `filterRealSessions` drops phantom `abandoned` stubs
+   * (#834), but TWO records of one physical session that are both real survive
+   * it — the `supersedes` pair (a backfilled stub plus the authoritative
+   * `completed` record that refutes it) and an exact same-id duplicate line.
+   * Both inflated `n_manual` / `n_autopilot` and skewed every mean computed
+   * from the bucket.
+   */
+  const STARTED = '2026-09-01T08:00:00.000Z';
+  const COMPLETED = '2026-09-01T09:00:00.000Z';
+
+  function session(id, extra = {}) {
+    return {
+      session_id: id,
+      session_type: 'deep',
+      started_at: STARTED,
+      completed_at: COMPLETED,
+      effectiveness: { completion_rate: 0.8, carryover_ratio: 0.1 },
+      ...extra,
+    };
+  }
+
+  it('counts a supersedes pair as ONE session (both records survive the phantom filter)', () => {
+    const sessions = [
+      // Backfilled stub, later refuted by the authoritative record below. It
+      // carries no `status` (a legacy stub), so it survives the phantom filter
+      // AND is a legal supersede target — `sessions-canonical.mjs` refuses a
+      // marker aimed at an authoritative `completed` record, and both records
+      // here share the `started_at` join key it attests against.
+      session('main-2026-09-01-abandoned-2f4f776e'),
+      session('main-2026-09-01-session-23', {
+        status: 'completed',
+        supersedes: 'main-2026-09-01-abandoned-2f4f776e',
+      }),
+      session('main-2026-09-02-session-1', { status: 'completed' }),
+    ];
+
+    const stats = groupByMode([], sessions).get('deep');
+    expect(stats.n_manual).toBe(2); // 3 records, 2 physical sessions
+  });
+
+  it('keeps records that carry no session_id (un-dedupable, never dropped)', () => {
+    const sessions = [
+      { session_type: 'deep', effectiveness: { completion_rate: 0.8, carryover_ratio: 0.1 } },
+      session('main-2026-09-02-session-1', { status: 'completed' }),
+    ];
+
+    const stats = groupByMode([], sessions).get('deep');
+    expect(stats.n_manual).toBe(2);
+  });
+});

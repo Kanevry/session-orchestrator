@@ -10,8 +10,9 @@
  * Behaviour (PRD §F1.3):
  *   1. Skip if `bootstrap.lock` is missing (repo not yet bootstrapped —
  *      the bootstrap-gate handles that path).
- *   2. Skip if `sessions.jsonl` line count ≥ `silence-after-sessions`
- *      (operator has already engaged at least once).
+ *   2. Skip if the `sessions.jsonl` DISTINCT-session count ≥
+ *      `silence-after-sessions` — identities, not lines (see `countSessions`);
+ *      the operator has already engaged at least once.
  *   3. Skip if bootstrap age < `nudge-after-hours` (give the operator a
  *      reasonable window after bootstrap before nudging).
  *   4. Emit otherwise, with a `markerPath` when the migration marker
@@ -34,6 +35,7 @@ import { stat, readFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 import { parseBootstrapLock } from './bootstrap-lock-freshness.mjs';
+import { countSessionsInJsonl } from './sessions-canonical.mjs';
 
 /** Milliseconds in one hour — exported for testability. */
 export const MS_PER_HOUR = 60 * 60 * 1000;
@@ -77,24 +79,31 @@ function buildBannerLines({ bootstrappedAt = null } = {}) {
 }
 
 /**
- * Best-effort line counter for NDJSON files. Returns 0 when the file is
- * missing OR empty OR unreadable — all three are equivalent for the
- * cold-start decision ("no sessions yet").
+ * Best-effort counter of DISTINCT physical sessions in an NDJSON ledger.
+ * Returns 0 when the file is missing OR empty OR unreadable — all three are
+ * equivalent for the cold-start decision ("no sessions yet").
+ *
+ * Counts IDENTITIES, not lines (#1167): `sessions.jsonl` is append-only, so one
+ * physical session can occupy two lines (a backfilled abandoned stub plus the
+ * authoritative record that supersedes it, or the systemic double-stub pair
+ * written by the two backfill writers). A raw line count therefore reports
+ * "the operator has already engaged" one session earlier than is true, and the
+ * cold-start nudge — one-shot per repo at the default threshold of 1 — is
+ * silently never emitted.
  *
  * Reads the full file because sessions.jsonl is small (1 line/session, ~2 KB
- * each — even 100 sessions = ~200 KB).
+ * each — even 100 sessions = ~200 KB). The async `readFile` is kept (the
+ * SessionStart hook's 5s budget must not block); only the collapse rules come
+ * from the shared canonical module.
  *
  * @param {string} filePath
  * @returns {Promise<number>}
  */
-async function countLines(filePath) {
+async function countSessions(filePath) {
   try {
-    const raw = await readFile(filePath, 'utf8');
-    if (!raw) return 0;
-    // Trailing newline must not inflate the count. split-then-filter handles
-    // both Unix (\n) and Windows (\r\n) line endings.
-    const lines = raw.split('\n').filter((l) => l.length > 0);
-    return lines.length;
+    // Counting rule (blank/malformed lines, id-less records) lives in
+    // `countSessionsInJsonl`; only the async read is local.
+    return countSessionsInJsonl(await readFile(filePath, 'utf8'));
   } catch {
     return 0;
   }
@@ -166,7 +175,7 @@ export async function detectColdStart(opts = {}) {
 
   // PRD §F1.3 Ubiquitous: silence once the repo has ≥ N sessions. This is
   // the auto-silence path — banner is one-shot per repo (default N=1).
-  const sessionCount = await countLines(sessionsPath);
+  const sessionCount = await countSessions(sessionsPath);
   if (sessionCount >= silenceAfterSessions) {
     return {
       shouldEmit: false,

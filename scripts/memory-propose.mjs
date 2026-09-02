@@ -259,11 +259,14 @@ const confidence = confidenceVal;
 
 let frontmatter = {};
 let stateMdReadOk = false;
+/** Directory holding STATE.md — the same state-dir the wave manifest lives in (#1166). */
+let stateDir = null;
 
 try {
   // resolveStateMdPath from state-md.mjs: falls back to .claude/STATE.md
   const stateMdMod = await import('./lib/state-md.mjs');
   const stateMdPath = stateMdMod.resolveStateMdPath(process.cwd());
+  stateDir = dirname(stateMdPath);
 
   if (!existsSync(stateMdPath)) {
     if (!dryRun) {
@@ -352,17 +355,105 @@ if (!dryRun && (currentWaveRaw === undefined || currentWaveRaw === null || curre
 }
 
 // ---------------------------------------------------------------------------
-// Step 3 — Build wave ID from STATE.md current-wave (guaranteed present by 2c
-// when !dryRun; falls back to a 'W-dryrun' placeholder under --dry-run when
-// STATE.md was absent/unparseable/missing the field — #741.3)
+// Step 3 — Build the RUNNING wave ID (#1166)
 // ---------------------------------------------------------------------------
+//
+// #1166 — two writers, two semantics: `skills/wave-executor/wave-loop.md` § 3a
+// writes STATE.md `current-wave` = the JUST-COMPLETED wave, while the
+// coordinator's `<state-dir>/wave-scope.json` carries `wave` = the RUNNING
+// wave. Stamping proposals off `current-wave` verbatim filed every wave-N+1
+// proposal into the W<N> quota bucket. Priority: the manifest ONLY when it is
+// bound to THIS session, else `current-wave + 1`. An UNBOUND manifest is not
+// trusted (#1177 FX1) — since #1123 both writers stamp the binding, so a
+// binding-less manifest is a peer's or a stale artefact.
+//
+// The session binding compares `manifest.semantic_session` against STATE.md's
+// `session` field — both are the SEMANTIC label. `manifest.session` is the raw
+// UUID, which STATE.md does not carry; comparing those two never matches.
 
-const frontmatterWaveId =
-  currentWaveRaw !== undefined && currentWaveRaw !== null && currentWaveRaw !== ''
-    ? `W${currentWaveRaw}`
-    : undefined;
+/** @returns {string|undefined} */
+function resolveRunningWaveId() {
+  if (stateDir !== null) {
+    try {
+      const manifestPath = join(stateDir, 'wave-scope.json');
+      if (existsSync(manifestPath)) {
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+        const boundSession = manifest?.semantic_session ?? manifest?.session;
+        const unbound =
+          boundSession === undefined || boundSession === null || boundSession === '';
+        // BOTH sides must be non-empty strings. `undefined === undefined` is
+        // true, so a STATE.md WITHOUT a `session` key previously "matched" any
+        // manifest whose `semantic_session` was also absent-but-present-in-the
+        // -comparison — adopting a foreign coordinator's wave number as its own.
+        const mineSide = manifest?.semantic_session;
+        const oursSide = frontmatter['session'];
+        const mine =
+          typeof mineSide === 'string' && mineSide.length > 0 &&
+          typeof oursSide === 'string' && oursSide.length > 0 &&
+          mineSide === oursSide;
+        // An UNBOUND manifest is NOT trusted (#1177 FX1). It used to be, as
+        // "legacy" — but since #1123 BOTH writers stamp the binding, so a
+        // manifest without one today is a PEER's or a stale artefact, and
+        // trusting it files this session's proposals into a foreign quota
+        // bucket. Unbound → say so once on stderr and fall back.
+        if (unbound) {
+          process.stderr.write(
+            'memory-propose: wave-scope.json unbound (no semantic_session) — ignored\n',
+          );
+        }
+        if (mine) {
+          const raw = manifest?.wave;
+          const num =
+            typeof raw === 'number'
+              ? raw
+              : typeof raw === 'string' && raw.trim() !== ''
+                ? Number(raw)
+                : NaN;
+          if (Number.isInteger(num)) return `W${num}`;
+        }
+      }
+    } catch (err) {
+      // Unreadable / malformed manifest → fall through to the +1 fallback, but
+      // SAY SO. A swallowed parse error makes a wrongly-bucketed proposal look
+      // like ordinary fallback behaviour; the operator then has no signal that
+      // the coordinator's own manifest is corrupt. Diagnostics on stderr keeps
+      // the stdout JSON contract intact (cli-design.md § JSON-First Output).
+      process.stderr.write(
+        `⚠ memory-propose: cannot read ${join(stateDir, 'wave-scope.json')} ` +
+          `(${err?.message ?? String(err)}) — falling back to current-wave + 1\n`,
+      );
+    }
+  }
 
-const waveId = dryRun ? (frontmatterWaveId ?? 'W-dryrun') : frontmatterWaveId;
+  if (currentWaveRaw === undefined || currentWaveRaw === null || currentWaveRaw === '') {
+    return undefined;
+  }
+  const completed = Number(currentWaveRaw);
+  if (!Number.isFinite(completed)) return undefined; // never 'WNaN'
+  // CEILING (BV-004): `+1` assumes waves run consecutively and that STATE.md is
+  // maintained — it is WRONG when a wave is skipped, when the plan is adapted
+  // mid-session, or under `persistence: false` where `current-wave` never
+  // advances. It is the fallback precisely because wave-scope.json is the only
+  // artefact that KNOWS the running wave.
+  // REVISIT when a wave-scope.json manifest is present in every dispatch (then
+  // delete the fallback and reject instead), or when a proposal is observed in
+  // the wrong quota bucket while the manifest was readable.
+  return `W${completed + 1}`;
+}
+
+const resolvedWaveId = resolveRunningWaveId();
+
+if (!dryRun && resolvedWaveId === undefined) {
+  exit(
+    {
+      status: STATUS.REJECTED_WRONG_CONTEXT,
+      detail: `Cannot resolve the running wave: no usable wave-scope.json and STATE.md 'current-wave' is not numeric (got '${currentWaveRaw}')`,
+    },
+    3,
+  );
+}
+
+const waveId = dryRun ? (resolvedWaveId ?? 'W-dryrun') : resolvedWaveId;
 
 // ---------------------------------------------------------------------------
 // Step 4 — Read Session Config (quota + floor)

@@ -896,6 +896,40 @@ describe('backfillCompletedFromStateMd — #429', () => {
     expect(() => validateSession(rec)).not.toThrow();
   });
 
+  it('(b2) stamps raw_session_id from the single bridged uuid — the abandoned path is not the only writer', async () => {
+    // The bug: only backfillAbandonedSession stamped `raw_session_id`, so the
+    // AUTHORITATIVE half of a pair carried no join key back to its harness
+    // UUID — exactly the blind spot #1167 exists to close, reproduced on the
+    // stronger record.
+    writeStateMd(COMPLETED_FRONTMATTER);
+    seedEvents([
+      {
+        timestamp: '2026-05-27T14:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: 'main-2026-05-27-session-1',
+        mode: 'deep',
+      },
+    ]);
+
+    const res = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+
+    expect(res.action).toBe('backfilled');
+    expect(readSessions()[0].raw_session_id).toBe(UUID);
+  });
+
+  it('(b3) omits raw_session_id when no uuid is bridged at all', async () => {
+    // The other half of the contract: guessing a uuid is worse than omitting
+    // it, so an events-less run must leave the key ABSENT (not null, not '').
+    writeStateMd(COMPLETED_FRONTMATTER);
+    seedEvents([]);
+
+    const res = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+
+    expect(res.action).toBe('backfilled');
+    expect('raw_session_id' in readSessions()[0]).toBe(false);
+  });
+
   it('(c) a second run after (b) is a no-op (idempotent — dedupe against the just-written record)', async () => {
     writeStateMd(COMPLETED_FRONTMATTER);
     seedEvents([
@@ -1101,5 +1135,69 @@ describe('isUuid — one UUID contract with scripts/lib/session-id.mjs (#1091)',
     expect(res.action).toBe('backfilled');
     expect(res.sessionId).toBe(VARIANT_C_LOOKALIKE);
     expect(res.record._synthetic_session_id).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1167 — session.ended is the SECOND semantic bridge
+//
+// THE DUPLICATE-STUB BUG: a session that LOST the lock-acquire race emits no
+// `lock.acquired`, so the only bridge this module read resolved null and the
+// synthetic-id mint fired — writing a SECOND `abandoned` stub beside the one
+// the SessionEnd hook had already written under the real semantic id. Measured
+// 2026-09-02 @ c3ab480: 8 such pairs in the live ledger (16 records), each with
+// millisecond-identical started_at + completed_at and no shared key.
+// ---------------------------------------------------------------------------
+
+describe('backfillAbandonedSession — semantic bridge via session.ended (#1167)', () => {
+  it('adopts semantic_session_id from session.ended when NO lock.acquired exists (no synthetic mint)', async () => {
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      {
+        timestamp: '2026-05-27T17:00:00.000Z',
+        event: 'orchestrator.session.ended',
+        session_id: UUID,
+        semantic_session_id: 'main-2026-05-27-session-3',
+        reason: 'other',
+      },
+    ]);
+
+    const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS });
+
+    expect(res.action).toBe('backfilled');
+    expect(res.sessionId).toBe('main-2026-05-27-session-3');
+
+    const recorded = readSessions();
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].session_id).toBe('main-2026-05-27-session-3');
+    // The synthetic mint must NOT have fired — that flag IS the duplicate class.
+    expect(recorded[0]._synthetic_session_id).toBeUndefined();
+    expect(recorded[0].session_id).not.toMatch(/-abandoned-[0-9a-f]{8}$/);
+    // The raw uuid is stamped so a reader can join this record back to events.
+    expect(recorded[0].raw_session_id).toBe(UUID);
+    expect(() => validateSession(recorded[0])).not.toThrow();
+  });
+
+  it('keeps lock.acquired as the winning bridge when both events attest an id', async () => {
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      {
+        timestamp: '2026-05-27T14:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: 'main-2026-05-27-session-1',
+        mode: 'deep',
+      },
+      {
+        timestamp: '2026-05-27T17:00:00.000Z',
+        event: 'orchestrator.session.ended',
+        session_id: UUID,
+        semantic_session_id: 'main-2026-05-27-session-9',
+      },
+    ]);
+
+    const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS });
+
+    expect(res.sessionId).toBe('main-2026-05-27-session-1');
   });
 });

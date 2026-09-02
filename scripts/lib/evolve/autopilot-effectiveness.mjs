@@ -27,6 +27,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { filterRealSessions } from '../session-schema.mjs';
+import { canonicalizeSessions } from '../sessions-canonical.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -181,7 +182,23 @@ export function groupByMode(autopilotRuns, sessions) {
   const out = new Map();
   if (!Array.isArray(sessions) || sessions.length === 0) return out;
 
-  const realSessions = filterRealSessions(sessions);
+  // Canonicalize BEFORE filtering (#1167). `filterRealSessions` drops phantom
+  // `abandoned` stubs, but two records of ONE physical session that are both
+  // real survive it — a `supersedes` pair (the backfilled stub plus the
+  // authoritative `completed` record that refutes it) and an exact same-id
+  // duplicate line both do. Each of those inflates `n_manual` / `n_autopilot`
+  // and skews every mean computed from the bucket, so the identity collapse
+  // has to happen first; the two compose in exactly this order (see
+  // `sessions-canonical.mjs` § "What this module does not do").
+  //
+  // `keepUnidentified: true` because effectiveness analysis must not LOSE the
+  // id-less rows `canonicalizeSessions` drops by default: legacy ledger rows
+  // and every in-repo fixture of the pre-id era carry `session_type` and
+  // metrics but no id, and dropping them would silently shrink `n_manual`
+  // instead of de-duplicating it.
+  const realSessions = filterRealSessions(
+    canonicalizeSessions(sessions, { keepUnidentified: true }),
+  );
   if (realSessions.length === 0) return out;
 
   // Optional: known autopilot_run_id set for stricter pairing. Empty set means

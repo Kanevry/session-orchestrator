@@ -42,10 +42,12 @@ import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 import { backfillAbandonedSession, isUuid } from './lib/session-close-backfill.mjs';
+import { emitEvent } from './lib/events.mjs';
 import { SO_PROJECT_DIR } from './lib/platform.mjs';
 
 const LOCK_ACQUIRED = 'orchestrator.session.lock.acquired';
 const SESSION_STARTED = 'orchestrator.session.started';
+const SESSION_ENDED = 'orchestrator.session.ended';
 
 /**
  * Default cap on how many candidates may reach the (expensive) shared core in a
@@ -86,16 +88,22 @@ function readJsonl(filePath) {
 export function planSessions({ repoRoot }) {
   const events = readJsonl(path.join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl'));
 
-  const semanticByUuid = new Map();
+  // Two independent UUID -> semantic bridges (#1167). `lock.acquired` is the
+  // original one, but a session that LOST the lock-acquire race never emits it;
+  // its `session.ended` event carries `semantic_session_id` all the same (since
+  // #1068 AC1) and was never read here. Without that second bridge the
+  // candidate resolved semantic=null and the shared core minted a SYNTHETIC id,
+  // writing a duplicate stub beside the record the SessionEnd hook had already
+  // written under the real semantic id (measured 2026-09-02 @ c3ab480: 8 pairs).
+  // lock.acquired keeps precedence — it is the older, mode-carrying attestation.
+  const semanticFromLock = new Map();
+  const semanticFromEnded = new Map();
   for (const ev of events) {
-    if (
-      ev.event === LOCK_ACQUIRED &&
-      typeof ev.session_id === 'string' &&
-      typeof ev.semantic_session_id === 'string'
-    ) {
-      semanticByUuid.set(ev.session_id, ev.semantic_session_id);
-    }
+    if (typeof ev.session_id !== 'string' || typeof ev.semantic_session_id !== 'string') continue;
+    if (ev.event === LOCK_ACQUIRED) semanticFromLock.set(ev.session_id, ev.semantic_session_id);
+    else if (ev.event === SESSION_ENDED) semanticFromEnded.set(ev.session_id, ev.semantic_session_id);
   }
+  const semanticByUuid = new Map([...semanticFromEnded, ...semanticFromLock]);
 
   const seen = new Set();
   const plan = [];
@@ -133,7 +141,14 @@ function readRecordedIds(repoRoot) {
   const records = readJsonl(path.join(repoRoot, '.orchestrator', 'metrics', 'sessions.jsonl'));
   const ids = new Set();
   for (const r of records) {
-    if (r && typeof r.session_id === 'string') ids.add(r.session_id);
+    if (!r) continue;
+    if (typeof r.session_id === 'string') ids.add(r.session_id);
+    // #1167 — a backfilled record now stamps the harness UUID it was
+    // reconstructed from. Indexing it lets a bare-UUID candidate be recognised
+    // as already-recorded even though the record itself is keyed semantically —
+    // the join that was structurally impossible while the field was absent
+    // (0 of 286 records carried it, measured 2026-09-02 @ c3ab480).
+    if (typeof r.raw_session_id === 'string') ids.add(r.raw_session_id);
   }
   return ids;
 }
@@ -238,6 +253,7 @@ export async function runMigration({
       case 'backfilled':
         summary.backfilled += 1;
         if (res.deadByAge) summary.dead_by_age += 1;
+        await emitBackfillCompleted(repoRoot, item, res);
         // Keep the pre-filter snapshot in step with what we just wrote, so a
         // second candidate bridging to the SAME semantic id is skipped cheaply
         // instead of re-entering the core (which would reach the same verdict).
@@ -261,6 +277,40 @@ export async function runMigration({
     }
   }
   return summary;
+}
+
+/**
+ * Emit `orchestrator.session.backfill_completed` for a record THIS path wrote
+ * (#1167). Mirrors the payload of `hooks/on-session-end.mjs::emitBackfillOutcome`
+ * so both writers are queryable with one filter.
+ *
+ * Until now the startup/CLI path wrote records SILENTLY: only the SessionEnd
+ * hook emitted the event, so nothing in the event stream distinguished "the
+ * backfill never ran" from "the backfill ran here". Best-effort by contract —
+ * observability must never fail a migration run.
+ *
+ * @param {string} repoRoot
+ * @param {{sessionId: string, semanticSessionId: string|null}} item
+ * @param {{action: string, sessionId?: string, supersedes?: string, error?: string}} res
+ */
+async function emitBackfillCompleted(repoRoot, item, res) {
+  try {
+    await emitEvent(
+      'orchestrator.session.backfill_completed',
+      {
+        kind: 'abandoned',
+        action: typeof res?.action === 'string' ? res.action : 'unknown',
+        ...(typeof item?.sessionId === 'string' ? { session_id: item.sessionId } : {}),
+        ...(typeof item?.semanticSessionId === 'string'
+          ? { semantic_session_id: item.semanticSessionId }
+          : {}),
+        ...(typeof res?.sessionId === 'string' ? { record_id: res.sessionId } : {}),
+        ...(typeof res?.supersedes === 'string' ? { supersedes: res.supersedes } : {}),
+        ...(typeof res?.error === 'string' ? { reason: res.error } : {}),
+      },
+      { repoRoot },
+    );
+  } catch { /* observability is best-effort */ }
 }
 
 /**

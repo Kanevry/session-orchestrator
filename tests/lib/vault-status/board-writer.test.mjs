@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, utimesSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -30,6 +30,8 @@ import {
   mirrorBoard,
 } from '../../../scripts/lib/vault-status/board-writer.mjs';
 
+import { boardLockPathFor } from '../../../scripts/lib/vault-status/board-lock.mjs';
+import { tryAcquireFileLock } from '../../../scripts/lib/file-lock.mjs';
 import { repoPathHash } from '../../../scripts/lib/session-registry.mjs';
 import { parseFrontmatter } from '../../../scripts/lib/vault-mirror/utils.mjs';
 import { DEFAULT_TTL_HOURS } from '../../../scripts/lib/session-lock.mjs';
@@ -1462,6 +1464,63 @@ describe('mirrorBoard — board_written telemetry', () => {
     expect(events[0].semantic_session_id).toBe('main-2026-08-23-deep-1');
   });
 
+  it('board_written carries the lock outcome, including a stale-override that broke the mutex', async () => {
+    // Bug this catches: `withBoardLock` has exposed `onLockOutcome` since #1180
+    // and NO production caller passed one (measured 2026-09-02:
+    // `grep -rn onLockOutcome scripts hooks` → board-lock.mjs + its test only).
+    // So the one event that can silently defeat the mutex — overriding an aged
+    // lock that may belong to a LIVE writer whose sweep outran staleMs — reached
+    // nothing aggregatable, and board-lock's DEFAULT_STALE_MS revisit trigger
+    // ("observed in the events ledger") had no observable at all.
+    const vaultDir = makeVaultDir();
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+    const repoRoot = makeThisRepoConfig('stale-lock-repo', vaultDir);
+
+    // A real lock file, backdated past the 60 s default staleMs.
+    const lockPath = boardLockPathFor(vaultDir);
+    const acquired = tryAcquireFileLock(lockPath, {
+      staleCheck: 'mtime',
+      staleMs: 60_000,
+      holder: 'dead-writer',
+      indent: 2,
+      tmpPrefix: '.board.lock',
+      warn: () => {},
+    });
+    expect(acquired.acquired).toBe(true);
+    const old = new Date(Date.now() - 600_000);
+    utimesSync(lockPath, old, old);
+
+    const result = await mirrorBoard({ repoRoot, now: FIXED_NOW, hostPaths: HERMETIC_HOST_PATHS });
+    expect(result.action).toBe('written');
+
+    const events = readBoardEvents(repoRoot);
+    expect(events).toHaveLength(1);
+    expect(events[0].lock.locked).toBe(true);
+    // `staleOverride` carries file-lock's own reason TOKEN (a string), not a
+    // boolean — measured against board-lock.mjs, which lifts it out of the WARN
+    // text via `/overriding stale lock \(([^)]*)\)/`.
+    expect(typeof events[0].lock.stale_override).toBe('string');
+    expect(events[0].lock.stale_override.length).toBeGreaterThan(0);
+    expect(Number.isFinite(events[0].lock.waited_ms)).toBe(true);
+    // The lock PATH must never travel: it is `<home>/…`, the CP1 shape
+    // `telemetrySafePath` exists to keep out of this payload.
+    expect(JSON.stringify(events[0])).not.toContain(homedir());
+  });
+
+  it('board_written omits `lock` on a path that never took the lock', async () => {
+    // Absent is not zero, applied to the lock: a no-op that never reached the
+    // critical section must not report `locked: false`, which is the FAIL-OPEN
+    // signal (a board written without the mutex). Conflating the two would make
+    // every disabled-vault repo look like a lock failure in a fleet query.
+    const repoRoot = makeRepo('no-vault-lockless-repo');
+
+    await mirrorBoard({ repoRoot, now: FIXED_NOW, hostPaths: HERMETIC_HOST_PATHS });
+
+    const events = readBoardEvents(repoRoot);
+    expect(events).toHaveLength(1);
+    expect(events[0]).not.toHaveProperty('lock');
+  });
+
   it('still writes the board when the events ledger path is unwritable', async () => {
     // Bug this catches: an emit that is not wrapped in try/catch lets telemetry
     // FAIL a board write. `.orchestrator/metrics` is created as a FILE here, so
@@ -1485,5 +1544,56 @@ describe('mirrorBoard — board_written telemetry', () => {
     expect(rows.map((r) => r.repo)).toEqual(['ledger-blocked-repo']);
     // The blocking file is untouched — the emit failed, it did not clobber.
     expect(readFileSync(join(repoRoot, '.orchestrator', 'metrics'), 'utf8')).toBe('not-a-directory\n');
+  });
+});
+
+// ===========================================================================
+// mirrorBoard — concurrent writers on the shared board (issue #1180)
+// ===========================================================================
+
+describe('mirrorBoard — concurrent writers (issue #1180)', () => {
+  /**
+   * Bug this catches: the board is ONE file shared by every repo on the host,
+   * and `mirrorBoardInner` is a read-modify-write (read the existing board to
+   * seed `preservedRows`, merge, write). `atomicWriteWithBackup`'s tmp+rename
+   * protects READERS, not the merge — so two writers that read the same base
+   * concurrently each write a board carrying only their own row, and the later
+   * rename silently drops the earlier writer's row.
+   *
+   * Interleave proved here (measured, not assumed): both `mirrorBoard` calls
+   * are started in the same tick via `Promise.all`. Un-serialized, A reads the
+   * (empty) board, yields at its first `await` (`readConfigFile` /
+   * `collectRows`), B reads the SAME empty base, and the two writes land one
+   * after the other — final board has ONE row. Serialized by `withBoardLock`,
+   * whichever writer wins the synchronous `tryAcquireFileLock` pass runs its
+   * whole merge first; the loser polls, then re-reads a base that already
+   * contains the winner's row — final board has BOTH rows, in either order.
+   */
+  it('two concurrent mirrorBoard writers on the same board file both persist their rows', async () => {
+    const vaultDir = makeVaultDir();
+    const boardPath = resolveBoardPath(vaultDir);
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+
+    const repoA = makeThisRepoConfig('concurrent-writer-a', vaultDir);
+    const repoB = makeThisRepoConfig('concurrent-writer-b', vaultDir);
+    for (const [root, sessionId] of [[repoA, 'sess-a'], [repoB, 'sess-b']]) {
+      mkdirSync(join(root, '.orchestrator'), { recursive: true });
+      writeFileSync(
+        join(root, '.orchestrator', 'session.lock'),
+        JSON.stringify(buildLockBody({ sessionId, heartbeatAgeHours: 0, now: FIXED_NOW }), null, 2) + '\n',
+        'utf8',
+      );
+    }
+
+    const [resA, resB] = await Promise.all([
+      mirrorBoard({ repoRoot: repoA, now: FIXED_NOW, hostPaths: HERMETIC_HOST_PATHS }),
+      mirrorBoard({ repoRoot: repoB, now: FIXED_NOW, hostPaths: HERMETIC_HOST_PATHS }),
+    ]);
+
+    expect([resA.action, resB.action]).toEqual(['written', 'written']);
+
+    const rows = parseBoardRows(readFileSync(boardPath, 'utf8'));
+    expect(rows.map((r) => r.repo).sort()).toEqual(['concurrent-writer-a', 'concurrent-writer-b']);
+    expect(rows.map((r) => r.status)).toEqual(['in-progress', 'in-progress']);
   });
 });

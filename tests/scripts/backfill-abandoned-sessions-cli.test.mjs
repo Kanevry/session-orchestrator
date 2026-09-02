@@ -453,3 +453,123 @@ describe('backfill-abandoned-sessions CLI — exit codes', () => {
     expect(existsSync(metricsFile('sessions.jsonl'))).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// (e) #1167 — the second semantic bridge, the raw-uuid join, and the event
+//
+// Root cause of the 8 duplicate stub pairs measured in the live ledger
+// (2026-09-02 @ c3ab480): this CLI resolved UUID -> semantic ONLY via
+// lock.acquired, so a session that lost the lock-acquire race minted a
+// SYNTHETIC id and wrote a second stub for a session already recorded under
+// its real semantic id.
+// ---------------------------------------------------------------------------
+
+const UUID_ENDED_ONLY = 'dddddddd-eeee-4fff-8000-111111111111';
+const SEM_ENDED_ONLY = 'main-2026-07-02-session-7';
+
+/** A session with NO lock.acquired — only a session.ended carrying the semantic id. */
+const ENDED_BRIDGE_EVENTS = [
+  {
+    timestamp: STARTED_AT,
+    event: 'orchestrator.session.started',
+    session_id: UUID_ENDED_ONLY,
+    branch: 'main',
+  },
+  {
+    timestamp: '2026-07-02T10:30:00.000Z',
+    event: 'orchestrator.session.ended',
+    session_id: UUID_ENDED_ONLY,
+    semantic_session_id: SEM_ENDED_ONLY,
+    reason: 'other',
+  },
+];
+
+describe('backfill-abandoned-sessions — #1167 duplicate-stub root cause', () => {
+  it('planSessions resolves the semantic id from session.ended when no lock.acquired exists', async () => {
+    seedEvents(ENDED_BRIDGE_EVENTS);
+    const { planSessions } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+
+    expect(planSessions({ repoRoot: tmp })).toEqual([
+      { sessionId: UUID_ENDED_ONLY, semanticSessionId: SEM_ENDED_ONLY },
+    ]);
+  });
+
+  it('writes a semantically-keyed record instead of a synthetic duplicate stub', () => {
+    seedEvents(ENDED_BRIDGE_EVENTS);
+
+    const r = runCli(['--repo-root', tmp, '--apply', '--json']);
+
+    expect(r.status).toBe(0);
+    const records = readSessions();
+    expect(records.map((x) => x.session_id)).toEqual([SEM_ENDED_ONLY]);
+    expect(records[0]._synthetic_session_id).toBeUndefined();
+    expect(records[0].raw_session_id).toBe(UUID_ENDED_ONLY);
+    expect(() => validateSession(records[0])).not.toThrow();
+  });
+
+  it('skips a candidate whose ONLY id is the uuid when a record carries it as raw_session_id', () => {
+    // The join that was structurally impossible before: the record is keyed
+    // semantically, the candidate is a bare uuid with no bridge at all — and
+    // without raw_session_id the run would mint a synthetic SECOND stub.
+    seedEvents([
+      {
+        timestamp: STARTED_AT,
+        event: 'orchestrator.session.started',
+        session_id: UUID_1,
+        branch: 'main',
+      },
+    ]);
+    mkdirSync(join(tmp, '.orchestrator', 'metrics'), { recursive: true });
+    writeFileSync(
+      metricsFile('sessions.jsonl'),
+      JSON.stringify({
+        session_id: SEM_1,
+        session_type: 'deep',
+        started_at: STARTED_AT,
+        completed_at: '2026-07-02T10:00:00.000Z',
+        total_waves: 0,
+        waves: [],
+        agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+        total_agents: 0,
+        total_files_changed: 0,
+        status: 'abandoned',
+        raw_session_id: UUID_1,
+      }) + '\n',
+      'utf8'
+    );
+
+    const r = runCli(['--repo-root', tmp, '--apply', '--json']);
+
+    expect(r.status).toBe(0);
+    expect(summaryOf(r).skipped['skipped-already-recorded']).toBe(1);
+    expect(readSessions()).toHaveLength(1);
+  });
+
+  it('emits one orchestrator.session.backfill_completed event per written record', () => {
+    seedEvents(ENDED_BRIDGE_EVENTS);
+
+    const r = runCli(['--repo-root', tmp, '--apply', '--json']);
+    expect(r.status).toBe(0);
+
+    const emitted = readFileSync(metricsFile('events.jsonl'), 'utf8')
+      .split('\n')
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.event === 'orchestrator.session.backfill_completed');
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].kind).toBe('abandoned');
+    expect(emitted[0].action).toBe('backfilled');
+    expect(emitted[0].session_id).toBe(UUID_ENDED_ONLY);
+    expect(emitted[0].record_id).toBe(SEM_ENDED_ONLY);
+  });
+
+  it('emits NO backfill_completed event on a dry-run (nothing was written)', () => {
+    seedEvents(ENDED_BRIDGE_EVENTS);
+
+    runCli(['--repo-root', tmp, '--json']);
+
+    const raw = readFileSync(metricsFile('events.jsonl'), 'utf8');
+    expect(raw).not.toContain('backfill_completed');
+  });
+});

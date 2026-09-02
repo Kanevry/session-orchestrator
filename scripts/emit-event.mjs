@@ -22,7 +22,8 @@
  *
  * Exit codes (per .claude/rules/cli-design.md):
  *   0 — success (event emitted)
- *   1 — user/input error (missing --type, malformed --payload JSON, non-object payload)
+ *   1 — user/input error (missing --type, malformed --payload JSON, non-object
+ *       payload, or a record rejected by validateEventRecord — #1177)
  *   2 — system error (write failure, unexpected internal error)
  *
  * Data → stdout (only with --json). Diagnostics → stderr (always). Related: #611.
@@ -49,7 +50,8 @@ Flags:
 
 Exit codes:
   0 — success
-  1 — user/input error (missing --type, malformed --payload, non-object payload)
+  1 — user/input error (missing --type, malformed --payload, non-object payload,
+      or an event record rejected by the events schema)
   2 — system error (write failure / internal error)
 `;
 
@@ -147,6 +149,12 @@ try {
 try {
   await emitEvent(type, payload, filePath ? { filePath } : {});
 } catch (err) {
+  // A schema-validation rejection is a USER/INPUT error (bad --type or a
+  // payload key colliding with the schema) — exit 1, not 2. Nothing was
+  // written: emitEvent validates before it touches the filesystem (#1177).
+  if (err?.name === 'EventValidationError') {
+    fail(`invalid event: ${err.message}`, 1, jsonMode);
+  }
   // Write/IO failures are system errors (exit 2).
   fail(`failed to emit event: ${err.message}`, 2, jsonMode);
 }

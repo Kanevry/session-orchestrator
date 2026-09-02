@@ -121,6 +121,61 @@ export function readOwnSessionIds(repoRoot, { hookInput = null } = {}) {
 }
 
 /**
+ * The ids that name this session and are PROCESS-LOCAL — tiers 1 and 2 only,
+ * never the lock and never STATE.md.
+ *
+ * A sibling of {@link readOwnSessionIds}, not a replacement: the two answer
+ * different questions and the difference is the whole point.
+ *
+ *   - `readOwnSessionIds()` answers *"could this id name me?"* and unions three
+ *     tiers, the third of which IS `session.lock`. That union is correct when
+ *     the thing being classified was written by some OTHER process (a wave-scope
+ *     manifest), because every id this process can legitimately claim counts.
+ *   - This function answers *"which process is emitting right now?"*, and for
+ *     that question the lock is **vacuous**: when the candidate ids under
+ *     judgement are the lock's OWN values, a membership test against a set that
+ *     contains the lock matches by construction — a peer-owned lock would
+ *     classify as `own` 100% of the time.
+ *
+ * **STATE.md is excluded for the same reason, and this is the #1177-FX1 fix.**
+ * `.claude/STATE.md` is a SHARED working-copy artefact written by whichever
+ * session owns the working copy — normally the lock holder. So when a peer holds
+ * the lock, the peer also wrote STATE.md, and the two "independent" witnesses
+ * agree with each other about the PEER. Unioning a shared-file witness with a
+ * process-local one lets the weaker witness carry the verdict while a
+ * disagreeing process-local id cannot veto it (measured: lock=peer +
+ * STATE.md=peer + `CLAUDE_CODE_SESSION_ID`=me stamped the PEER's ids). Tiering
+ * rather than unioning is the fix — a better signal REPLACES a worse one
+ * (`.claude/rules/host-resources.md` § HR-102).
+ *
+ * Never throws.
+ *
+ * @param {{ env?: object, hookInput?: object|null }} [opts]
+ * @param {object} [opts.env=process.env] — injectable for tests.
+ * @param {object|null} [opts.hookInput=null] — the harness's statement about
+ *   THIS invocation, when the caller is a hook.
+ * @returns {string[]} possibly EMPTY — an empty result means "this process
+ *   cannot prove who it is", which callers must treat as unprovable rather
+ *   than as a match.
+ */
+export function readProcessLocalSessionIds({ env = process.env, hookInput = null } = {}) {
+  const ids = [];
+  const add = (value) => {
+    const trimmed = typeof value === 'string' ? value.trim() : '';
+    if (trimmed && !ids.includes(trimmed)) ids.push(trimmed);
+  };
+
+  // Tier 1 — the harness's statement about THIS invocation.
+  if (hookInput && typeof hookInput === 'object') {
+    for (const key of ['session_id', 'sessionId', 'parent_session_id']) add(hookInput[key]);
+  }
+  // Tier 2 — process-scoped env var.
+  add(env?.CLAUDE_CODE_SESSION_ID);
+
+  return ids;
+}
+
+/**
  * Decide whether a wave-scope manifest belongs to THIS session.
  *
  * Three outcomes, and the middle one is load-bearing:

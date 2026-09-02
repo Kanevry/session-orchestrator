@@ -4,13 +4,15 @@
  * Checks: state-md-present, sessions-jsonl-growth, learnings-jsonl-nonempty,
  *         orchestrator-layout
  *
- * Stdlib only: node:fs, node:path.
+ * Stdlib + intra-repo helpers only (node:fs, node:path, ./helpers.mjs,
+ * ../../sessions-canonical.mjs).
  */
 
 import { existsSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
 import { parseFrontmatter, safeRead, parseJsonl, pass, fail } from './helpers.mjs';
+import { canonicalizeSessions } from '../../sessions-canonical.mjs';
 
 export function runCategory1(root) {
   const checks = [];
@@ -62,14 +64,23 @@ export function runCategory1(root) {
       const { lines, validLines } = parseJsonl(text);
       const requiredKeys = ['session_id', 'session_type', 'started_at'];
       const wellFormed = validLines.filter((l) => requiredKeys.every((k) => k in l));
-      if (lines >= 2 && wellFormed.length === lines) {
+      // "Growth" means IDENTITIES, not records (#1167): sessions.jsonl is
+      // append-only, so one physical session can occupy two lines (an abandoned
+      // stub plus the record that supersedes it, or the systemic double-stub
+      // pair). A repo whose only two lines are one duplicated session has not
+      // grown, and the ≥2 threshold exists to prove the ledger is actually
+      // accumulating sessions. The WELL-FORMEDNESS half deliberately stays on
+      // raw lines — a malformed or key-missing line is a defect of that line,
+      // and collapsing duplicates first would hide it.
+      const sessionCount = canonicalizeSessions(validLines).length;
+      if (sessionCount >= 2 && wellFormed.length === lines) {
         checks.push(pass('sessions-jsonl-growth', 3, 3, relPath,
-          { lineCount: lines, validLines: wellFormed.length },
-          `sessions.jsonl has ${lines} valid lines`));
+          { lineCount: lines, validLines: wellFormed.length, sessionCount },
+          `sessions.jsonl has ${sessionCount} distinct sessions in ${lines} valid lines`));
       } else {
         checks.push(fail('sessions-jsonl-growth', 3, relPath,
-          { lineCount: lines, validLines: wellFormed.length },
-          `sessions.jsonl: lines=${lines} (need ≥2), wellFormed=${wellFormed.length}/${lines}`));
+          { lineCount: lines, validLines: wellFormed.length, sessionCount },
+          `sessions.jsonl: sessions=${sessionCount} (need ≥2), lines=${lines}, wellFormed=${wellFormed.length}/${lines}`));
       }
     }
   }

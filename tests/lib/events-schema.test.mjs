@@ -19,6 +19,8 @@ import {
   isIso8601,
   validateEventRecord,
   ORCHESTRATOR_EVENT_RE,
+  CURRENT_SCHEMA_VERSION,
+  stampEventSchemaVersion,
 } from '@lib/events-schema.mjs';
 
 // CENSUS, not a list. The predecessor here was a hand-typed array of ten literals
@@ -279,5 +281,31 @@ describe('validateEventRecord — #773 orchestrator.handover.gated', () => {
     // The dotted name is a well-formed orchestrator.<domain>.<verb>, and the
     // extra payload fields pass through untouched → valid with no errors.
     expect(result).toEqual({ valid: true, errors: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1177 — stampEventSchemaVersion
+// ---------------------------------------------------------------------------
+
+describe('stampEventSchemaVersion (#1177)', () => {
+  // Bug: the stamper overwrites an existing version (destroying a caller's or a
+  // migration's own marker), or mutates the input record in place (so a caller
+  // that reuses the object silently gets a versioned copy it never asked for).
+  it('stamps CURRENT_SCHEMA_VERSION when the field is absent', () => {
+    const input = { event: 'orchestrator.session.started', timestamp: '2026-09-02T00:00:00Z' };
+    const out = stampEventSchemaVersion(input);
+    expect(out.schema_version).toBe(CURRENT_SCHEMA_VERSION);
+    expect('schema_version' in input).toBe(false); // shallow copy, no mutation
+  });
+
+  it('stamps over null/undefined but never over an existing value', () => {
+    expect(stampEventSchemaVersion({ schema_version: null }).schema_version).toBe(
+      CURRENT_SCHEMA_VERSION,
+    );
+    expect(stampEventSchemaVersion({ schema_version: undefined }).schema_version).toBe(
+      CURRENT_SCHEMA_VERSION,
+    );
+    expect(stampEventSchemaVersion({ schema_version: 7 }).schema_version).toBe(7);
   });
 });

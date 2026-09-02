@@ -111,8 +111,34 @@ agent-mapping: { impl: cursor:composer-2.5, test: cursor:cursor-grok-4.6-high, s
 | `cross-repos` | list | none | Related repositories under `~/Projects/`. The orchestrator checks their git state and critical issues during session start. |
 | `cross-repo.projects` | list | `[]` | Repos to process when running cross-repo maintenance scripts (`run-migrate-v2-cross-repo.mjs`, `vault-integration-watcher.mjs`, `promote-vault-strict.mjs`). Each entry is a path (absolute, `~`-prefixed, or bare name resolved under `~/Projects/`). When this list is empty or absent, those scripts emit a one-line notice and exit 0 — they never error on an empty list. Example: `[~/Projects/my-app, ~/Projects/another-app]`. |
 | `pencil` | string | none | Path to a `.pen` design file (relative to project root). Enables design-code alignment reviews after Impl-Core and Impl-Polish waves. |
-| `ecosystem-health` | boolean | `false` | Enable service health checks at session start. Requires `health-endpoints` to be configured. |
-| `health-endpoints` | list | none | Service URLs to check health. Each entry is an object with `name` and `url` fields. |
+| `ecosystem-health` | boolean | `false` | Enable service health checks at session start. Requires `health-endpoints` to be configured. Accepts the SCALAR form (`ecosystem-health: true`) read off the flat key/value map, or a BLOCK form (`ecosystem-health:` with no value, followed by an indented body — the wizard's output) read via `_parseEcosystemHealthBlockEnabled()`; the scalar wins when both are present (#1174). |
+| `health-endpoints` | list | none | Service URLs to check health. Each entry is an object with `name` and `url` fields. Parsed by `scripts/lib/config/health-endpoints.mjs`, which accepts THREE forms (#1174) — see below. |
+
+**`health-endpoints` accepted forms.** Before #1174 the parser read this key off the flat KV map,
+which bails to `null` the instant a value contains `{` and cannot see a nested YAML block at all;
+the wizard's own output (Form B) silently failed to parse. All three forms below are parsed
+content-scoped, independent of the flat KV map:
+
+```yaml
+# Form A — inline object array
+health-endpoints: [{name: "API", url: "https://a/health"}, {name: "W", url: "http://w:8080/z"}]
+
+# Form B — nested block (top-level, or one level under `ecosystem-health:`); the wizard's output.
+# Block items may also be inline objects, `- { name: API, url: … }` (the form this file's own
+# example above uses).
+health-endpoints:
+  - name: API
+    url: https://api.example.com/health
+
+# Form C — bare bracket list of URLs; each URL becomes its own name ({ name: <url>, url: <url> })
+health-endpoints: [https://a/health, https://b/health]
+```
+
+The `name=url` shorthand (Form D) is **not** supported — an entry containing `=` is treated
+verbatim as a Form-C URL, never split on `=`. A malformed entry (missing `name` or `url`, an
+unmatched brace) resolves to `null` for the whole key and prints exactly one
+`config: health-endpoints:` WARN to stderr — it never throws, so a broken config key cannot take
+down session-start.
 | `issue-limit` | integer | `50` | Maximum issues to fetch when querying VCS during session start. |
 | `stale-branch-days` | integer | `7` | Days of inactivity before a branch is flagged as stale. |
 | `stale-issue-days` | integer | `30` | Days without progress before an issue is flagged for triage. |
