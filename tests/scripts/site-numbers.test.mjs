@@ -486,8 +486,15 @@ describe('safe-value allowlist', () => {
 // fact that it never writes where it must not.
 // ---------------------------------------------------------------------------
 
-/** Two JSONL records; the count is deliberately not the snapshot's number. */
-const LEDGER = '{"a":1}\n{"b":2}\n{"c":3}\n';
+/**
+ * Three JSONL records; the count is deliberately not the snapshot's number.
+ * Each carries a distinct `session_id` (#1186: the `sessions` metric now reads
+ * via `readCanonicalSessions`, which drops/dedupes by `session_id` — a fixture
+ * without one would collapse to 0, not 3, and prove nothing about precedence).
+ * Reused verbatim for `learnings.jsonl`, whose raw-line count does not care
+ * about the extra field.
+ */
+const LEDGER = '{"session_id":"s-1","a":1}\n{"session_id":"s-2","b":2}\n{"session_id":"s-3","c":3}\n';
 
 /**
  * A synthetic repository complete enough for all thirteen metrics — the CLI's

@@ -758,4 +758,46 @@ describe('post-bash-write-verify E2E', () => {
     expect(res.stderr).not.toContain('pre-wave.mjs'); // pre-wave dirt not blamed
     expect(res.stderr).toContain('wave-scope.json'); // rollover notice visible
   });
+
+  it('reports a peer-session-scoped path as a PEER WRITE, not a violation (#1195)', () => {
+    // The bug: the hook knew only `allowedPaths`, so a file a PEER session
+    // declared through a `peer-session-*` record in the wave's aggregate sidecar
+    // was reported as "changed by a Bash call OUTSIDE the wave's N allowedPaths"
+    // — an alarm naming the peer's own agreed, legitimate write. Measured in a
+    // consumer repo 2026-09-02 (#1195): a peer's temp helper file surfaced in
+    // this session's knip gate through exactly this line.
+    mkdirSync(join(tmp, '.claude', 'filescopes'), { recursive: true });
+    writeFileSync(
+      join(tmp, '.claude', 'wave-scope.json'),
+      JSON.stringify({ wave: 4, role: 'Impl', enforcement: 'warn', allowedPaths: ['hooks/**'] }),
+    );
+    writeFileSync(
+      join(tmp, '.claude', 'filescopes', 'wave-4.scopes.json'),
+      JSON.stringify([
+        { id: 'a1', files: ['hooks/**'] },
+        { id: 'peer-session-b', files: ['peer/**'] },
+      ]),
+    );
+    runHook(); // baseline — folds the sidecar's own untracked path into the snapshot
+    mkdirSync(join(tmp, 'peer'), { recursive: true });
+    writeFileSync(join(tmp, 'peer', 'helper.mjs'), 'peer temp helper\n');
+
+    const res = runHook();
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain(
+      'peer/helper.mjs inside peer-session-b scope — peer write, not a violation',
+    );
+    // The decisive half: the same path must NOT also be counted as a violation.
+    expect(res.stderr).not.toContain('OUTSIDE the wave');
+  });
+
+  it('is unchanged when the aggregate sidecar is absent (#1195)', () => {
+    writeScope(['hooks/**']);
+    runHook();
+    writeFileSync(join(tmp, 'out-of-scope.mjs'), 'pwned\n');
+    const res = runHook();
+    expect(res.stderr).toContain('OUTSIDE the wave');
+    expect(res.stderr).toContain('out-of-scope.mjs');
+    expect(res.stderr).not.toContain('peer write');
+  });
 });

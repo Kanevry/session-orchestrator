@@ -243,6 +243,27 @@ const CARDINAL_RATIO_PATTERN = new RegExp(
 const INLINE_CODE_RE = /`[^`\n]*`/g;
 
 /**
+ * Gate-summary / STATUS-report lines are the HARNESS's own completion output —
+ * tool evidence, not an unverified assertion about the codebase — yet carried
+ * no exemption of their own: they were caught only incidentally, by whichever
+ * individual claim pattern happened not to fire on that exact phrasing. GitLab
+ * #1198 (Discovery D8, 2026-09-02): a 400-event sample of
+ * `discovery_validator_violation` records showed 186/400 (46.5%) firing on
+ * this exact class — the single largest false-positive source measured to
+ * date. Skipped at the LINE level, before ANY pattern runs, rather than by
+ * narrowing `CARDINAL_NOUN`: narrowing the noun set would ALSO silence a true
+ * "N files" claim appearing outside a gate-summary line, which is not this
+ * bug's fix.
+ *
+ * Four alternatives cover the measured shapes: an N-passed/M-failed count
+ * ("14904 passed / 0 failed"), a `STATUS:` report line (`skills/wave-executor`
+ * agent-report convention), a "Full Gate" heading, and a `Gate: <verdict>`
+ * summary line (English "typecheck" or German "grün"/"rot").
+ */
+const GATE_SUMMARY_LINE_RE =
+  /\b\d+\s+passed\s*\/\s*\d+\s+failed\b|^\s*STATUS:\s*(?:done|partial|failed)\b|\bFull Gate\b|\bGate:\s*(?:typecheck|grün|rot)\b/i;
+
+/**
  * Commands that count as a MEASUREMENT inside a fenced block. `grep|rg|find`
  * (the #567 set) only covers text search; the #908 facts are measured with
  * `git log --oneline | wc -l`, `jq` over a JSONL metrics file, `ls | wc -l`,
@@ -479,9 +500,18 @@ function findViolations(text) {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    let matched = CLAIM_PATTERNS.some((re) => re.test(line));
+    // #1198 FIX 2: gate-summary/STATUS lines are tool OUTPUT, not a claim —
+    // skipped before any pattern runs (see GATE_SUMMARY_LINE_RE header).
+    if (GATE_SUMMARY_LINE_RE.test(line)) continue;
+
+    // #1198 FIX 3 (masking-order bug): mask inline-code spans ONCE, then test
+    // BOTH the six CLAIM_PATTERNS and the cardinal/ratio patterns against the
+    // masked text. Previously only the cardinal branch masked — a claim
+    // quoted entirely inside backticks (evidence/example text, not an
+    // assertion) still tripped CLAIM_PATTERNS via the raw, unmasked line.
+    const masked = line.replace(INLINE_CODE_RE, ' ');
+    let matched = CLAIM_PATTERNS.some((re) => re.test(masked));
     if (!matched && !fencedLines.has(i)) {
-      const masked = line.replace(INLINE_CODE_RE, ' ');
       matched = CARDINAL_PATTERN.test(masked) || CARDINAL_RATIO_PATTERN.test(masked);
     }
     if (!matched) continue;
@@ -592,23 +622,38 @@ function projectRootHash(projectRoot) {
 }
 
 /**
- * Build the dedup sentinel path for real project/session/agent contexts.
+ * Build the dedup sentinel path for real project/session/agent/claim contexts.
  * Missing fallback IDs intentionally return null so unrelated hooks/tests do
  * not collide on a global "unknown" key.
+ *
+ * #1198 FIX 1: the key used to be `(projectRoot, sessionId, agent_type)` —
+ * `agent_type` is a CLASS ("discovery"), not an individual agent, so two
+ * DIFFERENT real subagents of the same type running in the same session
+ * collided on the same sentinel: the second agent's own `additionalContext`
+ * feedback was silently suppressed even though it never received a copy of
+ * the first agent's warning. Keying on `agentId` (the harness's per-process
+ * `agent_id`/`subagent_id`) instead removes that cross-agent collision. The
+ * claim-text hash is ADDITIVE: it lets a genuinely SECOND, DISTINCT claim
+ * from the same real agent still surface its own suppression check, rather
+ * than being silenced merely because that agent already triggered once for a
+ * different claim.
  *
  * @param {object} opts
  * @param {string} opts.projectRoot
  * @param {string|null} opts.sessionId
- * @param {string|null} opts.agent
+ * @param {string|null} opts.agentId
+ * @param {string|null} opts.claimText
  * @returns {string|null}
  */
-function dedupSentinelPath({ projectRoot, sessionId, agent }) {
+function dedupSentinelPath({ projectRoot, sessionId, agentId, claimText }) {
   if (typeof sessionId !== 'string' || !sessionId.trim()) return null;
-  if (typeof agent !== 'string' || !agent.trim()) return null;
+  if (typeof agentId !== 'string' || !agentId.trim()) return null;
+  if (typeof claimText !== 'string' || !claimText.trim()) return null;
 
+  const claimHash = createHash('sha256').update(claimText).digest('hex').slice(0, 16);
   return path.join(
     tmpdir(),
-    `psa006-${projectRootHash(projectRoot)}-${safeSentinelComponent(sessionId)}-${safeSentinelComponent(agent)}.lock`
+    `psa006-${projectRootHash(projectRoot)}-${safeSentinelComponent(sessionId)}-${safeSentinelComponent(agentId)}-${claimHash}.lock`
   );
 }
 
@@ -643,10 +688,18 @@ async function main() {
   // parent_session_id` order disagreed with telemetry and could log the wrong id.
   const sessionId = firstNonEmptyString(input, ['parent_session_id', 'session_id'], null);
 
-  // Project/session/agent deduplication: only emit additionalContext once for
-  // repeated real contexts. Missing session IDs never create/read a sentinel,
-  // so fallback traffic still surfaces warnings and cannot collide globally.
-  const sentinel = dedupSentinelPath({ projectRoot: SO_PROJECT_DIR, sessionId, agent: agentForDedup });
+  // Project/session/agent/claim deduplication: only emit additionalContext
+  // once for repeated real contexts. Missing session IDs never create/read a
+  // sentinel, so fallback traffic still surfaces warnings and cannot collide
+  // globally. Keyed on agentId (not agent TYPE, #1198 FIX 1) plus the first
+  // violation's claim text so distinct real agents and distinct claims never
+  // share a sentinel.
+  const sentinel = dedupSentinelPath({
+    projectRoot: SO_PROJECT_DIR,
+    sessionId,
+    agentId,
+    claimText: violations[0],
+  });
 
   const filePath = eventsFilePath();
   for (const claim of violations) {

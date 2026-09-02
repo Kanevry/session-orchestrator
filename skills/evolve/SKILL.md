@@ -34,6 +34,8 @@ Do NOT proceed past Phase 0 if GATE_CLOSED. There is no bypass. Refer to `skills
 
 ## Phase 1: Config & Data Loading
 
+**Telemetry start marker (#1200):** note the current wall-clock time before Step 1.1 runs (e.g. `date +%s%3N`, or the coordinator's own turn-start instant). Every `orchestrator.evolve.completed` emit in Phase 1 / Phase 3 below reports `duration_ms` (placeholder `DURATION_MS`) as the elapsed milliseconds since this marker — same in-memory-value convention as `CT`/`AC`/`ASK`/`DROP` in `skills/session-end/SKILL.md`'s `orchestrator.handover.gated` emits.
+
 ### 1.1 Read Session Config
 
 Read and parse Session Config per `skills/_shared/config-reading.md`. Store result as `$CONFIG`.
@@ -43,6 +45,13 @@ Read and parse Session Config per `skills/_shared/config-reading.md`. Store resu
 Extract `persistence` from `$CONFIG`. If `persistence` is `false`, abort with message:
 
 > "Learnings require persistence to be enabled in Session Config. Add `persistence: true` to your Session Config block (CLAUDE.md for Claude Code, AGENTS.md for Codex CLI)."
+
+**Telemetry on abort (#1200):** before stopping, emit the abort form of the run-completion event:
+
+```bash
+node scripts/emit-event.mjs --type orchestrator.evolve.completed --payload \
+  "$(node -e "process.stdout.write(JSON.stringify({aborted: 'persistence-disabled', reason: 'Learnings require persistence to be enabled in Session Config.'.slice(0,300), duration_ms: DURATION_MS}))")"
+```
 
 ### 1.3 Determine Mode
 
@@ -91,7 +100,12 @@ Extract learnings from session history.
 - Read all entries from `.orchestrator/metrics/sessions.jsonl` (or `<state-dir>/metrics/sessions.jsonl` if the v2 path does not exist — see Phase 1.4 fallback)
 - Parse each JSONL line as JSON
 - Sort by `completed_at` descending (most recent first)
-- If no sessions found, abort: "No session data available. Complete at least one session before running evolve."
+- If no sessions found, abort: "No session data available. Complete at least one session before running evolve." **Telemetry on abort (#1200):** before stopping, emit:
+
+  ```bash
+  node scripts/emit-event.mjs --type orchestrator.evolve.completed --payload \
+    "$(node -e "process.stdout.write(JSON.stringify({aborted: 'no-session-data', reason: 'No session data available. Complete at least one session before running evolve.'.slice(0,300), duration_ms: DURATION_MS}))")"
+  ```
 
 ### Step 3.1b: Read Extra Sources (#638)
 
@@ -380,6 +394,13 @@ For confirmed learnings, use atomic rewrite strategy:
 
 Report: "Saved N new learnings, updated M existing. Total active: K."
 
+**Telemetry (#1200):** emit the run-completion event as the last action of this step, using the counts already computed above — `N` (Step 3.5(4) new-learnings count) → `appended`, `M` (Step 3.5(2) reinforced-existing count) → `boosted`, `$PRUNE.archived` (the sweep CLI's returned total, Step 3.5(5)) → `pruned`. `promoted` is always `0` from THIS call site: promotion to `public` scope is the separate `npm run share:hw-learnings -- --promote` CLI, never invoked by `/evolve analyze` itself — see `docs/events-schema.md`. All four counters are ALWAYS present, including as `0`:
+
+```bash
+node scripts/emit-event.mjs --type orchestrator.evolve.completed --payload \
+  "$(node -e "process.stdout.write(JSON.stringify({appended: N, boosted: M, pruned: PRUNED, promoted: 0, duration_ms: DURATION_MS}))")"
+```
+
 ### Step 3.6: C2 Auto-Repair Feeder (opt-in — #647)
 
 > **Default OFF (advisory-only).** With no `skill-evolution:` block in Session Config, this step surfaces repair candidates as ADVICE only — it applies nothing and opens no MR. This mirrors the opt-in precedent of `slopcheck` (#520) and `verification-auto-fix` (#521): the engine is dark unless explicitly enabled.
@@ -542,6 +563,8 @@ N active learnings (M high confidence, K expiring soon)
 
 Single-pass LLM derivation of USER.md + AGENT.md (peer cards from #503) updates from current learnings + sessions + steering files. Dry-run-default per #506 EARS contract.
 
+**Telemetry start marker (#1200):** note the current wall-clock time at Phase 6 entry (`DURATION_MS` in the Step 6.4/6.5 emits below is the elapsed milliseconds since this marker) — same placeholder convention as `skills/session-end/SKILL.md`'s `orchestrator.handover.gated` emits.
+
 ### Step 6.0: Argument Parsing
 
 Parse `$ARGUMENTS` for trailing flags after the `dialectic` keyword:
@@ -603,12 +626,26 @@ const result = await runDialecticDeriver({
 - If `--apply`: call `mergePeerCard(existingBody, managedUpdates)` from `scripts/lib/peer-cards/merger.mjs` for each card target, then `writePeerCard(repoRoot, 'user', mergedUserCard)` and `writePeerCard(repoRoot, 'agent', mergedAgentCard)` from `scripts/lib/peer-cards/writer.mjs`. Update the `updated:` frontmatter.
 - Report: `Dialectic-derived: M deltas to USER.md, N deltas to AGENT.md. Dry-run | Applied. Tokens: in=<X> out=<Y>.`
 
+**Telemetry (#1200):** immediately after the report line above, emit the success form (`mode` mirrors which branch ran):
+
+```bash
+node scripts/emit-event.mjs --type orchestrator.dialectic.completed --payload \
+  "$(node -e "process.stdout.write(JSON.stringify({mode: 'MODE', user_deltas: M, agent_deltas: N, tokens_in: X, tokens_out: Y, duration_ms: DURATION_MS}))")"
+```
+
 ### Step 6.5: Error Handling
 - `status: 'unknown-model'` → fail with clear error (already thrown by validateModel)
 - `status: 'budget-exceeded'` → emit `{status:'budget-exceeded', used:N, budget:M}`, do NOT truncate
 - `status: 'would-empty-card'` → warn + require `--allow-emptying` flag
 - `status: 'empty-input'` → exit clean with message "dialectic: skipped (no input)"
 - subagent crash → log ⚠, exit cleanly (do NOT write to `.orchestrator/dialectic-pending.md`)
+
+**Telemetry (#1200):** for EACH outcome above, before exiting, emit `orchestrator.dialectic.completed` in its abort form — `SLUG` is `unknown-model` \| `budget-exceeded` \| `would-empty-card` \| `empty-input` \| `subagent-crash` respectively (the subagent-crash case has no `runDialecticDeriver` status of its own; use the literal slug `subagent-crash`):
+
+```bash
+node scripts/emit-event.mjs --type orchestrator.dialectic.completed --payload \
+  "$(node -e "process.stdout.write(JSON.stringify({aborted: 'SLUG', duration_ms: DURATION_MS}))")"
+```
 
 Cross-reference: PRD #506 AC1-AC4 + EARS gates. Vault Integration: dialectic does NOT mirror to vault (#506 scope — peer cards are repo-local by design; vault mirror is for cross-repo sessions/learnings).
 

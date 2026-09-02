@@ -347,6 +347,22 @@ if (runCheck('check-skill-script-paths.mjs') !== 0) checkFailed = 1;
 process.stdout.write('\n');
 runCheck('check-test-git-config-target.mjs');
 
+// BLOCKING (#1183): every `emitEvent()` call site under hooks/**/*.mjs must be
+// try/catch-guarded (emitEvent() throws EventValidationError on a malformed
+// record — an unguarded call aborts the hook process). Five pre-existing
+// unguarded sites are baselined inside the checker itself and report WARN,
+// never FAIL, so this can be blocking-by-default without going red on
+// arrival; only a NEW unguarded site fails the build.
+process.stdout.write('\n');
+if (runCheck('check-hooks-emit-event-guard.mjs') !== 0) checkFailed = 1;
+
+// BLOCKING (#1184): every scripts/lib/validate/check-*.mjs must be referenced
+// by basename from this file, .husky/pre-commit, or .gitlab-ci.yml — or carry
+// a `// registration: standalone <reason>` header marker declaring itself
+// deliberately CLI-only. A checker nobody runs is built work with no effect.
+process.stdout.write('\n');
+if (runCheck('check-validator-registration.mjs') !== 0) checkFailed = 1;
+
 // ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------

@@ -299,10 +299,78 @@ describe('vault-mirror entry-point invariant (#536)', () => {
     ]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('invalid --kind');
-    // The session fixture is referenced so the lint/typecheck does not flag
-    // it as dead, and to anchor that the rejection is on --kind, not on the
-    // JSONL contents.
-    expect(VALID_SESSION.length).toBeGreaterThan(0);
+  });
+});
+
+// ── #1186c: duplicated session_id collapses to ONE note ───────────────────────
+//
+// sessions.jsonl is append-only, so the same physical session can carry more
+// than one line — crash-recovery re-appends, #1068 stub/supersede pairs. Pre-
+// #1186c, `main()`'s loop called processSession() once PER RAW LINE, so two
+// lines sharing a session_id rendered the note TWICE (once per line) instead
+// of once for the session. This suite is RED against the unmodified per-line
+// loop (verified manually against the pre-fix code: two lines with the same
+// session_id and different-day completed_at produce TWO stdout actions —
+// created then updated — for one id).
+
+describe('vault-mirror session dedup — duplicated session_id (#1186c)', () => {
+  let dirs = [];
+
+  afterEach(() => {
+    for (const d of dirs) {
+      try {
+        rmSync(d, { recursive: true, force: true });
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+    dirs = [];
+  });
+
+  function tmp() {
+    const d = mkdtempSync(join(tmpdir(), 'vault-mirror-dedup-test-'));
+    dirs.push(d);
+    return d;
+  }
+
+  function writeJsonl(dir, content) {
+    const p = join(dir, 'source.jsonl');
+    writeFileSync(p, content + '\n', 'utf8');
+    return p;
+  }
+
+  it('two records sharing session_id collapse to exactly one note carrying the newer fields', () => {
+    const older = JSON.parse(VALID_SESSION);
+    // A later CALENDAR DAY, not just a later time-of-day: toDate() (utils.mjs)
+    // truncates completed_at to YYYY-MM-DD, so a same-day pair would already
+    // dead-end at the pre-existing skipped-noop staleness check regardless of
+    // this fix — the different day is what forces the OLD per-line loop to
+    // actually render the note twice (created, then updated), which is the
+    // defect this test is anchored against.
+    const newer = { ...older, completed_at: '2026-05-24T10:00:00Z', total_files_changed: 99 };
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(tmp(), [JSON.stringify(older), JSON.stringify(newer)].join('\n'));
+
+    const result = runMirror([
+      '--vault-dir', vaultDir,
+      '--source', sourceFile,
+      '--kind', 'session',
+      '--vault-name', 'test-vault',
+    ]);
+    expect(result.status).toBe(0);
+
+    const lines = result.stdout.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const forThisSession = lines.filter((l) => l.id === older.session_id);
+    // THE assertion: one physical session, one note — never two stdout actions
+    // for the same session_id, however many lines the ledger carries for it.
+    expect(forThisSession).toHaveLength(1);
+    expect(forThisSession[0].action).toBe('created');
+
+    const notePath = join(vaultDir, '50-sessions', 'test-vault', `${older.session_id}.md`);
+    expect(existsSync(notePath)).toBe(true);
+    // The NEWER record's distinguishing field landed — proves the winner (not
+    // an arbitrary line) is what got dispatched.
+    expect(readFileSync(notePath, 'utf8')).toContain('**Files changed:** 99');
   });
 });
 

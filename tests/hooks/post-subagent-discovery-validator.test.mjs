@@ -1041,4 +1041,126 @@ describe('post-subagent-discovery-validator hook', () => {
     // No additionalContext either — the stopping subagent sees nothing at all.
     expect(result.stdout.trim()).toBe('');
   });
+
+  // -------------------------------------------------------------------------
+  // #1198 — three defects Discovery D8 measured on 400 sampled
+  // discovery_validator_violation events (2026-09-02): 186/400 (46.5%) were
+  // the harness's OWN gate-summary/STATUS lines, a masking-order bug let a
+  // backtick-quoted MENTION of a claim still trip the six original patterns,
+  // and the dedup sentinel keyed on agent_type (a CLASS) instead of agent_id
+  // (an individual real agent), silently suppressing a genuinely different
+  // agent's own additionalContext feedback.
+  //
+  // RED-before-fix verified via ad-hoc probe against the unmodified hook
+  // (`node /tmp/dv-probe/probe2.mjs`, `node /tmp/dv-probe/probe.mjs`,
+  // 2026-09-02, run in this session before the fix landed):
+  //   - gate-summary case (1) below: flagged=true pre-fix → flagged=false post-fix.
+  //   - dedupe case below: agent-y's stdout was `''` (suppressed) pre-fix →
+  //     non-empty, containing "PSA-006", post-fix.
+  // -------------------------------------------------------------------------
+
+  it.each([
+    [
+      'gate-summary heading with passed/failed ratio',
+      '## Wave 3 (Impl-Polish) Complete ✓ — Gate: typecheck 413 OK · lint 0 · **14904 passed / 0 failed** (608 files)',
+    ],
+    [
+      'STATUS: done report line',
+      'STATUS: done — 76/76 scoped tests green, typecheck 423 files OK',
+    ],
+    [
+      'German "Full Gate … grün" summary',
+      'W4 Full Gate **grün**: typecheck 413 OK · lint 0 · 14914 passed / 0 failed (608 files)',
+    ],
+    [
+      'bold Full Gate summary with skipped count',
+      '**Full Gate W4: 622 Files / 15419 passed / 0 failed / 11 skipped, exit 0**',
+    ],
+  ])('#1198 FIX 2 gate-summary line "%s": does NOT flag', (_label, benign) => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([benign]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    expect(readEvents()).toEqual([]);
+  });
+
+  // A sixth candidate line from the P2 brief — "**Vorgeschlagene Struktur —
+  // 5 feste Issues, 1 bedingtes, 5 Kommentare:**" — is DELIBERATELY OMITTED
+  // here: measured against this fix (probe2.mjs, 2026-09-02), it still flags
+  // (flagged=true) because it carries none of GATE_SUMMARY_LINE_RE's four
+  // triggers (no passed/failed ratio, no `STATUS:` prefix, no "Full Gate", no
+  // `Gate: typecheck|grün|rot`). Widening the regex to also catch a bare
+  // "N feste Issues" planning bullet would risk silencing a true "N files"-
+  // shaped claim outside a gate-summary context, which is out of scope for
+  // this fix — see brief instruction "include (6) only if your regex change
+  // actually excludes it; otherwise leave it out and say so".
+
+  it('#1198 FIX 3 (masking-order): a claim entirely inside backticks does NOT flag', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([
+      'the rule says `all 4 callers opt in` as an example',
+    ]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    expect(readEvents()).toEqual([]);
+  });
+
+  // Positives — the gate-summary/masking fixes above must not silence a REAL
+  // bare-cardinal claim. Measured against the unmodified hook (probe2.mjs,
+  // 2026-09-02): the P2 brief listed a THIRD positive, "C4 bekommt 8
+  // Einträge, davon 4 aus dem eigenen Dateiscope." — that claim does NOT flag
+  // even on the UNMODIFIED hook (German "Einträge" is outside both
+  // CARDINAL_NOUN and every CLAIM_PATTERNS trigger word, all of which are
+  // English-lexical), so it is refuted as a "still flags" case and omitted
+  // rather than asserted as true.
+  it.each([
+    ['German commit-count cardinal', 'Der Katalog installiert seit vier Monaten einen 730 Commits alten Build.'],
+    ['German issue-count cardinal', 'Issue-Triage ist da: 102 offene Issues.'],
+  ])('#1198 positive "%s": still flags after the gate-summary/masking fixes', (_label, claim) => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([claim]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    const events = readEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].claim_text).toBe(claim);
+  });
+
+  it('#1198 FIX 1: two DIFFERENT agent_ids of the SAME type in the SAME session each get their own additionalContext', () => {
+    // Pre-fix: dedupSentinelPath keyed on (projectRoot, session_id,
+    // agent_type) — NOT agent_id — so agent-y's additionalContext was
+    // silently suppressed by agent-x's sentinel purely because both share
+    // agent_type "discovery", despite being two distinct real subagents.
+    // (events.jsonl was never affected by this bug — that append loop has no
+    // sentinel gate at all; only additionalContext, the channel meant for the
+    // STOPPING SUBAGENT, was wrongly shared across different agents.)
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const claim = '4 of 4 callers opt-in to the helper. No grep was run.';
+    writeAgentTranscript([claim], 'agent-x');
+    writeAgentTranscript([claim], 'agent-y');
+
+    const first = runHook(stopPayload(join(tmp, TRANSCRIPT_REL), {
+      agent_id: 'agent-x',
+      agent_type: 'discovery',
+      session_id: 'shared-session-001',
+    }));
+    const second = runHook(stopPayload(join(tmp, TRANSCRIPT_REL), {
+      agent_id: 'agent-y',
+      agent_type: 'discovery',
+      session_id: 'shared-session-001',
+    }));
+
+    expect(first.status).toBe(0);
+    expect(second.status).toBe(0);
+    const firstCtx = JSON.parse(first.stdout).hookSpecificOutput.additionalContext;
+    const secondCtx = JSON.parse(second.stdout).hookSpecificOutput.additionalContext;
+    expect(firstCtx).toContain('PSA-006');
+    expect(secondCtx).toContain('PSA-006');
+  });
 });

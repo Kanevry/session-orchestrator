@@ -54,6 +54,25 @@ This runs BEFORE the local session-lock acquire in Phase 1.2 — the preamble's 
 
 Read and parse Session Config per `skills/_shared/config-reading.md`. Store result as `$CONFIG`.
 
+## Phase 1.05: Skill-Invocation Self-Report (#1199)
+
+> Emit an L1 skill-invocation record for `session-start` itself. The PreToolUse `Skill`-matcher hook only captures skills dispatched via the `Skill` tool — a **prose-invoked** skill like this one is invisible to it (verified gap: external users show 0/20 sessions with a `session-start` row in `skill-invocations.jsonl`, vs. 93/93 for the operator). This self-report closes that gap so L2/L3 skill-health has a `session-start` selection signal. Best-effort, try/catch-silent — it never blocks Phase 1.1.
+
+```javascript
+try {
+  const { appendSkillInvocation, DEFAULT_SKILL_INVOCATIONS_PATH } =
+    await import('${PLUGIN_ROOT}/scripts/lib/skill-invocations-schema.mjs');
+  const nodePath = await import('node:path');
+  await appendSkillInvocation(nodePath.join(process.cwd(), DEFAULT_SKILL_INVOCATIONS_PATH), {
+    timestamp: new Date().toISOString(),
+    event: 'selected',
+    skill: 'session-orchestrator:session-start',
+    session_id: null,   // no session.lock is bound yet at Phase 1 — the raw id is acquired at Phase 1.2 (#1199)
+    phase: 'session-start',
+  });
+} catch { /* self-report is advisory — never blocks Phase 1.1 */ }
+```
+
 ## Phase 1.1: Dispatcher-Autonomy Migration Capture (one-time, per-repo)
 
 > Closes session-orchestrator issue #681 (Epic #673 P3 — one-time per-repo dispatcher-autonomy capture). Migration trigger: the first session-start after this feature ships on a repo whose committed `dispatcher-autonomy:` block is still absent. Cross-reference `.claude/rules/ask-via-tool.md` (AUQ via tool, not prose).
@@ -1236,6 +1255,7 @@ After user alignment:
 | File | Purpose |
 |------|---------|
 | `soul.md` | Identity and communication principles |
+| (inline) Phase 1.05 | Skill-Invocation Self-Report (#1199) — mirrors session-end Phase 0.6 |
 | (inline) Phase 1.2 | Session Lock Acquire — `acquire()` call, active/stale/cross-host AUQ flows, `forceAcquire()` on user consent, deviation note wiring |
 | (inline) Phase 1.7 | Vault Live-Status Board (#674/#716) — `sweepBoard()` from `scripts/lib/vault-status/board-writer.mjs`; gated on `vault-integration.enabled: true`; marks this repo `in-progress` + host-wide staleness sweep via `enumerateCandidates()` (`scripts/lib/dispatcher/enumerate.mjs`), so a crashed session in ANY repo renders `force-closed` from any repo's session-start; generator-marked + idempotent; never touches `_overview.md`; non-blocking (falls back to single-repo `mirrorBoard()` on enumeration failure) |
 | `presentation-format.md` | Phase 8 output templates and AskUserQuestion examples |

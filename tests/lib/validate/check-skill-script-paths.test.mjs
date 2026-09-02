@@ -15,6 +15,7 @@ import path from 'node:path';
 import {
   classifyAnnotation,
   extractCitations,
+  isPlaceholderCitation,
   scanSkillScriptPaths,
 } from '../../../scripts/lib/validate/check-skill-script-paths.mjs';
 
@@ -39,11 +40,11 @@ function fixtureRoot(body, existingScripts = []) {
   return root;
 }
 
-/** @param {string} body @param {string[]} [scripts] */
-function scanFixture(body, scripts = []) {
+/** @param {string} body @param {string[]} [scripts] @param {{strictSh?: boolean}} [opts] */
+function scanFixture(body, scripts = [], opts = {}) {
   const root = fixtureRoot(body, scripts);
   try {
-    return scanSkillScriptPaths({ pluginRoot: root });
+    return scanSkillScriptPaths({ pluginRoot: root, ...opts });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -198,6 +199,95 @@ describe('scanSkillScriptPaths', () => {
   });
 });
 
+describe('scanSkillScriptPaths — .sh extension (#1187)', () => {
+  it('reports a dead .sh citation as WARN by default (never blocking)', () => {
+    // THE bug this extension exists for: a `.sh` citation could rot exactly
+    // like a `.mjs` one, but this checker never looked. Non-strict mode must
+    // surface the finding without turning `ok` false — the corpus this
+    // checker can see has one such citation today and validate-plugin must
+    // stay green until its doc owner fixes it (see the module docblock).
+    const result = scanFixture('Run `scripts/ghost.sh` to do the thing.\n');
+    expect(result.ok).toBe(true);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({
+      kind: 'missing-path',
+      path: 'scripts/ghost.sh',
+      severity: 'warn',
+    });
+    expect(result.summary.warnings).toBe(1);
+  });
+
+  it('promotes the same dead .sh citation to FAIL under strictSh: true', () => {
+    const result = scanFixture('Run `scripts/ghost.sh` to do the thing.\n', [], { strictSh: true });
+    expect(result.ok).toBe(false);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({
+      kind: 'missing-path',
+      path: 'scripts/ghost.sh',
+      severity: 'fail',
+    });
+  });
+
+  it('reports a dead hooks/**.sh citation (the alternation covers both roots)', () => {
+    const result = scanFixture('See `hooks/ghost.sh` for the guard.\n');
+    expect(result.ok).toBe(true);
+    expect(result.findings[0]).toMatchObject({ path: 'hooks/ghost.sh', severity: 'warn' });
+  });
+
+  it('does NOT treat a hooks/**.mjs citation as a citation at all', () => {
+    // The `.mjs` half of the grammar stays scripts/-only — unchanged from
+    // before this extension. A `hooks/*.mjs` mention (the 6 "likely
+    // hook-development examples" from the #1176 census) must not even enter
+    // the citation count, dead or not.
+    const result = scanFixture('See `hooks/example.mjs` for the guard.\n');
+    expect(result.findings).toEqual([]);
+    expect(result.summary.citations).toBe(0);
+  });
+
+  it('passes an existing .sh citation exactly like an existing .mjs one', () => {
+    const result = scanFixture('Run `scripts/real.sh` to do the thing.\n', ['scripts/real.sh']);
+    expect(result.findings).toEqual([]);
+    expect(result.summary.existing).toBe(1);
+  });
+
+  it('ignores a missing .sh path inside a fenced code block', () => {
+    const result = scanFixture(
+      'Example:\n\n```bash\nbash scripts/example-runner.sh --wave 3\n```\n\nDone.\n',
+    );
+    expect(result.findings).toEqual([]);
+    expect(result.summary.citations).toBe(0);
+  });
+
+  it('does not report an example.sh placeholder', () => {
+    const result = scanFixture('Run `scripts/example.sh` to see the shape.\n');
+    expect(result.findings).toEqual([]);
+    expect(result.summary.placeholders).toBe(1);
+  });
+
+  it('does not report a .sh path with a path-check: example marker', () => {
+    const result = scanFixture(
+      'Planned as `scripts/lib/ghost.sh`. <!-- path-check: example -->\n',
+    );
+    expect(result.findings).toEqual([]);
+    expect(result.summary.annotated).toBe(1);
+  });
+});
+
+describe('isPlaceholderCitation', () => {
+  it.each([
+    ['scripts/example.sh', true],
+    ['hooks/my-hook.sh', true],
+    ['scripts/<name>.sh', true],
+    ['scripts/lib/foo.mjs', true],
+    ['hooks/bar.sh', true],
+    ['scripts/lib/placeholder.mjs', true],
+    ['scripts/lib/real-thing.mjs', false],
+    ['hooks/enforce-scope.sh', false],
+  ])('classifies %s as placeholder=%s', (citedPath, expected) => {
+    expect(isPlaceholderCitation(citedPath)).toBe(expected);
+  });
+});
+
 describe('extractCitations', () => {
   it('collects every citation on one line and skips fenced ones', () => {
     const { citations } = extractCitations([
@@ -259,5 +349,23 @@ describe('CLI contract against the live repo', () => {
     const inspection = scanSkillScriptPaths({ pluginRoot: repoRoot });
     expect(inspection.findings.filter((f) => f.kind === 'unbalanced-fence')).toEqual([]);
     expect(inspection.summary.filesScanned).toBeGreaterThan(100);
+  });
+
+  it('--strict-sh flips a dead .sh citation to a blocking exit code', () => {
+    // A FIXTURE, deliberately — never the live repo. The live corpus already
+    // carries one dead `.sh` citation this checker CAN see (tracked in
+    // OUT-OF-SCOPE), so a live-repo assertion of `status: 1` here would pin
+    // that defect and go red the moment its doc owner fixes it — exactly the
+    // anti-pattern this file's own header warns against.
+    const root = fixtureRoot('Run `scripts/ghost.sh` please.\n');
+    try {
+      const nonStrict = spawnSync('node', [checkScript, root], { encoding: 'utf8' });
+      expect(nonStrict.status).toBe(0);
+      const strict = spawnSync('node', [checkScript, root, '--strict-sh'], { encoding: 'utf8' });
+      expect(strict.status).toBe(1);
+      expect(strict.stdout).toContain('FAIL:');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

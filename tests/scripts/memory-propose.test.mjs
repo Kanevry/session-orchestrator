@@ -512,13 +512,6 @@ describe('Section D — happy path and quota', () => {
     expect(result.position).toBe('1/5');
   });
 
-  it('proposals.jsonl line is written after successful proposal', async () => {
-    const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
-    await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV);
-    const jsonlPath = join(dir, '.orchestrator', 'metrics', 'proposals.jsonl');
-    expect(existsSync(jsonlPath)).toBe(true);
-  });
-
   it('proposals.jsonl line contains the submitted subject', async () => {
     const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
     await runCli(dir, VALID_ARGS, WAVE_AGENT_ENV);

@@ -78,6 +78,14 @@ const gate = await evaluateWaveResourceGate({
 | `proceed` | Dispatch at `gate.agents` (= `plannedAgents`). Include `gate.reasons` in the wave progress update (informational). |
 | `reduce` | Dispatch at `gate.agents` (< `plannedAgents`). Log the reduction as a deviation in STATE.md. Include `gate.reasons` in the wave progress update. |
 | `coordinator-direct` | Do NOT dispatch subagents. Coordinator executes the wave's tasks directly. Log as a deviation in STATE.md. Continue to `### 1. Dispatch Agents` only for stagnation-pattern detection wording — the section's execution is skipped. |
+| `offload` (#1160) | The envelope carries `host` — `{ decision: 'offload', agents, host, reasons }`. Dispatch the offloadable roles to that alias via `dispatchRemote()` (`### Agent-Type Resolution`, `ssh:<alias>` branch) and the remaining roles locally at `gate.agents`. Placement, not reduction: log it in the wave progress update with the host named, since a wave that silently ran elsewhere is unreadable afterwards. |
+
+**The offload witness is supplied, never probed (#1160).** The gate's own JSDoc states it: `@param {Record<string, boolean>} [opts.remoteReady] — #1160 readiness witness per declared host alias. The gate never probes the network itself; without a witness no host counts as ready and the decision stays local.` So an `offload` decision is impossible unless the coordinator passes one of two things alongside `config`/`plannedAgents`/`waveRole`:
+
+- `remoteReady: { '<alias>': true }` — built from the SessionStart banner line `Offload <alias>: ready=yes`, which was measured at session start and needs no new network call here; or
+- `probeFn: remoteDoctor` from `scripts/lib/wave-executor/remote-dispatch.mjs` — `@param {(alias: string) => Promise<boolean>} [opts.probeFn] — optional async witness, consulted only for aliases absent from `remoteReady`. Default null.` Use it when the banner is stale or absent; it costs a live probe per alias.
+
+Passing neither is a valid choice, not a bug: the gate then behaves exactly as it did before #1160 and reduces locally.
 
 Reasons MUST appear in the wave's progress update under a "Resource gate:" bullet. Measurements (RAM free GB, CPU %, concurrent sessions) appear verbatim so the user can trust the decision.
 
@@ -294,7 +302,7 @@ For each agent in this wave:
 
 The colon heuristic (§ "How to detect project agents") has **three** readings, not two: no colon = project agent, `session-orchestrator:<agent>` = plugin agent, and `cursor:<model>` = **foreign channel**. When the session plan or `agent-mapping` resolves an agent to `cursor:<model>` (e.g. `impl: cursor:composer-2.5`), do NOT call the Agent tool. Dispatch **coordinator-direct** via `dispatchForeign({ model, prompt, repoRoot, role, runId, timeoutSec })` from `scripts/lib/wave-executor/foreign-dispatch.mjs`. Contract, in the order it binds:
 
-1. **`never_foreign` gate first.** `isNeverForeignRole(role)` returns `{ok:false, reason:'never-foreign-role'}` before any worktree or spawn. `NEVER_FOREIGN_ROLES` (impl-core, security-review, migration, release, secrets, incident, refactor-crosscut) is hand-copied from the account-switch routing SSOT; `dispatch-cursor.sh` enforces none of it, so **this adapter is the only gate** — never route around it with a shell call.
+1. **`never_foreign` gate first.** `isNeverForeignRole(role)` returns `{ok:false, reason:'never-foreign-role'}` before any worktree or spawn. `NEVER_FOREIGN_ROLES` (impl-core, security-review, migration, release, secrets, incident, refactor-crosscut) is hand-copied from the operator's model-routing SSOT (ADR-002); `dispatch-cursor.sh` enforces none of it, so **this adapter is the only gate** — never route around it with a shell call.
 2. **Detached worktree**, `<tmpdir>/so-foreign/<runId>` by default, `git worktree add --detach`. Never under `.claude/worktrees/` — eight readdir scanners in this repo read that path. The stream log is KEPT beside it (`<runId>.log.jsonl`), not trap-deleted.
 3. **Verdict measured at the filesystem, never from the model's prose.** `ok` is true only on exit 0 + no timeout + a non-empty changed set (`git diff --name-only` ∪ `ls-files --others`, since a diff alone is blind to new files). **An empty diff is a failure regardless of what the report says.**
 4. **MANDATORY Claude diff-review gate.** Read `result.diff` and judge it SEMANTICALLY before any merge-back — test-green is not the bar (measured counterexample: the foreign #1149 solution was test-green and semantically wrong). The **coordinator** applies (`git apply`) and commits; the foreign model never touches this repo's index or worktree (PSA-007). On review failure, discard the diff. **`result.hookTampering === true` invalidates the run regardless of `ok`**: the child repointed or rewrote the shared `.git` hooks path (a linked worktree isolates the tree, not `core.hooksPath`), and that write is invisible in `result.diff` — discard and do not merge. `null` means the fingerprint could not be read (not measured), never "clean".
@@ -304,9 +312,33 @@ The colon heuristic (§ "How to detect project agents") has **three** readings, 
 
 **Composition.** A foreign run is a background Bash task, so it composes with background `Agent()` dispatch in the same wave. It is **NOT** part of § Started-Set Verification: no `meta.json` sidecar exists for it and no task-notification arrives. Its lifecycle is the adapter's return value — do not count it as planned/started/completed, and do not read its absence from the started set as a drop.
 
-**Model selection** is not decided here: the account-switch routing SSOT (ADR-002 / `tools/routing/routing.yaml`) owns it. Working defaults: `composer-2.5` for foreign impl; `cursor-grok-4.6-high` for review / test-writing / judgment roles, at `timeoutSec ≥ 900`. Dogfood evidence (2026-08-25): `composer-2.5` on issue #1105 — 165 s, 2 files, +93 lines, mandatory review passed, merged only after independent test verification.
+**Model selection** is not decided here: the operator's model-routing SSOT (ADR-002) owns it. Working defaults: `composer-2.5` for foreign impl; `cursor-grok-4.6-high` for review / test-writing / judgment roles, at `timeoutSec ≥ 900`. Dogfood evidence (2026-08-25): `composer-2.5` on issue #1105 — 165 s, 2 files, +93 lines, mandatory review passed, merged only after independent test verification.
 
 **Timeout.** `maxTurns` does not exist on this channel — see the § Platform-Specific Dispatch timeout note. The wall-clock SIGTERM (`DEFAULT_TIMEOUT_SEC = 900`, a floor) is the only circuit breaker.
+
+##### Fourth branch: remote-host dispatch (`ssh:<alias>` — #1160)
+
+A fourth colon reading, beside the `cursor:<model>` branch above: `ssh:<alias>` routes the role to a declared offload host. Reached either from an `offload` resource-gate decision (§ 0.5) or from an explicit `agent-mapping` entry. Do NOT call the Agent tool — dispatch coordinator-direct via `dispatchRemote()` from `scripts/lib/wave-executor/remote-dispatch.mjs`:
+
+```js
+import { dispatchRemote } from "scripts/lib/wave-executor/remote-dispatch.mjs";
+// task fields, per the adapter's own JSDoc:
+//   host (offload alias, `-H`), repo, prompt (STDIN, never argv), role,
+//   runId (becomes `--job`), timeoutSec?, model?, patchPath?
+const result = await dispatchRemote(
+  { host, repo, prompt, role, runId, timeoutSec, model, patchPath },
+  { repoRoot },
+);
+```
+
+The contract mirrors the `cursor:` branch and differs in exactly one place — the artefact is a PATCH, not a worktree:
+
+1. **`never_foreign` gate first**, same `NEVER_FOREIGN_ROLES` lock, refused before any spawn; a refusal is a ledger record, not a silence.
+2. **The prompt goes on STDIN**, never into argv.
+3. **Verdict = exit 0 AND a non-empty patch.** The adapter's own words: *"`ok` is false unless the child exited 0 AND left a non-empty patch."* A green-sounding remote report with an empty patch is a failure.
+4. **The coordinator reads and reviews the patch, then applies it with `git apply`.** The remote never touches this repo — same PSA-007 boundary as the foreign branch, and the same semantic-review bar (test-green is not the bar).
+5. **Telemetry:** `orchestrator.remote_dispatch.completed`, emitted on refusals too.
+6. **Not part of § Started-Set Verification** — no `meta.json` sidecar, no task notification, exactly as for the `cursor:` branch. Its lifecycle is the adapter's return value.
 
 #### Pre-Dispatch Grounding Injection (#85)
 
@@ -1224,6 +1256,10 @@ Before each wave dispatch:
    The per-agent path IS `$AGENT_FILESCOPE_JSON` — the same file `--assert-subset` (#796 below), Grounding Injection (#85), the Learnings-Index (#1014) and File-Scope Injection (#1020) consume. Never write a `$TMPDIR` copy: it degrades to a signal-free allow when an injector cannot find the addressable wave-keyed file. The coordinator's record is materialized as `coordinator.json` and included in the aggregate, so its direct edits are covered by the two checks below.
 
    > **`<state-dir>/filescopes/` is control state, like `wave-scope.json` itself — never a wave territory.** Step 3.1 necessarily runs before the union exists, so writing these files reports `bash-write-verify: N file(s) changed by a Bash call OUTSIDE the wave's allowedPaths` naming `filescopes/wave-<N>/*.json`. Expected once per wave rollover at this step; it is information, not a scope violation. Never widen `allowedPaths` to silence it — that would grant agents write access to the deconfliction record itself.
+
+   **3.1a — a peer session's declared paths are their OWN record (#1195).** When a reachable peer session runs in this same checkout and has sent a Peer-Scope-Union request (`skills/_shared/parallel-aware-auq.md` § Peer-Scope-Union), carry its complete path list into the record array as exactly ONE record `{"id":"peer-session-<id>","files":[…]}` — `<id>` being the peer's semantic session id. Never merge peer paths into an agent's record: an agent record is a territory ONE agent may write, and a peer's paths are a territory NO agent of this wave may write. Keeping them separate is also what makes the disjointness check meaningful — a peer path colliding with an agent's scope is a real collision that must surface at 3.2, not be laundered by living in that agent's own record. `hooks/post-bash-write-verify.mjs` reads the same aggregate sidecar and reports a change under a `peer-session-*` record as a peer write instead of a violation.
+
+   The record's lifecycle is the coordinator's: every wave rollover re-materializes it (3.1 rebuilds the whole array, so an omitted peer record silently revokes the union mid-session), and session-end removes it with the rest of `filescopes/` — a peer record outliving its peer grants paths nothing is watching.
 
    **3.2 — assert disjointness BEFORE computing the union.** The materialized aggregate is an ARRAY of `{id, files}` records (never an object map: a duplicated agent id must stay visible), including `coordinator.json`. Run:
 

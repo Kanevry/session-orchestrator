@@ -55,7 +55,7 @@ import { sweepExpiredLearnings } from '../learnings/expiry-sweep.mjs';
 import { shouldDispatchAutoDream } from '../auto-dream.mjs';
 import { shouldDispatchAutoDialectic } from '../auto-dialectic.mjs';
 import { readSkillInvocations } from '../skill-invocations-schema.mjs';
-import { runReconcile, resolveEffectiveTargets } from '../reconcile/engine.mjs';
+import { runReconcileFromPhaseSkip, resolveEffectiveTargets } from '../reconcile/engine.mjs';
 import { resolveMemoryDir } from '../memory-paths.mjs';
 
 // ---------------------------------------------------------------------------
@@ -285,7 +285,7 @@ async function decideReconcile({ repoRoot, cfg }) {
     if (!existsSync(learningsPath)) {
       return mkSkip(phase, 'learnings.jsonl absent', 'learnings.jsonl');
     }
-    const { proposals, summary, error } = await runReconcile({
+    const { proposals, summary, error } = await runReconcileFromPhaseSkip({
       repoRoot,
       ruleExpiryDays: cfg?.reconcile?.['rule-expiry-days'] ?? undefined,
       minRuleDays: cfg?.reconcile?.['min-rule-days'] ?? undefined,
@@ -293,7 +293,6 @@ async function decideReconcile({ repoRoot, cfg }) {
       maxProposalsPerRun: cfg?.reconcile?.['max-proposals-per-run'] ?? undefined,
       now: new Date(),
       dryRun: true, // never write the candidate sidecar from the aggregator
-      trigger: 'phase-skip', // ledger discriminator (#1192) — the highest-volume, probe-only caller
     });
     if (error) return mkProbeError(phase, new Error(error)); // fail-open on engine error
     const floor = cfg?.reconcile?.['confidence-floor'] ?? 0.5;

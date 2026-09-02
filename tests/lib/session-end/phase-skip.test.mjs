@@ -14,7 +14,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-// Wrap (never replace) the reconcile engine's runReconcile so every existing
+// Wrap (never replace) the reconcile engine's runReconcileFromPhaseSkip (#1201 wrapper, delegates to the real runReconcile) so every existing
 // test in this file keeps exercising the REAL engine end-to-end — only the
 // forwarding test in Group G below inspects the mock's recorded call args.
 // See #741.1/#741.2 Gap 3: a kebab-vs-camelCase typo in decideReconcile()'s
@@ -22,11 +22,11 @@ import { tmpdir } from 'node:os';
 // the engine's own defaults, with no prior test catching it.
 vi.mock('@lib/reconcile/engine.mjs', async (importActual) => {
   const actual = await importActual();
-  return { ...actual, runReconcile: vi.fn(actual.runReconcile) };
+  return { ...actual, runReconcileFromPhaseSkip: vi.fn(actual.runReconcileFromPhaseSkip) };
 });
 
 import { planTailPhases, buildSkippedReport } from '@lib/session-end/phase-skip.mjs';
-import { runReconcile } from '@lib/reconcile/engine.mjs';
+import { runReconcileFromPhaseSkip } from '@lib/reconcile/engine.mjs';
 
 // ---------------------------------------------------------------------------
 // tmp helpers
@@ -449,7 +449,7 @@ describe('G — decideReconcile forwards min-rule-days / min-insight-chars to ru
         scope: 'repo-local', file_paths: ['skills/x.md'],
       },
     ]);
-    vi.mocked(runReconcile).mockClear();
+    vi.mocked(runReconcileFromPhaseSkip).mockClear();
 
     await plan(root, defaultConfig({
       reconcile: {
@@ -458,8 +458,8 @@ describe('G — decideReconcile forwards min-rule-days / min-insight-chars to ru
       },
     }));
 
-    expect(vi.mocked(runReconcile)).toHaveBeenCalledTimes(1);
-    const callArgs = vi.mocked(runReconcile).mock.calls[0][0];
+    expect(vi.mocked(runReconcileFromPhaseSkip)).toHaveBeenCalledTimes(1);
+    const callArgs = vi.mocked(runReconcileFromPhaseSkip).mock.calls[0][0];
     expect(callArgs.minRuleDays).toBe(14);
     expect(callArgs.minInsightChars).toBe(12);
   });
@@ -478,7 +478,7 @@ describe('G — decideReconcile forwards min-rule-days / min-insight-chars to ru
         scope: 'repo-local', file_paths: ['skills/x.md'],
       },
     ]);
-    vi.mocked(runReconcile).mockClear();
+    vi.mocked(runReconcileFromPhaseSkip).mockClear();
 
     await plan(root, defaultConfig({
       reconcile: {
@@ -487,8 +487,8 @@ describe('G — decideReconcile forwards min-rule-days / min-insight-chars to ru
       },
     }));
 
-    expect(vi.mocked(runReconcile)).toHaveBeenCalledTimes(1);
-    const callArgs = vi.mocked(runReconcile).mock.calls[0][0];
+    expect(vi.mocked(runReconcileFromPhaseSkip)).toHaveBeenCalledTimes(1);
+    const callArgs = vi.mocked(runReconcileFromPhaseSkip).mock.calls[0][0];
     expect(callArgs.maxProposalsPerRun).toBe(3);
   });
 });

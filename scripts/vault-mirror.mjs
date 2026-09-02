@@ -63,6 +63,7 @@ import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 import { resolveRepoNamespace } from './lib/vault-mirror/namespace.mjs';
 import { resolveCanonicalSuffixes } from './lib/named-vault-resolver.mjs';
 import { loadOwnerConfig } from './lib/owner-yaml.mjs';
+import { canonicalizeSessions } from './lib/sessions-canonical.mjs';
 
 // ── Canonical-vault helpers (#600 D2 / #607 D2) ────────────────────────────────
 // These are module-level (above the CLI bootstrap) so the module is import-safe
@@ -489,6 +490,111 @@ async function main() {
     qualityMinConfidence,
   };
 
+  /**
+   * Dispatch one already-parsed entry to its processor and account for the
+   * result. Extracted (#1186c) so the `--kind session` path below can call it
+   * AFTER a whole-file dedup pass instead of once per raw line; every branch
+   * is byte-identical to the pre-#1186c per-line loop body.
+   * @param {unknown} entry — parsed JSONL value (usually an object; a bare
+   *   `null`/primitive line is a real shape this must keep handling, see the
+   *   #1186c session branch below for why it is never filtered out here).
+   * @param {number} entryLineNum — 1-based JSONL line number, or (for the
+   *   `--kind session` dedup path) the line of the record that WON the
+   *   collapse. `_lineNum` is read ONLY for telemetry (process.mjs
+   *   `emitEntryAction` → `line:` on the per-entry ledger event), never to
+   *   derive content — process.mjs itself tolerates a non-finite value by
+   *   suppressing just that one ledger record, but every call site here
+   *   always supplies a real line number.
+   * @returns {Promise<void>}
+   */
+  async function dispatchEntry(entry, entryLineNum) {
+    try {
+      // Both processors return the `action` string they emitted (every one of
+      // their exit paths is an `emitAction` call), so the tally needs no second
+      // census of the 18 call sites in process.mjs — a census that would go
+      // stale the first time a branch is added.
+      const action =
+        kind === 'learning'
+          ? await processLearning(entry, entryLineNum, ctx)
+          : await processSession(entry, entryLineNum, ctx);
+      tally(action);
+    } catch (err) {
+      // Validation errors (missing required fields) → per-entry skip, not a global failure
+      if (err.message.startsWith('vault-mirror:')) {
+        process.stderr.write(`${err.message}\n`);
+        const entryId = entry?.id ?? entry?.session_id ?? null;
+        process.stdout.write(
+          JSON.stringify({ action: 'skipped-invalid', path: null, kind, id: entryId }) + '\n',
+        );
+        runState.skippedInvalid++;
+        tally('skipped-invalid');
+        await emitMirrorEvent({
+          action: 'skipped-invalid',
+          kind,
+          line: entryLineNum,
+          recordId: entryId,
+          skipClass: 'validation',
+          reason: err.message,
+          dryRun,
+        });
+        return;
+      }
+      // #718: discriminate genuine filesystem/system errors (which must still
+      // abort the whole run — a partially-written vault is worse than a loud
+      // failure) from mapper crashes on malformed producer data (a native
+      // TypeError/RangeError thrown while rendering ONE record, e.g. a shape
+      // the mapper didn't defensively guard). Node system errors always carry
+      // a non-empty `err.code` (EACCES/ENOSPC/EROFS/ENOENT/...) and/or
+      // `err.syscall` — a plain TypeError/RangeError from JS-level property
+      // access has neither, so this check is a reliable discriminator even in
+      // --dry-run mode (no writes happen, so a mapper crash there can only be
+      // a data-shape defect, never a real FS error).
+      const isSystemError =
+        (typeof err.code === 'string' && err.code.length > 0) || Boolean(err.syscall);
+      if (!isSystemError) {
+        process.stderr.write(
+          `vault-mirror: mapper crash on line ${entryLineNum} (${err.message}) — record skipped\n`,
+        );
+        const entryId = entry?.id ?? entry?.session_id ?? null;
+        process.stdout.write(
+          JSON.stringify({
+            action: 'skipped-invalid',
+            path: null,
+            kind,
+            id: entryId,
+            reason: 'mapper-crash',
+          }) + '\n',
+        );
+        runState.skippedInvalid++;
+        tally('skipped-invalid');
+        await emitMirrorEvent({
+          action: 'skipped-invalid',
+          kind,
+          line: entryLineNum,
+          recordId: entryId,
+          skipClass: 'mapper-crash',
+          reason: err.message,
+          dryRun,
+        });
+        return;
+      }
+      // Unexpected filesystem errors → fatal
+      process.stderr.write(`vault-mirror: filesystem error on line ${entryLineNum}: ${err.message}\n`);
+      await finishRun('filesystem-error');
+      process.exit(2);
+    }
+  }
+
+  // #1186c: for `--kind session`, every parsed entry is buffered here instead
+  // of dispatched inline — the dedup pass below needs the WHOLE file before it
+  // can tell which of several same-`session_id` lines is the winner. `--kind
+  // learning` is unaffected: it still dispatches per line, inline, immediately
+  // below (a malformed line further down the file must not undo an already-
+  // dispatched learning — pinned by the existing `total: 2, created: 1` abort
+  // test in tests/unit/vault-mirror.test.mjs).
+  const sessionEntries = [];
+  const sessionLineNums = [];
+
   for (const line of lines) {
     lineNum++;
     const trimmed = line.trim();
@@ -507,80 +613,59 @@ async function main() {
       process.exit(1);
     }
 
-    try {
-      // Both processors return the `action` string they emitted (every one of
-      // their exit paths is an `emitAction` call), so the tally needs no second
-      // census of the 18 call sites in process.mjs — a census that would go
-      // stale the first time a branch is added.
-      const action =
-        kind === 'learning'
-          ? await processLearning(entry, lineNum, ctx)
-          : await processSession(entry, lineNum, ctx);
-      tally(action);
-    } catch (err) {
-      // Validation errors (missing required fields) → per-entry skip, not a global failure
-      if (err.message.startsWith('vault-mirror:')) {
-        process.stderr.write(`${err.message}\n`);
-        const entryId = entry?.id ?? entry?.session_id ?? null;
-        process.stdout.write(
-          JSON.stringify({ action: 'skipped-invalid', path: null, kind, id: entryId }) + '\n',
-        );
-        runState.skippedInvalid++;
-        tally('skipped-invalid');
-        await emitMirrorEvent({
-          action: 'skipped-invalid',
-          kind,
-          line: lineNum,
-          recordId: entryId,
-          skipClass: 'validation',
-          reason: err.message,
-          dryRun,
-        });
+    if (kind === 'session') {
+      sessionEntries.push(entry);
+      sessionLineNums.push(lineNum);
+      continue;
+    }
+
+    await dispatchEntry(entry, lineNum);
+  }
+
+  if (kind === 'session') {
+    // Only an OBJECT entry carrying a non-empty `session_id` is eligible for
+    // the dedup collapse — the same predicate canonicalizeSessions itself uses
+    // internally (sessions-canonical.mjs `isRecordObject` + `isNonEmptyString`,
+    // not exported, so re-stated here rather than reached into). Everything
+    // else — a bare `null`/primitive JSONL line, or a legacy record with no
+    // `session_id` field — is dispatched EXACTLY as before: unaffected, in
+    // original file order, through the SAME validation/mapper-crash paths
+    // process.mjs already has for those shapes. Two regression-guard tests in
+    // tests/unit/vault-mirror.test.mjs depend on this (a bare `null` line and a
+    // legacy `session`-keyed record both still reach processSession() and its
+    // existing error handling, never silently vanish into the collapse).
+    const isIdentifiable = (e) =>
+      e !== null &&
+      typeof e === 'object' &&
+      !Array.isArray(e) &&
+      typeof e.session_id === 'string' &&
+      e.session_id.length > 0;
+    const identifiable = sessionEntries.filter(isIdentifiable);
+    // canonicalizeSessions never clones — the survivors are the SAME object
+    // references as in `sessionEntries`, so reference identity below is exact,
+    // never a guess (scripts/lib/sessions-canonical.mjs header, "RULE ORDER").
+    const survivors = new Set(canonicalizeSessions(identifiable));
+
+    for (let i = 0; i < sessionEntries.length; i++) {
+      const entry = sessionEntries[i];
+      if (isIdentifiable(entry) && !survivors.has(entry)) {
+        // A losing duplicate: an earlier line whose `session_id` a LATER line
+        // in this same batch supersedes or overwrites (crash-recovery
+        // re-append, #1068 stub/supersede pair). No dispatch, no stdout line,
+        // no tally for it — the winning occurrence (dispatched below, at its
+        // own position) already produces the ONE note this physical session
+        // gets. BV-004 ceiling: `runState.total` still counts this raw line,
+        // so `created+updated+skipped+failed` no longer partitions `total`
+        // for a `--kind session` run that collapsed at least one duplicate —
+        // no test pins that invariant for session kind (only for `learning`,
+        // where duplicates are not collapsed), and a partially-written vault
+        // from a batch that could not be fully deduped is the worse failure
+        // mode. Revisit with a dedicated telemetry action if an operator ever
+        // needs to name WHICH lines were collapsed, not just how many notes
+        // were written.
         continue;
       }
-      // #718: discriminate genuine filesystem/system errors (which must still
-      // abort the whole run — a partially-written vault is worse than a loud
-      // failure) from mapper crashes on malformed producer data (a native
-      // TypeError/RangeError thrown while rendering ONE record, e.g. a shape
-      // the mapper didn't defensively guard). Node system errors always carry
-      // a non-empty `err.code` (EACCES/ENOSPC/EROFS/ENOENT/...) and/or
-      // `err.syscall` — a plain TypeError/RangeError from JS-level property
-      // access has neither, so this check is a reliable discriminator even in
-      // --dry-run mode (no writes happen, so a mapper crash there can only be
-      // a data-shape defect, never a real FS error).
-      const isSystemError =
-        (typeof err.code === 'string' && err.code.length > 0) || Boolean(err.syscall);
-      if (!isSystemError) {
-        process.stderr.write(
-          `vault-mirror: mapper crash on line ${lineNum} (${err.message}) — record skipped\n`,
-        );
-        const entryId = entry?.id ?? entry?.session_id ?? null;
-        process.stdout.write(
-          JSON.stringify({
-            action: 'skipped-invalid',
-            path: null,
-            kind,
-            id: entryId,
-            reason: 'mapper-crash',
-          }) + '\n',
-        );
-        runState.skippedInvalid++;
-        tally('skipped-invalid');
-        await emitMirrorEvent({
-          action: 'skipped-invalid',
-          kind,
-          line: lineNum,
-          recordId: entryId,
-          skipClass: 'mapper-crash',
-          reason: err.message,
-          dryRun,
-        });
-        continue;
-      }
-      // Unexpected filesystem errors → fatal
-      process.stderr.write(`vault-mirror: filesystem error on line ${lineNum}: ${err.message}\n`);
-      await finishRun('filesystem-error');
-      process.exit(2);
+      await dispatchEntry(entry, sessionLineNums[i]);
     }
   }
 

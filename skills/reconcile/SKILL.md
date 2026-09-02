@@ -156,9 +156,9 @@ himself.
 ### 2.3 Invoke `runReconcile`
 
 ```javascript
-import { runReconcile } from '$PLUGIN_ROOT/scripts/lib/reconcile/engine.mjs';
+import { runReconcileFromSkill } from '$PLUGIN_ROOT/scripts/lib/reconcile/engine.mjs';
 
-const { proposals, rejected, summary, error } = await runReconcile({
+const { proposals, rejected, summary, error } = await runReconcileFromSkill({
   repoRoot,             // absolute path from git rev-parse --show-toplevel
   ruleExpiryDays: RULE_EXPIRY_DAYS,   // empty → undefined → engine per-type TTL
   minRuleDays: MIN_RULE_DAYS,         // default 7 — floors a near-dead expires-at
@@ -166,7 +166,8 @@ const { proposals, rejected, summary, error } = await runReconcile({
   maxProposalsPerRun: MAX_PROPOSALS_PER_RUN, // default 10 — volume brake (issue #900 D)
   now: new Date(),
   dryRun: DRY_RUN,     // true → engine touches no disk (no idempotency sidecar write)
-  trigger: 'skill',    // ledger discriminator (#1192) — always pass one; the engine records 'unknown' otherwise
+  // trigger is pinned to 'skill' IN CODE by runReconcileFromSkill (#1201 Part A) —
+  // this prose block no longer sets it.
   targets,             // from resolveEffectiveTargets above; recorded when non-empty, omitted otherwise
 });
 

@@ -131,7 +131,7 @@ schema, so nobody double-checks the actual runtime behavior, and invalid data pa
 undetected.
 
 Reference case: `maxLength: 63` was the natural way to express S3 bucket-name limits. The
-downstream validator (`aiat-poc-infra/scripts/estate/validate-estate-yaml.sh`) is a hand-written
+downstream validator (`aiat-poc-infra/scripts/estate/validate-estate-yaml.sh`) <!-- path-check: historical --> is a hand-written
 JSON-Schema mini-interpreter that does not implement `maxLength` — it would have parsed the
 schema, not recognized the keyword, and silently done nothing, so a 200-character bucket name
 would still validate green. Decision: extend the consumer (option 1) rather than relying only on

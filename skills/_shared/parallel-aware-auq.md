@@ -104,7 +104,36 @@ The two slots are `parallelPeer.mode` and `parallelPeer.pid`; `<ageHours>` is th
 - **Worktree anlegen + starten** → invoke `enterWorktree({ basePath, sessionId, branch, repoRoot, rawSessionId, reason: 'worktree-promotion' })` from `scripts/lib/autopilot/worktree-pipeline.mjs`. The helper creates a sibling worktree at `<basePath>/<repo-name>-<sessionId>/`, runs idempotency + boundary checks, and logs a WARN line to stderr on fresh creation. When `<branch>` is already checked out by another worktree — the normal case, since Phase 0.5 passes the current HEAD — the worktree lands on a fresh `so/<sessionId>` branch created at `<branch>` and the helper returns `{ branch: 'so/<sessionId>', promotedFrom: '<branch>' }` (#1067); the new worktree's STATE.md `branch` MUST record `so/<sessionId>` and note `promoted from <branch>@<repoRoot>`. Since #1170, `enterWorktree` releases the source root ITSELF once the destination worktree provably exists — it calls `leaveSourceRoot({ repoRoot, sessionId: rawSessionId, semanticSessionId: sessionId, reason })` from `scripts/lib/session-transition.mjs` internally, on BOTH success exits, so this AUQ handler makes no separate `leaveSourceRoot` call. `rawSessionId` — **read from this root's `.orchestrator/session.lock` via `readLock({ repoRoot })`, never the semantic label, and never `current-session.json`, which may describe a peer session (#863)** — is the RAW physical `session_id` owning this root's lock/registry entry; a wrong id aborts the teardown with `left.ok: false, reason: 'lock-session-mismatch:<owner>'` and removes nothing. In detail: the promotion is a PROCESS BOUNDARY, not a live migration (#1069) — the old root is deregistered and its `session.lock` released BEFORE the new worktree's own Phase 1.2 acquires, so the two roots never both own a live claim at once. `enterWorktree`'s return value carries the outcome as `left: { ok, steps, reason? }`; `leaveSourceRoot()` never throws, so on `left.ok !== true` `enterWorktree` itself emits the stderr WARN `enterWorktree: leaveSourceRoot: <reason>` and the promotion continues regardless (the destination worktree already exists — aborting here would leave the two-live-roots state the call prevents). Then exit the current preamble flow — the new worktree's own session-start runs from scratch (Phase 1 onwards). On failure (`WorktreeBoundaryError` or `git worktree add` non-zero exit), emit a stderr warning `parallel-aware: enterWorktree failed: <error>; falling back to Manuell` and proceed via the Manuell path.
 - **Manuell** → append a Deviation via `appendDeviationOnDisk()`:
   `Worktree-Auto-Promotion declined; running in-place alongside session_id=<peer.sessionId>, mode=<peer.mode>, pid=<peer.pid>. PSA-001/PSA-002/PSA-004 discipline applies.`
-  Continue Phase-0.
+  Continue Phase-0 — and run the **Peer-Scope-Union** protocol below before the first write.
+
+### Peer-Scope-Union (Manuell only, #1195)
+
+In-place beside a peer is survivable when the two scopes are DECLARED to each other rather than discovered by collision. Measured 2026-09-02 in a consumer repo: a 4-subagent session ran beside a deep session (wave 4, `enforcement: strict`) in ONE checkout, no worktree, zero collisions — the peer's paths were carried in the deep session's `allowedPaths` union (19 → 41, `--assert-subset` green) across a wave rollover.
+
+Four steps, in order. Steps 1 and 2 are the protocol; 3 and 4 are what keeps it honest.
+
+1. **Declare the COMPLETE path list.** The arriving session sends the peer every path it will write — including the ones a script produces (fixtures, snapshots, result files, temp helpers), not only the ones it plans to edit by hand. A path omitted here is a path the peer's guard reports as a violation. In the same message it adopts the peer's resource rules.
+2. **The peer unions.** The receiving coordinator adds those paths to its `allowedPaths` as ONE record `peer-session-<id>` in the wave's scope manifest, re-asserts subset/disjointness, and re-materializes them on every wave rollover (`skills/wave-executor/wave-loop.md` § Scope Manifest).
+3. **Probe with ONE real write.** Before dispatching any agent, make one small PLANNED Edit from the declared list. A denial here costs one edit; the same denial found after a fan-out costs the wave.
+4. **Announce before committing.** The arriving session sends its final file list, the peer sequences its own push behind it, and the SHAs come back. The git index is shared (PSA-007) — sequencing it is the only thing that makes two sessions in one checkout committable.
+
+Message template for step 1 (`SendMessage`, first line self-contained per `.claude/rules/cross-session-messaging.md`):
+
+```
+Scope-union request: I will write exactly these paths in <repo> — please add them to your allowedPaths.
+
+Paths (complete, incl. files my scripts write):
+- <path>
+- <path>
+
+Resource rules I adopt from you: no build, no dev-server ports, no service stop/restart,
+commit only via `git commit --only <my files>` after announcing, no push, no tag.
+
+I will probe with ONE planned edit before dispatching, announce my final file list before
+committing, and send you the SHAs afterwards.
+```
+
+Delivery is never guaranteed (CSM-004): an unanswered request establishes nothing. Without a confirmed union, do not write beside the peer — take the worktree instead.
 - **Abbrechen** → exit Phase-0 immediately. No file writes.
 
 ## Always-OK Pass-Through (no AUQ)

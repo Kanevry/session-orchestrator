@@ -102,6 +102,7 @@ Where the branch hangs is what keeps it honest. It sits BELOW the sibling check,
 **Peer-inform examples (message the peer, stay at PSA-001):**
 - A bug you can see plainly, entirely inside a file a live peer session owns — inform, do not patch it for them.
 - A fact that invalidates a peer's premise (a shared config you just changed, a branch they are about to build on) — inform, then keep working.
+- The inverse case: MY planned scope is file-disjoint from a reachable peer's, and I am about to work in-place in the same checkout. Then declaring beats discovering — request a **Peer-Scope-Union** (send the complete path list, adopt the peer's resource rules, probe with one real edit, announce before committing) so the peer carries my paths in its scope manifest. Working in-place without a manifest turns every one of my writes into a finding in the peer's guard. Protocol: `skills/_shared/parallel-aware-auq.md` § Peer-Scope-Union.
 
 **Scope overlap examples (triggers PSA-002):**
 - A file you are about to edit is already modified by someone else.

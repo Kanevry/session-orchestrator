@@ -79,6 +79,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { writeStdoutLineSync, writeJsonAtomicSync } from './lib/io.mjs';
+import { readCanonicalSessions } from './lib/sessions-canonical.mjs';
 
 /** Machine-readable schema tag for the --json envelope. */
 export const SCHEMA = 'site-numbers/1';
@@ -401,10 +402,31 @@ export const METRIC_DEFS = Object.freeze([
     // Gitignored ledger (`.gitignore`: local-only observability data) — absent
     // in every fresh clone, CI checkout and tarball build.
     snapshotFallback: true,
-    source: 'grep -c . .orchestrator/metrics/sessions.jsonl',
+    // #1186: `grep -c` over-counts — sessions.jsonl is append-only, so the same
+    // physical session can carry more than one line (crash-recovery re-appends,
+    // #1068 stub/supersede pairs). readCanonicalSessions collapses those to one
+    // record per session_id before the count; see scripts/lib/sessions-canonical.mjs
+    // for the three collapse rules. `learnings` below stays a raw line count —
+    // that ledger has no session_id-shaped identity to dedupe on.
+    // Measured on THIS repo's own ledger @ 2ccea0f2: raw line count 289 vs
+    // canonical (deduped) count 278 — an over-count of 11 records, which is the
+    // bug's magnitude this migration removes.
+    source: 'grep -c . .orchestrator/metrics/sessions.jsonl   (then deduped per session_id — see readCanonicalSessions, #1186)',
     compute: (root) => {
-      const r = countJsonlEntries(join(root, '.orchestrator', 'metrics', 'sessions.jsonl'));
-      return r === null ? null : fmtCount(r.entries);
+      const file = join(root, '.orchestrator', 'metrics', 'sessions.jsonl');
+      // Same absent/non-file guard as countJsonlEntries, kept explicit here
+      // because readCanonicalSessions returns [] (not null) on a missing ledger
+      // — collapsing that into fmtCount(0) would silently defeat the
+      // snapshotFallback precedence above (a fresh clone would report "0
+      // sessions" instead of falling back to the tracked snapshot).
+      if (!existsSync(file) || !statSync(file).isFile()) return null;
+      // Same reader every other #1186 consumer uses (autopilot.mjs,
+      // build-live-signals.mjs, telemetry/sync.mjs) — a record with no
+      // `session_id` is dropped rather than counted, because it cannot be
+      // identified for dedup. Measured @ 2ccea0f2 on this repo's own ledger:
+      // 0 such rows (raw 289 lines == 289 identified), so the drop is inert
+      // here; it only matters for a future malformed/legacy row.
+      return fmtCount(readCanonicalSessions({ filePath: file }).length);
     },
   },
   {
@@ -623,7 +645,17 @@ export function collect(root) {
   ]) {
     const r = countJsonlEntries(join(root, '.orchestrator', 'metrics', file));
     if (r && r.malformed > 0) {
-      warnings.push(`${file}: ${r.malformed} non-empty line(s) are not valid JSON — the ${name} count includes them`);
+      // #1186: the two ledgers now disagree on what a malformed line DOES to
+      // the published count. `learnings` is still the raw countJsonlEntries
+      // total, which counts a malformed line as an entry regardless of its
+      // content. `sessions` is readCanonicalSessions, whose parse loop skips a
+      // line it cannot JSON.parse — so a malformed session line is silently
+      // ABSENT from the count rather than included in it.
+      const consequence =
+        name === 'sessions'
+          ? `they are DROPPED from the sessions count (readCanonicalSessions skips unparseable lines)`
+          : `the ${name} count includes them`;
+      warnings.push(`${file}: ${r.malformed} non-empty line(s) are not valid JSON — ${consequence}`);
     }
   }
 

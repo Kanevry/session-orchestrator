@@ -132,24 +132,44 @@ describe('on-session-end — final orchestrator.wave.completed (#1193)', () => {
       // Catches: a duplicate completion for a wave post-tool-batch already closed.
       label: 'the last wave was already closed by an N+1 transition',
       session: { session_id: MINE, last_wave: 3, last_wave_completed: 3 },
+      refusedReason: 'already-completed',
+      refusedWaveNumber: 3,
     },
     {
       // Catches: a fabricated wave 0 for a session that never batched.
       label: 'last_wave is 0',
       session: { session_id: MINE, last_wave: 0 },
+      refusedReason: 'no-wave',
+      refusedWaveNumber: undefined,
     },
     {
       // Catches: an invented completion for a session with no wave lifecycle at all.
       label: 'last_wave is absent (Express-Path / coordinator-direct)',
       session: { session_id: MINE, semantic_session_id: 'fixture-no-wave' },
+      refusedReason: 'no-wave',
+      refusedWaveNumber: undefined,
     },
-  ])('emits nothing when $label', async ({ session }) => {
+  ])('emits nothing when $label, and records final_refused reason=$refusedReason (#1201 Part B)', async ({
+    session,
+    refusedReason,
+    refusedWaveNumber,
+  }) => {
     const projectDir = await mkProject();
     await writeSessionFile(projectDir, session);
 
     await runHook({ projectDir, stdin: owningStdin() });
 
-    expect(waveCompleted(await readEvents(projectDir))).toHaveLength(0);
+    const events = await readEvents(projectDir);
+    expect(waveCompleted(events)).toHaveLength(0);
+
+    // #1201 Part B / HR-105 — the refusal itself must leave a trace, never a
+    // silent return. `wave_number` is present ONLY for `already-completed`
+    // (the one case above where `last_wave` resolved before the refusal).
+    const refused = events.filter((e) => e.event === 'orchestrator.wave.final_refused');
+    expect(refused).toHaveLength(1);
+    expect(refused[0].reason).toBe(refusedReason);
+    expect(refused[0].wave_number).toBe(refusedWaveNumber);
+    expect(Object.hasOwn(refused[0], 'wave_number')).toBe(refusedWaveNumber !== undefined);
   });
 
   it('is idempotent across two SessionEnd runs on the same session file', async () => {
@@ -282,6 +302,11 @@ describe('on-session-end — final orchestrator.wave.completed (#1193)', () => {
     expect(waveCompleted(events)).toHaveLength(0);
     expect(Object.hasOwn(await readSessionFile(projectDir), 'last_wave_completed')).toBe(false);
     expect(events.some((e) => e.event === 'orchestrator.session.ended')).toBe(true);
+
+    // #1201 Part B / HR-105 — the refusal itself must be recorded, not silent.
+    const refused = events.filter((e) => e.event === 'orchestrator.wave.final_refused');
+    expect(refused).toHaveLength(1);
+    expect(refused[0].reason).toBe(reason);
   });
   it('re-verifies ownership on the SECOND read of current-session.json (TOCTOU)', async () => {
     // Catches: ownership is attested in resolveSession() against the FIRST read

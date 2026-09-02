@@ -22,7 +22,7 @@
  */
 
 import { describe, it, expect, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -347,6 +347,40 @@ it('measures the real repo', () => {
     // repo-relative path — accepting it made `node_modules` a finding.
     expect(normalizeCandidate('node_modules')).toBe(null);
     expect(normalizeCandidate('package.json')).toBe(null);
+  });
+});
+
+describe('P10 — linked worktree, `.git` is a FILE not a directory', () => {
+  it('does not classify `.git` as untracked when it is a worktree gitdir pointer', () => {
+    // The bug this catches: `resolveUntrackedOracle`'s exists-but-untracked
+    // branch is documented as "deliberately FILES ONLY" specifically so a
+    // DIRECTORY `.git` (present in every clone) is never misjudged — but in a
+    // git-worktree checkout `.git` is a FILE (`gitdir: <path>`), so the same
+    // `isFile()` guard that was supposed to protect `.git` instead re-opens
+    // the false positive for it, and every check whose import closure names
+    // the literal ".git" (e.g. `scripts/lib/validate/repo-files.mjs`) starts
+    // reporting it as an [R2] finding — measured on the remote-offload host at
+    // 936dae8a across 5 spawned test files.
+    const root = makeRepo({ '.gitignore': GITIGNORE, 'a.txt': 'hello\n' });
+    // `git worktree add` needs a resolvable HEAD — `makeRepo` only stages.
+    spawnSync('git', ['commit', '-q', '-m', 'initial'], { cwd: root, encoding: 'utf8' });
+
+    const wtRoot = `${root}-wt`;
+    tmpDirs.push(wtRoot);
+    const wt = spawnSync(
+      'git',
+      ['worktree', 'add', '-q', '-b', 'p10-fixture-branch', wtRoot],
+      { cwd: root, encoding: 'utf8' },
+    );
+    expect(wt.status).toBe(0);
+
+    // Sanity precondition — confirms the fixture actually reproduces the
+    // shape the bug depends on, rather than asserting on a directory.
+    expect(statSync(join(wtRoot, '.git')).isFile()).toBe(true);
+
+    const { untracked, error } = resolveUntrackedOracle(wtRoot, ['.git', 'a.txt']);
+    expect(error).toBe(null);
+    expect(untracked.has('.git')).toBe(false);
   });
 });
 

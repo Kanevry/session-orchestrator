@@ -246,14 +246,15 @@ After learnings are written (Phase 3.6) and the auto-dream decision is made (Pha
 
 1. Read `dialectic.cadence` (default 5), `dialectic.model` (default haiku), `dialectic.budget-tokens` (default 8000) from `$CONFIG`.
 
-2. Invoke `shouldDispatchAutoDialectic` from `scripts/lib/auto-dialectic.mjs`:
+2. Invoke `decideAndRecordAutoDialectic` from `scripts/lib/auto-dialectic.mjs`:
    ```javascript
-   import { shouldDispatchAutoDialectic } from '${PLUGIN_ROOT}/scripts/lib/auto-dialectic.mjs';
-   const decision = await shouldDispatchAutoDialectic({
+   import { decideAndRecordAutoDialectic } from '${PLUGIN_ROOT}/scripts/lib/auto-dialectic.mjs';
+   const decision = await decideAndRecordAutoDialectic({
      repoRoot: process.cwd(),
      cadence: config.dialectic?.cadence ?? 5,
    });
    ```
+   Same return shape as `shouldDispatchAutoDialectic` (`{trigger, reason, signals}`) — `decideAndRecordAutoDialectic` calls it internally and additionally emits the mechanical `orchestrator.dialectic.nudge_decided` telemetry record on all four return paths (#1200 part c), so the nudge decision is observable without depending on this prose actually reaching step 5/7.
 
 3. If `decision.trigger === false`: log `auto-dialectic: not triggered (${decision.reason})` and continue. Emit no nudge. Do NOT update `.orchestrator/dialectic-last-run`.
 
@@ -291,18 +292,19 @@ After the auto-dialectic nudge decision is made (Phase 3.6.7), and when the reco
 
 1. Read Session Config: `reconcile.enabled` (default `false`), `reconcile['rule-expiry-days']` (default `null` — falls back to per-type TTL in the engine), `reconcile['confidence-floor']` (default `0.5`), `reconcile['min-rule-days']` (default `7` — floor window (days) applied to a proposed rule's `expires-at` so a near-dead or already-elapsed natural expiry never produces a born-dead rule, issue #741.1), `reconcile['min-insight-chars']` (default `24` — opt-in minimum insight length gating the eligibility placeholder-insight check, issue #741.2), `reconcile['max-proposals-per-run']` (default `10` — volume brake, issue #900 D; the engine sorts eligible learnings by confidence DESC and proposes at most this many per run). If `reconcile.enabled` is not `true`, log `reconcile: disabled (reconcile.enabled=false)` and skip all remaining steps.
 
-2. Invoke `runReconcile` from `scripts/lib/reconcile/engine.mjs`:
+2. Invoke `runReconcileAtSessionEnd` from `scripts/lib/reconcile/engine.mjs`:
 
    ```javascript
-   import { runReconcile } from '${PLUGIN_ROOT}/scripts/lib/reconcile/engine.mjs';
-   const { proposals, rejected, summary, error } = await runReconcile({
+   import { runReconcileAtSessionEnd } from '${PLUGIN_ROOT}/scripts/lib/reconcile/engine.mjs';
+   const { proposals, rejected, summary, error } = await runReconcileAtSessionEnd({
      repoRoot: process.cwd(),
      ruleExpiryDays: config.reconcile['rule-expiry-days'] ?? undefined,
      minRuleDays: config.reconcile['min-rule-days'] ?? undefined,
      minInsightChars: config.reconcile['min-insight-chars'] ?? undefined,
      maxProposalsPerRun: config.reconcile['max-proposals-per-run'] ?? undefined,
      now: new Date(),
-     trigger: 'session-end', // ledger discriminator (#1192) — always pass one; the engine records 'unknown' otherwise
+     // trigger is pinned to 'session-end' IN CODE by runReconcileAtSessionEnd
+     // (#1201 Part A) — this prose block no longer sets it.
    });
    ```
 

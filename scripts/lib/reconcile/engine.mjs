@@ -33,10 +33,16 @@
  * the engine performs is into the reconcile-candidates sidecar (via
  * idempotency.mjs), and even that is skipped under `dryRun`.
  *
- * ── never-throws contract ────────────────────────────────────────────────────
- * `runReconcile` NEVER throws to its caller. A per-learning emit/render failure
- * degrades to a recorded rejection (never a crash); any unexpected top-level
- * error returns a zeroed result with an `error` field.
+ * ── never-throws contract (PIPELINE errors only) ─────────────────────────────
+ * Once the pipeline is running, `runReconcile` NEVER throws to its caller: a
+ * per-learning emit/render failure degrades to a recorded rejection (never a
+ * crash), and any unexpected top-level pipeline error returns a zeroed result
+ * with an `error` field. The ONE exception is a caller-INPUT validation error
+ * at the very top of `runReconcile` — an explicitly-passed `trigger` outside
+ * `KNOWN_TRIGGERS` (issue #1201 Part A) THROWS synchronously before the
+ * pipeline ever starts, the same class of failure as passing a malformed
+ * `params` object to any other function in this codebase; see
+ * `assertKnownTrigger` below.
  *
  * Plain Node ESM, no external deps — Node 20+ stdlib + the four siblings only.
  *
@@ -788,6 +794,51 @@ async function runReconcileInner(
  */
 export const RECONCILE_EVENT = 'orchestrator.reconcile.completed';
 
+/**
+ * Closed enum of `trigger` values a caller may explicitly pass to
+ * {@link runReconcile} (issue #1201 Part A / Discovery D8). Two of the three
+ * real call sites pinned `trigger` by PROSE inside a `.md` skill file —
+ * `skill` (`skills/reconcile/SKILL.md`) and `session-end`
+ * (`skills/session-end/phase-3-6-tail.md`) — where nothing enforced the
+ * string ever matched this list; only `phase-skip`
+ * (`scripts/lib/session-end/phase-skip.mjs`) pinned it in code. The two `.md`
+ * callers are migrated onto {@link runReconcileFromSkill} /
+ * {@link runReconcileAtSessionEnd} in this same change, so "prose sets the
+ * trigger" stops being possible for them at all.
+ */
+export const KNOWN_TRIGGERS = Object.freeze(['skill', 'session-end', 'phase-skip']);
+
+/**
+ * Reject an explicitly-passed `trigger` that is not in {@link KNOWN_TRIGGERS}
+ * — including the literal `'unknown'`, which is a DEFAULT this module mints
+ * for an ABSENT trigger, never a value a caller should pass on purpose. An
+ * absent trigger (`undefined`) is deliberately let through unchanged: it is
+ * legacy behaviour for a caller that has not yet been migrated onto a pinned
+ * wrapper, and `buildReconcilePayload` already defaults it to `'unknown'` so
+ * the per-trigger denominator in the ledger stays honest about which runs are
+ * unattributed rather than silently breaking them.
+ *
+ * BV-004 revisit trigger: `scripts/lib/session-end/phase-skip.mjs` is the one
+ * remaining caller passing `trigger: 'phase-skip'` as a hand-written literal
+ * rather than through {@link runReconcileFromPhaseSkip} (out of this task's
+ * file scope) — once every caller is migrated onto a pinned wrapper, flip the
+ * absent-trigger default below from "let it run" to a throw, closing the last
+ * legacy path.
+ *
+ * @param {unknown} trigger
+ * @throws {Error} when `trigger` is defined but not in `KNOWN_TRIGGERS`.
+ * @returns {void}
+ */
+export function assertKnownTrigger(trigger) {
+  if (trigger === undefined) return;
+  if (!KNOWN_TRIGGERS.includes(trigger)) {
+    throw new Error(
+      `runReconcile: invalid trigger ${JSON.stringify(trigger)} — must be one of: ` +
+        `${KNOWN_TRIGGERS.join(', ')} (or omitted entirely, for a not-yet-migrated caller).`,
+    );
+  }
+}
+
 /** Clamp for the `reason` string on the abort path — a message can be long. */
 const REASON_MAX_CHARS = 300;
 
@@ -881,9 +932,17 @@ async function emitReconcileCompleted(result, ctx) {
  * returned UNTOUCHED whether or not the ledger accepted the record.
  *
  * @param {Object} [params] - see {@link runReconcileInner}, plus:
- * @param {'skill'|'session-end'|'phase-skip'|string} [params.trigger] - which caller
- *        invoked this run; recorded ALWAYS (default `'unknown'`) so the per-trigger
- *        denominator is complete. Not read by the pipeline.
+ * @param {'skill'|'session-end'|'phase-skip'} [params.trigger] - which caller
+ *        invoked this run; recorded ALWAYS (default `'unknown'` when omitted) so
+ *        the per-trigger denominator is complete. Not read by the pipeline.
+ *        VALIDATED against {@link KNOWN_TRIGGERS} via {@link assertKnownTrigger}
+ *        when explicitly passed — an unknown string, including the literal
+ *        `'unknown'`, THROWS synchronously; an absent trigger is still let
+ *        through unchanged (issue #1201 Part A — see `assertKnownTrigger`'s
+ *        BV-004 revisit-trigger note for why the absent case is not also a
+ *        throw yet). Prefer {@link runReconcileFromSkill},
+ *        {@link runReconcileAtSessionEnd}, or {@link runReconcileFromPhaseSkip}
+ *        over passing `trigger` here directly.
  * @param {string[]} [params.targets] - the caller's effective target list
  *        (`resolveEffectiveTargets`); recorded when non-empty, omitted otherwise.
  *        Not read by the pipeline.
@@ -891,6 +950,7 @@ async function emitReconcileCompleted(result, ctx) {
  * @returns {Promise<ReconcileResult>}
  */
 export async function runReconcile(params = {}, opts = {}) {
+  assertKnownTrigger(params.trigger);
   const t0 = Date.now();
   const result = await runReconcileInner(params, opts);
   try {
@@ -905,4 +965,49 @@ export async function runReconcile(params = {}, opts = {}) {
     // Best-effort telemetry — never the reason a reconcile run fails.
   }
   return result;
+}
+
+/**
+ * Pin `trigger: 'skill'` in code for the `/reconcile` skill (Phase 2.3,
+ * `skills/reconcile/SKILL.md`) — the skill's own `.md` prose no longer sets
+ * the trigger string itself (issue #1201 Part A). Any `trigger` the caller
+ * passes in `params` is OVERWRITTEN; every other field forwards unchanged.
+ *
+ * @param {Object} [params] - see {@link runReconcile} `params`.
+ * @param {Object} [opts] - see {@link runReconcile} `opts` (DI seams).
+ * @returns {Promise<ReconcileResult>}
+ */
+export async function runReconcileFromSkill(params = {}, opts = {}) {
+  return runReconcile({ ...params, trigger: 'skill' }, opts);
+}
+
+/**
+ * Pin `trigger: 'session-end'` in code for session-end Phase 3.6.8
+ * (`skills/session-end/phase-3-6-tail.md`) — see
+ * {@link runReconcileFromSkill} for the rationale and contract.
+ *
+ * @param {Object} [params] - see {@link runReconcile} `params`.
+ * @param {Object} [opts] - see {@link runReconcile} `opts` (DI seams).
+ * @returns {Promise<ReconcileResult>}
+ */
+export async function runReconcileAtSessionEnd(params = {}, opts = {}) {
+  return runReconcile({ ...params, trigger: 'session-end' }, opts);
+}
+
+/**
+ * Pin `trigger: 'phase-skip'` in code for the session-end skip-plan
+ * aggregator (`scripts/lib/session-end/phase-skip.mjs`, the highest-volume
+ * probe-only caller) — see {@link runReconcileFromSkill} for the rationale
+ * and contract. NOT YET wired into `phase-skip.mjs` itself, which is out of
+ * this task's file scope and still passes `trigger: 'phase-skip'` as a
+ * hand-written literal directly to `runReconcile`; exported here so that
+ * migration is a one-line import swap (see `assertKnownTrigger`'s BV-004
+ * revisit-trigger note).
+ *
+ * @param {Object} [params] - see {@link runReconcile} `params`.
+ * @param {Object} [opts] - see {@link runReconcile} `opts` (DI seams).
+ * @returns {Promise<ReconcileResult>}
+ */
+export async function runReconcileFromPhaseSkip(params = {}, opts = {}) {
+  return runReconcile({ ...params, trigger: 'phase-skip' }, opts);
 }

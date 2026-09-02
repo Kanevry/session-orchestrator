@@ -358,6 +358,37 @@ async function emitBackfillOutcome(kind, result, { sessionId, semanticSessionId 
 }
 
 /**
+ * Emit `orchestrator.wave.final_refused` — the SIBLING event to
+ * `orchestrator.wave.completed` for every refusal path inside
+ * {@link emitFinalWaveCompleted} (#1201 Part B / Discovery D8). Deliberately
+ * a separate event name rather than `orchestrator.wave.completed` carrying
+ * `emitted:false`: existing consumers of `.completed` treat every row as a
+ * finished wave, and overloading it would silently corrupt that count.
+ *
+ * Wrapped in its OWN try/catch — independent of the caller's outer
+ * try/catch — so a telemetry failure on ONE refusal path can never surface
+ * as a failure of teardown, matching the best-effort contract every other
+ * emit in this SessionEnd hook already carries.
+ *
+ * @param {{sessionId: string|null, semanticSessionId: string|null}} ids
+ * @param {'not-recorded'|'clear'|'resume'|'unreadable'|'session-id-mismatch'|'no-wave'|'already-completed'|'exception'} reason
+ * @param {number} [waveNumber] - only when `last_wave` was resolved to a
+ *        positive number before the refusal (currently only `already-completed`).
+ * @returns {Promise<void>}
+ */
+async function emitFinalRefused({ sessionId, semanticSessionId }, reason, waveNumber) {
+  try {
+    await emitEvent('orchestrator.wave.final_refused', {
+      ...(sessionId !== null ? { session_id: sessionId } : {}),
+      ...(semanticSessionId !== null ? { semantic_session_id: semanticSessionId } : {}),
+      reason,
+      ...(typeof waveNumber === 'number' ? { wave_number: waveNumber } : {}),
+      emitted_by: 'on-session-end',
+    });
+  } catch { /* best-effort — a refusal record must never itself block teardown */ }
+}
+
+/**
  * Emit the FINAL `orchestrator.wave.completed` of the session (#1193).
  *
  * `hooks/post-tool-batch-wave-signal.mjs` closes wave N-1 only at an N-1→N
@@ -406,31 +437,55 @@ async function emitBackfillOutcome(kind, result, { sessionId, semanticSessionId 
  *
  * Strictly best-effort: never throws, never blocks teardown.
  *
+ * SIX silent refusal paths (#1201 Part B / Discovery D8 — one more than the
+ * issue's original five) previously returned with no trace anywhere: per
+ * `.claude/rules/host-resources.md` § HR-105, a refusal that writes nothing
+ * is unfalsifiable. Every refusal now emits a SIBLING event,
+ * `orchestrator.wave.final_refused`, via {@link emitFinalRefused} — never
+ * `orchestrator.wave.completed` itself with an `emitted:false` flag, because
+ * that event's consumers treat every row as a finished wave (D8's explicit
+ * recommendation). Each emit is wrapped in its OWN try/catch inside
+ * `emitFinalRefused` so telemetry can never block teardown, on top of this
+ * function's own outer catch (which now also emits `reason: 'exception'`,
+ * best-effort).
+ *
  * @param {string} projectRoot
  * @param {{sessionId: string|null, semanticSessionId: string|null,
  *          isRecordedSession: boolean, reason: string,
  *          rawStdinId: string|null}} ctx
- * @returns {Promise<void>}
+ * @returns {Promise<{emitted: true, wave_number: number}|{emitted: false, reason: string}>}
+ *          The return value is informational only — every branch has already
+ *          persisted its own outcome via `orchestrator.wave.completed` or
+ *          `orchestrator.wave.final_refused` by the time this resolves.
  */
 async function emitFinalWaveCompleted(
   projectRoot,
   { sessionId, semanticSessionId, isRecordedSession, reason, rawStdinId },
 ) {
+  const ids = { sessionId, semanticSessionId };
   try {
     // F1 — never speak for a session current-session.json does not describe.
-    if (!isRecordedSession) return;
+    if (!isRecordedSession) {
+      await emitFinalRefused(ids, 'not-recorded');
+      return { emitted: false, reason: 'not-recorded' };
+    }
     // F2 — `/clear` ends the HARNESS session, not the logical one. `resume` is
     // the SAME class (W4c Q3-MED-2): `on-session-start.mjs` preserves
     // `last_wave` / `last_wave_completed` across a resume of the same logical
     // session exactly as it does across a clear, and resume is the MORE common
     // of the two (fleet n=1498, 2026-09-02: 12 resume vs 9 clear).
-    if (reason === 'clear' || reason === 'resume') return;
+    if (reason === 'clear' || reason === 'resume') {
+      await emitFinalRefused(ids, reason);
+      return { emitted: false, reason };
+    }
     const sessionFile = path.join(projectRoot, '.orchestrator', 'current-session.json');
     let parsed = null;
     try {
       parsed = JSON.parse(await fs.readFile(sessionFile, 'utf8'));
     } catch {
-      return; // absent or malformed → nothing attestable to close
+      // absent or malformed → nothing attestable to close
+      await emitFinalRefused(ids, 'unreadable');
+      return { emitted: false, reason: 'unreadable' };
     }
 
     // W4c Q1-LOW-TOCTOU — `isRecordedSession` was attested against the FIRST
@@ -439,17 +494,26 @@ async function emitFinalWaveCompleted(
     // stale attestation. A genuine swap BETWEEN the two reads is not testable
     // without a seam, and none is added for it — the peer-id case pins the
     // re-check, and this predicate is what makes the window harmless.
-    if (rawStdinId === null || parsed?.session_id !== rawStdinId) return;
+    if (rawStdinId === null || parsed?.session_id !== rawStdinId) {
+      await emitFinalRefused(ids, 'session-id-mismatch');
+      return { emitted: false, reason: 'session-id-mismatch' };
+    }
 
     const lastWave = parsed?.last_wave;
-    if (typeof lastWave !== 'number' || !(lastWave > 0)) return;
+    if (typeof lastWave !== 'number' || !(lastWave > 0)) {
+      await emitFinalRefused(ids, 'no-wave');
+      return { emitted: false, reason: 'no-wave' };
+    }
     // W4c Q3-MED-3(iii) / Q3-LOW-4 — strictly ABOVE the high-water mark, not
     // merely different from it: a marker AHEAD of `last_wave` (written by the
     // batch hook's explicit `wave-complete{N}` branch) means this wave is
     // already closed, and a non-integer marker (`'3'`, `null`) counts as
     // ABSENT rather than as "different".
     const marker = Number.isInteger(parsed?.last_wave_completed) ? parsed.last_wave_completed : 0;
-    if (!(lastWave > marker)) return;
+    if (!(lastWave > marker)) {
+      await emitFinalRefused(ids, 'already-completed', lastWave);
+      return { emitted: false, reason: 'already-completed' };
+    }
 
     await emitEvent('orchestrator.wave.completed', {
       ...(sessionId !== null ? { session_id: sessionId } : {}),
@@ -473,7 +537,12 @@ async function emitFinalWaveCompleted(
     if (!markResult.ok) {
       console.error(`on-session-end: last_wave_completed mark skipped (${markResult.reason})`);
     }
-  } catch { /* best-effort — a SessionEnd hook must never block teardown */ }
+    return { emitted: true, wave_number: lastWave };
+  } catch {
+    // best-effort — a SessionEnd hook must never block teardown
+    await emitFinalRefused(ids, 'exception');
+    return { emitted: false, reason: 'exception' };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -507,6 +576,12 @@ async function main() {
   // on the SAME `isRecordedSession` attestation as the identity keys above, and
   // skipped for `reason === 'clear'` and `reason === 'resume'` alike — both end
   // the HARNESS session while the LOGICAL one continues; see the emitter's docblock.
+  //
+  // #1201 Part B — the return is `{emitted:true, wave_number}` or
+  // `{emitted:false, reason}`, but it is intentionally NOT branched on here:
+  // both outcomes already persisted themselves (`orchestrator.wave.completed`
+  // or the sibling `orchestrator.wave.final_refused`) before this call
+  // resolves, so nothing downstream in this hook needs to react to it.
   await emitFinalWaveCompleted(projectRoot, {
     sessionId,
     semanticSessionId,

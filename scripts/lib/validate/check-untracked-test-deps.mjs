@@ -695,9 +695,19 @@ export function resolveUntrackedOracle(repoRoot, candidates) {
   // directory candidates (`.git`, `.claude`, `docs/prd`, `skills/bootstrap`, …)
   // were all false. A directory can therefore only be condemned by
   // `check-ignore`, which does judge directories correctly.
+  //
+  // `.git` ALSO needs an explicit exemption from THIS FILES-ONLY branch, not
+  // just from the directory-only reasoning above. In a normal checkout `.git`
+  // is a directory and the `isFile()` guard already excludes it — but in a
+  // LINKED WORKTREE (`git worktree add`) `.git` is a FILE containing
+  // `gitdir: <path>`, which makes `existsSync() && isFile()` true and
+  // re-opens exactly the false-positive the comment above says is closed.
+  // `.git` is present in every clone/worktree by construction regardless of
+  // which shape it takes, so it is never a "never git-add-ed" candidate.
   for (const c of all) {
     if (untracked.has(c)) continue;
     if (tracked.has(c)) continue;
+    if (c === '.git') continue;
     try {
       const abs = path.join(repoRoot, c);
       if (existsSync(abs) && statSync(abs).isFile()) untracked.add(c);

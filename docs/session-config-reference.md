@@ -1246,6 +1246,8 @@ remote-hosts:
 
 Read by: `scripts/lib/config/remote-hosts.mjs` (parser), `scripts/lib/config.mjs` (`ssh:` channel validation), `scripts/lib/wave-resource-gate.mjs` (placement).
 
+See `skills/remote-offload/SKILL.md` for the wave-executor-side decision rule, the three offload channels, and how a declared alias here is what an `agent-mapping` `ssh:<alias>` value validates against.
+
 ## Evolve Extra Sources (#638)
 
 Opt-in EXTRA learning sources for `/evolve`. A domain measurement (e.g. an eval-learn regression harness) runs OUT-OF-BAND and writes a sidecar JSON of regression flags; `/evolve` then READS each declared sidecar and emits a `domain-regression` learning candidate per flag that has persisted across ≥2 consecutive sessions. This is a strict **read-only consumption contract**: `/evolve` never runs the domain measurement — it only consumes the sidecar output. Absent/empty ⇒ `[]` ⇒ no extra sources are read; existing `/evolve` runs are unaffected.

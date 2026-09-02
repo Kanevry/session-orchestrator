@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
  * post-bash-write-verify.mjs — PostToolUse hook (matcher `Bash`): report
- * working-tree changes a Bash call made OUTSIDE the wave's `allowedPaths`.
+ * working-tree changes a Bash call made OUTSIDE the wave's `allowedPaths` —
+ * except a path a PEER session declared through a `peer-session-*` record in
+ * the wave's aggregate scope sidecar (#1195), which is named as a peer write.
  *
  * ## Why this hook exists (#915, follow-up to #906 / #800)
  *
@@ -320,6 +322,84 @@ export function parsePorcelainZ(raw) {
 export function isInScope(relPath, allowedPaths) {
   if (!Array.isArray(allowedPaths) || allowedPaths.length === 0) return false;
   return allowedPaths.some((p) => typeof p === 'string' && pathMatchesPattern(relPath, p));
+}
+
+/**
+ * Prefix that marks an aggregate-sidecar record as a PEER SESSION's declared
+ * scope rather than one of this wave's own agents (#1195).
+ */
+export const PEER_RECORD_PREFIX = 'peer-session-';
+
+/**
+ * The peer-session records of a wave's aggregate scope sidecar.
+ *
+ * Shape, as written by `scripts/materialize-wave-scope.mjs`
+ * (`<state-dir>/filescopes/wave-<N>.scopes.json`): ONE JSON array of
+ * `{ id, files }` records — the per-agent files under
+ * `<state-dir>/filescopes/wave-<N>/<id>.json` are path STRINGS and are a
+ * different artefact (see `docs/scope-collision-guard.md` § 2.2). Only records
+ * whose `id` starts with `peer-session-` are returned: those are paths a peer
+ * session announced and this session's coordinator carried into the manifest
+ * union (`skills/wave-executor/wave-loop.md` § Scope Manifest).
+ *
+ * Absent, unreadable or malformed sidecar ⇒ `[]`, which restores the exact
+ * pre-#1195 behaviour. Never throws.
+ *
+ * @param {string} stateDir absolute path of the harness state dir (the
+ *   directory holding `wave-scope.json`)
+ * @param {unknown} wave the manifest's `wave` field
+ * @returns {Array<{ id: string, files: string[] }>}
+ */
+export function readPeerScopeRecords(stateDir, wave) {
+  if (typeof stateDir !== 'string' || stateDir === '') return [];
+  if (typeof wave !== 'number' || !Number.isInteger(wave) || wave <= 0) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(
+      readFileSync(path.join(stateDir, 'filescopes', `wave-${wave}.scopes.json`), 'utf8'),
+    );
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .filter(
+      (r) => r && typeof r === 'object'
+        && typeof r.id === 'string' && r.id.startsWith(PEER_RECORD_PREFIX)
+        && Array.isArray(r.files),
+    )
+    .map((r) => ({ id: r.id, files: r.files.filter((f) => typeof f === 'string') }));
+}
+
+/**
+ * Which peer record — if any — declared this path?
+ *
+ * Same matcher as `isInScope`, so a peer's declaration is read exactly the way
+ * the wave's own `allowedPaths` are.
+ *
+ * @param {string} relPath
+ * @param {Array<{ id: string, files: string[] }>} peerRecords
+ * @returns {string|null} the peer record id, or null
+ */
+export function peerRecordFor(relPath, peerRecords) {
+  if (!Array.isArray(peerRecords)) return null;
+  for (const record of peerRecords) {
+    if (record.files.some((p) => pathMatchesPattern(relPath, p))) return record.id;
+  }
+  return null;
+}
+
+/**
+ * Render the peer-write notice (#1195) — deliberately a NOTICE and not part of
+ * the violation report: the path is outside this wave's `allowedPaths` by
+ * construction, and saying so would re-file an agreed peer write as an alarm.
+ *
+ * @param {string} relPath
+ * @param {string} peerId the `peer-session-<id>` record id
+ * @returns {string}
+ */
+export function formatPeerWriteNotice(relPath, peerId) {
+  return `bash-write-verify: ${relPath} inside ${peerId} scope — peer write, not a violation`;
 }
 
 /**
@@ -915,8 +995,20 @@ async function main() {
   // first run is named, not silently trusted. Computed before the G4/G5 gate
   // above so the gate cannot swallow it.
   if (missingSnapshotNotice) messages.push(missingSnapshotNotice);
-  if (report.length > 0) {
-    messages.push(formatMessage(report, allowedPaths.length));
+  // #1195 — a path a PEER session declared (a `peer-session-*` record in this
+  // wave's aggregate sidecar) is outside `allowedPaths` by construction, yet it
+  // is an agreed write, not a bypass. Split it out of the violation report and
+  // name it, so the peer's file is countable without being an alarm. Sidecar
+  // absent ⇒ `peerRecords` is empty ⇒ every path stays a violation, unchanged.
+  const peerRecords = readPeerScopeRecords(path.dirname(scopePath), scope.wave);
+  const violations = [];
+  for (const relPath of report) {
+    const peerId = peerRecords.length > 0 ? peerRecordFor(relPath, peerRecords) : null;
+    if (peerId) messages.push(formatPeerWriteNotice(relPath, peerId));
+    else violations.push(relPath);
+  }
+  if (violations.length > 0) {
+    messages.push(formatMessage(violations, allowedPaths.length));
     warn = true;
   }
   if (messages.length === 0) return; // silence is the common case (0.91 % fire rate)

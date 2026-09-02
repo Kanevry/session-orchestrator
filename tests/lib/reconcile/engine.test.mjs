@@ -19,7 +19,13 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, it, expect, vi, afterAll } from 'vitest';
 
-import { runReconcile, resolveEffectiveTargets } from '../../../scripts/lib/reconcile/engine.mjs';
+import {
+  runReconcile,
+  runReconcileFromSkill,
+  runReconcileAtSessionEnd,
+  runReconcileFromPhaseSkip,
+  resolveEffectiveTargets,
+} from '../../../scripts/lib/reconcile/engine.mjs';
 import { writeApprovedRules } from '../../../scripts/lib/reconcile/writer.mjs';
 import { parseGlobsFrontmatter } from '../../../scripts/lib/rule-loader.mjs';
 import { normalizeDialects } from '../../../scripts/lib/learnings/schema.mjs';
@@ -1067,5 +1073,57 @@ describe('runReconcile — telemetry (orchestrator.reconcile.completed)', () => 
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // Issue #1201 Part A — the two `.md` callers used to set `trigger` by PROSE,
+  // with nothing enforcing the string ever matched what the engine records.
+  // TV-001 — the bug this table catches: an accidental spread-order swap
+  // inside a wrapper (`{ trigger: 'skill', ...params }` instead of
+  // `{ ...params, trigger: 'skill' }`) would let a caller-supplied `trigger`
+  // silently win over the wrapper's own pin — the exact prose-can-drift defect
+  // this migration exists to close, reintroduced in code instead of markdown.
+  it.each([
+    { name: 'runReconcileFromSkill', wrapper: runReconcileFromSkill, expected: 'skill' },
+    { name: 'runReconcileAtSessionEnd', wrapper: runReconcileAtSessionEnd, expected: 'session-end' },
+    { name: 'runReconcileFromPhaseSkip', wrapper: runReconcileFromPhaseSkip, expected: 'phase-skip' },
+  ])('$name pins trigger "$expected" into the ledger payload even when params attempts a different one', async ({ wrapper, expected }) => {
+    const repoRoot = tmpRepo([]);
+    try {
+      await wrapper({ repoRoot, now: NOW, dryRun: true, trigger: 'not-the-real-trigger' });
+      const rec = ledger(repoRoot).filter((r) => r.event === EVENT).at(-1);
+      expect(rec.trigger).toBe(expected);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Trigger validation (#1201 Part A) — `assertKnownTrigger`, exercised through
+ * the public `runReconcile` boundary it guards.
+ *
+ * TV-001 — the bug this table catches: before this change, a garbage
+ * `trigger` string (or the literal `'unknown'`, which is a DEFAULT this
+ * module mints, never a value a caller should pass) was accepted silently and
+ * written straight into the ledger, defeating the per-trigger denominator
+ * `orchestrator.reconcile.completed`'s docs row depends on.
+ */
+describe('runReconcile — trigger validation (#1201 Part A)', () => {
+  it('throws for the literal "unknown" trigger — a default, never a caller-supplied value', async () => {
+    await expect(runReconcile({ trigger: 'unknown' }, { learnings: [] })).rejects.toThrow(
+      /invalid trigger/,
+    );
+  });
+
+  it('throws for an unrecognised trigger string', async () => {
+    await expect(runReconcile({ trigger: 'bogus' }, { learnings: [] })).rejects.toThrow(
+      /invalid trigger/,
+    );
+  });
+
+  it('runs normally (no throw) when trigger is omitted entirely — legacy-caller compatibility', async () => {
+    const result = await runReconcile({ dryRun: true }, { learnings: [] });
+    expect(result.error).toBeUndefined();
+    expect(result.summary.totalLearnings).toBe(0);
   });
 });

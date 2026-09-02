@@ -23,6 +23,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import { filterRealSessions } from './session-schema.mjs';
+import { emitEvent, sessionAttribution } from './events.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -243,6 +244,73 @@ export async function shouldDispatchAutoDialectic({
     reason: `under-threshold (sessions=${resolved.sessionsSinceLast}/${cadence})`,
     signals: resolved,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Decision + mechanical telemetry (#1200 part c)
+// ---------------------------------------------------------------------------
+
+/**
+ * `shouldDispatchAutoDialectic()` plus a MECHANICAL `orchestrator.dialectic.nudge_decided`
+ * record, so the nudge decision is observable without depending on the
+ * session-end skill prose actually reaching the emit step (#1200: 0 records of
+ * this class across 164k fleet events despite the nudge firing every close).
+ *
+ * Contract-preserving wrapper: calls `shouldDispatchAutoDialectic()` unchanged
+ * and returns its decision object verbatim — the emit is a side effect bolted
+ * on, never a change to the decision logic or its return shape.
+ *
+ * Emits on ALL FOUR return paths (kill-switch, no-new-input,
+ * cadence-threshold-met, under-threshold) — best-effort, try/catch-wrapped,
+ * because `emitEvent()` throws `EventValidationError` on a malformed record
+ * and a telemetry failure must never change what the caller decides to do
+ * (same posture as `scripts/lib/reconcile/engine.mjs`'s `emitReconcileCompleted`
+ * wrapper).
+ *
+ * @param {object} args
+ * @param {string} args.repoRoot
+ * @param {number} [args.cadence=DEFAULT_CADENCE] `dialectic.cadence` from config.
+ * @param {object} [args.signals] Pre-computed signals (skips disk reads) — forwarded verbatim.
+ * @param {Function|null} [args.emitFn=emitEvent] DI hook for testing / disabling
+ *   emission; defaults to `emitEvent` from `./events.mjs`. Any error it throws
+ *   is swallowed — it never changes the returned decision.
+ * @param {boolean} [args.record=true] When `false`, no event is emitted at all —
+ *   for read-only PROBE callers (e.g. the session-end Phase 3.6.x tail-skip
+ *   aggregator, `scripts/lib/session-end/phase-skip.mjs`, whose documented
+ *   contract is side-effect-free) where the decision is computed for internal
+ *   branching only and must never itself be recorded as a nudge decision.
+ * @returns {Promise<{trigger:boolean, reason:string, signals:object}>}
+ */
+export async function decideAndRecordAutoDialectic({
+  repoRoot,
+  cadence = DEFAULT_CADENCE,
+  signals,
+  emitFn = emitEvent,
+  record = true,
+} = {}) {
+  const decision = await shouldDispatchAutoDialectic({ repoRoot, cadence, signals });
+
+  if (record && typeof emitFn === 'function') {
+    try {
+      await emitFn(
+        'orchestrator.dialectic.nudge_decided',
+        {
+          ...sessionAttribution(repoRoot),
+          decided: decision.trigger,
+          reason: decision.reason,
+          cadence,
+          sessions_since: decision.signals?.sessionsSinceLast,
+          learnings_since: decision.signals?.learningsSinceLast,
+        },
+        { repoRoot },
+      );
+    } catch {
+      // best-effort — a telemetry failure must never block or change the
+      // decision the caller already has in hand.
+    }
+  }
+
+  return decision;
 }
 
 // ---------------------------------------------------------------------------
