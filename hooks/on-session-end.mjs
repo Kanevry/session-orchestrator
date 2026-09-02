@@ -11,7 +11,12 @@
  *
  * JSONL format (`.orchestrator/metrics/events.jsonl`):
  *   {"timestamp":<ISO>,"event":"orchestrator.session.ended","session_id":"...","semantic_session_id":"...","reason":"<reason>","duration_ms":<int>}
- *   (`session_id` / `semantic_session_id` are omitted when unresolvable — #1068 AC1.)
+ *   (`session_id` / `semantic_session_id` are omitted when unresolvable — #1068 AC1.
+ *    `duration_ms` likewise: it is written ONLY when the ending session IS the
+ *    one `current-session.json` records AND a start timestamp parsed. A
+ *    fabricated `0` reads as a measured zero-length session and is
+ *    indistinguishable from one — 1082 of 1498 fleet records (72,2 %) carried
+ *    exactly that zero, measured 2026-09-02. Omit, never fabricate.)
  *
  * Exit codes: 0 always (informational hook — must never block session teardown).
  * stdin: optional JSON { hook_event_name:"SessionEnd", session_id?, reason?, cwd? }.
@@ -84,6 +89,9 @@ async function readStdinJson() {
  * `.orchestrator/current-session.json` (written by on-session-start.mjs).
  * duration_ms is only computed when the ENDING session is the one recorded in
  * current-session.json — never fabricated for a mismatched / unknown session.
+ * Not measurable ⇒ `durationMs: null`, and the caller then OMITS the key
+ * entirely (#1193 W5 F1, the last site of the omit-never-fabricate class this
+ * session removed from `session.stopped` and `agent.stopped`).
  *
  * #1091 / Kanevry#66 — WRITER/READER SYMMETRY. `on-session-start.mjs`
  * (`resolveSessionId`, :316-317) accepts a stdin raw id only when
@@ -114,14 +122,42 @@ async function readStdinJson() {
  * session therefore resolves `semanticSessionId: null` rather than inheriting
  * another live session's backfill identity.
  *
+ * #1193 W4a review F-A — `isRecordedSession` is computed from the RAW stdin
+ * UUID, NEVER from the resolved `sessionId`. The old order was
+ * `if (sessionId === null) sessionId = recordedId;` followed by
+ * `sessionId === recordedId`, which is SELF-FULFILLING: whenever stdin carried
+ * no session_id (or a non-UUID one), the fallback assigned the file's own id
+ * and the compare then trivially succeeded. Reproduced twice 2026-09-02 —
+ * peer-owned `current-session.json` (`last_wave: 3`) plus stdin
+ * `{"reason":"other"}` emitted `wave.completed` for the PEER's wave and wrote
+ * `last_wave_completed: 3` into the PEER's file, after which the peer's own
+ * SessionEnd stayed silent. The same vacuous predicate had always gated
+ * `durationMs` and `semanticSessionId`, so the #863 guard was hollow on that
+ * path too. One root fix (BV-003) for all three consumers: a `null` raw id
+ * means "not attestable" ⇒ `false`.
+ *
+ * WHY `sessionId` STILL FALLS BACK while the predicate does not. The two are
+ * deliberately asymmetric. `sessionId` is the hook's ACTOR identity — the id
+ * `deregisterSelf()` and the lock-release ownership compare use, and its
+ * current-session.json fallback is a named contract pinned by
+ * `tests/hooks/on-session-end.test.mjs` ("falls back to current-session.json
+ * session_id when stdin omits it"). `isRecordedSession` is an OWNERSHIP
+ * ASSERTION about a repo-global file; an assertion may never be derived from
+ * the very value it is asserting about. So the fallback stays for the emitted
+ * `session_id` field, and every claim that speaks FOR the recorded session
+ * (`duration_ms`, `semantic_session_id`, the final `wave.completed`) is gated
+ * on the strict raw compare instead. Precedent: `hooks/on-stop.mjs`
+ * `resolveStopDuration()`, which refuses the resolved id for the same reason.
+ *
  * @param {object|null} input
  * @param {string} projectRoot
- * @returns {Promise<{sessionId: string|null, semanticSessionId: string|null, durationMs: number}>}
+ * @returns {Promise<{sessionId: string|null, semanticSessionId: string|null, durationMs: number|null, isRecordedSession: boolean, rawStdinId: string|null}>}
  */
 async function resolveSession(input, projectRoot) {
   const fromStdin = input?.session_id ?? input?.sessionId ?? null;
   // UUID-only, exactly as the writer decides it (see the docblock above).
-  let sessionId = parseSessionId(fromStdin)?.format === 'uuid' ? fromStdin : null;
+  const rawStdinId = parseSessionId(fromStdin)?.format === 'uuid' ? fromStdin : null;
+  let sessionId = rawStdinId;
 
   let recordedId = null;
   let semanticSessionId = null;
@@ -144,13 +180,17 @@ async function resolveSession(input, projectRoot) {
     }
   } catch { /* missing or unparseable is fine */ }
 
+  // Actor-identity fallback ONLY — see the docblock's asymmetry note. This
+  // value must NEVER feed the ownership predicate below.
   if (sessionId === null) sessionId = recordedId;
 
-  // Only trust the recorded start time when the ending session IS the recorded one.
-  const isRecordedSession = sessionId !== null && sessionId === recordedId;
+  // Only trust the recorded start time when the ending session IS the recorded
+  // one — decided on the RAW stdin id, so an absent/non-UUID id is `false`
+  // rather than self-fulfilling (F-A).
+  const isRecordedSession = rawStdinId !== null && rawStdinId === recordedId;
   const durationMs = startedAtMs !== null && isRecordedSession
     ? Math.max(0, Date.now() - startedAtMs)
-    : 0;
+    : null;
 
   // #863 defect (c) — same guard as durationMs above: only surface the
   // recorded semantic id when THIS ending session is genuinely the one
@@ -158,7 +198,16 @@ async function resolveSession(input, projectRoot) {
   // contamination scenario this closes.
   const resolvedSemanticSessionId = isRecordedSession ? semanticSessionId : null;
 
-  return { sessionId, semanticSessionId: resolvedSemanticSessionId, durationMs };
+  // `rawStdinId` is returned so a LATER read of current-session.json can
+  // re-verify ownership against the same identity (W4c Q1-LOW-TOCTOU) instead
+  // of trusting an attestation made against an earlier read of the file.
+  return {
+    sessionId,
+    semanticSessionId: resolvedSemanticSessionId,
+    durationMs,
+    isRecordedSession,
+    rawStdinId,
+  };
 }
 
 /**
@@ -307,6 +356,156 @@ async function emitBackfillOutcome(kind, result, { sessionId, semanticSessionId 
   } catch { /* observability is best-effort */ }
 }
 
+/**
+ * Atomic read-modify-write of a JSON file: read (tolerating an absent or
+ * unparseable file), apply `mutate`, write a tmp file, rename over the
+ * original. Atomic on POSIX (same-filesystem rename), best-effort on Windows.
+ *
+ * Mirrors the helper in `hooks/post-tool-batch-wave-signal.mjs` — the two hooks
+ * are the only writers of the `last_wave_completed` marker and must persist it
+ * the same way.
+ *
+ * Why a local copy rather than `scripts/lib/io.mjs`: that module DOES export
+ * atomic writers (`writeJsonAtomic` at :765, `atomicWriteWithBackup` at :923)
+ * and this hook already imports from it — but neither has a READ-MODIFY-WRITE
+ * form, which is the whole point here (the marker must be merged into whatever
+ * else current-session.json already carries). Three sibling hooks keep the same
+ * private copy for the same reason: `cwd-change-restore.mjs:84`,
+ * `post-tool-failure-corrective-context.mjs:86`, and
+ * `post-tool-batch-wave-signal.mjs:87`. Lifting an RMW variant into io.mjs and
+ * collapsing the four copies is a follow-up, not part of this fix.
+ *
+ * @param {string} filePath
+ * @param {object} defaultValue used when the file is absent/unparseable
+ * @param {function(object): object} mutate synchronous pure transformer
+ */
+async function atomicMutateJson(filePath, defaultValue, mutate) {
+  let current = defaultValue;
+  try {
+    current = JSON.parse(await fs.readFile(filePath, 'utf8'));
+  } catch { /* absent or unparseable — start from defaultValue */ }
+
+  const updated = mutate(current);
+  const tmp = `${filePath}.tmp-ose-${process.pid}-${Date.now()}`;
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(tmp, JSON.stringify(updated, null, 2) + '\n', 'utf8');
+  await fs.rename(tmp, filePath);
+}
+
+/**
+ * Emit the FINAL `orchestrator.wave.completed` of the session (#1193).
+ *
+ * `hooks/post-tool-batch-wave-signal.mjs` closes wave N-1 only at an N-1→N
+ * transition, so the LAST wave of every session never received a completion —
+ * measured fleet-wide 2026-09-02 as 296 gaps over 296 wave runs (1018 started
+ * vs 722 completed), i.e. EXACTLY one missing final completion per run. The
+ * comment that claimed the coordinator emitted it at session close described a
+ * step that never existed. SessionEnd is that emitter.
+ *
+ * Deliberately SessionEnd-only: `on-stop.mjs` is not mirrored, so the ledger
+ * keeps the closed-vs-abandoned split measurable.
+ *
+ * Idempotent via the `last_wave_completed` high-water mark, written by both
+ * emitters and preserved across clear/compact by `on-session-start.mjs`.
+ * Emits nothing when `last_wave` is absent or 0 — an Express-Path or
+ * coordinator-direct session never batched, and zero waves is the correct
+ * reading there, not a gap.
+ *
+ * OWNERSHIP-GATED (#1193 review F1). `.orchestrator/current-session.json` is a
+ * single repo-global file describing whichever session most recently ran
+ * SessionStart — routinely a DIFFERENT, still-live session when two windows
+ * share this working copy. Emitting unguarded would (a) close a PEER's live
+ * wave with a completion the peer never reached, and (b) write
+ * `last_wave_completed` into the peer's file, so the peer's own SessionEnd then
+ * stays silent — preserving the very #1193 gap this closes, on the wrong
+ * session. So this reuses the SAME `isRecordedSession` predicate
+ * `resolveSession()` applies to `durationMs` and `semanticSessionId` (#863
+ * defect (c)); when it is false, nothing is emitted and nothing is written.
+ *
+ * REASON-GATED for `/clear` AND `resume` (#1193 review F2 + W4c Q3-MED-2). The
+ * SessionEnd matcher is empty, so `/clear` fires this hook mid-wave while the
+ * LOGICAL session continues (`hooks/on-session-start.mjs:383` preserves
+ * `last_wave` / `last_wave_completed` across exactly that). A `resume` is the
+ * SAME class — start preserves the marker across a resume of the same logical
+ * session just as it does across a clear — and resume is the MORE common of the
+ * two (fleet n = 1498 `session.ended`, 2026-09-02: 12 resume vs 9 clear).
+ * Closing the live wave on either is premature, and the preserved marker would
+ * then suppress the real completion later. Fleet `session.ended` reasons, re-measured
+ * 2026-09-02 over every repo's `.orchestrator/metrics/events.jsonl` under
+ * `~/Projects` (glob written as a path segment on purpose — a literal star
+ * followed by a slash would close this comment), except
+ * `EventDrop.at-deps-2026-09` — n = 1335: 1286 other, 27 completed, 12 resume,
+ * 8 clear, 1 error, 1 close. (Same denominator and date as the
+ * `session.ended` row in `docs/audits/2026-09-02-fleet-instruments.md`; the two
+ * disagreed by ~150 before W4a F-F because each counted a different repo set.)
+ *
+ * Strictly best-effort: never throws, never blocks teardown.
+ *
+ * @param {string} projectRoot
+ * @param {{sessionId: string|null, semanticSessionId: string|null,
+ *          isRecordedSession: boolean, reason: string,
+ *          rawStdinId: string|null}} ctx
+ * @returns {Promise<void>}
+ */
+async function emitFinalWaveCompleted(
+  projectRoot,
+  { sessionId, semanticSessionId, isRecordedSession, reason, rawStdinId },
+) {
+  try {
+    // F1 — never speak for a session current-session.json does not describe.
+    if (!isRecordedSession) return;
+    // F2 — `/clear` ends the HARNESS session, not the logical one. `resume` is
+    // the SAME class (W4c Q3-MED-2): `on-session-start.mjs` preserves
+    // `last_wave` / `last_wave_completed` across a resume of the same logical
+    // session exactly as it does across a clear, and resume is the MORE common
+    // of the two (fleet n=1498, 2026-09-02: 12 resume vs 9 clear).
+    if (reason === 'clear' || reason === 'resume') return;
+    const sessionFile = path.join(projectRoot, '.orchestrator', 'current-session.json');
+    let parsed = null;
+    try {
+      parsed = JSON.parse(await fs.readFile(sessionFile, 'utf8'));
+    } catch {
+      return; // absent or malformed → nothing attestable to close
+    }
+
+    // W4c Q1-LOW-TOCTOU — `isRecordedSession` was attested against the FIRST
+    // read of this file (in `resolveSession()`); the values acted on below come
+    // from this SECOND read. Re-verify ownership here rather than inheriting a
+    // stale attestation. A genuine swap BETWEEN the two reads is not testable
+    // without a seam, and none is added for it — the peer-id case pins the
+    // re-check, and this predicate is what makes the window harmless.
+    if (rawStdinId === null || parsed?.session_id !== rawStdinId) return;
+
+    const lastWave = parsed?.last_wave;
+    if (typeof lastWave !== 'number' || !(lastWave > 0)) return;
+    // W4c Q3-MED-3(iii) / Q3-LOW-4 — strictly ABOVE the high-water mark, not
+    // merely different from it: a marker AHEAD of `last_wave` (written by the
+    // batch hook's explicit `wave-complete{N}` branch) means this wave is
+    // already closed, and a non-integer marker (`'3'`, `null`) counts as
+    // ABSENT rather than as "different".
+    const marker = Number.isInteger(parsed?.last_wave_completed) ? parsed.last_wave_completed : 0;
+    if (!(lastWave > marker)) return;
+
+    await emitEvent('orchestrator.wave.completed', {
+      ...(sessionId !== null ? { session_id: sessionId } : {}),
+      ...(semanticSessionId !== null ? { semantic_session_id: semanticSessionId } : {}),
+      wave_number: lastWave,
+      reason: 'session-end',
+      emitted_by: 'on-session-end',
+    });
+
+    // Monotone, exactly as the batch hook's `maxWave()` — the mark may only
+    // ever rise, whichever of the three writers gets here last (W4c Q3-MED-3).
+    await atomicMutateJson(sessionFile, {}, (current) => ({
+      ...current,
+      last_wave_completed: Number.isInteger(current?.last_wave_completed)
+        && current.last_wave_completed > lastWave
+        ? current.last_wave_completed
+        : lastWave,
+    }));
+  } catch { /* best-effort — a SessionEnd hook must never block teardown */ }
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -317,7 +516,8 @@ async function main() {
 
   const reason =
     typeof input?.reason === 'string' && input.reason.length > 0 ? input.reason : 'other';
-  const { sessionId, semanticSessionId, durationMs } = await resolveSession(input, projectRoot);
+  const { sessionId, semanticSessionId, durationMs, isRecordedSession, rawStdinId } =
+    await resolveSession(input, projectRoot);
 
   // Single emission path: emitEvent writes the canonical {timestamp, event, ...payload}
   // JSONL record AND fires the optional Clank webhook with the SAME event name.
@@ -332,11 +532,27 @@ async function main() {
   // attestation bar is the #863 defect (c) guard inside `resolveSession()`: an
   // ending session that is NOT the one current-session.json describes resolves
   // `semanticSessionId: null` and therefore emits no key here.
+  // #1193 — close the last wave BEFORE the terminal session event, so the
+  // ledger's wave lifecycle is balanced within the session's own window. Gated
+  // on the SAME `isRecordedSession` attestation as the identity keys above, and
+  // skipped for `reason === 'clear'` and `reason === 'resume'` alike — both end
+  // the HARNESS session while the LOGICAL one continues; see the emitter's docblock.
+  await emitFinalWaveCompleted(projectRoot, {
+    sessionId,
+    semanticSessionId,
+    isRecordedSession,
+    reason,
+    rawStdinId,
+  });
+
   await emitEvent('orchestrator.session.ended', {
     ...(sessionId !== null ? { session_id: sessionId } : {}),
     ...(semanticSessionId !== null ? { semantic_session_id: semanticSessionId } : {}),
     reason,
-    duration_ms: durationMs,
+    // Omit-never-fabricate: only a MEASURED span is written. `null` here means
+    // the ending session is not the recorded one (or no start time parsed) —
+    // absence must stay absence, not become a zero-length session.
+    ...(Number.isFinite(durationMs) && durationMs >= 0 ? { duration_ms: durationMs } : {}),
   });
 
   // -------------------------------------------------------------------------

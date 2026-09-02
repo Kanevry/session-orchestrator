@@ -411,18 +411,18 @@ state-md-lock:
 
 ## Discovery-Validator (PSA-006 Enforcement, #567)
 
-Non-blocking `SubagentStop` hook that mechanically enforces PSA-006: distributional claims ("N of M", "100% of", "all N", "no remaining", "every X", "none of") appearing in a subagent's transcript tail must carry an adjacent fenced grep/rg/find transcript. When a claim lacks one, the hook records a `discovery_validator_violation` event in `.orchestrator/metrics/events.jsonl` and emits a stderr WARN. v1 is log + warn only — exit 0 always, never blocks the agent; a blocking hard-gate is reserved for a future iteration. Default ON (flip risk is near-zero; the hook only ever generates telemetry).
+Non-blocking `SubagentStop` hook that mechanically enforces PSA-006: distributional claims ("N of M", "100% of", "all N", "no remaining", "every X", "none of") appearing in a subagent's transcript tail must carry an adjacent fenced grep/rg/find transcript. When a claim lacks one, the hook records a `discovery_validator_violation` event in `.orchestrator/metrics/events.jsonl` and emits a stderr WARN. v1 is log + warn only — exit 0 always, never blocks the agent; a blocking hard-gate is reserved for a future iteration. Default OFF (opt-in) — the #690 flip to ON was reverted 2026-09-02 (#1191) after fleet measurement showed 6,946 violation events accumulating in 18 repos that never declared the block.
 
 All fields live under a top-level `discovery-validator` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
 
 ```yaml
 discovery-validator:
-  enabled: true                        # on by default; log+warn-only, exit-0-always — set false to silence
+  enabled: true                        # off by default; opt in per repo — log+warn-only, exit-0-always
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `discovery-validator.enabled` | boolean | `true` | Master toggle. When `false`, the `SubagentStop` hook is bypassed entirely — no transcript scanning, no `discovery_validator_violation` events. Note: when the `discovery-validator:` block is present but omits the `enabled:` line, the parser conservatively resolves to `false` (only a literal `true` flips it) — the `true` default applies when the block is absent entirely. Always set `enabled` explicitly when adding this block. |
+| `discovery-validator.enabled` | boolean | `false` | Master toggle. When `false` (or when the block is absent), the `SubagentStop` hook is bypassed entirely — no transcript scanning, no `discovery_validator_violation` events. Note: when the `discovery-validator:` block is present but omits the `enabled:` line, the parser conservatively resolves to `false` — only a literal `true` enables the hook. Always set `enabled` explicitly when adding this block. |
 
 **Used by:** `hooks/post-subagent-discovery-validator.mjs`, `scripts/lib/config/discovery-validator.mjs` (`_parseDiscoveryValidator`). See `.claude/rules/parallel-sessions.md` § PSA-006.
 

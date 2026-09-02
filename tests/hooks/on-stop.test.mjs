@@ -71,6 +71,10 @@ async function runHook({ projectDir, stdin = '', env = {} }) {
         // Never fire real webhooks during tests
         CLANK_EVENT_SECRET: undefined,
         CLANK_EVENT_URL: undefined,
+        // A spawned hook otherwise inherits the OPERATOR's live session id from
+        // the ambient env, so an assertion about identity resolution could pass
+        // on the real session rather than on the fixture.
+        CLAUDE_CODE_SESSION_ID: undefined,
         ...env,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -241,11 +245,14 @@ describe('Stop event with session_id', { timeout: 15000 }, () => {
     expect(record).toMatchObject({
       event: 'orchestrator.session.stopped',
       session_id: U('sess-abc123'),
-      duration_ms: 0,
       wave: 0,
     });
     expect(record.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
-    expect(Number.isInteger(record.duration_ms)).toBe(true);
+    // K5 — with no session.lock in this fixture the span is UNMEASURABLE, so
+    // both keys are omitted. The old code wrote a hard `duration_ms: 0`, which
+    // is why 8.127 of 8.127 fleet records carried a fabricated zero.
+    expect(Object.hasOwn(record, 'duration_ms')).toBe(false);
+    expect(Object.hasOwn(record, 'duration_source')).toBe(false);
     expect(Number.isInteger(record.wave)).toBe(true);
   });
 });
@@ -422,19 +429,19 @@ describe('sequential event accumulation', { timeout: 20000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('issue #32 — legacy agent_name is ignored', { timeout: 15000 }, () => {
-  it('uses "unknown" instead of the legacy agent_name field', async () => {
+  it('omits agent entirely instead of reading the legacy agent_name field', async () => {
     // This test pins the contract change. If the handler ever falls back to
     // input.agent_name again, this assertion will fail loudly.
+    // #1190: the fallback is now OMISSION, not the fabricated 'unknown' — an
+    // unmeasured agent type must stay distinguishable from a measured one.
     const dir = await track(await mkGitDir());
     await runHook({
       projectDir: dir,
       stdin: JSON.stringify({ hook_event_name: 'SubagentStop', agent_name: 'legacy-name' }),
     });
     const record = await readLastEvent(dir);
-    expect(record).toMatchObject({
-      event: 'orchestrator.agent.stopped',
-      agent: 'unknown',
-    });
+    expect(record.event).toBe('orchestrator.agent.stopped');
+    expect(Object.hasOwn(record, 'agent')).toBe(false);
   });
 });
 
@@ -1089,23 +1096,40 @@ describe('Stop event — semantic_session_id (#1068)', { timeout: 15000 }, () =>
     expect(record.semantic_session_id).toBe('main-2026-08-28-session-9');
   });
 
-  // TV-001 — the contamination bug (#863 defect (c), same shape one hook over):
-  // current-session.json is repo-global, so a turn-end from a DIFFERENT window
-  // must not stamp the recorded peer's semantic identity onto its own event.
-  it('omits the key when the stopping session is not the recorded one', async () => {
-    const dir = await track(await mkGitDir());
-    await seedCurrentSession(dir, {
-      sessionId: U('stop-sem-peer'),
+  // Both cases pin the SAME contamination class (#863 defect (c)) via two
+  // different entry points: an explicit foreign stdin id, and an absent one.
+  it.each([
+    {
+      // TV-001 — current-session.json is repo-global, so a turn-end from a
+      // DIFFERENT window must not stamp the recorded peer's semantic identity
+      // onto its own event.
+      label: 'the stopping session is not the recorded one',
+      seedSessionId: U('stop-sem-peer'),
       semanticSessionId: 'main-2026-08-28-session-9',
-    });
+      stdin: { session_id: U('stop-sem-foreign') },
+      expectedSessionId: U('stop-sem-foreign'),
+    },
+    {
+      // Catches the self-fulfilling half the case above could not reach: with
+      // no stdin id, `resolveSessionId()` assigned the FILE's id to
+      // `sessionId` and only THEN compared the two, so the peer's semantic
+      // identity was inherited by the very gate meant to refuse it.
+      // `session_id` still falls back — that is the actor identity the
+      // heartbeats need — but the attestation does not.
+      label: 'stdin carries no session_id at all (F-A, second site)',
+      seedSessionId: U('stop-sem-peer-2'),
+      semanticSessionId: 'main-2026-09-02-session-11',
+      stdin: { reason: 'other' },
+      expectedSessionId: U('stop-sem-peer-2'),
+    },
+  ])('omits the key when $label', async ({ seedSessionId, semanticSessionId, stdin, expectedSessionId }) => {
+    const dir = await track(await mkGitDir());
+    await seedCurrentSession(dir, { sessionId: seedSessionId, semanticSessionId });
 
-    await runHook({
-      projectDir: dir,
-      stdin: JSON.stringify({ session_id: U('stop-sem-foreign') }),
-    });
+    await runHook({ projectDir: dir, stdin: JSON.stringify(stdin) });
 
     const record = await readLastEvent(dir);
-    expect(record.session_id).toBe(U('stop-sem-foreign'));
+    expect(record.session_id).toBe(expectedSessionId);
     expect(Object.prototype.hasOwnProperty.call(record, 'semantic_session_id')).toBe(false);
   });
 });
@@ -1138,5 +1162,509 @@ describe('Stop event — stdin id is UUID-gated, mirroring the writer (#1091)', 
     expect(Date.parse(after.last_heartbeat)).toBeGreaterThan(Date.parse(before.last_heartbeat));
     const record = await readLastEvent(dir);
     expect(record.session_id).toBe(started);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 20. SubagentStop payload enrichment (#1190)
+//
+// The fleet's most frequent event carried a single field, and in 86,7% of
+// 103.763 records that field was the EMPTY STRING (`?? 'unknown'` never fires
+// on ''). These cases pin BOTH halves of the fix: the omission contract for an
+// unmeasured value, and the sidecar-derived fields.
+// ---------------------------------------------------------------------------
+
+describe('SubagentStop payload enrichment (#1190)', { timeout: 15000 }, () => {
+  const META = {
+    agentType: 'Explore',
+    description: 'operator prose that must never reach the payload',
+    toolUseId: 'toolu_01SQB2qvMLtZdCuST1w4P1Cs',
+    spawnDepth: 1,
+    model: 'opus',
+  };
+
+  /** One assistant transcript line whose single text block carries `text`. */
+  const assistantLine = (text) =>
+    `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } })}\n`;
+
+  /**
+   * Build the harness's sidecar layout beside a parent transcript:
+   *   <dir>/<parent-basename>/subagents/agent-<id>.{jsonl,meta.json}
+   * Returns the parent transcript path to put on stdin.
+   */
+  async function mkSidecar(dir, agentId, { transcriptText, meta = META } = {}) {
+    const parent = path.join(dir, 'parent.jsonl');
+    const subagents = path.join(dir, 'parent', 'subagents');
+    await fs.mkdir(subagents, { recursive: true });
+    await fs.writeFile(parent, '');
+    if (meta !== null) {
+      await fs.writeFile(
+        path.join(subagents, `agent-${agentId}.meta.json`),
+        typeof meta === 'string' ? meta : JSON.stringify(meta),
+      );
+    }
+    if (transcriptText !== undefined) {
+      await fs.writeFile(path.join(subagents, `agent-${agentId}.jsonl`), assistantLine(transcriptText));
+    }
+    return parent;
+  }
+
+  it('carries agent, agent_id and every sidecar-derived field for a live sidecar', async () => {
+    const dir = await track(await mkGitDir());
+    const parent = await mkSidecar(dir, 'abc123', { transcriptText: 'STATUS: done — ok' });
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_type: 'test-writer',
+        agent_id: 'abc123',
+        transcript_path: parent,
+      }),
+    });
+
+    const record = await readLastEvent(dir);
+    expect(record).toMatchObject({
+      event: 'orchestrator.agent.stopped',
+      agent: 'test-writer',
+      agent_id: 'abc123',
+      tool_use_id: META.toolUseId,
+      agent_type_meta: 'Explore',
+      transcript_found: true,
+      status: 'done',
+      duration_source: 'meta-birthtime',
+    });
+    expect(Number.isInteger(record.duration_ms)).toBe(true);
+    // W4a review F-B — a BOUNDED window, not `>= 0`. The sidecar was created
+    // milliseconds ago, so a plausible span is well under a minute; the old
+    // lower-bound-only assertion also accepted the ~55-year span an
+    // unsupported-birthtime filesystem produces (see the epoch case below),
+    // which meant it could not go red on exactly the bug it was watching.
+    expect(record.duration_ms).toBeGreaterThanOrEqual(0);
+    expect(record.duration_ms).toBeLessThan(60_000);
+    // The meta sidecar's `description` is operator prose; this payload also
+    // travels over the optional Clank webhook unredacted.
+    expect(JSON.stringify(record)).not.toContain('operator prose');
+  });
+
+  /**
+   * Force a file's birthtime backwards. On APFS/HFS+ a `utimes` to a moment
+   * BEFORE the birthtime drags `st_birthtime` along; on filesystems that do not
+   * record a birthtime at all there is nothing to forge. Returns whether the
+   * backdate actually took, so the caller can assert a real precondition
+   * instead of passing vacuously (this is exactly the fabricated-birthtime
+   * environment F-B is about, so a silent no-op must not read as a pass).
+   */
+  async function backdateBirthtime(file, when) {
+    await fs.utimes(file, when, when);
+    const { birthtimeMs } = await fs.stat(file);
+    return Math.abs(birthtimeMs - when.getTime()) < 2000;
+  }
+
+  // Both cases backdate the sidecar's own meta.json birthtime, then assert
+  // both duration keys are OMITTED — never a fabricated span. A filesystem
+  // that cannot forge a birthtime returns early rather than passing
+  // vacuously (see backdateBirthtime()).
+  it.each([
+    {
+      // Catches: Node documents birthtimeMs as 0/1970 on filesystems that
+      // record no birthtime (overlayfs, some CI images). The old `>= 0`
+      // guard accepted it and shipped a ~55-YEAR span stamped
+      // `duration_source: meta-birthtime` — a fabricated measurement of the
+      // exact class K5 removed.
+      label: 'the filesystem reports a 1970 birthtime',
+      agentId: 'abcEpoch',
+      when: () => new Date(0),
+    },
+    {
+      // Catches: any birthtime the filesystem did not really supply. No
+      // subagent runs for a week, so a span past the named ceiling is a
+      // broken clock or a broken birthtime, never a long agent.
+      label: 'the span is above the 7-day ceiling',
+      agentId: 'abcOld',
+      when: () => new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+    },
+  ])('omits duration when $label (F-B)', async ({ agentId, when }) => {
+    const dir = await track(await mkGitDir());
+    const parent = await mkSidecar(dir, agentId);
+    const metaPath = path.join(dir, 'parent', 'subagents', `agent-${agentId}.meta.json`);
+    const backdated = await backdateBirthtime(metaPath, when());
+    // Precondition, asserted rather than assumed — see backdateBirthtime().
+    if (!backdated) return; // this filesystem cannot forge a birthtime; nothing to prove
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_type: 'Explore',
+        agent_id: agentId,
+        transcript_path: parent,
+      }),
+    });
+
+    const record = await readLastEvent(dir);
+    expect(record.event).toBe('orchestrator.agent.stopped');
+    expect(Object.hasOwn(record, 'duration_ms')).toBe(false);
+    expect(Object.hasOwn(record, 'duration_source')).toBe(false);
+  });
+
+  it('omits an out-of-charset / oversized tool_use_id (F-E)', async () => {
+    // Catches: meta.json is harness-written, and tool_use_id lands in the
+    // ledger AND in the optional Clank webhook UNREDACTED. An unbounded value
+    // travelled verbatim into both.
+    const dir = await track(await mkGitDir());
+    const parent = await mkSidecar(dir, 'abcTid', {
+      meta: { ...META, toolUseId: `toolu_${'x'.repeat(200)}` },
+    });
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_type: 'Explore',
+        agent_id: 'abcTid',
+        transcript_path: parent,
+      }),
+    });
+
+    const record = await readLastEvent(dir);
+    expect(Object.hasOwn(record, 'tool_use_id')).toBe(false);
+    // The sibling field is unaffected — each derivation stands alone.
+    expect(record.agent_type_meta).toBe('Explore');
+  });
+
+  it('omits a structured agent_type_meta but KEEPS the plugin-qualified form (F-E)', async () => {
+    // Catches BOTH directions. A newline/quote payload must not reach the
+    // unredacted webhook — and the clamp must not be so tight that it drops the
+    // REAL shape: measured on-disk 2026-09-02, a live meta.json carries
+    // `session-orchestrator:code-implementer`, i.e. a COLON. A tool_use_id-
+    // identical charset would have silently omitted every plugin-qualified
+    // agent type in this repo.
+    const dir = await track(await mkGitDir());
+    const parent = await mkSidecar(dir, 'abcAtm', {
+      meta: { ...META, agentType: 'Explore\n{"injected":true}' },
+    });
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_type: 'Explore',
+        agent_id: 'abcAtm',
+        transcript_path: parent,
+      }),
+    });
+
+    let record = await readLastEvent(dir);
+    expect(Object.hasOwn(record, 'agent_type_meta')).toBe(false);
+    expect(record.tool_use_id).toBe(META.toolUseId);
+
+    const dir2 = await track(await mkGitDir());
+    const parent2 = await mkSidecar(dir2, 'abcAtm2', {
+      meta: { ...META, agentType: 'session-orchestrator:code-implementer' },
+    });
+    await runHook({
+      projectDir: dir2,
+      stdin: JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_type: 'Explore',
+        agent_id: 'abcAtm2',
+        transcript_path: parent2,
+      }),
+    });
+    record = await readLastEvent(dir2);
+    expect(record.agent_type_meta).toBe('session-orchestrator:code-implementer');
+  });
+
+  it('OMITS agent when agent_type is the empty string (the #1190 defect)', async () => {
+    const dir = await track(await mkGitDir());
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'SubagentStop', agent_type: '' }),
+    });
+
+    const record = await readLastEvent(dir);
+    expect(record.event).toBe('orchestrator.agent.stopped');
+    expect(Object.hasOwn(record, 'agent')).toBe(false);
+  });
+
+  it('OMITS a structured agent from stdin but KEEPS the plugin-qualified form (Q1-LOW-F3)', async () => {
+    // `agent` was the one unclamped string in this payload while its siblings
+    // carried an explicit webhook rationale. Same regex, same omit-never-truncate
+    // contract — and the colon form must survive, or the clamp would delete the
+    // real shape it is meant to admit.
+    const dir = await track(await mkGitDir());
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_type: 'Explore\n{"injected":true}',
+      }),
+    });
+    expect(Object.hasOwn(await readLastEvent(dir), 'agent')).toBe(false);
+
+    const dir2 = await track(await mkGitDir());
+    await runHook({
+      projectDir: dir2,
+      stdin: JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_type: 'session-orchestrator:code-implementer',
+      }),
+    });
+    expect((await readLastEvent(dir2)).agent).toBe('session-orchestrator:code-implementer');
+  });
+
+  it('omits every derived key (not false/0) when the sidecar directory is absent', async () => {
+    const dir = await track(await mkGitDir());
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_type: 'Explore',
+        agent_id: 'nope',
+        transcript_path: path.join(dir, 'missing.jsonl'),
+      }),
+    });
+
+    const record = await readLastEvent(dir);
+    expect(record).toMatchObject({ agent: 'Explore', agent_id: 'nope' });
+    for (const key of ['status', 'duration_ms', 'duration_source', 'tool_use_id', 'agent_type_meta']) {
+      expect(Object.hasOwn(record, key)).toBe(false);
+    }
+    // `transcript_found: false` is a MEASURED absence here — both inputs were
+    // present, so the probe ran and returned false. The omission contract binds
+    // the case where the probe COULD NOT run (no agent_id / no transcript_path),
+    // pinned by the traversal case below.
+    expect(record.transcript_found).toBe(false);
+  });
+
+  it('omits status when the transcript exists but carries no STATUS line', async () => {
+    const dir = await track(await mkGitDir());
+    const parent = await mkSidecar(dir, 'abc', { transcriptText: 'done, no marker' });
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_type: 'Explore',
+        agent_id: 'abc',
+        transcript_path: parent,
+      }),
+    });
+
+    const record = await readLastEvent(dir);
+    expect(record.transcript_found).toBe(true);
+    expect(Number.isInteger(record.duration_ms)).toBe(true);
+    expect(Object.hasOwn(record, 'status')).toBe(false);
+  });
+
+  // Every literal in AGENT_STATUS_RE, not just `done`. Before this, only the
+  // success literal was ever matched positively, so a typo in any of the other
+  // four alternatives — the ones that actually carry an attention signal — was
+  // invisible to the suite.
+  for (const literal of ['done', 'partial', 'blocked', 'failed', 'no-tests-needed']) {
+    it(`records status:'${literal}' from the transcript tail`, async () => {
+      const dir = await track(await mkGitDir());
+      const parent = await mkSidecar(dir, 'abc', { transcriptText: `STATUS: ${literal} — reported` });
+
+      await runHook({
+        projectDir: dir,
+        stdin: JSON.stringify({
+          hook_event_name: 'SubagentStop',
+          agent_type: 'Explore',
+          agent_id: 'abc',
+          transcript_path: parent,
+        }),
+      });
+
+      expect((await readLastEvent(dir)).status).toBe(literal);
+    });
+  }
+
+  it('finds the STATUS line inside the 64 KiB tail window of an oversized sidecar', async () => {
+    // The window path (`start > 0` → partial first line dropped → backwards
+    // multi-record scan) runs on 99,3 % of real sidecars (5.935 of 5.977 are
+    // larger than 64 KiB, measured 2026-09-02) and 0 tests exercised it: every
+    // other case here writes a single-record file far below the window.
+    const dir = await track(await mkGitDir());
+    const parent = await mkSidecar(dir, 'big');
+    const subagents = path.join(dir, 'parent', 'subagents');
+
+    // ~120 KiB of filler records, then the STATUS in the LAST one.
+    const filler = assistantLine('x'.repeat(4096)).repeat(30);
+    await fs.writeFile(
+      path.join(subagents, 'agent-big.jsonl'),
+      filler + assistantLine('STATUS: partial — ran out of turns'),
+    );
+    expect((await fs.stat(path.join(subagents, 'agent-big.jsonl'))).size).toBeGreaterThan(64 * 1024);
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_type: 'Explore',
+        agent_id: 'big',
+        transcript_path: parent,
+      }),
+    });
+
+    const record = await readLastEvent(dir);
+    expect(record.transcript_found).toBe(true);
+    expect(record.status).toBe('partial');
+  });
+
+  it('does not fire on a quoted STATUS token mid-line (line-anchor regression)', async () => {
+    const dir = await track(await mkGitDir());
+    const parent = await mkSidecar(dir, 'abc', {
+      transcriptText: 'the reviewer asked me to write STATUS: failed at the end',
+    });
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_type: 'Explore',
+        agent_id: 'abc',
+        transcript_path: parent,
+      }),
+    });
+
+    const record = await readLastEvent(dir);
+    expect(record.transcript_found).toBe(true);
+    expect(Object.hasOwn(record, 'status')).toBe(false);
+  });
+
+  it('exits 0 and still writes the record when the meta sidecar is corrupt', async () => {
+    const dir = await track(await mkGitDir());
+    const parent = await mkSidecar(dir, 'abc', { meta: 'not json' });
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_type: 'Explore',
+        agent_id: 'abc',
+        transcript_path: parent,
+      }),
+    });
+
+    expect(result.code).toBe(0);
+    const record = await readLastEvent(dir);
+    expect(record).toMatchObject({ agent: 'Explore', agent_id: 'abc' });
+    expect(Object.hasOwn(record, 'tool_use_id')).toBe(false);
+    expect(Object.hasOwn(record, 'agent_type_meta')).toBe(false);
+    expect(Object.hasOwn(record, 'status')).toBe(false);
+  });
+
+  it('rejects a path-traversing agent_id before it reaches the filesystem', async () => {
+    const dir = await track(await mkGitDir());
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_type: 'Explore',
+        agent_id: '../../etc/passwd',
+        transcript_path: path.join(dir, 'parent.jsonl'),
+      }),
+    });
+
+    const record = await readLastEvent(dir);
+    // The traversal id is OMITTED, not echoed: an unvalidated id lands in the
+    // ledger AND travels over the optional Clank webhook unredacted. Omission
+    // is the same contract every other optional field in this payload uses.
+    expect(Object.hasOwn(record, 'agent_id')).toBe(false);
+    expect(Object.hasOwn(record, 'transcript_found')).toBe(false);
+    // The record itself is still emitted, with the fields that DID validate.
+    expect(record.event).toBe('orchestrator.agent.stopped');
+    expect(record.agent).toBe('Explore');
+  });
+
+  it('OMITS an over-long agent_id (unbounded value in the payload)', async () => {
+    const dir = await track(await mkGitDir());
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_type: 'Explore',
+        agent_id: 'a'.repeat(4096),
+      }),
+    });
+
+    const record = await readLastEvent(dir);
+    expect(Object.hasOwn(record, 'agent_id')).toBe(false);
+    expect(record.agent).toBe('Explore');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// K5 — session.stopped duration_ms derived from the OWNED session.lock
+// ---------------------------------------------------------------------------
+// The bug: `typeof input?.start_ms === 'number' ? … : 0` fell back to a hard 0
+// because the harness never sends `start_ms` — 8.127 of 8.127 fleet
+// `orchestrator.session.stopped` records carried `duration_ms: 0` (measured
+// 2026-09-02). A fabricated zero is indistinguishable from a measured one.
+// ---------------------------------------------------------------------------
+
+describe('Stop duration_ms from session.lock (K5)', { timeout: 15000 }, () => {
+  async function writeStopLock(projectDir, sessionId, startedAtMs) {
+    const orchDir = path.join(projectDir, '.orchestrator');
+    await fs.mkdir(orchDir, { recursive: true });
+    const iso = new Date(startedAtMs).toISOString();
+    await fs.writeFile(
+      path.join(orchDir, 'session.lock'),
+      JSON.stringify({
+        session_id: sessionId,
+        started_at: iso,
+        last_heartbeat: iso,
+        mode: 'deep',
+        pid: 999999,
+        host: 'test-host',
+        ttl_hours: 4,
+      }, null, 2) + '\n',
+      'utf8',
+    );
+  }
+
+  it('derives duration_ms + duration_source from an OWNED lock', async () => {
+    const dir = await track(await mkGitDir());
+    const sessionId = U('k5-owned');
+    await writeStopLock(dir, sessionId, Date.now() - 90_000);
+
+    await runHook({ projectDir: dir, stdin: JSON.stringify({ session_id: sessionId }) });
+
+    const record = await readLastEvent(dir);
+    expect(record.duration_source).toBe('session-lock');
+    expect(record.duration_ms).toBeGreaterThan(80_000);
+    expect(record.duration_ms).toBeLessThan(120_000);
+  });
+
+  it.each([
+    {
+      // Catches: inheriting a foreign session's span. Two windows share one
+      // working copy routinely, so a lock in this repo may name someone else.
+      label: 'the lock names a PEER session',
+      setup: (dir) => writeStopLock(dir, U('k5-peer'), Date.now() - 90_000),
+      sessionId: U('k5-mine'),
+    },
+    {
+      // Catches: a hard-coded `duration_ms: 0` fallback masquerading as a
+      // measurement when there is nothing to measure from.
+      label: 'no lock exists — never a fabricated 0',
+      setup: () => {},
+      sessionId: U('k5-nolock'),
+    },
+  ])('OMITS both keys when $label', async ({ setup, sessionId }) => {
+    const dir = await track(await mkGitDir());
+    await setup(dir);
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: sessionId }),
+    });
+
+    const record = await readLastEvent(dir);
+    expect(record.event).toBe('orchestrator.session.stopped');
+    expect(Object.hasOwn(record, 'duration_ms')).toBe(false);
+    expect(Object.hasOwn(record, 'duration_source')).toBe(false);
   });
 });

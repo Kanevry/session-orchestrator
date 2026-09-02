@@ -304,12 +304,14 @@ describe('on-stop.mjs — SubagentStop branch', { timeout: 20000 }, () => {
     await runHook({
       hookPath: HOOKS.stop,
       projectDir: dir,
-      stdin: { hook_event_name: 'SubagentStop', agent_type: 'code-implementer' },
+      stdin: { hook_event_name: 'SubagentStop', agent_type: 'code-implementer', agent_id: 'a60348a01ca982b4c' },
     });
 
     const events = await readEvents(dir);
     const subEvent = events.find((e) => e.event === 'orchestrator.agent.stopped');
     expect(subEvent).toBeDefined();
+    // #1190: agent_id survives the real hook process, not just the unit spawn.
+    expect(subEvent.agent_id).toBe('a60348a01ca982b4c');
   });
 
   it('subagent_stop event includes agent: "code-implementer"', async () => {

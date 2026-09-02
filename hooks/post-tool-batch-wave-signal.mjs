@@ -29,6 +29,25 @@
  *
  * Exit codes: 0 always (informational, never blocking).
  *
+ * OWNERSHIP RULE for the wave keys (#1193 W4c Q1-MED). `.orchestrator/` is
+ * repo-global, so `current-session.json` describes whichever session most
+ * recently ran SessionStart — routinely a DIFFERENT, still-live session when
+ * two windows share this working copy. `last_wave` and `last_wave_completed`
+ * are therefore written ONLY when this batch's RAW stdin `session_id` equals
+ * the file's `session_id` (a file without one is legacy and allowed). Writing
+ * them unguarded was reproduced both ways with the real hook binaries: session
+ * A's batch stamped `last_wave_completed` into B's record, so B's own attested
+ * SessionEnd stayed silent (the #1193 gap preserved on B), and A's `last_wave`
+ * landed in B's record, so B's SessionEnd emitted `wave.completed` for A's wave
+ * under B's identity. `last_batch` stays UNGATED — it is a batch-resolution
+ * breadcrumb, not a claim about whose wave lifecycle this is.
+ *
+ * MONOTONICITY RULE (#1193 W4c Q3-MED-3). Three writers touch
+ * `last_wave_completed` (this hook's explicit branch, this hook's fallback,
+ * `hooks/on-session-end.mjs`). Every one of them writes through `maxWave()`,
+ * so the mark can only ever rise — an explicit `wave-complete{5}` arriving
+ * while `last_wave` is 4 must not be walked BACKWARDS to 4 by a later writer.
+ *
  * hooks.json wiring is managed separately (W3-C4 scope).
  */
 
@@ -133,6 +152,54 @@ async function resolveSessionIdForHeartbeat(input, sessionFile) {
     }
   } catch { /* missing or unparseable is fine */ }
   return null;
+}
+
+/**
+ * Monotone high-water helper — see the MONOTONICITY RULE in the module
+ * docblock. A non-integer `existing` (absent, `null`, or the string `'3'` a
+ * hand-edited file can carry) counts as ABSENT, never as a competing value.
+ *
+ * @param {unknown} existing
+ * @param {number} n
+ * @returns {number}
+ */
+function maxWave(existing, n) {
+  return Number.isInteger(existing) && existing > n ? existing : n;
+}
+
+/**
+ * Does THIS batch own `.orchestrator/current-session.json`?
+ * See the OWNERSHIP RULE in the module docblock for why the wave keys need it.
+ *
+ * Decided on the RAW stdin id only — deliberately NOT via
+ * `resolveSessionIdForHeartbeat()`, whose current-session.json fallback would
+ * make the compare self-fulfilling (the same F-A defect fixed in
+ * `hooks/on-session-end.mjs`: an assertion may never be derived from the value
+ * it asserts about). A file carrying no `session_id` is a legacy/pre-#587
+ * record with no owner to contend with → allowed.
+ *
+ * @param {object|null} input      Parsed stdin payload.
+ * @param {string} sessionFile     Absolute path to current-session.json.
+ * @returns {Promise<boolean>}
+ */
+async function ownsSessionFile(input, sessionFile) {
+  let rawStdinId = null;
+  if (typeof input?.session_id === 'string' && input.session_id.length > 0) {
+    rawStdinId = input.session_id;
+  } else if (typeof input?.sessionId === 'string' && input.sessionId.length > 0) {
+    rawStdinId = input.sessionId;
+  }
+
+  let recordedId = null;
+  try {
+    const parsed = JSON.parse(await readFile(sessionFile, 'utf8'));
+    if (typeof parsed?.session_id === 'string' && parsed.session_id.length > 0) {
+      recordedId = parsed.session_id;
+    }
+  } catch { /* absent or unparseable → no recorded owner */ }
+
+  if (recordedId === null) return true;
+  return rawStdinId !== null && rawStdinId === recordedId;
 }
 
 /**
@@ -256,6 +323,29 @@ async function main() {
           ...(batchSize !== null ? { batch_size: batchSize } : {}),
         },
       );
+      // #1193 review F2 — this branch is a SECOND emitter of
+      // `wave.completed`, so it must feed the same high-water mark the other
+      // two read; otherwise SessionEnd (and the fallback below) would close the
+      // very wave this signal just closed. Only a numbered completion can be
+      // recorded — an unnumbered signal marks nothing.
+      //
+      // W4c Q2-F1 — this branch also advances `last_wave`. Without it an
+      // explicit `wave-complete{5}` left the marker AHEAD of `last_wave: 4`,
+      // and SessionEnd then read `4 !== 5`, emitted a duplicate completed(4)
+      // and walked the marker BACKWARDS to 4. Both keys go through maxWave().
+      // W4c Q1-MED — and neither is written into a PEER's record.
+      if (
+        waveSignal === 'wave-complete'
+        && typeof waveNumber === 'number'
+        && waveNumber > 0
+        && await ownsSessionFile(input, sessionFile)
+      ) {
+        await atomicMutateJson(sessionFile, {}, (current) => ({
+          ...current,
+          last_wave: maxWave(current?.last_wave, waveNumber),
+          last_wave_completed: maxWave(current?.last_wave_completed, waveNumber),
+        }));
+      }
     } catch { /* best-effort — hook must remain non-blocking */ }
   } else if (waveSignal === null) {
     // ------------------------------------------------------------------
@@ -274,24 +364,41 @@ async function main() {
     // those windows — a drop to 0 (or any non-increase) is NOT a wave change
     // and is ignored, preventing spurious emissions on every batch.
     //
-    // Final-wave limitation: the LAST wave never receives a `completed` event
-    // here because there is no N+1 transition to trigger it. The coordinator
-    // emits the final orchestrator.wave.completed at session close.
+    // Final wave (#1193): no N+1 transition exists for the LAST wave, so its
+    // `completed` is emitted by `hooks/on-session-end.mjs` at SessionEnd, not
+    // here — and not by the coordinator, which never did (the prose claim this
+    // comment used to make was false from #612 until #1193, costing exactly one
+    // missing completion per wave run fleet-wide). The two emitters are made
+    // idempotent by the `last_wave_completed` high-water mark persisted below:
+    // when an N+1 transition already closed wave N, SessionEnd sees
+    // last_wave_completed === last_wave and stays silent.
     try {
       const wave = await resolveWaveNumber(SO_PROJECT_DIR);
       if (wave > 0) {
         // Read last_wave from the just-written session file (after the
         // last_batch RMW above, so we observe the latest persisted value).
         let lastWave = 0;
+        let lastWaveCompleted = 0;
         try {
           const raw = await readFile(sessionFile, 'utf8');
           const parsed = JSON.parse(raw);
           if (typeof parsed.last_wave === 'number') lastWave = parsed.last_wave;
-        } catch { /* absent/unparseable → lastWave stays 0 */ }
+          // #1193 review F2 — read in the SAME read as `last_wave`: a `/clear`
+          // mid-wave already emitted `completed(lastWave)` via SessionEnd, and
+          // `on-session-start.mjs` preserves that marker across the restart, so
+          // guarding on `wave > lastWave` alone would emit it a second time.
+          if (Number.isInteger(parsed.last_wave_completed)) {
+            lastWaveCompleted = parsed.last_wave_completed;
+          }
+        } catch { /* absent/unparseable → both stay 0 */ }
 
         if (wave > lastWave) {
-          // Close the prior wave first (only when there was one).
-          if (lastWave > 0) {
+          // Close the prior wave first — unless it was already closed. The
+          // compare is `>` and not `!==` (W4c Q3-MED-3): a marker AHEAD of
+          // `last_wave` (an explicit wave-complete for a higher wave) means the
+          // prior wave is already closed too, and a non-integer marker counts
+          // as absent rather than as "different".
+          if (lastWave > lastWaveCompleted) {
             await emitEvent('orchestrator.wave.completed', {
               wave_number: lastWave,
               ...(batchId !== null ? { batch_id: batchId } : {}),
@@ -305,11 +412,31 @@ async function main() {
             ...(batchId !== null ? { batch_id: batchId } : {}),
             ...(batchSize !== null ? { batch_size: batchSize } : {}),
           });
-          // Persist the high-water mark so the next batch does not re-emit.
-          await atomicMutateJson(sessionFile, {}, (current) => ({
-            ...current,
-            last_wave: wave,
-          }));
+          // Persist the high-water marks so the next batch does not re-emit,
+          // and so SessionEnd can tell whether the prior wave was already
+          // closed here (#1193). `last_wave_completed` is only advanced when a
+          // `completed` was actually emitted above (lastWave > 0).
+          // W4c Q1-MED — never stamp these into a PEER session's record. The
+          // events above are still emitted (they carry THIS session's
+          // attribution via emitEvent); only the shared-file claim is withheld.
+          // NAMED CEILING: for a non-owning session the marks therefore never
+          // advance, so this branch re-emits started{wave} once per batch until
+          // that session's own SessionStart takes over the file. Revisit if the
+          // ledger shows repeated started{N} for one wave in a shared checkout.
+          if (await ownsSessionFile(input, sessionFile)) {
+            await atomicMutateJson(sessionFile, {}, (current) => ({
+              ...current,
+              last_wave: maxWave(current?.last_wave, wave),
+              ...(Math.max(lastWave, lastWaveCompleted) > 0
+                ? {
+                  last_wave_completed: maxWave(
+                    current?.last_wave_completed,
+                    Math.max(lastWave, lastWaveCompleted),
+                  ),
+                }
+                : {}),
+            }));
+          }
         }
       }
     } catch { /* best-effort — hook must remain non-blocking */ }

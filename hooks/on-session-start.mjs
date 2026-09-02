@@ -404,6 +404,12 @@ async function resolveSessionId(input, projectRoot) {
           if (Object.prototype.hasOwnProperty.call(prev, 'last_batch')) {
             preserved.last_batch = prev.last_batch;
           }
+          // #1193 — the final-wave completion marker must survive a
+          // clear/compact too: dropping it re-arms a duplicate SessionEnd
+          // `orchestrator.wave.completed` for a wave already closed.
+          if (Object.prototype.hasOwnProperty.call(prev, 'last_wave_completed')) {
+            preserved.last_wave_completed = prev.last_wave_completed;
+          }
         }
       } catch { /* absent / unparseable → no preservation (reset) */ }
     }

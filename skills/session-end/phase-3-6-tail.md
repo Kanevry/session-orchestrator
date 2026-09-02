@@ -302,6 +302,7 @@ After the auto-dialectic nudge decision is made (Phase 3.6.7), and when the reco
      minInsightChars: config.reconcile['min-insight-chars'] ?? undefined,
      maxProposalsPerRun: config.reconcile['max-proposals-per-run'] ?? undefined,
      now: new Date(),
+     trigger: 'session-end', // ledger discriminator (#1192) — always pass one; the engine records 'unknown' otherwise
    });
    ```
 

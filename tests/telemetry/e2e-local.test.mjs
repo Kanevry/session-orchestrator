@@ -98,14 +98,20 @@ describe('e2e-local: happy path', () => {
       { timestamp: START, event: 'selected', skill: 'session-orchestrator:session-start', session_id: 's1', schema_version: 1 },
       { timestamp: START, event: 'selected', skill: 'session-orchestrator:session-start', session_id: 's1', schema_version: 1 },
       { timestamp: START, event: 'selected', skill: 'session-orchestrator:wave-executor', session_id: 's1', schema_version: 1 },
+      // A slash-command routed through the Skill tool — the real on-disk record
+      // shape for /session (GitLab #1189). It arrives plugin-PREFIXED and must
+      // reach the wire under its BARE roster name in commands[].
+      { timestamp: START, event: 'selected', skill: 'session-orchestrator:session', session_id: 's1', schema_version: 1 },
     ];
     const roster = {
       skills: new Set(['session-orchestrator:session-start', 'session-orchestrator:wave-executor']),
-      commands: new Set(),
+      commands: new Set(['session']),
     };
 
     const built = buildUsagePing({ sessionRecord, skillInvocations, env: {}, now: START, roster });
     expect(built.duration_bucket).toBe('15-60m');
+    expect(built.commands).toEqual(['session']);
+    expect(built.skills).not.toContain('session-orchestrator:session');
 
     const anonResult = ensureAnonId({}, { now: START });
     expect(anonResult.created).toBe(true);

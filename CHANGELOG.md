@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`orchestrator.reconcile.completed` (#1192).** Wrapper around `runReconcile` covering all
+  three return paths (empty corpus, normal, engine-error) with `trigger`
+  (`skill|session-end|phase-skip|unknown`), `targets` (allowlisted `repo-local|baseline`),
+  counters including measured zeros, `duration_ms`, and `aborted`+`reason` on the catch path.
+  Skipped with a stderr WARN when no `repoRoot` is passed, so test runs never write the fleet
+  ledger. First live record: `eligible 102 / proposals 10 / rejected 154 / capped 72 /
+  already_materialized 20`.
+- **`docs/audits/2026-09-02-fleet-instruments.md`** — the public scrubbed extract of the
+  Fleet-Mining v2 instrument audit: 18 repos, 1,587 learnings, 143,967 events, 347 telemetry
+  records (6 `anon_id`), 13 instrument verdicts and 12 orchestrator candidates (K1–K12).
 - **A new blocking validator catches dead script paths cited in skill/command/agent prose
   (#1176).** `scripts/lib/validate/check-skill-script-paths.mjs` scans `skills/`, `commands/`
   and `agents/` for `scripts/**.mjs` citations that neither exist nor carry a same-line/
@@ -44,8 +54,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vendor-ahead drift tracked in #531: the token is provisioned but the CI/CD variable is not
   yet set upstream.
 
+### Changed
+
+- **BREAKING (behavior): `discovery-validator.enabled` defaults to `false` again (#1191).**
+  Reverts the #690 flip of 2026-06-25. Fleet measurement (2026-09-02, 18 repos): 6,946
+  `discovery_validator_violation` events had accumulated in repos that never declared the
+  block, and a scope-adjusted n=60 sample put real precision at 0/60 — the hook was scanning
+  the MAIN transcript on `SubagentStop`, not the subagent's own. It now reads the subagent
+  transcript (`agent_transcript_path` when the harness sends it, else
+  `<dir>/<base>/subagents/agent-<agent_id>.jsonl` — no fallback to the main transcript), and
+  the violation event now carries `agent_id`. Repos that relied on the silent default lose the
+  signal until they set `enabled: true` explicitly.
+
 ### Fixed
 
+- **`orchestrator.agent.stopped` carried `agent: ""` in 86.7% of fleet records (#1190).**
+  89,991 of 103,763 historical records carried an empty `agent` because
+  `input?.agent_type ?? 'unknown'` never fires on an empty string — the harness's actual
+  shape. `agent` is now omitted when empty (never `'unknown'`, never a fabricated `0`/`false`).
+  Seven optional sidecar-derived fields were added — `agent_id`, `transcript_found`,
+  `tool_use_id`, `agent_type_meta`, `duration_ms` + `duration_source` (`meta-birthtime`), and
+  `status` (`done|partial|blocked|failed|no-tests-needed`, from the last line-anchored
+  `STATUS:` marker in the final 64 KiB of the agent transcript) — each independently omitted
+  when unmeasured, each wrapped in its own try/catch, with a charset guard on `agent_id`
+  before path interpolation. `CURRENT_SCHEMA_VERSION` is unchanged (additive). Measured
+  `status` coverage: 61.7% (71 done / 3 partial / 46 absent) over 120 completed sidecars.
+- **`commands[]` was empty in every usage ping (#1189).** `classifyInvocationName` routes
+  plugin-prefixed command names (`session-orchestrator:session`) into `commands[]` under the
+  bare name — the prefix is required, so a bare foreign name never becomes one of our
+  commands — and `.command`-field names are prefixed before classification, since that field
+  is itself the "this is one of ours" provenance signal a bare `.skill` arrival lacks.
+- **The final `orchestrator.wave.completed` of every session was never emitted (#1193).**
+  Fleet-wide: 1,018 `started` vs. 722 `completed`, a gap of exactly 296 — one per wave run.
+  `hooks/on-session-end.mjs` now emits it at SessionEnd, idempotent via a
+  `last_wave_completed` high-water mark written monotonically by both emitters, gated on
+  ownership of `current-session.json` via the RAW stdin session id (not the resolved one), and
+  skipped on `reason: clear`. `hooks/post-tool-batch-wave-signal.mjs` gained the same
+  raw-stdin-id ownership check, so it can no longer write wave keys into a peer session's
+  record either.
+- **`orchestrator.session.stopped.duration_ms` was a literal `0` in 8,127 of 8,127 fleet
+  records.** The harness never sends `start_ms`, so the old expression fell back to a
+  fabricated zero — indistinguishable from a real instant turn. It is now derived from an
+  OWNED `.orchestrator/session.lock` (`duration_source: 'session-lock'`, session-elapsed
+  measured at turn end) or omitted entirely, never `0`.
+- **`resolveSession()`'s ownership predicate was self-fulfilling** when the stdin `session_id`
+  was absent or non-UUID: it fell back to the recorded id and then compared the fallback
+  against itself. Fixed at the root (`rawStdinId !== null && rawStdinId === recordedId`) in
+  `hooks/on-session-end.mjs` for `duration_ms`, `semantic_session_id` and the new wave-completed
+  emit, plus the sibling site `resolveSessionId()` in `hooks/on-stop.mjs`.
 - **A live local `session.lock` no longer hides a same-working-copy registry peer (GH#67).**
   Registry-sourced entries in `scripts/lib/session-discovery.mjs` / `peer-discovery.mjs` now
   carry additive `registryOnly` / `lockSuperseded` / `lockOwnerId` annotations instead of

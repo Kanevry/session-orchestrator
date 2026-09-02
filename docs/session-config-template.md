@@ -431,11 +431,11 @@ Read by: `scripts/lib/config/reconcile.mjs` (parser), `skills/session-end/SKILL.
 
 ## Discovery-Validator (PSA-006 Enforcement)
 
-Non-blocking `SubagentStop` hook that mechanically enforces PSA-006: distributional claims ("N of M", "100% of", "all N", "no remaining", "every X", "none of") in a subagent's transcript tail must carry an adjacent fenced grep/rg/find transcript. When a claim lacks one, the hook records a `discovery_validator_violation` event in `.orchestrator/metrics/events.jsonl` and emits a stderr WARN. v1 is log + warn only (exit 0 always — never blocks an agent) — a blocking hard-gate is reserved for a future iteration. ON by default (flip risk is near-zero; generates real telemetry). Issue #567.
+Non-blocking `SubagentStop` hook that mechanically enforces PSA-006: distributional claims ("N of M", "100% of", "all N", "no remaining", "every X", "none of") in a subagent's transcript tail must carry an adjacent fenced grep/rg/find transcript. When a claim lacks one, the hook records a `discovery_validator_violation` event in `.orchestrator/metrics/events.jsonl` and emits a stderr WARN. v1 is log + warn only (exit 0 always — never blocks an agent) — a blocking hard-gate is reserved for a future iteration. OFF by default (opt-in). Issue #567; #690 flip reverted 2026-09-02 after fleet measurement.
 
 ```yaml
 discovery-validator:
-  enabled: true                        # on by default; log+warn-only, exit-0-always — set false to silence
+  enabled: true                        # opt-in; hook is off unless this block sets it
 ```
 
 Read by: `scripts/lib/config/discovery-validator.mjs`, `hooks/post-subagent-discovery-validator.mjs`.
@@ -836,7 +836,7 @@ reconcile:
 
 # Discovery-validator — PSA-006 enforcement (#567)
 discovery-validator:
-  enabled: true
+  enabled: true                  # opt-in; hook is off unless this block sets it
 
 # Dialectic-Deriver (#506)
 dialectic:

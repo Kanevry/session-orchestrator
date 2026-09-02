@@ -12,17 +12,38 @@
  * seam, but NEVER writes `.claude/rules/`.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterAll } from 'vitest';
 
 import { runReconcile, resolveEffectiveTargets } from '../../../scripts/lib/reconcile/engine.mjs';
 import { writeApprovedRules } from '../../../scripts/lib/reconcile/writer.mjs';
 import { parseGlobsFrontmatter } from '../../../scripts/lib/rule-loader.mjs';
 import { normalizeDialects } from '../../../scripts/lib/learnings/schema.mjs';
 import { RECONCILE_FIXTURE } from './_fixtures.mjs';
+
+/** This repo's own root — used ONLY to prove the real ledger is never written. */
+const REAL_REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+/**
+ * A throwaway repo root for the pipeline-shape cases that assert on the RESULT
+ * and care nothing about where the run is recorded.
+ *
+ * Without it those calls hit the #1119 no-repoRoot guard and each printed one
+ * identical stderr WARN — 19 per run of this file, which is `host-resources.md`
+ * § HR-101 noise: a warning that fires on nearly every call teaches the reader
+ * to ignore the class. The guard itself stays untouched in production code; the
+ * ONE deliberate no-repoRoot call is the regression test at the bottom of this
+ * file, which mocks stderr and asserts on exactly that single line.
+ *
+ * The directory is left empty on purpose: no learnings ledger, no rules dir, so
+ * the run's on-disk reads are all misses and the emit lands in a tmp ledger.
+ */
+const SCRATCH_ROOT = mkdtempSync(join(tmpdir(), 'reconcile-engine-scratch-'));
+afterAll(() => rmSync(SCRATCH_ROOT, { recursive: true, force: true }));
 
 /** An eligible fragile-pattern learning (real type + non-empty file_paths). */
 function eligibleLearning(overrides = {}) {
@@ -56,7 +77,7 @@ describe('runReconcile — committed-fixture regression lock (DI-injected dryRun
     // "already-expired-at-proposal" after that date. Pinned well before expiry
     // keeps the assertion deterministic forever.
     const result = await runReconcile(
-      { dryRun: true, now: new Date('2026-06-25T00:00:00Z') },
+      { repoRoot: SCRATCH_ROOT, dryRun: true, now: new Date('2026-06-25T00:00:00Z') },
       { learnings: RECONCILE_FIXTURE },
     );
 
@@ -83,7 +104,7 @@ describe('runReconcile — DI injection', () => {
     // eligibility expiry gate (#741.1c), so an unpinned Date.now() would flip
     // eligibleLearning() to already-expired-at-proposal after that date.
     const result = await runReconcile(
-      { now: new Date('2026-06-25T00:00:00Z') },
+      { repoRoot: SCRATCH_ROOT, now: new Date('2026-06-25T00:00:00Z') },
       { learnings: [eligibleLearning(), rejectLearning()], merge },
     );
 
@@ -152,7 +173,7 @@ describe('runReconcile — empty short-circuit', () => {
   it('returns an all-zero summary, no proposals/rejections, and never writes on an empty corpus', async () => {
     const merge = vi.fn(() => ({ merged: [], written: true }));
 
-    const result = await runReconcile({}, { learnings: [], merge });
+    const result = await runReconcile({ repoRoot: SCRATCH_ROOT }, { learnings: [], merge });
 
     expect(result.proposals).toEqual([]);
     expect(result.rejected).toEqual([]);
@@ -173,7 +194,7 @@ describe('runReconcile — empty short-circuit', () => {
 describe('runReconcile — never-throws boundary', () => {
   it('returns a zeroed result with an error field instead of throwing when the loader throws', async () => {
     const result = await runReconcile(
-      {},
+      { repoRoot: SCRATCH_ROOT },
       {
         loadLearnings: () => {
           throw new Error('boom');
@@ -207,7 +228,7 @@ describe('runReconcile — minRuleDays / minInsightChars param forwarding (#741.
     // gate stays inert for a non-empty, non-placeholder insight, so the
     // learning is still proposed.
     const baseline = await runReconcile(
-      { dryRun: true, now: pinnedNow },
+      { repoRoot: SCRATCH_ROOT, dryRun: true, now: pinnedNow },
       { learnings: [shortInsightLearning] },
     );
     expect(baseline.summary.proposed).toBe(1);
@@ -218,7 +239,7 @@ describe('runReconcile — minRuleDays / minInsightChars param forwarding (#741.
     // `undefined`), this call would have produced the SAME result as the
     // baseline above — the gate below is the fix under test.
     const gated = await runReconcile(
-      { dryRun: true, now: pinnedNow, minInsightChars: 24 },
+      { repoRoot: SCRATCH_ROOT, dryRun: true, now: pinnedNow, minInsightChars: 24 },
       { learnings: [shortInsightLearning] },
     );
     expect(gated.summary.proposed).toBe(0);
@@ -237,7 +258,7 @@ describe('runReconcile — minRuleDays / minInsightChars param forwarding (#741.
     });
 
     const result = await runReconcile(
-      { dryRun: true, now: new Date('2026-06-25T00:00:00Z'), minRuleDays: 15 },
+      { repoRoot: SCRATCH_ROOT, dryRun: true, now: new Date('2026-06-25T00:00:00Z'), minRuleDays: 15 },
       { learnings: [nearDeadLearning] },
     );
 
@@ -261,7 +282,7 @@ describe('runReconcile — max-proposals-per-run volume brake (#900 D, default c
     );
 
     const result = await runReconcile(
-      { dryRun: true, now: new Date('2026-06-25T00:00:00Z') },
+      { repoRoot: SCRATCH_ROOT, dryRun: true, now: new Date('2026-06-25T00:00:00Z') },
       { learnings },
     );
 
@@ -321,7 +342,7 @@ describe('runReconcile — max-proposals-per-run volume brake (#900 D, default c
       );
 
       const result = await runReconcile(
-        { dryRun: true, now: new Date('2026-06-25T00:00:00Z'), maxProposalsPerRun: cap },
+        { repoRoot: SCRATCH_ROOT, dryRun: true, now: new Date('2026-06-25T00:00:00Z'), maxProposalsPerRun: cap },
         { learnings },
       );
 
@@ -357,7 +378,7 @@ describe('runReconcile — #900 brandmauer guard: an aliased type without scope 
     expect(learning.type).toBe('anti-pattern'); // sanity: alias resolved
 
     const result = await runReconcile(
-      { dryRun: true, now: new Date('2026-06-25T00:00:00Z') },
+      { repoRoot: SCRATCH_ROOT, dryRun: true, now: new Date('2026-06-25T00:00:00Z') },
       { learnings: [learning] },
     );
 
@@ -389,7 +410,7 @@ describe('runReconcile — #900 brandmauer guard: an aliased type without scope 
     });
 
     const result = await runReconcile(
-      { dryRun: true, now: new Date('2026-06-25T00:00:00Z') },
+      { repoRoot: SCRATCH_ROOT, dryRun: true, now: new Date('2026-06-25T00:00:00Z') },
       { learnings: [learning] },
     );
 
@@ -477,7 +498,7 @@ describe('runReconcile — never writes .claude/rules/', () => {
 
     // Pin `now` before the fixture's 2026-08-05 natural expiry (see #741.1c note above).
     const result = await runReconcile(
-      { now: new Date('2026-06-25T00:00:00Z') },
+      { repoRoot: SCRATCH_ROOT, now: new Date('2026-06-25T00:00:00Z') },
       { learnings: [eligibleLearning()], merge },
     );
 
@@ -528,7 +549,7 @@ describe('runReconcile — a frontmatter-injecting learning is rejected, never p
     });
 
     const result = await runReconcile(
-      { now: new Date('2026-06-25T00:00:00Z') },
+      { repoRoot: SCRATCH_ROOT, now: new Date('2026-06-25T00:00:00Z') },
       { learnings: [poisoned], merge },
     );
 
@@ -544,7 +565,7 @@ describe('runReconcile — a frontmatter-injecting learning is rejected, never p
   it('isolates the bad record — a clean sibling in the same run is still proposed', async () => {
     const merge = vi.fn(() => ({ merged: [], written: true }));
     const result = await runReconcile(
-      { now: new Date('2026-06-25T00:00:00Z') },
+      { repoRoot: SCRATCH_ROOT, now: new Date('2026-06-25T00:00:00Z') },
       {
         learnings: [
           eligibleLearning({ subject: 'poisoned-host', host_class: 'x\ntier: always' }),
@@ -567,7 +588,7 @@ describe('runReconcile — a frontmatter-injecting learning is rejected, never p
   it('drops a newline-poisoned file_paths entry from the proposed globs', async () => {
     const merge = vi.fn(() => ({ merged: [], written: true }));
     const result = await runReconcile(
-      { now: new Date('2026-06-25T00:00:00Z') },
+      { repoRoot: SCRATCH_ROOT, now: new Date('2026-06-25T00:00:00Z') },
       {
         learnings: [
           eligibleLearning({
@@ -870,6 +891,181 @@ describe('resolveEffectiveTargets (#1099)', () => {
       expect(warn).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();
+    }
+  });
+});
+
+/**
+ * Telemetry (#1192) — `orchestrator.reconcile.completed`.
+ *
+ * Every case pins the run against a TMP repo root so the emit lands in a
+ * throwaway ledger; the one deliberate exception is the no-repoRoot regression,
+ * which asserts that this repo's REAL ledger stays byte-identical.
+ */
+describe('runReconcile — telemetry (orchestrator.reconcile.completed)', () => {
+  const EVENT = 'orchestrator.reconcile.completed';
+  const NOW = new Date('2026-06-25T00:00:00Z');
+
+  /** Make a tmp repo whose learnings corpus is `records`. */
+  function tmpRepo(records) {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'reconcile-engine-events-'));
+    const metricsDir = join(repoRoot, '.orchestrator', 'metrics');
+    mkdirSync(metricsDir, { recursive: true });
+    writeFileSync(
+      join(metricsDir, 'learnings.jsonl'),
+      records.map((r) => JSON.stringify(r)).join('\n') + (records.length ? '\n' : ''),
+      'utf8',
+    );
+    return repoRoot;
+  }
+
+  /** Every record in the tmp repo's ledger. */
+  function ledger(repoRoot) {
+    const p = join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
+    if (!existsSync(p)) return [];
+    return readFileSync(p, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l));
+  }
+
+  it('emits into the tmp repo ledger on a real (writing) run', async () => {
+    const repoRoot = tmpRepo(RECONCILE_FIXTURE);
+    try {
+      const merge = vi.fn(() => ({ written: true, skipped: 0 }));
+      const result = await runReconcile(
+        { repoRoot, now: NOW, trigger: 'skill' },
+        { merge, loadCandidates: () => ({ records: [] }), readMaterializedProvenance: () => ({ keys: new Set(), ids: new Set() }) },
+      );
+      const records = ledger(repoRoot).filter((r) => r.event === EVENT);
+      expect(records).toHaveLength(1);
+      const rec = records[0];
+      expect(rec.trigger).toBe('skill');
+      expect(rec.dry_run).toBe(false);
+      expect(rec.learnings_total).toBe(result.summary.totalLearnings);
+      expect(rec.eligible).toBe(result.summary.eligible);
+      expect(rec.proposals).toBe(result.summary.proposed);
+      expect(rec.rejected).toBe(result.summary.rejected);
+      expect(rec.already_materialized).toBe(result.summary.alreadyMaterialized);
+      expect(rec.written).toBe(true);
+      expect(rec.store_records_dropped).toBe(0);
+      expect(typeof rec.duration_ms).toBe('number');
+      expect('aborted' in rec).toBe(false);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('a dry run STILL emits, with dry_run:true and store_records_dropped ABSENT', async () => {
+    const repoRoot = tmpRepo(RECONCILE_FIXTURE);
+    try {
+      await runReconcile({ repoRoot, now: NOW, dryRun: true, trigger: 'phase-skip' });
+      const rec = ledger(repoRoot).filter((r) => r.event === EVENT).at(-1);
+      expect(rec.dry_run).toBe(true);
+      expect(rec.trigger).toBe('phase-skip');
+      expect(rec.written).toBe(false);
+      // Absence is load-bearing: the store was never inspected under dryRun, and
+      // a `0` here would be a false all-clear.
+      expect('store_records_dropped' in rec).toBe(false);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('targets are allowlisted to the closed enum before they reach the ledger (Q2-F4)', async () => {
+    // `reconcile.targets` is operator-authored Session Config and unbounded
+    // there; the payload previously echoed it verbatim into the ledger and the
+    // optional webhook. Anything outside the enum `resolveEffectiveTargets`
+    // recognises is not a target this engine can act on.
+    const repoRoot = tmpRepo([]);
+    try {
+      await runReconcile({
+        repoRoot,
+        now: NOW,
+        dryRun: true,
+        targets: ['repo-local', 'evil-' + 'x'.repeat(500)],
+      });
+      const rec = ledger(repoRoot).filter((r) => r.event === EVENT).at(-1);
+      expect(rec.targets).toEqual(['repo-local']);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('an EMPTY corpus emits a measured zero (the short-circuit is not a silence)', async () => {
+    const repoRoot = tmpRepo([]);
+    try {
+      await runReconcile({ repoRoot, now: NOW, dryRun: true, trigger: 'session-end' });
+      const records = ledger(repoRoot).filter((r) => r.event === EVENT);
+      expect(records).toHaveLength(1);
+      expect(records[0].learnings_total).toBe(0);
+      expect(records[0].eligible).toBe(0);
+      expect(records[0].proposals).toBe(0);
+      expect('aborted' in records[0]).toBe(false);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("a top-level engine error emits aborted:'engine-error' + reason and still returns the zeroed result", async () => {
+    const repoRoot = tmpRepo([]);
+    try {
+      const result = await runReconcile(
+        { repoRoot, now: NOW, trigger: 'skill' },
+        {
+          loadLearnings: () => {
+            throw new Error('boom');
+          },
+        },
+      );
+      expect(result.error).toBe('boom');
+      const rec = ledger(repoRoot).filter((r) => r.event === EVENT).at(-1);
+      expect(rec.aborted).toBe('engine-error');
+      expect(rec.reason).toContain('boom');
+      expect(rec.reason.length).toBeLessThanOrEqual(300);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('REGRESSION: no repoRoot writes NO event into the real fleet ledger', async () => {
+    // Nearly every other test in this file calls runReconcile WITHOUT a
+    // repoRoot. If the emit fell back to SO_PROJECT_DIR, every `npm test` run
+    // would append synthetic records to this repo's real ledger (#1119).
+    const realLedger = join(REAL_REPO_ROOT, '.orchestrator', 'metrics', 'events.jsonl');
+    const before = existsSync(realLedger) ? statSync(realLedger).size : -1;
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await runReconcile({ dryRun: true, now: NOW }, { learnings: RECONCILE_FIXTURE });
+      const after = existsSync(realLedger) ? statSync(realLedger).size : -1;
+      expect(after).toBe(before);
+      expect(stderr).toHaveBeenCalledTimes(1);
+      expect(String(stderr.mock.calls[0][0])).toContain(EVENT);
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it('an emitEvent failure never changes the return value (never-throws contract)', async () => {
+    // A repoRoot that is a FILE, not a directory: the ledger append fails with
+    // ENOTDIR — a real emitter failure, no mock needed.
+    const dir = mkdtempSync(join(tmpdir(), 'reconcile-engine-badroot-'));
+    const brokenRoot = join(dir, 'not-a-dir');
+    writeFileSync(brokenRoot, 'x', 'utf8');
+    try {
+      const broken = await runReconcile(
+        { repoRoot: brokenRoot, now: NOW, dryRun: true, trigger: 'skill' },
+        { learnings: RECONCILE_FIXTURE },
+      );
+      const working = await runReconcile(
+        { dryRun: true, now: NOW, trigger: 'skill' },
+        { learnings: RECONCILE_FIXTURE },
+      );
+      expect(broken.summary).toEqual(working.summary);
+      expect(broken.proposals).toHaveLength(working.proposals.length);
+      expect(broken.error).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

@@ -166,6 +166,8 @@ const { proposals, rejected, summary, error } = await runReconcile({
   maxProposalsPerRun: MAX_PROPOSALS_PER_RUN, // default 10 — volume brake (issue #900 D)
   now: new Date(),
   dryRun: DRY_RUN,     // true → engine touches no disk (no idempotency sidecar write)
+  trigger: 'skill',    // ledger discriminator (#1192) — always pass one; the engine records 'unknown' otherwise
+  targets,             // from resolveEffectiveTargets above; recorded when non-empty, omitted otherwise
 });
 
 // The engine does NOT apply a confidence floor — it proposes every eligible

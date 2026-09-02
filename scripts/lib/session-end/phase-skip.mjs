@@ -293,6 +293,7 @@ async function decideReconcile({ repoRoot, cfg }) {
       maxProposalsPerRun: cfg?.reconcile?.['max-proposals-per-run'] ?? undefined,
       now: new Date(),
       dryRun: true, // never write the candidate sidecar from the aggregator
+      trigger: 'phase-skip', // ledger discriminator (#1192) — the highest-volume, probe-only caller
     });
     if (error) return mkProbeError(phase, new Error(error)); // fail-open on engine error
     const floor = cfg?.reconcile?.['confidence-floor'] ?? 0.5;

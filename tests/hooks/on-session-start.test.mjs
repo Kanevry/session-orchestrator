@@ -717,6 +717,72 @@ describe('high-water-mark preservation across SessionStart (#612)', { timeout: 1
     expect(after.last_batch).toEqual({ batch_id: 'wave3-batch1', batch_size: 6 });
   });
 
+  it('preserves last_wave_completed when the prior session file carries the SAME semantic_session_id (#1193)', async () => {
+    // Catches: dropping the final-wave completion marker across a
+    // clear/compact/resume re-arms a DUPLICATE SessionEnd
+    // orchestrator.wave.completed for a wave already closed. Deleting the
+    // preservation block in hooks/on-session-start.mjs left the suite green
+    // until this case existed.
+    const dir = await mkProjectTracked();
+    await runHook({ projectDir: dir });
+    const firstSemanticId = (await readSessionFile(dir)).semantic_session_id;
+    expect(typeof firstSemanticId).toBe('string');
+
+    await clearSemanticIdMemory(dir);
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'current-session.json'),
+      JSON.stringify(
+        {
+          session_id: 'prev-uuid-cccc',
+          semantic_session_id: firstSemanticId,
+          pid: 12345,
+          source: 'stdin',
+          timestamp: '2026-05-28T00:00:00.000Z',
+          last_wave: 2,
+          last_wave_completed: 2,
+        },
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+
+    await runHook({ projectDir: dir });
+    const after = await readSessionFile(dir);
+    expect(after.semantic_session_id).toBe(firstSemanticId);
+    expect(Object.prototype.hasOwnProperty.call(after, 'last_wave_completed')).toBe(true);
+    expect(after.last_wave_completed).toBe(2);
+  });
+
+  it('resets last_wave_completed when the prior session file carries a DIFFERENT semantic_session_id (#1193)', async () => {
+    // The other half: a stale session's completion marker must NOT suppress the
+    // new session's own final wave.completed.
+    const dir = await mkProjectTracked();
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'current-session.json'),
+      JSON.stringify(
+        {
+          session_id: 'stale-uuid-dddd',
+          semantic_session_id: 'some-other-branch-2020-01-01-deep-9',
+          pid: 54321,
+          source: 'stdin',
+          timestamp: '2020-01-01T00:00:00.000Z',
+          last_wave: 2,
+          last_wave_completed: 2,
+        },
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+
+    await runHook({ projectDir: dir });
+    const after = await readSessionFile(dir);
+    expect(after.semantic_session_id).not.toBe('some-other-branch-2020-01-01-deep-9');
+    expect(Object.prototype.hasOwnProperty.call(after, 'last_wave_completed')).toBe(false);
+  });
+
   it('resets last_wave when the prior session file carries a DIFFERENT semantic_session_id', async () => {
     const dir = await mkProjectTracked();
     // The hook creates .orchestrator/ on its own, but we seed current-session.json

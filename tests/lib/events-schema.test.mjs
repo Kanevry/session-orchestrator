@@ -22,6 +22,7 @@ import {
   CURRENT_SCHEMA_VERSION,
   stampEventSchemaVersion,
 } from '@lib/events-schema.mjs';
+import { RECONCILE_EVENT } from '@lib/reconcile/engine.mjs';
 
 // CENSUS, not a list. The predecessor here was a hand-typed array of ten literals
 // under the title "matches every orchestrator.* event the codebase emits" — a title
@@ -193,6 +194,22 @@ describe('validateEventRecord — valid records', () => {
       reason: 'clear',
       duration_ms: 4200,
     });
+    expect(result).toEqual({ valid: true, errors: [] });
+  });
+
+  it('accepts the reconcile run event — no registry edit was needed for it (#1192)', () => {
+    // The engine's new emit validates on NAME SHAPE alone: events-schema.mjs has
+    // no per-event registry, so this pins the claim the #1192 docs row makes —
+    // registration is a catalog row, not a code change. A rename to a shape the
+    // regex rejects (e.g. `orchestrator.reconcileCompleted`) turns this red.
+    const result = validateEventRecord({
+      timestamp: '2026-09-02T10:00:00.000Z',
+      event: RECONCILE_EVENT,
+      trigger: 'skill',
+      dry_run: true,
+      learnings_total: 0,
+    });
+    expect(RECONCILE_EVENT).toBe('orchestrator.reconcile.completed');
     expect(result).toEqual({ valid: true, errors: [] });
   });
 

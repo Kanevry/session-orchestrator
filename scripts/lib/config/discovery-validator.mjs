@@ -10,6 +10,11 @@ import { matchBlockHeader } from './block-header.mjs';
  * transcript. v1 is log+warn only (events.jsonl + stderr WARN); exit 2
  * (blocking) is reserved for a future hard-gate.
  *
+ * OFF by default (opt-in) — issue #567's original acceptance criterion. The
+ * #690 flip to ON (2026-06-25) was reverted 2026-09-02 (#1191) after fleet
+ * measurement: 6,946 `discovery_validator_violation` events accumulated in 18
+ * repos that never declared the block.
+ *
  * Returns `{ enabled }`.
  * Tolerant parser: malformed values silently fall back to defaults.
  *
@@ -21,14 +26,14 @@ import { matchBlockHeader } from './block-header.mjs';
  * Independent of the `## Session Config` section boundary.
  *
  * Defaults:
- *   enabled: true
+ *   enabled: false (opt-in)
  *
  * @param {string} content — full file contents
  * @returns {{ enabled: boolean }}
  */
 export function _parseDiscoveryValidator(content) {
   const defaults = {
-    enabled: true,
+    enabled: false,
   };
 
   const lines = content.split(/\r?\n/);

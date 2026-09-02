@@ -11,9 +11,13 @@
  *   1. shouldRunHook('post-subagent-discovery-validator') gate — exit 0 when disabled.
  *   2. Read JSON payload from stdin; require hook_event_name === 'SubagentStop'.
  *   3. Read `discovery-validator.enabled` from CLAUDE.md/AGENTS.md Session Config.
- *      Default OFF — exit 0 immediately unless explicitly enabled.
- *   4. Read `input.transcript_path` (whole-session JSONL of assistant/user records),
- *      scan the TAIL (last ~8 `type:"assistant"` records), concat text blocks.
+ *      Default OFF (opt-in) — exit 0 immediately unless explicitly enabled.
+ *   4. Resolve the STOPPING SUBAGENT's OWN transcript (never the parent):
+ *      `input.agent_transcript_path` when the harness sends it, else
+ *      `<dir(transcript_path)>/<base>/subagents/agent-<agent_id>.jsonl`. Scan its
+ *      TAIL (last ~8 `type:"assistant"` records), concat text blocks. When no
+ *      `agent_id` is derivable (or the file is absent) the hook exits 0 and
+ *      records NOTHING — see the scope note below.
  *   5. Regex-scan the concatenated text for 8 claim patterns — 6 quantifier-
  *      triggered distributional claims, the #908 bare-cardinal repo-state
  *      fact ("14 commits", "92 learnings", "5 dirty files", "412 lines"), and
@@ -27,8 +31,19 @@
  *      date, `HEAD`, "as of", "measured at"). Undated-but-verified claims are
  *      counted and reported in the warn text — they are NOT violations in v1.
  *
- * Why read the transcript: the SubagentStop stdin payload has NO output_text
- * field. The agent's text lives in `input.transcript_path`.
+ * Why read a transcript at all: the SubagentStop stdin payload has NO
+ * output_text field — the agent's text only exists on disk.
+ *
+ * WHICH transcript (#1191, the root cause behind the fleet false-positive
+ * flood): `input.transcript_path` is the PARENT/MAIN session transcript, not
+ * the subagent's. Scanning it flagged the COORDINATOR's own prose — wave plans,
+ * TL;DRs, complexity scores. Measured 2026-09-02 on a seeded random sample of
+ * 60 violations: 100% coordinator text, scope-adjusted precision 0%, and
+ * `agent` was `"unknown"` in 90.8% of 1,541 vault events. The hook therefore
+ * reads `<transcriptDir>/<session>/subagents/agent-<agent_id>.jsonl` (the same
+ * layout `hooks/subagent-telemetry.mjs` and `scripts/lib/wave-transcript-tail.mjs`
+ * read) and NEVER falls back to the parent path: a scan of the wrong transcript
+ * is worse than no scan.
  *
  * Output channels — THREE writes, TWO different recipients:
  *   - `discovery_validator_violation` in .orchestrator/metrics/events.jsonl,
@@ -504,6 +519,77 @@ function firstNonEmptyString(input, keys, fallback) {
 }
 
 /**
+ * Resolve the STOPPING SUBAGENT's own transcript path (#1191).
+ *
+ * Precedence: an explicit `agent_transcript_path` from the harness, else the
+ * derived `<dir>/<base>/subagents/agent-<agent_id>.jsonl` sibling of the parent
+ * transcript. Returns null when the derivation is impossible — the caller must
+ * then scan NOTHING. Falling back to `input.transcript_path` is the defect this
+ * function exists to remove: that path is the coordinator's transcript.
+ *
+ * `agentId` is charset-restricted (not sanitised) before interpolation, so no
+ * payload value can traverse out of the `subagents/` directory — same contract
+ * as `resolveSubagentTranscriptPath()` in hooks/subagent-telemetry.mjs.
+ *
+ * @param {object} input — SubagentStop stdin payload
+ * @param {string|null} agentId
+ * @returns {string|null}
+ */
+function resolveAgentTranscriptPath(input, agentId) {
+  const explicit = firstNonEmptyString(input, ['agent_transcript_path'], null);
+  if (explicit !== null) return explicit;
+
+  const parent = input.transcript_path;
+  if (typeof parent !== 'string' || !parent.trim()) return null;
+  // Length-bounded at 64 to match `AGENT_ID_RE` in hooks/on-stop.mjs, which
+  // clamps the IDENTICAL value and states why: an unbounded id lands verbatim
+  // in the ledger event below and travels the optional Clank webhook (Q2-F8).
+  if (typeof agentId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(agentId)) return null;
+  // 'unknown' is the no-usable-id fallback — it names no file.
+  if (agentId === 'unknown') return null;
+
+  const dir = path.dirname(parent);
+  const base = path.basename(parent).replace(/\.jsonl$/i, '');
+  if (!base || base === '.' || base === '..') return null;
+
+  return path.join(dir, base, 'subagents', `agent-${agentId}.jsonl`);
+}
+
+/**
+ * Agent types carry a plugin qualifier, so the COLON is part of the real shape:
+ * `session-orchestrator:code-implementer` (37 chars, measured on-disk in a real
+ * sidecar meta.json 2026-09-02). Same constant as `AGENT_TYPE_META_RE` in
+ * hooks/on-stop.mjs — kept local because the two hooks share no module.
+ */
+const AGENT_TYPE_META_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
+
+/**
+ * Read the agent TYPE from the sidecar `agent-<id>.meta.json` the harness writes
+ * next to the subagent transcript. Used only when the stdin payload omits
+ * `agent_type` — the reason `agent` read `"unknown"` on ~91% of events.
+ *
+ * @param {string} agentTranscriptPath
+ * @returns {Promise<string|null>}
+ */
+async function readAgentTypeFromMeta(agentTranscriptPath) {
+  const metaPath = agentTranscriptPath.replace(/\.jsonl$/i, '.meta.json');
+  if (metaPath === agentTranscriptPath) return null;
+  try {
+    const meta = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+    const t = meta?.agentType;
+    if (typeof t !== 'string' || !t.trim()) return null;
+    // Clamped with the same shape hooks/on-stop.mjs applies to `agentType`
+    // (colon included — `session-orchestrator:code-implementer` is the real
+    // shape). This value reaches BOTH the ledger event and the model-visible
+    // `additionalContext` string, so a mismatch is OMITTED rather than
+    // truncated: the caller then falls back to the honest `'unknown'`.
+    return AGENT_TYPE_META_RE.test(t.trim()) ? t.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Sanitize a user/runtime-provided string for use in a tmp sentinel filename.
  *
  * @param {string} s
@@ -555,11 +641,19 @@ async function main() {
 
   if (!(await isEnabled())) return;
 
-  const text = await readTranscriptTail(input.transcript_path);
+  // #1191: scan the SUBAGENT's own transcript, never the parent. No agent_id
+  // (or no derivable path) → scan nothing and record nothing.
+  const agentId = firstNonEmptyString(input, ['agent_id', 'subagent_id'], null);
+  const agentTranscriptPath = resolveAgentTranscriptPath(input, agentId);
+  if (agentTranscriptPath === null) return;
+
+  const text = await readTranscriptTail(agentTranscriptPath);
   const { violations, undatedVerified } = findViolations(text);
   if (violations.length === 0) return;
 
-  const agentForDedup = firstNonEmptyString(input, ['agent_type'], null);
+  const agentForDedup =
+    firstNonEmptyString(input, ['agent_type', 'subagent_type'], null) ??
+    (await readAgentTypeFromMeta(agentTranscriptPath));
   const agent = agentForDedup ?? 'unknown';
   // session_id precedence: parent_session_id first, mirroring the sibling hook
   // hooks/subagent-telemetry.mjs (firstNonEmptyString(['parent_session_id',
@@ -578,6 +672,7 @@ async function main() {
       event: 'discovery_validator_violation',
       timestamp: new Date().toISOString(),
       agent,
+      ...(agentId !== null ? { agent_id: agentId } : {}),
       ...(sessionId !== null ? { session_id: sessionId } : {}),
       claim_text: claim,
     });

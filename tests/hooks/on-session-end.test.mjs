@@ -264,6 +264,37 @@ describe('on-session-end.mjs — SessionEnd event', { timeout: 15000 }, () => {
     });
     const record = await readLastEvent(dir);
     expect(record.session_id).toBe(U('recorded-1'));
+    // W4a review F-A — the ACTOR-identity fallback above survives, but it may
+    // no longer establish OWNERSHIP. Before the fix, assigning the recorded id
+    // to `sessionId` and *then* comparing it against `recordedId` made the
+    // predicate self-fulfilling, so an id-less SessionEnd silently claimed the
+    // recorded session's duration and semantic identity. Both are now withheld —
+    // and withheld means the KEY IS ABSENT (W5 F1), never a fabricated 0.
+    expect(Object.hasOwn(record, 'duration_ms')).toBe(false);
+    expect(Object.hasOwn(record, 'semantic_session_id')).toBe(false);
+  });
+
+  it('withholds duration_ms and semantic_session_id for a NON-UUID stdin session_id (F-A)', async () => {
+    // Catches: a harness that sends a semantic id (`main-2026-09-02-session-11`)
+    // — not UUID-shaped, so `rawStdinId` is null — inheriting the recorded
+    // session's attested identity via the same self-fulfilling compare.
+    const dir = await mkProject();
+    await seedCurrentSession(dir, {
+      sessionId: U('recorded-nonuuid'),
+      semanticSessionId: 'main-2026-09-02-session-11',
+      timestamp: new Date(Date.now() - 5000).toISOString(),
+    });
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        hook_event_name: 'SessionEnd',
+        session_id: 'main-2026-09-02-session-11',
+        reason: 'other',
+      }),
+    });
+    const record = await readLastEvent(dir);
+    expect(Object.hasOwn(record, 'duration_ms')).toBe(false);
+    expect(Object.hasOwn(record, 'semantic_session_id')).toBe(false);
   });
 
   it('computes duration_ms when the ending session is the recorded one', async () => {
@@ -278,7 +309,7 @@ describe('on-session-end.mjs — SessionEnd event', { timeout: 15000 }, () => {
     expect(record.duration_ms).toBeLessThan(60000);
   });
 
-  it('duration_ms is 0 when ending session differs from recorded session', async () => {
+  it('OMITS duration_ms when ending session differs from recorded session', async () => {
     const dir = await mkProject();
     await seedCurrentSession(dir, { sessionId: U('OTHER'), timestamp: new Date(Date.now() - 5000).toISOString() });
     await runHook({
@@ -286,17 +317,17 @@ describe('on-session-end.mjs — SessionEnd event', { timeout: 15000 }, () => {
       stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('sess-mismatch') }),
     });
     const record = await readLastEvent(dir);
-    expect(record.duration_ms).toBe(0);
+    expect(Object.hasOwn(record, 'duration_ms')).toBe(false);
   });
 
-  it('duration_ms is 0 when no current-session.json exists', async () => {
+  it('OMITS duration_ms when no current-session.json exists', async () => {
     const dir = await mkProject();
     await runHook({
       projectDir: dir,
       stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('sess-nofile') }),
     });
     const record = await readLastEvent(dir);
-    expect(record.duration_ms).toBe(0);
+    expect(Object.hasOwn(record, 'duration_ms')).toBe(false);
   });
 
   it('exits 0 and writes a record even with empty stdin (graceful degradation)', async () => {
@@ -307,7 +338,7 @@ describe('on-session-end.mjs — SessionEnd event', { timeout: 15000 }, () => {
     expect(record.reason).toBe('other');
   });
 
-  it('degrades to duration_ms 0 when current-session.json is malformed JSON', async () => {
+  it('OMITS duration_ms when current-session.json is malformed JSON', async () => {
     const dir = await mkProject();
     const od = path.join(dir, '.orchestrator');
     await fs.mkdir(od, { recursive: true });
@@ -319,10 +350,10 @@ describe('on-session-end.mjs — SessionEnd event', { timeout: 15000 }, () => {
     const record = await readLastEvent(dir);
     expect(record.event).toBe('orchestrator.session.ended');
     expect(record.session_id).toBe(U('sess-x'));
-    expect(record.duration_ms).toBe(0);
+    expect(Object.hasOwn(record, 'duration_ms')).toBe(false);
   });
 
-  it('degrades to duration_ms 0 when recorded timestamp is a non-string', async () => {
+  it('OMITS duration_ms when recorded timestamp is a non-string', async () => {
     const dir = await mkProject();
     await seedCurrentSession(dir, { sessionId: U('sess-ts'), timestamp: 123456 });
     await runHook({
@@ -330,7 +361,7 @@ describe('on-session-end.mjs — SessionEnd event', { timeout: 15000 }, () => {
       stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: U('sess-ts') }),
     });
     const record = await readLastEvent(dir);
-    expect(record.duration_ms).toBe(0);
+    expect(Object.hasOwn(record, 'duration_ms')).toBe(false);
   });
 });
 

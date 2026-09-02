@@ -220,6 +220,54 @@ export function filterRosterNames(names, rosterSet) {
   return deduped.slice(0, MAX_NAMES);
 }
 
+/**
+ * Classify a single raw invocation name into the skills or commands bucket.
+ *
+ * The Skill tool surfaces slash-commands that have NO backing `skills/` directory
+ * under the same plugin-prefixed name form as real skills (e.g.
+ * `session-orchestrator:session` for `commands/session.md`). `roster.skills` holds
+ * PREFIXED names, `roster.commands` holds BARE ones — so a prefixed command name
+ * matches neither set and used to be bucketed to 'other' (GitLab #1189: commands
+ * was `[]` in 345/345 usage pings).
+ *
+ * Decision order (skill roster wins on a spelling collision such as
+ * `memory-cleanup`, which is both a skill dir and a command file):
+ *   1. name in rosterSkills                     → {kind:'skill',   name}  (verbatim)
+ *   2. name is PREFIXED and its bare form is in rosterCommands
+ *                                               → {kind:'command', bare}
+ *   3. otherwise                                → {kind:'skill',   name}  (verbatim)
+ *
+ * Case 2 REQUIRES the plugin prefix (session-reviewer W2 finding, 2026-09-02).
+ * Without that requirement, a BARE third-party or personal skill name that
+ * happens to collide with one of our shipped command names (`test`, `close`,
+ * `go`, `release`, `portfolio` are all plausible foreign skill names) would be
+ * recorded as OUR command — a data-integrity defect, and the same rule made
+ * `memory-cleanup` reach BOTH buckets in one ping (bare → commands, prefixed →
+ * skills), double-counting a single surface. Requiring the prefix removes both:
+ * a bare arrival can only ever be a skill-path name, so an unknown one becomes
+ * 'other'. Cost: the one genuine bare `memory-cleanup` record is recorded as
+ * 'other' rather than as the command.
+ *
+ * Case 3 keeps foreign/third-party names on the SKILLS path only, where
+ * filterRosterNames projects them to the opaque token 'other' — an unclassified
+ * name is never duplicated into `commands`, preserving the privacy invariant.
+ *
+ * @param {unknown} name raw invocation name
+ * @param {Set<string>} rosterSkills prefixed shipped-skill names
+ * @param {Set<string>} rosterCommands bare shipped-command names
+ * @returns {{kind: 'skill'|'command', name: unknown}}
+ */
+export function classifyInvocationName(name, rosterSkills, rosterCommands) {
+  const skills = rosterSkills instanceof Set ? rosterSkills : new Set();
+  const commands = rosterCommands instanceof Set ? rosterCommands : new Set();
+  if (typeof name !== 'string') return { kind: 'skill', name };
+  if (skills.has(name)) return { kind: 'skill', name };
+  if (!name.startsWith(SKILL_PREFIX)) return { kind: 'skill', name };
+  const bare = name.slice(SKILL_PREFIX.length);
+  if (commands.has(bare)) return { kind: 'command', name: bare };
+  return { kind: 'skill', name };
+}
+
 // ---------------------------------------------------------------------------
 // Duration bucketing
 // ---------------------------------------------------------------------------
@@ -331,12 +379,12 @@ function distinctField(records, field) {
  * whitelist-clean but does NOT carry `anon_id` — the caller sets it via
  * ensureAnonId (anon-id.mjs), keeping ID rotation isolated there.
  *
- * skills are the distinct `.skill` values of `skillInvocations`; commands are the
- * distinct `.command` values of the same records (none in v1 skill-invocations
- * telemetry ⇒ []; the field is honored so a future command-telemetry stream feeds
- * in without a signature change). Both are roster-filtered — off-roster names
- * become "other" — deduped, sorted, and capped. No frequencies are recorded (v1
- * decision).
+ * The distinct `.skill` and `.command` values of `skillInvocations` go through a
+ * single classifyInvocationName pass that routes each name to skills or commands
+ * (the `.command` field carries nothing today; it is honored so a future direct
+ * command-telemetry stream feeds in without a signature change). Both buckets are
+ * then roster-filtered — off-roster names become "other" — deduped, sorted, and
+ * capped. No frequencies are recorded (v1 decision).
  *
  * @param {{
  *   sessionRecord: object,
@@ -362,8 +410,26 @@ export function buildUsagePing({
   const rosterSkills = rst?.skills instanceof Set ? rst.skills : new Set();
   const rosterCommands = rst?.commands instanceof Set ? rst.commands : new Set();
 
-  const skillNames = distinctField(invocations, 'skill');
-  const commandNames = distinctField(invocations, 'command');
+  // ONE classification pass over the union of both producer fields: today only
+  // `.skill` is written by hooks/skill-invocation-telemetry.mjs, `.command` is
+  // kept for the forward-compat producer documented above.
+  //
+  // `.command` records carry the BARE name, and classifyInvocationName requires
+  // the plugin prefix before it will route anything to the commands bucket (see
+  // its doc comment). So a `.command` name is normalized to the prefixed form
+  // first — the field itself is the "this is one of ours" signal that a bare
+  // `.skill` arrival lacks. Without this the forward-compat producer would be
+  // wired but dead: every record it writes would silently become 'other'.
+  const skillNames = [];
+  const commandNames = [];
+  const rawNames = [
+    ...distinctField(invocations, 'skill'),
+    ...distinctField(invocations, 'command').map((n) => (n.startsWith(SKILL_PREFIX) ? n : `${SKILL_PREFIX}${n}`)),
+  ];
+  for (const raw of rawNames) {
+    const { kind, name } = classifyInvocationName(raw, rosterSkills, rosterCommands);
+    (kind === 'command' ? commandNames : skillNames).push(name);
+  }
 
   return {
     record_kind: 'usage-ping',

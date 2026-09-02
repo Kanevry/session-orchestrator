@@ -281,7 +281,7 @@ describe('post-tool-batch mechanical wave-lifecycle fallback (#612)', () => {
     writeCurrentSession({ session_id: 's', last_wave: 3 });
 
     // Batch payload with NO wave_signal → exercises the fallback branch.
-    const result = runHook(JSON.stringify({ batch_id: 'b1', batch_size: 6 }));
+    const result = runHook(JSON.stringify({ session_id: 's', batch_id: 'b1', batch_size: 6 }));
     expect(result.status).toBe(0);
 
     const waveEvents = readEvents().filter((e) =>
@@ -296,7 +296,7 @@ describe('post-tool-batch mechanical wave-lifecycle fallback (#612)', () => {
     writeWaveScope(2);
     writeCurrentSession({ session_id: 's', last_wave: 1 });
 
-    const result = runHook(JSON.stringify({ batch_id: 'b2', batch_size: 4 }));
+    const result = runHook(JSON.stringify({ session_id: 's', batch_id: 'b2', batch_size: 4 }));
     expect(result.status).toBe(0);
 
     const events = readEvents();
@@ -312,12 +312,79 @@ describe('post-tool-batch mechanical wave-lifecycle fallback (#612)', () => {
     expect(readSessionFile().last_wave).toBe(2);
   });
 
+  it('persists last_wave_completed = N-1 alongside last_wave = N on a transition (#1193)', () => {
+    // The bug this catches: with only `last_wave` persisted, a SessionEnd could
+    // not tell whether the current wave had already been closed here by an N+1
+    // transition — so the new final-wave emitter in hooks/on-session-end.mjs
+    // would emit a SECOND completed for a wave this hook already closed.
+    writeWaveScope(4);
+    writeCurrentSession({ session_id: 's', last_wave: 3 });
+
+    const result = runHook(JSON.stringify({ session_id: 's', batch_id: 'b-hwm', batch_size: 1 }));
+    expect(result.status).toBe(0);
+
+    const session = readSessionFile();
+    expect(session.last_wave).toBe(4);
+    expect(session.last_wave_completed).toBe(3);
+  });
+
+  it('does NOT re-close a wave already marked last_wave_completed (F2 duplicate)', () => {
+    // The bug this catches: /clear mid-wave fires SessionEnd, which closes the
+    // LIVE wave 3 and stamps last_wave_completed: 3; on-session-start.mjs then
+    // PRESERVES that marker across the restart. With the transition guarded on
+    // `wave > last_wave` alone, the 3→4 boundary emitted completed{3} a SECOND
+    // time. Only started{4} is legitimate here.
+    writeWaveScope(4);
+    writeCurrentSession({ session_id: 's', last_wave: 3, last_wave_completed: 3 });
+
+    const result = runHook(JSON.stringify({ session_id: 's', batch_id: 'b-dup', batch_size: 1 }));
+    expect(result.status).toBe(0);
+
+    const events = readEvents();
+    expect(events.filter((e) => e.event === 'orchestrator.wave.completed')).toEqual([]);
+    const started = events.filter((e) => e.event === 'orchestrator.wave.started');
+    expect(started).toHaveLength(1);
+    expect(started[0].wave_number).toBe(4);
+    // The marker does not regress, and last_wave still advances.
+    const session = readSessionFile();
+    expect(session.last_wave).toBe(4);
+    expect(session.last_wave_completed).toBe(3);
+  });
+
+  it('persists last_wave_completed from the EXPLICIT wave_signal branch too (F2)', () => {
+    // The bug this catches: the explicit `wave-complete` signal is a THIRD
+    // emitter of orchestrator.wave.completed that wrote no marker, so
+    // hooks/on-session-end.mjs would close the very wave this signal closed.
+    writeCurrentSession({ session_id: 's', last_wave: 5 });
+
+    const result = runHook(JSON.stringify({
+      session_id: 's', wave_signal: 'wave-complete', wave_number: 5, batch_id: 'b-sig', batch_size: 1,
+    }));
+    expect(result.status).toBe(0);
+
+    const completed = readEvents().filter((e) => e.event === 'orchestrator.wave.completed');
+    expect(completed).toHaveLength(1);
+    expect(completed[0].wave_number).toBe(5);
+    expect(readSessionFile().last_wave_completed).toBe(5);
+  });
+
+  it('writes NO marker for a wave-start signal, nor for an unnumbered wave-complete (F2)', () => {
+    // Catches a marker stamped for something that was never completed: a
+    // wave-START, or a completion carrying no wave number to record.
+    writeCurrentSession({ session_id: 's', last_wave: 5 });
+    expect(runHook(JSON.stringify({ session_id: 's', wave_signal: 'wave-start', wave_number: 6 })).status).toBe(0);
+    expect(Object.hasOwn(readSessionFile(), 'last_wave_completed')).toBe(false);
+
+    expect(runHook(JSON.stringify({ session_id: 's', wave_signal: 'wave-complete' })).status).toBe(0);
+    expect(Object.hasOwn(readSessionFile(), 'last_wave_completed')).toBe(false);
+  });
+
   it('emits NO wave events when wave drops to 0 (wave-scope deleted mid-phase)', () => {
     // wave-scope.json absent → resolveWaveNumber() returns 0; current-session
     // still holds last_wave: 3. A non-increase (3 → 0) MUST be ignored.
     writeCurrentSession({ session_id: 's', last_wave: 3 });
 
-    const result = runHook(JSON.stringify({ batch_id: 'b3', batch_size: 2 }));
+    const result = runHook(JSON.stringify({ session_id: 's', batch_id: 'b3', batch_size: 2 }));
     expect(result.status).toBe(0);
 
     const waveEvents = readEvents().filter((e) =>
@@ -346,12 +413,104 @@ describe('post-tool-batch wave manifest lookup (#1082)', () => {
     writeFileSync(join(tmp, '.codex', 'wave-scope.json'), JSON.stringify({ wave: 3 }), 'utf8');
     writeCurrentSession({ session_id: 's', last_wave: 0 });
 
-    const result = runHook(JSON.stringify({ batch_id: 'b-codex', batch_size: 2 }));
+    const result = runHook(JSON.stringify({ session_id: 's', batch_id: 'b-codex', batch_size: 2 }));
     expect(result.status).toBe(0);
 
     const started = readEvents().filter((e) => e.event === 'orchestrator.wave.started');
     expect(started).toHaveLength(1);
     expect(started[0].wave_number).toBe(3);
     expect(readSessionFile().last_wave).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ownership + monotonicity of the wave keys (#1193 W4c Q1-MED / Q3-MED-3)
+// ---------------------------------------------------------------------------
+
+describe('post-tool-batch wave-key ownership (#1193 W4c Q1-MED)', () => {
+  const MINE = '11111111-1111-4111-8111-111111111111';
+  const PEER = '22222222-2222-4222-8222-222222222222';
+
+  it('does NOT write last_wave/last_wave_completed into a PEER session record (fallback branch)', () => {
+    // Catches: session A's batch stamping A's wave into live session B's
+    // repo-global record. Two damages, both reproduced with the real binaries:
+    // B's own SessionEnd then reads lastWave === marker and emits nothing (the
+    // #1193 gap preserved on B), and A's last_wave makes B's SessionEnd emit
+    // wave.completed for A's wave under B's identity.
+    writeWaveScope(5);
+    writeCurrentSession({ session_id: PEER, last_wave: 4 });
+
+    const result = runHook(JSON.stringify({ session_id: MINE, batch_id: 'b-peer', batch_size: 1 }));
+    expect(result.status).toBe(0);
+
+    const session = readSessionFile();
+    expect(session.last_wave).toBe(4);
+    expect(Object.hasOwn(session, 'last_wave_completed')).toBe(false);
+  });
+
+  it('does NOT write the marker into a PEER session record (explicit wave-complete branch)', () => {
+    writeCurrentSession({ session_id: PEER, last_wave: 4 });
+
+    const result = runHook(JSON.stringify({
+      session_id: MINE, wave_signal: 'wave-complete', wave_number: 5,
+    }));
+    expect(result.status).toBe(0);
+
+    const session = readSessionFile();
+    expect(session.last_wave).toBe(4);
+    expect(Object.hasOwn(session, 'last_wave_completed')).toBe(false);
+  });
+
+  it('DOES write both keys when the stdin session_id matches the record', () => {
+    // The other half of the gate: a matching owner is not blocked by it.
+    writeWaveScope(5);
+    writeCurrentSession({ session_id: MINE, last_wave: 4 });
+
+    expect(runHook(JSON.stringify({ session_id: MINE, batch_id: 'b-own' })).status).toBe(0);
+
+    const session = readSessionFile();
+    expect(session.last_wave).toBe(5);
+    expect(session.last_wave_completed).toBe(4);
+  });
+
+  it('allows the write when the record carries NO session_id (legacy file)', () => {
+    writeWaveScope(2);
+    writeCurrentSession({ last_wave: 1 });
+
+    expect(runHook(JSON.stringify({ session_id: MINE, batch_id: 'b-legacy' })).status).toBe(0);
+    expect(readSessionFile().last_wave).toBe(2);
+  });
+
+  it('advances last_wave too on an explicit wave-complete, and never lowers either key', () => {
+    // Catches Q2-F1: the explicit branch wrote only the marker, leaving it
+    // AHEAD of last_wave (marker 5 > last_wave 4) — after which SessionEnd read
+    // `4 !== 5`, emitted a duplicate completed(4) and walked the marker BACK
+    // to 4. Both keys are monotone through maxWave().
+    writeCurrentSession({ session_id: MINE, last_wave: 4, last_wave_completed: 7 });
+
+    expect(runHook(JSON.stringify({
+      session_id: MINE, wave_signal: 'wave-complete', wave_number: 5,
+    })).status).toBe(0);
+
+    const session = readSessionFile();
+    expect(session.last_wave).toBe(5);
+    // 7 is higher than this completion — the mark may only ever rise.
+    expect(session.last_wave_completed).toBe(7);
+  });
+
+  it('does not re-close a wave when the marker is AHEAD of last_wave', () => {
+    // Sequence: explicit wave-complete{5} landed while last_wave was 4, so the
+    // marker is 5. The 4→6 fallback transition must NOT emit completed(4).
+    writeWaveScope(6);
+    writeCurrentSession({ session_id: MINE, last_wave: 4, last_wave_completed: 5 });
+
+    expect(runHook(JSON.stringify({ session_id: MINE, batch_id: 'b-ahead' })).status).toBe(0);
+
+    const events = readEvents();
+    expect(events.filter((e) => e.event === 'orchestrator.wave.completed')).toEqual([]);
+    const started = events.filter((e) => e.event === 'orchestrator.wave.started');
+    expect(started).toHaveLength(1);
+    expect(started[0].wave_number).toBe(6);
+    expect(readSessionFile().last_wave_completed).toBe(5);
   });
 });

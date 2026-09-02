@@ -463,7 +463,7 @@ function defaultReadMaterializedProvenance(repoRoot) {
  * @param {boolean} [opts.dryRun]         - when true, compute proposals but SKIP the merge entirely.
  * @returns {Promise<ReconcileResult>}
  */
-export async function runReconcile(
+async function runReconcileInner(
   {
     repoRoot,
     ruleExpiryDays,
@@ -779,4 +779,130 @@ export async function runReconcile(
     const msg = err && err.message ? err.message : String(err);
     return zeroedResult(msg);
   }
+}
+
+/**
+ * Ledger name of the reconcile run event (issue #1192). Catalogued in
+ * `docs/events-schema.md`; `events-schema.mjs` needs no registration — it
+ * validates the NAME shape only, and this name already satisfies it.
+ */
+export const RECONCILE_EVENT = 'orchestrator.reconcile.completed';
+
+/** Clamp for the `reason` string on the abort path — a message can be long. */
+const REASON_MAX_CHARS = 300;
+
+/** The closed target enum `resolveEffectiveTargets` recognises. */
+const KNOWN_TARGETS = ['repo-local', 'baseline'];
+
+/**
+ * Build the `orchestrator.reconcile.completed` payload from a finished run.
+ *
+ * Counter fields are written INCLUDING `0`: each was MEASURED over the whole
+ * run, so a written zero is the payload (same contract as the vault-mirror run
+ * event). The two absence-preserving exceptions are `store_records_dropped`
+ * (absent ⇒ the candidate store was never inspected — dryRun, empty
+ * short-circuit, error path) and `targets` (absent ⇒ the caller asserted no
+ * target list). `aborted`/`reason` appear only when the never-throws guard
+ * fired; their absence means "ran to the end", never "unknown".
+ *
+ * @param {ReconcileResult} result
+ * @param {{ trigger?: string, targets?: string[], dryRun?: boolean, durationMs: number }} ctx
+ * @returns {Record<string, unknown>}
+ */
+function buildReconcilePayload(result, ctx) {
+  const summary = (result && result.summary) || {};
+  /** @type {Record<string, unknown>} */
+  const payload = {
+    trigger: typeof ctx.trigger === 'string' && ctx.trigger.trim() !== '' ? ctx.trigger : 'unknown',
+    dry_run: ctx.dryRun === true,
+    learnings_total: summary.totalLearnings ?? 0,
+    eligible: summary.eligible ?? 0,
+    proposals: summary.proposed ?? 0,
+    rejected: summary.rejected ?? 0,
+    capped: summary.capped ?? 0,
+    already_materialized: summary.alreadyMaterialized ?? 0,
+    written: summary.written === true,
+    duration_ms: ctx.durationMs,
+  };
+  // `targets` originates in operator-authored Session Config (`reconcile.targets`)
+  // and is unbounded there. Allowlisted to the CLOSED enum `resolveEffectiveTargets`
+  // recognises before it enters the ledger and the optional Clank webhook (Q2-F4):
+  // anything else is not a target this engine can act on, so recording it would
+  // be a verbatim echo of untrusted text, never a measurement. Omitted when empty.
+  const targets = Array.isArray(ctx.targets)
+    ? [...new Set(ctx.targets.filter((t) => KNOWN_TARGETS.includes(t)))]
+    : [];
+  if (targets.length > 0) payload.targets = targets;
+  if (typeof summary.skipped === 'number') payload.store_records_dropped = summary.skipped;
+  if (typeof result?.error === 'string' && result.error !== '') {
+    payload.aborted = 'engine-error';
+    payload.reason = result.error.slice(0, REASON_MAX_CHARS);
+  }
+  return payload;
+}
+
+/**
+ * Record one reconcile run in the repo's event ledger — best-effort.
+ *
+ * Refuses the ambient `SO_PROJECT_DIR` destination when no `repoRoot` was
+ * given: most engine tests call `runReconcile` without one, and a fallback
+ * would append synthetic records to the operator's REAL fleet ledger on every
+ * `npm test` (#1119, `scripts/lib/express-path.mjs`). Diagnostics on stderr.
+ *
+ * @param {ReconcileResult} result
+ * @param {{ repoRoot?: string, trigger?: string, targets?: string[], dryRun?: boolean, durationMs: number }} ctx
+ */
+async function emitReconcileCompleted(result, ctx) {
+  const { repoRoot } = ctx;
+  if (typeof repoRoot !== 'string' || repoRoot.trim() === '') {
+    process.stderr.write(
+      `reconcile: skipped ${RECONCILE_EVENT} — no repoRoot given; ` +
+        'refusing the ambient SO_PROJECT_DIR destination (#1119).\n',
+    );
+    return;
+  }
+  const { emitEvent } = await import('../events.mjs');
+  await emitEvent(RECONCILE_EVENT, buildReconcilePayload(result, ctx), { repoRoot });
+}
+
+/**
+ * Public boundary: run the reconciliation pipeline and record the run.
+ *
+ * A thin WRAPPER, deliberately: the pipeline has three return points (empty
+ * short-circuit, normal tail, never-throws catch), and an inline emit would
+ * miss two of them — including the empty corpus and the error path, the two
+ * runs an operator most needs recorded (`.claude/rules/host-resources.md`
+ * § HR-105). Same shape as `runNarrativeMirror` + `mirrorNarrative` in
+ * `scripts/lib/vault-status/narrative-mirror.mjs`.
+ *
+ * The emit is wrapped in try/catch because `emitEvent` THROWS
+ * `EventValidationError` on an invalid record — without the catch, telemetry
+ * would break this function's never-throws contract. The pipeline's result is
+ * returned UNTOUCHED whether or not the ledger accepted the record.
+ *
+ * @param {Object} [params] - see {@link runReconcileInner}, plus:
+ * @param {'skill'|'session-end'|'phase-skip'|string} [params.trigger] - which caller
+ *        invoked this run; recorded ALWAYS (default `'unknown'`) so the per-trigger
+ *        denominator is complete. Not read by the pipeline.
+ * @param {string[]} [params.targets] - the caller's effective target list
+ *        (`resolveEffectiveTargets`); recorded when non-empty, omitted otherwise.
+ *        Not read by the pipeline.
+ * @param {Object} [opts] - see {@link runReconcileInner}.
+ * @returns {Promise<ReconcileResult>}
+ */
+export async function runReconcile(params = {}, opts = {}) {
+  const t0 = Date.now();
+  const result = await runReconcileInner(params, opts);
+  try {
+    await emitReconcileCompleted(result, {
+      repoRoot: params.repoRoot,
+      trigger: params.trigger,
+      targets: params.targets,
+      dryRun: params.dryRun === true || opts.dryRun === true,
+      durationMs: Date.now() - t0,
+    });
+  } catch {
+    // Best-effort telemetry — never the reason a reconcile run fails.
+  }
+  return result;
 }

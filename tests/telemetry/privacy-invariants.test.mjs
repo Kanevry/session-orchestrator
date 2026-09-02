@@ -130,6 +130,28 @@ describe('cross-module chain: off-roster skill names are anonymized end-to-end',
     expect(serialized).not.toContain('my-secret-client-skill');
     expect(serialized).not.toContain('kundenname-workflow');
   });
+
+  it('never routes an unclassified name into commands[] (GitLab #1189 classification pass)', () => {
+    // Since the skill/command classification became one pass, commands[] is a
+    // second bucket a raw name could reach. It must stay unreachable for anything
+    // off-roster: only a name whose BARE form is in roster.commands lands there,
+    // so an unclassified name can only ever surface as 'other' in skills[].
+    const sessionRecord = { session_type: 'feature', started_at: START, completed_at: START };
+    const skillInvocations = [
+      { timestamp: START, event: 'selected', skill: 'kundenname-workflow', session_id: 's1', schema_version: 1 },
+      { timestamp: START, event: 'selected', skill: 'session-orchestrator:kundenname-command', session_id: 's1', schema_version: 1 },
+      { timestamp: START, event: 'selected', command: 'kundenname-direct', session_id: 's1', schema_version: 1 },
+    ];
+    const roster = { skills: new Set(['session-orchestrator:session-start']), commands: new Set(['session']) };
+
+    const built = buildUsagePing({ sessionRecord, skillInvocations, env: {}, now: START, roster });
+    const projected = projectUsagePing(built);
+
+    expect(built.commands).toEqual([]);
+    expect(built.skills).toEqual(['other']);
+    const serialized = JSON.stringify(projected);
+    expect(serialized).not.toContain('kundenname');
+  });
 });
 
 // ---------------------------------------------------------------------------

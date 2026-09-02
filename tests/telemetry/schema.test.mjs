@@ -31,6 +31,8 @@ import {
   projectUsagePing,
   deriveDurationBucket,
   buildUsagePing,
+  classifyInvocationName,
+  loadRoster,
   normalizeOs,
   normalizeArch,
 } from '../../scripts/lib/telemetry/schema.mjs';
@@ -268,6 +270,115 @@ describe('buildUsagePing', () => {
     expect(ping.skills).toContain('session-orchestrator:session-start');
     expect(ping.skills).toContain('other');
     expect(ping.duration_bucket).toBe('1-3h');
+  });
+});
+
+describe('classifyInvocationName — prefixed slash-commands reach commands[] (GitLab #1189)', () => {
+  // Mirrors the REAL roster shapes: skills are plugin-PREFIXED (loadRoster maps
+  // skills/*/SKILL.md through `${SKILL_PREFIX}${name}`), commands are BARE
+  // (commands/*.md basenames). A command invoked through the Skill tool arrives
+  // PREFIXED, which matched neither set before the fix.
+  const rosterSkills = new Set([
+    'session-orchestrator:session-end',
+    'session-orchestrator:test-runner',
+    'session-orchestrator:memory-cleanup',
+  ]);
+  const rosterCommands = new Set(['session', 'templates-ack', 'test', 'memory-cleanup', 'go']);
+  const classify = (name) => classifyInvocationName(name, rosterSkills, rosterCommands);
+
+  it.each([
+    // A real prefixed skill stays on the skills path, verbatim.
+    ['session-orchestrator:session-end', { kind: 'skill', name: 'session-orchestrator:session-end' }],
+    // A prefixed command routes to commands[] under its BARE roster name.
+    ['session-orchestrator:session', { kind: 'command', name: 'session' }],
+    ['session-orchestrator:templates-ack', { kind: 'command', name: 'templates-ack' }],
+    // "test" (command) is not confused with "test-runner" (skill) — same prefix, disjoint outcome.
+    ['session-orchestrator:test', { kind: 'command', name: 'test' }],
+    ['session-orchestrator:test-runner', { kind: 'skill', name: 'session-orchestrator:test-runner' }],
+    // A foreign plugin name never reaches commands[] — it stays on the skills
+    // path, where filterRosterNames projects it to 'other'. Putting it on the
+    // commands path too would duplicate an unclassified raw name into a
+    // second bucket — the privacy invariant this ordering protects.
+    ['superpowers:using-superpowers', { kind: 'skill', name: 'superpowers:using-superpowers' }],
+    // 'memory-cleanup' exists as BOTH skills/memory-cleanup/ and
+    // commands/memory-cleanup.md. W2 pinned the bare arrival as the COMMAND;
+    // the session-reviewer refuted that: it put one surface into BOTH buckets
+    // in a single ping (bare → commands, prefixed → skills), and it let ANY
+    // bare foreign skill whose name collides with our roster ('test', 'close',
+    // 'go', …) be recorded as our command. Requiring the prefix removes both
+    // defects — the bare form is now a skills-path name and reaches the wire
+    // as 'other' (session-reviewer W2 finding).
+    ['memory-cleanup', { kind: 'skill', name: 'memory-cleanup' }],
+    ['session-orchestrator:memory-cleanup', { kind: 'skill', name: 'session-orchestrator:memory-cleanup' }],
+    // The concrete data-integrity bug: a third-party or personal skill invoked
+    // bare under a name that happens to be in our 28-command roster must never
+    // be recorded as our command. Today's bare foreign names (agent-reach,
+    // code-review, simplify, gitlab-workflow, claude-api) do not collide —
+    // 'test' and 'go' are the plausible ones that would.
+    ['test', { kind: 'skill', name: 'test' }],
+    ['go', { kind: 'skill', name: 'go' }],
+    // Never throws on a non-string name.
+    [null, { kind: 'skill', name: null }],
+    [42, { kind: 'skill', name: 42 }],
+  ])('classifies %j as %j', (input, expected) => {
+    expect(classify(input)).toEqual(expected);
+  });
+});
+
+describe('buildUsagePing — command classification end to end (GitLab #1189)', () => {
+  const sessionRecord = { session_type: 'deep', started_at: START, completed_at: START };
+
+  it('populates commands[] from prefixed Skill-tool invocations, against the REAL roster', () => {
+    // Real record shapes from .orchestrator/metrics/skill-invocations.jsonl. Before
+    // the fix every one of these landed in skills[] as 'other' and commands[] was []
+    // — which is exactly what the server saw in 345/345 pings.
+    const skillInvocations = [
+      { skill: 'session-orchestrator:session-end', event: 'selected' },
+      { skill: 'session-orchestrator:session', event: 'selected' },
+      { skill: 'session-orchestrator:templates-ack', event: 'selected' },
+      { skill: 'session-orchestrator:test', event: 'selected' },
+      { skill: 'superpowers:using-superpowers', event: 'selected' },
+      { command: 'go', event: 'selected' }, // forward-compat direct-command producer
+    ];
+    const ping = buildUsagePing({
+      sessionRecord,
+      skillInvocations,
+      env: {},
+      now: START,
+      roster: loadRoster({ pluginRoot: REPO_ROOT }),
+    });
+
+    expect(ping.commands).toEqual(['go', 'session', 'templates-ack', 'test']);
+    expect(ping.skills).toEqual(['other', 'session-orchestrator:session-end']);
+    // The foreign name is anonymized, and never duplicated into commands[].
+    expect(ping.commands).not.toContain('other');
+    expect(ping.commands.some((n) => n.includes('superpowers'))).toBe(false);
+  });
+
+  it('anonymizes a BARE roster-colliding name instead of crediting our command', () => {
+    // A foreign skill invoked bare as 'test' must not be counted as our /test
+    // command (session-reviewer W2 finding). It is a skills-path name → 'other'.
+    const ping = buildUsagePing({
+      sessionRecord,
+      skillInvocations: [{ skill: 'test', event: 'selected' }, { skill: 'memory-cleanup', event: 'selected' }],
+      env: {},
+      now: START,
+      roster: loadRoster({ pluginRoot: REPO_ROOT }),
+    });
+    expect(ping.commands).toEqual([]);
+    expect(ping.skills).toEqual(['other']);
+  });
+
+  it('leaves an off-roster command name out of commands[] entirely', () => {
+    const ping = buildUsagePing({
+      sessionRecord,
+      skillInvocations: [{ skill: 'session-orchestrator:not-a-real-command', event: 'selected' }],
+      env: {},
+      now: START,
+      roster: loadRoster({ pluginRoot: REPO_ROOT }),
+    });
+    expect(ping.commands).toEqual([]);
+    expect(ping.skills).toEqual(['other']);
   });
 });
 

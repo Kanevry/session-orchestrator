@@ -43,7 +43,36 @@ projection unit test enforces the drop of any non-whitelisted input field.
 | `session_type` | One of `housekeeping`, `feature`, `deep`, `other`. |
 | `duration_bucket` | One of `<15m`, `15-60m`, `1-3h`, `>3h` — a coarse bucket, never an exact duration. |
 | `skills[]` | Names of invoked skills, filtered against the shipped plugin roster — any name not in that roster becomes `"other"`. |
-| `commands[]` | Same filtering rule as `skills[]`. |
+| `commands[]` | Names of invoked slash-commands, same filtering rule as `skills[]`. |
+
+### How a name lands in `skills[]` or `commands[]`
+
+Both buckets are fed from one local ledger of invocations
+(`.orchestrator/metrics/skill-invocations.jsonl`), so a single classification
+rule decides which bucket a name reaches — and it is deliberately biased
+towards anonymizing rather than towards attributing:
+
+- Shipped **skills** are recorded plugin-prefixed
+  (`session-orchestrator:session-end`); shipped **commands** are recorded bare
+  (`session`). The Skill tool surfaces a slash-command that has no backing
+  `skills/` directory under the *prefixed* form too, so a prefixed name whose
+  bare form is a shipped command is reported in `commands[]` under that bare
+  name.
+- A name is only ever reported as one of our commands when it carries the
+  plugin prefix. A **bare** name is never credited to a command, even when it
+  collides with one of our command names — a third-party or personal skill
+  invoked bare as `test` would otherwise be reported as our `/test` command.
+  Bare unknown names take the skills path and are reduced to `"other"`. The one
+  exception is a name arriving in the ledger's `.command` **field**: that field
+  is itself the "this is one of ours" provenance signal a bare `.skill` arrival
+  lacks, so `buildUsagePing` prefixes every `.command` value before
+  classification (`scripts/lib/telemetry/schema.mjs`). Without that step the
+  `.command` producer would be wired but dead — every record it writes would
+  silently become `"other"`.
+- On a spelling collision (`memory-cleanup` exists as both a skill and a
+  command) the skill roster wins, so exactly one bucket is credited. Counting
+  distinct surfaces across `skills[]` and `commands[]` therefore never
+  double-counts a single one.
 
 ## What we never collect
 

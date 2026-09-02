@@ -3,12 +3,14 @@
  *
  * Tests for hooks/post-subagent-discovery-validator.mjs (#567).
  *
- * The hook is a NON-BLOCKING SubagentStop validator (PSA-006): it reads
- * `input.transcript_path`, scans the tail of assistant records for
+ * The hook is a NON-BLOCKING SubagentStop validator (PSA-006): it resolves the
+ * STOPPING SUBAGENT's own transcript from `input.transcript_path` + `agent_id`
+ * (#1191 — the parent transcript is never scanned), scans the tail of assistant records for
  * distributional-claim regexes, and — when a claim lacks an adjacent fenced
  * grep/rg/find block — appends a `discovery_validator_violation` record to
  * .orchestrator/metrics/events.jsonl + writes a stderr WARN. Exit 0 ALWAYS.
- * Gated OFF by default via the `discovery-validator.enabled` Session-Config key.
+ * Gated OFF by default (opt-in) via the `discovery-validator.enabled`
+ * Session-Config key — absent block included (#1191).
  *
  * Strategy (mirrors tests/hooks/subagent-telemetry.test.mjs): spawn the hook
  * via node with stdin piped, CLAUDE_PROJECT_DIR pointing to a tmp sandbox, and
@@ -34,13 +36,18 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const HOOK = new URL('../../hooks/post-subagent-discovery-validator.mjs', import.meta.url).pathname;
 const EVENTS_REL = join('.orchestrator', 'metrics', 'events.jsonl');
 const TRANSCRIPT_REL = 'transcript.jsonl';
+// The harness keeps each subagent's own transcript beside the parent one:
+// <dir>/<base>/subagents/agent-<agent_id>.jsonl. Since #1191 the hook reads
+// THAT file, so every fixture writes there and every payload carries agent_id.
+const AGENT_ID = 'a1';
+const SUBAGENTS_REL = join('transcript', 'subagents');
 
 const CLAUDE_MD_ENABLED = [
   '# Sandbox',
@@ -72,7 +79,28 @@ afterEach(() => {
  * Write a transcript JSONL into the sandbox composed of one assistant record
  * per supplied text block. Returns the absolute path.
  */
-function writeTranscript(textBlocks) {
+function writeTranscript(textBlocks, agentId = AGENT_ID) {
+  writeAgentTranscript(textBlocks, agentId);
+  // The payload's transcript_path stays the PARENT path — the hook derives the
+  // subagent file from it. The parent file itself is never read.
+  return join(tmp, TRANSCRIPT_REL);
+}
+
+/** Write a subagent transcript at the harness's derived location. */
+function writeAgentTranscript(textBlocks, agentId = AGENT_ID) {
+  const records = textBlocks.map((text) => ({
+    type: 'assistant',
+    message: { content: [{ type: 'text', text }] },
+  }));
+  const dir = join(tmp, SUBAGENTS_REL);
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `agent-${agentId}.jsonl`);
+  writeFileSync(path, records.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+  return path;
+}
+
+/** Write the PARENT/main transcript (which the hook must never scan). */
+function writeMainTranscript(textBlocks) {
   const records = textBlocks.map((text) => ({
     type: 'assistant',
     message: { content: [{ type: 'text', text }] },
@@ -140,6 +168,7 @@ function stopPayload(transcriptPath, extra = {}) {
   return {
     hook_event_name: 'SubagentStop',
     agent_type: 'discovery',
+    agent_id: AGENT_ID,
     transcript_path: transcriptPath,
     ...extra,
   };
@@ -159,6 +188,126 @@ describe('post-subagent-discovery-validator hook', () => {
     expect(result.status).toBe(0);
     expect(readEvents()).toEqual([]);
     expect(result.stdout.trim()).toBe('');
+  });
+
+  it('ABSENT block (opt-in default): SubagentStop with a bare claim → exit 0, NO event and NO stdout', () => {
+    // #1191: the DISABLED case above pins an EXPLICIT `enabled: false`. The
+    // absent-block default — the state every repo but this one is in — was
+    // never tested, which is how the #690 flip to ON shipped and produced
+    // 6,946 violation events across 18 repos that never opted in.
+    writeClaudeMd(['# Sandbox', '', 'persistence: true', ''].join('\n'));
+    const transcript = writeTranscript(['We confirmed 4 of 4 callers opt-in to the new API.']);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    expect(readEvents()).toEqual([]);
+    expect(result.stdout.trim()).toBe('');
+  });
+
+  // -------------------------------------------------------------------------
+  // #1191 — WHICH transcript is scanned. The hook used to read
+  // input.transcript_path (the COORDINATOR's transcript); a seeded random
+  // sample of 60 fleet violations was 100% coordinator prose. These two cases
+  // pin both directions of the fix.
+  // -------------------------------------------------------------------------
+
+  it('ENABLED + claim only in the MAIN transcript → exit 0, NO violation (coordinator prose is never scanned)', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    writeMainTranscript(['The repo has 14 commits since the session-start ref.']);
+    writeAgentTranscript(['Read three files and applied the edit. Nothing to report.']);
+
+    const result = runHook(stopPayload(join(tmp, TRANSCRIPT_REL)));
+
+    expect(result.status).toBe(0);
+    expect(readEvents()).toEqual([]);
+  });
+
+  it('ENABLED + claim in the SUBAGENT transcript → violation carrying agent_id', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    writeMainTranscript(['Dispatching wave 2. Nothing measurable here.']);
+    writeAgentTranscript(['The repo has 14 commits since the session-start ref.']);
+
+    const result = runHook(stopPayload(join(tmp, TRANSCRIPT_REL)));
+
+    expect(result.status).toBe(0);
+    const events = readEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].agent_id).toBe(AGENT_ID);
+    expect(events[0].claim_text).toBe('The repo has 14 commits since the session-start ref.');
+  });
+
+  it('ENABLED + no agent_id → exit 0, no scan, no event (never falls back to the parent transcript)', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    writeMainTranscript(['The repo has 14 commits since the session-start ref.']);
+
+    const result = runHook({
+      hook_event_name: 'SubagentStop',
+      agent_type: 'discovery',
+      transcript_path: join(tmp, TRANSCRIPT_REL),
+    });
+
+    expect(result.status).toBe(0);
+    expect(readEvents()).toEqual([]);
+  });
+
+  it('ENABLED + a 65-char agent_id → exit 0, no scan, no event (Q2-F8 length bound)', () => {
+    // hooks/on-stop.mjs bounds the IDENTICAL value at {1,64} and says why: the
+    // id lands verbatim in the event below and travels the optional webhook.
+    // The charset guard here had no length bound at all.
+    const longId = 'a'.repeat(65);
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    writeAgentTranscript(['The repo has 14 commits since the session-start ref.'], longId);
+
+    const result = runHook(stopPayload(join(tmp, TRANSCRIPT_REL), { agent_id: longId }));
+
+    expect(result.status).toBe(0);
+    expect(readEvents()).toEqual([]);
+  });
+
+  it('ENABLED + a structured agentType in the meta sidecar → falls back to "unknown" (Q1-LOW-F3)', () => {
+    // The meta-derived agent type reaches BOTH the event and the model-visible
+    // additionalContext string, so it is clamped with the same regex on-stop.mjs
+    // uses — omit on mismatch, never truncate; the caller then records the
+    // honest 'unknown'.
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    writeAgentTranscript(['The repo has 14 commits since the session-start ref.']);
+    writeFileSync(
+      join(tmp, SUBAGENTS_REL, `agent-${AGENT_ID}.meta.json`),
+      JSON.stringify({ agentType: 'discovery\n{"injected":true}' }),
+      'utf8',
+    );
+
+    const result = runHook({
+      hook_event_name: 'SubagentStop',
+      agent_id: AGENT_ID,
+      transcript_path: join(tmp, TRANSCRIPT_REL),
+    });
+
+    expect(result.status).toBe(0);
+    const events = readEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].agent).toBe('unknown');
+    expect(result.stdout).not.toContain('injected');
+  });
+
+  it('ENABLED + a plugin-qualified agentType in the meta sidecar → kept verbatim (colon is the real shape)', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    writeAgentTranscript(['The repo has 14 commits since the session-start ref.']);
+    writeFileSync(
+      join(tmp, SUBAGENTS_REL, `agent-${AGENT_ID}.meta.json`),
+      JSON.stringify({ agentType: 'session-orchestrator:code-implementer' }),
+      'utf8',
+    );
+
+    const result = runHook({
+      hook_event_name: 'SubagentStop',
+      agent_id: AGENT_ID,
+      transcript_path: join(tmp, TRANSCRIPT_REL),
+    });
+
+    expect(result.status).toBe(0);
+    expect(readEvents()[0].agent).toBe('session-orchestrator:code-implementer');
   });
 
   it('ENABLED + claim WITH an adjacent grep block → exit 0, NO violation', () => {
