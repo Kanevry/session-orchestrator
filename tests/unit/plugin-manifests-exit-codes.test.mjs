@@ -24,7 +24,7 @@
  *
  * Network-dependent tests guard with isNetworkFailure() and skip on exit 2.
  * Per rules/test-quality.md: no branching (if/for) in test bodies — the skip
- * guard is called in a plain ctx.task.skip() path, not a conditional test.
+ * guard is called in a plain ctx.skip() path, not a conditional test.
  *
  * Falsification check:
  *   Test 2 (exit 1 on broken manifest): if the script changed to exit 0 on
@@ -231,7 +231,7 @@ describe('--json flag — failure shape for locally-provable failures', () => {
 
     if (isNetworkFailure(result)) {
       console.warn('[plugin-manifests-exit-codes.test] Skipping schema-violation --json test — schemastore unreachable');
-      ctx.task.skip('schemastore unreachable');
+      ctx.skip('schemastore unreachable');
       return;
     }
 

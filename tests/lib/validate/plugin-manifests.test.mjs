@@ -118,7 +118,7 @@ describe('happy path — real PLUGIN_ROOT manifests', () => {
 
     if (isNetworkFailure(result)) {
       console.warn('[plugin-manifests.test] Skipping — schemastore unreachable:', result.stderr.slice(0, 120));
-      ctx.task.skip('schemastore unreachable');
+      ctx.skip('schemastore unreachable');
       return;
     }
 
@@ -130,7 +130,7 @@ describe('happy path — real PLUGIN_ROOT manifests', () => {
 
     if (isNetworkFailure(result)) {
       console.warn('[plugin-manifests.test] Skipping — schemastore unreachable:', result.stderr.slice(0, 120));
-      ctx.task.skip('schemastore unreachable');
+      ctx.skip('schemastore unreachable');
       return;
     }
 
@@ -144,7 +144,7 @@ describe('happy path — real PLUGIN_ROOT manifests', () => {
 
     if (isNetworkFailure(result)) {
       console.warn('[plugin-manifests.test] Skipping — schemastore unreachable:', result.stderr.slice(0, 120));
-      ctx.task.skip('schemastore unreachable');
+      ctx.skip('schemastore unreachable');
       return;
     }
 
@@ -158,7 +158,7 @@ describe('happy path — real PLUGIN_ROOT manifests', () => {
 
     if (isNetworkFailure(result)) {
       console.warn('[plugin-manifests.test] Skipping — schemastore unreachable:', result.stderr.slice(0, 120));
-      ctx.task.skip('schemastore unreachable');
+      ctx.skip('schemastore unreachable');
       return;
     }
 
@@ -189,7 +189,7 @@ describe('invalid manifest — missing required field in plugin.json', () => {
 
     if (isNetworkFailure(result)) {
       console.warn('[plugin-manifests.test] Skipping — schemastore unreachable:', result.stderr.slice(0, 120));
-      ctx.task.skip('schemastore unreachable');
+      ctx.skip('schemastore unreachable');
       return;
     }
 
@@ -213,7 +213,7 @@ describe('invalid manifest — missing required field in plugin.json', () => {
 
     if (isNetworkFailure(result)) {
       console.warn('[plugin-manifests.test] Skipping — schemastore unreachable:', result.stderr.slice(0, 120));
-      ctx.task.skip('schemastore unreachable');
+      ctx.skip('schemastore unreachable');
       return;
     }
 
@@ -237,7 +237,7 @@ describe('invalid manifest — missing required field in plugin.json', () => {
 
     if (isNetworkFailure(result)) {
       console.warn('[plugin-manifests.test] Skipping — schemastore unreachable:', result.stderr.slice(0, 120));
-      ctx.task.skip('schemastore unreachable');
+      ctx.skip('schemastore unreachable');
       return;
     }
 
@@ -273,7 +273,7 @@ describe('invalid manifest — wrong type in marketplace.json', () => {
 
     if (isNetworkFailure(result)) {
       console.warn('[plugin-manifests.test] Skipping — schemastore unreachable:', result.stderr.slice(0, 120));
-      ctx.task.skip('schemastore unreachable');
+      ctx.skip('schemastore unreachable');
       return;
     }
 
@@ -299,7 +299,7 @@ describe('invalid manifest — wrong type in marketplace.json', () => {
 
     if (isNetworkFailure(result)) {
       console.warn('[plugin-manifests.test] Skipping — schemastore unreachable:', result.stderr.slice(0, 120));
-      ctx.task.skip('schemastore unreachable');
+      ctx.skip('schemastore unreachable');
       return;
     }
 
@@ -412,7 +412,7 @@ describe('--json flag output', () => {
 
     if (isNetworkFailure(result)) {
       console.warn('[plugin-manifests.test] Skipping live --json test — schemastore unreachable:', result.stderr.slice(0, 120));
-      ctx.task.skip('schemastore unreachable');
+      ctx.skip('schemastore unreachable');
       return;
     }
 
@@ -424,7 +424,7 @@ describe('--json flag output', () => {
 
     if (isNetworkFailure(result)) {
       console.warn('[plugin-manifests.test] Skipping live --json test — schemastore unreachable:', result.stderr.slice(0, 120));
-      ctx.task.skip('schemastore unreachable');
+      ctx.skip('schemastore unreachable');
       return;
     }
 
@@ -436,7 +436,7 @@ describe('--json flag output', () => {
 
     if (isNetworkFailure(result)) {
       console.warn('[plugin-manifests.test] Skipping live --json test — schemastore unreachable:', result.stderr.slice(0, 120));
-      ctx.task.skip('schemastore unreachable');
+      ctx.skip('schemastore unreachable');
       return;
     }
 
@@ -449,7 +449,7 @@ describe('--json flag output', () => {
 
     if (isNetworkFailure(result)) {
       console.warn('[plugin-manifests.test] Skipping live --json test — schemastore unreachable:', result.stderr.slice(0, 120));
-      ctx.task.skip('schemastore unreachable');
+      ctx.skip('schemastore unreachable');
       return;
     }
 
@@ -463,7 +463,7 @@ describe('--json flag output', () => {
 
     if (isNetworkFailure(result)) {
       console.warn('[plugin-manifests.test] Skipping live --json test — schemastore unreachable:', result.stderr.slice(0, 120));
-      ctx.task.skip('schemastore unreachable');
+      ctx.skip('schemastore unreachable');
       return;
     }
 
@@ -477,7 +477,7 @@ describe('--json flag output', () => {
 
     if (isNetworkFailure(result)) {
       console.warn('[plugin-manifests.test] Skipping live --json test — schemastore unreachable:', result.stderr.slice(0, 120));
-      ctx.task.skip('schemastore unreachable');
+      ctx.skip('schemastore unreachable');
       return;
     }
 
