@@ -46,60 +46,22 @@ describe('expandTilde — ~user/x (issue #1182 edge case)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Historical bug reproduction — proves the pre-#1182 gitlab-portfolio/cli.mjs
-// copy actually mis-expanded `~user/x`, which is why this consolidation
-// exists rather than being a pure style cleanup.
-// ---------------------------------------------------------------------------
-
-describe('historical gitlab-portfolio/cli.mjs expandHome (pre-#1182, reproduced verbatim)', () => {
-  // Exact shape removed from scripts/lib/gitlab-portfolio/cli.mjs by this
-  // migration — kept here ONLY as a fossil to prove the bug it had.
-  const buggyExpandHome = (p) => {
-    if (typeof p === 'string' && p.startsWith('~')) {
-      return path.join(os.homedir(), p.slice(1));
-    }
-    return p;
-  };
-
-  it('mis-expands `~user/x` into `<home>/user/x` — the #1182 bug', () => {
-    expect(buggyExpandHome('~alice/repo')).toBe(path.join(os.homedir(), 'alice/repo'));
-    // Diverges from the canonical (fixed) behaviour on the exact same input.
-    expect(buggyExpandHome('~alice/repo')).not.toBe(expandTilde('~alice/repo'));
-  });
-
-  it('agrees with the canonical helper on the cases it got right (`~`, `~/x`)', () => {
-    expect(buggyExpandHome('~')).toBe(expandTilde('~'));
-    expect(buggyExpandHome('~/Projects/vault')).toBe(expandTilde('~/Projects/vault'));
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Migrated call-site wiring — resolveBoardPath / boardLockPathFor now
-// delegate to the shared helper instead of an inline copy.
+// delegate to the shared helper instead of an inline copy. Table-driven
+// (TV rules § merge tests differing only in input/expected): both functions
+// need the same two cases (`~`-prefixed, bare `~`) proven against the same
+// bug (a migrated call site losing its home-expansion wiring).
 // ---------------------------------------------------------------------------
 
-describe('resolveBoardPath — delegates to the canonical expandTilde', () => {
-  it('expands a `~`-prefixed vaultDir before joining the board path', () => {
-    expect(resolveBoardPath('~/vault')).toBe(
-      path.join(os.homedir(), 'vault', '01-projects', '_active-sessions.md'),
-    );
+describe.each([
+  { name: 'resolveBoardPath', fn: resolveBoardPath, tail: path.join('01-projects', '_active-sessions.md') },
+  { name: 'boardLockPathFor', fn: boardLockPathFor, tail: path.join('.orchestrator', 'board.lock') },
+])('$name — delegates to the canonical expandTilde', ({ fn, tail }) => {
+  it('expands a `~`-prefixed vaultDir before joining the path', () => {
+    expect(fn('~/vault')).toBe(path.join(os.homedir(), 'vault', tail));
   });
 
   it('expands a bare `~` vaultDir', () => {
-    expect(resolveBoardPath('~')).toBe(
-      path.join(os.homedir(), '01-projects', '_active-sessions.md'),
-    );
-  });
-});
-
-describe('boardLockPathFor — delegates to the canonical expandTilde', () => {
-  it('expands a `~`-prefixed vaultDir before joining the lock path', () => {
-    expect(boardLockPathFor('~/vault')).toBe(
-      path.join(os.homedir(), 'vault', '.orchestrator', 'board.lock'),
-    );
-  });
-
-  it('expands a bare `~` vaultDir', () => {
-    expect(boardLockPathFor('~')).toBe(path.join(os.homedir(), '.orchestrator', 'board.lock'));
+    expect(fn('~')).toBe(path.join(os.homedir(), tail));
   });
 });

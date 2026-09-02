@@ -185,13 +185,19 @@ async function main() {
 
   // G7 — emit canonical event via emitEvent (single emission path: schema + webhook,
   // replacing the local hand-rolled appendFileSync bypass).
-  await emitEvent('orchestrator.memory.propose_invoked', {
-    session_id: sessionId,
-    wave,
-    argv_truncated: argvRedacted.slice(0, 512),
-    cwd: process.cwd(),
-    exit_code: null,
-  });
+  // #1183 — a malformed record throws EventValidationError BEFORE any side
+  // effect (scripts/lib/events.mjs); this PreToolUse hook must never abort on
+  // that (it is deny-capable via emitAllow() below), so the emit is wrapped
+  // rather than left to propagate.
+  try {
+    await emitEvent('orchestrator.memory.propose_invoked', {
+      session_id: sessionId,
+      wave,
+      argv_truncated: argvRedacted.slice(0, 512),
+      cwd: process.cwd(),
+      exit_code: null,
+    });
+  } catch { /* telemetry never blocks the hook (#1183) */ }
 
   // Always allow — this is an observe-only audit hook
   return emitAllow();

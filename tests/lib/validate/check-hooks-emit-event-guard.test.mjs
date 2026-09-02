@@ -17,7 +17,7 @@
  *   2 = tool error (e.g. a hook file that fails to parse)
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -69,7 +69,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('runCheckHooksEmitEventGuard — in-process against the live repo', () => {
-  it('returns 0 for the real repo — only the #1183-baselined pre-existing sites remain', () => {
+  it('returns 0 for the real repo — the #1183 baseline is empty and every site is guarded (MED-3)', () => {
     expect(runCheckHooksEmitEventGuard(REPO_ROOT)).toBe(0);
   });
 
@@ -130,6 +130,123 @@ describe('findEmitEventCalls — try/catch scope walk', () => {
     ].join('\n');
     const calls = findEmitEventCalls(source, 'fixture.mjs');
     expect(calls).toEqual([{ line: 7, guarded: false, eventType: 'x.y' }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Baseline Map: stale entries and missing reasons (MED-3, architect review)
+//
+// The bug this guards against: BASELINE_UNGUARDED was a bare Set with no
+// per-entry reason and no drain mechanism — a future exemption could be
+// added with no linked issue, and a site fixed under its own file-scope
+// left a permanently-silent baseline entry behind forever. Mirrors
+// check-unwired-features.mjs's ALLOWLIST allowlist-stale /
+// allowlist-missing-reason precedent.
+// ---------------------------------------------------------------------------
+
+describe('scanHooksEmitEventGuard — baseline Map: stale entries and missing reasons (MED-3)', () => {
+  it('reports a baseline entry whose site is now guarded as baseline-stale', () => {
+    const root = makeFixture({
+      'guarded.mjs': "async function a() {\n  try {\n    await emitEvent('a.guarded', {});\n  } catch {}\n}\n",
+    });
+    const baseline = new Map([['hooks/guarded.mjs::a.guarded', 'placeholder reason — GitLab #0000']]);
+
+    const { findings } = scanHooksEmitEventGuard(root, { baseline });
+
+    expect(findings).toEqual([
+      {
+        kind: 'baseline-stale',
+        key: 'hooks/guarded.mjs::a.guarded',
+        message: 'baseline entry no longer matches an unguarded call site (guarded or removed) — remove the entry',
+      },
+    ]);
+  });
+
+  it('reports a baseline entry whose site no longer exists at all as baseline-stale', () => {
+    const root = makeFixture({
+      'other.mjs': "async function a() {\n  doWork();\n}\n",
+    });
+    const baseline = new Map([['hooks/removed.mjs::gone.event', 'placeholder reason — GitLab #0000']]);
+
+    const { findings } = scanHooksEmitEventGuard(root, { baseline });
+
+    expect(findings).toEqual([
+      {
+        kind: 'baseline-stale',
+        key: 'hooks/removed.mjs::gone.event',
+        message: 'baseline entry no longer matches an unguarded call site (guarded or removed) — remove the entry',
+      },
+    ]);
+  });
+
+  it('reports a baseline entry with a whitespace-only reason as baseline-missing-reason while the site still matches', () => {
+    const root = makeFixture({
+      'unguarded.mjs': "async function b() {\n  await emitEvent('b.unguarded', {});\n}\n",
+    });
+    const baseline = new Map([['hooks/unguarded.mjs::b.unguarded', '   ']]);
+
+    const { findings } = scanHooksEmitEventGuard(root, { baseline });
+
+    expect(findings).toEqual([
+      {
+        kind: 'baseline-missing-reason',
+        key: 'hooks/unguarded.mjs::b.unguarded',
+        message: 'baseline entry has no reason — name the linked issue or remove the entry',
+      },
+      {
+        kind: 'unguarded',
+        file: 'hooks/unguarded.mjs',
+        line: 2,
+        eventType: 'b.unguarded',
+        baselined: true,
+      },
+    ]);
+  });
+
+  it('a reasoned baseline entry that still matches produces neither baseline-stale nor baseline-missing-reason', () => {
+    const root = makeFixture({
+      'unguarded.mjs': "async function b() {\n  await emitEvent('b.unguarded', {});\n}\n",
+    });
+    const baseline = new Map([['hooks/unguarded.mjs::b.unguarded', 'placeholder reason — GitLab #0000']]);
+
+    const { findings } = scanHooksEmitEventGuard(root, { baseline });
+
+    expect(findings).toEqual([
+      { kind: 'unguarded', file: 'hooks/unguarded.mjs', line: 2, eventType: 'b.unguarded', baselined: true },
+    ]);
+  });
+
+  it('empty baseline + all-guarded fixture passes with zero findings (the shipped default shape)', () => {
+    const root = makeFixture({
+      'guarded.mjs': "async function a() {\n  try {\n    await emitEvent('a.guarded', {});\n  } catch {}\n}\n",
+    });
+
+    const { findings, parseErrors } = scanHooksEmitEventGuard(root, { baseline: new Map() });
+
+    expect(parseErrors).toEqual([]);
+    expect(findings).toEqual([]);
+  });
+
+  it('runCheckHooksEmitEventGuard exits 1 and prints baseline-stale for a stale entry (CLI print format)', () => {
+    const root = makeFixture({
+      'guarded.mjs': "async function a() {\n  try {\n    await emitEvent('a.guarded', {});\n  } catch {}\n}\n",
+    });
+    const baseline = new Map([['hooks/guarded.mjs::a.guarded', 'placeholder reason — GitLab #0000']]);
+
+    const logs = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((line) => logs.push(line));
+    try {
+      const code = runCheckHooksEmitEventGuard(root, { baseline });
+      expect(code).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+
+    const out = logs.join('\n');
+    expect(out).toContain('FAIL');
+    expect(out).toContain('hooks/guarded.mjs::a.guarded');
+    expect(out).toContain('baseline-stale');
+    expect(out).toContain('Results: 0 passed, 1 failed');
   });
 });
 

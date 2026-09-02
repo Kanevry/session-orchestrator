@@ -1,10 +1,9 @@
 # PRD: Skill `journey-audit` — Nutzersicht-Produktaudit als wiederholbare Deep-Session
 
-Herkunft: EventDrop-Session main-2026-08-28-a6 (Erstlauf, manuell orchestriert). Ergebnis dort:
+Herkunft: <consumer-repo>-Session (Erstlauf, manuell orchestriert). Ergebnis dort:
 5 P0-Befunde (unverlinktes Kernfeature, verbrannte Gratis-Quota, Plan-Gate-Bypass, Claim-vs-Code-
 Widerspruch, EUR-Texte im USD-Kontext), 18 Issues, Fix-Welle. Aufwand: 7 Agenten, ~1,2 M
-Subagent-Tokens, ~3 h Wall-Clock (2 Rollen auf M5 offloaded). Dossier:
-EventDrop.at/docs/audits/2026-08-28-user-journey-audit.md.
+Subagent-Tokens, ~3 h Wall-Clock (2 Rollen auf M5 offloaded). Dossier im Ziel-Repo dokumentiert.
 
 ## Problem
 
@@ -46,9 +45,9 @@ Aktivierung) sind für jede Code-zentrische Prüfung unsichtbar.
 ### Manifest (`.orchestrator/journey-manifest.md` im Ziel-Repo)
 
 Personas + Einstiegspunkte, Wahrheits-SSOTs, Chat-Interview (Frage→Soll-Antwort), R5-SAFETY-Block,
-Credential-Quellen (env-Namen, nie Werte), Realdaten-Queries, bekannte Ausnahmen. EventDrop
+Credential-Quellen (env-Namen, nie Werte), Realdaten-Queries, bekannte Ausnahmen. <consumer-repo>
 bekommt das erste Manifest, destilliert aus den 7 Agenten-Prompts des Erstlaufs (im
-Session-Transkript main-2026-08-28-a6 dokumentiert).
+Session-Transkript dokumentiert).
 
 ### Kadenz & Abgrenzung
 

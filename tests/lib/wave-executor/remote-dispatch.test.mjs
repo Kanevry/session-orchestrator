@@ -23,6 +23,7 @@ import {
   parseDoctorLine,
   parsePatchFiles,
   remoteDoctor,
+  remoteReadyProbe,
   OFFLOAD_BIN,
   OFFLOAD_EXIT_REASONS,
   REMOTE_DISPATCH_EVENT,
@@ -230,6 +231,58 @@ describe('input validation', () => {
     });
     expect(res.reason).toBe('unsafe-patch-path');
     expect(spawnFn.calls).toHaveLength(0);
+  });
+
+  // Bug: `repo` reaches argv as the first positional of `offload claude`. An
+  // unvalidated `--patch` there is read by the CLI as an OPTION, not a repo —
+  // the operand after it becomes the flag's value and the run targets a file
+  // this module never chose. Same class as the `-H`/`--job` validation above,
+  // two fields further along.
+  it('refuses a repo that would reach argv as an option token', async () => {
+    const spawnFn = fakeSpawn();
+    const res = await dispatchRemote(baseTask(patchPathFor(), { repo: '--patch' }), {
+      spawnFn,
+      emitFn: noopEmit,
+    });
+    expect(res.reason).toBe('unsafe-repo');
+    expect(spawnFn.calls).toHaveLength(0);
+  });
+
+  it.each([['../../etc'], ['a repo'], ['x; whoami'], ['']])(
+    'refuses unsafe repo %j before spawning',
+    async (repo) => {
+      const spawnFn = fakeSpawn();
+      const res = await dispatchRemote(baseTask(patchPathFor(), { repo }), {
+        spawnFn,
+        emitFn: noopEmit,
+      });
+      expect(res.reason).toBe('unsafe-repo');
+      expect(spawnFn.calls).toHaveLength(0);
+    },
+  );
+
+  // Bug: `model` reaches argv right after `--model`. `-H` there is swallowed as
+  // the model name by a lenient parser, or shifts the host argument by one.
+  it('refuses a model that would reach argv as an option token', async () => {
+    const spawnFn = fakeSpawn();
+    const res = await dispatchRemote(baseTask(patchPathFor(), { model: '-H' }), {
+      spawnFn,
+      emitFn: noopEmit,
+    });
+    expect(res.reason).toBe('unsafe-model');
+    expect(spawnFn.calls).toHaveLength(0);
+  });
+
+  // An ABSENT model is not an unsafe one: `--model` is simply omitted.
+  it('accepts an absent model', async () => {
+    const patchPath = patchPathFor();
+    const spawnFn = okRun(patchPath);
+    const res = await dispatchRemote(baseTask(patchPath, { model: undefined }), {
+      spawnFn,
+      emitFn: noopEmit,
+    });
+    expect(res.ok).toBe(true);
+    expect(spawnFn.calls[0].args).not.toContain('--model');
   });
 
   it('refuses a patchPath outside the temp directory', async () => {
@@ -469,9 +522,12 @@ describe('parsePatchFiles', () => {
 // ---------------------------------------------------------------------------
 
 describe('remoteDoctor', () => {
-  // Real line, measured 2026-09-02 via `offload doctor -H m5 --brief`.
+  // Real line, measured 2026-09-02 via `offload doctor -H m5 --brief`, with the
+  // leading hostname scrubbed to the synthetic `Ferdinands-…` convention
+  // (commit ebce189c / #1151). The parser is segment-anchored, so the swap is
+  // behaviourally inert — and a real machine name has no business in a fixture.
   const REAL =
-    'Bernhards-Macbook-2 ready=yes · load 14.23 · mem free 96% · headless: slots none, keychain-route ok · 9 jobs · claude procs 12';
+    'Ferdinands-Macbook-2 ready=yes · load 14.23 · mem free 96% · headless: slots none, keychain-route ok · 9 jobs · claude procs 12';
 
   it('parses the measured ready line', () => {
     const execFn = fakeExec({ out: `${REAL}\n` });
@@ -526,6 +582,43 @@ describe('remoteDoctor', () => {
     const execFn = fakeExec({ out: 'ready=yes' });
     const res = remoteDoctor({ host: 'm5 && whoami', execFn });
     expect(res.ready).toBe(false);
+    expect(execFn.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// remoteReadyProbe — the gate adapter
+// ---------------------------------------------------------------------------
+
+describe('remoteReadyProbe', () => {
+  // Bug (the reason this function exists): the gate's witness contract is
+  // `async (alias) => boolean`, while remoteDoctor is sync and takes an options
+  // object. Handing remoteDoctor to `probeFn` reads `.ready` off a doctor call
+  // that never received the alias, so NO host is ever ready and the documented
+  // witness can never produce an `offload` decision.
+  it('answers true on a ready=yes line, taking the alias as its first argument', async () => {
+    const execFn = fakeExec({ out: 'host-x ready=yes · load 0.4 · 0 jobs\n' });
+    await expect(remoteReadyProbe('m5', { execFn })).resolves.toBe(true);
+    expect(execFn.calls[0].args).toEqual(['doctor', '-H', 'm5', '--brief']);
+  });
+
+  it('answers false on ready=no', async () => {
+    const execFn = fakeExec({ out: 'host-x ready=no · load 0.4' });
+    await expect(remoteReadyProbe('m5', { execFn })).resolves.toBe(false);
+  });
+
+  // Bug: a probe that THROWS would reject the gate call it is a witness for.
+  // A host that did not answer is not ready — never an exception.
+  it('answers false, never throws, when the probe blows up', async () => {
+    const execFn = () => {
+      throw new Error('offload: command not found');
+    };
+    await expect(remoteReadyProbe('m5', { execFn })).resolves.toBe(false);
+  });
+
+  it('answers false for an unsafe alias without executing anything', async () => {
+    const execFn = fakeExec({ out: 'ready=yes' });
+    await expect(remoteReadyProbe('m5 && whoami', { execFn })).resolves.toBe(false);
     expect(execFn.calls).toHaveLength(0);
   });
 });

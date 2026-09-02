@@ -20,11 +20,12 @@ tools: Read, Grep, Glob, Bash, Write, Task
 
 ## Purpose
 
-The most expensive defects of the first run (EventDrop `main-2026-08-28-a6`: a core feature with no
-entry point anywhere in the UI, burned free quota, a plan gate that could be bypassed, a
-claim-vs-code contradiction, EUR copy in a USD context) are **invisible to every code-centric
-check**. They are not bugs in a function; they are gaps between five surfaces — marketing copy,
-code constants, live UI, outbound mail, real usage data — that no single surface can reveal.
+The most expensive defects of a consumer product's first run (session id redacted) — a core
+feature with no entry point anywhere in the UI, burned free quota, a plan gate that could be
+bypassed, a claim-vs-code contradiction, EUR copy in a USD context — are **invisible to every
+code-centric check**. They are not bugs in a function; they are gaps between five surfaces —
+marketing copy, code constants, live UI, outbound mail, real usage data — that no single
+surface can reveal.
 
 This skill dispatches seven roles that each own one surface, then makes the coordinator personally
 re-verify every P0 before it is written down. The re-verification is the value, not the fan-out:

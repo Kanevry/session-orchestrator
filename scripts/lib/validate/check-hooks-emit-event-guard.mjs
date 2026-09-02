@@ -15,12 +15,25 @@
  * SCOPE. `hooks/` is out of the file-scope this checker's OWNING task may
  * edit (see the dispatching wave's FILE-SCOPE) — this checker only REPORTS,
  * it never fixes. Five pre-existing unguarded call sites were census'd at
- * HEAD 2ccea0f2 (2026-09-02, GitLab #1183) and are BASELINED below: each
- * reports as a WARN, never a FAIL, so this checker can ship blocking-by-
- * default without going red on arrival. Any unguarded call NOT in the
- * baseline is a genuine regression and FAILs the build. Shrink the baseline
- * as sites get fixed under their own file-scope; never grow it silently — a
- * baseline addition with no linked issue defeats the point of a baseline.
+ * HEAD 2ccea0f2 (2026-09-02, GitLab #1183) and were BASELINED below; all
+ * five were fixed in the same wave that added the reason/staleness
+ * discipline described next (FX-C, MED-3), so `BASELINE_UNGUARDED` is EMPTY
+ * on arrival. It stays a `Map<key, reason>`, not a bare `Set`, so the NEXT
+ * addition carries a reason from day one — mirroring
+ * `check-unwired-features.mjs`'s `ALLOWLIST` precedent verbatim: "Add an
+ * entry to `ALLOWLIST` keyed by the FULL dotted key path, whose value is a
+ * non-empty reason naming the actual consumer ... Every entry needs a
+ * reason — an empty or whitespace-only one is itself reported
+ * (`allowlist-missing-reason`) ... The list also drains itself: an entry is
+ * reported as `allowlist-stale` both when its key has left every config
+ * surface AND when the key stops triggering a finding (i.e. it finally got
+ * wired), so a fixed key does not leave a permanent exemption behind." Any
+ * unguarded call NOT in the baseline is a genuine regression and FAILs the
+ * build; a baseline entry whose site is now guarded or gone FAILs as
+ * `baseline-stale`; an entry with an empty reason FAILs as
+ * `baseline-missing-reason`. A baselined-but-still-unguarded site (a valid,
+ * reasoned entry that still matches) reports as a WARN, never a FAIL, so
+ * this checker can ship blocking-by-default without going red on arrival.
  *
  * METHOD (BV-001.5 substitution). A real AST scope-walk via `@babel/parser`
  * (`sourceType: 'module'`, `topLevelAwait` + `importMeta` plugins — the same
@@ -71,22 +84,24 @@ import { parse } from '@babel/parser';
 import { listRepoFiles } from './repo-files.mjs';
 
 // ---------------------------------------------------------------------------
-// Baseline — pre-existing unguarded sites, census'd at HEAD 2ccea0f2
-// (2026-09-02, #1183). Keyed on `<repo-relative-file>::<event-type-literal>`
-// rather than a line number: `hooks/` churns under other waves in this
-// repo's normal operation, and a line-number key would silently stop
-// matching (or worse, mismatch a DIFFERENT call) on any unrelated edit
-// above these sites. All five call sites pass a static string literal as
-// their first argument, so this key is stable.
+// Baseline — Map<key, reason>, keyed on
+// `<repo-relative-file>::<event-type-literal>` rather than a line number:
+// `hooks/` churns under other waves in this repo's normal operation, and a
+// line-number key would silently stop matching (or worse, mismatch a
+// DIFFERENT call) on any unrelated edit above a baselined site. A static
+// string-literal first argument (as every real emitEvent() call in this
+// repo uses) makes the key stable.
+//
+// Empty on arrival (MED-3, FX-C, 2026-09-02): the five sites census'd at
+// HEAD 2ccea0f2 (#1183) were guarded in the same wave that added this Map
+// plus the baseline-stale / baseline-missing-reason detection below. A
+// future addition MUST carry a non-empty reason naming the linked issue —
+// an empty reason fails as `baseline-missing-reason`, and an entry whose
+// site is later guarded (or removed) fails as `baseline-stale` rather than
+// lingering as a silent, permanent WARN exemption.
 // ---------------------------------------------------------------------------
 
-const BASELINE_UNGUARDED = new Set([
-  'hooks/on-session-end.mjs::orchestrator.session.ended',
-  'hooks/pre-bash-memory-propose-audit.mjs::orchestrator.memory.propose_invoked',
-  'hooks/on-session-start.mjs::orchestrator.session.started',
-  'hooks/on-stop.mjs::orchestrator.session.stopped',
-  'hooks/on-stop.mjs::orchestrator.agent.stopped',
-]);
+const BASELINE_UNGUARDED = new Map();
 
 const HOOKS_DIR_REL = 'hooks';
 
@@ -202,19 +217,27 @@ export function findEmitEventCalls(source, filename) {
 }
 
 /**
- * @typedef {{file: string, line: number, eventType: string | null, baselined: boolean}} Finding
+ * @typedef {{kind: 'unguarded', file: string, line: number, eventType: string | null, baselined: boolean}} UnguardedFinding
+ * @typedef {{kind: 'baseline-stale' | 'baseline-missing-reason', key: string, message: string}} BaselineFinding
+ * @typedef {UnguardedFinding | BaselineFinding} Finding
  */
 
 /**
  * @param {string} repoRoot
+ * @param {{baseline?: Map<string, string>}} [options] `baseline` defaults to
+ *   the module-level `BASELINE_UNGUARDED` (empty in production); injectable
+ *   so tests can exercise `baseline-stale` / `baseline-missing-reason`
+ *   against a synthetic map without mutating the shipped baseline.
  * @returns {{findings: Finding[], parseErrors: {file: string, message: string}[]}}
  */
-export function scanHooksEmitEventGuard(repoRoot) {
+export function scanHooksEmitEventGuard(repoRoot, { baseline = BASELINE_UNGUARDED } = {}) {
   const files = listRepoFiles(repoRoot, { dirs: [HOOKS_DIR_REL], exts: ['mjs'] });
   /** @type {Finding[]} */
   const findings = [];
   /** @type {{file: string, message: string}[]} */
   const parseErrors = [];
+  /** @type {Set<string>} baseline keys that matched a real unguarded call site this scan */
+  const flagged = new Set();
 
   for (const absFile of files) {
     const rel = path.relative(repoRoot, absFile).split(path.sep).join('/');
@@ -238,13 +261,40 @@ export function scanHooksEmitEventGuard(repoRoot) {
     for (const call of calls) {
       if (call.guarded) continue;
       const key = `${rel}::${call.eventType ?? `L${call.line}`}`;
+      const isBaselined = baseline.has(key);
+      if (isBaselined) {
+        flagged.add(key);
+        const reason = baseline.get(key);
+        if (String(reason ?? '').trim() === '') {
+          findings.push({
+            kind: 'baseline-missing-reason',
+            key,
+            message: 'baseline entry has no reason — name the linked issue or remove the entry',
+          });
+        }
+      }
       findings.push({
+        kind: 'unguarded',
         file: rel,
         line: call.line,
         eventType: call.eventType,
-        baselined: BASELINE_UNGUARDED.has(key),
+        baselined: isBaselined,
       });
     }
+  }
+
+  // Mirrors check-unwired-features.mjs's ALLOWLIST drain (see the header
+  // quote above): a baseline entry that no longer matches ANY unguarded call
+  // site this scan found — because the site is now guarded, or gone
+  // entirely — is stale and must be removed, not left as a permanent
+  // exemption.
+  for (const key of baseline.keys()) {
+    if (flagged.has(key)) continue;
+    findings.push({
+      kind: 'baseline-stale',
+      key,
+      message: 'baseline entry no longer matches an unguarded call site (guarded or removed) — remove the entry',
+    });
   }
 
   return { findings, parseErrors };
@@ -259,12 +309,15 @@ export function scanHooksEmitEventGuard(repoRoot) {
  * vocabulary.
  *
  * @param {string} repoRoot
+ * @param {{baseline?: Map<string, string>}} [options] forwarded to
+ *   {@link scanHooksEmitEventGuard} — see its JSDoc for why this is
+ *   injectable (test-only; the CLI entrypoint below never passes it).
  * @returns {number} 0 = clean (baselined WARNs allowed), 1 = new finding(s), 2 = tool error
  */
-export function runCheckHooksEmitEventGuard(repoRoot) {
+export function runCheckHooksEmitEventGuard(repoRoot, options) {
   console.log('--- Check: hooks emitEvent() try/catch guard (#1183) ---');
 
-  const { findings, parseErrors } = scanHooksEmitEventGuard(repoRoot);
+  const { findings, parseErrors } = scanHooksEmitEventGuard(repoRoot, options);
 
   if (parseErrors.length > 0) {
     for (const e of parseErrors) console.log(`  FAIL: ${e.file} — ${e.message}`);
@@ -273,30 +326,37 @@ export function runCheckHooksEmitEventGuard(repoRoot) {
     return 2;
   }
 
-  const newFindings = findings.filter((f) => !f.baselined);
-  const baselinedFindings = findings.filter((f) => f.baselined);
+  const unguarded = findings.filter((f) => f.kind === 'unguarded');
+  const baselineIssues = findings.filter((f) => f.kind === 'baseline-stale' || f.kind === 'baseline-missing-reason');
 
-  if (newFindings.length === 0) {
+  const newUnguarded = unguarded.filter((f) => !f.baselined);
+  const baselinedUnguarded = unguarded.filter((f) => f.baselined);
+
+  if (newUnguarded.length === 0 && baselineIssues.length === 0) {
     console.log(
-      baselinedFindings.length === 0
+      baselinedUnguarded.length === 0
         ? '  PASS: every hooks/**/*.mjs emitEvent() call site is try/catch-guarded'
-        : `  PASS: no NEW unguarded emitEvent() call sites (${baselinedFindings.length} pre-existing, baselined — see #1183)`,
+        : `  PASS: no NEW unguarded emitEvent() call sites (${baselinedUnguarded.length} pre-existing, baselined — see #1183)`,
     );
   }
-  for (const f of baselinedFindings) {
+  for (const f of baselinedUnguarded) {
     console.log(
       `  WARN: ${f.file}:${f.line} — emitEvent('${f.eventType ?? '?'}') not inside a try/catch (pre-existing, baselined #1183 — out of this checker's file-scope to fix)`,
     );
   }
-  for (const f of newFindings) {
+  for (const f of newUnguarded) {
     console.log(
       `  FAIL: ${f.file}:${f.line} — emitEvent('${f.eventType ?? '?'}') not inside a try/catch — a throw here aborts the hook process`,
     );
   }
+  for (const f of baselineIssues) {
+    console.log(`  FAIL: ${f.key} — ${f.message} (${f.kind})`);
+  }
 
+  const failCount = newUnguarded.length + baselineIssues.length;
   console.log('');
-  console.log(`Results: ${newFindings.length === 0 ? 1 : 0} passed, ${newFindings.length} failed`);
-  return newFindings.length > 0 ? 1 : 0;
+  console.log(`Results: ${failCount === 0 ? 1 : 0} passed, ${failCount} failed`);
+  return failCount > 0 ? 1 : 0;
 }
 
 const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href;

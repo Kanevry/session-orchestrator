@@ -247,49 +247,85 @@ describe('.husky/pre-push — full quality gate (#932)', () => {
     expect(script).toMatch(/--variant full-gate(\s|$)/);
   });
 
-  it('gates a PUBLISH push to a configured remote NAME (origin)', { timeout: 60_000 }, () => {
-    // bug_caught: #9 — a configured remote name must never be misread as
-    // scratch, or a real publish push loses its gate entirely.
-    const originUrl = 'https://example.com/origin-fixture.git';
-    const { res, gateRan } = runPrePush({
-      args: ['origin', originUrl],
-      remotes: { origin: originUrl },
+  // #C10 scratch-vs-publish classification — four cases differing only in
+  // args/remotes/gateExit and the expected gateRan/status/stderr, merged into
+  // one table (TV rules § merge tests differing only in input/expected).
+  const ORIGIN_URL = 'https://example.com/origin-fixture.git';
+  const SCRATCH_URL = 'ssh://user@host/path';
+  const GITHUB_URL = 'https://github.com/Kanevry/session-orchestrator.git';
+  // This repo's REAL origin (a self-hosted GitLab, not github.com) — neither
+  // of the two #C10 escape hatches (configured-name match, `*github.com*`
+  // substring) covers it; only the `git remote get-url --all` URL-match loop
+  // does. See mustNotContainStderr below for what this row proves.
+  const GITLAB_URL = 'https://gitlab.example.at/x.git';
+  // A sentinel `.not.toContain()` can never match real stderr — lets every
+  // row assert on the loop-deletion regression without branching inside the
+  // shared it.each body (rows that don't care about it get a no-op check).
+  const NO_STDERR_CHECK = '\u0000__no-stderr-check__\u0000';
+
+  it.each([
+    {
+      // bug_caught: #9 — a configured remote name must never be misread as
+      // scratch, or a real publish push loses its gate entirely.
+      label: 'gates a PUBLISH push to a configured remote NAME (origin)',
+      args: ['origin', ORIGIN_URL],
+      remotes: { origin: ORIGIN_URL },
       gateExit: 0,
-    });
-
-    expect(gateRan).toBe(true);
-    expect(res.status).toBe(0);
-  });
-
-  it('skips the gate as a SCRATCH push for an unconfigured raw URL', { timeout: 60_000 }, () => {
-    // bug_caught: #8 — proven red on the unmodified hook (quoted in the #C10
-    // report): before the hook read $1/$2 at all, this exact push shape ran
-    // the full gate and could block on it (gateExit=2 here would BLOCK the
-    // push if the gate ran at all — it must not run).
-    const scratchUrl = 'ssh://user@host/path';
-    const { res, gateRan } = runPrePush({
-      args: [scratchUrl, scratchUrl],
+      expectGateRan: true,
+      // '' — no stderr-content expectation for this row (unchanged from the
+      // pre-consolidation test, which asserted nothing about stderr here);
+      // toContain('') is unconditionally true so the row needs no branch.
+      mustContainStderr: '',
+      mustNotContainStderr: NO_STDERR_CHECK,
+    },
+    {
+      // bug_caught: #8 — proven red on the unmodified hook (quoted in the #C10
+      // report): before the hook read $1/$2 at all, this exact push shape ran
+      // the full gate and could block on it (gateExit=2 here would BLOCK the
+      // push if the gate ran at all — it must not run).
+      label: 'skips the gate as a SCRATCH push for an unconfigured raw URL',
+      args: [SCRATCH_URL, SCRATCH_URL],
+      remotes: {},
       gateExit: 2,
-    });
-
-    expect(gateRan).toBe(false);
-    expect(res.status).toBe(0);
-    expect(res.stderr).toContain('scratch push');
-  });
-
-  it('still gates a PUBLISH push made BY URL when the URL matches a configured remote (github)', { timeout: 60_000 }, () => {
-    // bug_caught: #9, the ceiling case (CEILINGS #5) — $1 and $2 are both the
-    // URL form (no remote NAME on the command line) when a push targets a
-    // remote directly by URL. The github remote's own URL must still gate,
-    // or every URL-form publish push reads as scratch.
-    const githubUrl = 'https://github.com/Kanevry/session-orchestrator.git';
-    const { res, gateRan } = runPrePush({
-      args: [githubUrl, githubUrl],
-      remotes: { github: githubUrl },
+      expectGateRan: false,
+      mustContainStderr: 'scratch push',
+      mustNotContainStderr: NO_STDERR_CHECK,
+    },
+    {
+      // bug_caught: #9, the ceiling case (CEILINGS #5) — $1 and $2 are both the
+      // URL form (no remote NAME on the command line) when a push targets a
+      // remote directly by URL. The github remote's own URL must still gate,
+      // or every URL-form publish push reads as scratch.
+      label: 'still gates a PUBLISH push made BY URL when the URL matches a configured remote (github)',
+      args: [GITHUB_URL, GITHUB_URL],
+      remotes: { github: GITHUB_URL },
       gateExit: 0,
-    });
+      expectGateRan: true,
+      mustContainStderr: '',
+      mustNotContainStderr: NO_STDERR_CHECK,
+    },
+    {
+      // bug_caught: GAP-1 (qa-strategist, MED) — the github-substring and
+      // origin-host escape hatches both rescue the GITHUB_URL row above even
+      // if the `git remote get-url --all` URL-match loop were deleted
+      // entirely, so that row alone cannot prove the loop matters. This row
+      // has NO origin remote configured and a non-github URL, so ONLY the
+      // loop can classify it as a publish push — deleting the loop makes
+      // so_scratch stay 1, and the push silently skips its gate.
+      label: 'still gates a PUBLISH push made BY URL to a configured NON-GitHub remote (gitlab), no origin configured',
+      args: [GITLAB_URL, GITLAB_URL],
+      remotes: { gitlab: GITLAB_URL },
+      gateExit: 0,
+      expectGateRan: true,
+      mustContainStderr: '',
+      mustNotContainStderr: 'scratch push',
+    },
+  ])('$label', { timeout: 60_000 }, ({ args, remotes, gateExit, expectGateRan, mustContainStderr, mustNotContainStderr }) => {
+    const { res, gateRan } = runPrePush({ args, remotes, gateExit });
 
-    expect(gateRan).toBe(true);
+    expect(gateRan).toBe(expectGateRan);
     expect(res.status).toBe(0);
+    expect(res.stderr).toContain(mustContainStderr);
+    expect(res.stderr).not.toContain(mustNotContainStderr);
   });
 });

@@ -100,6 +100,40 @@ function isSafeId(v) {
   return s.length > 0 && s.length <= MAX_ID_LEN && isSafeRunId(s);
 }
 
+/** Longest `repo` accepted as an argv operand. */
+const MAX_REPO_LEN = 128;
+
+/**
+ * A repo argument safe as the first positional of `offload claude`.
+ *
+ * Same character allowlist as `SAFE_PATH_RE` in `scripts/lib/config/remote-hosts.mjs`
+ * (a `repo-path` declared there is exactly what arrives here), plus two rules the
+ * charset alone cannot express: the first character may never be `-`, or the CLI
+ * reads the operand as an OPTION and silently consumes the token after it; and
+ * `..` may never appear, so a repo argument cannot climb out of the remote's
+ * project root.
+ */
+const SAFE_REPO_RE = /^[A-Za-z0-9._~/][A-Za-z0-9._~/-]{0,127}$/;
+
+/** @param {unknown} v @returns {boolean} */
+function isSafeRepo(v) {
+  const s = String(v ?? '');
+  return s.length > 0 && s.length <= MAX_REPO_LEN && SAFE_REPO_RE.test(s) && !s.includes('..');
+}
+
+/**
+ * A model name safe as the argv value of `--model`. Deliberately NARROWER than
+ * {@link SAFE_REPO_RE} — a model is a bare name (`sonnet`, `claude-opus-4.5`),
+ * never a path — and anchored against a leading `-` for the same option-token
+ * reason.
+ */
+const SAFE_MODEL_RE = /^[A-Za-z0-9._][A-Za-z0-9._-]{0,63}$/;
+
+/** @param {unknown} v @returns {boolean} */
+function isSafeModel(v) {
+  return SAFE_MODEL_RE.test(String(v ?? ''));
+}
+
 /**
  * Directories a remote patch may live in. Both spellings of the temp directory
  * are accepted because macOS resolves `os.tmpdir()` through a symlink
@@ -226,6 +260,16 @@ export async function dispatchRemote(
   if (isNeverForeignRole(role)) return refuse('never-foreign-role');
   if (!isSafeId(runId)) return refuse('unsafe-run-id');
   if (!isSafeId(host)) return refuse('unsafe-host');
+  // `repo` is the first positional and `model` the value of `--model`: both
+  // reach argv, and both were previously stringified straight into it. A value
+  // starting with `-` is read by the CLI as an option, which shifts every
+  // operand after it — the same injection class the two checks above prevent.
+  if (!isSafeRepo(repo)) return refuse('unsafe-repo');
+  // The truthiness test mirrors the `...(model ? ['--model', …] : [])` argv line
+  // below on purpose: a falsy model is OMITTED from argv, so it is absent, not
+  // unsafe. Validating a shape that never reaches argv would refuse callers for
+  // a value the CLI never sees.
+  if (model && !isSafeModel(model)) return refuse('unsafe-model');
 
   const patchTarget = path.resolve(
     String(patchPath || path.join(os.tmpdir(), `offload-${runId}.patch`)),
@@ -364,8 +408,10 @@ export async function dispatchRemote(
 /**
  * Parse one `offload doctor --brief` line.
  *
- * Real line, measured 2026-09-02 against host `m5`:
- * `Bernhards-Macbook-2 ready=yes · load 14.23 · mem free 96% · headless: slots
+ * Real line, measured 2026-09-02 against host `m5` (the leading hostname is
+ * SCRUBBED to the synthetic `Ferdinands-…` convention of
+ * `scripts/lib/host-identity.mjs`; every other segment is verbatim):
+ * `Ferdinands-Macbook-2 ready=yes · load 14.23 · mem free 96% · headless: slots
  * none, keychain-route ok · 9 jobs · claude procs 12`
  *
  * Every metric is `null` when its segment is absent — never a fabricated `0`,
@@ -426,4 +472,33 @@ export function remoteDoctor({ host, execFn = execFileSync, timeoutMs = 90_000 }
     };
   }
   return parseDoctorLine(raw);
+}
+
+/**
+ * THE adapter between {@link remoteDoctor} and the wave-resource gate's
+ * `probeFn` seam (`scripts/lib/wave-resource-gate.mjs` → `applyOffloadDecision`).
+ *
+ * The gate's witness contract is `async (alias: string) => boolean`;
+ * `remoteDoctor` is SYNC, takes an options object and returns a metrics record.
+ * Passing `remoteDoctor` itself as `probeFn` therefore yields `undefined.ready`
+ * on an object it never received an alias for, and no host is ever ready — the
+ * documented witness could not produce an `offload` decision at all. This
+ * function is the one shape both sides agree on; use it, never `remoteDoctor`
+ * directly.
+ *
+ * Never throws: a probe that raises is a host that did not answer, i.e. NOT
+ * ready. The gate must fail toward local, never toward a host it cannot vouch
+ * for.
+ *
+ * @param {string} alias — declared host alias (`remote-hosts[].alias`).
+ * @param {object} [opts]
+ * @param {Function} [opts.execFn] — `child_process.execFileSync` seam.
+ * @returns {Promise<boolean>} true only on a literal `ready=yes` line.
+ */
+export async function remoteReadyProbe(alias, { execFn } = {}) {
+  try {
+    return remoteDoctor({ host: alias, ...(execFn ? { execFn } : {}) }).ready === true;
+  } catch {
+    return false;
+  }
 }

@@ -454,14 +454,19 @@ async function handleStop(input) {
   // turn-end outcome is joinable by identity from events.jsonl alone. Omitted
   // (never `""`/`null`) when unattested: an unresolved identity stays visibly
   // unresolved rather than becoming a guessed id.
-  await emitEvent('orchestrator.session.stopped', {
-    ...(sessionId !== null ? { session_id: sessionId } : {}),
-    ...(semanticSessionId !== null ? { semantic_session_id: semanticSessionId } : {}),
-    wave,
-    ...(branch !== null ? { branch } : {}),
-    ...(commit !== null ? { commit } : {}),
-    ...duration,
-  });
+  // #1183 — a malformed record throws EventValidationError BEFORE any side
+  // effect (scripts/lib/events.mjs); this hook must never abort on that, so
+  // the emit is wrapped rather than left to propagate.
+  try {
+    await emitEvent('orchestrator.session.stopped', {
+      ...(sessionId !== null ? { session_id: sessionId } : {}),
+      ...(semanticSessionId !== null ? { semantic_session_id: semanticSessionId } : {}),
+      wave,
+      ...(branch !== null ? { branch } : {}),
+      ...(commit !== null ? { commit } : {}),
+      ...duration,
+    });
+  } catch { /* telemetry never blocks the hook (#1183) */ }
 }
 
 /**
@@ -558,7 +563,12 @@ async function handleSubagentStop(input) {
     }
   }
 
-  await emitEvent('orchestrator.agent.stopped', payload);
+  // #1183 — a malformed record throws EventValidationError BEFORE any side
+  // effect (scripts/lib/events.mjs); this hook must never abort on that, so
+  // the emit is wrapped rather than left to propagate.
+  try {
+    await emitEvent('orchestrator.agent.stopped', payload);
+  } catch { /* telemetry never blocks the hook (#1183) */ }
   return null;
 }
 

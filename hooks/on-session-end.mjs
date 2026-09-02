@@ -590,15 +590,20 @@ async function main() {
     rawStdinId,
   });
 
-  await emitEvent('orchestrator.session.ended', {
-    ...(sessionId !== null ? { session_id: sessionId } : {}),
-    ...(semanticSessionId !== null ? { semantic_session_id: semanticSessionId } : {}),
-    reason,
-    // Omit-never-fabricate: only a MEASURED span is written. `null` here means
-    // the ending session is not the recorded one (or no start time parsed) —
-    // absence must stay absence, not become a zero-length session.
-    ...(Number.isFinite(durationMs) && durationMs >= 0 ? { duration_ms: durationMs } : {}),
-  });
+  // #1183 — a malformed record throws EventValidationError BEFORE any side
+  // effect (scripts/lib/events.mjs); this hook must never abort on that, so
+  // the emit is wrapped rather than left to propagate.
+  try {
+    await emitEvent('orchestrator.session.ended', {
+      ...(sessionId !== null ? { session_id: sessionId } : {}),
+      ...(semanticSessionId !== null ? { semantic_session_id: semanticSessionId } : {}),
+      reason,
+      // Omit-never-fabricate: only a MEASURED span is written. `null` here means
+      // the ending session is not the recorded one (or no start time parsed) —
+      // absence must stay absence, not become a zero-length session.
+      ...(Number.isFinite(durationMs) && durationMs >= 0 ? { duration_ms: durationMs } : {}),
+    });
+  } catch { /* telemetry never blocks the hook (#1183) */ }
 
   // -------------------------------------------------------------------------
   // C1 (#724) — Close-through backfill + deterministic lock release.

@@ -76,6 +76,32 @@ describe('materialize-wave-scope.mjs — canonical two-shape materialization', (
     expect(JSON.parse(readFileSync(aggregatePath(stateDir), 'utf8'))).toEqual(VALID_SCOPES);
   });
 
+  // BUG CAUGHT (#1195, W4 architect LOW-3): a peer session's record is written
+  // into the aggregate so --assert-disjoint and post-bash-write-verify can read
+  // it — but shape (a) is `$AGENT_FILESCOPE_JSON`, addressed by an AGENT id at
+  // dispatch time. No agent is ever dispatched for a peer session, so a
+  // `peer-session-*.json` per-agent file is a declaration nothing reads, and one
+  // more file the orphan reconciler must then be taught to spare.
+  it('writes NO per-agent file for a peer-session record, but keeps it in the aggregate (#1195)', () => {
+    const stateDir = makeStateDir();
+    const scopes = [
+      { id: 'W7-I1', files: ['scripts/alpha.mjs'] },
+      { id: 'peer-session-2026-09-02-x', files: ['peer/helper.mjs'] },
+      { id: 'coordinator', files: [] },
+    ];
+
+    const result = runCli({ stateDir, scopes, args: ['--json'] });
+
+    expect(result.code).toBe(0);
+    expect(existsSync(agentPath(stateDir, 'W7-I1'))).toBe(true);
+    expect(existsSync(agentPath(stateDir, 'peer-session-2026-09-02-x'))).toBe(false);
+    expect(JSON.parse(readFileSync(aggregatePath(stateDir), 'utf8'))).toEqual(scopes);
+    expect(JSON.parse(result.stdout).perAgentPaths).toEqual([
+      agentPath(stateDir, 'W7-I1'),
+      agentPath(stateDir, 'coordinator'),
+    ]);
+  });
+
   it('emits machine-readable paths with --json', () => {
     const stateDir = makeStateDir();
 

@@ -98,7 +98,7 @@ agent-mapping: { impl: cursor:composer-2.5, test: cursor:cursor-grok-4.6-high, s
 
 **Where the rest of the contract lives** — deliberately not here, so one place owns it:
 
-- **Model selection** (which model for which role, and why): the account-switch routing SSOT, ADR-002 / `tools/routing/routing.yaml`. Working defaults are `composer-2.5` for foreign impl and `cursor-grok-4.6-high` for review / test-writing / judgment roles.
+- **Model selection** (which model for which role, and why): the operator's model-routing SSOT (ADR-002). Working defaults are `composer-2.5` for foreign impl and `cursor-grok-4.6-high` for review / test-writing / judgment roles.
 - **Dispatch contract** (detached worktree, the `never_foreign` role lock, the filesystem-measured verdict, the MANDATORY Claude semantic diff-review before merge-back, wall-clock timeout instead of `maxTurns`, and the `orchestrator.foreign_dispatch.completed` event that replaces the hook-chain telemetry a foreign run cannot emit): `skills/wave-executor/wave-loop.md` § Third branch: foreign-model dispatch.
 
 ## VCS & Infrastructure

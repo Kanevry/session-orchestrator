@@ -320,6 +320,42 @@ describe('validate-wave-scope.mjs — --union (#1020)', () => {
     expect(r.stdout).not.toMatch(/"blockedCommands"/);
   });
 
+  // BUG CAUGHT (#1195 follow-through, W4 architect HIGH-1): a `peer-session-*`
+  // record unioned into `allowedPaths` GRANTS every agent of this wave write
+  // access to the peer session's files — the exact inverse of what wave-loop.md
+  // § 3.1a says the record means ("a territory NO agent of this wave may
+  // write"). It also makes the peer branch of hooks/post-bash-write-verify.mjs
+  // dead code, because that hook only ever sees paths OUTSIDE allowedPaths.
+  it('EXCLUDES a peer-session record from the union (#1195)', () => {
+    const r = runWithSidecar(
+      [
+        { id: 'W3-I1', files: ['scripts/lib/alpha.mjs'] },
+        { id: 'peer-session-2026-09-02-x', files: ['scripts/lib/peer-owned.mjs', 'peer/**'] },
+      ],
+      unionArgs,
+      { ...MANIFEST, role: 'Quality' }, // no test-sibling expansion — pin the exact array
+    );
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout)).toEqual(['scripts/lib/alpha.mjs']);
+  });
+
+  // BUG CAUGHT: excluding peer records in the wrong LAYER — inside the sidecar
+  // reader, or in findScopeCollisions — would also hide a peer/agent path
+  // collision, which § 3.1a argues is precisely the collision that must
+  // surface. The exclusion belongs to the union alone.
+  it('still FAILS --assert-disjoint when a peer record collides with an agent (#1195)', () => {
+    const r = runWithSidecar(
+      [
+        { id: 'W3-I1', files: ['scripts/lib/alpha.mjs'] },
+        { id: 'peer-session-2026-09-02-x', files: ['scripts/lib/alpha.mjs'] },
+      ],
+      disjointArgs,
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/wave scope collision/);
+    expect(r.stderr).toContain('peer-session-2026-09-02-x');
+  });
+
   // BUG CAUGHT: computing the union BEFORE the collision check would emit a
   // usable-looking allowedPaths array derived from a plan that double-assigns a
   // file — the caller writes it into the manifest and the defect is laundered

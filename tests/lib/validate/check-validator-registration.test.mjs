@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import {
   scanValidatorRegistration,
   runCheckValidatorRegistration,
+  stripComments,
 } from '@lib/validate/check-validator-registration.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -141,5 +142,99 @@ describe('check-validator-registration CLI — wired, unwired, standalone', () =
 
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('Usage: check-validator-registration.mjs <repo-root>');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Comment-stripping (HIGH, qa review, #1184 FX-C)
+//
+// The bug this guards against: a checker referenced only inside a `//`/`#`
+// comment (the exact shape of a disabled, commented-out registration line)
+// reported `registered: true` before this fix — a plain substring match saw
+// the basename inside the comment text and never asked whether it sat on a
+// live code line. MEASURED before the fix: exit 0 for a fixture whose only
+// reference sat in `// runCheck('check-ghost.mjs'); // DISABLED`.
+// ---------------------------------------------------------------------------
+
+describe('check-validator-registration CLI — comment-stripped matching (HIGH, #1184 FX-C)', () => {
+  it('exits 1 and reports UNREGISTERED when the only reference sits in a `//` line comment', () => {
+    const root = makeFixture({
+      'check-ghost.mjs': '// a checker\n',
+    }, {
+      validatePlugin: "// runCheck('check-ghost.mjs'); // DISABLED\n",
+    });
+
+    const r = run(root);
+
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain('FAIL');
+    expect(r.stdout).toContain('check-ghost.mjs');
+    expect(r.stdout).toContain('Results: 0 passed, 1 failed');
+  });
+
+  it('exits 1 and reports UNREGISTERED when the only reference sits in a `#` shell comment', () => {
+    const root = makeFixture({
+      'check-ghost.mjs': '// a checker\n',
+    }, {
+      husky: "# husky run 'check-ghost.mjs' disabled pending #1184\n",
+    });
+
+    const r = run(root);
+
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain('check-ghost.mjs');
+  });
+
+  it('exits 1 and reports UNREGISTERED when the only reference sits inside a `/* */` block comment', () => {
+    const root = makeFixture({
+      'check-ghost.mjs': '// a checker\n',
+    }, {
+      validatePlugin: "/*\nrunCheck('check-ghost.mjs');\n*/\n",
+    });
+
+    const r = run(root);
+
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain('check-ghost.mjs');
+  });
+
+  it('still reports REGISTERED for a real, live (uncommented) reference — no false positive from stripping', () => {
+    const root = makeFixture({
+      'check-real.mjs': '// a checker\n',
+    }, {
+      validatePlugin: "runCheck('check-real.mjs'); // registered here\n",
+    });
+
+    const r = run(root);
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('Results: 1 passed, 0 failed');
+  });
+});
+
+describe('stripComments — quote-aware `//`/`#`/`/* */` stripping', () => {
+  const jsStyle = { lineComment: '//', blockComment: true, quoteChars: ['"', "'", '`'] };
+  const shStyle = { lineComment: '#', blockComment: false, quoteChars: ['"', "'"] };
+
+  it('drops everything after `//` on a js-style line', () => {
+    expect(stripComments("runCheck('a.mjs'); // runCheck('b.mjs')\n", jsStyle)).toBe("runCheck('a.mjs'); \n");
+  });
+
+  it('drops a `/* */` block comment spanning multiple lines', () => {
+    expect(stripComments("x();\n/*\nrunCheck('b.mjs');\n*/\ny();\n", jsStyle)).toBe('x();\n\ny();\n');
+  });
+
+  it('drops everything after `#` on a shell-style line', () => {
+    expect(stripComments("real-command\n# runCheck check-b.mjs\n", shStyle)).toBe('real-command\n\n');
+  });
+
+  it('does NOT treat a `#` inside a double-quoted shell string as a comment start', () => {
+    const src = 'GLAB_TARBALL="glab_${GLAB_VERSION#v}_linux_amd64.tar.gz"\n';
+    expect(stripComments(src, shStyle)).toBe(src);
+  });
+
+  it('does NOT treat a `//` inside a js string as a comment start', () => {
+    const src = "const url = 'https://example.test/check-b.mjs';\n";
+    expect(stripComments(src, jsStyle)).toBe(src);
   });
 });

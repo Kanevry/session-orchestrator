@@ -192,26 +192,16 @@ describe('matchBlockHeaderDetailed — inline value capture (matchBlockHeader ca
 });
 
 describe('matchBlockHeaderDetailed — indentation distinguishes a nested header from a top-level one', () => {
-  it('reports indent: 0 for a top-level header', () => {
-    expect(matchBlockHeaderDetailed('health-endpoints:', 'health-endpoints')).toEqual({
-      indent: 0,
-      value: null,
-    });
-  });
-
-  it('reports the exact indent width for a header nested under a parent block', () => {
-    // The shape ecosystem-health: / health-endpoints: nests at 2 spaces.
-    expect(matchBlockHeaderDetailed('  health-endpoints:', 'health-endpoints')).toEqual({
-      indent: 2,
-      value: null,
-    });
-  });
-
-  it('a different indent width is reported distinctly — not clamped to a boolean', () => {
-    expect(matchBlockHeaderDetailed('    health-endpoints:', 'health-endpoints')).toEqual({
-      indent: 4,
-      value: null,
-    });
+  // indent: 0 is already pinned by "reports value: null for a bare header"
+  // above (identical input, identical assertion) — not repeated here
+  // (test-value.md TV-004). The exact indent width is reported distinctly,
+  // never clamped to a boolean: the shape `ecosystem-health: / health-endpoints:`
+  // nests at 2 spaces; 4 proves the width itself is carried, not just "nested".
+  it.each([
+    ['  health-endpoints:', 2],
+    ['    health-endpoints:', 4],
+  ])('the line %j reports indent: %i', (line, indent) => {
+    expect(matchBlockHeaderDetailed(line, 'health-endpoints')).toEqual({ indent, value: null });
   });
 });
 

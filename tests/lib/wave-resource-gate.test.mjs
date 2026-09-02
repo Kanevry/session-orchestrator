@@ -711,6 +711,26 @@ describe('evaluateWaveResourceGate — offload decision (#1160)', () => {
     expect(result.host).toBe('m5');
   });
 
+  // Bug: a probeFn that REJECTS (ssh down, binary missing) propagated out of
+  // applyOffloadDecision and rejected the WHOLE gate call — the caller lost its
+  // resource decision entirely instead of falling back to the local one it had
+  // already computed. A witness that cannot answer is a host that is not ready.
+  test('a rejecting probeFn falls back to the local decision instead of rejecting', async () => {
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig({ 'remote-hosts': [M5] }),
+      plannedAgents: 6,
+      waveRole: 'Quality',
+      probeOverride: makeOverride(PRESSURE),
+      probeFn: async () => {
+        throw new Error('ssh: host down');
+      },
+    });
+    expect(result.decision).toBe('reduce');
+    expect(result.host).toBeUndefined();
+    expect(result.reasons.some((r) => /offload probe for 'm5' failed/.test(r))).toBe(true);
+    expect(result.reasons.some((r) => r.includes('ssh: host down'))).toBe(true);
+  });
+
   // Bug (HR-106): formatGateReport dropped `host`, so an offload line was
   // indistinguishable from a proceed line — same decision word, same count.
   test('formatGateReport renders the host on an offload decision', () => {

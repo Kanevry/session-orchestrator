@@ -13,12 +13,20 @@
  * After the aggregate is published, per-agent declarations left behind by an
  * earlier materialization of the SAME wave are reconciled away (#1103) — but
  * only against a proven session owner. See {@link reconcileOrphans}.
+ *
+ * PEER RECORDS (`peer-session-*`, #1195) get NO per-agent file: shape (a) is
+ * `$AGENT_FILESCOPE_JSON`, addressed by an agent id at dispatch time, and no
+ * agent is ever dispatched for a peer session — nothing reads it. They are
+ * still written into the aggregate, where `--assert-disjoint` and
+ * `hooks/post-bash-write-verify.mjs` do read them; `--union` excludes them so
+ * `allowedPaths` never grants a peer's territory to this wave's agents.
  */
 
 import { readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeJsonAtomicSync } from './lib/io.mjs';
+import { isPeerRecordId } from './lib/scope-gate.mjs';
 
 const HELP = `Usage: node scripts/materialize-wave-scope.mjs --state-dir <dir> --wave <positive-int> [--json]
 
@@ -50,6 +58,9 @@ Examples:
 
 Writes:
   <state-dir>/filescopes/wave-N/<id>.json       Bare string[] for each record
+                      EXCEPT a peer-session-* record (#1195), which is
+                      aggregate-only: no agent is dispatched for it, so nothing
+                      would read its per-agent file.
   <state-dir>/filescopes/wave-N.scopes.json     Aggregate [{id, files}, ...]
 
 Removes (only with a proven owner — see --session):
@@ -368,7 +379,12 @@ export function materializeWaveScope(records, {
 }) {
   const scopeDir = resolve(stateDir, 'filescopes', `wave-${wave}`);
   const aggregatePath = resolve(stateDir, 'filescopes', `wave-${wave}.scopes.json`);
-  const perAgentPaths = records.map(({ id }) => resolve(scopeDir, `${id}.json`));
+  // #1195 — peer records are aggregate-only (see the header note): no reader
+  // exists for a per-agent file that no dispatch will ever address. Excluding
+  // them from `keepIds` below also lets a stale `peer-session-*.json` written
+  // before this rule be reconciled away like any other orphan.
+  const agentRecords = records.filter((r) => !isPeerRecordId(r.id));
+  const perAgentPaths = agentRecords.map(({ id }) => resolve(scopeDir, `${id}.json`));
 
   try {
     unlinkSync(aggregatePath);
@@ -378,8 +394,8 @@ export function materializeWaveScope(records, {
     }
   }
 
-  for (let index = 0; index < records.length; index++) {
-    const result = writeJson(perAgentPaths[index], records[index].files, { tmpPrefix: '.materialize-wave-scope' });
+  for (let index = 0; index < agentRecords.length; index++) {
+    const result = writeJson(perAgentPaths[index], agentRecords[index].files, { tmpPrefix: '.materialize-wave-scope' });
     if (!result?.ok) {
       throw new WriteError(`cannot write per-agent declaration ${perAgentPaths[index]}: ${result?.error ?? 'unknown write failure'}`);
     }
@@ -396,7 +412,7 @@ export function materializeWaveScope(records, {
   // no aggregate at all — deleting coverage that nothing replaced.
   const { removed, retained } = reconcileOrphans({
     scopeDir,
-    keepIds: records.map(({ id }) => id),
+    keepIds: agentRecords.map(({ id }) => id),
     ownerIds: manifestSessionIds(stateDir, readFile),
     sessionId: session,
     readDir,

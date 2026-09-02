@@ -372,6 +372,61 @@ describe('vault-mirror session dedup — duplicated session_id (#1186c)', () => 
     // an arbitrary line) is what got dispatched.
     expect(readFileSync(notePath, 'utf8')).toContain('**Files changed:** 99');
   });
+
+  // qa-strategist GAP-1 (HEAD 3b352d78): `runState.total` is incremented PER
+  // RAW LINE (scripts/vault-mirror.mjs ~:602), unconditionally — including for
+  // a line whose session_id the dedup pass above later collapses away. That
+  // relaxation is a NAMED BV-004 ceiling in the source comment ("runState.total
+  // still counts this raw line, so created+updated+skipped+failed no longer
+  // partitions total ... no test pins that invariant for session kind"), but
+  // nothing actually PINS the accepted shape — so a dedup regression that
+  // DROPS a distinct session_id (the sum would fall to 1) is indistinguishable
+  // from this accepted gap without a test that asserts the exact numbers.
+  it('#1186c ceiling: a 3-line/2-id session ledger counts total=3 while dispatching exactly 2, no aborted key', () => {
+    const older = JSON.parse(VALID_SESSION);
+    const newer = { ...older, completed_at: '2026-05-24T10:00:00Z', total_files_changed: 99 };
+    // A THIRD, distinct session_id — the id the dedup pass must NOT collapse
+    // away. If a future regression drops it (e.g. an off-by-one in the
+    // survivors Set), the dispatched count falls from 2 to 1 while `total`
+    // stays 3 — exactly the drop this test is anchored to catch.
+    const third = {
+      ...older,
+      session_id: 'session-2026-05-25-entry-point-second',
+      completed_at: '2026-05-25T10:00:00Z',
+    };
+    const vaultDir = tmp();
+    const projectDir = tmp(); // pins CLAUDE_PROJECT_DIR → readable events.jsonl
+    const sourceFile = writeJsonl(
+      tmp(),
+      [JSON.stringify(older), JSON.stringify(newer), JSON.stringify(third)].join('\n'),
+    );
+
+    const result = runMirror(
+      [
+        '--vault-dir', vaultDir,
+        '--source', sourceFile,
+        '--kind', 'session',
+        '--vault-name', 'test-vault',
+      ],
+      { projectDir },
+    );
+    expect(result.status).toBe(0);
+
+    const runEvents = readEvents(projectDir, 'orchestrator.vault.mirror_run_completed');
+    expect(runEvents).toHaveLength(1);
+    // THE denominator: three raw non-blank JSONL lines were attempted, dedup
+    // collapse or not.
+    expect(runEvents[0].total).toBe(3);
+    // THE partition: two DISTINCT session_ids survive dedup (the winner of the
+    // older/newer pair, plus the untouched third id) — a per-line-dispatch
+    // regression would push this to 3; a dedup-drops-a-survivor regression
+    // would push this to 1.
+    expect(
+      runEvents[0].created + runEvents[0].updated + runEvents[0].skipped + runEvents[0].failed,
+    ).toBe(2);
+    // A complete (non-aborted) run must never carry the `aborted` label.
+    expect(runEvents[0]).not.toHaveProperty('aborted');
+  });
 });
 
 // ── Canonical Meta-Vault guard (#600 D2) ───────────────────────────────────────

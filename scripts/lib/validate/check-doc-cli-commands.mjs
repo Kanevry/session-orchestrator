@@ -81,8 +81,6 @@ const SCAN_DIRS = Object.freeze([
   'templates',
 ]);
 
-/** Never descend into these. */
-
 /** The CLIs this check knows how to interrogate. */
 const BINS = Object.freeze(['gh', 'glab']);
 

@@ -10,7 +10,7 @@
 
 ### What
 
-`session-orchestrator.com` is replaced by a purpose-built marketing landing page that lives as a **standalone route segment inside the portfolio host app (`gotzendorfer-v2`)** — the same architecture that already serves `agentic-cutter.com` from `src/app/(standalone)/agentic-cutter/`.
+`session-orchestrator.com` is replaced by a purpose-built marketing landing page that lives as a **standalone route segment inside the portfolio host app** — the same architecture that already serves `agentic-cutter.com` from `src/app/(standalone)/agentic-cutter/`.
 
 The new page is a **dark, terminal-flavoured, English-only landing page** that a developer arriving from a plugin catalogue converts on within seconds, and that a non-technical reader can still understand end to end. Its centrepiece is a short pre-rendered **Remotion video** visualising the `research → plan → wave-execute → close` loop — built with the house Remotion process already proven on a sibling product's landing hero.
 
@@ -244,7 +244,7 @@ And every interactive element exposes a visible focus indicator
 
 ### Affected Files
 
-**In the host app (`gotzendorfer-v2`), on a dedicated branch in an isolated worktree:**
+**In the portfolio host app, on a dedicated branch in an isolated worktree:**
 
 - `src/app/(standalone)/session-orchestrator/layout.tsx` — new. Segment layout: metadata, canonical URL, fonts, CSP nonce consumption, JSON-LD, analytics. Modelled on the existing `agentic-cutter` segment layout.
 - `src/app/(standalone)/session-orchestrator/page.tsx` — new. The landing page composition.

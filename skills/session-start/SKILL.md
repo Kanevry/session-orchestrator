@@ -546,7 +546,7 @@ This single call does three things:
 
 - **Generator-marked + idempotent.** The board carries the `_generator: session-orchestrator-active-sessions@1` frontmatter sentinel; repeated writes that produce identical content are no-ops, so re-running this phase never churns the file.
 - **Host-local + git-ignorable.** The board lives under the operator's vault tree (under `$HOME`), never inside any repo — it is never committed.
-- **NEVER touches the sven-owned `_overview.md`.** The writer hard-refuses any path whose basename is `_overview.md` (returns `{ action: 'skipped-handwritten' }`), and only ever overwrites files it owns (frontmatter `_generator` matches the marker). The handwritten overview is structurally safe.
+- **NEVER touches the human-authored `_overview.md`.** The writer hard-refuses any path whose basename is `_overview.md` (returns `{ action: 'skipped-handwritten' }`), and only ever overwrites files it owns (frontmatter `_generator` matches the marker). The handwritten overview is structurally safe.
 
 ### Non-blocking behavior
 

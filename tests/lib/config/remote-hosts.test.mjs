@@ -100,6 +100,36 @@ describe('_parseRemoteHosts — record drops', () => {
     expect(warnText()).toContain('unsafe alias');
   });
 
+  // Bug: the charset allowlists admitted a LEADING hyphen, so `alias: -H` and
+  // `repo-path: --x` passed validation and then reached `offload`'s argv as
+  // OPTION tokens rather than values — the operand behind them is swallowed as
+  // the flag's argument and the command means something the operator never
+  // declared. A charset cannot express "not first"; the anchor can.
+  it('drops an alias that begins with a hyphen (argv option token), with a WARN', () => {
+    expect(_parseRemoteHosts('remote-hosts:\n  - alias: "-H"\n')).toEqual([]);
+    expect(warnText()).toContain('unsafe alias');
+  });
+
+  it('drops a repo-path that begins with a hyphen, with a WARN', () => {
+    const content = ['remote-hosts:', '  - alias: m5', '    repo-path: "--x"', ''].join('\n');
+    expect(_parseRemoteHosts(content)).toEqual([]);
+    expect(warnText()).toContain('shell metacharacter in repo-path');
+  });
+
+  // An INTERIOR hyphen is the common case (`m5-box`, `~/Projects/my-repo`) and
+  // must keep working — the anchor bans the position, never the character.
+  it('keeps an interior hyphen in alias and paths', () => {
+    const content = [
+      'remote-hosts:',
+      '  - alias: m5-box',
+      '    repo-path: ~/Projects/my-repo',
+      '',
+    ].join('\n');
+    const parsed = _parseRemoteHosts(content);
+    expect(parsed.map((h) => h.alias)).toEqual(['m5-box']);
+    expect(parsed[0]['repo-path']).toBe('~/Projects/my-repo');
+  });
+
   it('drops a host with an unsafe repo-path but keeps its siblings', () => {
     const content = [
       'remote-hosts:',

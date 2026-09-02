@@ -18,14 +18,25 @@
  *   (d) normal mutate round-trip — basic contract sanity.
  *   (e) tmp file never left behind on failure — a non-ENOENT failure must
  *       return before ever creating a `.tmp-*` sibling.
+ *   (f) tmp file removed when WRITE succeeds but RENAME fails (qa-strategist
+ *       GAP-2, HEAD 3b352d78) — the write/rename `catch` (~:118) does a
+ *       best-effort `unlink(tmp)` so a failure at that stage never leaves an
+ *       orphaned `.tmp-*` sibling. Case (e) above cannot exercise this: it
+ *       fails at the READ stage, before any tmp file exists, so removing the
+ *       `unlink()` call would not change its outcome either way (verified
+ *       empirically — see the comment on the test itself for the measurement
+ *       and why the `chmod`-the-directory technique doesn't discriminate
+ *       here, unlike for (b)).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { atomicMutateJson } from '../../../hooks/_lib/atomic-json.mjs';
+import { isRoot } from '../../_helpers/perms.mjs';
 
 let tmp;
 
@@ -113,4 +124,50 @@ describe('atomicMutateJson', () => {
 
     expect(tmpArtifacts(tmp)).toEqual([]);
   });
+
+  // (f) qa-strategist GAP-2 (HEAD 3b352d78): force a WRITE-then-RENAME failure
+  // (as opposed to (e)'s READ failure) and assert the tmp sibling is cleaned
+  // up. The gap note suggested `fs.chmodSync(dirname(filePath), 0o500)` — that
+  // was tried FIRST and rejected: measured directly (node -e against this
+  // module, both with and without the `unlink()` call in the catch), a
+  // write-permission-denied directory makes `writeFile(tmp, …)` itself throw
+  // EACCES before any `.tmp-*` entry is ever created — so "no artifact left
+  // behind" holds trivially whether or not `unlink()` exists, and the test
+  // would NOT flip red on the named regression (fails the mandatory
+  // falsification check).
+  //
+  // `chflags uchg` (BSD/macOS user-immutable flag) on the ALREADY-VALID target
+  // file instead lets `writeFile(tmp, …)` succeed for real (a genuine
+  // `.tmp-*` file lands on disk) while `rename(tmp, filePath)` fails with
+  // EPERM — the actual write-succeeds/rename-fails shape the gap describes.
+  // Verified empirically against a throwaway copy of this module with the
+  // `unlink()` call stripped: the SAME chflags scenario left
+  // `current-session.json.tmp-ajs-<pid>-<ts>` sitting in the directory
+  // afterward, where the real module (with `unlink()` intact) leaves only the
+  // original file — so this test DOES flip red on the regression the (e)
+  // technique could not catch.
+  //
+  // `chflags` is BSD/macOS-only and (like chmod-based enforcement) can be
+  // bypassed by root, so this is gated the same way the repo's other
+  // permission-dependent tests are (`tests/_helpers/perms.mjs`).
+  it.skipIf(process.platform !== 'darwin' || isRoot)(
+    '(f) tmp file removed when write succeeds but rename fails (uchg-protected target)',
+    async () => {
+      const filePath = join(tmp, 'current-session.json');
+      writeFileSync(filePath, JSON.stringify({ count: 1 }), 'utf8');
+      execSync(`chflags uchg "${filePath}"`);
+
+      try {
+        const result = await atomicMutateJson(filePath, {}, (current) => ({
+          ...current,
+          count: current.count + 1,
+        }));
+
+        expect(result.ok).toBe(false);
+        expect(tmpArtifacts(tmp)).toEqual([]);
+      } finally {
+        execSync(`chflags nouchg "${filePath}"`);
+      }
+    },
+  );
 });

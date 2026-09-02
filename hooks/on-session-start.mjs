@@ -978,7 +978,12 @@ async function main() {
     payload.memory_pressure_pct_free = bannerData.resources.memory_pressure_pct_free ?? null;
     payload.peer_sessions_count = bannerData.resources.peer_sessions_count ?? null;
   }
-  await emitEvent('orchestrator.session.started', payload);
+  // #1183 — a malformed record throws EventValidationError BEFORE any side
+  // effect (scripts/lib/events.mjs); this hook must never abort on that, so
+  // the emit is wrapped rather than left to propagate.
+  try {
+    await emitEvent('orchestrator.session.started', payload);
+  } catch { /* telemetry never blocks the hook (#1183) */ }
 
   // #1138 — one-time telemetry-consent nudge. Queued (never written) here so it
   // rides the single stdout envelope below.

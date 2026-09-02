@@ -64,6 +64,7 @@ async function readEvents(projectDir) {
 }
 
 const waveCompleted = (events) => events.filter((e) => e.event === 'orchestrator.wave.completed');
+const finalRefused = (events) => events.filter((e) => e.event === 'orchestrator.wave.final_refused');
 
 /**
  * Ownership fixtures. The ids are UUID-shaped ON PURPOSE: `resolveSession()`
@@ -196,6 +197,57 @@ describe('on-session-end — final orchestrator.wave.completed (#1193)', () => {
     const events = await readEvents(projectDir);
     expect(events.some((e) => e.event === 'orchestrator.session.ended')).toBe(true);
     expect(waveCompleted(events)).toHaveLength(0);
+  });
+
+  it('records a not-recorded final_refused when current-session.json is absent entirely (GAP-2)', async () => {
+    // Catches: `not-recorded` is the refusal reached whenever the ownership
+    // check `if (!isRecordedSession)` at the TOP of emitFinalWaveCompleted
+    // fires — an absent file is the most common way it fires, and nothing
+    // asserted its final_refused record before this test. A regression that
+    // reorders that check below the file-read (so an absent file instead hits
+    // the `unreadable` branch) or that starts attaching a stray wave_number
+    // to this reason would previously ship silently.
+    const projectDir = await mkProject();
+    // No writeSessionFile call — current-session.json is never created.
+
+    const { code } = await runHook({ projectDir, stdin: owningStdin() });
+    expect(code).toBe(0);
+
+    const events = await readEvents(projectDir);
+    expect(waveCompleted(events)).toHaveLength(0);
+
+    const refused = finalRefused(events);
+    expect(refused).toHaveLength(1);
+    expect(refused[0].reason).toBe('not-recorded');
+    expect(Object.hasOwn(refused[0], 'wave_number')).toBe(false);
+
+    expect(events.some((e) => e.event === 'orchestrator.session.ended')).toBe(true);
+  });
+
+  it('records a not-recorded final_refused when current-session.json names a different (peer) session (GAP-2)', async () => {
+    // Catches the same silent `not-recorded` branch reached via the OTHER
+    // common path: a peer session's file IS present but names someone else.
+    // `isRecordedSession` fails on the raw-id compare before the file is
+    // ever re-read for last_wave, per the qa-strategist's measurement — this
+    // complements the existing F1 test below, which asserts the wave/file
+    // integrity side but never the refusal record's reason or shape.
+    const projectDir = await mkProject();
+    await writeSessionFile(projectDir, {
+      session_id: OTHER, last_wave: 3, semantic_session_id: 'peer-session',
+    });
+
+    const { code } = await runHook({ projectDir, stdin: owningStdin() });
+    expect(code).toBe(0);
+
+    const events = await readEvents(projectDir);
+    expect(waveCompleted(events)).toHaveLength(0);
+
+    const refused = finalRefused(events);
+    expect(refused).toHaveLength(1);
+    expect(refused[0].reason).toBe('not-recorded');
+    expect(Object.hasOwn(refused[0], 'wave_number')).toBe(false);
+
+    expect(events.some((e) => e.event === 'orchestrator.session.ended')).toBe(true);
   });
 
   it('emits NOTHING and leaves the file untouched when the ending session is not the recorded one (F1)', async () => {

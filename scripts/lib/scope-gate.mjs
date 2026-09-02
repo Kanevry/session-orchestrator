@@ -919,6 +919,28 @@ export function suggestForScopeViolation(relPath, allowedCsv) {
 }
 
 /**
+ * Prefix that marks an aggregate-sidecar record as a PEER SESSION's declared
+ * scope rather than one of this wave's own agents (#1195).
+ *
+ * SSOT: this constant lives here — in the module both the `--union` helper and
+ * `hooks/post-bash-write-verify.mjs` already import — so the union exclusion
+ * below and the hook's peer-write notice can never disagree about what a peer
+ * record IS.
+ */
+export const PEER_RECORD_PREFIX = 'peer-session-';
+
+/**
+ * Is this record id a PEER SESSION's record (see {@link PEER_RECORD_PREFIX})?
+ * Fail-closed: a non-string id is not a peer record.
+ *
+ * @param {unknown} id
+ * @returns {boolean}
+ */
+export function isPeerRecordId(id) {
+  return typeof id === 'string' && id.startsWith(PEER_RECORD_PREFIX);
+}
+
+/**
  * Merge many agents' declared file scopes into ONE deduplicated, order-stable
  * list — the mechanical form of "allowedPaths is the UNION of all agent file
  * scopes" (#1020, wave-loop.md § Scope Manifest #3).
@@ -943,6 +965,19 @@ export function suggestForScopeViolation(relPath, allowedCsv) {
  * non-array / non-object members and non-string, empty entries are skipped.
  * Pure, sync, no I/O — hook-safe per the module header.
  *
+ * PEER RECORDS ARE EXCLUDED (#1195 follow-through). A record whose id starts
+ * with `peer-session-` declares a territory NO agent of this wave may write —
+ * it exists so a peer's paths take part in the DISJOINTNESS check and so
+ * `hooks/post-bash-write-verify.mjs` can name a peer write instead of alarming
+ * about it. Unioning it into `allowedPaths` would do the exact inverse: Gate 7
+ * (`hooks/enforce-scope.mjs`) would GRANT every agent of the wave write access
+ * to the peer's files, and the hook's peer branch would become dead code (a
+ * peer path can only reach it while it is OUTSIDE `allowedPaths`). The
+ * exclusion lives HERE — the one helper `--union` runs — rather than in the
+ * CLI, so every consumer of the union inherits it.
+ * `findScopeCollisions` deliberately does NOT filter: a peer/agent path
+ * collision is a real collision and must surface.
+ *
  * @param {Array<string[]|{id?: string, files?: string[]}>} scopes
  * @returns {string[]} deduplicated union in first-seen order
  */
@@ -954,6 +989,7 @@ export function unionFileScopes(scopes) {
     let files = null;
     if (Array.isArray(scope)) files = scope;
     else if (scope !== null && typeof scope === 'object' && Array.isArray(scope.files)) {
+      if (isPeerRecordId(scope.id)) continue;
       files = scope.files;
     }
     if (files === null) continue;

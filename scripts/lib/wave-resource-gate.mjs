@@ -128,7 +128,9 @@ async function applyDecisionRules(measurements, opts) {
  *   - `opts.remoteReady` — `{ [alias]: boolean }`, e.g. built from the
  *     SessionStart `Offload m5: ready=yes` banner or `remoteDoctor()`.
  *   - `opts.probeFn` — `async (alias) => boolean`, consulted only for hosts the
- *     `remoteReady` map does not already answer for. Default `null`.
+ *     `remoteReady` map does not already answer for. Default `null`. A probeFn
+ *     that REJECTS is read as not-ready and its message is appended to
+ *     `reasons` — the gate never loses the local decision to a failed witness.
  * With neither supplied NO host is ready and the decision stays `reduce` /
  * `coordinator-direct` — the gate fails toward local, never toward a host it
  * cannot vouch for.
@@ -150,20 +152,37 @@ async function applyOffloadDecision(result, opts) {
   if (mappedRole === undefined) return result;
 
   const ready = remoteReady && typeof remoteReady === 'object' ? remoteReady : {};
+  // A witness that THROWS is a host that did not answer — never a reason to lose
+  // the local decision the resource rules already computed. Before this catch, a
+  // rejecting probeFn (ssh down, `offload` missing) propagated all the way out of
+  // evaluateWaveResourceGate and rejected the whole gate call.
+  /** @type {string[]} */
+  const probeFailures = [];
   // First fit in DECLARATION order — the operator's order is the preference order.
   let host;
   for (const h of hosts) {
     if (!Array.isArray(h?.['roles-allowed']) || !h['roles-allowed'].includes(mappedRole)) continue;
     let isReady = ready[h.alias] === true;
     if (!isReady && ready[h.alias] === undefined && typeof probeFn === 'function') {
-      isReady = (await probeFn(h.alias)) === true;
+      try {
+        isReady = (await probeFn(h.alias)) === true;
+      } catch (err) {
+        isReady = false;
+        probeFailures.push(
+          `offload probe for '${h.alias}' failed (${(err && err.message) || String(err)}) — staying local`,
+        );
+      }
     }
     if (isReady) {
       host = h;
       break;
     }
   }
-  if (host === undefined) return result;
+  if (host === undefined) {
+    return probeFailures.length === 0
+      ? result
+      : { ...result, reasons: [...result.reasons, ...probeFailures] };
+  }
 
   // The wave runs at its planned size again — but never above the HR-004 static
   // ceiling, which is a property of the REPO and holds wherever the wave runs.
@@ -337,7 +356,9 @@ function computeResourceDecision(measurements, opts) {
  *   declared host alias. The gate never probes the network itself; without a witness
  *   no host counts as ready and the decision stays local.
  * @param {(alias: string) => Promise<boolean>} [opts.probeFn] - optional async witness,
- *   consulted only for aliases absent from `remoteReady`. Default null.
+ *   consulted only for aliases absent from `remoteReady`. Default null. Use
+ *   `remoteReadyProbe` from scripts/lib/wave-executor/remote-dispatch.mjs; a
+ *   rejection counts as not-ready and is reported in `reasons`, never thrown.
  * @returns {Promise<{decision: "proceed"|"reduce"|"coordinator-direct"|"offload", agents: number, reasons: string[], measurements: object, host?: string}>}
  *   `host` is present only on an `offload` decision — the declared alias the wave runs on.
  */

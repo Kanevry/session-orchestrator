@@ -162,7 +162,7 @@ import { findScopeFile, pathMatchesPattern } from '../scripts/lib/hardening.mjs'
 // tests/hooks/post-bash-write-verify.test.mjs, which imports the named export —
 // is unchanged. Two byte-identical copies of a clock is exactly the one-fact-two-
 // copies class this repo keeps paying for.
-import { sessionAgeMs } from '../scripts/lib/scope-gate.mjs';
+import { sessionAgeMs, PEER_RECORD_PREFIX, isPeerRecordId } from '../scripts/lib/scope-gate.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -325,10 +325,14 @@ export function isInScope(relPath, allowedPaths) {
 }
 
 /**
- * Prefix that marks an aggregate-sidecar record as a PEER SESSION's declared
- * scope rather than one of this wave's own agents (#1195).
+ * Re-exported for readers of this hook: the prefix that marks an
+ * aggregate-sidecar record as a PEER SESSION's declared scope rather than one
+ * of this wave's own agents (#1195). The DEFINITION lives in
+ * `scripts/lib/scope-gate.mjs`, next to `unionFileScopes`, which must exclude
+ * exactly these records from `allowedPaths` for the peer branch below to be
+ * reachable at all.
  */
-export const PEER_RECORD_PREFIX = 'peer-session-';
+export { PEER_RECORD_PREFIX };
 
 /**
  * The peer-session records of a wave's aggregate scope sidecar.
@@ -365,7 +369,7 @@ export function readPeerScopeRecords(stateDir, wave) {
   return parsed
     .filter(
       (r) => r && typeof r === 'object'
-        && typeof r.id === 'string' && r.id.startsWith(PEER_RECORD_PREFIX)
+        && isPeerRecordId(r.id)
         && Array.isArray(r.files),
     )
     .map((r) => ({ id: r.id, files: r.files.filter((f) => typeof f === 'string') }));
@@ -391,8 +395,10 @@ export function peerRecordFor(relPath, peerRecords) {
 
 /**
  * Render the peer-write notice (#1195) — deliberately a NOTICE and not part of
- * the violation report: the path is outside this wave's `allowedPaths` by
- * construction, and saying so would re-file an agreed peer write as an alarm.
+ * the violation report: a peer record is EXCLUDED from the union that computes
+ * `allowedPaths` (`unionFileScopes`, `scripts/lib/scope-gate.mjs`), so a peer
+ * path is outside `allowedPaths` and reaches this branch; naming it as a
+ * violation would re-file an agreed peer write as an alarm.
  *
  * @param {string} relPath
  * @param {string} peerId the `peer-session-<id>` record id
@@ -996,14 +1002,16 @@ async function main() {
   // above so the gate cannot swallow it.
   if (missingSnapshotNotice) messages.push(missingSnapshotNotice);
   // #1195 — a path a PEER session declared (a `peer-session-*` record in this
-  // wave's aggregate sidecar) is outside `allowedPaths` by construction, yet it
-  // is an agreed write, not a bypass. Split it out of the violation report and
+  // wave's aggregate sidecar) is outside `allowedPaths` because `--union`
+  // EXCLUDES peer records when computing it (`unionFileScopes`,
+  // `scripts/lib/scope-gate.mjs`) — that exclusion is what keeps this branch
+  // reachable. Such a write is agreed, not a bypass. Split it out of the violation report and
   // name it, so the peer's file is countable without being an alarm. Sidecar
   // absent ⇒ `peerRecords` is empty ⇒ every path stays a violation, unchanged.
   const peerRecords = readPeerScopeRecords(path.dirname(scopePath), scope.wave);
   const violations = [];
   for (const relPath of report) {
-    const peerId = peerRecords.length > 0 ? peerRecordFor(relPath, peerRecords) : null;
+    const peerId = peerRecordFor(relPath, peerRecords);
     if (peerId) messages.push(formatPeerWriteNotice(relPath, peerId));
     else violations.push(relPath);
   }

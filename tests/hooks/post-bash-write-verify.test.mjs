@@ -789,6 +789,29 @@ describe('post-bash-write-verify E2E', () => {
     );
     // The decisive half: the same path must NOT also be counted as a violation.
     expect(res.stderr).not.toContain('OUTSIDE the wave');
+
+    // The PREMISE of this test — 'peer/**' absent from allowedPaths — is not a
+    // fixture convenience: it is what the production union must produce from
+    // this very sidecar. While `--union` unioned peer records in, allowedPaths
+    // granted 'peer/**' to every agent of the wave and this branch was
+    // unreachable in production, passing here only because the fixture wrote
+    // allowedPaths by hand (W4 architect HIGH-1, #1195).
+    const union = spawnSync(
+      process.execPath,
+      [
+        new URL('../../scripts/validate-wave-scope.mjs', import.meta.url).pathname,
+        '--union',
+        join(tmp, '.claude', 'filescopes', 'wave-4.scopes.json'),
+      ],
+      {
+        input: JSON.stringify({
+          wave: 4, role: 'Impl', enforcement: 'warn', allowedPaths: [], blockedCommands: [],
+        }),
+        encoding: 'utf8',
+      },
+    );
+    expect(union.status).toBe(0);
+    expect(JSON.parse(union.stdout)).not.toContain('peer/**');
   });
 
   it('is unchanged when the aggregate sidecar is absent (#1195)', () => {

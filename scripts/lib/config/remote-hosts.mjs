@@ -49,11 +49,17 @@ export const ALLOWED_REMOTE_ROLES = Object.freeze(['test', 'ui', 'perf']);
 
 // A host `alias` is an ssh destination that reaches argv as `-H <alias>`: letters,
 // digits, hyphen, underscore, dot only. No spaces, no shell metacharacters.
-const SAFE_NAME_RE = /^[A-Za-z0-9._-]+$/;
+//
+// The first character is anchored separately from the rest because a charset
+// cannot express a POSITION: an alias of `-H` passes any hyphen-inclusive
+// allowlist and then reaches argv as an OPTION token, where the CLI swallows the
+// operand behind it. Interior hyphens (`m5-box`) stay legal.
+const SAFE_NAME_RE = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/;
 
 // `repo-path` / `claude-path` are filesystem paths handed to a remote shell —
-// same allowlist as custom-phases' `review`.
-const SAFE_PATH_RE = /^[A-Za-z0-9._~/-]+$/;
+// same allowlist as custom-phases' `review`, with the same leading-hyphen anchor
+// as SAFE_NAME_RE above (`--x` is a flag, not a path).
+const SAFE_PATH_RE = /^[A-Za-z0-9._~/][A-Za-z0-9._~/-]*$/;
 
 /**
  * Parse the top-level `remote-hosts:` YAML list block from markdown content.

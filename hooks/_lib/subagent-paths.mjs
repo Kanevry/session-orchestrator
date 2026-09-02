@@ -84,6 +84,24 @@ export function isValidAgentId(agentId) {
  * override without a `.jsonl` suffix is ever observed, this needs its own
  * validation branch instead of the current always-well-formed assumption.
  *
+ * NAMED CEILING (BV-004, LOW, qa review): the override's containment check
+ * (`path.relative(resolvedDir, resolvedOverride)` below) is LEXICAL, not
+ * filesystem-real — it runs on `path.resolve()`'d strings, never on
+ * `fs.realpathSync()`'d ones. A symlink SITTING INSIDE `dirname(transcriptPath)`
+ * whose TARGET points outside that tree therefore passes containment: the
+ * lexical path looks contained, the file it actually resolves to is not.
+ * Deliberately not fixed with a realpath call here — every current consumer
+ * of this override branch (hooks/post-subagent-discovery-validator.mjs) only
+ * READS the resulting sidecar files, and `agentTranscriptPath` is a value the
+ * HARNESS itself supplies on stdin, not one an untrusted external actor can
+ * inject — so the realpath syscalls would buy nothing against the live
+ * threat model. REVISIT TRIGGER: if `agentTranscriptPath` (or any future
+ * override this module accepts) is ever sourced from a producer this repo
+ * does NOT trust as much as the harness's own stdin payload, resolve both
+ * `resolvedOverride` and `resolvedDir` through `fs.realpathSync()` before the
+ * `path.relative()` comparison, so a symlink cannot smuggle the effective
+ * path outside the allowed tree.
+ *
  * @param {object} args
  * @param {string|undefined|null} args.transcriptPath — parent transcript path
  *   (stdin `transcript_path`, or an equivalent parent-transcript path)

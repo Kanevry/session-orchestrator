@@ -26,18 +26,40 @@
  * `check-dead-bridge.mjs`'s `:ignore` marker already use in this directory.
  *
  * ORACLE. A plain substring match of the checker's own basename (e.g.
- * `"check-foo.mjs"`) against the text of the three surface files — the same
- * granularity `runCheck('check-foo.mjs')` calls and `.husky`/CI script lines
- * already use to name a checker. MEASURED (HEAD 2ccea0f2, all 33 live
- * `check-*.mjs` basenames): zero basenames are a substring of another, so
- * this match cannot cross-attribute one checker's registration to a
- * different one.
+ * `"check-foo.mjs"`) against the COMMENT-STRIPPED text of the three surface
+ * files — the same granularity `runCheck('check-foo.mjs')` calls and
+ * `.husky`/CI script lines already use to name a checker. MEASURED (HEAD
+ * 2ccea0f2, all 33 live `check-*.mjs` basenames): zero basenames are a
+ * substring of another, so this match cannot cross-attribute one checker's
+ * registration to a different one.
+ *
+ * COMMENT-STRIPPING (HIGH, qa review, #1184 FX-C). A basename referenced
+ * ONLY inside a `//`/`#` line comment or a `/* *\/` block comment is NOT a
+ * real registration — the surface text is stripped of comments (quote-aware,
+ * so a `#`/`//` INSIDE a string — a URL fragment, a shell parameter
+ * expansion `${VAR#pattern}` — is never mistaken for a comment start) before
+ * matching. MEASURED before this fix: a fixture whose only reference to
+ * `check-ghost.mjs` sat in `// runCheck('check-ghost.mjs'); // DISABLED`
+ * reported `registered: true` (exit 0) — commenting a checker OUT silently
+ * kept it PASSing. `scripts/validate-plugin.mjs` uses `//`+`/* *\/` (js);
+ * `.husky/pre-commit` and `.gitlab-ci.yml` use `#` (sh/yaml) — see
+ * {@link commentStyleForSurface}. The checker's OWN
+ * `// registration: standalone` header marker is read from the CHECKER file
+ * directly (never from a surface text) and is unaffected by this stripping.
  *
  * NAMED CEILING (BV-004): a checker referenced only in prose (a `.md` doc, a
  * skill body) and nowhere in the three RUN surfaces above still reports
  * UNREGISTERED — being documented is not being run. REVISIT if a fourth run
  * surface (a new CI job file, a different git hook) is ever added: extend
- * `RUN_SURFACES`, do not special-case it here.
+ * `RUN_SURFACES`, do not special-case it here. The comment stripper's own
+ * quote-tracking is a single flat state — an escaped quote (`\"`) inside a
+ * double-quoted string is not honoured, and a template-literal's `${...}`
+ * interpolation is not walked separately. Both failure directions lean
+ * toward treating MORE text as "inside a string" than a real parser would,
+ * which can only make the stripper MISS a comment (false "still
+ * registered"), never manufacture a false UNREGISTERED — the direction this
+ * checker's own false-positive history (the paragraph above) already
+ * measured as the live hazard.
  *
  * Usage: check-validator-registration.mjs <repo-root>
  * Output: `  PASS: …` / `  FAIL: …` lines (two leading spaces), then
@@ -66,6 +88,75 @@ const RUN_SURFACES = Object.freeze([
 const VALIDATE_DIR_REL = path.join('scripts', 'lib', 'validate');
 
 /**
+ * Comment style for a RUN_SURFACES path, keyed on extension rather than
+ * position — avoids a silent index-drift if `RUN_SURFACES` is ever
+ * reordered. `.mjs` gets JS-shaped comments (`//`, `/* *\/`, quotes
+ * `'`/`"`/`` ` ``); everything else (`.husky/pre-commit` has no extension,
+ * `.gitlab-ci.yml`) gets shell/YAML-shaped comments (`#` only, quotes
+ * `'`/`"`).
+ *
+ * @param {string} rel repo-relative surface path
+ * @returns {{lineComment: string, blockComment: boolean, quoteChars: string[]}}
+ */
+function commentStyleForSurface(rel) {
+  return rel.endsWith('.mjs')
+    ? { lineComment: '//', blockComment: true, quoteChars: ['"', "'", '`'] }
+    : { lineComment: '#', blockComment: false, quoteChars: ['"', "'"] };
+}
+
+/**
+ * Strip comments from `text` so a checker basename mentioned only inside a
+ * comment is never read as a real registration. Quote-aware: walks `'`/`"`
+ * (and, for the js style, `` ` ``) spans without inspecting their contents,
+ * so a comment marker INSIDE a string (a URL fragment `#frag`, a shell
+ * parameter expansion `${VAR#pattern}`) is left untouched rather than
+ * truncating the line early. See the header NAMED CEILING for what this
+ * quote-tracking deliberately does not attempt.
+ *
+ * @param {string} text
+ * @param {{lineComment: string, blockComment: boolean, quoteChars: string[]}} style
+ * @returns {string}
+ */
+export function stripComments(text, { lineComment, blockComment, quoteChars }) {
+  let out = '';
+  let i = 0;
+  let inQuote = null;
+  while (i < text.length) {
+    const ch = text[i];
+    if (inQuote) {
+      out += ch;
+      if (ch === '\\' && i + 1 < text.length) {
+        out += text[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === inQuote) inQuote = null;
+      i += 1;
+      continue;
+    }
+    if (quoteChars.includes(ch)) {
+      inQuote = ch;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (blockComment && ch === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      i = end === -1 ? text.length : end + 2;
+      continue;
+    }
+    if (text.startsWith(lineComment, i)) {
+      const nl = text.indexOf('\n', i);
+      i = nl === -1 ? text.length : nl; // keep the newline itself, drop the comment text
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+/**
  * @typedef {{basename: string, registered: boolean, standalone: boolean, surfaces: string[]}} RegistrationResult
  */
 
@@ -78,10 +169,14 @@ export function scanValidatorRegistration(repoRoot) {
     (f) => /^check-.*\.mjs$/.test(path.basename(f)),
   );
 
+  // Comment-stripped before matching (HIGH, #1184 FX-C): a basename
+  // referenced only inside a `//`/`#`/`/* *\/` comment is NOT a real
+  // registration — see the header's COMMENT-STRIPPING paragraph.
   const surfaceTexts = RUN_SURFACES.map((rel) => {
     const abs = path.join(repoRoot, rel);
     try {
-      return existsSync(abs) ? readFileSync(abs, 'utf8') : '';
+      const raw = existsSync(abs) ? readFileSync(abs, 'utf8') : '';
+      return stripComments(raw, commentStyleForSurface(rel));
     } catch {
       return '';
     }
