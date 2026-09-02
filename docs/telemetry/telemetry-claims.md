@@ -58,29 +58,30 @@ the measurement recipe — see [Reproduce it yourself](#reproduce-it-yourself).
 
 ---
 
-## In-repo test suite — the "10,000+ tests" badge
+## In-repo test suite — the "15,000+ tests" badge
 
 Distinct from the private-corpus figures above, the README **Tests** badge and the
-"10,000+ vitest tests run on every commit" line count **this repository's own test
+"15,000+ vitest tests run on every commit" line count **this repository's own test
 suite** — a **public, CI-verifiable** number, not a maintainer-reported aggregate.
 
 | Claim | What it counts | How measured | As-of |
 | --- | --- | --- | --- |
-| 10,000+ vitest tests | executed test cases across `tests/**/*.test.mjs` | `npm test` prints the exact runtime total; the static floor is countable without running the suite (below) | 2026-06 |
+| 15,000+ vitest tests | executed test cases across `tests/**/*.test.mjs` | `npm test` prints the exact runtime total; the static floor is countable without running the suite (below) | 2026-09 |
 
 Both numbers reproduce in a fresh checkout:
 
 ```bash
-find tests -name '*.test.mjs' | wc -l                    # test files            -> 475
-grep -rohE '\b(it|test)\(' tests | wc -l                 # static test defs      -> ~9,871
-grep -rohE '\b(it|test|describe)\.each\b' tests | wc -l   # parameterized blocks  -> 93
+find tests -name '*.test.mjs' | wc -l                    # test files            -> 637
+grep -rohE '\b(it|test)\(' tests | wc -l                 # static test defs      -> ~13,361
+grep -rohE '\b(it|test|describe)\.each\b' tests | wc -l   # parameterized blocks  -> 440
 ```
 
-The static `it(` / `test(` count (~9,871 across 475 files) is a **floor**: the 93
+The static `it(` / `test(` count (~13,361 across 637 files) is a **floor**: the 440
 `it.each` / `test.each` parameterized blocks each expand to multiple executed cases
-at runtime, so the **case count vitest reports on `npm test` is 10,000+**. Unlike the
-private-corpus figures above, this one is fully auditable — run `npm test` in this
-checkout and read vitest's summary line.
+at runtime, so the **case count vitest reports on `npm test` is 15,000+** (measured
+15,869/0 on the local Full Gate at HEAD, 2026-09-02). Unlike the private-corpus
+figures above, this one is fully auditable — run `npm test` in this checkout and
+read vitest's summary line.
 
 ## Methodology
 

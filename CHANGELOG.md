@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.24.0] - 2026-09-02
+
+Five commits since v3.23.0 (4 `feat`, 1 `docs`; 152 files, +14,596/−942), no
+`BREAKING CHANGE:` footer and no `!` subject.
+
+One `docs` commit (`c3ab4801`) adds ADR-0013, naming the ownership-check-before-deregister
+ordering that closed Wave 4 of the previous session. One `feat` commit (`a019d5a4`, deep
+session, 5 waves, 37 agents + 3 reviewers + 3 panel) closes the GH#67 peer-filter class
+across every affected site, plus #1170, #1176, #1177, #1166, #1167, #1174, #1180 and #1175.
+One `feat` commit (`936dae8a`) closes a Fleet-Mining v2 instrument audit across 18 repos
+(1,587 learnings, 144k events, 347 telemetry records) with five repairs to the fleet's own
+measurement instruments (#1189, #1190, #1191, #1192, #1193).
+
+Two further `feat` commits (`2ccea0f2`, `3b352d78`) are Waves 2 and 3 of a new session (11
+agents each; Opus for guards/identity/protocol, Sonnet for consolidation/polish). The
+through-line: identity and scope boundaries are now drawn at the PROCESS, not the working
+copy — a peer session's manifest in the same checkout is `foreign`, a dispatched subagent's
+raw session id belongs to its coordinator, and four duplicated helper implementations
+collapse to one canonical each.
+
 ### Added
 
 - **`orchestrator.reconcile.completed` (#1192).** Wrapper around `runReconcile` covering all
@@ -53,6 +73,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (personal PAT) for `SCHEMA_DRIFT_TOKEN`. Activation is blocked on the documented
   vendor-ahead drift tracked in #531: the token is provisioned but the CI/CD variable is not
   yet set upstream.
+- **A `remote-hosts:` config block routes wave work to another machine over SSH (#1160).**
+  `scripts/lib/config/remote-hosts.mjs` adds the block (opt-in template + reference doc) and
+  an `ssh:<alias>` channel in `agent-mapping`; the wave-resource gate adds an `offload`
+  decision AFTER the HR-004 heavy-repo cap, gated on an injected readiness witness
+  (`remoteReady` map or async `probeFn`) — the gate never probes the network itself, so with
+  no witness the decision stays local. `dispatchRemote()`/`remoteDoctor()`/
+  `remoteReadyProbe()` wrap the host-side `offload` CLI (prompt travels on stdin, never argv;
+  exit codes 1–8 mapped to typed refusal reasons; an empty returned patch counts as failure,
+  not success). Emits `orchestrator.remote_dispatch.completed` on every attempt AND every
+  refusal (`ok:false`, `exit_code: null`) — the payload carries the configured alias, never a
+  hostname or IP. `skills/remote-offload/SKILL.md` documents the channel generically for any
+  consuming repo (skill count measured 48 → 49); wave-3 added the fourth wave-executor
+  dispatch branch (`ssh:<alias>` via `dispatchRemote()`) to `wave-loop.md` alongside the
+  existing three.
+- **A Peer-Scope-Union protocol lets two coordinator sessions in the same working copy share
+  scope without racing (#1195).** `skills/_shared/parallel-aware-auq.md` documents the
+  four-step handshake plus a message template; `skills/wave-executor/wave-loop.md` §
+  Scope Manifest 3.1a adds a `peer-session-<id>` record (rolled over each wave, cleared at
+  session-end) that is included in the disjoint check but excluded from the coordinator's own
+  file-scope union; a new branch in the `parallel-sessions.md` decision tree routes to it; and
+  `hooks/post-bash-write-verify.mjs` now partitions a peer's writes from genuine scope
+  violations instead of flagging both alike.
+- **Session-start now writes its own identity before anything can read it wrong (#1199).**
+  Phase 1.05 adds a self-report block (`session_id: null` before Phase 1.2 resolves it) so
+  downstream consumers see an explicit unresolved state instead of inferring one.
+- **`/evolve` and the auto-dialectic nudge now emit their own completion events (#1200).**
+  `orchestrator.evolve.completed` and `dialectic.completed` are emitted via `emit-event.mjs`
+  from inside the skill; `decideAndRecordAutoDialectic()` emits `dialectic.nudge_decided`
+  mechanically rather than leaving the decision only in skill prose, consumed by
+  `phase-3-6-tail.md`.
 
 ### Changed
 
@@ -65,6 +115,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `<dir>/<base>/subagents/agent-<agent_id>.jsonl` — no fallback to the main transcript), and
   the violation event now carries `agent_id`. Repos that relied on the silent default lose the
   signal until they set `enabled: true` explicitly.
+- **Scope enforcement now treats every identity as process-local, including your own
+  (#1194).** `enforce-scope.mjs` reads session ids via a new `readProcessLocalSessionIds()`
+  instead of `readOwnSessionIds()` — a peer's manifest sitting in the SAME working copy now
+  classifies as `foreign`, not `own`. Two existing tests had asserted the inverted behaviour
+  and were rewritten with a named ceiling (a harness with no session id, e.g. bare
+  Codex/Cursor, resolves to `unknown` → enforce, never skip); `scope-collision-guard.md` and
+  `state-ownership.md` were updated to match.
+- **`memory.propose`'s lock check is now a raw→semantic lookup, not a trust boundary
+  (#1188).** The lock is consulted only to translate the caller's raw id into its semantic
+  session id, authorised by a process-local match against the RAW id — measured: a dispatched
+  subagent carries the COORDINATOR's raw UUID in `CLAUDE_CODE_SESSION_ID`, never its own.
+  `sessions-canonical.mjs` and the backfill path now distinguish silent `ENOENT` from loud
+  `EACCES`/`EISDIR` in two separate ledger readers instead of treating every read failure the
+  same.
+- **Four duplicated helper implementations collapse to one each.**
+  `scripts/lib/validate/markdown-fences.mjs` (#1181) replaces 4 line-start-only fence
+  scanners with one line-start-AND-end-anchored automaton shared by all 4 callers
+  (`validate-plugin` output byte-identical before/after, 203/0). `expandTilde` (#1182)
+  replaces 8 copies of home-directory expansion with the existing `common.mjs`
+  implementation — one of the deleted copies (`gitlab-portfolio/cli.mjs`) mis-expanded
+  `~user` (a different user's home, not the caller's). `hooks/_lib/subagent-paths.mjs`
+  (#1196) replaces 4 divergent sidecar-path derivations with one carrying the strictest rules
+  from any of them (agent-id length `{1,64}`, `'unknown'` rejected,
+  `agent_transcript_path` confined inside the transcript directory).
+  `hooks/_lib/atomic-json.mjs` (#1197) replaces 4 byte-identical copies with one whose
+  read-modify-write default only replaces a genuinely MISSING file (`ENOENT`) — an
+  unparsable or unreadable file is no longer silently overwritten with the default.
+- **A block-header matcher gained an indent+inline-value form, additively (#1185).**
+  `matchBlockHeaderDetailed` is now shared so `health-endpoints.mjs` no longer maintains its
+  own `HEADER_RE`.
+- **Five readers now go through the canonical `sessions.jsonl` collapse instead of counting
+  raw lines (#1186).** `telemetry/sync.mjs` and `build-live-signals.mjs` (wave 2), plus
+  `site-numbers.mjs` and `vault-mirror.mjs --kind session` (wave 3), now read
+  newest-per-`session_id`; on this repo the session count measured 289 lines → 278 sessions
+  (11 duplicate lines collapsed). Two tests pinning the old raw-line count were removed as no
+  longer testing real behaviour.
+- **Wave-completion refusals are now named events, not silent skips (#1201).**
+  `KNOWN_TRIGGERS` plus three explicit wrapper functions (`runReconcileFromSkill`/
+  `AtSessionEnd`/`FromPhaseSkip`) replace an implicit trigger string — an unrecognised
+  trigger now throws instead of silently defaulting. `emitFinalWaveCompleted` emits
+  `orchestrator.wave.final_refused` for all six refusal paths instead of leaving them
+  unrecorded — closing the same class of instrument gap named in
+  `.claude/rules/host-resources.md` § HR-105.
 
 ### Fixed
 
@@ -158,6 +251,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `onLockOutcome` reports a `staleOverride` reason when the lock was force-acquired past a
   stale holder, and `sweepBoard()`'s board event now records it too — distinguishing "the
   mutex worked as designed" from "a slow host looked like a crash".
+- **`check-hooks-emit-event-guard` and `check-validator-registration` both went live in
+  `validate-plugin` (#1183, #1184).** `check-hooks-emit-event-guard.mjs` (#1183) parses hooks
+  via `@babel/parser` (AST, not regex) to catch a hook that mutates state without emitting a
+  corresponding event; 5 pre-existing sites are grandfathered into an explicit WARN baseline
+  with a reason and stale-detection instead of silently passing. `check-validator-registration.mjs`
+  (#1184) confirms every validator module is actually wired into `validate-plugin.mjs`
+  (measured 33 of 33 wired, using comment-stripped source so a commented-out registration
+  doesn't count as live).
+- **`check-skill-script-paths`'s new `--strict-sh` mode found its own premise refuted
+  (#1187).** Extending the dead-path scan to shell-script citations, only 1 of 27 `.sh`
+  references sits inside the tool's own scan directories (`skills/`, `commands/`, `agents/`)
+  — the other 26 are in `docs/`, alongside 7 dead `.mjs` citations inside `docs/adr/` the same
+  run surfaced. Shipped as a WARN-only opt-in flag; the `docs/` sweep is a follow-up.
+- **The discovery-validator's dedupe key, gate-summary skip, and masking order all landed
+  together (#1198).** A dedupe key (`session_id`, `agent_id`, `sha256(claim)`) collapses
+  repeated flags of the identical claim; gate-summary recap lines (the coordinator's own
+  restatement of a subagent's findings, not a fresh claim) are now skipped entirely; claim
+  masking now runs before every pattern is checked, not a subset. Measured against the
+  flagged corpus: 186 of 400 flagged claims were false positives. Two claims from this
+  session's own discovery briefing were checked against the fix and refuted.
+- **A pre-push scratch-vs-publish check now reads the two arguments git already passes it.**
+  `.husky/pre-push` had never read `$1` (remote name/URL) or `$2` (remote URL) — confirmed by
+  `rg -n '\$1|\$2' .husky/pre-push` finding only a local function's own arguments — so every
+  push ran the full quality gate regardless of destination. It now skips the gate for a raw,
+  unconfigured scratch URL (e.g. the remote-offload sync target) while continuing to gate
+  real publish remotes; a named ceiling covers a real but unlisted third publish host, which
+  still reads as scratch.
+- **`check-untracked-test-deps` misclassified `.git` as an untracked file inside a linked
+  worktree.** In a normal checkout `.git` is a directory and was already excluded; in a
+  `git worktree add` checkout `.git` is a FILE containing `gitdir: <path>`, which satisfied
+  the same `isFile()` check the untracked-candidate branch uses. `.git` is now explicitly
+  exempted regardless of which shape it takes — measured 62 of 62 tests passing across the 5
+  affected test files inside a linked worktree checkout.
 
 ## [3.23.0] - 2026-08-28
 

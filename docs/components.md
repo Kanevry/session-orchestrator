@@ -26,7 +26,7 @@ flowchart LR
 - **Architecture:** `architecture`, `domain-model`, `ubiquitous-language`
 - **Cross-session:** `evolve`, `convergence-monitoring`, `memory-cleanup`, `reconcile`, `sunset-review`, `eval`
 - **Vault & docs:** `vault-sync`, `vault-mirror`, `daily`, `docs-orchestrator`
-- **Ecosystem:** `bootstrap`, `gitlab-ops`, `gitlab-portfolio`, `ecosystem-health`, `mode-selector`, `autopilot`, `dispatcher`, `spinout`, `npm-publish`
+- **Ecosystem:** `bootstrap`, `gitlab-ops`, `gitlab-portfolio`, `ecosystem-health`, `mode-selector`, `autopilot`, `dispatcher`, `remote-offload`, `spinout`, `npm-publish`
 - **Testing:** `test-runner`, `playwright-driver`, `peekaboo-driver`
 - **Content review:** `persona-panel`
 - **Operator ergonomics:** `eli5` (plain-language restatement of the last answer)

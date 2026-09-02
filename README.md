@@ -1,9 +1,9 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.23.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-3.24.0-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
-[![Tests](https://img.shields.io/badge/tests-12%2C000%2B-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
+[![Tests](https://img.shields.io/badge/tests-15%2C000%2B-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
 
 Loop engineering for AI coding agents — turn ad-hoc sessions into a repeatable research → plan → wave-execute → close loop with verification gates. Runs on **Claude Code, Codex CLI, Cursor, and [Pi](docs/pi-setup.md)**.
 
@@ -76,7 +76,7 @@ Everything else is opt-in. See [`docs/session-config-template.md`](docs/session-
 - **28 slash commands** (`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/grill`, `/evolve`, `/autopilot`, `/dispatcher`, `/reconcile`, `/eval`, `/test`, `/debug`, …)
 - **15 typed subagents** (code-implementer, test-writer, security-reviewer, session-reviewer, qa-strategist, architect-reviewer, …)
 - **10 hook event types** enforcing scope, blocking destructive commands, gating templates-first, capturing telemetry — full on Claude Code; experimental, post-hoc, or bridged on the other platforms ([Platform support](#platform-support))
-- **10,000+ vitest tests** run on every commit ([telemetry methodology](docs/telemetry/telemetry-claims.md))
+- **15,000+ vitest tests** run on every commit ([telemetry methodology](docs/telemetry/telemetry-claims.md))
 
 Full component inventory: [`docs/components.md`](docs/components.md).
 
@@ -133,19 +133,21 @@ The system is markdown-driven config plus a thin Node runtime — skills, comman
 - **Cross-session learning is opt-in and inspectable.** Every session writes a record; after 5+ sessions `/evolve analyze` extracts confidence-scored patterns you can read and prune. Nothing is hidden.
 - **VCS dual support, no lock-in.** Auto-detects GitLab or GitHub from your remote and drives the full lifecycle for both.
 
-## Recent highlights (v3.23.0)
+## Recent highlights (v3.24.0)
 
-Every release is additive and backward-compatible. Highlights of the v3.23.0 line: the first shaped by three external bug reports on the public mirror (Kanevry#64, #65, #66), all three reproduced, fixed and live-verified:
+Every release is additive and backward-compatible. Highlights of the v3.24.0 line: parallel-session identity moves from repo-scoped to process-local, remote work gets a declared host channel, and four duplicated-copy classes collapse to one module each:
 
-- **Codex CLI mints UUIDv7 session ids; every reader accepted only v4 (#66 / #1091)** — each SessionStart minted a fresh v4, so a resumed or compacted thread read its own lock as a foreign session. `parseSessionId` now accepts RFC 9562 versions 1–8 and the stop/end hooks apply the writer's rule, so one id owns the lock from start through release. The `UUID_V4_RE` alias is gone: zero importers, and a name that said v4 while matching v1–8.
-- **Every `/close` wrote 0 of 5 recommendation fields (#65 / #1036)** — the documented Phase 3.7a call passed `undefined` where a repo root is required, and the fail-open catch hid it on every run. The snippet binds the root; the catch now names the cause. A second defect found while verifying the fix: backticks in a comment inside a `node -e "…"` string made bash execute `undefined` on each close.
-- **Codex copies a marketplace plugin and starts the MCP child with no plugin-root variable (#64)** — measured: the copy lives under `~/.codex/plugins/cache/<marketplace>/session-orchestrator/<version>/`, and from a non-git cwd the launcher resolved to `/scripts/mcp-server.sh`. `.mcp.json` and `plugin-root.mjs` gained a cache-scan tier with a name-matched `package.json`, and `.mcp.json` now mirrors the module's tier order under two drift tests. Existing installs need a reinstall — Codex snapshots `.mcp.json` at install time.
-- **Worktree-Auto-Promotion is a process boundary, not a live migration (#1069, ADR-0013)** — the source session deregisters and releases its lock before the new worktree's session acquires (`leaveSourceRoot()`, called from inside `enterWorktree()` since #1170), which removes the phantom peer that stayed visible for up to 60 minutes. Because the new session's id never equals the worktree suffix, Phase 4a cleanup keys on a promotion marker written at creation time; the review panel found that key dead before any user did.
-- **The host registry contributed nothing to session numbering (#1066)** — the census projected only raw UUIDs, which the n-increment discards. It now counts `semantic_session_id`, so two sessions on one host cannot mint the same label. The semantic id stays a best-effort label; ownership remains the raw id plus owner proof.
-- **The mode selector scored a field no record carries (#1071)** — `completion_rate` sits under `effectiveness` in all 281 ledger records; the flat read was always `undefined`, so the high-completion bonus was unreachable and the fixtures pinned a shape production never writes. Fixed with a nested-first read and a divisor test for the 99 records that carry no rate at all.
-- **Semgrep regained two rules a path filter had dropped (#1129)** — re-aimed at this repo's real trust boundary (hook stdin, child-process stdout), taint-mode; the first true positives were three unguarded `JSON.parse` calls on `glab`/`gh` output in the CI banner. A proposed spread-sink was refused with a measurement: object spread cannot pollute a prototype.
+- **Parallel-session identity moves from repo-scoped to process-local (#1194 / #1188)** — `enforce-scope` now reads only process-local session ids (`readProcessLocalSessionIds`), so a peer's manifest in the same working copy is treated as foreign, not as your own; `memory-propose` authorizes off a process-local match of the raw session id rather than trusting the lock file alone. A peer's declared scope also gets its own place in the wave manifest now, as a `peer-session-<id>` record instead of a silent gap (#1195).
+- **Remote-offload: declare hosts, route heavy roles to a ready host instead of halving the wave (#1160)** — a `remote-hosts:` config block, an `ssh:<alias>` dispatch channel, and an offload decision wired into the resource gate right after the HR-004 cap (readiness is injected, never measured inside the gate itself). `skills/remote-offload/SKILL.md` is now the generic entry point, with adapters around the `offload` CLI.
+- **Four copy-classes collapsed to one module each (#1181 / #1182 / #1196 / #1197)** — atomic-JSON handling, subagent sidecar-path derivation, `expandHome`, and markdown-fence parsing each had 4–8 divergent copies; consolidating `atomic-json.mjs` also closed a data-loss path where a read-modify-write default silently replaced an unparsable or unreadable file.
+- **Refusals are now events, not silence (#1200 / #1201)** — `emitFinalWaveCompleted` writes `orchestrator.wave.final_refused` for six refusal paths, evolve and dialectic completions emit their own events, and reconcile's trigger set now lives in code (`KNOWN_TRIGGERS`) instead of being asserted in prose.
+- **Canonical session counting, fleet-wide (#1186)** — `site-numbers` and `vault-mirror --kind session` now count the same way everywhere: 289 raw lines in this repo's own ledger collapsed to 278 real sessions once double-counts were removed.
+- **Discovery-validator false positives cut — 186 of 400 measured hits were the harness's own gate-summary lines (#1198)** — a dedupe key and a gate-summary skip removed the noise; two brief claims about the masking order were also measured and refuted along the way.
+- **Three new mechanical guards land in `validate-plugin` (#1183 / #1184 / #1187)** — `emitEvent` try/catch coverage, validator-registration parity (every check actually wired in), and dead `.sh` citations in docs.
+- **The pre-push gate distinguishes a publish push from a scratch push; linked-worktree gates run green (15,829/0 on the remote host)** — a `.git` file (not a directory) in a linked worktree was previously misread as an untracked candidate, flagging 13 tracked files as missing.
+- **The AUQ clarity guard's delivery is proven live, not asserted (#1122)** — `check-auq-clarity` is wired into `validate-plugin` and blocks on the two hard hurdles at a measured 0% false-positive rate; its own wiring closes with a fake-regression proof, not a claim.
 
-Previous line (v3.22.0): instruments that confidently measured the wrong quantity — the 99%-firing resource warning, the AUQ audit, and the lock-release identity split.
+Previous line (v3.23.0): three external bug reports fixed end-to-end (Codex session-id versions, missing `/close` fields, plugin-root resolution), the worktree-promotion process boundary, and three measurement fixes (host-registry numbering, the mode-selector's mis-shaped read, two regained Semgrep rules).
 
 Full version history: [CHANGELOG.md](CHANGELOG.md).
 

@@ -174,6 +174,9 @@ custom-phases:
     when: both
     command: node scripts/archive-closed-prds.mjs --apply --prd-dir docs/plans --vault-subdir 01-projects/session-orchestrator/plans
     mode: warn
+remote-hosts:
+  - alias: m5
+    roles-allowed: [test, ui, perf]
 evolve:
   extra-sources: []
 dialectic:
