@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.24.0] - 2026-09-02
 
-Five commits since v3.23.0 (4 `feat`, 1 `docs`; 152 files, +14,596/−942), no
-`BREAKING CHANGE:` footer and no `!` subject.
+Six commits since v3.23.0 (4 `feat`, 1 `fix`, 1 `docs`; 160 files,
++15,586/−981 before the release commit), no `BREAKING CHANGE:` footer and no
+`!` subject.
 
 One `docs` commit (`c3ab4801`) adds ADR-0013, naming the ownership-check-before-deregister
 ordering that closed Wave 4 of the previous session. One `feat` commit (`a019d5a4`, deep
