@@ -298,6 +298,16 @@ describe('sweep-expired-learnings.mjs — usage', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('unknown argument');
   });
+
+  // #1206 — mode/flag mismatches are usage errors, never silent no-ops (same
+  // discipline as the pre-existing --grace-days/--entries gates below): a
+  // sweep-mode --appended would silently never emit, which reads as "my
+  // counters were recorded" when they never could be.
+  it('--appended without --prune exits with status 1', () => {
+    const result = runSweep(['--appended', '1']);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('only valid with --prune');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -477,6 +487,43 @@ describe('sweep-expired-learnings.mjs — --prune --json', () => {
       byReason: { expired: 1 },
       dryRun: true,
       archivePath,
+    });
+  });
+
+  // #1206 — the bug: a CLI that folds `orchestrator.evolve.completed` into
+  // this exit path but drops one of the telemetry flags on the floor reports
+  // success to the operator while the ledger record is missing or wrong.
+  it('with --apply --appended --boosted --duration-ms --repo-root, writes exactly one orchestrator.evolve.completed record', () => {
+    writeJsonl(learningsPath, [
+      liveLearning({ id: 'alive' }),
+      learning({ id: 'dead', subject: 'stale', expires_at: new Date(Date.now() - DAY_MS).toISOString() }),
+    ]);
+
+    const result = runSweep([
+      '--prune', '--apply',
+      '--file', learningsPath,
+      '--archive', archivePath,
+      '--json',
+      '--appended', '2',
+      '--boosted', '1',
+      '--duration-ms', '250',
+      '--repo-root', workdir,
+    ]);
+    expect(result.status).toBe(0);
+
+    const eventsPath = path.join(workdir, '.orchestrator', 'metrics', 'events.jsonl');
+    const records = readFileSync(eventsPath, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim().length > 0)
+      .map((l) => JSON.parse(l))
+      .filter((r) => r.event === 'orchestrator.evolve.completed');
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      appended: 2,
+      boosted: 1,
+      pruned: 1,
+      promoted: 0,
+      duration_ms: 250,
     });
   });
 });
@@ -666,5 +713,19 @@ describe('skills/evolve/SKILL.md § 3.5(5) — the named invocation, executed', 
     // The `&& rm -f "$NEXT"` half: the sidecar is consumed only on success, so
     // its absence proves the whole chain ran, not just the node call.
     expect(existsSync(sidecar)).toBe(false);
+
+    // #1206 — the block is ALSO the run's only orchestrator.evolve.completed
+    // emit now (Step 3.5's separate emit-event.mjs call was deleted). None of
+    // N/M/DURATION_MS is exported in this fixture, so `${N:-0}`-style bash
+    // expansion must degrade to 0 rather than erroring — this is the proof
+    // that it does, and that `pruned` still carries the real archived count.
+    const eventsPath = path.join(metrics, 'events.jsonl');
+    const events = readFileSync(eventsPath, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim().length > 0)
+      .map((l) => JSON.parse(l))
+      .filter((r) => r.event === 'orchestrator.evolve.completed');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ appended: 0, boosted: 0, pruned: 1, promoted: 0 });
   });
 });

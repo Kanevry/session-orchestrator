@@ -28,7 +28,7 @@ import {
   OFFLOAD_EXIT_REASONS,
   REMOTE_DISPATCH_EVENT,
 } from '@lib/wave-executor/remote-dispatch.mjs';
-import { NEVER_FOREIGN_ROLES } from '@lib/wave-executor/foreign-dispatch.mjs';
+import { NEVER_FOREIGN_ROLES } from '@lib/wave-executor/dispatch-common.mjs';
 
 /**
  * A fake child process. `writePatch` runs when the child is spawned, so a test

@@ -166,7 +166,11 @@ function releaseLock(lockFile, _myBody) {
 }
 
 /**
- * Read the current LWW map from disk. Returns {} on miss or parse error.
+ * Read the current LWW map from disk. Returns {} on a missing file (ENOENT)
+ * silently; an unreadable/unparseable one (EACCES/EISDIR/malformed JSON/…)
+ * also returns {} but with a stderr WARN (#1210 — ENOENT and other failures
+ * are different facts, same split as `sessions-canonical.mjs`
+ * `readCanonicalSessions`).
  * @param {string} currentFile
  * @returns {Record<string, object>}
  */
@@ -176,7 +180,14 @@ function readCurrentMap(currentFile) {
     const obj = JSON.parse(raw);
     if (obj && typeof obj === 'object' && !Array.isArray(obj)) return obj;
     return {};
-  } catch {
+  } catch (err) {
+    if (!err || err.code !== 'ENOENT') {
+      process.stderr.write(
+        `⚠ readCurrentMap: cannot read ${currentFile} ` +
+          `(${err?.code ?? '?'}: ${err?.message ?? String(err)}) — ` +
+          'treating as EMPTY, counts below are floors\n',
+      );
+    }
     return {};
   }
 }

@@ -141,7 +141,9 @@ function stripCommentLine(line) {
     return null;
   }
   // Single-line doc comment
-  if (trimmed.startsWith('// ') && !trimmed.startsWith('// ──')) {
+  // A bare `//` (blank line inside a canonical comment run) is a comment too —
+  // without this the generated block carried a stray `//` (measured 2026-09-03).
+  if (trimmed === '//' || (trimmed.startsWith('// ') && !trimmed.startsWith('// ──'))) {
     // Keep structural separator comments, drop narrative ones
     return null;
   }

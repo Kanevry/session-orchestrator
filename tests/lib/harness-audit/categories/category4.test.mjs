@@ -236,6 +236,43 @@ describe('runCategory4', () => {
   });
 
   // -------------------------------------------------------------------------
+  // #1209b — readCanonicalSessions migration: a duplicated session_id whose
+  // LATEST (canonical) state is abandoned must not let an EARLIER raw line
+  // for the SAME identity keep counting as "recent".
+  // -------------------------------------------------------------------------
+  it('fails sessions-jsonl-recent for a duplicated session_id whose canonical (newest) record is abandoned, even though an earlier raw line for the same id was recent and completed', () => {
+    ensureDir(join(root, '.orchestrator/metrics'));
+
+    // Pinned "now" is 2026-05-09T08:00:00Z (see beforeEach).
+    const oldRealCompletedAt = new Date('2026-04-08T08:00:00Z').toISOString(); // 31 days ago
+    const recentCompletedAt = new Date('2026-05-08T10:00:00Z').toISOString(); // 1 day ago
+
+    const lines = [
+      // Session B — genuinely old on its own; would fail the 30-day threshold.
+      JSON.stringify({ session_id: 'main-2026-04-08-session-1', session_type: 'deep', completed_at: oldRealCompletedAt, status: 'completed' }),
+      // Session A — FIRST raw occurrence: recent and completed.
+      JSON.stringify({ session_id: 'main-2026-05-08-session-1', session_type: 'deep', completed_at: recentCompletedAt, status: 'completed' }),
+      // Session A — SECOND raw occurrence, SAME session_id: a later
+      // correction marks it abandoned. A raw backward scan finds this LAST
+      // line, skips it (abandoned), then falls back to the FIRST occurrence
+      // above and (pre-#1209b bug) reports the session as recent.
+      JSON.stringify({ session_id: 'main-2026-05-08-session-1', session_type: 'deep', status: 'abandoned' }),
+    ];
+    writeFileSync(join(root, '.orchestrator/metrics/sessions.jsonl'), lines.join('\n') + '\n');
+
+    const checks = runCategory4(root);
+    const recentCheck = checks.find((c) => c.check_id === 'sessions-jsonl-recent');
+
+    // Canonical newest-wins collapses the two 'main-2026-05-08-session-1'
+    // lines to the ABANDONED one; the only surviving REAL record is the
+    // 31-day-old session B — the check must FAIL, not pass on the stale raw
+    // duplicate.
+    expect(recentCheck.status).toBe('fail');
+    expect(recentCheck.evidence.ageInDays).toBe(31);
+    expect(recentCheck.evidence.latestCompletedAt).toBe(oldRealCompletedAt);
+  });
+
+  // -------------------------------------------------------------------------
   // Edge case — sessions.jsonl file missing
   // -------------------------------------------------------------------------
   it('fails sessions-jsonl-recent when sessions.jsonl does not exist', () => {

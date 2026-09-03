@@ -213,6 +213,35 @@ function learningContentMatches(existingContent, renderedContent) {
   );
 }
 
+/**
+ * Would the process-wide masker (see `ensureMasker` below) still change `text`
+ * if it ran again right now? (#1028 residue 1)
+ *
+ * Used as a LAST guard before returning `skipped-noop` in `processLearning`.
+ * `learningContentMatches` above compares only five canonical fields, so it
+ * cannot see a raw secret sitting in a NON-canonical field (`evidence` is the
+ * realistic one — see the KNOWN-RESIDUAL note on `maskEntrySecrets` below): a
+ * candidate that matches on those five fields can still be an on-disk leak.
+ * When this returns `true`, the caller must NOT skip — it falls through to the
+ * write path so the note is re-rendered (and re-masked) from the current entry.
+ *
+ * NAMED CEILING: this only heals a needle that is still present in the CURRENT
+ * process env. A needle that has since been rotated out of the env no longer
+ * masks to anything different, so `mask(text) === text` and this returns
+ * `false` — that needle's leak is healed only by an explicit `force: true`
+ * re-mirror (which bypasses the comparison entirely), never by a plain re-run.
+ *
+ * COST: one extra `mask()` call per candidate no-op — cheap relative to the
+ * read/parse/render already done to reach this check, and only paid on the
+ * no-op path (a real content change already writes without reaching here).
+ *
+ * @param {string} text — on-disk note content to probe
+ * @returns {boolean} true when masking `text` again would produce different output
+ */
+function maskerWouldChange(text) {
+  return ensureMasker().mask(text) !== text;
+}
+
 // ── repo derivation ───────────────────────────────────────────────────────────
 
 /**
@@ -451,36 +480,38 @@ export function getMaskerStats() {
  *      as a wildcard (see that function) so this direction resolves to
  *      `skipped-noop` again.
  *
- *      KNOWN RESIDUAL — and NOT the one an earlier revision of this note named.
- *      That revision claimed a COLD-START FREEZE over the CANONICAL fields: first
- *      run without the env writes the raw value, later runs render `[REDACTED]`,
- *      and the note freezes. Measured, that direction HEALS: with no marker on the
- *      on-disk side `matchesModuloRedaction` returns false at its first line, the
- *      canonical fields differ, and the run writes the masked content. The
- *      asymmetry is still deliberate (an on-disk redaction is evidence a mask ran;
- *      an on-disk raw value is evidence of nothing) — it simply does not freeze
- *      anything the field comparison can see.
+ *      RESIDUAL (#1028), NOW HEALED BY A MASK RE-PROBE — and NOT the residual an
+ *      earlier revision of this note named. That revision claimed a COLD-START
+ *      FREEZE over the CANONICAL fields: first run without the env writes the raw
+ *      value, later runs render `[REDACTED]`, and the note freezes. Measured, that
+ *      direction HEALS: with no marker on the on-disk side `matchesModuloRedaction`
+ *      returns false at its first line, the canonical fields differ, and the run
+ *      writes the masked content. The asymmetry is still deliberate (an on-disk
+ *      redaction is evidence a mask ran; an on-disk raw value is evidence of
+ *      nothing) — it simply does not freeze anything the field comparison can see.
  *
- *      What DOES freeze is the half the field comparison cannot see.
- *      `learningContentMatches` compares exactly five canonical fields — `status`,
- *      `expires`, `confidence`, `insight`, `source_session`. A raw secret sitting
- *      in any OTHER field (`evidence` is the realistic one; it is agent-authored
- *      free text and it is rendered into the note) leaves all five identical
- *      between the raw on-disk note and the masked candidate. The comparison
- *      reports a match, the run emits `skipped-noop`, and the plaintext stays in
- *      the tracked, pushed file permanently — no later run rewrites it, because no
- *      later run ever sees a difference.
+ *      What the field comparison ALONE cannot see: `learningContentMatches`
+ *      compares exactly five canonical fields — `status`, `expires`, `confidence`,
+ *      `insight`, `source_session`. A raw secret sitting in any OTHER field
+ *      (`evidence` is the realistic one; it is agent-authored free text and it is
+ *      rendered into the note) leaves all five identical between the raw on-disk
+ *      note and the masked candidate — the comparison alone reports a match.
  *
- *      THE ESCAPE HATCH EXISTS AND IS UNDOCUMENTED ELSEWHERE, which is the real
- *      defect: `processLearning(entry, n, { ...ctx, force: true })` skips the
- *      date/content comparison entirely and re-renders from the (masked) entry, so
- *      a single forced re-mirror with the env populated heals every such note. It
- *      covers the same-id and legacy-flat paths; the disambiguated-collision
- *      branch below does not read `force` and is not healed by it.
- *      Revisit-Trigger: widen the canonical field set (or diff the whole rendered
- *      body) the first time a mirror run is observed leaving a raw needle in a
- *      non-canonical field — a test written TODAY would only pin the leak as
- *      expected behaviour.
+ *      THE FIX: every `skipped-noop` return in `processLearning` (legacy-flat,
+ *      disambig-collision, same-id) is now additionally gated by
+ *      `maskerWouldChange` (see that function above). When the on-disk content
+ *      would still be changed by the CURRENT masker, the run falls through to the
+ *      write path and re-renders (masked) instead of skipping — so a plain
+ *      re-mirror heals the leak on its own; `force: true` is no longer the only
+ *      escape hatch. The disambig-collision branch's `!force` guard now also
+ *      matches the same-id and legacy-flat branches (it previously lacked one, so
+ *      `force: true` was silently ignored on that one path).
+ *      Revisit-Trigger: `maskerWouldChange` only detects needles present in the
+ *      CURRENT process env — a needle since rotated out of the env is not seen as
+ *      still-leaking and is healed only by an explicit `force: true` re-mirror.
+ *      Widen this (e.g. persist a needle-shape fingerprint, or diff the whole
+ *      rendered body) the first time a rotated-out secret is observed staying on
+ *      disk after a plain re-run.
  *
  * FRONTMATTER AND BODY ARE TREATED IDENTICALLY. A credential is exactly as
  * published in `title:` as it is under `## Insight` — both live in the same
@@ -647,9 +678,17 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
         // Render the candidate and compare canonical fields before deciding to skip.
         const candidateContent = generator(entry, slug, generatorOpts);
         if (learningContentMatches(legacyContent, candidateContent)) {
-          return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: legacyFlatPath, id: slug });
+          // #1028 residue 1: the five-field compare cannot see a raw secret
+          // sitting in a non-canonical field (e.g. `evidence`) — probe the
+          // on-disk content against the CURRENT masker before trusting the
+          // match. See maskerWouldChange above.
+          const stillLeaks = maskerWouldChange(legacyContent);
+          if (!stillLeaks) {
+            return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: legacyFlatPath, id: slug });
+          }
         }
-        // Content differs — fall through to write into the namespaced path.
+        // Content differs, or the on-disk note still leaks under the current
+        // env — fall through to write into the namespaced path.
       }
       // Updated date would advance or content changed — fall through to write into the namespaced path.
     }
@@ -686,13 +725,22 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
           return emitEntryAction(_lineNum, ctx, { action: 'skipped-handwritten', path: targetPath, id: entryId });
         }
         // Check updated advancement; if date has not advanced, also diff content.
+        // #1028 residue 1: this guard previously lacked the `!force &&` that the
+        // legacy-flat and same-id branches carry, so `force: true` was silently
+        // ignored on this one path — byte-identical guard shape to those two now.
         const entryUpdated = toDate(dateSource);
-        if (disambigFm['updated'] && disambigFm['updated'] >= entryUpdated) {
+        if (!force && disambigFm['updated'] && disambigFm['updated'] >= entryUpdated) {
           const candidateContent = generator(entry, slug, generatorOpts);
           if (learningContentMatches(disambigContent, candidateContent)) {
-            return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: targetPath, id: disambigSlug });
+            // #1028 residue 1: probe the on-disk content against the CURRENT
+            // masker before trusting the five-field match — see maskerWouldChange.
+            const stillLeaks = maskerWouldChange(disambigContent);
+            if (!stillLeaks) {
+              return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: targetPath, id: disambigSlug });
+            }
           }
-          // Content differs — fall through to write.
+          // Content differs, or the on-disk note still leaks under the current
+          // env — fall through to write.
         }
       }
 
@@ -708,9 +756,15 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     if (!force && fm['updated'] && fm['updated'] >= entryUpdated) {
       const candidateContent = generator(entry, slug, generatorOpts);
       if (learningContentMatches(existingContent, candidateContent)) {
-        return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: targetPath, id: slug });
+        // #1028 residue 1: probe the on-disk content against the CURRENT masker
+        // before trusting the five-field match — see maskerWouldChange above.
+        const stillLeaks = maskerWouldChange(existingContent);
+        if (!stillLeaks) {
+          return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: targetPath, id: slug });
+        }
       }
-      // Content differs — fall through to overwrite (same path as date-advance branch).
+      // Content differs, or the on-disk note still leaks under the current env —
+      // fall through to overwrite (same path as date-advance branch).
     }
 
     // Overwrite with advanced updated date (or forced re-render)

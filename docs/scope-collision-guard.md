@@ -89,7 +89,7 @@ false
 true true
 ```
 
-Both globs match `scripts/lib/x.mjs`, yet the direct comparison says `false`. For `assertFileScopeSubset()` that inexactness is *safe*: its glob branch reduces to verbatim presence plus literal-prefix coverage and therefore **over-approximates coverage**, which at worst accepts a union it could not fully prove. For a **collision** check the sign flips — the same over-approximation becomes a **false negative**, i.e. a missed collision, i.e. the incident. That is why the two exact stages decide first and stage 3 is reached only for pairs neither can settle.
+Both globs match `scripts/lib/x.mjs`, yet the direct comparison says `false`. For `assertFileScopeSubset()` that inexactness is *safe*: its glob branch reduces to verbatim presence plus literal-prefix coverage and therefore **over-approximates coverage**, which at worst accepts a union it could not fully prove. For a **collision** check the sign flips — the same over-approximation becomes a **false negative**, i.e. a missed collision, i.e. the incident. That is why the two exact stages decide first and stage 3 is reached only for pairs neither can settle. <!-- path-check: example -->
 
 ## 4. The hook
 

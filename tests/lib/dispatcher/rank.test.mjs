@@ -415,3 +415,58 @@ describe('defaultDeps().staleDaysFor — abandoned-stub tail skip (#834)', () =>
     expect(staleDays).toBeLessThan(61);
   });
 });
+
+// ---------------------------------------------------------------------------
+// defaultDeps().staleDaysFor — #1209: a late-appended duplicate `session_id`
+// line must not shadow a genuinely newer session
+// ---------------------------------------------------------------------------
+
+describe('defaultDeps().staleDaysFor — #1209: late re-append of an OLD session_id does not mask a newer one', () => {
+  let tmpRoot;
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), 'rank-stale-dup-'));
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  /**
+   * Fake-regression fixture: a raw backward-position scan (the pre-#1209
+   * behaviour) trusts the LAST LINE as "most recent" — but a backfill/repair
+   * writer (`session-record-repair.mjs`, `migrate-sessions-jsonl.mjs`) can
+   * append a record for an OLD session well after genuinely newer sessions
+   * already ran. Here `old-session` is re-appended (same session_id, same
+   * content) as the LAST line, positionally after `new-session` — which is
+   * ~5 days old, not ~50.
+   */
+  function seedLateReappendFixture(nowMs) {
+    const dir = join(tmpRoot, '.orchestrator', 'metrics');
+    mkdirSync(dir, { recursive: true });
+    const oldCompletedAt = new Date(nowMs - 50 * MS_PER_DAY).toISOString();
+    const newCompletedAt = new Date(nowMs - 5 * MS_PER_DAY).toISOString();
+    const oldRecord = JSON.stringify({
+      session_id: 'old-session',
+      status: 'completed',
+      completed_at: oldCompletedAt,
+    });
+    const lines = [
+      oldRecord,
+      JSON.stringify({ session_id: 'new-session', status: 'completed', completed_at: newCompletedAt }),
+      // Late re-append of the SAME old session_id, positioned LAST.
+      oldRecord,
+    ];
+    writeFileSync(join(dir, 'sessions.jsonl'), lines.join('\n') + '\n', 'utf8');
+  }
+
+  it('computes stale-days from the genuinely newer session (~5), not the re-appended old duplicate (~50)', async () => {
+    const nowMs = Date.parse('2026-08-20T00:00:00.000Z');
+    seedLateReappendFixture(nowMs);
+
+    const staleDays = await defaultDeps().staleDaysFor(tmpRoot, nowMs);
+
+    expect(staleDays).toBeGreaterThan(4);
+    expect(staleDays).toBeLessThan(6);
+  });
+});

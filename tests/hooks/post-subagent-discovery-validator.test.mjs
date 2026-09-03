@@ -1163,4 +1163,80 @@ describe('post-subagent-discovery-validator hook', () => {
     expect(firstCtx).toContain('PSA-006');
     expect(secondCtx).toContain('PSA-006');
   });
+
+  // -------------------------------------------------------------------------
+  // #1211 — German distributional claims. D3 (Discovery, 2026-09-03) measured
+  // the proposal against 41 real German claim lines sampled from this repo's
+  // own events.jsonl: the quantifier-anchored German patterns (CLAIM_PATTERNS
+  // additions) flagged 7/41 (disciplined, same order of magnitude as the
+  // English six); a WIDE German bare-cardinal noun set flagged 39/41 (~57% FP
+  // in the labelled sample) and was rejected. Shipped: the quantifier
+  // patterns + a NARROW bare-cardinal German noun addition (Zeilen/Dateien/
+  // Datei/Aufrufer/Einträge only) + four German gate-summary shapes.
+  //
+  // The "davon" case is the #1198 sentence itself ("C4 bekommt 8 Einträge,
+  // davon 4 aus dem eigenen Dateiscope") — on the unmodified (pre-#1211)
+  // hook this claim carries no matching pattern at all and does NOT flag,
+  // which is the concrete bug #1211 fixes. See the fake-regression pinned
+  // below the positive block.
+  // -------------------------------------------------------------------------
+
+  it.each([
+    ['davon-Anker (ASCII "Eintraege")', 'C4 bekommt 8 Eintraege, davon 4 aus dem eigenen Dateiscope.'],
+    ['davon-Anker (Umlaut "Einträge")', 'C4 bekommt 8 Einträge, davon 4 aus dem eigenen Dateiscope.'],
+    ['N von M <noun>', '13 von 100 Learnings werden doppelt zugestellt.'],
+    ['alle N <noun>', 'Alle 8 Issues markiert und kommentiert.'],
+    [
+      'ratio + English "Commits" noun still flags alongside a German heading',
+      '**4/4 Kern-Issues geliefert und geschlossen**, 2 Commits auf origin/main:',
+    ],
+  ])('#1211 German positive "%s": flags a violation', (_label, claim) => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([claim]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    const events = readEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].claim_text).toBe(claim);
+  });
+
+  it.each([
+    [
+      'N Wellen, M Agents summary',
+      '**5 Wellen, 20 Agents, 3 Commits, CI-Pipeline #6995 grün auf `1e2ba8b`** (origin + github).',
+    ],
+    ['Arbeitsbaum leer', '**7 Commits, Arbeitsbaum leer, nichts gepusht.**'],
+    [
+      'Gate N.N/M ratio',
+      '**Welle 2** (7 Agenten + 3 Koordinator-Edits): 4 Commits auf beiden Remotes, Gate 14.118/0.',
+    ],
+    ['mit Nachweis geschlossen', '### Abgeschlossen (7 Issues, alle mit Nachweis geschlossen)'],
+  ])('#1211 German gate-summary "%s": does NOT flag', (_label, benign) => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([benign]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    expect(readEvents()).toEqual([]);
+  });
+
+  it('#1211 German claim WITH an adjacent rg measurement block → exit 0, NO violation', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([
+      [
+        'Alle 8 Issues wurden geprüft:',
+        '```bash',
+        'rg -c "Issue" report.md',
+        '```',
+      ].join('\n'),
+    ]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    expect(readEvents()).toEqual([]);
+  });
 });

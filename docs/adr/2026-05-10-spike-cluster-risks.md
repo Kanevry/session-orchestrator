@@ -48,9 +48,9 @@ A risk is **critical** if at least one of severity-high, likelihood-med, detecti
 - **Detection:** automatic via Session Config Zod schema validation (rejects on load). **Note:** the pre-bash destructive-command guard (`hooks/pre-bash-destructive-guard.mjs`) does NOT cover this path — it fires on Bash *tool* calls only, not on hook-internal `spawnSync`/`execFile`. The Zod validator IS first AND only line of defense.
 - **Mitigation (3 layers):**
   1. **Documentation rule** in `docs/session-config-reference.md`: verification commands MUST be idempotent and read-mostly. Citing `parallel-sessions.md` PSA-003 — *"Did I create this file/commit/change? If not, it is not mine to touch."* — verification runs inside a shared workspace and inherits PSA-003 destructive-action safeguards. **MUST emphasize that the pre-bash destructive guard does NOT protect this code path** (hook-internal spawn bypasses the Bash-tool guard surface).
-  2. **Zod schema validation** in `scripts/lib/verification-config.mjs` (NEW; mirrors `scripts/lib/owner-yaml.mjs` pattern from `owner-persona.md`) rejects known-dangerous patterns at config load: `git reset`, `git push --force`, `rm -rf`, `npm publish`, `git checkout --`, `git clean -f`, `> ` redirects to tracked files. Reuse the regex set from `.orchestrator/policy/blocked-commands.json` rather than re-inventing. **This is the only enforcement gate — there is no second line of defense.**
+  2. **Zod schema validation** in `scripts/lib/verification-config.mjs` (NEW; mirrors `scripts/lib/owner-yaml.mjs` pattern from `owner-persona.md`) rejects known-dangerous patterns at config load: `git reset`, `git push --force`, `rm -rf`, `npm publish`, `git checkout --`, `git clean -f`, `> ` redirects to tracked files. Reuse the regex set from `.orchestrator/policy/blocked-commands.json` rather than re-inventing. **This is the only enforcement gate — there is no second line of defense.** <!-- path-check: planned #366 -->
   3. **Sandbox option** for genuinely destructive proof commands: `verification.sandbox: worktree` runs the command inside a per-iteration `git worktree` (A5 mitigation). Default `none` so the safe path is the loud one.
-- **Escalation:** if the Zod validator regresses, there is NO architectural fallback covering hook-internal spawn. Treat any change to `scripts/lib/verification-config.mjs` as security-critical. Pair with R-CR-4 (execFile-allowlist) which adds a complementary gate at the *execution* boundary rather than the config-load boundary.
+- **Escalation:** if the Zod validator regresses, there is NO architectural fallback covering hook-internal spawn. Treat any change to `scripts/lib/verification-config.mjs` as security-critical. Pair with R-CR-4 (execFile-allowlist) which adds a complementary gate at the *execution* boundary rather than the config-load boundary. <!-- path-check: planned #366 -->
 
 ### R-CR-4: Arbitrary command execution via `verification.command` (#366)
 
@@ -58,10 +58,10 @@ A risk is **critical** if at least one of severity-high, likelihood-med, detecti
 - **Likelihood:** high without execFile-allowlist mitigation (any string fed to `spawnSync('sh', ['-c', cmd])` is full shell-injection surface)
 - **Detection:** automatic via Zod schema validator with binary allowlist + shell-metacharacter rejection at config-load time; complemented by `execFile`-with-`shell: false` at execution time (no shell parsing means no injection vector even if validator regresses)
 - **Mitigation (3 layers):**
-  1. **Zod validator with binary allowlist + shell-metacharacter rejection** in `scripts/lib/verification-config.mjs`: `verification.command` is an array `[binary, ...args]` (recommended) or a string parsed via whitespace-aware Zod transform. Reject any `command[0]` not in the allowlist (`npm`, `npx`, `node`, `pnpm`, `vitest`, project-local `./scripts/*`). Reject any element containing shell metacharacters (`$`, `` ` ``, `|`, `;`, `&&`, `||`, `>`, `<`, newline). Failure surfaces as `fail_reason: 'config-validation-error'`.
+  1. **Zod validator with binary allowlist + shell-metacharacter rejection** in `scripts/lib/verification-config.mjs`: `verification.command` is an array `[binary, ...args]` (recommended) or a string parsed via whitespace-aware Zod transform. Reject any `command[0]` not in the allowlist (`npm`, `npx`, `node`, `pnpm`, `vitest`, project-local `./scripts/*`). Reject any element containing shell metacharacters (`$`, `` ` ``, `|`, `;`, `&&`, `||`, `>`, `<`, newline). Failure surfaces as `fail_reason: 'config-validation-error'`. <!-- path-check: planned #366 -->
   2. **`execFile(bin, args, { shell: false })`** in `hooks/on-stop.mjs`: replace any `spawnSync('sh', ['-c', cmd])` with `execFile(binary, args, { cwd, stdio, shell: false, timeout: ... })`. With `shell: false`, the OS execve() call takes binary + argv directly — there is no shell to interpret metacharacters even if the validator misses one. This is the architectural backstop.
   3. **AC asserts shell-metacharacter rejection at config-validation time:** add a vitest test that feeds the Zod validator each metacharacter (`$`, `` ` ``, `|`, `;`, `&&`, `||`, `>`, `<`) embedded in command args and asserts rejection with `fail_reason: 'config-validation-error'`. This is a binary contract — re-runs floor/ceiling do NOT apply.
-- **Escalation:** if both the validator and `shell: false` are bypassed (e.g. operator force-pushes a malicious config + somehow re-introduces `sh -c`), the system has no further architectural defense. The pre-bash destructive guard does NOT fire on hook-internal spawn (see R-CR-3 note). Treat any PR touching `scripts/lib/verification-config.mjs` OR `hooks/on-stop.mjs` spawn invocation as security-reviewer-required.
+- **Escalation:** if both the validator and `shell: false` are bypassed (e.g. operator force-pushes a malicious config + somehow re-introduces `sh -c`), the system has no further architectural defense. The pre-bash destructive guard does NOT fire on hook-internal spawn (see R-CR-3 note). Treat any PR touching `scripts/lib/verification-config.mjs` OR `hooks/on-stop.mjs` spawn invocation as security-reviewer-required. <!-- path-check: planned #366 -->
 
 ## High risks
 
@@ -69,7 +69,7 @@ A risk is **critical** if at least one of severity-high, likelihood-med, detecti
 
 - **Severity:** high
 - **Likelihood:** med
-- **Detection:** automatic (`scripts/lib/validate/check-session-schema.mjs` runs in CI; flags missing required fields and unknown fields)
+- **Detection:** automatic (`scripts/lib/validate/check-session-schema.mjs` runs in CI; flags missing required fields and unknown fields) <!-- path-check: planned #364 -->
 - **Mitigation:** A6 documents the v1 schema (82 entries). Phase D extensions (`agent_identity`, `worktree_path`, `parent_run_id`, `stall_recovery_count`) MUST be **additive-only**: new fields default to `null` or `undefined`; existing readers tolerate missing fields. Bump `schema_version: 2` only when a field becomes required. Run the existing migrate-cli pattern (#305) for any non-additive change. Cite `backend-data.md` Migration Patterns: *"Always write reversible migrations."*
 - **Escalation:** if a reader breaks, fall back to `schema_version: 1` reads with explicit nullability handling for the new fields. Never strip unknown fields on write — preserves forward-compat for in-flight sessions.
 - **Status (2026-07-02):** the `schema_version: 2` bump landed via #372 — additive-only as mitigated above, gated on 135/135 production entries validating clean.
@@ -79,7 +79,7 @@ A risk is **critical** if at least one of severity-high, likelihood-med, detecti
 - **Severity:** high
 - **Likelihood:** med (two MCP servers exposing `list_items` with different semantics is plausible once the catalogue grows past one server)
 - **Detection:** automatic via a new `.mcp.json` validation step in `scripts/validate-plugin.mjs` (currently 27 checks; this becomes 28). Unique-name check across all registered servers.
-- **Mitigation:** enforce the prefix-by-server convention `mcp__<server>__<tool>` already used in `hooks/hooks.json:24–46` (A6). Document in `skills/mcp-builder/SKILL.md` as a hard rule, not a recommendation. Collision fails plugin-validation at install time. The `scripts/lib/tool-adapter.mjs` abstraction (#365 deliverable) is the natural enforcement point — but see R-M-3 for premature-abstraction risk.
+- **Mitigation:** enforce the prefix-by-server convention `mcp__<server>__<tool>` already used in `hooks/hooks.json:24–46` (A6). Document in `skills/mcp-builder/SKILL.md` as a hard rule, not a recommendation. Collision fails plugin-validation at install time. The `scripts/lib/tool-adapter.mjs` abstraction (#365 deliverable) is the natural enforcement point — but see R-M-3 for premature-abstraction risk. <!-- path-check: planned #365 -->
 - **Escalation:** if a third-party MCP server violates the convention, `tool-adapter.mjs` injects the prefix at registration time (best-effort) and logs a warning to `events.jsonl`.
 
 ### R-H-3: Worktree disk fill (#364)
@@ -117,7 +117,7 @@ A risk is **critical** if at least one of severity-high, likelihood-med, detecti
 ### R-M-3: Tool-adapter abstraction premature (#365)
 
 - **Severity:** medium · **Likelihood:** med · **Detection:** manual (review surfaces it as YAGNI)
-- A6 notes `scripts/lib/tool-adapter.mjs` does NOT exist. The temptation in #365 is to ship the abstraction *and* the reloaderoo recommendation in one wave. Mitigation: defer the adapter to phase 2; document the seam in the ADR but ship only the reloaderoo `npx` recommendation + `mcp-builder` skill update in phase 1. Escalation: if a second consumer materialises (#341 Phase D multi-story dispatch needing per-story MCP routing), promote the abstraction with concrete shape.
+- A6 notes `scripts/lib/tool-adapter.mjs` does NOT exist. The temptation in #365 is to ship the abstraction *and* the reloaderoo recommendation in one wave. Mitigation: defer the adapter to phase 2; document the seam in the ADR but ship only the reloaderoo `npx` recommendation + `mcp-builder` skill update in phase 1. Escalation: if a second consumer materialises (#341 Phase D multi-story dispatch needing per-story MCP routing), promote the abstraction with concrete shape. <!-- path-check: planned #365 -->
 
 ### R-M-4: failures.jsonl unbounded growth (#366)
 
@@ -166,19 +166,19 @@ A risk is **critical** if at least one of severity-high, likelihood-med, detecti
 | Risk | Owning file(s) | Mitigation type |
 |------|----------------|------------------|
 | R-CR-1 | `hooks/on-stop.mjs` + `tests/hooks/on-stop.test.mjs` + `scripts/lib/autopilot/kill-switches.mjs` | code + test |
-| R-CR-2 | `scripts/lib/autopilot/kill-switches.mjs` + `scripts/lib/verification-config.mjs` (NEW) + Session Config | code + config |
-| R-CR-3 | `docs/session-config-reference.md` + `scripts/lib/verification-config.mjs` (NEW Zod) | docs + validation (NOTE: pre-bash guard does NOT cover this path) |
-| R-CR-4 | `scripts/lib/verification-config.mjs` (NEW Zod allowlist) + `hooks/on-stop.mjs` (execFile, shell:false) + AC test for shell-metacharacter rejection | validation + execution + test |
-| R-H-1 | `scripts/lib/validate/check-session-schema.mjs` + sessions.jsonl writer | schema + CI gate |
+| R-CR-2 | `scripts/lib/autopilot/kill-switches.mjs` + `scripts/lib/verification-config.mjs` (NEW) + Session Config <!-- path-check: planned #366 --> | code + config |
+| R-CR-3 | `docs/session-config-reference.md` + `scripts/lib/verification-config.mjs` (NEW Zod) <!-- path-check: planned #366 --> | docs + validation (NOTE: pre-bash guard does NOT cover this path) |
+| R-CR-4 | `scripts/lib/verification-config.mjs` (NEW Zod allowlist) + `hooks/on-stop.mjs` (execFile, shell:false) + AC test for shell-metacharacter rejection <!-- path-check: planned #366 --> | validation + execution + test |
+| R-H-1 | `scripts/lib/validate/check-session-schema.mjs` + sessions.jsonl writer <!-- path-check: planned #364 --> | schema + CI gate |
 | R-H-2 | `skills/mcp-builder/SKILL.md` + `scripts/validate-plugin.mjs` + `.mcp.json` | docs + validation |
 | R-H-3 | `scripts/gc-stale-worktrees.mjs` (NEW) + session-start `df` check | code + ops |
 | R-H-4 | `package.json` devDependencies (exact pin) + `pnpm-lock.yaml` + `skills/mcp-builder/SKILL.md` (`pnpm exec reloaderoo`) + vault-staleness probe | dependency-pin + docs + observability |
 | R-M-1 | `scripts/lib/session-lock.mjs` (header docs) | docs |
-| R-M-2 | `scripts/lib/verification-config.mjs` (NEW timeout field) | config |
+| R-M-2 | `scripts/lib/verification-config.mjs` (NEW timeout field) <!-- path-check: planned #366 --> | config |
 | R-M-3 | ADR text only — defer code | docs |
 | R-M-4 | PRD phase 2 — GC policy | code (deferred) |
 | R-M-5 | `#341` PRD draft | docs |
-| R-M-6 | `scripts/lib/verification-config.mjs` re-run logic | code |
+| R-M-6 | `scripts/lib/verification-config.mjs` re-run logic <!-- path-check: planned #366 --> | code |
 | R-M-7 | `scripts/lib/worktree/lifecycle.mjs` (NEW `validateWorktreeFragment`) + unit test for traversal rejection | code + test |
 | R-M-8 | Phase D control-dir code (`mkdir { mode: 0o700 }`, `writeFile { mode: 0o600 }`) + startup self-check + `infrastructure.md` deploy note | code + ops + docs |
 | R-L-6 | session-start logger + `events.jsonl` MCP-version-drift warning | observability |

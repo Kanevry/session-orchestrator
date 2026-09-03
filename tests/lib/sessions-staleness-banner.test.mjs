@@ -455,6 +455,31 @@ describe('checkSessionsStaleness — #1125 anchor is the newest across ALL recor
   });
 });
 
+describe('checkSessionsStaleness — #1209b canonical collapse (duplicate session_id)', () => {
+  it('anchors on the CANONICAL (newest-wins) record for a duplicated session_id, not a stale duplicate LINE with a later completed_at', () => {
+    // Two raw LINES for the SAME session_id (sessionLine() always writes
+    // 'main-test-session'): the FIRST is a since-corrected, too-recent
+    // completed_at; the SECOND (file-order-newest, canonical winner) is the
+    // TRUE, much older value. A raw max-reduce over every line (pre-#1209b)
+    // cannot "forget" the first line once seen, so it anchors on the stale
+    // duplicate and reports no gap; readCanonicalSessions() collapses to the
+    // LAST occurrence per session_id, which is the record this check must use.
+    writeSessions(tmpRepo, [
+      sessionLine('2026-01-01T20:00:00.000Z'), // stale duplicate — 4h before the foreign event
+      sessionLine('2025-12-01T00:00:00.000Z'), // canonical winner — 768h before the foreign event
+    ]);
+    writeEvents(tmpRepo, [eventLine('2026-01-02T00:00:00.000Z')]);
+    const now = Date.parse('2026-01-02T02:00:00.000Z');
+
+    const result = checkSessionsStaleness({ repoRoot: tmpRepo, now });
+
+    expect(result).not.toBe(null);
+    expect(result.severity).toBe('alert');
+    expect(result.lastLedgerAt).toBe('2025-12-01T00:00:00.000Z');
+    expect(result.deltaHours).toBe(768);
+  });
+});
+
 describe('session-start SKILL.md wiring (#724)', () => {
   it('references checkSessionsStaleness and sessions-staleness-banner.mjs in Phase 4', () => {
     const skillPath = path.resolve(

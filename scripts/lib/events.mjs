@@ -152,6 +152,22 @@ const STATE_DIR_CANDIDATES = ['.claude', '.codex', '.cursor', '.pi'];
  * if rotation is common, the lock must be refreshed on rotation rather than
  * this comparison widened.
  *
+ * **THE manifest-binding writer contract (#1207).** This function is not only
+ * `emitEvent()`'s correlation fill — it is the canonical primitive for every
+ * caller that needs to name a `.orchestrator/`-adjacent artefact as "mine"
+ * without risking a peer's id. `skills/wave-executor/wave-loop.md` § Scope
+ * Manifest step 1 calls it directly to derive `wave-scope.json`'s `session` /
+ * `semantic_session` binding — a hand-written prose comparison against
+ * STATE.md previously stood in for exactly this check, and (per the STATE.md
+ * caveat above) that comparison could not veto a peer-owned lock. Any new
+ * writer facing the same "is this working-copy-shared artefact mine to
+ * stamp?" question should call this function rather than re-deriving the
+ * raw-id-vs-process-local comparison inline (see `scripts/memory-propose.mjs`
+ * `resolveRunningWaveId()` for a case that reads the SAME lock but needs the
+ * semantic id plus diagnostic detail this function's `{}`-on-any-mismatch
+ * contract intentionally does not expose, and keeps its own comparison for
+ * that reason).
+ *
  * @param {string} [root=SO_PROJECT_DIR] — the repo the record is pinned to.
  * @returns {{session_id?: string, semantic_session_id?: string}}
  */

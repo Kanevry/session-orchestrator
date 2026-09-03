@@ -29,12 +29,12 @@
  * @typedef {{ repoRoot: string, repoName: string, free: boolean, status: 'frei'|'in-progress'|'force-closed', heartbeat: string|null, sessionId: string|null }} Candidate
  */
 
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { scanBacklog } from '../backlog-scan.mjs';
 import { checkCiStatus as realCheckCiStatus } from '../ci-status-banner.mjs';
 import { probe as realProbe, evaluate as realEvaluate, DEFAULT_RESOURCE_THRESHOLDS as CANONICAL_RESOURCE_THRESHOLDS } from '../resource-probe.mjs';
+import { readCanonicalSessions } from '../sessions-canonical.mjs';
 import { isRealSession } from '../session-schema/filters.mjs';
 
 /** Staleness cap (days). Beyond this, additional age does not raise the score. */
@@ -154,17 +154,29 @@ async function defaultFetchPriority(repoRoot, nowMs) {
 
 /**
  * Default STALENESS source: read `<repoRoot>/.orchestrator/metrics/sessions.jsonl`,
- * find the last REAL (non-phantom) record scanning backward from the tail, and
- * compute days since `completed_at` (fallback `started_at`). No file / no
- * parsable REAL record / no timestamp ⇒ `STALENESS_CAP_DAYS` (treat as
- * maximally stale = most worthwhile).
+ * find the MOST RECENT REAL (non-phantom) record's timestamp, and compute days
+ * since `completed_at` (fallback `started_at`). No file / no parsable REAL
+ * record / no timestamp ⇒ `STALENESS_CAP_DAYS` (treat as maximally stale =
+ * most worthwhile).
  *
- * Scans backward PAST any trailing `status: 'abandoned'` phantom stubs (#834)
- * — session-close-backfill writes these for sessions that ended without a real
- * close (0 waves, seconds of runtime). Stopping at the raw last LINE would let
- * a single recent phantom make a genuinely neglected repo look freshly
- * touched, defeating the dispatcher's whole purpose (this is the N=1 extreme
- * case of the phantom-tail problem — one stub is enough to zero out staleness).
+ * Skips `status: 'abandoned'` phantom stubs (#834) — session-close-backfill
+ * writes these for sessions that ended without a real close (0 waves, seconds
+ * of runtime). Counting one would let a single recent phantom make a
+ * genuinely neglected repo look freshly touched, defeating the dispatcher's
+ * whole purpose (this is the N=1 extreme case of the phantom-tail problem —
+ * one stub is enough to zero out staleness).
+ *
+ * #1209: takes the MAX timestamp over every canonical REAL record instead of
+ * scanning backward through raw file lines from the tail. A raw backward scan
+ * trusts FILE POSITION as a proxy for recency, which silently breaks the
+ * moment a backfill/repair writer appends an OLDER record after genuinely
+ * newer ones already exist — `session-record-repair.mjs` and
+ * `migrate-sessions-jsonl.mjs` both do this by design (see
+ * `sessions-canonical.mjs`'s module header, "by-design raw" list). A
+ * duplicated `session_id` re-appended late at the tail would make the old
+ * backward scan report the STALE re-append's date instead of the genuinely
+ * newer session's date; `readCanonicalSessions` collapses the duplicate to
+ * one record first, so the max-reduce below sees only the true timestamps.
  *
  * @param {string} repoRoot
  * @param {number} nowMs
@@ -173,33 +185,21 @@ async function defaultFetchPriority(repoRoot, nowMs) {
 async function defaultStaleDaysFor(repoRoot, nowMs) {
   try {
     const file = path.join(repoRoot, '.orchestrator', 'metrics', 'sessions.jsonl');
-    const raw = readFileSync(file, 'utf8');
-    const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
-    if (lines.length === 0) return STALENESS_CAP_DAYS;
+    const records = readCanonicalSessions({ filePath: file });
+    if (records.length === 0) return STALENESS_CAP_DAYS;
 
-    // Scan backward for the last REAL (non-abandoned) session record, skipping
-    // both corrupt lines and phantom stubs.
-    let last = null;
-    for (let i = lines.length - 1; i >= 0; i -= 1) {
-      let parsed;
-      try {
-        parsed = JSON.parse(lines[i]);
-      } catch {
-        continue; // Skip a corrupt line and try the previous one.
-      }
-      if (isRealSession(parsed)) {
-        last = parsed;
-        break;
-      }
+    let latestMs = null;
+    for (const rec of records) {
+      if (!isRealSession(rec)) continue;
+      const iso = rec.completed_at || rec.started_at || null;
+      if (!iso || typeof iso !== 'string') continue;
+      const t = Date.parse(iso);
+      if (Number.isNaN(t)) continue;
+      if (latestMs === null || t > latestMs) latestMs = t;
     }
-    if (!last || typeof last !== 'object') return STALENESS_CAP_DAYS;
+    if (latestMs === null) return STALENESS_CAP_DAYS;
 
-    const iso = last.completed_at || last.started_at || null;
-    if (!iso || typeof iso !== 'string') return STALENESS_CAP_DAYS;
-    const t = Date.parse(iso);
-    if (Number.isNaN(t)) return STALENESS_CAP_DAYS;
-
-    const days = (nowMs - t) / MS_PER_DAY;
+    const days = (nowMs - latestMs) / MS_PER_DAY;
     return days > 0 ? days : 0;
   } catch {
     // No sessions file (or unreadable) ⇒ never worked on ⇒ maximally stale.

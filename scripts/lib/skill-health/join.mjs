@@ -35,6 +35,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { isRealSession } from '../session-schema/filters.mjs';
+import { readCanonicalSessions } from '../sessions-canonical.mjs';
 
 const DEFAULT_INVOCATIONS_PATH = path.resolve(
   fileURLToPath(import.meta.url),
@@ -81,6 +82,15 @@ async function readJsonl(filePath) {
  * it to route the join to the `abandoned` outcome bucket instead of counting
  * a zero-signal join as `sessionsJoined`.
  *
+ * Callers pass `sessionRecords` from `readCanonicalSessions()` (#1209b) — one
+ * record per physical session (newest-wins per `session_id`, systemic
+ * double-stub twin dropped, superseded stubs removed). Without that upstream
+ * collapse, the two-writer double-stub class (a SEPARATE synthetic
+ * `session_id` for the SAME physical session) would enter this map as a
+ * second, independent `abandoned` entry — this function's own `map.set()`
+ * overwrite only dedupes an EXACT `session_id` repeat, never two different
+ * ids for one session.
+ *
  * @param {object[]} sessionRecords
  * @returns {Map<string, { agentSummary: { complete: number, partial: number, failed: number, spiral: number }, real: boolean }>}
  */
@@ -121,10 +131,13 @@ export async function joinSkillOutcomes({
   invocationsPath = DEFAULT_INVOCATIONS_PATH,
   sessionsPath = DEFAULT_SESSIONS_PATH,
 } = {}) {
-  const [invocations, sessionRecords] = await Promise.all([
-    readJsonl(invocationsPath),
-    readJsonl(sessionsPath),
-  ]);
+  // Invocations stay on the raw async reader (no identity-collapse concept
+  // applies to a selection-event stream). Sessions move to the CANONICAL
+  // (#1209b) reader — synchronous by contract (see sessions-canonical.mjs) —
+  // so a session_id counted twice under the two-writer double-stub bug no
+  // longer inflates `sessionsAbandoned` (see buildSessionMap doc above).
+  const invocations = await readJsonl(invocationsPath);
+  const sessionRecords = readCanonicalSessions({ filePath: sessionsPath });
 
   const sessionMap = buildSessionMap(sessionRecords);
 

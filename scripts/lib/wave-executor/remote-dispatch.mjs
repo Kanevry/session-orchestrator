@@ -6,10 +6,10 @@
  * Relationship to `foreign-dispatch.mjs`: same contract, different channel.
  * That module sends a task to a foreign MODEL on this machine; this one sends
  * a task to Claude on ANOTHER machine. Both share the parts that must not
- * diverge and are therefore IMPORTED, never copied: the `never_foreign` role
- * lock ({@link isNeverForeignRole}), the run-id path-segment validator
- * ({@link isSafeRunId}), the SIGTERM→SIGKILL child runner ({@link runChild}),
- * and the two budget constants.
+ * diverge and are therefore IMPORTED from the common base (`dispatch-common.mjs`,
+ * #1204), never copied: the `never_foreign` role lock ({@link isNeverForeignRole}),
+ * the run-id path-segment validator ({@link isSafeRunId}), the SIGTERM→SIGKILL
+ * child runner ({@link runChild}), and the two budget constants.
  *
  * Three properties are load-bearing here and each has a test:
  *
@@ -40,9 +40,7 @@ import {
   isNeverForeignRole,
   isSafeRunId,
   runChild,
-} from './foreign-dispatch.mjs';
-
-export { DEFAULT_KILL_GRACE_MS, DEFAULT_TIMEOUT_SEC };
+} from './dispatch-common.mjs';
 
 /** The `offload` binary. Resolved on PATH; a missing binary surfaces as ENOENT
  * and is classified as a CHANNEL failure, never as a model failure. */

@@ -62,6 +62,7 @@ import { findProjectRoot, resolveInstructionFile, expandTilde } from './lib/comm
 import { parseSessionConfig } from './lib/config.mjs';
 import { createSecretValueMasker } from './lib/secret-masker.mjs';
 import { stableHostname, readHostAliases } from './lib/host-identity.mjs';
+import { emitEvent, sessionAttribution } from './lib/events.mjs';
 
 // Vault-relative default write target (Epic #774 — docs Public-Split removed
 // the prior in-repo generated telemetry doc in favor of the private Meta-Vault).
@@ -311,6 +312,15 @@ export function redactLocalHostNames(s, names) {
 let _secretMasker = null;
 
 /**
+ * Learning entries handed to `anonymizeLearning` this process. Counts only
+ * (#1028 residue 2) — mirrors `_maskedRecords` in
+ * `scripts/lib/vault-mirror/process.mjs`.
+ */
+let _maskedRecords = 0;
+/** String values this process that masking actually CHANGED. Counts only. */
+let _maskHits = 0;
+
+/**
  * Mask env-derived secret VALUES in a free-form string.
  *
  * Fail-soft: non-strings pass through by reference, and a zero-needle env makes
@@ -322,7 +332,68 @@ let _secretMasker = null;
 function maskSecretValues(s) {
   if (typeof s !== 'string') return s;
   if (_secretMasker === null) _secretMasker = createSecretValueMasker(process.env);
-  return _secretMasker.mask(s);
+  const masked = _secretMasker.mask(s);
+  if (masked !== s) _maskHits++;
+  return masked;
+}
+
+/**
+ * Counts-only view of the masking that happened in this process (#1028
+ * residue 2). FORCE-BUILDS the masker rather than reporting 0 for an unbuilt
+ * one — same reasoning as `getMaskerStats()` in
+ * `scripts/lib/vault-mirror/process.mjs`: at 0 anonymized entries the lazy
+ * build in `maskSecretValues` above never fires, and a `needle_count: 0` from
+ * that path would be indistinguishable from "this channel has no masking
+ * wired at all" — the exact ambiguity the telemetry exists to remove.
+ *
+ * NEVER returns a needle, a prefix of one, or any masked text — only cardinals.
+ *
+ * @returns {{ needleCount: number, records: number, hits: number }}
+ */
+function getExportMaskerStats() {
+  if (_secretMasker === null) _secretMasker = createSecretValueMasker(process.env);
+  return { needleCount: _secretMasker.needleCount, records: _maskedRecords, hits: _maskHits };
+}
+
+/**
+ * Emit this channel's `orchestrator.secret_masker.applied` record — the third
+ * of the three masker channels (`vault-mirror`, `narrative-mirror`,
+ * `export-hw-learnings`) to wire it (#1028 residue 2). Same core field set as
+ * the sibling channels (`channel`, `needle_count`, `records`, `hits`,
+ * `dry_run`), plus `session_id`/`semantic_session_id` via `sessionAttribution`
+ * — matching the `narrative-mirror` channel's shape, since this CLI (like
+ * `mirrorNarrative`) always resolves a concrete `repoRoot` to attribute
+ * against, unlike the `vault-mirror` CLI's 2-arg `emitEvent` call.
+ *
+ * `repoRoot` is REQUIRED here rather than left to `emitEvent`'s own
+ * cwd-derived default (#941/#1147) — a bare 2-arg call would attribute a run
+ * to whatever directory the process happens to sit in rather than to the repo
+ * whose `learnings.jsonl` was actually exported.
+ *
+ * Best-effort: never throws, never alters the export/promote result.
+ *
+ * @param {{ repoRoot: string, dryRun: boolean }} opts
+ * @returns {Promise<void>}
+ */
+async function emitMaskerTelemetry({ repoRoot, dryRun }) {
+  if (typeof repoRoot !== 'string' || repoRoot.length === 0) return;
+  try {
+    const stats = getExportMaskerStats();
+    await emitEvent(
+      'orchestrator.secret_masker.applied',
+      {
+        channel: 'export-hw-learnings',
+        needle_count: stats.needleCount,
+        records: stats.records,
+        hits: stats.hits,
+        dry_run: !!dryRun,
+        ...sessionAttribution(repoRoot),
+      },
+      { repoRoot },
+    );
+  } catch {
+    /* Best-effort telemetry — a broken ledger must never fail the export. */
+  }
 }
 
 /**
@@ -379,6 +450,11 @@ export function bucketCpuPct(pct) {
  */
 export function anonymizeLearning(entry) {
   const e = normalizeLearning(entry);
+  // #1028 residue 2: counted BEFORE the masking calls below, unconditionally —
+  // "records handed to the masker choke-point" must not depend on whether this
+  // particular entry's insight/evidence happened to contain a needle. Mirrors
+  // `_maskedRecords++` in `scripts/lib/vault-mirror/process.mjs`.
+  _maskedRecords++;
   const out = {
     ...e,
     // #1025: value-mask BEFORE form-anonymize — see the ORDER IS LOAD-BEARING
@@ -488,6 +564,11 @@ function parseArgs(argv) {
     input: '.orchestrator/metrics/learnings.jsonl',
     output: undefined, // resolved lazily below (default = vault-dir target)
     generatedAt: new Date().toISOString(),
+    // #1028 residue 2: resolved explicitly HERE, at the CLI boundary, so the
+    // masker-telemetry emit in promoteHwLearnings/exportHwLearnings gets a
+    // real repoRoot — those library functions deliberately never default it
+    // themselves (see their opts.repoRoot doc for why).
+    repoRoot: findProjectRoot(),
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -541,9 +622,18 @@ function parseArgs(argv) {
  * @param {object} opts
  * @param {string} opts.input — path to learnings.jsonl
  * @param {boolean} opts.dryRun — if true, do not write any files
+ * @param {string} [opts.repoRoot] — repo whose ledger the masker-telemetry
+ *   event (#1028 residue 2) is pinned to. EXPLICIT ONLY — never defaulted to
+ *   `findProjectRoot()`/cwd inside this library function (#941/#1147: a
+ *   silent cwd-derived default is exactly what let earlier callers, including
+ *   plain test invocations, write into whichever repo the process happened to
+ *   sit in). The CLI entrypoint below resolves and passes it explicitly;
+ *   library callers that omit it simply get no masker-telemetry emit — see
+ *   `emitMaskerTelemetry`'s own repoRoot guard.
  * @returns {Promise<{promoted: number, skipped: number, flags: string[]}>}
  */
 export async function promoteHwLearnings(opts) {
+  const repoRoot = opts.repoRoot;
   const { entries, malformed } = await readLearnings(opts.input);
 
   const hwPrivate = filterByScope(filterByType(entries, 'hardware-pattern'), 'private');
@@ -555,6 +645,10 @@ export async function promoteHwLearnings(opts) {
   }
 
   if (hwPrivate.length === 0) {
+    // #1028 residue 2: emitted here too — a run that anonymizes 0 entries
+    // still ran, and `getExportMaskerStats()` force-builds the masker so
+    // `needle_count` is real even though `_maskedRecords` stays 0.
+    await emitMaskerTelemetry({ repoRoot, dryRun: !!opts.dryRun });
     return { promoted: 0, skipped: hwPublicExisting.length, flags };
   }
 
@@ -595,10 +689,23 @@ export async function promoteHwLearnings(opts) {
     await rewriteLearnings(opts.input, allEntries);
   }
 
+  // #1028 residue 2: one masker-telemetry record per promote run.
+  await emitMaskerTelemetry({ repoRoot, dryRun: !!opts.dryRun });
+
   return { promoted: promotedEntries.length, skipped: hwPublicExisting.length, flags };
 }
 
+/**
+ * @param {object} opts
+ * @param {string} opts.input — path to learnings.jsonl
+ * @param {string} opts.output — write target
+ * @param {boolean} opts.dryRun — if true, do not write any files
+ * @param {string} opts.generatedAt — ISO timestamp for the rendered doc
+ * @param {string} [opts.repoRoot] — see `promoteHwLearnings` opts.repoRoot doc.
+ * @returns {Promise<{markdown: string, count: number}>}
+ */
 export async function exportHwLearnings(opts) {
+  const repoRoot = opts.repoRoot;
   const { entries } = await readLearnings(opts.input);
   const hwPublic = filterByScope(filterByType(entries, 'hardware-pattern'), 'public');
   const anonymized = hwPublic.map((e) => anonymizeLearning(e));
@@ -608,6 +715,11 @@ export async function exportHwLearnings(opts) {
     await mkdir(path.dirname(opts.output), { recursive: true });
     await writeFile(opts.output, md, 'utf8');
   }
+  // #1028 residue 2: one masker-telemetry record per export run, whether or
+  // not any hardware-pattern entry was actually public (`hwPublic.length`
+  // can legitimately be 0 — `getExportMaskerStats()` still force-builds the
+  // masker so `needle_count` is a real measured value).
+  await emitMaskerTelemetry({ repoRoot, dryRun: !!opts.dryRun });
   return { markdown: md, count: hwPublic.length };
 }
 

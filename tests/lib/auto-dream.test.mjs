@@ -102,11 +102,14 @@ describe('readDreamSignals', () => {
   });
 
   it('lastCleanupAt=null counts ALL valid sessions.jsonl entries', async () => {
+    // #1209: each record carries a distinct session_id — readCanonicalSessions
+    // drops id-less records (they cannot be deduplicated), so an id-less
+    // fixture would silently count 0 instead of 3 after the migration.
     const { repoRoot, memoryDir } = makeFakeRepo({
       sessions: [
-        { started_at: '2026-05-01T10:00:00Z' },
-        { started_at: '2026-05-02T10:00:00Z' },
-        { started_at: '2026-05-03T10:00:00Z' },
+        { session_id: 's1', started_at: '2026-05-01T10:00:00Z' },
+        { session_id: 's2', started_at: '2026-05-02T10:00:00Z' },
+        { session_id: 's3', started_at: '2026-05-03T10:00:00Z' },
       ],
     });
     const signals = await readDreamSignals({ repoRoot, memoryDir });
@@ -118,16 +121,44 @@ describe('readDreamSignals', () => {
     const { repoRoot, memoryDir } = makeFakeRepo({
       sessions: [
         // Older — should be excluded
-        { started_at: '2026-04-01T10:00:00Z' },
+        { session_id: 's1', started_at: '2026-04-01T10:00:00Z' },
         // Carries the cleanup timestamp
-        { started_at: '2026-05-01T10:00:00Z', memory_cleanup_at: '2026-05-01T10:00:00Z' },
+        { session_id: 's2', started_at: '2026-05-01T10:00:00Z', memory_cleanup_at: '2026-05-01T10:00:00Z' },
         // Newer — should be counted (2 of them)
-        { started_at: '2026-05-02T10:00:00Z' },
-        { started_at: '2026-05-03T10:00:00Z' },
+        { session_id: 's3', started_at: '2026-05-02T10:00:00Z' },
+        { session_id: 's4', started_at: '2026-05-03T10:00:00Z' },
       ],
     });
     const signals = await readDreamSignals({ repoRoot, memoryDir });
     expect(signals.lastCleanupAt).toBe('2026-05-01T10:00:00Z');
+    expect(signals.sessionsSinceCleanup).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1209 — duplicate session_id lines counted once, not once per LINE
+// ---------------------------------------------------------------------------
+// sessions.jsonl is APPEND-ONLY: the same physical session can carry more than
+// one line (crash-recovery re-appends, #1068 stub/supersede pairs). Before the
+// readCanonicalSessions migration, readDreamSignals counted every LINE, so a
+// session that appears twice inflated sessionsSinceCleanup by one extra count
+// per duplicate — a fake regression this fixture pins.
+
+describe('readDreamSignals — #1209: duplicate session_id lines counted once', () => {
+  it('the same session_id appended twice (crash-recovery re-append) counts as ONE session, not two', async () => {
+    const { repoRoot, memoryDir } = makeFakeRepo({
+      sessions: [
+        { session_id: 'dup-1', started_at: '2026-07-01T10:00:00Z' },
+        {
+          session_id: 'dup-1',
+          started_at: '2026-07-01T10:00:00Z',
+          completed_at: '2026-07-01T11:00:00Z',
+        },
+        { session_id: 'other', started_at: '2026-07-02T10:00:00Z' },
+      ],
+    });
+    const signals = await readDreamSignals({ repoRoot, memoryDir });
+    // 2 PHYSICAL sessions (dup-1 once, other once) — not 3 raw lines.
     expect(signals.sessionsSinceCleanup).toBe(2);
   });
 });
@@ -141,13 +172,15 @@ describe('readDreamSignals', () => {
 
 describe('readDreamSignals — #834: abandoned phantom stubs excluded from cadence count', () => {
   it('5 abandoned phantoms + 2 real sessions since last cleanup: sessionsSinceCleanup counts only the 2 real sessions', async () => {
+    // #1209: distinct session_id per record — see the id-less-drop note above.
     const abandoned = Array.from({ length: 5 }, (_, i) => ({
+      session_id: `aband-${i + 1}`,
       status: 'abandoned',
       started_at: `2026-06-0${i + 1}T08:00:00Z`,
     }));
     const real = [
-      { started_at: '2026-06-10T08:00:00Z' },
-      { started_at: '2026-06-11T08:00:00Z' },
+      { session_id: 'real-1', started_at: '2026-06-10T08:00:00Z' },
+      { session_id: 'real-2', started_at: '2026-06-11T08:00:00Z' },
     ];
     const { repoRoot, memoryDir } = makeFakeRepo({ sessions: [...abandoned, ...real] });
     const signals = await readDreamSignals({ repoRoot, memoryDir });
@@ -157,13 +190,15 @@ describe('readDreamSignals — #834: abandoned phantom stubs excluded from caden
 
 describe('shouldDispatchAutoDream — #834: cadence must not fire off abandoned phantom stubs', () => {
   it('5 abandoned + 2 real sessions (7 raw lines), threshold=5: does NOT trigger (today it would, on 7 total)', async () => {
+    // #1209: distinct session_id per record — see the id-less-drop note above.
     const abandoned = Array.from({ length: 5 }, (_, i) => ({
+      session_id: `aband-${i + 1}`,
       status: 'abandoned',
       started_at: `2026-06-0${i + 1}T08:00:00Z`,
     }));
     const real = [
-      { started_at: '2026-06-10T08:00:00Z' },
-      { started_at: '2026-06-11T08:00:00Z' },
+      { session_id: 'real-1', started_at: '2026-06-10T08:00:00Z' },
+      { session_id: 'real-2', started_at: '2026-06-11T08:00:00Z' },
     ];
     const { repoRoot, memoryDir } = makeFakeRepo({
       memoryLines: 10,
@@ -423,21 +458,24 @@ describe('readDreamSignals — #699: memory_cleanup_at stamp advances lastCleanu
   it('latest memory_cleanup_at becomes lastCleanupAt and sessions after it count from zero', async () => {
     // Scenario: 4 sessions before cleanup, then cleanup stamps memory_cleanup_at,
     // then 2 sessions after. sessionsSinceCleanup must be 2 (not 6 or 3).
+    // #1209: distinct session_id per record — readCanonicalSessions drops
+    // id-less records, so they were given ids without changing the scenario.
     const { repoRoot, memoryDir } = makeFakeRepo({
       sessions: [
-        { started_at: '2026-06-01T08:00:00Z' },
-        { started_at: '2026-06-02T08:00:00Z' },
-        { started_at: '2026-06-03T08:00:00Z' },
-        { started_at: '2026-06-04T08:00:00Z' },
+        { session_id: 's1', started_at: '2026-06-01T08:00:00Z' },
+        { session_id: 's2', started_at: '2026-06-02T08:00:00Z' },
+        { session_id: 's3', started_at: '2026-06-03T08:00:00Z' },
+        { session_id: 's4', started_at: '2026-06-04T08:00:00Z' },
         // The cleanup session: started AFTER the four above, carries the stamp.
         {
+          session_id: 's5',
           started_at: '2026-06-05T08:00:00Z',
           completed_at: '2026-06-05T08:30:00Z',
           memory_cleanup_at: '2026-06-05T08:30:00Z',
         },
         // Two sessions after cleanup — only these should be counted.
-        { started_at: '2026-06-06T09:00:00Z' },
-        { started_at: '2026-06-07T09:00:00Z' },
+        { session_id: 's6', started_at: '2026-06-06T09:00:00Z' },
+        { session_id: 's7', started_at: '2026-06-07T09:00:00Z' },
       ],
     });
     const signals = await readDreamSignals({ repoRoot, memoryDir });
@@ -449,10 +487,11 @@ describe('readDreamSignals — #699: memory_cleanup_at stamp advances lastCleanu
     // Scenario matching a healthy no-op cleanup on the last session: cadence resets to 0.
     const { repoRoot, memoryDir } = makeFakeRepo({
       sessions: [
-        { started_at: '2026-06-10T08:00:00Z' },
-        { started_at: '2026-06-11T08:00:00Z' },
+        { session_id: 's1', started_at: '2026-06-10T08:00:00Z' },
+        { session_id: 's2', started_at: '2026-06-11T08:00:00Z' },
         // Most recent session runs cleanup (even no-op) and stamps.
         {
+          session_id: 's3',
           started_at: '2026-06-12T08:00:00Z',
           completed_at: '2026-06-12T08:45:00Z',
           memory_cleanup_at: '2026-06-12T08:45:00Z',
@@ -469,16 +508,18 @@ describe('readDreamSignals — #699: memory_cleanup_at stamp advances lastCleanu
     const { repoRoot, memoryDir } = makeFakeRepo({
       sessions: [
         {
+          session_id: 's1',
           started_at: '2026-06-01T08:00:00Z',
           memory_cleanup_at: '2026-06-01T08:30:00Z',
         },
-        { started_at: '2026-06-02T09:00:00Z' },
+        { session_id: 's2', started_at: '2026-06-02T09:00:00Z' },
         {
+          session_id: 's3',
           started_at: '2026-06-03T08:00:00Z',
           memory_cleanup_at: '2026-06-03T08:45:00Z',
         },
         // One session after the latest cleanup.
-        { started_at: '2026-06-04T10:00:00Z' },
+        { session_id: 's4', started_at: '2026-06-04T10:00:00Z' },
       ],
     });
     const signals = await readDreamSignals({ repoRoot, memoryDir });
@@ -530,14 +571,15 @@ describe('shouldDispatchAutoDream — #699: cadence does NOT trigger after recen
     const { repoRoot, memoryDir } = makeFakeRepo({
       memoryLines: 10, // well below softLimit=180
       sessions: [
-        { started_at: '2026-06-08T08:00:00Z' },
-        { started_at: '2026-06-09T08:00:00Z' },
+        { session_id: 's1', started_at: '2026-06-08T08:00:00Z' },
+        { session_id: 's2', started_at: '2026-06-09T08:00:00Z' },
         {
+          session_id: 's3',
           started_at: '2026-06-10T08:00:00Z',
           completed_at: '2026-06-10T08:30:00Z',
           memory_cleanup_at: '2026-06-10T08:30:00Z', // stamp from no-op cleanup
         },
-        { started_at: '2026-06-11T09:00:00Z' },
+        { session_id: 's4', started_at: '2026-06-11T09:00:00Z' },
       ],
     });
     const result = await shouldDispatchAutoDream({

@@ -8,7 +8,6 @@
  */
 
 import { probe, evaluate } from './resource-probe.mjs';
-import { isNeverForeignRole } from './wave-executor/foreign-dispatch.mjs';
 
 /**
  * Wave roles that may run on a declared remote host, mapped to the
@@ -147,7 +146,14 @@ async function applyOffloadDecision(result, opts) {
   if (!Array.isArray(hosts) || hosts.length === 0) return result;
 
   const role = String(waveRole ?? '').trim().toLowerCase();
-  if (isNeverForeignRole(role)) return result;
+  // No isNeverForeignRole() check here (D8 #1204 LOW-1): the invariant is
+  // enforced STRUCTURALLY by this mapping table, not by an extra guard.
+  // NEVER_FOREIGN_ROLES {impl-core, security-review, migration, release,
+  // secrets, incident, refactor-crosscut} and OFFLOADABLE_WAVE_ROLES keys
+  // {quality, test, ui, perf} have ZERO overlap — measured by inspection of
+  // both literal lists — so a never-foreign role always falls through to
+  // `mappedRole === undefined` below regardless. A redundant call here was
+  // dead code that a lookup-table edit could not make live again on its own.
   const mappedRole = OFFLOADABLE_WAVE_ROLES[role];
   if (mappedRole === undefined) return result;
 

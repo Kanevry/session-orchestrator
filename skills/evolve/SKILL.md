@@ -46,7 +46,7 @@ Extract `persistence` from `$CONFIG`. If `persistence` is `false`, abort with me
 
 > "Learnings require persistence to be enabled in Session Config. Add `persistence: true` to your Session Config block (CLAUDE.md for Claude Code, AGENTS.md for Codex CLI)."
 
-**Telemetry on abort (#1200):** before stopping, emit the abort form of the run-completion event:
+**Telemetry on abort (#1200, #1206):** before stopping, emit the abort form of the run-completion event. Kept as a minimal `emit-event.mjs` call, not routed through `scripts/sweep-expired-learnings.mjs` — no store-write CLI has run yet at this gate (it fires before Step 1.4 even reads `learnings.jsonl`), so there is no mechanical pipeline call site to fold this emit into, unlike the Step 3.5(5)/(6) success path below:
 
 ```bash
 node scripts/emit-event.mjs --type orchestrator.evolve.completed --payload \
@@ -100,7 +100,7 @@ Extract learnings from session history.
 - Read all entries from `.orchestrator/metrics/sessions.jsonl` (or `<state-dir>/metrics/sessions.jsonl` if the v2 path does not exist — see Phase 1.4 fallback)
 - Parse each JSONL line as JSON
 - Sort by `completed_at` descending (most recent first)
-- If no sessions found, abort: "No session data available. Complete at least one session before running evolve." **Telemetry on abort (#1200):** before stopping, emit:
+- If no sessions found, abort: "No session data available. Complete at least one session before running evolve." **Telemetry on abort (#1200, #1206):** before stopping, emit — same minimal `emit-event.mjs` call as Phase 1.2's abort, and for the same reason: this gate fires before the Step 3.5(5) `sweep-expired-learnings.mjs --prune` call exists to fold the emit into:
 
   ```bash
   node scripts/emit-event.mjs --type orchestrator.evolve.completed --payload \
@@ -316,22 +316,34 @@ For confirmed learnings, use atomic rewrite strategy:
    Write the full next-generation entry set (existing entries **with** the step-2/3 confidence
    updates, **plus** the step-4 new learnings) as JSONL to a temp sidecar **via the Write tool**
    (not a shell `>` redirect — the destructive-command guard blocks it), then invoke the
-   `--prune` subcommand of the sweep CLI:
+   `--prune` subcommand of the sweep CLI. **This call is also `/evolve`'s ONLY
+   `orchestrator.evolve.completed` success emit (#1206)** — export `N` (Step 3.5(4)'s
+   new-learnings count), `M` (Step 3.5(2)'s reinforced-existing count) and `DURATION_MS`
+   (elapsed ms since the Phase 1 marker) as real shell variables before running this line;
+   `${N:-0}`-style expansion means an un-exported variable degrades to a safe `0` rather than
+   an argument error:
 
    ```bash
    NEXT=".orchestrator/metrics/.learnings-next.jsonl"   # written by the step above
-   node scripts/sweep-expired-learnings.mjs --prune --apply --json --entries "$NEXT" && rm -f "$NEXT"
+   node scripts/sweep-expired-learnings.mjs --prune --apply --json --entries "$NEXT" \
+     --appended "${N:-0}" --boosted "${M:-0}" --duration-ms "${DURATION_MS:-0}" \
+     --repo-root "$(pwd)" && rm -f "$NEXT"
    ```
 
    `--file` / `--archive` default to the canonical store + archive paths — pass them only when
    operating on a non-default pair. The command prints ONE JSON line; capture it as `$PRUNE` and
-   report its `{scanned, kept, archived, byReason}` in the final summary. Preview first with
-   `--prune --dry-run --json` (same counts, zero writes) whenever the next generation was
-   hand-assembled.
+   report its `{scanned, kept, archived, byReason}` in the final summary — `$PRUNE.archived` is
+   also the `pruned` counter the emit above just wrote, so there is nothing left to compute for
+   the telemetry after this line. Preview first with `--prune --dry-run --json` (same counts,
+   zero writes, **no telemetry emit** — dry-run never claims a completed run) whenever the next
+   generation was hand-assembled.
 
-   > **This step is `/evolve`'s only store-write path.** Until #1017 the invocation lived here as
-   > an inline `node --input-type=module -e` block, which is a mechanism hiding inside prose: no
-   > `--help`, no exit-code contract, no test. Do not re-inline it, and do not hand-roll a
+   > **This step is `/evolve`'s only store-write path, and (since #1206) its only
+   > `orchestrator.evolve.completed` success emit.** Until #1017 the store write lived here as
+   > an inline `node --input-type=module -e` block, and until #1206 the telemetry emit was a
+   > SEPARATE `emit-event.mjs` call further down this file — both were a mechanism hiding inside
+   > prose: no `--help`, no exit-code contract, no test, and (for the emit) forgettable
+   > independently of the write it reported on. Do not re-inline either, and do not hand-roll a
    > `jq | ... > learnings.jsonl` pass — that bypasses every #721 safety net.
 
    **Exit codes are the no-op rule.** `0` = applied (or a clean no-op). `1` = input error: the
@@ -394,12 +406,12 @@ For confirmed learnings, use atomic rewrite strategy:
 
 Report: "Saved N new learnings, updated M existing. Total active: K."
 
-**Telemetry (#1200):** emit the run-completion event as the last action of this step, using the counts already computed above — `N` (Step 3.5(4) new-learnings count) → `appended`, `M` (Step 3.5(2) reinforced-existing count) → `boosted`, `$PRUNE.archived` (the sweep CLI's returned total, Step 3.5(5)) → `pruned`. `promoted` is always `0` from THIS call site: promotion to `public` scope is the separate `npm run share:hw-learnings -- --promote` CLI, never invoked by `/evolve analyze` itself — see `docs/events-schema.md`. All four counters are ALWAYS present, including as `0`:
-
-```bash
-node scripts/emit-event.mjs --type orchestrator.evolve.completed --payload \
-  "$(node -e "process.stdout.write(JSON.stringify({appended: N, boosted: M, pruned: PRUNED, promoted: 0, duration_ms: DURATION_MS}))")"
-```
+**Telemetry (#1200, #1206):** already emitted by `scripts/sweep-expired-learnings.mjs --prune`
+at Step 3.5(5) above — no separate action here. `appended`/`boosted`/`duration_ms` are whatever
+`$N`/`$M`/`$DURATION_MS` carried into that call, and `pruned` is `$PRUNE.archived` (the sweep
+CLI's own returned total). `promoted` is always `0` from THIS call site: promotion to `public`
+scope is the separate `npm run share:hw-learnings -- --promote` CLI, never invoked by
+`/evolve analyze` itself — see `docs/events-schema.md`.
 
 ### Step 3.6: C2 Auto-Repair Feeder (opt-in — #647)
 
@@ -626,11 +638,27 @@ const result = await runDialecticDeriver({
 - If `--apply`: call `mergePeerCard(existingBody, managedUpdates)` from `scripts/lib/peer-cards/merger.mjs` for each card target, then `writePeerCard(repoRoot, 'user', mergedUserCard)` and `writePeerCard(repoRoot, 'agent', mergedAgentCard)` from `scripts/lib/peer-cards/writer.mjs`. Update the `updated:` frontmatter.
 - Report: `Dialectic-derived: M deltas to USER.md, N deltas to AGENT.md. Dry-run | Applied. Tokens: in=<X> out=<Y>.`
 
-**Telemetry (#1200):** immediately after the report line above, emit the success form (`mode` mirrors which branch ran):
+**Telemetry (#1200, #1206) — emitted by `scripts/dialectic-deriver.mjs`, not skill prose.**
+The dry-run branch needs no action here: `runDialecticDeriver()` already emitted the success
+form (`mode: 'dry-run'`) internally at Step 6.2, using `countManagedSections(diff)` on the SAME
+diff this step presents — in dry-run the diff IS the final artefact, so the event and the
+artefact are computed from the same value. The **apply** branch is the one case that pipeline
+cannot record on its own: the merge above happens here, one layer up, so call
+`recordDialecticRun()` (the sibling export beside `emitEvolveCompleted` in
+`scripts/lib/learnings/evolve-telemetry.mjs`) immediately after the `writePeerCard()` calls,
+using each target's `mergePeerCard()` `stats` for the deltas:
 
-```bash
-node scripts/emit-event.mjs --type orchestrator.dialectic.completed --payload \
-  "$(node -e "process.stdout.write(JSON.stringify({mode: 'MODE', user_deltas: M, agent_deltas: N, tokens_in: X, tokens_out: Y, duration_ms: DURATION_MS}))")"
+```javascript
+await recordDialecticRun({
+  repoRoot,
+  status: 'ok',
+  mode: 'apply',
+  userDeltas: userMergeStats.replaced + userMergeStats.appended,
+  agentDeltas: agentMergeStats.replaced + agentMergeStats.appended,
+  tokensIn: result.usage?.input_tokens,
+  tokensOut: result.usage?.output_tokens,
+  durationMs: DURATION_MS,
+});
 ```
 
 ### Step 6.5: Error Handling
@@ -640,11 +668,22 @@ node scripts/emit-event.mjs --type orchestrator.dialectic.completed --payload \
 - `status: 'empty-input'` → exit clean with message "dialectic: skipped (no input)"
 - subagent crash → log ⚠, exit cleanly (do NOT write to `.orchestrator/dialectic-pending.md`)
 
-**Telemetry (#1200):** for EACH outcome above, before exiting, emit `orchestrator.dialectic.completed` in its abort form — `SLUG` is `unknown-model` \| `budget-exceeded` \| `would-empty-card` \| `empty-input` \| `subagent-crash` respectively (the subagent-crash case has no `runDialecticDeriver` status of its own; use the literal slug `subagent-crash`):
+**Telemetry (#1200, #1206) — emitted by `scripts/dialectic-deriver.mjs` for THREE of the five
+outcomes.** `budget-exceeded`, `would-empty-card`, and `empty-input` are `runDialecticDeriver()`
+RETURN values, so the module records them itself, mechanically, at the exact return point —
+nothing to do here for those three. The remaining two are THROWN, not returned, and can only be
+caught one layer up:
 
-```bash
-node scripts/emit-event.mjs --type orchestrator.dialectic.completed --payload \
-  "$(node -e "process.stdout.write(JSON.stringify({aborted: 'SLUG', duration_ms: DURATION_MS}))")"
+- `unknown-model` — `validateModel()` throws synchronously before `runDialecticDeriver()` can
+  record anything about the call.
+- `subagent-crash` — a `dispatchAgent`/`Agent()` failure propagates out of
+  `runDialecticDeriver()` uncaught (it has no status of its own for this case).
+
+Catch both here and call the SAME `recordDialecticRun()` used in Step 6.4's apply branch,
+passing the literal slug as `status` (the abort form: `{aborted: status, duration_ms}`):
+
+```javascript
+await recordDialecticRun({ repoRoot, status: 'unknown-model' /* or 'subagent-crash' */, durationMs: DURATION_MS });
 ```
 
 Cross-reference: PRD #506 AC1-AC4 + EARS gates. Vault Integration: dialectic does NOT mirror to vault (#506 scope — peer cards are repo-local by design; vault mirror is for cross-repo sessions/learnings).

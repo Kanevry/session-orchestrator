@@ -48,11 +48,17 @@ export function resolveSession(records, sessionId) {
 
   // Explicit selection: the LAST record carrying this session_id (records may be
   // rewritten/backfilled across a session's life; the latest is authoritative).
+  //
+  // #1209: engine.mjs's production caller now passes CANONICAL records
+  // (readCanonicalSessions already resolved newest-wins per session_id before
+  // this array reaches here — see sessions-canonical.mjs), so at most one
+  // record can carry a given id in practice. `resolveSession` stays a
+  // general, pure function — `findLast` keeps the exact "last match wins"
+  // semantics for a caller that hands in raw, un-deduped records directly
+  // (e.g. the unit tests below), while degenerating to a single candidate on
+  // the canonical path.
   if (sessionId) {
-    let match = null;
-    for (const r of records) {
-      if (isPlainObject(r) && r.session_id === sessionId) match = r;
-    }
+    const match = records.findLast((r) => isPlainObject(r) && r.session_id === sessionId) ?? null;
     if (!match) {
       throw new SessionResolutionError(`session not found: ${sessionId}`);
     }
@@ -113,6 +119,19 @@ export function computeWindow(record) {
  * as overlapping. Records sharing the resolved session_id (duplicate/backfill
  * rewrites of the SAME session) are excluded, as are records without a valid
  * window.
+ *
+ * #1209: the #1068 double-stub class — two ABANDONED records for ONE physical
+ * session (a real semantic `session_id` + a synthetic backfill twin, sharing
+ * an exact `started_at`/`completed_at` tuple, see `sessions-canonical.mjs`
+ * rule 2) — used to be counted as TWO distinct peers here, because the raw
+ * `records` array carried both lines under different ids and this function has
+ * no way to know they are the same physical session. With engine.mjs's
+ * production caller now passing `readCanonicalSessions()` output,
+ * `collapseAbandonedTuples()` has already dropped the synthetic twin before
+ * this array reaches here — a double-stub pair can therefore no longer
+ * produce a false EXTRA peer (`count` inflated by one) on the canonical path.
+ * `findPeerOverlap` itself stays general/pure for callers (including the unit
+ * tests below) that pass raw, un-deduped records directly.
  *
  * @param {object[]} records — all sessions.jsonl records.
  * @param {object} resolved — the resolved session record.

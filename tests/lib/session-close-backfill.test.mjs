@@ -17,7 +17,7 @@
  *   - Error path proves the no-throw contract (would-be-fatal append is caught).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -1199,5 +1199,63 @@ describe('backfillAbandonedSession — semantic bridge via session.ended (#1167)
     const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS });
 
     expect(res.sessionId).toBe('main-2026-05-27-session-1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readJsonlSafe — ENOENT vs other read failures (#1210)
+// ---------------------------------------------------------------------------
+
+describe('readJsonlSafe — ENOENT vs other read failures (#1210)', () => {
+  it('warns on a non-ENOENT read failure (EISDIR) and still degrades to a safe empty read', async () => {
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+    ]);
+    const eventsPath = path.join(metricsDir(), 'events.jsonl');
+    const realReadFileSync = fs.readFileSync;
+    const injectedReadFileSync = (p, encoding) => {
+      if (p === eventsPath) {
+        const err = new Error('EISDIR: illegal operation on a directory, read');
+        err.code = 'EISDIR';
+        throw err;
+      }
+      return realReadFileSync(p, encoding);
+    };
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const res = await backfillAbandonedSession({
+        repoRoot,
+        sessionId: UUID,
+        now: NOW_MS,
+        deps: { readFileSync: injectedReadFileSync },
+      });
+
+      // The forced read failure degrades events to an empty read (no bridge
+      // found) rather than throwing — the no-throw contract survives.
+      expect(res.action).toBe('backfilled');
+      const warned = stderrSpy.mock.calls.some(
+        (call) => typeof call[0] === 'string' && call[0].includes(eventsPath) && call[0].includes('EISDIR'),
+      );
+      expect(warned).toBe(true);
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it('does NOT warn when events.jsonl is simply absent (ENOENT)', async () => {
+    // No seedEvents() call — events.jsonl does not exist on disk at all.
+    // The metrics dir still needs to exist for the (unrelated) TOCTOU marker
+    // write later in the function; only the events read is under test here.
+    fs.mkdirSync(metricsDir(), { recursive: true });
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS });
+
+      expect(res.action).toBe('backfilled');
+      expect(stderrSpy).not.toHaveBeenCalled();
+    } finally {
+      stderrSpy.mockRestore();
+    }
   });
 });

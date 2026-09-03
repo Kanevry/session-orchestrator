@@ -36,6 +36,7 @@ import path from 'node:path';
 
 import { resolvePluginRoot } from '../common.mjs';
 import { readJsonlFile } from '../io.mjs';
+import { readCanonicalSessions } from '../sessions-canonical.mjs';
 import { buildRunId, CURRENT_STANDARD_VERSION, VALID_MODEL_SOURCES } from './schema.mjs';
 import { resolveSession, computeWindow, findPeerOverlap } from './session-resolve.mjs';
 
@@ -538,7 +539,14 @@ export function evaluateSession(opts = {}) {
 
   const sessionsPath = path.join(metricsDir, 'sessions.jsonl');
   const eventsPath = path.join(metricsDir, 'events.jsonl');
-  const records = readJsonlFile(sessionsPath, { skipInvalid: true });
+  // #1209: sessions.jsonl is APPEND-ONLY (the same physical session can carry
+  // more than one line — crash-recovery re-appends, #1068 stub/supersede
+  // pairs), so a raw readJsonlFile() left resolveSession()/findPeerOverlap()
+  // to hand-roll their own dedup over duplicated / phantom-doubled records.
+  // readCanonicalSessions() collapses those first (newest-wins per
+  // session_id, #1068 double-stub collapse, supersede removal) — see
+  // session-resolve.mjs for how that simplifies both callers below.
+  const records = readCanonicalSessions({ filePath: sessionsPath });
   const events = readJsonlFile(eventsPath, { skipInvalid: true });
 
   const { record: session, resolvedVia } = resolveSession(records, sessionId);

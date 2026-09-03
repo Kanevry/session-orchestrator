@@ -1198,27 +1198,27 @@ Before each wave dispatch:
    # Warning: policy file .orchestrator/policy/blocked-commands.json not found — using legacy hardcoded blocklist
    ```
 
-   **Deriving the session binding (#1123):** `wave-scope.json` lives in the WORKING COPY, and `hooks/enforce-scope.mjs` applies whatever it finds there to every session running in that checkout. Without a binding, a Discovery wave's `allowedPaths: []` denied every write of an unrelated parallel session. Name the writer — both fields come from ONE `sessionAttribution()` call, which reads `.orchestrator/session.lock` once:
+   **Deriving the session binding (#1123, made mechanical #1207):** `wave-scope.json` lives in the WORKING COPY, and `hooks/enforce-scope.mjs` applies whatever it finds there to every session running in that checkout. Without a binding, a Discovery wave's `allowedPaths: []` denied every write of an unrelated parallel session. Name the writer — both fields come from ONE `attributionForRecord()` call, which reads `.orchestrator/session.lock` and confirms it against this process's own identity before returning anything:
    ```bash
    SESSION_BINDING=$(node --input-type=module -e "
-   import { sessionAttribution } from '$PLUGIN_ROOT/scripts/lib/events.mjs';
-   const a = sessionAttribution(process.cwd());
+   import { attributionForRecord } from '$PLUGIN_ROOT/scripts/lib/events.mjs';
+   const a = attributionForRecord(process.cwd());
    const out = {};
    if (a.session_id) out.session = a.session_id;
    if (a.semantic_session_id) out.semantic_session = a.semantic_session_id;
    console.log(JSON.stringify(out));
    ")
    ```
-   **Verify the binding names YOU before you write it (#1123 follow-up).** `sessionAttribution()` reads the repo-global `.orchestrator/session.lock`, which in a shared working copy can hold a PEER's id — a session that lost the acquire race (`bootstrapLock()` reason `active`) leaves the lock naming the session that won it. Compare both ids against your own session (STATE.md `session`): **if they do not match, OMIT the `session`/`semantic_session` keys entirely** and write an unbound manifest. Unbound = ENFORCE, which is the fail-closed direction; writing a foreign id instead publishes a manifest that classifies as somebody else's for every reader. The reader half is defensive against exactly this (Gate 3b resolves identity as the UNION of payload, env and lock, so a peer-owned-lock manifest still reads `own` to its writer), but the reader cannot repair a binding the writer knowingly got wrong — and a manifest naming a peer is unreadable as an audit record either way.
+   **The binding check is now mechanical, not a prose comparison (#1207).** `attributionForRecord()` reads the repo-global `.orchestrator/session.lock`, which in a shared working copy can hold a PEER's id — a session that lost the acquire race (`bootstrapLock()` reason `active`) leaves the lock naming the session that won it. It never hands that peer's id back: internally it confirms the lock's raw `session_id` against `readProcessLocalSessionIds()` (this process's own env-/hook-supplied identity) and returns `{}` — not the peer's ids, not an empty-but-present pair — whenever the two disagree or no process-local id exists at all. **STATE.md is deliberately not part of this check.** It is a shared working-copy artefact written by whichever session holds the lock, so under a peer-owned lock STATE.md's `session` field agrees with the lock about the same peer — comparing against it, as the previous version of this step asked you to do in prose, would have "confirmed" exactly the wrong id (#1177 FX1 found the identical trap in `emitEvent()`'s own correlation fill). `$SESSION_BINDING` above is therefore already correct; there is no further comparison left to perform before using it. Unbound (`{}`) = ENFORCE, the fail-closed direction; a filled binding is provably this session's own, never a foreign one you'd need to catch by hand.
 
-   Merge `$SESSION_BINDING`'s keys into the manifest. **If a value is empty, OMIT the key — never write `"session": ""`.** An empty id is present-but-equal-to-nobody: the legacy warning stays silent while every reader compares it against its own id, finds no match, and treats the manifest as FOREIGN — the one disposition that skips enforcement entirely. `sessionAttribution()` already omits rather than fills (CI runs hold no lock), and `validate-wave-scope.mjs` rejects the empty string outright, so the honest path is also the only one that validates.
+   Merge `$SESSION_BINDING`'s keys into the manifest. **If a value is empty, OMIT the key — never write `"session": ""`.** An empty id is present-but-equal-to-nobody: the legacy warning stays silent while every reader compares it against its own id, finds no match, and treats the manifest as FOREIGN — the one disposition that skips enforcement entirely. `attributionForRecord()` already omits rather than fills (CI runs hold no lock, and an unauthorised process-local mismatch), and `validate-wave-scope.mjs` rejects the empty string outright, so the honest path is also the only one that validates.
 
    ```json
    {
      "wave": N,
      "role": "<role>",
      "enforcement": "<from Session Config, default: warn>",
-     "session": "<raw session_id from sessionAttribution(); OMIT the key if unavailable>",
+     "session": "<raw session_id from attributionForRecord(); OMIT the key if unavailable>",
      "semantic_session": "<semantic_session_id from the same call; OMIT if unavailable>",
      "allowedPaths": ["<from agent specs in session plan>"],
      "blockedCommands": "<derived dynamically from the effective floor∪overlay policy via loadEffectivePolicy (severity: block rules, #972); falls back to legacy 5-element array if no policy resolves>",

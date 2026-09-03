@@ -42,6 +42,7 @@
 import { open, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { readCanonicalSessions } from './sessions-canonical.mjs';
 import { withStateMdLock } from './session-lock.mjs';
 import { resolveStateMdPath } from './state-md/frontmatter-mutators.mjs';
 import { parseStateMd } from './state-md/yaml-parser.mjs';
@@ -127,34 +128,22 @@ function isValidMode(mode) {
  *  - Malformed JSONL line → silently skipped (per-line try/catch).
  *  - Lines without a string `session_id` field → filtered out.
  *
- * Performance note: sessions.jsonl is line-oriented but typically <100 KB.
- * A single readFile is faster than line-streaming at this size. Should the
- * file grow past ~5 MB a future change can swap to a `readline` stream with
- * early-exit; not a launch blocker.
+ * #1209: migrated to `readCanonicalSessions` (dedup per `session_id`, drop
+ * id-less lines — same three rules `sessions-canonical.mjs` documents).
+ * Number-neutral for THIS reader: the only consumer of its output
+ * (`resolveSemanticSessionId`) folds `candidateIds` through `Math.max` over
+ * the parsed `n` — "Duplicates are fine — Math.max handles them" (see that
+ * function's body) — so collapsing a duplicate `session_id` line to one
+ * record changes nothing observable here. Migrated anyway for one collapse
+ * implementation across all `sessions.jsonl` raw-line-scan readers (#1209).
  *
  * @param {string} repoRoot
- * @returns {Promise<string[]>}  Array of session_id strings (may include duplicates).
+ * @returns {Promise<string[]>}  Array of session_id strings (may include duplicates
+ *   only across DIFFERENT ids — never the same id twice, see above).
  */
 async function readSessionIdsFromHistory(repoRoot) {
   const filePath = path.join(repoRoot, '.orchestrator', 'metrics', 'sessions.jsonl');
-  let raw;
-  try {
-    raw = await readFile(filePath, 'utf8');
-  } catch {
-    return [];
-  }
-  const ids = [];
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed === '') continue;
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (typeof parsed?.session_id === 'string') ids.push(parsed.session_id);
-    } catch {
-      // Malformed line — skip silently (audit §3.1 robustness contract).
-    }
-  }
-  return ids;
+  return readCanonicalSessions({ filePath }).map((rec) => rec.session_id);
 }
 
 /**

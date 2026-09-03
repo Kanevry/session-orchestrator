@@ -403,6 +403,16 @@ function resolveRunningWaveId() {
         // Cursor) resolves no process-local id -> binding unprovable ->
         // current-wave + 1 fallback with a stderr line. REVISIT if that fallback
         // rate is measured non-trivial in events.jsonl.
+        //
+        // #1207 — kept hand-rolled rather than calling `attributionForRecord()`
+        // (scripts/lib/events.mjs): that function's contract is `{}`-on-any-
+        // mismatch with no detail, but the stderr diagnostics below (raw id,
+        // lock status, process-local id list) are load-bearing for debugging a
+        // wrongly-bucketed proposal, and attributionForRecord() has no lock-
+        // status channel to source them from (it swallows `readLock()` errors
+        // silently by design). `readLockDetailed()` is used here specifically
+        // for that `.status` field `readLock()` (attributionForRecord's own
+        // primitive) does not return.
         const lock = readLockDetailed({ repoRoot: process.cwd() });
         const processLocal = readProcessLocalSessionIds();
         const lockRaw =

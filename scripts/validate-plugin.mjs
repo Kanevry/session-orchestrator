@@ -95,6 +95,42 @@ function runCheck(script) {
 }
 
 /**
+ * Advisory second pass for `check-skill-script-paths.mjs` (#1208): run it a
+ * second time with `--strict-sh --json` so the flag has a run surface inside
+ * validate-plugin, without promoting `.sh` findings to blocking here — the
+ * BLOCKING `.mjs`-only call above stays exactly as it is. Same non-blocking
+ * shape as the `check-unwired-features.mjs` / `check-learning-provenance.mjs`
+ * / `check-vcs-repo-flag.mjs` calls further down (exit code deliberately
+ * ignored; `checkFailed` is never set from this call). `runCheck()` cannot be
+ * reused here because it always spawns `[script, PLUGIN_ROOT]` with no room
+ * for extra flags, so this is a small dedicated spawn instead.
+ *
+ * @returns {void}
+ */
+function runStrictShAdvisory() {
+  const result = spawnSync(
+    'node',
+    [path.join(VALIDATE_DIR, 'check-skill-script-paths.mjs'), PLUGIN_ROOT, '--strict-sh', '--json'],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  let parsed;
+  try {
+    parsed = JSON.parse(result.stdout || '');
+  } catch {
+    process.stdout.write(
+      '  WARN: check-skill-script-paths --strict-sh: could not parse JSON output (advisory)\n',
+    );
+    return;
+  }
+  const shDead = (parsed.findings || []).filter(
+    (f) => f.kind === 'missing-path' && f.path.endsWith('.sh'),
+  ).length;
+  process.stdout.write(
+    `  check-skill-script-paths --strict-sh: ${shDead} dead .sh citation(s) (advisory)\n`,
+  );
+}
+
+/**
  * Run the surface-count drift family (issue #663) from the claude-md-drift-check
  * checker over the doc surfaces that carry artifact counts (README.md +
  * .orchestrator/steering/structure.md). The checker emits JSON; this adapter
@@ -327,6 +363,7 @@ runCheck('check-doc-cli-commands.mjs');
 // citation's own line or the line immediately above.
 process.stdout.write('\n');
 if (runCheck('check-skill-script-paths.mjs') !== 0) checkFailed = 1;
+runStrictShAdvisory();
 
 // WARN-only: a state-mutating `git` call in tests/ that names no target resolves
 // its destination from the ambient cwd (or an inherited GIT_DIR) — the 2026-08-19

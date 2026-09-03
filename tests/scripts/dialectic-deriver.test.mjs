@@ -25,6 +25,8 @@ import {
   mkdirSync,
   writeFileSync,
   rmSync,
+  readFileSync,
+  existsSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -674,5 +676,58 @@ describe('runDialecticDeriver — integration with mock dispatchAgent', () => {
     expect(prompt).toContain('REAL-SESSION-MARKER');
     expect(prompt).not.toContain('GHOST-MARKER-1');
     expect(prompt).not.toContain('GHOST-MARKER-2');
+  });
+
+  it('readLastSessions collapses a duplicate session_id ledger line before ranking — a dup must not occupy two of the K slots (#1209)', async () => {
+    // Two raw lines share the SAME session_id (the ledger is append-only and
+    // can carry a duplicate — see scripts/lib/sessions-canonical.mjs header).
+    // A naive raw-line reader keeps both, and with a tied completed_at both
+    // duplicate copies rank ahead of the older DISTINCT session, evicting it
+    // from a K=2 window entirely.
+    seedLearnings([{ id: 'L1', confidence: 0.9, text: 'learning' }]);
+    seedSessions([
+      {
+        session_id: 'DUP-SESSION-MARKER',
+        completed_at: '2026-01-03T00:00:00Z',
+        agent_summary: { complete: 3, partial: 0, failed: 0, spiral: 0 },
+      },
+      {
+        session_id: 'DUP-SESSION-MARKER',
+        completed_at: '2026-01-03T00:00:00Z',
+        agent_summary: { complete: 3, partial: 0, failed: 0, spiral: 0 },
+        note: 'second ledger line for the same physical session',
+      },
+      {
+        session_id: 'OLDER-REAL-SESSION-MARKER',
+        completed_at: '2026-01-01T00:00:00Z',
+        agent_summary: { complete: 2, partial: 0, failed: 0, spiral: 0 },
+      },
+    ]);
+    const dispatchAgent = vi.fn().mockResolvedValue({
+      text: '```diff\n# target: user\nbody\n```',
+      usage: { input_tokens: 10, output_tokens: 5 },
+    });
+    await runDialecticDeriver({ dispatchAgent, repoRoot: repo, lastKSessions: 2 });
+    const prompt = dispatchAgent.mock.calls[0][0].prompt;
+    expect(prompt).toContain('OLDER-REAL-SESSION-MARKER');
+  });
+
+  it('empty-input run emits exactly one orchestrator.dialectic.completed record with aborted: "empty-input" (#1206)', async () => {
+    // Empty tmp repo: no learnings/sessions/cards/steering — same fixture
+    // shape as the AC4 test above, which pins the RETURNED status; this test
+    // pins the SIDE EFFECT the return value cannot show.
+    const dispatchAgent = vi.fn();
+
+    await runDialecticDeriver({ dispatchAgent, repoRoot: repo });
+
+    const ledgerPath = join(repo, '.orchestrator', 'metrics', 'events.jsonl');
+    expect(existsSync(ledgerPath)).toBe(true);
+    const records = readFileSync(ledgerPath, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l))
+      .filter((r) => r.event === 'orchestrator.dialectic.completed');
+    expect(records).toHaveLength(1);
+    expect(records[0].aborted).toBe('empty-input');
   });
 });

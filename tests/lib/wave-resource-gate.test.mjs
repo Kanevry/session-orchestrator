@@ -603,9 +603,12 @@ describe('evaluateWaveResourceGate — offload decision (#1160)', () => {
     expect(result.host).toBeUndefined();
   });
 
-  // isNeverForeignRole is case-sensitive over lowercase entries; a wave role
-  // arrives capitalised, so a missing .toLowerCase() would let 'Release' through.
-  test('never offloads a NEVER_FOREIGN role even when it maps to an offloadable name', async () => {
+  // 'release' never maps to an offloadable name — OFFLOADABLE_WAVE_ROLES only
+  // has {quality, test, ui, perf}, disjoint from NEVER_FOREIGN_ROLES by
+  // construction (D8 #1204 LOW-1) — so this pins that a wave role arriving
+  // capitalised ('Release') still falls through mappedRole === undefined; a
+  // missing .toLowerCase() would be the only way this could offload.
+  test('never offloads a NEVER_FOREIGN role, pinned via the disjoint mapping table', async () => {
     const result = await evaluateWaveResourceGate({
       config: makeConfig({ 'remote-hosts': [M5] }),
       plannedAgents: 4,

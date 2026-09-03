@@ -17,15 +17,17 @@ import path from 'node:path';
 import {
   dispatchForeign,
   isForeignWorktreePath,
-  isNeverForeignRole,
   parseCursorStream,
   removeForeignWorktree,
   FOREIGN_AGENT_BASE_ARGS,
   FOREIGN_ENV_ALLOWLIST,
   MEASUREMENT_EXCLUDES,
+} from '@lib/wave-executor/foreign-dispatch.mjs';
+import {
+  isNeverForeignRole,
   NEVER_FOREIGN_ROLES,
   DEFAULT_TIMEOUT_SEC,
-} from '@lib/wave-executor/foreign-dispatch.mjs';
+} from '@lib/wave-executor/dispatch-common.mjs';
 
 const NUL = String.fromCharCode(0);
 

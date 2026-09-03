@@ -47,6 +47,8 @@ import { randomBytes } from 'node:crypto';
 
 import { readPeerCards } from './lib/peer-cards/reader.mjs';
 import { filterRealSessions } from './lib/session-schema/filters.mjs';
+import { readCanonicalSessions } from './lib/sessions-canonical.mjs';
+import { recordDialecticRun } from './lib/learnings/evolve-telemetry.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -172,6 +174,30 @@ function countContentLines(body) {
     n += 1;
   }
   return n;
+}
+
+/**
+ * Count the peer-card sections a proposed diff body would change (#1206 —
+ * `orchestrator.dialectic.completed`'s `user_deltas` / `agent_deltas` in
+ * dry-run mode, where there is no `mergePeerCard()` stats object to read).
+ * Pure function — no I/O.
+ *
+ * Counts `<!-- BEGIN MANAGED: <name> -->` sentinels (the same grammar
+ * `scripts/lib/peer-cards/merger.mjs` parses). A proposed body that carries
+ * none — the LLM emits a bare full-body replacement per the current prompt
+ * contract in {@link buildPrompt}, not per-section sentinels — still counts
+ * as ONE delta: a non-empty full-body replacement is a real change to the
+ * target, and an empty proposed body counts as zero (nothing to report for a
+ * target the response never touched).
+ *
+ * @param {string | undefined} diffText — `diff.user` or `diff.agent` from
+ *   {@link parseResponse}; `undefined` when the target was not emitted.
+ * @returns {number}
+ */
+export function countManagedSections(diffText) {
+  if (typeof diffText !== 'string' || diffText.length === 0) return 0;
+  const matches = diffText.match(/<!--\s*BEGIN\s+MANAGED:\s*[\w-]+\s*-->/g);
+  return matches && matches.length > 0 ? matches.length : 1;
 }
 
 /**
@@ -393,19 +419,25 @@ async function readTopLearnings(repoRoot, topN) {
 }
 
 /**
- * Read and rank sessions: filter out phantom `status: 'abandoned'` stubs
- * (#834, session-close-backfill), sort by `completed_at` DESC, take last K.
+ * Read and rank sessions: collapse ledger duplicates (#1209 — the ledger is
+ * append-only and can carry more than one raw line per physical session, see
+ * `scripts/lib/sessions-canonical.mjs` header), filter out phantom
+ * `status: 'abandoned'` stubs (#834, session-close-backfill), sort by
+ * `completed_at` DESC, take last K.
  *
- * Without the filter, phantoms (0 waves, seconds of runtime) can displace
- * REAL session context out of the K-window the derivation prompt sees.
+ * Without the dedup, a duplicate ledger line for the SAME session can occupy
+ * two of the K context slots and evict a genuinely distinct, older session.
+ * Without the phantom filter, phantoms (0 waves, seconds of runtime) can
+ * displace REAL session context out of the K-window the derivation prompt sees.
+ *
+ * Synchronous — `readCanonicalSessions()` reads the file itself.
  *
  * @param {string} repoRoot
  * @param {number} lastK
- * @returns {Promise<Array<object>>}
+ * @returns {Array<object>}
  */
-async function readLastSessions(repoRoot, lastK) {
-  const path = join(repoRoot, '.orchestrator', 'metrics', 'sessions.jsonl');
-  const entries = filterRealSessions(await readJsonlBestEffort(path));
+function readLastSessions(repoRoot, lastK) {
+  const entries = filterRealSessions(readCanonicalSessions({ repoRoot }));
   entries.sort((a, b) => {
     const ta = typeof a?.completed_at === 'string' ? a.completed_at : '';
     const tb = typeof b?.completed_at === 'string' ? b.completed_at : '';
@@ -488,6 +520,15 @@ export async function runDialecticDeriver({
     throw new TypeError('runDialecticDeriver: repoRoot (absolute path) is required');
   }
 
+  // #1206 — telemetry start marker for the mechanical `orchestrator.dialectic.
+  // completed` emits below. Mechanical (measured), not the coordinator's own
+  // typed DURATION_MS placeholder — covers every return path THIS function
+  // can determine on its own; see the module header for the two abort classes
+  // (`unknown-model`, thrown above; `subagent-crash`) and APPLY-mode success
+  // that only the skill-prose caller can record (merge + Agent() dispatch
+  // both happen one layer up, outside this pure pipeline).
+  const t0 = Date.now();
+
   // Gate 1: model fail-fast. Throws Error with the canonical message.
   validateModel(model);
 
@@ -516,6 +557,7 @@ export async function runDialecticDeriver({
     && (peerCards.agent === null || peerCards.agent === undefined)
     && (steering === null || steering === undefined)
   ) {
+    await recordDialecticRun({ repoRoot, status: 'empty-input', durationMs: Date.now() - t0 });
     return { status: 'empty-input', skipped_reason: 'no-input', diff: {} };
   }
 
@@ -533,6 +575,7 @@ export async function runDialecticDeriver({
   const estimatedInput = estimateInputTokens(prompt);
   const verdict = checkBudget(estimatedInput, budget);
   if (verdict.ok === false) {
+    await recordDialecticRun({ repoRoot, status: 'budget-exceeded', durationMs: Date.now() - t0 });
     return {
       status: 'budget-exceeded',
       used: verdict.used,
@@ -551,6 +594,7 @@ export async function runDialecticDeriver({
 
   // Gate 4: would-empty-card — refuse unless caller passed allowEmptying.
   if (!allowEmptying && detectEmptying(diff, peerCards)) {
+    await recordDialecticRun({ repoRoot, status: 'would-empty-card', durationMs: Date.now() - t0 });
     return {
       status: 'would-empty-card',
       skipped_reason: 'detected-empty-card-target',
@@ -561,6 +605,27 @@ export async function runDialecticDeriver({
         output_tokens: response?.usage?.output_tokens,
       },
     };
+  }
+
+  // #1206 success telemetry — DRY-RUN ONLY. `diff` here is the run's FINAL
+  // artefact in dry-run mode (Step 6.4 writes it verbatim to
+  // `.orchestrator/dialectic-pending.md`), so the delta counts are knowable
+  // right here via the pure `countManagedSections()` helper. In APPLY mode
+  // the artefact is NOT final yet — `mergePeerCard()` still has to run, and
+  // that happens one layer up in `skills/evolve/SKILL.md` Step 6.4 — so the
+  // success emit for that branch is that caller's job, using the SAME
+  // `recordDialecticRun()` with the real merge-stats deltas.
+  if (dryRun) {
+    await recordDialecticRun({
+      repoRoot,
+      status: 'ok',
+      mode: 'dry-run',
+      userDeltas: countManagedSections(diff.user),
+      agentDeltas: countManagedSections(diff.agent),
+      tokensIn: response?.usage?.input_tokens,
+      tokensOut: response?.usage?.output_tokens,
+      durationMs: Date.now() - t0,
+    });
   }
 
   return {

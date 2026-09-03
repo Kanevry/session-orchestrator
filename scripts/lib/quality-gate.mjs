@@ -67,7 +67,7 @@ import { fileURLToPath } from 'node:url';
 import { emitEvent, sessionAttribution } from './events.mjs';
 import { admitSuiteCounts, extractTestCounts } from './gates/gate-helpers.mjs';
 import { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
-import { readLock } from './session-lock.mjs';
+import { readProcessLocalSessionIds } from './session-identity/own-session.mjs';
 
 export { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
 
@@ -420,44 +420,32 @@ function listChangedFiles(repoRoot, ref) {
  * The id-space THIS process belongs to, for comparison against a repo-global
  * file that any session in the working copy may have written.
  *
- * Two sources, both read rather than invented — this deliberately adds no third
- * way of answering "who am I" (`scripts/lib/lock-reaper.mjs` takes the id from
- * its caller; `scripts/lib/peer-discovery.mjs` reads `readLock()`):
+ * Process-local witnesses ONLY (`CLAUDE_CODE_SESSION_ID`, via
+ * {@link readProcessLocalSessionIds}) — the `session.lock` fallback this
+ * function used to carry is deliberately GONE, not merely deprioritised.
+ * `session.lock` is a repo-GLOBAL artefact any session in the working copy
+ * can hold; unioning or falling back to it made a shared resource stand in
+ * for a process-local identity, which is exactly the #1194 hazard class
+ * (`.claude/rules/host-resources.md` § HR-102 — "a better signal REPLACES a
+ * worse one, it does not merely suppress it"). Concretely for this module
+ * (#1205): without the env var, a process that is NOT the lock holder used to
+ * silently adopt the lock holder's id as its own, so a `current-session.json`
+ * written by that same holder passed the ownership check by construction.
+ * `readProcessLocalSessionIds()` (`./session-identity/own-session.mjs`) is
+ * the shared, already-hardened implementation of this exact question — see
+ * its JSDoc for the full lock/STATE.md exclusion rationale.
  *
- *   1. `CLAUDE_CODE_SESSION_ID` — the only PER-PROCESS source, and therefore
- *      the only one a foreign session cannot spoof by writing a file. Measured
- *      2026-08-23 inside a dispatched wave agent: present, and equal to the
- *      coordinator's `current-session.json` `session_id` (a child session
- *      inherits the parent's id, which is what makes it usable here).
- *      `scripts/lib/spiral-carryover.mjs` reads the same variable, under the
- *      same measured premise.
- *   2. `session.lock` `session_id` / `semantic_session_id` — a repo-global
- *      FALLBACK for harnesses that export no session env var. Weaker on
- *      purpose: the lock is one more shared file in the same working copy, so
- *      it can name a peer rather than us. It is used only when (1) is absent,
- *      where the alternative is no check at all.
+ * An empty result is not a mismatch: {@link classifyCurrentSessionOwnership}
+ * treats an empty `ownIds` as `'unknown'`, never `'foreign'`, so
+ * `corrective_context` is kept — the existing fail-open contract from #1058,
+ * unchanged by this fix.
  *
- * @param {string} repoRoot
  * @returns {Set<string>} possibly empty — an empty set means "identity
  *   unresolvable", which the classifier below treats as `unknown`, never as a
  *   mismatch.
  */
-function readOwnSessionIds(repoRoot) {
-  const ids = new Set();
-  // `.trim()` first: a whitespace-only env var is truthy and would otherwise
-  // enter the set as a phantom id (`development.md` § env-var whitespace trap).
-  const fromEnv = (process.env.CLAUDE_CODE_SESSION_ID || '').trim();
-  if (fromEnv) ids.add(fromEnv);
-  if (ids.size === 0) {
-    try {
-      const lock = readLock({ repoRoot });
-      for (const key of ['session_id', 'semantic_session_id']) {
-        const value = typeof lock?.[key] === 'string' ? lock[key].trim() : '';
-        if (value) ids.add(value);
-      }
-    } catch { /* readLock never throws, but the contract is not ours to trust */ }
-  }
-  return ids;
+function readOwnSessionIds() {
+  return new Set(readProcessLocalSessionIds({ env: process.env, hookInput: null }));
 }
 
 /**
@@ -534,7 +522,7 @@ function readCorrectiveContext(repoRoot) {
     if (!existsSync(p)) return [];
     const raw = readFileSync(p, 'utf8');
     const parsed = JSON.parse(raw);
-    const { verdict, fileIds } = classifyCurrentSessionOwnership(parsed, readOwnSessionIds(repoRoot));
+    const { verdict, fileIds } = classifyCurrentSessionOwnership(parsed, readOwnSessionIds());
     if (verdict === 'foreign') {
       process.stderr.write(
         `⚠️  quality-gate: .orchestrator/current-session.json belongs to another session ` +

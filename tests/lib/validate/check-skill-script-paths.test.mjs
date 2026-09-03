@@ -17,6 +17,7 @@ import {
   extractCitations,
   isPlaceholderCitation,
   scanSkillScriptPaths,
+  SCAN_DIRS,
 } from '../../../scripts/lib/validate/check-skill-script-paths.mjs';
 
 const repoRoot = process.cwd();
@@ -49,6 +50,14 @@ function scanFixture(body, scripts = [], opts = {}) {
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+describe('SCAN_DIRS', () => {
+  it('includes docs (#1208 — the checker now scans ADR/reference prose too)', () => {
+    // Pins the flip: a regression here would silently narrow the scan back to
+    // skills/commands/agents and stop catching dead citations in docs/*.md.
+    expect(SCAN_DIRS).toContain('docs');
+  });
+});
 
 describe('scanSkillScriptPaths', () => {
   it('passes a citation whose file exists', () => {

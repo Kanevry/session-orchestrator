@@ -11,7 +11,7 @@
 
 ## Why this map exists
 
-The three spikes look orthogonal at the issue-title level (architecture vs. devex vs. autopilot), but they all reach into the same five plugin surfaces: **Session Config schema, hook handlers (`hooks/on-stop.mjs` + `hooks.json` timeouts), autopilot kill-switch registry (`scripts/lib/autopilot/kill-switches.mjs`), the `.orchestrator/metrics/*.jsonl` ledgers, and the not-yet-existing `scripts/lib/tool-adapter.mjs` abstraction**. Without an explicit connection map, the three sibling ADRs/PRDs (ADR-364, ADR-365, PRD-366) risk recommending overlapping or contradictory schema changes — e.g. two spikes both bumping `sessions.jsonl` to v2 with incompatible field shapes, or two spikes registering kill-switches with colliding NAME constants. This map fixes the integration contract once so the three documents can be authored and reviewed independently without a final-stage merge surprise.
+The three spikes look orthogonal at the issue-title level (architecture vs. devex vs. autopilot), but they all reach into the same five plugin surfaces: **Session Config schema, hook handlers (`hooks/on-stop.mjs` + `hooks.json` timeouts), autopilot kill-switch registry (`scripts/lib/autopilot/kill-switches.mjs`), the `.orchestrator/metrics/*.jsonl` ledgers, and the not-yet-existing `scripts/lib/tool-adapter.mjs` abstraction**. Without an explicit connection map, the three sibling ADRs/PRDs (ADR-364, ADR-365, PRD-366) risk recommending overlapping or contradictory schema changes — e.g. two spikes both bumping `sessions.jsonl` to v2 with incompatible field shapes, or two spikes registering kill-switches with colliding NAME constants. This map fixes the integration contract once so the three documents can be authored and reviewed independently without a final-stage merge surprise. <!-- path-check: planned #365 -->
 
 ## Dependency graph (textual)
 
@@ -66,7 +66,7 @@ PRD-366 will introduce a new kill-switch — most likely `VERIFICATION_BUDGET_EX
 
 ### #366 ↔ #365 (tool-adapter)
 
-#366's `verification-command` field is initially shell-only (`pnpm test`, `npm run typecheck`). But once verification expands beyond shell — e.g. "verify by calling MCP tool X" or "screenshot via headless browser adapter" — it will need #365's tool-adapter abstraction. **Recommendation:** PRD-366 Phase 1 ships shell-only; Phase 2 (post-#365) adds `verification-command-adapter: <mcp-tool-id>` once `scripts/lib/tool-adapter.mjs` exists. This avoids #366 having to invent its own ad-hoc adapter and then refactor when #365 lands.
+#366's `verification-command` field is initially shell-only (`pnpm test`, `npm run typecheck`). But once verification expands beyond shell — e.g. "verify by calling MCP tool X" or "screenshot via headless browser adapter" — it will need #365's tool-adapter abstraction. **Recommendation:** PRD-366 Phase 1 ships shell-only; Phase 2 (post-#365) adds `verification-command-adapter: <mcp-tool-id>` once `scripts/lib/tool-adapter.mjs` exists. This avoids #366 having to invent its own ad-hoc adapter and then refactor when #365 lands. <!-- path-check: planned #365 -->
 
 ### #364 ↔ #365 (managed-agent invokes MCP)
 
@@ -100,7 +100,7 @@ If #364's thin-slice produces a managed-agent registry (per A6, "managed-agents 
 | `.orchestrator/metrics/events.jsonl` | — | EXTEND (`tool_invocations` event type) | — |
 | `.orchestrator/metrics/failures.jsonl` | — | — | NEW (verification failure evidence) |
 | `scripts/lib/autopilot/kill-switches.mjs` | adds `STALL_TIMEOUT` (Symphony pattern) | — | adds `VERIFICATION_BUDGET_EXCEEDED` |
-| `scripts/lib/tool-adapter.mjs` | — | NEW | — (consumes if Phase 2) |
+| `scripts/lib/tool-adapter.mjs` | — | NEW | — (consumes if Phase 2) <!-- path-check: planned #365 --> |
 | `scripts/lib/worktree.mjs` | EXTEND (`validateWorkspacePath`) | — | — |
 | New skill `mcp-debug` | — | NEW | — |
 | `skills/mcp-builder/SKILL.md` | — | EXTEND (recommend `npx reloaderoo`) | — |
@@ -112,7 +112,7 @@ Verbs: **NEW** = file does not exist today, spike creates it; **EXTEND** = file 
 
 The three spikes are technically order-independent, but ordering them reduces total rework:
 
-1. **#365 first** — small, isolated, no schema changes (only docs + a new `mcp-debug` skill + the `scripts/lib/tool-adapter.mjs` scaffold). Estimate ~3–5 days. **Unblocks** the tool-adapter standard that both #364 (managed-agent → MCP) and #366 Phase 2 (verification-by-tool) want to consume.
+1. **#365 first** — small, isolated, no schema changes (only docs + a new `mcp-debug` skill + the `scripts/lib/tool-adapter.mjs` scaffold). Estimate ~3–5 days. **Unblocks** the tool-adapter standard that both #364 (managed-agent → MCP) and #366 Phase 2 (verification-by-tool) want to consume. <!-- path-check: planned #365 -->
 2. **#366 next, Phase 1 only** — shell-only verification command + `hooks/on-stop.mjs` extension + `failures.jsonl` ledger + one new `VERIFICATION_BUDGET_EXCEEDED` kill-switch. Estimate ~5–7 days. Adopts #365's tool-adapter standard if available, else stays shell-only and defers Phase 2.
 3. **#364 last** — medium-granularity (per A6): `agent_identity` field + thin-slice managed-agent substrate. Estimate ~7–10 days. **Depends** on #366's `failures.jsonl` pattern as the forward-compat reference for proof-bundle artefacts (cost / lease / proof-of-work artefacts in A2/A3 map onto the same JSONL ledger discipline).
 

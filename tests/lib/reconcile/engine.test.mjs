@@ -175,6 +175,66 @@ describe('runReconcile — default loader uses the learnings schema SSOT', () =>
   });
 });
 
+describe('runReconcile — defaultLoadLearnings ENOENT vs other read failures (#1210)', () => {
+  it('warns on a non-ENOENT read failure and still degrades to an empty (not thrown) corpus', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'reconcile-engine-eisdir-'));
+    try {
+      const metricsDir = join(repoRoot, '.orchestrator', 'metrics');
+      mkdirSync(metricsDir, { recursive: true });
+      // A DIRECTORY at the learnings.jsonl path: the real fs.readFileSync
+      // throws EISDIR, not ENOENT — no DI mock needed to force the "other"
+      // branch.
+      mkdirSync(join(metricsDir, 'learnings.jsonl'));
+
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        const result = await runReconcile({
+          repoRoot,
+          dryRun: true,
+          now: new Date('2026-07-04T00:00:00Z'),
+        });
+
+        expect(result.error).toBeUndefined();
+        expect(result.summary.totalLearnings).toBe(0);
+        const warned = stderr.mock.calls.some(
+          (call) =>
+            typeof call[0] === 'string' &&
+            call[0].includes('defaultLoadLearnings') &&
+            call[0].includes('EISDIR'),
+        );
+        expect(warned).toBe(true);
+      } finally {
+        stderr.mockRestore();
+      }
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT warn when learnings.jsonl is simply absent (ENOENT)', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'reconcile-engine-enoent-'));
+    try {
+      // No learnings.jsonl (and no .orchestrator/metrics/ dir at all).
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        const result = await runReconcile({
+          repoRoot,
+          dryRun: true,
+          now: new Date('2026-07-04T00:00:00Z'),
+        });
+
+        expect(result.error).toBeUndefined();
+        expect(result.summary.totalLearnings).toBe(0);
+        expect(stderr).not.toHaveBeenCalled();
+      } finally {
+        stderr.mockRestore();
+      }
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('runReconcile — empty short-circuit', () => {
   it('returns an all-zero summary, no proposals/rejections, and never writes on an empty corpus', async () => {
     const merge = vi.fn(() => ({ merged: [], written: true }));

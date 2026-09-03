@@ -71,6 +71,27 @@ import {
 } from '../../scripts/lib/vault-sync-baseline.mjs';
 
 // ── Inline vendored schema (mirrors projects-baseline vault-frontmatter.ts) ──
+// Provenance notes for the GENERATED block below (kept OUTSIDE the sentinels so a
+// regeneration cannot drop them — measured 2026-09-03, a --write did exactly that):
+//
+// vaultNoteStatusSchema — measured 2026-08-23: FOUR hand-maintained copies of this
+// enum exist: (1) the SSOT projects-baseline/packages/zod-schemas/src/vault-frontmatter.ts,
+// (2) this file, (3) sven-infra `02-cron/vault-overview-sync.sh:216`,
+// (4) `tests/lib/vault-mirror/render-sessions.test.mjs:490`, whose own comment names
+// this file as its source and then transcribes it. Copy 4 is deliberately NOT widened:
+// it asserts membership for a mapper that emits only `verified`/`draft`.
+// A drift test reading the SSOT directly was REJECTED (SSOT is host-local; such a test
+// passes here and fails in CI). The durable fix is this generated block plus the CI job
+// `schema-drift-check` (armed 2026-09-03, #1175) — not a test across a repo boundary.
+//
+// `maintenance|planned|paused|dead` were added 2026-08-23 (baseline MR !27, merge 6f38aeb):
+// six `_overview.md` files already carried one of them; removing the four produced exactly
+// 6 `status` errors, re-adding them 0. Without them the strict gate blocks every
+// vault session-close.
+//
+// vaultNoteTypeSchema `peer-card` (#503), `board` (#738) and the optional `source-repo`
+// field (#725) were vendor-ahead until 2026-09-03; upstream-lifted in projects-baseline
+// cb9ec97 (session-orchestrator #531).
 // ── BEGIN GENERATED SCHEMA (sync-vault-schema.mjs) — do not edit between sentinels ──
 const slugRegex = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -92,26 +113,6 @@ const vaultNoteTypeSchema = z.enum([
   'board',
 ]);
 
-// VENDORED COPY. SSOT: projects-baseline/packages/zod-schemas/src/vault-frontmatter.ts
-// (`vaultNoteStatusSchema`). This file is a standalone CLI with no exports, so the
-// values cannot be imported — they are hand-kept in sync, and that is the known cost.
-//
-// Measured 2026-08-23: FOUR hand-maintained copies of this enum exist —
-//   1. the SSOT above
-//   2. this file
-//   3. sven-infra `02-cron/vault-overview-sync.sh:216`
-//   4. `tests/lib/vault-mirror/render-sessions.test.mjs:490`, whose own comment names
-//      this file as its source and then transcribes it
-// Copy 4 is deliberately NOT widened: it asserts membership for a mapper that emits
-// only `verified`/`draft`, so adding values it cannot produce would weaken it.
-//
-// A drift test reading the SSOT directly was considered and REJECTED: the SSOT lives
-// in a sibling repo resolved host-locally, so such a test passes on this machine and
-// fails in CI, where projects-baseline is not checked out. The durable fix is
-// generation from the SSOT at build time, not a test that reads across a repo
-// boundary. Revisit trigger: a fifth copy, or the first CI-visible drift.
-//
-// Order below mirrors the SSOT exactly, so a diff of the two lists is readable.
 const vaultNoteStatusSchema = z.enum([
   'draft',
   'active',
@@ -120,13 +121,6 @@ const vaultNoteStatusSchema = z.enum([
   'production',
   'mvp',
   'idea',
-  // Added 2026-08-23 (baseline MR !27, merge 6f38aeb). sven renders these into
-  // `01-projects/*/_overview.md`; measured the same day, SIX of them already carried
-  // one of these values (4x dead, 1x paused, 1x maintenance). Falsified rather than
-  // assumed: removing the four again produced exactly 6 `status` errors, re-adding
-  // them produced 0. Without them the strict gate blocks every vault session-close.
-  // Slugs deliberately not listed here — the scanner treats them as private
-  // (`check-owner-leakage` CP6), and the count is the load-bearing part anyway.
   'maintenance',
   'planned',
   'paused',

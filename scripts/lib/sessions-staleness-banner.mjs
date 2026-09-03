@@ -132,6 +132,7 @@ import path from 'node:path';
 
 import { readLock, DEFAULT_TTL_HOURS } from './session-lock.mjs';
 import { isRealSession } from './session-schema/filters.mjs';
+import { readCanonicalSessions } from './sessions-canonical.mjs';
 
 /** Repo-relative path to the session ledger (one record per closed session). */
 const SESSIONS_PATH = '.orchestrator/metrics/sessions.jsonl';
@@ -240,20 +241,21 @@ function keepNewer(current, candidate) {
  * result so the caller can say the anchor is a stub start, not a measured close;
  * the key is omitted (`undefined`) on the genuine path.
  *
- * @param {string[]} lines
+ * `records` is the CANONICAL (#1209b) record set — `readCanonicalSessions()`
+ * has already collapsed a duplicated `session_id` to its newest occurrence, so
+ * a since-corrected raw LINE for the same identity (e.g. one later marked
+ * `status: 'abandoned'`, or a stale `completed_at` a later record for the same
+ * id superseded) can no longer independently skew this max-reduce the way a
+ * raw-line scan over every append could.
+ *
+ * @param {object[]} records
  * @returns {{iso: string, ms: number, stubFallback?: true}|null}
  */
-function lastLedgerEntry(lines) {
+function lastLedgerEntry(records) {
   let newestGenuine = null; // newest genuine completed_at (or started_at floor)
   let newestStub = null; // newest stub started_at
 
-  for (const line of lines) {
-    let record;
-    try {
-      record = JSON.parse(line);
-    } catch {
-      continue;
-    }
+  for (const record of records) {
     if (!record || typeof record !== 'object') continue;
 
     if (isBackfillStub(record)) {
@@ -370,10 +372,15 @@ export function checkSessionsStaleness({ repoRoot, now = Date.now() } = {}) {
 
     const nowMs = typeof now === 'number' && Number.isFinite(now) ? now : Date.now();
 
-    const sessionLines = readJsonlLines(path.join(repoRoot, SESSIONS_PATH));
+    const sessionsPath = path.join(repoRoot, SESSIONS_PATH);
+    const sessionLines = readJsonlLines(sessionsPath);
     if (sessionLines === null || sessionLines.length === 0) return null;
 
-    const ledger = lastLedgerEntry(sessionLines);
+    // CANONICAL (#1209b) record set — readJsonlLines() above only decides
+    // missing-vs-empty (readCanonicalSessions() cannot tell those apart, see
+    // its own doc); the anchor scan itself now runs over the collapsed set.
+    const sessionRecords = readCanonicalSessions({ filePath: sessionsPath });
+    const ledger = lastLedgerEntry(sessionRecords);
     if (ledger === null) return null;
 
     const eventLines = readJsonlLines(path.join(repoRoot, EVENTS_PATH));

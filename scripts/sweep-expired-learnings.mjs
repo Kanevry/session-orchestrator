@@ -23,6 +23,7 @@
  * Usage:
  *   node scripts/sweep-expired-learnings.mjs [--prune] [--dry-run|--apply] [--json]
  *     [--grace-days N] [--entries PATH] [--file PATH] [--archive PATH]
+ *     [--appended N] [--boosted M] [--duration-ms D] [--skipped a,b] [--repo-root PATH]
  *
  * Flags:
  *   --prune           Decision-driven prune+consolidate+rewrite instead of the
@@ -40,6 +41,23 @@
  *                      store.
  *   --file PATH       Learnings store (default: .orchestrator/metrics/learnings.jsonl)
  *   --archive PATH    Archive sidecar (default: .orchestrator/metrics/learnings-archive.jsonl)
+ *   --appended N      PRUNE ONLY (#1206). New learnings written this `/evolve`
+ *                      run (Step 3.5(4)); folded into the mechanical
+ *                      `orchestrator.evolve.completed` emit alongside this
+ *                      call's own `pruned` count. Default 0.
+ *   --boosted M       PRUNE ONLY (#1206). Existing learnings reinforced this
+ *                      run (Step 3.5(2)). Default 0.
+ *   --duration-ms D   PRUNE ONLY (#1206). Elapsed ms since the run's telemetry
+ *                      start marker. Default 0.
+ *   --skipped a,b     PRUNE ONLY (#1206). Comma-separated list of optional
+ *                      steps that ran but were themselves skipped this run
+ *                      (HR-105 — e.g. `skill-evolution-off`). Default none.
+ *   --repo-root PATH  PRUNE ONLY (#1206). Repo root the
+ *                      `orchestrator.evolve.completed` record is pinned to.
+ *                      No default and NO process.cwd() fallback (#1119) — when
+ *                      omitted, no event is emitted at all (stderr WARN, exit
+ *                      code unaffected). Emission is best-effort and never
+ *                      changes this command's exit code or stdout contract.
  *
  * Exit codes:
  *   0  Success (including no-op when nothing is archive-eligible)
@@ -51,6 +69,7 @@
 import { existsSync } from 'node:fs';
 import { sweepExpiredLearnings, pruneLearnings } from './lib/learnings/expiry-sweep.mjs';
 import { readLearnings } from './lib/learnings/io.mjs';
+import { emitEvolveCompleted } from './lib/learnings/evolve-telemetry.mjs';
 
 const DEFAULT_FILE = '.orchestrator/metrics/learnings.jsonl';
 const DEFAULT_ARCHIVE = '.orchestrator/metrics/learnings-archive.jsonl';
@@ -97,6 +116,20 @@ function parseArgs(argv) {
     entries: null,
     file: DEFAULT_FILE,
     archive: DEFAULT_ARCHIVE,
+    appended: 0,
+    boosted: 0,
+    durationMs: 0,
+    skipped: [],
+    // #1119 — NO process.cwd() fallback. Most CLI callers (every test in this
+    // file except the SKILL.md-extraction fixture, which sets its own tmp
+    // `cwd`) invoke this script from the repo root without `--repo-root`; a
+    // cwd fallback would silently append synthetic `orchestrator.evolve.
+    // completed` records to the operator's REAL fleet ledger on every
+    // `--prune --apply` run in `npm test`. `emitEvolveCompleted()` already
+    // refuses to emit (stderr WARN, no throw) when repoRoot is absent — same
+    // fail-closed contract as `emitReconcileCompleted` / `express-path.mjs`.
+    repoRoot: null,
+    telemetryExplicit: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -122,6 +155,37 @@ function parseArgs(argv) {
       args.file = argv[++i];
     } else if (a === '--archive') {
       args.archive = argv[++i];
+    } else if (a === '--appended') {
+      const raw = argv[++i];
+      const v = Number(raw);
+      if (!Number.isInteger(v) || v < 0) {
+        usageError(`--appended requires a non-negative integer, got: ${raw}`);
+      }
+      args.appended = v;
+      args.telemetryExplicit = true;
+    } else if (a === '--boosted') {
+      const raw = argv[++i];
+      const v = Number(raw);
+      if (!Number.isInteger(v) || v < 0) {
+        usageError(`--boosted requires a non-negative integer, got: ${raw}`);
+      }
+      args.boosted = v;
+      args.telemetryExplicit = true;
+    } else if (a === '--duration-ms') {
+      const raw = argv[++i];
+      const v = Number(raw);
+      if (!Number.isFinite(v) || v < 0) {
+        usageError(`--duration-ms requires a non-negative number, got: ${raw}`);
+      }
+      args.durationMs = v;
+      args.telemetryExplicit = true;
+    } else if (a === '--skipped') {
+      const raw = argv[++i];
+      args.skipped = typeof raw === 'string' ? raw.split(',').filter((s) => s.length > 0) : [];
+      args.telemetryExplicit = true;
+    } else if (a === '--repo-root') {
+      args.repoRoot = argv[++i];
+      args.telemetryExplicit = true;
     } else if (a === '--help' || a === '-h') {
       printHelp();
       process.exit(0);
@@ -139,6 +203,12 @@ function parseArgs(argv) {
   }
   if (!args.prune && args.entries !== null) {
     usageError('--entries is only valid with --prune');
+  }
+  if (!args.prune && args.telemetryExplicit) {
+    usageError(
+      '--appended/--boosted/--duration-ms/--skipped/--repo-root are only valid with --prune ' +
+        '(the sweep path never emits orchestrator.evolve.completed)',
+    );
   }
   return args;
 }
@@ -264,6 +334,26 @@ async function runPrune(args) {
     entries_from: args.entries,
     ...result,
   };
+
+  // #1206 — the ONE mechanical call site for `orchestrator.evolve.completed`:
+  // this `--prune --apply` invocation IS `/evolve analyze`'s Step 3.5(5) store
+  // write, so folding the emit in here (instead of a separate
+  // `emit-event.mjs` call in skill prose) means the event can no longer be
+  // forgotten independently of the write it reports on. Gated on `!dryRun` —
+  // a `--prune --dry-run` preview (the docs' own recommended pre-check for a
+  // hand-assembled `--entries` sidecar) never wrote anything, so it must not
+  // report a completed run either. Best-effort — never changes this
+  // command's exit code or stdout contract.
+  if (!args.dryRun) {
+    await emitEvolveCompleted({
+      repoRoot: args.repoRoot,
+      appended: args.appended,
+      boosted: args.boosted,
+      pruned: result.archived,
+      durationMs: args.durationMs,
+      skipped: args.skipped,
+    });
+  }
 
   if (args.json) {
     process.stdout.write(JSON.stringify(summary) + '\n');

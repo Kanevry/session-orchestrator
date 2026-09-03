@@ -972,7 +972,10 @@ describe('mirrorNarrative', () => {
       const { repoRoot } = scaffold({ repoDirName: 'telemetry-nopath-repo', withStateMd: false });
       await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
 
-      const records = readLedger(repoRoot);
+      // Scoped to NARRATIVE_EVENT (#1028 residue 2): since this run also emits
+      // a sibling `orchestrator.secret_masker.applied` record, the ledger now
+      // carries 2 lines — this test's subject is the narrative event alone.
+      const records = readLedger(repoRoot).filter((e) => e.event === NARRATIVE_EVENT);
       expect(records).toHaveLength(1);
       const record = records[0];
 
@@ -1049,6 +1052,54 @@ describe('mirrorNarrative', () => {
         '# telemetry-broken-ledger-repo — Session Narrative',
       );
       expect(readLedger(repoRoot)).toEqual([]);
+    });
+
+    // #1028 residue 2 — THE BUG THIS CATCHES, NAMED: `maskNarrative` has
+    // masked unconditionally since #1025, but `orchestrator.secret_masker.applied`
+    // had exactly ONE emitter (`scripts/vault-mirror.mjs`) before this fix. A
+    // census grepping event NAMES for `narrative` read as "this channel masks
+    // nothing", which was never true — it just never SAID so. This test fails
+    // on HEAD ("never called") and passes once `mirrorNarrative` emits it
+    // beside `orchestrator.vault.narrative_mirrored`.
+    it('emits ONE orchestrator.secret_masker.applied per run, channel narrative-mirror, needle_count/hits >= 1 when a needle is masked', async () => {
+      const NEEDLE_KEY = 'SO_TEST_NARRATIVE_MASKER_TELEMETRY_TOKEN';
+      const NEEDLE = 'narrative-masker-telemetry-needle-9f2c1a';
+      vi.stubEnv(NEEDLE_KEY, NEEDLE);
+      const { repoRoot } = scaffold({ repoDirName: 'masker-telemetry-repo' });
+      fs.writeFileSync(
+        path.join(repoRoot, '.claude', 'STATE.md'),
+        ['---', 'session-id: main-masker-telemetry', '---', '', '## Deviations', '', `- Pasted ${NEEDLE} into the log.`, ''].join('\n'),
+      );
+
+      const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+      expect(result.action).toBe('written');
+
+      const events = readLedger(repoRoot).filter((e) => e.event === 'orchestrator.secret_masker.applied');
+      expect(events).toHaveLength(1);
+      expect(events[0].channel).toBe('narrative-mirror');
+      expect(events[0].needle_count).toBeGreaterThanOrEqual(1);
+      expect(events[0].hits).toBeGreaterThanOrEqual(1);
+      expect(events[0].records).toBe(1);
+
+      vi.unstubAllEnvs();
+    });
+
+    // Discriminator for the test above: on a skip path (no STATE.md, so
+    // `maskNarrative` is never REACHED), the emit still fires exactly once —
+    // `needle_count` comes from the masker built at the TOP of
+    // `runNarrativeMirror`, not from the (unreached) masking step, so a run
+    // that never masks anything is still a REAL measured 0-hit record rather
+    // than a silently-skipped one.
+    it('still emits exactly one masker event on the skipped-no-statemd path, with hits: 0', async () => {
+      const { repoRoot } = scaffold({ repoDirName: 'masker-telemetry-skip-repo', withStateMd: false });
+
+      const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+      expect(result.action).toBe('skipped-no-statemd');
+
+      const events = readLedger(repoRoot).filter((e) => e.event === 'orchestrator.secret_masker.applied');
+      expect(events).toHaveLength(1);
+      expect(events[0].channel).toBe('narrative-mirror');
+      expect(events[0].hits).toBe(0);
     });
   });
 });

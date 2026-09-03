@@ -160,8 +160,10 @@ function zeroedResult(error) {
 /**
  * Default learnings loader — read + parse `<repoRoot>/.orchestrator/metrics/learnings.jsonl`
  * line-by-line, migrate/normalize records through the learnings schema SSOT,
- * and skip blank/malformed lines. A missing file yields `[]`. Never throws (a
- * read error degrades to `[]`).
+ * and skip blank/malformed lines. A missing file (ENOENT) yields `[]`
+ * silently; an unreadable one (EACCES/EISDIR/…) yields `[]` with a stderr
+ * WARN (#1210 — ENOENT and other read failures are different facts, same
+ * split as `sessions-canonical.mjs` `readCanonicalSessions`).
  *
  * @param {string|undefined} repoRoot
  * @returns {Array<Record<string, unknown>>}
@@ -175,8 +177,15 @@ function defaultLoadLearnings(repoRoot) {
   let raw;
   try {
     raw = readFileSync(absPath, 'utf8');
-  } catch {
-    return []; // ENOENT or any read error → empty corpus.
+  } catch (err) {
+    if (!err || err.code !== 'ENOENT') {
+      process.stderr.write(
+        `⚠ defaultLoadLearnings: cannot read ${absPath} ` +
+          `(${err?.code ?? '?'}: ${err?.message ?? String(err)}) — ` +
+          'treating as EMPTY, counts below are floors\n',
+      );
+    }
+    return [];
   }
 
   /** @type {Array<Record<string, unknown>>} */

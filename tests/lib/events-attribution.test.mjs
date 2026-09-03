@@ -299,7 +299,11 @@ describe('emitEvent — wave correlation (#1177 FA3)', () => {
 // ---------------------------------------------------------------------------
 
 describe('attributionForRecord', () => {
-  it('returns {} for a root with no lock and stays well under 1 ms/call', async () => {
+  // #1207 — the title below used to read "returns {} for a root with no
+  // lock", but the body writes a matching lock AND asserts the FILLED
+  // attribution, not `{}`. Retitled to describe what it actually asserts;
+  // the perf bound stays attached here since it needs a real filled call.
+  it('fills both keys when the process-local id matches the lock, and stays well under 1 ms/call', async () => {
     process.env.CLAUDE_CODE_SESSION_ID = OWN_UUID;
     await writeLock(OWN_SEMANTIC, OWN_UUID);
     await writeStateMd(OWN_SEMANTIC);
@@ -314,5 +318,30 @@ describe('attributionForRecord', () => {
     // Generous bound: a hot path called ~34 ways must not become a file-IO tax.
     // Measured locally at ~0.02 ms/call; 1 ms is the contract in the prompt.
     expect(msPerCall).toBeLessThan(1);
+  });
+
+  // (i) — the fake-regression case (#1207/#1123): a lock naming a PEER must
+  // never be handed back just because THIS process happens to carry its own
+  // (different) id. Swapping the implementation for the raw `sessionAttribution()`
+  // call it wraps (no process-local confirmation) turns this test red — it
+  // would return the peer's ids instead of `{}`.
+  it('returns {} when the lock names a PEER even though this process carries its own id', async () => {
+    process.env.CLAUDE_CODE_SESSION_ID = OWN_UUID;
+    await writeLock(PEER_SEMANTIC, PEER_UUID);
+    expect(attributionForRecord(root)).toEqual({});
+  });
+
+  // (ii) — no STATE.md is written here at all. Proves the fill does not
+  // secretly depend on STATE.md's presence (the #1177 FX1 witness this
+  // function deliberately dropped) — a regression that reintroduced a
+  // STATE.md read would pass the test above (which does write STATE.md) but
+  // fail this one wherever the on-disk file itself became load-bearing.
+  it('fills both keys from the lock alone when the process-local id matches, with no STATE.md present', async () => {
+    process.env.CLAUDE_CODE_SESSION_ID = OWN_UUID;
+    await writeLock(OWN_SEMANTIC, OWN_UUID);
+    expect(attributionForRecord(root)).toEqual({
+      session_id: OWN_UUID,
+      semantic_session_id: OWN_SEMANTIC,
+    });
   });
 });

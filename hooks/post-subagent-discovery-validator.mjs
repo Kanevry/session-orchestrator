@@ -18,10 +18,12 @@
  *      TAIL (last ~8 `type:"assistant"` records), concat text blocks. When no
  *      `agent_id` is derivable (or the file is absent) the hook exits 0 and
  *      records NOTHING — see the scope note below.
- *   5. Regex-scan the concatenated text for 8 claim patterns — 6 quantifier-
- *      triggered distributional claims, the #908 bare-cardinal repo-state
- *      fact ("14 commits", "92 learnings", "5 dirty files", "412 lines"), and
- *      the #918 numerator/denominator slash form ("12/14 files", "4/4 callers").
+ *   5. Regex-scan the concatenated text for 17 claim patterns — 6 English
+ *      quantifier-triggered distributional claims, 9 German equivalents
+ *      (#1211 — "N von M", "alle N", "davon", "sämtliche", …), the #908
+ *      bare-cardinal repo-state fact ("14 commits", "92 learnings",
+ *      "5 dirty files", "412 lines", "8 Einträge"), and the #918
+ *      numerator/denominator slash form ("12/14 files", "4/4 callers").
  *   6. For each match, check whether a fenced ```bash block containing a
  *      MEASUREMENT command (grep/rg/find/git/wc/jq/ls/node/npm) appears within
  *      ±5 lines. If a claim has NO adjacent measurement block → record a
@@ -132,8 +134,18 @@ const STATE = '(?:commits?|learnings?|issues?|branches?|lines?|entries|records?|
  * admitted: 490 real SubagentStop transcripts (2026-07-31), +0 additional
  * firings from the bare form — the noun is free on this corpus (all +3 delta
  * firings came from the #918 slash pattern below).
+ *
+ * German extension (#1211): `zeilen?|dateien?|datei|aufrufer|eintr(?:ä|ae)ge?`
+ * only — the same D3 measurement that found the quantifier patterns
+ * disciplined (7/41, see WIDE_DE above) found the WIDE German noun set
+ * (Sessions/Repos/Treffer/Stellen/Module/Tests included) firing 39/41
+ * (~57% false-positive rate in the labelled sample) when admitted here. Those
+ * six nouns are deliberately excluded from this bare-cardinal set; they
+ * remain reachable through the quantifier-triggered German patterns above,
+ * which carry a lexical anchor.
  */
-const CARDINAL_NOUN = '(?:commits?|learnings?|issues?|branches?|lines?|files?|callers?)';
+const CARDINAL_NOUN =
+  '(?:commits?|learnings?|issues?|branches?|lines?|files?|callers?|zeilen?|dateien?|datei|aufrufer|eintr(?:ä|ae)ge?)';
 
 /**
  * Wide noun class = code-distribution nouns ∪ repo-state nouns. Used by the six
@@ -146,6 +158,22 @@ const CARDINAL_NOUN = '(?:commits?|learnings?|issues?|branches?|lines?|files?|ca
  * ordinary prose, not measured claims. That pattern keeps the narrow CTX.
  */
 const WIDE = `(?:${CTX}|${STATE})`;
+
+/**
+ * German counterparts of CTX/STATE/WIDE (#1211). D3 (Discovery, 2026-09-03)
+ * measured these against 41 real German claim lines pulled from this repo's
+ * own `.orchestrator/metrics/events.jsonl`: the quantifier-triggered patterns
+ * built from WIDE_DE below flagged 7/41 — the same "disciplined" order of
+ * magnitude as the English CLAIM_PATTERNS — so the noun set here can stay as
+ * wide as its English sibling. The bare-cardinal noun set is a SEPARATE,
+ * deliberately narrower list — see CARDINAL_NOUN below, which measured a
+ * ~57% false-positive rate on the same corpus when widened this far.
+ */
+const CTX_DE =
+  '(?:Aufrufer|Stellen?|Module?|Tests?|Treffer|Zeilen?|Aufrufstellen?|Referenzen?|Instanzen?|Konsumenten?|Verweise?)';
+const STATE_DE =
+  '(?:Commits?|Learnings?|Issues?|Branches?|Zeilen?|Eintr(?:ä|ae)ge?|Sessions?|Repos?|Dateien?|Datei|Waves?|Wellen?)';
+const WIDE_DE = `(?:${CTX_DE}|${STATE_DE})`;
 
 /** Bounded same-line gap between a trigger and its context noun. */
 const CTX_GAP = '[^\\n]{0,40}?';
@@ -168,6 +196,22 @@ const CLAIM_PATTERNS = [
   new RegExp(`no remaining\\b${CTX_GAP}\\b${WIDE}\\b`, 'i'),
   new RegExp(`every ${CTX}\\b`, 'i'),
   new RegExp(`none of\\b${CTX_GAP}\\b${WIDE}\\b`, 'i'),
+
+  // German equivalents (#1211). Each mirrors one of the six English patterns
+  // above, plus three shapes with no direct English counterpart in this list
+  // ("davon" subset-claims, "sämtliche", "kein einziger") — all measured at
+  // 7/41 on the D3 German corpus (see WIDE_DE header comment above).
+  new RegExp(`\\b\\d+\\s+von\\s+\\d+\\b${CTX_GAP}\\b${WIDE_DE}\\b`, 'i'), // "N von M <noun>"
+  new RegExp(`\\b100\\s?%\\s*(?:von|der|aller)\\b${CTX_GAP}\\b${WIDE_DE}\\b`, 'i'), // "100 % von/der/aller <noun>"
+  new RegExp(`\\balle\\s+\\d+\\b${CTX_GAP}\\b${WIDE_DE}\\b`, 'i'), // "alle N <noun>"
+  new RegExp(`\\bkeine\\s+verbleibenden\\b${CTX_GAP}\\b${WIDE_DE}\\b`, 'i'), // "keine verbleibenden <noun>"
+  new RegExp(`\\bjed(?:er|e|es)\\s+${CTX_DE}\\b`, 'i'), // "jeder/jede/jedes <CTX_DE>"
+  new RegExp(`\\bkein(?:er|e|es)\\s+(?:von|der)\\b${CTX_GAP}\\b${WIDE_DE}\\b`, 'i'), // "keiner/keine/keins von/der <noun>"
+  // "N <noun> … davon N" (#1198 anchor) — the shape the D3 sample sentence
+  // uses: "8 Einträge, davon 4 aus dem eigenen Dateiscope".
+  new RegExp(`\\b\\d+\\s+${WIDE_DE}\\b${CTX_GAP}\\bdavon\\s+\\d+\\b`, 'i'),
+  new RegExp(`\\bs(?:ä|ae)mtliche\\s+${CTX_DE}\\b`, 'i'), // "sämtliche/saemtliche <CTX_DE>"
+  new RegExp(`\\bkein\\w{0,2}\\s+einzige[rs]?\\b${CTX_GAP}\\b${WIDE_DE}\\b`, 'i'), // "kein(e)? einzige[rs]? <noun>"
 ];
 
 /**
@@ -258,10 +302,17 @@ const INLINE_CODE_RE = /`[^`\n]*`/g;
  * Four alternatives cover the measured shapes: an N-passed/M-failed count
  * ("14904 passed / 0 failed"), a `STATUS:` report line (`skills/wave-executor`
  * agent-report convention), a "Full Gate" heading, and a `Gate: <verdict>`
- * summary line (English "typecheck" or German "grün"/"rot").
+ * summary line (English "typecheck" or German "grün"/"gruen"/"rot").
+ *
+ * German gate/status shapes (#1211), added after the English four: a
+ * `Gate N[.N]/M` ratio ("Gate 14.118/0"), an "N Wellen, M Agents" session
+ * tally, "Arbeitsbaum leer" (clean-tree report), and "mit Nachweis
+ * geschlossen" (session-close issue-disposition heading) — all measured on
+ * this repo's own German session-report prose, the same corpus D3 sampled
+ * for the noun-set decisions above.
  */
 const GATE_SUMMARY_LINE_RE =
-  /\b\d+\s+passed\s*\/\s*\d+\s+failed\b|^\s*STATUS:\s*(?:done|partial|failed)\b|\bFull Gate\b|\bGate:\s*(?:typecheck|grün|rot)\b/i;
+  /\b\d+\s+passed\s*\/\s*\d+\s+failed\b|^\s*STATUS:\s*(?:done|partial|failed)\b|\bFull Gate\b|\bGate:\s*(?:typecheck|grün|gruen|rot)\b|\bGate \d[\d.]*\/\d+\b|\b\d+\s+Wellen?,\s*\d+\s+Agents?\b|\bArbeitsbaum leer\b|\bmit Nachweis geschlossen\b/i;
 
 /**
  * Commands that count as a MEASUREMENT inside a fenced block. `grep|rg|find`

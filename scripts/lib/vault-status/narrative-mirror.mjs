@@ -218,15 +218,27 @@ export function extractNarrative(stateMdContents) {
  * REFERENCE (byte-identical downstream), and `mask` passes non-strings through —
  * masking must never be the reason a mirror run dies.
  *
+ * Takes the ALREADY-BUILT masker (rather than building its own) so
+ * `runNarrativeMirror` can build it exactly ONCE per run and reuse it for both
+ * the actual masking below AND the `orchestrator.secret_masker.applied`
+ * telemetry (#1028) — the masker's `needleCount` is measured once, not
+ * potentially twice with process.env read between the two reads.
+ *
  * @param {{ waveHistory: string, deviations: string, whatNotToRetry: string, missionStatus: object[]|null }} narrative
- * @returns {{ waveHistory: string, deviations: string, whatNotToRetry: string, missionStatus: object[]|null }}
+ * @param {{ mask: (text: string) => string, needleCount: number }} masker
+ * @returns {{ narrative: { waveHistory: string, deviations: string, whatNotToRetry: string, missionStatus: object[]|null }, hits: number }}
  */
-function maskNarrative(narrative) {
-  const { mask, needleCount } = createSecretValueMasker(process.env);
-  if (needleCount === 0) return narrative;
+function maskNarrative(narrative, masker) {
+  const { mask, needleCount } = masker;
+  if (needleCount === 0) return { narrative, hits: 0 };
 
+  let hits = 0;
   const walk = (value) => {
-    if (typeof value === 'string') return mask(value);
+    if (typeof value === 'string') {
+      const masked = mask(value);
+      if (masked !== value) hits++;
+      return masked;
+    }
     if (Array.isArray(value)) return value.map(walk);
     if (value && typeof value === 'object') {
       const out = {};
@@ -236,7 +248,7 @@ function maskNarrative(narrative) {
     return value;
   };
 
-  return walk(narrative);
+  return { narrative: walk(narrative), hits };
 }
 
 // ── Pure render ────────────────────────────────────────────────────────────────
@@ -664,6 +676,56 @@ async function emitNarrativeEvent({ repoRoot, action, path: outputPath, chars, e
   }
 }
 
+/**
+ * Emit this channel's `orchestrator.secret_masker.applied` record (#1028
+ * residue 2). Until now the narrative mirror was the ONLY masker channel of
+ * the three (`vault-mirror`, `narrative-mirror`, `export-hw-learnings`) that
+ * never emitted this event — `maskNarrative` has masked unconditionally since
+ * #1025, but nothing told the ledger. A census grepping event NAMES for
+ * `narrative` therefore read as "this channel masks nothing", which was never
+ * true; it just never SAID so.
+ *
+ * Emitted UNCONDITIONALLY once per `mirrorNarrative` run whenever a `repoRoot`
+ * was resolvable — including every skip outcome, not only `written` — so
+ * `needle_count: 0` is a REAL measured "the env carries no secret-shaped
+ * value" rather than a stand-in for "the masker never ran" (same
+ * force-build-don't-default posture as `getMaskerStats()` in
+ * `scripts/lib/vault-mirror/process.mjs`). `records` is the literal `1`: one
+ * `mirrorNarrative` run always masks (or attempts to mask) exactly one
+ * STATE.md, unlike the CLI channels that fan out over many JSONL lines.
+ *
+ * Same field set as the `vault-mirror` channel's own masker emit
+ * (`channel`, `needle_count`, `records`, `hits`, `dry_run`), PLUS
+ * `session_id`/`semantic_session_id` via `sessionAttribution` — matching this
+ * module's own `emitNarrativeEvent` above rather than the CLI's 2-arg
+ * `emitEvent` call, because `mirrorNarrative` (unlike the CLI) already always
+ * carries a `repoRoot` to attribute against.
+ *
+ * Best-effort: never throws, never alters the mirror result.
+ *
+ * @param {{ repoRoot?: string, needleCount: number, hits: number, dryRun: boolean }} opts
+ * @returns {Promise<void>}
+ */
+async function emitMaskerEvent({ repoRoot, needleCount, hits, dryRun }) {
+  if (typeof repoRoot !== 'string' || repoRoot.length === 0) return;
+  try {
+    await emitEvent(
+      'orchestrator.secret_masker.applied',
+      {
+        channel: 'narrative-mirror',
+        needle_count: needleCount,
+        records: 1,
+        hits,
+        dry_run: dryRun,
+        ...sessionAttribution(repoRoot),
+      },
+      { repoRoot },
+    );
+  } catch {
+    /* Best-effort telemetry — see emitNarrativeEvent above for why. */
+  }
+}
+
 // ── Convenience orchestration ────────────────────────────────────────────────────
 
 /**
@@ -723,29 +785,49 @@ export async function mirrorNarrative(opts) {
     chars: outcome.chars,
   });
 
+  // #1028 residue 2: the masker-telemetry sibling of the narrative event
+  // above, on every non-throwing outcome (including skips) — see
+  // emitMaskerEvent for why this fires unconditionally.
+  await emitMaskerEvent({
+    repoRoot: opts?.repoRoot,
+    needleCount: outcome.needleCount,
+    hits: outcome.hits,
+    dryRun: outcome.dryRun,
+  });
+
   return outcome.result;
 }
 
 /**
  * The mirror itself — every early return of {@link mirrorNarrative} lives here.
  *
- * Split out so that exactly ONE emit site covers EVERY outcome: a future early
- * return added inside this function is telemetered by construction, whereas
- * hand-placing an emit beside each of the seven `return`s makes "forgot the new
- * one" the default failure. The `chars` companion travels beside the result
+ * Split out so that the two emit sites in `mirrorNarrative` (the narrative
+ * event AND, since #1028, the masker event) each cover EVERY outcome from
+ * ONE call: a future early return added inside this function is telemetered
+ * by construction, whereas hand-placing an emit beside each of the seven
+ * `return`s makes "forgot the new one" the default failure. The `chars` companion travels beside the result
  * rather than inside it because the returned object is a PUBLIC shape that
  * callers (and tests) compare with `toEqual` — adding a key there would be an
  * observable contract change for a purely internal measurement.
  *
  * @param {Parameters<typeof mirrorNarrative>[0]} opts
- * @returns {Promise<{ result: { action: string, path?: string }, chars?: number }>}
+ * @returns {Promise<{ result: { action: string, path?: string }, chars?: number, needleCount: number, hits: number, dryRun: boolean }>}
  */
 async function runNarrativeMirror(opts) {
   const { repoRoot, repo, now = new Date(), dryRun = false, fs: injectedFs, hostPaths } = opts;
 
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
-    return { result: { action: 'skipped-vault-disabled' } };
+    return { result: { action: 'skipped-vault-disabled' }, needleCount: 0, hits: 0, dryRun };
   }
+
+  // #1028: the masker is built ONCE per run, right here — before every
+  // remaining early-return below — so `mirrorNarrative`'s
+  // `orchestrator.secret_masker.applied` emit always carries a REAL measured
+  // `needle_count` on every outcome (including a skip), rather than a
+  // defaulted 0 that would be indistinguishable from "the masker never ran".
+  // Same "force-build, never default" posture as `getMaskerStats()` in
+  // `scripts/lib/vault-mirror/process.mjs`.
+  const masker = createSecretValueMasker(process.env);
 
   // Read Session Config (CLAUDE.md / AGENTS.md) and resolve vault settings.
   let config;
@@ -753,12 +835,12 @@ async function runNarrativeMirror(opts) {
     const configText = await readConfigFile(repoRoot);
     config = parseSessionConfig(configText, { hostPaths });
   } catch {
-    return { result: { action: 'skipped-vault-disabled' } };
+    return { result: { action: 'skipped-vault-disabled' }, needleCount: masker.needleCount, hits: 0, dryRun };
   }
 
   const vaultIntegration = config?.['vault-integration'];
   if (!vaultIntegration || vaultIntegration.enabled !== true) {
-    return { result: { action: 'skipped-vault-disabled' } };
+    return { result: { action: 'skipped-vault-disabled' }, needleCount: masker.needleCount, hits: 0, dryRun };
   }
 
   // Defense-in-depth: when the caller omits (or passes an empty) `repo`, derive
@@ -775,7 +857,7 @@ async function runNarrativeMirror(opts) {
 
   const rawVaultDir = vaultIntegration['vault-dir'];
   if (!rawVaultDir || typeof rawVaultDir !== 'string') {
-    return { result: { action: 'skipped-vault-disabled' } };
+    return { result: { action: 'skipped-vault-disabled' }, needleCount: masker.needleCount, hits: 0, dryRun };
   }
 
   const vaultDir = path.resolve(expandTilde(rawVaultDir));
@@ -799,7 +881,7 @@ async function runNarrativeMirror(opts) {
     canonicalizeRoot: true,
   });
   if (!inside.ok) {
-    return { result: { action: 'skipped-invalid-path', path: outputPath } };
+    return { result: { action: 'skipped-invalid-path', path: outputPath }, needleCount: masker.needleCount, hits: 0, dryRun };
   }
 
   // Read STATE.md (best-effort; absent STATE.md → nothing to mirror).
@@ -808,13 +890,13 @@ async function runNarrativeMirror(opts) {
   try {
     stateContents = await readFile(stateMdPath, 'utf8');
   } catch {
-    return { result: { action: 'skipped-no-statemd', path: outputPath } };
+    return { result: { action: 'skipped-no-statemd', path: outputPath }, needleCount: masker.needleCount, hits: 0, dryRun };
   }
 
   // #1025: the ONE masking site for the narrative mirror — after the frontmatter
   // parse (so `[REDACTED]` can never break it) and before the render, the
   // idempotency comparison and the write. See maskNarrative above.
-  const narrative = maskNarrative(extractNarrative(stateContents));
+  const { narrative, hits } = maskNarrative(extractNarrative(stateContents), masker);
   const content = renderNarrative({ repo: repoName, narrative, now });
 
   // `chars` measures the document THIS call rendered — so it is present on
@@ -823,5 +905,8 @@ async function runNarrativeMirror(opts) {
   return {
     result: writeNarrative({ outputPath, content, dryRun, fs: injectedFs }),
     chars: content.length,
+    needleCount: masker.needleCount,
+    hits,
+    dryRun,
   };
 }

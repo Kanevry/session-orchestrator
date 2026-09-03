@@ -303,6 +303,34 @@ describe('appendProposal + readWaveSummary — boundary', () => {
     expect(summary).toBeNull();
   });
 
+  it('B9b (#1210): does NOT warn when the summary file is simply absent (ENOENT)', async () => {
+    const repoRoot = tmpRepo();
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const summary = await readWaveSummary({ repoRoot, waveId: 'W1' });
+
+    expect(summary).toBeNull();
+    expect(stderrSpy).not.toHaveBeenCalled();
+  });
+
+  it('B9c (#1210): warns on a non-ENOENT read failure (EISDIR) and still returns null', async () => {
+    const repoRoot = tmpRepo();
+    // A DIRECTORY at the summary path: the real fs.readFileSync throws
+    // EISDIR, not ENOENT — no DI mock needed to force the "other" branch.
+    const summaryPath = join(repoRoot, '.orchestrator/metrics/proposals-summary-W1.json');
+    mkdirSync(summaryPath);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const summary = await readWaveSummary({ repoRoot, waveId: 'W1' });
+
+    expect(summary).toBeNull();
+    const warned = stderrSpy.mock.calls.some(
+      (call) =>
+        typeof call[0] === 'string' && call[0].includes(summaryPath) && call[0].includes('EISDIR'),
+    );
+    expect(warned).toBe(true);
+  });
+
   it('B10: each appended line is valid JSON with correct wave_id field', async () => {
     const repoRoot = tmpRepo();
     await appendProposal({ record: makeRecord({ waveId: 'W1' }), repoRoot, waveId: 'W1' });

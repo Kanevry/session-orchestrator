@@ -13,7 +13,7 @@
  *     stream contents AND the LWW current-map that the SUT actually writes.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -294,6 +294,36 @@ describe('agent-status — corrupt current-json (no throw)', () => {
 
   it('returns {} when the current map file is missing', () => {
     expect(readCurrentStatus({ repoRoot })).toEqual({});
+  });
+
+  it('B1 (#1210): does NOT warn when the current-map file is simply absent (ENOENT)', () => {
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(readCurrentStatus({ repoRoot })).toEqual({});
+      expect(stderrSpy).not.toHaveBeenCalled();
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it('B2 (#1210): warns on a non-ENOENT read failure (EISDIR) and still returns {}', () => {
+    const currentFile = join(repoRoot, CURRENT);
+    mkdirSync(join(repoRoot, RUNTIME), { recursive: true });
+    // A DIRECTORY at the current-map path: the real fs.readFileSync throws
+    // EISDIR, not ENOENT — no DI mock needed to force the "other" branch.
+    mkdirSync(currentFile);
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      expect(readCurrentStatus({ repoRoot })).toEqual({});
+      const warned = stderrSpy.mock.calls.some(
+        (call) =>
+          typeof call[0] === 'string' && call[0].includes(currentFile) && call[0].includes('EISDIR'),
+      );
+      expect(warned).toBe(true);
+    } finally {
+      stderrSpy.mockRestore();
+    }
   });
 
   it('recovers the map on the next write even when prior file was corrupt', async () => {

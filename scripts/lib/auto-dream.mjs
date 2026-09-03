@@ -25,6 +25,7 @@ import { existsSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
+import { readCanonicalSessions } from './sessions-canonical.mjs';
 import { filterRealSessions } from './session-schema.mjs';
 
 // ---------------------------------------------------------------------------
@@ -61,49 +62,50 @@ export async function readDreamSignals({ repoRoot, memoryDir }) {
   }
 
   // 2. Read sessions.jsonl entries to compute lastCleanupAt + sessionsSinceCleanup
+  //
+  // #1209: migrated from a hand-rolled parse loop to `readCanonicalSessions`
+  // — the raw file is APPEND-ONLY (a physical session can carry more than one
+  // LINE: crash-recovery re-appends, #1068 stub/supersede pairs), and the
+  // hand-rolled loop counted every line. `sessionsSinceCleanup` is a CADENCE
+  // count ("how many sessions since the last cleanup"), so counting a
+  // duplicated line twice inflated it — this migration LOWERS the count,
+  // which is the fix, not a side effect. `canonicalizeSessions` also drops
+  // lines with no `session_id` (they cannot be deduplicated, so they were
+  // never a countable "session" to begin with); the existing fixtures below
+  // were given synthetic `session_id` values so their asserted counts still
+  // reflect the same intended scenario post-migration.
   let lastCleanupAt = null;
   let sessionsSinceCleanup = 0;
 
-  if (existsSync(sessionsFilePath)) {
-    const raw = await readFile(sessionsFilePath, 'utf8');
-    const lines = raw.split('\n').filter((l) => l.length > 0);
-    const entries = [];
-    for (const line of lines) {
-      try {
-        entries.push(JSON.parse(line));
-      } catch {
-        // Malformed line — skip silently, this is a best-effort signal reader.
+  const entries = readCanonicalSessions({ filePath: sessionsFilePath });
+
+  // Abandoned-session filter (#834): sessions.jsonl carries phantom
+  // `status: 'abandoned'` stubs (session-close-backfill records for
+  // sessions that ended without a real close). They are legitimate DATA
+  // but not legitimate SIGNAL — a burst of abandoned stubs must not fire
+  // /memory-cleanup off zero real work. filterRealSessions() is the
+  // shared, tested implementation (scripts/lib/session-schema/filters.mjs).
+  const realEntries = filterRealSessions(entries);
+
+  // Find the most recent memory_cleanup_at timestamp across all REAL entries.
+  for (const entry of realEntries) {
+    const ts = entry.memory_cleanup_at;
+    if (typeof ts === 'string' && ts.length > 0) {
+      if (lastCleanupAt === null || ts > lastCleanupAt) {
+        lastCleanupAt = ts;
       }
     }
+  }
 
-    // Abandoned-session filter (#834): sessions.jsonl carries phantom
-    // `status: 'abandoned'` stubs (session-close-backfill records for
-    // sessions that ended without a real close). They are legitimate DATA
-    // but not legitimate SIGNAL — a burst of abandoned stubs must not fire
-    // /memory-cleanup off zero real work. filterRealSessions() is the
-    // shared, tested implementation (scripts/lib/session-schema/filters.mjs).
-    const realEntries = filterRealSessions(entries);
-
-    // Find the most recent memory_cleanup_at timestamp across all REAL entries.
+  // Count REAL entries newer than the last cleanup (or total REAL entries
+  // when no cleanup ever ran).
+  if (lastCleanupAt === null) {
+    sessionsSinceCleanup = realEntries.length;
+  } else {
     for (const entry of realEntries) {
-      const ts = entry.memory_cleanup_at;
-      if (typeof ts === 'string' && ts.length > 0) {
-        if (lastCleanupAt === null || ts > lastCleanupAt) {
-          lastCleanupAt = ts;
-        }
-      }
-    }
-
-    // Count REAL entries newer than the last cleanup (or total REAL entries
-    // when no cleanup ever ran).
-    if (lastCleanupAt === null) {
-      sessionsSinceCleanup = realEntries.length;
-    } else {
-      for (const entry of realEntries) {
-        const startedAt = entry.started_at;
-        if (typeof startedAt === 'string' && startedAt > lastCleanupAt) {
-          sessionsSinceCleanup += 1;
-        }
+      const startedAt = entry.started_at;
+      if (typeof startedAt === 'string' && startedAt > lastCleanupAt) {
+        sessionsSinceCleanup += 1;
       }
     }
   }

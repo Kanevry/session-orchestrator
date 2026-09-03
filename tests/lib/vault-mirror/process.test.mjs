@@ -1886,6 +1886,152 @@ describe('processLearning #1025: redaction-aware idempotency across an env chang
 
     expect(second.lines[0].action).toBe('skipped-noop');
     expect(writeFileSyncSpy).not.toHaveBeenCalled();
+
+    // ── Run 3 (#1028 extension): the on-disk note is ALREADY redacted (no raw
+    // needle survives — asserted above) and the needle is put BACK in env. The
+    // #1028 `maskerWouldChange` guard must not treat an already-masked note as
+    // "still leaking": masking `[REDACTED]` text again is a no-op (there is no
+    // raw needle left to replace), so this must still be skipped-noop — proving
+    // the new guard does not cause churn on a genuinely healed note.
+    vi.stubEnv('SO_TEST_MASK_TOKEN', needle);
+    const { processLearning: run3 } = await loadProcess();
+    writeFileSyncSpy.mockClear();
+
+    const third = await captureStdout(() =>
+      run3(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning', force: false }),
+    );
+
+    expect(third.lines[0].action).toBe('skipped-noop');
+    expect(writeFileSyncSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ── #1028 residue 1: the masked re-run must heal a leak in a NON-canonical
+// field. `learningContentMatches` compares only five canonical fields (status,
+// expires, confidence, insight, source_session); `evidence` is not one of them,
+// so a raw secret sitting there matches on all five forever and the mirror
+// never rewrites it, even once the env carries the needle. The `!force` guard
+// on the disambig-collision branch was also missing (unlike the other two
+// skipped-noop sites), so `force: true` was silently ignored there.
+
+describe('processLearning #1028 residue 1: a leak in a non-canonical field must heal', () => {
+  let existsSyncSpy;
+  let readFileSyncSpy;
+  let writeFileSyncSpy;
+
+  beforeEach(() => {
+    existsSyncSpy = vi.spyOn(fs, 'existsSync');
+    readFileSyncSpy = vi.spyOn(fs, 'readFileSync');
+    writeFileSyncSpy = vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
+    vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    vi.doUnmock('node:child_process');
+  });
+
+  async function loadProcess() {
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
+    });
+    return import('@lib/vault-mirror/process.mjs'); // git mock → repoNs 'r'
+  }
+
+  const LEARNING = {
+    id: 'a1b2c3d4-0001-4000-8000-000000001028',
+    type: 'architectural',
+    subject: 'explicit-contracts-1028',
+    insight: 'Prefer explicit contracts',
+    confidence: 0.9,
+    source_session: 'session-2026-08-14',
+    created_at: '2026-08-14T10:00:00Z',
+  };
+
+  // (a) BUG CAUGHT: a raw secret sitting only in `evidence` (non-canonical)
+  // matches on all five canonical fields forever, so the pre-fix code returns
+  // skipped-noop even once the env carries the needle — the raw secret never
+  // heals. Fake-regression (quoted below in the report) confirms this was RED
+  // against the pre-fix HEAD version of process.mjs.
+  it('a raw secret sitting only in evidence heals the first time the env carries it', async () => {
+    const needle = `so-test-needle-${randomUUID()}`;
+    const entry = { ...LEARNING, evidence: `curl -H "PRIVATE-TOKEN: ${needle}" failed` };
+
+    // ── Run 1: no needle in env → evidence written RAW (masker has 0 needles) ──
+    const { processLearning: run1 } = await loadProcess();
+    existsSyncSpy.mockReturnValue(false);
+    let onDisk = '';
+    writeFileSyncSpy.mockImplementation((_p, content) => { onDisk = content; });
+
+    const first = await captureStdout(() =>
+      run1(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning', force: false }),
+    );
+    expect(first.lines[0].action).toBe('created');
+    expect(onDisk).toContain(needle);
+
+    // ── Run 2: same record, needle NOW in env. The five canonical fields are
+    // byte-identical to run 1 (evidence is not one of them), so the five-field
+    // compare alone reports a match — this is exactly the residual the
+    // maskerWouldChange guard must catch.
+    vi.stubEnv('SO_TEST_MASK_TOKEN', needle);
+    const { processLearning: run2 } = await loadProcess();
+    writeFileSyncSpy.mockClear();
+    let rewritten = '';
+    writeFileSyncSpy.mockImplementation((_p, content) => { rewritten = content; });
+    existsSyncSpy.mockReturnValue(true);
+    readFileSyncSpy.mockReturnValue(onDisk);
+
+    const second = await captureStdout(() =>
+      run2(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning', force: false }),
+    );
+
+    expect(second.lines[0].action).not.toBe('skipped-noop');
+    expect(writeFileSyncSpy).toHaveBeenCalledOnce();
+    expect(rewritten).toContain('[REDACTED]');
+    expect(rewritten).not.toContain(needle);
+  });
+
+  // (b) BUG CAUGHT: the disambig-collision branch's date/content guard did not
+  // check `force` at all (unlike the legacy-flat and same-id branches), so
+  // `force: true` was silently ignored on this one path — an identical-content
+  // disambig note was skipped instead of rewritten even when the caller
+  // explicitly asked to bypass the comparison.
+  it('force:true bypasses the disambig-collision skip even when content matches', async () => {
+    const { processLearning } = await loadProcess();
+    const { generateLearningNote } = await import('@lib/vault-mirror/render-learnings.mjs');
+    const { subjectToSlug, uuidPrefix8 } = await import('@lib/vault-mirror/utils.mjs');
+
+    const entry = {
+      ...LEARNING,
+      id: 'a1b2c3d4-0001-4000-8000-00000000c011',
+      subject: 'disambig-force-1028',
+    };
+    const slug = subjectToSlug(entry.subject);
+    const disambigSlug = `${slug}-${uuidPrefix8(entry.id)}`;
+    // '(none recorded)' matches normalizeLearningEntry's fallback for a missing
+    // `evidence` field — see render-learnings.mjs normalizeLearningEntry.
+    const disambigContent = generateLearningNote({ ...entry, evidence: '(none recorded)' }, disambigSlug, {
+      repoNs: 'r',
+    });
+
+    const mainContent =
+      '---\nid: different-id-1028\nupdated: 2026-01-01\n_generator: session-orchestrator-vault-mirror@1\n---\n';
+
+    existsSyncSpy
+      .mockReturnValueOnce(true) // legacy-flat check operand: targetPath exists
+      .mockReturnValueOnce(true) // explicit existsSync(targetPath): main slug file exists
+      .mockReturnValueOnce(true); // disambig existsSync(targetPath): disambig file exists
+    readFileSyncSpy.mockReturnValueOnce(mainContent).mockReturnValueOnce(disambigContent);
+
+    const { lines } = await captureStdout(() =>
+      processLearning(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning', force: true }),
+    );
+
+    expect(lines[0].action).not.toBe('skipped-noop');
+    expect(writeFileSyncSpy).toHaveBeenCalledOnce();
   });
 });
 

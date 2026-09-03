@@ -108,14 +108,24 @@ function markerName(id) {
 }
 
 /**
- * Read a JSONL file into an array of parsed objects. Missing file → []; each
- * malformed line is skipped rather than aborting the whole read. Never throws.
+ * Read a JSONL file into an array of parsed objects. Missing file (ENOENT) →
+ * [] silently; an unreadable one (EACCES/EISDIR/…) → [] with a stderr WARN
+ * (#1210 — ENOENT and other read failures are different facts, same split as
+ * `sessions-canonical.mjs` `readCanonicalSessions`). Each malformed line is
+ * skipped rather than aborting the whole read. Never throws.
  */
 function readJsonlSafe(readFileSync, filePath) {
   let raw;
   try {
     raw = readFileSync(filePath, 'utf8');
-  } catch {
+  } catch (err) {
+    if (!err || err.code !== 'ENOENT') {
+      process.stderr.write(
+        `⚠ readJsonlSafe: cannot read ${filePath} ` +
+          `(${err?.code ?? '?'}: ${err?.message ?? String(err)}) — ` +
+          'treating as EMPTY, counts below are floors\n',
+      );
+    }
     return [];
   }
   const out = [];

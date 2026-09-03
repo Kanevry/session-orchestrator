@@ -11,14 +11,14 @@ Session-orchestrator increasingly relies on MCP servers and MCP-shaped adapters 
 
 The internal codebase audit (W1-A4 §4 + W1-A6) made the gap concrete:
 
-- `scripts/lib/tool-adapter.mjs` does **not exist**. There is no shared place to land tracing, retry, or fallback routing for tool invocations.
+- `scripts/lib/tool-adapter.mjs` does **not exist**. There is no shared place to land tracing, retry, or fallback routing for tool invocations. <!-- path-check: planned #365 -->
 - No MCP health check at session-start. A broken `.mcp.json` server surfaces only when the user tries to call a tool mid-wave.
 - No tool-error classification. Failures get logged into `events.jsonl` as opaque tool-name + outcome strings, no structured cause field.
 - All hook handlers run with a uniform 5s timeout (W1-A6 cross-cutting gap §2). Debug-heavy tool inspections (e.g. `list-tools` against a server that warms up models on first request) blow past it without a per-hook override.
 
 reloaderoo (`cameroncooke/reloaderoo`, MIT, Node 18+, no peer deps — W1-A4 §1) directly answers the contributor-loop side of this gap with two stateless modes: `inspect` (one-shot CLI: `server-info`, `list-tools`, `call-tool --params <JSON>`, `ping`, `list-resources`, `get-prompt`) and `proxy` (transparent stdio MCP proxy that auto-injects a `restart_server` tool so a connected client can hot-reload the wrapped server without losing its session). Zero-install via `npx reloaderoo …` makes adoption a documentation move, not a dependency move.
 
-This ADR records the contributor-facing standard. Implementation work — a new `skills/mcp-debug/` skill, a `scripts/lib/tool-adapter.mjs` abstraction, and a per-hook timeout override in `hooks/hooks.json` — is **deferred to follow-up issues** so this ADR stays focused on the question the spike was asked to answer: "adopt, adapt, or inspire?"
+This ADR records the contributor-facing standard. Implementation work — a new `skills/mcp-debug/` skill, a `scripts/lib/tool-adapter.mjs` abstraction, and a per-hook timeout override in `hooks/hooks.json` — is **deferred to follow-up issues** so this ADR stays focused on the question the spike was asked to answer: "adopt, adapt, or inspire?" <!-- path-check: planned #365 -->
 
 ## Decision
 
@@ -48,7 +48,7 @@ mcp-builder stays the *authoring* skill; mcp-debug becomes the *operating* skill
 
 ### 3. Tool-adapter seam (deferred — separate issue)
 
-`scripts/lib/tool-adapter.mjs` is the right home for tracing, retry, and fallback routing across every tool invocation, but **building it is out of scope for this ADR**. Record the design surface so a follow-up issue can pick it up:
+`scripts/lib/tool-adapter.mjs` is the right home for tracing, retry, and fallback routing across every tool invocation, but **building it is out of scope for this ADR**. Record the design surface so a follow-up issue can pick it up: <!-- path-check: planned #365 -->
 
 ```ts
 // scripts/lib/tool-adapter.mjs (proposed surface)
@@ -126,7 +126,7 @@ These are the rules that become the contract once the follow-up issues land. Eac
 
 ## Cross-references
 
-- **ADR-364 (`docs/adr/2026-05-10-364-remote-agent-substrate.md`) — managed-agent dispatchers route through this seam.** The proposed `scripts/lib/tool-adapter.mjs` (Decision §3 — "Tool-adapter seam") is the *single* dispatch surface for both local-direct tool calls and managed-agent → MCP tool calls. Per ADR-364, any managed-agent substrate that emits MCP-shaped tool invocations MUST route through this adapter, not invent a parallel one. This keeps tracing (MCP-DBG-3, once promoted out of Future Standards), retry classification (MCP-DBG-7's closed `error.code` enum), and timeout policy (MCP-DBG-8) consistent across both call paths. Adapter implementation is gated on ADR-365 follow-up issues; ADR-364 consumes the seam, does not duplicate it.
+- **ADR-364 (`docs/adr/2026-05-10-364-remote-agent-substrate.md`) — managed-agent dispatchers route through this seam.** The proposed `scripts/lib/tool-adapter.mjs` (Decision §3 — "Tool-adapter seam") is the *single* dispatch surface for both local-direct tool calls and managed-agent → MCP tool calls. Per ADR-364, any managed-agent substrate that emits MCP-shaped tool invocations MUST route through this adapter, not invent a parallel one. This keeps tracing (MCP-DBG-3, once promoted out of Future Standards), retry classification (MCP-DBG-7's closed `error.code` enum), and timeout policy (MCP-DBG-8) consistent across both call paths. Adapter implementation is gated on ADR-365 follow-up issues; ADR-364 consumes the seam, does not duplicate it. <!-- path-check: planned #365 -->
 - **PRD-366 ("Stop-Hook Verification Loop", #366; archived in the private Meta-Vault) — hooks.json timeout coordination.** PRD-366's Phase 1 bumps the uniform Stop+SubagentStop timeout from 5s to 65s. ADR-365's MCP-DBG-8 (per-hook `timeout: 30` for MCP inspection hooks) is an additive, non-overlapping schema extension layered on top in a separate follow-up — both spikes touch `hooks/hooks.json` but at different keys, so the order is: PRD-366 uniform bump first, ADR-365 per-matcher override second.
 - **Cross-connections doc (`docs/adr/2026-05-10-spike-cluster-cross-connections.md`) — Session Config blocks.** **ADR-365 introduces no Session Config keys** (this ADR is docs-only — standards + a proposed skill + a proposed adapter file, all gated on follow-up issues). The cross-connections doc therefore MUST drop any `mcp-debug.*` ownership claim from its Conflict-avoidance rules. If a future MCP-debug feature does need a config block (e.g. `mcp-debug.timeout-overrides`, `mcp-debug.default-version`), it will land in a separate ADR that explicitly registers the block under cross-connections rule 1 at that time.
 
@@ -143,7 +143,7 @@ These are the rules that become the contract once the follow-up issues land. Eac
 
 - W1-A4 §1–§3 + open questions — reloaderoo capability matrix, install profile, adoption-tier rationale.
 - W1-A4 §2 — Claude Code manual-refresh limitation in proxy mode.
-- W1-A6 §A6 (#365 part) — gap inventory: missing `scripts/lib/tool-adapter.mjs`, `.mcp.json` single-server entry, hooks.json `mcp__.*` matchers.
+- W1-A6 §A6 (#365 part) — gap inventory: missing `scripts/lib/tool-adapter.mjs`, `.mcp.json` single-server entry, hooks.json `mcp__.*` matchers. <!-- path-check: planned #365 -->
 - W1-A6 cross-cutting gap §1 — `events.jsonl` unbounded (86K entries, no retention).
 - W1-A6 cross-cutting gap §2 — uniform 5s hook timeout.
 - Issue #365 (`spike(devex): MCP/tool-adapter inspection and hot-reload debug loop`) — acceptance criteria and scope.

@@ -451,3 +451,52 @@ describe('abandoned-session join routing (#834)', () => {
     expect(result.sessionsAbandoned).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// J10 — #1209b ledger double-stub collapse (readCanonicalSessions migration).
+// Distinct from J5 above: J5 is about the SAME session_id selected twice in
+// skill-invocations.jsonl; this is about TWO DIFFERENT session_ids in
+// sessions.jsonl for the SAME physical session (the two-writer double-stub
+// class canonicalizeSessions rule 2 collapses).
+// ---------------------------------------------------------------------------
+
+describe('ledger double-stub collapse (#1209b, readCanonicalSessions)', () => {
+  it('does not double-count sessionsAbandoned when the ledger carries the two-writer double-stub pair for one physical session', async () => {
+    const STARTED = '2026-08-15T11:42:58.603Z';
+    const COMPLETED = '2026-08-15T12:16:29.600Z';
+    const authenticId = 'main-2026-08-15-session-2';
+    const syntheticId = 'main-2026-08-15-abandoned-1a2b3c4d';
+
+    // Two invocations of the SAME skill, referencing the TWO ledger ids the
+    // two-writer double-stub bug produces for one physical session.
+    appendInv({ skill: 'discovery', session_id: authenticId });
+    appendInv({ skill: 'discovery', session_id: syntheticId });
+
+    // Two `abandoned` ledger lines sharing the EXACT started_at/completed_at
+    // tuple — the systemic double-stub class canonicalizeSessions rule 2
+    // collapses (the synthetic twin is dropped, the non-synthetic survives).
+    appendFileSync(sessPath, JSON.stringify({
+      session_id: authenticId,
+      status: 'abandoned',
+      started_at: STARTED,
+      completed_at: COMPLETED,
+      agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+    }) + '\n');
+    appendFileSync(sessPath, JSON.stringify({
+      session_id: syntheticId,
+      status: 'abandoned',
+      started_at: STARTED,
+      completed_at: COMPLETED,
+      agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+      _synthetic_session_id: true,
+    }) + '\n');
+
+    const result = await joinSkillOutcomes({ invocationsPath: invPath, sessionsPath: sessPath });
+
+    // Only ONE physical session — the collapsed synthetic twin's invocation
+    // can no longer resolve to a phantom "abandoned" ledger entry, so it
+    // routes to `unknown` instead of doubling `sessionsAbandoned`.
+    expect(result.sessionsAbandoned).toBe(1);
+    expect(result.bySkill.discovery.outcomes.abandoned).toBe(1);
+  });
+});

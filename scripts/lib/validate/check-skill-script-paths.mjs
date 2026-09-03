@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /**
- * Check: every `scripts/**.mjs` path cited in `skills/`, `commands/` and
- * `agents/` either EXISTS or is annotated as deliberately absent (#1176).
- * Extended (#1187) to also cite `scripts/**.sh` and `hooks/**.sh` — see
- * "## Mode: BLOCKING for `.mjs`, ADVISORY for `.sh`" below for why that half
- * is advisory, not blocking.
+ * Check: every `scripts/**.mjs` path cited in `skills/`, `commands/`,
+ * `agents/` and `docs/` either EXISTS or is annotated as deliberately absent
+ * (#1176). Extended (#1187) to also cite `scripts/**.sh` and `hooks/**.sh` —
+ * see "## Mode: BLOCKING for `.mjs`, ADVISORY for `.sh`" below for why that
+ * half is advisory, not blocking. `docs/` joined `SCAN_DIRS` in #1208, after
+ * the 22 dead paths it carried at the time (9 `.mjs`, all ADR/reference
+ * prose) were annotated — see that section below for the census and why
+ * widening the scan root had to wait for the annotation pass, not precede it.
  *
  * ## Why
  *
@@ -12,8 +15,8 @@
  * `node scripts/lib/auto-commit.mjs` costs an operator a failed command and a
  * re-derivation of what the file was supposed to do — and nothing in the
  * corpus notices, because a markdown file compiles under every gate. Measured
- * 2026-09-02 @ c3ab480: 237 distinct citations across the three scan roots,
- * 7 of them dead.
+ * 2026-09-02 @ c3ab480: 237 distinct citations across the (then three) scan
+ * roots, 7 of them dead.
  *
  * ## Fences are skipped, and that is most of the answer
  *
@@ -58,27 +61,37 @@
  * The `.sh` half of the citation grammar (below) does not get that same
  * severity by default. A #1176 repo-wide grep (`scripts/hooks` prose across
  * `skills/commands/agents/docs/hooks`) found 27 distinct `.sh` citations, 21
- * dead — but only ONE of those 27 sits inside this checker's three scan roots
- * (`skills/contract-version-bump/SKILL.md:134`, itself arguably a
- * cross-repo path — see the dry-run note at `scanSkillScriptPaths`'s
- * `strictSh` option). The other 26 live in `docs/`, which this checker does
- * NOT scan and — per this same paragraph's own evidence — MUST NOT start
- * scanning as a side effect of the `.sh` extension: `docs/adr/*.md` alone
- * carries 7 dead `.mjs` citations of its own (all historical/planned ADR
- * prose, e.g. `scripts/lib/tool-adapter.mjs`, `scripts/lib/auto-commit.mjs`),
- * none annotated, all outside this task's edit scope. Widening `SCAN_DIRS` to
- * `docs` would turn those 7 into new BLOCKING findings on a doc surface
- * nobody triaged — the opposite of "the `.mjs` behaviour stays exactly as
- * today". So `SCAN_DIRS` stays `['skills', 'commands', 'agents']`; the wider
- * `docs`/`hooks` prose census is a follow-up for whoever owns those files,
- * not a silent scope change here.
+ * dead — but at the time only ONE of those 27 sat inside this checker's
+ * (then three) scan roots (`skills/contract-version-bump/SKILL.md:134`,
+ * itself arguably a cross-repo path — see the dry-run note at
+ * `scanSkillScriptPaths`'s `strictSh` option). The other 26 lived in `docs/`,
+ * which this checker did not yet scan.
+ *
+ * #1208 closed that gap in two steps, annotation before widening rather than
+ * the reverse: first, a `dirs: ['docs']` re-scan (530 citations, 66 files)
+ * found 50 findings — 22 unique dead paths (9 `.mjs`, 15 `.sh`) across
+ * 24 (file, path) pairs, concentrated in `docs/adr/*.md` (ADR prose citing
+ * not-yet-built modules like `scripts/lib/tool-adapter.mjs`) and
+ * `docs/changelog/v2.md` (23 `.sh` citations to the pre-`.mjs`-migration
+ * shell scripts, #218/#317 — historical by construction). Every one of the
+ * 22 was annotated (`planned #<iid>` for the ADR gaps, `historical` for the
+ * changelog, `example` for the one illustrative path in
+ * `docs/scope-collision-guard.md`) — zero of them were real defects. Only
+ * then did `SCAN_DIRS` gain `'docs'`, so the widening added zero new
+ * BLOCKING findings on arrival (re-verify: `scanSkillScriptPaths({
+ * pluginRoot, dirs: ['docs'] })` → `ok: true`, `findings: 0`). The wider
+ * `hooks/` `.sh` prose census (26 of the 27 `.sh` citations above are outside
+ * `SCAN_DIRS` even now, since `hooks/` prose itself is not a scanned root)
+ * remains a follow-up for whoever owns those files.
  *
  * A `.sh` finding is therefore `WARN:` by default (visible, never blocking —
  * `ok` and the CLI exit code ignore `severity: 'warn'` findings) and only
  * becomes `FAIL:`/blocking under the `--strict-sh` CLI flag (or
  * `strictSh: true` for `scanSkillScriptPaths()` callers) — flip that default
  * once the dead `.sh` citations this checker CAN see are fixed by their doc
- * owner (BV-004 revisit trigger).
+ * owner (BV-004 revisit trigger). `--strict-sh` gained a validate-plugin run
+ * surface in #1208 (advisory, non-blocking — see `scripts/validate-plugin.mjs`
+ * near its `check-skill-script-paths.mjs` call).
  *
  * @module scripts/lib/validate/check-skill-script-paths
  */
@@ -90,7 +103,7 @@ import { listRepoFiles } from './repo-files.mjs';
 import { forEachLine } from './markdown-fences.mjs';
 
 /** Documentation roots whose prose is treated as a claim about the repo. */
-export const SCAN_DIRS = Object.freeze(['skills', 'commands', 'agents']);
+export const SCAN_DIRS = Object.freeze(['skills', 'commands', 'agents', 'docs']);
 
 /**
  * A cited script path. One regex, one alternation, reused for every

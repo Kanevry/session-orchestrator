@@ -870,3 +870,87 @@ describe('#1072 redactLocalHostNames: suffix-stripped host_id values', () => {
     },
   );
 });
+
+// ---------------------------------------------------------------------------
+// #1028 residue 2 — orchestrator.secret_masker.applied telemetry
+// ---------------------------------------------------------------------------
+//
+// THE BUG THIS CATCHES, NAMED: this channel has masked secret VALUES since
+// #1025 (`maskSecretValues`, wired into `anonymizeLearning`), but never told
+// the ledger. Before this fix, `orchestrator.secret_masker.applied` had
+// exactly ONE emitter (`scripts/vault-mirror.mjs`) — a census grepping event
+// NAMES for `export`/`hw-learnings` read as "this channel masks nothing",
+// which was never true; it just never SAID so. These tests fail on HEAD
+// ("never called") and pass once `promoteHwLearnings`/`exportHwLearnings`
+// each emit exactly once.
+//
+// Reads the REAL ledger under an explicit tmp `repoRoot` — same convention as
+// `tests/lib/vault-status/narrative-mirror.test.mjs`'s own telemetry tests —
+// rather than mocking `emitEvent`. `repoRoot: tmp` is passed EXPLICITLY on
+// every call (#941/#1147): `promoteHwLearnings`/`exportHwLearnings`
+// deliberately never default it to `findProjectRoot()`/cwd themselves, so
+// this suite's many OTHER calls (which omit `repoRoot`) never write into this
+// repo's own real `.orchestrator/metrics/events.jsonl`.
+describe('#1028 residue 2: orchestrator.secret_masker.applied telemetry', () => {
+  /** Read every ledger record written under `repoRoot`. `[]` when absent. */
+  function readLedger(repoRoot) {
+    const ledger = join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
+    if (!existsSync(ledger)) return [];
+    return readFileSync(ledger, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line));
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it('exportHwLearnings emits ONE masker event, channel export-hw-learnings, needle_count/hits >= 1', async () => {
+    const needle = `sotestneedle${randomUUID().replace(/-/g, '')}1`;
+    vi.stubEnv('SO_TEST_HW_EXPORT_MASKER_TOKEN', needle);
+    // The masker is a module-level lazy singleton built from process.env on
+    // first use — reset + re-import AFTER stubEnv (same reasoning as the
+    // #1025 describe block above), or an earlier test in this file has
+    // already frozen it against the unstubbed env.
+    vi.resetModules();
+    const { exportHwLearnings } = await import('../../scripts/export-hw-learnings.mjs');
+
+    const input = join(tmp, 'learnings.jsonl');
+    const output = join(tmp, 'hardware-patterns.md');
+    writeFileSync(
+      input,
+      JSON.stringify(baseLearning({ id: 'masker-export-1', insight: `token seen: ${needle}` })) + '\n',
+    );
+
+    await exportHwLearnings({ input, output, dryRun: false, generatedAt: GENERATED_AT, repoRoot: tmp });
+
+    const events = readLedger(tmp).filter((e) => e.event === 'orchestrator.secret_masker.applied');
+    expect(events).toHaveLength(1);
+    expect(events[0].channel).toBe('export-hw-learnings');
+    expect(events[0].needle_count).toBeGreaterThanOrEqual(1);
+    expect(events[0].hits).toBeGreaterThanOrEqual(1);
+  });
+
+  it('promoteHwLearnings emits ONE masker event, channel export-hw-learnings, needle_count/hits >= 1', async () => {
+    const needle = `sotestneedle${randomUUID().replace(/-/g, '')}2`;
+    vi.stubEnv('SO_TEST_HW_PROMOTE_MASKER_TOKEN', needle);
+    vi.resetModules();
+    const { promoteHwLearnings } = await import('../../scripts/export-hw-learnings.mjs');
+
+    const input = join(tmp, 'learnings.jsonl');
+    writeFileSync(
+      input,
+      JSON.stringify(privateHwLearning({ id: 'masker-promote-1', insight: `saw ${needle} in the trace` })) + '\n',
+    );
+
+    await promoteHwLearnings({ input, dryRun: false, repoRoot: tmp });
+
+    const events = readLedger(tmp).filter((e) => e.event === 'orchestrator.secret_masker.applied');
+    expect(events).toHaveLength(1);
+    expect(events[0].channel).toBe('export-hw-learnings');
+    expect(events[0].needle_count).toBeGreaterThanOrEqual(1);
+    expect(events[0].hits).toBeGreaterThanOrEqual(1);
+  });
+});

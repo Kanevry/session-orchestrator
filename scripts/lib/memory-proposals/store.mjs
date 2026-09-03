@@ -227,11 +227,18 @@ function countWaveLines(jsonlPath, waveId) {
 }
 
 /**
- * Read the per-wave summary JSON, or return a zeroed summary if absent.
+ * Read + parse a per-wave summary JSON file. Returns the parsed summary on
+ * success, or `null` on any failure — missing file (ENOENT) silently, any
+ * other read/parse failure with a stderr WARN (#1210 — ENOENT and other
+ * failures are different facts, same split as `sessions-canonical.mjs`
+ * `readCanonicalSessions`). Shared by `readSummary` (defaults to zeros) and
+ * `readWaveSummary` (surfaces `null` to its own caller) — one read path
+ * instead of two near-identical copies.
+ *
  * @param {string} summaryPath
- * @returns {{ queued: number, dropped: number, below_floor: number, fs_error: number }}
+ * @returns {{ queued: number, dropped: number, below_floor: number, fs_error: number } | null}
  */
-function readSummary(summaryPath) {
+function readSummaryFileSafe(summaryPath) {
   try {
     const raw = fs.readFileSync(summaryPath, 'utf8');
     const parsed = JSON.parse(raw);
@@ -243,10 +250,26 @@ function readSummary(summaryPath) {
         fs_error: parsed.fs_error ?? 0,
       };
     }
-  } catch {
-    /* ENOENT or malformed — return zeros */
+    return null;
+  } catch (err) {
+    if (!err || err.code !== 'ENOENT') {
+      process.stderr.write(
+        `⚠ readSummaryFileSafe: cannot read ${summaryPath} ` +
+          `(${err?.code ?? '?'}: ${err?.message ?? String(err)}) — ` +
+          'treating as EMPTY, counts below are floors\n',
+      );
+    }
+    return null;
   }
-  return { queued: 0, dropped: 0, below_floor: 0, fs_error: 0 };
+}
+
+/**
+ * Read the per-wave summary JSON, or return a zeroed summary if absent.
+ * @param {string} summaryPath
+ * @returns {{ queued: number, dropped: number, below_floor: number, fs_error: number }}
+ */
+function readSummary(summaryPath) {
+  return readSummaryFileSafe(summaryPath) ?? { queued: 0, dropped: 0, below_floor: 0, fs_error: 0 };
 }
 
 /**
@@ -422,20 +445,5 @@ export async function countProposalsForWave({ repoRoot, waveId }) {
  */
 export async function readWaveSummary({ repoRoot, waveId }) {
   const summaryPath = summaryPathFor(repoRoot, waveId);
-  try {
-    const raw = fs.readFileSync(summaryPath, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object') {
-      return {
-        queued: parsed.queued ?? 0,
-        dropped: parsed.dropped ?? 0,
-        below_floor: parsed.below_floor ?? 0,
-        fs_error: parsed.fs_error ?? 0,
-      };
-    }
-    return null;
-  } catch (err) {
-    if (err.code === 'ENOENT') return null;
-    return null;
-  }
+  return readSummaryFileSafe(summaryPath);
 }
