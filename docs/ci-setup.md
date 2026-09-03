@@ -14,62 +14,78 @@ project-level Job Token allowlists are explicitly configured — an admin action
 in the foreign project that cannot be scripted from here. The fix is a deploy
 token or PAT stored as the masked CI variable `SCHEMA_DRIFT_TOKEN`.
 
-> **Current decision (2026-08-28, #1062): amber is the accepted normal state.**
-> `glab variable list` on this project returns zero CI variables — no
-> `SCHEMA_DRIFT_TOKEN` is set — so every pipeline runs the job to exit 3
-> (`NOT VERIFIED`) and `pipeline-gate` prints the amber line. This is a
-> deliberate operator choice, not a defect: the job is correctly fail-loud
-> (exit taxonomy below), the vendored schema is compared manually at each
-> baseline refresh (#1100), and no token is rotated for a check that runs
-> against a private project of our own. Session-start's CI banner keeps
-> reporting the soft failure on purpose (`allow_failure` jobs are invisible
-> at pipeline level, which is what that banner exists to surface). Revisit
-> trigger: the first time a vendored-schema drift ships unnoticed, or when
-> the baseline gains a public mirror — then set the token (Option A below)
-> and flip `SCHEMA_DRIFT_OPTIONAL` at both sites.
+> **Armed (2026-09-03, #1175): the hard gate is live.** #531 landed upstream
+> — `infrastructure/projects-baseline` commit `cb9ec97` adds `peer-card`,
+> `board`, and `source-repo` to the canonical schema (the issue's AC named
+> only `peer-card`; the close comment widened scope to all three values
+> already vendored ahead here). That closed the vendored-schema divergence
+> which had blocked activation since 2026-09-02; `skills/vault-sync/
+> validator.mjs` was regenerated and `node scripts/sync-vault-schema.mjs
+> --check` now exits 0. The Project Access Token was re-minted (id 53, see
+> § Activation status below), the masked `SCHEMA_DRIFT_TOKEN` CI variable is
+> set on this project, and `SCHEMA_DRIFT_OPTIONAL` is `"false"` at both
+> sites in `.gitlab-ci.yml` — a missing or expired token now hard-fails the
+> pipeline (exit 4) instead of printing the amber `NOT VERIFIED` line that
+> was the accepted state under the prior (2026-08-28, #1062) decision. Both
+> directions were proven before the flip — see below. Revisit trigger for
+> the token itself: expiry (2027-09-01) or a scope/rotation need — see
+> § Rotation / re-arm sequence.
 
-### Activation status (measured 2026-09-02)
+### Activation status (token re-minted 2026-09-03, id 53)
 
-**Update, same day:** the token below was **revoked** — an unused credential is a
-liability per SEC-005's secrets-lifecycle discipline, and leaving a live,
-never-set-as-a-CI-variable token sitting in `infrastructure/projects-baseline`
-served no purpose once the control run below had already answered the
-question it was minted for. Re-minting it (same `glab api --method POST … --input -`
-recipe as Option A step 1) is now **Step 0** of the re-activation sequence
-below, not an assumed-still-valid token.
+The Project Access Token was revoked on 2026-09-02 once a control run had
+answered the question it was minted for — an unused credential is a
+liability per SEC-005's secrets-lifecycle discipline. That control run had
+also surfaced the real reason activation was still blocked:
+`skills/vault-sync/validator.mjs`'s `vaultNoteTypeSchema` enum carried
+`peer-card` and `board`, and `vaultFrontmatterSchema` carried
+`source-repo: z.string().optional()`, none of which the canonical
+`infrastructure/projects-baseline` source had yet — the documented
+vendor-ahead state (`scripts/sync-vault-schema.mjs` header, "Vendor-ahead
+state (2026-05-23, #503, I5)"), tracked as upstream-sync-debt in issue #531
+(#503 itself was already closed).
 
-A Project Access Token was provisioned today, scoped exactly as Option A
-below recommends:
+**#531 landed upstream** as commit `cb9ec97`: `vaultNoteTypeSchema` gained
+`peer-card` and `board`; `vaultFrontmatterSchema` gained `source-repo:
+z.string().optional()`. With the canonical source caught up,
+`node scripts/sync-vault-schema.mjs --check` exits 0 — no drift.
+
+**Token, re-minted:**
 
 - **Name:** `session-orchestrator-ci-schema-drift`
 - **Project:** `infrastructure/projects-baseline` (id 52) — the TARGET repo,
   not this one
+- **Token id:** 53
 - **Scopes:** `read_repository`
 - **Access level:** Reporter (20)
 - **Expires:** 2027-09-01
 
-The masked `SCHEMA_DRIFT_TOKEN` CI variable on this project (id 74) was set
-with that token, then **removed again**. A control run with the token set
-confirmed the clone step authenticates correctly — but the drift check itself
-then failed for a real, already-known reason:
-`skills/vault-sync/validator.mjs`'s `vaultNoteTypeSchema` enum carries
-`peer-card` and `board`, and the canonical `infrastructure/projects-baseline`
-source does not have either yet. This is the documented vendor-ahead state
-(`scripts/sync-vault-schema.mjs` header, "Vendor-ahead state (2026-05-23,
-#503, I5)") and tracked as upstream-sync-debt in issue #531 (#503 itself is
-closed). With the variable set and `SCHEMA_DRIFT_OPTIONAL` still `"true"`,
-this exit-1 `DRIFT` is a **hard** failure — it is not in
-`allow_failure.exit_codes: [3]` — so leaving the variable set today would turn
-the next push red for a fact already tracked in #531, not for a new defect.
-The variable was removed rather than left set; activation stays blocked until
-the canonical enum gains both values.
+The masked `SCHEMA_DRIFT_TOKEN` CI variable is set on this project (id 74),
+**not** Protected — same reasoning as Option A step 3 below.
 
-**Re-activation sequence once #531 lands upstream:**
+**Proof pipelines, both directions, run before the flip:**
 
-0. **Re-mint the token** — it was revoked (see § Activation status above). Run
-   the same `glab api --method POST … --input -` recipe as Option A step 1,
-   against the TARGET project (id 52), and copy the response's `token` field
-   immediately — it is shown exactly once.
+- **GREEN** — pipeline 8358 @ `dc9522dd` (branch
+  `proof/1175-schema-drift-green`): job `schema-drift-check` #84625 ran with
+  the token, cloned the baseline, and printed `RESULT: IN-SYNC (exit 0)`;
+  `pipeline-gate` succeeded.
+- **RED** — pipelines 8355–8357 @ `bca78dae` (branch
+  `proof/1175-schema-drift-red`, a deliberately bogus enum value injected
+  into the vendored copy): `sync-vault-schema.mjs` reported drift, the job
+  failed with exit 1 — outside `allow_failure.exit_codes: [3]` — and
+  `pipeline-gate` never ran.
+
+With both proofs recorded, `SCHEMA_DRIFT_OPTIONAL` is `"false"` at both
+sites in `.gitlab-ci.yml` — `schema-drift-check` and `pipeline-gate`.
+`tests/ci/schema-drift-check.test.mjs` pins the committed value on both
+jobs, so a half-revert or a template refresh flipping one site back to
+`"true"` fails the suite locally, not silently in a pipeline.
+
+**Rotation / re-arm sequence** (token expiry or replacement):
+
+0. **Re-mint the token.** Run the same `glab api --method POST … --input -`
+   recipe as Option A step 1, against the TARGET project (id 52), and copy
+   the response's `token` field immediately — it is shown exactly once.
 1. `read -rs TOKEN` at the prompt (no echo), then pipe it into `glab variable
    set` rather than passing it as a `--value` argument — a value passed on the
    command line is visible to any other process on the host via `ps`, while
@@ -92,10 +108,12 @@ the canonical enum gains both values.
    `RESULT: IN-SYNC` — and confirm the job DURATION is well over 20 seconds
    (see the pipeline-6815 warning above). A fast "success" is the exit-3
    soft-skip in disguise, not a real run.
-3. Flip `SCHEMA_DRIFT_OPTIONAL` to `"false"` at **both** sites —
-   `schema-drift-check` and `pipeline-gate` — in one commit.
-   `tests/ci/schema-drift-check.test.mjs` already asserts the two values are
-   equal, so no test edit is needed to enforce the flip.
+3. `SCHEMA_DRIFT_OPTIONAL` stays `"false"` at **both** sites —
+   `schema-drift-check` and `pipeline-gate`. A rotation replaces only the
+   credential, never the flag; if the flag was ever reverted for an
+   emergency, flip it back to `"false"` at both sites in one commit —
+   `tests/ci/schema-drift-check.test.mjs` pins the committed value on both
+   jobs, so a half-flip fails the suite locally.
 4. Local counter-probe before trusting the pipeline: clone
    `infrastructure/projects-baseline` with the token, make a throwaway copy of
    `packages/zod-schemas/src/vault-frontmatter.ts` with one field
@@ -134,11 +152,12 @@ let alone diff a schema against it. Issue #933.
 
 ```yaml
 variables:
-  SCHEMA_DRIFT_OPTIONAL: "true"
+  SCHEMA_DRIFT_OPTIONAL: "false"
 ```
 
-It is the review-visible declaration that "no token" is *currently* an accepted
-state. The behaviour matrix:
+It is the review-visible declaration that "no token" is *no longer* an
+accepted state — armed 2026-09-03 (#1175, see § Activation status above).
+The behaviour matrix:
 
 | `SCHEMA_DRIFT_TOKEN` | `SCHEMA_DRIFT_OPTIONAL` | Exit | State | Pipeline effect |
 |---|---|---|---|---|
@@ -169,14 +188,24 @@ note, not a blocker: the sentinels are intact today, and the fix — if it is
 ever needed — is giving `sync-vault-schema.mjs`'s malformed-sentinel case a
 distinct exit code, not a change here.
 
-**After completing the token setup below, change `SCHEMA_DRIFT_OPTIONAL` to
-`"false"` in `.gitlab-ci.yml`** — in **both** places: the `schema-drift-check`
+**This is what the armed state looks like.** `SCHEMA_DRIFT_OPTIONAL` is
+`"false"` in `.gitlab-ci.yml` at **both** places: the `schema-drift-check`
 job and `pipeline-gate`. One flag, two enforcement points;
-`tests/ci/schema-drift-check.test.mjs` asserts the mirroring, so a half-flip
-fails the suite locally rather than silently leaving one point advisory. The
-flip is what converts a missing token from a tolerated warning into a hard red,
-and it is the whole point of the flag: the opt-out is a line in a reviewed file,
-not the accidental side effect of an unset CI variable.
+`tests/ci/schema-drift-check.test.mjs` asserts the mirroring AND pins the
+literal `"false"` value on both jobs, so a half-flip — or a full revert —
+fails the suite locally rather than silently leaving one point advisory. A
+missing or expired token now hard-fails the pipeline (exit 4) instead of the
+tolerated amber warning — that is the whole point of the flag: the opt-out is
+a line in a reviewed file, not the accidental side effect of an unset CI
+variable.
+
+**To switch it back to amber temporarily** (a token rotation window, or
+taking the check offline for an emergency): set `SCHEMA_DRIFT_OPTIONAL` to
+`"true"` at **both** sites, in one commit — the same mirrored-pair discipline
+applies in reverse, and the same test catches a half-revert. Re-arm by
+flipping both sites back to `"false"` once the reason for the amber window is
+resolved; see § Rotation / re-arm sequence above for the token side of that
+operation.
 
 > **Before you flip it, run ONE pipeline with the token present while
 > `SCHEMA_DRIFT_OPTIONAL` is still `"true"`, and check the job's DURATION.**

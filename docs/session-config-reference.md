@@ -1240,7 +1240,7 @@ remote-hosts:
 
 **Two enums, never conflated.** `roles-allowed` holds `agent-mapping` roles (`test`, `ui`, `perf`) — NOT wave roles (`Impl-Core`, `Quality`, …). The wave→role translation is `OFFLOADABLE_WAVE_ROLES` in `scripts/lib/wave-resource-gate.mjs`; a wave role absent from that map is local-only by default.
 
-**Placement contract.** The gate applies its offload arm only after the HR-004 heavy-repo cap, and only when the resource verdict was `reduce` or `coordinator-direct`. It does NOT probe the network: the coordinator supplies a readiness witness (`remoteReady: { m5: true }`, or an async `probeFn`). With no witness, no host counts as ready and the decision stays local — the gate fails toward local, never toward an unverified host. A role in `NEVER_FOREIGN_ROLES` (`scripts/lib/wave-executor/foreign-dispatch.mjs`) is never offloaded regardless.
+**Placement contract.** The gate applies its offload arm only after the HR-004 heavy-repo cap, and only when the resource verdict was `reduce` or `coordinator-direct`. It does NOT probe the network: the coordinator supplies a readiness witness (`remoteReady: { m5: true }`, or an async `probeFn`). With no witness, no host counts as ready and the decision stays local — the gate fails toward local, never toward an unverified host. A role in `NEVER_FOREIGN_ROLES` (`scripts/lib/wave-executor/dispatch-common.mjs`) is never offloaded regardless.
 
 **agent-mapping interaction.** A declared alias is what an `agent-mapping` value of the form `<role>: ssh:<alias>` validates against; naming an undeclared host throws at parse time, naming the `ssh` channel with no target throws as for any other channel.
 

@@ -595,11 +595,20 @@ coverage:
 # would go looking for a schema diff that does not exist. Only 3 is in
 # `allow_failure.exit_codes`; 4 and 5 are hard failures by construction.
 #
-# TO ACTIVATE THE HARD GATE: create SCHEMA_DRIFT_TOKEN (steps in
-# docs/ci-setup.md), then flip SCHEMA_DRIFT_OPTIONAL to "false" in BOTH places
-# below — this job and `pipeline-gate`. The mirroring is asserted by
-# tests/ci/schema-drift-check.test.mjs, so a half-flip fails the suite locally
-# rather than silently leaving one of the two enforcement points advisory.
+# ARMED (2026-09-03, #1175): SCHEMA_DRIFT_OPTIONAL is "false" in BOTH places
+# below — this job and `pipeline-gate`. Token `session-orchestrator-ci-schema-
+# drift` (id 53, read_repository, access_level 20, expires 2027-09-01) is
+# minted on infrastructure/projects-baseline (project 52) and set as the
+# masked CI variable SCHEMA_DRIFT_TOKEN on this project (74, unprotected).
+# Proven both ways before the flip: GREEN pipeline 8358 @ dc9522dd
+# (branch proof/1175-schema-drift-green) ran schema-drift-check job #84625
+# with the token, cloned the baseline, printed `RESULT: IN-SYNC (exit 0)`,
+# and pipeline-gate succeeded; RED pipelines 8355-8357 @ bca78dae
+# (branch proof/1175-schema-drift-red, bogus enum value) printed
+# `sync-vault-schema: drift detected`, exited 1 (not in allow_failure's
+# exit_codes [3]), and pipeline-gate never ran. The mirroring is asserted by
+# tests/ci/schema-drift-check.test.mjs, so a half-flip (or a template refresh
+# reverting one site) fails the suite locally before it reaches a pipeline.
 # ---------------------------------------------------------------------------
 
 schema-drift-check:
@@ -618,12 +627,11 @@ schema-drift-check:
   needs:
     - test
   variables:
-    # Committed, review-visible opt-out. Measured 2026-07-30 via
-    # `glab variable list` → the project has ZERO CI variables, so
-    # SCHEMA_DRIFT_TOKEN is unset and a hard failure here would redden every
-    # pipeline immediately. Flip to "false" the moment the token is configured
-    # (docs/ci-setup.md § Activating the hard gate).
-    SCHEMA_DRIFT_OPTIONAL: "true"
+    # Committed, review-visible enforcement. Flipped to "false" 2026-09-03
+    # (#1175) once SCHEMA_DRIFT_TOKEN was minted and set as a masked CI
+    # variable — see docs/ci-setup.md § Activation status for the full record.
+    # Missing/expired token now hard-fails (exit 4), not amber-skips.
+    SCHEMA_DRIFT_OPTIONAL: "false"
   script:
     # Fail-visible guard. The old form was `exit 0` — a job that had checked
     # nothing reported the same green as a job that had checked everything.
@@ -710,7 +718,7 @@ pipeline-gate:
   allow_failure: false
   variables:
     # Must mirror schema-drift-check's value: one flag, two enforcement points.
-    SCHEMA_DRIFT_OPTIONAL: "true"
+    SCHEMA_DRIFT_OPTIONAL: "false"
   needs:
     # Hard — absence is a pipeline-creation error (see mechanism 1 above).
     - gitleaks-scan

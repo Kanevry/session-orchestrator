@@ -289,11 +289,14 @@ describe('pipeline-gate fan-in evaluates the markers (#940)', () => {
 
   it('tolerates a missing schema-drift marker as declared-optional — visibly, never as VERIFIED', () => {
     // bug_caught: two inversions of the amber path. (a) tolerance broken →
-    // every pipeline red while the token is legitimately unconfigured (the
-    // committed state, measured 2026-07-30: zero CI variables) → gate deleted;
-    // (b) the missing marker reported as VERIFIED → the soft path is green
-    // again, one level up. Asserting the NOT-VERIFIED notice pins (b).
-    const res = runGate({ markers: ['coverage.ok'], source: 'merge_request_event' });
+    // every pipeline red while the token is legitimately unconfigured → gate
+    // deleted; (b) the missing marker reported as VERIFIED → the soft path is
+    // green again, one level up. Asserting the NOT-VERIFIED notice pins (b).
+    // Since the hard gate armed (2026-09-03, #1175), the committed default is
+    // SCHEMA_DRIFT_OPTIONAL: "false" — this test exercises the amber branch
+    // explicitly (still a real code path: a temporary revert or a token-
+    // rotation window), not the committed default.
+    const res = runGate({ markers: ['coverage.ok'], source: 'merge_request_event', optional: 'true' });
 
     expect(res.status).toBe(0);
     expect(res.stdout).toContain('schema-drift: NOT VERIFIED');
@@ -319,5 +322,17 @@ describe('pipeline-gate fan-in evaluates the markers (#940)', () => {
     // fan-in advisory while every pipeline stays green.
     expect(gateJob.variables.SCHEMA_DRIFT_OPTIONAL).toBe(job.variables.SCHEMA_DRIFT_OPTIONAL);
     expect(gateJob.allow_failure).toBe(false);
+  });
+
+  it('ships ARMED: both jobs commit SCHEMA_DRIFT_OPTIONAL="false" (#1175)', () => {
+    // bug_caught: a half-revert or a template refresh flipping ONE site back
+    // to "true" after the hard gate was activated (2026-09-03, #1175) — the
+    // parity test above catches a two-sided disagreement but is satisfied by
+    // both sites drifting back to "true" together, which would silently
+    // re-open the amber-tolerate hole #933 was written to close. Pinning the
+    // literal committed value on both jobs is the only thing that catches
+    // that case.
+    expect(job.variables.SCHEMA_DRIFT_OPTIONAL).toBe('false');
+    expect(gateJob.variables.SCHEMA_DRIFT_OPTIONAL).toBe('false');
   });
 });

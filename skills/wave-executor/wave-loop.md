@@ -314,7 +314,7 @@ The colon heuristic (§ "How to detect project agents") has **three** readings, 
 
 **Model selection** is not decided here: the operator's model-routing SSOT (ADR-002) owns it. Working defaults: `composer-2.5` for foreign impl; `cursor-grok-4.6-high` for review / test-writing / judgment roles, at `timeoutSec ≥ 900`. Dogfood evidence (2026-08-25): `composer-2.5` on issue #1105 — 165 s, 2 files, +93 lines, mandatory review passed, merged only after independent test verification.
 
-**Timeout.** `maxTurns` does not exist on this channel — see the § Platform-Specific Dispatch timeout note. The wall-clock SIGTERM (`DEFAULT_TIMEOUT_SEC = 900`, a floor) is the only circuit breaker.
+**Timeout.** `maxTurns` does not exist on this channel — see the § Platform-Specific Dispatch timeout note. The wall-clock SIGTERM (`DEFAULT_TIMEOUT_SEC = 900`, defined in `scripts/lib/wave-executor/dispatch-common.mjs`, a floor) is the only circuit breaker.
 
 ##### Fourth branch: remote-host dispatch (`ssh:<alias>` — #1160)
 
@@ -593,7 +593,7 @@ The `agents-per-wave` config is ignored on Cursor — all work is sequential. Se
 
 > **Timeout note:** Agent timeout is controlled by `maxTurns` from `circuit-breaker.md`, not by a time-based timeout. Claude Code's built-in turn limit provides the safety net. There is no need to set explicit time-based timeouts on agent dispatch.
 >
-> **Foreign-dispatch exception (#1150):** this is FALSE for a `cursor:<model>` dispatch. `cursor-agent` has no `maxTurns` and no turn limit of any kind, so a wall-clock SIGTERM is the **only** circuit breaker there — `timeoutSec` (default `DEFAULT_TIMEOUT_SEC = 900`, a measured floor, not a suggestion: `cursor-grok-4.6-high` ran 2 of 3 hard-test tasks past a 540 s cap). Lowering it manufactures timeouts that read as model failure. See § Third branch: foreign-model dispatch.
+> **Foreign-dispatch exception (#1150):** this is FALSE for a `cursor:<model>` dispatch. `cursor-agent` has no `maxTurns` and no turn limit of any kind, so a wall-clock SIGTERM is the **only** circuit breaker there — `timeoutSec` (default `DEFAULT_TIMEOUT_SEC = 900`, defined in `scripts/lib/wave-executor/dispatch-common.mjs`, a measured floor, not a suggestion: `cursor-grok-4.6-high` ran 2 of 3 hard-test tasks past a 540 s cap). Lowering it manufactures timeouts that read as model failure. See § Third branch: foreign-model dispatch.
 
 ### 2. Review Agent Outputs
 
@@ -862,7 +862,7 @@ If the commit itself fails (e.g., nothing to commit, pre-commit hook rejects), d
 
 **Mission-status transition:** after a successful auto-commit, transition the mission status for all tasks in this wave from `in-dev` → `testing` using `setMissionStatus(stateContent, taskId, 'testing')` from `scripts/lib/state-md.mjs`. This matches the coordinator-level rule in `SKILL.md § Mission-Status Updates`: "in-dev → testing: Quality wave begins and this item's implementation wave completed without failure." The auto-commit checkpoint fires at the same logical moment — after implementation completes and Quality-Lite passes.
 
-**Implementation deferred:** This subsection documents the contract. The procedural body (git add/commit sequence + error handling) will land in a future release as `scripts/lib/auto-commit.mjs` (tracked in GitLab #214; not yet implemented as of v3.10.0). Until then, this section is a no-op stub when `auto-commit-per-wave: true` is set; the coordinator MUST warn the user at session-start that auto-commits are not yet active (emit: "auto-commit-per-wave is set but the implementation (scripts/lib/auto-commit.mjs) is not yet available — commits will occur at session-end via /close as normal"). <!-- path-check: planned #214 -->
+**Implementation deferred:** This subsection documents the contract. The procedural body (git add/commit sequence + error handling) will land in a future release as `scripts/lib/auto-commit.mjs` — not yet implemented as of v3.10.0, and no GitLab issue currently tracks it (follow-up issue pending). Until then, this section is a no-op stub when `auto-commit-per-wave: true` is set; the coordinator MUST warn the user at session-start that auto-commits are not yet active (emit: "auto-commit-per-wave is set but the implementation (scripts/lib/auto-commit.mjs) is not yet available — commits will occur at session-end via /close as normal"). <!-- path-check: historical -->
 
 ---
 

@@ -233,7 +233,12 @@ describe('C — input smuggled → phase flips to run:true', () => {
 
   it('3.6.5 flips to run when sessions-since-cleanup reaches the threshold', async () => {
     const root = makeRepo();
-    const sessions = Array.from({ length: 5 }, (_, i) => ({ started_at: `2026-07-0${i + 1}T00:00:00Z` }));
+    const sessions = Array.from({ length: 5 }, (_, i) => ({
+      // #1209: readDreamSignals now reads the CANONICAL ledger, which drops id-less
+      // records (no real record lacks one — emit-session.mjs refuses them).
+      session_id: `main-2026-07-0${i + 1}-session-1`,
+      started_at: `2026-07-0${i + 1}T00:00:00Z`,
+    }));
     writeJsonl(metric(root, 'sessions.jsonl'), sessions);
     const { plan: p } = await plan(root, defaultConfig());
     expect(byId(p, '3.6.5')).toMatchObject({ run: true, inputSource: 'auto-dream-signal' });
@@ -266,7 +271,12 @@ describe('C — input smuggled → phase flips to run:true', () => {
 
   it('3.6.7 flips to run when cadence met with new input', async () => {
     const root = makeRepo();
-    const sessions = Array.from({ length: 5 }, (_, i) => ({ started_at: `2026-07-0${i + 1}T00:00:00Z` }));
+    const sessions = Array.from({ length: 5 }, (_, i) => ({
+      // #1209: readDreamSignals now reads the CANONICAL ledger, which drops id-less
+      // records (no real record lacks one — emit-session.mjs refuses them).
+      session_id: `main-2026-07-0${i + 1}-session-1`,
+      started_at: `2026-07-0${i + 1}T00:00:00Z`,
+    }));
     writeJsonl(metric(root, 'sessions.jsonl'), sessions);
     const { plan: p } = await plan(root, defaultConfig());
     expect(byId(p, '3.6.7')).toMatchObject({ run: true, inputSource: 'auto-dialectic-signal' });

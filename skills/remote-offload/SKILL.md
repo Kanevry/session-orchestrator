@@ -33,7 +33,7 @@ The gate decides, not the coordinator. `applyOffloadDecision()` in `scripts/lib/
 - `opts.remoteReady` — `{ [alias]: boolean }`, built from the SessionStart banner line `Offload <alias>: ready=yes …`, or
 - `opts.probeFn` — an async `(alias) => boolean` fallback, consulted only for aliases `remoteReady` doesn't answer for (backed by `remoteDoctor()`, i.e. `offload doctor -H <alias> --brief` parsed by `parseDoctorLine()`).
 
-With neither supplied, no host counts as ready and the wave stays local — the gate fails toward local, never toward an unverified host. A role in `NEVER_FOREIGN_ROLES` (`scripts/lib/wave-executor/foreign-dispatch.mjs`: `impl-core`, `security-review`, `migration`, `release`, `secrets`) is never offloaded regardless of readiness.
+With neither supplied, no host counts as ready and the wave stays local — the gate fails toward local, never toward an unverified host. A role in `NEVER_FOREIGN_ROLES` (`scripts/lib/wave-executor/dispatch-common.mjs`: `impl-core`, `security-review`, `migration`, `release`, `secrets`) is never offloaded regardless of readiness.
 
 ## 2. What is declared where
 
