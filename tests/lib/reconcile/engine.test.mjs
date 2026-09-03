@@ -225,7 +225,14 @@ describe('runReconcile — defaultLoadLearnings ENOENT vs other read failures (#
 
         expect(result.error).toBeUndefined();
         expect(result.summary.totalLearnings).toBe(0);
-        expect(stderr).not.toHaveBeenCalled();
+        // Narrowed (#1206 W4 LOW-5): a file-wide "no stderr call at all"
+        // assertion reds on any unrelated future diagnostic write. The real
+        // invariant is that defaultLoadLearnings specifically stayed silent
+        // on ENOENT — same predicate shape as the EISDIR case above.
+        const warnedAboutLoad = stderr.mock.calls.some(
+          (call) => typeof call[0] === 'string' && call[0].includes('defaultLoadLearnings'),
+        );
+        expect(warnedAboutLoad).toBe(false);
       } finally {
         stderr.mockRestore();
       }

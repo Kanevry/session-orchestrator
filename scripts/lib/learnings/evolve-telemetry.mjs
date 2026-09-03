@@ -55,6 +55,9 @@ const REASON_MAX_CHARS = 300;
  *   ABORT form instead of the success form: `{aborted, reason, duration_ms}`.
  * @param {string} [opts.reason] - abort message shown to the user, clamped to
  *   {@link REASON_MAX_CHARS}.
+ * @param {Function} [opts.emitFn] - DI hook for testing; defaults to the real
+ *   `emitEvent` from `../events.mjs` (dynamically imported, so a caller that
+ *   supplies `emitFn` never touches the real module at all).
  * @returns {Promise<void>}
  */
 export async function emitEvolveCompleted({
@@ -67,6 +70,7 @@ export async function emitEvolveCompleted({
   skipped = [],
   aborted,
   reason,
+  emitFn,
 } = {}) {
   if (typeof repoRoot !== 'string' || repoRoot.trim() === '') {
     process.stderr.write(
@@ -93,10 +97,17 @@ export async function emitEvolveCompleted({
         };
 
   try {
-    const { emitEvent } = await import('../events.mjs');
-    await emitEvent('orchestrator.evolve.completed', payload, { repoRoot });
-  } catch {
-    // best-effort — a telemetry failure must never break the caller's pipeline.
+    const emit = emitFn ?? (await import('../events.mjs')).emitEvent;
+    await emit('orchestrator.evolve.completed', payload, { repoRoot });
+  } catch (err) {
+    // best-effort — a telemetry failure must never break the caller's pipeline,
+    // but a silently swallowed failure is exactly the 0-records unfalsifiability
+    // #1206 was filed against — so it is surfaced on stderr instead.
+    process.stderr.write(
+      '⚠ evolve-telemetry: emit failed (orchestrator.evolve.completed): ' +
+        (err?.message ?? String(err)) +
+        '\n',
+    );
   }
 }
 
@@ -115,6 +126,9 @@ export async function emitEvolveCompleted({
  * @param {number} [opts.tokensIn] - success form only; omitted when not measured.
  * @param {number} [opts.tokensOut] - success form only; omitted when not measured.
  * @param {number} [opts.durationMs] - omitted (never fabricated) when not measured.
+ * @param {Function} [opts.emitFn] - DI hook for testing; defaults to the real
+ *   `emitEvent` from `../events.mjs` (dynamically imported, so a caller that
+ *   supplies `emitFn` never touches the real module at all).
  * @returns {Promise<void>}
  */
 export async function recordDialecticRun({
@@ -126,6 +140,7 @@ export async function recordDialecticRun({
   tokensIn,
   tokensOut,
   durationMs,
+  emitFn,
 } = {}) {
   if (typeof repoRoot !== 'string' || repoRoot.trim() === '') {
     process.stderr.write(
@@ -148,9 +163,16 @@ export async function recordDialecticRun({
       : { aborted: status, duration_ms: durationMs };
 
   try {
-    const { emitEvent } = await import('../events.mjs');
-    await emitEvent('orchestrator.dialectic.completed', payload, { repoRoot });
-  } catch {
-    // best-effort — a telemetry failure must never break the caller's pipeline.
+    const emit = emitFn ?? (await import('../events.mjs')).emitEvent;
+    await emit('orchestrator.dialectic.completed', payload, { repoRoot });
+  } catch (err) {
+    // best-effort — a telemetry failure must never break the caller's pipeline,
+    // but a silently swallowed failure is exactly the 0-records unfalsifiability
+    // #1206 was filed against — so it is surfaced on stderr instead.
+    process.stderr.write(
+      '⚠ evolve-telemetry: emit failed (orchestrator.dialectic.completed): ' +
+        (err?.message ?? String(err)) +
+        '\n',
+    );
   }
 }

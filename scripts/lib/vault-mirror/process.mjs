@@ -217,7 +217,9 @@ function learningContentMatches(existingContent, renderedContent) {
  * Would the process-wide masker (see `ensureMasker` below) still change `text`
  * if it ran again right now? (#1028 residue 1)
  *
- * Used as a LAST guard before returning `skipped-noop` in `processLearning`.
+ * Used as a LAST guard before returning `skipped-noop` in BOTH `processLearning`
+ * and `processSession` — the session channel's two skip sites were date-only
+ * until the W4 review of #1028 (see the module note above).
  * `learningContentMatches` above compares only five canonical fields, so it
  * cannot see a raw secret sitting in a NON-canonical field (`evidence` is the
  * realistic one — see the KNOWN-RESIDUAL note on `maskEntrySecrets` below): a
@@ -497,15 +499,31 @@ export function getMaskerStats() {
  *      rendered into the note) leaves all five identical between the raw on-disk
  *      note and the masked candidate — the comparison alone reports a match.
  *
- *      THE FIX: every `skipped-noop` return in `processLearning` (legacy-flat,
- *      disambig-collision, same-id) is now additionally gated by
- *      `maskerWouldChange` (see that function above). When the on-disk content
- *      would still be changed by the CURRENT masker, the run falls through to the
- *      write path and re-renders (masked) instead of skipping — so a plain
- *      re-mirror heals the leak on its own; `force: true` is no longer the only
- *      escape hatch. The disambig-collision branch's `!force` guard now also
- *      matches the same-id and legacy-flat branches (it previously lacked one, so
- *      `force: true` was silently ignored on that one path).
+ *      THE FIX — IN BOTH GENERATORS, which is the half an earlier revision of
+ *      this note got wrong: it described the guard as a `processLearning` matter,
+ *      and `processSession` shipped with two purely DATE-based `skipped-noop`
+ *      returns beside it. The session note's narrative body is the LARGER
+ *      free-text surface of the two, so that omission was the bigger half of the
+ *      leak. Every `skipped-noop` return in BOTH `processLearning` (legacy-flat,
+ *      disambig-collision, same-id) and `processSession` (legacy-flat, same-id)
+ *      is now gated by `maskerWouldChange` (see that function above). When the
+ *      on-disk content would still be changed by the CURRENT masker, the run
+ *      falls through to the write path and re-renders (masked) instead of
+ *      skipping — so a plain re-mirror heals the leak on its own; `force: true`
+ *      is no longer the only escape hatch. The disambig-collision branch's
+ *      `!force` guard now also matches the same-id and legacy-flat branches (it
+ *      previously lacked one, so `force: true` was silently ignored there).
+ *
+ *      THE LEGACY-FLAT BRANCH NEEDS ONE MORE STEP (#1028 residue 2). Falling
+ *      through there writes the NAMESPACED path, and from the next run on
+ *      `existsSync(targetPath)` is true — the flat file is never read again. A
+ *      guard alone would therefore leave the plaintext on disk and merely make it
+ *      unreachable to the heal, with the ledger reporting a clean write. Both
+ *      generators now re-render the legacy flat note IN PLACE (masked) before
+ *      falling through, and mark the resulting action `healed_legacy_flat: true`.
+ *      Rewriting rather than deleting is what the deferred-migration decision
+ *      above asks for: that decision is about not MOVING the note, which a masked
+ *      re-render preserves and a deletion would silently undo.
  *      Revisit-Trigger: `maskerWouldChange` only detects needles present in the
  *      CURRENT process env — a needle since rotated out of the env is not seen as
  *      still-leaking and is healed only by an explicit `force: true` re-mirror.
@@ -667,30 +685,48 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
   // duplicating the note. The deferred-migration decision means we only skip;
   // we do NOT move the flat note into the namespaced dir here.
   const legacyFlatPath = join(resolve(vaultDir), '40-learnings', `${slug}.md`);
+  // Set when a still-leaking legacy flat note was healed in place below, so the
+  // action emitted for THIS entry can say so (see the write sites at the end).
+  let healedLegacyFlat = false;
   if (!existsSync(targetPath) && existsSync(legacyFlatPath)) {
     const legacyContent = readFileSync(legacyFlatPath, 'utf8');
     const legacyFm = parseFrontmatter(legacyContent);
     // Only skip if the flat note is ours (has our generator marker and matching id).
     if (legacyFm && legacyFm['_generator'] === GENERATOR_MARKER && legacyFm['id'] === slug) {
       const entryUpdated = toDate(dateSource);
+      // #1028 residue 2 (W4 review HIGH-2): the leak probe must run on EVERY
+      // path that leaves this branch, not only the date-not-advanced one — every
+      // one of them falls through to the NAMESPACED path, after which
+      // `existsSync(targetPath)` is true forever and this legacy file is never
+      // read again. A raw secret left in it would become unreachable to the
+      // self-heal while staying fully published in the tracked vault.
+      const legacyStillLeaks = maskerWouldChange(legacyContent);
       if (!force && legacyFm['updated'] && legacyFm['updated'] >= entryUpdated) {
         // Date has not advanced — but content may have changed (confidence, insight, etc.).
         // Render the candidate and compare canonical fields before deciding to skip.
         const candidateContent = generator(entry, slug, generatorOpts);
-        if (learningContentMatches(legacyContent, candidateContent)) {
+        if (learningContentMatches(legacyContent, candidateContent) && !legacyStillLeaks) {
           // #1028 residue 1: the five-field compare cannot see a raw secret
-          // sitting in a non-canonical field (e.g. `evidence`) — probe the
-          // on-disk content against the CURRENT masker before trusting the
-          // match. See maskerWouldChange above.
-          const stillLeaks = maskerWouldChange(legacyContent);
-          if (!stillLeaks) {
-            return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: legacyFlatPath, id: slug });
-          }
+          // sitting in a non-canonical field (e.g. `evidence`) — the
+          // `legacyStillLeaks` probe above is what makes this match trustworthy.
+          return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: legacyFlatPath, id: slug });
         }
         // Content differs, or the on-disk note still leaks under the current
         // env — fall through to write into the namespaced path.
       }
       // Updated date would advance or content changed — fall through to write into the namespaced path.
+      //
+      // Heal the leaking legacy note IN PLACE first. Rewriting is the option
+      // consistent with the deferred-migration rationale above: that decision is
+      // about not MOVING the note (the flat path stays authoritative for older
+      // vaults and for hand-made links into it), which a masked re-render
+      // preserves and a deletion would silently undo. Deleting an operator-visible
+      // vault file to fix a leak also trades one irreversible loss for another —
+      // the content here is already ours (generator marker + id checked above).
+      if (legacyStillLeaks) {
+        if (!dryRun) writeFileSync(legacyFlatPath, generator(entry, slug, generatorOpts), 'utf8');
+        healedLegacyFlat = true;
+      }
     }
   }
 
@@ -776,7 +812,15 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
   // File does not exist — create
   const content = generator(entry, slug, generatorOpts);
   if (!dryRun) writeFileSync(targetPath, content, 'utf8');
-  return emitEntryAction(_lineNum, ctx, { action: 'created', path: targetPath, id: slug });
+  return emitEntryAction(_lineNum, ctx, {
+    action: 'created',
+    path: targetPath,
+    id: slug,
+    // No PATH in the meta: the stdout payload's `path` is vault-relative on
+    // purpose (emitAction relativises it), a raw absolute path here would put
+    // the operator's home dir on stdout and into the ledger record.
+    ...(healedLegacyFlat ? { meta: { healed_legacy_flat: true } } : {}),
+  });
 }
 
 export async function processSession(rawEntry, _lineNum, ctx) {
@@ -895,15 +939,30 @@ export async function processSession(rawEntry, _lineNum, ctx) {
   // the namespaced path as absent. If a session note already exists flat
   // (pre-namespace migration), skip creating a duplicate.
   const legacyFlatPath = join(resolve(vaultDir), '50-sessions', `${session_id}.md`);
+  let healedLegacyFlat = false;
   if (!existsSync(targetPath) && existsSync(legacyFlatPath)) {
     const legacyContent = readFileSync(legacyFlatPath, 'utf8');
     const legacyFm = parseFrontmatter(legacyContent);
     if (legacyFm && legacyFm['_generator'] === GENERATOR_MARKER && legacyFm['id'] === session_id) {
       const entryUpdated = toDate(entry.completed_at);
-      if (!force && legacyFm['updated'] && legacyFm['updated'] >= entryUpdated) {
+      // #1028 residue 1, session channel (W4 review HIGH-1): the skip decision
+      // here is DATE-ONLY — it never looks at the note's content, so a raw
+      // secret written into the narrative before the env carried the needle
+      // would stay published forever. Same `maskerWouldChange` probe the
+      // learning channel carries; see that function above.
+      const legacyStillLeaks = maskerWouldChange(legacyContent);
+      if (!force && !legacyStillLeaks && legacyFm['updated'] && legacyFm['updated'] >= entryUpdated) {
         return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: legacyFlatPath, id: session_id });
       }
-      // Updated date would advance — fall through to write into the namespaced path.
+      // Updated date would advance, or the on-disk note still leaks — fall
+      // through to write into the namespaced path. Heal the legacy note in place
+      // first (HIGH-2, same rationale as processLearning's legacy-flat branch):
+      // after this run `existsSync(targetPath)` is true, so the flat file is
+      // never read again and its plaintext would be unreachable to the heal.
+      if (legacyStillLeaks) {
+        if (!dryRun) writeFileSync(legacyFlatPath, renderedBody, 'utf8');
+        healedLegacyFlat = true;
+      }
     }
   }
 
@@ -925,7 +984,11 @@ export async function processSession(rawEntry, _lineNum, ctx) {
     // Same generator: check id and updated
     if (fm['id'] === session_id) {
       const entryUpdated = toDate(entry.completed_at);
-      if (!force && fm['updated'] && fm['updated'] >= entryUpdated) {
+      // #1028 residue 1, session channel (W4 review HIGH-1): probe the on-disk
+      // content against the CURRENT masker before trusting the date-only skip —
+      // the session note's narrative body is the larger free-text leak surface
+      // of the two channels. See maskerWouldChange above.
+      if (!force && !maskerWouldChange(existingContent) && fm['updated'] && fm['updated'] >= entryUpdated) {
         return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: targetPath, id: session_id });
       }
       if (!dryRun) writeFileSync(targetPath, renderedBody, 'utf8');
@@ -936,5 +999,11 @@ export async function processSession(rawEntry, _lineNum, ctx) {
   // File does not exist — create. Reuse the rendered body computed during the
   // quality-gate check (avoids a second generator invocation).
   if (!dryRun) writeFileSync(targetPath, renderedBody, 'utf8');
-  return emitEntryAction(_lineNum, ctx, { action: 'created', path: targetPath, id: session_id });
+  return emitEntryAction(_lineNum, ctx, {
+    action: 'created',
+    path: targetPath,
+    id: session_id,
+    // Boolean only — never a path; see the same note in processLearning.
+    ...(healedLegacyFlat ? { meta: { healed_legacy_flat: true } } : {}),
+  });
 }

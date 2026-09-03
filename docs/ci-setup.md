@@ -207,6 +207,23 @@ flipping both sites back to `"false"` once the reason for the amber window is
 resolved; see § Rotation / re-arm sequence above for the token side of that
 operation.
 
+**Fork / external-contributor MR caveat.** `.gate-rules` (`.gitlab-ci.yml:74`)
+includes `if: $CI_PIPELINE_SOURCE == "merge_request_event"`, so a merge
+request pipeline runs `schema-drift-check` regardless of who opened it — but
+GitLab does not pass the target project's masked CI/CD variables to a
+pipeline running a **forked** project's code, by design, so that an untrusted
+fork cannot exfiltrate a secret. A fork/contributor MR therefore cannot read
+`SCHEMA_DRIFT_TOKEN` even though the variable is set and unprotected on this
+project, and with `SCHEMA_DRIFT_OPTIONAL: "false"` that reads as a genuinely
+missing token: exit **4** (`MISCONFIGURED`), a hard pipeline failure — not the
+amber `SKIPPED` a same-project branch would get. The accepted mitigation is
+either of: a maintainer re-runs the pipeline from within this project (e.g.
+pushing the same commit to a branch here, where the variable IS available),
+or a maintainer temporarily sets `SCHEMA_DRIFT_OPTIONAL: "true"` on that one
+MR/branch for the duration of review. Do not weaken the committed default in
+`.gitlab-ci.yml` for this — it stays `"false"` at both sites per the armed
+state above.
+
 > **Before you flip it, run ONE pipeline with the token present while
 > `SCHEMA_DRIFT_OPTIONAL` is still `"true"`, and check the job's DURATION.**
 > A `schema-drift-check` that "succeeds" in under ~20 seconds did not clone the

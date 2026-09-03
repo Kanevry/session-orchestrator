@@ -1190,6 +1190,10 @@ describe('post-subagent-discovery-validator hook', () => {
       'ratio + English "Commits" noun still flags alongside a German heading',
       '**4/4 Kern-Issues geliefert und geschlossen**, 2 Commits auf origin/main:',
     ],
+    // Singular "Eintrag" (#1211 follow-up): the original `eintr(?:ä|ae)ge?`
+    // alternation made only the trailing `e` optional, so it could match
+    // `einträg`/`eintraeg` but never the actual singular noun `Eintrag`.
+    ['bare-cardinal singular "Eintrag"', '1 Eintrag ohne Beleg wurde übernommen.'],
   ])('#1211 German positive "%s": flags a violation', (_label, claim) => {
     writeClaudeMd(CLAUDE_MD_ENABLED);
     const transcript = writeTranscript([claim]);

@@ -195,9 +195,11 @@ npm-audit:
 #   44 packages have verified attestations
 #   exit=0
 # A gate that can be binding today is wired binding today — there is no
-# allow_failure here and no exit code is excused. Contrast schema-drift-check,
-# which is advisory only because its precondition (a CI token) is genuinely
-# absent in this project.
+# allow_failure here and no exit code is excused. Contrast schema-drift-check:
+# once advisory-only for lack of a CI token, now ARMED (2026-09-03, #1175) —
+# SCHEMA_DRIFT_TOKEN is provisioned and SCHEMA_DRIFT_OPTIONAL: "false" at both
+# sites (this job and `pipeline-gate`), so a missing token is exit 4
+# (MISCONFIGURED), a hard failure, not an amber skip.
 #
 # WHY THE SCRIPT IS NOT A BARE `npm audit signatures`:
 # npm collapses two categorically different outcomes onto the SAME exit 1 —

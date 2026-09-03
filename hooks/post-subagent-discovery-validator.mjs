@@ -135,7 +135,7 @@ const STATE = '(?:commits?|learnings?|issues?|branches?|lines?|entries|records?|
  * firings from the bare form — the noun is free on this corpus (all +3 delta
  * firings came from the #918 slash pattern below).
  *
- * German extension (#1211): `zeilen?|dateien?|datei|aufrufer|eintr(?:ä|ae)ge?`
+ * German extension (#1211): `zeilen?|dateien?|datei|aufrufer|eintr(?:ag|(?:ä|ae)ge)`
  * only — the same D3 measurement that found the quantifier patterns
  * disciplined (7/41, see WIDE_DE above) found the WIDE German noun set
  * (Sessions/Repos/Treffer/Stellen/Module/Tests included) firing 39/41
@@ -143,9 +143,15 @@ const STATE = '(?:commits?|learnings?|issues?|branches?|lines?|entries|records?|
  * six nouns are deliberately excluded from this bare-cardinal set; they
  * remain reachable through the quantifier-triggered German patterns above,
  * which carry a lexical anchor.
+ *
+ * The `eintr…` alternation covers both number forms: `(?:ä|ae)ge` for the
+ * plural `Einträge`/`Eintraege`, `ag` for the singular `Eintrag` — the
+ * original `eintr(?:ä|ae)ge?` made the trailing `e` optional but never
+ * touched the stem, so it matched `einträg`/`eintraeg` (not a real word) and
+ * missed the actual singular `Eintrag` entirely (e.g. "1 Eintrag ohne Beleg").
  */
 const CARDINAL_NOUN =
-  '(?:commits?|learnings?|issues?|branches?|lines?|files?|callers?|zeilen?|dateien?|datei|aufrufer|eintr(?:ä|ae)ge?)';
+  '(?:commits?|learnings?|issues?|branches?|lines?|files?|callers?|zeilen?|dateien?|datei|aufrufer|eintr(?:ag|(?:ä|ae)ge))';
 
 /**
  * Wide noun class = code-distribution nouns ∪ repo-state nouns. Used by the six
@@ -172,7 +178,7 @@ const WIDE = `(?:${CTX}|${STATE})`;
 const CTX_DE =
   '(?:Aufrufer|Stellen?|Module?|Tests?|Treffer|Zeilen?|Aufrufstellen?|Referenzen?|Instanzen?|Konsumenten?|Verweise?)';
 const STATE_DE =
-  '(?:Commits?|Learnings?|Issues?|Branches?|Zeilen?|Eintr(?:ä|ae)ge?|Sessions?|Repos?|Dateien?|Datei|Waves?|Wellen?)';
+  '(?:Commits?|Learnings?|Issues?|Branches?|Zeilen?|Eintr(?:ag|(?:ä|ae)ge)|Sessions?|Repos?|Dateien?|Datei|Waves?|Wellen?)';
 const WIDE_DE = `(?:${CTX_DE}|${STATE_DE})`;
 
 /** Bounded same-line gap between a trigger and its context noun. */
@@ -310,6 +316,14 @@ const INLINE_CODE_RE = /`[^`\n]*`/g;
  * geschlossen" (session-close issue-disposition heading) — all measured on
  * this repo's own German session-report prose, the same corpus D3 sampled
  * for the noun-set decisions above.
+ *
+ * Trade named, not fixed: `\bGate \d[\d.]*\/\d+\b` matching anywhere on the
+ * line silences the WHOLE line, so a distributional claim that happens to
+ * share a line with a `Gate N/M` mention goes unflagged too — the same
+ * per-line skip the English `passed/failed` alternative above already makes,
+ * accepted here for the same reason (a gate-summary line is harness evidence,
+ * not an unverified assertion, and false positives on it were the single
+ * largest measured class — see #1198 above).
  */
 const GATE_SUMMARY_LINE_RE =
   /\b\d+\s+passed\s*\/\s*\d+\s+failed\b|^\s*STATUS:\s*(?:done|partial|failed)\b|\bFull Gate\b|\bGate:\s*(?:typecheck|grün|gruen|rot)\b|\bGate \d[\d.]*\/\d+\b|\b\d+\s+Wellen?,\s*\d+\s+Agents?\b|\bArbeitsbaum leer\b|\bmit Nachweis geschlossen\b/i;

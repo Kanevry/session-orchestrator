@@ -45,7 +45,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
@@ -139,5 +139,63 @@ describe('readCorrectiveContext — session.lock fallback removal (#1205)', () =
     // #1058 fail-open contract — never discarded on the strength of a
     // repo-global lock file that could name any peer in the working copy.
     expect(callArg.correctiveContext).toEqual(['hint-from-other-session']);
+  });
+});
+
+describe('readCorrectiveContext — visible fail-open on unverifiable ownership', () => {
+  // vi.spyOn on an already-spied `process.stderr.write` returns the SAME spy
+  // instance rather than a fresh one, so an un-restored spy's `.mock.calls`
+  // from a PRIOR test in this describe block leaks into the next test's
+  // "fresh" `stderrSpy` variable. Restore after every test so each spy's call
+  // list reflects only its own test.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // maxRetries: 0 -> totalAttempts is 1, so readCorrectiveContext runs exactly
+  // ONCE (the abort path only — no fixer dispatch). That is what makes "exactly
+  // one WARN" a meaningful assertion rather than an artefact of the retry count
+  // (see the module doc: "runs at most once per fixer dispatch plus once at
+  // abort, and each line marks a distinct decision point").
+  it('keeps corrective_context AND emits exactly one UNVERIFIED WARN when CLAUDE_CODE_SESSION_ID is unset and the file names a peer', async () => {
+    delete process.env[ENV_KEY];
+    writeCurrentSession('PEER-SESSION-ID', 'hint-from-peer');
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const result = await runQualityGateWithRetry({
+      maxRetries: 0,
+      dispatchFixer: vi.fn().mockResolvedValue(undefined),
+      repoRoot,
+      commands: FAIL_LINT_COMMANDS,
+    });
+
+    const bundle = JSON.parse(readFileSync(result.diagnosticsBundlePath, 'utf8'));
+    expect(bundle.correctiveContext).toEqual(['hint-from-peer']);
+
+    const unverifiedWarnings = stderrSpy.mock.calls
+      .map(([line]) => String(line))
+      .filter((line) => line.includes('UNVERIFIED'));
+    expect(unverifiedWarnings).toHaveLength(1);
+  });
+
+  it('emits NO UNVERIFIED warn when CLAUDE_CODE_SESSION_ID matches the file\'s own session id', async () => {
+    process.env[ENV_KEY] = 'PEER-SESSION-ID';
+    writeCurrentSession('PEER-SESSION-ID', 'hint-from-peer');
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const result = await runQualityGateWithRetry({
+      maxRetries: 0,
+      dispatchFixer: vi.fn().mockResolvedValue(undefined),
+      repoRoot,
+      commands: FAIL_LINT_COMMANDS,
+    });
+
+    const bundle = JSON.parse(readFileSync(result.diagnosticsBundlePath, 'utf8'));
+    expect(bundle.correctiveContext).toEqual(['hint-from-peer']);
+
+    const unverifiedWarnings = stderrSpy.mock.calls
+      .map(([line]) => String(line))
+      .filter((line) => line.includes('UNVERIFIED'));
+    expect(unverifiedWarnings).toHaveLength(0);
   });
 });

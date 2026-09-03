@@ -2066,3 +2066,231 @@ describe('matchesModuloRedaction (shared #1025 predicate)', () => {
     expect(matchesModuloRedaction('token=[REDACTED] failed', 'token= failed')).toBe(false);
   });
 });
+
+// ── #1028 residue, W4 review: the SESSION channel and the legacy-flat plaintext ─
+//
+// Two gaps the #1028 fix left open, both found by the W4 review panel:
+//   HIGH-1 — `processSession`'s two `skipped-noop` returns were DATE-ONLY. The
+//     narrative body is the larger free-text surface of the two channels, so a
+//     credential mirrored before the env carried the needle stayed published in
+//     `50-sessions/<ns>/<id>.md` forever. No narrative-masking test existed.
+//   HIGH-2 — on the legacy-flat branch the heal wrote the MASKED copy to the
+//     NAMESPACED path and left the plaintext flat note behind; every later run
+//     then sees `existsSync(targetPath) === true` and never reads the flat file
+//     again, so the leak becomes unreachable while the ledger says `created`.
+
+describe('#1028 W4 residue: session-narrative heal + legacy-flat plaintext heal', () => {
+  let existsSyncSpy;
+  let readFileSyncSpy;
+  let writeFileSyncSpy;
+
+  beforeEach(() => {
+    existsSyncSpy = vi.spyOn(fs, 'existsSync');
+    readFileSyncSpy = vi.spyOn(fs, 'readFileSync');
+    writeFileSyncSpy = vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
+    vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+    vi.spyOn(fs, 'readdirSync').mockReturnValue([]);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    vi.doUnmock('node:child_process');
+  });
+
+  // resetModules is load-bearing: each run needs a FRESH masker singleton so it
+  // rebuilds its needle set from the env as it stands for THAT run.
+  async function loadProcess() {
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
+    });
+    return import('@lib/vault-mirror/process.mjs'); // git mock → repoNs 'r'
+  }
+
+  const SESSION = {
+    session_id: 'main-2026-08-14-session-1',
+    session_type: 'feature',
+    started_at: '2026-08-14T08:00:00Z',
+    completed_at: '2026-08-14T10:00:00Z',
+    duration_seconds: 7200,
+    waves: 1,
+    agents_dispatched: 2,
+    effectiveness: { planned_issues: 1, completed_issues: 1, carryover: 0, completion_rate: 1.0 },
+  };
+
+  // (a) BUG CAUGHT (HIGH-1): run 1 mirrors a session narrative while the env does
+  // NOT carry the needle, so the raw credential lands in the note. Run 2 has the
+  // needle in env but the record is unchanged, so `updated` has not advanced —
+  // pre-fix that is a date-only `skipped-noop` and the plaintext stays on disk
+  // for good. The guard must make run 2 rewrite the note masked instead.
+  it('a raw secret in the session narrative heals the first time the env carries it', async () => {
+    const needle = `so-test-needle-${randomUUID()}`;
+    const entry = {
+      ...SESSION,
+      notes: `curl -H "PRIVATE-TOKEN: ${needle}" failed. ${'n'.repeat(500)}`,
+    };
+    const targetPath = '/vault/50-sessions/r/main-2026-08-14-session-1.md';
+
+    // ── Run 1: no needle in env → narrative written RAW (masker has 0 needles) ──
+    const { processSession: run1 } = await loadProcess();
+    existsSyncSpy.mockReturnValue(false);
+    let onDisk = '';
+    writeFileSyncSpy.mockImplementation((_p, content) => { onDisk = content; });
+
+    const first = await captureStdout(() =>
+      run1(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'session', force: false }),
+    );
+    expect(first.lines[0].action).toBe('created');
+    expect(onDisk).toContain(needle);
+
+    // ── Run 2: same record (so `updated` has NOT advanced), needle NOW in env ──
+    vi.stubEnv('SO_TEST_MASK_TOKEN', needle);
+    const { processSession: run2 } = await loadProcess();
+    writeFileSyncSpy.mockClear();
+    let rewritten = '';
+    writeFileSyncSpy.mockImplementation((_p, content) => { rewritten = content; });
+    existsSyncSpy.mockImplementation((p) => p === targetPath);
+    readFileSyncSpy.mockReturnValue(onDisk);
+
+    const second = await captureStdout(() =>
+      run2(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'session', force: false }),
+    );
+
+    expect(second.lines[0].action).not.toBe('skipped-noop');
+    expect(writeFileSyncSpy).toHaveBeenCalledOnce();
+    expect(writeFileSyncSpy.mock.calls[0][0]).toBe(targetPath);
+    expect(rewritten).toContain('[REDACTED]');
+    expect(rewritten).not.toContain(needle);
+  });
+
+  // (a2) The anti-churn direction for the SESSION channel: an already-masked note
+  // must stay `skipped-noop` with the needle in env — masking `[REDACTED]` text
+  // again is a no-op, so the new guard must not turn every healed note into a
+  // rewrite. (Sibling of the learning-channel run-3 assertion above.)
+  it('an already-masked session note stays skipped-noop with the needle in env', async () => {
+    const needle = `so-test-needle-${randomUUID()}`;
+    const entry = { ...SESSION, notes: `token ${needle} leaked. ${'n'.repeat(500)}` };
+    const targetPath = '/vault/50-sessions/r/main-2026-08-14-session-1.md';
+
+    vi.stubEnv('SO_TEST_MASK_TOKEN', needle);
+    const { processSession: run1 } = await loadProcess();
+    existsSyncSpy.mockReturnValue(false);
+    let onDisk = '';
+    writeFileSyncSpy.mockImplementation((_p, content) => { onDisk = content; });
+    await captureStdout(() =>
+      run1(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'session', force: false }),
+    );
+    expect(onDisk).toContain('[REDACTED]');
+    expect(onDisk).not.toContain(needle);
+
+    const { processSession: run2 } = await loadProcess();
+    writeFileSyncSpy.mockClear();
+    existsSyncSpy.mockImplementation((p) => p === targetPath);
+    readFileSyncSpy.mockReturnValue(onDisk);
+
+    const second = await captureStdout(() =>
+      run2(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'session', force: false }),
+    );
+    expect(second.lines[0].action).toBe('skipped-noop');
+    expect(writeFileSyncSpy).not.toHaveBeenCalled();
+  });
+
+  // (b) BUG CAUGHT (HIGH-2): the namespaced path is ABSENT and a LEAKING legacy
+  // flat note exists. Pre-fix the run wrote the masked render to the namespaced
+  // path only — leaving `40-learnings/<slug>.md` carrying the plaintext, and
+  // unreachable from then on because `existsSync(targetPath)` is true afterwards.
+  // The legacy file itself must be rewritten masked in the same run.
+  it('a leaking LEGACY-FLAT learning note is rewritten masked, not merely bypassed', async () => {
+    const needle = `so-test-needle-${randomUUID()}`;
+    const LEARNING = {
+      id: 'a1b2c3d4-0001-4000-8000-0000000010b2',
+      type: 'architectural',
+      subject: 'legacy-flat-heal-1028',
+      insight: 'Prefer explicit contracts',
+      evidence: `curl -H "PRIVATE-TOKEN: ${needle}" failed`,
+      confidence: 0.9,
+      source_session: 'session-2026-08-14',
+      created_at: '2026-08-14T10:00:00Z',
+    };
+    const targetPath = '/vault/40-learnings/r/legacy-flat-heal-1028.md';
+    const legacyFlatPath = '/vault/40-learnings/legacy-flat-heal-1028.md';
+
+    // ── Run 1: no needle in env, flat layout → note written RAW to the flat path.
+    const { processLearning: run1 } = await loadProcess();
+    existsSyncSpy.mockReturnValue(false);
+    let onDisk = '';
+    writeFileSyncSpy.mockImplementation((_p, content) => { onDisk = content; });
+    await captureStdout(() =>
+      run1(LEARNING, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning', force: false }),
+    );
+    expect(onDisk).toContain(needle);
+
+    // ── Run 2: needle in env; the namespaced path is ABSENT, the legacy flat one
+    // exists and carries the plaintext.
+    vi.stubEnv('SO_TEST_MASK_TOKEN', needle);
+    const { processLearning: run2 } = await loadProcess();
+    writeFileSyncSpy.mockClear();
+    writeFileSyncSpy.mockReturnValue(undefined);
+    existsSyncSpy.mockImplementation((p) => p === legacyFlatPath);
+    readFileSyncSpy.mockReturnValue(onDisk);
+
+    const { lines } = await captureStdout(() =>
+      run2(LEARNING, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning', force: false }),
+    );
+
+    expect(lines[0].action).not.toBe('skipped-noop');
+
+    // BEHAVIOUR FIRST, shape after: the mutation must turn this RED on the
+    // rewrite itself, never on the ledger flag that merely describes it.
+    const byPath = new Map(writeFileSyncSpy.mock.calls.map(([p, c]) => [p, c]));
+    // Both files exist after this run and NEITHER may carry the raw needle.
+    expect(byPath.has(legacyFlatPath)).toBe(true);
+    expect(byPath.get(legacyFlatPath)).toContain('[REDACTED]');
+    expect(byPath.get(legacyFlatPath)).not.toContain(needle);
+    expect(byPath.has(targetPath)).toBe(true);
+    expect(byPath.get(targetPath)).not.toContain(needle);
+    // The ledger says the legacy plaintext was healed, not just bypassed.
+    expect(lines[0].healed_legacy_flat).toBe(true);
+  });
+
+  // (b2) Anti-churn for the legacy-flat branch: a legacy note that does NOT leak
+  // must still be a plain `skipped-noop` with no write at all — the heal may not
+  // become an unconditional rewrite of every flat note in an older vault.
+  it('a non-leaking legacy-flat note is still skipped-noop with no write', async () => {
+    const LEARNING = {
+      id: 'a1b2c3d4-0001-4000-8000-0000000010b3',
+      type: 'architectural',
+      subject: 'legacy-flat-clean-1028',
+      insight: 'Prefer explicit contracts',
+      evidence: 'Three modules broke',
+      confidence: 0.9,
+      source_session: 'session-2026-08-14',
+      created_at: '2026-08-14T10:00:00Z',
+    };
+    const legacyFlatPath = '/vault/40-learnings/legacy-flat-clean-1028.md';
+
+    const { processLearning: run1 } = await loadProcess();
+    existsSyncSpy.mockReturnValue(false);
+    let onDisk = '';
+    writeFileSyncSpy.mockImplementation((_p, content) => { onDisk = content; });
+    await captureStdout(() =>
+      run1(LEARNING, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning', force: false }),
+    );
+
+    const { processLearning: run2 } = await loadProcess();
+    writeFileSyncSpy.mockClear();
+    writeFileSyncSpy.mockReturnValue(undefined);
+    existsSyncSpy.mockImplementation((p) => p === legacyFlatPath);
+    readFileSyncSpy.mockReturnValue(onDisk);
+
+    const { lines } = await captureStdout(() =>
+      run2(LEARNING, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning', force: false }),
+    );
+
+    expect(lines[0].action).toBe('skipped-noop');
+    expect(lines[0].path).toBe('40-learnings/legacy-flat-clean-1028.md');
+    expect(writeFileSyncSpy).not.toHaveBeenCalled();
+  });
+});

@@ -6,15 +6,25 @@
  * DI-free: both emitters take a plain options object and write directly into
  * `<repoRoot>/.orchestrator/metrics/events.jsonl` via the real `emitEvent()`,
  * so every test pins a TMP repo root — same pattern as
- * `tests/lib/reconcile/engine.test.mjs`'s telemetry describe block. The one
- * deliberate exception is the no-repoRoot regression, which asserts this
- * repo's REAL ledger stays byte-identical (#1119).
+ * `tests/lib/reconcile/engine.test.mjs`'s telemetry describe block.
+ *
+ * The two no-repoRoot regression tests are the one exception: they never
+ * touch this repo's real ledger (statSync-ing it before/after was flaky
+ * under parallel sessions and hooks that write into that same file — #1206
+ * W4 MED-4). Instead they point the AMBIENT project dir (`CLAUDE_PROJECT_DIR`,
+ * which `scripts/lib/platform.mjs`'s `SO_PROJECT_DIR` resolves from — see
+ * `tests/lib/events-default-url.test.mjs` for the same isolation pattern) at
+ * a throwaway tmpdir via `vi.resetModules()` + a dynamic re-import, then
+ * assert nothing was written even there. That is a STRICTER guard than the
+ * byte-identical check it replaces: it would still catch a regression where
+ * the `repoRoot` guard is removed and the call silently falls through to
+ * `emitEvent()`'s own `SO_PROJECT_DIR` default — without ever depending on,
+ * or risking corrupting, this repo's real event ledger.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
@@ -22,8 +32,6 @@ import {
   emitEvolveCompleted,
   recordDialecticRun,
 } from '../../../scripts/lib/learnings/evolve-telemetry.mjs';
-
-const REAL_REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 /** Every record in a tmp repo's event ledger. */
 function ledger(repoRoot) {
@@ -111,15 +119,42 @@ describe('emitEvolveCompleted', () => {
     expect('appended' in records[0]).toBe(false);
   });
 
-  it('REGRESSION: no repoRoot writes NO event into the real fleet ledger', async () => {
-    const realLedger = join(REAL_REPO_ROOT, '.orchestrator', 'metrics', 'events.jsonl');
-    const before = existsSync(realLedger) ? statSync(realLedger).size : -1;
+  it('REGRESSION: no repoRoot writes NO event, even under an isolated ambient project dir', async () => {
+    const origClaudeProjectDir = process.env.CLAUDE_PROJECT_DIR;
+    const isolatedDir = mkdtempSync(join(tmpdir(), 'evolve-telemetry-noroot-'));
+    process.env.CLAUDE_PROJECT_DIR = isolatedDir;
+    vi.resetModules();
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
-      await emitEvolveCompleted({ appended: 1, durationMs: 1 });
-      const after = existsSync(realLedger) ? statSync(realLedger).size : -1;
-      expect(after).toBe(before);
+      const isolated = await import('@lib/learnings/evolve-telemetry.mjs');
+      await isolated.emitEvolveCompleted({ appended: 1, durationMs: 1 });
+      expect(existsSync(join(isolatedDir, '.orchestrator', 'metrics', 'events.jsonl'))).toBe(false);
       expect(stderr).toHaveBeenCalledTimes(1);
+    } finally {
+      stderr.mockRestore();
+      if (origClaudeProjectDir === undefined) {
+        delete process.env.CLAUDE_PROJECT_DIR;
+      } else {
+        process.env.CLAUDE_PROJECT_DIR = origClaudeProjectDir;
+      }
+      vi.resetModules();
+      rmSync(isolatedDir, { recursive: true, force: true });
+    }
+  });
+
+  it('an emitFn that throws is caught, surfaced as one stderr WARN, and never rethrown (#1206 LOW-1)', async () => {
+    repoRoot = mkdtempSync(join(tmpdir(), 'evolve-telemetry-'));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const throwingEmitFn = vi.fn().mockRejectedValue(new Error('boom'));
+    try {
+      await expect(
+        emitEvolveCompleted({ repoRoot, durationMs: 1, emitFn: throwingEmitFn }),
+      ).resolves.toBeUndefined();
+      expect(throwingEmitFn).toHaveBeenCalledTimes(1);
+      expect(stderr).toHaveBeenCalledTimes(1);
+      expect(stderr.mock.calls[0][0]).toContain(
+        'evolve-telemetry: emit failed (orchestrator.evolve.completed): boom',
+      );
     } finally {
       stderr.mockRestore();
     }
@@ -171,17 +206,26 @@ describe('recordDialecticRun', () => {
     expect('mode' in records[0]).toBe(false);
   });
 
-  it('REGRESSION: no repoRoot writes NO event into the real fleet ledger', async () => {
-    const realLedger = join(REAL_REPO_ROOT, '.orchestrator', 'metrics', 'events.jsonl');
-    const before = existsSync(realLedger) ? statSync(realLedger).size : -1;
+  it('REGRESSION: no repoRoot writes NO event, even under an isolated ambient project dir', async () => {
+    const origClaudeProjectDir = process.env.CLAUDE_PROJECT_DIR;
+    const isolatedDir = mkdtempSync(join(tmpdir(), 'evolve-telemetry-noroot-'));
+    process.env.CLAUDE_PROJECT_DIR = isolatedDir;
+    vi.resetModules();
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
-      await recordDialecticRun({ status: 'empty-input', durationMs: 1 });
-      const after = existsSync(realLedger) ? statSync(realLedger).size : -1;
-      expect(after).toBe(before);
+      const isolated = await import('@lib/learnings/evolve-telemetry.mjs');
+      await isolated.recordDialecticRun({ status: 'empty-input', durationMs: 1 });
+      expect(existsSync(join(isolatedDir, '.orchestrator', 'metrics', 'events.jsonl'))).toBe(false);
       expect(stderr).toHaveBeenCalledTimes(1);
     } finally {
       stderr.mockRestore();
+      if (origClaudeProjectDir === undefined) {
+        delete process.env.CLAUDE_PROJECT_DIR;
+      } else {
+        process.env.CLAUDE_PROJECT_DIR = origClaudeProjectDir;
+      }
+      vi.resetModules();
+      rmSync(isolatedDir, { recursive: true, force: true });
     }
   });
 });

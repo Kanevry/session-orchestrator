@@ -522,7 +522,8 @@ function readCorrectiveContext(repoRoot) {
     if (!existsSync(p)) return [];
     const raw = readFileSync(p, 'utf8');
     const parsed = JSON.parse(raw);
-    const { verdict, fileIds } = classifyCurrentSessionOwnership(parsed, readOwnSessionIds());
+    const ownIds = readOwnSessionIds();
+    const { verdict, fileIds } = classifyCurrentSessionOwnership(parsed, ownIds);
     if (verdict === 'foreign') {
       process.stderr.write(
         `⚠️  quality-gate: .orchestrator/current-session.json belongs to another session ` +
@@ -530,6 +531,19 @@ function readCorrectiveContext(repoRoot) {
         'Another session is active in this working copy (PSA-001).\n',
       );
       return [];
+    }
+    // The fail-open half of `verdict === 'unknown'`: the file DOES name an id,
+    // but this process has no process-local witness of its own (ownIds is
+    // empty — no `CLAUDE_CODE_SESSION_ID`, e.g. Codex/Cursor). Ownership is
+    // unprovable, so the content is kept per the #1058 contract — but silently
+    // is the wrong word for that: make the fail-open visible on stderr rather
+    // than indistinguishable from a verified 'own' match.
+    if (verdict === 'unknown' && fileIds.length > 0 && ownIds.size === 0) {
+      process.stderr.write(
+        '⚠ quality-gate: cannot verify ownership of .orchestrator/current-session.json ' +
+        '(no process-local session id — CLAUDE_CODE_SESSION_ID unset); keeping corrective_context ' +
+        `from session ${fileIds.join(', ')} UNVERIFIED\n`,
+      );
     }
     const arr = Array.isArray(parsed?.corrective_context) ? parsed.corrective_context : [];
     return arr.slice(-CORRECTIVE_CONTEXT_TAIL);
