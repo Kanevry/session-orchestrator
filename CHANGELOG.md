@@ -7,6 +7,133 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Three commits so far (`ee8ea425` Wave 2, `e22a702e` Wave 3, `37169158` Wave 4; 71 files,
++3,505/−678, measured `git diff --stat 2cb8708b..HEAD`), no `BREAKING CHANGE:` footer and
+no `!` subject. Twelve Wave-2 follow-up issues land as mechanism: identity resolution
+folds onto the process-local reader on a third surface, seven ledger readers move onto one
+canonical `sessions.jsonl` collapse, and a `secret_masker.applied` guard closes its last
+two gaps. Wave 3 arms the schema-drift CI gate; Wave 4 is a 3-Opus-reviewer panel plus
+fixpass that closed 2 HIGH findings inside the panel's own Wave-2/3 diff.
+
+### Added
+
+- **`scripts/lib/wave-executor/dispatch-common.mjs` (#1204).** Six symbols
+  (`NEVER_FOREIGN_ROLES`, `DEFAULT_TIMEOUT_SEC`, `DEFAULT_KILL_GRACE_MS`, `isSafeRunId`,
+  `isNeverForeignRole`, `runChild`) extracted out of `foreign-dispatch.mjs` into one shared
+  module, imported by both dispatch call sites (`foreign-dispatch.mjs`, `remote-dispatch.mjs`)
+  and their two test files. A redundant `isNeverForeignRole` check that had never lived in
+  `wave-resource-gate.mjs`'s own invariant is now a documented non-check there instead of a
+  silent gap.
+- **`scripts/lib/learnings/evolve-telemetry.mjs` (#1206).** Mechanical
+  `orchestrator.evolve.completed` / `orchestrator.dialectic.completed` emitters replace
+  hand-written prose emit sites in `skills/evolve/SKILL.md`: `recordEvolveCompletion()` is
+  called from `scripts/sweep-expired-learnings.mjs`'s `--prune` exit path (the one store
+  write `/evolve analyze` already performs), and `recordDialecticRun()` from
+  `scripts/dialectic-deriver.mjs`. Both skip the emit with a stderr note when no `repoRoot`
+  is given, so test runs never write the fleet ledger. `docs/events-schema.md` gained both
+  event's producer lines.
+
+### Changed
+
+- **Quality-gate ownership check now folds onto the process-local reader (#1205).**
+  `quality-gate.mjs`'s private copy of `readOwnSessionIds()` is gone; the ownership check now
+  calls `readProcessLocalSessionIds()` directly (removing the STATE.md-lock fallback), with
+  the first test of the ownership path itself.
+- **Wave-scope manifest binding writes `attributionForRecord()`, not a hand-rolled call
+  (#1207).** `skills/wave-executor/wave-loop.md`'s manifest-binding step now sources
+  `session`/`wave` from the same `attributionForRecord()` used by `emitEvent()`'s own
+  correlation fill, instead of a raw `sessionAttribution()` call; the STATE.md prose
+  comparison the previous step asked for is removed as a redundant, sometimes-wrong check
+  (a peer-owned lock and STATE.md agree with each other, not with this process).
+- **Seven readers now go through `readCanonicalSessions()` instead of their own duplicate
+  parse (#1209).** `session-id.mjs`, `auto-dream.mjs`, `dispatcher/rank.mjs`,
+  `eval/engine.mjs` (+ new `eval/session-resolve.mjs`), `harness-audit/categories/category4.mjs`
+  (via `canonicalizeSessions({ keepUnidentified: true })`, since a bare wrapper broke 3
+  id-less fixtures), `skill-health/join.mjs`, `sessions-staleness-banner.mjs`, and
+  `dialectic-deriver.mjs` each had a red-on-HEAD fake-regression proof before the fix
+  (auto-dream 3→2 sessions, rank 50→<6 candidates, eval 2→1 peers). `category9` is
+  deliberately untouched.
+- **Four modules now distinguish silent `ENOENT` from a loud read failure (#1210).**
+  `session-close-backfill.mjs`, `reconcile/engine.mjs`, `memory-proposals/store.mjs` (via a
+  new shared helper — a decorative `err.code` branch there is now real), and
+  `agent-status.mjs` all warn on stderr for `EACCES`/`EISDIR`/other, and stay silent only on
+  a genuinely missing file.
+- **German distributional-claim patterns join the English set (#1211).** Six German
+  quantifier-triggered patterns (`N von M`, `100% von/der/aller`, `alle N`, `keine
+  verbleibenden`, `jeder/jede/jedes`, `keiner/keine/keins von/der`) plus a narrow German
+  `CARDINAL_NOUN` extension (`zeilen?|dateien?|datei|aufrufer|eintr(?:ag|(?:ä|ae)ge)`) land
+  in `hooks/post-subagent-discovery-validator.mjs`. Measured against a 41-line German claim
+  corpus pulled from this repo's own `events.jsonl`: the quantifier patterns flag 7/41
+  (same order of magnitude as the English baseline); a wider bare-cardinal noun set
+  (`Sessions`/`Repos`/`Treffer`/`Stellen`/`Module`/`Tests`) was tried and rejected after it
+  flagged 39/41 (~57% false-positive rate) — those six nouns stay reachable only through the
+  lexically-anchored quantifier patterns. German `GATE_SUMMARY` recap forms are also
+  recognised and skipped, matching the existing English recap-skip.
+- **`skills/vault-sync/validator.mjs`'s vendored schema catches up with upstream (#531).**
+  `peer-card` (#503), `board` (#738), and the optional `source-repo` field (#725) were
+  vendor-ahead of `projects-baseline` until this session; upstream-lifted in
+  `projects-baseline@cb9ec97`. `sync-vault-schema.mjs` now strips a bare `//` line (with a
+  regression test), and the provenance notes documenting the vendoring history moved outside
+  the generated-block sentinels so a `--write` regeneration can no longer drop them (measured:
+  it did, once).
+- **The schema-drift CI gate is armed (#1175, follow-up to #531).** `SCHEMA_DRIFT_OPTIONAL`
+  is `"false"` in both `.gitlab-ci.yml` jobs that read it — `schema-drift-check` (line 636)
+  and `pipeline-gate` (line 723) — so a missing `SCHEMA_DRIFT_TOKEN` now hard-fails (exit 4)
+  instead of degrading to an amber "not verified" pass. A test pins the armed state (a half
+  revert of either flag turns 2 tests red). Proof: pipelines 8355–8357 @ `bca78dae` (bogus
+  enum) failed with `schema-drift-check` reporting "drift detected"; pipeline 8358 @
+  `dc9522dd` (branch `proof/1175-schema-drift-green`) passed with the check running WITH the
+  token, in sync. `docs/ci-setup.md` documents the Project-Access-Token recipe and the
+  now-current state (was previously the follow-up gap this same doc named).
+- **`#1203` — the `enforce-scope.mjs` peer-manifest fix confirmed already SHIPPED via
+  #1194.** `tests/hooks/enforce-scope.test.mjs:1219/:1245/:1302` (56/56) prove the behaviour
+  landed with #1194; no further code change was needed.
+
+### Fixed
+
+- **`processSession`'s two skipped-noop returns had no `maskerWouldChange` re-probe
+  (#1028, found by the Wave-4 security-reviewer as MED, confirmed HIGH by qa-strategist).**
+  The session-note generator's skip paths (`process.mjs:904`/`:929`) now carry the same
+  `maskerWouldChange` guard the learning-note generator already had at 3 sites
+  (`:703`/`:773`/`:797`); a missing `!force` check in the disambiguation-collision branch is
+  also fixed. 4 new tests, red on HEAD before the fix.
+- **The legacy-flat heal wrote the masked copy to the namespaced path while the plaintext
+  legacy original stayed in place and became unreachable (#1028, qa-strategist HIGH-2).**
+  Both generators (learning-note and session-note) now re-render the leaking legacy note
+  masked IN PLACE (same fix shape at both `#660 IDEMPOTENCY DUAL-PROBE` sites), marking the
+  result `action: 'created'` + `meta.healed_legacy_flat: true` instead of leaving a second,
+  unreachable plaintext copy on disk.
+- **`orchestrator.secret_masker.applied` now emits from all three channels that mask vault
+  content, not two.** `scripts/lib/vault-mirror/process.mjs`,
+  `scripts/lib/vault-status/narrative-mirror.mjs`, and `scripts/export-hw-learnings.mjs`
+  (documented in its own comment as "the third") each carry the emit at the end of their run.
+- **`quality-gate.mjs`'s fail-open corrective-context path was silent (#1205, Wave-4
+  security-reviewer LOW).** Without `CLAUDE_CODE_SESSION_ID` (Codex/Cursor with no
+  process-local witness), a peer's `corrective_context` was kept without any signal. It now
+  prints a stderr WARN naming the UNVERIFIED session id before keeping the context; behaviour
+  is unchanged, only the visibility.
+- **`check-skill-script-paths` had 24 dead script citations sitting unannotated inside
+  `docs/` (#1208).** `docs/` is now in `SCAN_DIRS`; 24 dead citations were annotated with the
+  existing `<!-- path-check: planned #<iid> | historical | example -->` marker convention
+  (measured: 1,087 citations across 259 files, 53 total annotated after this pass). A new
+  `--strict-sh` mode extends the same dead-path scan to `.sh` citations, reported as an
+  advisory count line in `validate-plugin` output (0 findings currently).
+
+### Notes
+
+- **Full Gate (Wave 4, `37169158`):** typecheck 432 OK, lint 0, 642 files / 15,926 passed /
+  0 failed / 11 skipped, `validate-plugin` 249/0, owner-leakage PASS (macOS). Quoted from
+  the Wave-4 commit trailer, not re-run for this entry.
+- **The Wave-4 review panel (3 Opus reviewers: security-reviewer, session-reviewer,
+  qa-strategist) found both HIGH findings above inside its own Wave-2/Wave-3 diff** — the
+  `#1028` masker-guard residue the panel itself was reviewing. Both were closed same-wave by
+  a dedicated fixpass (F-A/F-B/F-C) with fresh red-on-HEAD proofs before the green fix,
+  plus test-hygiene cleanup (`dispatch-common.test.mjs` lost 12 structure-only assertions;
+  `evolve-telemetry.test.mjs`'s regression tests no longer stat the real repo ledger) and
+  three LOW fixes (`evolve-telemetry.mjs`'s `catch {}` now WARNs on stderr;
+  `post-subagent-discovery-validator.mjs`'s German pattern now matches singular `Eintrag`;
+  `.gitlab-ci.yml`/`docs/ci-setup.md` prose brought in line with the now-armed drift gate).
+
 ## [3.24.0] - 2026-09-02
 
 Six commits since v3.23.0 (4 `feat`, 1 `fix`, 1 `docs`; 160 files,
