@@ -182,7 +182,13 @@ async function main(argv) {
   // consumer and would name a foreign session — `foreign` = gates stand down.
   const merged = { ...draft };
   for (const key of [...MANIFEST_SESSION_KEYS.current, ...MANIFEST_SESSION_KEYS.legacy]) delete merged[key];
-  Object.assign(merged, binding);
+  // Explicit per-key copy, never Object.assign: `merged` derives from a
+  // JSON.parse'd draft, and a `__proto__` payload key would reach the
+  // Object.prototype setter through [[Set]] semantics (CWE-1321, semgrep
+  // prototype-pollution-object-assign — CI-red on ce6a28aa).
+  for (const key of MANIFEST_SESSION_KEYS.current) {
+    if (typeof binding[key] === 'string' && binding[key]) merged[key] = binding[key];
+  }
   process.stdout.write(`${JSON.stringify(merged)}\n`);
 }
 
