@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 Three commits so far (`ee8ea425` Wave 2, `e22a702e` Wave 3, `37169158` Wave 4; 71 files,
-+3,505/−678, measured `git diff --stat 2cb8708b..HEAD`), no `BREAKING CHANGE:` footer and
++3,505/−678, measured `git diff --stat 2cb8708b..37169158`), no `BREAKING CHANGE:` footer and
 no `!` subject. Twelve Wave-2 follow-up issues land as mechanism: identity resolution
 folds onto the process-local reader on a third surface, seven ledger readers move onto one
 canonical `sessions.jsonl` collapse, and a `secret_masker.applied` guard closes its last
@@ -93,7 +93,7 @@ fixpass that closed 2 HIGH findings inside the panel's own Wave-2/3 diff.
 
 - **`processSession`'s two skipped-noop returns had no `maskerWouldChange` re-probe
   (#1028, found by the Wave-4 security-reviewer as MED, confirmed HIGH by qa-strategist).**
-  The session-note generator's skip paths (`process.mjs:904`/`:929`) now carry the same
+  The session-note generator's skip paths (`process.mjs:953`/`:991`) now carry the same
   `maskerWouldChange` guard the learning-note generator already had at 3 sites
   (`:703`/`:773`/`:797`); a missing `!force` check in the disambiguation-collision branch is
   also fixed. 4 new tests, red on HEAD before the fix.
