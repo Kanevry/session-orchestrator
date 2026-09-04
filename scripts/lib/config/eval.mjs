@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * eval.mjs — Parser for the top-level `eval:` YAML block (#809, Epic #803).
@@ -51,7 +52,7 @@ const ALLOWED_REPORT = new Set(['html', 'none']);
 export function _parseEval(content) {
   const defaults = { enabled: false, mode: 'warn', judge: 'off', report: 'html', handle: null };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

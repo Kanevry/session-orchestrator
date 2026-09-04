@@ -150,6 +150,55 @@ describe('_isConfigWeakeningAllowed', () => {
     });
   });
 
+  // W4/F1 — the bug: the scan used a raw `content.split(/\r?\n/)`, so a
+  // COMMENTED-OUT bypass line inside `## Session Config` ARMED the bypass.
+  // Commenting a key out is the most ordinary way to disable it; measured
+  // 2026-09-04 the pre-fix scan returned `true` for the fixture below.
+  describe('commented-out form is NOT honored (W4/F1)', () => {
+    it('returns false when the bypass sits inside an HTML comment block', () => {
+      const content = [
+        '## Session Config',
+        '',
+        'waves: 5',
+        '<!--',
+        'allow-config-weakening: true',
+        '-->',
+        '',
+      ].join('\n');
+      expect(_isConfigWeakeningAllowed(content)).toBe(false);
+    });
+
+    // W4/F1c — X3's #1162 follow-up made `stripHtmlCommentBlocks` fail-CLOSED for
+    // block parsers: an UNTERMINATED `<!--` returns the lines UNFILTERED so
+    // nothing silently vanishes. For a BYPASS scan that direction is inverted —
+    // it hands the commented-out bypass line straight back and re-arms the
+    // guard's off switch. Measured 2026-09-04: with only the F1 fix in place,
+    // the fixture below returned `true`.
+    it('returns false when an UNTERMINATED comment precedes the bypass line', () => {
+      const content = [
+        '## Session Config',
+        '',
+        'waves: 5',
+        '<!--',
+        'allow-config-weakening: true',
+        '',
+      ].join('\n');
+      expect(_isConfigWeakeningAllowed(content)).toBe(false);
+    });
+
+    it('still honors the plain form on the line AFTER a closed comment block', () => {
+      const content = [
+        '## Session Config',
+        '<!--',
+        'allow-config-weakening: false',
+        '-->',
+        'allow-config-weakening: true',
+        '',
+      ].join('\n');
+      expect(_isConfigWeakeningAllowed(content)).toBe(true);
+    });
+  });
+
   describe('scope + edge cases', () => {
     it('returns false on empty string', () => {
       expect(_isConfigWeakeningAllowed('')).toBe(false);

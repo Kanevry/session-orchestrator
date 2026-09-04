@@ -35,6 +35,7 @@
 import pathModule from 'node:path';
 
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines, preprocessBlockLinesNoDash } from './block-preprocess.mjs';
 
 /** Per-entry defaults (none beyond the required field-set; documented for symmetry). */
 export const EVOLVE_EXTRA_SOURCE_DEFAULTS = Object.freeze({
@@ -67,7 +68,9 @@ const SAFE_PATH_RE = /^[A-Za-z0-9._~/-]+$/;
  * @returns {Array<{path: string, kind: string, 'learning-type': string}>}
  */
 export function _parseEvolve(content) {
-  const lines = content.split(/\r?\n/);
+  // NoDash: `- ` is the RECORD boundary under `extra-sources:` — de-dashing the
+  // first key of a record would merge it into the previous one (#1162).
+  const lines = preprocessBlockLinesNoDash(content);
   let inEvolve = false;
   let inExtraSources = false;
   const blockLines = [];
@@ -254,7 +257,10 @@ export function _parseEvolveDecay(content) {
     'floor-factor': EVOLVE_DECAY_DEFAULTS['floor-factor'],
   };
 
-  const lines = content.split(/\r?\n/);
+  // Standard variant: this parser reads only FLAT `decay-*` sub-keys and builds
+  // no records, so bold-subkey normalisation is safe here even though the same
+  // `evolve:` block also carries the `extra-sources:` dash records (#1162).
+  const lines = preprocessBlockLines(content);
   let inEvolve = false;
   const blockLines = [];
 

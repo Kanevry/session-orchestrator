@@ -20,6 +20,7 @@
 import { parseThreshold } from '../persona-panel/threshold.mjs';
 import { ALLOWED_MODEL_ALIASES, MODEL_ID_RE } from '../agent-frontmatter.mjs';
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 const ALLOWED_AFTER = new Set(['quality', 'impl-polish']);
 const ALLOWED_MODE = new Set(['off', 'warn', 'strict']);
@@ -169,7 +170,7 @@ export function _normalizePersonaGateWave(parsed) {
  * @returns {string[]}
  */
 function _extractBlock(content, key) {
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   const blockLines = [];
   let inBlock = false;
 

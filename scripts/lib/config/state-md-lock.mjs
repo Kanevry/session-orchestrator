@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * state-md-lock.mjs — Parser for the top-level `state-md-lock:` YAML block
@@ -30,7 +31,7 @@ export function _parseStateMdLock(content) {
     'timeout-ms': 10000,
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

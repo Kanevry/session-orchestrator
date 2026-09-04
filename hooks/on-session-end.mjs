@@ -35,7 +35,7 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 if (!shouldRunHook('on-session-end')) process.exit(0);
 
 import { emitEvent } from '../scripts/lib/events.mjs';
-import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
+import { getProjectDir } from '../scripts/lib/platform.mjs';
 import {
   backfillAbandonedSession,
   backfillCompletedFromStateMd,
@@ -551,7 +551,7 @@ async function emitFinalWaveCompleted(
 
 async function main() {
   const input = await readStdinJson();
-  const projectRoot = SO_PROJECT_DIR;
+  const projectRoot = getProjectDir();
 
   const reason =
     typeof input?.reason === 'string' && input.reason.length > 0 ? input.reason : 'other';

@@ -43,6 +43,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { classifyMode } from './exclusivity-matrix.mjs';
+import { isLockShape } from './session-lock-shape.mjs';
 import { isPidAliveOnHost } from './file-lock.mjs';
 import { writeJsonAtomicSync } from './io.mjs';
 import { hostnamesMatch, lockHostCandidate, recordHostAlias, stableHostname } from './host-identity.mjs';
@@ -199,16 +200,10 @@ function heartbeatAgeMinutes(lock) {
 function parseLock(raw) {
   try {
     const obj = JSON.parse(raw);
-    if (
-      typeof obj === 'object' &&
-      obj !== null &&
-      typeof obj.session_id === 'string' &&
-      typeof obj.started_at === 'string' &&
-      typeof obj.mode === 'string' &&
-      typeof obj.pid === 'number' &&
-      typeof obj.host === 'string' &&
-      typeof obj.ttl_hours === 'number'
-    ) {
+    // The six-field predicate lives in ONE place (#1153 P7) — see
+    // `./session-lock-shape.mjs` for the other consumer and the fail-open
+    // drift this sharing prevents.
+    if (isLockShape(obj)) {
       // Schema v1 → v2 normalisation: when `last_heartbeat` is absent or
       // non-string, treat the lock as if it heartbeat-ed once at started_at.
       const normalised = { ...obj };

@@ -12,7 +12,7 @@
  *      custom-phases / eval gotcha stays broken-by-design).
  *
  * Plus the indent-anchored nested sub-block guard (memory) which is DELIBERATELY
- * NOT bold-tolerant and must keep requiring the plain `  <sub>:` form.
+ * bold-tolerant since #1162 (block-preprocess normalizes bold sub-keys).
  *
  * In-process only (PSA-006 / validate-config-exit-code learning): every assertion
  * calls the parser directly, never a CLI exit code. Expected values are literals.
@@ -109,12 +109,15 @@ describe('memory bold-header adoption', () => {
     expect(_parseMemory(content).proposals['quota-per-wave']).toBe(9);
   });
 
-  it('nested sub-block header is NOT bold-tolerant — a bold `proposals:` is ignored, quota stays default', () => {
-    // The nested `proposals:` detection is indent-anchored (`/^\s{2}proposals:\s*$/`)
-    // and deliberately NOT converted, so a bold nested header never enters the
-    // sub-block and quota-per-wave keeps its default of 5.
+  it('a bold nested sub-block header now enters the block — #1162 (was a documented limitation)', () => {
+    // Before #1162 the nested `proposals:` detection was indent-anchored
+    // (`/^\s{2}proposals:\s*$/`) on the RAW line, so `  **proposals:**` never
+    // entered the sub-block and this test pinned that LIMITATION (quota stayed
+    // 5). `preprocessBlockLines` (W2-C1/W3-P2) normalizes the bold form to
+    // `  proposals:` before the parser sees it, so the operator's written value
+    // now wins — nothing is silently armed, only the written 9 takes effect.
     const content = ['memory:', '  **proposals:**', '    quota-per-wave: 9', ''].join('\n');
-    expect(_parseMemory(content).proposals['quota-per-wave']).toBe(5);
+    expect(_parseMemory(content).proposals['quota-per-wave']).toBe(9);
   });
 
   it('negative-lock: inline comment on the top-level header yields all-defaults', () => {

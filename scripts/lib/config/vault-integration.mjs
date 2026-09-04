@@ -22,6 +22,7 @@
 
 import { _coerceBoolean, _coerceInteger } from './coercers.mjs';
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 // ---------------------------------------------------------------------------
 // vault-integration
@@ -68,7 +69,12 @@ export function _parseVaultIntegration(content) {
   const defaults = { enabled: false, 'vault-dir': null, mode: 'warn', 'vault-name': null };
   if (typeof content !== 'string' || content === '') return defaults;
 
-  const lines = content.split(/\r?\n/);
+  // #1162: NOT a raw split. `preprocessBlockLines` drops HTML-commented lines
+  // (a commented-out block was read as live config) and rewrites bold-bullet
+  // sub-keys (`- **enabled:** true` fell back to the `false` default). This
+  // parser has no dash-RECORD body, so the bold pass is safe here — see the
+  // named risk in block-preprocess.mjs.
+  const lines = preprocessBlockLines(content);
 
   // Pass 1: inline-object form. Matches `vault-integration: { ... }` with or
   // without a leading `- ` (baseline list-item form per #497).

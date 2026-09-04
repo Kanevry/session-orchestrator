@@ -928,6 +928,87 @@ describe('mirrorNarrative', () => {
   });
 
   // =========================================================================
+  // #1214 — the THIRD masker sink's skip-noop path must HEAL, not freeze.
+  //
+  // THE BUG THESE CATCH, NAMED: `_session-narrative.md` is written into the
+  // operator's TRACKED, PUSHED vault repo, so a raw credential that lands there
+  // is removable only by a history rewrite in a foreign repo. `writeNarrative`
+  // decides skip-noop from a byte compare plus `matchesModuloRedaction` — and
+  // NOT from the `maskerWouldChange` probe that guards the five skipped-noop
+  // returns in `vault-mirror/process.mjs` (#1028). If the redaction-wildcard
+  // arm ever swallowed the case where a needle ENTERS the env after the note
+  // was mirrored, the note would return `skipped-noop` forever and the raw
+  // value would stay published with no re-probe to heal it.
+  //
+  // Both directions are asserted because they fail differently: (a) no marker
+  // on disk at all, (b) a marker already on disk whose wildcard could plausibly
+  // absorb the second needle's span. Measured 2026-09-04 at HEAD cd785003:
+  // both heal (`written`, raw value gone), so these PIN the invariant rather
+  // than proving a live defect — see the #1214 note in narrative-mirror.mjs.
+  // =========================================================================
+
+  describe('masker re-probe on the skip-noop path (#1214)', () => {
+    const NEEDLE_KEY = 'SO_TEST_NARRATIVE_TOKEN';
+    const SECOND_KEY = 'SO_TEST_NARRATIVE_SECOND_TOKEN';
+    const NEEDLE = 'narrative-needle-b7f31c9d4e0a';
+    const SECOND = 'narrative-needle-0a4e9d13f7b2';
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    // (a) The note was mirrored BEFORE the needle existed in the env, so the
+    // on-disk file carries the RAW value and no `[REDACTED]` marker at all. The
+    // next run — same STATE.md, needle now present — must rewrite it masked.
+    it('heals a note mirrored BEFORE the needle entered the env', async () => {
+      const { repoRoot } = scaffold({ repoDirName: 'narrative-heal-fresh-needle' });
+      fs.writeFileSync(
+        path.join(repoRoot, '.claude', 'STATE.md'),
+        ['---', 'session-id: main-1214-a', '---', '', '## Deviations', '', `- Pasted ${NEEDLE} into the run log.`, ''].join('\n'),
+      );
+
+      const run1 = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+      expect(run1.action).toBe('written');
+      expect(fs.readFileSync(run1.path, 'utf8')).toContain(NEEDLE); // raw: env had no needle
+
+      vi.stubEnv(NEEDLE_KEY, NEEDLE);
+      const run2 = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+
+      expect(run2.action).not.toBe('skipped-noop');
+      const after = fs.readFileSync(run2.path, 'utf8');
+      expect(after).not.toContain(NEEDLE);
+      expect(after).toContain('- Pasted [REDACTED] into the run log.');
+    });
+
+    // (b) The sharper half: the on-disk note ALREADY carries a `[REDACTED]`
+    // span (needle 1), which arms `matchesModuloRedaction`'s wildcard, AND a
+    // second value that only NOW becomes maskable. The wildcard must not absorb
+    // the second needle's span into a false no-op.
+    it('heals a SECOND needle even when the note already carries a [REDACTED] span', async () => {
+      const { repoRoot } = scaffold({ repoDirName: 'narrative-heal-second-needle' });
+      fs.writeFileSync(
+        path.join(repoRoot, '.claude', 'STATE.md'),
+        ['---', 'session-id: main-1214-b', '---', '', '## Deviations', '', `- First ${NEEDLE} here.`, `- Second ${SECOND} there.`, ''].join('\n'),
+      );
+
+      vi.stubEnv(NEEDLE_KEY, NEEDLE);
+      const run1 = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+      expect(run1.action).toBe('written');
+      const first = fs.readFileSync(run1.path, 'utf8');
+      expect(first).toContain('- First [REDACTED] here.');
+      expect(first).toContain(SECOND); // raw: the second key was not in env yet
+
+      vi.stubEnv(SECOND_KEY, SECOND);
+      const run2 = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+
+      expect(run2.action).not.toBe('skipped-noop');
+      const after = fs.readFileSync(run2.path, 'utf8');
+      expect(after).not.toContain(SECOND);
+      expect(after).toContain('- Second [REDACTED] there.');
+    });
+  });
+
+  // =========================================================================
   // Telemetry (#1129)
   //
   // THE BUG THIS CATCHES, NAMED: the mirror's REJECTION and NO-OP paths return

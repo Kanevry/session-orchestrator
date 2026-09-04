@@ -11,6 +11,17 @@ import { buildLiveSignals } from '@lib/build-live-signals.mjs';
 import { selectMode } from '@lib/mode-selector.mjs';
 import { writeFileSync, mkdirSync } from 'node:fs';
 
+/**
+ * Null-returning scanBacklog stub (no VCS / CLI) — mirrors the same seam used
+ * in tests/lib/build-live-signals.test.mjs. Without it, buildLiveSignals()
+ * falls through to the REAL scanBacklog() against process.cwd() (this repo's
+ * own checkout), shelling out to `glab issue list` over the network on every
+ * test run (#1169). None of the tests below assert on `signals.backlog`, and
+ * `selectMode`/`computeDelta` never reads that field, so the null stub is
+ * behavior-preserving.
+ */
+const nullScanBacklog = async () => null;
+
 let tmp;
 let jsonlPath;
 
@@ -770,6 +781,7 @@ describe('runLoop — end-to-end with real buildLiveSignals (#301 Phase C-1.c)',
         statePath: path.join(fixtureDir, '.claude/STATE.md'),
         sessionsPath: path.join(fixtureDir, '.orchestrator/metrics/sessions.jsonl'),
         lockPath: path.join(fixtureDir, '.orchestrator/bootstrap.lock'),
+        _scanBacklog: nullScanBacklog,
       });
       const rec = selectMode(signals);
       observedConfidence = rec.confidence;
@@ -832,6 +844,7 @@ describe('runLoop — end-to-end with real buildLiveSignals (#301 Phase C-1.c)',
         statePath: path.join(fixtureDir, '.claude/STATE.md'),
         sessionsPath: path.join(fixtureDir, '.orchestrator/metrics/sessions.jsonl'),
         lockPath: path.join(fixtureDir, '.orchestrator/bootstrap.lock'),
+        _scanBacklog: nullScanBacklog,
       });
       // Lock-in: signals must be a valid Signals object consumed by selectMode.
       expect(signals.recommendedMode).toBe('feature');
@@ -894,6 +907,7 @@ describe('runLoop — end-to-end with real buildLiveSignals (#301 Phase C-1.c)',
         statePath: path.join(fixtureDir, '.claude/STATE.md'),
         sessionsPath: path.join(fixtureDir, '.orchestrator/metrics/sessions.jsonl'),
         lockPath: path.join(fixtureDir, '.orchestrator/bootstrap.lock'),
+        _scanBacklog: nullScanBacklog,
       });
       return selectMode(signals);
     };
@@ -946,6 +960,7 @@ describe('runLoop — end-to-end with real buildLiveSignals (#301 Phase C-1.c)',
         statePath: path.join(fixtureDir, '.claude/STATE.md'),
         sessionsPath: path.join(fixtureDir, '.orchestrator/metrics/sessions.jsonl'),
         lockPath: path.join(fixtureDir, '.orchestrator/bootstrap.lock'),
+        _scanBacklog: nullScanBacklog,
       });
       return selectMode(signals);
     };
@@ -997,6 +1012,7 @@ describe('runLoop — end-to-end with real buildLiveSignals (#301 Phase C-1.c)',
         statePath: path.join(fixtureDir, '.claude/STATE.md'),
         sessionsPath: path.join(fixtureDir, '.orchestrator/metrics/sessions.jsonl'),
         lockPath: path.join(fixtureDir, '.orchestrator/bootstrap.lock'),
+        _scanBacklog: nullScanBacklog,
       });
       return selectMode(signals);
     };

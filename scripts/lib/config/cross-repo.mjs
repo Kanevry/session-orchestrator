@@ -20,6 +20,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readConfigFile } from './io.mjs';
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * Resolve the cross-repo confinement root. Defaults to ~/Projects.
@@ -47,7 +48,7 @@ const SAFE_PATH_RE = /^[A-Za-z0-9._~/-]+$/;
  * @returns {string[]} list of project paths, or [] when absent/empty/none/null
  */
 export function _parseCrossRepo(content) {
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
 
   for (const rawLine of lines) {

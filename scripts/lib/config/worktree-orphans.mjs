@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * worktree-orphans.mjs — Parser for the top-level `worktree-orphans:` YAML block.
@@ -85,7 +86,7 @@ export function _parseWorktreeOrphans(content) {
 
   if (typeof content !== 'string' || content === '') return defaults;
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

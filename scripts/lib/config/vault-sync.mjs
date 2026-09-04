@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * vault-sync.mjs — Parser for the top-level `vault-sync:` YAML block.
@@ -16,7 +17,7 @@ import { matchBlockHeader } from './block-header.mjs';
 export function _parseVaultSync(content) {
   const defaults = { enabled: false, mode: 'warn', 'vault-dir': null, exclude: [] };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

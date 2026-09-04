@@ -20,7 +20,7 @@ import {
   finalizeState,
 } from './telemetry.mjs';
 import { durableCommit } from './durable-telemetry.mjs';
-import { SO_STATE_DIR } from '../platform.mjs';
+import { getStateDir } from '../platform.mjs';
 
 // Internal clamp — mirrors flags.mjs internal; not re-exported there.
 function clampNumber(value, { min, max, fallback }) {
@@ -311,7 +311,7 @@ export async function runLoop(opts = {}) {
     files: [
       jsonlPath.replace(process.cwd() + '/', ''),
       '.orchestrator/metrics/sessions.jsonl',
-      `${SO_STATE_DIR}/STATE.md`,
+      `${getStateDir()}/STATE.md`,
     ],
     enabled: false,
   });

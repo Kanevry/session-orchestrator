@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * wave-reviewers.mjs — Parser for the `wave-reviewers` / `persona-reviewers` sub-block.
@@ -58,7 +59,7 @@ export function _parseWaveReviewers(content) {
  * @returns {string[]}
  */
 function _extractBlock(content, key) {
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   const blockLines = [];
   let inBlock = false;
 

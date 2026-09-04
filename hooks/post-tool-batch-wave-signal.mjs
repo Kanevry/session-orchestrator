@@ -58,7 +58,7 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 // Exit 0 immediately when disabled via SO_HOOK_PROFILE / SO_DISABLED_HOOKS.
 if (!shouldRunHook('post-tool-batch-wave-signal')) process.exit(0);
 
-import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
+import { getProjectDir } from '../scripts/lib/platform.mjs';
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { findScopeFile } from '../scripts/lib/scope-gate.mjs';
 import { atomicMutateJson } from './_lib/atomic-json.mjs';
@@ -248,7 +248,7 @@ async function main() {
     ...(waveSignal !== null ? { wave_signal: waveSignal } : {}),
   };
 
-  const sessionFile = path.join(SO_PROJECT_DIR, '.orchestrator', 'current-session.json');
+  const sessionFile = path.join(getProjectDir(), '.orchestrator', 'current-session.json');
 
   const lastBatchResult = await atomicMutateJson(sessionFile, {}, (current) => ({
     ...current,
@@ -277,7 +277,7 @@ async function main() {
     const sessionId = await resolveSessionIdForHeartbeat(input, sessionFile);
     if (typeof sessionId === 'string' && sessionId.length > 0) {
       const { updateHeartbeat } = await import('../scripts/lib/session-lock.mjs');
-      updateHeartbeat({ repoRoot: SO_PROJECT_DIR, sessionId });
+      updateHeartbeat({ repoRoot: getProjectDir(), sessionId });
     }
   } catch { /* best effort — hook must remain non-blocking */ }
 
@@ -357,7 +357,7 @@ async function main() {
     // when an N+1 transition already closed wave N, SessionEnd sees
     // last_wave_completed === last_wave and stays silent.
     try {
-      const wave = await resolveWaveNumber(SO_PROJECT_DIR);
+      const wave = await resolveWaveNumber(getProjectDir());
       if (wave > 0) {
         // Read last_wave from the just-written session file (after the
         // last_batch RMW above, so we observe the latest persisted value).

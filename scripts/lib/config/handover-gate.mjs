@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * handover-gate.mjs — Parser for the top-level `handover-gate:` YAML block
@@ -43,7 +44,7 @@ export function _parseHandoverGate(content) {
     'max-open-questions': 3,
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

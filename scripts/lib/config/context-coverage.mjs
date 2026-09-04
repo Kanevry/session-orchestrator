@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * context-coverage.mjs — Parser for the top-level `context-coverage:` YAML block.
@@ -37,7 +38,7 @@ import { matchBlockHeader } from './block-header.mjs';
 export function _parseContextCoverage(content) {
   const defaults = { enabled: false, mode: 'warn' };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

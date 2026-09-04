@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * skill-evolution.mjs — Parser for the top-level `skill-evolution:` YAML block
@@ -39,7 +40,7 @@ export function _parseSkillEvolution(content) {
     'judge-budget-tokens': 8000,
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

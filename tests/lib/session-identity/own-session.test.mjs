@@ -27,6 +27,8 @@ import {
   readOwnSessionIds,
   readProcessLocalSessionIds,
   classifyManifestSession,
+  MANIFEST_SESSION_KEYS,
+  manifestSessionBinding,
 } from '../../../scripts/lib/session-identity/own-session.mjs';
 
 const ENV_KEY = 'CLAUDE_CODE_SESSION_ID';
@@ -152,6 +154,26 @@ describe('readOwnSessionIds (#1123)', () => {
     expect([...readOwnSessionIds(tmp, { hookInput: { session_id: ' ' } })]).toEqual([]);
   });
 
+  it('returns an EMPTY set for a MALFORMED lock — same as no lock at all (#1153 P7)', () => {
+    // The bug: #1153 P7 replaced the `readLock()` import with a local read to
+    // drop a 3249-line static closure from a module the live enforce-scope hook
+    // loads on every Edit/Write. A read that is more tolerant than `readLock()`
+    // would start admitting ids from a half-written or corrupt lock, where the
+    // old code contributed none. Both non-ok shapes are pinned: invalid JSON,
+    // and valid JSON that fails the lock schema (`pid` missing).
+    delete process.env[ENV_KEY];
+    mkdirSync(join(tmp, '.orchestrator'), { recursive: true });
+    writeFileSync(join(tmp, '.orchestrator', 'session.lock'), '{ not json at all', 'utf8');
+    expect(readOwnSessionIds(tmp).size).toBe(0);
+
+    writeFileSync(
+      join(tmp, '.orchestrator', 'session.lock'),
+      JSON.stringify({ session_id: 'HALF-WRITTEN', started_at: 'x', mode: 'session', host: 'h', ttl_hours: 4 }),
+      'utf8',
+    );
+    expect(readOwnSessionIds(tmp).size).toBe(0);
+  });
+
   it('returns an EMPTY set — never throws — when nothing resolves', () => {
     // The bug: an unresolvable identity must be reported as such so the caller
     // can fall through unchanged. Throwing here would take a PreToolUse guard
@@ -248,5 +270,102 @@ describe('readProcessLocalSessionIds (#1177 FX1)', () => {
     // This is the contract enforce-scope G3b depends on (#1194) — a lock tier
     // sneaking back would make a peer-owned lock self-confirming there.
     expect(readProcessLocalSessionIds({ env: {}, hookInput: null })).toEqual([]);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// #1153 P2 — manifest key rename: `session`/`semantic_session` ->
+// `session_id`/`semantic_session_id`, with the legacy pair still READ.
+// ---------------------------------------------------------------------------
+
+describe('manifest session-key rename (#1153 P2)', () => {
+  const OWN = new Set(['RAW-UUID', 'main-2026-01-01-session-1']);
+
+  it('classifies a manifest carrying the CURRENT key names', () => {
+    const r = classifyManifestSession(
+      { session_id: 'RAW-UUID', semantic_session_id: 'main-2026-01-01-session-1' },
+      OWN,
+    );
+    expect(r.verdict).toBe('own');
+    expect(r.manifestIds).toEqual(['RAW-UUID', 'main-2026-01-01-session-1']);
+  });
+
+  it('reaches the SAME verdict for the LEGACY key names (transition release)', () => {
+    // A package upgraded mid-wave finds an old-format manifest on disk. Reading
+    // it as UNBOUND would silently switch the hooks from stand-down to enforce.
+    expect(
+      classifyManifestSession({ session: 'PEER', semantic_session: 'peer-semantic' }, OWN).verdict,
+    ).toBe('foreign');
+    expect(classifyManifestSession({ session: 'RAW-UUID' }, OWN).verdict).toBe('own');
+  });
+
+  it('reads a HALF-migrated manifest per slot, not per manifest', () => {
+    // New raw id + legacy semantic id is a real on-disk state during the
+    // transition; a whole-manifest "is this legacy?" test would drop one id.
+    const r = classifyManifestSession(
+      { session_id: 'RAW-UUID', semantic_session: 'main-2026-01-01-session-1' },
+      OWN,
+    );
+    expect(r.manifestIds).toEqual(['RAW-UUID', 'main-2026-01-01-session-1']);
+  });
+
+  it('is unchanged when both spellings are present and EQUAL', () => {
+    const r = classifyManifestSession(
+      { session_id: 'RAW-UUID', session: 'RAW-UUID' },
+      OWN,
+    );
+    expect(r.verdict).toBe('own');
+    expect(r.manifestIds).toEqual(['RAW-UUID']);
+  });
+
+  it('yields NO id for a slot whose two spellings DISAGREE (fail-closed)', () => {
+    // Was: "prefers the CURRENT name". That direction was DISARMING — a peer
+    // appending `"session_id": "attacker"` beside this session's legitimate
+    // legacy `"session": "RAW-UUID"` made the slot resolve to an id we do not
+    // carry, the verdict `foreign`, and enforce-scope stands down on `foreign`.
+    // `validate-wave-scope.mjs` already calls this manifest an ERROR, but no
+    // hook runs the validator. Dropping the slot collapses the verdict to
+    // `unknown`, which every caller treats as "keep enforcing".
+    const attacker = classifyManifestSession(
+      { session_id: 'attacker', session: 'RAW-UUID' },
+      OWN,
+    );
+    expect(attacker.manifestIds).toEqual([]);
+    expect(attacker.verdict).toBe('unknown');
+
+    // Symmetric: the conflict is a property of the slot, not of which spelling
+    // holds the foreign value.
+    expect(
+      manifestSessionBinding({ session_id: 'RAW-UUID', session: 'PEER' }),
+    ).toEqual({});
+
+    // A conflict in ONE slot never swallows the other slot's agreement.
+    expect(
+      manifestSessionBinding({
+        session_id: 'attacker',
+        session: 'RAW-UUID',
+        semantic_session_id: 'main-2026-01-01-session-1',
+      }),
+    ).toEqual({ semantic_session_id: 'main-2026-01-01-session-1' });
+  });
+
+  it('yields no ids for an ARRAY, which typeof calls an object', () => {
+    // The array guard was dropped in an earlier rewrite while the JSDoc still
+    // promised "a non-object yields no ids".
+    expect(manifestSessionBinding([])).toEqual({});
+    expect(manifestSessionBinding(Object.assign(['x'], { session_id: 'RAW-UUID' }))).toEqual({});
+    expect(
+      classifyManifestSession(Object.assign([], { session_id: 'PEER' }), OWN).verdict,
+    ).toBe('unknown');
+  });
+
+  it('exports ONE key list for every reader to import', () => {
+    expect(MANIFEST_SESSION_KEYS.current).toEqual(['session_id', 'semantic_session_id']);
+    expect(MANIFEST_SESSION_KEYS.legacy).toEqual(['session', 'semantic_session']);
+    expect(manifestSessionBinding({ semantic_session: '  padded  ' })).toEqual({
+      semantic_session_id: 'padded',
+    });
+    expect(manifestSessionBinding(['not', 'a', 'record'])).toEqual({});
   });
 });

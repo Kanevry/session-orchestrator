@@ -46,7 +46,7 @@ import { dirname, join, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { isWaveAgentContext, WAVE_AGENT_ENV_VAR, WAVE_AGENT_ENV_VALUE } from './lib/wave-context.mjs';
-import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
+import { readProcessLocalSessionIds, manifestSessionBinding } from './lib/session-identity/own-session.mjs';
 import { readLockDetailed } from './lib/session-lock.mjs';
 
 // ---------------------------------------------------------------------------
@@ -369,7 +369,7 @@ if (!dryRun && (currentWaveRaw === undefined || currentWaveRaw === null || curre
 // trusted (#1177 FX1) — since #1123 both writers stamp the binding, so a
 // binding-less manifest is a peer's or a stale artefact.
 //
-// The session binding compares `manifest.semantic_session` — the SEMANTIC label
+// The session binding compares the manifest's `semantic_session_id` — the SEMANTIC label
 // — against the semantic id looked up in `session.lock`, and that lookup is only
 // honoured when this PROCESS's own raw session id equals the lock's raw
 // `session_id` (#1188). STATE.md's `session` field is NOT a witness here: it is
@@ -382,14 +382,18 @@ function resolveRunningWaveId() {
       const manifestPath = join(stateDir, 'wave-scope.json');
       if (existsSync(manifestPath)) {
         const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-        const boundSession = manifest?.semantic_session ?? manifest?.session;
+        // #1153 P2 — key spellings resolved in ONE place (own-session.mjs),
+        // which also reads the pre-#1153 `session` / `semantic_session` names
+        // for one transition release. Absent slots come back as `undefined`.
+        const binding = manifestSessionBinding(manifest);
+        const boundSession = binding.semantic_session_id ?? binding.session_id;
         const unbound =
           boundSession === undefined || boundSession === null || boundSession === '';
         // BOTH sides must be non-empty strings. `undefined === undefined` is
         // true, so a STATE.md WITHOUT a `session` key previously "matched" any
         // manifest whose `semantic_session` was also absent-but-present-in-the
         // -comparison — adopting a foreign coordinator's wave number as its own.
-        const mineSide = manifest?.semantic_session;
+        const mineSide = binding.semantic_session_id;
         // #1188 — STATE.md is a working-copy artefact of the LOCK OWNER, not a
         // process-local witness: when a peer holds the lock the peer wrote BOTH
         // STATE.md and the manifest, so the two "independent" sides agree about
@@ -441,7 +445,7 @@ function resolveRunningWaveId() {
         // bucket. Unbound → say so once on stderr and fall back.
         if (unbound) {
           process.stderr.write(
-            'memory-propose: wave-scope.json unbound (no semantic_session) — ignored\n',
+            'memory-propose: wave-scope.json unbound (no semantic_session_id) — ignored\n',
           );
         }
         if (mine) {

@@ -182,6 +182,61 @@ describe('wave-transcript-tail — psa007-git-write detector', () => {
     // …and the real thing is still caught, so no row above can be satisfied by
     // a detector that simply always returns false.
     { why: 'real in-repo commit', cmd: 'cd /repo && git commit -m "wip"', hit: true },
+
+    // #1215 — the regex matched the subcommand LITERAL, so a capability probe
+    // read as an index write. Measured live 2026-09-03: agent C8 was reported
+    // as psa007-git-write for `git stash --version`, index clean, no new stash.
+    { why: 'stash capability probe', cmd: 'git stash --version >/dev/null 2>&1; echo ok', hit: false },
+    { why: 'stash list is a read', cmd: 'git stash list', hit: false },
+    { why: 'stash help is a read', cmd: 'git stash --help', hit: false },
+    { why: 'stash show is a read', cmd: 'git stash show stash@{0}', hit: false },
+    { why: 'add --dry-run writes nothing', cmd: 'git add --dry-run .', hit: false },
+    { why: 'commit --dry-run writes nothing', cmd: 'git commit --dry-run', hit: false },
+    { why: 'rm --cached --dry-run writes nothing', cmd: 'git rm --cached --dry-run x', hit: false },
+    { why: 'git show is not git stash', cmd: 'git show HEAD:scripts/lib/x.mjs > /tmp/x', hit: false },
+    // Bug the -n split catches: `git commit -n` is --no-verify, NOT --dry-run
+    // (measured: `git commit -h` prints "-n, --no-verify"; `git add -h` prints
+    // "-n, --[no-]dry-run"). A blanket "-n means read" rule would blind the
+    // detector to `git commit --no-verify`, the PSA-007 anti-pattern verbatim.
+    { why: 'add -n is --dry-run', cmd: 'git add -n .', hit: false },
+    { why: 'commit -n is --no-verify, a real commit', cmd: 'git commit -n -m x', hit: true },
+    // A read-flag hidden in a commit message must not disarm the detector.
+    { why: 'read flag quoted inside a commit message', cmd: 'git commit -m "fix --dry-run docs"', hit: true },
+    // Positives: the write forms must survive the argument-awareness.
+    { why: 'bare stash is an implicit push', cmd: 'git stash', hit: true },
+    { why: 'stash push', cmd: 'git stash push -m wip', hit: true },
+    { why: 'stash pop', cmd: 'git stash pop', hit: true },
+    { why: 'plain add', cmd: 'git add .', hit: true },
+    { why: 'plain commit', cmd: 'git commit -m x', hit: true },
+    { why: 'checkout -- discards work', cmd: 'git checkout -- scripts/lib/x.mjs', hit: true },
+    { why: 'branch checkout touches no content', cmd: 'git checkout main', hit: false },
+    { why: 'reset stays unconditional', cmd: 'git reset --hard', hit: true },
+
+    // #1172 — the fixture suppression required a trailing slash, so the
+    // reported form (bare `cd /tmp`) still fired. Measured 2026-08-28: W4-FX2
+    // was reported for a `mktemp` proof repo written this way.
+    { why: 'bare cd /tmp fixture repo', cmd: 'cd /tmp && git init && git commit -m x', hit: false },
+    { why: 'bare cd /private/tmp fixture repo', cmd: 'cd /private/tmp; git add seed.txt', hit: false },
+    { why: 'quoted $TMPDIR', cmd: 'cd "$TMPDIR" && git commit -m seed', hit: false },
+    { why: 'cd $(mktemp -d)', cmd: 'cd $(mktemp -d) && git add .', hit: false },
+    // …and the terminator class keeps a real directory whose name merely
+    // STARTS with /tmp reported, so the suppression cannot swallow the repo.
+    { why: '/tmpfoo is not the temp dir', cmd: 'cd /tmpfoo && git commit -m x', hit: true },
+    { why: 'non-tmp working copy', cmd: 'cd /Users/x/repo && git commit -m x', hit: true },
+
+    // W4/F2 — the bug: the global-flag run was `(?:-[^\s]+\s+)*`, which cannot
+    // absorb a VALUE-taking global flag. `git -C /tmp stash` ate `-C ` and then
+    // met `/tmp`, which is no subcommand, so the whole invocation read as NOT a
+    // git write. Measured 2026-09-04, pre-fix: the first two rows returned false.
+    // `-C <dir>` is deliberately NOT fixture context (FIXTURE_CONTEXT_RE keys on
+    // `cd`/`mktemp`); teaching it `-C` would hand back a one-token evasion.
+    { why: '-C consumes its dir, stash still a write', cmd: 'git -C /tmp stash', hit: true },
+    { why: '-c consumes its k=v, commit still a write', cmd: 'git -c user.name=x commit -m y', hit: true },
+    { why: '-C . commit', cmd: 'git -C . commit -m x', hit: true },
+    { why: '--dry-run still wins over the global flag', cmd: 'git -c k=v commit --dry-run', hit: false },
+    { why: 'command prefix', cmd: 'command git commit -m x', hit: true },
+    { why: 'env VAR=x prefix', cmd: 'env GIT_AUTHOR_NAME=x git commit -m y', hit: true },
+    { why: '--git-dir= form falls through the generic alternative', cmd: 'git --git-dir=/r/.git push', hit: true },
   ])('isGitWrite: $why → $hit', ({ cmd, hit }) => {
     expect(isGitWrite(cmd)).toBe(hit);
   });

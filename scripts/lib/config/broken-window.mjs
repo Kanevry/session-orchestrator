@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * broken-window.mjs — Parser for the top-level `broken-window-budget:` YAML block
@@ -48,7 +49,7 @@ export function _parseBrokenWindow(content) {
     'due-days': 7,
   };
 
-  const lines = String(content ?? '').split(/\r?\n/);
+  const lines = preprocessBlockLines(String(content ?? ''));
   let inBlock = false;
   const blockLines = [];
 

@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * moc-staleness.mjs — Parser for the top-level `moc-staleness:` YAML block.
@@ -31,7 +32,7 @@ export function _parseMocStaleness(content) {
     mode: 'warn',
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

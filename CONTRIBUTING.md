@@ -492,9 +492,9 @@ Session Orchestrator supports Claude Code, Codex CLI, Cursor IDE, and Pi. When c
 
 ### Writing Platform-Portable Scripts (Node.js)
 
-1. **Import the actual exports from `platform.mjs`**: `detectPlatform()` returns the platform string; `SO_PLATFORM`, `SO_STATE_DIR`, `SO_CONFIG_FILE`, and `SO_PLUGIN_ROOT` are module constants computed at load time.
+1. **Import the actual exports from `platform.mjs`**: `detectPlatform()` returns the platform string; `getPlatform()`, `getStateDir()`, `getConfigFile()`, and `getPluginRoot()` are lazy, memoized accessors — computed on first use per process, not module constants (#1153 P5). Call the getter at the point of use; never cache the result in a top-level `const`.
 2. **Honor explicit hook context.** Codex wrappers set `SO_PLATFORM=codex` and `CODEX_PLUGIN_ROOT` from native `${PLUGIN_ROOT}`. Code that receives an explicit platform override must prefer it over ambient multi-harness detection.
-3. **Never hardcode `.claude/`** — use `resolveStateDir(platform)` or `SO_STATE_DIR`.
+3. **Never hardcode `.claude/`** — use `resolveStateDir(platform)` or `getStateDir()`.
 4. **Use the shared project resolver** rather than inventing a new env chain. It supports `CLAUDE_PROJECT_DIR`, `CODEX_PROJECT_DIR`, `CURSOR_PROJECT_DIR`, and `PI_PROJECT_DIR`.
 5. **Resolve plugin roots through shared helpers.** Native `PLUGIN_ROOT` wins first; a valid `SO_PLATFORM` then promotes its matching compatibility variable; remaining compatibility roots retain Claude → Codex → Cursor → Pi order before filesystem walk. Shell snippets should follow the same precedence.
 
@@ -526,13 +526,13 @@ Test files are in `tests/`. Add new tests as `tests/<area>/<name>.test.mjs` foll
 
 ### Platform Variables
 
-`scripts/lib/platform.mjs` exports these as **module constants** computed at load time via `detectPlatform()`:
-- `SO_PLATFORM`: `claude` | `codex` | `cursor` | `pi`
-- `SO_STATE_DIR`: `.claude` | `.codex` | `.cursor` | `.pi`
-- `SO_CONFIG_FILE`: `CLAUDE.md` (Claude Code, Cursor) | `AGENTS.md` (Codex, Pi)
-- `SO_SHARED_DIR`: `.orchestrator` (all platforms)
+`scripts/lib/platform.mjs` exports these as **lazy, memoized accessors** — resolved via `detectPlatform()` on first call, then cached for the life of the process (#1153 P5; the pre-#1153 `SO_PLATFORM`/`SO_STATE_DIR`/`SO_CONFIG_FILE`/`SO_PLUGIN_ROOT` module-constant exports are gone — call the getter, do not re-add a live binding):
+- `getPlatform()`: `claude` | `codex` | `cursor` | `pi`
+- `getStateDir()`: `.claude` | `.codex` | `.cursor` | `.pi`
+- `getConfigFile()`: `CLAUDE.md` (Claude Code, Cursor) | `AGENTS.md` (Codex, Pi)
+- `SO_SHARED_DIR`: `.orchestrator` (all platforms) — a plain constant, unaffected: it does no filesystem work
 
-Do not confuse the exported `SO_PLATFORM` constant with the `SO_PLATFORM` environment override used by hook wrappers. Codex sets the environment value explicitly so downstream handlers can prefer Codex semantics even in a process that also exposes another harness variable.
+Do not confuse `getPlatform()` with the `SO_PLATFORM` environment override used by hook wrappers. Codex sets the environment value explicitly so downstream handlers can prefer Codex semantics even in a process that also exposes another harness variable.
 
 ### Codex Refresh and Versioning
 

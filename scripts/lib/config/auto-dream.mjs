@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * auto-dream.mjs — Parser for the top-level `auto-dream:` YAML block (issue #566).
@@ -32,7 +33,7 @@ export function _parseAutoDream(content) {
     'min-confidence': 0.5,
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

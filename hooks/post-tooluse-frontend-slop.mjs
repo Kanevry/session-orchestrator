@@ -29,7 +29,7 @@ if (!shouldRunHook('frontend-slop-hook')) process.exit(0);
 
 import path from 'node:path';
 
-import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
+import { getProjectDir } from '../scripts/lib/platform.mjs';
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { detectFiles, SCANNABLE_EXTS } from '../scripts/lib/frontend-detect/detect.mjs';
 import { loadFrontendSlopHookConfig } from '../scripts/lib/config/frontend-slop-hook.mjs';
@@ -98,7 +98,7 @@ function resolveSessionId(input) {
  */
 function toRelPath(filePath) {
   try {
-    const rel = path.relative(SO_PROJECT_DIR, filePath);
+    const rel = path.relative(getProjectDir(), filePath);
     if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return rel;
   } catch { /* fall through */ }
   return path.basename(filePath);
@@ -147,7 +147,7 @@ async function main() {
   if (!SCANNABLE_EXTS.has(ext)) return;
 
   // Session Config gate — OPT-IN (default off).
-  const config = await loadFrontendSlopHookConfig({ repoRoot: SO_PROJECT_DIR });
+  const config = await loadFrontendSlopHookConfig({ repoRoot: getProjectDir() });
   if (config.enabled !== true) return;
 
   // Run the deterministic detector (fail-soft: unreadable files → []).

@@ -30,7 +30,7 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 // Exit 0 immediately when disabled via SO_HOOK_PROFILE / SO_DISABLED_HOOKS.
 if (!shouldRunHook('post-tool-failure-corrective-context')) process.exit(0);
 
-import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
+import { getProjectDir } from '../scripts/lib/platform.mjs';
 import { atomicMutateJson } from './_lib/atomic-json.mjs';
 
 // ---------------------------------------------------------------------------
@@ -179,7 +179,7 @@ async function main() {
     exit_code: exitCode,
   };
 
-  const sessionFile = path.join(SO_PROJECT_DIR, '.orchestrator', 'current-session.json');
+  const sessionFile = path.join(getProjectDir(), '.orchestrator', 'current-session.json');
 
   const result = await atomicMutateJson(sessionFile, {}, (current) => {
     const existing = Array.isArray(current.corrective_context)

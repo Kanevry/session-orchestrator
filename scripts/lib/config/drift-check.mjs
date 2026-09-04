@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * drift-check.mjs — Parser for the top-level `drift-check:` YAML block.
@@ -39,7 +40,7 @@ export function _parseDriftCheck(content) {
     'check-docs-parity': true,
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

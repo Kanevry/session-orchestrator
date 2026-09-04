@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * dispatcher-autonomy.mjs — Parser + resolver for the top-level
@@ -40,7 +41,7 @@ export function _parseDispatcherAutonomy(content) {
     'confidence-floor': 0.5,
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

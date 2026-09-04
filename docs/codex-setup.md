@@ -11,6 +11,8 @@ Guide for using Session Orchestrator with OpenAI Codex through Codex's public pl
 
 ## Installation
 
+**Recommended:** the short remote form (`codex plugin marketplace add <owner>/<repo>`) needs no local clone — see "Short-Form Marketplace Add" below. The steps below are the maintainer/local-clone path used by `scripts/codex-install.mjs`.
+
 Clone the repository, install its runtime dependencies, and run the installer from the plugin root:
 
 ```bash
@@ -30,7 +32,7 @@ codex plugin list --available --json
 
 It operates only through public Codex plugin commands; hook trust remains untouched.
 
-### Short-Form Marketplace Add (Verified 2026-08-28, codex-cli 0.141.0)
+### Short-Form Marketplace Add (Recommended — Verified 2026-09-04, codex-cli 0.144.4)
 
 `codex plugin marketplace add --help` documents a short remote form:
 
@@ -38,33 +40,22 @@ It operates only through public Codex plugin commands; hook trust remains untouc
 codex plugin marketplace add owner/repo --ref main
 ```
 
-Tested against this repo in a scoped throwaway `CODEX_HOME` (2026-08-28, codex-cli 0.141.0):
+This is the recommended install path — no local clone needed. Confirmed end-to-end on codex-cli **0.144.4** (2026-09-04), against this repo's unchanged flat layout (`.codex-plugin/plugin.json` + `.claude-plugin/marketplace.json` at repo root, no `plugins/<name>/`):
 
 ```
-$ codex plugin marketplace add Kanevry/session-orchestrator --json
-{
-  "marketplaceName": "kanevry",
-  "installedRoot": ".../.tmp/marketplaces/kanevry",
-  "alreadyAdded": false
-}
+$ codex plugin add session-orchestrator@kanevry --json
+{"pluginId":"session-orchestrator@kanevry","version":"3.22.1+codex.20260825125233","installedPath":"~/.codex/plugins/cache/kanevry/session-orchestrator/<version>","authPolicy":"ON_INSTALL"}
 $ echo $?
 0
 ```
 
-This succeeds and clones the repo via git — no `--ref`/`owner/repo` string is needed beyond the short form; the resulting marketplace name (`kanevry`) is read from `.claude-plugin/marketplace.json`'s `name` field, not from the `owner/repo` argument.
+`codex plugin list --available --json --marketplace kanevry` confirms `installed: true, enabled: true` for the same layout — no `plugins/<name>/` restructuring was needed.
 
-**However**, the subsequent install step fails identically for both this short remote form *and* the long-form local install documented above (`codex plugin marketplace add "$PWD"`, same as `scripts/codex-install.mjs` runs):
+**Historical note:** on codex-cli 0.141.0 (2026-08-28), the identical `plugin add` command failed against this same layout with `Error: plugin session-orchestrator was not found in marketplace kanevry`; upgrading to 0.144.4+ resolves it.
 
-```
-$ codex plugin add session-orchestrator@kanevry --json
-Error: plugin `session-orchestrator` was not found in marketplace `kanevry`
-$ echo $?
-1
-```
+### Switching Marketplace Sources
 
-`codex plugin list --available --json --marketplace kanevry` returns `{"installed": [], "available": []}` for both forms — the marketplace is configured, but no plugin is discoverable inside it, contradicting item 1 under "Understand the Three States" below. A synthetic marketplace root mirroring this repo's exact layout (`.codex-plugin/plugin.json` directly at root, no `.claude-plugin/marketplace.json`) reproduces the same empty discovery; by contrast, a directory scanned via a `<root>/plugins/<name>/.codex-plugin/plugin.json` layout (the shape `codex plugin marketplace add --help`'s `--sparse plugins/foo` example implies, and the shape this host's own pre-existing `local` marketplace uses via `~/plugins/session-orchestrator`) resolves correctly. This suggests codex's own plugin-discovery convention expects a `plugins/<name>/` marketplace layout that this repo's flat root does not provide, though `.claude-plugin/marketplace.json` (Claude Code's schema) is independently accepted as "a supported manifest" at the `marketplace add` step, without resolving to a discoverable Codex plugin at `list` time.
-
-**Caveat that limits this finding:** this host's installed codex-cli is **0.141.0**, older than the "0.144.4 or newer" prerequisite this guide states above. This failure was not re-verified against 0.144.4+, so it may be specific to running below the documented minimum rather than a defect in this repo's layout on a supported version. Until re-verified on 0.144.4+, treat both the short remote form and the long-form local install (`node scripts/codex-install.mjs`) as **unconfirmed end-to-end on this host** — the `marketplace add` step succeeds either way, but `plugin add` does not, on 0.141.0. Do not elevate either form to a README-level recommended command until a `plugin add` success is measured and dated.
+`codex plugin marketplace add owner/repo` silently **replaces** an already-registered marketplace of the same declared name — the name comes from `marketplace.json`'s `name` field, not the `owner/repo` argument — with a fresh git clone under `~/.codex/.tmp/marketplaces/<name>`. Re-adding the original local path afterward then fails with `marketplace '<name>' is already added from a different source; remove it before adding this source`. To switch sources deliberately, run `codex plugin marketplace remove <name>` first.
 
 ## Understand the Three States
 

@@ -19,7 +19,7 @@
  * Flags:
  *   --source <path>   Path to learnings.jsonl (default: .orchestrator/metrics/learnings.jsonl)
  *   --dry-run         Preview changes without writing (DEFAULT)
- *   --apply           Write patched records back; backup original to <path>.bak.<isoDate>
+ *   --apply           Write patched records back; backup original to <path>.bak-<isoDate>
  *
  * Exit codes:
  *   0  Success (including no-op when nothing needs backfilling)
@@ -51,7 +51,7 @@ if (args.includes('--help') || args.includes('-h')) {
 Options:
   --source <path>   Path to learnings.jsonl (default: .orchestrator/metrics/learnings.jsonl)
   --dry-run         Preview changes without writing (DEFAULT)
-  --apply           Write patched records; backup original to <path>.bak.<isoDate>
+  --apply           Write patched records; backup original to <path>.bak-<isoDate>
 
 Exit codes:  0 success  1 input error  2 I/O error
 `
@@ -144,7 +144,12 @@ let applied = false;
 if (!dryRun && countToBackfill > 0) {
   // Backup first
   const isoDate = new Date().toISOString().replace(/[:.]/g, '-');
-  const backupPath = `${sourcePath}.bak.${isoDate}`;
+  // Hyphen delimiter is canonical (#1173): the keep-3 rotation in
+  // scripts/lib/learnings/io.mjs and the restore sweep in
+  // backfill-learnings-from-vault.mjs both key on it. The dot form this script
+  // used to emit produced backups that grew unrotated and were skipped on
+  // restore.
+  const backupPath = `${sourcePath}.bak-${isoDate}`;
   try {
     copyFileSync(sourcePath, backupPath);
   } catch (err) {

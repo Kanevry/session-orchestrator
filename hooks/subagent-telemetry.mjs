@@ -84,14 +84,23 @@ if (!shouldRunHook('subagent-telemetry')) process.exit(0);
 import fs from 'node:fs';
 import path from 'node:path';
 import { appendSubagent } from '../scripts/lib/subagents-schema.mjs';
-import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
+import { getProjectDir } from '../scripts/lib/platform.mjs';
 import { resolveSubagentSidecar } from './_lib/subagent-paths.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const JSONL_PATH = path.join(SO_PROJECT_DIR, '.orchestrator', 'metrics', 'subagents.jsonl');
+/**
+ * Absolute path to the subagent ledger. A FUNCTION, not a module-level const:
+ * `getProjectDir()` walks the filesystem on first call, and this hook must not
+ * pay that at import time (#1153 P5).
+ *
+ * @returns {string}
+ */
+function jsonlPath() {
+  return path.join(getProjectDir(), '.orchestrator', 'metrics', 'subagents.jsonl');
+}
 
 /**
  * Defense-in-depth byte ceiling for transcript reads (#624). The transcript path
@@ -669,7 +678,7 @@ async function main() {
     // duration measurement and the explicit orphan discriminator below.
     // 'unknown' is the agent-id fallback for a payload with no usable id —
     // joining on it would collide across unrelated agents, so never scan for it.
-    const startedAtMs = agentId === 'unknown' ? null : findStartTimestampMs(JSONL_PATH, agentId);
+    const startedAtMs = agentId === 'unknown' ? null : findStartTimestampMs(jsonlPath(), agentId);
 
     // duration_ms (#917): prefer the harness value, else join backwards to this
     // agent's own start record, else null. Never 0 — see resolveDurationMs().
@@ -717,7 +726,7 @@ async function main() {
     record['gen_ai.system'] = 'anthropic';
   }
 
-  await appendSubagent(JSONL_PATH, record);
+  await appendSubagent(jsonlPath(), record);
 }
 
 // Exit 0 always — informational hook must never block Claude.

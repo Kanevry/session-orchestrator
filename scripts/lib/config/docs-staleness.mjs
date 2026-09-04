@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * docs-staleness.mjs — Parser for the top-level `docs-staleness:` YAML block.
@@ -29,7 +30,7 @@ export function _parseDocsStaleness(content) {
     mode: 'warn',
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

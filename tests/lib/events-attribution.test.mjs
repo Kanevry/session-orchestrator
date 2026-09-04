@@ -228,7 +228,7 @@ describe('emitEvent — wave correlation (#1177 FA3)', () => {
       // Bug: only 4.8% of records carried `wave`, so per-wave ledger analysis
       // had to join through a second file.
       label: '(e1) OWN manifest → fills wave',
-      setup: () => writeWaveScope({ wave: 3, session: OWN_UUID, semantic_session: OWN_SEMANTIC }),
+      setup: () => writeWaveScope({ wave: 3, session_id: OWN_UUID, semantic_session_id: OWN_SEMANTIC }),
       payload: {},
       expected: { wave: 3 },
     },
@@ -236,7 +236,7 @@ describe('emitEvent — wave correlation (#1177 FA3)', () => {
       // Bug: wave-scope.json is a shared working-copy artefact; a peer's
       // manifest would stamp this session's events with the peer's wave number.
       label: '(e2) FOREIGN manifest → omits wave',
-      setup: () => writeWaveScope({ wave: 7, session: PEER_UUID, semantic_session: PEER_SEMANTIC }),
+      setup: () => writeWaveScope({ wave: 7, session_id: PEER_UUID, semantic_session_id: PEER_SEMANTIC }),
       payload: {},
       expected: {},
     },
@@ -255,21 +255,21 @@ describe('emitEvent — wave correlation (#1177 FA3)', () => {
       // 1876/1876 numeric — one string splits every downstream group-by.
       label: '(e6) manifest wave "3" (string) → coerced to the number 3',
       setup: () =>
-        writeWaveScope({ wave: '3', session: OWN_UUID, semantic_session: OWN_SEMANTIC }),
+        writeWaveScope({ wave: '3', session_id: OWN_UUID, semantic_session_id: OWN_SEMANTIC }),
       payload: {},
       expected: { wave: 3 },
     },
     {
       label: '(e7) manifest wave "abc" → omits wave (never NaN)',
       setup: () =>
-        writeWaveScope({ wave: 'abc', session: OWN_UUID, semantic_session: OWN_SEMANTIC }),
+        writeWaveScope({ wave: 'abc', session_id: OWN_UUID, semantic_session_id: OWN_SEMANTIC }),
       payload: {},
       expected: {},
     },
     {
       label: '(e8) manifest wave 2.5 → omits wave (never a fraction)',
       setup: () =>
-        writeWaveScope({ wave: 2.5, session: OWN_UUID, semantic_session: OWN_SEMANTIC }),
+        writeWaveScope({ wave: 2.5, session_id: OWN_UUID, semantic_session_id: OWN_SEMANTIC }),
       payload: {},
       expected: {},
     },

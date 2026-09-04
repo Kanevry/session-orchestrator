@@ -149,6 +149,15 @@ describe('host-identity', () => {
       });
     });
 
+    it('records a live platform value, never null (W2-C8 follow-up, #1153 P5)', async () => {
+      // The bug: collectFingerprint() destructured the deprecated SO_PLATFORM
+      // live binding, which stays `undefined` until getPlatform() has run
+      // elsewhere in the process — so `platform` silently recorded null/undefined
+      // instead of the live getter's value.
+      const fp = await collectFingerprint({ salt: 'test-salt' });
+      expect(['claude', 'codex', 'cursor', 'pi']).toContain(fp.platform);
+    });
+
     it('never includes raw hostname', async () => {
       const fp = await collectFingerprint({ salt: 'test-salt' });
       const serialized = JSON.stringify(fp);
@@ -409,5 +418,99 @@ describe('host-identity', () => {
       // '' still never matches — the fallback widens nothing.
       expect(hostnamesMatch(lockHostCandidate({}), 'Mac.local')).toBe(false);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1153 P6 — `_privateDir()` is overridable.
+//
+// TV-001: the bug these catch is a hand-run vault/host probe writing into the
+// operator's REAL `~/.config/session-orchestrator` because the private dir had
+// no override at all (only the narrower `SO_HOST_ALIASES_FILE` did). The
+// observable surface is `readHostAliases()`, whose path is
+// `_privateDir()/host-aliases.json` when `SO_HOST_ALIASES_FILE` is unset.
+// ---------------------------------------------------------------------------
+describe('_privateDir override (#1153 P6)', () => {
+  let tmp;
+  let saved;
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(path.join(os.tmpdir(), 'privatedir-'));
+    saved = {
+      so: process.env.SO_CONFIG_HOME,
+      xdg: process.env.XDG_CONFIG_HOME,
+      aliases: process.env.SO_HOST_ALIASES_FILE,
+    };
+    // The narrower Tier-1 override must be OUT of the way for these tests —
+    // otherwise `_privateDir()` is never consulted at all.
+    delete process.env.SO_HOST_ALIASES_FILE;
+    delete process.env.SO_CONFIG_HOME;
+    delete process.env.XDG_CONFIG_HOME;
+  });
+
+  afterEach(async () => {
+    for (const [key, value] of [
+      ['SO_CONFIG_HOME', saved.so],
+      ['XDG_CONFIG_HOME', saved.xdg],
+      ['SO_HOST_ALIASES_FILE', saved.aliases],
+    ]) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    try { await rm(tmp, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('honours SO_CONFIG_HOME as the private dir itself', async () => {
+    process.env.SO_CONFIG_HOME = tmp;
+    await writeFile(path.join(tmp, 'host-aliases.json'), JSON.stringify(['Alpha.local']), 'utf8');
+    expect(readHostAliases()).toEqual([stableHostname('Alpha.local')]);
+  });
+
+  it('falls THROUGH a whitespace-only SO_CONFIG_HOME to XDG_CONFIG_HOME', async () => {
+    // A whitespace-only env var is truthy: a bare `||` would return '   ' and
+    // resolve the ledger to a relative path that never matches anything.
+    process.env.SO_CONFIG_HOME = '   ';
+    process.env.XDG_CONFIG_HOME = tmp;
+    const dir = path.join(tmp, 'session-orchestrator');
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'host-aliases.json'), JSON.stringify(['Beta.local']), 'utf8');
+    expect(readHostAliases()).toEqual([stableHostname('Beta.local')]);
+  });
+
+  it('appends session-orchestrator under XDG_CONFIG_HOME when SO_CONFIG_HOME is unset', async () => {
+    process.env.XDG_CONFIG_HOME = tmp;
+    const dir = path.join(tmp, 'session-orchestrator');
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'host-aliases.json'), JSON.stringify(['Gamma.local']), 'utf8');
+    expect(readHostAliases()).toEqual([stableHostname('Gamma.local')]);
+  });
+
+  it('keeps SO_HOST_ALIASES_FILE winning over SO_CONFIG_HOME', async () => {
+    const explicit = path.join(tmp, 'explicit.json');
+    await writeFile(explicit, JSON.stringify(['Delta.local']), 'utf8');
+    await writeFile(path.join(tmp, 'host-aliases.json'), JSON.stringify(['Alpha.local']), 'utf8');
+    process.env.SO_HOST_ALIASES_FILE = explicit;
+    process.env.SO_CONFIG_HOME = tmp;
+    expect(readHostAliases()).toEqual([stableHostname('Delta.local')]);
+  });
+
+  it('prefers SO_CONFIG_HOME over XDG_CONFIG_HOME when BOTH are set to real dirs', async () => {
+    // Bug this catches: every other test in this describe sets exactly ONE of
+    // the two vars, so a refactor that FLIPPED the precedence (XDG first) would
+    // pass all of them — each var is the only candidate in its own test. Only a
+    // both-set case where both dirs hold a DIFFERENT ledger discriminates.
+    const soDir = path.join(tmp, 'so');
+    const xdgDir = path.join(tmp, 'xdg');
+    await mkdir(soDir, { recursive: true });
+    await mkdir(path.join(xdgDir, 'session-orchestrator'), { recursive: true });
+    await writeFile(path.join(soDir, 'host-aliases.json'), JSON.stringify(['Epsilon.local']), 'utf8');
+    await writeFile(
+      path.join(xdgDir, 'session-orchestrator', 'host-aliases.json'),
+      JSON.stringify(['Zeta.local']),
+      'utf8',
+    );
+    process.env.SO_CONFIG_HOME = soDir;
+    process.env.XDG_CONFIG_HOME = xdgDir;
+    expect(readHostAliases()).toEqual([stableHostname('Epsilon.local')]);
   });
 });

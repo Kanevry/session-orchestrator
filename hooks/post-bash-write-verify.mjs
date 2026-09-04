@@ -163,6 +163,13 @@ import { findScopeFile, pathMatchesPattern } from '../scripts/lib/hardening.mjs'
 // is unchanged. Two byte-identical copies of a clock is exactly the one-fact-two-
 // copies class this repo keeps paying for.
 import { sessionAgeMs, PEER_RECORD_PREFIX, isPeerRecordId } from '../scripts/lib/scope-gate.mjs';
+// #1153 P1 — the same process-local ownership check hooks/enforce-scope.mjs
+// applies at Gate 3b. This hook reads the SAME working-copy `wave-scope.json`,
+// so without it a peer session's manifest drives this session's advisories.
+import {
+  readProcessLocalSessionIds,
+  classifyManifestSession,
+} from '../scripts/lib/session-identity/own-session.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -854,6 +861,17 @@ async function main() {
   }
   if (raw === null) return; // file vanished between findScopeFile and read
 
+  // The control-file identity of THIS call, computed BEFORE the G3b
+  // stand-down (W4/F7). Ordering is the whole fix: G3b used to `return` above
+  // this, so a peer or agent that REBOUND `wave-scope.json` to a fabricated
+  // `session_id` with one `cat >` redirect disarmed this session's gates AND
+  // suppressed the #938 control-file notice at the same time. Deleting the file
+  // was reported (G3 above); rebinding it was not — the louder half of the
+  // tamper trail was the one behind the gate the tamper opens.
+  //
+  // Nothing but the hash/enforcement snapshot is derived here: no path
+  // evaluation, no allowedPaths read, no report — those still wait for the
+  // classification below to judge the manifest ours.
   const relScopePath = path.relative(repoRoot, scopePath) || scopePath;
   const currentScopeState = {
     hash: createHash('sha1').update(raw).digest('hex').slice(0, 16),
@@ -862,6 +880,73 @@ async function main() {
       : 'unparseable',
     gateOn: scope ? scope?.gates?.['bash-write-verify'] !== false : true,
   };
+
+  // G3b (#1153 P1) — is this manifest even MINE?
+  //
+  // `wave-scope.json` is a WORKING-COPY artefact; two live sessions in one
+  // checkout read the same bytes. Everything below this point — the path
+  // report, the control-file notice, the snapshot — describes THIS session's
+  // relationship to a wave plan. When the manifest provably names another
+  // session, none of it is about us, and the advisories were a peer's
+  // `allowedPaths` scolding an unrelated session (#1082 / #1123).
+  //
+  // Deliberately AFTER the parse: an unparseable manifest leaves `scope === null`,
+  // which classifies as `'unknown'` and keeps every pre-#1153 behaviour —
+  // including the #938 tamper notices, which must never be reachable via a
+  // manifest a Bash call just corrupted. `'own'` and `'unknown'` (legacy,
+  // unbound, or no resolvable own identity) fall through unchanged.
+  //
+  // CEILING (BV-004): on a harness that supplies no session id at all (Codex
+  // CLI, Cursor today) the own-id set is empty, so this gate is permanently
+  // `'unknown'` = full pre-#1153 behaviour there.
+  {
+    const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
+    const { verdict, manifestIds } = classifyManifestSession(scope ?? {}, ownIds);
+    if (verdict === 'foreign') {
+      // Observability only — one event per stand-down decision, awaited so the
+      // append cannot be lost to the process exiting.
+      try {
+        const { emitEvent } = await import('../scripts/lib/events.mjs');
+        await emitEvent(
+          'orchestrator.scope.foreign_session_ignored',
+          {
+            hook: 'post-bash-write-verify',
+            manifest: scopePath,
+            manifest_session: manifestIds,
+            own_session: [...ownIds],
+            wave: scope?.wave,
+          },
+          { repoRoot },
+        );
+      } catch { /* observability is best-effort — never blocks the decision */ }
+
+      // The stand-down itself is a control-file event when the binding CHANGED
+      // since the last call: the manifest this session was baselined against is
+      // now bound to someone else, which switches every scope gate off. Reported
+      // on the visible channel exactly once — the snapshot below records the new
+      // hash, so a stable foreign manifest (an ordinary peer wave) is silent from
+      // the next call on, and a rebind back to us reports again.
+      if (prevScopeState
+        && prevScopeState.hash !== 'absent'
+        && prevScopeState.hash !== currentScopeState.hash) {
+        writeSnapshot(snapFile, { ...carriedRecord, scopeState: currentScopeState });
+        emitMessages([
+          `bash-write-verify: control file ${relScopePath} changed its SESSION BINDING `
+          + `since the last Bash call (now names ${manifestIds.join(', ') || 'an unnamed session'}) — `
+          + 'this session\'s scope gates are standing down. '
+          + 'Scope-control changes are never exempt from reporting (#938).',
+        ], true);
+      }
+      return;
+    }
+  }
+
+  // ADVERSARIAL CEILING: `wave-scope.json` is a file ANY process in this working
+  // copy can write, so writing a foreign id into it is a per-file kill switch for
+  // this session's own gate. Accepted because "no manifest" already means allow
+  // (G3), so a foreign manifest grants nothing an `rm` would not — but the change
+  // MUST stay visible: see post-bash-write-verify's control-file notice (#938),
+  // which is the only thing that distinguishes this from a legitimate peer wave.
 
   let scopeMtimeMs = null;
   try {

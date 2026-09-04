@@ -71,7 +71,7 @@ import { parseSessionConfig } from './lib/config.mjs';
 import { subjectToSlug, parseFrontmatter } from './lib/vault-mirror/utils.mjs';
 import { kebab } from './lib/learnings/kebab.mjs';
 import { validateLearning } from './lib/learnings/schema.mjs';
-import { appendLearning } from './lib/learnings/io.mjs';
+import { appendLearning, isBackupOf } from './lib/learnings/io.mjs';
 
 const DEFAULT_RULES_DIR = '.claude/rules';
 const DEFAULT_STORE = '.orchestrator/metrics/learnings.jsonl';
@@ -620,7 +620,13 @@ function idsInStore(filePath) {
   return ids;
 }
 
-/** List `<store>.bak-*` siblings (a verbatim original beats any reconstruction). */
+/**
+ * List `<store>.bak[-.]*` siblings (a verbatim original beats any
+ * reconstruction). Both delimiter forms count — the legacy dot form
+ * (`learnings.jsonl.bak.evolve-<ts>`) is still on disk in consumer repos and
+ * was silently skipped here, i.e. a backup that exists and is not found in the
+ * one case it is for (#1173).
+ */
 function backupPaths(storePath) {
   const dir = dirname(storePath);
   const base = basename(storePath);
@@ -633,7 +639,7 @@ function backupPaths(storePath) {
     return [];
   }
   return names
-    .filter((n) => n.startsWith(`${base}.bak-`))
+    .filter((n) => isBackupOf(base, n))
     .sort()
     .map((n) => join(dir, n));
 }

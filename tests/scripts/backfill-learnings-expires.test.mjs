@@ -108,9 +108,14 @@ function readJsonl(filePath) {
     });
 }
 
+/**
+ * List backup siblings in EITHER delimiter form. Deliberately not pinned to the
+ * hyphen the writer emits since #1173 — a helper that only matched the emitted
+ * form could not tell "no backup" from "backup in the other form".
+ */
 function listBackups(dir, base) {
   if (!existsSync(dir)) return [];
-  return readdirSync(dir).filter((f) => f.startsWith(`${base}.bak.`));
+  return readdirSync(dir).filter((f) => /^\.bak[-.]/.test(f.slice(base.length)) && f.startsWith(base));
 }
 
 /** Last line of stdout = summary JSON. */
@@ -187,7 +192,13 @@ describe('backfill-learnings-expires.mjs — --apply patches records', () => {
     // Backup file emitted at <path>.bak.<isoDate>
     const backups = listBackups(workdir, 'learnings.jsonl');
     expect(backups.length).toBe(1);
-    expect(backups[0]).toMatch(/^learnings\.jsonl\.bak\./);
+    // #1173: the delimiter must be the canonical HYPHEN. The dot form this
+    // script used to emit was invisible to BOTH the keep-3 rotation in
+    // scripts/lib/learnings/io.mjs and the restore sweep in
+    // backfill-learnings-from-vault.mjs, so those backups grew unbounded and
+    // were skipped on restore.
+    expect(backups[0]).toMatch(/^learnings\.jsonl\.bak-/);
+    expect(backups[0]).not.toMatch(/^learnings\.jsonl\.bak\./);
 
     const summary = parseSummary(result.stdout);
     expect(summary.applied).toBe(true);

@@ -33,7 +33,7 @@ import { spawn } from 'node:child_process';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { appendSkillInvocation } from '../scripts/lib/skill-invocations-schema.mjs';
-import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
+import { getProjectDir } from '../scripts/lib/platform.mjs';
 import { shouldDailyFlush } from '../scripts/lib/telemetry/sync.mjs';
 import { resolveConsent, readTelemetryState } from '../scripts/lib/telemetry/consent.mjs';
 import { loadOwnerConfig } from '../scripts/lib/owner-yaml.mjs';
@@ -42,9 +42,21 @@ import { loadOwnerConfig } from '../scripts/lib/owner-yaml.mjs';
 // Constants
 // ---------------------------------------------------------------------------
 
-const METRICS_DIR = path.join(SO_PROJECT_DIR, '.orchestrator', 'metrics');
+/**
+ * Metrics directory / ledger path. FUNCTIONS, not module-level consts:
+ * `getProjectDir()` walks the filesystem on first call, and this hook must not
+ * pay that at import time (#1153 P5).
+ *
+ * @returns {string}
+ */
+function metricsDirPath() {
+  return path.join(getProjectDir(), '.orchestrator', 'metrics');
+}
 
-const JSONL_PATH = path.join(METRICS_DIR, 'skill-invocations.jsonl');
+/** @returns {string} */
+function jsonlPath() {
+  return path.join(metricsDirPath(), 'skill-invocations.jsonl');
+}
 
 /** Absolute path to the telemetry CLI (carries the hidden `_flush` subcommand). */
 const TELEMETRY_CLI_PATH = path.resolve(
@@ -123,7 +135,7 @@ export function maybeSpawnDailyFlush({
   now = Date.now(),
   statePath,
   queuePath,
-  metricsDir = METRICS_DIR,
+  metricsDir = metricsDirPath(),
 } = {}) {
   try {
     // 1. Cheapest gate: env kill-switches, no file I/O.
@@ -187,7 +199,7 @@ async function main() {
     schema_version: 1,
   };
 
-  await appendSkillInvocation(JSONL_PATH, record);
+  await appendSkillInvocation(jsonlPath(), record);
 
   // Daily-fallback telemetry flush — non-blocking, best-effort, never throws.
   maybeSpawnDailyFlush();

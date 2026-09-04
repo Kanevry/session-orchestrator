@@ -117,7 +117,10 @@ describe('exit-code contract — locally-provable scenarios (no network)', () =>
     expect(result.status).toBe(1);
   });
 
-  it('exits 1 (not 2) when plugin.json contains broken JSON', () => {
+  it('exits 1 (not 2) when plugin.json contains broken JSON', { timeout: 30_000 }, () => {
+    // #1217: pinned to 30s — measured 887-965ms unloaded (W1-D4, 2026-09-04); the
+    // one observed 10 095ms outlier was host contention under a saturated host,
+    // not spawn cost. No repo-wide pinned-slow list exists (#976 never implemented).
     // JSON parse error is caught before any schema fetch. The script pushes a
     // FAIL result and continues; final exit depends on results array → exit 1.
     const root = makeTmpRoot((r) => {

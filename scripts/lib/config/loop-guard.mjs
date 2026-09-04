@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * loop-guard.mjs — Parser for the top-level `loop-guard:` YAML block
@@ -57,7 +58,7 @@ export function _parseLoopGuard(content) {
     window: DEFAULT_WINDOW,
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

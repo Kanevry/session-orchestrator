@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * discovery-validator.mjs — Parser for the top-level `discovery-validator:`
@@ -36,7 +37,7 @@ export function _parseDiscoveryValidator(content) {
     enabled: false,
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

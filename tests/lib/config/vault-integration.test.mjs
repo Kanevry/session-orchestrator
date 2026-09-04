@@ -119,6 +119,48 @@ describe('_parseVaultIntegration', () => {
       ].join('\n'),
       expected: VI_DEFAULTS,
     },
+    // ── issue #1162 regression — preprocessing defects ──────────────────────
+    // (a) A block commented OUT with `<!-- … -->` was parsed as LIVE config, so
+    // commenting a key out ARMED it (the exact inversion #1097 fixed for the
+    // flat KV path; the block parsers never got it).
+    {
+      why: '#1162a: an HTML-commented block is documentation, not live config',
+      content: [
+        '<!--',
+        'vault-integration:',
+        '  enabled: true',
+        '  mode: strict',
+        '-->',
+        '',
+      ].join('\n'),
+      expected: VI_DEFAULTS,
+    },
+    {
+      why: '#1162a: a commented block does not clobber the live block above it',
+      content: [
+        'vault-integration:',
+        '  enabled: true',
+        '  mode: warn',
+        '<!--',
+        '  mode: strict',
+        '-->',
+        '',
+      ].join('\n'),
+      expected: vi({ enabled: true }),
+    },
+    // (b) The bold-bullet markdown rendering was accepted on the block HEADER
+    // (#823) but not on the SUB-KEYS — so `- **enabled:** true` fell back to the
+    // `false` default with no error anywhere.
+    {
+      why: '#1162b: bold-bullet sub-key `- **enabled:** true` is read as enabled: true',
+      content: 'vault-integration:\n  - **enabled:** true\n',
+      expected: vi({ enabled: true }),
+    },
+    {
+      why: '#1162b: bold sub-keys without a dash and with the colon outside the markers',
+      content: 'vault-integration:\n  **enabled:** true\n  - **mode**: strict\n',
+      expected: vi({ enabled: true, mode: 'strict' }),
+    },
     {
       why: '#593: realistic CLAUDE.md Session Config layout with vault-integration among peers',
       content: [

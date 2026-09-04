@@ -25,6 +25,7 @@ import { join, dirname, resolve, parse as parsePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseSessionConfig } from './lib/config.mjs';
 import { collectUnparsableLines } from './lib/config/section-extractor.mjs';
+import { findUnterminatedComment } from './lib/config/block-preprocess.mjs';
 import { ENFORCEMENT_VALUES } from './lib/config-schema.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -105,6 +106,20 @@ try {
 } catch (err) {
   process.stderr.write(`parse-config.mjs: Failed to read ${configFile}: ${err.message}\n`);
   process.exit(1);
+}
+
+// Unterminated-comment gate — ONE line per session, not one per parser.
+// An `<!--` with no `-->` after it would put the shared HTML-comment skipper in
+// the swallowing state for the rest of the document; `stripHtmlCommentBlocks`
+// now fails CLOSED (returns the lines unfiltered) rather than letting every
+// later block disappear into its defaults, but the operator still has to learn
+// that the document has a defect. This is the surface that says so — never
+// fatal, exit code unchanged.
+const unterminatedCommentLine = findUnterminatedComment(content.split(/\r?\n/));
+if (unterminatedCommentLine !== null) {
+  process.stderr.write(
+    `⚠ ${parsePath(configFile).base}: unterminated <!-- at line ${unterminatedCommentLine} — comment stripping disabled for the whole document\n`,
+  );
 }
 
 let config;

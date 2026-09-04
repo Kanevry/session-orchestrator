@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * vault-mirror-quality.mjs — Parser for the top-level `vault-mirror:` YAML block,
@@ -30,7 +31,7 @@ export function _parseVaultMirrorQuality(content) {
     },
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

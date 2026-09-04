@@ -33,7 +33,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
+import { getProjectDir } from '../scripts/lib/platform.mjs';
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { writeJsonAtomicSync } from '../scripts/lib/io.mjs';
 import { _parseLoopGuard } from '../scripts/lib/config/loop-guard.mjs';
@@ -84,8 +84,8 @@ function readStdinJson() {
  */
 async function loadConfig() {
   const candidates = [
-    path.join(SO_PROJECT_DIR, 'CLAUDE.md'),
-    path.join(SO_PROJECT_DIR, 'AGENTS.md'),
+    path.join(getProjectDir(), 'CLAUDE.md'),
+    path.join(getProjectDir(), 'AGENTS.md'),
   ];
   for (const file of candidates) {
     try {

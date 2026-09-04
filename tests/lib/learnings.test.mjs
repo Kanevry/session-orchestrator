@@ -594,6 +594,15 @@ describe('rewriteLearnings — legacy-tolerant round-trip (#386)', () => {
 const bakName = (base, msAgo) =>
   `${base}.bak-${new Date(Date.now() - msAgo).toISOString().replace(/[:.]/g, '-')}`;
 
+// Legacy DOT-delimiter sibling names (#1173). Two historical shapes exist on
+// disk in consumer repos: a bare `.bak.<ISO>` (the pre-fix
+// backfill-learnings-expires writer) and a labelled `.bak.evolve-<ISO>`.
+// Both were invisible to rotation while it matched `.bak-` only.
+const dotBakName = (base, msAgo) =>
+  `${base}.bak.${new Date(Date.now() - msAgo).toISOString().replace(/[:.]/g, '-')}`;
+const dotLabelBakName = (base, msAgo) =>
+  `${base}.bak.evolve-${new Date(Date.now() - msAgo).toISOString().replace(/[:.]/g, '-')}`;
+
 describe('rewriteLearnings — backup + keep-N rotation (#721)', () => {
   it('backup default: rewriting over an existing file creates a .bak sibling holding the exact prior bytes', async () => {
     const filePath = join(tmp, 'learnings.jsonl');
@@ -633,6 +642,57 @@ describe('rewriteLearnings — backup + keep-N rotation (#721)', () => {
     expect(backups).not.toContain(basename(oldest));
     expect(backups).toContain(basename(mid));
     expect(backups).toContain(basename(newestPlanted));
+  });
+
+  it('keep-3 rotation across MIXED delimiter forms: the 3 newest survive whatever the delimiter, and the oldest is pruned (#1173)', async () => {
+    const filePath = join(tmp, 'learnings.jsonl');
+    writeFileSync(filePath, JSON.stringify(LEGACY()) + '\n');
+
+    // 2 hyphen-form + 2 dot-form backups, interleaved in age. The rewrite below
+    // stamps a 5th at "now", so keep-3 must prune the two OLDEST — and age, not
+    // the delimiter, must decide which. A whole-filename sort cannot do this:
+    // '-' (0x2D) < '.' (0x2E), so every dot-form name sorts after every
+    // hyphen-form name regardless of when it was written.
+    const oldestDot = dotBakName('learnings.jsonl', 50_000);
+    const oldHyphen = bakName('learnings.jsonl', 40_000);
+    const midDotLabelled = dotLabelBakName('learnings.jsonl', 30_000);
+    const newHyphen = bakName('learnings.jsonl', 20_000);
+    for (const name of [oldestDot, oldHyphen, midDotLabelled, newHyphen]) {
+      writeFileSync(join(tmp, name), 'planted');
+    }
+
+    await rewriteLearnings(filePath, [{ ...LEGACY(), id: 'mixed-rotated' }]);
+
+    const survivors = readdirSync(tmp).filter((f) => f.startsWith('learnings.jsonl.bak'));
+    // 4 planted + 1 fresh = 5, minus 2 pruned = 3 retained.
+    expect(survivors).toHaveLength(3);
+    // The two oldest went, regardless of their delimiter form.
+    expect(survivors).not.toContain(basename(oldestDot));
+    expect(survivors).not.toContain(basename(oldHyphen));
+    // The newest planted of EACH form survived, plus the fresh hyphen backup.
+    expect(survivors).toContain(basename(midDotLabelled));
+    expect(survivors).toContain(basename(newHyphen));
+    expect(survivors.filter((f) => f.startsWith('learnings.jsonl.bak-')).some((f) => f !== basename(newHyphen))).toBe(
+      true
+    );
+  });
+
+  it('rotation ignores the .backfill-tmp scratch sibling — `.bak` + a non-delimiter char is not a backup (#1173)', async () => {
+    const filePath = join(tmp, 'learnings.jsonl');
+    writeFileSync(filePath, JSON.stringify(LEGACY()) + '\n');
+    // Same `${base}.bak` prefix, but the next char is 'f' — this is the scratch
+    // file backfill-learnings-expires writes, and widening to a delimiter CLASS
+    // must not start eating it.
+    const scratch = 'learnings.jsonl.backfill-tmp-123-456';
+    writeFileSync(join(tmp, scratch), 'scratch');
+    for (const msAgo of [40_000, 30_000, 20_000]) {
+      writeFileSync(join(tmp, bakName('learnings.jsonl', msAgo)), 'planted');
+    }
+
+    await rewriteLearnings(filePath, [{ ...LEGACY(), id: 'scratch-safe' }]);
+
+    expect(existsSync(join(tmp, scratch))).toBe(true);
+    expect(readdirSync(tmp).filter((f) => f.startsWith('learnings.jsonl.bak'))).toHaveLength(3);
   });
 
   it('dryRun: true → neither the target file nor a .bak is written, validated entries are returned', async () => {

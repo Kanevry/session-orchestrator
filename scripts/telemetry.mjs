@@ -33,7 +33,7 @@ import { queueStats } from './lib/telemetry/queue.mjs';
 import { flush, buildBatch } from './lib/telemetry/sync.mjs';
 import { loadOwnerConfig } from './lib/owner-yaml.mjs';
 import { readPluginVersionFromPackageJson } from './lib/bootstrap-lock-freshness.mjs';
-import { SO_PLUGIN_ROOT } from './lib/platform.mjs';
+import { getPluginRoot } from './lib/platform.mjs';
 
 const EXIT_OK = 0;
 const EXIT_USER = 1;
@@ -69,7 +69,7 @@ ENV KILL-SWITCHES
 
 /** Plugin version for `--version` — single-sourced via readPluginVersionFromPackageJson (null → 'unknown'). */
 function readPkgVersion() {
-  return readPluginVersionFromPackageJson(SO_PLUGIN_ROOT) ?? 'unknown';
+  return readPluginVersionFromPackageJson(getPluginRoot()) ?? 'unknown';
 }
 
 // ---------------------------------------------------------------------------

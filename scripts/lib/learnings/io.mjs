@@ -189,22 +189,76 @@ export async function appendLearning(filePath, entry) {
 const BACKUP_KEEP = 3;
 
 /**
- * Best-effort keep-N rotation of `${baseName}.bak-*` siblings in `dir`.
+ * Timestamp suffix of a backup sibling of `baseName`, or `null` if `fileName`
+ * is not one. Accepts BOTH historical delimiters after `.bak` (#1173): the
+ * canonical `-` this module writes, and the legacy `.` that pre-#721 writers
+ * (e.g. `learnings.jsonl.bak.evolve-<ts>`) still left on disk in consumer
+ * repos — those files were invisible to rotation AND to restore.
+ * The delimiter check is what keeps a `${baseName}.backfill-tmp-*` scratch
+ * file out: `.bak` followed by `f` is not a backup.
+ *
+ * REVISIT-TRIGGER for the legacy `.` branch (BV-004): `-` has been the only
+ * delimiter any writer emits since #721, so the `.` arm exists purely to keep
+ * pre-#721 files on disk visible to rotation and restore. Drop it once no fleet
+ * repo reports a `.bak.` sibling — re-measure via the fleet sweep, do not infer
+ * it from this repo alone.
+ *
+ * @param {string} baseName — basename of the store file (e.g. `learnings.jsonl`)
+ * @param {string} fileName — sibling filename to classify
+ * @returns {string|null} the suffix after the delimiter, or `null`
+ */
+export function backupSuffixOf(baseName, fileName) {
+  const stem = `${baseName}.bak`;
+  if (!fileName.startsWith(stem)) return null;
+  const delim = fileName[stem.length];
+  return delim === '-' || delim === '.' ? fileName.slice(stem.length + 1) : null;
+}
+
+/**
+ * True when `fileName` is a backup sibling of `baseName` in either delimiter
+ * form. Shared by this module's rotation and by `backfill-learnings-from-vault`'s
+ * restore sweep so the two can never drift apart again (#1173).
+ *
+ * @param {string} baseName
+ * @param {string} fileName
+ * @returns {boolean}
+ */
+export function isBackupOf(baseName, fileName) {
+  return backupSuffixOf(baseName, fileName) !== null;
+}
+
+/**
+ * Best-effort keep-N rotation of `${baseName}.bak[-.]*` siblings in `dir`.
  * The `.bak-<ISO>` naming uses ISO 8601 with `:`/`.` swapped for `-`, so a
- * plain lexical sort of the filenames is chronological. Oldest beyond `keep`
- * are unlinked. Errors PROPAGATE — the single caller wraps this in try/catch so
- * a rotation failure can never abort the rewrite it protects.
+ * plain lexical sort of the SUFFIX is chronological. Sorting on the suffix
+ * rather than the whole filename is load-bearing across the two delimiter
+ * forms (#1173): `-` (0x2D) sorts before `.` (0x2E), so a whole-name sort
+ * would group every legacy dot-form file after every hyphen-form one
+ * regardless of age, and rotation would prune only hyphen-form backups.
+ * Oldest beyond `keep` are unlinked. Errors PROPAGATE — the single caller
+ * wraps this in try/catch so a rotation failure can never abort the rewrite it
+ * protects.
  *
  * @param {string} dir — directory holding the store + its backups
  * @param {string} baseName — basename of the store file (e.g. `learnings.jsonl`)
  * @param {number} keep — number of newest backups to retain
  */
 async function rotateBackups(dir, baseName, keep = BACKUP_KEEP) {
-  const prefix = `${baseName}.bak-`;
   const names = await readdir(dir);
   // Lexical sort == chronological for the dash-normalized ISO suffix. Ascending
   // → oldest first, so the head of the list is what we prune.
-  const backups = names.filter((n) => n.startsWith(prefix)).sort();
+  const backups = names
+    .map((n) => ({ name: n, suffix: backupSuffixOf(baseName, n) }))
+    .filter((e) => e.suffix !== null)
+    // Sort key strips a leading non-digit label so a labelled legacy suffix
+    // (`.bak.evolve-<ts>`) compares against a bare one (`.bak-<ts>`) on the
+    // timestamp, not on the label. Ceiling (#1173): this assumes the label
+    // PRECEDES the timestamp, which holds for every form observed on disk; a
+    // suffix carrying no digits at all sorts oldest and is pruned first.
+    // Revisit if a writer ever appends its label after the timestamp.
+    .map((e) => ({ ...e, key: e.suffix.replace(/^\D*/, '') }))
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+    .map((e) => e.name);
   const stale = backups.slice(0, Math.max(0, backups.length - keep));
   for (const name of stale) {
     await unlink(path.join(dir, name));

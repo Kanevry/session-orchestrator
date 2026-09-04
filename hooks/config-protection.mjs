@@ -50,7 +50,7 @@ import path from 'node:path';
 
 import { emitAllow, emitDeny } from '../scripts/lib/io.mjs';
 import { emitEvent } from '../scripts/lib/events.mjs';
-import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
+import { getProjectDir } from '../scripts/lib/platform.mjs';
 import {
   _parseConfigProtection,
   _isConfigWeakeningAllowed,
@@ -461,7 +461,7 @@ async function main() {
   let cfgContent = '';
   for (const file of ['CLAUDE.md', 'AGENTS.md']) {
     try {
-      cfgContent = await fs.readFile(path.join(SO_PROJECT_DIR, file), 'utf8');
+      cfgContent = await fs.readFile(path.join(getProjectDir(), file), 'utf8');
       if (cfgContent) break;
     } catch { /* try next candidate */ }
   }

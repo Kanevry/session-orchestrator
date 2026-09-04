@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * cold-start.mjs — Parser for the top-level `cold-start:` YAML block (PRD F1.3 /
@@ -30,7 +31,7 @@ export function _parseColdStart(content) {
     'silence-after-sessions': 1,
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

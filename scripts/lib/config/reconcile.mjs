@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * reconcile.mjs — Parser for the top-level `reconcile:` YAML block.
@@ -169,7 +170,7 @@ export function _parseReconcile(content) {
     'max-proposals-per-run': 10,
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

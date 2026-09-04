@@ -302,8 +302,6 @@ const ALLOWLIST = Object.freeze({
     'prose-only consumer — skills/wave-executor/wave-loop.md gates the per-wave commit step on this key; the commit itself is a coordinator action, not a script',
   'instruction-budget':
     'dedicated reader outside the parser layer — scripts/lib/instruction-budget-guard.mjs parses this block itself (S2 exemption only; S1 evidence is real)',
-  webhooks:
-    'dedicated reader outside the parser layer — scripts/lib/webhook-url.mjs resolves these URLs env-first (S2 exemption only; S1 evidence is real)',
 });
 
 /**

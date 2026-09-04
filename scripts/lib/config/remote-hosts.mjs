@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLinesNoDash } from './block-preprocess.mjs';
 
 /**
  * remote-hosts.mjs — Parser for the `remote-hosts:` Session Config block (#1160).
@@ -73,7 +74,7 @@ const SAFE_PATH_RE = /^[A-Za-z0-9._~/][A-Za-z0-9._~/-]*$/;
  * @returns {Array<{alias: string, 'roles-allowed': string[], 'repo-path': string|null, 'claude-path': string|null}>}
  */
 export function _parseRemoteHosts(content) {
-  const lines = String(content ?? '').split(/\r?\n/);
+  const lines = preprocessBlockLinesNoDash(String(content ?? ''));
   let inBlock = false;
   const blockLines = [];
 

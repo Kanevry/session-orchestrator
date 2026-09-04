@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * issue-budget.mjs — Parser for the `issue-budget:` block-style Session Config key.
@@ -65,7 +66,7 @@ export function _parseIssueBudget(content) {
 
   if (typeof content !== 'string' || content === '') return { ...defaults };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

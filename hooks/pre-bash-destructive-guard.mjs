@@ -95,6 +95,8 @@ let blocker = null;
 let readConfigFile;
 let loadEffectivePolicy;
 let isSessionConfigHeading;
+let preprocessBlockLinesNoDash;
+let findUnterminatedComment;
 let emitEvent;
 
 /**
@@ -164,6 +166,7 @@ async function bootstrap() {
       config: { specifier: lib('config.mjs') },
       blockedCommandsPolicy: { specifier: lib('blocked-commands-policy.mjs') },
       sectionExtractor: { specifier: lib('config', 'section-extractor.mjs') },
+      blockPreprocess: { specifier: lib('config', 'block-preprocess.mjs') },
       events: { specifier: lib('events.mjs') },
       blocker: {
         specifier: lib('command-blocker.mjs'),
@@ -192,6 +195,7 @@ async function bootstrap() {
   ({ readConfigFile } = modules.config);
   ({ loadEffectivePolicy } = modules.blockedCommandsPolicy);
   ({ isSessionConfigHeading } = modules.sectionExtractor);
+  ({ findUnterminatedComment, preprocessBlockLinesNoDash } = modules.blockPreprocess);
   ({ emitEvent } = modules.events);
   blocker = modules.blocker;
   degradedLabels = degraded;
@@ -760,19 +764,41 @@ async function main() {
     const mdContent = await readConfigFile(projectDir);
     // Look for "allow-destructive-ops: true" in the Session Config block.
     // Simple line-based scan: find lines under ## Session Config, stop at next ##.
-    const lines = mdContent.split(/\r?\n/);
-    let inConfig = false;
-    for (const line of lines) {
-      // SSOT predicate (#968) — never re-derive this comparison. A local copy
-      // that drifts LOOSER than the extractor silently disagrees with the
-      // runtime about where the config block starts.
-      if (isSessionConfigHeading(line)) { inConfig = true; continue; }
-      if (inConfig && /^## /.test(line)) break;
-      if (inConfig) {
-        const m = line.match(/^\s*(?:-\s+\*\*)?allow-destructive-ops(?::\*\*)?\s*:\s*(\S+)/);
-        if (m && m[1].toLowerCase() === 'true') {
-          process.stderr.write('ℹ destructive-guard bypassed\n');
-          return emitAllow();
+    // W4/F1b — HTML-comment stripping is MANDATORY here (same class as #1162a).
+    // With a raw `split(/\r?\n/)` a COMMENTED-OUT
+    // `<!--\nallow-destructive-ops: true\n-->` under `## Session Config` DISABLED
+    // the whole 14-rule guard for the session: commenting a key out is the most
+    // ordinary way to turn it off and must never turn it ON. `NoDash` (not the
+    // full `preprocessBlockLines`) on purpose — bold-subkey normalisation is not
+    // wanted; the regex below already tolerates `- **key:**` and stays as-is.
+    //
+    // UNTERMINATED `<!--` — the fail-closed direction INVERTS for a bypass scan.
+    // `stripHtmlCommentBlocks` returns the lines UNFILTERED when a comment is
+    // never closed (right for a block PARSER, nothing may silently vanish), which
+    // here would hand the commented-out bypass line back and re-arm the guard's
+    // own off switch. For this scan "I cannot tell where the comments end" must
+    // mean NOT ARMED: the bypass is opt-in, so refusing to grant it is the safe
+    // reading of an ambiguous document. Said out loud on stderr, because a
+    // silently-ignored bypass would look identical to a typo the operator meant.
+    if (findUnterminatedComment(mdContent.split(/\r?\n/)) !== null) {
+      process.stderr.write(
+        'ℹ destructive-guard: unterminated <!-- in CLAUDE.md — bypass ignored\n'
+      );
+    } else {
+      const lines = preprocessBlockLinesNoDash(mdContent);
+      let inConfig = false;
+      for (const line of lines) {
+        // SSOT predicate (#968) — never re-derive this comparison. A local copy
+        // that drifts LOOSER than the extractor silently disagrees with the
+        // runtime about where the config block starts.
+        if (isSessionConfigHeading(line)) { inConfig = true; continue; }
+        if (inConfig && /^## /.test(line)) break;
+        if (inConfig) {
+          const m = line.match(/^\s*(?:-\s+\*\*)?allow-destructive-ops(?::\*\*)?\s*:\s*(\S+)/);
+          if (m && m[1].toLowerCase() === 'true') {
+            process.stderr.write('ℹ destructive-guard bypassed\n');
+            return emitAllow();
+          }
         }
       }
     }

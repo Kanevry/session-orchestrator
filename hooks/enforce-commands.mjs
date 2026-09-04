@@ -65,6 +65,10 @@ let readJson;
 let findScopeFile;
 let extractBashWriteTargets;
 let pathMatchesPattern;
+/** @type {typeof import('../scripts/lib/session-identity/own-session.mjs').readProcessLocalSessionIds} */
+let readProcessLocalSessionIds;
+/** @type {typeof import('../scripts/lib/session-identity/own-session.mjs').classifyManifestSession} */
+let classifyManifestSession;
 /**
  * The `command-blocker.mjs` namespace, imported DIRECTLY (not via the
  * hardening.mjs barrel — which does not carry the `headFallback` recovery, and
@@ -150,6 +154,10 @@ async function bootstrap() {
         headFallback: true,
         requires: ['commandMatchesBlocked', 'suggestForCommandBlock'],
       },
+      // #1153 P1. Bound through the same loader as every other repo dependency,
+      // so a SyntaxError in the identity module banners GUARD INACTIVE instead
+      // of link-crashing this hook into a silent fail-open (#993).
+      sessionIdentity: { specifier: lib('session-identity/own-session.mjs') },
     },
     {
       hookName: HOOK_NAME,
@@ -163,6 +171,7 @@ async function bootstrap() {
   ({ resolveProjectDir } = modules.platform);
   ({ readJson } = modules.common);
   ({ findScopeFile, extractBashWriteTargets, pathMatchesPattern } = modules.hardening);
+  ({ readProcessLocalSessionIds, classifyManifestSession } = modules.sessionIdentity);
   blocker = modules.blocker;
   degradedLabels = degraded;
 }
@@ -245,6 +254,66 @@ async function main() {
   } catch {
     scope = {};
   }
+  // G3b (#1153 P1) — is this manifest even MINE?
+  //
+  // `wave-scope.json` lives in the WORKING COPY, not in the session, so two live
+  // sessions sharing one checkout read the SAME file. Before this gate, session
+  // A's `blockedCommands` decided session B's Bash calls, with a deny reason
+  // pointing at a wave plan B does not own (#1082, the sibling defect
+  // hooks/enforce-scope.mjs Gate 3b closed for Edit/Write under #1123).
+  //
+  // Deliberately AFTER the parse block: a corrupt manifest folds to `{}`, hence
+  // no ids, hence `'unknown'` — and keeps being enforced. `'own'` and
+  // `'unknown'` fall through completely unchanged; a legacy manifest without a
+  // `session` field stays enforced. Only what is PROVABLY foreign stands down.
+  //
+  // IDENTITY TIER: `readProcessLocalSessionIds` (hook payload +
+  // `CLAUDE_CODE_SESSION_ID`) and deliberately NOT `readOwnSessionIds`, whose
+  // third tier is the repo-global `session.lock` — one file shared by every
+  // session in the checkout, which made a peer's manifest classify as `'own'`
+  // (#1194).
+  //
+  // CEILING (BV-004): on a harness that exports no session env var and puts no
+  // `session_id` in the hook payload (Codex CLI, Cursor today) both tiers are
+  // empty, so this gate is permanently `'unknown'` = enforce = pre-#1153
+  // behaviour there. Revisit when those hook payloads carry a session id.
+  {
+    // `new Set(...)` is load-bearing: `readProcessLocalSessionIds` returns a
+    // string[], and `classifyManifestSession` does `ownIds instanceof Set ?
+    // ownIds : new Set()` — a bare array would silently become EMPTY.
+    const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
+    const { verdict, manifestIds } = classifyManifestSession(scope, ownIds);
+    if (verdict === 'foreign') {
+      // Observability only, and deliberately NOT emitWarn: this branch is hit on
+      // every Bash call of the non-owning session, so a stderr line per call
+      // would be noise. Awaited before the allow — flushNotices() exits the
+      // process, which would discard a pending append.
+      try {
+        const { emitEvent } = await import('../scripts/lib/events.mjs');
+        await emitEvent(
+          'orchestrator.scope.foreign_session_ignored',
+          {
+            hook: HOOK_NAME,
+            manifest: scopePath,
+            manifest_session: manifestIds,
+            own_session: [...ownIds],
+            wave: scope.wave,
+            command,
+          },
+          { repoRoot: projectRoot },
+        );
+      } catch { /* observability is best-effort — never blocks the decision */ }
+      return flushNotices(notices);
+    }
+  }
+
+  // ADVERSARIAL CEILING: `wave-scope.json` is a file ANY process in this working
+  // copy can write, so writing a foreign id into it is a per-file kill switch for
+  // this session's own gate. Accepted because "no manifest" already means allow
+  // (G3), so a foreign manifest grants nothing an `rm` would not — but the change
+  // MUST stay visible: see post-bash-write-verify's control-file notice (#938),
+  // which is the only thing that distinguishes this from a legitimate peer wave.
+
   const enforcement = scope.enforcement || 'strict';
   const blockedCommands = Array.isArray(scope.blockedCommands)
     ? scope.blockedCommands

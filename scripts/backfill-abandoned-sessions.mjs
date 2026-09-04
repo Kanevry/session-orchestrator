@@ -43,7 +43,7 @@ import { fileURLToPath } from 'node:url';
 
 import { backfillAbandonedSession, isUuid } from './lib/session-close-backfill.mjs';
 import { emitEvent } from './lib/events.mjs';
-import { SO_PROJECT_DIR } from './lib/platform.mjs';
+import { getProjectDir } from './lib/platform.mjs';
 
 const LOCK_ACQUIRED = 'orchestrator.session.lock.acquired';
 const SESSION_STARTED = 'orchestrator.session.started';
@@ -441,7 +441,7 @@ async function main() {
         '  --dry-run             preview only (DEFAULT — nothing is written)\n' +
         '  --apply               synthesize + append abandoned-session stubs\n' +
         '  --json                emit the summary as JSON to stdout\n' +
-        '  --repo-root           override the project root (default: resolved SO_PROJECT_DIR)\n' +
+        '  --repo-root           override the project root (default: resolved project dir)\n' +
         '  --assume-dead-before  ISO-8601 cutoff; a candidate whose last known event\n' +
         '                        predates it bypasses a live foreign session.lock\n' +
         'Exit codes: 0 ok, 1 arg error, 2 system error\n'
@@ -451,7 +451,7 @@ async function main() {
 
   // --apply is an explicit opt-in; absent it (or with --dry-run) we never write.
   const apply = values.apply === true && values['dry-run'] !== true;
-  const repoRoot = values['repo-root'] || SO_PROJECT_DIR;
+  const repoRoot = values['repo-root'] || getProjectDir();
 
   let assumeDeadBeforeMs = null;
   if (typeof values['assume-dead-before'] === 'string' && values['assume-dead-before'].length > 0) {

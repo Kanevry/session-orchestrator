@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * slopcheck.mjs — Parser for the top-level `slopcheck:` YAML block
@@ -36,7 +37,7 @@ export function _parseSlopcheck(content) {
     sources: [...DEFAULT_SOURCES],
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

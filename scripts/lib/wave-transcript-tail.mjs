@@ -96,9 +96,107 @@ const RE_EMIT_EVERY = 10;
 
 /**
  * git subcommands that mutate the shared index, the stash stack, or remote
- * history — the PSA-007 prohibition list, verbatim.
+ * history — the PSA-007 prohibition list, verbatim. Matching the subcommand
+ * LITERAL is only the first half: the arguments decide whether the invocation
+ * writes anything at all (#1215).
+ *
+ * Group 1 is the subcommand, group 2 the remaining argument string.
+ *
+ * The global-flag run has TWO alternatives on purpose (W4/F2). A bare
+ * `(?:-[^\s]+\s+)*` cannot absorb a VALUE-taking global flag: in
+ * `git -C /tmp stash` the run eats `-C ` and then meets `/tmp`, which is not a
+ * subcommand, so the whole invocation read as NOT a git write — measured 2026-09-04,
+ * `isGitWrite('git -C /tmp stash')` and `isGitWrite('git -c user.name=x commit -m y')`
+ * both returned false. `-C`/`-c`/`--git-dir`/`--work-tree`/`--namespace`/
+ * `--exec-path`/`--config-env` are the value-taking globals; the space-separated
+ * form is matched first, the `--flag=value` form falls through to the generic
+ * alternative unchanged.
+ *
+ * `command git …` and `env VAR=x git …` prefixes are absorbed too — both are
+ * ordinary agent shapes that hid a write behind one token.
+ *
+ * DELIBERATE — `-C <dir>` is NOT treated as fixture context. `FIXTURE_CONTEXT_RE`
+ * keys on `cd /tmp` / `mktemp`, the shapes agents actually write around a test
+ * fixture; teaching it `-C` would hand back the exact one-token evasion this fix
+ * closes (`git -C /tmp/../<repo> commit`). A genuine `git -C "$TMPDIR" commit`
+ * therefore reports — a false alarm on an advisory detector, never a missed breach.
+ *
+ * CEILING (BV-004): the prefix list is enumerated, not general. `sudo git …`,
+ * `nice -n 5 git …` and any other wrapper still hide the write; and a git write
+ * inside `$(…)` or a quoted string was never detected (see `isGitWrite`).
+ * Revisit if a real PSA-007 breach is ever missed through a wrapper.
  */
-const GIT_WRITE_RE = /^\s*git\s+(?:-[^\s]+\s+)*(add|commit|stash|push|mv|rm|reset|checkout\s+--)\b/;
+const GIT_WRITE_RE =
+  /^\s*(?:command\s+|env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+)*git\s+(?:(?:-C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env)\s+\S+\s+|-[^\s]+\s+)*(add|commit|stash|push|mv|rm|reset|checkout)\b(.*)$/;
+
+/**
+ * `git stash` sub-subcommands that actually touch the stash stack. Bare
+ * `git stash` (no sub-subcommand) is `stash push`, so it counts too; anything
+ * else — `list`, `show`, an unknown word — is a read.
+ */
+const STASH_WRITE_SUBS = new Set([
+  'push',
+  'save',
+  'pop',
+  'apply',
+  'drop',
+  'clear',
+  'branch',
+  'create',
+  'store',
+]);
+
+/**
+ * Argument-aware PSA-007 classification. Decision table (#1215):
+ *
+ * | invocation                        | verdict | why                                    |
+ * |-----------------------------------|---------|----------------------------------------|
+ * | `git stash` / `stash push|save`   | write   | pushes onto the shared stash stack     |
+ * | `stash pop|apply|drop|clear`      | write   | mutates / consumes the stack           |
+ * | `stash branch|create|store`       | write   | creates refs from the stack            |
+ * | `git stash list` / `stash show`   | READ    | capability/inspection probe            |
+ * | `--help` / `-h` / `--version`     | READ    | capability probe, any subcommand       |
+ * | `--dry-run` (any subcommand)      | READ    | prints, never writes                   |
+ * | `-n` on add / rm / mv / push      | READ    | `-n` IS `--dry-run` there              |
+ * | `-n` on commit                    | WRITE   | `-n` is `--no-verify` — a REAL commit  |
+ * | `git checkout -- <path>`          | write   | discards sibling work (destructive)    |
+ * | `git checkout <branch>`           | READ    | no index/worktree content destroyed    |
+ * | `git reset` (any form)            | write   | destructive, kept unconditional        |
+ * | `git add|commit|push|mv|rm` else  | write   | the PSA-007 list, verbatim             |
+ *
+ * The `-n` split is measured, not assumed — `git commit -h` prints
+ * `-n, --no-verify` while `git add -h` / `git rm -h` / `git push -h` all print
+ * `-n, --[no-]dry-run` (measured 2026-09-04, git in this repo's PATH).
+ * Treating `commit -n` as a read would blind the detector to
+ * `git commit --no-verify`, which `parallel-sessions.md` § PSA-007 names as an
+ * anti-pattern verbatim.
+ *
+ * Ceiling: flags are matched as whole tokens after quoted spans are stripped,
+ * so `git commit -m "fix -h"` stays a write. Bundled short flags (`-nv`) and
+ * flags hidden in `$(…)` are not decoded — they read as writes, a false alarm,
+ * never a missed breach. Revisit if agents start writing bundled git flags.
+ *
+ * @param {string} sub — the matched git subcommand
+ * @param {string} rawArgs — everything after it in the segment
+ * @returns {boolean}
+ */
+function gitSegmentWrites(sub, rawArgs) {
+  // Strip quoted spans so a commit message can never supply a read flag.
+  const args = String(rawArgs || '').replace(/"[^"]*"|'[^']*'/g, ' ');
+  const tokens = args.split(/\s+/).filter(Boolean);
+
+  for (const t of tokens) {
+    if (t === '--help' || t === '-h' || t === '--version' || t === '--dry-run') return false;
+    if (t === '-n' && sub !== 'commit') return false;
+  }
+
+  if (sub === 'checkout') return tokens.includes('--');
+  if (sub === 'stash') {
+    const first = tokens.find((t) => !t.startsWith('-'));
+    return first === undefined || STASH_WRITE_SUBS.has(first);
+  }
+  return true;
+}
 
 /**
  * STATUS literals that all report as pattern `status-partial`.
@@ -283,9 +381,22 @@ export function classifyErrorClass(text) {
  * `/private/tmp`, `/var/folders`, `$TMPDIR`). A fixture repo created somewhere
  * else is still reported — a false alarm, never a missed breach. Revisit if
  * agents start seeding fixtures outside these paths.
+ *
+ * #1172: the temp path must also match BARE — the reported false alarm was
+ * `cd /tmp && git init && git commit -m x`, where the old pattern required a
+ * trailing `/` after `/tmp` and therefore saw nothing. The terminator class
+ * (`/`, quote, whitespace, `;`, `&`, `|`, end of string) is what keeps
+ * `cd /tmpfoo` — a real directory that is NOT the temp dir — reported.
+ *
+ * The destructive guard's own temp allowlist (`hooks/pre-bash-destructive-guard.mjs`
+ * `isSafeRmTarget`) is deliberately NOT reused: it exports nothing
+ * (`grep -n "^export" hooks/pre-bash-destructive-guard.mjs` → 0 matches,
+ * measured 2026-09-04) and resolves paths on the filesystem against a loaded
+ * policy, whereas this is a lexical test on a transcript string with no repo
+ * context. Same intent, different substrate.
  */
 const FIXTURE_CONTEXT_RE =
-  /\bmktemp\b|\bcd\s+["']?(?:\/private)?\/(?:tmp|var\/folders)\/|\bcd\s+["']?\$\{?(?:TMPDIR|TMP|SCRATCH)/;
+  /\bmktemp\b|\bcd\s+["']?(?:\/private)?\/(?:tmp|var\/folders)(?:["'\s;&|/]|$)|\bcd\s+["']?\$\{?(?:TMPDIR|TMP|SCRATCH)/;
 
 /**
  * True when the Bash command contains a git INDEX/HISTORY write in ANY
@@ -301,7 +412,10 @@ const FIXTURE_CONTEXT_RE =
 export function isGitWrite(command) {
   const text = String(command || '');
   if (FIXTURE_CONTEXT_RE.test(text)) return false;
-  return text.split(/&&|\|\||;|\||\n/).some((seg) => GIT_WRITE_RE.test(seg));
+  return text.split(/&&|\|\||;|\||\n/).some((seg) => {
+    const m = GIT_WRITE_RE.exec(seg);
+    return m ? gitSegmentWrites(m[1], m[2]) : false;
+  });
 }
 
 /**

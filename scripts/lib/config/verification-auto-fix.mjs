@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * verification-auto-fix.mjs — Parser for the top-level `verification-auto-fix:`
@@ -31,7 +32,7 @@ export function _parseVerificationAutoFix(content) {
     'max-retries': 2,
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

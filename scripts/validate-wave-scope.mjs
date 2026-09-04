@@ -73,6 +73,7 @@ import path from 'node:path';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { warn } from './lib/common.mjs';
+import { MANIFEST_SESSION_KEYS } from './lib/session-identity/own-session.mjs';
 import {
   assertFileScopeSubset,
   assertTestSiblingCoverage,
@@ -289,10 +290,13 @@ function validateOptionalSessionId(obj, key, errors) {
 }
 
 /**
- * Validate the OPTIONAL session binding (#1123): `session` (the raw
- * `session_id` of the session that WROTE this manifest) and its human-readable
- * twin `semantic_session`. Both come from one `sessionAttribution(repoRoot)`
- * call — see `skills/wave-executor/wave-loop.md` § Scope Manifest.
+ * Validate the OPTIONAL session binding (#1123): `session_id` (the raw session
+ * id of the session that WROTE this manifest) and its human-readable twin
+ * `semantic_session_id`. Both come from one `sessionAttribution(repoRoot)`
+ * call — see `skills/wave-executor/wave-loop.md` § Scope Manifest. The
+ * pre-#1153 spellings `session` / `semantic_session` are still ACCEPTED here
+ * (read side only, until the next minor release) — key names come from
+ * `MANIFEST_SESSION_KEYS` so the writer and every reader share one list.
  *
  * Deliberately NOT part of {@link validateRequired}, and that is a compatibility
  * constraint rather than a preference: `wave-scope.json` is a shared
@@ -307,8 +311,24 @@ function validateOptionalSessionId(obj, key, errors) {
  * @param {string[]} warnings
  */
 function validateSession(obj, errors, warnings) {
-  const present = validateOptionalSessionId(obj, 'session', errors);
-  validateOptionalSessionId(obj, 'semantic_session', errors);
+  let present = false;
+  MANIFEST_SESSION_KEYS.current.forEach((key, i) => {
+    const legacyKey = MANIFEST_SESSION_KEYS.legacy[i];
+    const hasCurrent = validateOptionalSessionId(obj, key, errors);
+    const hasLegacy = validateOptionalSessionId(obj, legacyKey, errors);
+    // Both spellings of the SAME slot, disagreeing, is the one case the reader
+    // cannot resolve honestly: it silently prefers `key` and drops the other
+    // id, so a manifest that names two different sessions would classify as
+    // `own` for one of them. Name it here rather than let the preference decide.
+    if (hasCurrent && hasLegacy && obj[key] !== obj[legacyKey]) {
+      errors.push(
+        `${key} and legacy ${legacyKey} are both present with DIFFERENT values — ` +
+          'a manifest binds to exactly one session; drop the legacy key (accepted on ' +
+          'the read side only, until the next minor release, #1153)',
+      );
+    }
+    if (i === 0) present = hasCurrent || hasLegacy;
+  });
   if (!present) {
     warnings.push(
       'no session field — manifest is not session-bound (legacy, #1123), so every session sharing this ' +

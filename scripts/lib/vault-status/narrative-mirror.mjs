@@ -416,6 +416,30 @@ function normalizeUpdated(content) {
  * between runs: run 1 (env set) → `skipped-noop`, run 2 (env absent) → `written`
  * with the raw value on disk.
  *
+ * WHY THERE IS NO `maskerWouldChange` RE-PROBE HERE (#1214). The two sibling
+ * sinks in `vault-mirror/process.mjs` (processLearning, processSession) guard
+ * all five of their `skipped-noop` returns with `maskerWouldChange(existing)`,
+ * because their five-field / date comparisons can report a match while the
+ * on-disk note still carries a raw needle. This sink compares the WHOLE
+ * document, which makes that residue unreachable: `matchesModuloRedaction`
+ * only fires when the EXISTING side carries a `[REDACTED]` marker, and every
+ * literal segment around such a marker must appear verbatim in the candidate —
+ * but the candidate comes through `maskNarrative` with the CURRENT masker, so
+ * it can never contain a value that masker would redact. A raw needle on disk
+ * therefore always lands in a literal segment that fails to match, and the run
+ * writes. Measured 2026-09-04 at HEAD cd785003 in both directions (no marker on
+ * disk; marker already on disk plus a second needle entering the env): both
+ * returned `written` with the raw value gone. The two tests named `(#1214)` in
+ * tests/lib/vault-status/narrative-mirror.test.mjs pin that invariant — an
+ * argument-order slip on the call below makes both return `skipped-noop` and
+ * republish the raw value, which is how they were verified to bite.
+ *
+ * NAMED CEILING: the invariant rests on `maskNarrative` walking EVERY string
+ * that reaches the render. `repo` is fed to `renderNarrative` outside that walk
+ * (it is a directory basename, not STATE.md content), so a future rendered
+ * field added outside the walk would reopen this. Revisit trigger: any new
+ * `renderNarrative` input that does not pass through `maskNarrative`.
+ *
  * `matchesModuloRedaction` is IMPORTED from `../vault-mirror/process.mjs`, not
  * re-derived here: `secret-masker.mjs`'s header states this compensation as a
  * contract binding on every consumer that diffs a written artifact against a fresh

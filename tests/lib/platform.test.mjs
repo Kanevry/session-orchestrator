@@ -15,12 +15,13 @@ import {
   SO_IS_WINDOWS,
   SO_IS_WSL,
   SO_PATH_SEP,
-  SO_PLATFORM,
-  SO_PLUGIN_ROOT,
-  SO_PROJECT_DIR,
-  SO_STATE_DIR,
-  SO_CONFIG_FILE,
   SO_SHARED_DIR,
+  getPlatform,
+  getPluginRoot,
+  getProjectDir,
+  getStateDir,
+  getConfigFile,
+  _resetPlatformCache,
   detectPlatform,
   resolvePluginRoot,
   resolveProjectDir,
@@ -43,10 +44,14 @@ const ENV_KEYS = [
 
 beforeEach(() => {
   for (const key of ENV_KEYS) vi.stubEnv(key, '');
+  // The lazy accessors memoize per process (#1153 P5) — without this the second
+  // test in this file would read the first test's environment.
+  _resetPlatformCache();
 });
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  _resetPlatformCache();
 });
 
 // ---------------------------------------------------------------------------
@@ -54,17 +59,20 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('module exports', () => {
-  it('exports all 10 constants as non-undefined values', () => {
+  it('exports the plain constants as non-undefined values', () => {
     expect(SO_OS).not.toBeUndefined();
     expect(SO_IS_WINDOWS).not.toBeUndefined();
     expect(SO_IS_WSL).not.toBeUndefined();
     expect(SO_PATH_SEP).not.toBeUndefined();
-    expect(SO_PLATFORM).not.toBeUndefined();
-    expect(SO_PLUGIN_ROOT).not.toBeUndefined();
-    expect(SO_PROJECT_DIR).not.toBeUndefined();
-    expect(SO_STATE_DIR).not.toBeUndefined();
-    expect(SO_CONFIG_FILE).not.toBeUndefined();
     expect(SO_SHARED_DIR).not.toBeUndefined();
+  });
+
+  it('exports the 5 lazy accessors, each returning a defined value', () => {
+    expect(getPlatform()).not.toBeUndefined();
+    expect(getPluginRoot()).not.toBeUndefined();
+    expect(getProjectDir()).not.toBeUndefined();
+    expect(getStateDir()).not.toBeUndefined();
+    expect(getConfigFile()).not.toBeUndefined();
   });
 
   it('exports all 5 functions as callable functions', () => {
@@ -354,11 +362,12 @@ describe('resolvePluginRoot', () => {
     expect(resolvePluginRoot()).toBe(repoDir);
   });
 
-  it('SO_PLUGIN_ROOT constant is either empty or an absolute path', () => {
-    if (SO_PLUGIN_ROOT !== '') {
-      expect(path.isAbsolute(SO_PLUGIN_ROOT)).toBe(true);
+  it('getPluginRoot() is either empty or an absolute path', () => {
+    const root = getPluginRoot();
+    if (root !== '') {
+      expect(path.isAbsolute(root)).toBe(true);
     } else {
-      expect(SO_PLUGIN_ROOT).toBe('');
+      expect(root).toBe('');
     }
   });
 });
@@ -367,9 +376,9 @@ describe('resolvePluginRoot', () => {
 // 11. SO_PLATFORM is one of the valid platform values
 // ---------------------------------------------------------------------------
 
-describe('SO_PLATFORM', () => {
+describe('getPlatform', () => {
   it('is one of "claude", "codex", "cursor", or "pi"', () => {
-    expect(['claude', 'codex', 'cursor', 'pi']).toContain(SO_PLATFORM);
+    expect(['claude', 'codex', 'cursor', 'pi']).toContain(getPlatform());
   });
 });
 
@@ -483,5 +492,109 @@ describe('walk boundary (#1139)', () => {
     const cwd = enterSandbox(path.join('scratch', 'nested'));
 
     expect(resolveProjectDir('claude')).toBe(cwd);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 16. Lazy, memoized accessors (#1153 P5)
+//
+// The bug these pin: the five SO_* values used to be `export const … = detect…()`
+// evaluated at MODULE LOAD, so every static importer — including the hottest
+// deny-capable hooks, which run on every tool call — paid a filesystem walk-up
+// just for importing platform.mjs, whether or not it ever read the value.
+// ---------------------------------------------------------------------------
+
+describe('lazy platform accessors (#1153 P5)', () => {
+  it('memoizes: three calls detect once', () => {
+    vi.stubEnv('CODEX_PLUGIN_ROOT', '/tmp/does-not-matter');
+    expect(getPlatform()).toBe('codex');
+
+    // Change the environment WITHOUT resetting — a memoized value must not
+    // re-detect, otherwise the "compute once per process" contract is a lie.
+    vi.stubEnv('CODEX_PLUGIN_ROOT', '');
+    vi.stubEnv('CURSOR_RULES_DIR', '/tmp/does-not-matter');
+    expect(getPlatform()).toBe('codex');
+    expect(getPlatform()).toBe('codex');
+  });
+
+  it('_resetPlatformCache() makes the next call re-detect', () => {
+    vi.stubEnv('CODEX_PLUGIN_ROOT', '/tmp/does-not-matter');
+    expect(getPlatform()).toBe('codex');
+
+    vi.stubEnv('CODEX_PLUGIN_ROOT', '');
+    vi.stubEnv('PI_PLUGIN_ROOT', '/tmp/does-not-matter');
+    _resetPlatformCache();
+    expect(getPlatform()).toBe('pi');
+  });
+
+  it('derived accessors follow the memoized platform', () => {
+    vi.stubEnv('CODEX_PLUGIN_ROOT', '/tmp/does-not-matter');
+    expect(getStateDir()).toBe('.codex');
+    expect(getConfigFile()).toBe('AGENTS.md');
+
+    _resetPlatformCache();
+    vi.stubEnv('CODEX_PLUGIN_ROOT', '');
+    vi.stubEnv('CURSOR_RULES_DIR', '/tmp/does-not-matter');
+    expect(getStateDir()).toBe('.cursor');
+    expect(getConfigFile()).toBe('CLAUDE.md');
+  });
+
+  it('importing platform.mjs performs ZERO filesystem calls', async () => {
+    const calls = [];
+    vi.resetModules();
+    vi.doMock('node:fs', async (importOriginal) => {
+      /** @type {any} */
+      const actual = await importOriginal();
+      return {
+        ...actual,
+        default: actual.default ?? actual,
+        existsSync: (...args) => { calls.push(['existsSync', args[0]]); return actual.existsSync(...args); },
+        statSync: (...args) => { calls.push(['statSync', args[0]]); return actual.statSync(...args); },
+        readFileSync: (...args) => { calls.push(['readFileSync', args[0]]); return actual.readFileSync(...args); },
+      };
+    });
+
+    try {
+      const mod = await import('@lib/platform.mjs');
+      // The import itself must be filesystem-silent …
+      expect(calls).toEqual([]);
+
+      // First USE is where the work happens — proves the spies were live and
+      // that the empty array above is a measurement, not a mocking artefact.
+      mod.getProjectDir();
+      expect(calls.length).toBeGreaterThan(0);
+      mod._resetPlatformCache();
+    } finally {
+      vi.doUnmock('node:fs');
+      vi.resetModules();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Deprecated compat bindings are DELETED (#1153 P5 follow-up)
+// ---------------------------------------------------------------------------
+
+describe('deprecated compat bindings', () => {
+  it('does not export SO_PLATFORM/SO_PLUGIN_ROOT/SO_PROJECT_DIR/SO_STATE_DIR/SO_CONFIG_FILE', async () => {
+    // Bug this catches: re-introducing any of these as an `export let` live
+    // binding brings back the #1153 P5 defect — the name is `undefined` until
+    // some getter has run in the process, so a bare importer silently resolves
+    // a root/platform to undefined instead of failing loudly. Deletion is the
+    // fix; this assertion is the tripwire against a quiet re-introduction.
+    const mod = await import('@lib/platform.mjs');
+    const names = Object.keys(mod);
+    for (const removed of [
+      'SO_PLATFORM',
+      'SO_PLUGIN_ROOT',
+      'SO_PROJECT_DIR',
+      'SO_STATE_DIR',
+      'SO_CONFIG_FILE',
+    ]) {
+      expect(names).not.toContain(removed);
+    }
+    // Control: the plain constants that were KEPT are still exported, so a
+    // wholesale export-list breakage cannot make the assertion above pass.
+    expect(names).toEqual(expect.arrayContaining(['SO_SHARED_DIR', 'SO_OS', 'SO_PATH_SEP']));
   });
 });

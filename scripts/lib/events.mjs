@@ -41,7 +41,7 @@
 
 import { promises as fs, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { SO_PROJECT_DIR, SO_SHARED_DIR } from './platform.mjs';
+import { getProjectDir, SO_SHARED_DIR } from './platform.mjs';
 import { readLock } from './session-lock.mjs';
 import { resolveStateMdPath } from './state-md/frontmatter-mutators.mjs';
 import {
@@ -70,7 +70,7 @@ import {
  * @param {string} [repoRoot=SO_PROJECT_DIR] — project root the events log lives under.
  * @returns {string}
  */
-export function eventsFilePath(repoRoot = SO_PROJECT_DIR) {
+export function eventsFilePath(repoRoot = getProjectDir()) {
   return path.join(repoRoot, SO_SHARED_DIR, 'metrics', 'events.jsonl');
 }
 
@@ -156,8 +156,8 @@ const STATE_DIR_CANDIDATES = ['.claude', '.codex', '.cursor', '.pi'];
  * `emitEvent()`'s correlation fill — it is the canonical primitive for every
  * caller that needs to name a `.orchestrator/`-adjacent artefact as "mine"
  * without risking a peer's id. `skills/wave-executor/wave-loop.md` § Scope
- * Manifest step 1 calls it directly to derive `wave-scope.json`'s `session` /
- * `semantic_session` binding — a hand-written prose comparison against
+ * Manifest step 1 calls it directly to derive `wave-scope.json`'s `session_id` /
+ * `semantic_session_id` binding — a hand-written prose comparison against
  * STATE.md previously stood in for exactly this check, and (per the STATE.md
  * caveat above) that comparison could not veto a peer-owned lock. Any new
  * writer facing the same "is this working-copy-shared artefact mine to
@@ -171,7 +171,7 @@ const STATE_DIR_CANDIDATES = ['.claude', '.codex', '.cursor', '.pi'];
  * @param {string} [root=SO_PROJECT_DIR] — the repo the record is pinned to.
  * @returns {{session_id?: string, semantic_session_id?: string}}
  */
-export function attributionForRecord(root = SO_PROJECT_DIR) {
+export function attributionForRecord(root = getProjectDir()) {
   const attribution = sessionAttribution(root);
   const lockRawId =
     typeof attribution.session_id === 'string' ? attribution.session_id.trim() : '';
@@ -225,8 +225,8 @@ function waveScopePath(root) {
  * keys, for the same reason (a shared file cannot prove which process emits):
  *
  *   - manifest classified `own` → fill (as a NUMBER, see below).
- *   - anything else → omit. That includes an UNBOUND manifest (no `session` /
- *     `semantic_session`): since #1123 BOTH writers stamp the binding, so a
+ *   - anything else → omit. That includes an UNBOUND manifest (no `session_id` /
+ *     `semantic_session_id`): since #1123 BOTH writers stamp the binding, so a
  *     manifest without one is a peer's or a stale artefact, never a legacy own
  *     one. It also includes `unknown` because we cannot resolve our own
  *     identity — stricter than `classifyManifestSession()`'s own `unknown`
@@ -314,7 +314,7 @@ export async function emitEvent(type, payload = {}, opts = {}) {
   // A payload that supplies EITHER session key suppresses BOTH: mixing a
   // caller's `session_id` with a lock-derived `semantic_session_id` would
   // silently produce a record whose two id fields name different sessions.
-  const attributionRoot = opts.repoRoot ?? SO_PROJECT_DIR;
+  const attributionRoot = opts.repoRoot ?? getProjectDir();
   const correlation = {};
   if (payload.session_id === undefined && payload.semantic_session_id === undefined) {
     Object.assign(correlation, attributionForRecord(attributionRoot));

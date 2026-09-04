@@ -63,6 +63,7 @@
  */
 
 import { matchBlockHeader, matchBlockHeaderDetailed } from './block-header.mjs';
+import { preprocessBlockLines, preprocessBlockLinesNoDash } from './block-preprocess.mjs';
 import { _coerceBoolean } from './coercers.mjs';
 
 /**
@@ -315,7 +316,9 @@ function assignKV(entry, text) {
 export function _parseHealthEndpoints(content) {
   if (typeof content !== 'string' || content === '') return null;
 
-  const lines = content.split(/\r?\n/);
+  // NoDash: `- name:` / `- url:` / `- {name, url}` list items are RECORD
+  // boundaries here — de-dashing would merge two endpoints into one (#1162).
+  const lines = preprocessBlockLinesNoDash(content);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].replace(/\r$/, '');
     const m = matchBlockHeaderDetailed(line, 'health-endpoints');
@@ -353,7 +356,9 @@ export function _parseHealthEndpoints(content) {
 export function _parseEcosystemHealthBlockEnabled(content) {
   if (typeof content !== 'string' || content === '') return null;
 
-  const lines = content.split(/\r?\n/);
+  // Standard variant: this parser reads only the flat `enabled:` sub-key and
+  // builds no records (#1162).
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
   for (const rawLine of lines) {

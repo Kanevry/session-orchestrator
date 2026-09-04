@@ -672,3 +672,35 @@ describe('validate-wave-scope.mjs — session binding (#1123)', () => {
     expect(r.stderr).not.toMatch(/no session field/);
   });
 });
+
+
+describe('session-binding key rename (#1153 P2)', () => {
+  const SESSION = '10de3bb9-95bc-4793-ab51-a609287d11df';
+  const SEMANTIC = 'main-2026-08-24-session-1';
+
+  it('accepts the CURRENT key names silently', () => {
+    const r = run(JSON.stringify({ ...VALID, session_id: SESSION, semantic_session_id: SEMANTIC }));
+    expect(r.status).toBe(0);
+    expect(r.stderr).not.toMatch(/not session-bound/);
+  });
+
+  it('still accepts the LEGACY key names for one transition release', () => {
+    const r = run(JSON.stringify({ ...VALID, session: SESSION, semantic_session: SEMANTIC }));
+    expect(r.status).toBe(0);
+    expect(r.stderr).not.toMatch(/not session-bound/);
+  });
+
+  it('accepts both spellings of a slot when they carry the SAME value', () => {
+    const r = run(JSON.stringify({ ...VALID, session_id: SESSION, session: SESSION }));
+    expect(r.status).toBe(0);
+    expect(r.stderr).not.toMatch(/DIFFERENT values/);
+  });
+
+  it('ERRORS when both spellings of a slot carry DIFFERENT values', () => {
+    // The reader silently prefers `session_id` and drops the other id, so this
+    // manifest would name two sessions and classify as `own` for one of them.
+    const r = run(JSON.stringify({ ...VALID, session_id: SESSION, session: 'SOMEONE-ELSE' }));
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/session_id and legacy session are both present with DIFFERENT values/);
+  });
+});

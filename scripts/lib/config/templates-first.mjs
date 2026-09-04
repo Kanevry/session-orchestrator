@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * templates-first.mjs — Parser for the top-level `templates-first:` YAML block
@@ -34,7 +35,7 @@ export function _parseTemplatesFirst(content) {
     hosts: [...DEFAULT_HOSTS],
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

@@ -77,7 +77,7 @@ function learningOf(overrides = {}) {
  *   inBackup?, note?: 'omit'|'mutate', mutate?: (noteText) => string,
  *   noteRepoNs?: string, extraNoteAt?: string }`
  */
-function makeFixture(specs, { storeSeed = [] } = {}) {
+function makeFixture(specs, { storeSeed = [], backupSuffix = '-2026-08-01T00-00-00-000Z' } = {}) {
   const repoRoot = mkTmp('so-bf-repo-');
   const vaultDir = mkTmp('so-bf-vault-');
   const repoNs = basename(repoRoot);
@@ -131,7 +131,9 @@ function makeFixture(specs, { storeSeed = [] } = {}) {
     archiveLines.map((l) => `${l}\n`).join('')
   );
   if (backupLines.length > 0) {
-    writeFileSync(`${storePath}.bak-2026-08-01T00-00-00-000Z`, backupLines.map((l) => `${l}\n`).join(''));
+    // `backupSuffix` carries its own delimiter so a fixture can plant the legacy
+    // DOT form (#1173) as well as the canonical hyphen one.
+    writeFileSync(`${storePath}.bak${backupSuffix}`, backupLines.map((l) => `${l}\n`).join(''));
   }
 
   return { repoRoot, vaultDir, repoNs, storePath };
@@ -193,6 +195,25 @@ describe('orphan detection', () => {
     expect(rec.restorable).toBe(false);
     expect(rec.record).toBeUndefined();
     expect(report.summary.orphans).toBe(0);
+    expect(report.summary.recoverable_from_backup).toBe(1);
+  });
+
+  // Bug (#1173): the same verbatim backup, named in the LEGACY dot form
+  // (`learnings.jsonl.bak.evolve-<ts>`), being skipped by backupPaths() — a
+  // backup that exists on disk and is not found in the one case it is for, so
+  // the tool falls back to a date-truncated vault reconstruction.
+  it.each([
+    ['hyphen (canonical)', '-2026-08-01T00-00-00-000Z'],
+    ['dot (legacy bare ISO)', '.2026-08-01T00-00-00-000Z'],
+    ['dot (legacy labelled)', '.evolve-2026-08-01T00-00-00-000Z'],
+  ])('finds a verbatim backup named in the %s form', async (_label, backupSuffix) => {
+    const l = learningOf({ id: 'bbbbbbbb-0000-4000-8000-000000000002' });
+    const { repoRoot, vaultDir } = makeFixture([{ learning: l, inBackup: true }], { backupSuffix });
+
+    const { report } = await runMain(['--vault-dir', vaultDir], { repoRoot, now: NOW });
+
+    const rec = report.records.find((r) => r.learning_id === l.id);
+    expect(rec.status).toBe('recoverable-verbatim-from-backup');
     expect(report.summary.recoverable_from_backup).toBe(1);
   });
 

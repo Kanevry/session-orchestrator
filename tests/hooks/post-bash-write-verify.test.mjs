@@ -824,3 +824,142 @@ describe('post-bash-write-verify E2E', () => {
     expect(res.stderr).not.toContain('peer write');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Foreign-session manifest (#1153 P1, sibling of enforce-scope's #1123 Gate 3b)
+// ---------------------------------------------------------------------------
+//
+// `wave-scope.json` is a WORKING-COPY artefact; two live sessions in one
+// checkout read the same `allowedPaths`. Before Gate 3b this hook reported a
+// PEER's wave plan against THIS session's writes — the #1082 lockout on the
+// PostToolUse advisory axis.
+//
+// The bug each test catches (TV-001):
+//   1. a peer's allowedPaths still producing an OUTSIDE-the-wave warning here
+//   2. a stand-down with no trace (the #1020 signal-free-ALLOW class)
+//   3. over-reach — a manifest naming US, or naming nobody, going unenforced
+
+describe('post-bash-write-verify — foreign-session manifest (#1153 P1)', () => {
+  let tmp;
+
+  const git = (...args) => execFileSync('git', args, { cwd: tmp, encoding: 'utf8' });
+
+  const runHook = (sessionId) => spawnSync(process.execPath, [HOOK], {
+    input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'echo x > out-of-scope.mjs' } }),
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      CLAUDE_PROJECT_DIR: tmp,
+      SO_HOOK_PROFILE: 'full',
+      SO_DISABLED_HOOKS: '',
+      CLAUDE_CODE_SESSION_ID: sessionId,
+    },
+    timeout: 20_000,
+  });
+
+  const writeScope = (extra) => {
+    mkdirSync(join(tmp, '.claude'), { recursive: true });
+    writeFileSync(
+      join(tmp, '.claude', 'wave-scope.json'),
+      JSON.stringify({ wave: 4, enforcement: 'warn', allowedPaths: ['hooks/**'], ...extra }),
+    );
+  };
+
+  const readEvents = () => {
+    const f = join(tmp, '.orchestrator', 'metrics', 'events.jsonl');
+    if (!existsSync(f)) return [];
+    return readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  };
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'pbwv-foreign-'));
+    git('init', '-q');
+    git('config', 'user.email', 't@e.st');
+    git('config', 'user.name', 'T');
+    mkdirSync(join(tmp, 'hooks'), { recursive: true });
+    writeFileSync(join(tmp, 'hooks', 'keep.mjs'), '// seed\n');
+    git('add', '-A');
+    git('-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'seed');
+    const snap = snapshotPathFor(realpathSync(tmp));
+    if (existsSync(snap)) rmSync(snap, { force: true });
+  });
+
+  afterEach(() => {
+    if (tmp && existsSync(tmp)) {
+      const snap = snapshotPathFor(realpathSync(tmp));
+      if (existsSync(snap)) rmSync(snap, { force: true });
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('stays silent about an out-of-scope write when the manifest names ANOTHER session', () => {
+    writeScope({ session_id: 'PEER-UUID-1111', semantic_session_id: 'main-2026-01-01-session-9' });
+    expect(runHook('OWN-UUID-2222').stderr).toBe(''); // baseline
+    writeFileSync(join(tmp, 'out-of-scope.mjs'), 'pwned\n');
+    const res = runHook('OWN-UUID-2222');
+    expect(res.status).toBe(0);
+    expect(res.stderr).not.toContain('out-of-scope.mjs');
+  });
+
+  it('emits orchestrator.scope.foreign_session_ignored once per gated call', () => {
+    // Deliberately the LEGACY key spelling (#1153 P2): readers accept it for one
+    // transition release, and this is the one hook-level case that proves it.
+    writeScope({ session: 'PEER-UUID-1111', semantic_session: 'main-2026-01-01-session-9' });
+    runHook('OWN-UUID-2222');
+    const events = readEvents().filter((e) => e.event === 'orchestrator.scope.foreign_session_ignored');
+    expect(events).toHaveLength(1);
+    expect(events[0].hook).toBe('post-bash-write-verify');
+    expect(events[0].manifest_session).toEqual(['PEER-UUID-1111', 'main-2026-01-01-session-9']);
+    expect(events[0].own_session).toEqual(['OWN-UUID-2222']);
+    expect(events[0].wave).toBe(4);
+  });
+
+  it('WARNS unchanged when the manifest names THIS session', () => {
+    writeScope({ session: 'OWN-UUID-2222' });
+    expect(runHook('OWN-UUID-2222').stderr).toBe('');
+    writeFileSync(join(tmp, 'out-of-scope.mjs'), 'pwned\n');
+    const res = runHook('OWN-UUID-2222');
+    expect(res.stderr).toContain('out-of-scope.mjs');
+    expect(readEvents().filter((e) => e.event === 'orchestrator.scope.foreign_session_ignored')).toHaveLength(0);
+  });
+
+  it('WARNS unchanged for a LEGACY manifest with no session field (unknown = enforce)', () => {
+    writeScope({});
+    expect(runHook('OWN-UUID-2222').stderr).toBe('');
+    writeFileSync(join(tmp, 'out-of-scope.mjs'), 'pwned\n');
+    expect(runHook('OWN-UUID-2222').stderr).toContain('out-of-scope.mjs');
+  });
+
+  // W4/F7 — the bug: G3b `return`ed BEFORE `currentScopeState` was computed, so
+  // REBINDING the manifest to a fabricated `session_id` (one `cat >` redirect)
+  // disarmed this session's gates AND produced total silence. Deleting the file
+  // was reported (G3); rebinding it was not. Red without the reorder: the hook
+  // emitted nothing at all on the rebinding call.
+  it('reports the SESSION BINDING change when the manifest is rebound to a foreign id', () => {
+    writeScope({ session_id: 'OWN-UUID-2222' });
+    expect(runHook('OWN-UUID-2222').stderr).toBe(''); // baseline against MY manifest
+
+    // The attack: rebind the control file to a session id that is not mine.
+    writeScope({ session_id: 'PEER-UUID-1111' });
+    writeFileSync(join(tmp, 'out-of-scope.mjs'), 'pwned\n');
+    const res = runHook('OWN-UUID-2222');
+    const out = `${res.stdout}\n${res.stderr}`;
+
+    expect(res.status).toBe(0);
+    expect(out).toContain('SESSION BINDING');
+    expect(out).toContain('PEER-UUID-1111');
+    // The stand-down itself is unchanged: no path report from a foreign manifest.
+    expect(out).not.toContain('out-of-scope.mjs');
+    // …and it is a ONE-line notice: the snapshot recorded the new hash.
+    const again = runHook('OWN-UUID-2222');
+    expect(`${again.stdout}\n${again.stderr}`).not.toContain('SESSION BINDING');
+  });
+
+  it('stays silent when a foreign manifest is STABLE (an ordinary peer wave)', () => {
+    writeScope({ session_id: 'PEER-UUID-1111' });
+    expect(runHook('OWN-UUID-2222').stderr).toBe('');
+    writeFileSync(join(tmp, 'out-of-scope.mjs'), 'pwned\n');
+    const res = runHook('OWN-UUID-2222');
+    expect(`${res.stdout}\n${res.stderr}`).not.toContain('SESSION BINDING');
+  });
+});

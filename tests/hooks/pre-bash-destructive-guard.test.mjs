@@ -309,6 +309,56 @@ describe('allow-destructive-ops bypass', { timeout: 15000 }, () => {
     });
     expectDeny(result);
   });
+
+  // W4/F1b — the bug: the bypass scan used a raw `mdContent.split(/\r?\n/)`, so a
+  // COMMENTED-OUT `allow-destructive-ops: true` under `## Session Config`
+  // DISABLED the whole 14-rule guard for the session. Measured 2026-09-04: the
+  // pre-fix scan returned `true` for this fixture, i.e. every blocked command
+  // was allowed. Commenting a key out must never turn it on.
+  it('does NOT bypass when allow-destructive-ops sits inside an HTML comment', async () => {
+    const dir = await mkProjectTracked({
+      claudeMdExtra: ['<!--', 'allow-destructive-ops: true', '-->'].join('\n'),
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('git reset --hard HEAD~1'),
+    });
+    expectDeny(result);
+    expect(result.stderr).not.toContain('bypassed');
+  });
+
+  // W4/F1c — same inversion, live hook. `stripHtmlCommentBlocks` returns the
+  // lines UNFILTERED on an UNTERMINATED `<!--` (fail-closed for a block parser),
+  // which for this BYPASS scan hands the commented-out line back and disarms the
+  // 14-rule guard. Measured 2026-09-04: with only the F1b fix in place this
+  // fixture ALLOWED. "I cannot tell where the comments end" must mean NOT ARMED.
+  it('does NOT bypass when an UNTERMINATED <!-- precedes allow-destructive-ops', async () => {
+    const dir = await mkProjectTracked({
+      claudeMdExtra: ['<!--', 'allow-destructive-ops: true'].join('\n'),
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('git reset --hard HEAD~1'),
+    });
+    expectDeny(result);
+    expect(result.stderr).not.toContain('bypassed');
+    expect(result.stderr).toContain('unterminated <!-- in CLAUDE.md — bypass ignored');
+  });
+
+  // The bold form is NOT a supported bypass — the regex's `(?::\*\*)?\s*:\s*`
+  // needs a second literal colon that `- **key:** true` does not have. Pinned
+  // here (not widened) so the fix above cannot quietly start honouring it, and
+  // mirrors the identical pin in tests/lib/config/config-protection.test.mjs.
+  it('does NOT bypass for the bold `- **allow-destructive-ops:** true` form', async () => {
+    const dir = await mkProjectTracked({
+      claudeMdExtra: '- **allow-destructive-ops:** true',
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('git reset --hard HEAD~1'),
+    });
+    expectDeny(result);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -27,6 +27,10 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeJsonAtomicSync } from './lib/io.mjs';
 import { isPeerRecordId } from './lib/scope-gate.mjs';
+import {
+  MANIFEST_SESSION_KEYS,
+  manifestSessionBinding,
+} from './lib/session-identity/own-session.mjs';
 
 const HELP = `Usage: node scripts/materialize-wave-scope.mjs --state-dir <dir> --wave <positive-int> [--json]
 
@@ -220,7 +224,8 @@ export function validateScopeRecords(value) {
 /**
  * Read the session ids the sibling manifest `<state-dir>/wave-scope.json`
  * declares for this state directory (#1123 wrote both `session` — the raw
- * `session_id` — and its human-readable twin `semantic_session`).
+ * `session_id` — and its human-readable twin `semantic_session_id`; the
+ * pre-#1153 spellings `session` / `semantic_session` are still read).
  *
  * A caller may legitimately hold either spelling, so BOTH are returned and a
  * match against either proves ownership. Any failure to read or parse the
@@ -239,10 +244,12 @@ export function manifestSessionIds(stateDir, readFile = readFileSync) {
     return [];
   }
   if (!isRecord(manifest)) return [];
-  return ['session', 'semantic_session']
-    .map((key) => manifest[key])
-    .filter((value) => typeof value === 'string' && value.trim().length > 0)
-    .map((value) => value.trim());
+  // #1153 P2 — the key spellings live in own-session.mjs, which also reads the
+  // pre-#1153 `session`/`semantic_session` names for one transition release.
+  const binding = manifestSessionBinding(manifest);
+  return MANIFEST_SESSION_KEYS.current
+    .map((key) => binding[key])
+    .filter((value) => typeof value === 'string' && value.length > 0);
 }
 
 /**

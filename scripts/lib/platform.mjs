@@ -2,10 +2,15 @@
  * platform.mjs — platform detection for session-orchestrator (Node.js port of platform.sh)
  * ESM-importable. Uses only Node built-ins. No external dependencies.
  *
- * Exports 10 constants + 5 named helper functions:
- *   SO_PLATFORM, SO_PLUGIN_ROOT, SO_PROJECT_DIR, SO_STATE_DIR, SO_CONFIG_FILE,
- *   SO_SHARED_DIR, SO_OS, SO_IS_WINDOWS, SO_IS_WSL, SO_PATH_SEP
- *   detectPlatform, resolvePluginRoot, resolveProjectDir, resolveStateDir, resolveConfigFile
+ * Exports:
+ *   - lazy memoized accessors (#1153 P5): getPlatform, getPluginRoot, getProjectDir,
+ *     getStateDir, getConfigFile (+ test-only _resetPlatformCache)
+ *   - plain constants (no filesystem work): SO_SHARED_DIR, SO_OS, SO_IS_WINDOWS,
+ *     SO_IS_WSL, SO_PATH_SEP
+ *   - pure resolvers: detectPlatform, resolvePluginRoot, resolveProjectDir,
+ *     resolveStateDir, resolveConfigFile
+ *
+ * NOTHING in this module touches the filesystem at import time.
  */
 
 import { existsSync, statSync } from 'node:fs';
@@ -293,23 +298,111 @@ export function resolveConfigFile(platform) {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-initialise — compute all exported constants at module load
+// Lazy, memoized accessors (#1153 P5)
 // ---------------------------------------------------------------------------
+//
+// These five values used to be `export const … = detect…()` evaluated at MODULE
+// LOAD, so every one of the ~31 static importers — including the hottest
+// deny-capable hooks, which run on every single tool call — paid a filesystem
+// walk-up (statSync/existsSync per ancestor directory, twice over for
+// resolvePluginRoot) merely for importing this module, whether or not it ever
+// read the value.
+//
+// They are now computed on FIRST USE and memoized. Call the getter at the point
+// of use, never at a module's top level — a top-level `const X = getProjectDir()`
+// re-creates the exact cost this change removes.
 
-/** @type {"claude"|"codex"|"cursor"|"pi"} */
-export const SO_PLATFORM = detectPlatform();
+/**
+ * Memo slots. `undefined` is the miss sentinel — `''` is a legitimate
+ * resolvePluginRoot() result and must not re-trigger resolution.
+ * @type {{platform: ("claude"|"codex"|"cursor"|"pi")|undefined, pluginRoot: string|undefined, projectDir: string|undefined, stateDir: string|undefined, configFile: string|undefined}}
+ */
+const _cache = {
+  platform: undefined,
+  pluginRoot: undefined,
+  projectDir: undefined,
+  stateDir: undefined,
+  configFile: undefined,
+};
 
-/** Absolute path to the session-orchestrator plugin directory (empty string if unresolvable) */
-export const SO_PLUGIN_ROOT = resolvePluginRoot(SO_PLATFORM);
+/**
+ * Host platform, detected once per process.
+ * @returns {"claude"|"codex"|"cursor"|"pi"}
+ */
+export function getPlatform() {
+  if (_cache.platform === undefined) {
+    _cache.platform = detectPlatform();
+  }
+  return _cache.platform;
+}
 
-/** Absolute path to the current project root */
-export const SO_PROJECT_DIR = resolveProjectDir(SO_PLATFORM);
+/**
+ * Absolute path to the session-orchestrator plugin directory, resolved once.
+ * @returns {string}  Absolute path, or empty string if unresolvable.
+ */
+export function getPluginRoot() {
+  if (_cache.pluginRoot === undefined) {
+    _cache.pluginRoot = resolvePluginRoot(getPlatform());
+  }
+  return _cache.pluginRoot;
+}
 
-/** Platform-native state directory name */
-export const SO_STATE_DIR = resolveStateDir(SO_PLATFORM);
+/**
+ * Absolute path to the current project root, resolved once.
+ * @returns {string}
+ */
+export function getProjectDir() {
+  if (_cache.projectDir === undefined) {
+    _cache.projectDir = resolveProjectDir(getPlatform());
+  }
+  return _cache.projectDir;
+}
 
-/** Platform config file name */
-export const SO_CONFIG_FILE = resolveConfigFile(SO_PLATFORM);
+/**
+ * Platform-native state directory name (".claude" | ".codex" | ".cursor" | ".pi").
+ * @returns {string}
+ */
+export function getStateDir() {
+  if (_cache.stateDir === undefined) {
+    _cache.stateDir = resolveStateDir(getPlatform());
+  }
+  return _cache.stateDir;
+}
+
+/**
+ * Platform config file name ("CLAUDE.md" | "AGENTS.md").
+ * @returns {string}
+ */
+export function getConfigFile() {
+  if (_cache.configFile === undefined) {
+    _cache.configFile = resolveConfigFile(getPlatform());
+  }
+  return _cache.configFile;
+}
+
+/**
+ * Test-only: drop every memoized value so the next getter re-detects.
+ * Production code must never call this — the values are process-stable.
+ * @returns {void}
+ */
+export function _resetPlatformCache() {
+  _cache.platform = undefined;
+  _cache.pluginRoot = undefined;
+  _cache.projectDir = undefined;
+  _cache.stateDir = undefined;
+  _cache.configFile = undefined;
+}
+
+// The deprecated `export let SO_PLATFORM / SO_PLUGIN_ROOT / SO_PROJECT_DIR /
+// SO_STATE_DIR / SO_CONFIG_FILE` live bindings (#1153 P5) are GONE. They were
+// `undefined` until the matching getter had run in the process, which made
+// every bare read a silent wrong answer. Every consumer now calls the getter
+// (getPlatform(), getProjectDir(), …). A re-introduction is caught by the
+// named-export assertion in tests/lib/platform.test.mjs — do not add them back.
+
+// ---------------------------------------------------------------------------
+// Plain constants — no filesystem work, safe to evaluate at load
+// ---------------------------------------------------------------------------
 
 /** Shared orchestrator directory name — always ".orchestrator" */
 export const SO_SHARED_DIR = '.orchestrator';

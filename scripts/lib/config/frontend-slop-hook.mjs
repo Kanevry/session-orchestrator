@@ -18,8 +18,9 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import { SO_PROJECT_DIR } from '../platform.mjs';
+import { getProjectDir } from '../platform.mjs';
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * Parse the top-level `frontend-slop-hook:` YAML block from markdown content.
@@ -35,7 +36,7 @@ import { matchBlockHeader } from './block-header.mjs';
 export function _parseFrontendSlopHook(content) {
   const defaults = { enabled: false };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 
@@ -86,7 +87,10 @@ export function _parseFrontendSlopHook(content) {
  * @returns {Promise<{ enabled: boolean }>}
  */
 export async function loadFrontendSlopHookConfig(opts = {}) {
-  const root = opts.repoRoot || SO_PROJECT_DIR;
+  // Called at USE time, never at module load: the deprecated `SO_PROJECT_DIR`
+  // named export is a live binding that stays `undefined` until some getter has
+  // run in the process, so a bare call resolved the root to undefined (#1153 P5).
+  const root = opts.repoRoot || getProjectDir();
   const candidates = [
     path.join(root, 'CLAUDE.md'),
     path.join(root, 'AGENTS.md'),

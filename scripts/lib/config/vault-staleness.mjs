@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * vault-staleness.mjs — Parser for the top-level `vault-staleness:` YAML block.
@@ -17,7 +18,7 @@ export function _parseVaultStaleness(content) {
     mode: 'warn',
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

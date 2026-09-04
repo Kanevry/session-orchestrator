@@ -1119,8 +1119,8 @@ const PEER_SCOPE = {
   wave: 4,
   role: 'Discovery',
   enforcement: 'strict',
-  session: 'PEER-UUID-1111',
-  semantic_session: 'main-2026-01-01-session-9',
+  session_id: 'PEER-UUID-1111',
+  semantic_session_id: 'main-2026-01-01-session-9',
   allowedPaths: [],
 };
 
@@ -1201,7 +1201,7 @@ describe('foreign-session manifest (#1123)', { timeout: 15000 }, () => {
     // gets `{subagent-uuid}`, every manifest reads foreign, and Gate 3b allows
     // every write — each one logging an event that looks like the guard
     // correctly standing down. Env deleted so the payload is the only source.
-    const dir = await mkProjectTracked({ ...PEER_SCOPE, session: 'COORD-UUID-4444' });
+    const dir = await mkProjectTracked({ ...PEER_SCOPE, session_id: 'COORD-UUID-4444' });
     const result = await runHook({
       projectDir: dir,
       stdin: JSON.stringify({
@@ -1228,7 +1228,7 @@ describe('foreign-session manifest (#1123)', { timeout: 15000 }, () => {
     // session that wrote a peer id into its own manifest stands down. ACCEPTED —
     // the defense moved to the WRITER, which must omit the `session` keys when
     // the lock does not name it (`wave-loop.md` § Scope Manifest).
-    const dir = await mkProjectTracked({ ...PEER_SCOPE, session: 'PEER-UUID-1111' });
+    const dir = await mkProjectTracked({ ...PEER_SCOPE, session_id: 'PEER-UUID-1111' });
     await writeSessionLock(dir, { session_id: 'PEER-UUID-1111' });
     const result = await runHook({
       projectDir: dir,
@@ -1249,7 +1249,7 @@ describe('foreign-session manifest (#1123)', { timeout: 15000 }, () => {
     // as `own`, and Gate 7 denied the second session's legitimate writes — the
     // very lockout #1123 was built to end. Process-local identity only: the
     // payload says OWN-UUID-2222, the manifest says PEER-UUID-1111 → foreign.
-    const dir = await mkProjectTracked({ ...PEER_SCOPE, semantic_session: undefined });
+    const dir = await mkProjectTracked({ ...PEER_SCOPE, semantic_session_id: undefined });
     await writeSessionLock(dir, { session_id: 'PEER-UUID-1111' });
     const result = await runHook({
       projectDir: dir,

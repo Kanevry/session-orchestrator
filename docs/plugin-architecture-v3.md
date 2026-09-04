@@ -114,7 +114,7 @@ Under `scripts/lib/`. Each module is a focused concern and exports only what cal
 | Module | 1-liner | Key exports |
 |--------|---------|-------------|
 | **`io.mjs`** | Hook stdin/stdout helpers matching the Claude Code contract | `readStdin`, `emitAllow`, `emitDeny`, `emitWarn`, `emitSystemMessage` |
-| **`platform.mjs`** | OS + editor detection | `SO_OS`, `SO_IS_WINDOWS`, `SO_IS_WSL`, `SO_PATH_SEP`, `SO_STATE_DIR`, `detectPlatform()` |
+| **`platform.mjs`** | OS + editor detection | `SO_OS`, `SO_IS_WINDOWS`, `SO_IS_WSL`, `SO_PATH_SEP`, `getStateDir()`, `detectPlatform()` |
 | **`path-utils.mjs`** | CWE-23-safe path helpers (null-byte rejection, UNC block, cross-drive escape, locale-stable casing) | `normalizeForMatching`, `isWithin`, `CWE_23_ATTACK_PATTERNS` |
 | **`config.mjs`** | CRLF-tolerant Session Config parser (originally parse-config.sh in v2; byte-exact parity preserved) | `parseSessionConfig`, `readConfigFile`, `getConfigValue` |
 | **`config-schema.mjs`** | Plain-JS validator; validates the 7 mandatory Session Config fields (3 required strings + 4 typed fields) | `validateSessionConfig` (internal `REQUIRED_STRING_FIELDS` constant covers the 3 required strings — not exported) |

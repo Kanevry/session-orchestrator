@@ -37,14 +37,14 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 // Exit 0 immediately when disabled via SO_HOOK_PROFILE / SO_DISABLED_HOOKS.
 if (!shouldRunHook('operator-steer')) process.exit(0);
 
-import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
+import { getProjectDir } from '../scripts/lib/platform.mjs';
 
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const steerPath = path.join(SO_PROJECT_DIR, '.orchestrator', 'STEER.md');
+  const steerPath = path.join(getProjectDir(), '.orchestrator', 'STEER.md');
 
   // File absent — nothing to do.
   if (!existsSync(steerPath)) return;

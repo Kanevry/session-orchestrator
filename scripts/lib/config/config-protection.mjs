@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { findUnterminatedComment, preprocessBlockLines, preprocessBlockLinesNoDash } from './block-preprocess.mjs';
 import { isSessionConfigHeading } from './section-extractor.mjs';
 
 /**
@@ -45,7 +46,7 @@ export function _parseConfigProtection(content) {
 
   if (typeof content !== 'string' || content.length === 0) return defaults;
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 
@@ -107,7 +108,26 @@ export function _parseConfigProtection(content) {
 export function _isConfigWeakeningAllowed(content) {
   if (typeof content !== 'string' || content.length === 0) return false;
 
-  const lines = content.split(/\r?\n/);
+  // HTML-comment stripping ONLY (`preprocessBlockLinesNoDash`), never the full
+  // `preprocessBlockLines`: bold-subkey normalisation would make
+  // `- **allow-config-weakening:** true` arm the bypass, and
+  // `tests/lib/config/config-protection.test.mjs` pins the opposite — only the
+  // plain form is the supported bypass. Fail-closed beats markdown tolerance there.
+  // The comment strip is the OTHER direction and is mandatory (W4/F1): with a raw
+  // `content.split(/\r?\n/)` a COMMENTED-OUT `<!--\nallow-config-weakening: true\n-->`
+  // inside `## Session Config` ARMED the bypass — commenting a key out is the most
+  // ordinary way to disable it and must never enable it (same class as #1162a).
+  //
+  // UNTERMINATED `<!--` — the fail-closed direction INVERTS for a bypass scan.
+  // `stripHtmlCommentBlocks` returns the lines UNFILTERED when a comment is never
+  // closed, which is right for a block PARSER (nothing may silently vanish) and
+  // wrong here: it hands the commented-out bypass line straight back and re-arms
+  // the guard's own off switch. For this scan "I cannot tell where the comments
+  // end" must mean NOT ARMED — the bypass is opt-in, so refusing to grant it is
+  // the safe reading in every ambiguous document.
+  if (findUnterminatedComment(content.split(/\r?\n/)) !== null) return false;
+
+  const lines = preprocessBlockLinesNoDash(content);
   let inConfig = false;
   for (const line of lines) {
     if (isSessionConfigHeading(line)) { inConfig = true; continue; }

@@ -46,7 +46,7 @@ import { AGENT_ID_RE, resolveSubagentSidecar } from './_lib/subagent-paths.mjs';
 if (!shouldRunHook('on-stop')) process.exit(0);
 
 import { emitEvent } from '../scripts/lib/events.mjs';
-import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
+import { getProjectDir } from '../scripts/lib/platform.mjs';
 import { parseSessionId } from '../scripts/lib/session-id.mjs';
 import { heartbeat, logSweepEvent } from '../scripts/lib/session-registry.mjs';
 import { readLock, updateHeartbeat } from '../scripts/lib/session-lock.mjs';
@@ -366,7 +366,7 @@ function resolveStopDuration(input, projectRoot) {
  * @param {object|null} input
  */
 async function handleStop(input) {
-  const projectRoot = SO_PROJECT_DIR;
+  const projectRoot = getProjectDir();
 
   const wave = await readWaveNumber(projectRoot);
   const { commit, branch } = await gitInfo(projectRoot);

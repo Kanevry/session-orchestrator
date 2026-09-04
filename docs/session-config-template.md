@@ -612,26 +612,6 @@ express-path:
 
 Read by: `skills/session-start/phase-8-5-express-path.md`, `skills/session-plan/SKILL.md` (express-path short-circuit).
 
-## Webhooks
-
-Opt-in webhook notifications. The `scripts/lib/webhook-url.mjs` resolver checks env first (`SO_WEBHOOK_<KIND>_URL`), then this Session Config block. **No personal-domain default** — callers must supply a URL or the resolver throws.
-
-```yaml
-webhooks:
-  slack:
-    url: https://hooks.slack.com/services/REDACTED/REDACTED/REDACTED
-  discord:
-    url: https://discord.com/api/webhooks/REDACTED/REDACTED
-  generic:
-    url: https://example.com/hooks/session-events
-  gitlab-pipeline-status:
-    url: https://gitlab.example.com/hooks/pipeline
-```
-
-Measured: `scripts/lib/webhook-url.mjs` (`resolveWebhookUrl`) is the only reader of this `webhooks:` block, and it currently has **zero callers repo-wide** (`grep -rn "webhook-url" scripts/ hooks/` outside itself and one exemption comment in `check-unwired-features.mjs`) — the block is unreachable at HEAD; follow-up issue pending.
-
-What actually fires a webhook today is a **separate** mechanism: `scripts/lib/events.mjs`'s `emitEvent()` reads `CLANK_EVENT_SECRET` + `CLANK_EVENT_URL` directly from the environment (never from this Session Config block) and, when both are set, fire-and-forget POSTs every emitted event to the internal Clank Event Bus. Every hook that calls `emitEvent()` — which is most of `hooks/` — participates in that path; none of them reads `webhooks:` here.
-
 ## Hook Runtime Profile (env-only, not config)
 
 `SO_HOOK_PROFILE` and `SO_DISABLED_HOOKS` are environment variables, **not Session Config fields**. They control hook execution at runtime without editing `hooks.json`.
@@ -682,7 +662,7 @@ That's enough for `/session feature` → `/go` → `/close` to work end-to-end. 
 
 ## Full opt-in baseline (copy-paste)
 
-Everything turned on for a project that wants the full feature surface (vault, docs, drift checks, env-aware sizing, webhooks). Trim to taste:
+Everything turned on for a project that wants the full feature surface (vault, docs, drift checks, env-aware sizing). Trim to taste:
 
 ```yaml
 ## Session Config
@@ -968,13 +948,6 @@ config-protection:
   enabled: true            # PreToolUse: warn on gate-weakening Edit/Write
   mode: warn               # warn | strict (strict blocks loosening, exit 2)
 allow-config-weakening: false   # per-session bypass (mirrors allow-destructive-ops)
-
-# Webhooks (URLs are required when used — no defaults)
-# webhooks:
-#   slack:
-#     url: https://hooks.slack.com/services/...
-#   gitlab-pipeline-status:
-#     url: https://gitlab.example.com/hooks/pipeline
 
 # Agent mapping
 agent-mapping:

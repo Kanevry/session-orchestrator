@@ -214,10 +214,16 @@ function isCodeFence(line) {
  * this repo's own convention encourages. Revisit if a fleet CLAUDE.md is ever
  * measured opening a multi-line comment after a value.
  *
+ * EXPORTED since #1162 for a third consumer: `block-preprocess.mjs`, which
+ * gives the ~36 block parsers under `scripts/lib/config/` the same
+ * commented-out-is-not-live-config semantics. Same argument as the export of
+ * `isSessionConfigHeading` — a fourth copy of this state machine that drifts
+ * loose is worse than no check at all. Behaviour is unchanged by the export.
+ *
  * @returns {(line: string) => boolean} true when the line is inside (or opens)
  *   a multi-line HTML comment and must be ignored by both consumers.
  */
-function htmlCommentSkipper() {
+export function htmlCommentSkipper() {
   let inComment = false;
   return function skipHtmlComment(line) {
     if (inComment) {

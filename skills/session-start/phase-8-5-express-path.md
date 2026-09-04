@@ -21,7 +21,7 @@ invalid `--session-type` / `--task-count` / `--repo-root`), exit `2` an unreadab
 `--parallel-agents` is optional and tri-state — omitting it asserts nothing and leaves the field
 out of the record, which is NOT the same claim as `false`.
 
-`--repo-root` is required and is never defaulted from `SO_PROJECT_DIR` (#941): an ambient
+`--repo-root` is required and is never defaulted from `getProjectDir()` (#941): an ambient
 destination once put a synthetic record into the operator's real fleet ledger.
 
 Until #1146 this block was a fenced `js` snippet with an `import` — prose no process runs. Measured

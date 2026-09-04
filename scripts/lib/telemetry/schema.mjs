@@ -35,7 +35,7 @@
  * none and holds no mutable runtime state.
  */
 
-import { SO_PLATFORM, SO_PLUGIN_ROOT } from '../platform.mjs';
+import { getPlatform, getPluginRoot } from '../platform.mjs';
 import { enumerateSurface } from '../sunset/walker.mjs';
 import { readPluginVersionFromPackageJson } from '../bootstrap-lock-freshness.mjs';
 
@@ -163,7 +163,7 @@ export function projectUsagePing(input) {
 export function loadRoster({ pluginRoot } = {}) {
   const root = (typeof pluginRoot === 'string' && pluginRoot.trim() !== '')
     ? pluginRoot
-    : SO_PLUGIN_ROOT;
+    : getPluginRoot();
 
   if (!isNonEmptyString(root)) {
     process.stderr.write(
@@ -309,8 +309,9 @@ export function deriveDurationBucket(startedAtISO, completedAtISO) {
  * whose null return (missing/unparseable package.json or non-string version) maps to 'unknown'.
  */
 function resolvePluginVersion() {
-  if (!isNonEmptyString(SO_PLUGIN_ROOT)) return 'unknown';
-  return readPluginVersionFromPackageJson(SO_PLUGIN_ROOT) ?? 'unknown';
+  const root = getPluginRoot();
+  if (!isNonEmptyString(root)) return 'unknown';
+  return readPluginVersionFromPackageJson(root) ?? 'unknown';
 }
 
 /** Normalize the detected platform to the closed enum (+ 'other' fallback). */
@@ -436,7 +437,7 @@ export function buildUsagePing({
     schema_version: USAGE_PING_SCHEMA_VERSION,
     sent_at: now,
     plugin_version: resolvePluginVersion(),
-    platform: normalizePlatform(SO_PLATFORM),
+    platform: normalizePlatform(getPlatform()),
     os: normalizeOs(process.platform),
     arch: normalizeArch(process.arch),
     node_major: parseInt(process.versions.node, 10),

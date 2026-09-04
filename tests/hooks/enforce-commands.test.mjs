@@ -34,10 +34,18 @@ const HOOK = path.resolve(import.meta.dirname, '../../hooks/enforce-commands.mjs
 /**
  * Spawn the hook, pipe stdin JSON, collect stdout/stderr, resolve with exit code.
  */
-async function runHook({ projectDir, stdin, execArgv = [] }) {
+async function runHook({ projectDir, stdin, execArgv = [], env = {} }) {
   return new Promise((resolve) => {
+    // `env` overlays the inherited environment; a value of `null` DELETES the
+    // variable — the only way to reproduce a harness that exports no session id
+    // (#1153 P1), since the live operator environment exports
+    // `CLAUDE_CODE_SESSION_ID` and `spawn` inherits it by default.
+    const childEnv = { ...process.env, CLAUDE_PROJECT_DIR: projectDir, ...env };
+    for (const [key, value] of Object.entries(env)) {
+      if (value === null) delete childEnv[key];
+    }
     const child = spawn(process.execPath, [...execArgv, HOOK], {
-      env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
+      env: childEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -747,5 +755,102 @@ describe('#1001 — DEGRADED surfaces on stdout, not stderr alone', { timeout: 3
     // as no-decision, i.e. fail-OPEN. Asserted explicitly so the intent survives
     // any future loosening of the shared helper.
     expect(result.stdout.split('\n').filter((l) => l.trim().length > 0)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Foreign-session manifest (#1153 P1, sibling of enforce-scope's #1123 Gate 3b)
+// ---------------------------------------------------------------------------
+//
+// `wave-scope.json` lives in the WORKING COPY, not in the session, so two live
+// sessions in one checkout read the SAME `blockedCommands` list. Before Gate 3b
+// this hook denied a peer session's Bash calls with a reason naming a wave plan
+// that session does not own — the #1082 lockout, on the command axis.
+//
+// The bug each test below catches, named per TV-001:
+//   1. a peer's manifest still blocking THIS session's command (the lockout)
+//   2. a stand-down that leaves no trace (the #1020 signal-free-ALLOW class:
+//      "guard correctly stood down" is indistinguishable from "guard broken")
+//   3. over-reach — a manifest naming US no longer being enforced
+
+/** A manifest that blocks everything interesting, bound to a PEER session. */
+const FOREIGN_CMD_SCOPE = {
+  wave: 4,
+  role: 'Discovery',
+  enforcement: 'strict',
+  session_id: 'PEER-UUID-1111',
+  semantic_session_id: 'main-2026-01-01-session-9',
+  blockedCommands: ['npm test'],
+};
+
+/** Parse every JSONL record the hook emitted into the project's events log. */
+async function readCmdEvents(dir) {
+  try {
+    const raw = await fs.readFile(
+      path.join(dir, '.orchestrator', 'metrics', 'events.jsonl'),
+      'utf8',
+    );
+    return raw.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  } catch {
+    return [];
+  }
+}
+
+describe('foreign-session manifest (#1153 P1)', { timeout: 15000 }, () => {
+  it('allows a blocked command when the manifest names ANOTHER session', async () => {
+    const dir = await mkProjectTracked(FOREIGN_CMD_SCOPE);
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('npm test'),
+      env: { CLAUDE_CODE_SESSION_ID: 'OWN-UUID-2222' },
+    });
+    expectAllow(result);
+  });
+
+  it('emits exactly one orchestrator.scope.foreign_session_ignored event', async () => {
+    const dir = await mkProjectTracked(FOREIGN_CMD_SCOPE);
+    await runHook({
+      projectDir: dir,
+      stdin: bashPayload('npm test'),
+      env: { CLAUDE_CODE_SESSION_ID: 'OWN-UUID-2222' },
+    });
+
+    const events = (await readCmdEvents(dir))
+      .filter((e) => e.event === 'orchestrator.scope.foreign_session_ignored');
+    expect(events).toHaveLength(1);
+    expect(events[0].hook).toBe('enforce-commands');
+    expect(events[0].manifest_session).toEqual(['PEER-UUID-1111', 'main-2026-01-01-session-9']);
+    expect(events[0].own_session).toEqual(['OWN-UUID-2222']);
+    expect(events[0].wave).toBe(4);
+    expect(events[0].command).toBe('npm test');
+  });
+
+  it('still denies when the manifest names THIS session — enforcement unchanged', async () => {
+    // The over-reach guard: the gate must key on a PROVABLY foreign id, never on
+    // the mere presence of a `session` field.
+    const dir = await mkProjectTracked({ ...FOREIGN_CMD_SCOPE, session_id: 'OWN-UUID-2222' });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('npm test'),
+      env: { CLAUDE_CODE_SESSION_ID: 'OWN-UUID-2222' },
+    });
+    expectDeny(result, 'npm test');
+    expect(await readCmdEvents(dir)).toHaveLength(0);
+  });
+
+  it('still denies a LEGACY manifest with no session field (unknown = enforce)', async () => {
+    // The fail-closed half: a manifest written before #1153 binds nobody and
+    // must keep constraining everyone exactly as it did before.
+    const dir = await mkProjectTracked({
+      wave: 4,
+      enforcement: 'strict',
+      blockedCommands: ['npm test'],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('npm test'),
+      env: { CLAUDE_CODE_SESSION_ID: 'OWN-UUID-2222' },
+    });
+    expectDeny(result, 'npm test');
   });
 });

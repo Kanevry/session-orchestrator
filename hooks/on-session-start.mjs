@@ -42,7 +42,7 @@ if (!shouldRunHook('on-session-start')) process.exit(0);
 import { emitEvent, eventsFilePath } from '../scripts/lib/events.mjs';
 import { maybeRotate } from '../scripts/lib/events-rotation.mjs';
 import { readConfigFile, parseSessionConfig } from '../scripts/lib/config.mjs';
-import { SO_PLATFORM, resolveProjectDir } from '../scripts/lib/platform.mjs';
+import { getPlatform, resolveProjectDir } from '../scripts/lib/platform.mjs';
 import {
   registerSelf,
   detectPeers,
@@ -705,7 +705,7 @@ async function main() {
   // must never break the hook, which is informational-only.
   const input = await stdinPromise;
   const { sessionId, semanticSessionId, mode } = await resolveSessionId(input, projectRoot);
-  const platform = process.env.SO_PLATFORM ?? SO_PLATFORM;
+  const platform = process.env.SO_PLATFORM ?? getPlatform();
 
   // Epic #583 P3 — mechanical session.lock writer (closes D1+D2+D4 gaps).
   // Bootstrap the session-lock so discoverActiveSessions() picks us up even

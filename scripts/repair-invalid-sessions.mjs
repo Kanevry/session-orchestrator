@@ -40,7 +40,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { repairLedger, CANONICAL_LEDGER_REL } from './lib/session-record-repair.mjs';
-import { SO_PROJECT_DIR } from './lib/platform.mjs';
+import { getProjectDir } from './lib/platform.mjs';
 
 const USAGE =
   'Usage: node scripts/repair-invalid-sessions.mjs [--dry-run|--apply] [--json]\n' +
@@ -52,7 +52,7 @@ const USAGE =
   CANONICAL_LEDGER_REL +
   ');\n' +
   '                must resolve inside <repo-root>/.orchestrator/metrics/\n' +
-  '  --repo-root   project root (default: resolved SO_PROJECT_DIR)\n' +
+  '  --repo-root   project root (default: resolved project dir)\n' +
   'Exit codes: 0 completed, 1 arg error, 2 system error, 3 post-verification failed\n';
 
 /**
@@ -168,7 +168,7 @@ async function main() {
 
   // --apply is an explicit opt-in; absent it (or with --dry-run) we never write.
   const apply = values.apply === true && values['dry-run'] !== true;
-  const repoRoot = values['repo-root'] || SO_PROJECT_DIR;
+  const repoRoot = values['repo-root'] || getProjectDir();
   const requestedFile = values.file || path.join(repoRoot, CANONICAL_LEDGER_REL);
 
   // MED-3: bound the target to <repoRoot>/.orchestrator/metrics/ BEFORE any I/O.

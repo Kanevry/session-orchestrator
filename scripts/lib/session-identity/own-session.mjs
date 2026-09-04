@@ -26,7 +26,49 @@
  * session id.
  */
 
-import { readLock } from '../session-lock.mjs';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { isLockShape } from '../session-lock-shape.mjs';
+
+/**
+ * Read the two session ids out of `<repoRoot>/.orchestrator/session.lock`.
+ *
+ * A deliberate, behaviour-identical stand-in for `readLock()` from
+ * `../session-lock.mjs` (#1153 P7): that import drags a static closure of six
+ * modules (session-lock → exclusivity-matrix, file-lock, io, host-identity,
+ * crypto-digest-utils — measured 2026-09-04 by following its `^import` lines)
+ * into every consumer of this module, of which the live
+ * `hooks/enforce-scope.mjs` runs on EVERY Edit/Write. Two strings do not need
+ * a lock manager.
+ *
+ * Tolerance is matched to `readLock()` exactly, which collapses every non-ok
+ * outcome of `readLockDetailed()` to `null`: missing file, unreadable file,
+ * invalid JSON, and **valid JSON that fails the lock schema** all yield `{}`
+ * here. The schema check is not reproduced but IMPORTED — `isLockShape()` from
+ * `../session-lock-shape.mjs` is the same predicate `parseLock()` applies, and
+ * that module imports nothing, so sharing it costs the hook chain no closure.
+ * A copy would have been free to drift the fail-OPEN way: a relaxed
+ * `parseLock` plus an unchanged copy here drops the lock tier's ids, the own
+ * manifest reads `foreign`, and enforcement switches itself off silently.
+ *
+ * Never throws.
+ *
+ * @param {string} repoRoot
+ * @returns {{ session_id?: string, semantic_session_id?: string }}
+ */
+function readLockIds(repoRoot) {
+  try {
+    const raw = readFileSync(
+      path.join(repoRoot ?? process.cwd(), '.orchestrator', 'session.lock'),
+      'utf8',
+    );
+    const obj = JSON.parse(raw);
+    if (!isLockShape(obj)) return {};
+    return { session_id: obj.session_id, semantic_session_id: obj.semantic_session_id };
+  } catch {
+    return {};
+  }
+}
 
 /**
  * The set of session ids that provably name THIS session — the UNION of every
@@ -112,10 +154,10 @@ export function readOwnSessionIds(repoRoot, { hookInput = null } = {}) {
 
   // Source 3 — repo-global lock file (the manifest writer's own identity).
   try {
-    const lock = readLock({ repoRoot });
+    const lock = readLockIds(repoRoot);
     for (const key of ['session_id', 'semantic_session_id']) add(lock?.[key]);
   } catch {
-    /* readLock never throws by contract, but that contract is not ours to trust */
+    /* readLockIds never throws by contract, but that contract is not ours to trust */
   }
   return ids;
 }
@@ -190,9 +232,11 @@ export function readProcessLocalSessionIds({ env = process.env, hookInput = null
  *   - `'own'` — an id matched.
  *
  * Both id fields are consulted because they address the same session under two
- * naming schemes: `session` is the raw harness session id (a UUID on Claude
- * Code), `semantic_session` the `<branch>-<date>-<mode>-<n>` form. A harness
+ * naming schemes: `session_id` is the raw harness session id (a UUID on Claude
+ * Code), `semantic_session_id` the `<branch>-<date>-<mode>-<n>` form. A harness
  * that resolves only the semantic one must still recognise its own manifest.
+ * The pre-#1153 spellings `session` / `semantic_session` are still READ (see
+ * {@link MANIFEST_SESSION_KEYS}).
  *
  * @param {unknown} scope — parsed wave-scope manifest (any shape; a non-object
  *   simply yields no ids, hence `'unknown'`).
@@ -204,14 +248,85 @@ export function readProcessLocalSessionIds({ env = process.env, hookInput = null
  *   latter returns a `string[]`: a bare array is NOT a Set and folds to the
  *   empty set below, yielding `'unknown'` for every manifest.
  * @returns {{ verdict: 'own'|'foreign'|'unknown', manifestIds: string[] }}
+ * @see MANIFEST_SESSION_KEYS / {@link manifestSessionBinding} — defined
+ *   immediately below rather than above this doc comment, because the three
+ *   live hooks import this module on EVERY tool call: a use-before-define here
+ *   throws inside the hook chain and locks every session sharing the checkout
+ *   out of Edit/Write/Bash (measured 2026-09-04, ~8 minutes, #1153 P2).
  */
+/**
+ * The session-binding key names of a `wave-scope.json` manifest — the ONE place
+ * these literals live (#1153 P2). Every reader imports them from here instead
+ * of repeating the strings: `scripts/materialize-wave-scope.mjs`,
+ * `scripts/validate-wave-scope.mjs`, `scripts/memory-propose.mjs`, and — via
+ * {@link classifyManifestSession} — `scripts/lib/events.mjs` plus the three
+ * live hooks.
+ *
+ * `current` are the canonical names, chosen to match the two neighbouring
+ * session artefacts a reader already knows: `.orchestrator/session.lock` and
+ * `current-session.json` both spell them `session_id` / `semantic_session_id`,
+ * and `scripts/lib/quality-gate.mjs` reads that exact pair. One session
+ * identity should not carry two spellings depending on which file names it.
+ *
+ * `legacy` are the pre-#1153 spellings, and they are **accepted on the READ
+ * side only, until the next minor release**. `wave-scope.json` is git-ignored
+ * and session-ephemeral, so the one surviving reason to read them is a package
+ * upgraded mid-wave with an old-format manifest already on disk. The writer
+ * (`scripts/wave-scope-binding.mjs`) emits `current` exclusively.
+ *
+ * @type {Readonly<{ current: readonly string[], legacy: readonly string[] }>}
+ */
+export const MANIFEST_SESSION_KEYS = Object.freeze({
+  current: Object.freeze(['session_id', 'semantic_session_id']),
+  legacy: Object.freeze(['session', 'semantic_session']),
+});
+
+/**
+ * Resolve the binding out of a manifest under BOTH key spellings. A non-object
+ * — including an ARRAY, which `typeof` calls `'object'` — yields no ids.
+ *
+ * **A CONFLICT yields no value for that slot, and that is fail-CLOSED.**
+ * When both spellings of one slot are present with different non-empty values,
+ * the manifest is self-contradictory (`scripts/validate-wave-scope.mjs` calls
+ * exactly this an ERROR — but no hook runs the validator, so the classifier is
+ * the only thing standing between the manifest and the guard). Preferring the
+ * current spelling let a peer DISARM this session's guard by appending
+ * `"session_id": "attacker"` beside a legitimate legacy `"session": "<me>"`:
+ * the slot then resolved to an id this session does not carry,
+ * {@link classifyManifestSession} returned `'foreign'`, and
+ * `hooks/enforce-scope.mjs` skips enforcement on `'foreign'`. Dropping the slot
+ * instead collapses the verdict to `'unknown'`, which every caller treats as
+ * "keep enforcing".
+ *
+ * Both present and EQUAL (after trim) → that value. Only one present → that
+ * value. Both present and different → the slot is omitted.
+ *
+ * @param {unknown} scope
+ * @returns {{ session_id?: string, semantic_session_id?: string }}
+ */
+export function manifestSessionBinding(scope) {
+  const out = {};
+  if (!scope || typeof scope !== 'object' || Array.isArray(scope)) return out;
+  MANIFEST_SESSION_KEYS.current.forEach((key, i) => {
+    const legacyKey = MANIFEST_SESSION_KEYS.legacy[i];
+    const pick = (v) => (typeof v === 'string' && v.trim() ? v.trim() : '');
+    const current = pick(scope[key]);
+    const legacy = pick(scope[legacyKey]);
+    if (current && legacy && current !== legacy) return; // conflict → no value
+    const value = current || legacy;
+    if (value) out[key] = value;
+  });
+  return out;
+}
+
+/** @see the contract note above `MANIFEST_SESSION_KEYS` — the full docblock for
+ * this function sits there, separated from it only because the constants must
+ * be defined before use (#1153 P2). */
 export function classifyManifestSession(scope, ownIds) {
   const manifestIds = [];
-  if (scope && typeof scope === 'object' && !Array.isArray(scope)) {
-    for (const key of ['session', 'semantic_session']) {
-      const value = typeof scope[key] === 'string' ? scope[key].trim() : '';
-      if (value) manifestIds.push(value);
-    }
+  const binding = manifestSessionBinding(scope);
+  for (const key of MANIFEST_SESSION_KEYS.current) {
+    if (binding[key]) manifestIds.push(binding[key]);
   }
   const own = ownIds instanceof Set ? ownIds : new Set();
   if (manifestIds.length === 0 || own.size === 0) return { verdict: 'unknown', manifestIds };

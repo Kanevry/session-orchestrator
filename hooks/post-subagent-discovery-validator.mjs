@@ -75,7 +75,7 @@ import path from 'node:path';
 import { resolveSubagentSidecar } from './_lib/subagent-paths.mjs';
 import { appendJsonl } from '../scripts/lib/common.mjs';
 import { eventsFilePath } from '../scripts/lib/events.mjs';
-import { SO_PROJECT_DIR } from '../scripts/lib/platform.mjs';
+import { getProjectDir } from '../scripts/lib/platform.mjs';
 import { _parseDiscoveryValidator } from '../scripts/lib/config/discovery-validator.mjs';
 
 // ---------------------------------------------------------------------------
@@ -389,8 +389,8 @@ function readStdinJson() {
  */
 async function isEnabled() {
   const candidates = [
-    path.join(SO_PROJECT_DIR, 'CLAUDE.md'),
-    path.join(SO_PROJECT_DIR, 'AGENTS.md'),
+    path.join(getProjectDir(), 'CLAUDE.md'),
+    path.join(getProjectDir(), 'AGENTS.md'),
   ];
   for (const file of candidates) {
     try {
@@ -760,7 +760,7 @@ async function main() {
   // violation's claim text so distinct real agents and distinct claims never
   // share a sentinel.
   const sentinel = dedupSentinelPath({
-    projectRoot: SO_PROJECT_DIR,
+    projectRoot: getProjectDir(),
     sessionId,
     agentId,
     claimText: violations[0],

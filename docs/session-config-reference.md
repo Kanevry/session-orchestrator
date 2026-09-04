@@ -61,6 +61,8 @@ Bypass via `SO_SKIP_CONFIG_VALIDATION=1`. Missing fields can be patched into an 
 
 **Stale-citation note:** an older code comment on the `custom-phases:` key in this repo's own `CLAUDE.md` cites a per-key regex (`/^custom-phases:\s*$/`) as the mechanism. That citation predates the #830 generalisation — `custom-phases.mjs` (like all 37 consumers) now delegates to the shared `matchBlockHeader(line, 'custom-phases')`, which is strictly MORE tolerant than the old per-key regex (it additionally accepts the dash-bullet and bold-bullet renderings). The no-inline-comment failure mode is unchanged; only the underlying mechanism moved from a bespoke regex to the shared helper. Treat any remaining per-key regex citation in prose (including in this file, prior to this section's introduction) as documentation of the OLD mechanism — the general contract above is current.
 
+**A second, orthogonal gotcha shares this section: a multi-line `<!-- … -->` comment (#1162).** Every block-shaped parser now strips commented-out lines before matching, via `scripts/lib/config/block-preprocess.mjs` — so a block commented out to disable it can no longer be read as live config, and a bold-bullet sub-key rendering (`- **enabled:** true`) is normalised before parsing instead of silently missing its regex. The one failure mode that still exists is an **unterminated** `<!--` — a stray opener with no matching `-->` anywhere in the rest of the document. `scripts/parse-config.mjs` detects this ONCE per session (not once per parser) and prints a single stderr WARN: `⚠ <file>: unterminated <!-- at line N — comment stripping disabled for the whole document`. The fail-closed direction differs by consumer: a block PARSER gets its lines back UNFILTERED (nothing may silently vanish), while the two destructive-bypass scanners (`allow-config-weakening`, `allow-destructive-ops`) treat an unterminated comment as the bypass being **NOT ARMED** — an ambiguous document must never grant an opt-in it cannot read cleanly.
+
 ## Policy Files
 
 Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
@@ -703,6 +705,8 @@ vault-integration:
 ```
 
 > **Host-local override (#653; extended #819).** `vault-dir` resolves host-locally with precedence: env-var (`SO_VAULT_DIR`) > `owner.yaml` `paths.vault-dir` > the committed default. `plan-baseline-path` resolves with an extra per-context tier in between: `SO_BASELINE_PATH` env > `owner.yaml` `baselines:` directory-prefix match against cwd > `owner.yaml` `paths.baseline-path` (legacy scalar) > the committed default. This keeps maintainer-specific absolute paths out of version control. Resolvers: `scripts/lib/config/host-paths.mjs` (both keys) and `scripts/lib/named-baseline-resolver.mjs` (the `baselines:` match tier).
+
+> **`SO_CONFIG_HOME` — the host-private config directory itself.** A sibling override, one layer below `owner.yaml`'s own contents rather than a key inside it: `scripts/lib/host-identity.mjs` `_privateDir()` resolves the directory holding `owner.yaml`, `host-private.json`, and the host-alias ledger (`SO_HOST_ALIASES_FILE`, see `host-identity.mjs`) with precedence env-var (`SO_CONFIG_HOME`, names the private dir ITSELF) > `XDG_CONFIG_HOME` (names its PARENT — `owner-config-loader.mjs` uses the same variable the same way) > the homedir default `~/.config/session-orchestrator`. Both env vars are read with `.trim() || fallback`, not a bare `||` (`.claude/rules/development.md` § Error Handling env-var-fallback-whitespace trap).
 
 > **Parser accepts three key-line renderings (#823).** The `vault-integration:` key line is recognized in plain form (`vault-integration:`), dash-bullet form (`- vault-integration:`), and bold-bullet form (`- **vault-integration:**`) — each paired with either the inline-object shape (`{ enabled: true, ... }` on the same line) or the indented block shape shown above. Parser: `scripts/lib/config/vault-integration.mjs` (`_parseVaultIntegration`).
 
@@ -1542,43 +1546,7 @@ SO_DISABLED_HOOKS=enforce-scope,enforce-commands claude ...
 
 Each hook handler imports `shouldRunHook` from `hooks/_lib/profile-gate.mjs` at the top level and calls `process.exit(0)` immediately when gated off. The exit is silent (no stdout, no stderr), so Claude Code sees an allow as if the hook had never run.
 
-## Webhooks (#228)
-
-Opt-in webhook notifications delivered by `scripts/lib/webhook-url.mjs`. The helper centralizes URL resolution so no personal-domain default ever silently fires — callers must supply a URL explicitly.
-
-### Resolution order
-
-For every supported kind the resolver checks sources in this order; the first non-empty string wins:
-
-1. **Environment variable** `SO_WEBHOOK_<KIND>_URL` — uppercase kind, hyphens → underscores  
-   e.g. `SO_WEBHOOK_SLACK_URL`, `SO_WEBHOOK_GITLAB_PIPELINE_STATUS_URL`
-2. **Session Config** `webhooks.<kind>.url`
-3. **Error** — `WebhookConfigError` is thrown. No silent personal-domain fallback.
-
-### Supported kinds
-
-| Kind | Env variable | Config key |
-|------|-------------|------------|
-| `slack` | `SO_WEBHOOK_SLACK_URL` | `webhooks.slack.url` |
-| `discord` | `SO_WEBHOOK_DISCORD_URL` | `webhooks.discord.url` |
-| `generic` | `SO_WEBHOOK_GENERIC_URL` | `webhooks.generic.url` |
-| `gitlab-pipeline-status` | `SO_WEBHOOK_GITLAB_PIPELINE_STATUS_URL` | `webhooks.gitlab-pipeline-status.url` |
-
-### Session Config example
-
-```yaml
-webhooks:
-  slack:
-    url: https://hooks.slack.com/services/REDACTED/REDACTED/REDACTED
-  discord:
-    url: https://discord.com/api/webhooks/REDACTED/REDACTED
-  generic:
-    url: https://example.com/hooks/session-events
-  gitlab-pipeline-status:
-    url: https://gitlab.example.com/hooks/pipeline
-```
-
-### Clank Event Bus (events.mjs / on-stop.mjs)
+## Clank Event Bus (events.mjs / on-stop.mjs)
 
 The internal Clank Event Bus webhook is controlled by two environment variables:
 

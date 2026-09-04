@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLinesNoDash } from './block-preprocess.mjs';
 
 /**
  * custom-phases.mjs — Parser for the `custom-phases:` Session Config block (#637).
@@ -65,7 +66,7 @@ const SAFE_PATH_RE = /^[A-Za-z0-9._~/-]+$/;
  * @returns {Array<{name: string, when: string, command: string, mode: string, review: string|null}>}
  */
 export function _parseCustomPhases(content) {
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLinesNoDash(content);
   let inBlock = false;
   const blockLines = [];
 

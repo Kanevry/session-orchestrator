@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * gitlab-portfolio.mjs — Parser for the top-level `gitlab-portfolio:` YAML block.
@@ -66,7 +67,7 @@ export function coerceGitlabPortfolio(raw) {
  * @returns {{ enabled: boolean, mode: 'warn'|'strict'|'off', 'stale-days': number, 'critical-labels': string[] }}
  */
 export function _parseGitlabPortfolio(content) {
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

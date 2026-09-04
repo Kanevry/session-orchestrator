@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * events-rotation.mjs — Parser for the top-level `events-rotation:` YAML block.
@@ -17,7 +18,7 @@ import { matchBlockHeader } from './block-header.mjs';
 export function _parseEventsRotation(content) {
   const defaults = { enabled: true, 'max-size-mb': 10, 'max-backups': 5 };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

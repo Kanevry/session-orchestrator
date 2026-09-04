@@ -88,9 +88,161 @@ fixpass that closed 2 HIGH findings inside the panel's own Wave-2/3 diff.
 - **`#1203` — the `enforce-scope.mjs` peer-manifest fix confirmed already SHIPPED via
   #1194.** `tests/hooks/enforce-scope.test.mjs:1219/:1245/:1302` (56/56) prove the behaviour
   landed with #1194; no further code change was needed.
+- **`scripts/lib/platform.mjs`'s five module-constant exports become lazy, memoized
+  accessors; the five constants are REMOVED (#1153 P5).** They were internal accessor
+  constants of this plugin, never a documented public API, and every in-repo importer is
+  migrated — an external importer of these five names (none known) switches to the
+  getters; no `BREAKING CHANGE:` footer is carried for that reason. `SO_PLATFORM`, `SO_PLUGIN_ROOT`,
+  `SO_PROJECT_DIR`, `SO_STATE_DIR`, `SO_CONFIG_FILE` used to be `export const … =
+  detect…()` evaluated at module load, so every one of ~31 static importers — including
+  the hottest deny-capable hooks, which run on every tool call — paid a filesystem
+  walk-up (`statSync`/`existsSync` per ancestor directory) merely for importing the
+  module, whether or not the value was ever read. They are replaced by
+  `getPlatform()`/`getPluginRoot()`/`getProjectDir()`/`getStateDir()`/`getConfigFile()`,
+  computed on first call and memoized for the process (plus a test-only
+  `_resetPlatformCache()`); the deprecated names are fully REMOVED, not kept as
+  deprecated live bindings — a re-introduction is caught by the named-export assertion in
+  `tests/lib/platform.test.mjs`. 22 non-test call sites across `scripts/` and `hooks/` now
+  call a getter (measured 2026-09-04: `grep -rlE "getPlatform\(\)|getPluginRoot\(\)|getProjectDir\(\)|getStateDir\(\)|getConfigFile\(\)" scripts/ hooks/ --include="*.mjs" | grep -v /tests/ | grep -v platform.mjs | wc -l` → 22).
+- **Wave-scope manifest session keys renamed to `session_id`/`semantic_session_id`,
+  canonical since #1153 P2.** The pre-#1153 spellings `session`/`semantic_session` are
+  still ACCEPTED on the read side for one release (`MANIFEST_SESSION_KEYS` in
+  `scripts/lib/session-identity/own-session.mjs` is the shared SSOT list every writer and
+  reader now imports); `scripts/validate-wave-scope.mjs` flags a manifest that carries
+  BOTH spellings with conflicting values as an error rather than silently preferring one
+  and dropping the other. `scripts/wave-scope-binding.mjs` (new — #1153 P4) replaces the
+  inline `node --input-type=module -e` block `skills/wave-executor/wave-loop.md` § Scope
+  Manifest previously asked the coordinator to retype once per wave; an unbound `{}`
+  manifest now emits `orchestrator.scope.unbound_manifest` (0 hits repo-wide before this
+  file existed), making the previously-silent fail-closed case countable. `--merge` folds
+  the binding into an existing manifest in place.
+- **`_privateDir()` (host-identity.mjs) now honours `SO_CONFIG_HOME` (#1153 P6).** Two
+  overrides, most specific first: `SO_CONFIG_HOME` names the private config directory
+  itself; `XDG_CONFIG_HOME` (same variable `owner-config-loader.mjs` already reads) names
+  its parent. Both read via `.trim() || fallback`, not a bare `||` (the whitespace-only
+  env-var trap). Without either, the homedir default `~/.config/session-orchestrator` is
+  unchanged.
+- **`scripts/lib/session-identity/own-session.mjs`'s static import closure cut from 3,567
+  to 269 lines (#1153 P7).** It no longer imports `../session-lock.mjs` — which drags
+  `session-lock` → `exclusivity-matrix` → `file-lock` → `io` → `host-identity` behind it —
+  and instead shares the shape predicate `isLockShape()` via a new zero-import module,
+  `scripts/lib/session-lock-shape.mjs`, with `session-lock.mjs`'s own `parseLock()`. This
+  matters because `hooks/enforce-scope.mjs` loads `own-session.mjs` on every Edit/Write;
+  anything it imports joins that hook's static closure.
+- **codex-cli 0.144.4 fixes the `plugin add` failure documented against 0.141.0
+  (#1163, FIXED-UPSTREAM — no code change here).** Re-verified end-to-end 2026-09-04
+  against this repo's unchanged flat layout: `codex plugin add session-orchestrator@kanevry
+  --json` now exits 0 where it previously failed with `plugin session-orchestrator was
+  not found in marketplace kanevry`. `docs/codex-setup.md`'s "Short-Form Marketplace Add"
+  section is promoted to the recommended install path and the prior failure kept as a
+  historical note; a new "Switching Marketplace Sources" section documents that
+  `marketplace add` silently REPLACES an already-registered marketplace of the same
+  declared name.
+- **`#1152` closed — the reported defect was a false premise (two separate writers, not
+  one drifting one).** No code change; investigation confirmed the two paths write
+  independently and neither needed reconciling.
+- **`#1214` — the suspected `maskerWouldChange` gap in the vault narrative-mirror sink was
+  a false premise, refuted by measurement.** Unlike the two `vault-mirror/process.mjs`
+  sinks fixed under #1028 (five-field comparisons that can match while a raw needle
+  survives on disk), `scripts/lib/vault-status/narrative-mirror.mjs` compares the WHOLE
+  rendered document, and the candidate always passes through the CURRENT `maskNarrative` —
+  so a value that masker would redact can never appear in it, and a false
+  `matchesModuloRedaction` match cannot occur. Measured 2026-09-04 at HEAD `cd785003` in
+  both directions (no marker on disk; marker on disk plus a second needle entering the
+  env): both returned `written` with the raw value gone. No probe added; two invariant
+  tests in `tests/lib/vault-status/narrative-mirror.test.mjs` pin it. Named ceiling: the
+  invariant depends on `maskNarrative` walking every rendered string, and `repo` is fed to
+  `renderNarrative` OUTSIDE that walk (a directory basename, not STATE.md content) — a
+  future rendered field added the same way would reopen this.
+
+### Removed
+
+- **`scripts/lib/webhook-url.mjs` deleted — zero callers repo-wide (#1168).** `resolveWebhookUrl`/
+  `WebhookConfigError` and their test file (`tests/lib/webhook-url.test.mjs`, 192 lines) are gone,
+  −364 lines total; the `## Webhooks (#228)` section in `docs/session-config-reference.md`
+  (the `webhooks.<kind>.url` Session Config surface it backed) is removed with it. The still-live
+  Clank Event Bus webhook (`scripts/lib/events.mjs`, `CLANK_EVENT_SECRET`/`CLANK_EVENT_URL`) is
+  unrelated and unaffected — its doc section is promoted from `### Clank Event Bus` to
+  `## Clank Event Bus` in the same edit, since it is no longer a subsection of the now-removed one.
 
 ### Fixed
 
+- **Two silent Session Config parsing bugs fixed across 39 block-shaped parsers
+  (#1162).** New shared module `scripts/lib/config/block-preprocess.mjs` fixes both: (a) a
+  block commented out with a multi-line `<!-- … -->` was read as LIVE config —
+  `stripHtmlCommentBlocks()` now strips it via the existing `htmlCommentSkipper()` state
+  machine; (b) the bold-bullet sub-key rendering (`- **enabled:** true`) matched no sub-key
+  regex and silently fell back to its default — `normalizeBoldSubkeys()` now normalises it
+  to `enabled: true` before parsing. `preprocessBlockLines()` (35 standard parsers) and
+  `preprocessBlockLinesNoDash()` (4 dash-RECORD parsers — `custom-phases`, `remote-hosts`,
+  `evolve`'s `_parseEvolve`, `health-endpoints`) are the two drop-ins for
+  `content.split(/\r?\n/)`; NoDash skips bold-normalisation because de-dashing a record's
+  first key would silently merge it into the previous record.
+  `config-protection.mjs`'s `_isConfigWeakeningAllowed()` and
+  `hooks/pre-bash-destructive-guard.mjs`'s bypass scan deliberately use HTML-comment
+  stripping ONLY, never bold-normalisation — the bold form
+  (`- **allow-config-weakening:** true` / `- **allow-destructive-ops:** true`) must not arm
+  a bypass. An UNTERMINATED `<!--` fails closed in both directions: a block parser gets its
+  lines back UNFILTERED, while both bypass scanners treat it as NOT ARMED (said out loud on
+  stderr, since a silently-ignored bypass would look identical to an operator typo);
+  `scripts/parse-config.mjs` prints one stderr WARN per session, not one per parser. Two
+  new parity test files pin the contract per parser: `tests/lib/config/preprocess-parity-a-l.test.mjs`
+  and `-m-z.test.mjs`.
+- **PSA-007's git-write detector is argument-aware, closing a false-positive AND a
+  false-negative class (#1172, #1215).** `isGitWrite()` in
+  `scripts/lib/wave-transcript-tail.mjs` used to match the subcommand literal alone; it now
+  parses the arguments too. `git stash list`/`show`, `--version`, `--help`/`-h`,
+  `--dry-run`, and `-n` on every subcommand except `commit` (where `-n` means
+  `--no-verify`, still a real write — measured 2026-09-04 that `git commit -h` prints
+  `-n, --no-verify` while `add`/`rm`/`push -h` all print `-n, --[no-]dry-run`) now read as
+  reads, not writes. The value-taking global flags `-C`/`-c`/`--git-dir`/`--work-tree`/
+  `--namespace`/`--exec-path`/`--config-env`, and `command`/`env VAR=x` prefixes, are now
+  absorbed so `git -C /tmp stash` and `env FOO=x git commit` are still recognised as git
+  writes at all (measured false negative before the fix: `isGitWrite('git -C /tmp stash')`
+  returned `false`). `FIXTURE_CONTEXT_RE`'s `cd /tmp` match now also fires on the BARE path
+  with no trailing `/` — the reported false alarm was
+  `cd /tmp && git init && git commit -m x`. 32 table rows added (70 cases in the file
+  after the change) in `tests/lib/wave-transcript-tail.test.mjs`.
+- **`buildLiveSignals()`'s injectable `_scanBacklog` test seam was unused at 5 call sites,
+  so the affected test suite shelled out to a live `glab issue list` on every run
+  (#1169).** `tests/lib/autopilot.test.mjs` now passes a null-returning `_scanBacklog` stub
+  at every call site that does not assert on `signals.backlog` (`selectMode`/`computeDelta`
+  never read that field, so the stub is behaviour-preserving). `scripts/lib/autopilot/loop.mjs`
+  also migrated off the removed `SO_STATE_DIR` constant onto `getStateDir()` (#1153 P5) in
+  the same pass. Test-phase wall time for the affected suite dropped from ~750ms to ~25ms,
+  with no live network calls remaining.
+- **One flaky spawn-timeout test pinned with margin instead of disabled (#1217).**
+  `tests/unit/plugin-manifests-exit-codes.test.mjs`'s "exits 1 (not 2) when plugin.json
+  contains broken JSON" case now passes `{ timeout: 30_000 }` explicitly — measured
+  887–965ms unloaded (W1-D4, 2026-09-04), with one observed 10,095ms outlier attributed to
+  host contention, not spawn cost. Same discriminating-margin pattern as the three tests
+  hardened earlier in this file; no repo-wide pinned-slow list exists (#976 never
+  implemented).
+- **Legacy `.bak.`-delimited backup files were invisible to both rotation and restore
+  (#1173).** `scripts/lib/learnings/io.mjs` exports `backupSuffixOf()`/`isBackupOf()`,
+  accepting both the canonical `.bak-<ISO>` delimiter this module writes and the legacy
+  `.bak.<label>-<ts>` delimiter pre-#721 writers left behind (e.g.
+  `learnings.jsonl.bak.evolve-<ts>`), shared with `backfill-learnings-from-vault`'s restore
+  sweep so the two predicates cannot drift apart again. `rotateBackups()` now sorts on the
+  SUFFIX (a leading non-digit label stripped first) rather than the whole filename —
+  sorting on the whole name grouped every `.`-delimited legacy file after every
+  `-`-delimited one regardless of age (`-` is 0x2D, `.` is 0x2E), so rotation pruned only
+  hyphen-form backups. `scripts/backfill-learnings-expires.mjs` itself was still emitting
+  the dot form on `--apply` — its own backups were the ones going unrotated and unrestored
+  — and now emits the canonical hyphen form (`tests/scripts/backfill-learnings-expires.test.mjs`
+  pins both the new emission and the absence of the old one).
+- **A peer session's `wave-scope.json` drove this session's Bash gates on two hooks, and a
+  rebind of the manifest could suppress its own tamper notice (#1153 P1).**
+  `hooks/enforce-commands.mjs` and `hooks/post-bash-write-verify.mjs` both gain a Gate 3b
+  ownership check — `classifyManifestSession()` against `readProcessLocalSessionIds()` (hook
+  payload + `CLAUDE_CODE_SESSION_ID`, deliberately not the lock-file tier that made a
+  peer's manifest classify as `'own'` under #1194) — and stand down silently when the
+  manifest provably names another session, emitting `orchestrator.scope.foreign_session_ignored`
+  for observability. In `post-bash-write-verify.mjs` the ordering is the fix itself: the
+  control-file hash/enforcement snapshot is now computed BEFORE the Gate 3b stand-down, so
+  a `cat >` rebind of `wave-scope.json` to a fabricated `session_id` can no longer disarm
+  this session's gates AND suppress the #938 control-file notice in the same stroke — the
+  notice now fires once, on the call where the SESSION BINDING itself changed.
 - **`processSession`'s two skipped-noop returns had no `maskerWouldChange` re-probe
   (#1028, found by the Wave-4 security-reviewer as MED, confirmed HIGH by qa-strategist).**
   The session-note generator's skip paths (`process.mjs:953`/`:991`) now carry the same
@@ -133,6 +285,13 @@ fixpass that closed 2 HIGH findings inside the panel's own Wave-2/3 diff.
   three LOW fixes (`evolve-telemetry.mjs`'s `catch {}` now WARNs on stderr;
   `post-subagent-discovery-validator.mjs`'s German pattern now matches singular `Eintrag`;
   `.gitlab-ci.yml`/`docs/ci-setup.md` prose brought in line with the now-armed drift gate).
+- **A use-before-define in an intermediate save of `own-session.mjs` blocked every
+  Bash/Edit call of every session on this host for roughly 8 minutes.** `hooks/enforce-commands.mjs`
+  and `hooks/enforce-scope.mjs` both import the module live on every tool call (the #1153
+  P1 Gate 3b wiring), so a `SyntaxError`/`ReferenceError` mid-refactor link-crashed both
+  hooks host-wide rather than degrading to one repo's GUARD INACTIVE banner. Follow-up
+  issue pending to make an intermediate, uncommitted save of a hot-path hook dependency
+  fail more locally.
 
 ## [3.24.0] - 2026-09-02
 

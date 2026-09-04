@@ -17,7 +17,7 @@
  *     ram_total_gb: 18,
  *     hostname_hash: '<sha256 hex>',
  *     is_ssh: false,
- *     platform: 'claude' | 'codex' | 'cursor' | null,
+ *     platform: 'claude' | 'codex' | 'cursor' | 'pi',
  *     first_seen: '2026-04-19T11:00:00Z',
  *   }
  *
@@ -43,13 +43,21 @@ import { digestSha256WithSalt } from './crypto-digest-utils.mjs';
 import path from 'node:path';
 import os from 'node:os';
 // NOTE (#1072 gate fix): platform.mjs is deliberately NOT imported statically.
-// Its module level computes SO_PLATFORM/SO_PLUGIN_ROOT via detectPlatform()/
-// resolvePluginRoot(), which walk the filesystem (existsSync + readFileSync of
-// package.json up the tree). session-lock.mjs now imports this module, which
-// put those import-time reads into every graph that imports session-lock —
-// including fs-mocked test graphs (tests/lib/vault-mirror/process.test.mjs went
-// red: the walk consumed the mocks' sequenced return values). The only two
-// consumers (SO_OS/SO_PLATFORM in collectFingerprint) are async — load lazily.
+// Its module level used to compute SO_PLATFORM/SO_PLUGIN_ROOT via
+// detectPlatform()/resolvePluginRoot(), which walk the filesystem
+// (existsSync + readFileSync of package.json up the tree). session-lock.mjs
+// now imports this module, which put those import-time reads into every
+// graph that imports session-lock — including fs-mocked test graphs
+// (tests/lib/vault-mirror/process.test.mjs went red: the walk consumed the
+// mocks' sequenced return values). The only two consumers in
+// collectFingerprint (os name + platform) are async — load lazily.
+//
+// (#1153 P5) platform.mjs now exports memoized lazy getters
+// (getPlatform(), getPluginRoot(), ...); the old SO_PLATFORM/SO_PROJECT_DIR/…
+// names are deprecated `export let` live bindings that stay `undefined`
+// until the matching getter has run elsewhere in the process. Destructure
+// and CALL getPlatform() below — never read the deprecated SO_PLATFORM
+// binding directly, or `platform` silently records null/undefined.
 
 const FINGERPRINT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const PLACEHOLDER_SALT = 'env-aware-v1-default-salt-replaced-by-owner-yaml';
@@ -345,7 +353,25 @@ export function lockHostCandidate(lock) {
 // Paths
 // ---------------------------------------------------------------------------
 
+/**
+ * The host-private config directory — every per-host artefact below it
+ * (`host-private.json`, `owner.yaml`, the alias ledger) moves with it.
+ *
+ * Two overrides, most specific first: `SO_CONFIG_HOME` names the private dir
+ * ITSELF; `XDG_CONFIG_HOME` names its parent (repo precedent:
+ * `owner-config-loader.mjs`). Without either, the homedir default.
+ *
+ * `.trim() || fallback` throughout — a whitespace-only env var is truthy and
+ * would short-circuit a bare `||` (`.claude/rules/development.md` § Error
+ * Handling, env-var fallback whitespace trap).
+ *
+ * @returns {string}
+ */
 function _privateDir() {
+  const own = (process.env.SO_CONFIG_HOME || '').trim();
+  if (own) return own;
+  const xdg = (process.env.XDG_CONFIG_HOME || '').trim();
+  if (xdg) return path.join(xdg, 'session-orchestrator');
   return path.join(os.homedir(), '.config', 'session-orchestrator');
 }
 
@@ -393,7 +419,7 @@ export async function resolveSalt() {
  * @param {string} [opts.salt] — override salt (tests)
  */
 export async function collectFingerprint(opts = {}) {
-  const { SO_OS, SO_PLATFORM } = await import('./platform.mjs');
+  const { SO_OS, getPlatform } = await import('./platform.mjs');
   const osName = SO_OS;
   const arch = process.arch;
   const cpus = os.cpus() || [];
@@ -417,7 +443,7 @@ export async function collectFingerprint(opts = {}) {
     ram_total_gb: ramTotalGb,
     hostname_hash: hostnameHash,
     is_ssh: isSSH(),
-    platform: SO_PLATFORM || null,
+    platform: getPlatform(),
     first_seen: new Date().toISOString(),
   };
 }

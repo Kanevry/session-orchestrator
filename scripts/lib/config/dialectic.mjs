@@ -1,4 +1,5 @@
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * dialectic.mjs — Parser for top-level `dialectic:` YAML block (#506).
@@ -30,7 +31,7 @@ const ALLOWED_MODELS = new Set(['haiku', 'sonnet', 'opus']);
 export function _parseDialectic(content) {
   const defaults = { cadence: 5, model: 'haiku', 'budget-tokens': 8000 };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

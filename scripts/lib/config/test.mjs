@@ -8,6 +8,7 @@
 
 import { validatePathInsideProject } from '../path-utils.mjs';
 import { matchBlockHeader } from './block-header.mjs';
+import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
  * Parse the top-level `test:` YAML block from markdown content.
@@ -27,7 +28,7 @@ export function _parseTest(content) {
     'retention-days': 30,
   };
 
-  const lines = content.split(/\r?\n/);
+  const lines = preprocessBlockLines(content);
   let inBlock = false;
   const blockLines = [];
 

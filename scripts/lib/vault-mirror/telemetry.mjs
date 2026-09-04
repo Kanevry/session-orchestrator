@@ -38,7 +38,7 @@
  */
 
 import { emitEvent, sessionAttribution } from '../events.mjs';
-import { SO_PROJECT_DIR } from '../platform.mjs';
+import { getProjectDir } from '../platform.mjs';
 
 /** Canonical event name for a single vault-mirror JSONL entry. */
 export const MIRROR_EVENT = 'orchestrator.vault.mirror_completed';
@@ -81,7 +81,7 @@ const present = (v) => v !== undefined && v !== null;
  * @returns {{session_id?: string, semantic_session_id?: string}}
  */
 function mirrorSessionAttribution() {
-  return sessionAttribution(SO_PROJECT_DIR);
+  return sessionAttribution(getProjectDir());
 }
 
 /**
