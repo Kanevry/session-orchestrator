@@ -13,6 +13,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { isRoot } from '../../_helpers/perms.mjs';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, symlinkSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -131,7 +132,10 @@ describe('writeApprovedRules — rejected proposal archive', () => {
     expect(record.type).toBe('fragile-pattern');
   });
 
-  it('does NOT warn about re-proposal when a prior terminal verdict is already on disk', async () => {
+  // chmod 0o555 does not block root (GitLab Docker runner runs as uid 0 —
+  // pipeline #8499 went red on exactly this test); same guard as
+  // tests/unit/state-md-lock.test.mjs.
+  it.skipIf(isRoot)('does NOT warn about re-proposal when a prior terminal verdict is already on disk', async () => {
     // BUG this catches (TV-001): `markCandidateProcessed` returns
     // `alreadyProcessed`, and NO production caller read it — so the two very
     // different states behind `written:false` collapsed into one message. When
