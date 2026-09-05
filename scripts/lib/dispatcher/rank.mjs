@@ -209,19 +209,73 @@ async function defaultStaleDaysFor(repoRoot, nowMs) {
 
 /**
  * Default READINESS (CI) source: thin wrapper over `checkCiStatus`.
- * Returns the 'green'|'red'|'unknown' status string, or null (no-op).
- * null / 'unknown' are treated as non-blocking by `scoreCandidate`.
+ *
+ * Passes the probe's result through VERBATIM rather than flattening it to a
+ * status string (#1031 follow-up). `checkCiStatus` has THREE return states —
+ * `null` (benign absence), `{status, …}` (a real reading), and
+ * `{severity:'warn', degraded:<reason>}` (the state could NOT be read) — and
+ * the old `typeof result.status === 'string' ? result.status : null` collapsed
+ * the third onto the first. That was not a scoring bug (both are non-blocking)
+ * but it discarded the one thing the operator needs to know: the ranking was
+ * computed WITHOUT a CI reading, and why. {@link normalizeCiSignal} in
+ * `rankCandidates` performs the shape reduction and keeps the reason.
+ *
+ * A THROW is the fourth state, and it is NOT the first: `checkCiStatus` is
+ * documented never to throw, so an exception here means the probe itself broke
+ * (a bad import, an unexpected runtime error). Returning `null` for it would
+ * assert measured ABSENCE — the one thing we know is false. It is mapped to the
+ * degraded shape instead, so {@link normalizeCiSignal} surfaces it as
+ * `ciStatus: 'unknown'` + `ciDegraded: 'probe-threw'` rather than silently.
  *
  * @param {{ repoRoot: string }} args
- * @returns {Promise<'green'|'red'|'unknown'|null>}
+ * @returns {Promise<'green'|'red'|'unknown'|null|object>} raw probe result.
  */
 async function defaultCheckCiStatus({ repoRoot }) {
   try {
-    const result = await realCheckCiStatus({ repoRoot });
-    return result && typeof result.status === 'string' ? result.status : null;
-  } catch {
-    return null;
+    return (await realCheckCiStatus({ repoRoot })) ?? null;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return {
+      severity: 'warn',
+      ok: false,
+      message: `⚠ ci-status: CI probe threw — state UNKNOWN, not "green". ${detail}`,
+      degraded: 'probe-threw',
+    };
   }
+}
+
+/**
+ * Reduce whatever a `checkCiStatus` dep returned to the pair the ranking needs:
+ * a scoring status and — when the state was UNREADABLE — the reason.
+ *
+ * Accepts every shape the dep contract permits, old and new:
+ *   - a bare status string (`'green'`/`'red'`/`'unknown'`) — the shape every
+ *     injected test dep uses; passed through unchanged.
+ *   - `null`/`undefined` — genuine absence, no signal, no reason.
+ *   - `{status: <string>}` — a real reading from `checkCiStatus`.
+ *   - `{degraded: <reason>}` with no usable `status` — the probe FAILED. Mapped
+ *     to `'unknown'`, which `scoreCandidate` already treats as non-blocking
+ *     (`ciFactor` dampens on `'red'` only), so ranking is byte-identical to the
+ *     previous `null` — but the reason survives into `readiness.ciDegraded`
+ *     and into a `warnings` entry.
+ *   - anything else — `null`, as before.
+ *
+ * `ciDegraded` is `null` (and the caller OMITS the key) whenever the state was
+ * readable, so existing strict `toEqual` pins on `signals.readiness` hold.
+ *
+ * @param {unknown} raw
+ * @returns {{ ciStatus: 'green'|'red'|'unknown'|null, ciDegraded: string|null }}
+ */
+export function normalizeCiSignal(raw) {
+  if (typeof raw === 'string' && raw) return { ciStatus: raw, ciDegraded: null };
+  if (!raw || typeof raw !== 'object') return { ciStatus: null, ciDegraded: null };
+  if (typeof raw.status === 'string' && raw.status) {
+    return { ciStatus: raw.status, ciDegraded: null };
+  }
+  if (typeof raw.degraded === 'string' && raw.degraded) {
+    return { ciStatus: 'unknown', ciDegraded: raw.degraded };
+  }
+  return { ciStatus: null, ciDegraded: null };
 }
 
 /**
@@ -290,7 +344,7 @@ export function defaultDeps() {
  *   ranked: Array<{ candidate: Candidate, score: number, signals: {
  *     priority: { criticalCount: number, highCount: number } | null,
  *     staleDays: number,
- *     readiness: { ciStatus: 'green'|'red'|'unknown'|null, resourceVerdict: 'green'|'warn'|'degraded'|'critical' },
+ *     readiness: { ciStatus: 'green'|'red'|'unknown'|null, resourceVerdict: 'green'|'warn'|'degraded'|'critical', ciDegraded?: string },
  *   } }>,
  *   warnings: string[],
  * }>}
@@ -342,18 +396,40 @@ export async function rankCandidates(freeCandidates, opts = {}) {
       staleDays = STALENESS_CAP_DAYS;
     }
 
-    // READINESS — CI status.
+    // READINESS — CI status. A degraded probe result ("state unknown") is
+    // NON-BLOCKING but not INVISIBLE: it scores like `null`, and reports why.
+    // Declared WITHOUT an initialiser on purpose: both paths below assign, and
+    // a `= null` seed would quietly re-create a fall-through "absent" default.
     let ciStatus;
+    let ciDegraded;
     try {
-      ciStatus = await deps.checkCiStatus({ repoRoot });
+      ({ ciStatus, ciDegraded } = normalizeCiSignal(await deps.checkCiStatus({ repoRoot })));
     } catch {
-      ciStatus = null;
+      // A THROWING dep is not measured ABSENCE. Leaving `ciDegraded` at null
+      // here re-created the exact collapse `normalizeCiSignal` exists to
+      // prevent: the ranking silently proceeded as if no CI signal existed,
+      // when in truth the probe broke. Scoring is unchanged (`'unknown'` is
+      // non-blocking) — only the reason becomes visible.
+      ciStatus = 'unknown';
+      ciDegraded = 'probe-threw';
+    }
+    if (ciDegraded) {
+      warnings.push(
+        `CI state unknown for ${repoName} (${ciDegraded}) — ranked without CI dampening`,
+      );
     }
 
     const signals = {
       priority,
       staleDays,
-      readiness: { ciStatus, resourceVerdict },
+      readiness: {
+        ciStatus,
+        resourceVerdict,
+        // Key OMITTED when the CI state was readable — a strict `toEqual` on
+        // `signals.readiness` must not have to know about a field that only
+        // exists on the failure path.
+        ...(ciDegraded ? { ciDegraded } : {}),
+      },
     };
     const score = scoreCandidate(signals);
 

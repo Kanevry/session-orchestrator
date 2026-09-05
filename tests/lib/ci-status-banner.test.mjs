@@ -1,15 +1,18 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { checkCiStatus as checkCiStatusReal } from '@lib/ci-status-banner.mjs';
+import { checkCiStatus as checkCiStatusReal, DEGRADED_REASONS } from '@lib/ci-status-banner.mjs';
 
 // ── stderr WARN capture (#1022 follow-up) ────────────────────────────────────
 //
-// `checkCiStatus` returns `null` for BOTH "no CI to report" and "the CLI was
-// present but the invocation failed" — the return contract is shared with 13
-// sibling banners and cannot distinguish them. The only observable difference
-// is a `console.warn` line, which is therefore the single visibility mechanism
-// for the whole #1022 defect class ("CLI installed, call rejected"). Spying it
-// file-wide both silences the pre-existing failure-path tests and makes the
-// warn assertable; `mockImplementation` keeps the real console quiet.
+// Until #1031 `checkCiStatus` returned `null` for BOTH "no CI to report" and
+// "the CLI was present but the invocation failed", so a `console.warn` line was
+// the single visibility mechanism for the whole #1022 defect class ("CLI
+// installed, call rejected"). The unreadable half now leaves as a DEGRADED
+// result and the warn is the second channel rather than the only one — it is
+// still asserted here, because the two carry different audiences (stderr trace
+// vs. rendered banner) and a regression in either is a regression.
+// `mockImplementation` keeps the real console quiet.
 let warnSpy;
 
 beforeEach(() => {
@@ -19,6 +22,28 @@ beforeEach(() => {
 afterEach(() => {
   warnSpy.mockRestore();
 });
+
+/**
+ * Assert the #1031 third return state: a result that says "state UNKNOWN",
+ * carrying a member of the frozen enum. Pinning `severity` + a non-empty
+ * `message` is what makes the result RENDERABLE — `session-start-probes.mjs`
+ * reads exactly those two fields, so a degraded object without them would be
+ * scored `'ok'` and print nothing, i.e. exactly the old silent `null`.
+ *
+ * @param {*} result
+ * @param {string} reason
+ */
+function expectDegraded(result, reason) {
+  expect(result).not.toBeNull();
+  expect(result.degraded).toBe(reason);
+  expect(DEGRADED_REASONS).toContain(result.degraded);
+  expect(result.severity).toBe('warn');
+  expect(result.ok).toBe(false);
+  expect(typeof result.message).toBe('string');
+  expect(result.message).toContain('not "green"');
+  // A degraded result must never masquerade as a reading.
+  expect(result.status).toBeUndefined();
+}
 
 // ── #1065 GitLab API target DI default ─────────────────────────────────────
 //
@@ -308,7 +333,7 @@ describe('checkCiStatus — GitLab red with last-green', () => {
 // ── Test 3: glab missing (ENOENT) ─────────────────────────────────────────────
 
 describe('checkCiStatus — glab not in PATH', () => {
-  it('returns null when glab execFile throws ENOENT', async () => {
+  it('degrades with `cli-missing` (silently, no warn) when glab execFile throws ENOENT', async () => {
     const enoentError = new Error('spawn glab ENOENT');
     enoentError.code = 'ENOENT';
 
@@ -324,11 +349,11 @@ describe('checkCiStatus — glab not in PATH', () => {
       { execFile: mockExecFile },
     );
 
-    expect(result).toBeNull();
-    // A missing CLI is a normal, expected state on a machine without glab —
-    // it must stay SILENT. If the WARN below fires here, every session-start
-    // on a CLI-less machine prints a meaningless warning and the signal that
-    // the WARN exists to carry (#1022: CLI present, call rejected) drowns.
+    // #1031: a missing CLI never established that CI is green, so the RESULT
+    // says so. The WARN channel stays silent — it is a normal state on a
+    // machine without glab, and warning here would drown the signal the warn
+    // exists to carry (#1022: CLI present, call rejected).
+    expectDegraded(result, 'cli-missing');
     expect(warnSpy.mock.calls).toHaveLength(0);
   });
 });
@@ -422,7 +447,7 @@ describe('checkCiStatus — non-VCS repo', () => {
 // ── Test 7: Timeout ───────────────────────────────────────────────────────────
 
 describe('checkCiStatus — timeout', () => {
-  it('returns null when CLI invocation exceeds timeoutMs', async () => {
+  it('degrades with `timeout` when a CLI invocation exceeds timeoutMs', async () => {
     // Mock execFile that never calls callback → simulates a hung process.
     const hangingMock = vi.fn(function (_cmd, _args, _opts, _callback) {
       // Never invoke callback → the promise race should win via timeout.
@@ -434,7 +459,14 @@ describe('checkCiStatus — timeout', () => {
       { execFile: hangingMock },
     );
 
-    expect(result).toBeNull();
+    // The hang is on the FIRST spawn (`git remote -v`), i.e. the detectVcs
+    // probe's own timeout race — the path that used to return a bare `null`
+    // under the "a hang is not actionable" argument #1031 superseded. What the
+    // operator acts on is not the hang; it is that CI state is unknown.
+    expectDegraded(result, 'timeout');
+    // Still silent on the warn channel — a hung subprocess is not a fact worth
+    // a stderr line beside every other banner.
+    expect(warnSpy.mock.calls).toHaveLength(0);
   });
 });
 
@@ -575,7 +607,7 @@ describe('checkCiStatus — GitHub action_required → red', () => {
 // ── Test 14: never throws ─────────────────────────────────────────────────────
 
 describe('checkCiStatus — error containment', () => {
-  it('returns null on malformed JSON from glab pipelines API', async () => {
+  it('degrades with `parse-error` on malformed JSON from glab pipelines API', async () => {
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITLAB_ORIGIN),
       gitRevParseResponse(HEAD_SHA),
@@ -597,7 +629,7 @@ describe('checkCiStatus — error containment', () => {
       { execFile: mockExecFile },
     );
 
-    expect(result).toBeNull();
+    expectDegraded(result, 'parse-error');
   });
 
   // Bug this catches (TV-001): an expired `gh` auth makes `gh repo view` print
@@ -625,7 +657,7 @@ describe('checkCiStatus — error containment', () => {
       { execFile: mockExecFile },
     );
 
-    expect(result).toBeNull();
+    expectDegraded(result, 'parse-error');
     expect(warnSpy.mock.calls).toHaveLength(1);
     const [message] = warnSpy.mock.calls[0];
     expect(message).toContain('gh repo view --json nameWithOwner');
@@ -650,7 +682,11 @@ describe('checkCiStatus — error containment', () => {
 
     const result = await checkCiStatus({ repoRoot: '/fake/repo', now: NOW }, { execFile: mockExecFile });
 
-    expect(result).toBeNull();
+    expectDegraded(result, 'parse-error');
+    // The escaping obligation extends to the RENDERED banner, not only the
+    // warn: since #1031 the degraded message carries the same redacted text.
+    // eslint-disable-next-line no-control-regex -- matching control bytes is the assertion
+    expect(result.message).not.toMatch(/[\u0000-\u001f]/);
     const [message] = warnSpy.mock.calls[0];
     expect(message).toContain('returned unparseable JSON');
     // The bytes are reported, but as escape SEQUENCES, never as control bytes.
@@ -691,7 +727,9 @@ describe('checkCiStatus — error containment', () => {
   ])('names %s (%s) when its stdout is %s', async (site, _what, payload, fragment) => {
     const result = await runWithStdout(site, payload);
 
-    expect(result).toBeNull();
+    // Both halves — unparseable AND wrong-shape — are one `parse-error` class:
+    // in either case a CLI answered and this module could not read the answer.
+    expectDegraded(result, 'parse-error');
     expect(warnSpy.mock.calls).toHaveLength(1);
     const [message] = warnSpy.mock.calls[0];
     // The identification the warn channel owes: WHICH subprocess answered.
@@ -833,12 +871,12 @@ describe('checkCiStatus — #1065 GitLab API target', () => {
       { execFile: mockExecFile, resolveGitlabProjectTarget: () => undefined },
     );
 
-    expect(result).toBeNull();
     expect(mockExecFile).not.toHaveBeenCalled();
     // A GitLab remote WAS detected; only its form was rejected. That is a query
-    // failure, not an absence, so silence here would restore exactly the
+    // failure, not an absence, so a bare `null` here would restore exactly the
     // pre-#1039 state this module's own rule forbids: "CI green" and "could not
-    // ask" rendering identically. Pinning toHaveLength(0) pinned that silence.
+    // ask" rendering identically.
+    expectDegraded(result, 'query-failed');
     expect(warnSpy.mock.calls).toHaveLength(1);
     expect(warnSpy.mock.calls[0][0]).toContain('CI state is UNKNOWN, not "green"');
   });
@@ -876,7 +914,7 @@ describe('checkCiStatus — #1065 GitLab API target', () => {
       { execFile: mockExecFile, resolveGitlabProjectTarget: () => GITLAB_PROJECT_TARGET },
     );
 
-    expect(result).toBeNull();
+    expectDegraded(result, 'parse-error');
     expect(warnSpy.mock.calls).toHaveLength(1);
     expect(warnSpy.mock.calls[0][0]).toContain('returned JSON of an unexpected shape');
     expect(warnSpy.mock.calls[0][0]).toContain('expected an array, got object');
@@ -960,10 +998,11 @@ describe('checkCiStatus — #1022 rejected-invocation WARN', () => {
       { execFile: mockExecFile },
     );
 
-    // The return contract is shared with 13 sibling banners — null stays null.
-    expect(result).toBeNull();
-    // …so the WARN carries the whole signal. Exactly one, with the child's own
-    // error text verbatim: an operator cannot act on "something failed".
+    // Since #1031 the residual bucket: a present CLI ran and rejected the
+    // invocation. Neither missing-CLI, nor timeout, nor unreadable output.
+    expectDegraded(result, 'query-failed');
+    // The WARN still carries the child's own error text verbatim — an operator
+    // cannot act on "something failed". Exactly one line.
     expect(warnSpy.mock.calls).toEqual([
       [
         'WARN ci-status-banner: CI status check failed, banner suppressed — ' +
@@ -998,7 +1037,11 @@ describe('checkCiStatus — #1022 rejected-invocation WARN', () => {
       },
     );
 
-    expect(result).toBeNull();
+    expectDegraded(result, 'query-failed');
+    // The redaction obligation now covers the RENDERED banner too: the degraded
+    // message carries the same redacted text the warn does.
+    expect(result.message).not.toContain('ci-bot');
+    expect(result.message).not.toContain('glpat-');
     expect(warnSpy.mock.calls).toEqual([
       [
         'WARN ci-status-banner: CI status check failed, banner suppressed — ' +
@@ -1147,7 +1190,7 @@ describe('checkCiStatus — #1039 VCS-detection failure taxonomy', () => {
     expect(warnSpy.mock.calls).toHaveLength(0);
   });
 
-  it('WARNS with reason `git-unavailable` when git is not on PATH', async () => {
+  it('WARNS and degrades (`cli-missing`) with reason `git-unavailable` when git is not on PATH', async () => {
     const enoent = new Error('spawn git ENOENT');
     enoent.code = 'ENOENT'; // string errno — NOT an exit status
 
@@ -1160,11 +1203,18 @@ describe('checkCiStatus — #1039 VCS-detection failure taxonomy', () => {
       { execFile: mockExecFile },
     );
 
-    expect(result).toBeNull();
+    // git is a CLI, and "not on PATH" is one member of the enum, not two
+    // spellings of it — the upstream `git-unavailable` reason projects onto
+    // `cli-missing`. It still WARNS (unlike a missing glab/gh) because the
+    // probe never got as far as choosing a platform.
+    expectDegraded(result, 'cli-missing');
     expect(warnSpy.mock.calls).toHaveLength(1);
     const [message] = warnSpy.mock.calls[0];
     // The reason token is what separates this from the silent absence paths.
     expect(message).toContain('git-unavailable');
+    // …and it survives into the rendered banner, so the operator sees WHICH
+    // query failed rather than a bare enum member.
+    expect(result.message).toContain('git-unavailable');
     // The honesty clause — a suppressed banner is not a green one.
     expect(message).toContain('not "green"');
   });
@@ -1187,12 +1237,89 @@ describe('checkCiStatus — #1039 VCS-detection failure taxonomy', () => {
       { execFile: mockExecFile },
     );
 
-    expect(result).toBeNull();
+    expectDegraded(result, 'git-error');
     expect(warnSpy.mock.calls).toHaveLength(1);
     const [message] = warnSpy.mock.calls[0];
     expect(message).toContain('git-error');
     expect(message).toContain('gitlab.example.com');
     expect(message).not.toContain('ci-bot');
     expect(message).not.toContain('glpat-');
+    // The redaction runs BEFORE the text is handed to the degraded message, so
+    // it holds on the rendered banner too — the channel an operator actually
+    // reads at session-start.
+    expect(result.message).not.toContain('ci-bot');
+    expect(result.message).not.toContain('glpat-');
+  });
+
+  it('ESCAPES control bytes in the degraded message, not just credentials', async () => {
+    // BUG this catches (TV-001): redaction and control-byte escaping are
+    // different protections, and the degraded path only ever ran the first.
+    // `parseCliJson` escapes the text IT embeds, but a CLI stderr quoted into
+    // `err.message` reaches the operator's terminal by a second route — so an
+    // ANSI/CR payload from a hostile or merely noisy CLI was rendered RAW into
+    // the session-start banner line.
+    const esc = String.fromCharCode(27);
+    const failed = new Error(
+      `Command failed: glab ci status\n${esc}[31mFAKE ERROR${esc}[0m\rcleared`,
+    );
+    failed.code = 1;
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
+      { cmd: 'glab', error: failed },
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    expect(result.degraded).toBeTypeOf('string');
+    // No raw ESC, CR or LF survives into the operator-facing line…
+    expect(result.message).not.toContain(esc);
+    expect(result.message).not.toContain('\r');
+    expect(result.message).not.toContain('\n');
+    // …and the escaped form is what is shown instead, so nothing is lost.
+    expect(result.message).toContain('\\u001b');
+  });
+});
+
+// ── Test 21: #1031 degraded-reason census ────────────────────────────────────
+
+describe('ci-status-banner — DEGRADED_REASONS enum integrity', () => {
+  const SOURCE = readFileSync(
+    fileURLToPath(new URL('../../scripts/lib/ci-status-banner.mjs', import.meta.url)),
+    'utf8',
+  );
+
+  // Bug this catches (TV-001): a new failure path added with a reason literal
+  // that is NOT in the frozen enum. Nothing else notices — `degradedResult`
+  // takes a plain string, so the probe would emit a member no consumer can
+  // switch on, and `session-start-probes.mjs` would still render it as a
+  // generic warn. The census is a REGEX OVER THE SOURCE, never a hand-typed
+  // list: a list under a census title only ever tests itself.
+  it('every degraded reason literal in the module is a member of the exported enum', () => {
+    const emitted = [...SOURCE.matchAll(/degradedResult\(\s*'([^']+)'/g)].map((m) => m[1]);
+
+    // Vacuum guard: an empty census passes trivially and would hide a rename
+    // of `degradedResult` itself.
+    expect(emitted.length).toBeGreaterThanOrEqual(5);
+    for (const reason of new Set(emitted)) {
+      expect(DEGRADED_REASONS).toContain(reason);
+    }
+  });
+
+  it('every enum member is actually reachable from a call site in the module', () => {
+    const emitted = new Set(
+      [...SOURCE.matchAll(/degradedResult\(\s*'([^']+)'/g)].map((m) => m[1]),
+    );
+    // The only reason to freeze an enum is exhaustive switching; a member no
+    // call site emits makes that promise false for consumers.
+    expect([...DEGRADED_REASONS].filter((r) => !emitted.has(r))).toEqual([]);
+  });
+
+  it('is frozen', () => {
+    expect(Object.isFrozen(DEGRADED_REASONS)).toBe(true);
   });
 });

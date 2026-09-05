@@ -25,6 +25,7 @@ import {
   loadCandidates,
   isProcessed,
   mergeCandidates,
+  markCandidateProcessed,
 } from '../../../scripts/lib/reconcile/idempotency.mjs';
 
 let tmpDir;
@@ -283,5 +284,107 @@ describe('isProcessed', () => {
     const existingRecord = candidate({ learning_key: existingKey, processed_at: processedAt });
     if (outcome !== undefined) existingRecord.outcome = outcome;
     expect(isProcessed(cand, [existingRecord])).toBe(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// markCandidateProcessed — the terminal stamp (#1042 / #1153 P10)
+// ---------------------------------------------------------------------------
+
+describe('markCandidateProcessed', () => {
+  it('mints a terminal record whose status agrees with an operator rejection', () => {
+    const res = markCandidateProcessed({
+      learningKey: 'anti-pattern/never-proposed-before',
+      outcome: 'rejected',
+      processedAt: '2026-06-22T09:00:00.000Z',
+      fallbackSlug: 'anti-pattern-never-proposed-before',
+      fallbackConfidence: 0.7,
+      storePath,
+    });
+
+    // The bug: the mint branch hardcoded status:'proposed' while stamping
+    // processed_at + outcome:'rejected' in the SAME record — a terminal,
+    // declined candidate that still reads as a live proposal.
+    expect(res.stamped.status).toBe('rejected');
+    expect(res.stamped.outcome).toBe('rejected');
+    expect(res.stamped.processed_at).toBe('2026-06-22T09:00:00.000Z');
+    expect(res.written).toBe(true);
+    expect(res.alreadyProcessed).toBe(false);
+
+    const { records } = loadCandidates({ storePath });
+    expect(records).toHaveLength(1);
+    expect(records[0].status).toBe('rejected');
+  });
+
+  it('mints status "proposed" when the proposal was accepted and written', () => {
+    const res = markCandidateProcessed({
+      learningKey: 'proven-pattern/accepted',
+      outcome: 'written',
+      processedAt: '2026-06-22T09:00:00.000Z',
+      fallbackSlug: 'proven-pattern-accepted',
+      storePath,
+    });
+
+    expect(res.stamped.status).toBe('proposed');
+    expect(res.stamped.outcome).toBe('written');
+  });
+
+  it('returns the PERSISTED record when a prior terminal verdict wins the dedupe', () => {
+    writeFileSync(
+      storePath,
+      JSON.stringify(
+        candidate({
+          learning_key: 'fragile-pattern/zx-imports',
+          processed_at: '2026-06-21T12:00:00.000Z',
+          outcome: 'written',
+        }),
+      ) + '\n',
+    );
+
+    const res = markCandidateProcessed({
+      learningKey: 'fragile-pattern/zx-imports',
+      outcome: 'rejected',
+      processedAt: '2026-06-25T18:00:00.000Z',
+      storePath,
+    });
+
+    // The bug: the function returned the freshly-built stamp while
+    // mergeCandidates KEPT the existing terminal record — caller and disk
+    // disagreed about the verdict, silently.
+    const { records } = loadCandidates({ storePath });
+    expect(records).toHaveLength(1);
+    expect(records[0].processed_at).toBe('2026-06-21T12:00:00.000Z');
+    expect(records[0].outcome).toBe('written');
+    expect(res.stamped.processed_at).toBe('2026-06-21T12:00:00.000Z');
+    expect(res.stamped.outcome).toBe('written');
+    expect(res.alreadyProcessed).toBe(true);
+    // Not a write FAILURE — writer.mjs raises an operator-visible error on
+    // written:false, and the store IS in the intended terminal state here.
+    expect(res.written).toBe(true);
+  });
+
+  it('stamps a live existing record in place, preserving its provenance fields', () => {
+    writeFileSync(storePath, JSON.stringify(candidate({ confidence: 0.42 })) + '\n');
+
+    const res = markCandidateProcessed({
+      learningKey: 'fragile-pattern/zx-imports',
+      outcome: 'written',
+      processedAt: '2026-06-25T18:00:00.000Z',
+      storePath,
+    });
+
+    expect(res.stamped.processed_at).toBe('2026-06-25T18:00:00.000Z');
+    expect(res.stamped.outcome).toBe('written');
+    expect(res.stamped.confidence).toBe(0.42);
+    expect(res.stamped.created_at).toBe('2026-06-21T00:00:00.000Z');
+    expect(res.alreadyProcessed).toBe(false);
+  });
+
+  it('is a no-op for a missing learningKey', () => {
+    expect(markCandidateProcessed({ outcome: 'written', storePath })).toEqual({
+      written: false,
+      stamped: null,
+    });
+    expect(loadCandidates({ storePath }).records).toEqual([]);
   });
 });

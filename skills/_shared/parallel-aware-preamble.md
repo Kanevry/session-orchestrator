@@ -2,6 +2,7 @@
 
 > Single source of truth for the parallel-session-detection preamble.
 > Referenced by: autopilot, session-start, session-plan, wave-executor, session-end (5 orchestrator entry-points).
+> Design history: the 2026-05-26 parallel-aware-sessions spec is superseded on lock liveness (heartbeat, not PID) — see `docs/README.md` § Superseded design notes.
 
 ## Purpose
 

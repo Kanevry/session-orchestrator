@@ -50,11 +50,18 @@ const FORBIDDEN_CODEX_EVENTS = new Set([
   'CwdChanged',
 ]);
 
-const DISALLOWED_EDIT_HANDLERS = [
+/**
+ * Hook handlers that read an Edit/Write `tool_input.file_path` payload. Codex
+ * emits `apply_patch` payloads of a different shape, so wiring one of these into
+ * hooks-codex.json produces a handler that silently never fires. Exported so the
+ * contract test can assert the census rather than re-list it.
+ */
+export const DISALLOWED_EDIT_HANDLERS = [
   'enforce-scope.mjs',
   'config-protection.mjs',
   'post-edit-validate.mjs',
   'post-tooluse-frontend-slop.mjs',
+  'post-edit-import-probe.mjs',
 ];
 
 const CODEX_HOOK_WRAPPER_COMMAND =

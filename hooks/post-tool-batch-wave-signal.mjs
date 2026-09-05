@@ -42,6 +42,21 @@
  * under B's identity. `last_batch` stays UNGATED — it is a batch-resolution
  * breadcrumb, not a claim about whose wave lifecycle this is.
  *
+ * DIFF-SIZE MEASUREMENT (#980). The mechanical fallback below persists
+ * `wave_start_sha` (`git rev-parse HEAD`, best-effort) at every wave-OPEN
+ * transition and attaches `files_changed` + `files_changed_source:
+ * 'worktree-vs-wave-start-sha'` to the `orchestrator.wave.completed` it emits
+ * for the wave that sha opened. `files_changed` counts the DEDUPED union of
+ * `git diff --name-only <wave_start_sha>` (working tree vs the wave's start
+ * commit — the coordinator normally commits only at close, so uncommitted
+ * edits must count) and `git ls-files --others --exclude-standard` (untracked).
+ * Every git call is best-effort with a 1.5 s timeout; any failure, or a missing
+ * `wave_start_sha`, OMITS the key — the convergence-monitor reader treats an
+ * absent key as null and the `shrinking_diff` signal simply does not fire.
+ * `wave_start_sha` is written under the SAME ownership gate as the wave keys.
+ * OUT OF SCOPE: `hooks/on-session-end.mjs`'s final-wave `.completed` carries no
+ * `files_changed` — no wave-open transition runs there, so it has no start sha.
+ *
  * MONOTONICITY RULE (#1193 W4c Q3-MED-3). Three writers touch
  * `last_wave_completed` (this hook's explicit branch, this hook's fallback,
  * `hooks/on-session-end.mjs`). Every one of them writes through `maxWave()`,
@@ -51,6 +66,7 @@
  * hooks.json wiring is managed separately (W3-C4 scope).
  */
 
+import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -205,6 +221,87 @@ async function resolveWaveNumber(projectDir) {
   } catch {
     // Absent or unparseable — treat as 0 (no active wave).
     return 0;
+  }
+}
+
+/**
+ * The only environment variables forwarded to the `git` children below.
+ * Everything else — `GIT_DIR`/`GIT_WORK_TREE`/`GIT_COMMON_DIR` above all — is
+ * dropped, so an ambient redirect cannot make these probes measure a FOREIGN
+ * repository while `cwd` points at this one (`GIT_DIR` outranks `cwd`; that is
+ * exactly the 2026-08-19 redirect incident class).
+ *
+ * Same 6-entry allowlist as `scripts/lib/git-config-drift.mjs:170` and
+ * `check-banner-parity.mjs:63`, COPIED rather than imported on purpose: this is
+ * a live hook, and importing a scripts/lib module for six strings would add an
+ * edge to the hook import graph (`hooks/_lib/hook-import-set.json`) for no
+ * behavioural gain — the constant is cheaper to copy than a shared module is to
+ * maintain (BV-001, the same call git-config-drift.mjs documents).
+ */
+const GIT_ENV_ALLOWLIST = Object.freeze(['PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'TZ']);
+
+/** @returns {Record<string,string>} the allowlisted subset of `process.env`. */
+function filteredGitEnv() {
+  /** @type {Record<string,string>} */
+  const out = {};
+  for (const key of GIT_ENV_ALLOWLIST) {
+    const value = process.env[key];
+    if (typeof value === 'string') out[key] = value;
+  }
+  return out;
+}
+
+/** Shared spawn options for the best-effort git probes below (#980). */
+const GIT_OPTS = (projectDir) => ({
+  cwd: projectDir,
+  encoding: 'utf8',
+  timeout: 1_500,
+  stdio: ['ignore', 'pipe', 'ignore'],
+  env: filteredGitEnv(),
+});
+
+/**
+ * `git rev-parse HEAD` in `projectDir`, best-effort (#980).
+ * Returns null on ANY failure — not a git repo, detached/empty HEAD, timeout,
+ * git absent. A null is persisted as null so a STALE sha from the previous wave
+ * can never be mistaken for this wave's start point.
+ *
+ * @param {string} projectDir
+ * @returns {string|null}
+ */
+function readHeadSha(projectDir) {
+  try {
+    const out = execFileSync('git', ['rev-parse', 'HEAD'], GIT_OPTS(projectDir)).trim();
+    return /^[0-9a-f]{40}$/i.test(out) ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Count the files this wave touched: the DEDUPED union of the working tree's
+ * diff against `sha` and the untracked (non-ignored) files (#980).
+ *
+ * Working-tree-vs-sha rather than `sha..HEAD` on purpose: the coordinator
+ * commits at session close, not per wave, so a commit-only diff reads 0 for
+ * every wave of a normal session.
+ *
+ * @param {string} projectDir
+ * @param {unknown} sha  Persisted `wave_start_sha` (may be null/absent).
+ * @returns {number|null} null when unmeasurable — caller OMITS the key.
+ */
+function countFilesChangedSince(projectDir, sha) {
+  if (typeof sha !== 'string' || !/^[0-9a-f]{40}$/i.test(sha)) return null;
+  try {
+    const opts = GIT_OPTS(projectDir);
+    const tracked = execFileSync('git', ['diff', '--name-only', sha], opts);
+    const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], opts);
+    const paths = new Set(
+      `${tracked}\n${untracked}`.split('\n').map((l) => l.trim()).filter((l) => l.length > 0),
+    );
+    return paths.size;
+  } catch {
+    return null;
   }
 }
 
@@ -363,10 +460,13 @@ async function main() {
         // last_batch RMW above, so we observe the latest persisted value).
         let lastWave = 0;
         let lastWaveCompleted = 0;
+        let waveStartSha = null;
         try {
           const raw = await readFile(sessionFile, 'utf8');
           const parsed = JSON.parse(raw);
           if (typeof parsed.last_wave === 'number') lastWave = parsed.last_wave;
+          // #980 — the sha persisted when THIS `last_wave` was opened.
+          if (typeof parsed.wave_start_sha === 'string') waveStartSha = parsed.wave_start_sha;
           // #1193 review F2 — read in the SAME read as `last_wave`: a `/clear`
           // mid-wave already emitted `completed(lastWave)` via SessionEnd, and
           // `on-session-start.mjs` preserves that marker across the restart, so
@@ -383,8 +483,17 @@ async function main() {
           // prior wave is already closed too, and a non-integer marker counts
           // as absent rather than as "different".
           if (lastWave > lastWaveCompleted) {
+            // #980 — measure the closing wave's diff size BEFORE the new wave's
+            // start sha is persisted below. Unmeasurable → both keys omitted.
+            const filesChanged = countFilesChangedSince(getProjectDir(), waveStartSha);
             await emitEvent('orchestrator.wave.completed', {
               wave_number: lastWave,
+              ...(filesChanged !== null
+                ? {
+                  files_changed: filesChanged,
+                  files_changed_source: 'worktree-vs-wave-start-sha',
+                }
+                : {}),
               ...(batchId !== null ? { batch_id: batchId } : {}),
               ...(batchSize !== null ? { batch_size: batchSize } : {}),
             });
@@ -408,8 +517,13 @@ async function main() {
           // that session's own SessionStart takes over the file. Revisit if the
           // ledger shows repeated started{N} for one wave in a shared checkout.
           if (await ownsSessionFile(input, sessionFile)) {
+            // #980 — the OPEN half: stamp the sha this new wave starts from.
+            // Written as null (not omitted) when git is unreadable, so the
+            // PREVIOUS wave's sha can never linger and inflate the next count.
+            const startSha = readHeadSha(getProjectDir());
             const markResult = await atomicMutateJson(sessionFile, {}, (current) => ({
               ...current,
+              wave_start_sha: startSha,
               last_wave: maxWave(current?.last_wave, wave),
               ...(Math.max(lastWave, lastWaveCompleted) > 0
                 ? {

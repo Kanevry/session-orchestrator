@@ -33,7 +33,7 @@ afterEach(() => {
   if (tmp && existsSync(tmp)) rmSync(tmp, { recursive: true, force: true });
 });
 
-function runHook(stdinJson) {
+function runHook(stdinJson, extraEnv = {}) {
   return spawnSync(process.execPath, [HOOK], {
     input: stdinJson,
     encoding: 'utf8',
@@ -42,6 +42,7 @@ function runHook(stdinJson) {
       CLAUDE_PROJECT_DIR: tmp,
       SO_HOOK_PROFILE: 'full',
       SO_DISABLED_HOOKS: '',
+      ...extraEnv,
     },
     timeout: 10_000,
   });
@@ -512,5 +513,149 @@ describe('post-tool-batch wave-key ownership (#1193 W4c Q1-MED)', () => {
     expect(started).toHaveLength(1);
     expect(started[0].wave_number).toBe(6);
     expect(readSessionFile().last_wave_completed).toBe(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Diff-size measurement on wave.completed (GitLab #980)
+// ---------------------------------------------------------------------------
+// The `shrinking_diff` convergence signal compares `files_changed` across two
+// consecutive `orchestrator.wave.completed` records. Measured 2026-09-05: 144
+// such records in this repo's ledger, none carrying a measurement key — the
+// signal was structurally dead because NO emitter wrote one. These tests pin
+// the emitter half: a `wave_start_sha` stamped at each wave OPEN, and the
+// deduped worktree-vs-that-sha count attached to that wave's `completed`.
+
+/** `git` in the sandbox, with a repo-local identity (no global config needed). */
+function git(cwd, args) {
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+  return r.stdout.trim();
+}
+
+/** Turn the sandbox into a git repo with two tracked files and one commit. */
+function initRepo() {
+  git(tmp, ['init', '-q', '-b', 'main']);
+  git(tmp, ['config', 'user.email', 'test@example.invalid']);
+  git(tmp, ['config', 'user.name', 'Test']);
+  // The hook's own artefacts live under these two dirs — a real repo ignores
+  // them, and counting them as untracked "wave work" would be wrong.
+  writeFileSync(join(tmp, '.gitignore'), '.orchestrator/\n.claude/\n', 'utf8');
+  writeFileSync(join(tmp, 'a.txt'), 'a\n', 'utf8');
+  writeFileSync(join(tmp, 'b.txt'), 'b\n', 'utf8');
+  git(tmp, ['add', '.gitignore', 'a.txt', 'b.txt']);
+  git(tmp, ['commit', '-q', '-m', 'init']);
+  return git(tmp, ['rev-parse', 'HEAD']);
+}
+
+describe('post-tool-batch wave diff-size measurement (#980)', () => {
+  const MINE = '33333333-3333-4333-8333-333333333333';
+
+  it('persists wave_start_sha at the wave-OPEN transition', () => {
+    const head = initRepo();
+    writeWaveScope(1);
+    writeCurrentSession({ session_id: MINE, last_wave: 0 });
+
+    expect(runHook(JSON.stringify({ session_id: MINE, batch_id: 'b-open' })).status).toBe(0);
+
+    const session = readSessionFile();
+    expect(session.last_wave).toBe(1);
+    expect(session.wave_start_sha).toBe(head);
+  });
+
+  it('attaches files_changed (tracked edits + untracked, deduped) to completed{N}', () => {
+    // The fake-regression target: without the emitter half, the completed
+    // record carries no measurement key at all and shrinking_diff never fires.
+    const head = initRepo();
+    writeFileSync(join(tmp, 'a.txt'), 'a changed\n', 'utf8');
+    writeFileSync(join(tmp, 'b.txt'), 'b changed\n', 'utf8');
+    writeFileSync(join(tmp, 'c.txt'), 'new\n', 'utf8'); // untracked
+    writeWaveScope(2);
+    writeCurrentSession({ session_id: MINE, last_wave: 1, wave_start_sha: head });
+
+    expect(runHook(JSON.stringify({ session_id: MINE, batch_id: 'b-diff' })).status).toBe(0);
+
+    const completed = readEvents().filter((e) => e.event === 'orchestrator.wave.completed');
+    expect(completed).toHaveLength(1);
+    expect(completed[0].wave_number).toBe(1);
+    expect(completed[0].files_changed).toBe(3);
+    expect(completed[0].files_changed_source).toBe('worktree-vs-wave-start-sha');
+    // The NEW wave gets its own start sha (HEAD is unchanged — nothing committed).
+    expect(readSessionFile().wave_start_sha).toBe(head);
+  });
+
+  it('measures the PROJECT repo even under an ambient GIT_DIR/GIT_WORK_TREE redirect', () => {
+    // The bug: `git` honours GIT_DIR over `cwd`, so an ambient redirect (the
+    // 2026-08-19 incident class) made these probes read a FOREIGN repository —
+    // a clean one reports 0 changed files, so the wave silently measures zero
+    // while the operator's own worktree is full of edits.
+    const head = initRepo();
+    writeFileSync(join(tmp, 'a.txt'), 'a changed\n', 'utf8');
+    writeFileSync(join(tmp, 'b.txt'), 'b changed\n', 'utf8');
+    writeFileSync(join(tmp, 'c.txt'), 'new\n', 'utf8'); // untracked
+    writeWaveScope(2);
+    writeCurrentSession({ session_id: MINE, last_wave: 1, wave_start_sha: head });
+
+    // A second, CLEAN repo the ambient env points at.
+    const foreign = mkdtempSync(join(tmpdir(), 'ptb-foreign-'));
+    try {
+      git(foreign, ['init', '-q', '-b', 'main']);
+      git(foreign, ['config', 'user.email', 'foreign@example.invalid']);
+      git(foreign, ['config', 'user.name', 'Foreign']);
+      writeFileSync(join(foreign, 'z.txt'), 'z\n', 'utf8');
+      git(foreign, ['add', 'z.txt']);
+      git(foreign, ['commit', '-q', '-m', 'foreign']);
+      const foreignHead = git(foreign, ['rev-parse', 'HEAD']);
+      expect(foreignHead).not.toBe(head);
+
+      const res = runHook(JSON.stringify({ session_id: MINE, batch_id: 'b-redirect' }), {
+        GIT_DIR: join(foreign, '.git'),
+        GIT_WORK_TREE: foreign,
+      });
+      expect(res.status).toBe(0);
+
+      const completed = readEvents().filter((e) => e.event === 'orchestrator.wave.completed');
+      expect(completed).toHaveLength(1);
+      expect(completed[0].files_changed).toBe(3); // the fixture repo, not the clean foreign one
+      // …and the NEW wave's start sha is the fixture repo's HEAD, not the foreign HEAD.
+      expect(readSessionFile().wave_start_sha).toBe(head);
+    } finally {
+      rmSync(foreign, { recursive: true, force: true });
+    }
+  });
+
+  it('omits both keys when no wave_start_sha was ever persisted', () => {
+    const head = initRepo();
+    expect(head).toMatch(/^[0-9a-f]{40}$/);
+    writeWaveScope(2);
+    writeCurrentSession({ session_id: MINE, last_wave: 1 }); // no wave_start_sha
+
+    expect(runHook(JSON.stringify({ session_id: MINE, batch_id: 'b-nosha' })).status).toBe(0);
+
+    const completed = readEvents().filter((e) => e.event === 'orchestrator.wave.completed');
+    expect(completed).toHaveLength(1);
+    expect(Object.hasOwn(completed[0], 'files_changed')).toBe(false);
+    expect(Object.hasOwn(completed[0], 'files_changed_source')).toBe(false);
+  });
+
+  it('git failure (sandbox is not a repo): keys absent, event still emitted, exit 0', () => {
+    // No initRepo() — tmp is a bare tmpdir, so every git probe fails.
+    writeWaveScope(2);
+    writeCurrentSession({
+      session_id: MINE,
+      last_wave: 1,
+      wave_start_sha: '0'.repeat(40),
+    });
+
+    const result = runHook(JSON.stringify({ session_id: MINE, batch_id: 'b-nogit' }));
+    expect(result.status).toBe(0);
+
+    const events = readEvents();
+    const completed = events.filter((e) => e.event === 'orchestrator.wave.completed');
+    expect(completed).toHaveLength(1);
+    expect(Object.hasOwn(completed[0], 'files_changed')).toBe(false);
+    expect(events.filter((e) => e.event === 'orchestrator.wave.started')).toHaveLength(1);
+    // The stale sha is cleared rather than left to inflate the next count.
+    expect(readSessionFile().wave_start_sha).toBe(null);
   });
 });

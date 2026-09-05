@@ -37,7 +37,7 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, copyFileSync } from 'node:fs';
 import {
-  OWNER_YAML_PATH,
+  resolveOwnerYamlPath,
   validateOwnerConfig,
   writeOwnerConfig,
   getDefaults,
@@ -161,7 +161,7 @@ export function getInterviewQuestions() {
  * @returns {{ ok: boolean, path: string, errors: string[] }}
  */
 export function applyInterviewAnswers(answers, opts = {}) {
-  const filePath = opts.path ?? OWNER_YAML_PATH;
+  const filePath = opts.path ?? resolveOwnerYamlPath();
 
   if (!Array.isArray(answers) || answers.length !== 5) {
     return { ok: false, path: filePath, errors: ['applyInterviewAnswers requires exactly 5 answers'] };
@@ -258,7 +258,7 @@ export function runOwnerInterview(opts = {}) {
   const {
     skipIfExists = true,
     force = false,
-    path: filePath = OWNER_YAML_PATH,
+    path: filePath = resolveOwnerYamlPath(),
   } = opts;
 
   const fileExists = existsSync(filePath);

@@ -590,6 +590,26 @@ export function evaluateNpmAuth(whoami) {
 }
 
 /**
+ * Turn a `checkCiStatus` result into the `ci-green-on-head` preflight row.
+ *
+ * Three input states since #1031, and the middle one is why this is a named
+ * function rather than a ternary: `degraded` means the check could NOT be READ.
+ * Interpolating `ci.status` there printed `status: undefined` — a red row whose
+ * detail names no cause, which reads as "CI is broken" when the truth is "we
+ * never found out". Only an actual `status: 'green'` reading passes; a release
+ * must never proceed on an unknown CI state.
+ *
+ * @param {null | {status?: string, failingJobName?: string, degraded?: string}} ci
+ * @returns {{ok: boolean, detail: string}}
+ */
+export function evaluateCiRow(ci) {
+  if (ci === null || ci === undefined) return { ok: false, detail: 'CI status unavailable' };
+  if (ci.degraded) return { ok: false, detail: `CI status unknown (${ci.degraded})` };
+  const job = ci.failingJobName ? ` (${ci.failingJobName})` : '';
+  return { ok: ci.status === 'green', detail: `status: ${ci.status}${job}` };
+}
+
+/**
  * Flag-combination gate, applied before any work.
  *
  * `--skip-ci` turns the CI check into `ok:true` with the detail
@@ -769,8 +789,8 @@ async function preflight(repoRoot, target, { skipCi = false } = {}) {
   } else {
     const { checkCiStatus } = await import('./lib/ci-status-banner.mjs');
     const ci = await checkCiStatus({ repoRoot, timeoutMs: 15000 });
-    const green = ci !== null && ci.status === 'green';
-    add('ci-green-on-head', green, ci === null ? 'CI status unavailable' : `status: ${ci.status}${ci.failingJobName ? ` (${ci.failingJobName})` : ''}`);
+    const row = evaluateCiRow(ci);
+    add('ci-green-on-head', row.ok, row.detail);
   }
 
   // 7. Leakage gate over the actual pack file list.

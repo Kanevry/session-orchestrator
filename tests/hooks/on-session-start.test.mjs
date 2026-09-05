@@ -754,6 +754,69 @@ describe('high-water-mark preservation across SessionStart (#612)', { timeout: 1
     expect(after.last_wave_completed).toBe(2);
   });
 
+  it('preserves wave_start_sha when the prior session file carries the SAME semantic_session_id (#980)', async () => {
+    // Catches: post-tool-batch-wave-signal.mjs stamps wave_start_sha as the OPEN
+    // half of the wave diff. A /clear + resume mid-wave rewrote
+    // current-session.json without it, so the wave's own `wave.completed` came
+    // out with no start point and silently omitted `files_changed` — a hole the
+    // last_wave/last_wave_completed cases above could not see.
+    const dir = await mkProjectTracked();
+    await runHook({ projectDir: dir });
+    const firstSemanticId = (await readSessionFile(dir)).semantic_session_id;
+    expect(typeof firstSemanticId).toBe('string');
+
+    await clearSemanticIdMemory(dir);
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'current-session.json'),
+      JSON.stringify(
+        {
+          session_id: 'prev-uuid-eeee',
+          semantic_session_id: firstSemanticId,
+          pid: 12345,
+          source: 'stdin',
+          timestamp: '2026-05-28T00:00:00.000Z',
+          last_wave: 4,
+          wave_start_sha: '0123456789abcdef0123456789abcdef01234567',
+        },
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+
+    await runHook({ projectDir: dir });
+    const after = await readSessionFile(dir);
+    expect(after.semantic_session_id).toBe(firstSemanticId);
+    expect(after.wave_start_sha).toBe('0123456789abcdef0123456789abcdef01234567');
+  });
+
+  it('resets wave_start_sha when the prior session file carries a DIFFERENT semantic_session_id (#980)', async () => {
+    // The other half: a foreign session's start sha must never seed this
+    // session's diff, which would attribute its commits to our first wave.
+    const dir = await mkProjectTracked();
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'current-session.json'),
+      JSON.stringify(
+        {
+          session_id: 'stale-uuid-ffff',
+          semantic_session_id: 'some-other-branch-2020-01-01-deep-9',
+          pid: 54321,
+          source: 'stdin',
+          timestamp: '2020-01-01T00:00:00.000Z',
+          wave_start_sha: '0123456789abcdef0123456789abcdef01234567',
+        },
+        null,
+        2,
+      ) + '\n',
+      'utf8',
+    );
+
+    await runHook({ projectDir: dir });
+    const after = await readSessionFile(dir);
+    expect(Object.prototype.hasOwnProperty.call(after, 'wave_start_sha')).toBe(false);
+  });
+
   it('resets last_wave_completed when the prior session file carries a DIFFERENT semantic_session_id (#1193)', async () => {
     // The other half: a stale session's completion marker must NOT suppress the
     // new session's own final wave.completed.

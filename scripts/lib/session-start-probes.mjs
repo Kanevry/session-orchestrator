@@ -176,8 +176,16 @@ export const PROBES = [
     args: ({ repoRoot }) => ({ repoRoot }),
     // Bespoke shape: `{status, ok, details, …}` with no `message` field. The
     // banner text is prescribed by SKILL.md § Phase 4.
+    //
+    // The degraded branch is NOT decoration (#1031): this entry overrides BOTH
+    // `render` and `severityOf`, so the module-level defaults that already
+    // handle a `{severity:'warn', message, degraded}` result never run for this
+    // probe. Without these two lines a degraded ci-status result scored `'ok'`
+    // and rendered nothing — "could not read" displayed exactly like "green",
+    // which is the confusion the probe's own migration removed one layer down.
     render: (r) => {
       if (!r || typeof r !== 'object') return null;
+      if (r.degraded) return typeof r.message === 'string' && r.message ? r.message : null;
       if (r.status === 'red') {
         const pid = r.details?.currentPipelineId ?? '?';
         const green = r.lastGreen
@@ -193,7 +201,16 @@ export const PROBES = [
       return null;
     },
     // `status: 'red'` is an alert even though the probe publishes no severity.
-    severityOf: (r) => (r?.status === 'red' ? 'alert' : r?.status === 'green' && r?.allowFailureJobs ? 'warn' : 'ok'),
+    // A degraded result is a finding, never clean — same rule as the generic
+    // path in `severityOf()` below.
+    severityOf: (r) =>
+      r?.degraded
+        ? 'warn'
+        : r?.status === 'red'
+          ? 'alert'
+          : r?.status === 'green' && r?.allowFailureJobs
+            ? 'warn'
+            : 'ok',
   },
   {
     id: 'qg-command-drift',

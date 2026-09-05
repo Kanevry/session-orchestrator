@@ -3,8 +3,22 @@
  * Checks CI status for the current HEAD commit and returns a structured
  * result for session-start Phase 4 banner rendering.
  *
- * Plain-JS — no Zod dependency. Never throws. Returns null on any
- * no-op condition (no VCS, CLI missing, timeout, parse failure).
+ * Plain-JS — no Zod dependency. Never throws.
+ *
+ * THREE return states (#1031), not two:
+ *   - `null`                     — read, and there is nothing to report (a
+ *                                  benign ABSENCE: no VCS remote, no pipeline
+ *                                  worth a banner, green with no soft failures)
+ *   - `{status, ok, details, …}` — a real CI reading (`green` | `red` |
+ *                                  `unknown`)
+ *   - `{severity, message, degraded, ok:false}` — the state could NOT be read.
+ *     `degraded` is a member of the frozen {@link DEGRADED_REASONS} enum
+ *     exported below. This must NEVER be read as "CI is green".
+ *
+ * Until #1031 every unreadable state collapsed onto `null`, which in the banner
+ * contract reads as all-clear — the exact confusion #1022 (`gh repo view -R` →
+ * `unknown shorthand flag`) hid behind on every GitHub repo. The shape is the
+ * one `scripts/lib/mirror-issues-banner.mjs` established.
  *
  * Supports GitLab (via glab) and GitHub (via gh).
  * VCS is auto-detected from the repo's git remotes via
@@ -28,6 +42,78 @@ const execFileAsync = promisify(_execFile);
 
 /** Default timeout in milliseconds for CLI invocations. */
 export const DEFAULT_TIMEOUT_MS = 8000;
+
+/**
+ * Closed set of `degraded` reasons (#1031). A degraded result means "the CI
+ * state was NOT successfully read" — never "CI is green".
+ *
+ * Deliberately THIS module's own enum rather than a merged one shared with
+ * `mirror-issues-banner.mjs` / `git-config-drift.mjs`: those two already carry
+ * DIFFERENT member sets for their own failure surfaces, and a merged superset
+ * would hand every consumer members its probe can never emit — an enum whose
+ * members are not exhaustively reachable cannot be switched on exhaustively,
+ * which is the only reason to freeze one. The members here are exactly what
+ * this probe can fail at:
+ *
+ *   - `cli-missing`  a required binary (`git`, `glab`, `gh`) is not on PATH.
+ *   - `timeout`      a subprocess outlived its budget. Not silent since #1031:
+ *                    a hang is not actionable, but "state unknown" IS the
+ *                    finding, and silence renders identically to green.
+ *   - `parse-error`  a CLI answered with output this module could not read
+ *                    (unparseable JSON, or valid JSON of the wrong shape).
+ *   - `query-failed` residual bucket — a present CLI ran and rejected the
+ *                    invocation, or a resolvable remote whose API target could
+ *                    not be derived. Folding these into `parse-error` would
+ *                    mislabel a rejected flag as malformed output.
+ *   - `git-error`    the VCS probe itself failed (`git remote -v` non-zero for
+ *                    a reason other than "not a work tree"). Distinct from
+ *                    `query-failed` because it means the module never got as
+ *                    far as choosing a CI platform.
+ *
+ * @type {readonly ['cli-missing','timeout','parse-error','query-failed','git-error']}
+ */
+export const DEGRADED_REASONS = Object.freeze([
+  'cli-missing',
+  'timeout',
+  'parse-error',
+  'query-failed',
+  'git-error',
+]);
+
+/**
+ * Build the third return state. Distinct from `null` on purpose: `null` in the
+ * banner contract reads as "all clear", which a failed read has NOT
+ * established.
+ *
+ * The `detail` is appended bounded (BV-004: 200 chars — long enough for a
+ * `Command failed: <argv>` first line, short enough not to bury the
+ * session-start banner it prints beside; revisit if a CLI starts emitting a
+ * diagnostic that needs more). Callers pass ALREADY-redacted text — every
+ * source here is either a fixed string or a `redactUrlCredentials` result.
+ *
+ * @param {'cli-missing'|'timeout'|'parse-error'|'query-failed'|'git-error'} reason
+ * @param {string} [detail]  Optional, already-redacted diagnostic tail
+ * @returns {{ severity: 'warn', ok: false, message: string, degraded: string }}
+ */
+function degradedResult(reason, detail) {
+  // Redaction (the callers' job) and control-byte escaping are DIFFERENT
+  // protections: `redactUrlCredentials` removes secrets, it does not neutralise
+  // ANSI/CR. `parseCliJson` already escapes the text it embeds (see the call at
+  // the JSON.parse catch), but the degraded tail reaches the operator's terminal
+  // by a second route — a CLI stderr quoted into `err.message` — and skipped it.
+  // Escape here so BOTH routes are covered at their common exit. Slice first,
+  // escape after: the budget is 200 chars of DETAIL, and escaping cannot then
+  // leave a cut mid-`\uXXXX`.
+  const tail = detail ? ` — ${escapeControlBytes(String(detail).trim().slice(0, 200))}` : '';
+  return {
+    severity: 'warn',
+    ok: false,
+    message:
+      `⚠ ci-status: CI status for HEAD could not be determined (${reason}) — ` +
+      `state UNKNOWN, not "green".${tail}`,
+    degraded: reason,
+  };
+}
 
 /**
  * Wraps execFile with a per-call timeout race.
@@ -148,10 +234,10 @@ function parseCliJson(stdout, label, expect) {
     // `cause` preserves the original for a debugger; the reason is ALSO
     // inlined into the message because the outer catch reads `err.message`
     // only — a cause-only wrapper would lose it on the operator-facing line.
-    throw new Error(
+    throw tagParseError(new Error(
       `${label} returned unparseable JSON (${reason}) — ${shown}`,
       { cause: err },
-    );
+    ));
   }
 
   // A shape mismatch reports the JSON TYPE, never the payload. The parse
@@ -161,12 +247,28 @@ function parseCliJson(stdout, label, expect) {
   // its contents echoed anywhere. A type name carries no body content.
   const actual = jsonTypeOf(parsed);
   if (expect === 'array' && actual !== 'array') {
-    throw new Error(`${label} returned JSON of an unexpected shape — expected an array, got ${actual}`);
+    throw tagParseError(new Error(`${label} returned JSON of an unexpected shape — expected an array, got ${actual}`));
   }
   if (expect === 'object' && actual !== 'object') {
-    throw new Error(`${label} returned JSON of an unexpected shape — expected an object, got ${actual}`);
+    throw tagParseError(new Error(`${label} returned JSON of an unexpected shape — expected an object, got ${actual}`));
   }
   return parsed;
+}
+
+/**
+ * Stamp the `parse-error` degraded reason onto an error raised by
+ * {@link parseCliJson}.
+ *
+ * Carried on the error object rather than re-derived from its message text in
+ * the outer catch: a message-substring test would silently reclassify the
+ * moment a wording changes, and the two failures (`unparseable JSON`, wrong
+ * shape) are one class only because THIS function says so.
+ *
+ * @param {Error} err
+ * @returns {Error}
+ */
+function tagParseError(err) {
+  return Object.assign(err, { degradedReason: 'parse-error' });
 }
 
 /**
@@ -175,11 +277,17 @@ function parseCliJson(stdout, label, expect) {
  * every subprocess here runs under has no counterpart in the SYNCHRONOUS
  * `vcs-repo-spec.mjs` core (it uses `execFileSync`, which cannot time out).
  *
- * Deliberately NOT a query-failure for warning purposes — a timeout stays
- * SILENT, matching how `checkCiStatus`'s outer catch has always treated one
- * (`msg === 'timeout'` → silent `null`). Warning on a hung `git` but not on a
- * hung `glab` would be an inconsistency inside a single banner, and a hang is
- * not a fact an operator can act on the way "git is not installed" is.
+ * Deliberately NOT a query-failure for WARNING purposes — a timeout emits no
+ * `console.warn`, matching how `checkCiStatus`'s outer catch has always
+ * treated one, and warning on a hung `git` but not on a hung `glab` would be
+ * an inconsistency inside a single banner.
+ *
+ * It is no longer SILENT, though (#1031). The old argument — "a hang is not a
+ * fact an operator can act on the way 'git is not installed' is" — is
+ * superseded: what the operator acts on is not the hang, it is that CI state
+ * is UNKNOWN, and returning `null` rendered that identically to green. A
+ * timeout therefore yields `degradedResult('timeout')` on both this path and
+ * the outer catch.
  */
 const PROBE_TIMEOUT = 'probe-timeout';
 
@@ -202,6 +310,32 @@ const PROBE_TIMEOUT = 'probe-timeout';
  * @type {ReadonlySet<string>}
  */
 const SILENT_QUERY_FAILURES = new Set(['not-a-git-repo']);
+
+/**
+ * Project a `REMOTE_RESOLUTION_REASONS` query failure onto this module's own
+ * {@link DEGRADED_REASONS} member.
+ *
+ * Written as explicit branches rather than a lookup table so that EVERY reason
+ * literal this module can emit sits inside a literal call to the builder
+ * call — which is what makes the enum-membership census in
+ * `tests/lib/ci-status-banner.test.mjs` a regex over the source instead of a
+ * hand-typed list that drifts.
+ *
+ * The fallthrough is `query-failed`, not a throw: a reason added to the frozen
+ * upstream set must degrade visibly (fail-toward-visible), never crash the
+ * probe or slip back onto the silent path.
+ *
+ * @param {string} reason
+ * @param {string} [detail]  Already-redacted git stderr
+ * @returns {{ severity: 'warn', ok: false, message: string, degraded: string }}
+ */
+function degradedForVcsReason(reason, detail) {
+  // git itself is a CLI, and "not on PATH" is the same fact for it as for
+  // glab/gh — one member, not two spellings of it.
+  if (reason === 'git-unavailable') return degradedResult('cli-missing', detail);
+  if (reason === 'git-error') return degradedResult('git-error', detail);
+  return degradedResult('query-failed', detail);
+}
 
 /**
  * Classify a rejected ASYNC `execFile` into a `REMOTE_RESOLUTION_REASONS`
@@ -651,24 +785,22 @@ async function checkGithub(repoRoot, deps = {}) {
 /**
  * Checks CI status for the current HEAD commit.
  *
- * Returns `null` (silent no-op) when:
- *   - The repo has no usable VCS remote (not a git repo, no remotes at all,
- *     or >= 2 remotes with no preference match) — a benign, measured absence
- *   - Required CLI (glab / gh) not in PATH
- *   - Any CLI invocation times out
+ * Returns `null` (silent no-op) ONLY for a measured ABSENCE: the repo has no
+ * usable VCS remote (not a git repo, no remotes at all, or >= 2 remotes with no
+ * preference match). That is a complete answer — there is no CI here.
  *
- * Also returns `null`, but with a `console.warn` trace, when the VCS-detection
- * QUERY ITSELF failed (`git` not on PATH, `git remote -v` erroring), when a
- * present CLI rejected its invocation, or when a CLI returned output this
- * module could not parse (see {@link parseCliJson}). `null` alone cannot
- * express "could not read" — see the outer catch and Step 1 for why the warn
- * channel carries it.
+ * Returns a DEGRADED result (`{severity:'warn', ok:false, message, degraded}`,
+ * see {@link DEGRADED_REASONS}) when the state could not be read: the
+ * VCS-detection query itself failed (`git` not on PATH, `git remote -v`
+ * erroring), a required CLI is missing, an invocation timed out, a present CLI
+ * rejected its invocation, a GitLab API target could not be derived, or a CLI
+ * returned output this module could not parse (see {@link parseCliJson}).
+ * Callers MUST treat that as "state unknown", never as clean — the generic
+ * degraded path in `scripts/lib/session-start-probes.mjs` does exactly that.
  *
- * The unparseable-output case was listed above as SILENT until 2026-08-28.
- * That was never the behaviour — it has always fallen through to the outer
- * catch's warn branch (measured at 30940cb). The drift survived because the
- * one test covering it asserted only the `null` and let the file-wide
- * `console.warn` spy swallow the rest.
+ * Missing-CLI and timeout additionally stay SILENT on the `console.warn`
+ * channel (they are normal states on a CLI-less machine); every other degraded
+ * reason also emits a warn.
  *
  * @param {{
  *   repoRoot?: string,
@@ -686,6 +818,11 @@ async function checkGithub(repoRoot, deps = {}) {
  *   `resolveGitlabProjectTarget`, which proves host and project path from one
  *   sanitized remote; GitHub retains the #872 spec/host resolvers.
  * @returns {Promise<null | {
+ *   severity: 'warn',
+ *   ok: false,
+ *   message: string,
+ *   degraded: 'cli-missing'|'timeout'|'parse-error'|'query-failed'|'git-error',
+ * } | {
  *   status: 'green'|'red'|'unknown',
  *   ok: boolean,
  *   lastGreen?: { sha: string, pipelineId: number, ageCommits: number, ageDays: number|null },
@@ -723,23 +860,30 @@ export async function checkCiStatus(opts = {}, deps = {}) {
     if (!vcs) {
       const detected = await detectVcs(repoRoot, depsWithExec);
       if (!detected.ok) {
-        // The two-state `null` return is fixed by 13 sibling banners, so the
-        // third state lives in the WARN channel: an ABSENCE (`no-remotes`,
-        // `no-matching-remote`, `unsafe-value`) is a real, benign answer and
-        // stays silent — warning there would train operators to ignore this
-        // line, which is the more expensive error. A QUERY FAILURE
-        // (`git-unavailable`, `git-error`) means the question could not be
-        // asked at all, and that is precisely the state that was
-        // indistinguishable from "nothing to report" before #1039.
-        // `not-a-git-repo` is the one query failure this banner reads as an
-        // absence — see {@link SILENT_QUERY_FAILURES}.
+        // An ABSENCE (`no-remotes`, `no-matching-remote`, `unsafe-value`) is a
+        // real, benign answer and stays `null` AND silent — degrading there
+        // would print a banner on every session-start in a remote-less repo and
+        // train operators to ignore this line, which is the more expensive
+        // error. A QUERY FAILURE (`git-unavailable`, `git-error`) means the
+        // question could not be asked at all: since #1031 that is the third
+        // state, no longer a warn-only side channel on top of an all-clear
+        // `null`. `not-a-git-repo` is the one query failure this banner reads
+        // as an absence — see {@link SILENT_QUERY_FAILURES}.
+        if (detected.reason === PROBE_TIMEOUT) {
+          return degradedResult('timeout');
+        }
         if (isQueryFailure(detected.reason) && !SILENT_QUERY_FAILURES.has(detected.reason)) {
-          const detail = detected.stderr
-            ? ` — ${redactUrlCredentials(detected.stderr).trim()}`
+          const stderr = detected.stderr
+            ? redactUrlCredentials(detected.stderr).trim()
             : '';
+          const detail = stderr ? ` — ${stderr}` : '';
           console.warn(
             `WARN ci-status-banner: VCS detection failed (${detected.reason}), banner suppressed — ` +
               `CI state is UNKNOWN, not "green".${detail}`,
+          );
+          return degradedForVcsReason(
+            detected.reason,
+            stderr ? `${detected.reason}: ${stderr}` : detected.reason,
           );
         }
         return null;
@@ -765,7 +909,10 @@ export async function checkCiStatus(opts = {}, deps = {}) {
           'WARN ci-status-banner: a GitLab remote was detected but its host/project path ' +
             'could not be derived, banner suppressed — CI state is UNKNOWN, not "green".',
         );
-        return null;
+        return degradedResult(
+          'query-failed',
+          'a GitLab remote was detected but its host/project path could not be derived',
+        );
       }
       return await checkGitlab(repoRoot, now, { ...depsWithExec, gitlabProject });
     }
@@ -779,47 +926,45 @@ export async function checkCiStatus(opts = {}, deps = {}) {
     // Unknown VCS value — silent no-op.
     return null;
   } catch (err) {
-    // Swallow all errors: ENOENT (CLI missing), timeout, parse failures.
-    // These are all no-op conditions per the spec.
+    // Never throws: every failure below leaves as the third return state.
     const msg = err instanceof Error ? err.message : String(err);
 
-    // Timeout and ENOENT (missing CLI) → silent null.
-    if (
-      msg === 'timeout' ||
-      (err && err.code === 'ENOENT')
-    ) {
-      return null;
+    // Timeout and ENOENT (missing CLI) stay SILENT on the warn channel — a
+    // machine without `glab` is a normal state, and a warn on every
+    // session-start there drowns the #1022 signal this channel carries. Since
+    // #1031 they are no longer silent on the RETURN channel: neither state
+    // established that CI is green, so both degrade.
+    if (msg === 'timeout') return degradedResult('timeout');
+    if (err && err.code === 'ENOENT') {
+      return degradedResult('cli-missing', redactUrlCredentials(msg));
     }
 
     // Everything else means the CLI was PRESENT but the invocation failed —
-    // non-zero exit, rejected flag, unparseable output. Returning a bare null
-    // here makes that state indistinguishable from "CLI not installed", which
-    // is exactly how #1022 (`gh repo view -R` → `unknown shorthand flag: 'R'`)
-    // stayed invisible on every GitHub repo. THIS module keeps the two-state
-    // contract (null ⇒ silent no-op) for backwards compatibility with the
-    // Phase-4 callers already written against it, so leave a stderr trace
-    // instead: non-blocking, but the next defect of this class is no longer
-    // silent. Credentials redacted defense-in-depth (#907) — the message can
-    // quote the failed argv, which carries the repo spec.
+    // non-zero exit, rejected flag, unparseable output. A bare `null` here made
+    // that state indistinguishable from "CLI not installed" AND from "CI is
+    // green", which is exactly how #1022 (`gh repo view -R` → `unknown
+    // shorthand flag: 'R'`) stayed invisible on every GitHub repo.
     //
-    // DIRECTION FOR NEW BANNERS — do not copy this shape. The
-    // absence-preserving form is `scripts/lib/mirror-issues-banner.mjs`: a
-    // THIRD return state `{ severity, message, degraded }` whose `degraded`
-    // is a member of the closed `DEGRADED_REASONS` enum exported there, so
-    // "could not read" stays distinguishable from "read, and clean".
+    // #1031 finished the migration this comment used to describe as pending:
+    // the third state `{ severity, message, degraded }` — the shape
+    // `scripts/lib/mirror-issues-banner.mjs` established — now leaves here too,
+    // alongside (not instead of) the stderr trace. `parse-error` is carried on
+    // the error by `tagParseError`; everything else is the residual
+    // `query-failed`.
     //
-    // The REMOTE probe (`detectVcs`) has since been pulled onto that shape
-    // (#1039): it returns a reason from the frozen `REMOTE_RESOLUTION_REASONS`
-    // set and Step 1 branches on `isQueryFailure` — absence silent, query
-    // failure warned. This outer catch is what remains unmigrated: it still
-    // collapses every CLI-side failure onto `null`, which a caller reads as
-    // all-clear, and it cannot be widened without changing a return contract
-    // 13 sibling banners share. Same verdict, stated caller-side, in
-    // `skills/session-start/SKILL.md` § Phase 4 (the mirror-issues
-    // paragraph): "Do not reproduce it."
+    // Credentials redacted defense-in-depth (#907) — the message can quote the
+    // failed argv, which carries the repo spec — and the redacted text is what
+    // reaches BOTH the warn and the operator-facing `message`.
+    const redacted = redactUrlCredentials(msg);
     console.warn(
-      `WARN ci-status-banner: CI status check failed, banner suppressed — ${redactUrlCredentials(msg)}`,
+      `WARN ci-status-banner: CI status check failed, banner suppressed — ${redacted}`,
     );
-    return null;
+    // Literal reasons on BOTH branches, never `degradedResult(reason)` with a
+    // computed variable: the enum census in the test file is a regex over this
+    // source, and a variable hides the member from it.
+    if (err && typeof err === 'object' && err.degradedReason === 'parse-error') {
+      return degradedResult('parse-error', redacted);
+    }
+    return degradedResult('query-failed', redacted);
   }
 }

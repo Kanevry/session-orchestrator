@@ -211,6 +211,57 @@ function runDriftCheck() {
   return 0;
 }
 
+/**
+ * BLOCKING (#1224): the committed hook-reachable allowlist
+ * (`hooks/_lib/hook-import-set.json`) must match a fresh crawl of the four hook
+ * manifests. The allowlist is what gates `hooks/post-edit-import-probe.mjs`, so
+ * a stale set silently NARROWS that probe — a newly hook-reachable module would
+ * be edited without ever being checked, which is precisely the 2026-09-04
+ * host-wide-block incident class the probe exists to catch. A rotting allowlist
+ * is therefore a real defect, not a cosmetic drift, hence FAIL rather than WARN.
+ *
+ * `scripts/generate-hook-import-set.mjs --check` owns the comparison (it exits 1
+ * on drift); this adapter only translates it into validate-plugin's vocabulary.
+ * `runCheck()` cannot be reused — it spawns from `scripts/lib/validate/` and
+ * passes PLUGIN_ROOT positionally, while the generator takes `--plugin-root`.
+ *
+ * @returns {number} 0 when in sync, 1 on drift or a generator error.
+ */
+function runHookImportSetCheck() {
+  console.log('--- Check: hook-import-set drift (#1224) ---');
+  const script = path.join(SCRIPT_DIR, 'generate-hook-import-set.mjs');
+  const result = spawnSync(
+    process.execPath,
+    [script, '--plugin-root', PLUGIN_ROOT, '--check'],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  const combined = ((result.stdout ?? '') + (result.stderr ?? '')).trim();
+
+  // A silent exit 0 is NOT a pass. The generator's CLI entry is gated on
+  // `import.meta.url === file://${process.argv[1]}`, which does not hold when
+  // the spawned path traverses a symlink (measured: `/tmp` → `/private/tmp` on
+  // macOS makes the whole CLI body a no-op that still exits 0). Demanding the
+  // in-sync marker turns that failure mode from a silent pass into a finding.
+  const inSync = combined.match(/(\d+) modules, in sync/);
+  if (result.status === 0 && inSync) {
+    console.log(`  PASS: hook-import-set: in sync (${inSync[1]} entries)`);
+    totalPass += 1;
+    return 0;
+  }
+  if (result.status === 0) {
+    console.log('  FAIL: hook-import-set: generator exited 0 without reporting a comparison '
+      + `(no in-sync marker in output: ${JSON.stringify(combined.slice(0, 120))})`);
+    totalFail += 1;
+    return 1;
+  }
+  const detail = combined.split('\n').filter(Boolean).pop()
+    ?? `generator exited ${result.status}`;
+  console.log(`  FAIL: hook-import-set: ${detail.replace(/^✗\s*hook-import-set:\s*/, '')}`);
+  console.log('        Remedy: node scripts/generate-hook-import-set.mjs && stage hooks/_lib/hook-import-set.json');
+  totalFail += 1;
+  return 1;
+}
+
 // ---------------------------------------------------------------------------
 // Run all checks — same order as validate-plugin.sh
 // plugin.json checks are prerequisite; abort early if they fail.
@@ -255,6 +306,9 @@ if (runDriftCheck() !== 0) checkFailed = 1;
 
 process.stdout.write('\n');
 if (runCheck('check-hooks-symmetry.mjs') !== 0) checkFailed = 1;
+
+process.stdout.write('\n');
+if (runHookImportSetCheck() !== 0) checkFailed = 1;
 
 process.stdout.write('\n');
 if (runCheck('check-guard-requires-parity.mjs') !== 0) checkFailed = 1;

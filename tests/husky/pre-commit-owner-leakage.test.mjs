@@ -27,6 +27,7 @@ const SCANNER_PATH = join(REPO_ROOT, 'scripts', 'lib', 'validate', 'check-owner-
 const CONFIDENTIAL_NAMES_HELPER_PATH = join(REPO_ROOT, 'scripts', 'lib', 'validate', 'confidential-names.mjs');
 const HOST_PATHS_HELPER_PATH = join(REPO_ROOT, 'scripts', 'lib', 'config', 'host-paths.mjs');
 const OWNER_YAML_HELPER_PATH = join(REPO_ROOT, 'scripts', 'lib', 'owner-yaml.mjs');
+const PRIVATE_CONFIG_DIR_HELPER_PATH = join(REPO_ROOT, 'scripts', 'lib', 'config', 'private-config-dir.mjs');
 const NODE_MODULES_PATH = join(REPO_ROOT, 'node_modules');
 
 /** Build the same owner-leakage-only hook slice the E2E beforeEach installs below. */
@@ -208,15 +209,18 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       execFileSync('git', ['-C', tmpDir, 'config', 'user.name', 'Test']);
       execFileSync('git', ['-C', tmpDir, 'config', 'commit.gpgsign', 'false']);
 
-      // Copy the scanner AND the three host-local helper modules it dynamically
+      // Copy the scanner AND the four host-local helper modules it dynamically
       // imports for CP11, at their real relative paths, so getConfidentialNamePatterns()
-      // resolves them from inside tmpDir.
+      // resolves them from inside tmpDir. The chain is copied FILE BY FILE, so every
+      // repo-local import added anywhere on it must be added here too — owner-yaml.mjs
+      // imports scripts/lib/config/private-config-dir.mjs (#1223).
       mkdirSync(join(tmpDir, 'scripts', 'lib', 'validate'), { recursive: true });
       mkdirSync(join(tmpDir, 'scripts', 'lib', 'config'), { recursive: true });
       cpSync(SCANNER_PATH, join(tmpDir, 'scripts', 'lib', 'validate', 'check-owner-leakage.mjs'));
       cpSync(CONFIDENTIAL_NAMES_HELPER_PATH, join(tmpDir, 'scripts', 'lib', 'validate', 'confidential-names.mjs'));
       cpSync(HOST_PATHS_HELPER_PATH, join(tmpDir, 'scripts', 'lib', 'config', 'host-paths.mjs'));
       cpSync(OWNER_YAML_HELPER_PATH, join(tmpDir, 'scripts', 'lib', 'owner-yaml.mjs'));
+      cpSync(PRIVATE_CONFIG_DIR_HELPER_PATH, join(tmpDir, 'scripts', 'lib', 'config', 'private-config-dir.mjs'));
       // owner-yaml.mjs statically imports 'js-yaml' from node_modules. tmpDir has
       // no node_modules of its own, so ESM bare-specifier resolution would fail
       // with ERR_MODULE_NOT_FOUND — symlink the real repo's node_modules so the

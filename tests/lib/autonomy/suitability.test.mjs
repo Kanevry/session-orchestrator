@@ -89,6 +89,20 @@ describe('computeSuitabilityVerdict — suitable truth-table', () => {
     expect(r.warnings).toContain('CI signal absent');
   });
 
+  it("CI {status:'unknown'} → still passes G3 (only a literal 'red' fails)", () => {
+    const r = computeSuitabilityVerdict({ ...GREEN, ci: { status: 'unknown' } });
+    expect(r.suitable).toBe(true);
+  });
+
+  it("CI {status:'unknown'} → warns; it must not be QUIETER than plain absence", () => {
+    // A degraded probe (#1031) produces exactly this shape. It is well-formed,
+    // so it hit neither the absent nor the malformed branch and passed in
+    // total silence — the strictly-weaker signal warning less than the
+    // stronger one.
+    const r = computeSuitabilityVerdict({ ...GREEN, ci: { status: 'unknown' } });
+    expect(r.warnings).toContain('CI signal unknown — treated as absent');
+  });
+
   it("resourceVerdict 'critical' overrides high confidence + green CI → not suitable", () => {
     const r = computeSuitabilityVerdict({
       ...GREEN,

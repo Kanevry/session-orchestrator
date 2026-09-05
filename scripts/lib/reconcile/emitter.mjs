@@ -172,18 +172,37 @@ const GLOB_METACHAR_RE = /[*?[\]{}()]|[!@+](?=\()/;
  * {@link UNSAFE_PATH_QUOTE_RE}). Results are deduped, order-preserving on
  * first occurrence.
  *
+ * #1153 P13: skipping used to be entirely silent, so a learning whose ONLY
+ * `file_paths` entry was unusable produced the generic "no activation axis"
+ * rejection with nothing naming WHY the axis was empty. Every skipped entry is
+ * therefore recorded into the optional `dropped` sink (value + one-word
+ * reason), which {@link formatDroppedFilePaths} renders into that rejection
+ * reason. The sink is an out-parameter rather than a changed return type so
+ * every existing caller stays byte-identical.
+ *
  * @param {string[]} filePaths
+ * @param {{value: string, reason: string}[]} [dropped] - out-param sink
  * @returns {string[]}
  */
-function globsFromFilePaths(filePaths) {
+function globsFromFilePaths(filePaths, dropped) {
   const out = [];
   const seen = new Set();
   for (const raw of filePaths) {
     if (typeof raw !== 'string' || raw === '') continue;
-    if (GLOB_METACHAR_RE.test(raw)) continue;
+    if (GLOB_METACHAR_RE.test(raw)) {
+      dropped?.push({ value: raw, reason: 'glob-metachar' });
+      continue;
+    }
     // #1015: frontmatter-structure guard. Skipping (never escaping) keeps this
     // idempotent and non-overlapping with the renderer's sanitiser.
-    if (CONTROL_CHARS_TEST_RE.test(raw) || UNSAFE_PATH_QUOTE_RE.test(raw)) continue;
+    if (CONTROL_CHARS_TEST_RE.test(raw)) {
+      dropped?.push({ value: raw, reason: 'control-char' });
+      continue;
+    }
+    if (UNSAFE_PATH_QUOTE_RE.test(raw)) {
+      dropped?.push({ value: raw, reason: 'quote' });
+      continue;
+    }
     const normalized = raw.replace(/\\/g, '/');
     const dir = dirname(normalized);
     const pattern = dir === '.' ? normalized : `${dir}/**`;
@@ -193,6 +212,42 @@ function globsFromFilePaths(filePaths) {
     }
   }
   return out;
+}
+
+/** Max chars of a single dropped `file_paths` value in a rejection reason. */
+const DROPPED_VALUE_MAX = 60;
+
+/**
+ * Render the `dropped` sink of {@link globsFromFilePaths} into a suffix for the
+ * never-always-on rejection reason (#1153 P13).
+ *
+ * The reason string is OPERATOR-VISIBLE (engine.mjs forwards it verbatim into
+ * `reason: emit/render error: …` and from there into the candidates ledger), so
+ * a hostile `file_paths` entry must not be able to inject newlines or ANSI into
+ * it. Each value is therefore `JSON.stringify`-escaped — which turns every
+ * control char into a `\uXXXX` literal — and then hard-truncated to
+ * {@link DROPPED_VALUE_MAX} chars, with any trailing partial backslash escape
+ * removed so the cut cannot end mid-sequence.
+ *
+ * @param {{value: string, reason: string}[]} dropped
+ * @returns {string} `''` when nothing was dropped, else a ` — dropped …` suffix
+ */
+function formatDroppedFilePaths(dropped) {
+  if (!Array.isArray(dropped) || dropped.length === 0) return '';
+  const rendered = dropped.map(({ value, reason }) => {
+    const escaped = JSON.stringify(String(value));
+    const clipped =
+      escaped.length <= DROPPED_VALUE_MAX
+        ? escaped
+        // A `\uXXXX` escape is 6 chars, so the cut can land at FIVE distinct
+        // depths inside one — and `/\\+$/` only ever caught the shallowest
+        // (`\`). Measured at DROPPED_VALUE_MAX=60 with a NUL at offsets 53..56:
+        // the old form left `\u000`, `\u00`, `\u0` and `\u` standing. Strip the
+        // backslash together with up to three hex digits of a partial `u`-escape.
+        : `${escaped.slice(0, DROPPED_VALUE_MAX - 1).replace(/\\(u[0-9a-fA-F]{0,3})?$/, '')}…`;
+    return `${clipped} (${reason})`;
+  });
+  return ` — dropped file_paths: ${dropped.length} (${rendered.join(', ')})`;
 }
 
 /**
@@ -320,7 +375,8 @@ export function toActivationMetadata(learning, { ruleExpiryDays, now, minRuleDay
   }
 
   const filePaths = Array.isArray(learning.file_paths) ? learning.file_paths : [];
-  const globs = globsFromFilePaths(filePaths);
+  const droppedFilePaths = [];
+  const globs = globsFromFilePaths(filePaths, droppedFilePaths);
 
   // #1015: `host_class` is copied straight into an UNQUOTED `host-class:`
   // frontmatter line by the renderer, so its SHAPE is load-bearing. Reject a
@@ -358,16 +414,22 @@ export function toActivationMetadata(learning, { ruleExpiryDays, now, minRuleDay
   // The brandmauer: an auto-generated rule must carry ≥1 activation axis. If we
   // could derive neither a glob nor a host-class, refuse — never emit always-on.
   if (globs.length === 0 && hostClass === undefined) {
+    // #1153 P13: name the entries that were silently skipped on the way here —
+    // otherwise "no activation axis" is indistinguishable from "no file_paths
+    // at all", and the operator has no way to see that a malformed record (not
+    // an empty one) caused the rejection.
+    const droppedSuffix = formatDroppedFilePaths(droppedFilePaths);
     if (hostClassDroppedByType) {
       throw new Error(
         `emitter: host_class ${JSON.stringify(learning.host_class)} is present and well-formed, but type ` +
           `${JSON.stringify(learning.type)} is not host-specific (#1090 — host-class is only copied through for ` +
           `${[...HOST_SPECIFIC_TYPES].join(', ')}) — refusing to emit always-on auto-generated rule ` +
-          '(never-always-on invariant); no other activation axis (globs) is available either.',
+          `(never-always-on invariant); no other activation axis (globs) is available either.${droppedSuffix}`,
       );
     }
     throw new Error(
-      'emitter: no activation axis (globs/host-class) — refusing to emit always-on auto-generated rule (never-always-on invariant)',
+      'emitter: no activation axis (globs/host-class) — refusing to emit always-on auto-generated rule ' +
+        `(never-always-on invariant)${droppedSuffix}`,
     );
   }
 

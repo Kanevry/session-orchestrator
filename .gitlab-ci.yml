@@ -399,6 +399,24 @@ plugin-schema-validate:
   rules: *gate-rules
   allow_failure: false
 
+# hook-import-set-check — drift guard for the committed hook-reachable
+# allowlist hooks/_lib/hook-import-set.json (#1224). That file gates
+# hooks/post-edit-import-probe.mjs: a stale allowlist does not make the probe
+# noisy, it makes it SILENT for exactly the modules that just became
+# hook-reachable — the 2026-09-04 shape where a broken helper blocked every
+# Bash/Edit/Write call host-wide for ~8 minutes. The .husky/pre-commit stage
+# covers the same drift locally but is `--no-verify`-bypassable, so this is the
+# mechanical backstop. Node-stdlib only, no extra deps, sub-second.
+hook-import-set-check:
+  stage: validate
+  <<: *node-setup
+  interruptible: true
+  timeout: 5m
+  script:
+    - node scripts/generate-hook-import-set.mjs --plugin-root "$CI_PROJECT_DIR" --check
+  rules: *gate-rules
+  allow_failure: false
+
 # package-manager-guard — recurrence guard for the pnpm/npm working-tree drift
 # incident class (#715): a bare `pnpm install` at repo root silently rewrites
 # node_modules to a pnpm layout, and a stray gitignored pnpm-lock.yaml never
@@ -732,6 +750,7 @@ pipeline-gate:
     - owner-leakage
     - fixture-shape
     - plugin-schema-validate
+    - hook-import-set-check
     - package-manager-guard
     - test
     # Optional + artifacts — conditionally absent, judged by marker (mechanism 2).

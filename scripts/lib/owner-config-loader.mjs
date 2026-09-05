@@ -8,7 +8,10 @@
  *
  * ── PATH RESOLUTION ──────────────────────────────────────────────────────
  *
- *   Default path: `${XDG_CONFIG_HOME ?? ${HOME}/.config}/session-orchestrator/owner.yaml`
+ *   Default path (#1223 — delegated to the single resolver
+ *   `config/private-config-dir.mjs`; `SO_CONFIG_HOME` names the private dir
+ *   ITSELF and wins):
+ *   `${SO_CONFIG_HOME ?? ${XDG_CONFIG_HOME ?? ${HOME}/.config}/session-orchestrator}/owner.yaml`
  *   - macOS / Linux: `~/.config/session-orchestrator/owner.yaml`
  *   - Windows:       `%APPDATA%\session-orchestrator\owner.yaml` when
  *                    APPDATA is set and XDG_CONFIG_HOME is not (Node uses
@@ -43,29 +46,37 @@
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 import yaml from 'js-yaml';
 
 import { validate } from './owner-config.mjs';
+import { resolvePrivateConfigDir } from './config/private-config-dir.mjs';
 
 // ---------------------------------------------------------------------------
 // Path resolution
 // ---------------------------------------------------------------------------
 
-const APP_DIR = 'session-orchestrator';
-const CONFIG_FILE = 'owner.yaml';
-
 /**
- * Resolve the canonical owner.yaml path on disk. Honours XDG_CONFIG_HOME
- * when set (Linux convention), otherwise falls back to `${HOME}/.config`.
+ * Resolve the canonical owner.yaml path on disk: the ONE private-config-dir
+ * resolver (#1223) plus the file's basename — precedence `SO_CONFIG_HOME` (the
+ * private dir itself) > `XDG_CONFIG_HOME` (its parent) > `${HOME}/.config`, each
+ * `.trim()`ed so a whitespace-only value falls through instead of
+ * short-circuiting (`.claude/rules/development.md` § Error Handling).
+ *
+ * Reaches the leaf DIRECTLY rather than through `owner-yaml.mjs`'s
+ * `resolveOwnerYamlPath()`: that hop exists only to append the same basename and
+ * drags a `js-yaml`-importing module in with it. The precedence — the part #1223
+ * consolidated — still lives in exactly one place; only the literal `'owner.yaml'`
+ * is stated twice.
+ *
+ * Before #1223 this function knew only `XDG_CONFIG_HOME` and did not trim, so
+ * `SO_CONFIG_HOME=<sandbox>` still read the operator's real home.
+ *
  * Returns an absolute path string. Does NOT touch the filesystem.
  *
  * @returns {string} absolute path to owner.yaml
  */
 export function resolveOwnerConfigPath() {
-  const xdg = process.env.XDG_CONFIG_HOME;
-  const base = xdg && xdg.length > 0 ? xdg : join(homedir(), '.config');
-  return join(base, APP_DIR, CONFIG_FILE);
+  return join(resolvePrivateConfigDir(), 'owner.yaml');
 }
 
 // ---------------------------------------------------------------------------

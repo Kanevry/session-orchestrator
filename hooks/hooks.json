@@ -135,6 +135,11 @@
             "type": "command",
             "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-tooluse-frontend-slop.mjs\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-edit-import-probe.mjs\"",
+            "timeout": 5
           }
         ]
       },

@@ -185,6 +185,31 @@ describe('isDispatcherAutonomyBlockPresent — deliberate edge cases', () => {
   it('treats a BOM at file start with the header on a later line as PRESENT', () => {
     expect(isDispatcherAutonomyBlockPresent('\uFEFF# Title\n\ndispatcher-autonomy:\n  autonomy: off\n')).toBe(true);
   });
+
+  // #1222 \u2014 the named bug: a commented-out block parses to DEFAULTS
+  // (_parseDispatcherAutonomy preprocesses with preprocessBlockLines), so
+  // reporting it PRESENT made the one-time capture AUQ unreachable forever.
+  it('treats a fully commented-out block as ABSENT (parser strips HTML comments too)', () => {
+    const content = '# Title\n\n<!--\ndispatcher-autonomy:\n  autonomy: off\n-->\n';
+    expect(isDispatcherAutonomyBlockPresent(content)).toBe(false);
+    // The parity half: the parser sees no block either.
+    expect(_parseDispatcherAutonomy(content).autonomy).toBe('off');
+  });
+
+  it('treats a commented-out block followed by a real block as PRESENT', () => {
+    const content =
+      '# Title\n\n<!--\ndispatcher-autonomy:\n  autonomy: off\n-->\n\ndispatcher-autonomy:\n  autonomy: advisory\n';
+    expect(isDispatcherAutonomyBlockPresent(content)).toBe(true);
+    expect(_parseDispatcherAutonomy(content).autonomy).toBe('advisory');
+  });
+
+  it('treats a header after an UNTERMINATED <!-- as PRESENT (strip is fail-open; parser agrees)', () => {
+    const content = '# Title\n\n<!-- note\ndispatcher-autonomy:\n  autonomy: advisory\n';
+    expect(isDispatcherAutonomyBlockPresent(content)).toBe(true);
+    // Parity: stripHtmlCommentBlocks returns the lines unfiltered, so the parser
+    // reads the block as live config as well.
+    expect(_parseDispatcherAutonomy(content).autonomy).toBe('advisory');
+  });
 });
 
 // ---------------------------------------------------------------------------

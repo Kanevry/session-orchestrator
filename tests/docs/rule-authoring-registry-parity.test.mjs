@@ -6,8 +6,11 @@
  * "Transcribed verbatim from `LEARNING_TYPE_REGISTRY`" table + surrounding
  * prose against the REAL `LEARNING_TYPE_REGISTRY` / `LEARNING_TYPE_ALIASES`
  * exports in scripts/lib/learnings/schema.mjs. Three parity axes:
- *   (1) every table row's ttlDays/agentProposable/ruleConvertible matches the
- *       registry 1:1 (bijective — no missing row, no extra row);
+ *   (1) every table row's ttlDays/agentProposable/ruleConvertible/hostScoped
+ *       matches the registry 1:1 (bijective — no missing row, no extra row);
+ *       `hostScoped` is the #1090 fourth axis, added in #1153 P12 — before it
+ *       the parser captured only three and a drifted host-scoping cell was
+ *       structurally invisible;
  *   (2) the "... are the N `ruleConvertible: true` types" prose sentence's
  *       count word AND its listed type names match the registry-derived set;
  *   (3) every `LEARNING_TYPE_ALIASES` key is mentioned (in backticks) inside
@@ -36,7 +39,7 @@
  *
  * Bug class caught: a future edit to LEARNING_TYPE_REGISTRY or
  * LEARNING_TYPE_ALIASES (add/remove a ruleConvertible:true type, flip a
- * ttlDays/agentProposable/ruleConvertible flag, add/rename an alias) that is
+ * ttlDays/agentProposable/ruleConvertible/hostScoped flag, add/rename an alias) that is
  * not mirrored into docs/rule-authoring.md's table/prose — exactly the
  * D3-flagged "manual mitziehen, sonst stille Drift" silent-drift failure.
  */
@@ -67,10 +70,10 @@ const WORD_TO_NUMBER = {
 // parser; this file's own guard function IS the artifact under test).
 // ---------------------------------------------------------------------------
 
-/** Extracts `| \`type\` | ttlDays | agentProposable | ruleConvertible |` rows. */
+/** Extracts `| \`type\` | ttlDays | agentProposable | ruleConvertible | hostScoped |` rows. */
 function parseRegistryTable(docText) {
   const rows = [];
-  const rowRe = /^\|\s*`([^`]+)`\s*\|\s*(\d+)\s*\|\s*(true|false)\s*\|\s*(true|false)\s*\|\s*$/gm;
+  const rowRe = /^\|\s*`([^`]+)`\s*\|\s*(\d+)\s*\|\s*(true|false)\s*\|\s*(true|false)\s*\|\s*(true|false)\s*\|\s*$/gm;
   let m;
   while ((m = rowRe.exec(docText)) !== null) {
     rows.push({
@@ -78,6 +81,7 @@ function parseRegistryTable(docText) {
       ttlDays: Number(m[2]),
       agentProposable: m[3] === 'true',
       ruleConvertible: m[4] === 'true',
+      hostScoped: m[5] === 'true',
     });
   }
   return rows;
@@ -124,6 +128,9 @@ function computeParityDiffs(docText, registry, aliases) {
     }
     if (row.ruleConvertible !== meta.ruleConvertible) {
       diffs.push(`table ruleConvertible mismatch for '${type}': doc=${row.ruleConvertible} registry=${meta.ruleConvertible}`);
+    }
+    if (row.hostScoped !== meta.hostScoped) {
+      diffs.push(`table hostScoped mismatch for '${type}': doc=${row.hostScoped} registry=${meta.hostScoped}`);
     }
   }
   for (const row of tableRows) {
@@ -184,8 +191,8 @@ describe('docs/rule-authoring.md registry-table parity (D3 follow-up)', () => {
 describe('RED fixtures — falsification proof (docs/rule-authoring.md is never edited on disk)', () => {
   it('flags a drifted ttlDays value in the table', () => {
     const corrupted = REAL_DOC_TEXT.replace(
-      '| `fragile-file` | 45 | true | true |',
-      '| `fragile-file` | 999 | true | true |',
+      '| `fragile-file` | 45 | true | true | false |',
+      '| `fragile-file` | 999 | true | true | false |',
     );
     expect(corrupted).not.toBe(REAL_DOC_TEXT);
     const diffs = computeParityDiffs(corrupted, LEARNING_TYPE_REGISTRY, LEARNING_TYPE_ALIASES);
@@ -194,8 +201,8 @@ describe('RED fixtures — falsification proof (docs/rule-authoring.md is never 
 
   it('flags a drifted ruleConvertible boolean in the table', () => {
     const corrupted = REAL_DOC_TEXT.replace(
-      '| `convention` | 90 | true | true |',
-      '| `convention` | 90 | true | false |',
+      '| `convention` | 90 | true | true | false |',
+      '| `convention` | 90 | true | false | false |',
     );
     expect(corrupted).not.toBe(REAL_DOC_TEXT);
     const diffs = computeParityDiffs(corrupted, LEARNING_TYPE_REGISTRY, LEARNING_TYPE_ALIASES);
@@ -203,7 +210,7 @@ describe('RED fixtures — falsification proof (docs/rule-authoring.md is never 
   });
 
   it('flags a removed table row for a registered type', () => {
-    const corrupted = REAL_DOC_TEXT.replace('| `design-pattern` | 90 | true | true |\n', '');
+    const corrupted = REAL_DOC_TEXT.replace('| `design-pattern` | 90 | true | true | false |\n', '');
     expect(corrupted).not.toBe(REAL_DOC_TEXT);
     const diffs = computeParityDiffs(corrupted, LEARNING_TYPE_REGISTRY, LEARNING_TYPE_ALIASES);
     expect(diffs).toContain("table missing row for type 'design-pattern'");
@@ -211,12 +218,25 @@ describe('RED fixtures — falsification proof (docs/rule-authoring.md is never 
 
   it('flags an extra unregistered-type row (a simulated table addition with no matching registry entry)', () => {
     const corrupted = REAL_DOC_TEXT.replace(
-      '| `design-pattern` | 90 | true | true |',
-      '| `design-pattern` | 90 | true | true |\n| `made-up-type` | 30 | true | true |',
+      '| `design-pattern` | 90 | true | true | false |',
+      '| `design-pattern` | 90 | true | true | false |\n| `made-up-type` | 30 | true | true | false |',
     );
     expect(corrupted).not.toBe(REAL_DOC_TEXT);
     const diffs = computeParityDiffs(corrupted, LEARNING_TYPE_REGISTRY, LEARNING_TYPE_ALIASES);
     expect(diffs).toContain("table has extra row for unregistered type 'made-up-type'");
+  });
+
+  it('flags a drifted hostScoped boolean in the table (the #1090 fourth axis)', () => {
+    // hardware-pattern is the ONLY hostScoped:true type — flipping its cell to
+    // `false` is exactly the drift that was invisible before P12 widened the
+    // parser and the diff to the fourth axis.
+    const corrupted = REAL_DOC_TEXT.replace(
+      '| `hardware-pattern` | 60 | true | false | true |',
+      '| `hardware-pattern` | 60 | true | false | false |',
+    );
+    expect(corrupted).not.toBe(REAL_DOC_TEXT);
+    const diffs = computeParityDiffs(corrupted, LEARNING_TYPE_REGISTRY, LEARNING_TYPE_ALIASES);
+    expect(diffs).toContain("table hostScoped mismatch for 'hardware-pattern': doc=false registry=true");
   });
 
   it('flags a count-word drift in the "are the N `ruleConvertible: true` types" sentence', () => {
@@ -255,15 +275,28 @@ describe('RED fixtures — falsification proof (docs/rule-authoring.md is never 
 describe('computeParityDiffs() sanity (non-doc synthetic case)', () => {
   it('reports a missing-row diff when the registry has a type absent from a minimal doc fixture', () => {
     const minimalDoc = [
-      '| Type | ttlDays | agentProposable | ruleConvertible |',
-      '|------|---------|------------------|------------------|',
-      '| `alpha` | 30 | true | false |',
+      '| Type | ttlDays | agentProposable | ruleConvertible | hostScoped |',
+      '|------|---------|------------------|------------------|------------|',
+      '| `alpha` | 30 | true | false | false |',
     ].join('\n');
     const syntheticRegistry = {
-      alpha: { ttlDays: 30, agentProposable: true, ruleConvertible: false },
-      beta: { ttlDays: 45, agentProposable: true, ruleConvertible: true },
+      alpha: { ttlDays: 30, agentProposable: true, ruleConvertible: false, hostScoped: false },
+      beta: { ttlDays: 45, agentProposable: true, ruleConvertible: true, hostScoped: false },
     };
     const diffs = computeParityDiffs(minimalDoc, syntheticRegistry, {});
     expect(diffs).toContain("table missing row for type 'beta'");
+  });
+
+  it('reports a hostScoped diff for a deliberately wrong cell in a synthetic fixture table', () => {
+    const fixtureDoc = [
+      '| Type | ttlDays | agentProposable | ruleConvertible | hostScoped |',
+      '|------|---------|------------------|------------------|------------|',
+      '| `alpha` | 30 | true | false | true |',
+    ].join('\n');
+    const syntheticRegistry = {
+      alpha: { ttlDays: 30, agentProposable: true, ruleConvertible: false, hostScoped: false },
+    };
+    const diffs = computeParityDiffs(fixtureDoc, syntheticRegistry, {});
+    expect(diffs).toContain("table hostScoped mismatch for 'alpha': doc=true registry=false");
   });
 });

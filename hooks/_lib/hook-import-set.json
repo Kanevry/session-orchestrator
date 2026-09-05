@@ -1,0 +1,1429 @@
+{
+  "generated_at": "2026-09-05T06:45:18.746Z",
+  "head": "4b4513031992a4146a71a87ea2fea6a9a1761cb5",
+  "entries": [
+    {
+      "file": "hooks/_lib/atomic-json.mjs",
+      "reachable_from": [
+        "cwd-change-restore.mjs",
+        "on-session-end.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs"
+      ]
+    },
+    {
+      "file": "hooks/_lib/guard-source-loader.mjs",
+      "reachable_from": [
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-destructive-guard.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-task-scope-disjoint.mjs"
+      ]
+    },
+    {
+      "file": "hooks/_lib/lock-bootstrap.mjs",
+      "reachable_from": [
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "hooks/_lib/lock-reconcile.mjs",
+      "reachable_from": [
+        "on-session-end.mjs"
+      ]
+    },
+    {
+      "file": "hooks/_lib/profile-gate.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "cwd-change-restore.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "operator-steer.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-destructive-guard.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-bash-templates-first.mjs",
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "hooks/_lib/subagent-paths.mjs",
+      "reachable_from": [
+        "on-stop.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "subagent-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "hooks/_lib/transcript-history.mjs",
+      "reachable_from": [
+        "pre-bash-templates-first.mjs"
+      ]
+    },
+    {
+      "file": "hooks/_lib/vcs-create-matcher.mjs",
+      "reachable_from": [
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-templates-first.mjs"
+      ]
+    },
+    {
+      "file": "hooks/config-protection.mjs",
+      "reachable_from": [
+        "config-protection.mjs"
+      ]
+    },
+    {
+      "file": "hooks/cwd-change-restore.mjs",
+      "reachable_from": [
+        "cwd-change-restore.mjs"
+      ]
+    },
+    {
+      "file": "hooks/enforce-commands.mjs",
+      "reachable_from": [
+        "enforce-commands.mjs"
+      ]
+    },
+    {
+      "file": "hooks/enforce-scope.mjs",
+      "reachable_from": [
+        "enforce-scope.mjs"
+      ]
+    },
+    {
+      "file": "hooks/loop-guard.mjs",
+      "reachable_from": [
+        "loop-guard.mjs"
+      ]
+    },
+    {
+      "file": "hooks/on-session-end.mjs",
+      "reachable_from": [
+        "on-session-end.mjs"
+      ]
+    },
+    {
+      "file": "hooks/on-session-start.mjs",
+      "reachable_from": [
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "hooks/on-stop.mjs",
+      "reachable_from": [
+        "on-stop.mjs"
+      ]
+    },
+    {
+      "file": "hooks/operator-steer.mjs",
+      "reachable_from": [
+        "operator-steer.mjs"
+      ]
+    },
+    {
+      "file": "hooks/post-bash-write-verify.mjs",
+      "reachable_from": [
+        "post-bash-write-verify.mjs"
+      ]
+    },
+    {
+      "file": "hooks/post-edit-import-probe.mjs",
+      "reachable_from": [
+        "post-edit-import-probe.mjs"
+      ]
+    },
+    {
+      "file": "hooks/post-edit-validate.mjs",
+      "reachable_from": [
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "hooks/post-subagent-discovery-validator.mjs",
+      "reachable_from": [
+        "post-subagent-discovery-validator.mjs"
+      ]
+    },
+    {
+      "file": "hooks/post-tool-batch-wave-signal.mjs",
+      "reachable_from": [
+        "post-tool-batch-wave-signal.mjs"
+      ]
+    },
+    {
+      "file": "hooks/post-tool-failure-corrective-context.mjs",
+      "reachable_from": [
+        "post-tool-failure-corrective-context.mjs"
+      ]
+    },
+    {
+      "file": "hooks/post-tooluse-frontend-slop.mjs",
+      "reachable_from": [
+        "post-tooluse-frontend-slop.mjs"
+      ]
+    },
+    {
+      "file": "hooks/pre-auq-clarity.mjs",
+      "reachable_from": [
+        "pre-auq-clarity.mjs"
+      ]
+    },
+    {
+      "file": "hooks/pre-bash-destructive-guard.mjs",
+      "reachable_from": [
+        "pre-bash-destructive-guard.mjs"
+      ]
+    },
+    {
+      "file": "hooks/pre-bash-issue-budget.mjs",
+      "reachable_from": [
+        "pre-bash-issue-budget.mjs"
+      ]
+    },
+    {
+      "file": "hooks/pre-bash-memory-propose-audit.mjs",
+      "reachable_from": [
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "hooks/pre-bash-sessions-ledger-guard.mjs",
+      "reachable_from": [
+        "pre-bash-sessions-ledger-guard.mjs"
+      ]
+    },
+    {
+      "file": "hooks/pre-bash-staging-fence.mjs",
+      "reachable_from": [
+        "pre-bash-staging-fence.mjs"
+      ]
+    },
+    {
+      "file": "hooks/pre-bash-templates-first.mjs",
+      "reachable_from": [
+        "pre-bash-templates-first.mjs"
+      ]
+    },
+    {
+      "file": "hooks/pre-task-scope-disjoint.mjs",
+      "reachable_from": [
+        "pre-task-scope-disjoint.mjs"
+      ]
+    },
+    {
+      "file": "hooks/skill-invocation-telemetry.mjs",
+      "reachable_from": [
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "hooks/subagent-telemetry.mjs",
+      "reachable_from": [
+        "subagent-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/backfill-abandoned-sessions.mjs",
+      "reachable_from": [
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/agent-frontmatter.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/auq/clarity.mjs",
+      "reachable_from": [
+        "pre-auq-clarity.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/auq/schema.mjs",
+      "reachable_from": [
+        "pre-auq-clarity.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/bootstrap-lock-freshness.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/cold-start-detector.mjs",
+      "reachable_from": [
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/command-blocker.mjs",
+      "reachable_from": [
+        "post-bash-write-verify.mjs",
+        "post-edit-validate.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-templates-first.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/common.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-templates-first.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/auto-dream.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/block-header.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/block-preprocess.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/broken-window.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/coercers.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/cold-start.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/config-protection.mjs",
+      "reachable_from": [
+        "config-protection.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/context-coverage.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/cross-repo.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/custom-phases.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/dialectic.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/discovery-validator.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/dispatcher-autonomy.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/docs-orchestrator.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/docs-staleness.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/drift-check.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/eval.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/events-rotation.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/evolve.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/frontend-slop-hook.mjs",
+      "reachable_from": [
+        "post-tooluse-frontend-slop.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/gitlab-portfolio.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/handover-gate.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/health-endpoints.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/host-paths.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/io.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/issue-budget.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs",
+        "pre-bash-issue-budget.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/loop-guard.mjs",
+      "reachable_from": [
+        "loop-guard.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/memory.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/moc-staleness.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/persona-gate-wave.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/private-config-dir.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/reconcile.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/remote-hosts.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/section-extractor.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/skill-evolution.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/slopcheck.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/state-md-lock.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/templates-first.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/test.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/vault-integration.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/vault-mirror-quality.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/vault-staleness.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/vault-sync.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/verification-auto-fix.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/wave-reviewers.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/worktree-orphans.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/crypto-digest-utils.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-task-scope-disjoint.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/dispatcher/enumerate.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/env-check.mjs",
+      "reachable_from": [
+        "post-bash-write-verify.mjs",
+        "post-edit-validate.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/events-rotation.mjs",
+      "reachable_from": [
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/events-schema.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/events.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/exclusivity-matrix.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/express-path.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/file-lock.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/frontend-detect/detect.mjs",
+      "reachable_from": [
+        "post-tooluse-frontend-slop.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/frontend-detect/rules.mjs",
+      "reachable_from": [
+        "post-tooluse-frontend-slop.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/hardening.mjs",
+      "reachable_from": [
+        "post-bash-write-verify.mjs",
+        "post-edit-validate.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/host-identity.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-task-scope-disjoint.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/io.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-destructive-guard.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-bash-templates-first.mjs",
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/issue-budget.mjs",
+      "reachable_from": [
+        "pre-bash-issue-budget.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/lock-reaper.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/locks/lock-body.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/locks/staging-fence-lock.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/locks/state-md-lock.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/named-baseline-resolver.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/owner-yaml.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/path-utils.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/persona-panel/threshold.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/platform.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "cwd-change-restore.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "operator-steer.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-bash-templates-first.mjs",
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/plugin-root.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "cwd-change-restore.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "operator-steer.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-bash-templates-first.mjs",
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/resource-probe.mjs",
+      "reachable_from": [
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/resource-probe/evaluate.mjs",
+      "reachable_from": [
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/resource-probe/parsers.mjs",
+      "reachable_from": [
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/resource-probe/probe-platform.mjs",
+      "reachable_from": [
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/scope-gate.mjs",
+      "reachable_from": [
+        "post-bash-write-verify.mjs",
+        "post-edit-validate.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/session-close-backfill.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/session-discovery.mjs",
+      "reachable_from": [
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/session-id.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/session-identity/own-session.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/session-lock-shape.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/session-lock.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/session-registry.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/session-schema.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/session-schema/aliases.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/session-schema/constants.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/session-schema/filters.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/session-schema/normalizer.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/session-schema/serializer.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/session-schema/timestamps.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/session-schema/validator.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/session-start-probes.mjs",
+      "reachable_from": [
+        "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/sessions-canonical.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/skill-invocations-schema.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/skill-judgments-schema.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/state-md/frontmatter-mutators.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/state-md/yaml-parser.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-memory-propose-audit.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/subagents-schema.mjs",
+      "reachable_from": [
+        "subagent-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/sunset/walker.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/telemetry/anon-id.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/telemetry/consent.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/telemetry/paths.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/telemetry/queue.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/telemetry/schema.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/telemetry/sync.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/wave-context.mjs",
+      "reachable_from": [
+        "pre-bash-staging-fence.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/worktree/listing.mjs",
+      "reachable_from": [
+        "on-session-start.mjs"
+      ]
+    }
+  ]
+}

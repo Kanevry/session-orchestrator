@@ -38,7 +38,8 @@
  *
  * ── Exports ───────────────────────────────────────────────────────────────────
  *
- *   OWNER_YAML_PATH            — default file path on disk
+ *   resolvePrivateConfigDir({env}?) — THE host-private config dir resolver (#1223)
+ *   resolveOwnerYamlPath(env?) — owner.yaml path, resolved at CALL time (#1223)
  *   validateOwnerSections(obj) — pure validation, no I/O; bucketed per section (#820)
  *   validateOwnerConfig(obj)   — pure validation, no I/O; thin wrapper over validateOwnerSections
  *   loadOwnerConfig({path?})   — reads file; per-section tolerance for OPTIONAL
@@ -49,15 +50,52 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
 import yaml from 'js-yaml';
+import { resolvePrivateConfigDir } from './config/private-config-dir.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Default path for the owner persona config file. */
-export const OWNER_YAML_PATH = join(homedir(), '.config', 'session-orchestrator', 'owner.yaml');
+/** Basename of the owner persona config file. */
+const OWNER_YAML_FILE = 'owner.yaml';
+
+/**
+ * Re-export of the single host-private-config-dir resolver (#1223).
+ *
+ * The implementation lives in the ZERO-IMPORT leaf
+ * `scripts/lib/config/private-config-dir.mjs`, NOT here: `host-identity.mjs`
+ * sits on `hooks/on-stop.mjs`'s import subgraph (via `session-lock.mjs`), and
+ * this module statically imports `js-yaml`. While the resolver lived here,
+ * importing it from `host-identity.mjs` dragged `js-yaml` onto THAT subgraph and
+ * broke the GH#63 "degrade gracefully without node_modules" contract
+ * (`ERR_MODULE_NOT_FOUND` in `tests/hooks/on-stop.test.mjs`).
+ *
+ * THIS module is itself still a bare-specifier node on the wider hook graph —
+ * measured 2026-09-05 over `hooks/_lib/hook-import-set.json` (150 entries, head
+ * 4b45130): `owner-yaml.mjs → js-yaml`, reachable from on-session-start,
+ * on-session-end, post-edit-validate and skill-invocation-telemetry, all four of
+ * which throw ERR_MODULE_NOT_FOUND without node_modules. That is the pre-existing
+ * state, not a contract; only on-stop's subgraph is guaranteed bare-free.
+ *
+ * NOTE for `tests/husky/pre-commit-owner-leakage.test.mjs`: that test copies
+ * the CP11 import chain FILE BY FILE into a tmp repo, so the leaf below is on
+ * its copied-file list. Any FURTHER repo-local import added here needs the same
+ * treatment.
+ */
+export { resolvePrivateConfigDir };
+
+/**
+ * Resolve the owner.yaml path at CALL time via the single private-config-dir
+ * resolver {@link resolvePrivateConfigDir} (#1223). Honours
+ * `SO_CONFIG_HOME` > `XDG_CONFIG_HOME` > homedir, each trimmed.
+ *
+ * @param {Record<string, string|undefined>} [env] — env source (default `process.env`)
+ * @returns {string} absolute path to owner.yaml
+ */
+export function resolveOwnerYamlPath(env = process.env) {
+  return join(resolvePrivateConfigDir({ env }), OWNER_YAML_FILE);
+}
 
 const VALID_LANGUAGES = /** @type {const} */ (['de', 'en']);
 const VALID_TONE_STYLES = /** @type {const} */ (['direct', 'neutral', 'friendly']);
@@ -430,7 +468,7 @@ export function validateOwnerConfig(obj) {
  * }}
  */
 export function loadOwnerConfig(opts = {}) {
-  const filePath = opts.path ?? OWNER_YAML_PATH;
+  const filePath = opts.path ?? resolveOwnerYamlPath();
 
   if (!existsSync(filePath)) {
     return { config: getDefaults(), source: 'defaults', errors: [] };
@@ -537,7 +575,7 @@ export function loadOwnerConfig(opts = {}) {
  * @returns {{ written: boolean, errors: string[] }}
  */
 export function writeOwnerConfig(config, opts = {}) {
-  const filePath = opts.path ?? OWNER_YAML_PATH;
+  const filePath = opts.path ?? resolveOwnerYamlPath();
 
   const validation = validateOwnerConfig(config);
   if (!validation.valid) {

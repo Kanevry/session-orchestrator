@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, symlinkSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -129,6 +129,69 @@ describe('writeApprovedRules — rejected proposal archive', () => {
     expect(new Date(record._rejected_at).toISOString()).toBe(record._rejected_at);
     expect(record.learningKey).toBe('fragile-pattern/some-rule');
     expect(record.type).toBe('fragile-pattern');
+  });
+
+  it('does NOT warn about re-proposal when a prior terminal verdict is already on disk', async () => {
+    // BUG this catches (TV-001): `markCandidateProcessed` returns
+    // `alreadyProcessed`, and NO production caller read it — so the two very
+    // different states behind `written:false` collapsed into one message. When
+    // the store already holds a terminal verdict for the key, the operator was
+    // told "a later run may re-propose it", which is FALSE: the sidecar is in
+    // exactly the state the stamp wanted, and the operator is sent after a
+    // non-bug.
+    const runtimeDir = join(tmpDir, '.orchestrator', 'runtime');
+    mkdirSync(runtimeDir, { recursive: true });
+    const storePath = join(runtimeDir, 'reconcile-candidates.jsonl');
+    writeFileSync(
+      storePath,
+      // Full record shape — a partial one is dropped by the store's schema
+      // check (measured: `{records:[], skipped:1}`) and the seed would be
+      // silently absent, which is how this test would pass vacuously.
+      JSON.stringify({
+        id: 'rc-seed',
+        schema_version: 1,
+        learning_key: 'fragile-pattern/already-done',
+        slug: 'already-done',
+        status: 'rejected',
+        reason: 'seeded',
+        confidence: 0.9,
+        created_at: '2026-01-01T00:00:00.000Z',
+        superseded_by: null,
+        outcome: 'rejected',
+        processed_at: '2026-01-01T00:00:00.000Z',
+      }) + '\n',
+      'utf8',
+    );
+    // Reads keep working, writes fail → `written:false` with the terminal
+    // record still found. This is the only way to reach the branch without
+    // mocking the module under test.
+    chmodSync(runtimeDir, 0o555);
+
+    try {
+      const result = await writeApprovedRules({
+        approved: [],
+        rejected: [
+          {
+            learningKey: 'fragile-pattern/already-done',
+            type: 'fragile-pattern',
+            reason: 'user-declined',
+            status: 'rejected',
+            operatorRejected: true,
+          },
+        ],
+        repoRoot: tmpDir,
+        sessionId: 'session-test-already-processed',
+      });
+
+      expect(result.archived).toBe(1);
+      expect(result.errors).toHaveLength(1);
+      // FALSIFICATION: without reading `alreadyProcessed` the message is the
+      // generic failure line and both assertions below flip.
+      expect(result.errors[0]).toContain('a prior terminal verdict is already on disk');
+      expect(result.errors[0]).not.toContain('may re-propose it');
+    } finally {
+      chmodSync(runtimeDir, 0o755);
+    }
   });
 
   it('uses "user-declined" as _rejected_reason when item.reason is absent', async () => {
@@ -748,6 +811,8 @@ describe('writeApprovedRules — stamps an operator rejection terminal (#1042)',
       confidence: 0.85,
       candidateId: 'rc-declined1',
       status: 'proposed',
+      // #1153 P15 — phase-3-6-tail.md step 6 stamps this explicit flag.
+      operatorRejected: true,
     };
 
     const result = await writeApprovedRules({ approved: [], rejected: [declined], repoRoot: tmpDir });
@@ -811,6 +876,7 @@ describe('writeApprovedRules — stamps an operator rejection terminal (#1042)',
           content: '# Auto-generated rule: operator cut\n',
           confidence: 0.9,
           status: 'proposed',
+          operatorRejected: true,
         },
       ],
       repoRoot: tmpDir,
@@ -822,6 +888,64 @@ describe('writeApprovedRules — stamps an operator rejection terminal (#1042)',
     const records = storeRecords();
     expect(records).toHaveLength(1);
     expect(records[0].learning_key).toBe('fragile-pattern/operator-cut');
+    expect(records[0].outcome).toBe('rejected');
+  });
+
+  it('stamps on the explicit operatorRejected flag even when the rendered content is EMPTY (#1153 P15 — flag wins)', async () => {
+    // The bug this catches: keying on content presence alone, an
+    // operator-declined proposal whose rendered body happened to be empty was
+    // read as an ENGINE rejection and never stamped terminal — so the operator's
+    // "no" evaporated and the rule came back next run (the #1042 bug, reopened
+    // through the heuristic's blind spot).
+    const result = await writeApprovedRules({
+      approved: [],
+      rejected: [
+        {
+          learningKey: 'anti-pattern/declined-with-empty-body',
+          slug: 'anti-pattern-declined-with-empty-body-aaa1111',
+          path: '.claude/rules/anti-pattern-declined-with-empty-body-aaa1111.md',
+          content: '',
+          confidence: 0.88,
+          status: 'proposed',
+          operatorRejected: true,
+        },
+      ],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.archived).toBe(1);
+    expect(result.errors).toEqual([]);
+    const records = storeRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].learning_key).toBe('anti-pattern/declined-with-empty-body');
+    expect(records[0].outcome).toBe('rejected');
+    expect(isProcessed({ learning_key: 'anti-pattern/declined-with-empty-body' }, records)).toBe(true);
+  });
+
+  it('LEGACY fallback — stamps a flagless item that carries rendered content (pre-P15 skill bodies)', async () => {
+    // A consumer repo pinning a phase-3-6-tail.md older than the P15 stamp emits
+    // no `operatorRejected` key at all. The deprecated content-presence fallback
+    // in isOperatorRejection() keeps those rejections terminal; delete this test
+    // together with the fallback at its documented removal trigger.
+    const result = await writeApprovedRules({
+      approved: [],
+      rejected: [
+        {
+          learningKey: 'convention/declined-by-legacy-caller',
+          slug: 'convention-declined-by-legacy-caller-bbb2222',
+          path: '.claude/rules/convention-declined-by-legacy-caller-bbb2222.md',
+          content: '# Auto-generated rule: declined by a pre-P15 caller\n',
+          confidence: 0.8,
+          status: 'proposed',
+        },
+      ],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.archived).toBe(1);
+    const records = storeRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].learning_key).toBe('convention/declined-by-legacy-caller');
     expect(records[0].outcome).toBe('rejected');
   });
 
@@ -854,6 +978,7 @@ describe('writeApprovedRules — stamps an operator rejection terminal (#1042)',
           content: '# Auto-generated rule: declined after propose\n',
           confidence: 0.91,
           status: 'proposed',
+          operatorRejected: true,
         },
       ],
       repoRoot: tmpDir,

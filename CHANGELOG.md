@@ -32,6 +32,33 @@ fixpass that closed 2 HIGH findings inside the panel's own Wave-2/3 diff.
   `scripts/dialectic-deriver.mjs`. Both skip the emit with a stderr note when no `repoRoot`
   is given, so test runs never write the fleet ledger. `docs/events-schema.md` gained both
   event's producer lines.
+- **`hooks/post-edit-import-probe.mjs` — a PostToolUse hook that catches a broken
+  hook-reachable module at save time, not at the next tool call (#1224).** On every
+  Edit/Write/MultiEdit to a `.mjs`/`.js`/`.cjs` file that is a member of the new committed
+  allowlist `hooks/_lib/hook-import-set.json` (149 modules at generation time — every module
+  transitively reachable from the four hook manifests' entry files), it runs ESLint's
+  `no-undef` on that single file (primary check) plus an `import()` probe scoped to
+  `scripts/lib/**` only (secondary — `hooks/*.mjs` is excluded because half of them run
+  `main()` at module bottom). Reports via `additionalContext` + the new
+  `orchestrator.hook.import_probe_failed` event (payload: `file`, `check`, `error`,
+  `reachable_from`, `duration_ms` — documented in `docs/events-schema.md`); never blocks
+  (exit 0 always); kill switch `SO_DISABLED_HOOKS=post-edit-import-probe`. The allowlist is
+  built by the new `scripts/generate-hook-import-set.mjs` (`--check` re-crawls and diffs) and
+  is guarded three ways: a new blocking `validate-plugin.mjs` check
+  (`runHookImportSetCheck`), a new `.husky/pre-commit` stage scoped to commits touching
+  `hooks/` or `scripts/lib/`, and — deliberately absent — no Codex wiring
+  (`hooks-codex.json`), documented as an intentional asymmetry in
+  `check-hooks-symmetry.mjs`'s `DOCUMENTED_ASYMMETRIES` (same missing Edit/Write-payload
+  adapter gap as `post-edit-validate.mjs`). Wired into `hooks.json`, `hooks-cursor.json`, and
+  `hooks-pi.json`. Rationale: the 2026-09-04 host-wide hook-block incident documented
+  elsewhere in this section (a `SyntaxError`/`ReferenceError` in an intermediate save of
+  `own-session.mjs` blocked every Bash/Edit call on the host for ~8 minutes) was a
+  **call-time** defect neither `node --check` (syntactically valid) nor a bare `await
+  import()` (module-level evaluation succeeds) catches — ESLint's `no-undef` does. The
+  allowlist has since been regenerated to include `scripts/lib/config/private-config-dir.mjs`
+  (new, #1223 below), which became hook-reachable via `host-identity.mjs`: measured
+  2026-09-05, `node scripts/generate-hook-import-set.mjs --check` → `✓ hook-import-set: 150
+  modules, in sync`.
 
 ### Changed
 
@@ -102,8 +129,8 @@ fixpass that closed 2 HIGH findings inside the panel's own Wave-2/3 diff.
   computed on first call and memoized for the process (plus a test-only
   `_resetPlatformCache()`); the deprecated names are fully REMOVED, not kept as
   deprecated live bindings — a re-introduction is caught by the named-export assertion in
-  `tests/lib/platform.test.mjs`. 22 non-test call sites across `scripts/` and `hooks/` now
-  call a getter (measured 2026-09-04: `grep -rlE "getPlatform\(\)|getPluginRoot\(\)|getProjectDir\(\)|getStateDir\(\)|getConfigFile\(\)" scripts/ hooks/ --include="*.mjs" | grep -v /tests/ | grep -v platform.mjs | wc -l` → 22).
+  `tests/lib/platform.test.mjs`. 23 non-test call sites across `scripts/` and `hooks/` now
+  call a getter (re-measured 2026-09-05: `grep -rlE "getPlatform\(\)|getPluginRoot\(\)|getProjectDir\(\)|getStateDir\(\)|getConfigFile\(\)" scripts/ hooks/ --include="*.mjs" | grep -v /tests/ | grep -v platform.mjs | wc -l` → 23; it was 22 on 2026-09-04, before this session's own new modules landed).
 - **Wave-scope manifest session keys renamed to `session_id`/`semantic_session_id`,
   canonical since #1153 P2.** The pre-#1153 spellings `session`/`semantic_session` are
   still ACCEPTED on the read side for one release (`MANIFEST_SESSION_KEYS` in
@@ -154,6 +181,86 @@ fixpass that closed 2 HIGH findings inside the panel's own Wave-2/3 diff.
   invariant depends on `maskNarrative` walking every rendered string, and `repo` is fed to
   `renderNarrative` OUTSIDE that walk (a directory basename, not STATE.md content) — a
   future rendered field added the same way would reopen this.
+- **Three host-private-config-dir resolvers collapse into one (#1223).** New zero-import
+  leaf `scripts/lib/config/private-config-dir.mjs` (`node:os` + `node:path` only) exports
+  `resolvePrivateConfigDir({env}?)` — precedence `SO_CONFIG_HOME` (the dir itself) >
+  `XDG_CONFIG_HOME` (its parent) > `~/.config/session-orchestrator`, each `.trim()`ed. Before
+  this, `owner-yaml.mjs`'s import-time `OWNER_YAML_PATH` (homedir-only, no overrides at all),
+  `owner-config-loader.mjs`'s `resolveOwnerConfigPath()` (XDG-only, untrimmed), and
+  `host-identity.mjs`'s `_privateDir()` each had a different precedence — so
+  `SO_CONFIG_HOME=<sandbox>` moved the self-alias ledger but not `owner.yaml`, which kept
+  reading the operator's real home (the CLAUDE.md "vault-dir resolves HOST-LOCALLY" hazard
+  class). `host-identity.mjs` now delegates `_privateDir()` to the leaf directly (it is
+  reachable from live hooks via `session-lock.mjs`, so the leaf must stay import-free);
+  `owner-yaml.mjs` re-exports `resolvePrivateConfigDir` and adds a call-time
+  `resolveOwnerYamlPath(env?)`; the old `OWNER_YAML_PATH` constant is fully REMOVED (verified
+  0 remaining consumers repo-wide), not kept as a deprecated back-compat export.
+  `owner-config-loader.mjs` and `owner-interview.mjs` now call through
+  `resolveOwnerYamlPath()` instead of their own copies. `tests/husky/pre-commit-owner-leakage.test.mjs`'s
+  file-by-file copied import chain (the CP11 scanner's dynamic-import fixture) gained the new
+  leaf as a required copy.
+- **`skills/wave-executor/wave-loop.md` gains a "Shell variables used in this section"
+  preamble (#1225).** `$PLUGIN_ROOT`, `$WAVE`, `$ROLE`, `$STATE_DIR` are defined once ahead
+  of the Scope Manifest steps instead of being re-explained inline (the `$PLUGIN_ROOT`
+  per-platform expansion parenthetical is now a single cross-reference instead of a repeated
+  clause).
+- **`scripts/lib/ci-status-banner.mjs` gains a three-state contract instead of two (#1031).**
+  A frozen `DEGRADED_REASONS` enum (`cli-missing`, `timeout`, `parse-error`, `query-failed`,
+  `git-error`) now distinguishes "state could not be read" from "no CI here" — before this,
+  4 return sites collapsed every CLI-missing / timeout / unparseable-output / VCS-probe-error
+  case onto the same `null` an absent remote returns, which the banner reads as all-clear
+  (the same collapse class documented for `mirror-issues-banner.mjs` in
+  `skills/session-start/SKILL.md`, now fixed on this probe too). Consumers updated to the new
+  shape: the probe registry in `scripts/lib/session-start-probes.mjs` (`ci-status` entry's
+  `render`/`severityOf` now treat a `degraded` result as `warn`, not `ok`);
+  `scripts/lib/dispatcher/rank.mjs` (new exported `normalizeCiSignal()` reduces every shape —
+  bare string, `{status}`, `{degraded}`, `null` — to `{ciStatus, ciDegraded}`, mapping
+  `degraded` to `'unknown'` for scoring parity with the old behaviour while surfacing the
+  reason into `signals.readiness.ciDegraded` and a `warnings` entry); `scripts/release.mjs`'s
+  `evaluateCiRow()` treats `ci.degraded` as "CI status unknown (\<reason\>)", never as green.
+  `skills/session-start/SKILL.md`'s CI-status paragraph documents the new degraded banner
+  line. `scripts/lib/qg-command-drift-banner.mjs` is converted too (W3-P1): it mints its own
+  `degradedBanner(reason)` and passes a nested `detailed.degraded` straight through
+  (`:59`/`:99`/`:102-103`), so a config that could not be READ is reported as `warn` rather
+  than read as "no drift".
+- **`hooks/post-tool-batch-wave-signal.mjs` starts emitting the `files_changed` measurement
+  `scripts/lib/convergence-monitor.mjs`'s `shrinking_diff` signal has always read but no
+  producer ever wrote (#980).** At an N→N+1 wave-open transition, the `orchestrator.wave.completed`
+  emitted for wave N now carries `files_changed` (the deduped union of
+  `git diff --name-only <wave_start_sha>` and `git ls-files --others --exclude-standard`,
+  measured against the working tree because the coordinator commits at session close, not per
+  wave) and `files_changed_source: 'worktree-vs-wave-start-sha'`; `wave_start_sha` (`git
+  rev-parse HEAD`) is persisted into `.orchestrator/current-session.json` under the same
+  ownership gate as the other wave keys when a wave opens. Both keys are optional and
+  absent-is-not-zero — any git failure, a 1.5s timeout, or a missing `wave_start_sha` omits
+  them, and the monitor reads the absence as `null` rather than firing on a fabricated 0.
+  `skills/convergence-monitoring/SIGNALS.md` gained a "Live monitor input" subsection under
+  all three signals (shrinking_diff, pass_rate_plateau, velocity_drop), each quoting a fresh
+  measurement of `.orchestrator/metrics/events.jsonl` (2026-09-05): 144 pre-existing
+  `wave.completed` records carried no `files_changed` key at all before this fix; 33
+  `orchestrator.quality_gate.*` records carry both `wave_number` and a well-formed `counts`
+  object (making `pass_rate_plateau` fireable, `_evaluateSignals` now a test-only export);
+  11,754 `orchestrator.agent.stopped` records make `velocity_drop` fireable, versus 0 for the
+  `agent.dispatched` type the reader also accepts. `monitors/monitors.json`'s
+  `convergence-monitor` description corrected — it never opened `sessions.jsonl` (a stale
+  claim from an earlier draft of the monitor).
+- **`scripts/validate-wave-scope.mjs`'s internal `validateSession()` renamed to
+  `validateSessionBinding()` (#1153 P11).** Rename only, no behaviour change — the old name
+  read as "validate the session" when it validates the wave-scope manifest's session-BINDING
+  fields specifically; a previously-considered `skipped[]` return addition was dropped as a
+  false premise (the function already reports via `errors`/`warnings`).
+- **`docs/rule-authoring.md`'s `LEARNING_TYPE_REGISTRY` table gains its fourth axis,
+  `hostScoped` (#1153 P12, follow-up to #1090).** The table previously transcribed only
+  `ttlDays`/`agentProposable`/`ruleConvertible`, so a drifted `host_class`-gating cell was
+  structurally invisible to `tests/docs/rule-authoring-registry-parity.test.mjs`; the parser
+  regex and parity-diff logic there now check all four axes bijectively.
+  `hardware-pattern` is the only `hostScoped: true` type today.
+- **`docs/README.md` gains a "Superseded design notes" section (#1153 P14).** Because
+  `docs/specs/` is gitignored, a correction written INTO a spec can never be committed — the
+  correction for `docs/specs/2026-05-26-parallel-aware-sessions-design.md` (which still
+  specifies PID-based lock liveness) lives here instead: liveness has been heartbeat-age
+  based since #1137, and the recorded PID has been consulted nowhere since #1151.
+  `skills/_shared/parallel-aware-preamble.md` cross-references it.
 
 ### Removed
 
@@ -270,6 +377,66 @@ fixpass that closed 2 HIGH findings inside the panel's own Wave-2/3 diff.
   (measured: 1,087 citations across 259 files, 53 total annotated after this pass). A new
   `--strict-sh` mode extends the same dead-path scan to `.sh` citations, reported as an
   advisory count line in `validate-plugin` output (0 findings currently).
+- **A block commented out with `<!-- … -->` still armed the dispatcher-autonomy one-time
+  capture AUQ (#1222).** `isDispatcherAutonomyBlockPresent()` called the shared
+  `hasBlockHeader()` matcher directly on raw content, while `scripts/parse-config.mjs`
+  preprocesses with comment-stripping first — so a `dispatcher-autonomy:` header sitting
+  inside a comment parsed to defaults (correctly) but was reported PRESENT (incorrectly),
+  meaning the operator was never asked. The guard now preprocesses with the same
+  `preprocessBlockLinesNoDash()` the parser uses before testing for the header, so an
+  unterminated `<!--` still fails toward PRESENT (one un-asked question, not a silently
+  disarmed bypass) matching the module's own documented one-time-capture contract.
+  `block-header.mjs`'s docblock now states explicitly that comment-stripping is the caller's
+  job. The three further planned call sites in `skill-evolution.mjs`, `persona-gate-wave.mjs`,
+  and `wave-reviewers.mjs` are NOT part of this change — none of the three currently calls
+  `hasBlockHeader()`/`isDispatcherAutonomyBlockPresent()` at all, so there is nothing to sweep
+  there yet.
+- **`reapStaleBudgetFiles()`'s exact-boundary comparison had no falsifying test (#1153
+  P8).** A file aged exactly `maxAgeDays` is meant to be KEPT (`mtimeMs >= now -
+  maxAgeDays*86400000`); the existing 30-vs-1-day test stayed green even if `>=` were
+  weakened to `>`, which would silently reap a peer session's issue-budget file the instant
+  it turned `maxAgeDays` old. A new test in `tests/unit/hook-issue-budget.test.mjs` seeds one
+  file exactly on the cutoff and one a second past it and asserts the former survives and the
+  latter does not.
+- **`sessionFromLock()`'s `host_id` fallback for a pre-#1072 lock had no test (#1153 P9).**
+  Two new cases in `tests/lib/session-discovery.test.mjs` pin both branches of
+  `lock.host_id ?? stableHostname(...)`: a lock that already carries `host_id` passes it
+  through unchanged, and a lock written before #1072 (no `host_id` field) derives it from the
+  raw `host` — without the fallback pin, a lock-sourced session could silently regress to the
+  raw, non-normalised host for comparison against the registry path's normalised twin.
+- **`markCandidateProcessed()`'s mint branch stamped a self-contradictory terminal record
+  (#1153 P10, follow-up to #1042).** A freshly-minted candidate (no prior sidecar record) was
+  always given `status: 'proposed'` even while being stamped `processed_at` +
+  `outcome: 'rejected'` in the same write — a terminal, declined candidate that still read as
+  a live proposal to anything rendering `status`. `status` now agrees with `outcome`
+  (`'rejected'` when the outcome is `'rejected'`, `'proposed'` otherwise, the only two
+  ReconcileCandidate status values). Separately, the function used to return the
+  freshly-built stamp even when `mergeCandidates`'s dedupe rule kept an OLDER terminal record
+  on disk instead — caller and store then disagreed about the verdict, silently. It now reads
+  the record back out of the merge result and returns that, plus a new `alreadyProcessed`
+  flag (`written` stays `true` in that case: the store IS in the intended terminal state, and
+  `written: false` is reserved for a genuine write failure). Four new tests in
+  `tests/lib/reconcile/idempotency.test.mjs`, red on HEAD before the fix.
+- **A learning whose `file_paths` were entirely unusable produced the same generic
+  "no activation axis" rejection as a learning with no `file_paths` at all (#1153 P13).**
+  `globsFromFilePaths()` now records each skipped entry (glob-metachar / control-char / quote)
+  into an out-parameter sink, rendered by the new `formatDroppedFilePaths()` into a
+  `— dropped file_paths: N (…)` suffix on the never-always-on rejection reason — the message
+  engine.mjs forwards verbatim into the operator-visible candidates ledger. Each dropped value
+  is `JSON.stringify`-escaped (so a raw newline or ANSI control char in a hostile `file_paths`
+  entry cannot inject into the reason string) and hard-truncated to 60 chars with no
+  mid-escape cut. Two new tests in `tests/lib/reconcile/emitter.test.mjs` pin both the naming
+  and the escaping.
+- **`writer.mjs`'s `isOperatorRejection()` inferred an operator rejection from rendered
+  `content` being non-empty, which an operator-declined proposal with an empty rendered body
+  could fail (#1153 P15, closes the inference gap left open by #1042's own documented
+  ceiling).** `skills/session-end/phase-3-6-tail.md` step 6 now stamps every proposal the
+  operator left unselected with an explicit `operatorRejected: true` flag before it joins the
+  engine's `rejected` array; `isOperatorRejection()` keys on that flag first, falling back to
+  the old content-presence heuristic (marked `@deprecated`, kept only for a consumer repo
+  pinning a pre-P15 skill body) when the flag is absent. Two new tests in
+  `tests/lib/reconcile/writer.test.mjs` cover the flag-wins-over-empty-content case and the
+  legacy flagless fallback.
 
 ### Notes
 
@@ -292,6 +459,15 @@ fixpass that closed 2 HIGH findings inside the panel's own Wave-2/3 diff.
   hooks host-wide rather than degrading to one repo's GUARD INACTIVE banner. Follow-up
   issue pending to make an intermediate, uncommitted save of a hot-path hook dependency
   fail more locally.
+- **This session's `session.lock` heartbeat was only refreshed once per wave, not
+  continuously.** A long session-start/plan phase between heartbeats let a foreign
+  `SessionEnd` reap the lock as stale before this session's own wave loop had a chance to
+  refresh it. Deviation logged in this session's narrative; a follow-up issue for a
+  time-based (not wave-based) heartbeat refresh is to be filed at close, not yet opened as of
+  this diff.
+- **Full Gate (session close, uncommitted vs `4b451303`):** 651 files / 16,261 passed /
+  0 failed / 16 skipped, typecheck 435 OK, lint 0, `validate-plugin` 250/0, Semgrep 0 new
+  findings, hook-import-set-check in sync (150 modules) — supersedes the Wave-4 note above.
 
 ## [3.24.0] - 2026-09-02
 

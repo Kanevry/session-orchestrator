@@ -113,6 +113,11 @@ const DOCUMENTED_ASYMMETRIES = {
       PostToolUse: [
         'post-edit-validate.mjs',
         'post-tooluse-frontend-slop.mjs',
+        // post-edit-import-probe (#1224): same missing Edit/Write payload
+        // adapter as post-edit-validate — the hook reads tool_name and
+        // tool_input.file_path, neither of which any Codex bridge delivers.
+        // A manifest entry would be a silent no-op, not enforcement.
+        'post-edit-import-probe.mjs',
         'post-bash-write-verify.mjs',
       ],
       SubagentStart: ['subagent-telemetry.mjs'],

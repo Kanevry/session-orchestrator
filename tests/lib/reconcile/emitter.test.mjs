@@ -227,6 +227,68 @@ describe('toActivationMetadata — glob-metacharacter file_paths entries are ski
     );
   });
 
+  // #1153 P13. The bug: the rejection reason engine.mjs forwards verbatim
+  // ("emit/render error: emitter: no activation axis …") was identical whether
+  // the learning had NO file_paths at all or a file_paths list every entry of
+  // which was dropped as unusable — so an operator reading the candidates
+  // ledger could not tell a malformed record from an empty one, nor which
+  // entry was the problem.
+  it('names the dropped entry and its reason when "**" was the only file_paths entry', () => {
+    const learning = fragileLearning({ file_paths: ['**'] });
+    // FALSIFICATION: without the dropped-entry tracking the message ends at
+    // "(never-always-on invariant)" and this assertion fails.
+    expect(() => toActivationMetadata(learning, {})).toThrow(
+      /dropped file_paths: 1 \("\*\*" \(glob-metachar\)\)/,
+    );
+  });
+
+  it('escapes a control-char entry — no raw control char reaches the reason', () => {
+    // No bracket or star here on purpose: GLOB_METACHAR_RE is checked FIRST, so
+    // a path carrying both would be reported as glob-metachar and would never
+    // exercise the control-char branch.
+    const learning = fragileLearning({ file_paths: ['scripts/a\n\u001bred.mjs'] });
+    let message = '';
+    try {
+      toActivationMetadata(learning, {});
+    } catch (err) {
+      message = err.message;
+    }
+    expect(message).toMatch(/dropped file_paths: 1 \(.*\(control-char\)\)/);
+    // The reason is operator-visible (engine.mjs forwards it into the
+    // candidates ledger): a raw newline or ESC in it would let a hostile
+    // file_paths entry forge log lines or inject ANSI.
+    // eslint-disable-next-line no-control-regex
+    expect(message).not.toMatch(/[\u0000-\u001f]/);
+    expect(message).toContain('\\n');
+    expect(message).toContain('\\u001b');
+  });
+
+  it('truncates without ever ending mid-`\\uXXXX` escape', () => {
+    // BUG this catches (TV-001): the cut is taken on the JSON-ESCAPED string,
+    // so it can land at five distinct depths inside a 6-char `\uXXXX` sequence.
+    // The old guard was `.replace(/\\+$/, '')` — a trailing BACKSLASH only —
+    // which caught exactly the shallowest of the five. Measured at
+    // DROPPED_VALUE_MAX=60 with a NUL at offsets 53..56: `\u000`, `\u00`,
+    // `\u0` and `\u` all survived the cut and reached the operator line as a
+    // broken escape.
+    const ctrl = String.fromCharCode(0);
+    // 55 leading chars puts the escape across the cut (offset 55 of 53..56).
+    const learning = fragileLearning({ file_paths: [`${'a'.repeat(55)}${ctrl}tail.mjs`] });
+    let message = '';
+    try {
+      toActivationMetadata(learning, {});
+    } catch (err) {
+      message = err.message;
+    }
+
+    expect(message).toContain('dropped file_paths: 1');
+    // FALSIFICATION: with the old `/\\+$/` guard the rendered value ends
+    // `...\u0…` and this matches.
+    expect(message).not.toMatch(/\\u[0-9a-fA-F]{0,3}…/);
+    // The truncation itself still happened — this is not a vacuous pass.
+    expect(message).toContain('…');
+  });
+
   it('skips a bracket-class glob entry (e.g. "src/[ab]/x.mjs")', () => {
     const learning = fragileLearning({
       file_paths: ['src/[ab]/x.mjs', 'scripts/lib/autopilot/worktree-pipeline.mjs'],

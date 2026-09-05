@@ -449,3 +449,30 @@ describe('R2 parity invariant — session-config-template.md', () => {
     expect(violations).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1222 parser/comment parity — a commented-out block is ABSENT
+// ---------------------------------------------------------------------------
+
+describe('_parseSkillEvolution — HTML-comment parity (#1222)', () => {
+  // FALSIFICATION: this parser only sees past `<!-- … -->` because it runs
+  // `preprocessBlockLines(content)` (which strips HTML comment blocks) before
+  // matching the header. Swap that for a raw `content.split(/\r?\n/)` — the
+  // shape `isDispatcherAutonomyBlockPresent()` had before #1222 — and a block
+  // an operator DISABLED by commenting it out silently becomes live config,
+  // here arming `autonomy: autonomous-gated`. That is the bug this pins.
+  it('treats a commented-out block as absent (never arms autonomy from a disabled block)', () => {
+    const content = [
+      '# CLAUDE.md',
+      '',
+      '<!--',
+      'skill-evolution:',
+      '  autonomy: autonomous-gated',
+      '  evidence-floor: 0.9',
+      '  judge: on',
+      '-->',
+      '',
+    ].join('\n');
+    expect(_parseSkillEvolution(content)).toEqual(DEFAULTS);
+  });
+});

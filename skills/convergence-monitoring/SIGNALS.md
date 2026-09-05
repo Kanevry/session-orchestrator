@@ -32,6 +32,34 @@ PEAK_DIFF_SIZE=$(jq -s 'map(.diff_size) | max' <<< "$WAVE_HISTORY_JSON")
 SD_VALUE=$(echo "scale=3; $WAVE_DIFF_SIZE / $PEAK_DIFF_SIZE" | bc)
 ```
 
+### Live monitor input (`scripts/lib/convergence-monitor.mjs`)
+
+The `shrinking_diff` NDJSON signal compares `files_changed` across two
+consecutive `orchestrator.wave.completed` records. Until 2026-09-05 **no
+producer wrote that key** — 144 such records in
+`.orchestrator/metrics/events.jsonl`, none carrying a measurement key, so the
+signal was structurally dead. The emitter is now
+`hooks/post-tool-batch-wave-signal.mjs` (#980): at an N→N+1 wave transition its
+`orchestrator.wave.completed` for wave N carries
+
+- `files_changed` — the DEDUPED count of `git diff --name-only <wave_start_sha>`
+  ∪ `git ls-files --others --exclude-standard`, and
+- `files_changed_source: 'worktree-vs-wave-start-sha'` — how it was measured.
+
+`wave_start_sha` is the `git rev-parse HEAD` the same hook persists into
+`.orchestrator/current-session.json` when wave N is opened. The comparison is
+against the WORKING TREE, not `<sha>..HEAD`, because the coordinator commits at
+session close rather than per wave.
+
+**Both keys are optional, and absent is not zero.** Any git failure, a 1.5 s
+timeout, or a missing `wave_start_sha` omits them; the monitor reads the absence
+as `null` and `shrinking_diff` simply does not fire. Two records carry no
+measurement by construction: the final wave's completion from
+`hooks/on-session-end.mjs` (no wave-open transition ran there, so it has no
+start sha) and any completion emitted from an explicit injected `wave_signal`.
+The git/jq recipe above is the SKILL-level computation and is independent of the
+monitor.
+
 ### Thresholds
 
 | SD value  | Interpretation                                         |
@@ -99,6 +127,22 @@ PR_PRIOR=$(echo "$PASS_RATES" | jq '.[length - 2] // 0')
 If `quality.incremental` events are absent (test runner not configured), set
 `PR_confidence = 0.0` and trend = `plateau` (neutral; do not block on missing data).
 
+### Live monitor input (`scripts/lib/convergence-monitor.mjs`)
+
+The `pass_rate_plateau` NDJSON signal reads the **quality-gate envelope**:
+`orchestrator.quality_gate.passed` / `.failed` records carrying BOTH
+`wave_number` and a well-formed `counts` object. It folds `counts.passed` into
+the wave's pass count (and `counts.failed` alongside it), then fires when two
+consecutive waves report the identical pass count. Measured 2026-09-05: 33 such
+records in `.orchestrator/metrics/events.jsonl`; the flat `test.passed` key the
+reader also accepts has **0** producers and is kept only as an alias for a future
+direct emitter.
+
+The `wave_number` + `counts` pair is a type-AND-shape gate, not a prefix
+widening: a session-level gate run (no `wave_number`) must stay invisible to the
+monitor, because admitting it would instantiate a `WaveSummary` per gate run and
+burn the once-per-wave emit keys before the real wave record arrives (#966).
+
 ### Thresholds
 
 | PR value  | Interpretation                                             |
@@ -159,6 +203,17 @@ VEL_LINES=$(git diff --shortstat "$WAVE_START_REF" "$WAVE_END_REF" \
 # Prior wave lines (for trend):
 VEL_LINES_PRIOR=<read from events.jsonl for wave N-1>
 ```
+
+### Live monitor input (`scripts/lib/convergence-monitor.mjs`)
+
+The `velocity_drop` NDJSON signal counts **one `orchestrator.agent.stopped`
+record per dispatched agent** (wave read from `wave` or `wave_number`) and fires
+when the later wave stopped fewer agents than the earlier one. Measured
+2026-09-05 over `.orchestrator/metrics/events.jsonl`: 11,754
+`orchestrator.agent.stopped` records versus **0** for the `agent.dispatched` type
+the reader also accepts — `agent.stopped` is the only per-agent record this repo
+actually emits with a wave number. The git-based `VEL_COMMITS` / `VEL_LINES`
+recipe above is the SKILL-level computation and is independent of the monitor.
 
 ### Thresholds
 

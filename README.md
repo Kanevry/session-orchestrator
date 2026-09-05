@@ -195,6 +195,14 @@ allow-destructive-ops: true
 
 The rule source of truth is [`.claude/rules/parallel-sessions.md`](.claude/rules/parallel-sessions.md) (PSA-003), vendored to consumer repos via `/bootstrap`.
 
+`hooks/post-edit-import-probe.mjs` (PostToolUse on `Edit`/`Write`/`MultiEdit`) guards the other direction: a hook-reachable helper saved in a broken intermediate state makes *every* Bash/Edit/Write call fail with "Internal hook error — request blocked", host-wide, for every session sharing the working copy. Right after such a file is saved the probe runs ESLint `no-undef` on it (plus a child-process `import()` for `scripts/lib/**`) and reports the blast radius; it never blocks and always exits 0.
+
+It only fires for files listed in the committed allowlist [`hooks/_lib/hook-import-set.json`](hooks/_lib/hook-import-set.json) — the transitive import closure of the hook entry files. Regenerate it with `node scripts/generate-hook-import-set.mjs` (the `--check` form is wired into `.husky/pre-commit` and `scripts/validate-plugin.mjs`, so the allowlist cannot rot). Kill switch:
+
+```bash
+SO_DISABLED_HOOKS=post-edit-import-probe
+```
+
 ## Development
 
 ```bash

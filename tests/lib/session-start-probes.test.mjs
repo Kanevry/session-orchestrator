@@ -390,6 +390,59 @@ describe('the built-in registry', () => {
     expect(out.bannerLines).toContain('probe has not run for 47 days');
   });
 
+  // BUG this catches (TV-001): the `ci-status` entry overrides BOTH `render`
+  // and `severityOf`, so the module-level defaults that already handle a
+  // three-state `degraded` result never run for it. Before #1031 wired the
+  // degraded branch into those two overrides, a degraded ci-status result
+  // scored 'ok' and rendered nothing — "could not read" displayed exactly like
+  // "green", the collapse SKILL.md § Phase 4 names and forbids.
+  //
+  // The generic-path test above ("treats a degraded result as a finding") uses
+  // a bare fake probe with NO overrides, so it cannot see this hole. This one
+  // runs the REAL registry entry's `render`/`severityOf` against the exact
+  // object `checkCiStatus` now returns.
+  it('renders a degraded ci-status result through the REAL registry entry', async () => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    const dir = await mkTmp();
+    const { emit } = captureEmit();
+    const degraded = {
+      severity: 'warn',
+      ok: false,
+      message: '⚠ ci-status: CI status for HEAD could not be determined (query-failed) — state UNKNOWN, not "green".',
+      degraded: 'query-failed',
+    };
+    const fake = await fakeProbe(
+      dir,
+      'ci-status',
+      `export function probe() { return ${JSON.stringify(degraded)}; }`,
+      { render: registryProbe.render, severityOf: registryProbe.severityOf },
+    );
+
+    const out = await runSessionStartProbes({ repoRoot: dir }, { probes: [fake], emit });
+
+    expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-warn' });
+    expect(out.bannerLines).toContain(degraded.message);
+  });
+
+  // The other half of the same override: a real reading must be unaffected.
+  // Without this, "render everything" would satisfy the test above.
+  it('keeps the real registry entry silent on a plain green ci-status reading', async () => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    const dir = await mkTmp();
+    const { emit } = captureEmit();
+    const fake = await fakeProbe(
+      dir,
+      'ci-status',
+      `export function probe() { return { status: 'green', ok: true, details: { cliUsed: 'glab' } }; }`,
+      { render: registryProbe.render, severityOf: registryProbe.severityOf },
+    );
+
+    const out = await runSessionStartProbes({ repoRoot: dir }, { probes: [fake], emit });
+
+    expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-clean' });
+    expect(out.bannerLines).toEqual([]);
+  });
+
   it('has a unique id per entry and a sane default budget', () => {
     const ids = PROBES.map((p) => p.id);
     expect(new Set(ids).size).toBe(ids.length);

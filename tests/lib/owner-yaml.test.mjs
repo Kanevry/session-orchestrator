@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
-  OWNER_YAML_PATH,
+  resolveOwnerYamlPath,
   validateOwnerConfig,
   validateOwnerSections,
   loadOwnerConfig,
@@ -87,16 +87,60 @@ function makeTmpDir() {
 }
 
 // ---------------------------------------------------------------------------
-// OWNER_YAML_PATH
+// resolveOwnerYamlPath + call-time resolution (#1223)
 // ---------------------------------------------------------------------------
 
-describe('OWNER_YAML_PATH', () => {
-  it('is a non-empty absolute string pointing into .config/session-orchestrator', () => {
-    expect(typeof OWNER_YAML_PATH).toBe('string');
-    expect(OWNER_YAML_PATH.length).toBeGreaterThan(0);
-    expect(OWNER_YAML_PATH).toContain('.config');
-    expect(OWNER_YAML_PATH).toContain('session-orchestrator');
-    expect(OWNER_YAML_PATH).toMatch(/owner\.yaml$/);
+describe('resolveOwnerYamlPath (#1223)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('honours SO_CONFIG_HOME as the private dir itself', () => {
+    vi.stubEnv('SO_CONFIG_HOME', '/so/dir');
+    vi.stubEnv('XDG_CONFIG_HOME', '/xdg');
+    expect(resolveOwnerYamlPath()).toBe(join('/so/dir', 'owner.yaml'));
+  });
+
+  it('falls THROUGH a whitespace-only SO_CONFIG_HOME to XDG_CONFIG_HOME', () => {
+    vi.stubEnv('SO_CONFIG_HOME', '   ');
+    vi.stubEnv('XDG_CONFIG_HOME', '/xdg');
+    expect(resolveOwnerYamlPath()).toBe(join('/xdg', 'session-orchestrator', 'owner.yaml'));
+  });
+
+  it('accepts an explicit env object instead of process.env', () => {
+    expect(resolveOwnerYamlPath({ SO_CONFIG_HOME: '/injected' })).toBe(join('/injected', 'owner.yaml'));
+  });
+
+  // The live bug #1223 fixes: SO_CONFIG_HOME pointed at a sandbox, yet
+  // loadOwnerConfig() still read the operator's REAL home, because the default
+  // path was an IMPORT-time constant. Stubbing the env AFTER the module was
+  // imported is exactly what makes this test discriminate — it goes red the
+  // moment the default reverts to an import-time constant.
+  it('makes loadOwnerConfig() read owner.yaml from SO_CONFIG_HOME (resolved at CALL time)', () => {
+    const dir = makeTmpDir();
+    writeFileSync(
+      join(dir, 'owner.yaml'),
+      [
+        'owner:',
+        '  name: SandboxOwner',
+        '  language: de',
+        'tone:',
+        '  style: direct',
+        'efficiency:',
+        '  output-level: lite',
+        '  preamble: minimal',
+        'hardware-sharing:',
+        '  enabled: false',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    vi.stubEnv('SO_CONFIG_HOME', dir);
+
+    const result = loadOwnerConfig();
+    expect(result.source).toBe('file');
+    expect(result.config.owner.name).toBe('SandboxOwner');
   });
 });
 

@@ -145,3 +145,28 @@ describe('_normalizePersonaGateWave — edge cases', () => {
     expect(result.threshold).toBe('3-of-3');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1222 parser/comment parity — a commented-out block is ABSENT
+// ---------------------------------------------------------------------------
+
+describe('_parsePersonaGateWave — HTML-comment parity (#1222)', () => {
+  // FALSIFICATION: `_extractBlock()` sees past `<!-- … -->` only because it
+  // runs `preprocessBlockLines(content)` first. Replace that with a raw
+  // `content.split(/\r?\n/)` — the shape `isDispatcherAutonomyBlockPresent()`
+  // had before #1222 — and a block the operator DISABLED by commenting it out
+  // silently becomes live config, here returning `enabled: true`.
+  it('treats a commented-out block as absent (returns null, not an enabled gate)', () => {
+    const content = [
+      '# CLAUDE.md',
+      '',
+      '<!--',
+      'persona-gate-wave:',
+      '  enabled: true',
+      '  after: quality',
+      '-->',
+      '',
+    ].join('\n');
+    expect(_parsePersonaGateWave(content)).toBe(null);
+  });
+});

@@ -7,6 +7,7 @@ import {
   scoreCandidate,
   rankCandidates,
   defaultDeps,
+  normalizeCiSignal,
   STALENESS_CAP_DAYS,
 } from '../../../scripts/lib/dispatcher/rank.mjs';
 
@@ -352,6 +353,138 @@ describe('rankCandidates — shared host resource verdict (AC6 sharing contract)
       'critical',
     ]);
     expect(ranked.map((r) => r.score)).toEqual([0.5, 0.5, 0.5]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1031 follow-up: a DEGRADED CI probe result is non-blocking but visible.
+//
+// TV-001 — the bug these catch: `defaultCheckCiStatus` flattened every
+// `checkCiStatus` result to `result.status` and mapped everything else to
+// `null`. Since #1031 `checkCiStatus` has a THIRD state,
+// `{severity:'warn', message, degraded:<reason>}` = "the CI state could not be
+// READ", and that state landed on `null` — the same value that means "there is
+// nothing to report". Scoring was (and stays) unaffected, so no existing test
+// could see it: the ranking was identical, and the reason was simply gone.
+// ---------------------------------------------------------------------------
+
+describe('normalizeCiSignal — shape reduction', () => {
+  it('passes a bare status string through with no reason', () => {
+    expect(normalizeCiSignal('green')).toEqual({ ciStatus: 'green', ciDegraded: null });
+    expect(normalizeCiSignal('red')).toEqual({ ciStatus: 'red', ciDegraded: null });
+  });
+
+  it('maps null/undefined/garbage to no signal and no reason', () => {
+    expect(normalizeCiSignal(null)).toEqual({ ciStatus: null, ciDegraded: null });
+    expect(normalizeCiSignal(undefined)).toEqual({ ciStatus: null, ciDegraded: null });
+    expect(normalizeCiSignal(42)).toEqual({ ciStatus: null, ciDegraded: null });
+    expect(normalizeCiSignal({})).toEqual({ ciStatus: null, ciDegraded: null });
+  });
+
+  it('reads a real probe reading from {status}', () => {
+    expect(normalizeCiSignal({ status: 'red', ok: false })).toEqual({
+      ciStatus: 'red',
+      ciDegraded: null,
+    });
+  });
+
+  it("maps a degraded probe result to 'unknown' and KEEPS the reason", () => {
+    expect(
+      normalizeCiSignal({ severity: 'warn', ok: false, message: 'glab missing', degraded: 'cli-missing' }),
+    ).toEqual({ ciStatus: 'unknown', ciDegraded: 'cli-missing' });
+  });
+});
+
+describe('rankCandidates — degraded CI probe (#1031 follow-up)', () => {
+  const candidate = { repoRoot: '/r/alpha', repoName: 'alpha', free: true };
+  const DEGRADED = {
+    severity: 'warn',
+    ok: false,
+    message: 'CI status unavailable (glab not on PATH)',
+    degraded: 'cli-missing',
+  };
+
+  it('scores identically to a null CI signal — a failed read never dampens', async () => {
+    const withNull = await rankCandidates([candidate], {
+      now: FIXED_NOW,
+      deps: makeDeps({ staleByRepo: { '/r/alpha': 30 } }),
+    });
+    const withDegraded = await rankCandidates([candidate], {
+      now: FIXED_NOW,
+      deps: makeDeps({
+        staleByRepo: { '/r/alpha': 30 },
+        ciByRepo: { '/r/alpha': DEGRADED },
+      }),
+    });
+
+    expect(withDegraded.ranked[0].score).toBe(withNull.ranked[0].score);
+    expect(withDegraded.ranked[0].score).toBe(2);
+  });
+
+  it("carries ciStatus 'unknown' plus the reason in the candidate's signals", async () => {
+    const { ranked } = await rankCandidates([candidate], {
+      now: FIXED_NOW,
+      deps: makeDeps({ ciByRepo: { '/r/alpha': DEGRADED } }),
+    });
+
+    expect(ranked[0].signals.readiness.ciStatus).toBe('unknown');
+    expect(ranked[0].signals.readiness.ciDegraded).toBe('cli-missing');
+  });
+
+  it('names the repo and the reason in warnings', async () => {
+    const { warnings } = await rankCandidates([candidate], {
+      now: FIXED_NOW,
+      deps: makeDeps({ ciByRepo: { '/r/alpha': DEGRADED } }),
+    });
+
+    expect(warnings).toContain(
+      'CI state unknown for alpha (cli-missing) — ranked without CI dampening',
+    );
+  });
+
+  it('a readable CI state adds NO ciDegraded key and NO warning', async () => {
+    const { ranked, warnings } = await rankCandidates([candidate], {
+      now: FIXED_NOW,
+      deps: makeDeps({ ciByRepo: { '/r/alpha': 'green' } }),
+    });
+
+    expect(ranked[0].signals.readiness).toEqual({ ciStatus: 'green', resourceVerdict: 'green' });
+    expect(warnings.some((w) => w.includes('CI state unknown'))).toBe(false);
+  });
+
+  it("a THROWING dep degrades as 'probe-threw' — never as measured absence", async () => {
+    // A throw is not an absence: the probe BROKE, so nothing was measured. The
+    // catch used to leave ciDegraded at null, which is the exact collapse the
+    // degraded state exists to prevent — silent, and indistinguishable from
+    // "this repo has no CI".
+    const deps = makeDeps();
+    deps.checkCiStatus = async () => {
+      throw new Error('boom');
+    };
+
+    const { ranked, warnings } = await rankCandidates([candidate], {
+      now: FIXED_NOW,
+      deps,
+    });
+
+    expect(ranked[0].signals.readiness.ciStatus).toBe('unknown');
+    expect(ranked[0].signals.readiness.ciDegraded).toBe('probe-threw');
+    expect(warnings).toContain(
+      'CI state unknown for alpha (probe-threw) — ranked without CI dampening',
+    );
+  });
+
+  it('a red reading still dampens — degraded handling did not swallow a real red', async () => {
+    const { ranked } = await rankCandidates([candidate], {
+      now: FIXED_NOW,
+      deps: makeDeps({
+        staleByRepo: { '/r/alpha': 30 },
+        ciByRepo: { '/r/alpha': { status: 'red', ok: false } },
+      }),
+    });
+
+    expect(ranked[0].signals.readiness.ciStatus).toBe('red');
+    expect(ranked[0].score).toBe(0.5);
   });
 });
 

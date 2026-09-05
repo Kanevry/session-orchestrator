@@ -410,6 +410,13 @@ async function resolveSessionId(input, projectRoot) {
           if (Object.prototype.hasOwnProperty.call(prev, 'last_wave_completed')) {
             preserved.last_wave_completed = prev.last_wave_completed;
           }
+          // #980 — the OPEN half of the wave-diff pair, written by
+          // post-tool-batch-wave-signal.mjs. Dropping it across a /clear leaves
+          // the running wave with no start point, so the next
+          // `orchestrator.wave.completed` silently omits `files_changed`.
+          if (Object.prototype.hasOwnProperty.call(prev, 'wave_start_sha')) {
+            preserved.wave_start_sha = prev.wave_start_sha;
+          }
         }
       } catch { /* absent / unparseable → no preservation (reset) */ }
     }

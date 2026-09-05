@@ -32,6 +32,14 @@
  * The two `**` markers are independent (`**key:` and `key:**` both match),
  * mirroring the tolerant #823 vault-integration regex.
  *
+ * COMMENT-STRIPPING IS THE CALLER'S JOB (#1222). Every matcher here sees RAW
+ * lines: a header inside a `<!-- … -->` HTML comment matches exactly like a live
+ * one. That is deliberate — stripping comments needs the `block-preprocess.mjs`
+ * state machine, and importing it would end this module's zero-import leaf
+ * status. A caller that must agree with a comment-STRIPPING parser preprocesses
+ * its content first (`preprocessBlockLinesNoDash(content).join('\n')`) — see
+ * `dispatcher-autonomy-capture.mjs` `isDispatcherAutonomyBlockPresent()`.
+ *
  * `matchBlockHeaderDetailed` (#1185) is a SEPARATE, additive matcher below for
  * parsers that need what this contract deliberately rejects — an indented
  * (nested) header and/or an inline value. It does not change the contract

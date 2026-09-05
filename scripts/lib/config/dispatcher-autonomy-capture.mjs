@@ -39,6 +39,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 
 import { hasBlockHeader } from './block-header.mjs';
+import { preprocessBlockLinesNoDash } from './block-preprocess.mjs';
 
 const ALLOWED_AUTONOMY = ['off', 'advisory', 'autonomous-gated'];
 const DEFAULT_CONFIDENCE_FLOOR = 0.5;
@@ -113,6 +114,18 @@ export function getDispatcherAutonomyQuestion() {
  * the shared `matchBlockHeader()` matcher (block-header.mjs). `hasBlockHeader()`
  * splits on `/\r?\n/` and tests each line, so `\r` and trailing whitespace are
  * eaten by the `\s*$` tail and the identical set of inputs matches.
+ *
+ * PARSER PARITY, both halves (#1222): the parser preprocesses its content with
+ * `preprocessBlockLines()` — it STRIPS `<!-- … -->` HTML comments and is
+ * fence-BLIND. This guard therefore preprocesses too, with
+ * `preprocessBlockLinesNoDash()` (comment-strip only; the full
+ * `preprocessBlockLines` additionally de-dashes bold sub-keys, which this
+ * whole-file presence scan has no use for), and stays fence-blind as well. Before
+ * that, a block commented OUT (`<!--\ndispatcher-autonomy:\n  autonomy: off\n-->`)
+ * parsed to DEFAULTS while being reported PRESENT — so the one-time capture AUQ
+ * never fired and the operator was never asked. The two halves must move
+ * together: teach one about comments or fences and the other follows in
+ * lock-step, or the guard and the parser disagree again.
  * Verified-equivalent edge cases:
  *   - CRLF line endings (`dispatcher-autonomy:\r\n`) → PRESENT (`\s*$` eats the `\r`).
  *   - Trailing spaces / tabs on the header line → PRESENT (`\s*$`).
@@ -130,6 +143,15 @@ export function getDispatcherAutonomyQuestion() {
  *   - Header present but BODY malformed (garbage non-yaml lines) → PRESENT. A
  *     malformed block is the operator's to fix, never a re-prompt trigger — the
  *     parser tolerantly falls back to defaults, and capture must not re-ask.
+ *   - Header inside a `<!-- … -->` comment → ABSENT (#1222), matching the parser.
+ *   - Header inside a comment that is never closed (a stray `<!--` with no
+ *     `-->`) → PRESENT. `stripHtmlCommentBlocks()` returns the lines UNFILTERED
+ *     in that case, so nothing silently vanishes, and the parser — which uses the
+ *     same helper — sees the header too. Unlike `_isConfigWeakeningAllowed()` in
+ *     config-protection.mjs, this scan does NOT invert that direction: there the
+ *     scanned line ARMS a bypass, so ambiguity must mean "not armed"; here the
+ *     only cost of a stray PRESENT is one un-asked question, while diverging from
+ *     the parser would re-open exactly the bug this fix closes.
  *
  * No-throw: null / non-string / empty → false.
  *
@@ -138,7 +160,8 @@ export function getDispatcherAutonomyQuestion() {
  */
 export function isDispatcherAutonomyBlockPresent(claudeMdContent) {
   if (typeof claudeMdContent !== 'string' || claudeMdContent.length === 0) return false;
-  return hasBlockHeader(claudeMdContent, 'dispatcher-autonomy');
+  const preprocessed = preprocessBlockLinesNoDash(claudeMdContent).join('\n');
+  return hasBlockHeader(preprocessed, 'dispatcher-autonomy');
 }
 
 /**

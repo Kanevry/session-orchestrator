@@ -378,7 +378,14 @@ After the auto-dialectic nudge decision is made (Phase 3.6.7), and when the reco
 
    The batch counter moved out of `header` and into the question because `header` is cut off after 12 characters — `Reconciliation — Confirm Rule Proposals (Batch N of M)` reached the operator as `Reconciliati`. The rendered `content` shown in the description is the rule prose that will land on disk.
 
-6. After all batches are answered, partition proposals into `approved` (any option selected across all batches) and `rejected` (all unselected). Proposals the operator rejected join the engine's `rejected` array for archival.
+6. After all batches are answered, partition proposals into `approved` (any option selected across all batches) and `rejected` (all unselected). Proposals the operator rejected join the engine's `rejected` array for archival — each one STAMPED with an explicit `operatorRejected: true` flag first:
+
+   ```javascript
+   // `declined` = the surfaced proposals the operator left unselected across all batches.
+   const operatorRejected = declined.map((item) => ({ ...item, operatorRejected: true }));
+   ```
+
+   The flag is what `writer.mjs`'s `isOperatorRejection()` keys on to decide whether the item gets a TERMINAL sidecar stamp (#1042). Engine-side rejections (the `rejected` array `runReconcile` returned) MUST NOT be stamped — they carry no flag and stay proposable next run. Without the flag the writer falls back to an implicit content-presence heuristic (deprecated, see `writer.mjs`); do not rely on it in new call sites.
 
 7. Invoke `writeApprovedRules` from `scripts/lib/reconcile/writer.mjs`:
 

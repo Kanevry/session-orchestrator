@@ -21,8 +21,13 @@
 #      files — closing the gap where `git add <leak> && git commit` slipped
 #      through 3× before (deep-1, deep-2, deep-3). Reuses the same scanner CI
 #      runs in the owner-leakage validate job, so local/CI parity is exact.
-#   5. check-test-fixture-shapes (#556) — live-credential shapes in tests/.
-#   6. lint-staged (#352) — eslint --fix on staged *.mjs.
+#   5. hook-import-set-drift (#1224) — the committed hook-reachable allowlist
+#      must match a fresh crawl. Runs ONLY when the staged set touches
+#      hooks/ or scripts/lib/. Reads the WORKTREE (the generator crawls files,
+#      not index blobs) — acceptable here because the artefact it guards is
+#      itself regenerated from the worktree.
+#   6. check-test-fixture-shapes (#556) — live-credential shapes in tests/.
+#   7. lint-staged (#352) — eslint --fix on staged *.mjs.
 # Plus one ADVISORY (never blocking) stage: check-test-value-bans over staged
 # test files only.
 # Skipped silently when the guard script is absent (vendored-hook consumers,
@@ -106,6 +111,36 @@ node scripts/lib/validate/check-owner-leakage.mjs "$(git rev-parse --show-toplev
   echo "  Use 'git commit --no-verify' to bypass (only after triaging)." >&2
   exit 1
 }
+
+# --- hook-import-set-drift:begin (#1224) ---
+# The committed hook-reachable allowlist (hooks/_lib/hook-import-set.json) is
+# what gates hooks/post-edit-import-probe.mjs. A stale allowlist silently
+# NARROWS that probe: a module that just BECAME hook-reachable is edited without
+# ever being checked — the 2026-09-04 incident shape, where a broken helper made
+# every Bash/Edit/Write call fail host-wide for ~8 minutes.
+# Scoped to commits that touch hooks/ or scripts/lib/ — the only two trees the
+# crawl reads — so an unrelated docs commit never pays the crawl cost.
+# `grep -q` alone decides the gate; no `grep -c` counting (see
+# .claude/rules/bash-harness-pitfalls.md § 1).
+if [ -f scripts/generate-hook-import-set.mjs ] &&
+   git diff --cached --name-only --diff-filter=ACMR | grep -qE '^(hooks|scripts/lib)/'; then
+  # A silent exit 0 is NOT a pass: if the generator's CLI entry guard does not
+  # fire (symlinked/realpath-differing invocation), the whole body is a no-op
+  # that still exits 0 — a fail-OPEN gate. Demand the success MARKER, exactly
+  # as scripts/validate-plugin.mjs runHookImportSetCheck() does.
+  his_out=$(node scripts/generate-hook-import-set.mjs --check 2>&1) || true
+  case "$his_out" in
+    (*"modules, in sync"*) : ;;
+    (*)
+      echo "✗ hook-import-set: committed allowlist is stale (see #1224). Commit blocked." >&2
+      echo "  run node scripts/generate-hook-import-set.mjs and stage hooks/_lib/hook-import-set.json" >&2
+      echo "  Use 'git commit --no-verify' to bypass (only after triaging)." >&2
+      [ -n "$his_out" ] && echo "  generator said: $his_out" >&2
+      exit 1
+      ;;
+  esac
+fi
+# --- hook-import-set-drift:end ---
 
 # check-test-fixture-shapes (#556) — scan tracked tests/**/*.{mjs,ts,js} for
 # live-credential shapes (sk_live_, xoxb-<digits>, AKIA…, AIzaSy…) that would

@@ -1175,6 +1175,12 @@ After each wave, provide a brief status:
 - Adaptations for Wave [N+1] ([NextRole]): [none / list changes]
 ```
 
+**Shell variables used in this section:**
+- `$PLUGIN_ROOT` — harness-supplied; `$CLAUDE_PLUGIN_ROOT`, `$CODEX_PLUGIN_ROOT`, or `$CURSOR_RULES_DIR` per platform — see `skills/_shared/config-reading.md`.
+- `$WAVE` — the current wave number (the `<N>` in `<state-dir>/filescopes/wave-<N>/`).
+- `$ROLE` — the wave's assigned role, resolved from the session plan's role-to-wave mapping (§ 0 above).
+- `$STATE_DIR` — same value as the `<state-dir>` placeholder used elsewhere in this doc: `.claude` / `.codex` / `.cursor` per platform.
+
 ## Scope Manifest
 
 Before each wave dispatch:
@@ -1227,7 +1233,7 @@ Before each wave dispatch:
    The `wave` field also doubles as the RUNNING-wave signal for readers outside this step's STATE.md `current-wave` (which records the just-completed wave, per step 1 of `3a. Post-Wave: Update STATE.md` above): `scripts/memory-propose.mjs` reads it directly for proposal attribution only when the manifest is bound to the calling session (`semantic_session_id` matches the session's own semantic id); an unbound or foreign manifest is ignored and the reader falls back to `current-wave + 1` (#1166, #1123).
 
    **What the binding means to a reader.** Three states, and the disposition differs for each. **Absent** = legacy = ENFORCE: a manifest written before #1123 (or by a stale skill body) binds nobody, so it must keep constraining everyone exactly as it did before — this is the only state that preserves the pre-#1123 contract, and `validate-wave-scope.mjs` marks it with one advisory stderr line rather than an error, because § 3.3's pre-union skeleton is itself an unbound manifest. **Own session** = ENFORCE, unchanged. **Foreign session** — `session_id` present (or the legacy `session`, still read for one transition release, #1153 P2) and not this session's id — = ALLOW: `hooks/enforce-scope.mjs` lets the write through and emits `orchestrator.scope.foreign_session_ignored` so the skip is counted rather than silent. A foreign manifest is somebody else's wave plan; it never had authority over this session's writes, and the event is what keeps that visible instead of leaving an allow nothing recorded. (The reader half lives in `hooks/enforce-scope.mjs` — the writer's only obligation is to name itself honestly here.)
-2. Validate by piping through `node "$PLUGIN_ROOT/scripts/validate-wave-scope.mjs"` (where `$PLUGIN_ROOT` is `$CLAUDE_PLUGIN_ROOT`, `$CODEX_PLUGIN_ROOT`, or `$CURSOR_RULES_DIR` per platform — see `skills/_shared/config-reading.md`). If validation fails (exit 1), fix the JSON based on stderr errors and retry.
+2. Validate by piping through `node "$PLUGIN_ROOT/scripts/validate-wave-scope.mjs"` (`$PLUGIN_ROOT` — see "Shell variables used in this section" above). If validation fails (exit 1), fix the JSON based on stderr errors and retry.
 3. **`allowedPaths` is COMPUTED from one canonical declaration array — never hand-transcribed (#1020/#1083).** Transcribing either declaration shape or the union by hand produced scope divergences. Globs stay verbatim (`scripts/*.sh`) — the enforcement hook resolves them at check time.
 
    **3.1 — materialize both declaration shapes once.** Build one JSON array from the session plan, one `{id, files}` record for every agent plus exactly one `coordinator` record for the coordinator's planned direct edits. `files` arrays, their entries and their order are the plan's verbatim declarations. Materialize it ONCE and capture the aggregate-sidecar path:

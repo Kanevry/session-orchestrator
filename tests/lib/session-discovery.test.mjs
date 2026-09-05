@@ -110,6 +110,34 @@ describe('Group A — happy path', () => {
     expect(result[0].branch).toBe('main');
   });
 
+  // host_id is the #1072 normalised twin the registry path also emits. Both
+  // branches below pin `sessionFromLock`'s `lock.host_id ?? stableHostname(...)`:
+  // without the fallback a pre-#1072 lock yields `host_id: undefined`, and a
+  // consumer comparing hosts silently degrades to the raw `host` for
+  // lock-sourced sessions ONLY — a divergence no other assertion here catches.
+  it('passes a lock-recorded host_id through unchanged', async () => {
+    writeLock(repoRoot, lockBody({ session_id: 'sess-A3', host: 'Macbook-2.local', host_id: 'm5-alias' }));
+
+    const result = await discoverActiveSessions(repoRoot, {
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main', 'abc123'),
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].host_id).toBe('m5-alias');
+    expect(result[0].host).toBe('Macbook-2.local');
+  });
+
+  it('derives host_id from the raw host for a pre-#1072 lock that has none', async () => {
+    writeLock(repoRoot, lockBody({ session_id: 'sess-A4', host: 'Macbook-2.local' }));
+
+    const result = await discoverActiveSessions(repoRoot, {
+      listWorktreesImpl: singleWtImpl(repoRoot, 'main', 'abc123'),
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].host_id).toBe('macbook-2');
+  });
+
   it('discoverActiveSessions returns a Promise (is thenable)', () => {
     const returned = discoverActiveSessions(repoRoot, {
       listWorktreesImpl: async () => [],

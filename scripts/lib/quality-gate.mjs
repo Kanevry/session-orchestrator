@@ -114,30 +114,99 @@ function resolveRepoRoot(explicit) {
 }
 
 /**
- * Load default commands from Session Config via `scripts/parse-config.mjs`.
- * Returns a partial object — keys that fail to resolve are simply absent
- * (the caller falls through to DEFAULT_COMMANDS for those).
+ * Closed set of `degraded` reasons for {@link loadCommandsFromSessionConfigDetailed}.
+ *
+ * Its own enum, deliberately not shared with `ci-status-banner.mjs`'s
+ * `DEGRADED_REASONS`: the members below are exactly the three ways THIS
+ * config-read can fail, and an enum whose members are not exhaustively
+ * reachable cannot be switched on exhaustively.
+ *
+ *   - `script-missing` — `scripts/parse-config.mjs` is not on disk.
+ *   - `spawn-failed`   — the subprocess exited non-zero, timed out, or wrote
+ *                        nothing to stdout.
+ *   - `parse-error`    — stdout was not parseable JSON (or the read threw).
+ */
+export const CONFIG_READ_DEGRADED_REASONS = Object.freeze([
+  'script-missing',
+  'spawn-failed',
+  'parse-error',
+]);
+
+/**
+ * Does `repoRoot` carry a Session Config file at all?
+ *
+ * Mirrors the file-name precedence `scripts/parse-config.mjs::resolveConfigFile`
+ * uses (`SO_CONFIG_FILE` → `CLAUDE.md` → `AGENTS.md`) but NOT its upward
+ * project-root walk — see the ceiling note at the call site.
+ *
+ * @param {string} repoRoot
+ * @returns {boolean}
+ */
+function sessionConfigFileExists(repoRoot) {
+  try {
+    const soConfigFile = process.env.SO_CONFIG_FILE;
+    if (soConfigFile && existsSync(join(repoRoot, soConfigFile))) return true;
+    return existsSync(join(repoRoot, 'CLAUDE.md')) || existsSync(join(repoRoot, 'AGENTS.md'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Load default commands from Session Config via `scripts/parse-config.mjs`,
+ * distinguishing "the config declares no `*-command` keys" from "the config
+ * could not be read at all".
+ *
+ * Both cases yield `commands: {}` — that half is unchanged, and every command
+ * resolution keeps falling through to DEFAULT_COMMANDS exactly as before. What
+ * is new is the second channel: on failure the result also carries a
+ * `degraded` reason from {@link CONFIG_READ_DEGRADED_REASONS}. Without it,
+ * `checkQgCommandDrift` reported "no drift" for a config it never managed to
+ * read — a silent all-clear derived from an absent measurement (#1031's
+ * failure class, one consumer over).
+ *
+ * `degraded` is OMITTED, not set to null, on the success path, so a strict
+ * `toEqual({commands: {…}})` pin holds for every readable config.
  *
  * Never throws.
  *
  * @param {string} repoRoot
- * @returns {{lint?: string, typecheck?: string, test?: string}}
+ * @returns {{commands: {lint?: string, typecheck?: string, test?: string},
+ *            degraded?: 'script-missing'|'spawn-failed'|'parse-error'}}
  */
-export function loadCommandsFromSessionConfig(repoRoot) {
+export function loadCommandsFromSessionConfigDetailed(repoRoot) {
   try {
     const scriptPath = join(
       dirname(fileURLToPath(import.meta.url)),
       '..',
       'parse-config.mjs',
     );
-    if (!existsSync(scriptPath)) return {};
+    if (!existsSync(scriptPath)) return { commands: {}, degraded: 'script-missing' };
     const result = spawnSync('node', [scriptPath], {
       cwd: repoRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 10_000,
     });
-    if (result.status !== 0 || !result.stdout) return {};
+    if (result.status !== 0 || !result.stdout) {
+      // `parse-config.mjs` exits 1 for EVERY failure, including the benign
+      // "this repo has no CLAUDE.md / AGENTS.md at all" — measured 2026-09-05
+      // in an empty tmp dir: stderr `CLAUDE.md or AGENTS.md required`, exit 1.
+      // A repo with no Session Config has no `*-command` value that could
+      // drift, so reporting that as a failed READ would fire a warning on every
+      // such repo (`.claude/rules/host-resources.md` § HR-101 — a warning class
+      // that is usually present is a broken instrument).
+      //
+      // Ceiling (BV-004): `parse-config.mjs` resolves its config via
+      // `findProjectRoot(cwd)` walking UPWARD, this check looks only at
+      // `repoRoot` itself. For a `repoRoot` nested below the project root the
+      // two disagree — and the disagreement resolves toward SILENCE (no
+      // `degraded`), i.e. the pre-#1031 behaviour, never toward a false alarm.
+      // Revisit if a caller starts passing sub-directory roots.
+      return sessionConfigFileExists(repoRoot)
+        ? { commands: {}, degraded: 'spawn-failed' }
+        : { commands: {} };
+    }
     const cfg = JSON.parse(result.stdout);
     const out = {};
     if (typeof cfg['lint-command'] === 'string' && cfg['lint-command'].trim()) {
@@ -149,10 +218,28 @@ export function loadCommandsFromSessionConfig(repoRoot) {
     if (typeof cfg['test-command'] === 'string' && cfg['test-command'].trim()) {
       out.test = cfg['test-command'];
     }
-    return out;
+    return { commands: out };
   } catch {
-    return {};
+    return { commands: {}, degraded: 'parse-error' };
   }
+}
+
+/**
+ * Load default commands from Session Config via `scripts/parse-config.mjs`.
+ * Returns a partial object — keys that fail to resolve are simply absent
+ * (the caller falls through to DEFAULT_COMMANDS for those).
+ *
+ * Thin wrapper over {@link loadCommandsFromSessionConfigDetailed}; byte-identical
+ * return value for every input, including every failure path. Callers that need
+ * to tell a failed read from an empty config use the detailed variant.
+ *
+ * Never throws.
+ *
+ * @param {string} repoRoot
+ * @returns {{lint?: string, typecheck?: string, test?: string}}
+ */
+export function loadCommandsFromSessionConfig(repoRoot) {
+  return loadCommandsFromSessionConfigDetailed(repoRoot).commands;
 }
 
 /**

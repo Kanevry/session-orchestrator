@@ -39,6 +39,7 @@
  * @property {number} waveNumber
  * @property {number | null} filesChanged
  * @property {number | null} testPassed
+ * @property {number | null} testFailed
  * @property {number | null} agentDispatchCount
  */
 
@@ -143,21 +144,56 @@ function tailRead(absPath, prevOffset) {
  * Event types this monitor is meant to classify. Anything else is ignored even
  * when it carries a wave number.
  *
- * The allowlist is a wave-LIFECYCLE prefix plus the agent-dispatch counters —
- * i.e. exactly the records that can carry the three measurements
- * `evaluateSignals` compares (`files_changed`, `test.passed`,
- * `agents_dispatched`). It is deliberately fail-CLOSED: a new event type that
- * gains a `wave_number` field must be added here consciously.
+ * The allowlist is a wave-LIFECYCLE prefix, the agent-dispatch/-stop counters,
+ * and the quality-gate envelope — i.e. exactly the records that can carry the
+ * three measurements `evaluateSignals` compares (`files_changed`, the test
+ * pass count, the per-wave agent count). It is deliberately fail-CLOSED: a new
+ * event type that gains a `wave_number` field must be added here consciously.
+ *
+ * The gate admission is a TYPE-AND-SHAPE gate, never a bare prefix widening —
+ * see `isWaveScopedEvent` for why.
  */
 const WAVE_EVENT_PREFIX = 'orchestrator.wave.';
 const WAVE_EVENT_NAMES = new Set(['agent.dispatched', 'orchestrator.agent.dispatched']);
+const AGENT_STOPPED_EVENT = 'orchestrator.agent.stopped';
+const GATE_EVENT_PREFIX = 'orchestrator.quality_gate.';
 
 /**
- * @param {string} evType
+ * True when a record carries a `counts` object this monitor can fold, i.e. a
+ * plain object with a numeric `passed`. `counts: null`, an array, or a string
+ * payload are all rejected — the shape half of the type-and-shape gate.
+ *
+ * @param {Record<string, unknown>} rec
  * @returns {boolean}
  */
-function isWaveScopedEvent(evType) {
-  return evType.startsWith(WAVE_EVENT_PREFIX) || WAVE_EVENT_NAMES.has(evType);
+function hasFoldableCounts(rec) {
+  const counts = rec.counts;
+  if (counts === null || typeof counts !== 'object' || Array.isArray(counts)) return false;
+  return pickInt(/** @type {Record<string, unknown>} */ (counts).passed) !== null;
+}
+
+/**
+ * Type-AND-shape gate: admit a record only when its event type is one this
+ * monitor classifies AND the record actually carries a measurement `classify`
+ * can fold. A bare prefix widening for `orchestrator.quality_gate.*` would
+ * re-open the #966 trap — the gate is the single highest-volume record type in
+ * `events.jsonl`, and admitting the session-level runs (no `wave_number`, or an
+ * envelope without `counts`) would instantiate a `WaveSummary` per gate run,
+ * advance `latestWave`, and burn the once-per-wave `alreadyEmitted` keys before
+ * the real wave record arrives. Hence the discriminator: a gate record is
+ * wave-scoped only when it has BOTH `wave_number` and a well-formed `counts`.
+ *
+ * @param {string} evType
+ * @param {Record<string, unknown>} rec
+ * @returns {boolean}
+ */
+function isWaveScopedEvent(evType, rec = {}) {
+  if (evType.startsWith(WAVE_EVENT_PREFIX)) return true;
+  if (WAVE_EVENT_NAMES.has(evType) || evType === AGENT_STOPPED_EVENT) return true;
+  if (evType.startsWith(GATE_EVENT_PREFIX)) {
+    return pickInt(rec.wave_number) !== null && hasFoldableCounts(rec);
+  }
+  return false;
 }
 
 /**
@@ -182,9 +218,23 @@ function isWaveScopedEvent(evType) {
  * record arrived later. Several other high-volume types (`session.stopped`,
  * `memory.propose_invoked`) already carry a wave and sat in the same trap.
  *
- * Note the measurement keys are read FLAT (`rec['test.passed']`) and are
- * deliberately NOT reconciled with the gate event's nested `counts.passed` —
- * folding one into the other would silently change what this monitor measures.
+ * ## Where the pass count actually comes from (#980)
+ *
+ * Two independent paths, deliberately not merged:
+ *   - the FLAT `rec['test.passed']` alias, kept for a future direct emitter on
+ *     a wave-lifecycle record — no producer writes it today;
+ *   - the gate envelope's NESTED `counts.passed`, folded ONLY for
+ *     `orchestrator.quality_gate.*` records that also carry `wave_number`.
+ *     That gating is what keeps the #966 invariant intact: an ungated record
+ *     (a `wave.completed` carrying `counts`, or a session-level gate run with
+ *     no `wave_number`) still folds NOTHING, so a gate run cannot manufacture a
+ *     `WaveSummary` and burn the once-per-wave emit keys.
+ *
+ * `orchestrator.agent.stopped` is counted per record toward the wave's agent
+ * count, the same way `agent.dispatched` is — it is the only per-agent record
+ * this repo actually emits with a wave number (11,754 records measured
+ * 2026-09-05 in `.orchestrator/metrics/events.jsonl`, against 0 for
+ * `agent.dispatched`).
  *
  * @param {Record<string, unknown>} rec
  * @param {Map<number, WaveSummary>} state
@@ -192,7 +242,7 @@ function isWaveScopedEvent(evType) {
  */
 function classify(rec, state) {
   const evType = String(rec.event_type ?? rec.event ?? '');
-  if (!isWaveScopedEvent(evType)) return null;
+  if (!isWaveScopedEvent(evType, rec)) return null;
 
   const waveNumber = pickInt(rec.wave_number ?? rec.wave ?? rec.waveId);
   if (waveNumber === null) return null;
@@ -202,6 +252,7 @@ function classify(rec, state) {
       waveNumber,
       filesChanged: null,
       testPassed: null,
+      testFailed: null,
       agentDispatchCount: null,
     };
     state.set(waveNumber, summary);
@@ -210,8 +261,17 @@ function classify(rec, state) {
   if (filesChanged !== null) summary.filesChanged = filesChanged;
   const testPassed = pickInt(rec['test.passed'] ?? rec.test_passed ?? rec.testsPassed);
   if (testPassed !== null) summary.testPassed = testPassed;
-  // Count one agent.dispatched event toward this wave's dispatch count.
-  if (WAVE_EVENT_NAMES.has(evType)) {
+  // Nested gate envelope — admitted by isWaveScopedEvent only WITH wave_number,
+  // so the ungated #966 invariant (no fold) survives for every other record.
+  if (evType.startsWith(GATE_EVENT_PREFIX)) {
+    const counts = /** @type {Record<string, unknown>} */ (rec.counts);
+    const gatePassed = pickInt(counts.passed);
+    if (gatePassed !== null) summary.testPassed = gatePassed;
+    const gateFailed = pickInt(counts.failed);
+    if (gateFailed !== null) summary.testFailed = gateFailed;
+  }
+  // Count one dispatched/stopped agent record toward this wave's agent count.
+  if (WAVE_EVENT_NAMES.has(evType) || evType === AGENT_STOPPED_EVENT) {
     summary.agentDispatchCount = (summary.agentDispatchCount ?? 0) + 1;
   } else {
     const dispatched = pickInt(rec.agents_dispatched ?? rec.agentsDispatched);
@@ -443,4 +503,7 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
   main();
 }
 
-export { classify, isWaveScopedEvent };
+// `_evaluateSignals` is a test-only export (leading `_` per the repo convention,
+// cf. `_clearCompileCache` in scripts/lib/agent-output-schema.mjs): the signal
+// firing is otherwise reachable only through the live tail loop.
+export { classify, isWaveScopedEvent, evaluateSignals as _evaluateSignals };

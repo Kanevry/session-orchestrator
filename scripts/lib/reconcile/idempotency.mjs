@@ -391,7 +391,14 @@ export function mergeCandidates({ candidates, repoRoot, storePath } = {}) {
  * @param {number} [params.fallbackConfidence] - used only when no existing record is found.
  * @param {string} [params.repoRoot]
  * @param {string} [params.storePath]
- * @returns {{ written: boolean, stamped: ReconcileCandidate|null }}
+ * @returns {{ written: boolean, stamped: ReconcileCandidate|null, alreadyProcessed?: boolean }}
+ *   `stamped` is the record as PERSISTED (read back out of `mergeCandidates`'s
+ *   merged array), never the one this call merely proposed — when a prior
+ *   terminal verdict wins the dedupe, the two differ and only the former is
+ *   true. `alreadyProcessed: true` marks exactly that case; `written` stays
+ *   `true` there, because the store holds the intended terminal state and
+ *   `written: false` means a WRITE FAILURE to the one production caller
+ *   (`writer.mjs`, which turns it into an operator-visible error).
  */
 export function markCandidateProcessed({
   learningKey,
@@ -419,6 +426,7 @@ export function markCandidateProcessed({
     stamped = { ...found, processed_at: stampAt, outcome: typeof outcome === 'string' ? outcome : (found.outcome ?? null) };
   } else {
     const slug = typeof fallbackSlug === 'string' ? fallbackSlug : '';
+    const finalOutcome = typeof outcome === 'string' ? outcome : null;
     stamped = buildCandidate({
       id:
         typeof fallbackCandidateId === 'string' && fallbackCandidateId.length > 0
@@ -426,15 +434,40 @@ export function markCandidateProcessed({
           : makeCandidateId(learningKey, slug),
       learningKey,
       slug,
-      status: 'proposed',
+      // A minted record is TERMINAL from birth (`processed_at` is set two lines
+      // below), so `status` must agree with `outcome` instead of always saying
+      // `'proposed'` — a record reading `status:'proposed'` while carrying
+      // `outcome:'rejected'` is self-contradictory and misreads as a live
+      // proposal to anything that renders `status`. The vocabulary is exactly
+      // the two members of the ReconcileCandidate typedef; nothing new is
+      // invented here: `'rejected'` for the operator-rejection outcome
+      // (writer.mjs, issue #1042), `'proposed'` for the accepted outcomes
+      // (`'written'` / `'already-on-disk'`), where the proposal stood.
+      status: finalOutcome === 'rejected' ? 'rejected' : 'proposed',
       reason: 'stamped without a prior sidecar record',
       confidence: typeof fallbackConfidence === 'number' ? fallbackConfidence : 0,
       createdAt: stampAt,
     });
     stamped.processed_at = stampAt;
-    stamped.outcome = typeof outcome === 'string' ? outcome : null;
+    stamped.outcome = finalOutcome;
   }
 
   const result = mergeCandidates({ candidates: [stamped], repoRoot, storePath });
-  return { written: result.written === true, stamped };
+
+  // Report what is PERSISTED, not what we asked for. `mergeCandidates`'s dedupe
+  // rule keeps an already-terminal existing record and DROPS the incoming one,
+  // so when `found` was already processed the store still holds the OLD
+  // `processed_at`/`outcome` — returning our freshly-built `stamped` would tell
+  // the caller a verdict that is nowhere on disk. `merged` IS the array that was
+  // just written, so reading the record back out of it is the honest answer.
+  const persisted = result.merged.find((rec) => rec && rec.learning_key === learningKey);
+  return {
+    written: result.written === true,
+    stamped: persisted ?? stamped,
+    // `true` iff a prior terminal verdict won and this call changed nothing on
+    // disk. `written` deliberately stays `true` in that case: the store IS in
+    // the intended terminal state, and writer.mjs treats `written:false` as a
+    // stamp FAILURE worth an operator-visible error.
+    alreadyProcessed: isTerminal(found),
+  };
 }

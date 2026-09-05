@@ -190,3 +190,34 @@ describe('_parseWaveReviewers — block boundary', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1222 parser/comment parity — a commented-out block is ABSENT
+// ---------------------------------------------------------------------------
+
+describe('_parseWaveReviewers — HTML-comment parity (#1222)', () => {
+  // FALSIFICATION: `_extractBlock()` sees past `<!-- … -->` only because it
+  // runs `preprocessBlockLines(content)` first. Replace that with a raw
+  // `content.split(/\r?\n/)` — the shape `isDispatcherAutonomyBlockPresent()`
+  // had before #1222 — and a block the operator DISABLED by commenting it out
+  // silently becomes live config, here returning `enabled: true`.
+  it('treats a commented-out block as absent (falls back to defaults)', () => {
+    const content = [
+      '# CLAUDE.md',
+      '',
+      '<!--',
+      'wave-reviewers:',
+      '  enabled: true',
+      '  reviewers: [architect-reviewer]',
+      '  mode: strict',
+      '-->',
+      '',
+    ].join('\n');
+    expect(_parseWaveReviewers(content)).toEqual({
+      enabled: false,
+      reviewers: [],
+      mode: 'warn',
+      deprecated: false,
+    });
+  });
+});

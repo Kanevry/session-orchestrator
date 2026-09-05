@@ -32,13 +32,40 @@ efficiency:
 
 describe('owner-config-loader resolveOwnerConfigPath()', () => {
   const originalXdg = process.env.XDG_CONFIG_HOME;
+  const originalSo = process.env.SO_CONFIG_HOME;
+
+  beforeEach(() => {
+    // SO_CONFIG_HOME outranks XDG_CONFIG_HOME (#1223) — an ambient value would
+    // mask every XDG case below.
+    delete process.env.SO_CONFIG_HOME;
+  });
 
   afterEach(() => {
-    if (originalXdg === undefined) {
-      delete process.env.XDG_CONFIG_HOME;
-    } else {
-      process.env.XDG_CONFIG_HOME = originalXdg;
+    for (const [key, value] of [
+      ['XDG_CONFIG_HOME', originalXdg],
+      ['SO_CONFIG_HOME', originalSo],
+    ]) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
     }
+  });
+
+  // #1223: this resolver knew only XDG_CONFIG_HOME, so `SO_CONFIG_HOME=<tmp>`
+  // moved host-identity's artefacts into the sandbox while owner.yaml kept
+  // being read from the operator's real home.
+  it('honours SO_CONFIG_HOME as the private dir itself, outranking XDG_CONFIG_HOME', () => {
+    process.env.SO_CONFIG_HOME = '/so/private';
+    process.env.XDG_CONFIG_HOME = '/custom/xdg';
+    expect(resolveOwnerConfigPath()).toBe('/so/private/owner.yaml');
+  });
+
+  // A whitespace-only env var is TRUTHY: the pre-#1223 `xdg.length > 0` test
+  // returned '   /session-orchestrator/owner.yaml' — a relative path.
+  it('falls through a whitespace-only XDG_CONFIG_HOME to the homedir default', () => {
+    process.env.XDG_CONFIG_HOME = '   ';
+    const p = resolveOwnerConfigPath();
+    expect(p).toMatch(/^[\\/]/);
+    expect(p).toMatch(/[\\/]\.config[\\/]session-orchestrator[\\/]owner\.yaml$/);
   });
 
   it('honours XDG_CONFIG_HOME when set', () => {

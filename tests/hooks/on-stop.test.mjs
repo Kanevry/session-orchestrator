@@ -1002,8 +1002,8 @@ describe('missing node_modules — graceful degradation (GH#63)', { timeout: 300
 });
 
 // ---------------------------------------------------------------------------
-// 18. Repo-wide structural guard: no hook may STATICALLY import a third-party
-//     package (GH#63 recurrence class).
+// 18. Repo-wide structural guard: the hook import graph carries exactly the two
+//     KNOWN bare specifiers and no third (GH#63 recurrence class).
 // ---------------------------------------------------------------------------
 //
 // The runtime test above proves on-stop.mjs degrades. This guard is the cheap
@@ -1011,9 +1011,34 @@ describe('missing node_modules — graceful degradation (GH#63)', { timeout: 300
 // reintroduces the same load-time crash, in a file whose own tests would never
 // notice (the repo always has node_modules).
 //
-// Named ceiling (revisit trigger): this checks DIRECT imports of hooks/**/*.mjs
-// only. A third-party package pulled in transitively via scripts/lib/** is not
-// covered — revisit if a hook helper chain grows a bare dependency.
+// The previous version scanned `readdir(hooks/)` — DIRECT hook imports only —
+// under the named ceiling "revisit if a hook helper chain grows a bare
+// dependency". THAT TRIGGER HAS FIRED. Measured 2026-09-05 over the committed
+// `hooks/_lib/hook-import-set.json` (150 entries, head 4b45130), the graph
+// carries two TRANSITIVE bare specifiers, both pre-existing:
+//
+//   scripts/lib/owner-yaml.mjs       → js-yaml  (reachable from on-session-start,
+//                                                on-session-end, post-edit-validate,
+//                                                skill-invocation-telemetry)
+//   scripts/lib/worktree/listing.mjs → zx       (on-session-start)
+//
+// 4 of those 5 hooks throw ERR_MODULE_NOT_FOUND without node_modules; only
+// on-stop.mjs degrades (GH#63), because its own subgraph is bare-free. Removing
+// the two is a separate follow-up, not this guard's job. So the guard now walks
+// the whole COMMITTED graph (plus every hooks/**/*.mjs on disk, which keeps the
+// old direct-import coverage for the one hook the crawl does not reach) against
+// a DATED explicit allowlist — a THIRD bare dependency, direct or transitive,
+// goes red.
+//
+/**
+ * Bare specifiers KNOWN to sit on the hook import graph, measured 2026-09-05 at
+ * head 4b45130. This map may SHRINK (a dep removed) but must never grow without
+ * a deliberate decision — growing it is the regression the guard exists to name.
+ */
+const KNOWN_BARE_GRAPH_DEPS = {
+  'scripts/lib/owner-yaml.mjs': ['js-yaml'],
+  'scripts/lib/worktree/listing.mjs': ['zx'],
+};
 
 /** Bare (non-relative, non-`node:`) specifiers statically imported by `source`. */
 function staticThirdPartyImports(source) {
@@ -1032,16 +1057,30 @@ function staticThirdPartyImports(source) {
 }
 
 describe('hooks static-import guard (GH#63 recurrence class)', () => {
-  it('no hooks/**/*.mjs statically imports a third-party package', async () => {
-    const hooksDir = path.resolve(import.meta.dirname, '../../hooks');
-    const entries = await fs.readdir(hooksDir, { recursive: true });
+  it('the hook import graph carries only the two known bare deps', async () => {
+    const repoRoot = path.resolve(import.meta.dirname, '../..');
+    const graph = JSON.parse(
+      await fs.readFile(path.join(repoRoot, 'hooks/_lib/hook-import-set.json'), 'utf8'),
+    );
+    expect(Array.isArray(graph.entries)).toBe(true);
+    expect(graph.entries.length).toBeGreaterThan(0);
+
+    // Union: every module the committed crawl reaches, plus every hook file on
+    // disk (the crawl starts from hooks.json, so an unregistered hook — measured
+    // 2026-09-05: hooks/wave-scope-commit-guard.mjs — is not in `entries`).
+    const hooksDir = path.join(repoRoot, 'hooks');
+    const onDisk = (await fs.readdir(hooksDir, { recursive: true }))
+      .filter((e) => e.endsWith('.mjs'))
+      .map((rel) => path.posix.join('hooks', rel.split(path.sep).join('/')));
+    const files = [...new Set([...graph.entries.map((e) => e.file), ...onDisk])].sort();
+
     const offenders = {};
-    for (const rel of entries.filter((e) => e.endsWith('.mjs'))) {
-      const source = await fs.readFile(path.join(hooksDir, rel), 'utf8');
-      const specs = staticThirdPartyImports(source);
+    for (const rel of files) {
+      const source = await fs.readFile(path.join(repoRoot, rel), 'utf8');
+      const specs = [...new Set(staticThirdPartyImports(source))];
       if (specs.length > 0) offenders[rel] = specs;
     }
-    expect(offenders).toEqual({});
+    expect(offenders).toEqual(KNOWN_BARE_GRAPH_DEPS);
   });
 
   it('the detector itself flags a static zx import (fake-regression check)', () => {

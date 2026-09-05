@@ -112,6 +112,17 @@ describe('validate-plugin.mjs — current repo plugin', () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('===========================================');
   });
+
+  // Registration guard (#1224) — asserts the hook-import-set drift check RAN
+  // and reported a verdict, deliberately WITHOUT asserting which verdict. The
+  // allowlist's sync state is a property of the working tree at this instant;
+  // pinning it here would make an unrelated import change red this test (the
+  // live-repo-as-fixture anti-pattern). What must never regress is that the
+  // check is wired at all — an unwired drift guard is the #1224 defect itself.
+  it('runs the hook-import-set drift check and reports a verdict (#1224)', () => {
+    expect(r.stdout).toContain('--- Check: hook-import-set drift (#1224) ---');
+    expect(r.stdout).toMatch(/(PASS|FAIL): hook-import-set:/);
+  });
 });
 
 // ---------------------------------------------------------------------------

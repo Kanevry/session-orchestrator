@@ -158,6 +158,12 @@ export function computeSuitabilityVerdict(deps = {}) {
   const ciNotRed = ciStatus !== 'red'; // null status (absent/malformed) passes
   if (ciAbsent) warnings.push('CI signal absent');
   else if (ciMalformed) warnings.push('CI signal malformed — treated as absent');
+  // `{status:'unknown'}` is a WELL-FORMED reading that establishes nothing —
+  // since #1031 it is what a degraded probe produces, and it hits neither
+  // branch above. Without this line it passed G3 with NO warning at all, i.e.
+  // more quietly than the plain-absent case it is strictly weaker than. The
+  // gate stays non-blocking (only a literal 'red' fails); only the silence goes.
+  else if (ciStatus === 'unknown') warnings.push('CI signal unknown — treated as absent');
   const ciSegment = ciAbsent ? 'absent' : ciMalformed ? 'malformed' : `${ciStatus}`;
 
   // --- G4 — resource gate (green/warn/degraded/null pass; only 'critical' fails)

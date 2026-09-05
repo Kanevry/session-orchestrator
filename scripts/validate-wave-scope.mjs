@@ -310,7 +310,7 @@ function validateOptionalSessionId(obj, key, errors) {
  * @param {string[]} errors
  * @param {string[]} warnings
  */
-function validateSession(obj, errors, warnings) {
+function validateSessionBinding(obj, errors, warnings) {
   let present = false;
   MANIFEST_SESSION_KEYS.current.forEach((key, i) => {
     const legacyKey = MANIFEST_SESSION_KEYS.legacy[i];
@@ -769,7 +769,7 @@ function validate(
   const warnings = [];
 
   validateRequired(obj, errors);
-  validateSession(obj, errors, warnings);
+  validateSessionBinding(obj, errors, warnings);
   validateAllowedPaths(obj, errors, warnings);
   validateBlockedCommands(obj, errors);
   validateGates(obj, errors);

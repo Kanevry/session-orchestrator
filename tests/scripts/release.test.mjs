@@ -41,6 +41,7 @@ import {
   evaluateLeakageGate,
   evaluateRemoteHeadParity,
   evaluateNpmAuth,
+  evaluateCiRow,
   validateFlags,
   ensureGithubRelease,
   evaluatePublishReceipt,
@@ -48,6 +49,7 @@ import {
   runPublishRelease,
   printPublishOutcome,
 } from '../../scripts/release.mjs';
+import { DEGRADED_REASONS } from '../../scripts/lib/ci-status-banner.mjs';
 
 // Fixture shapes are copied from the live repo files (golden-record rule in
 // .claude/rules/testing.md) — hand-inventing them would let the real files
@@ -944,5 +946,48 @@ describe('runPublishRelease — the irreversible default', () => {
     await expect(
       runPublishRelease('/repo', '9.9.9', { publishImpl: 'nope' }),
     ).rejects.toThrow(/requires an explicit publishImpl/);
+  });
+});
+
+// ── #1031: the CI preflight row reads a THREE-state probe ────────────────────
+
+describe('evaluateCiRow', () => {
+  // BUG this catches (TV-001): `checkCiStatus` gained a degraded state whose
+  // object carries no `status`. The pre-#1031 expression interpolated it
+  // anyway, so an unreadable CI check printed `status: undefined` — a red row
+  // whose detail names no cause, which an operator reads as "CI is broken"
+  // when the truth is "we never found out". Red without the `degraded` branch.
+  it('names the reason when the probe could not read CI state', () => {
+    expect(evaluateCiRow({ severity: 'warn', ok: false, degraded: 'query-failed', message: 'x' }))
+      .toEqual({ ok: false, detail: 'CI status unknown (query-failed)' });
+  });
+
+  it('never passes a degraded result, whatever the reason', () => {
+    // Loop over the EXPORTED enum, not a hand-typed copy of it: the branch
+    // under test is reason-agnostic, so a hand list adds no coverage and
+    // silently stops covering the newest member the day one is added.
+    expect(DEGRADED_REASONS.length).toBeGreaterThanOrEqual(5); // vacuum guard
+    for (const reason of DEGRADED_REASONS) {
+      expect(evaluateCiRow({ degraded: reason }).ok).toBe(false);
+    }
+  });
+
+  it('passes only an actual green reading', () => {
+    expect(evaluateCiRow({ status: 'green', ok: true })).toEqual({ ok: true, detail: 'status: green' });
+  });
+
+  it('fails a red reading and names the failing job', () => {
+    expect(evaluateCiRow({ status: 'red', failingJobName: 'lint' }))
+      .toEqual({ ok: false, detail: 'status: red (lint)' });
+  });
+
+  it('fails an unknown reading', () => {
+    expect(evaluateCiRow({ status: 'unknown' })).toEqual({ ok: false, detail: 'status: unknown' });
+  });
+
+  // `null` is the probe's ABSENCE state (no VCS remote) — a release still may
+  // not proceed on it, but the detail must not claim a reason it does not have.
+  it('reports absence distinctly from degradation', () => {
+    expect(evaluateCiRow(null)).toEqual({ ok: false, detail: 'CI status unavailable' });
   });
 });

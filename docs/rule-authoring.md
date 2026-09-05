@@ -194,32 +194,33 @@ The `learning-key` field above links a rule to a learning record, but does not b
 
 ### The type-taxonomy + per-type TTL registry (single source of truth)
 
-`LEARNING_TYPE_REGISTRY` in [`scripts/lib/learnings/schema.mjs`](../scripts/lib/learnings/schema.mjs) (~L80–107) is the **single source of truth** for every learning `type`'s TTL policy and its two cross-module capability flags. Before this registry existed (pre-#733), three modules independently hand-maintained overlapping type lists that drifted out of sync. `LEARNING_TTL_DAYS` (this file), `PROPOSAL_TYPES` (`scripts/lib/memory-proposals/schema.mjs`), and `CONVERT_TYPES` (`scripts/lib/reconcile/eligibility.mjs`) are now all **derived** from this one registry — no hand-maintained duplicate lists remain.
+`LEARNING_TYPE_REGISTRY` in [`scripts/lib/learnings/schema.mjs`](../scripts/lib/learnings/schema.mjs) (~L92–127) is the **single source of truth** for every learning `type`'s TTL policy and its three cross-module capability flags (`agentProposable`, `ruleConvertible`, `hostScoped` — four axes in total, counting `ttlDays`). Before this registry existed (pre-#733), three modules independently hand-maintained overlapping type lists that drifted out of sync. `LEARNING_TTL_DAYS` (this file), `PROPOSAL_TYPES` (`scripts/lib/memory-proposals/schema.mjs`), and `CONVERT_TYPES` (`scripts/lib/reconcile/eligibility.mjs`) are now all **derived** from this one registry — no hand-maintained duplicate lists remain.
 
 Transcribed verbatim from `LEARNING_TYPE_REGISTRY` (16 types):
 
-| Type | ttlDays | agentProposable | ruleConvertible |
-|------|---------|------------------|------------------|
-| `mode-selector-accuracy` | 30 | true | false |
-| `hardware-pattern` | 60 | true | false |
-| `fragile-file` | 45 | true | true |
-| `effective-sizing` | 45 | true | false |
-| `recurring-issue` | 45 | true | true |
-| `workflow-pattern` | 90 | true | true |
-| `proven-pattern` | 90 | true | true |
-| `anti-pattern` | 90 | true | true |
-| `autopilot-effectiveness` | 90 | true | false |
-| `autonomy-verdict` | 90 | false | false |
-| `domain-regression` | 60 | true | false |
-| `convention` | 90 | true | true |
-| `architecture-pattern` | 90 | true | true |
-| `design-pattern` | 90 | true | true |
-| `fragile-pattern` | 45 | false | true |
-| `stagnation-class-frequency` | 60 | false | true |
+| Type | ttlDays | agentProposable | ruleConvertible | hostScoped |
+|------|---------|------------------|------------------|------------|
+| `mode-selector-accuracy` | 30 | true | false | false |
+| `hardware-pattern` | 60 | true | false | true |
+| `fragile-file` | 45 | true | true | false |
+| `effective-sizing` | 45 | true | false | false |
+| `recurring-issue` | 45 | true | true | false |
+| `workflow-pattern` | 90 | true | true | false |
+| `proven-pattern` | 90 | true | true | false |
+| `anti-pattern` | 90 | true | true | false |
+| `autopilot-effectiveness` | 90 | true | false | false |
+| `autonomy-verdict` | 90 | false | false | false |
+| `domain-regression` | 60 | true | false | false |
+| `convention` | 90 | true | true | false |
+| `architecture-pattern` | 90 | true | true | false |
+| `design-pattern` | 90 | true | true | false |
+| `fragile-pattern` | 45 | false | true | false |
+| `stagnation-class-frequency` | 60 | false | true | false |
 
 Capability axes:
 - **`agentProposable`** — the type may appear in `PROPOSAL_TYPES` (a wave-agent may `memory.propose()` this type). `autonomy-verdict`, `fragile-pattern`, and `stagnation-class-frequency` are `false` — these are analyzer-synthesized classes, not agent-observed, so they are never agent-proposable.
 - **`ruleConvertible`** — the type may appear in `CONVERT_TYPES` (the FA2 reconciliation engine may convert a learning of this type into a conditional `.claude/rules/*.md` proposal). `fragile-file`, `recurring-issue`, `anti-pattern`, `convention`, `architecture-pattern`, `design-pattern`, `fragile-pattern`, `stagnation-class-frequency`, `workflow-pattern`, and `proven-pattern` are the ten `ruleConvertible: true` types (issue #900 flipped the last two from `false` — the real corpus census showed a large volume of these records carrying usable `file_paths` scope that were structurally unconvertible before the flip).
+- **`hostScoped`** — `reconcile/emitter.mjs` may copy the record's `host_class` through as the emitted rule's `host-class` activation axis (issue #1090; derived set: that module's `HOST_SPECIFIC_TYPES`). `hardware-pattern` is the ONLY `true` type today — its content IS the chip/OS, so gating the emitted rule by host-class is faithful rather than an accidental one-machine restriction. For every other type `host_class` merely records the machine the learning was authored on and must never gate the rule.
 
 ### Type aliasing (issue #900)
 

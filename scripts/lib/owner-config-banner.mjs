@@ -36,7 +36,7 @@
  *  - Issue #820.
  */
 
-import { loadOwnerConfig, OWNER_YAML_PATH } from './owner-yaml.mjs';
+import { loadOwnerConfig, resolveOwnerYamlPath } from './owner-yaml.mjs';
 
 /**
  * Format a `{ section, errors }` entry into a short `"name" (first error)` tag.
@@ -91,7 +91,7 @@ export function checkOwnerConfig({ loader = loadOwnerConfig } = {}) {
       return {
         severity: 'warn',
         message:
-          `⚠ owner-config: ${OWNER_YAML_PATH} is invalid (${firstError}) — the entire file was ` +
+          `⚠ owner-config: ${resolveOwnerYamlPath()} is invalid (${firstError}) — the entire file was ` +
           'discarded and defaults are in effect. Fix the file (see .claude/rules/owner-persona.md) ' +
           'to restore your settings.',
         discarded: true,
@@ -115,7 +115,7 @@ export function checkOwnerConfig({ loader = loadOwnerConfig } = {}) {
 
     return {
       severity: 'warn',
-      message: `⚠ owner-config: ${OWNER_YAML_PATH} — ${parts.join('; ')} — fix the file to restore full config.`,
+      message: `⚠ owner-config: ${resolveOwnerYamlPath()} — ${parts.join('; ')} — fix the file to restore full config.`,
       ...(droppedSections.length > 0 ? { droppedSections } : {}),
       ...(sectionWarnings.length > 0 ? { sectionWarnings } : {}),
     };

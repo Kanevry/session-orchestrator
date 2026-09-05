@@ -457,26 +457,37 @@ function frontmatterRefusalReason(content) {
  * not yet mature enough — silently, and with no way back short of editing the
  * sidecar by hand.
  *
- * The discriminator is the rendered `content`: `engine.mjs` pushes its own
- * rejections as `{learningKey, type, reason, status:'rejected'}` — they never
- * reach the renderer, so they never carry `content`/`slug`/`path` — while the
- * proposals the operator declines are full `ReconcileProposal` records whose
- * `content` is the very rule text the AUQ showed him.
+ * PRIMARY discriminator (#1153 P15): the explicit `operatorRejected: true`
+ * flag that `skills/session-end/phase-3-6-tail.md` step 6 stamps on every
+ * proposal the operator left unselected before concatenating it into the one
+ * `rejected` array. `engine.mjs` pushes its own rejections as
+ * `{learningKey, type, reason, status:'rejected'}` and never sets the flag, so
+ * the two shapes are now distinguishable by a marker rather than by inference.
  *
- * CEILING (BV-004): this reads an implicit signal, not an explicit marker,
- * because the one production caller (`skills/session-end/phase-3-6-tail.md`
- * step 6/7) concatenates engine rejections and operator-declined proposals into
- * ONE `rejected` array and marks neither. Revisit if that caller starts passing
- * rendered content on engine-side rejections, or if it gains an explicit
- * operator-rejection flag — then key on the flag instead.
+ * FALLBACK (@deprecated — remove once no supported skill body predates the P15
+ * stamp): when the flag is absent, fall back to the old implicit signal — the
+ * rendered `content`. Engine rejections never reach the renderer, so they never
+ * carry `content`/`slug`/`path`, while an operator-declined proposal is a full
+ * `ReconcileProposal` whose `content` is the rule text the AUQ showed him. The
+ * fallback exists because the skill prose and this module ship together but
+ * consumer repos may pin an OLDER `phase-3-6-tail.md` that emits no flag;
+ * dropping it immediately would silently stop stamping their operator
+ * rejections terminal (the exact #1042 bug). REMOVAL TRIGGER: the next major
+ * release in which no supported consumer ships a pre-P15 skill body.
  *
- * @param {WriterRejectedItem & {content?: unknown, learningKey?: unknown}} item
+ * Either way the decision stays conservative in the same direction: a false
+ * negative costs nothing (the learning is re-proposed next run); a false
+ * positive would permanently suppress a learning that was only capped.
+ *
+ * @param {WriterRejectedItem & {content?: unknown, learningKey?: unknown, operatorRejected?: unknown}} item
  * @returns {boolean}
  */
 function isOperatorRejection(item) {
   if (!item || typeof item !== 'object') return false;
-  if (typeof item.content !== 'string' || item.content.length === 0) return false;
-  return typeof item.learningKey === 'string' && item.learningKey.length > 0;
+  if (typeof item.learningKey !== 'string' || item.learningKey.length === 0) return false;
+  if (item.operatorRejected === true) return true;
+  // @deprecated fallback — pre-P15 skill bodies emit no flag; see above.
+  return typeof item.content === 'string' && item.content.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -663,8 +674,12 @@ export async function writeApprovedRules({
             repoRoot,
           });
           if (!stampResult.written) {
+            // Same discrimination as the rejected path below (identical shape,
+            // identical reader): an already-terminal record is not a lost stamp.
             errors.push(
-              `sidecar-stamp failed for "${item.path ?? item.slug}" (learningKey=${item.learningKey}) — rule file was written but the idempotency sidecar was not updated`,
+              stampResult.alreadyProcessed
+                ? `sidecar-stamp for "${item.path ?? item.slug}" (learningKey=${item.learningKey}) wrote nothing — a prior terminal verdict is already on disk, so the rule file landed and the candidate stays terminal`
+                : `sidecar-stamp failed for "${item.path ?? item.slug}" (learningKey=${item.learningKey}) — rule file was written but the idempotency sidecar was not updated`,
             );
           }
         }
@@ -724,8 +739,15 @@ export async function writeApprovedRules({
                   repoRoot,
                 });
                 if (!stampResult.written) {
+                  // `alreadyProcessed` distinguishes the two failures that look
+                  // identical from `written:false` alone. When a PRIOR terminal
+                  // verdict is already on disk, the re-proposal warning is
+                  // simply false — the sidecar holds the state we wanted — and
+                  // telling the operator otherwise sends him after a non-bug.
                   errors.push(
-                    `sidecar-stamp failed for rejected "${item.learningKey}" — the rejection was archived but the idempotency sidecar was not updated, so a later run may re-propose it`,
+                    stampResult.alreadyProcessed
+                      ? `sidecar-stamp for rejected "${item.learningKey}" wrote nothing — a prior terminal verdict is already on disk, so the rejection is recorded and it will NOT be re-proposed`
+                      : `sidecar-stamp failed for rejected "${item.learningKey}" — the rejection was archived but the idempotency sidecar was not updated, so a later run may re-propose it`,
                   );
                 }
               }

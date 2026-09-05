@@ -40,6 +40,7 @@ import {
   unlinkSync,
 } from 'node:fs';
 import { digestSha256WithSalt } from './crypto-digest-utils.mjs';
+import { resolvePrivateConfigDir } from './config/private-config-dir.mjs';
 import path from 'node:path';
 import os from 'node:os';
 // NOTE (#1072 gate fix): platform.mjs is deliberately NOT imported statically.
@@ -357,22 +358,34 @@ export function lockHostCandidate(lock) {
  * The host-private config directory — every per-host artefact below it
  * (`host-private.json`, `owner.yaml`, the alias ledger) moves with it.
  *
- * Two overrides, most specific first: `SO_CONFIG_HOME` names the private dir
- * ITSELF; `XDG_CONFIG_HOME` names its parent (repo precedent:
- * `owner-config-loader.mjs`). Without either, the homedir default.
+ * Precedence (`SO_CONFIG_HOME` = the dir itself > `XDG_CONFIG_HOME` = its
+ * parent > homedir, each trimmed) now lives in ONE place: `resolvePrivateConfigDir`
+ * in `config/private-config-dir.mjs` (#1223) — a ZERO-IMPORT leaf (`node:os` +
+ * `node:path` only).
  *
- * `.trim() || fallback` throughout — a whitespace-only env var is truthy and
- * would short-circuit a bare `||` (`.claude/rules/development.md` § Error
- * Handling, env-var fallback whitespace trap).
+ * The leaf is deliberately NOT `owner-yaml.mjs`, although that module re-exports
+ * the same function: owner-yaml.mjs statically imports `js-yaml`, and THIS module
+ * sits on `on-stop.mjs`'s import subgraph (via `session-lock.mjs`). Importing the
+ * resolver from owner-yaml.mjs therefore put a bare specifier on THAT subgraph and
+ * broke the GH#63 contract that on-stop degrades with one actionable line when
+ * node_modules is absent (measured: `ERR_MODULE_NOT_FOUND: Cannot find package
+ * 'js-yaml' imported from …/scripts/lib/owner-yaml.mjs`, 2 red tests in
+ * tests/hooks/on-stop.test.mjs). Never import owner-yaml.mjs from here.
  *
- * @returns {string}
+ * This says nothing about the WHOLE hook import graph, which is NOT bare-free.
+ * Measured 2026-09-05 over `hooks/_lib/hook-import-set.json` (150 entries, head
+ * 4b45130): two bare specifiers remain, both pre-existing — `owner-yaml.mjs →
+ * js-yaml` (reachable from on-session-start, on-session-end, post-edit-validate,
+ * skill-invocation-telemetry) and `scripts/lib/worktree/listing.mjs → zx`
+ * (on-session-start). Only `on-stop.mjs` degrades without node_modules today;
+ * the other four throw ERR_MODULE_NOT_FOUND. The guard in
+ * `tests/hooks/on-stop.test.mjs` allowlists exactly those two, so a THIRD one
+ * turns red.
+ *
+ * @returns {string} absolute path to the host-private config directory
  */
 function _privateDir() {
-  const own = (process.env.SO_CONFIG_HOME || '').trim();
-  if (own) return own;
-  const xdg = (process.env.XDG_CONFIG_HOME || '').trim();
-  if (xdg) return path.join(xdg, 'session-orchestrator');
-  return path.join(os.homedir(), '.config', 'session-orchestrator');
+  return resolvePrivateConfigDir();
 }
 
 function _privateFile() {

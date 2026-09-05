@@ -716,6 +716,14 @@ describe('reapStaleBudgetFiles', () => {
     return file;
   }
 
+  /** Write a counter file for `sessionId` with an exact epoch-ms mtime. */
+  async function seedAt(dir, sessionId, mtimeMs) {
+    const file = await seed(dir, sessionId, 0);
+    const at = new Date(mtimeMs);
+    await fs.utimes(file, at, at);
+    return file;
+  }
+
   it('removes files past the age cutoff, keeps young ones and the current session', async () => {
     const dir = await mkProject();
     const stale = await seed(dir, 'long-gone-session', 30);
@@ -731,6 +739,25 @@ describe('reapStaleBudgetFiles', () => {
     await expect(fs.access(stale)).rejects.toThrow();
     await expect(fs.access(young)).resolves.toBeUndefined();
     await expect(fs.access(ownAndOld)).resolves.toBeUndefined();
+  });
+
+  // The cutoff is `mtimeMs >= now - maxAgeDays*86400000` → a file aged EXACTLY
+  // maxAgeDays is KEPT. Nothing pinned that comparison: the 30-vs-1-day test
+  // above stays green if `>=` is weakened to `>`, which silently reaps a
+  // peer session's file the instant it turns maxAgeDays old.
+  it('keeps a file aged exactly maxAgeDays and removes one a second older', async () => {
+    const dir = await mkProject();
+    const now = 1_700_000_000_000;
+    const cutoff = now - 14 * 24 * 60 * 60 * 1000;
+    const onCutoff = await seedAt(dir, 'exactly-at-the-cutoff', cutoff);
+    const justPast = await seedAt(dir, 'one-second-older', cutoff - 1000);
+
+    const { removed, kept } = reapStaleBudgetFiles({ repoRoot: dir, maxAgeDays: 14, now });
+
+    expect(removed).toEqual([justPast]);
+    expect(kept).toEqual([onCutoff]);
+    await expect(fs.access(onCutoff)).resolves.toBeUndefined();
+    await expect(fs.access(justPast)).rejects.toThrow();
   });
 
   it('leaves unrecognised files in the directory alone', async () => {

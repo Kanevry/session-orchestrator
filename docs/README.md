@@ -98,6 +98,10 @@ Two things worth knowing about this split:
 | `docs/plans/` | Active work document | `/write-executable-plan` artifacts for in-progress work. May not exist when nothing is mid-plan. |
 | `docs/_private/`, `docs/specs/` | Local-only (gitignored) | Operator scratch space; never tracked, out of scope for this classification. |
 
+### Superseded design notes
+
+Because `docs/specs/` is gitignored, a correction written INTO a spec can never be committed — so the correction lives here instead. `docs/specs/2026-05-26-parallel-aware-sessions-design.md` (parallel-aware sessions) specifies PID-based lock liveness (`stale-pid-dead`). That is **superseded**: liveness is heartbeat-age based since #1137 (`isLockLive`; `acquire()` knows only `stale-heartbeat`), and the recorded PID is consulted nowhere since #1151 — it was the PID of the short-lived subprocess that wrote the lock, dead within a second. Read the local spec only with that correction applied.
+
 ## See Also
 
 - `docs/prd/2026-07-08-docs-public-split.md` — the epic that established this split (S1–S8, issues #775–#782).

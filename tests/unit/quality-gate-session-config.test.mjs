@@ -44,9 +44,15 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 
-import { loadCommandsFromSessionConfig, runQualityGateWithRetry } from '@lib/quality-gate.mjs';
+import {
+  loadCommandsFromSessionConfig,
+  loadCommandsFromSessionConfigDetailed,
+  CONFIG_READ_DEGRADED_REASONS,
+  runQualityGateWithRetry,
+} from '@lib/quality-gate.mjs';
 
 // ---------------------------------------------------------------------------
 // Per-test filesystem isolation
@@ -223,6 +229,106 @@ describe('loadCommandsFromSessionConfig — A5: result keys are limited to the d
     expect(result).toHaveProperty('typecheck');
     // Verify no extra keys slipped through
     expect(Object.keys(result).length).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group A6: loadCommandsFromSessionConfigDetailed — failed read vs empty config
+//
+// TV-001 — the bug these catch: `loadCommandsFromSessionConfig` returns `{}`
+// for BOTH "the Session Config declares no *-command keys" and "the
+// parse-config subprocess failed". Its only consumer that draws a conclusion
+// from the emptiness — `checkQgCommandDrift` — therefore reported "no drift"
+// for a config it never read. Group A above pins the commands half; nothing
+// pinned the distinction, because before this change there was none.
+// ---------------------------------------------------------------------------
+
+describe('loadCommandsFromSessionConfigDetailed — A6: failed read vs empty config', () => {
+  // Bug this catches (TV-001): a new degraded path added to
+  // `loadCommandsFromSessionConfigDetailed` with a reason literal that is NOT
+  // in the frozen enum — consumers switch exhaustively over the enum, so such a
+  // member arrives as an unhandled value. The previous form of this test was a
+  // hand-typed list compared against the export, which tests only itself and
+  // goes stale the moment a fourth path lands. This is a REGEX OVER THE SOURCE,
+  // mirroring the DEGRADED_REASONS census in tests/lib/ci-status-banner.test.mjs.
+  const QG_SOURCE = readFileSync(
+    fileURLToPath(new URL('../../scripts/lib/quality-gate.mjs', import.meta.url)),
+    'utf8',
+  );
+  const emittedReasons = new Set(
+    [...QG_SOURCE.matchAll(/degraded:\s*'([^']+)'/g)].map((m) => m[1]),
+  );
+
+  it('every degraded reason literal in the module is a member of the exported enum', () => {
+    // Vacuum guard: an empty census passes trivially and would hide a rename of
+    // the `degraded:` key itself.
+    expect(emittedReasons.size).toBeGreaterThanOrEqual(3);
+    for (const reason of emittedReasons) {
+      expect(CONFIG_READ_DEGRADED_REASONS).toContain(reason);
+    }
+  });
+
+  it('every enum member is actually emitted by a call site in the module', () => {
+    expect([...CONFIG_READ_DEGRADED_REASONS].filter((r) => !emittedReasons.has(r))).toEqual([]);
+  });
+
+  it('is frozen', () => {
+    expect(Object.isFrozen(CONFIG_READ_DEGRADED_REASONS)).toBe(true);
+  });
+
+  it('reports degraded=spawn-failed when CLAUDE.md exists but parse-config exits non-zero', { timeout: 5_000 }, () => {
+    execSync('git init -q', { cwd: repoRoot });
+    // `agents-per-wave: 1` fails the config validator → parse-config exits 1
+    // with empty stdout (measured 2026-09-05: "agents-per-wave must be an
+    // integer >= 2 (got 1)").
+    writeFileSync(
+      join(repoRoot, 'CLAUDE.md'),
+      '# T\n## Session Config\nenforcement: strict\nagents-per-wave: 1\ntest-command: mocha\n',
+      'utf8',
+    );
+
+    const detailed = loadCommandsFromSessionConfigDetailed(repoRoot);
+
+    expect(detailed.commands).toEqual({});
+    expect(detailed.degraded).toBe('spawn-failed');
+  });
+
+  it('does NOT report degraded when the repo simply has no Session Config file', { timeout: 5_000 }, () => {
+    execSync('git init -q', { cwd: repoRoot });
+    // No CLAUDE.md / AGENTS.md: parse-config also exits 1, but nothing was
+    // misread — there is no *-command value that could drift. A warning here
+    // would fire on every config-less repo (HR-101).
+    const detailed = loadCommandsFromSessionConfigDetailed(repoRoot);
+
+    expect(detailed.commands).toEqual({});
+    expect('degraded' in detailed).toBe(false);
+  });
+
+  it('does NOT report degraded for a readable config that declares no *-command keys', { timeout: 5_000 }, () => {
+    execSync('git init -q', { cwd: repoRoot });
+    writeFileSync(
+      join(repoRoot, 'CLAUDE.md'),
+      '# T\n## Session Config\npersistence: true\n',
+      'utf8',
+    );
+
+    const detailed = loadCommandsFromSessionConfigDetailed(repoRoot);
+
+    expect('degraded' in detailed).toBe(false);
+  });
+
+  it('reports degraded=parse-error when the read itself throws', () => {
+    // The `parse-error` member was in the enum but no test ever produced it.
+    // Reachable without any mock: a NON-STRING repoRoot makes `join()` inside
+    // the try block throw, and the catch stamps `parse-error` (measured
+    // 2026-09-05: `123`, `{}`, `['/tmp']` all → `{commands:{},
+    // degraded:'parse-error'}`). That is a real caller shape — a repoRoot
+    // resolved from config can arrive as a non-string — and the contract that
+    // matters is that it NEVER throws out to the gate loop.
+    const detailed = loadCommandsFromSessionConfigDetailed(/** @type {any} */ (123));
+
+    expect(detailed.commands).toEqual({});
+    expect(detailed.degraded).toBe('parse-error');
   });
 });
 

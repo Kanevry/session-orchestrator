@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  DISALLOWED_EDIT_HANDLERS,
   parseCodexHookWrapperCommand,
   validateCodexPluginContract,
 } from '../../../scripts/lib/codex/plugin-contract.mjs';
@@ -381,6 +382,24 @@ describe('validateCodexPluginContract', () => {
     writeHooks(hooksFile);
 
     expectRule(validateFixture(), 'trusted-wrapper');
+  });
+
+  // Census-style: parametrized over the EXPORTED list, so a handler added to
+  // DISALLOWED_EDIT_HANDLERS without a Codex-side rejection cannot slip through.
+  // The handler file is created in the fixture so the `handler-file` rule cannot
+  // mask the `unsupported-edit-payload` rule under test.
+  it.each(DISALLOWED_EDIT_HANDLERS)('rejects the edit-payload handler %s', (handler) => {
+    makeFixture();
+    writeFileSync(join(fixtureRoot, 'hooks', handler), '// fixture\n');
+    const hooksFile = validHooks();
+    hooksFile.hooks.Stop[0].hooks[0].command = validCommand(handler);
+    writeHooks(hooksFile);
+
+    expectRule(validateFixture(), 'unsupported-edit-payload');
+  });
+
+  it('names post-edit-import-probe.mjs among the disallowed edit handlers (#1224)', () => {
+    expect(DISALLOWED_EDIT_HANDLERS).toContain('post-edit-import-probe.mjs');
   });
 
   it('rejects a wrapper whose handler file does not exist', () => {
