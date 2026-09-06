@@ -4,7 +4,7 @@
  *
  * ── The gap this closes (measured 2026-09-06) ────────────────────────────────
  * The operator's host ran the marketplace-cache copy at **3.19.0**, installed
- * 2026-08-09, while the repo and npm were at **3.24.0** — five minors, four
+ * 2026-08-09, while the repo and npm stood at the **3.24** line — five minors, four
  * weeks, and not one warning. Three independent reasons, none of which is a
  * bug in isolation:
  *
