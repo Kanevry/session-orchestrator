@@ -545,6 +545,7 @@ manual cleanup steps: [`docs/migration-v4.md`](docs/migration-v4.md).
 ### Fixed
 
 #### 4.0.0 — audit session
+- **`tests/telemetry/sync.test.mjs`: the two `detectSandbox` "real operator shape" cases no longer use `process.cwd()`** — the husky pre-push gate runs the suite in a tracked-tree copy under `$TMPDIR`, where cwd IS a temp root and the guard correctly answers `sandbox:temp-root`; both cases were red on every push attempt while green in the checkout (measured 2026-09-06 — the first push of the 4.0.0 review session failed on exactly this file, unnamed until the gate learned to name `failed_files`). They now probe a path under `os.homedir()`.
 
 - **`js-yaml` out of the eager hook import graph — 4 of 27 hooks crashed on every turn
   without `node_modules`; now 0 (GH#62 / GH#63 / GitLab #1230).**

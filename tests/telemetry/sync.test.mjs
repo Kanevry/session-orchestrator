@@ -732,7 +732,14 @@ describe('maybeSpawnDailyFlush', () => {
 // ---------------------------------------------------------------------------
 
 /** A cwd that is definitely NOT under a temp root, so condition (c) stays quiet. */
-const REAL_CWD = process.cwd();
+// A "real operator shape" is a checkout OUTSIDE every temp root. It must not be
+// `process.cwd()`: the husky pre-push gate runs this suite in a tracked-tree
+// copy materialised under $TMPDIR, where cwd IS a temp root and detectSandbox
+// correctly answers `sandbox:temp-root` — measured 2026-09-06, two tests red on
+// every push attempt while green in the checkout (the very first push of the
+// 4.0.0 review session failed on exactly this file, unnamed at the time). The
+// path need not exist: detectSandbox's realOrSelf() falls back to the literal.
+const REAL_CWD = join(os.homedir(), 'Projects', 'operator-checkout');
 
 describe('detectSandbox — the three refusal conditions', () => {
   it('(a) refuses under SO_TELEMETRY_DISABLED=1', () => {
