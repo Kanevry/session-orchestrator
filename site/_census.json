@@ -7,12 +7,12 @@
     "agents": "14",
     "hooks": "27",
     "tests": "662",
-    "sessions": "278",
-    "learnings": "170",
+    "sessions": "288",
+    "learnings": "198",
     "rules": "26",
     "rules-generated": "8",
     "blocked-commands": "14",
     "counted-at": "2026-09-06",
-    "counted-sha": "9b0a555e"
+    "counted-sha": "432b1871"
   }
 }
