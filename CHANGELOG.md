@@ -978,7 +978,8 @@ manual cleanup steps: [`docs/migration-v4.md`](docs/migration-v4.md).
   `npm pack --dry-run`, not a mock). The release leakage gate's `.orchestrator/`
   exclusion is narrowed to carve THIS directory back IN (`scripts/release.mjs`
   around line 319) — the operator's own `metrics/`, `debug/` artefacts and live
-  `*.lock` files stay excluded; only the tracked policy floor ships. **The
+  `*.lock` files stay excluded. `files[]` admits the directory, not a file list — what
+  keeps the shipped set equal to the TRACKED policy set is the packlist test below, not npm. **The
   Wave-4 review panel found this test asserted only a FLOOR (≥ 6 files) while
   `package.json`'s `files[]` admits the WHOLE `.orchestrator/policy/` directory
   and the carve-out above matched the path anywhere in the string, not just at

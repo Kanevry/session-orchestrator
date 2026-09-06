@@ -317,12 +317,15 @@ What you get back, and what you do not:
 - **The removed skills, commands and scripts come back with the checkout.** They were deleted
   from the repository, not from your disk history.
 - **What does NOT roll back automatically** is anything an installer wrote into YOUR project:
-  `.cursor/commands/`, `.cursor/hooks.json`, Pi settings. Both `cursor-install.mjs` and
-  `pi-install.mjs` skip any destination that already exists — a symlink or a file
-  (`scripts/cursor-install.mjs:69-73`; the `hooks.json` writer at `:139-140`) — so re-running
-  the installer from the 3.24.0 checkout only **adds** files missing from your project. It does
-  not restore a symlink you removed yourself, and it does not resync an existing `hooks.json` or
-  Pi settings file. To get those back: remove the stale file first (§ "Cursor still shows the
+  `.cursor/commands/`, `.cursor/hooks.json`, Pi settings. The two installers behave
+  differently: `cursor-install.mjs` skips any destination that already exists — a symlink or a
+  file (`scripts/cursor-install.mjs:69-73`; the `hooks.json` writer at `:139-140`) — so
+  re-running it from the 3.24.0 checkout only **adds** command links missing from your project;
+  it does not restore a link you removed yourself and does not resync an existing `hooks.json`.
+  `pi-install.mjs --settings-only` **does** rewrite the Pi settings file: it reads it, upserts
+  this package's entry and writes it back (`scripts/pi-install.mjs` `upsertPackage` /
+  `writeSettings`), so re-running it from the 3.24.0 checkout re-points Pi at that checkout.
+  For Cursor, to get a removed link back: delete the stale file first (§ "Cursor still shows the
   removed commands" has a safe, symlink-only removal recipe), then re-run the installer with
   your project path, as shown above.
 
