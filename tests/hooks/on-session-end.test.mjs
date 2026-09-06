@@ -1132,6 +1132,21 @@ async function seedTelemetryState(fakeHome, record) {
 function telemetryEnv(fakeHome, endpoint) {
   return {
     HOME: fakeHome,
+    // See tests/_helpers/telemetry-isolation.mjs: XDG_CONFIG_HOME outranks HOME
+    // in the identity resolver, so leaving it inherited both defeats this fake
+    // home AND trips detectSandbox's config-home-split branch, which then
+    // suppresses the very send these tests assert.
+    // Pin the identity home to the fake HOME instead of clearing it. Clearing
+    // makes the resolver fall back to homedir(), which is correct but leaves
+    // detectSandbox's verdict a function of WHERE the host's tmpdir sits
+    // relative to the state path — i.e. host-dependent, which is what made
+    // these tests green on macOS and red on Linux. Declaring the home makes
+    // both the resolver and the guard read the same directory on every host:
+    // the identity is inside the declared config home, so it is not a split,
+    // and it is under a temp root, so it is not a real identity beside a
+    // throwaway project either.
+    SO_CONFIG_HOME: `${fakeHome}/.config/session-orchestrator`,
+    XDG_CONFIG_HOME: '',
     SO_TELEMETRY_ENDPOINT: endpoint,
     SO_TELEMETRY: '',
     SO_TELEMETRY_DISABLED: '',

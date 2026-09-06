@@ -67,6 +67,16 @@ export function isolatedHome() {
 export function telemetryIsolationEnv({ home } = {}) {
   return {
     HOME: home ?? isolatedHome(),
+    // A fake HOME is NOT authoritative on its own. `resolvePrivateConfigDir()`
+    // reads SO_CONFIG_HOME > XDG_CONFIG_HOME > homedir(), so an inherited
+    // XDG_CONFIG_HOME silently outranks the HOME set on the line above and the
+    // child resolves the REAL identity. Measured 2026-09-06: GitHub's
+    // ubuntu-latest runner sets XDG_CONFIG_HOME and macos-latest does not,
+    // which is the whole of why three telemetry tests were green on macOS and
+    // red on Linux. Empty string, not delete: the resolver trims and falls
+    // through, and spawn passes '' as an empty value.
+    SO_CONFIG_HOME: '',
+    XDG_CONFIG_HOME: '',
     SO_TELEMETRY: '',
     SO_TELEMETRY_DISABLED: '1',
     DO_NOT_TRACK: '1',

@@ -44,7 +44,19 @@ describe('session-registry', () => {
 
     it('falls back to ~/.config when env var unset', () => {
       delete process.env.SO_SESSION_REGISTRY_DIR;
-      expect(registryBaseDir()).toBe(path.join(os.homedir(), '.config', 'session-orchestrator', 'sessions'));
+      // `registryBaseDir()` goes through `resolvePrivateConfigDir()`, whose
+      // precedence is SO_CONFIG_HOME > XDG_CONFIG_HOME > homedir(). With either
+      // declared, this assertion measures the DECLARED home and only agrees with
+      // the homedir default by coincidence — which is exactly what it does on a
+      // host where XDG_CONFIG_HOME happens to equal `$HOME/.config`. Stub both
+      // away so the case under test is the fallback and not the coincidence.
+      vi.stubEnv('SO_CONFIG_HOME', '');
+      vi.stubEnv('XDG_CONFIG_HOME', '');
+      try {
+        expect(registryBaseDir()).toBe(path.join(os.homedir(), '.config', 'session-orchestrator', 'sessions'));
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
   });
 

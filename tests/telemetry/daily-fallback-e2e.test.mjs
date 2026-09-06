@@ -133,6 +133,16 @@ function runFlushChild(extraEnv = {}) {
         SO_TELEMETRY_DISABLED: '',
         SO_TELEMETRY_DEBUG: '',
         CI: '',
+        // The identity resolver reads SO_CONFIG_HOME > XDG_CONFIG_HOME >
+        // homedir(), so an INHERITED XDG_CONFIG_HOME outranks the HOME above and
+        // points the child at the host's real config dir — while this test's
+        // state file sits under tmpHome. detectSandbox then reports
+        // `sandbox:config-home-split` and refuses the send this test asserts.
+        // Measured 2026-09-06: green on macos-latest, red on ubuntu-latest for
+        // exactly this reason. Declaring the home (rather than clearing it)
+        // makes resolver and guard read the same directory on every host.
+        SO_CONFIG_HOME: join(tmpHome, '.config', 'session-orchestrator'),
+        XDG_CONFIG_HOME: '',
         ...extraEnv,
       },
     });
