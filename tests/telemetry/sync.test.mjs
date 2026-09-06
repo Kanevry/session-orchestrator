@@ -17,7 +17,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import os, { tmpdir } from 'node:os';
 import http from 'node:http';
 
 import {
@@ -262,6 +262,139 @@ describe('flush — queue drain', () => {
     const batches = sender.mock.calls[0][0];
     expect(batches).toHaveLength(3);
     expect(queueStats({ path: queuePath }).count).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5b. flush — queued records are re-normalised at the transport boundary
+//
+// TV-001, the two bugs these name:
+//   (1) a record queued by an older client carries a private `session_profile`
+//       (STATE.md `session-profile` was free text before the whitelist); flush
+//       forwarded queued batches VERBATIM, so the private string reached the
+//       sender on every later flush.
+//   (2) the ingest server validates all-or-nothing, so that record 400s the
+//       whole batch forever — the queue grows 1 → 2 → 3 and never drains.
+// ---------------------------------------------------------------------------
+
+/** A sender shaped like the ingest server: all-or-nothing 400 on an unknown profile. */
+function whitelistSender() {
+  return vi.fn(async (batches) => {
+    const bad = batches.find(
+      (b) => 'session_profile' in b && b.session_profile !== 'ultradeep',
+    );
+    if (bad) {
+      const err = new Error('telemetry endpoint returned HTTP 400');
+      err.status = 400;
+      throw err;
+    }
+  });
+}
+
+describe('flush — queued-record normalisation (transport boundary)', () => {
+  it('drops a non-whitelisted session_profile from a QUEUED record before sending', async () => {
+    grantedFixture();
+    enqueue(
+      { record_kind: 'usage-ping', anon_id: 'q1', session_profile: 'client-acme-private-repo' },
+      { path: queuePath },
+    );
+
+    const sender = vi.fn().mockResolvedValue(undefined);
+    const result = await flush({ env: {}, sender, metricsDir, statePath, queuePath, now: NOW });
+
+    expect(result.sent).toBe(true);
+    const batches = sender.mock.calls[0][0];
+    expect(batches).toHaveLength(2);
+    expect(batches[0]).not.toHaveProperty('session_profile');
+    expect(JSON.stringify(batches)).not.toContain('client-acme-private-repo');
+  });
+
+  it('keeps a WHITELISTED session_profile on a queued record', async () => {
+    grantedFixture();
+    enqueue(
+      { record_kind: 'usage-ping', anon_id: 'q1', session_profile: 'ultradeep' },
+      { path: queuePath },
+    );
+
+    const sender = vi.fn().mockResolvedValue(undefined);
+    await flush({ env: {}, sender, metricsDir, statePath, queuePath, now: NOW });
+
+    expect(sender.mock.calls[0][0][0].session_profile).toBe('ultradeep');
+  });
+
+  it('projects a queued record onto the whitelist — an off-whitelist key never reaches the sender', async () => {
+    grantedFixture();
+    enqueue(
+      { record_kind: 'usage-ping', anon_id: 'q1', repo_path: '/Users/someone/Projects/private' },
+      { path: queuePath },
+    );
+
+    const sender = vi.fn().mockResolvedValue(undefined);
+    await flush({ env: {}, sender, metricsDir, statePath, queuePath, now: NOW });
+
+    expect(sender.mock.calls[0][0][0]).not.toHaveProperty('repo_path');
+  });
+
+  it('does not grow the queue forever on a poison record — it drains on the first flush', async () => {
+    grantedFixture();
+    enqueue(
+      { record_kind: 'usage-ping', anon_id: 'q1', session_profile: 'client-acme-private-repo' },
+      { path: queuePath },
+    );
+
+    const sender = whitelistSender();
+    const r1 = await flush({ env: {}, sender, metricsDir, statePath, queuePath, now: NOW });
+    expect(r1.sent).toBe(true);
+    expect(queueStats({ path: queuePath }).count).toBe(0);
+
+    const r2 = await flush({ env: {}, sender, metricsDir, statePath, queuePath, now: NOW });
+    expect(r2.sent).toBe(true);
+    expect(queueStats({ path: queuePath }).count).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5c. flush — 4xx eviction vs transport re-queue
+// ---------------------------------------------------------------------------
+
+describe('flush — schema rejection evicts, transport failure re-queues', () => {
+  it('evicts the batch and reports rejected-evicted on HTTP 400', async () => {
+    grantedFixture();
+    enqueue({ record_kind: 'usage-ping', anon_id: 'q1' }, { path: queuePath });
+
+    const sender = vi.fn(async () => {
+      const err = new Error('telemetry endpoint returned HTTP 400');
+      err.status = 400;
+      throw err;
+    });
+    const result = await flush({ env: {}, sender, metricsDir, statePath, queuePath, now: NOW });
+
+    expect(result).toMatchObject({ sent: false, queued: false, reason: 'rejected-evicted' });
+    expect(queueStats({ path: queuePath }).count).toBe(0);
+  });
+
+  it('re-queues (never evicts) on a 503 — a transport failure is not a bad payload', async () => {
+    grantedFixture();
+    enqueue({ record_kind: 'usage-ping', anon_id: 'q1' }, { path: queuePath });
+
+    const sender = vi.fn(async () => {
+      const err = new Error('telemetry endpoint returned HTTP 503');
+      err.status = 503;
+      throw err;
+    });
+    const result = await flush({ env: {}, sender, metricsDir, statePath, queuePath, now: NOW });
+
+    expect(result).toMatchObject({ sent: false, queued: true, reason: 'queued' });
+    expect(queueStats({ path: queuePath }).count).toBe(2);
+  });
+
+  it('re-queues on a status-less error (an injected sender that just throws)', async () => {
+    grantedFixture();
+    const sender = vi.fn().mockRejectedValue(new Error('network down'));
+    const result = await flush({ env: {}, sender, metricsDir, statePath, queuePath, now: NOW });
+
+    expect(result).toMatchObject({ sent: false, queued: true, reason: 'queued' });
+    expect(queueStats({ path: queuePath }).count).toBe(1);
   });
 });
 
@@ -673,6 +806,46 @@ describe('detectSandbox — the three refusal conditions', () => {
 
   it('permits a real operator shape (no env redirect, real checkout)', () => {
     expect(detectSandbox({ env: {}, cwd: REAL_CWD })).toEqual({ sandbox: false, reason: null });
+  });
+
+  // THE BUG: the catch block returned `{ sandbox: false }` — a PERMIT — under a
+  // comment stating that a guard which throws must never become a guard which
+  // permits. Any probe failure (an unresolvable temp root, an env accessor that
+  // throws) therefore sent the ping the guard exists to stop, with the real
+  // anon_id, from an environment nothing had classified.
+  it('FAILS CLOSED: a throwing probe refuses the send with reason "sandbox:probe-failed"', () => {
+    const spy = vi.spyOn(os, 'tmpdir').mockImplementation(() => {
+      throw new Error('probe blew up');
+    });
+    try {
+      // A shape that would otherwise be PERMITTED (real cwd, no redirect) —
+      // so the refusal can only come from the failing probe.
+      expect(detectSandbox({ env: {}, statePath: join(tmpDir, 'telemetry.json'), cwd: REAL_CWD }))
+        .toEqual({ sandbox: true, reason: 'sandbox:probe-failed' });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('FAILS CLOSED end-to-end: flush() with a throwing probe sends nothing and queues nothing', async () => {
+    const statePath = join(tmpDir, 'probe-telemetry.json');
+    writeFileSync(statePath, JSON.stringify({ schema_version: 1, consent: 'granted' }));
+    const queuePath = join(tmpDir, 'probe-queue.ndjson');
+    mkdirSync(metricsDir, { recursive: true });
+    const sender = vi.fn(async () => {});
+    const spy = vi.spyOn(os, 'tmpdir').mockImplementation(() => {
+      throw new Error('probe blew up');
+    });
+    try {
+      const res = await flush({ env: {}, sender, metricsDir, statePath, queuePath, ownerConfig: {} });
+      expect(res.sent).toBe(false);
+      expect(res.queued).toBe(false);
+      expect(res.reason).toBe('sandbox:probe-failed');
+      expect(sender).not.toHaveBeenCalled();
+      expect(existsSync(queuePath)).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

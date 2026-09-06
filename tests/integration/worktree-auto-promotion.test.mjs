@@ -24,18 +24,15 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-  mkdtempSync,
-  rmSync,
   writeFileSync,
   readFileSync,
   existsSync,
   mkdirSync,
   realpathSync as realRealpathSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 
+import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 import {
   enterWorktree,
   WorktreeBoundaryError,
@@ -149,10 +146,10 @@ let basePath;
 let repoRoot;
 
 beforeEach(() => {
-  // mkdtempSync may return /var/... on macOS; resolve it so all path-equality
-  // assertions match the production code's realpathSync output. Mirrors the
-  // #374/#375 fix pattern from worktree-pipeline.test.mjs.
-  tmp = realRealpathSync(mkdtempSync(path.join(tmpdir(), 'enter-wt-')));
+  // makeTmpDir resolves the macOS /var → /private/var symlink so all
+  // path-equality assertions match the production code's realpathSync output.
+  // Mirrors the #374/#375 fix pattern from worktree-pipeline.test.mjs.
+  tmp = makeTmpDir('enter-wt-');
 
   basePath = path.join(tmp, 'base');
   repoRoot = path.join(tmp, 'base', 'myrepo');
@@ -161,7 +158,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(tmp, { recursive: true, force: true });
+  removeTree(tmp);
   vi.restoreAllMocks();
 });
 
@@ -631,8 +628,7 @@ describe('enterWorktree — real git repository (#1067)', () => {
       // 'Source-Branch bereits ausgecheckt' ab; kein reiner Executor-Mock."
       // The mocked suite above cannot catch a wrong argv that git itself rejects
       // — only a real `git worktree add` can.
-      const git = (cwd, args) =>
-        execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      const git = (cwd, args) => fixtureGit(args, cwd, { stdio: ['ignore', 'pipe', 'pipe'] });
 
       git(repoRoot, ['init', '-q']);
       git(repoRoot, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
@@ -817,8 +813,7 @@ describe('enterWorktree → detectAutoPromotedWorktree round trip (real git, #10
     'a session with a DIFFERENT id still detects the worktree, via the marker',
     { timeout: 20_000 },
     async () => {
-      const git = (cwd, args) =>
-        execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      const git = (cwd, args) => fixtureGit(args, cwd, { stdio: ['ignore', 'pipe', 'pipe'] });
 
       git(repoRoot, ['init', '-q']);
       git(repoRoot, ['symbolic-ref', 'HEAD', 'refs/heads/main']);

@@ -21,12 +21,13 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { spawnSync, execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+
 import { fileURLToPath } from 'node:url';
 import { collectUnicodeViolations } from '@lib/validate/check-unicode-safety.mjs';
+import { fixtureGit, makeTmpDir, removeTree } from '../../_helpers/tmp-fixture.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -54,9 +55,9 @@ const tmpRoots = [];
 
 /** Make a git-initialised tmp plugin-root and return its path. */
 function makeFixture() {
-  const root = mkdtempSync(join(tmpdir(), 'check-unicode-'));
+  const root = makeTmpDir('check-unicode-');
   tmpRoots.push(root);
-  execFileSync('git', ['init', '-q'], { cwd: root });
+  fixtureGit(['init', '-q'], root);
   return root;
 }
 
@@ -66,7 +67,7 @@ function writeTracked(root, relPath, content) {
   const dir = join(full, '..');
   mkdirSync(dir, { recursive: true });
   writeFileSync(full, content, 'utf8');
-  execFileSync('git', ['add', '-f', relPath], { cwd: root });
+  fixtureGit(['add', '-f', relPath], root);
 }
 
 /** Spawn the CLI against a plugin root; returns the spawnSync result. */
@@ -79,7 +80,7 @@ function run(pluginRoot, ...extraArgs) {
 
 afterEach(() => {
   for (const root of tmpRoots.splice(0)) {
-    rmSync(root, { recursive: true, force: true });
+    removeTree(root);
   }
 });
 

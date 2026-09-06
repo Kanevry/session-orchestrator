@@ -12,6 +12,8 @@ globs:
   - "tests/_helpers/**"
   - "tests/scripts/**"
   - "tests/scripts/validate/**"
+  - "CLAUDE.md"
+  - "skills/wave-executor/**"
   - "tests/unit/**"
 paths:
   - "hooks/**"
@@ -22,6 +24,8 @@ paths:
   - "tests/_helpers/**"
   - "tests/scripts/**"
   - "tests/scripts/validate/**"
+  - "CLAUDE.md"
+  - "skills/wave-executor/**"
   - "tests/unit/**"
 learning-key: anti-pattern/ein-peer-record-im-selben-allowedpaths-array-das-per-union-eingesammelt-wird-gewaehrt-statt-zu-markieren
 expires-at: 2026-10-04
@@ -77,11 +81,17 @@ A fail-closed AST guard is incomplete when it validates recognized direct calls 
 
 **Evidence** — 2026-08-19, measured on `tests/scripts/site-numbers.test.mjs`: removing the comment-block marker leaves validate-plugin at 172 passed / 0 failed (inert); removing the same-line marker on the `readPackageVersion` call drops it to 171 / 2 (load-bearing).
 
+### A declaration mechanism with two required shapes fails silently when only one is written
+
+The #1020 scope declaration needs a per-agent file (array of path STRINGS, read by the FILE-SCOPE prompt injection, the learnings index and `--assert-subset`) AND a per-wave aggregate sidecar (array of `{id,files}` RECORDS, the only thing `--assert-disjoint`/`--union` accept). Writing only the aggregate produces no error anywhere: the injector finds nothing, `pre-task-scope-disjoint` extracts nothing, permits every dispatch, and writes NO ledger entry. The absence of a ledger entry is indistinguishable from a quiet session, and the global `allowedPaths` gate keeps firing correctly, so the chain LOOKS healthy. The general rule: when a mechanism needs two artefacts, the missing-one case must be a loud error rather than an empty read — and a ledger that writes nothing during signal-free operation cannot report its own silence.
+
+**Evidence** — 2026-08-19: six waves and ~29 dispatches ran with only the aggregate written. `.orchestrator/wave-dispatch-scopes.json` still carried waveKey `...|w2|Impl-Core` updated 2026-08-17T05:25:37Z — two days old, from another session. Measured in a throwaway repo: `--union <dir>` -> "Cannot read --union file"; `--union <agent-id>.json` -> "must be a JSON array of {id, files} records"; `--union <aggregate>.json` -> works. GitLab #1083.
+
 <!-- untrusted-content:end -->
 
 ## Provenance
 
-Consolidated 7 generated rules into this file (2026-09-06, 43→8 rule consolidation).
+Consolidated 8 generated rules into this file (2026-09-06, 43→8 rule consolidation; the last one restored 2026-09-06 after the first pass dropped its prose and markers).
 The reconcile engine dedupes on these markers — removing a pair regenerates that learning as a standalone file.
 
 Frontmatter `learning-key:` is a scalar and duplicates only the FIRST bullet; `defaultReadMaterializedProvenance()` unions frontmatter with body, so every bullet below is load-bearing.
@@ -99,5 +109,7 @@ Frontmatter `learning-key:` is a scalar and duplicates only the FIRST bullet; `d
 - learning-id: `ed5ad563-dc22-4759-83c3-308afe5e37c8`
 - learning-key: `recurring-issue/an-exemption-marker-that-only-works-same-line-is-visually-identical-to-one-in-a-comment-block`
 - learning-id: `d86c9b5f-bdd3-4f48-b37e-b5b751e78486`
+- learning-key: `anti-pattern/a-declaration-mechanism-with-two-required-shapes-fails-silently-when-only-one-is-written`
+- learning-id: `726397dd-7657-4eee-bea9-a6891cb04e1a`
 
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695), consolidated by hand 2026-09-06

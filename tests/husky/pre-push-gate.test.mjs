@@ -44,10 +44,11 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+
 import { join, resolve } from 'node:path';
+import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const HOOK_PATH = join(REPO_ROOT, '.husky', 'pre-push');
@@ -63,7 +64,7 @@ const tmpDirs = [];
 afterEach(() => {
   while (tmpDirs.length > 0) {
     try {
-      rmSync(tmpDirs.pop(), { recursive: true, force: true });
+      removeTree(tmpDirs.pop());
     } catch {
       // best-effort cleanup
     }
@@ -78,7 +79,19 @@ afterEach(() => {
  * hook's own cleanup trap before this function returns), so a relative
  * sentinel would never be observable from the fixture repo dir.
  */
-const GATE_PROBE_SRC = "import { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.GATE_RAN_FILE, 'ran');\n";
+const GATE_PROBE_SRC = [
+  "import { writeFileSync } from 'node:fs';",
+  // The sentinel records ARGV, not just the fact of the run: the hook hands the
+  // gate the real repo root as `--ledger-root <root>` (it runs inside a
+  // throwaway clone whose own .orchestrator/ dies with the EXIT trap), and
+  // nothing else in this suite can see that the flag was passed.
+  "writeFileSync(process.env.GATE_RAN_FILE, JSON.stringify(process.argv.slice(2)));",
+  // Exit code moved out of the npm script string and into the probe: `npm run
+  // <s> -- <args>` APPENDS the forwarded args to the script command line, so a
+  // trailing `&& exit 0` would receive them (`exit 0 --ledger-root …`).
+  "process.exit(Number(process.env.GATE_EXIT || 0));",
+  '',
+].join('\n');
 
 /**
  * Run the real hook in a tmp dir with a stubbed `quality-gate` npm script.
@@ -96,16 +109,16 @@ const GATE_PROBE_SRC = "import { writeFileSync } from 'node:fs';\nwriteFileSync(
  */
 function runPrePush({ stdin, gateExit = 0, env = {}, withGateScript = true, args, remotes = {} } = {}) {
   if (args) {
-    const dir = mkdtempSync(join(tmpdir(), 'so-pre-push-remote-'));
+    const dir = makeTmpDir('so-pre-push-remote-');
     tmpDirs.push(dir);
-    const gateRanFile = join(mkdtempSync(join(tmpdir(), 'so-pre-push-sentinel-')), 'gate-ran');
+    const gateRanFile = join(makeTmpDir('so-pre-push-sentinel-'), 'gate-ran');
 
-    execFileSync('git', ['init', '-q', dir]);
-    execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@example.com']);
-    execFileSync('git', ['-C', dir, 'config', 'user.name', 'Test']);
-    execFileSync('git', ['-C', dir, 'config', 'commit.gpgsign', 'false']);
+    fixtureGit(['init', '-q', dir]);
+    fixtureGit(['-C', dir, 'config', 'user.email', 'test@example.com']);
+    fixtureGit(['-C', dir, 'config', 'user.name', 'Test']);
+    fixtureGit(['-C', dir, 'config', 'commit.gpgsign', 'false']);
     for (const [name, url] of Object.entries(remotes)) {
-      execFileSync('git', ['-C', dir, 'remote', 'add', name, url]);
+      fixtureGit(['-C', dir, 'remote', 'add', name, url]);
     }
     mkdirSync(join(dir, 'scripts'), { recursive: true });
     writeFileSync(join(dir, 'scripts', 'run-quality-gate.mjs'), '// stub\n');
@@ -116,16 +129,16 @@ function runPrePush({ stdin, gateExit = 0, env = {}, withGateScript = true, args
         name: 'pre-push-remote-fixture',
         version: '0.0.0',
         private: true,
-        scripts: { 'quality-gate': `node gate-probe.mjs && exit ${gateExit}` },
+        scripts: { 'quality-gate': 'node gate-probe.mjs' },
       }),
     );
-    execFileSync('git', ['-C', dir, 'add', '-A']);
-    execFileSync('git', ['-C', dir, 'commit', '-q', '-m', 'fixture']);
-    const sha = execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    fixtureGit(['-C', dir, 'add', '-A']);
+    fixtureGit(['-C', dir, 'commit', '-q', '-m', 'fixture']);
+    const sha = fixtureGit(['-C', dir, 'rev-parse', 'HEAD'], undefined, { encoding: 'utf8' }).trim();
 
     const childEnv = { ...process.env };
     delete childEnv.SKIP_QUALITY_GATE;
-    Object.assign(childEnv, { GATE_RAN_FILE: gateRanFile }, env);
+    Object.assign(childEnv, { GATE_RAN_FILE: gateRanFile, GATE_EXIT: String(gateExit) }, env);
     const res = spawnSync('sh', [HOOK_PATH, ...args], {
       cwd: dir,
       input: stdin ?? `refs/heads/feat/x ${sha} refs/heads/feat/x ${ZERO_SHA}\n`,
@@ -133,10 +146,16 @@ function runPrePush({ stdin, gateExit = 0, env = {}, withGateScript = true, args
       timeout: 60_000,
       env: childEnv,
     });
-    return { res, gateRan: existsSync(gateRanFile) };
+    const gateRan = existsSync(gateRanFile);
+    return {
+      res,
+      gateRan,
+      dir,
+      gateArgv: gateRan ? JSON.parse(readFileSync(gateRanFile, 'utf8')) : null,
+    };
   }
 
-  const dir = mkdtempSync(join(tmpdir(), 'so-pre-push-'));
+  const dir = makeTmpDir('so-pre-push-');
   tmpDirs.push(dir);
   if (withGateScript) {
     mkdirSync(join(dir, 'scripts'), { recursive: true });
@@ -262,6 +281,31 @@ describe('.husky/pre-push — full quality gate (#932)', () => {
   // row assert on the loop-deletion regression without branching inside the
   // shared it.each body (rows that don't care about it get a no-op check).
   const NO_STDERR_CHECK = '\u0000__no-stderr-check__\u0000';
+
+  it('hands the real repo root to the gate as --ledger-root', { timeout: 60_000 }, () => {
+    // bug_caught (Q5 named gap; the writer half of the 2026-09-06 HIGH): the
+    // hook runs the gate inside a `git clone` of the tracked tree with every
+    // *PROJECT_DIR name scrubbed, so the gate resolves THAT tree as its project
+    // dir and appends `orchestrator.quality_gate.{passed,failed}` to a
+    // directory the hook's EXIT trap deletes. Measured 2026-09-06: a pre-push
+    // run that BLOCKED a push left no failed-record in this repo's ledger at
+    // all. The writer side of the fix — the hook handing the real root back —
+    // had no test: delete `-- --ledger-root "$repo_root"` from the hook and
+    // every other test in this file stays green.
+    const { res, gateRan, gateArgv, dir } = runPrePush({
+      args: ['origin', ORIGIN_URL],
+      remotes: { origin: ORIGIN_URL },
+      gateExit: 0,
+    });
+
+    expect(res.status).toBe(0);
+    expect(gateRan).toBe(true);
+    const idx = gateArgv.indexOf('--ledger-root');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    // `git rev-parse --show-toplevel` returns the resolved path, so compare
+    // against realpath (/var → /private/var on macOS).
+    expect(gateArgv[idx + 1]).toBe(realpathSync(dir));
+  });
 
   it.each([
     {

@@ -408,13 +408,43 @@ start=$(date +%s)
 #
 # `npm run --silent` keeps package.json as the single definition of the gate
 # command and drops npm's own ERR! banner; the child's exit code is forwarded.
+#
+# ONE thing must survive the scrub, and it is not a path the gate reads — it is
+# the path the gate WRITES its telemetry to. With every root swept, the gate
+# resolves its project dir from cwd and lands on the temp tree, so
+# `orchestrator.quality_gate.{passed,failed}` is appended to
+# $work/tree/.orchestrator/metrics/events.jsonl and removed by the EXIT trap
+# above. Measured 2026-09-06: a pre-push run that BLOCKED a push left NO
+# quality_gate.failed record in this repo's ledger — the blocking runs were
+# precisely the ones no ledger could see. `--ledger-root` hands the real root
+# back for that ONE purpose (scripts/run-quality-gate.mjs uses it only for the
+# emitEvent destination + session attribution).
+#
+# It is an ARGV FLAG, not an exported env var, and the difference is the whole
+# fix. The first version exported SO_GATE_LEDGER_ROOT here; measured 2026-09-06,
+# that variable was inherited straight down the chain `npm run quality-gate` →
+# gate-full.mjs → `npm test` → every vitest worker, where the gate's OWN
+# telemetry tests spread `...process.env` and so wrote their events to the pinned
+# root instead of their per-test fixture: `8 failed | 1 passed`. The gate that
+# releases 4.0.0 would have blocked on itself. An env var reaches every
+# descendant; a flag reaches exactly the one process meant to read it.
+#
+# `npm run <script> -- <args>` appends the args to the script's command line, so
+# the gate receives `--variant full-gate --ledger-root <root>` and package.json
+# stays the single definition of the gate command. Passed only when repo_root is
+# non-empty (the non-git degrade path above has no root to pin to); an invalid
+# value makes the gate WARN and fall back, never fail.
 (
   cd "$run_dir" || exit 1
   for root_var in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | grep -E 'PROJECT_DIR$|PLUGIN_ROOT$|RULES_DIR$'); do
     unset "$root_var"
   done
   unset root_var
-  npm run --silent quality-gate
+  if [ -n "$repo_root" ]; then
+    npm run --silent quality-gate -- --ledger-root "$repo_root"
+  else
+    npm run --silent quality-gate
+  fi
 )
 status=$?
 elapsed=$(( $(date +%s) - start ))

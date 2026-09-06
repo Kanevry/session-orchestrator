@@ -11,12 +11,11 @@
  * are tested at least as carefully as the true positives.
  */
 
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 import {
   checkCiConfig,
   checkEnvDocumentation,
@@ -29,7 +28,7 @@ import {
 let root;
 
 function gitIn(args) {
-  execFileSync('git', args, { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] });
+  fixtureGit(args, root, { stdio: ['ignore', 'pipe', 'ignore'] });
 }
 
 /** Create N commits so the repo has a plausible history length. */
@@ -42,7 +41,7 @@ function commitN(n, prefix = 'c') {
 }
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), 'so-hygiene-'));
+  root = makeTmpDir('so-hygiene-');
   gitIn(['init', '-q']);
   gitIn(['config', 'user.email', 'hygiene-test@example.com']);
   gitIn(['config', 'user.name', 'Hygiene Test']);
@@ -50,7 +49,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+  removeTree(root);
 });
 
 // ── Release hygiene ──────────────────────────────────────────────────────────
@@ -193,9 +192,7 @@ describe('checkStaleArtifacts', () => {
 
     // Anti-trap: a tmp fixture where git simply found nothing would pass this
     // test while pinning the OPPOSITE of its name. Prove the file is tracked.
-    const lsOut = execFileSync('git', ['ls-files', '--', '.orchestrator'], {
-      cwd: root,
-      encoding: 'utf8',
+    const lsOut = fixtureGit(['ls-files', '--', '.orchestrator'], root, {
       stdio: ['ignore', 'pipe', 'ignore'],
     });
     expect(lsOut).toContain('.orchestrator/policy/schema.json');
@@ -226,7 +223,7 @@ describe('checkStaleArtifacts', () => {
     // Bug this catches: falling back to an empty tracked set on git failure
     // re-opens the exact defect the exclusion closes — every source file under
     // .orchestrator/ becomes a pruning candidate again, silently.
-    const notARepo = mkdtempSync(join(tmpdir(), 'so-hygiene-nogit-'));
+    const notARepo = makeTmpDir('so-hygiene-nogit-');
     try {
       mkdirSync(join(notARepo, '.orchestrator'), { recursive: true });
       const old = join(notARepo, '.orchestrator', 'old.json');
@@ -236,15 +233,14 @@ describe('checkStaleArtifacts', () => {
 
       // Anti-trap: assert git really fails here rather than assuming it.
       expect(() =>
-        execFileSync('git', ['ls-files', '--', '.orchestrator'], {
-          cwd: notARepo,
+        fixtureGit(['ls-files', '--', '.orchestrator'], notARepo, {
           stdio: ['ignore', 'pipe', 'ignore'],
         }),
       ).toThrow();
 
       expect(checkStaleArtifacts(notARepo, 30)).toBeNull();
     } finally {
-      rmSync(notARepo, { recursive: true, force: true });
+      removeTree(notARepo);
     }
   });
 
@@ -354,11 +350,11 @@ describe('checkEnvDocumentation', () => {
 
 describe('checkProjectHygiene', () => {
   it('returns null for a non-repo path', () => {
-    const notARepo = mkdtempSync(join(tmpdir(), 'so-not-repo-'));
+    const notARepo = makeTmpDir('so-not-repo-');
     try {
       expect(checkProjectHygiene({ repoRoot: notARepo })).toBeNull();
     } finally {
-      rmSync(notARepo, { recursive: true, force: true });
+      removeTree(notARepo);
     }
   });
 

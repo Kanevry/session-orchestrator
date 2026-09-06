@@ -73,7 +73,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { listRepoFiles } from './repo-files.mjs';
+import { enumerateRepoFiles } from './enumerate-repo-files.mjs';
 
 /** Marker line inside a checker's own header — declares deliberate CLI-only status. */
 export const STANDALONE_MARKER = /^\s*\/\/\s*registration:\s*standalone\b(?:\s+(.*))?$/m;
@@ -165,9 +165,15 @@ export function stripComments(text, { lineComment, blockComment, quoteChars }) {
  * @returns {RegistrationResult[]} sorted by basename
  */
 export function scanValidatorRegistration(repoRoot) {
-  const checkerFiles = listRepoFiles(repoRoot, { dirs: [VALIDATE_DIR_REL], exts: ['mjs'] }).filter(
-    (f) => /^check-.*\.mjs$/.test(path.basename(f)),
-  );
+  // "Exists in this directory, tracked or not" (#1248) — a checker written but
+  // not yet staged is precisely the one most likely to be unregistered, and the
+  // bare git index cannot see it. `enumerateRepoFiles` still honours
+  // `.gitignore`, so no ignored tree enters the census (#1143).
+  const checkerFiles = enumerateRepoFiles({
+    repoRoot,
+    dirs: [VALIDATE_DIR_REL],
+    exts: ['mjs'],
+  }).filter((f) => /^check-.*\.mjs$/.test(path.basename(f)));
 
   // Comment-stripped before matching (HIGH, #1184 FX-C): a basename
   // referenced only inside a `//`/`#`/`/* *\/` comment is NOT a real

@@ -232,6 +232,92 @@ async function resolveLatestVersion({ cacheDir, now, fetchImpl }) {
 }
 
 /**
+ * The four platforms this probe has a SOURCED update recipe for. Each string
+ * is quoted from the doc that actually documents it, never invented:
+ *
+ *   - claude: README.md §"Upgrade" (`/plugin update ...`).
+ *   - codex:  docs/codex-setup.md §"Refresh and Explicit Cache Invalidation" —
+ *             the short-form marketplace install path, labelled Recommended
+ *             there (`codex plugin marketplace upgrade` + `codex plugin add`).
+ *   - cursor: README.md's per-platform install row + docs/cursor-setup.md —
+ *             re-running the same install script is the documented recipe
+ *             (README §"Upgrade": "...followed by the same install
+ *             script you originally ran").
+ *   - pi:     the PRIMARY install path is `pi install npm:session-orchestrator`
+ *             (docs/pi-setup.md §"Option 1", `docs/pi-setup.md:16`), not the
+ *             checkout — so the instruction leads with re-running that exact
+ *             documented command. There is still no separately-documented
+ *             `pi update`/upgrade subcommand anywhere in this repo (checked
+ *             again here), so this is a repeat of the documented INSTALL
+ *             command, never an invented one — same honesty bar as the rest
+ *             of this table. `--settings-only` only rewrites
+ *             `.pi/settings.json`; it never touches an npm-installed copy, so
+ *             the checkout + `pi-install.mjs --settings-only` recipe (README
+ *             §"Upgrade", docs/pi-setup.md §"Option 2/3") is named only as the
+ *             fallback for a dev-fallback registration, never as the primary
+ *             remedy.
+ *
+ * @type {Record<"claude"|"codex"|"cursor"|"pi", string>}
+ */
+const PLATFORM_UPDATE_INSTRUCTIONS = {
+  claude: '/plugin update session-orchestrator@kanevry, then restart Claude Code',
+  codex:
+    'run `codex plugin marketplace upgrade kanevry && codex plugin add session-orchestrator@kanevry` ' +
+    '(docs/codex-setup.md), then restart Codex',
+  cursor:
+    'run `git pull && npm install && node scripts/cursor-install.mjs <project-dir>` ' +
+    '(docs/cursor-setup.md), then reload Cursor',
+  pi:
+    'run `pi install npm:session-orchestrator` again (docs/pi-setup.md, the primary path); ' +
+    'dev-fallback checkout installs instead run ' +
+    '`git pull && npm install && node scripts/pi-install.mjs <project-dir> --settings-only`, ' +
+    'then restart Pi',
+};
+
+/**
+ * Fallback instruction for any platform value this probe has no sourced
+ * recipe for — a future harness, a malformed override, or (see
+ * {@link resolvePlatformFromEnv}) an environment with no platform signal at
+ * all reaching a code path other than the default. Never omits an actionable
+ * step: the one universal truth about this package is that it publishes to
+ * npm (`docs/npm-publish` runbook), so that is what the fallback names.
+ * @type {string}
+ */
+const GENERIC_UPDATE_INSTRUCTION = 'run `npm update -g session-orchestrator`';
+
+/**
+ * Best-effort platform guess from environment variables alone — the first
+ * two precedence steps of `scripts/lib/platform.mjs`'s `detectPlatform()`
+ * (an explicit `SO_PLATFORM` override, then each harness's own compatibility
+ * env var), duplicated locally rather than imported.
+ *
+ * Deliberately NOT an import: this module sits behind the SessionStart
+ * hook's own lazy `await import()`, and `hooks/_lib/hook-import-set.json`
+ * tracks its closure — adding platform.mjs as a dependency here is a
+ * wave-scope change, not a two-line addition, so the fallback stays local
+ * exactly like `isTruthyFlag` above (same rationale, same precedent).
+ * `detectPlatform()`'s third step — a filesystem walk from `cwd` for marker
+ * directories — is left out on purpose: it needs `node:fs`/`node:path`
+ * traversal this probe has no other reason to carry, and every non-Claude
+ * harness already sets its own compat env var, so the walk would only ever
+ * re-confirm the same `'claude'` default this function already falls back to.
+ *
+ * @param {Record<string,string|undefined>} env
+ * @returns {"claude"|"codex"|"cursor"|"pi"}
+ */
+function resolvePlatformFromEnv(env) {
+  const explicit = String(env?.SO_PLATFORM ?? '').trim().toLowerCase();
+  if (explicit === 'claude' || explicit === 'codex' || explicit === 'cursor' || explicit === 'pi') {
+    return explicit;
+  }
+  if (String(env?.CLAUDE_PLUGIN_ROOT ?? '').trim() !== '') return 'claude';
+  if (String(env?.CODEX_PLUGIN_ROOT ?? '').trim() !== '') return 'codex';
+  if (String(env?.CURSOR_RULES_DIR ?? '').trim() !== '') return 'cursor';
+  if (String(env?.PI_PLUGIN_ROOT ?? '').trim() !== '') return 'pi';
+  return 'claude';
+}
+
+/**
  * Compare the running plugin version against the published `latest` and, when
  * it is a MINOR or MAJOR behind, produce one operator-facing banner line.
  *
@@ -239,6 +325,14 @@ async function resolveLatestVersion({ cacheDir, now, fetchImpl }) {
  * no surface change, and a banner that fires on every patch release is a
  * banner an operator learns to skip (`.claude/rules/host-resources.md` HR-101 —
  * a signal may only warn if it is rare).
+ *
+ * The message is English by default (this package's docs — README, CHANGELOG
+ * — are English; German is an `owner.yaml` per-operator tonality signal, not a
+ * package default, and this probe reaches third-party npm/marketplace
+ * consumers who never opted into either) and its remedy instruction is
+ * platform-aware: a Codex/Cursor/Pi consumer has no `/plugin update` command,
+ * so the CLAUDE-only remedy text is wrong for three of the four harnesses
+ * that reach this probe.
  *
  * @param {object} [opts]
  * @param {string} [opts.pluginRoot]  Package root to read `version` from.
@@ -249,6 +343,12 @@ async function resolveLatestVersion({ cacheDir, now, fetchImpl }) {
  * @param {Record<string,string|undefined>} [opts.env]  Defaults to `process.env`.
  * @param {number} [opts.now]  Injected clock (ms). Defaults to `Date.now()`.
  * @param {Function} [opts.fetchImpl]  Injected fetch. Defaults to `globalThis.fetch`.
+ * @param {"claude"|"codex"|"cursor"|"pi"} [opts.platform]  The harness driving
+ *   this session, when the caller already knows it (the SessionStart hook
+ *   computes this once and could pass it straight through). Falls back to
+ *   {@link resolvePlatformFromEnv} on `opts.env` when omitted — never throws,
+ *   never leaves the instruction generic just because the caller didn't wire
+ *   the parameter through yet.
  * @returns {Promise<{severity: 'warn', message: string, installed: string, latest: string}|null>}
  *   `null` means NO STATEMENT — never "up to date".
  */
@@ -258,6 +358,7 @@ export async function checkPluginUpdate({
   env = process.env,
   now = Date.now(),
   fetchImpl,
+  platform,
 } = {}) {
   if (isUpdateCheckDisabled(env)) return null;
   if (typeof cacheDir !== 'string' || cacheDir.length === 0) return null;
@@ -290,12 +391,15 @@ export async function checkPluginUpdate({
     return null;
   }
 
+  const resolvedPlatform =
+    typeof platform === 'string' && platform.length > 0 ? platform : resolvePlatformFromEnv(env);
+  const instruction = PLATFORM_UPDATE_INSTRUCTIONS[resolvedPlatform] ?? GENERIC_UPDATE_INSTRUCTION;
+
   return {
     severity: 'warn',
     message:
-      `⚠ session-orchestrator ${installed} installiert, ${latest} verfügbar ` +
-      `(${count} ${unit} zurück) — /plugin update session-orchestrator@kanevry, ` +
-      'danach Claude Code neu starten.',
+      `⚠ session-orchestrator ${installed} installed, ${latest} available ` +
+      `(${count} ${unit} behind) — ${instruction}.`,
     installed,
     latest,
   };

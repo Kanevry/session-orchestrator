@@ -21,20 +21,25 @@ at the commit above:
     skills/architecture/LANGUAGE.md
     skills/architecture/DEEPENING.md
     skills/architecture/INTERFACE-DESIGN.md
-    skills/domain-model/CONTEXT-FORMAT.md
-    skills/domain-model/ADR-FORMAT.md
+    skills/architecture/references/CONTEXT-FORMAT.md
+    skills/architecture/references/ADR-FORMAT.md
 
   Adapted SKILL.md files (description and frontmatter re-tuned for our
   trigger conventions; process body and structural content preserved):
     skills/architecture/SKILL.md
       (from improve-codebase-architecture/SKILL.md)
-    skills/domain-model/SKILL.md
-      (from domain-model/SKILL.md)
+    skills/architecture/references/domain-model.md
+      (from domain-model/SKILL.md; merged into skills/architecture/ as a
+      reference doc in 4.0.0 — the former skills/domain-model/ directory
+      is gone)
     skills/ubiquitous-language/SKILL.md
       (from ubiquitous-language/SKILL.md)
+      (removed in 4.0.0; attribution retained for the history of the
+      vendored content)
 
-Each adapted SKILL.md carries `derived-from: mattpocock/skills@90ea8ee`
-and `license: MIT` in its YAML frontmatter for traceability.
+Each adapted file still present in this repository carries
+`derived-from: mattpocock/skills@90ea8ee` and `license: MIT` in its YAML
+frontmatter for traceability.
 
 The MIT License notice from the upstream project is reproduced below in
 satisfaction of the "above copyright notice and this permission notice

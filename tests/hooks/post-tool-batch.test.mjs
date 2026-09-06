@@ -16,9 +16,10 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+
+import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const HOOK = new URL('../../hooks/post-tool-batch-wave-signal.mjs', import.meta.url).pathname;
 const SESSION_REL = join('.orchestrator', 'current-session.json');
@@ -26,11 +27,11 @@ const SESSION_REL = join('.orchestrator', 'current-session.json');
 let tmp;
 
 beforeEach(() => {
-  tmp = mkdtempSync(join(tmpdir(), 'ptb-test-'));
+  tmp = makeTmpDir('ptb-test-');
 });
 
 afterEach(() => {
-  if (tmp && existsSync(tmp)) rmSync(tmp, { recursive: true, force: true });
+  if (tmp && existsSync(tmp)) removeTree(tmp);
 });
 
 function runHook(stdinJson, extraEnv = {}) {
@@ -526,11 +527,9 @@ describe('post-tool-batch wave-key ownership (#1193 W4c Q1-MED)', () => {
 // the emitter half: a `wave_start_sha` stamped at each wave OPEN, and the
 // deduped worktree-vs-that-sha count attached to that wave's `completed`.
 
-/** `git` in the sandbox, with a repo-local identity (no global config needed). */
+/** `git` in the sandbox, routed through {@link fixtureGit} — see that module's header. */
 function git(cwd, args) {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
-  if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
-  return r.stdout.trim();
+  return fixtureGit(args, cwd).trim();
 }
 
 /** Turn the sandbox into a git repo with two tracked files and one commit. */
@@ -597,7 +596,7 @@ describe('post-tool-batch wave diff-size measurement (#980)', () => {
     writeCurrentSession({ session_id: MINE, last_wave: 1, wave_start_sha: head });
 
     // A second, CLEAN repo the ambient env points at.
-    const foreign = mkdtempSync(join(tmpdir(), 'ptb-foreign-'));
+    const foreign = makeTmpDir('ptb-foreign-');
     try {
       git(foreign, ['init', '-q', '-b', 'main']);
       git(foreign, ['config', 'user.email', 'foreign@example.invalid']);
@@ -620,7 +619,7 @@ describe('post-tool-batch wave diff-size measurement (#980)', () => {
       // …and the NEW wave's start sha is the fixture repo's HEAD, not the foreign HEAD.
       expect(readSessionFile().wave_start_sha).toBe(head);
     } finally {
-      rmSync(foreign, { recursive: true, force: true });
+      removeTree(foreign);
     }
   });
 

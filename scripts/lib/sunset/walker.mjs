@@ -471,6 +471,12 @@ function collectFiles(dir) {
 function isBoilerplateSite(relPath, kind, name) {
   if (kind === 'agent') {
     if (relPath === `agents/${name}.md`) return true;
+    // Kept for repoRoots where an authoring-spec file still lives at this path
+    // (pre-4.0.0 checkouts, template/consumer repos) — see
+    // tests/lib/sunset-walker.test.mjs "boilerplate exclusion (agents)". The
+    // session-orchestrator repo itself moved the spec to docs/agent-authoring.md,
+    // which is outside SCAN_DIRS and can never appear as a relPath here, so
+    // there is no live path to repoint this exclusion to.
     if (relPath === 'agents/AGENTS.md') return true;
     if (relPath === `agents/schemas/${name}.schema.json`) return true;
     // Routing-table / validator boilerplate.

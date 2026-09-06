@@ -31,11 +31,40 @@ const REPO_ROOT = resolve(__dirname, '../../');
  * @param {{cwd?: string}} [options]
  * @returns {import('node:child_process').SpawnSyncReturns<string>}
  */
+/**
+ * Ledger sandbox for every spawn that does not pin its own project dir.
+ *
+ * Measured 2026-09-06: six `orchestrator.quality_gate.passed` records landed in
+ * THIS repo's real `.orchestrator/metrics/events.jsonl` within 3 seconds
+ * (18:36:29.852 / :29.950 / :30.935 / :31.088 / :31.211 / :32.408, 2 full-gate
+ * + 4 baseline, no `counts`) — impossible for a suite that takes ~85 s, and
+ * carrying the live session's attribution. They came from this file: the
+ * spawns below run with `cwd = REPO_ROOT` and no project-dir override, so
+ * `emitEvent` resolved the real repo and appended synthetic gate records to the
+ * instrument `/eval`'s gate-health dimension reads. Pinning a tmp default here
+ * is the fix at the source; the telemetry describe further down keeps its own
+ * per-test dir and is unaffected (an explicit `extraEnv` value still wins).
+ */
+const LEDGER_SANDBOX = mkdtempSync(join(tmpdir(), 'qg-ledger-sandbox-'));
+
 function run(args, extraEnv = {}, options = {}) {
+  const env = { ...process.env };
+  // Belt-and-braces scrub of the AMBIENT value only. `SO_GATE_LEDGER_ROOT` was
+  // the pre-push hook's first (env-var) form of what is now `--ledger-root`;
+  // measured 2026-09-06 it reached every vitest worker through the hook's own
+  // gate run and turned this describe red 8/9. The script no longer reads it —
+  // the test below pins that — and this delete keeps a stale export in an
+  // operator's shell from re-creating the same class through some future reader.
+  // It runs BEFORE extraEnv, so a test that deliberately sets the name still can.
+  delete env.SO_GATE_LEDGER_ROOT;
+  // Sandbox AFTER process.env: the ambient CLAUDE_PROJECT_DIR of the session
+  // running this suite points at the REAL repo and would otherwise win.
+  // extraEnv stays last, so an explicit per-test dir still overrides.
+  Object.assign(env, { CLAUDE_PROJECT_DIR: LEDGER_SANDBOX }, extraEnv);
   return spawnSync('node', [SCRIPT, ...args], {
     encoding: 'utf8',
     cwd: options.cwd ?? REPO_ROOT,
-    env: { ...process.env, ...extraEnv },
+    env,
   });
 }
 
@@ -356,6 +385,138 @@ describe('run-quality-gate.mjs — quality_gate telemetry emission (#610)', () =
     expect(ev).toBeDefined();
     expect(ev.variant).toBe('incremental');
     expect(ev.exit_code).toBe(0);
+  });
+
+  // THE BUG, measured 2026-09-06: the husky pre-push gate BLOCKED a push and
+  // left NO `orchestrator.quality_gate.failed` line in this repo's ledger that
+  // day. `.husky/pre-push` runs the gate inside a materialised tracked tree
+  // with every `*PROJECT_DIR` name scrubbed, so `emitEvent` resolved that TEMP
+  // tree (it has a CLAUDE.md and a .git) and the record was deleted with it by
+  // the hook's EXIT trap. The failing runs were exactly the ones no ledger
+  // could see. `--ledger-root` is the hook's channel for handing the real root
+  // back — and the assertion below is two-sided, because writing the record to
+  // BOTH roots would look identical from the pinned root alone.
+  it('pins the event to --ledger-root and never to the tree it ran in', () => {
+    const ledger = mkdtempSync(join(tmpdir(), 'qg-ledger-'));
+    // The flag is validated against an EXISTING `.orchestrator/` dir — the
+    // marker of a root this harness was initialised in (see resolveLedgerRoot).
+    mkdirSync(join(ledger, '.orchestrator'), { recursive: true });
+    try {
+      const config = JSON.stringify({
+        'typecheck-command': 'skip',
+        'test-command': 'node -e "process.exit(1)"',
+        'lint-command': 'skip',
+      });
+      // CLAUDE_PROJECT_DIR: tmp stands in for the pre-push temp tree — the root
+      // the gate would otherwise write to.
+      const r = run(
+        ['--variant', 'full-gate', '--config', config, '--ledger-root', ledger],
+        { CLAUDE_PROJECT_DIR: tmp },
+      );
+      expect(r.status).not.toBe(0);
+
+      const pinned = join(ledger, '.orchestrator', 'metrics', 'events.jsonl');
+      expect(existsSync(pinned)).toBe(true);
+      const ev = readFileSync(pinned, 'utf8')
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l))
+        .find((e) => e.event === 'orchestrator.quality_gate.failed');
+      expect(ev).toBeDefined();
+      expect(ev.exit_code).toBe(r.status);
+      // The temp tree must stay clean, or the pinning is a copy, not a move.
+      expect(readEvents()).toEqual([]);
+    } finally {
+      rmSync(ledger, { recursive: true, force: true });
+    }
+  });
+
+  // bug_caught: a typo'd or stale `--ledger-root` silently creates an
+  // `.orchestrator/metrics/` tree at an arbitrary path (or, worse, aborts the
+  // gate). The flag is passed by a git hook where nobody reads stdout, so the
+  // only acceptable failure mode is: one WARN, previous resolution, unchanged
+  // exit code.
+  it('warns and falls back when --ledger-root is not an initialised project root', () => {
+    // Under the per-test dir, not a fixed name in the shared tmp root: a
+    // regression run that makes the gate CREATE this path would otherwise leave
+    // it behind and turn the next run of this test into a false green.
+    const bogus = join(tmp, 'not-an-initialised-root');
+    expect(existsSync(bogus)).toBe(false);
+    const config = JSON.stringify({ 'typecheck-command': 'skip', 'test-command': 'skip', 'lint-command': 'skip' });
+    const r = run(
+      ['--variant', 'full-gate', '--config', config, '--ledger-root', bogus],
+      { CLAUDE_PROJECT_DIR: tmp },
+    );
+    // The gate's own verdict is untouched by a bad telemetry flag.
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('--ledger-root');
+    expect(existsSync(bogus)).toBe(false);
+    // Fallback = the previous resolution, i.e. CLAUDE_PROJECT_DIR.
+    const ev = readEvents().find((e) => e.event === 'orchestrator.quality_gate.passed');
+    expect(ev).toBeDefined();
+  });
+
+  // bug_caught (THE HIGH, measured 2026-09-06): while the pin was an ENV VAR,
+  // `SO_GATE_LEDGER_ROOT=$tmp npx vitest run … -t "telemetry emission"` gave
+  // `8 failed | 1 passed` — the hook exported it, the gate's own `npm test`
+  // inherited it into every vitest worker, and these very tests wrote their
+  // events to the hook's root instead of their fixture. The gate that releases
+  // 4.0.0 blocked on itself. This pins that the script reads ARGV ONLY: an
+  // ambient env var of that name changes nothing.
+  it('ignores an ambient SO_GATE_LEDGER_ROOT in the environment (argv is the only channel)', () => {
+    const decoy = mkdtempSync(join(tmpdir(), 'qg-ledger-decoy-'));
+    mkdirSync(join(decoy, '.orchestrator'), { recursive: true });
+    try {
+      const config = JSON.stringify({ 'typecheck-command': 'skip', 'test-command': 'skip', 'lint-command': 'skip' });
+      const r = run(['--variant', 'full-gate', '--config', config], {
+        CLAUDE_PROJECT_DIR: tmp,
+        SO_GATE_LEDGER_ROOT: decoy,
+      });
+      expect(r.status).toBe(0);
+      expect(existsSync(join(decoy, '.orchestrator', 'metrics', 'events.jsonl'))).toBe(false);
+      const ev = readEvents().find((e) => e.event === 'orchestrator.quality_gate.passed');
+      expect(ev).toBeDefined();
+    } finally {
+      rmSync(decoy, { recursive: true, force: true });
+    }
+  });
+
+  // A count with no name is what made the 2026-09-06 pre-push block unusable.
+  // The envelope now carries `failed_files`; this pins that the EVENT carries
+  // it too — the ledger is the only copy that outlives the run.
+  it('carries failed_files on the failed event, and omits the key when nothing named a file', () => {
+    const transcript = [
+      ' FAIL  tests/red.test.mjs > red > fails',
+      ' Test Files  1 failed (1)',
+      '      Tests  1 failed (1)',
+    ].join('\\n');
+    writeFileSync(
+      join(tmp, 'suite.mjs'),
+      `process.stdout.write('${transcript}\\n'); process.exit(1);\n`,
+      'utf8',
+    );
+    const failing = JSON.stringify({
+      'typecheck-command': 'skip',
+      'test-command': `node ${join(tmp, 'suite.mjs')}`,
+      'lint-command': 'skip',
+    });
+    const r = run(['--variant', 'full-gate', '--config', failing], { CLAUDE_PROJECT_DIR: tmp });
+    expect(r.status).not.toBe(0);
+    const ev = readEvents().find((e) => e.event === 'orchestrator.quality_gate.failed');
+    expect(ev).toBeDefined();
+    expect(ev.failed_files).toEqual(['tests/red.test.mjs']);
+
+    // Absent, never `[]`: a gate that named no file must not publish a key that
+    // reads as "measured, and nothing failed".
+    const skipAll = JSON.stringify({
+      'typecheck-command': 'skip',
+      'test-command': 'skip',
+      'lint-command': 'node -e "process.exit(1)"',
+    });
+    const r2 = run(['--variant', 'full-gate', '--config', skipAll], { CLAUDE_PROJECT_DIR: tmp });
+    expect(r2.status).not.toBe(0);
+    const events = readEvents().filter((e) => e.event === 'orchestrator.quality_gate.failed');
+    expect(Object.keys(events[events.length - 1])).not.toContain('failed_files');
   });
 
   // #954 — the suite counts must ride the EVENT, not the STATE.md prose header.

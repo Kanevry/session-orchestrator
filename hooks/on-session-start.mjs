@@ -712,7 +712,15 @@ async function main() {
   // must never break the hook, which is informational-only.
   const input = await stdinPromise;
   const { sessionId, semanticSessionId, mode } = await resolveSessionId(input, projectRoot);
-  const platform = process.env.SO_PLATFORM ?? getPlatform();
+  // getPlatform() ALREADY implements the SO_PLATFORM override as step 1 of its
+  // precedence — and, unlike a bare `??`, it validates the value against the
+  // four-platform allowlist and trims it. The former `process.env.SO_PLATFORM ??
+  // getPlatform()` therefore added nothing except the empty-string trap
+  // (`.claude/rules/development.md` § Env-var fallback whitespace trap): a key
+  // exported as `SO_PLATFORM=` is not nullish, so `??` short-circuited and this
+  // hook stamped `platform: ''` on the session event and handed '' down to the
+  // update probe. Measured 2026-09-06 by the codex test below.
+  const platform = getPlatform();
 
   // Epic #583 P3 — mechanical session.lock writer (closes D1+D2+D4 gaps).
   // Bootstrap the session-lock so discoverActiveSessions() picks us up even
@@ -976,6 +984,14 @@ async function main() {
     const { checkPluginUpdate } = await import('../scripts/lib/plugin-update-banner.mjs');
     pluginUpdate = await checkPluginUpdate({
       cacheDir: path.join(projectRoot, '.orchestrator', 'runtime'),
+      // The probe's own fallback is env-only (SO_PLATFORM, then each harness's
+      // compat var) and cannot run detectPlatform()'s third step, the marker-
+      // directory walk from cwd. This hook already resolved the platform at the
+      // top of run() through exactly that full precedence, so handing it over
+      // makes the remedy instruction MEASURED rather than guessed — a Codex or
+      // Cursor consumer with no compat var set would otherwise be told to run
+      // `/plugin update`, a command its harness does not have.
+      platform,
     });
     if (pluginUpdate && bannerData) pushBanner(pluginUpdate.message);
   } catch { /* hook must remain non-blocking */ }

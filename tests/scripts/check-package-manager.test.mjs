@@ -18,16 +18,8 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import {
-  mkdtempSync,
-  mkdirSync,
-  writeFileSync,
-  symlinkSync,
-  rmSync,
-  realpathSync,
-  readFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, symlinkSync, realpathSync, readFileSync } from 'node:fs';
+
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { load as loadYaml } from 'js-yaml';
@@ -38,6 +30,7 @@ import {
   parseCiEnv,
   runPackageManagerGuard,
 } from '../../scripts/check-package-manager.mjs';
+import { fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SCRIPT = join(REPO_ROOT, 'scripts', 'check-package-manager.mjs');
@@ -94,16 +87,16 @@ const installAndGuardLists = deriveInstallAndGuardLists(
 // ---------------------------------------------------------------------------
 
 function gitInit(dir) {
-  spawnSync('git', ['init', '-q'], { cwd: dir });
-  spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
-  spawnSync('git', ['config', 'user.name', 'Test User'], { cwd: dir });
+  fixtureGitSpawn(['init', '-q'], dir);
+  fixtureGitSpawn(['config', 'user.email', 'test@example.com'], dir);
+  fixtureGitSpawn(['config', 'user.name', 'Test User'], dir);
   // Override any global gpgsign requirement so commits never hang on a passphrase.
-  spawnSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
+  fixtureGitSpawn(['config', 'commit.gpgsign', 'false'], dir);
 }
 
 function gitCommitAll(dir, message = 'init') {
-  spawnSync('git', ['add', '-A'], { cwd: dir });
-  spawnSync('git', ['commit', '-q', '-m', message], { cwd: dir });
+  fixtureGitSpawn(['add', '-A'], dir);
+  fixtureGitSpawn(['commit', '-q', '-m', message], dir);
 }
 
 /** Writes a minimal package.json (+ optional package-lock.json) into `dir`. */
@@ -146,19 +139,19 @@ describe('check-package-manager.mjs', () => {
   let extraDirs;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), 'check-pkg-mgr-'));
+    tmp = makeTmpDir('check-pkg-mgr-');
     extraDirs = [];
   });
 
   afterEach(() => {
-    rmSync(tmp, { recursive: true, force: true });
+    removeTree(tmp);
     for (const dir of extraDirs) {
-      rmSync(dir, { recursive: true, force: true });
+      removeTree(dir);
     }
   });
 
   function makeExtraTmpDir(prefix) {
-    const dir = mkdtempSync(join(tmpdir(), prefix));
+    const dir = makeTmpDir(prefix);
     extraDirs.push(dir);
     return dir;
   }
@@ -191,8 +184,8 @@ describe('check-package-manager.mjs', () => {
     it('reports c2 when package-lock.json is not tracked in git', () => {
       writePackageFiles(tmp, { lockfile: false });
       gitInit(tmp);
-      spawnSync('git', ['add', 'package.json'], { cwd: tmp });
-      spawnSync('git', ['commit', '-q', '-m', 'init'], { cwd: tmp });
+      fixtureGitSpawn(['add', 'package.json'], tmp);
+      fixtureGitSpawn(['commit', '-q', '-m', 'init'], tmp);
 
       expect(checkCommittedTree(tmp)).toEqual([
         {

@@ -119,10 +119,42 @@ describe('gate-full — test failure', () => {
       files_total: 1,
       files_passed: 0,
       files_failed: 1,
+      // Measured, and EMPTY: this stub prints the summary line only, so the
+      // file-level measurement exists but names nothing. Absent would mean
+      // "no file-level measurement at all" — the case the sibling row below
+      // pins. See `failed_files` in gate-full.mjs.
+      failed_files: [],
       suite_died: true,
     });
     // Contract: consumers parse exactly one JSON document from stdout.
     expect(r.stdout.trim().split('\n')).toHaveLength(1);
+  });
+
+  // THE BUG this row names, measured 2026-09-06: the pre-push gate BLOCKED a
+  // push with `files_failed: 1` out of 662 and no file name anywhere in the
+  // envelope, and reconstructing WHICH file died cost a full manual
+  // re-materialisation of the tracked tree. The runner had printed the path all
+  // along — `extractTestCounts` just never looked past the two summary lines.
+  it('names the failing files in failed_files and on stderr (vitest transcript shape)', () => {
+    const transcript = [
+      ' \\u276f tests/red.test.mjs (2 tests | 1 failed) 4ms',
+      ' FAIL  tests/red.test.mjs > red > fails',
+      ' \\u276f tests/red.test.mjs:3:33',
+      ' FAIL  tests/dead.test.mjs [ tests/dead.test.mjs ]',
+      ' Test Files  2 failed (2)',
+      '      Tests  1 failed | 1 passed (2)',
+    ].join('\\n');
+    const cmd = `node -e "process.stdout.write('${transcript}\\n'); process.exit(1)"`;
+    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: cmd, LINT_CMD: 'skip' });
+    expect(r.status).toBe(2);
+
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed.test.files_failed).toBe(2);
+    expect(parsed.test.failed_files).toEqual(['tests/red.test.mjs', 'tests/dead.test.mjs']);
+    // The operator under pre-push reads stderr, so the names must be there too —
+    // with the command that reproduces them.
+    expect(r.stderr).toContain('failing test files (2)');
+    expect(r.stderr).toContain('npx vitest run tests/red.test.mjs tests/dead.test.mjs');
   });
 
   // The sibling of the row above, and the bug it names: a FAILING runner that
@@ -140,6 +172,7 @@ describe('gate-full — test failure', () => {
     expect(parsed.test).not.toHaveProperty('files_total');
     expect(parsed.test).not.toHaveProperty('files_passed');
     expect(parsed.test).not.toHaveProperty('files_failed');
+    expect(parsed.test).not.toHaveProperty('failed_files');
     // The load-bearing half: `suite_died: false` here would be a claim about a
     // file-level measurement that never happened.
     expect(parsed.test).not.toHaveProperty('suite_died');

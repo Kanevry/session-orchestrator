@@ -105,8 +105,22 @@ if command -v gitleaks >/dev/null 2>&1; then
   }
 fi
 
-node scripts/lib/validate/check-owner-leakage.mjs "$(git rev-parse --show-toplevel)" >/dev/null 2>&1 || {
-  echo "✗ check-owner-leakage: privacy leak detected in tracked files. Commit blocked." >&2
+# The scanner's own output is CAPTURED, not discarded: a fixed "privacy leak
+# detected" line for every non-zero exit taught the operator to reach for
+# --no-verify, because it also fired for the CP11 DISABLED verdict (a guard that
+# could not RUN, e.g. an unrelated typo in owner.yaml's paths: section) — a leak
+# claim about a repo that has no leak. Printing the tail is SAFE: every violation
+# line goes through redactSpans() before it reaches stdout (see the
+# `const safeContent = redactSpans(v.lineContent, cp11Patterns)` choke point in
+# check-owner-leakage.mjs), and the CP11 reason strings deliberately carry no path.
+leak_out=$(node scripts/lib/validate/check-owner-leakage.mjs "$(git rev-parse --show-toplevel)" 2>&1) || {
+  printf '%s\n' "$leak_out" | tail -n 8 | sed 's/^/    /' >&2
+  case "$leak_out" in
+    (*"CP11 DISABLED"*)
+      echo "✗ check-owner-leakage: privacy scanner could not run (see above). Commit blocked." >&2 ;;
+    (*)
+      echo "✗ check-owner-leakage: privacy leak detected in tracked files. Commit blocked." >&2 ;;
+  esac
   echo "  Run \`node scripts/lib/validate/check-owner-leakage.mjs .\` for details." >&2
   echo "  Use 'git commit --no-verify' to bypass (only after triaging)." >&2
   exit 1

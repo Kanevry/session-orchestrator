@@ -23,7 +23,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -34,6 +34,7 @@ import {
   parseNulConfigList,
   remoteHost,
 } from '@lib/git-config-drift.mjs';
+import { removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const GIT_AVAILABLE = spawnSync('git', ['--version'], { stdio: 'ignore' }).status === 0;
 
@@ -68,7 +69,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const dir of tmpDirs) {
     try {
-      rmSync(dir, { recursive: true, force: true });
+      removeTree(dir);
     } catch {
       /* best-effort cleanup */
     }

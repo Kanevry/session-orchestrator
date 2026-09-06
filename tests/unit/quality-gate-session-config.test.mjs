@@ -21,7 +21,8 @@
  *         reflects real git diff output when repoRoot is a git repository.
  *
  * Integration approach:
- *   - Real git repos are initialised with execSync — no mocking of git.
+ *   - Real git repos are initialised with real `git` (routed through
+ *     `tests/_helpers/tmp-fixture.mjs`) — no mocking of git.
  *   - Real CLAUDE.md files are written to tmpdir — no mocking of fs.
  *   - parse-config.mjs subprocess is invoked for real.
  *   - Gates use cross-platform `node -e` exit-0/1 stand-ins (PASS/FAIL) for
@@ -33,19 +34,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import {
-  mkdtempSync,
-  rmSync,
-  mkdirSync,
-  writeFileSync,
-  readFileSync,
-  existsSync,
-  readdirSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
+
+import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 import {
   loadCommandsFromSessionConfig,
@@ -61,7 +54,7 @@ import {
 let repoRoot;
 
 beforeEach(() => {
-  repoRoot = mkdtempSync(join(tmpdir(), 'qg-session-cfg-'));
+  repoRoot = makeTmpDir('qg-session-cfg-');
   // Pre-create the diagnostics dir so runQualityGateWithRetry can write bundles.
   mkdirSync(join(repoRoot, '.orchestrator', 'metrics', 'verification-failures'), {
     recursive: true,
@@ -69,7 +62,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(repoRoot, { recursive: true, force: true });
+  removeTree(repoRoot);
 });
 
 // ---------------------------------------------------------------------------
@@ -106,14 +99,14 @@ const FAIL = 'node -e "process.exit(1)"';
  * @returns {string} commit SHA (40-char hex)
  */
 function initGitRepo(dir, file = 'A.txt', content = 'initial') {
-  execSync('git init -q', { cwd: dir });
-  execSync('git config user.email "test@test.local"', { cwd: dir });
-  execSync('git config user.name "Test"', { cwd: dir });
+  fixtureGit(['init', '-q'], dir);
+  fixtureGit(['config', 'user.email', 'test@test.local'], dir);
+  fixtureGit(['config', 'user.name', 'Test'], dir);
   writeFileSync(join(dir, '.gitignore'), '.orchestrator/\n', 'utf8');
   writeFileSync(join(dir, file), content, 'utf8');
-  execSync('git add .', { cwd: dir });
-  execSync('git commit -m "init" -q', { cwd: dir });
-  return execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
+  fixtureGit(['add', '.'], dir);
+  fixtureGit(['commit', '-m', 'init', '-q'], dir);
+  return fixtureGit(['rev-parse', 'HEAD'], dir).trim();
 }
 
 /**
@@ -131,9 +124,9 @@ function addCommit(dir, file, content, msg = 'add file') {
   const parentDir = filePath.substring(0, filePath.lastIndexOf('/'));
   if (parentDir !== dir) mkdirSync(parentDir, { recursive: true });
   writeFileSync(filePath, content, 'utf8');
-  execSync('git add .', { cwd: dir });
-  execSync(`git commit -m "${msg}" -q`, { cwd: dir });
-  return execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
+  fixtureGit(['add', '.'], dir);
+  fixtureGit(['commit', '-m', msg, '-q'], dir);
+  return fixtureGit(['rev-parse', 'HEAD'], dir).trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -209,7 +202,7 @@ describe('loadCommandsFromSessionConfig — A4: graceful failure when no config 
   it('returns {} when git repo has no CLAUDE.md (parse-config cannot find config file)', { timeout: 5_000 }, () => {
     // A dir with a .git marker stops parse-config upward walk at this dir.
     // Since CLAUDE.md is absent here, parse-config exits 1 → function returns {}.
-    execSync('git init -q', { cwd: repoRoot });
+    fixtureGit(['init', '-q'], repoRoot);
     // Deliberately do NOT write CLAUDE.md.
     const result = loadCommandsFromSessionConfig(repoRoot);
     expect(result).toEqual({});
@@ -277,7 +270,7 @@ describe('loadCommandsFromSessionConfigDetailed — A6: failed read vs empty con
   });
 
   it('reports degraded=spawn-failed when CLAUDE.md exists but parse-config exits non-zero', { timeout: 5_000 }, () => {
-    execSync('git init -q', { cwd: repoRoot });
+    fixtureGit(['init', '-q'], repoRoot);
     // `agents-per-wave: 1` fails the config validator → parse-config exits 1
     // with empty stdout (measured 2026-09-05: "agents-per-wave must be an
     // integer >= 2 (got 1)").
@@ -294,7 +287,7 @@ describe('loadCommandsFromSessionConfigDetailed — A6: failed read vs empty con
   });
 
   it('does NOT report degraded when the repo simply has no Session Config file', { timeout: 5_000 }, () => {
-    execSync('git init -q', { cwd: repoRoot });
+    fixtureGit(['init', '-q'], repoRoot);
     // No CLAUDE.md / AGENTS.md: parse-config also exits 1, but nothing was
     // misread — there is no *-command value that could drift. A warning here
     // would fire on every config-less repo (HR-101).
@@ -305,7 +298,7 @@ describe('loadCommandsFromSessionConfigDetailed — A6: failed read vs empty con
   });
 
   it('does NOT report degraded for a readable config that declares no *-command keys', { timeout: 5_000 }, () => {
-    execSync('git init -q', { cwd: repoRoot });
+    fixtureGit(['init', '-q'], repoRoot);
     writeFileSync(
       join(repoRoot, 'CLAUDE.md'),
       '# T\n## Session Config\npersistence: true\n',
@@ -421,7 +414,7 @@ describe('writeLastGreenSha (via runQualityGateWithRetry) — B3: creates runtim
     // Ensure runtime/ dir does NOT exist.
     const runtimeDir = join(repoRoot, '.orchestrator', 'runtime');
     if (existsSync(runtimeDir)) {
-      rmSync(runtimeDir, { recursive: true, force: true });
+      removeTree(runtimeDir);
     }
     expect(existsSync(runtimeDir)).toBe(false);
 
@@ -621,8 +614,8 @@ describe('listChangedFiles (via runQualityGateWithRetry) — C5: paths with spac
     const spacedDir = join(repoRoot, 'my dir');
     mkdirSync(spacedDir, { recursive: true });
     writeFileSync(join(spacedDir, 'file.txt'), 'content', 'utf8');
-    execSync('git add .', { cwd: repoRoot });
-    execSync('git commit -m "add spaced file" -q', { cwd: repoRoot });
+    fixtureGit(['add', '.'], repoRoot);
+    fixtureGit(['commit', '-m', 'add spaced file', '-q'], repoRoot);
 
     let capturedChangedFiles;
     await runQualityGateWithRetry({

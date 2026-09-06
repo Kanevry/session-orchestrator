@@ -81,11 +81,12 @@
  *   1 — at least one failure (or usage error / unreadable root)
  */
 
-import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync, realpathSync } from 'node:fs';
 import { join, extname, relative, basename, sep, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { argv } from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 // NOTE: the two host-local helper modules (../config/host-paths.mjs and
 // ./confidential-names.mjs) are imported DYNAMICALLY inside
 // getConfidentialNamePatterns(), NOT statically here. This scanner is a
@@ -93,7 +94,9 @@ import { fileURLToPath } from 'node:url';
 // "Reuse the same scanner") — the .husky/pre-commit E2E and any consumer that
 // copies ONLY this file into a fresh tree would otherwise crash at module load
 // with ERR_MODULE_NOT_FOUND, blocking clean commits. Dynamic import lets CP11 go
-// silently inert when the helpers are absent while CP1–CP10 run unchanged.
+// inert (one WARN line, exit unchanged) when the helpers are absent while CP1–CP10
+// run unchanged. That degrade is scoped to ERR_MODULE_NOT_FOUND ALONE (#1244) —
+// every other CP11 load failure fails CLOSED; see getConfidentialNamePatterns().
 
 // ---------------------------------------------------------------------------
 // CLI / import-mode detection (#661)
@@ -103,7 +106,25 @@ import { fileURLToPath } from 'node:url';
 // AND an importable library (the canonicalization helpers are unit-tested in
 // isolation). When imported, the top-level scan + process.exit() must NOT run.
 // `isMain` is true only when this file is the node entry point.
-const isMain = argv[1] !== undefined && resolve(argv[1]) === fileURLToPath(import.meta.url);
+// REALPATH BOTH SIDES (#1244 / same class as the #1153 argv[1] main-guard finding).
+// `fileURLToPath(import.meta.url)` is already canonicalized by Node's ESM loader,
+// so a plain `resolve(argv[1])` comparison silently fails whenever the invocation
+// path traverses a symlink — on macOS every `/tmp/...` path does (`/tmp` →
+// `/private/tmp`). The failure mode is the worst one a security guard has: isMain
+// stays false, runScan() never runs, and the process prints NOTHING and exits 0,
+// i.e. a clean-looking pass that never scanned a byte. realpathSync both sides so
+// the two spellings of the same file compare equal; if realpathSync throws (path
+// gone, permission denied) fall back to the historical comparison.
+function canonicalPath(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+const isMain =
+  argv[1] !== undefined &&
+  canonicalPath(resolve(argv[1])) === canonicalPath(fileURLToPath(import.meta.url));
 
 // CLI: single positional arg required (only enforced when run directly).
 const pluginRoot = argv[2];
@@ -568,8 +589,10 @@ function escapeRegex(s) {
 // its cases red (#974).
 //
 // The dynamic-import degrade used by getConfidentialNamePatterns() is NOT
-// available here. That helper degrades to `[]` — CP11 goes inert, CP1–CP10 keep
-// running, nothing leaks. A failed REDACTION has the opposite failure direction:
+// available here. That helper degrades to `[]` for the standalone-copy case alone
+// — CP11 goes inert, CP1–CP10 keep running, nothing leaks (every OTHER load
+// failure there is now a counted FAIL, #1244). A failed REDACTION has the opposite
+// failure direction:
 // it prints confidential names verbatim into a PUBLIC GitHub-Actions log, which
 // is precisely the exposure this function exists to prevent (Fix 1 below). The
 // redaction sink must be unconditionally present, so it lives inline.
@@ -646,6 +669,78 @@ function redactSpans(line, patterns) {
 }
 
 /**
+ * The THREE modules getConfidentialNamePatterns() imports directly, as absolute
+ * URLs resolved against THIS file. Used only to classify an ERR_MODULE_NOT_FOUND:
+ * `err.url` carries the URL of the module that could not be found (measured on
+ * Node 24 — a relative specifier yields `url`, a bare package specifier yields
+ * none), so a miss on one of these three is the standalone single-file copy,
+ * while a miss anywhere DEEPER (a transitive of an in-tree helper, or a bare
+ * package) is a broken install that must fail CLOSED rather than go inert.
+ */
+const CP11_DIRECT_SIBLING_URLS = new Set(
+  ['../config/host-paths.mjs', './confidential-names.mjs', '../owner-yaml.mjs'].map(
+    (spec) => new URL(spec, import.meta.url).href,
+  ),
+);
+
+/**
+ * True when an ERR_MODULE_NOT_FOUND names one of this scanner's own three DIRECT
+ * helper imports — i.e. the documented standalone-vendoring shape. False for a
+ * transitive relative module or a bare package (no `err.url` at all), which is a
+ * broken in-tree install: CP11 then fails closed instead of silently returning
+ * zero patterns while names ARE configured.
+ *
+ * @param {{ url?: string }} err
+ * @returns {boolean}
+ */
+function isMissingDirectSibling(err) {
+  return typeof err?.url === 'string' && CP11_DIRECT_SIBLING_URLS.has(err.url);
+}
+
+/**
+ * Was `paths.confidential-names-file` actually written into owner.yaml?
+ *
+ * WHY THIS RE-READS THE FILE. `loadOwnerConfig()` reports an invalid OPTIONAL
+ * section only as `droppedSections: [{ section: 'paths', errors }]` and replaces
+ * `config.paths` with the DEFAULTS — the raw keys of the dropped section are not
+ * recoverable from its return value, and its `errors[]` name a key only for the
+ * per-key `paths.<key> must be a string` case (a `paths: 42` shape names none).
+ * So the one question CP11's verdict turns on — did the operator configure a
+ * names file AT ALL — has no answer in the loader's contract today. Re-parsing
+ * the file for that single key is the minimal derivation; widening the loader's
+ * return shape would touch every one of its callers.
+ *
+ * Only reached when the YAML already parsed once inside loadOwnerConfig (the
+ * dropped-section branch implies that), so `js-yaml` is resolvable here; 'unknown'
+ * is the defensive residue and makes the caller fail closed.
+ *
+ * Returns a CLASS, never the value: the configured path is host-local and this
+ * scanner's output is captured by a PUBLIC CI mirror (see the no-path rule above).
+ *
+ * @param {string} ownerYamlPath
+ * @returns {'configured'|'absent'|'unknown'}
+ */
+function rawConfidentialNamesKeyState(ownerYamlPath) {
+  let parsed;
+  try {
+    const yaml = createRequire(import.meta.url)('js-yaml');
+    parsed = yaml.load(readFileSync(ownerYamlPath, 'utf8'));
+  } catch {
+    return 'unknown';
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return 'unknown';
+  const paths = parsed.paths;
+  // `paths:` absent, null, or not a mapping at all → the key cannot be in there.
+  if (paths === null || typeof paths !== 'object' || Array.isArray(paths)) return 'absent';
+  const value = paths['confidential-names-file'];
+  if (value === undefined || value === null) return 'absent';
+  // A non-string (or empty-string) value is still an ATTEMPT to configure CP11 —
+  // except '' , which is the schema's documented "no override" spelling.
+  if (typeof value === 'string' && value.trim() === '') return 'absent';
+  return 'configured';
+}
+
+/**
  * CP11: build word-boundary, case-insensitive regexes from the host-local
  * confidential-names list (#728a). Mirrors CP6_PATTERNS (private slugs), but the
  * name source is LOADED from a never-committed host-local file instead of a
@@ -667,24 +762,167 @@ function redactSpans(line, patterns) {
  * with ERR_MODULE_NOT_FOUND. When the helpers are unresolvable (or throw), CP11
  * degrades to inert ([] patterns) and CP1–CP10 run unchanged.
  *
- * @returns {Promise<RegExp[]>} one regex per configured name, or [] when
- *   unconfigured / unusable / unresolvable (standalone copy).
+ * FAIL CLOSED WHEN CP11 WAS EXPECTED (GitLab #1244). The single bare
+ * `try { … } catch { return [] }` this function used to be conflated three
+ * outcomes that must not share a verdict, and printed `PASS` for all three:
+ *   (a) the helpers are unresolvable — the STANDALONE single-file copy. The
+ *       intended degrade, and the ONLY one: inert + one WARN line, exit unchanged.
+ *   (b) CP11 is not configured at all (no names file, no env) — the ~99% default:
+ *       inactive, silent, PASS. Unchanged. This INCLUDES an owner.yaml whose
+ *       `paths:` section was dropped as invalid for some OTHER key (the #1244
+ *       fix over-reached here and failed every commit on such a host): the raw
+ *       key is re-read (rawConfidentialNamesKeyState) and, when absent, CP11 is
+ *       INACTIVE — one WARN naming the dropped section, no FAIL, exit unchanged.
+ *   (c) CP11 IS configured — env set, a names file resolved, or the raw
+ *       `paths.confidential-names-file` key present in a `paths:` section that
+ *       was dropped as invalid — or its configuration is unknowable because
+ *       owner.yaml exists but cannot be parsed (e.g. `js-yaml` missing) — and
+ *       could not be loaded. Previously indistinguishable from (b): the scanner matched
+ *       nothing and printed `PASS: no owner-privacy leakage found`. A guard that
+ *       cannot run must say so and FAIL, never report the clean verdict it did
+ *       not earn — so this returns a `disabledReason` that runScan turns into a
+ *       `CP11 DISABLED` stderr line plus a counted FAIL (exit 1).
+ *
+ * The reason strings deliberately carry NO PATH. This scanner's stdout+stderr are
+ * captured by a PUBLIC GitHub-Actions mirror, and the confidential-names path is
+ * host-local — echoing it there would leak the very `/Users/<name>/…` shape CP1
+ * exists to block. The operator knows their own path; the CLASS of failure is what
+ * this line has to convey.
+ *
+ * @returns {Promise<{ patterns: RegExp[], disabledReason?: string, inertWarn?: string }>}
  */
 async function getConfidentialNamePatterns() {
+  let helpers;
   try {
-    const { loadHostPaths, resolveHostPath } = await import('../config/host-paths.mjs');
-    const { loadConfidentialNames } = await import('./confidential-names.mjs');
-    const ctx = loadHostPaths();
-    const namesPath = resolveHostPath('confidential-names-file', '', ctx);
-    const names = loadConfidentialNames({ namesPath });
-    if (!names) return [];
-    return names.map((name) => new RegExp(`\\b${escapeRegex(name)}\\b`, 'i'));
-  } catch {
-    // Helper modules absent (standalone single-file vendoring) or a config read
-    // failure — CP11 goes silently inert; the CP1–CP10 rules need none of these
-    // modules and continue to enforce the scan.
-    return [];
+    helpers = {
+      hostPaths: await import('../config/host-paths.mjs'),
+      confidentialNames: await import('./confidential-names.mjs'),
+      // Already a transitive dependency (host-paths.mjs imports it statically), so
+      // this adds no file to the standalone-copy chain the husky E2E mirrors.
+      ownerYaml: await import('../owner-yaml.mjs'),
+    };
+  } catch (err) {
+    if (err?.code === 'ERR_MODULE_NOT_FOUND' && isMissingDirectSibling(err)) {
+      // (a) standalone single-file vendoring — the documented degrade.
+      return {
+        patterns: [],
+        inertWarn: 'CP11 inert — confidential-names helpers not resolvable (standalone copy)',
+      };
+    }
+    // Any OTHER import failure is a broken in-tree install, not the vendoring case.
+    return { patterns: [], disabledReason: `confidential-names helpers failed to load (${err?.name ?? 'Error'})` };
   }
+
+  try {
+    const { loadHostPaths, resolveHostPath } = helpers.hostPaths;
+    const { loadConfidentialNames } = helpers.confidentialNames;
+    const { loadOwnerConfig, resolveOwnerYamlPath } = helpers.ownerYaml;
+
+    // Load owner.yaml ONCE and hand the same result to loadHostPaths, so the
+    // env>owner.yaml>default precedence is unchanged while the load's own health
+    // (reason / droppedSections) stays visible here.
+    const owner = loadOwnerConfig();
+    const namesPath = resolveHostPath('confidential-names-file', '', loadHostPaths({ ownerLoader: () => owner }));
+
+    if (typeof namesPath !== 'string' || namesPath.trim() === '') {
+      // Nothing resolves a names file. That is either (b) — genuinely
+      // unconfigured — or a state in which the answer is UNKNOWABLE because the
+      // owner.yaml that would carry it could not be read. Unknowable is (c).
+      if (existsSync(resolveOwnerYamlPath())) {
+        if (owner.reason === 'yaml-parser-missing') {
+          return {
+            patterns: [],
+            disabledReason:
+              "owner.yaml exists but 'js-yaml' is not installed, so a configured confidential-names-file cannot be resolved (run 'npm install')",
+          };
+        }
+        if (owner.reason === 'unparseable') {
+          return {
+            patterns: [],
+            disabledReason:
+              'owner.yaml exists but could not be parsed, so a configured confidential-names-file cannot be resolved',
+          };
+        }
+        if (owner.droppedSections?.some((d) => d.section === 'paths')) {
+          // The paths: section was replaced by its default because SOME key in it
+          // is invalid — which says nothing yet about whether CP11 was configured.
+          // Re-read the RAW file for that one key (the loader does not expose it on
+          // this branch; see rawConfidentialNamesKeyState) and only then decide.
+          const rawKey = rawConfidentialNamesKeyState(resolveOwnerYamlPath());
+          if (rawKey === 'configured') {
+            return {
+              patterns: [],
+              disabledReason:
+                'owner.yaml has an invalid paths: section, so a configured confidential-names-file cannot be resolved',
+            };
+          }
+          if (rawKey === 'unknown') {
+            return {
+              patterns: [],
+              disabledReason:
+                'owner.yaml has an invalid paths: section and could not be re-read, so a configured confidential-names-file cannot be ruled out',
+            };
+          }
+          // 'absent' — CP11 was never configured here. Inactive, not disabled:
+          // ONE WARN naming the dropped section, no FAIL, exit unchanged.
+          return {
+            patterns: [],
+            inertWarn:
+              'CP11 inactive — owner.yaml\'s paths: section was dropped as invalid, but it configures no confidential-names-file',
+          };
+        }
+      }
+      return { patterns: [] }; // (b) the ~99% default — inactive, silent.
+    }
+
+    // A names file IS configured. loadConfidentialNames() returns null for BOTH
+    // "unusable" and "deliberately empty list", so classify the file first — an
+    // empty list is an operator choice (inactive, silent), a missing/malformed
+    // one is (c).
+    const unusable = classifyNamesFile(namesPath);
+    if (unusable) return { patterns: [], disabledReason: unusable };
+
+    const names = loadConfidentialNames({ namesPath });
+    if (!names) return { patterns: [] }; // readable, well-formed, zero usable entries.
+    return { patterns: names.map((name) => new RegExp(`\\b${escapeRegex(name)}\\b`, 'i')) };
+  } catch (err) {
+    // The helpers resolved but something below threw. CP11 cannot run — fail closed.
+    return { patterns: [], disabledReason: `confidential-names resolution failed (${err?.name ?? 'Error'})` };
+  }
+}
+
+/**
+ * Classify a CONFIGURED confidential-names file as usable or not.
+ *
+ * `loadConfidentialNames()` collapses "file missing / unreadable / malformed /
+ * not an array" and "well-formed but empty" into one `null` return, which is
+ * exactly the distinction CP11's fail-closed verdict turns on. Rather than widen
+ * that module's contract (it has four other consumers of its `null`), this reads
+ * the file once more for classification only. It never returns file CONTENT — the
+ * reason string carries the error CLASS alone, matching the confidential-names
+ * privacy invariant and the no-path rule above.
+ *
+ * @param {string} namesPath
+ * @returns {string|null} a reason string when unusable, null when usable.
+ */
+function classifyNamesFile(namesPath) {
+  let raw;
+  try {
+    if (!existsSync(namesPath)) {
+      return 'a confidential-names-file is configured but does not exist';
+    }
+    raw = readFileSync(namesPath, 'utf8');
+  } catch (err) {
+    return `the configured confidential-names-file is unreadable (${err?.name ?? 'Error'})`;
+  }
+  try {
+    if (!Array.isArray(JSON.parse(raw))) {
+      return 'the configured confidential-names-file is not a JSON array';
+    }
+  } catch (err) {
+    return `the configured confidential-names-file contains malformed JSON (${err?.name ?? 'Error'})`;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -945,7 +1183,24 @@ const scanFiles = textFiles.filter((f) => {
 // unresolvable (standalone single-file copy) → the CP11 block below is a no-op.
 // Awaited once, before the per-line loop, because the helpers are now dynamically
 // imported (standalone-safe) — CP1–CP10 behaviour is unchanged.
-const cp11Patterns = await getConfidentialNamePatterns();
+//
+// #1244: a CP11 that was EXPECTED but could not load is a DISABLED guard, not a
+// clean scan — it is announced on stderr and counted as a FAIL so the run exits
+// non-zero. CP1–CP10 still run to completion either way: a disabled CP11 must not
+// suppress the findings the other ten rules can still make.
+const cp11 = await getConfidentialNamePatterns();
+const cp11Patterns = cp11.patterns;
+if (cp11.inertWarn) {
+  console.error(`WARN: ${cp11.inertWarn}`);
+}
+if (cp11.disabledReason) {
+  console.error(`CP11 DISABLED: ${cp11.disabledReason}`);
+  // Shaped like the per-file FAIL lines (`<where> — <CPn label>: <content>`) so the
+  // report's `— CPn` attribution parser sees CP11 here too; `<scan-wide>` stands in
+  // for the file position because a disabled guard is a property of the RUN, not of
+  // any one file. The reason carries no path (see getConfidentialNamePatterns).
+  fail(`<scan-wide> — CP11 (guard disabled): ${cp11.disabledReason}`);
+}
 
 /** @type {Array<{relPath: string, lineNum: number, pattern: string, lineContent: string}>} */
 const violations = [];
@@ -1089,7 +1344,13 @@ for (const filePath of scanFiles) {
 // The spec does not say to deduplicate, so keep as-is.
 
 if (violations.length === 0) {
-  pass(`no owner-privacy leakage found across ${scanFiles.length} scanned files`);
+  // #1244: only claim the clean verdict the run actually earned. With CP11
+  // disabled, ten of eleven rules ran — say that instead of "no leakage found".
+  if (cp11.disabledReason) {
+    console.log(`  (CP1–CP10 found no leakage across ${scanFiles.length} scanned files; CP11 did not run)`);
+  } else {
+    pass(`no owner-privacy leakage found across ${scanFiles.length} scanned files`);
+  }
 } else {
   for (const v of violations) {
     // Choke-point redaction (Fix 1 + Fix 2): scrub every configured confidential

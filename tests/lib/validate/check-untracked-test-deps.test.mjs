@@ -22,7 +22,7 @@
  */
 
 import { describe, it, expect, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -35,6 +35,7 @@ import {
   extractLiteralCandidates,
   maskSource,
 } from '../../../scripts/lib/validate/check-untracked-test-deps.mjs';
+import { fixtureGitSpawn, removeTree } from '../../_helpers/tmp-fixture.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const CHECK = join(REPO_ROOT, 'scripts', 'lib', 'validate', 'check-untracked-test-deps.mjs');
@@ -44,7 +45,7 @@ const GITIGNORE = '.orchestrator/metrics/*.jsonl\n';
 
 const tmpDirs = [];
 afterAll(() => {
-  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
+  for (const d of tmpDirs) removeTree(d);
 });
 
 /**
@@ -62,10 +63,10 @@ function makeRepo(files) {
     mkdirSync(dirname(abs), { recursive: true });
     writeFileSync(abs, content);
   }
-  spawnSync('git', ['init', '-b', 'main'], { cwd: root, encoding: 'utf8' });
-  spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: root, encoding: 'utf8' });
-  spawnSync('git', ['config', 'user.name', 'Test'], { cwd: root, encoding: 'utf8' });
-  spawnSync('git', ['add', '-A'], { cwd: root, encoding: 'utf8' });
+  fixtureGitSpawn(['init', '-b', 'main'], root, { encoding: 'utf8' });
+  fixtureGitSpawn(['config', 'user.email', 'test@test.com'], root, { encoding: 'utf8' });
+  fixtureGitSpawn(['config', 'user.name', 'Test'], root, { encoding: 'utf8' });
+  fixtureGitSpawn(['add', '-A'], root, { encoding: 'utf8' });
   return root;
 }
 
@@ -363,7 +364,7 @@ describe('P10 — linked worktree, `.git` is a FILE not a directory', () => {
     // 936dae8a across 5 spawned test files.
     const root = makeRepo({ '.gitignore': GITIGNORE, 'a.txt': 'hello\n' });
     // `git worktree add` needs a resolvable HEAD — `makeRepo` only stages.
-    spawnSync('git', ['commit', '-q', '-m', 'initial'], { cwd: root, encoding: 'utf8' });
+    fixtureGitSpawn(['commit', '-q', '-m', 'initial'], root, { encoding: 'utf8' });
 
     const wtRoot = `${root}-wt`;
     tmpDirs.push(wtRoot);

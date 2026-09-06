@@ -1830,7 +1830,7 @@ describe('plugin-update banner (#nnn)', { timeout: 15000 }, () => {
     const objects = stdoutObjects(result.stdout);
     expect(objects).toHaveLength(1);
     const lines = objects[0].systemMessage.split('\n');
-    const update = lines.find((l) => l.includes('session-orchestrator') && l.includes('verfügbar'));
+    const update = lines.find((l) => l.includes('session-orchestrator') && l.includes('available'));
     expect(update).toBeDefined();
     expect(update).toContain('999.0.0');
     expect(update).toContain('/plugin update session-orchestrator@kanevry');
@@ -1882,6 +1882,47 @@ describe('plugin-update banner (#nnn)', { timeout: 15000 }, () => {
     expect(result.stdout).not.toContain('999.0.0');
     const [evt] = await readEvents(dir);
     expect(evt.plugin_version_latest).toBeUndefined();
+  });
+
+  // THE BUG: the probe's own platform fallback is env-only — SO_PLATFORM, then
+  // each harness's compat var — and stops there. detectPlatform()'s THIRD step,
+  // the marker-directory walk up from cwd, is the one signal a Codex checkout
+  // that exports no CODEX_PLUGIN_ROOT actually has. The hook runs that full
+  // precedence at the top of run(); if it does not hand the result down, such a
+  // session is told to run `/plugin update`, a command Codex does not have.
+  //
+  // The fixture is built so ONLY the walk can answer: every compat env var is
+  // cleared, so the probe's own fallback returns its 'claude' default and the
+  // assertion below goes red the moment the `platform` argument is dropped.
+  it('hands the hook-detected platform to the probe (codex marker dir, no env signal)', async () => {
+    const dir = await mkProjectTracked();
+    await seedLatestCache(dir, '999.0.0');
+    await fs.mkdir(path.join(dir, '.codex-plugin'), { recursive: true });
+
+    const result = await runHook({
+      projectDir: dir,
+      useCwd: true,
+      env: probeEnv({
+        SO_PLATFORM: '',
+        CLAUDE_PLUGIN_ROOT: '',
+        CODEX_PLUGIN_ROOT: '',
+        CURSOR_RULES_DIR: '',
+        PI_PLUGIN_ROOT: '',
+      }),
+    });
+
+    expect(result.code).toBe(0);
+    const objects = stdoutObjects(result.stdout);
+    const update = objects[0].systemMessage
+      .split('\n')
+      .find((l) => l.includes('session-orchestrator') && l.includes('available'));
+    expect(update).toBeDefined();
+    // The codex row of PLATFORM_UPDATE_INSTRUCTIONS, not the claude one.
+    expect(update).toContain('codex plugin marketplace upgrade kanevry');
+    expect(update).not.toContain('/plugin update');
+
+    const [evt] = await readEvents(dir);
+    expect(evt.platform).toBe('codex');
   });
 });
 

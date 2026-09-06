@@ -9,6 +9,7 @@ import {
   runCheck,
   extractCount,
   extractTestCounts,
+  extractFailedTestFiles,
   collectDebugArtifacts,
 } from './gate-helpers.mjs';
 
@@ -64,11 +65,26 @@ const testCounts =
 // from a measured one — with `suite_died: false` derived from it, stating a
 // verdict nobody had checked. Absent, not zero: the same contract this
 // envelope's `counts` field already keeps (`admitSuiteCounts`).
+//
+// `failed_files` (this change) is the fifth member of that same set and joins
+// it for the same reason: it is DERIVED from the runner's file-level report, so
+// it is published exactly when the file-level measurement exists. A count with
+// no name is what made the 2026-09-06 pre-push block unusable —
+// `files_failed: 1` out of 662, and reconstructing WHICH file cost a manual
+// re-materialisation of the tracked tree. An EMPTY array here is meaningful and
+// is NOT the absent case: it says the file-level summary was parsed and no path
+// could be read out of it (a non-vitest reporter, a truncated capture), which
+// is a parser gap worth seeing — the unmeasured case is the absent key.
+const failedTestFiles = testResult.status === 'fail'
+  ? extractFailedTestFiles(testResult.fullOutput ?? testResult.output ?? '')
+  : [];
+
 const fileFields = testCounts.files
   ? {
       files_total: testCounts.files.total,
       files_passed: testCounts.files.passed,
       files_failed: testCounts.files.failed,
+      failed_files: failedTestFiles,
       // Self-diagnosing: true exactly when `status: 'fail'` sits beside a
       // test-case `failed: 0` that a file-level failure explains. Greppable —
       // a consumer no longer has to recompute the contradiction by hand.
@@ -154,6 +170,16 @@ const failed = [tcResult, testResult, lintResult].some(
 // of silence" the hook promises still holds; and the operator gets the failure
 // at the moment of the block instead of a second run to find it.
 if (failed) {
+  // Names FIRST, raw output after. Under the pre-push hook the raw block is
+  // hundreds of lines; the operator reads the top of it, and the one fact he
+  // needs to act (`npx vitest run <file>`) must not sit at the bottom.
+  if (failedTestFiles.length > 0) {
+    process.stderr.write(
+      `\n──── failing test files (${failedTestFiles.length}) ────\n` +
+        failedTestFiles.map((f) => `  ${f}\n`).join('') +
+        `  reproduce: npx vitest run ${failedTestFiles.join(' ')}\n`,
+    );
+  }
   for (const [name, result] of [
     ['typecheck', tcResult],
     ['test', testResult],

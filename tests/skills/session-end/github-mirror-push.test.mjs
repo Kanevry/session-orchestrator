@@ -30,10 +30,11 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+
 import { join, resolve } from 'node:path';
+import { fixtureGit, makeTmpDir, removeTree } from '../../_helpers/tmp-fixture.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..', '..');
 const SKILL_PATH = join(REPO_ROOT, 'skills', 'session-end', 'SKILL.md');
@@ -56,7 +57,7 @@ const tmpDirs = [];
 afterEach(() => {
   while (tmpDirs.length > 0) {
     try {
-      rmSync(tmpDirs.pop(), { recursive: true, force: true });
+      removeTree(tmpDirs.pop());
     } catch {
       // best-effort cleanup
     }
@@ -73,7 +74,7 @@ const GIT_ENV = {
 };
 
 function git(cwd, args) {
-  return execFileSync('git', ['-C', cwd, ...args], { env: GIT_ENV, encoding: 'utf8' });
+  return fixtureGit(['-C', cwd, ...args], undefined, { env: GIT_ENV, encoding: 'utf8' });
 }
 
 /**
@@ -81,10 +82,10 @@ function git(cwd, args) {
  * @param {string|null} githubRemote URL for the `github` remote, or null for none.
  */
 function makeRepo(githubRemote) {
-  const root = mkdtempSync(join(tmpdir(), 'so-mirror-'));
+  const root = makeTmpDir('so-mirror-');
   tmpDirs.push(root);
   const dir = join(root, 'work');
-  execFileSync('git', ['init', '-q', dir], { env: GIT_ENV });
+  fixtureGit(['init', '-q', dir], undefined, { env: GIT_ENV });
   git(dir, ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init']);
   if (githubRemote) git(dir, ['remote', 'add', 'github', githubRemote]);
   return { root, dir };
@@ -130,10 +131,10 @@ describe('session-end Phase 4.4 GitHub mirror push — the four states are disti
   });
 
   it('State 2 (push succeeds): exits 0, names the pushed SHA, and the remote really has it', () => {
-    const bareRoot = mkdtempSync(join(tmpdir(), 'so-mirror-bare-'));
+    const bareRoot = makeTmpDir('so-mirror-bare-');
     tmpDirs.push(bareRoot);
     const bare = join(bareRoot, 'bare.git');
-    execFileSync('git', ['init', '-q', '--bare', bare], { env: GIT_ENV });
+    fixtureGit(['init', '-q', '--bare', bare], undefined, { env: GIT_ENV });
 
     const { dir } = makeRepo(bare);
     const head = git(dir, ['rev-parse', 'HEAD']).trim();
@@ -169,7 +170,7 @@ describe('session-end Phase 4.4 GitHub mirror push — the four states are disti
 
 /** A directory that exists but holds no git repository — a reachable path, unreachable remote. */
 function root_unreachable() {
-  const d = mkdtempSync(join(tmpdir(), 'so-mirror-void-'));
+  const d = makeTmpDir('so-mirror-void-');
   tmpDirs.push(d);
   return d;
 }
@@ -192,7 +193,7 @@ function root_unreachable() {
 
 describe('state 0 — not a git repository', () => {
   it('fails closed and says why, instead of claiming no mirror is configured', () => {
-    const root = mkdtempSync(join(tmpdir(), 'so-mirror-norepo-'));
+    const root = makeTmpDir('so-mirror-norepo-');
     tmpDirs.push(root);
     const res = runBlock(root);
 

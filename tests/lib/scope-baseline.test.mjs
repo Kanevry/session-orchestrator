@@ -25,16 +25,9 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import {
-  mkdtempSync,
-  mkdirSync,
-  rmSync,
-  writeFileSync,
-  readFileSync,
-} from 'node:fs';
-import { tmpdir, hostname } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { join, dirname } from 'node:path';
-import { execFileSync } from 'node:child_process';
 
 import {
   writeBaseline,
@@ -47,6 +40,7 @@ import { resolveBaselineRange } from '@lib/vcs-repo-spec.mjs';
 import { parseStateMd, serializeStateMd } from '@lib/state-md.mjs';
 import { STATE_LOCK_PATH } from '@lib/locks/state-md-lock.mjs';
 import { unwritablePath } from '../_helpers/unwritable-path.mjs';
+import { fixtureGit, makeTmpDir as makeFixtureTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 /**
  * The S6-epic seven-file change set (#899 fixture, reused verbatim by the
@@ -71,7 +65,7 @@ const tmpRoots = [];
 
 /** Plain tmp dir — no git. Used by writeBaseline()/readBaseline() tests. */
 function makeTmpDir() {
-  const root = mkdtempSync(join(tmpdir(), 'scope-baseline-'));
+  const root = makeFixtureTmpDir('scope-baseline-');
   tmpRoots.push(root);
   return root;
 }
@@ -79,10 +73,10 @@ function makeTmpDir() {
 /** Tmp dir + local git identity. Used by computeDrift() tests. */
 function makeTmpRepo() {
   const root = makeTmpDir();
-  execFileSync('git', ['init', '-q'], { cwd: root });
-  execFileSync('git', ['config', 'user.email', 'scope-baseline-test@example.com'], { cwd: root });
-  execFileSync('git', ['config', 'user.name', 'Scope Baseline Test'], { cwd: root });
-  execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: root });
+  fixtureGit(['init', '-q'], root);
+  fixtureGit(['config', 'user.email', 'scope-baseline-test@example.com'], root);
+  fixtureGit(['config', 'user.name', 'Scope Baseline Test'], root);
+  fixtureGit(['config', 'commit.gpgsign', 'false'], root);
   return root;
 }
 
@@ -113,8 +107,8 @@ function writeFilesAndCommit(root, relPaths, message) {
     mkdirSync(dirname(abs), { recursive: true });
     writeFileSync(abs, `content for ${rel}\n`, 'utf8');
   }
-  execFileSync('git', ['add', '-A'], { cwd: root });
-  execFileSync('git', ['commit', '-q', '-m', message], { cwd: root });
+  fixtureGit(['add', '-A'], root);
+  fixtureGit(['commit', '-q', '-m', message], root);
 }
 
 /**
@@ -126,18 +120,16 @@ function writeFilesAndCommit(root, relPaths, message) {
  * from; `update-ref` alone leaves a tracking ref that no remote owns.
  */
 function seedRemoteTracking(root, name, branch, sha) {
-  execFileSync('git', ['remote', 'add', name, `git@${name}.example.com:group/project.git`], { cwd: root });
-  execFileSync('git', ['update-ref', `refs/remotes/${name}/${branch}`, sha], { cwd: root });
+  fixtureGit(['remote', 'add', name, `git@${name}.example.com:group/project.git`], root);
+  fixtureGit(['update-ref', `refs/remotes/${name}/${branch}`, sha], root);
 }
 
 /** `git symbolic-ref --short <ref>`, or `''` when the ref is unset (exit 1). */
 function symbolicRefOrEmpty(root, ref) {
   try {
-    return execFileSync('git', ['symbolic-ref', '--short', ref], {
-      cwd: root,
+    return fixtureGit(['symbolic-ref', '--short', ref], root, {
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim();
+      stdio: ['ignore', 'pipe', 'pipe']}).trim();
   } catch {
     return '';
   }
@@ -146,9 +138,9 @@ function symbolicRefOrEmpty(root, ref) {
 /** Seeds README.md as an initial commit and returns its SHA. */
 function initialCommit(root) {
   writeFileSync(join(root, 'README.md'), '# tmp\n', 'utf8');
-  execFileSync('git', ['add', '-A'], { cwd: root });
-  execFileSync('git', ['commit', '-q', '-m', 'initial'], { cwd: root });
-  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+  fixtureGit(['add', '-A'], root);
+  fixtureGit(['commit', '-q', '-m', 'initial'], root);
+  return fixtureGit(['rev-parse', 'HEAD'], root, { encoding: 'utf8' }).trim();
 }
 
 /** N distinct real filenames under src/ — genuine per-file drift, not a token diff. */
@@ -259,7 +251,7 @@ const FIXTURE_MALFORMED = `---
 afterEach(() => {
   while (tmpRoots.length > 0) {
     const root = tmpRoots.pop();
-    rmSync(root, { recursive: true, force: true });
+    removeTree(root);
   }
 });
 

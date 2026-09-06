@@ -36,7 +36,14 @@
  *  - Issue #820.
  */
 
-import { loadOwnerConfig, resolveOwnerYamlPath } from './owner-yaml.mjs';
+import { loadOwnerConfig, resolveOwnerYamlPath, getDefaults } from './owner-yaml.mjs';
+
+/**
+ * OPTIONAL object sections (mirrors `owner-yaml.mjs`'s internal, unexported
+ * `OPTIONAL_OBJECT_SECTIONS`) — the only sections the #1244 discard-branch
+ * merge rule can carry through a whole-file discard.
+ */
+const OPTIONAL_OBJECT_SECTION_NAMES = /** @type {const} */ (['paths', 'dispatcher']);
 
 /**
  * Format a `{ section, errors }` entry into a short `"name" (first error)` tag.
@@ -52,6 +59,7 @@ function formatSectionTag(entry) {
  * Check owner.yaml load health and produce a session-start banner.
  *
  * @param {{ loader?: (opts?: object) => {
+ *   config?: object,
  *   source: 'file'|'defaults'|'partial',
  *   errors: string[],
  *   droppedSections?: Array<{ section: string, errors: string[] }>,
@@ -86,15 +94,44 @@ export function checkOwnerConfig({ loader = loadOwnerConfig } = {}) {
     }
 
     // Whole-file discard: a REQUIRED section was invalid (legacy behaviour).
+    //
+    // #1244 MERGE RULE (owner-yaml.mjs loadOwnerConfig): a VALID optional
+    // object section (`paths`, `dispatcher`) survives the discard — merged
+    // onto its default in `result.config`. loadOwnerConfig's return carries no
+    // dedicated "survived" field, so it is derived here: a section differs
+    // from `getDefaults()` only when real, validly-parsed values were merged
+    // in. Without this, the banner claimed "the entire file was discarded"
+    // while a host-local `paths.confidential-names-file` the operator DID
+    // configure correctly was still live — the exact silent-fix-that-lies gap
+    // Q3 measured with a tmp owner.yaml (invalid `owner.name`, valid
+    // `paths.confidential-names-file`).
     if (result.source === 'defaults' && errors.length > 0) {
       const firstError = errors[0];
+      const path = resolveOwnerYamlPath();
+      const survivedSections = [];
+      if (result.config && typeof result.config === 'object') {
+        const defaults = getDefaults();
+        for (const name of OPTIONAL_OBJECT_SECTION_NAMES) {
+          if (JSON.stringify(result.config[name]) !== JSON.stringify(defaults[name])) {
+            survivedSections.push(name);
+          }
+        }
+      }
+
+      const message =
+        survivedSections.length > 0
+          ? `⚠ owner-config: ${path} has required section(s) invalid (${firstError}) — ` +
+            `${survivedSections.map((s) => `"${s}"`).join('/')} kept, everything else defaulted. ` +
+            'Fix the file (see .claude/rules/owner-persona.md) to restore your settings.'
+          : `⚠ owner-config: ${path} is invalid (${firstError}) — the entire file was ` +
+            'discarded and defaults are in effect. Fix the file (see .claude/rules/owner-persona.md) ' +
+            'to restore your settings.';
+
       return {
         severity: 'warn',
-        message:
-          `⚠ owner-config: ${resolveOwnerYamlPath()} is invalid (${firstError}) — the entire file was ` +
-          'discarded and defaults are in effect. Fix the file (see .claude/rules/owner-persona.md) ' +
-          'to restore your settings.',
+        message,
         discarded: true,
+        ...(droppedSections.length > 0 ? { droppedSections } : {}),
       };
     }
 

@@ -42,11 +42,12 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawnSync, execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, readFileSync, realpathSync, utimesSync, symlinkSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { rmSync, existsSync, writeFileSync, mkdirSync, readFileSync, realpathSync, utimesSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 
+import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 import {
   parsePorcelainZ,
   isIgnoredPath,
@@ -347,10 +348,10 @@ describe('sessionAgeMs', () => {
   const isoAgo = (ms) => new Date(NOW - ms).toISOString();
 
   beforeEach(() => {
-    repo = realpathSync(mkdtempSync(join(tmpdir(), 'so-session-age-')));
+    repo = makeTmpDir('so-session-age-');
     mkdirSync(join(repo, '.orchestrator'), { recursive: true });
   });
-  afterEach(() => rmSync(repo, { recursive: true, force: true }));
+  afterEach(() => removeTree(repo));
 
   it('takes the MINIMUM of both clocks, so a leftover current-session.json cannot fake an hours-old session (#957)', () => {
     // Bug caught: the single-clock read returned `now - timestamp` for ANY
@@ -404,7 +405,7 @@ describe('sessionAgeMs', () => {
       expect(sessionAgeMs(repo, NOW)).toBeNull();
     }
 
-    rmSync(join(repo, '.orchestrator'), { recursive: true });
+    removeTree(join(repo, '.orchestrator'));
     expect(sessionAgeMs(repo, NOW)).toBeNull();
   });
 
@@ -432,7 +433,7 @@ describe('sessionAgeMs', () => {
 describe('post-bash-write-verify E2E', () => {
   let tmp;
 
-  const git = (...args) => execFileSync('git', args, { cwd: tmp, encoding: 'utf8' });
+  const git = (...args) => fixtureGit(args, tmp);
 
   const runHook = () => spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'echo x > out-of-scope.mjs' } }),
@@ -450,7 +451,7 @@ describe('post-bash-write-verify E2E', () => {
   };
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), 'pbwv-e2e-'));
+    tmp = makeTmpDir('pbwv-e2e-');
     git('init', '-q');
     git('config', 'user.email', 't@e.st');
     git('config', 'user.name', 'T');
@@ -471,7 +472,7 @@ describe('post-bash-write-verify E2E', () => {
     // /var/folders → /private/var/folders), so the test must too.
     const snap = snapshotPathFor(realpathSync(tmp));
       if (existsSync(snap)) rmSync(snap, { force: true });
-      rmSync(tmp, { recursive: true, force: true });
+      removeTree(tmp);
     }
   });
 
@@ -499,7 +500,7 @@ describe('post-bash-write-verify E2E', () => {
     // scope-detector silently no-op'd. realpath'ing both sides fixes it.
     writeScope(['hooks/**']);
     // A symlink to the REAL hook file, invoked as the script entry point.
-    const linkDir = mkdtempSync(join(tmpdir(), 'pbwv-symlink-'));
+    const linkDir = makeTmpDir('pbwv-symlink-');
     const linkedHook = join(linkDir, 'post-bash-write-verify.mjs');
     symlinkSync(HOOK, linkedHook);
     try {
@@ -518,7 +519,7 @@ describe('post-bash-write-verify E2E', () => {
       expect(res.stderr).toContain('bash-write-verify');
       expect(res.stderr).toContain('out-of-scope.mjs');
     } finally {
-      rmSync(linkDir, { recursive: true, force: true });
+      removeTree(linkDir);
     }
   });
 
@@ -582,7 +583,7 @@ describe('post-bash-write-verify E2E', () => {
   it('never writes its snapshot inside the repo (self-report immunity, live check)', () => {
     writeScope(['hooks/**']);
     runHook();
-    const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: tmp, encoding: 'utf8' });
+    const dirty = fixtureGit(['status', '--porcelain'], tmp);
     // Only the scope file the test itself created may be dirty.
     expect(dirty).not.toContain('so-bash-write-verify');
     const live = snapshotPathFor(realpathSync(tmp));
@@ -842,7 +843,7 @@ describe('post-bash-write-verify E2E', () => {
 describe('post-bash-write-verify — foreign-session manifest (#1153 P1)', () => {
   let tmp;
 
-  const git = (...args) => execFileSync('git', args, { cwd: tmp, encoding: 'utf8' });
+  const git = (...args) => fixtureGit(args, tmp);
 
   const runHook = (sessionId) => spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'echo x > out-of-scope.mjs' } }),
@@ -872,7 +873,7 @@ describe('post-bash-write-verify — foreign-session manifest (#1153 P1)', () =>
   };
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), 'pbwv-foreign-'));
+    tmp = makeTmpDir('pbwv-foreign-');
     git('init', '-q');
     git('config', 'user.email', 't@e.st');
     git('config', 'user.name', 'T');
@@ -888,7 +889,7 @@ describe('post-bash-write-verify — foreign-session manifest (#1153 P1)', () =>
     if (tmp && existsSync(tmp)) {
       const snap = snapshotPathFor(realpathSync(tmp));
       if (existsSync(snap)) rmSync(snap, { force: true });
-      rmSync(tmp, { recursive: true, force: true });
+      removeTree(tmp);
     }
   });
 

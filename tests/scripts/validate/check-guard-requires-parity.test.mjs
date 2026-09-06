@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeAll, afterEach } from 'vitest';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+
 import { inspectGuardRequiresParity } from '../../../scripts/lib/validate/check-guard-requires-parity.mjs';
+import { fixtureGit, makeTmpDir, removeTree } from '../../_helpers/tmp-fixture.mjs';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(TEST_DIR, '../../..');
@@ -31,18 +32,18 @@ ${shadow}`;
 }
 
 function makeFixture({ workingSource, headSource = workingSource, hook }) {
-  const root = mkdtempSync(join(tmpdir(), 'guard-requires-parity-'));
+  const root = makeTmpDir('guard-requires-parity-');
   fixtureRoots.push(root);
   mkdirSync(join(root, 'hooks'), { recursive: true });
   mkdirSync(join(root, 'scripts', 'lib'), { recursive: true });
   writeFileSync(join(root, 'hooks', 'fixture-hook.mjs'), hook);
   writeFileSync(join(root, 'scripts', 'lib', 'fixture.mjs'), headSource);
 
-  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
-  execFileSync('git', ['config', 'user.email', 'fixture@example.com'], { cwd: root });
-  execFileSync('git', ['config', 'user.name', 'Fixture'], { cwd: root });
-  execFileSync('git', ['add', '-A'], { cwd: root });
-  execFileSync('git', ['commit', '-q', '-m', 'fixture'], { cwd: root });
+  fixtureGit(['init', '-q', '-b', 'main'], root);
+  fixtureGit(['config', 'user.email', 'fixture@example.com'], root);
+  fixtureGit(['config', 'user.name', 'Fixture'], root);
+  fixtureGit(['add', '-A'], root);
+  fixtureGit(['commit', '-q', '-m', 'fixture'], root);
   if (workingSource !== headSource) {
     writeFileSync(join(root, 'scripts', 'lib', 'fixture.mjs'), workingSource);
   }
@@ -68,7 +69,7 @@ beforeAll(() => {
 });
 
 afterEach(() => {
-  while (fixtureRoots.length > 0) rmSync(fixtureRoots.pop(), { recursive: true, force: true });
+  while (fixtureRoots.length > 0) removeTree(fixtureRoots.pop());
 });
 
 describe('check-guard-requires-parity.mjs — current repository', () => {
@@ -336,7 +337,7 @@ describe('check-guard-requires-parity.mjs — contract and version failures', ()
       workingSource: 'export function foo() {}\n',
       hook: makeHook({ requires: ['foo'] }),
     });
-    const outside = mkdtempSync(join(tmpdir(), 'guard-requires-parity-outside-'));
+    const outside = makeTmpDir('guard-requires-parity-outside-');
     fixtureRoots.push(outside);
     const target = join(outside, 'outside-handler.mjs');
     writeFileSync(target, 'export const escaped = true;\n');

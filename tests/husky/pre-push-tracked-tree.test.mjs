@@ -51,15 +51,16 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+
 import { join, resolve } from 'node:path';
 
 // The keep-set is imported, not restated: tests/setup/scrub-git-env.mjs and this
 // hook share one justification for which GIT_ names may survive a sweep, and a
 // second copy here would let the two drift apart unnoticed.
 import { GIT_ENV_KEEP } from '../setup/scrub-git-env.mjs';
+import { fixtureGit, fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const HOOK_PATH = join(REPO_ROOT, '.husky', 'pre-push');
@@ -150,7 +151,7 @@ const tmpDirs = [];
 afterEach(() => {
   while (tmpDirs.length > 0) {
     try {
-      rmSync(tmpDirs.pop(), { recursive: true, force: true });
+      removeTree(tmpDirs.pop());
     } catch {
       // best-effort cleanup
     }
@@ -158,7 +159,7 @@ afterEach(() => {
 });
 
 function mkTmp(prefix) {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const dir = makeTmpDir(prefix);
   tmpDirs.push(dir);
   // macOS $TMPDIR is /var/... which is a symlink to /private/var/..., so a child
   // process reports the resolved form. Comparing unresolved paths would make
@@ -176,10 +177,10 @@ function mkTmp(prefix) {
  */
 function makeRepo({ tracked = {}, worktree = {} } = {}) {
   const dir = mkTmp('so-pre-push-tracked-');
-  execFileSync('git', ['init', '-q', dir]);
-  execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@example.com']);
-  execFileSync('git', ['-C', dir, 'config', 'user.name', 'Test']);
-  execFileSync('git', ['-C', dir, 'config', 'commit.gpgsign', 'false']);
+  fixtureGit(['init', '-q', dir]);
+  fixtureGit(['-C', dir, 'config', 'user.email', 'test@example.com']);
+  fixtureGit(['-C', dir, 'config', 'user.name', 'Test']);
+  fixtureGit(['-C', dir, 'config', 'commit.gpgsign', 'false']);
 
   // The hook only probes this path's EXISTENCE before deciding to run at all.
   mkdirSync(join(dir, 'scripts'), { recursive: true });
@@ -196,9 +197,9 @@ function makeRepo({ tracked = {}, worktree = {} } = {}) {
   );
   for (const [rel, body] of Object.entries(tracked)) writeFileSync(join(dir, rel), body);
 
-  execFileSync('git', ['-C', dir, 'add', '-A']);
-  execFileSync('git', ['-C', dir, 'commit', '-q', '-m', 'fixture']);
-  const sha = execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  fixtureGit(['-C', dir, 'add', '-A']);
+  fixtureGit(['-C', dir, 'commit', '-q', '-m', 'fixture']);
+  const sha = fixtureGit(['-C', dir, 'rev-parse', 'HEAD'], undefined, { encoding: 'utf8' }).trim();
 
   for (const [rel, body] of Object.entries(worktree)) writeFileSync(join(dir, rel), body);
   return { dir, sha };
@@ -237,7 +238,7 @@ describe('.husky/pre-push — gates the TRACKED tree, not the working tree', () 
     const { dir, sha } = makeRepo({ worktree: { 'helper.mjs': 'export const x = 1;\n' } });
     expect(existsSync(join(dir, 'helper.mjs'))).toBe(true);
     expect(
-      execFileSync('git', ['-C', dir, 'status', '--short'], { encoding: 'utf8' }),
+      fixtureGit(['-C', dir, 'status', '--short'], undefined, { encoding: 'utf8' }),
     ).toContain('?? helper.mjs');
 
     const { res, probe } = runHook({ cwd: dir, stdin: contentLine(sha), probeExit: 2 });
@@ -358,7 +359,7 @@ describe('.husky/pre-push — gates the TRACKED tree, not the working tree', () 
       }),
     );
     expect(
-      spawnSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).status,
+      fixtureGitSpawn(['-C', dir, 'rev-parse', '--show-toplevel'], undefined, { encoding: 'utf8' }).status,
     ).not.toBe(0);
 
     const { res, probe } = runHook({ cwd: dir, stdin: contentLine('a'.repeat(40)), probeExit: 0 });
@@ -381,7 +382,7 @@ describe('.husky/pre-push — gates the TRACKED tree, not the working tree', () 
     // below flip: `probe.gitDir` carries the path, and `symbolic-ref HEAD` fails
     // because the fixture is detached.
     const { dir, sha } = makeRepo({ tracked: { 'probe.txt': 'TRACKED\n' } });
-    const branchBefore = execFileSync('git', ['-C', dir, 'symbolic-ref', 'HEAD'], {
+    const branchBefore = fixtureGit(['-C', dir, 'symbolic-ref', 'HEAD'], undefined, {
       encoding: 'utf8',
     }).trim();
 
@@ -428,9 +429,9 @@ describe('.husky/pre-push — gates the TRACKED tree, not the working tree', () 
     // 3. And the ORIGINAL repo is untouched — still on its branch, same commit.
     //    `symbolic-ref` throws on a detached HEAD, which is precisely the damage.
     expect(
-      execFileSync('git', ['-C', dir, 'symbolic-ref', 'HEAD'], { encoding: 'utf8' }).trim(),
+      fixtureGit(['-C', dir, 'symbolic-ref', 'HEAD'], undefined, { encoding: 'utf8' }).trim(),
     ).toBe(branchBefore);
-    expect(execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()).toBe(
+    expect(fixtureGit(['-C', dir, 'rev-parse', 'HEAD'], undefined, { encoding: 'utf8' }).trim()).toBe(
       sha,
     );
     expect(res.status).toBe(0);

@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { execFileSync } from 'node:child_process';
+
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -28,6 +28,7 @@ import {
   NEVER_FOREIGN_ROLES,
   DEFAULT_TIMEOUT_SEC,
 } from '@lib/wave-executor/dispatch-common.mjs';
+import { fixtureGit, makeTmpDir, removeTree } from '../../_helpers/tmp-fixture.mjs';
 
 const NUL = String.fromCharCode(0);
 
@@ -263,14 +264,14 @@ describe('dispatchForeign outcome classification', () => {
   let tmpRoot;
   let wtParent;
   beforeAll(() => {
-    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'so-fd-out-'));
+    tmpRoot = makeTmpDir('so-fd-out-');
     // The worktree parent is a SIBLING of the repo root, never a child: a
     // worktreeRoot inside repoRoot is refused outright (unsafe-worktree-root).
-    wtParent = fs.mkdtempSync(path.join(os.tmpdir(), 'so-foreign-out-'));
+    wtParent = makeTmpDir('so-foreign-out-');
   });
   afterAll(() => {
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
-    fs.rmSync(wtParent, { recursive: true, force: true });
+    removeTree(tmpRoot);
+    removeTree(wtParent);
   });
 
   const dispatch = (overrides = {}, deps = {}) =>
@@ -546,10 +547,10 @@ describe('dispatchForeign outcome classification', () => {
 describe('dispatchForeign path guards', () => {
   let repoRoot;
   beforeAll(() => {
-    repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'so-fd-guard-'));
+    repoRoot = makeTmpDir('so-fd-guard-');
   });
   afterAll(() => {
-    fs.rmSync(repoRoot, { recursive: true, force: true });
+    removeTree(repoRoot);
   });
 
   // Bug: runId names a directory AND a log file before it names a run, so it is
@@ -619,10 +620,10 @@ describe('worktree mechanics (synthetic repo)', () => {
   let worktree;
 
   beforeAll(() => {
-    fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'so-fd-git-'));
+    fixture = makeTmpDir('so-fd-git-');
     const git = (...args) =>
-      execFileSync('git', ['-C', fixture, ...args], { encoding: 'utf8', stdio: 'pipe' });
-    execFileSync('git', ['init', '-q', '-b', 'main', fixture], { encoding: 'utf8' });
+      fixtureGit(['-C', fixture, ...args], undefined, { encoding: 'utf8', stdio: 'pipe' });
+    fixtureGit(['init', '-q', '-b', 'main', fixture], undefined, { encoding: 'utf8' });
     git('config', 'user.email', 'test@example.invalid');
     git('config', 'user.name', 'Fixture');
     fs.writeFileSync(path.join(fixture, 'seed.txt'), 'seed\n');
@@ -637,15 +638,15 @@ describe('worktree mechanics (synthetic repo)', () => {
     // worktree deliberately lives outside <tmpdir>/so-foreign*, which is
     // exactly the shape that function now refuses.
     try {
-      execFileSync('git', ['-C', fixture, 'worktree', 'remove', '--force', worktree], {
+      fixtureGit(['-C', fixture, 'worktree', 'remove', '--force', worktree], undefined, {
         encoding: 'utf8',
         stdio: 'pipe',
       });
     } catch {
       /* best effort */
     }
-    fs.rmSync(fixture, { recursive: true, force: true });
-    fs.rmSync(worktree, { recursive: true, force: true });
+    removeTree(fixture);
+    removeTree(worktree);
   });
 
   // Bug (measured 2026-08-25, refutes the "append to <wt>/.git/info/exclude"
@@ -657,16 +658,8 @@ describe('worktree mechanics (synthetic repo)', () => {
   // Hence: query-time `--exclude`, and this test pins WHY.
   it('proves a per-worktree info/exclude is not honoured by git', () => {
     expect(fs.statSync(path.join(worktree, '.git')).isFile()).toBe(true);
-    const perWorktreeGitDir = execFileSync(
-      'git',
-      ['-C', worktree, 'rev-parse', '--git-dir'],
-      { encoding: 'utf8' }
-    ).trim();
-    const commonGitDir = execFileSync(
-      'git',
-      ['-C', worktree, 'rev-parse', '--git-common-dir'],
-      { encoding: 'utf8' }
-    ).trim();
+    const perWorktreeGitDir = fixtureGit(['-C', worktree, 'rev-parse', '--git-dir'], undefined, { encoding: 'utf8' }).trim();
+    const commonGitDir = fixtureGit(['-C', worktree, 'rev-parse', '--git-common-dir'], undefined, { encoding: 'utf8' }).trim();
     expect(path.resolve(worktree, perWorktreeGitDir)).not.toBe(path.resolve(worktree, commonGitDir));
 
     fs.mkdirSync(path.join(perWorktreeGitDir, 'info'), { recursive: true });
@@ -674,7 +667,7 @@ describe('worktree mechanics (synthetic repo)', () => {
     fs.mkdirSync(path.join(worktree, 'node_modules'), { recursive: true });
     fs.writeFileSync(path.join(worktree, 'node_modules', 'x.js'), 'x\n');
 
-    const status = execFileSync('git', ['-C', worktree, 'status', '--porcelain'], {
+    const status = fixtureGit(['-C', worktree, 'status', '--porcelain'], undefined, {
       encoding: 'utf8',
     });
     expect(status).toContain('node_modules');
@@ -688,18 +681,14 @@ describe('worktree mechanics (synthetic repo)', () => {
     fs.writeFileSync(path.join(worktree, 'node_modules', 'x.js'), 'x\n');
     fs.writeFileSync(path.join(worktree, 'brand-new.mjs'), 'export const x = 1;\n');
 
-    const listed = execFileSync(
-      'git',
-      [
+    const listed = fixtureGit([
         '-C',
         worktree,
         'ls-files',
         '--others',
         '--exclude-standard',
         ...MEASUREMENT_EXCLUDES.map((p) => `--exclude=${p}`),
-      ],
-      { encoding: 'utf8' }
-    );
+      ], undefined, { encoding: 'utf8' });
     expect(listed).toContain('brand-new.mjs');
     expect(listed).not.toContain('node_modules');
   });
@@ -709,15 +698,11 @@ describe('worktree mechanics (synthetic repo)', () => {
   // measurement therefore reports a successful run as `empty-diff`.
   it('proves git diff alone cannot see a newly created file', () => {
     fs.writeFileSync(path.join(worktree, 'created-by-model.mjs'), 'export const y = 2;\n');
-    const diffOnly = execFileSync('git', ['-C', worktree, 'diff', '--name-only'], {
+    const diffOnly = fixtureGit(['-C', worktree, 'diff', '--name-only'], undefined, {
       encoding: 'utf8',
     });
     expect(diffOnly.trim()).toBe('');
-    const others = execFileSync(
-      'git',
-      ['-C', worktree, 'ls-files', '--others', '--exclude-standard', '--exclude=node_modules'],
-      { encoding: 'utf8' }
-    );
+    const others = fixtureGit(['-C', worktree, 'ls-files', '--others', '--exclude-standard', '--exclude=node_modules'], undefined, { encoding: 'utf8' });
     expect(others).toContain('created-by-model.mjs');
   });
 
@@ -725,6 +710,11 @@ describe('worktree mechanics (synthetic repo)', () => {
     // A foreign-SHAPED path (so it clears the safety guard and git is actually
     // called) that does not exist — this pins the git-failure path, not the
     // refusal path the test below covers.
+    // NOT makeTmpDir(): the path SHAPE is this test's subject. makeTmpDir
+    // realpath-resolves, which on macOS turns /var/folders/... into
+    // /private/var/folders/... — a shape removeForeignWorktree's safety
+    // guard rejects up front (`unsafe-worktree-path`), so the git-failure
+    // path this test pins would never be reached.
     const absent = fs.mkdtempSync(path.join(os.tmpdir(), 'so-foreign-absent-'));
     try {
       const res = removeForeignWorktree({
@@ -735,7 +725,7 @@ describe('worktree mechanics (synthetic repo)', () => {
       expect(res.reason).toBeUndefined();
       expect(typeof res.error).toBe('string');
     } finally {
-      fs.rmSync(absent, { recursive: true, force: true });
+      removeTree(absent);
     }
   });
 
@@ -746,7 +736,7 @@ describe('worktree mechanics (synthetic repo)', () => {
   // must precede the git call, not merely report afterwards.
   it('refuses to force-remove a worktree outside the foreign tmp root, making no git call', () => {
     const victim = path.join(fixture, '..', `${path.basename(fixture)}-victim`);
-    execFileSync('git', ['-C', fixture, 'worktree', 'add', '--detach', '-q', victim, 'HEAD'], {
+    fixtureGit(['-C', fixture, 'worktree', 'add', '--detach', '-q', victim, 'HEAD'], undefined, {
       encoding: 'utf8',
     });
     const dirty = path.join(victim, 'uncommitted-work.txt');
@@ -770,14 +760,14 @@ describe('worktree mechanics (synthetic repo)', () => {
       expect(fs.readFileSync(dirty, 'utf8')).toContain('work nobody else may delete');
     } finally {
       try {
-        execFileSync('git', ['-C', fixture, 'worktree', 'remove', '--force', victim], {
+        fixtureGit(['-C', fixture, 'worktree', 'remove', '--force', victim], undefined, {
           encoding: 'utf8',
           stdio: 'pipe',
         });
       } catch {
         /* best effort */
       }
-      fs.rmSync(victim, { recursive: true, force: true });
+      removeTree(victim);
     }
   });
 
@@ -787,9 +777,9 @@ describe('worktree mechanics (synthetic repo)', () => {
   // worktree registered in the operator's REAL repo, where nothing later
   // removes it.
   it('classifies a missing binary as channel-unavailable and leaves no orphaned worktree', async () => {
-    const foreignParent = fs.mkdtempSync(path.join(os.tmpdir(), 'so-foreign-enoent-'));
+    const foreignParent = makeTmpDir('so-foreign-enoent-');
     const listLines = () =>
-      execFileSync('git', ['-C', fixture, 'worktree', 'list'], { encoding: 'utf8' })
+      fixtureGit(['-C', fixture, 'worktree', 'list'], undefined, { encoding: 'utf8' })
         .split('\n')
         .filter(Boolean).length;
     const before = listLines();
@@ -818,7 +808,7 @@ describe('worktree mechanics (synthetic repo)', () => {
       expect(events).toHaveLength(1);
       expect(events[0].payload).toMatchObject({ ok: false, reason: 'channel-unavailable' });
     } finally {
-      fs.rmSync(foreignParent, { recursive: true, force: true });
+      removeTree(foreignParent);
     }
   });
 
@@ -827,7 +817,7 @@ describe('worktree mechanics (synthetic repo)', () => {
   // its mode bits and can plant symlinks inside it before the run starts.
   // mkdtemp's random 0700 directory is not.
   it('defaults the worktree parent to a fresh mkdtemp directory, not a fixed path', async () => {
-    const before = execFileSync('git', ['-C', fixture, 'worktree', 'list'], { encoding: 'utf8' })
+    const before = fixtureGit(['-C', fixture, 'worktree', 'list'], undefined, { encoding: 'utf8' })
       .split('\n')
       .filter(Boolean).length;
     const res = await dispatchForeign(
@@ -842,11 +832,11 @@ describe('worktree mechanics (synthetic repo)', () => {
     expect(parent).not.toBe(path.join(os.tmpdir(), 'so-foreign'));
     expect(path.basename(parent).length).toBeGreaterThan('so-foreign-'.length);
     expect(
-      execFileSync('git', ['-C', fixture, 'worktree', 'list'], { encoding: 'utf8' })
+      fixtureGit(['-C', fixture, 'worktree', 'list'], undefined, { encoding: 'utf8' })
         .split('\n')
         .filter(Boolean).length
     ).toBe(before);
-    fs.rmSync(parent, { recursive: true, force: true });
+    removeTree(parent);
   });
 
   // Bug (HIGH, the headline one): a linked worktree shares core.hooksPath and
@@ -856,7 +846,7 @@ describe('worktree mechanics (synthetic repo)', () => {
   // to the event (counts changed_files). The before/after fingerprint is the
   // only mechanical signal that a review can read.
   it('flags hookTampering when a hook appears during the dispatch', async () => {
-    const foreignParent = fs.mkdtempSync(path.join(os.tmpdir(), 'so-foreign-hooks-'));
+    const foreignParent = makeTmpDir('so-foreign-hooks-');
     const hooksDir = path.join(fixture, '.git', 'hooks');
     const planted = path.join(hooksDir, 'pre-commit');
     try {
@@ -904,17 +894,13 @@ describe('worktree mechanics (synthetic repo)', () => {
     } finally {
       for (const wtName of ['hooked', 'hooked2']) {
         try {
-          execFileSync(
-            'git',
-            ['-C', fixture, 'worktree', 'remove', '--force', path.join(foreignParent, wtName)],
-            { encoding: 'utf8', stdio: 'pipe' }
-          );
+          fixtureGit(['-C', fixture, 'worktree', 'remove', '--force', path.join(foreignParent, wtName)], undefined, { encoding: 'utf8', stdio: 'pipe' });
         } catch {
           /* best effort */
         }
       }
       fs.rmSync(planted, { force: true });
-      fs.rmSync(foreignParent, { recursive: true, force: true });
+      removeTree(foreignParent);
     }
   });
 });

@@ -11,13 +11,13 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import {
-  mkdtempSync,
   writeFileSync,
   readFileSync,
   realpathSync,
-  rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+
+import { fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 // macOS: /var/folders → /private/var/folders symlink. validatePathInsideProject's
 // phase-2 (symlink) check requires the confinement root to be the resolved realpath.
@@ -105,19 +105,19 @@ const tmpdirs = [];
  * Returns the tmpdir path.
  */
 function makeTmpRepo({ filename = 'CLAUDE.md', content }) {
-  const tmp = mkdtempSync(join(TMP_REAL, 'promote-test-'));
+  const tmp = makeTmpDir('promote-test-');
   tmpdirs.push(tmp);
 
   // Git init with deterministic author so commits don't fail on CI
-  spawnSync('git', ['-C', tmp, 'init'], { encoding: 'utf8' });
-  spawnSync('git', ['-C', tmp, 'config', 'user.email', 'test@test.local'], { encoding: 'utf8' });
-  spawnSync('git', ['-C', tmp, 'config', 'user.name', 'Test'], { encoding: 'utf8' });
+  fixtureGitSpawn(['-C', tmp, 'init']);
+  fixtureGitSpawn(['-C', tmp, 'config', 'user.email', 'test@test.local']);
+  fixtureGitSpawn(['-C', tmp, 'config', 'user.name', 'Test']);
 
   if (filename && content !== undefined) {
     writeFileSync(join(tmp, filename), content, 'utf8');
     // Initial commit so HEAD exists (required for git commit later)
-    spawnSync('git', ['-C', tmp, 'add', filename], { encoding: 'utf8' });
-    spawnSync('git', ['-C', tmp, 'commit', '-m', 'init'], { encoding: 'utf8' });
+    fixtureGitSpawn(['-C', tmp, 'add', filename]);
+    fixtureGitSpawn(['-C', tmp, 'commit', '-m', 'init']);
   }
 
   return tmp;
@@ -140,7 +140,7 @@ function run(extraArgs = []) {
  * Get the git log oneline output for a repo.
  */
 function gitLog(repoDir) {
-  const r = spawnSync('git', ['-C', repoDir, 'log', '--oneline'], { encoding: 'utf8' });
+  const r = fixtureGitSpawn(['-C', repoDir, 'log', '--oneline']);
   return r.stdout.trim();
 }
 
@@ -150,7 +150,7 @@ function gitLog(repoDir) {
 
 afterEach(() => {
   for (const d of tmpdirs.splice(0)) {
-    try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(d); } catch { /* ignore */ }
   }
 });
 
@@ -245,8 +245,8 @@ describe('promote-vault-strict', () => {
     const tmp = makeTmpRepo({ filename: null, content: undefined });
     // Commit a dummy file to have a HEAD
     writeFileSync(join(tmp, 'README.md'), '# hi', 'utf8');
-    spawnSync('git', ['-C', tmp, 'add', 'README.md'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', tmp, 'commit', '-m', 'init'], { encoding: 'utf8' });
+    fixtureGitSpawn(['-C', tmp, 'add', 'README.md']);
+    fixtureGitSpawn(['-C', tmp, 'commit', '-m', 'init']);
 
     const result = run(['--repo', tmp, '--apply', '--no-baseline']);
 
@@ -327,7 +327,7 @@ describe('promote-vault-strict', () => {
   it('9. no --repo and no cross-repo.projects in config → no-op exit 0 with notice', () => {
     // Create a tmpdir with a CLAUDE.md that has NO cross-repo: block.
     // The script must detect the empty list and exit cleanly.
-    const tmp = mkdtempSync(join(TMP_REAL, 'promote-noop-test-'));
+    const tmp = makeTmpDir('promote-noop-test-');
     tmpdirs.push(tmp);
 
     writeFileSync(

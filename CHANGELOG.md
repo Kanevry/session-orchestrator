@@ -189,6 +189,82 @@ prose-invoked skills (0 by construction) were exempt. Upgrade guide:
   payload, identical in value for the whole generation so the server's existing column stays
   comparable: **DEPRECATED 2026-09-06, removal 2027-03-06** (`docs/telemetry.md:42-43`).
 
+- **`zod` and `yaml` hoisted from a nested skill's own `package.json` to this repo's
+  root `dependencies`.** `skills/vault-sync/package.json` resolved them as its own
+  transitive install; a fresh top-level `npm ci` without that nested install step
+  left `vault-sync`'s schema validation unable to resolve either package. Root
+  `package.json` now pins `yaml@^2.9.0` and `zod@^3.25.76` directly (the nested
+  `package.json` still carries its own copies — redundant, harmless, left as a
+  cleanup candidate).
+- **`scripts/release.mjs`'s preflight gains a GitHub-mirror CI row and two
+  publish-time hardenings.** `evaluateGithubCiRow()` adds `ci-green-on-head-github`
+  as its own preflight check (26 rows total) via `checkCiStatus({ vcs: 'github' })`
+  — `--skip-ci` marks it skipped, and a repo with no configured GitHub remote also
+  skips it rather than failing; `publishInvocation()` now pins
+  `npm_config_loglevel=notice` on the publish spawn (an inherited silent level from
+  an outer gate run suppressed output the packlist gate depends on); and
+  `describeTagProgress()` is printed on a post-receipt tag/push failure, so a
+  publish that succeeds but fails to tag no longer leaves the operator guessing
+  what state the release is in. `commands/release.md` step 7 documents the ≥600s
+  Bash wrapper this needs; `skills/npm-publish/SKILL.md` is updated to match.
+- **The release drift sweep moves off `git grep` onto `enumerateRepoFiles()`
+  (#1248) — the same gitignore/untracked blind spot the two checkers below were
+  fixed for, closed once.** `collectDriftHits()` in `scripts/release.mjs` now
+  enumerates via `git ls-files --cached --others --exclude-standard` instead of
+  shelling out to `git grep` for the previous release tag, so an untracked file is
+  swept for a leftover version literal exactly as a tracked one is.
+- **The Full Gate now names which test FILES failed, not just the pass/fail
+  count.** `extractFailedTestFiles()` (`scripts/lib/gates/gate-helpers.mjs`) parses
+  vitest's own failure output; `gate-full.mjs` carries the result as a new
+  `failed_files[]` field alongside the existing counts, on both the returned
+  object and the `orchestrator.quality_gate.*` event payload. Separately,
+  `.husky/pre-push` now passes the real repo root to the gate as an **argv flag**,
+  `--ledger-root <path>` (`npm run --silent quality-gate -- --ledger-root
+  "$repo_root"`), so a gate run against a materialised temp worktree writes its
+  event into the REAL repo ledger instead of a tree an `EXIT` trap deletes seconds
+  later — the root cause of several `quality_gate.passed` records the test suite
+  itself had polluted into `.orchestrator/metrics/events.jsonl`.
+  `resolveLedgerRoot()` (`scripts/run-quality-gate.mjs`) validates the flag as an
+  existing directory that itself contains `.orchestrator/`; anything else is one
+  stderr WARN and a fallback to the pre-existing resolution, never a crash. **This
+  shipped first as an exported `SO_GATE_LEDGER_ROOT` env var and was replaced
+  before release, inside the same session**: the Wave-4 architect-panel review
+  measured that an exported env var is inherited by every descendant process,
+  including the gate's OWN vitest children three levels down (`npm run
+  quality-gate` → `gate-full.mjs` → `npm test`), where `run-quality-gate.test.mjs`'s
+  telemetry tests spread `...process.env` and so wrote their fixture events to the
+  pinned root instead of their own tmp fixture — measured **8 of 9 telemetry tests
+  red** under the hook's own environment. An argv flag reaches only the one
+  process meant to read it. `run-quality-gate.test.mjs` still sandboxes
+  `CLAUDE_PROJECT_DIR` per test and additionally scrubs any ambient
+  `SO_GATE_LEDGER_ROOT` before each run (belt-and-braces against a leftover from
+  the removed env-var form); a new `tests/husky/pre-push-gate.test.mjs` case
+  ("hands the real repo root to the gate as --ledger-root") pins the hook's own
+  argv, and 0 production readers of `SO_GATE_LEDGER_ROOT` remain repo-wide
+  (`grep -rn SO_GATE_LEDGER_ROOT` outside test files and history comments → no
+  match, measured 2026-09-06).
+- **The session-start plugin-update banner is now English and platform-aware.**
+  `checkPluginUpdate()` (`scripts/lib/plugin-update-banner.mjs`) accepts an
+  optional `platform` and picks the matching upgrade command from
+  `PLATFORM_UPDATE_INSTRUCTIONS` (`claude`/`codex`/`cursor`/`pi`), falling back to
+  a generic `npm update`-shaped instruction when the platform is unset or
+  unknown — previously every consumer saw the same `claude plugin update` line
+  regardless of harness.
+- **Six documentation corrections following the 4.0.0 removals above.** The
+  `autopilot` SKILL's Configuration section is now a 4-line pointer to
+  `docs/migration-v4.md` instead of describing the removed `bg-isolation` field in
+  full; `NOTICE`'s attribution table is repointed at
+  `skills/architecture/references/{domain-model,ADR-FORMAT,CONTEXT-FORMAT}.md` and
+  notes `ubiquitous-language`'s removal while keeping its MIT attribution history;
+  `check-agents.mjs`'s warn-string citations of `agents/AGENTS.md` now cite
+  `docs/agent-authoring.md`; `templates/_shared/journey-manifest.md` gained a
+  retirement notice (kept as an optional per-repo template — no command consumes
+  it anymore); `skills/architecture/SKILL.md` documents when to load
+  `references/domain-model.md`; and `README.md` picked up matching corrections
+  (Windows is untested rather than "runs natively"; the update banner is
+  patch-silent; nothing is sent without consent EXCEPT the update check's own
+  anonymous `GET`, opt-out via `SO_DISABLE_UPDATE_CHECK`/`DO_NOT_TRACK`).
+
 #### Predecessor commits (v3.24.0 → `e4674109`)
 
 - **Quality-gate ownership check now folds onto the process-local reader (#1205).**
@@ -397,6 +473,14 @@ Every entry under *4.0.0 — audit session* below is a REMOVED PUBLIC SURFACE an
 this release is a major. Each names its replacement or states explicitly that there is none.
 Upgrade guide: [`docs/migration-v4.md`](docs/migration-v4.md).
 
+**Deviation from the deprecate-then-remove norm** (`.claude/rules/development.md` § Package
+Lifecycle: stub + first-call `console.warn` for ≥1 minor cycle). The 5 skills and 3 commands
+below are HARD-deleted, not stubbed — an explicit operator decision made 2026-09-06. The
+removal test was **0 telemetry ∧ 0 fleet invocation over 90 days ∧ no runtime consumer**, and
+that 90-day window is honestly a *search* window, not 90 days of shipped exposure: `journey-audit`
+itself had existed for only 9 days (added 2026-08-28) before this cut. Full rationale and the
+manual cleanup steps: [`docs/migration-v4.md`](docs/migration-v4.md).
+
 #### 4.0.0 — audit session
 
 - **5 skills removed** — `find skills -name SKILL.md | wc -l` → 43, against
@@ -417,6 +501,11 @@ Upgrade guide: [`docs/migration-v4.md`](docs/migration-v4.md).
   `pi/prompts/` (both also 25): **`/contract-version-bump`**, **`/journey-audit`** (with
   their skills above) and **`/autopilot-multi`**. **No replacement** for any of the three.
   `/autopilot` is a different command, unaffected, and stays.
+- **Session Config `autopilot.bg-isolation` removed** — the `autopilot:` block's only field,
+  retired together with `/autopilot-multi` above (`scripts/parse-config.mjs` never parsed an
+  `autopilot` key at all, so removing it changes no runtime behaviour). **No replacement** —
+  delete the block from your `CLAUDE.md`/`AGENTS.md`; single-story `/autopilot` takes no
+  Session Config block and is unaffected.
 - **8 top-level scripts removed** (`scripts/*.mjs`, 0 runtime callers each, with their test
   files): `autopilot-multi.mjs`, `backfill-learnings.mjs`, `backfill-learnings-expires.mjs`,
   `fleet-instruction-scan.mjs`, `lifecycle-sim-v6.mjs`, `migrate-learnings-jsonl.mjs`,
@@ -436,6 +525,12 @@ Upgrade guide: [`docs/migration-v4.md`](docs/migration-v4.md).
   [`docs/memory-proposal-flow.md`](docs/memory-proposal-flow.md). Same content, no longer a
   dispatch target. **Anything dispatching either by name must stop** — they are
   documentation, and were only ever documentation.
+
+- **`scripts/lib/autopilot/multi-killswitch.mjs` and
+  `scripts/lib/autopilot/dep-graph.mjs` deleted, with their test files** —
+  orphaned by the `/autopilot-multi` removal above, with only their own tests as
+  consumers. **No replacement**; single-story `/autopilot` never imported either
+  module.
 
 #### Predecessor commits (v3.24.0 → `e4674109`)
 
@@ -520,6 +615,182 @@ Upgrade guide: [`docs/migration-v4.md`](docs/migration-v4.md).
   watcher could only start when the `ecosystem-health` skill ran, and that skill has 0
   recorded invocations fleet-wide, so it never started once. The trigger is now
   `on-skill-invoke:session-start`.
+
+- **CP11 (the confidential-names owner-leakage check) could fail OPEN and still
+  print `PASS` (#1244).** `getConfidentialNamePatterns()`
+  (`scripts/lib/validate/check-owner-leakage.mjs`) collapsed three different
+  outcomes onto the same `[]` degrade: (a) the standalone single-file copy, where
+  the helpers are genuinely unresolvable — the only case meant to go inert; (b)
+  CP11 simply unconfigured; and (c) CP11 configured but unreadable (missing
+  `js-yaml`, an unparseable `owner.yaml`, or a wholesale-discarded partial
+  config), which used to read identically to (b) and print the clean verdict it
+  never earned. Case (c) now returns a `disabledReason` and the scanner prints
+  `CP11 DISABLED: <reason>` plus a counted FAIL — with no path in the reason
+  string, since this scanner's output is mirrored to a public CI log.
+  `owner-yaml.mjs`'s whole-file discard on an invalid REQUIRED section (#820) now
+  merges a still-VALID optional object section (e.g. `paths:`) back onto its
+  default instead of discarding it too, so a correctly declared
+  `confidential-names-file` no longer vanishes because an unrelated section was
+  malformed; a genuinely invalid optional section is reported via
+  `droppedSections`, and an unparseable file gets the new `reason: 'unparseable'`.
+  A third, unrelated fail-open closed in the same file: `isMain` now compares
+  `realpathSync()` of both sides, so a symlinked invocation path (`/tmp` →
+  `/private/tmp` on macOS) can no longer make the scanner exit 0 having scanned
+  nothing.
+- **CP11's own DISABLED path (above) was itself overbroad, and its degrade
+  path had two further defects — all three closed together in
+  `scripts/lib/validate/check-owner-leakage.mjs` and `.husky/pre-commit`
+  (Wave-4 Codex second-look).** First, DISABLED fired even when NO
+  confidential-names file was ever configured: a healthy `owner.yaml` with
+  only an unrelated invalid optional section (e.g. `paths: { vault-dir: 42
+  }`) and no `confidential-names-file` key reported `CP11 DISABLED` and a
+  counted FAIL, when the correct verdict is "inactive." A new
+  `rawConfidentialNamesKeyState()` re-reads the RAW (pre-validation) key
+  before classifying, so DISABLED now fires only when a names path was
+  actually configured; a healthy owner.yaml with `paths:` present but no
+  names-file key now stays `PASS` with no CP11 line at all, pinned by a new
+  case in `tests/lib/validate/check-owner-leakage.test.mjs`. Second, the
+  standalone-copy inert degrade (the ONE case meant to go silently
+  patterns-`[]`) was scoped by a bare `ERR_MODULE_NOT_FOUND` check, so a
+  missing TRANSITIVE module — not just the scanner's own three vendored
+  sibling imports — also went inert instead of failing closed.
+  `isMissingDirectSibling()` now inspects `err.url` (the URL Node's own
+  `ERR_MODULE_NOT_FOUND` carries) against the scanner's three known
+  direct-sibling import URLs; a miss anywhere deeper now THROWS. Third,
+  `.husky/pre-commit` was capturing but discarding the scanner's own stderr
+  on failure and printing the same "privacy leak detected" line regardless
+  of cause; it now prints the scanner's (redacted) diagnostic tail and
+  distinguishes "the scanner could not run" from "the scanner found a
+  leak." 259/259 tests pass; 4 fake-regression probes (each reverting one
+  of the three fixes above) still turn red; a live repo scan still PASSes.
+- **`checkOwnerConfig()`'s whole-file-discard message claimed "the entire
+  file was discarded" even when a validly-configured OPTIONAL section
+  survived the discard onto its default (#1244 merge rule, Fixed above).**
+  `scripts/lib/owner-config-banner.mjs` now diffs each optional object
+  section (`paths`, `dispatcher`) in the merged config against
+  `getDefaults()`: a section that differs was real and survived, and the
+  banner names it — `"paths" kept, everything else defaulted` — instead of
+  claiming total loss; `droppedSections` renders on this branch too.
+  Reproduced with a tmp owner.yaml carrying an invalid `owner.name`
+  (required, triggers the whole-file path) alongside a valid
+  `paths.confidential-names-file` (a Wave-4 architect-panel finding); a new
+  case in `tests/lib/owner-config-banner.test.mjs` pins the "kept" wording.
+  168/168 tests pass; 2 fake-regression probes still turn red; a real,
+  healthy host's banner still returns null.
+- **`check-skill-script-paths` and `check-validator-registration` answered an
+  existence question from the git INDEX, so a brand-new untracked file's own
+  citation was invisible to them until `git add` (#1248).** Measured in a clone
+  (Wave-1 discovery): an untracked skill citing a non-existent script reported
+  `1 passed, 0 failed` before staging and `0 passed, 1 failed` after — same tree,
+  same defect. New shared `scripts/lib/validate/enumerate-repo-files.mjs`
+  (`enumerateRepoFiles()`) answers "does this exist under these roots right now"
+  via `git ls-files --cached --others --exclude-standard`, honouring
+  `.gitignore` without reopening #1143 (a bare `readdirSync` walk was tried and
+  REFUTED: it pulls a gitignored peer worktree under `.claude/worktrees/` into
+  the census — measured 287 vs 290 `.md` files with one peer worktree present).
+  Both checkers, and the release drift sweep (Changed, above), now share this
+  one enumerator instead of three different partial views.
+- **`enumerateRepoFiles()` (above) silently dropped `stat` failures other than
+  `ENOENT`/`ENOTDIR`, so a permission-denied file read as "does not exist"
+  instead of "unknown" — the release drift sweep (Changed, above) could
+  report a clean sweep on 0 actual reads (Wave-4 Codex second-look).** It
+  now throws a typed `RepoEnumerationError`
+  (`scripts/lib/validate/enumerate-repo-files.mjs`) for
+  `EACCES`/`EPERM`/`ELOOP`/`EIO`/`ENAMETOOLONG`/anything else it cannot
+  classify as "provably absent," carrying the path and the underlying error
+  code; only `ENOENT` and `ENOTDIR` are still treated as absent.
+  `collectDriftHits()` (`scripts/release.mjs`) reports this as exit 128,
+  which the release preflight already reads as "inconclusive" — the same
+  reading a crashed `git grep` got, never a silent clean. 195/195 tests
+  pass across the 5 touched files; the Codex reproduction now shows status
+  128 / `ok:false` instead of a clean sweep; `validate-plugin.mjs` still
+  234/0. Two known sibling sites of the same swallow-class are filed as
+  follow-up issues rather than fixed here: `listRepoFiles()`
+  (`scripts/lib/repo-files.mjs`) has the identical catch-all, and 3 further
+  test files still hand-roll `git init` + a bare recursive `rmSync` in
+  template-string form (invisible to a literal-string census) rather than
+  routing through `tests/_helpers/tmp-fixture.mjs`.
+- **15 more fixture-shaped test files are routed onto the
+  `tests/_helpers/tmp-fixture.mjs` helper (the detached-`git-maintenance` fix,
+  below) this session — 3 of them deleting a weaker inline copy of the same
+  helper that `enumerate-repo-files.test.mjs`, `check-validator-registration.test.mjs`
+  and `check-skill-script-paths.test.mjs` had each written for themselves
+  (above), plus 11 legacy files and a `release.test.mjs` git-grep-to-fixture
+  probe.** `tests/unit/quality-gate-session-config.test.mjs` — the one file
+  this pass left out of scope, needed here because it was also touching
+  `enumerate-repo-files.test.mjs` — is itself routed in this same session (23
+  insertions / 30 deletions: `execSync('git init', ...)` →
+  `fixtureGit(['init', ...])`, `rmSync(repoRoot, ...)` → `removeTree(repoRoot)`,
+  `mkdtempSync(...)` → `makeTmpDir(...)`). Net −28 LOC across the routed
+  files; 526/526 of their own tests unchanged per file; eslint clean. The
+  self-census this whole effort is measured against
+  (`tests/lib/validate/check-test-git-config-target.test.mjs`) cannot resolve
+  a fixture helper's own `...spread` token to a git subcommand, so its floor
+  was lowered from `>50` to `>20` with a Revisit-Trigger comment naming the
+  exact condition ("the census learning to resolve the helper's spread")
+  rather than silently loosened — the remaining git-fixture files are reduced
+  this session, not proven at zero: 3 further sites in template-string form
+  are filed as follow-up issues (above).
+- **The full test suite failed 1–2 tests per run, never the same one twice — a
+  detached `git maintenance` child racing the fixture's own cleanup.**
+  `GIT_TRACE=1` on a bare fixture commit showed `git maintenance run --auto
+  --quiet --detach` still writing into a temp `.git` directory after
+  `execFileSync` returned, so the `afterEach` `rmSync` raced a live process and
+  failed with `ENOTEMPTY`. New `tests/_helpers/tmp-fixture.mjs` (`fixtureGit`,
+  `fixtureGitSpawn`, `removeTree`, `makeTmpDir`) sets `maintenance.auto=false`,
+  `gc.auto=0` and `core.fsmonitor=false` on every fixture repo, and retries
+  removal (`maxRetries: 5`) for what config alone cannot reach. 24 fixture files
+  (118 git call sites, 35 `rmSync` sites, 39 `mkdtemp` sites) now route through
+  it; the detached-maintenance trace line is gone from the routed files, and the
+  494 tests across those 24 files still pass.
+- **10 of the 43 learning-provenance markers the 43→8 generated-rule
+  consolidation (Changed, above) dropped are restored, across
+  `git-and-worktrees`, `guard-design`, `measurement-discipline`,
+  `process-contracts`, `review-and-adapter-contracts`, `test-hygiene` and
+  `toolchain-and-build.md` (+121/−19 across the 7 files).** That consolidation's
+  own claim — "each keeping its provenance markers" — was false for 10 of them
+  when written; a fresh census now counts 43 of 43 keys and 43 of 43 ids (a
+  previously reported "42 ids" was itself a UUID-filter miss, not a real 42nd
+  gap). One of the 10 was a markers-only restoration against an
+  already-present duplicate prose block; the other 9 restore both the prose and
+  its evidence line.
+- **`docs/migration-v4.md` §6 Rollback and its "Cursor still shows the removed
+  commands" recipe both had defects that would have re-broken what they were
+  trying to fix (Wave-4 Codex second-look).** §6's `cursor-install.mjs` /
+  `pi-install.mjs` rollback lines were missing the target-project argument
+  both scripts require — they default to `process.cwd()`
+  (`scripts/cursor-install.mjs:24-51`), so an operator following the doc
+  literally would link the installer into the session-orchestrator checkout
+  itself, not their own project. Both lines now carry
+  `/path/to/your-project` explicitly, with a note that both installers are
+  ADD-ONLY: they skip any destination that already exists, so re-running the
+  3.24.0-checkout installer never resyncs a `hooks.json` or Pi settings file
+  written under 4.0.0 — only adds what your project is missing. The
+  "Cursor still shows the removed commands" recipe used `rm -f` to delete
+  three named files, which deletes a REGULAR file with the same name exactly
+  as readily as a symlink — including a command an operator wrote themselves
+  under one of those three retired names; it is now a `[ -L "$p" ] && rm
+  "$p"` loop, symlink-only. Separately, the session-start plugin-update
+  banner's Pi instruction (Changed, above) led with the dev-fallback checkout
+  recipe though the documented PRIMARY Pi install path is `pi install
+  npm:session-orchestrator` (`docs/pi-setup.md:16`, §"Option 1") —
+  `PLATFORM_UPDATE_INSTRUCTIONS.pi` (`scripts/lib/plugin-update-banner.mjs`)
+  now leads with re-running that exact command, naming the checkout +
+  `--settings-only` recipe only as the fallback for a dev-fallback
+  registration. 25/25 tests pass; `check-skill-links.mjs` reports 86;
+  `validate-plugin.mjs` 234/0.
+- **`#1229` closed — the session-lock heartbeat already refreshes on `Stop`,
+  `PostToolBatch` and `SessionStart`, not only once per wave; the reported gap
+  was a false premise, refuted by measurement.** Live call sites confirmed at
+  `hooks/on-stop.mjs:438` (fires every turn), `hooks/post-tool-batch-wave-signal.mjs:377`,
+  and `hooks/on-session-start.mjs:1078`; a heartbeat mid-wave measured 3 seconds
+  old. No `UserPromptSubmit` hook exists to add a fourth site.
+- **`#1230` closed — `js-yaml` is already lazily required in `owner-yaml.mjs`
+  (`:120-127`, memoised, one WARN on failure) and all 27 hooks already exit 0
+  with both `zx` and `js-yaml` blocked; the reported gap was a false premise,
+  refuted by measurement.** The eager-import class the Predecessor-commits Fixed
+  entry above already closed was re-verified still holding at this session's
+  base commit — no regression, no further code change needed.
 
 #### Predecessor commits (v3.24.0 → `e4674109`)
 
@@ -686,6 +957,75 @@ Upgrade guide: [`docs/migration-v4.md`](docs/migration-v4.md).
   pinning a pre-P15 skill body) when the flag is absent. Two new tests in
   `tests/lib/reconcile/writer.test.mjs` cover the flag-wins-over-empty-content case and the
   legacy flagless fallback.
+
+### Security
+
+#### 4.0.0 — audit session
+
+- **The published npm tarball shipped 0 of the 6 files under
+  `.orchestrator/policy/` — including the destructive-command guard's own floor
+  policy (`blocked-commands.json`) — so an npm-installed consumer without a host
+  overlay ran `hooks/pre-bash-destructive-guard.mjs` against `rules: null` and it
+  silently ALLOWED every command the floor exists to block (found by the Wave-1
+  Codex external review, P1: `npm pack --dry-run | grep -c orchestrator/policy`
+  → 0).** `package.json`'s `files[]` now lists `.orchestrator/policy/`;
+  `npm pack --dry-run --json | grep -c "orchestrator/policy"` reports **6**
+  policy files today (`blocked-commands.json`, `ecosystem.schema.json`,
+  `quality-gates.example.json`, `quality-gates.schema.json`,
+  `templates-policy.json`, `test-profiles.json`) where it reported 0 before,
+  pinned by the new `tests/scripts/pack-policy-floor.test.mjs` (a real
+  `npm pack --dry-run`, not a mock). The release leakage gate's `.orchestrator/`
+  exclusion is narrowed to carve THIS directory back IN (`scripts/release.mjs`
+  around line 319) — the operator's own `metrics/`, `debug/` artefacts and live
+  `*.lock` files stay excluded; only the tracked policy floor ships. **The
+  Wave-4 review panel found this test asserted only a FLOOR (≥ 6 files) while
+  `package.json`'s `files[]` admits the WHOLE `.orchestrator/policy/` directory
+  and the carve-out above matched the path anywhere in the string, not just at
+  its start** — an untracked private file dropped into that directory would
+  ship, invisible to a floor check. `pack-policy-floor.test.mjs` now asserts SET
+  EQUALITY between the packed policy entries and `git ls-files
+  .orchestrator/policy` (tracked-only, sorted); the carve-out regex is anchored
+  to the path start (`/^\.orchestrator\/policy\//`, previously unanchored),
+  with the VCS-trust rationale — everything under this one directory ships
+  because it is tracked, not because of a per-file allowlist — recorded in a
+  comment beside it.
+- **`session_profile` was the one free-form string field on the telemetry
+  wire — both an internal Wave-1 review and the Codex review reproduced sending
+  an arbitrary string through it.** `VALID_SESSION_PROFILES` (`['ultradeep']`
+  today) is now enforced on BOTH ends: the client
+  (`scripts/lib/telemetry/schema.mjs`) omits the field when it is not a known
+  profile rather than passing it through, and the ingest server
+  (`server/ingest/validate.mjs`) rejects a record whose `session_profile` fails
+  the same enum plus a 32-char length ceiling. Reproduced before the fix: a
+  crafted `session_profile` string reached the wire; after, the client sends
+  nothing and the server rejects a forged one directly. `detectSandbox()`
+  (`scripts/lib/telemetry/sync.mjs`) now also fails CLOSED — a probe that
+  itself throws returns `{ sandbox: true, reason: 'sandbox:probe-failed' }`
+  instead of falling through to "not a sandbox". `docs/telemetry.md` gained the
+  field table, the no-free-text-fields claim, and a new section documenting the
+  npm update-check's own egress (`SO_DISABLE_UPDATE_CHECK`, `DO_NOT_TRACK`,
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`).
+- **The `session_profile` whitelist above covered only the LIVE send path — a
+  record already sitting in the offline queue when that whitelist landed still
+  carried whatever it was enqueued with, and `flush()`
+  (`scripts/lib/telemetry/sync.mjs`) forwarded every queued batch to the sender
+  UNCHANGED.** Reproduced by the Wave-4 Codex second-look: a record the ingest
+  server rejects is retried, still rejected, still requeued — the offline queue
+  grew 1 → 2 → 3 and never drained. `sanitizeQueuedRecord()` now re-projects
+  (`projectUsagePing`) and re-whitelists `session_profile` on every queued
+  record before it joins a send batch, closing the same gap the live path was
+  already closed for; the Codex reproduction now shows the queue back at 0
+  after 3 consecutive rejections. A batch the server rejects with HTTP 400/422
+  is now EVICTED (`reason: 'rejected-evicted'`) instead of re-queued: the
+  ingest API validates a batch all-or-nothing with no per-record index, so the
+  only bounded response to "the server will never accept this payload" is to
+  drop the whole batch (named ceiling, BV-004: revisit if the server ever
+  reports which record failed). `defaultSender` now attaches the HTTP status to
+  the thrown error (`err.status`) so `flush()` can tell a schema rejection
+  (evict) from a transport failure (re-queue, unchanged behaviour) — an
+  injected sender that throws a bare `Error` still falls through to the
+  pre-existing re-queue path. `docs/telemetry.md` documents `rejected-evicted`
+  under "When a ping is sent".
 
 ### Notes
 

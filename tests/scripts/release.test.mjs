@@ -21,9 +21,8 @@
 //      GitHub state authorizes a duplicate create.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import {
   SURFACES,
@@ -49,7 +48,12 @@ import {
   waitForRegistryPropagation,
   runPublishRelease,
   printPublishOutcome,
+  publishInvocation,
+  describeTagProgress,
+  evaluateGithubCiRow,
+  collectDriftHits,
 } from '../../scripts/release.mjs';
+import { fixtureGit, fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 import { DEGRADED_REASONS } from '../../scripts/lib/ci-status-banner.mjs';
 
 // Fixture shapes are copied from the live repo files (golden-record rule in
@@ -93,10 +97,10 @@ function writeFixture(root, v) {
 
 let root;
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), 'release-test-'));
+  root = makeTmpDir('release-test-');
 });
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+  removeTree(root);
 });
 
 describe('scanSurfaces', () => {
@@ -288,6 +292,34 @@ describe('checkLeakage', () => {
     expect(new Set(names)).toEqual(new Set(declared));
   });
 
+  // The `.orchestrator/policy/` carve-out (Codex P1). skills/npm-publish/SKILL.md
+  // § "what a leak means" allows exactly two answers to a gate hit: it is a real
+  // leak (fix `package.json` `files`), or it is genuine over-matching (fix
+  // LEAKAGE_PATTERNS **with a test**). This is the second — the destructive-guard
+  // FLOOR policy is INTENDED to ship since 4.0.0, because `npm pack` carried 0
+  // policy entries and `loadEffectivePolicy` therefore returned `rules:null`,
+  // leaving the guard permissive on every consumer install.
+  //
+  // BUG this catches (TV-001): the cheap way to write that carve-out is a PREFIX
+  // test, which silently also excuses `.orchestrator/policy-backup/` — and no
+  // other test in this file distinguishes the two. The runtime classes must stay
+  // caught, or the carve-out becomes a hole for metrics/, tmp/ and session.lock.
+  it('does not flag the shipped destructive-guard policy floor', () => {
+    expect(checkLeakage(['npm notice 5.6kB .orchestrator/policy/blocked-commands.json'])).toEqual([]);
+    expect(checkLeakage(['npm notice 1.3kB .orchestrator/policy/quality-gates.schema.json'])).toEqual([]);
+  });
+
+  it('still flags every other .orchestrator/ path, including the policy- prefix trick', () => {
+    for (const line of [
+      'npm notice 3.4kB .orchestrator/metrics/sessions.jsonl',
+      'npm notice 0.2kB .orchestrator/session.lock',
+      'npm notice 0.4kB .orchestrator/tmp/w2-common.md',
+      'npm notice 0.9kB .orchestrator/policy-backup/blocked-commands.json',
+    ]) {
+      expect(checkLeakage([line]).map((v) => v.name)).toEqual(['.orchestrator/']);
+    }
+  });
+
   it('returns no violations for a clean pack list', () => {
     const lines = [
       'npm notice package: session-orchestrator@3.19.0',
@@ -412,7 +444,7 @@ describe('evaluateDriftSweep', () => {
   it('accepts exit 1 (no match) as the genuine clean sweep', () => {
     const r = evaluateDriftSweep({ status: 1, stdout: '', stderr: '' }, '3.20.0', ALLOWLIST);
     expect(r.ok).toBe(true);
-    expect(r.detail).toContain('no tracked file');
+    expect(r.detail).toContain('no file');
   });
 
   it('fails on hits outside the history allowlist and names them', () => {
@@ -507,6 +539,83 @@ describe('evaluateDriftSweep', () => {
     ['nothing to see', false],
   ])('isDependencyRangeOnly(%j) === %s', (line, expected) => {
     expect(isDependencyRangeOnly(line, '3.24.0')).toBe(expected);
+  });
+});
+
+describe('collectDriftHits', () => {
+  // THE BUG (#1248): the sweep was one `git grep`, which searches the INDEX.
+  // An UNTRACKED file carrying the previous release's version literal was
+  // invisible to it — and a doc or manifest written FOR this release and not
+  // yet staged is exactly where a stale literal lives. The sweep reported
+  // clean on the tree that carried the drift. Nothing in the suite covered the
+  // population; every existing case feeds `evaluateDriftSweep` a hand-written
+  // stdout, so the producer could stay blind and stay green.
+  let repo;
+
+  beforeEach(() => {
+    repo = makeTmpDir('so-drift-');
+    fixtureGit(['init', '-q', '-b', 'main', repo]);
+    writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: 'x', version: '4.0.0' }, null, 2));
+    writeFileSync(join(repo, '.gitignore'), 'ignored/\n');
+    fixtureGit(['add', 'package.json', '.gitignore'], repo);
+    fixtureGit(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'], repo);
+  });
+
+  afterEach(() => removeTree(repo));
+
+  it('sees an UNTRACKED file carrying the previous version literal', () => {
+    mkdirSync(join(repo, 'docs'), { recursive: true });
+    writeFileSync(join(repo, 'docs/x.md'), 'shipped in 3.24.0\n');
+
+    // The old population, measured in this very fixture: git grep cannot see it.
+    const gitGrep = fixtureGitSpawn(['grep', '-n', '--fixed-strings', '3.24.0', '--', '.'], repo);
+    expect(gitGrep.status).toBe(1);
+    expect(gitGrep.stdout).toBe('');
+
+    const hits = collectDriftHits({ repoRoot: repo, prevTag: '3.24.0' });
+    expect(hits.status).toBe(0);
+    expect(hits.stdout).toContain('docs/x.md:1:shipped in 3.24.0');
+    expect(evaluateDriftSweep(hits, '3.24.0', /^(CHANGELOG\.md)/).ok).toBe(false);
+  });
+
+  it('still honours .gitignore — an ignored tree is not swept', () => {
+    mkdirSync(join(repo, 'ignored'), { recursive: true });
+    writeFileSync(join(repo, 'ignored/dep.json'), '"version": "3.24.0"\n');
+    expect(collectDriftHits({ repoRoot: repo, prevTag: '3.24.0' })).toMatchObject({ status: 1, stdout: '' });
+  });
+
+  it('reports exit 1 (clean) — never 0 — when nothing carries the literal', () => {
+    expect(collectDriftHits({ repoRoot: repo, prevTag: '3.24.0' })).toMatchObject({ status: 1, stdout: '' });
+  });
+
+  it('skips binaries by the NUL sniff instead of emitting mojibake rows', () => {
+    writeFileSync(join(repo, 'blob.bin'), Buffer.concat([Buffer.from([0, 1, 2]), Buffer.from('3.24.0')]));
+    expect(collectDriftHits({ repoRoot: repo, prevTag: '3.24.0' }).status).toBe(1);
+  });
+
+  it('fails CLOSED when enumeration throws', () => {
+    const hits = collectDriftHits({
+      repoRoot: repo,
+      prevTag: '3.24.0',
+      enumerate: () => {
+        throw new Error('git exploded');
+      },
+    });
+    expect(hits.status).toBe(128);
+    expect(evaluateDriftSweep(hits, '3.24.0', HISTORY_ALLOWLIST)).toMatchObject({ ok: false });
+  });
+
+  it('fails CLOSED on a file it cannot read — content-less row, which reads as a hit', () => {
+    const hits = collectDriftHits({
+      repoRoot: repo,
+      prevTag: '3.24.0',
+      enumerate: () => [join(repo, 'vanished.md')],
+      read: () => {
+        throw new Error('EACCES');
+      },
+    });
+    expect(hits.stdout.trim()).toBe('vanished.md');
+    expect(evaluateDriftSweep(hits, '3.24.0', HISTORY_ALLOWLIST).ok).toBe(false);
   });
 });
 
@@ -741,7 +850,7 @@ describe('ensureGithubRelease', () => {
     // impossible rather than merely discouraged — gh refuses when the tag is
     // not on the remote. The spec comes from resolveRepoSpec (#1039), never a
     // hardcoded owner/repo.
-    const root = mkdtempSync(join(tmpdir(), 'release-gh-'));
+    const root = makeTmpDir('release-gh-');
     try {
       writeFileSync(join(root, 'CHANGELOG.md'), '# Changelog\n\n## [3.21.0] - 2026-08-19\n\n### Added\n- a thing\n');
       let notesSeenByGh = null;
@@ -769,7 +878,7 @@ describe('ensureGithubRelease', () => {
       // The body is the CHANGELOG excerpt, passed by file (never as argv).
       expect(notesSeenByGh).toContain('- a thing');
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeTree(root);
     }
   });
 
@@ -777,7 +886,7 @@ describe('ensureGithubRelease', () => {
     // A non-zero status alone is not "release absent": auth, network and empty
     // output all share it. Creating in those states risks targeting the wrong
     // repository or turning a transient API failure into a duplicate release.
-    const root = mkdtempSync(join(tmpdir(), 'release-gh-'));
+    const root = makeTmpDir('release-gh-');
     try {
       writeFileSync(join(root, 'CHANGELOG.md'), '# Changelog\n\n## [3.21.0] - 2026-08-19\n\n- x\n');
       const calls = [];
@@ -802,7 +911,7 @@ describe('ensureGithubRelease', () => {
       expect(missing.ok).toBe(false);
       expect(missing.detail).toContain('ENOENT');
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeTree(root);
     }
   });
 });
@@ -1049,5 +1158,135 @@ describe('evaluateCiRow', () => {
   // not proceed on it, but the detail must not claim a reason it does not have.
   it('reports absence distinctly from degradation', () => {
     expect(evaluateCiRow(null)).toEqual({ ok: false, detail: 'CI status unavailable' });
+  });
+});
+
+// ── The publish spawn must not inherit a silent loglevel ─────────────────────
+
+describe('publishInvocation', () => {
+  // BUG this catches (TV-001): the `npm publish` spawn inherited
+  // `npm_config_loglevel`. Under a silent ancestor (`npm run --silent`, which
+  // the husky pre-push gate uses) npm publishes and prints NOTHING, so the
+  // `+ pkg@version` line `evaluatePublishReceipt` requires never appears, the
+  // receipt reads unconfirmed, `publish()` throws and `main()` exits 2 =
+  // "pre-receipt, safe to rerun" — while the registry already holds the
+  // version. No existing test looks at the publish spawn's environment at all;
+  // the pinned-env test above covers `npm pack`, a different call site.
+  it('pins npm_config_loglevel=notice so the receipt line is always printed', () => {
+    const call = publishInvocation('/repo', '/tmp/rc/npmrc');
+    expect(call.opts.env.npm_config_loglevel).toBe('notice');
+  });
+
+  it('publishes the package publicly through the temp userconfig, from the repo root', () => {
+    const call = publishInvocation('/repo', '/tmp/rc/npmrc');
+    expect(call.cmd).toBe('npm');
+    expect(call.args).toEqual(['publish', '--access', 'public', '--userconfig', '/tmp/rc/npmrc']);
+    expect(call.opts.cwd).toBe('/repo');
+  });
+
+  it('keeps the rest of the environment — the pin is an override, not a replacement', () => {
+    const call = publishInvocation('/repo', '/tmp/rc/npmrc');
+    expect(call.opts.env.PATH).toBe(process.env.PATH);
+  });
+});
+
+// ── The partial tag/push state after an irreversible receipt ─────────────────
+
+describe('describeTagProgress', () => {
+  // BUG this catches (TV-001): `printPublishOutcome`'s tag/push-failure branch
+  // referenced NONE of the progress `runPublishRelease` collects and also
+  // suppressed the `pushed:` line, so after an irreversible npm receipt the
+  // operator was told only THAT tag-and-push failed. In particular a created
+  // local tag went unannounced, and it makes the next `--check` fail
+  // `tag-free-local` — a collision with no visible cause.
+  const progress = {
+    tag: 'v4.0.0',
+    localTagCreated: true,
+    remotes: [
+      { remote: 'origin', mainPushed: true, tagPushed: true },
+      { remote: 'github', mainPushed: true, tagPushed: false },
+    ],
+  };
+
+  it('names the local tag and every remote half-state', () => {
+    const text = describeTagProgress(progress).join('\n');
+    expect(text).toContain('local tag v4.0.0: CREATED');
+    expect(text).toContain('tag-free-local');
+    expect(text).toContain('origin: main pushed, tag pushed.');
+    expect(text).toContain('github: main pushed, tag NOT pushed.');
+  });
+
+  it('reports an unrecorded progress object as unknown, never as "nothing happened"', () => {
+    expect(describeTagProgress(undefined).join('\n')).toContain('was not recorded');
+  });
+
+  it('says so when no remote was reached at all', () => {
+    const text = describeTagProgress({ tag: 'v4.0.0', localTagCreated: false, remotes: [] }).join('\n');
+    expect(text).toContain('local tag v4.0.0: not created.');
+    expect(text).toContain('no remote was reached');
+  });
+});
+
+describe('printPublishOutcome — the tag/push-failure branch', () => {
+  it('prints the partial tag/push state instead of dropping it', () => {
+    const outcome = {
+      status: 'post-publish-reconciliation',
+      receipt: { confirmed: true, target: '4.0.0' },
+      propagation: { ok: true, detail: 'registry reports 4.0.0 on attempt 1/5' },
+      tag: 'v4.0.0',
+      pushed: ['origin'],
+      tagProgress: {
+        tag: 'v4.0.0',
+        localTagCreated: true,
+        remotes: [
+          { remote: 'origin', mainPushed: true, tagPushed: true },
+          { remote: 'github', mainPushed: false, tagPushed: false },
+        ],
+      },
+      release: { ok: false, skipped: true, detail: 'GitHub release skipped' },
+      live: { ok: false, skipped: true, detail: 'live-site verification skipped' },
+      reconciliation: [{ phase: 'tag-and-push', kind: 'failed', detail: 'git push github main exited 1' }],
+    };
+    const stderr = [];
+    const code = printPublishOutcome(outcome, '4.0.0', { log: () => {}, error: (l) => stderr.push(l) });
+    const text = stderr.join('\n');
+
+    expect(code).toBe(1);
+    expect(text).toContain('local tag v4.0.0: CREATED');
+    expect(text).toContain('origin: main pushed, tag pushed.');
+    expect(text).toContain('github: main NOT pushed, tag NOT pushed.');
+  });
+});
+
+// ── The GitHub-mirror CI row (macOS matrix lives only there) ─────────────────
+
+describe('evaluateGithubCiRow', () => {
+  // BUG this catches (TV-001): `ci-green-on-head` reads GitLab (origin) only,
+  // whose pipeline is Linux-only; the macOS matrix leg runs exclusively on the
+  // GitHub mirror. A release could go out green with macOS red. The row must
+  // also keep the fail-closed contract — the tempting shape is to let an
+  // unreadable mirror pass "because the GitLab row already went green".
+  it('passes a green mirror reading and names the repo it asked', () => {
+    expect(evaluateGithubCiRow('github.com/Kanevry/session-orchestrator', { status: 'green', ok: true }))
+      .toEqual({ ok: true, detail: 'github.com/Kanevry/session-orchestrator — status: green' });
+  });
+
+  it('fails a red mirror reading and names the failing job', () => {
+    const row = evaluateGithubCiRow('github.com/o/r', { status: 'red', failingJobName: 'test (macos-latest)' });
+    expect(row.ok).toBe(false);
+    expect(row.detail).toContain('test (macos-latest)');
+  });
+
+  it('fails an unreadable mirror — degraded is not green', () => {
+    expect(DEGRADED_REASONS.length).toBeGreaterThanOrEqual(5); // vacuum guard
+    for (const reason of DEGRADED_REASONS) {
+      expect(evaluateGithubCiRow('github.com/o/r', { degraded: reason }).ok).toBe(false);
+    }
+    expect(evaluateGithubCiRow('github.com/o/r', { status: 'unknown' }).ok).toBe(false);
+    expect(evaluateGithubCiRow('github.com/o/r', null).ok).toBe(false);
+  });
+
+  it('self-disables when the checkout has no github remote', () => {
+    expect(evaluateGithubCiRow(undefined, null)).toEqual({ ok: true, detail: 'skipped — no github remote' });
   });
 });

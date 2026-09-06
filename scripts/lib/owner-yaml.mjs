@@ -540,18 +540,37 @@ export function validateOwnerConfig(obj) {
  * surfaced only via `sectionWarnings` (never dropped, never counted towards
  * `'partial'`).
  *
+ * MERGE RULE for the whole-file discard (GitLab #1244). The discard returns
+ * `getDefaults()` — but a VALID optional object section is merged back on top
+ * of its default (`{...defaults[name], ...parsed[name]}`), key by key. `source`
+ * stays `'defaults'` and `errors` still carries every required-section error,
+ * so no existing caller's branch changes; what changes is that a host-local
+ * path the operator DID declare correctly is no longer thrown away because an
+ * unrelated section (e.g. `tone:`) is malformed. That silent loss was a
+ * fail-OPEN path for the owner-leakage scanner's CP11 rule: a partial
+ * owner.yaml carrying only `owner:` + `paths.confidential-names-file:` made the
+ * scanner report PASS while matching nothing. An INVALID optional section is
+ * still replaced by its default and is now reported via `droppedSections` on
+ * this branch too (previously only on the required-valid branch), so a consumer
+ * can tell "not configured" from "configured but unusable".
+ *
  * Defensive — never throws.
  *
  * When `js-yaml` cannot be resolved (no `node_modules`), returns defaults with
  * `source: 'defaults'`, `reason: 'yaml-parser-missing'` and one explanatory
  * entry in `errors` — never throws, never crashes the importing hook (GH#62/#63).
+ * When the file exists but cannot be turned into an object at all (unreadable,
+ * YAML syntax error, non-mapping top level) the same shape is returned with
+ * `reason: 'unparseable'`: in that state NOTHING about the file's contents is
+ * knowable, which is the distinction CP11 needs in order to fail CLOSED rather
+ * than assume "nothing configured".
  *
  * @param {{ path?: string }} [opts]
  * @returns {{
  *   config: object,
  *   source: 'file'|'defaults'|'partial',
  *   errors: string[],
- *   reason?: 'yaml-parser-missing',
+ *   reason?: 'yaml-parser-missing'|'unparseable',
  *   droppedSections?: Array<{ section: string, errors: string[] }>,
  *   sectionWarnings?: Array<{ section: string, errors: string[] }>,
  * }}
@@ -570,6 +589,7 @@ export function loadOwnerConfig(opts = {}) {
     return {
       config: getDefaults(),
       source: 'defaults',
+      reason: 'unparseable',
       errors: [`failed to read owner.yaml: ${err.message}`],
     };
   }
@@ -594,6 +614,7 @@ export function loadOwnerConfig(opts = {}) {
     return {
       config: getDefaults(),
       source: 'defaults',
+      reason: 'unparseable',
       errors: [`YAML parse error: ${err.message}`],
     };
   }
@@ -602,20 +623,36 @@ export function loadOwnerConfig(opts = {}) {
     return {
       config: getDefaults(),
       source: 'defaults',
+      reason: 'unparseable',
       errors: ['owner.yaml must contain a YAML mapping at the top level'],
     };
   }
 
   const { sections, errors: allErrors } = validateOwnerSections(parsed);
 
-  // Any REQUIRED section invalid → legacy whole-file-discard, unchanged (#820).
+  // Any REQUIRED section invalid → whole-file discard (#820), EXCEPT that a
+  // VALID optional object section is merged back onto its default (#1244 — see
+  // the MERGE RULE in the JSDoc above). `source` stays 'defaults' and `errors`
+  // is unchanged, so every existing caller branch is untouched; only the
+  // discarded-but-valid `paths:`/`dispatcher:` keys survive, which is what stops
+  // CP11 from going silently inert on a partial owner.yaml.
   const requiredInvalid = REQUIRED_SECTIONS.some((name) => !sections[name]?.valid);
   if (requiredInvalid) {
-    return {
-      config: getDefaults(),
-      source: 'defaults',
-      errors: allErrors,
-    };
+    const discardConfig = getDefaults();
+    const discardDropped = [];
+    for (const name of OPTIONAL_OBJECT_SECTIONS) {
+      const sec = sections[name];
+      if (sec?.valid && isPlainObject(parsed[name])) {
+        discardConfig[name] = { ...discardConfig[name], ...parsed[name] };
+      } else if (sec && !sec.valid) {
+        // Present but malformed — already replaced by its default above. Report
+        // it so a consumer can distinguish "not configured" from "unusable".
+        discardDropped.push({ section: name, errors: sec.errors });
+      }
+    }
+    const discardResult = { config: discardConfig, source: 'defaults', errors: allErrors };
+    if (discardDropped.length > 0) discardResult.droppedSections = discardDropped;
+    return discardResult;
   }
 
   // All REQUIRED sections valid — tolerate malformed OPTIONAL sections instead

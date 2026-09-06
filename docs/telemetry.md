@@ -41,7 +41,7 @@ projection unit test enforces the drop of any non-whitelisted input field.
 | `ci` | Boolean — whether the run was detected as a CI environment. |
 | `fleet` | Boolean — **DEPRECATED since 2026-09-06, removal 2027-03-06.** Identical in value to `fleet_self_declared` for the whole deprecation generation; kept so the server's existing `fleet` column stays comparable across the rename. |
 | `fleet_self_declared` | Boolean, optional — the client's own claim that this send came from an operator host. **Self-declared, and the name says so on purpose:** the authoritative classification is server-side (see below). Derived from the *resolved consent state* (`enabled-fleet` from an `owner.yaml` opt-in, or `enabled-env` from `SO_TELEMETRY=1`), no longer from a raw `owner.yaml` read. |
-| `session_profile` | Optional — the STATE.md frontmatter `session-profile` (e.g. `ultradeep`), emitted **verbatim**. A SECOND axis beside `session_type`, never a substitute for it: an ultradeep session is `session_type: "deep"` PLUS `session_profile: "ultradeep"`. Deliberately not normalized — degrading an unknown profile to `other` would destroy the only signal that distinguishes the 7-wave form. **Absent when no profile is set** (the key is omitted, never `null`), including on derived pings, which never invent one. |
+| `session_profile` | Optional — the STATE.md frontmatter `session-profile`, and **whitelisted profile names only** (today exactly `ultradeep`). Anything else — a value your repo invented, a client name, a typo — is **omitted from the ping entirely**: never sent verbatim, and never flattened to `other` either. A SECOND axis beside `session_type`, never a substitute for it: an ultradeep session is `session_type: "deep"` PLUS `session_profile: "ultradeep"`. **Absent when no profile is set or the profile is not on the whitelist** (the key is omitted, never `null`), including on derived pings, which never invent one. The whitelist is enforced twice — client-side before the send, and again server-side, which rejects a record carrying an unlisted profile rather than storing it. |
 | `session_record` | Optional — WHICH source the session facts in this ping came from: `ledger` (a matching `sessions.jsonl` record), `derived` (reconstructed from `events.jsonl`), `absent` (neither). When `absent`, `session_type` is `unknown` and `duration_bucket` is **not a measurement**. |
 | `session_type` | One of `housekeeping`, `feature`, `deep`, `other`, `unknown`. `other` means MEASURED but not one of the three modes; `unknown` means NOT MEASURED. Before 2026-09-06 both collapsed to `other`. |
 | `duration_bucket` | One of `<15m`, `15-60m`, `1-3h`, `>3h` — a coarse bucket, never an exact duration. |
@@ -82,7 +82,12 @@ towards anonymizing rather than towards attributing:
 This list is a hard invariant, not a deferral:
 
 - No repository names, no file paths, no git remotes.
-- No prompts, no session transcripts, no free-form text of any kind.
+- No prompts, no session transcripts, no free-form text of any kind. Every
+  field on the wire is either a number, a boolean, or a value from a closed
+  set this repository ships. The last free-text field, `session_profile`, was
+  closed on 2026-09-06: it now carries whitelisted profile names only, and an
+  unlisted value is dropped before the payload is built (and refused again by
+  the server, so it cannot be stored even if some other client sent it).
 - No command arguments — only whitelisted command/skill *names*, and only
   from the shipped roster (anything else is reduced to `"other"`).
 - No hostnames.
@@ -183,6 +188,38 @@ the offline queue is non-empty or a session has completed since — the latter
 clause is what lets the fallback originate a ping instead of only retrying a
 failed one (#1138).
 
+## The other thing that leaves the host: the update check
+
+Telemetry is not the only outbound request this plugin can make, so the second
+one is documented here rather than somewhere an egress audit would miss it.
+
+On **SessionStart**, `hooks/on-session-start.mjs` calls the plugin-update banner
+(`scripts/lib/plugin-update-banner.mjs`), which asks npm whether a newer release
+exists:
+
+```
+GET https://registry.npmjs.org/session-orchestrator/latest
+```
+
+What it is, precisely:
+
+- **No payload and no identifier.** It is a plain `GET` of a constant, public
+  URL — no body, no query string, no `anon_id`, no headers this plugin adds.
+  npm sees a request for a public package's metadata, as `npm view` would.
+- **At most once per 24 h.** The answer is cached
+  (`plugin-latest.json`, `CACHE_TTL_MS = 24 h`); within the TTL no request is
+  made at all. The request has a short timeout and every failure is silent.
+- **Independent of telemetry consent.** It is not a ping and sends nothing about
+  you — but it is still traffic, so it honours the offline flags below.
+
+**Kill switches** (any one of them, set to anything other than empty / `0` /
+`false`, turns the whole check off — not merely the request; the SessionStart
+record then also omits `plugin_version_latest`):
+
+- `SO_DISABLE_UPDATE_CHECK` — this probe's own switch.
+- `DO_NOT_TRACK` — the standard flag, also honoured by the telemetry path.
+- `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`.
+
 ## Retention
 
 - **Raw records:** kept 24 months, then pruned. The retention window exists
@@ -201,7 +238,11 @@ Two triggers, deliberately independent of each other:
    flush.
 2. **SessionStart** (`backfillOnSessionStart` in
    `scripts/backfill-abandoned-sessions.mjs`) — drains whatever the PREVIOUS
-   session left queued.
+   session left queued. Since 4.0.0 every queued record is re-projected and
+   `session_profile`-whitelisted at the transport boundary before it is sent,
+   and a batch the server rejects with HTTP 400/422 is EVICTED (breadcrumb
+   `reason: rejected-evicted`) instead of being re-queued forever — a poison
+   record can no longer block every later flush.
 
 Trigger 2 exists because trigger 1 fires only on a REGULAR close, and most
 sessions do not have one: measured 2026-09-06 over 90 fleet days, **429 clean
@@ -236,6 +277,11 @@ A send is refused (no network, no queue write, no anon-ID mint) when **any** of:
   the telemetry state is actually read from (unless the caller redirected the
   state path too — that redirect succeeded, which is the opposite of the leak);
 - `CLAUDE_PROJECT_DIR`, or the cwd, sits under the OS temp directory or `/tmp`.
+
+The guard also **fails closed**: if any of its own probes throws, the send is
+refused with `sandbox:probe-failed` rather than permitted. An environment the
+guard could not classify is treated as one it would have refused; nothing is
+lost, because the next session re-probes from scratch.
 
 If you invoke any telemetry writer by hand, export `SO_TELEMETRY_DISABLED=1`.
 
@@ -297,7 +343,7 @@ generation, then drop the old one.
 | `fleet_self_declared` | new name for `fleet` | — |
 | `fleet` | deprecated alias, same value | **2027-03-06** |
 | `session_record` | new (`ledger` \| `derived` \| `absent`) | — |
-| `session_profile` | new (verbatim STATE.md `session-profile`; omitted when unset) | — |
+| `session_profile` | new (STATE.md `session-profile`, whitelisted names only; omitted when unset or unlisted) | — |
 
 Client-side the frozen whitelist is split in two: `USAGE_PING_FIELDS` (the
 REQUIRED v1 contract, which `tests/telemetry/parity.test.mjs` asserts the

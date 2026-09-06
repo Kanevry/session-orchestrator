@@ -13,26 +13,25 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 import { checkIgnoredBallast } from '@lib/project-hygiene.mjs';
 
 const dirs = [];
 afterEach(() => {
   for (const d of dirs) {
-    try { rmSync(d, { recursive: true, force: true }); } catch { /* best-effort */ }
+    try { removeTree(d); } catch { /* best-effort */ }
   }
   dirs.length = 0;
 });
 
 /** A fresh git repo with one committed file, so `git status` has a baseline. */
 function freshRepo() {
-  const root = mkdtempSync(join(tmpdir(), 'project-hygiene-orch-'));
+  const root = makeTmpDir('project-hygiene-orch-');
   dirs.push(root);
-  const g = (...args) => execFileSync('git', args, { cwd: root, stdio: 'ignore' });
+  const g = (...args) => fixtureGit(args, root, { stdio: 'ignore' });
   g('init', '-q');
   g('config', 'user.email', 'test@example.invalid');
   g('config', 'user.name', 'Test');

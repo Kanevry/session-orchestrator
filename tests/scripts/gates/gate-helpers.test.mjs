@@ -10,6 +10,7 @@ import {
   csvToJsonArray,
   extractCount,
   extractTestCounts,
+  extractFailedTestFiles,
   extractErrorLinesJson,
   runCheck,
   findChangedFiles,
@@ -506,5 +507,87 @@ describe('runCheck fullOutput', () => {
     const res = runCheck(`sh -c 'echo "${SUMMARY}"; echo trailing'`);
     expect(res.status).toBe('pass');
     expect(res.fullOutput).toContain('14357 passed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractFailedTestFiles
+// ---------------------------------------------------------------------------
+
+/**
+ * A real vitest 4.1.5 failure transcript, captured 2026-09-06 by running two
+ * deliberately red fixtures (one failing assertion, one import-time death)
+ * through `npx vitest run` with stdout piped — the same non-TTY capture shape
+ * `runCheck` produces. Trimmed to the lines that carry file names; every line
+ * below appeared verbatim in that run.
+ */
+const VITEST_FAILURE_TRANSCRIPT = [
+  ' RUN  v4.1.5 /repo',
+  '',
+  ' \u276f tests/dead.test.mjs (0 test)',
+  ' \u276f tests/red.test.mjs (2 tests | 1 failed) 4ms',
+  '     \u00d7 fails 3ms',
+  ' \u276f tests/green.test.mjs (2 tests) 1ms',
+  '',
+  '\u23af\u23af\u23af Failed Suites 1 \u23af\u23af\u23af',
+  '',
+  ' FAIL  tests/dead.test.mjs [ tests/dead.test.mjs ]',
+  "Error: Cannot find module './does-not-exist.mjs'",
+  ' \u276f tests/dead.test.mjs:1:1',
+  '',
+  '\u23af\u23af\u23af Failed Tests 1 \u23af\u23af\u23af',
+  '',
+  ' FAIL  tests/red.test.mjs > red > fails',
+  'AssertionError: expected 1 to be 2',
+  ' \u276f tests/red.test.mjs:3:33',
+  '',
+  ' Test Files  2 failed | 1 passed (3)',
+  '      Tests  1 failed | 3 passed (4)',
+].join('\n');
+
+describe('extractFailedTestFiles', () => {
+  // THE BUG: the gate envelope published `files_failed: 1` out of 662 and no
+  // name (measured 2026-09-06 on a pre-push block), even though the runner had
+  // printed the path in the very output the counts were parsed from.
+  // `extractTestCounts` reads only the two summary LINES, so no existing test
+  // in this suite could have caught a missing file name.
+  it('names both failing files of a real vitest transcript, and no passing one', () => {
+    expect(extractFailedTestFiles(VITEST_FAILURE_TRANSCRIPT, '/repo')).toEqual([
+      'tests/red.test.mjs',
+      'tests/dead.test.mjs',
+    ]);
+  });
+
+  // The discriminator that makes the summary-line regex safe: vitest prefixes
+  // STACK FRAMES with the same U+276F and repeats the file name there. Matching
+  // the marker alone would admit `tests/red.test.mjs:3:33` and the PASSING
+  // file's own summary line.
+  it('ignores stack frames and passing-file summary lines', () => {
+    const noise = [
+      ' \u276f tests/green.test.mjs (2 tests) 1ms',
+      ' \u276f tests/red.test.mjs:3:33',
+      '      1| import { describe } from \'vitest\';',
+    ].join('\n');
+    expect(extractFailedTestFiles(noise, '/repo')).toEqual([]);
+  });
+
+  it('de-duplicates a file named on both its summary line and its FAIL lines', () => {
+    const repeated = [
+      ' \u276f tests/red.test.mjs (9 tests | 3 failed) 4ms',
+      ' FAIL  tests/red.test.mjs > a > one',
+      ' FAIL  tests/red.test.mjs > a > two',
+      ' FAIL  tests/red.test.mjs > a > three',
+    ].join('\n');
+    expect(extractFailedTestFiles(repeated, '/repo')).toEqual(['tests/red.test.mjs']);
+  });
+
+  it('relativises an absolute path against the run root and survives ANSI colour', () => {
+    const coloured = ' \u001b[31m FAIL \u001b[39m /repo/tests/red.test.mjs > red > fails';
+    expect(extractFailedTestFiles(coloured, '/repo')).toEqual(['tests/red.test.mjs']);
+  });
+
+  it('returns [] for empty or non-string input', () => {
+    expect(extractFailedTestFiles('')).toEqual([]);
+    expect(extractFailedTestFiles(null)).toEqual([]);
   });
 });

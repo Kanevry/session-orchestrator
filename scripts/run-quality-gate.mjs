@@ -14,6 +14,9 @@
  *                            defaults from the policy file or built-in defaults apply.
  *   --files <f1,f2,...>      Comma-separated file list (incremental + per-file).
  *   --session-start-ref <r>  Git ref for diff base (incremental, to find changed files).
+ *   --ledger-root <path>     Repo root the telemetry event is pinned to (and the
+ *                            root session attribution is read from). Only the
+ *                            pre-push hook passes it; see the emission block below.
  *   -h, --help               Show this help and exit.
  *
  * Exit codes:
@@ -31,8 +34,8 @@
  *   scripts/lib/gates/gate-{baseline,incremental,full,per-file}.mjs
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
@@ -80,7 +83,7 @@ const argv = process.argv.slice(2);
 if (argv.includes('-h') || argv.includes('--help')) {
   process.stdout.write(
     'Usage: run-quality-gate.mjs --variant <variant> [--config <json-or-file>] ' +
-    '[--files <file1,file2,...>] [--session-start-ref <ref>]\n\n' +
+    '[--files <file1,file2,...>] [--session-start-ref <ref>] [--ledger-root <path>]\n\n' +
     'Variants: baseline, incremental, full-gate, per-file\n\n' +
     'Exit codes:\n' +
     '  0 — pass (non-blocking variants always exit 0)\n' +
@@ -94,6 +97,7 @@ let variant = '';
 let config = '';
 let files = '';
 let sessionStartRef = '';
+let ledgerRootArg = '';
 
 for (let i = 0; i < argv.length; i++) {
   const arg = argv[i];
@@ -113,6 +117,10 @@ for (let i = 0; i < argv.length; i++) {
     case '--session-start-ref':
       if (i + 1 >= argv.length) die('Missing value for --session-start-ref');
       sessionStartRef = argv[++i];
+      break;
+    case '--ledger-root':
+      if (i + 1 >= argv.length) die('Missing value for --ledger-root');
+      ledgerRootArg = argv[++i];
       break;
     default:
       die(`Unknown argument: ${arg}`);
@@ -206,6 +214,76 @@ function suiteCountsFromGateStdout(stdout) {
   if (parsed.stubbed && typeof parsed.stubbed === 'object' && parsed.stubbed.test) return null;
 
   return admitSuiteCounts(test);
+}
+
+/**
+ * Lift `test.failed_files` out of a gate sub-script's JSON stdout envelope.
+ *
+ * Envelope adapter, same posture as {@link suiteCountsFromGateStdout}: it
+ * decides only whether a NAMED-FILE measurement exists, never what the names
+ * mean. `null` — never `[]` — for every non-measurement, so the caller OMITS
+ * the key instead of publishing an empty array that reads as "no file failed".
+ *
+ * Only `gate-full.mjs` publishes the key, and only when the runner printed a
+ * file-level summary; every other variant emits a bare status string.
+ *
+ * Never throws.
+ *
+ * @param {string} stdout — the gate sub-script's captured stdout.
+ * @returns {string[]|null}
+ */
+function failedFilesFromGateStdout(stdout) {
+  if (typeof stdout !== 'string' || !stdout.trim()) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  const files = parsed?.test?.failed_files;
+  if (!Array.isArray(files) || files.length === 0) return null;
+  const named = files.filter((f) => typeof f === 'string' && f.trim());
+  return named.length > 0 ? named : null;
+}
+
+/**
+ * Validate and resolve the `--ledger-root` flag (see the telemetry block below).
+ *
+ * Only the pre-push hook passes this, and it hands over a path the gate then
+ * WRITES to — so a typo must not silently create an `.orchestrator/metrics/`
+ * tree somewhere arbitrary. The check is therefore two-part: the value must be
+ * an existing DIRECTORY, and it must already contain an `.orchestrator/`
+ * directory — the marker of a root this harness has already been initialised in.
+ *
+ * The alternative check (`git rev-parse --show-toplevel` with cwd = that path,
+ * compared against the value) is rejected on cost: it spawns a process on every
+ * gate run to prove a property two `statSync` calls already prove. The one case
+ * it accepts and this one rejects — a git root that has never run the
+ * orchestrator — is precisely the case with no ledger to pin to.
+ *
+ * A bad value NEVER crashes the gate: it warns once on stderr and returns
+ * `null`, which restores the previous resolution
+ * (`CLAUDE_PROJECT_DIR ?? CODEX_PROJECT_DIR ?? repoRoot`) at the call sites.
+ * The gate's exit code is the authoritative output; telemetry is best-effort.
+ *
+ * @param {string} value — raw flag value (`''` when the flag was not passed).
+ * @returns {string|null} absolute, validated root — or `null` to fall back.
+ */
+function resolveLedgerRoot(value) {
+  const raw = (value || '').trim();
+  if (!raw) return null;
+  const abs = resolve(raw);
+  try {
+    if (statSync(abs).isDirectory() && statSync(join(abs, '.orchestrator')).isDirectory()) {
+      return abs;
+    }
+  } catch { /* falls through to the warn below */ }
+  warn(
+    `--ledger-root '${raw}' is not an initialised project root ` +
+    '(existing directory containing .orchestrator/) — falling back to the default ' +
+    'telemetry destination.',
+  );
+  return null;
 }
 
 /**
@@ -325,24 +403,63 @@ if (result.error && typeof result.status !== 'number') {
 // (single emission path). `sessionAttribution` is the shared helper in
 // events.mjs (#941); this CLI wrapper runs against the CWD `repoRoot`, so the
 // bare emitEvent destination (SO_PROJECT_DIR default) is correct here.
+//
+// EXCEPT under the pre-push hook, which is the one caller that runs the gate in
+// a tree that is about to be DELETED. `.husky/pre-push` materialises the tracked
+// tree into a temp dir and deliberately scrubs every `*PROJECT_DIR` name before
+// invoking the gate there, so `getProjectDir()` resolves to that temp tree (it
+// carries both a CLAUDE.md (or AGENTS.md) and a .git) and the record lands in
+// `<tmp>/.orchestrator/metrics/events.jsonl`, which the hook's EXIT trap then
+// removes. Measured 2026-09-06: a pre-push run that BLOCKED a push left no
+// `orchestrator.quality_gate.failed` line in this repo's ledger at all — the
+// gate failure was, by construction, the one event that could never be recorded.
+//
+// `--ledger-root` is that hook's channel for handing back the root it already
+// knows (`git rev-parse --show-toplevel`, read BEFORE it cds). It pins ONLY the
+// telemetry destination and the attribution root — every other path the gate
+// resolves stays inside the tree actually under test, which is the whole point
+// of the materialisation. Absent (every other caller) → unchanged behaviour:
+// `emitEvent`'s own default resolution.
+//
+// It is an ARGV FLAG and not an env var, and that is load-bearing. Measured
+// 2026-09-06 with the env-var form: `SO_GATE_LEDGER_ROOT=$tmp npx vitest run
+// tests/scripts/run-quality-gate.test.mjs -t "telemetry emission"` → `8 failed |
+// 1 passed`. The chain was: hook exports the var → `npm run quality-gate` →
+// `gate-full.mjs` spawns `npm test` → every vitest worker inherits it → the
+// suite's own gate spawns spread `...process.env`, so the pinned root outranked
+// their per-test project dir and the gate's telemetry tests wrote to the hook's
+// root. The gate that releases 4.0.0 would have blocked on itself. An env var is
+// inherited by every descendant; a flag reaches exactly one process.
+//
 // Best-effort: a telemetry failure must NEVER alter the gate's authoritative
 // exit code — which is why the counts parse also lives inside this try.
 const exitCode = result.status ?? 1;
+const ledgerRoot = resolveLedgerRoot(ledgerRootArg);
 try {
   const counts = suiteCountsFromGateStdout(gateStdout);
+  // The names behind `counts.failed`. Absent, never `[]` — see
+  // `failedFilesFromGateStdout`.
+  const failedFiles = failedFilesFromGateStdout(gateStdout);
   // Wave-scope sidecar is read from the SAME project dir the event lands in
   // (emitEvent's own destination precedence), so a tmp-scoped run cannot pick
   // up the host repo's live wave. Mirrors the hook's projectDir resolution.
   const waveNumber = resolveWaveNumber(
-    process.env.CLAUDE_PROJECT_DIR ?? process.env.CODEX_PROJECT_DIR ?? repoRoot,
+    ledgerRoot ?? process.env.CLAUDE_PROJECT_DIR ?? process.env.CODEX_PROJECT_DIR ?? repoRoot,
   );
-  await emitEvent(`orchestrator.quality_gate.${exitCode === 0 ? 'passed' : 'failed'}`, {
-    variant,
-    exit_code: exitCode,
-    ...(counts ? { counts } : {}),
-    ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
-    ...sessionAttribution(repoRoot),
-  });
+  await emitEvent(
+    `orchestrator.quality_gate.${exitCode === 0 ? 'passed' : 'failed'}`,
+    {
+      variant,
+      exit_code: exitCode,
+      ...(counts ? { counts } : {}),
+      ...(failedFiles ? { failed_files: failedFiles } : {}),
+      ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
+      ...sessionAttribution(ledgerRoot ?? repoRoot),
+    },
+    // `{}` is byte-identical to omitting the argument (`opts.repoRoot ??
+    // getProjectDir()`), so the default path is untouched.
+    ledgerRoot ? { repoRoot: ledgerRoot } : {},
+  );
 } catch { /* best-effort telemetry — gate result is authoritative */ }
 
 process.exit(exitCode);

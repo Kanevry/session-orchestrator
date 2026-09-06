@@ -21,11 +21,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
 
+import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 import { detectSharedLibTouch } from '@lib/quality-gate.mjs';
 
 let repoRoot;
@@ -33,7 +32,7 @@ let baseSha;
 
 /** Run a git command in repoRoot. Throws on non-zero exit. */
 function git(...args) {
-  return execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8' }).trim();
+  return fixtureGit(args, repoRoot).trim();
 }
 
 /** Write a file at `relPath` (creating parent dirs) and return its full path. */
@@ -45,7 +44,7 @@ function writeFileInRepo(relPath, content) {
 }
 
 beforeEach(() => {
-  repoRoot = mkdtempSync(join(tmpdir(), 'qg-shared-lib-touch-'));
+  repoRoot = makeTmpDir('qg-shared-lib-touch-');
   // Init repo with deterministic identity (no global config dependency).
   git('init', '--quiet', '-b', 'main');
   git('config', 'user.email', 'test@example.com');
@@ -58,7 +57,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(repoRoot, { recursive: true, force: true });
+  removeTree(repoRoot);
 });
 
 describe('detectSharedLibTouch — #555 FL-3', () => {

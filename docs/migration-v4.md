@@ -46,6 +46,8 @@ change list: [CHANGELOG.md](../CHANGELOG.md).
 | dispatching `AGENTS.md` as an agent | **removed as a dispatch target** | It was never an agent — it is the authoring spec, now [`docs/agent-authoring.md`](./agent-authoring.md). Read it; do not dispatch it. |
 | dispatching `memory-proposal-collector` as an agent | **removed as a dispatch target** | Now [`docs/memory-proposal-flow.md`](./memory-proposal-flow.md). |
 | citing `skills/_shared/model-selection.md` | **removed** | No replacement; it had zero consumers. |
+| Session Config `autopilot.bg-isolation` | **removed** | No replacement — delete the `autopilot:` block from your `CLAUDE.md`/`AGENTS.md`, it was the block's only field and is now inert (`scripts/parse-config.mjs` never parsed it). |
+| Session Config `webhooks.<kind>.url` | **removed** (pre-4.0.0, `ce6a28aa`) | No replacement — `scripts/lib/webhook-url.mjs` had zero callers. The still-live Clank Event Bus webhook (`CLANK_EVENT_SECRET`/`CLANK_EVENT_URL`) is unrelated and unaffected. | <!-- path-check: historical -->
 
 ### 1b. Telemetry consumers (dated deprecations, nothing breaks yet)
 
@@ -129,14 +131,19 @@ instructions from `AGENTS.md` found nothing in this repo. If you keep your own
 ```bash
 cd ~/Projects/session-orchestrator
 git pull && npm install
-node scripts/cursor-install.mjs /path/to/your-project    # re-syncs commands, rules, hooks
+node scripts/cursor-install.mjs /path/to/your-project    # links NEW commands/rules/skills only
 # Restart Cursor
 ```
 
-**Re-running the installer is required, not optional, on this upgrade.** The 3.x generator
-wrote a malformed `argument-hint` into 24 of 28 command files (GH#54); the fix is in the
-generator, so your project's `.cursor/commands/` only picks it up when regenerated. The three
-removed commands disappear from `.cursor/commands/` in the same pass.
+**The installer adds new files; it never overwrites or removes an existing one.** `linkPath()`
+skips whenever the destination already exists as a symlink or a file
+(`scripts/cursor-install.mjs:69-73`), and the `hooks.json` writer skips outright when one is
+already there (`:139-140`). Two consequences on this upgrade: the malformed `argument-hint` fix
+(the 3.x generator wrote it into 24 of 28 command files, GH#54) reaches you for free through
+your existing symlinks the moment `git pull` updates this checkout — no re-run needed for that.
+But the three retired commands do **not** disappear from `.cursor/commands/` on their own, and a
+`hooks.json` written before 4.0.0 is never synchronised with a new hook event automatically.
+Both need the manual step in § 5 ("Cursor still shows the removed commands") below.
 
 A root `plugin.json` following the [agent-plugins.org](https://agent-plugins.org) 1.0.0
 schema now ships as well, for Cursor's plugin system.
@@ -179,8 +186,10 @@ node scripts/validate-plugin.mjs
 - **`STATE.md`** — same frontmatter schema. 4.0.0 adds ONE optional scalar,
   `session-profile`, and absent is not empty: a STATE.md without it behaves exactly as before.
   A 3.x build reading a 4.0.0 STATE.md simply ignores the extra key.
-- **Session Config in `CLAUDE.md` / `AGENTS.md` / Cursor rules** — no key is removed, renamed
-  or given a new default. If you configured this plugin in 3.x, that block is still correct.
+- **Session Config in `CLAUDE.md` / `AGENTS.md` / Cursor rules** — no key you are likely using
+  is renamed or given a new default. Two keys ARE removed — `autopilot.bg-isolation` and
+  `webhooks.<kind>.url` — see § 1a above; everything else you configured in 3.x is still
+  correct as-is.
 - **Session memory** (`~/.claude/projects/<project>/memory/`) — untouched.
 - **`session-type`** — still the closed set `housekeeping` / `feature` / `deep`. `ultradeep`
   is an argument ALIAS that resolves to `session-type: deep` plus
@@ -237,8 +246,24 @@ inside Claude Code with `!node --version`. This is unchanged from v3.
 
 ### Cursor still shows the removed commands
 
-Re-run `node scripts/cursor-install.mjs /path/to/your-project` and restart Cursor. The
-installer writes into your project; a plugin update alone does not touch it.
+Re-running the installer does **not** fix this: `linkPath()` skips any destination that already
+exists (`scripts/cursor-install.mjs:69-73`), including a stale symlink pointing at a command
+that no longer exists in this repo. Remove only the three dead **symlinks** from your project —
+never an unconditional `rm -f`, which would just as happily delete a regular file, including a
+command you wrote yourself under one of these three names (the installer itself never overwrites
+or deletes a regular file; this recipe must not either):
+
+```bash
+for f in autopilot-multi contract-version-bump journey-audit; do
+  p=/path/to/your-project/.cursor/commands/$f.md
+  [ -L "$p" ] && rm "$p"   # -L: true only for a symlink, so a real file with this name survives
+done
+```
+
+Then restart Cursor. Same story for `.cursor/hooks.json`: the installer skips it outright once
+it exists (`:139-140`), so a `hooks.json` written before 4.0.0 is never re-synced with a new hook
+event automatically — re-check it by hand (diff it against a fresh `node scripts/cursor-install.mjs`
+run in an empty scratch directory if you suspect drift).
 
 ## 6. Rollback
 
@@ -266,9 +291,16 @@ cd /path/to/session-orchestrator
 git fetch --tags
 git checkout v3.24.0
 npm install                       # the 3.24.0 lockfile, not the 4.0.0 one
-node scripts/codex-install.mjs    # or cursor-install.mjs / pi-install.mjs, per platform
+node scripts/codex-install.mjs                              # Codex — no target-project argument
+node scripts/cursor-install.mjs /path/to/your-project        # Cursor — pass YOUR project, not this checkout
+node scripts/pi-install.mjs /path/to/your-project --settings-only   # Pi — same argument contract
 # Restart your editor
 ```
+
+Run only the line for your platform. `cursor-install.mjs` and `pi-install.mjs` both default their
+target to `process.cwd()` when no argument is given (`scripts/cursor-install.mjs:24-51`) — omit
+the project path here and the installer links into `/path/to/session-orchestrator` itself, not
+into your project.
 
 **npm consumers:** `npm install session-orchestrator@3.24.0`.
 
@@ -285,8 +317,14 @@ What you get back, and what you do not:
 - **The removed skills, commands and scripts come back with the checkout.** They were deleted
   from the repository, not from your disk history.
 - **What does NOT roll back automatically** is anything an installer wrote into YOUR project:
-  `.cursor/commands/`, `.cursor/hooks.json`, Pi settings. Re-run the platform installer from
-  the 3.24.0 checkout, as shown above.
+  `.cursor/commands/`, `.cursor/hooks.json`, Pi settings. Both `cursor-install.mjs` and
+  `pi-install.mjs` skip any destination that already exists — a symlink or a file
+  (`scripts/cursor-install.mjs:69-73`; the `hooks.json` writer at `:139-140`) — so re-running
+  the installer from the 3.24.0 checkout only **adds** files missing from your project. It does
+  not restore a symlink you removed yourself, and it does not resync an existing `hooks.json` or
+  Pi settings file. To get those back: remove the stale file first (§ "Cursor still shows the
+  removed commands" has a safe, symlink-only removal recipe), then re-run the installer with
+  your project path, as shown above.
 
 If 4.0.0 blocks you, please open an issue describing the blocker before rolling back — a
 removal we got wrong is fixable in a 4.0.x patch.

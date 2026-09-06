@@ -19,15 +19,15 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
   scanValidatorRegistration,
   runCheckValidatorRegistration,
   stripComments,
 } from '@lib/validate/check-validator-registration.mjs';
+import { fixtureGitSpawn, makeTmpDir, removeTree } from '../../_helpers/tmp-fixture.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..', '..');
@@ -46,7 +46,7 @@ const tmpRoots = [];
  * (each defaults to referencing nothing).
  */
 function makeFixture(checkers, surfaces = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'check-validator-registration-'));
+  const root = makeTmpDir('check-validator-registration-');
   tmpRoots.push(root);
 
   const validateDir = join(root, 'scripts', 'lib', 'validate');
@@ -70,7 +70,7 @@ function run(repoRoot) {
 
 afterEach(() => {
   for (const root of tmpRoots.splice(0)) {
-    rmSync(root, { recursive: true, force: true });
+    removeTree(root);
   }
 });
 
@@ -236,5 +236,82 @@ describe('stripComments — quote-aware `//`/`#`/`/* */` stripping', () => {
   it('does NOT treat a `//` inside a js string as a comment start', () => {
     const src = "const url = 'https://example.test/check-b.mjs';\n";
     expect(stripComments(src, jsStyle)).toBe(src);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1248 — an UNTRACKED checker must be judged too
+// ---------------------------------------------------------------------------
+
+/**
+ * THE BUG: this checker enumerated `check-*.mjs` from the git index, so a
+ * checker just written and not yet staged — the state in which "did anyone
+ * wire this?" is the live question — never entered the census at all. The
+ * result read as PASS, which is indistinguishable from "wired".
+ *
+ * `makeFixture` above builds a NON-git tmpdir, which takes the enumerator's
+ * walk path; these cases `git init` so the primary (`git ls-files`) path is
+ * the one under test.
+ */
+describe('#1248 — an untracked checker is still judged', () => {
+  const gitRoots = [];
+
+  /** Hermetic, maintenance-free git — see `tests/_helpers/tmp-fixture.mjs` header. */
+  const git = (cwd, args) => fixtureGitSpawn(args, cwd);
+
+  /** A git repo whose committed content is fully registered and clean. */
+  function gitFixture() {
+    const root = makeFixture(
+      { 'check-wired.mjs': '// a real checker\n' },
+      { validatePlugin: "runCheck('check-wired.mjs');\n" },
+    );
+    gitRoots.push(root);
+    git(root, ['init', '-q']);
+    git(root, ['-c', 'user.email=t@example.com', '-c', 'user.name=t', 'add', '-A']);
+    git(root, ['-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '-m', 'base']);
+    return root;
+  }
+
+  afterEach(() => {
+    for (const root of gitRoots.splice(0)) {
+      removeTree(root);
+    }
+  });
+
+  it('FAILS on an untracked, unregistered checker — without ever `git add`-ing it', () => {
+    const root = gitFixture();
+    writeFileSync(
+      join(root, 'scripts', 'lib', 'validate', 'check-ghost.mjs'),
+      '// nobody runs me\n',
+      'utf8',
+    );
+
+    const names = scanValidatorRegistration(root).map((r) => r.basename);
+    expect(names).toContain('check-ghost.mjs');
+    expect(scanValidatorRegistration(root).find((r) => r.basename === 'check-ghost.mjs')).toMatchObject(
+      { registered: false, standalone: false },
+    );
+
+    const cli = run(root);
+    expect(cli.status).toBe(1);
+    expect(cli.stdout).toContain('FAIL: check-ghost.mjs');
+    // Proof it really is untracked: staging is what USED to be required.
+    expect(git(root, ['status', '--porcelain', '--untracked-files=all']).stdout).toContain(
+      '?? scripts/lib/validate/check-ghost.mjs',
+    );
+  });
+
+  it('still ignores a GITIGNORED checker — the walk-based repair would have counted it (#1143)', () => {
+    const root = gitFixture();
+    writeFileSync(join(root, '.gitignore'), 'scripts/lib/validate/check-vendored.mjs\n', 'utf8');
+    writeFileSync(
+      join(root, 'scripts', 'lib', 'validate', 'check-vendored.mjs'),
+      '// vendored copy, not ours to wire\n',
+      'utf8',
+    );
+
+    const names = scanValidatorRegistration(root).map((r) => r.basename);
+    expect(names).not.toContain('check-vendored.mjs');
+    expect(run(root).status).toBe(0);
   });
 });

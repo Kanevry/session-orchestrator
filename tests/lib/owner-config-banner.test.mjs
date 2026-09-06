@@ -55,6 +55,76 @@ describe('checkOwnerConfig — whole-file discard (warn, discarded flag)', () =>
   });
 });
 
+describe('checkOwnerConfig — whole-file discard with a survived optional section (#1244 Q3 MED)', () => {
+  // Bug this catches: owner-yaml.mjs's #1244 MERGE RULE keeps a VALID optional
+  // section (paths/dispatcher) alive through a whole-file discard — merged
+  // onto its default in `result.config` — but the banner (pre-fix) rendered
+  // "the entire file was discarded" regardless, because its discard branch
+  // never looked at `result.config` at all. Fake-regression: reverting the
+  // fix to the OLD literal (unconditional "is invalid (...) — the entire file
+  // was discarded...") makes this test's `toContain('"paths"')` and
+  // `.not.toContain('entire file was')` assertions fail while the sibling test
+  // below (no config field at all, nothing survived) stays green either way —
+  // which is exactly the false confidence Q3 measured against a real tmp
+  // owner.yaml (invalid `owner.name`, valid `paths.confidential-names-file`).
+  it('names the survived "paths" section instead of claiming a full discard', () => {
+    const loader = () => ({
+      config: {
+        owner: { name: '', language: 'en' }, // discarded — replaced by default
+        paths: {
+          'vault-dir': '',
+          'baseline-path': '',
+          'namespace-map-path': '',
+          'confidential-names-file': '/tmp/does-not-matter/names.json',
+        },
+      },
+      source: 'defaults',
+      errors: ['owner.name is required and must be a non-empty string'],
+    });
+    const result = checkOwnerConfig({ loader });
+    expect(result.severity).toBe('warn');
+    expect(result.discarded).toBe(true);
+    expect(result.message).toContain('"paths"');
+    expect(result.message).toContain('kept');
+    expect(result.message).not.toContain('entire file was');
+  });
+
+  it('still renders the existing full-discard text when NOTHING survived (all-invalid control)', () => {
+    // Same discard branch, but `result.config` (when present) is byte-identical
+    // to getDefaults() for every optional section — nothing to name as kept.
+    const loader = () => ({
+      config: {
+        owner: { name: '', language: 'en' },
+        paths: { 'vault-dir': '', 'baseline-path': '', 'namespace-map-path': '', 'confidential-names-file': '' },
+        dispatcher: { autonomy: '' },
+      },
+      source: 'defaults',
+      errors: ['owner.name is required and must be a non-empty string'],
+    });
+    const result = checkOwnerConfig({ loader });
+    expect(result.severity).toBe('warn');
+    expect(result.discarded).toBe(true);
+    expect(result.message).toContain('entire file was');
+    expect(result.message).not.toContain('kept');
+  });
+
+  it('renders droppedSections on the discard branch when an optional section was ALSO malformed', () => {
+    const loader = () => ({
+      config: {
+        owner: { name: '', language: 'en' },
+        paths: { 'vault-dir': '', 'baseline-path': '', 'namespace-map-path': '', 'confidential-names-file': '' },
+      },
+      source: 'defaults',
+      errors: ['owner.name is required and must be a non-empty string'],
+      droppedSections: [{ section: 'dispatcher', errors: ['dispatcher must be an object when present'] }],
+    });
+    const result = checkOwnerConfig({ loader });
+    expect(result.droppedSections).toEqual([
+      { section: 'dispatcher', errors: ['dispatcher must be an object when present'] },
+    ]);
+  });
+});
+
 describe('checkOwnerConfig — sectionWarnings only (warn)', () => {
   it('returns a warn finding naming the section with invalid list entries', () => {
     const loader = () => ({

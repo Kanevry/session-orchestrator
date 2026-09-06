@@ -544,6 +544,59 @@ describe('checkCiStatus — forced vcs', () => {
     expect(result.status).toBe('green');
     expect(result.ok).toBe(true);
   });
+
+  // BUG this catches (TV-001): `scripts/release.mjs` preflight asks this probe
+  // for the GITHUB mirror (`vcs: 'github'`) from a repo whose `origin` — and
+  // therefore whose DETECTED family — is GitLab, because the macOS matrix leg
+  // runs only on the mirror. If the forced value were ignored, or detection ran
+  // anyway, that row would read GitLab a second time and report a duplicate
+  // green while macOS was red. The forced-gitlab case above cannot catch it:
+  // there the forced value and the detected value agree. The mock fails on any
+  // unstubbed call, so the absence of a `git remote -v` stub IS the assertion
+  // that detection was skipped.
+  it('skips VCS detection and queries gh when vcs is forced to github', async () => {
+    const spec = 'github.com/Kanevry/session-orchestrator';
+    const mockExecFile = makeExecFileMock([
+      { cmd: 'gh', args: ['repo', 'view', spec, '--json', 'nameWithOwner'], stdout: GH_REPO_VIEW },
+      {
+        cmd: 'gh',
+        args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs', '--hostname', 'github.com'],
+        stdout: JSON.stringify({ check_runs: [{ name: 'test (macos-latest)', conclusion: 'success' }] }),
+      },
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', vcs: 'github', now: NOW },
+      { execFile: mockExecFile, resolveRepoSpec: () => spec, resolveRepoHost: () => 'github.com' },
+    );
+
+    expect(result).toMatchObject({ status: 'green', ok: true, details: { cliUsed: 'gh' } });
+    expect(mockExecFile.mock.calls.some(([cmd]) => cmd === 'git')).toBe(false);
+  });
+
+  it('reports the mirror red when only the macOS leg failed', async () => {
+    const spec = 'github.com/Kanevry/session-orchestrator';
+    const mockExecFile = makeExecFileMock([
+      { cmd: 'gh', args: ['repo', 'view', spec, '--json', 'nameWithOwner'], stdout: GH_REPO_VIEW },
+      {
+        cmd: 'gh',
+        args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs', '--hostname', 'github.com'],
+        stdout: JSON.stringify({
+          check_runs: [
+            { name: 'test (ubuntu-latest)', conclusion: 'success' },
+            { name: 'test (macos-latest)', conclusion: 'failure' },
+          ],
+        }),
+      },
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', vcs: 'github', now: NOW },
+      { execFile: mockExecFile, resolveRepoSpec: () => spec, resolveRepoHost: () => 'github.com' },
+    );
+
+    expect(result).toMatchObject({ status: 'red', ok: false, failingJobName: 'test (macos-latest)' });
+  });
 });
 
 // ── Test 12: GitLab red — no lastGreen in history ────────────────────────────

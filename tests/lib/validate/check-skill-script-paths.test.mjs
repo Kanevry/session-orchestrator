@@ -6,10 +6,9 @@
  * the live corpus would pin its defect state and punish the repair.
  */
 
-import { describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import {
@@ -19,6 +18,7 @@ import {
   scanSkillScriptPaths,
   SCAN_DIRS,
 } from '../../../scripts/lib/validate/check-skill-script-paths.mjs';
+import { fixtureGitSpawn, makeTmpDir, removeTree } from '../../_helpers/tmp-fixture.mjs';
 
 const repoRoot = process.cwd();
 const checkScript = path.join(repoRoot, 'scripts/lib/validate/check-skill-script-paths.mjs');
@@ -31,7 +31,7 @@ const checkScript = path.join(repoRoot, 'scripts/lib/validate/check-skill-script
  * @returns {string} absolute fixture root
  */
 function fixtureRoot(body, existingScripts = []) {
-  const root = mkdtempSync(path.join(tmpdir(), 'skill-script-paths-'));
+  const root = makeTmpDir('skill-script-paths-');
   mkdirSync(path.join(root, 'skills/demo'), { recursive: true });
   writeFileSync(path.join(root, 'skills/demo/SKILL.md'), body);
   for (const relative of existingScripts) {
@@ -47,7 +47,7 @@ function scanFixture(body, scripts = [], opts = {}) {
   try {
     return scanSkillScriptPaths({ pluginRoot: root, ...opts });
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeTree(root);
   }
 }
 
@@ -374,7 +374,82 @@ describe('CLI contract against the live repo', () => {
       expect(strict.status).toBe(1);
       expect(strict.stdout).toContain('FAIL:');
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      removeTree(root);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1248 — an UNTRACKED doc with a dead citation must FAIL
+// ---------------------------------------------------------------------------
+
+/**
+ * THE BUG (measured in a clone, Wave-1 D6 2026-09-06): an untracked
+ * `skills/zz-probe/SKILL.md` citing `scripts/does-not-exist.mjs` reported
+ * `1 passed, 0 failed` BEFORE `git add -A` and `0 passed, 1 failed` AFTER —
+ * same tree, same defect, no edit in between. The enumeration ran off the git
+ * index, so the file most likely to carry a fresh defect (a skill just
+ * written) was structurally invisible.
+ *
+ * The fixtures above are non-git tmpdirs, which take the enumerator's WALK
+ * path and could never have caught this; these two cases `git init` on
+ * purpose so the primary (`git ls-files`) path is the one under test.
+ */
+describe('#1248 — enumeration must see untracked files', () => {
+  const gitRoots = [];
+
+  /** Hermetic, maintenance-free git — see `tests/_helpers/tmp-fixture.mjs` header. */
+  const git = (cwd, args) => fixtureGitSpawn(args, cwd);
+
+  /** A git repo whose ONLY committed doc is clean; the defective doc is added but never staged. */
+  function gitFixtureRoot() {
+    const root = makeTmpDir('skill-script-paths-git-');
+    gitRoots.push(root);
+    mkdirSync(path.join(root, 'skills/tracked'), { recursive: true });
+    writeFileSync(path.join(root, 'skills/tracked/SKILL.md'), 'Nothing cited here.\n');
+    git(root, ['init', '-q']);
+    git(root, ['-c', 'user.email=t@example.com', '-c', 'user.name=t', 'add', 'skills/tracked/SKILL.md']);
+    git(root, ['-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '-m', 'base']);
+    return root;
+  }
+
+  afterEach(() => {
+    for (const root of gitRoots.splice(0)) {
+      removeTree(root);
+    }
+  });
+
+  it('FAILS on an untracked SKILL.md citing a non-existent script — without ever `git add`-ing it', () => {
+    const root = gitFixtureRoot();
+    mkdirSync(path.join(root, 'skills/zz-probe'), { recursive: true });
+    writeFileSync(
+      path.join(root, 'skills/zz-probe/SKILL.md'),
+      'Run `node scripts/does-not-exist.mjs` to do the thing.\n',
+    );
+
+    const result = scanSkillScriptPaths({ pluginRoot: root });
+    expect(result.ok).toBe(false);
+    expect(result.findings.map((f) => f.path)).toContain('scripts/does-not-exist.mjs');
+
+    const cli = spawnSync('node', [checkScript, root], { encoding: 'utf8' });
+    expect(cli.status).toBe(1);
+    // Proof the file really is untracked: staging is what USED to be required.
+    expect(git(root, ['status', '--porcelain', '--untracked-files=all']).stdout).toContain(
+      '?? skills/zz-probe/SKILL.md',
+    );
+  });
+
+  it('still ignores a GITIGNORED doc — the walk-based repair would have counted it (#1143)', () => {
+    const root = gitFixtureRoot();
+    writeFileSync(path.join(root, '.gitignore'), 'skills/private/\n');
+    mkdirSync(path.join(root, 'skills/private'), { recursive: true });
+    writeFileSync(
+      path.join(root, 'skills/private/SKILL.md'),
+      'Run `node scripts/also-missing.mjs`.\n',
+    );
+
+    const result = scanSkillScriptPaths({ pluginRoot: root });
+    expect(result.findings.map((f) => f.path)).not.toContain('scripts/also-missing.mjs');
+    expect(result.ok).toBe(true);
   });
 });

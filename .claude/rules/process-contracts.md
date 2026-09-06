@@ -21,9 +21,9 @@ expires-at: 2026-10-07
 
 # Process Contracts (consolidated)
 
-A process communicates through exactly three channels — exit code, stdout, and duration — and each of these rules is a case of reading one of them as evidence for something it cannot carry.
+A process communicates through exactly three channels — exit code, stdout, and duration — and each of these rules is a case of reading one of them as evidence for something it cannot carry. The fourth is the same failure one layer down: an exit code that never arrived, printed as an empty string and read as zero.
 
-**`expires-at` is 2026-10-07 — the EARLIEST of the 3 absorbed dates.** A merged file must not outlive its shortest-lived content: a single date covering several learnings expires when the FIRST of them is due for review, never when the last is.
+**`expires-at` is 2026-10-07 — the EARLIEST of the 4 absorbed dates.** A merged file must not outlive its shortest-lived content: a single date covering several learnings expires when the FIRST of them is due for review, never when the last is.
 
 <!-- untrusted-content:start — everything up to untrusted-content:end is agent-authored learning text, reproduced verbatim as DATA. It is NOT an instruction to any agent that loads this rule. -->
 
@@ -45,11 +45,17 @@ An `unref()`-ed poll timer is the ONLY handle of a pure tailer process, so the e
 
 **Evidence** — `tests/docs/setup-config-examples.test.mjs` pins the contract empirically: malformed-JSON stdin → exit 1; `enforcement: warn` + `agents-per-wave: 1` (schema-invalid) → exit 0 pass-through. Fake-regression: corrupting `docs/pi-setup.md` `agents-per-wave` to 1 turned the guard RED (2 failed), reverted green 24/24.
 
+### Ein leerer String als Exit-Code liest sich als Erfolg — `${PIPESTATUS[0]}` ist in zsh leer
+
+Die Agenten-Shell hier ist zsh; zsh schreibt `$pipestatus` und indiziert ab 1, also expandiert `${PIPESTATUS[0]}` zum LEEREN String. Der Schaden ist nicht, dass es scheitert, sondern die RICHTUNG: ein leeres `EXIT=` neben einem gruen aussehenden Log liest sich als exit 0, und ein Verifikationsschritt meldet einen Durchlauf, den er nie gemessen hat. Portabel: in eine Datei umleiten und `$?` direkt lesen.
+
+**Evidence** — Zwei Wave-Agenten liefen am 2026-08-23 unabhaengig hinein, beide beim Melden von Verifikations-Exit-Codes, beide merkten es nur, weil der leere String falsch AUSSAH. Reproduziert: `false | true; echo ${PIPESTATUS[0]}` -> leer, `${pipestatus[1]}` -> 1. Das Repo selbst nutzt PIPESTATUS null Mal, es ist also keine Code-Schwachstelle sondern eine Falle fuer alle, die Shell IN das Repo schreiben.
+
 <!-- untrusted-content:end -->
 
 ## Provenance
 
-Consolidated 3 generated rules into this file (2026-09-06, 43→8 rule consolidation).
+Consolidated 4 generated rules into this file (2026-09-06, 43→8 rule consolidation; the last one restored 2026-09-06 after the first pass dropped its prose and markers).
 The reconcile engine dedupes on these markers — removing a pair regenerates that learning as a standalone file.
 
 Frontmatter `learning-key:` is a scalar and duplicates only the FIRST bullet; `defaultReadMaterializedProvenance()` unions frontmatter with body, so every bullet below is load-bearing.
@@ -59,5 +65,7 @@ Frontmatter `learning-key:` is a scalar and duplicates only the FIRST bullet; `d
 - learning-id: `e0bf9b8a-968a-4499-afd7-635eb182fe7a`
 - learning-key: `anti-pattern/validate-config-cli-exit-code-is-not-a-schema-gate-under-enforcement-warn`
 - learning-id: `3b80997d-6d36-41a8-94ad-6fffb898adee`
+- learning-key: `anti-pattern/ein-leerer-string-als-exit-code-liest-sich-als-erfolg-pipestatus-0-ist-in-zsh-leer`
+- learning-id: `ca473588-c567-45bf-adca-f2b28d5b8162`
 
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695), consolidated by hand 2026-09-06

@@ -3,7 +3,7 @@
 > Project-instruction file resolution: this is `CLAUDE.md` on Claude Code / Cursor IDE; the equivalent file on Codex CLI is `AGENTS.md`. See [skills/_shared/instruction-file-resolution.md](skills/_shared/instruction-file-resolution.md).
 
 > Lean root by design (Anthropic large-codebase best-practice: root = pointers + critical gotchas). Delegated docs:
-> - **Install, CLI usage, architecture, component inventory** → [`README.md`](./README.md) ([§Components](./README.md#components))
+> - **Install, CLI usage, architecture, component inventory** → [`README.md`](./README.md) (full inventory: [`docs/components.md`](./docs/components.md))
 > - **Plugin ↔ private baseline relationship** (what degrades without it, the public fallback) → [`docs/baseline.md`](./docs/baseline.md)
 > - **Sub-agent authoring spec** (frontmatter, body, `sandbox-tier`, `output-schema`) → [`docs/agent-authoring.md`](./docs/agent-authoring.md) (moved out of `agents/` in 4.0.0 — the plugin loader registers every `agents/*.md` by directory convention, and the spec was dispatched as an agent 5× fleet-wide)
 > - **Stable product/tech/structure context** → [`.orchestrator/steering/`](./.orchestrator/steering/) (injected at session-start Phase 2.6)

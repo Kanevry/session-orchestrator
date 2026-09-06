@@ -269,6 +269,82 @@ export function extractTestCounts(output) {
 }
 
 /**
+ * ANSI SGR / CSI escapes vitest emits when it believes it writes to a TTY.
+ * `runCheck` captures through a pipe, where vitest disables colour — but a
+ * runner invoked through a pty wrapper, or with `FORCE_COLOR`, still colours
+ * its output and would defeat every anchored match below.
+ */
+// eslint-disable-next-line no-control-regex
+const ANSI_ESCAPE = /\u001b\[[0-9;]*[A-Za-z]/g;
+
+/** Path shape of a test/spec file, as printed by vitest/jest. */
+const TEST_FILE_PATH = String.raw`[^\s()]+\.(?:test|spec)\.[cm]?[jt]sx?`;
+
+/**
+ * `FAIL <path>` — printed once per failing FILE in the "Failed Tests" and
+ * "Failed Suites" sections. Two real shapes, both covered by this anchor
+ * (measured against vitest 4.1.5, 2026-09-06):
+ *
+ *   ` FAIL  dead.test.mjs [ dead.test.mjs ]`      ← suite died at import
+ *   ` FAIL  red.test.mjs > red > fails`           ← a test case failed
+ */
+const FAIL_LINE = new RegExp(String.raw`^\s*FAIL\s+(${TEST_FILE_PATH})(?:\s|$)`);
+
+/**
+ * `❯ <path> (N tests | M failed)` — the per-file line of the run summary.
+ *
+ * The `(… | … failed)` group is load-bearing, NOT decoration: vitest prefixes
+ * STACK FRAMES with the same `❯` and the frame carries the same file name
+ * (` ❯ red.test.mjs:3:33`). Requiring the parenthesised counts is what keeps a
+ * frame — and a PASSING file's summary line, ` ❯ green.test.mjs (2 tests)` —
+ * out of the result.
+ */
+const FILE_SUMMARY_FAIL_LINE = new RegExp(
+  String.raw`^\s*❯\s+(${TEST_FILE_PATH})\s+\(\d+\s+tests?[^)]*\|\s*\d+\s+failed`,
+);
+
+/**
+ * Name the test FILES a failing run blamed — the one thing the gate envelope
+ * never carried.
+ *
+ * Measured 2026-09-06: a husky pre-push run blocked `git push origin main` with
+ * `{"test":{"status":"fail","total":16417,"passed":16415,"failed":2,
+ * "files_total":662,"files_passed":661,"files_failed":1,…}}` — a COUNT and no
+ * name. `files_failed: 1` says a file died; reconstructing WHICH one cost a
+ * full manual re-materialisation of the tracked tree, even though the runner
+ * had printed the path in the very output this envelope was built from.
+ *
+ * Order is first-appearance and duplicates are dropped: vitest names the same
+ * file on its summary line AND once per failing case inside it, so a raw match
+ * list would repeat one path N times and read as N failing files.
+ *
+ * Absolute paths are relativised against `cwd` when it is a prefix — a gate
+ * report is read next to `git status`, so a repo-relative path is the useful
+ * form. A path outside `cwd` is left verbatim rather than turned into a `../..`
+ * chain that names nothing an operator can act on.
+ *
+ * @param {string} output - Captured test-runner stdout/stderr.
+ * @param {string} [cwd=process.cwd()] - Root to relativise absolute paths against.
+ * @returns {string[]} De-duplicated file paths, in first-appearance order.
+ */
+export function extractFailedTestFiles(output, cwd = process.cwd()) {
+  if (!output || typeof output !== 'string') return [];
+
+  const prefix = cwd.endsWith('/') ? cwd : `${cwd}/`;
+  const seen = new Set();
+
+  for (const rawLine of output.split('\n')) {
+    const line = rawLine.replace(ANSI_ESCAPE, '');
+    const match = FAIL_LINE.exec(line) ?? FILE_SUMMARY_FAIL_LINE.exec(line);
+    if (!match) continue;
+    const file = match[1].startsWith(prefix) ? match[1].slice(prefix.length) : match[1];
+    seen.add(file);
+  }
+
+  return [...seen];
+}
+
+/**
  * Admit a suite-count triple, or refuse to claim a measurement.
  *
  * ## Why this exists (#967 item 2)

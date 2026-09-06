@@ -81,13 +81,14 @@ import {
   rmSync,
   realpathSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative as relativePath, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 import { resolveRepoSpec } from './lib/vcs-repo-spec.mjs';
+import { enumerateRepoFiles } from './lib/validate/enumerate-repo-files.mjs';
 
 const PACKAGE_NAME = 'session-orchestrator';
 const SPAWN_OPTS = { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 };
@@ -316,7 +317,18 @@ function hasPathSegment(path, segment) {
 
 export const LEAKAGE_PATTERNS = [
   { name: 'tests/', matches: (path) => hasPathSegment(path, 'tests') },
-  { name: '.orchestrator/', matches: (path) => /\.orchestrator\//.test(path) },
+  // `.orchestrator/policy/` is CARVED OUT and everything else under
+  // `.orchestrator/` still leaks: the destructive-guard FLOOR policy ships to npm
+  // consumers since 4.0.0 (Codex P1 — measured: `npm pack` carried 0 policy
+  // entries, so `loadEffectivePolicy` returned `rules:null` and the guard allowed
+  // everything on a consumer install). The carve-out is a `policy/` PATH segment,
+  // not a prefix: `.orchestrator/metrics/`, `.orchestrator/tmp/`,
+  // `.orchestrator/runtime/`, `*.lock` and the `.orchestrator/policy-backup/`
+  // prefix trick are all still caught.
+  {
+    name: '.orchestrator/',
+    matches: (path) => /\.orchestrator\//.test(path) && !/^\.orchestrator\/policy\//.test(path),
+  },
   { name: '.claude/', matches: (path) => hasPathSegment(path, '.claude') },
   { name: '.github/', matches: (path) => /\.github\//.test(path) },
   { name: 'node_modules', matches: (path) => /node_modules/.test(path) },
@@ -454,15 +466,17 @@ export function isDependencyRangeOnly(content, literal) {
 }
 
 /**
- * Drift sweep verdict over a `git grep` result (`-l` file list or `-n` line hits).
+ * Drift sweep verdict over a grep-shaped result (`-l` file list or `-n` line hits).
  *
- * `git grep` exit codes: 0 = matches found, 1 = no match (the success case
- * here), anything else = it did not run. Measured on git 2.x: a bad regex and
- * a bad pathspec both exit 128; git also documents 2 for usage errors. The old
- * inline code read `.stdout` without ever looking at `.status`, so BOTH the
- * no-match case and the it-crashed case produced an empty hit list and the
- * same reassuring detail line, "no tracked file still carries X". A sweep that
- * never ran is not a clean sweep.
+ * Exit-code contract, kept identical to `git grep`'s because that is what this
+ * evaluator was written against and what {@link collectDriftHits} now emits:
+ * 0 = matches found, 1 = no match (the success case here), anything else = it
+ * did not run. Measured on git 2.x: a bad regex and a bad pathspec both exit
+ * 128; git also documents 2 for usage errors. The old inline code read
+ * `.stdout` without ever looking at `.status`, so BOTH the no-match case and
+ * the it-crashed case produced an empty hit list and the same reassuring
+ * detail line, "no file still carries X". A sweep that never ran is not a
+ * clean sweep.
  *
  * ONE CLASS OF MATCH IS NOT OURS TO BUMP: a dependency RANGE that happens to equal our own
  * previous version. `skills/vault-sync` pins `zod` at `^3.24.0` (the projects-baseline pin), so
@@ -475,7 +489,8 @@ export function isDependencyRangeOnly(content, literal) {
  * or badge form), so the predicate cannot mask a stale surface.
  *
  * Accepts BOTH `git grep` output shapes. A bare `path` (from `-l`) carries no content and is
- * therefore always a hit — the fail-closed reading, unchanged. `path:line:content` (from `-n`)
+ * therefore always a hit — the fail-closed reading, unchanged, and the shape {@link collectDriftHits}
+ * emits for a file it could not READ. `path:line:content` (from `-n`)
  * is judged per line, and the file counts as drift as soon as ONE matching line is not a range.
  *
  * @param {{status: number, stdout?: string, stderr?: string}} grep
@@ -487,7 +502,7 @@ export function evaluateDriftSweep(grep, prevTag, allowlist) {
   if (grep.status !== 0 && grep.status !== 1) {
     return {
       ok: false,
-      detail: `git grep did not run (exit ${grep.status}): ${(grep.stderr || '').trim().slice(0, 200)} — sweep for ${prevTag} is inconclusive`,
+      detail: `drift sweep did not run (exit ${grep.status}): ${(grep.stderr || '').trim().slice(0, 200)} — sweep for ${prevTag} is inconclusive`,
     };
   }
   const hits = [];
@@ -502,8 +517,85 @@ export function evaluateDriftSweep(grep, prevTag, allowlist) {
     ok: hits.length === 0,
     detail: hits.length
       ? `still carry ${prevTag}: ${hits.slice(0, 5).join(', ')}`
-      : `no tracked file outside the allowlist still carries ${prevTag}`,
+      : `no file outside the allowlist still carries ${prevTag} (tracked + untracked-not-ignored)`,
   };
+}
+
+/**
+ * Bytes of a file inspected when deciding whether it is binary.
+ *
+ * A NUL byte in the first 8 KB is the same heuristic `git grep`/`grep` use to
+ * declare a file binary. NAMED CEILING (BV-004): a text file whose only NUL
+ * sits past 8 KB is scanned as text (harmless — it produces no version match),
+ * and a binary whose first 8 KB happen to be NUL-free is scanned as text and
+ * may emit mojibake rows. Revisit trigger: the first drift-sweep row naming a
+ * file nobody recognises as text.
+ */
+const BINARY_SNIFF_BYTES = 8192;
+
+/**
+ * Produce the drift-sweep hit list over the files that EXIST in the working
+ * tree — tracked or not — in the exact `{status, stdout, stderr}` shape
+ * {@link evaluateDriftSweep} already consumes.
+ *
+ * ## Why not `git grep` any more (#1248)
+ *
+ * `git grep` searches the INDEX: it is blind to an untracked file, so the
+ * moment a stale version literal is most likely to exist (a doc or manifest
+ * written for this release and not yet staged) is exactly the moment the sweep
+ * cannot see it and reports clean. The population is now
+ * `scripts/lib/validate/enumerate-repo-files.mjs`
+ * (`git ls-files --cached --others --exclude-standard`) — tracked PLUS
+ * untracked, minus everything `.gitignore` excludes, so `node_modules/` and
+ * the peer worktrees under `.claude/worktrees/` stay out without a prune list
+ * having to guess at them.
+ *
+ * What `git grep` bought — searching hidden directories a plain `rg` skips,
+ * which is how the forgotten `.codex-plugin` manifest was found — is kept:
+ * `git ls-files` lists dotted paths like any other.
+ *
+ * ## Fail-closed, in two places
+ *
+ * Enumeration itself throwing is reported as exit 128, which
+ * {@link evaluateDriftSweep} reads as "inconclusive" = FAIL — the same reading
+ * a crashed `git grep` got. A single file that enumerates but cannot be READ
+ * is emitted as a CONTENT-LESS row, which that evaluator already treats as a
+ * hit: a file we could not sweep is never silently a clean file.
+ *
+ * @param {object} options
+ * @param {string} options.repoRoot absolute repository root
+ * @param {string} options.prevTag the previous release literal to sweep for
+ * @param {(o: {repoRoot: string}) => string[]} [options.enumerate] injection seam for tests
+ * @param {(absolute: string) => Buffer} [options.read] injection seam for tests
+ * @returns {{status: number, stdout: string, stderr: string}}
+ */
+export function collectDriftHits({ repoRoot, prevTag, enumerate = enumerateRepoFiles, read = readFileSync }) {
+  let files;
+  try {
+    files = enumerate({ repoRoot });
+  } catch (err) {
+    return { status: 128, stdout: '', stderr: `enumerateRepoFiles failed: ${err && err.message}` };
+  }
+  const rows = [];
+  for (const absolute of files) {
+    const relative = relativePath(repoRoot, absolute).split(sep).join('/');
+    let buf;
+    try {
+      buf = read(absolute);
+    } catch {
+      // Content-less row = hit (see the evaluator's contract above).
+      rows.push(relative);
+      continue;
+    }
+    if (buf.subarray(0, BINARY_SNIFF_BYTES).includes(0)) continue;
+    const text = buf.toString('utf8');
+    if (!text.includes(prevTag)) continue;
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i += 1) {
+      if (lines[i].includes(prevTag)) rows.push(`${relative}:${i + 1}:${lines[i]}`);
+    }
+  }
+  return { status: rows.length ? 0 : 1, stdout: rows.length ? `${rows.join('\n')}\n` : '', stderr: '' };
 }
 
 /**
@@ -660,6 +752,33 @@ export function evaluateCiRow(ci) {
 }
 
 /**
+ * Turn the GitHub-mirror CI reading into the `ci-green-on-head-github` row.
+ *
+ * WHY A SECOND CI ROW AT ALL: `ci-green-on-head` reads whatever platform
+ * `detectVcsFamily` picks for `origin` — GitLab here — and the GitLab pipeline
+ * runs Linux only. The **macOS** matrix leg exists solely on the GitHub mirror
+ * (`.github/workflows/test.yml`), i.e. on the operator's own platform. A
+ * release could therefore go out fully green with the macOS leg red, and the
+ * release path would never have asked.
+ *
+ * SELF-DISABLING, and that is the one place this row is allowed to pass without
+ * evidence: a checkout with no `github` remote has no mirror to be red, so the
+ * row is `skipped` rather than red. Everything else keeps the three-state
+ * contract of `evaluateCiRow` unchanged — `unknown` and `degraded` FAIL, because
+ * "we could not read the mirror" is not "the mirror is green" (the fail-closed
+ * house rule at the top of this file).
+ *
+ * @param {string|undefined} repoSpec — `resolveRepoSpec({vcs:'github'})`, undefined when no github remote resolves
+ * @param {null | {status?: string, failingJobName?: string, degraded?: string}} ci
+ * @returns {{ok: boolean, detail: string}}
+ */
+export function evaluateGithubCiRow(repoSpec, ci) {
+  if (!repoSpec) return { ok: true, detail: 'skipped — no github remote' };
+  const row = evaluateCiRow(ci);
+  return { ok: row.ok, detail: `${repoSpec} — ${row.detail}` };
+}
+
+/**
  * Flag-combination gate, applied before any work.
  *
  * `--skip-ci` turns the CI check into `ok:true` with the detail
@@ -767,12 +886,18 @@ async function preflight(repoRoot, target, { skipCi = false } = {}) {
   const changelog = checkChangelogEntry(readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf8'), target);
   add('changelog-entry', changelog.ok, changelog.problems.join('; '));
 
-  // 3b. Drift sweep: no TRACKED file outside the surfaces table + allowlist
-  // may still carry the previous release's version literal. `git grep` (not
-  // rg) on purpose — it searches every tracked file including hidden
-  // directories, which is exactly how the forgotten .codex-plugin manifest
-  // was invisible to a plain rg census. Allowlisted: files that legitimately
-  // carry version HISTORY.
+  // 3b. Drift sweep: no file outside the surfaces table + allowlist may still
+  // carry the previous release's version literal.
+  //
+  // POPULATION (#1248, closed here): this used to be one `git grep`, which
+  // searches the INDEX and is therefore blind to UNTRACKED files — the sweep
+  // measured "no TRACKED file still carries X" while its row read as a
+  // whole-tree census. It now enumerates via
+  // `scripts/lib/validate/enumerate-repo-files.mjs` (tracked PLUS
+  // untracked-not-ignored) and greps in-process; see {@link collectDriftHits}
+  // for the fail-closed contract and why hidden directories (the forgotten
+  // .codex-plugin manifest) are still covered. Allowlisted: files that
+  // legitimately carry version HISTORY.
   const tagList = run('git', ['tag', '-l', 'v*', '--sort=-v:refname'], { cwd: repoRoot });
   const prevTag = (tagList.stdout || '')
     .split('\n').map((t) => t.trim().replace(/^v/, ''))
@@ -782,10 +907,11 @@ async function preflight(repoRoot, target, { skipCi = false } = {}) {
     // one of them means the sweep is unnecessary.
     add('drift-sweep', false, `git tag -l failed (exit ${tagList.status}) — cannot determine the previous release to sweep for`);
   } else if (prevTag) {
-    // `-n` (not `-l`): the verdict needs the matching LINE, because a caret-ranged dependency
-    // that equals our previous version is not drift and a file list cannot show that.
-    const grep = run('git', ['grep', '-n', '--fixed-strings', prevTag, '--', '.'], { cwd: repoRoot });
-    const sweep = evaluateDriftSweep(grep, prevTag, HISTORY_ALLOWLIST);
+    // Line-shaped rows (not a bare file list): the verdict needs the matching LINE, because a
+    // caret-ranged dependency that equals our previous version is not drift and a file list
+    // cannot show that.
+    const hits = collectDriftHits({ repoRoot, prevTag });
+    const sweep = evaluateDriftSweep(hits, prevTag, HISTORY_ALLOWLIST);
     add('drift-sweep', sweep.ok, sweep.detail);
   } else {
     add('drift-sweep', true, 'no previous tag to sweep against');
@@ -843,6 +969,27 @@ async function preflight(repoRoot, target, { skipCi = false } = {}) {
     const ci = await checkCiStatus({ repoRoot, timeoutMs: 15000 });
     const row = evaluateCiRow(ci);
     add('ci-green-on-head', row.ok, row.detail);
+  }
+
+  // 6b. CI green on the GitHub mirror too. The row above asks the platform
+  // `detectVcsFamily` picks for `origin` (GitLab), whose pipeline is Linux-only;
+  // the macOS matrix leg lives exclusively in `.github/workflows/test.yml`.
+  // `vcs: 'github'` forces the probe onto the mirror without touching the
+  // detection order. The GitHub check-runs path reads `commits/HEAD`, i.e. the
+  // mirror's default-branch head — which is HEAD only because `head-pushed-github`
+  // above proves github/main == local HEAD; that row is this one's precondition,
+  // not a duplicate of it.
+  if (skipCi) {
+    add('ci-green-on-head-github', true, 'SKIPPED via --skip-ci');
+  } else {
+    const githubSpec = resolveRepoSpec({ repoRoot, vcs: 'github' });
+    let githubCi = null;
+    if (githubSpec) {
+      const { checkCiStatus } = await import('./lib/ci-status-banner.mjs');
+      githubCi = await checkCiStatus({ repoRoot, vcs: 'github', timeoutMs: 15000 });
+    }
+    const row = evaluateGithubCiRow(githubSpec, githubCi);
+    add('ci-green-on-head-github', row.ok, row.detail);
   }
 
   // 7. Leakage gate over the actual pack file list.
@@ -1024,6 +1171,37 @@ export function waitForRegistryPropagation(repoRoot, target, deps = {}) {
  * @param {{runImpl?: Function, waitImpl?: Function, attempts?: number, delaySeconds?: number}} [deps]
  * @returns {{receipt: {confirmed: boolean, target: string, detail: string}, propagation: ReturnType<typeof waitForRegistryPropagation>}}
  */
+/**
+ * The exact `npm publish` invocation: argv plus spawn options.
+ *
+ * WHY THE ENV PIN, AND WHY THIS IS A NAMED FUNCTION: `npm_config_loglevel` is
+ * INHERITED, and the `+ <pkg>@<version>` receipt line — the ONE piece of
+ * evidence `evaluatePublishReceipt` accepts as the irreversible boundary — is
+ * printed at `notice` level. Any ancestor that ran under `npm run --silent`
+ * (the husky pre-push gate does exactly that) therefore hands this child a
+ * silent loglevel, npm publishes successfully and prints nothing, the receipt
+ * reads as unconfirmed, `publish()` throws, and `main()` exits 2 = "pre-receipt,
+ * safe to rerun" while the registry already holds the version. That is the worst
+ * failure this file can produce, and it is the same inherited-silent trap the
+ * leakage gate's `npm pack --dry-run` was already pinned against (see preflight
+ * step 7). The pin makes the receipt independent of the caller's environment.
+ *
+ * Exported because `publish()` itself deliberately is not (it is the
+ * irreversible act) — the invocation it builds is pure, so the pin is testable
+ * without a publishable seam.
+ *
+ * @param {string} repoRoot
+ * @param {string} userconfigPath — the 0600 temp npmrc carrying the token
+ * @returns {{cmd: string, args: string[], opts: {cwd: string, env: object}}}
+ */
+export function publishInvocation(repoRoot, userconfigPath) {
+  return {
+    cmd: 'npm',
+    args: ['publish', '--access', 'public', '--userconfig', userconfigPath],
+    opts: { cwd: repoRoot, env: { ...process.env, npm_config_loglevel: 'notice' } },
+  };
+}
+
 // Deliberately NOT exported: this is the irreversible act, and every production
 // path to it runs through main() -> preflight() (leakage gate, CI gate, dirty-tree
 // gate). Exporting it made the whole gate chain bypassable by any importer, and no
@@ -1031,9 +1209,10 @@ export function waitForRegistryPropagation(repoRoot, target, deps = {}) {
 function publish(repoRoot, target, deps = {}) {
   const token = loadNpmToken(repoRoot);
   const runImpl = deps.runImpl ?? run;
-  const res = withTempUserconfig(token, (tmpRc) =>
-    runImpl('npm', ['publish', '--access', 'public', '--userconfig', tmpRc], { cwd: repoRoot }),
-  );
+  const res = withTempUserconfig(token, (tmpRc) => {
+    const call = publishInvocation(repoRoot, tmpRc);
+    return runImpl(call.cmd, call.args, call.opts);
+  });
   const receipt = evaluatePublishReceipt(res, target);
   if (!receipt.confirmed) throw new Error(receipt.detail);
 
@@ -1172,6 +1351,46 @@ export async function runPublishRelease(repoRoot, target, deps = {}) {
 }
 
 /**
+ * Render the partial tag/push state left behind by a failed post-receipt tail.
+ *
+ * Pure so the reconciliation lines are unit-testable against a synthetic
+ * outcome: the branch that produces them only exists after an irreversible npm
+ * publish, which no test may perform.
+ *
+ * Absent progress is reported as absent, never as "nothing happened": a
+ * `tagAndPushImpl` that threw before attaching `releaseProgress` leaves state
+ * genuinely unknown, and the operator must inspect rather than assume.
+ *
+ * @param {{tag?: string|null, localTagCreated?: boolean, remotes?: Array<{remote: string, mainPushed?: boolean, tagPushed?: boolean}>}} [tagProgress]
+ * @returns {string[]}
+ */
+export function describeTagProgress(tagProgress) {
+  const lines = ['\nPARTIAL TAG/PUSH STATE (the npm receipt is already irreversible):'];
+  if (!tagProgress || typeof tagProgress !== 'object') {
+    lines.push('  tag/push progress was not recorded — inspect `git tag -l` and both remotes manually.');
+    return lines;
+  }
+  const tag = tagProgress.tag || 'the release tag';
+  lines.push(
+    tagProgress.localTagCreated === true
+      ? `  local tag ${tag}: CREATED (the next \`--check\` will fail \`tag-free-local\` until it is pushed or deleted).`
+      : `  local tag ${tag}: not created.`,
+  );
+  const remotes = Array.isArray(tagProgress.remotes) ? tagProgress.remotes : [];
+  if (remotes.length === 0) {
+    lines.push('  no remote was reached — neither main nor the tag was pushed anywhere.');
+    return lines;
+  }
+  for (const remote of remotes) {
+    lines.push(
+      `  ${remote.remote}: main ${remote.mainPushed === true ? 'pushed' : 'NOT pushed'}, ` +
+        `tag ${remote.tagPushed === true ? 'pushed' : 'NOT pushed'}.`,
+    );
+  }
+  return lines;
+}
+
+/**
  * Print a completed publish-tail outcome and return the CLI exit code.
  *
  * @param {{status: string, propagation: object, tag: string|null, pushed: string[], release: object, live: object, reconciliation: Array<{phase: string, kind?: string, detail: string}>}} outcome
@@ -1192,6 +1411,16 @@ export function printPublishOutcome(outcome, target, io = {}) {
   }
   if (!tagAndPushFailed) {
     log(`  tagged ${outcome.tag} (AFTER publish) and pushed main+tag to: ${outcome.pushed.join(', ')}.`);
+  } else {
+    // The npm receipt is already irreversible at this point, so the ONLY thing
+    // that helps the operator is the exact partial state tag-and-push reached.
+    // `runPublishRelease` collects it (`tagProgress.localTagCreated` plus a
+    // per-remote `{mainPushed, tagPushed}`); this printer used to reference
+    // none of it and suppressed the `pushed:` line as well, so the operator was
+    // told only THAT it failed. The local-tag line matters twice over: a
+    // created local tag makes the next `--check` fail `tag-free-local`, which
+    // reads as a mysterious collision unless it was announced here.
+    for (const line of describeTagProgress(outcome.tagProgress)) error(line);
   }
 
   if (outcome.release.skipped) {
@@ -1449,6 +1678,13 @@ async function main() {
     if (!values.publish) return 0;
 
     console.log(`\nPublishing ${PACKAGE_NAME}@${target} ...`);
+    // No spawn timeout is set anywhere in this file, on purpose: a kill in the
+    // middle of `npm publish` or a tag push is the very failure the receipt
+    // boundary exists to avoid. The wall-clock cost is real, though — each of
+    // the two `git push` remotes re-runs the husky pre-push full gate (~2.5 min
+    // each, measured) and the site poll waits up to 120 s.
+    console.log('  This tail can run ~7 minutes (pre-push gate x2 remotes + up to 120s site poll).');
+    console.log('  Run it with a >=600s command timeout or in the background — do NOT kill it mid-run.');
     const outcome = await runPublishRelease(repoRoot, target, { publishImpl: publish });
     return printPublishOutcome(outcome, target);
   }

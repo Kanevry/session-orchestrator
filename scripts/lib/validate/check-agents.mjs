@@ -547,7 +547,7 @@ if (existsSync(agentsDir)) {
 //   agents at a glance). With more than 9 agents, colors are deliberately
 //   shared — but two DISPATCHABLE agents sharing a color is a likely
 //   same-wave collision and surfaces as a WARN (not FAIL: deliberate
-//   cross-phase shares are legitimate — see agents/AGENTS.md § Color
+//   cross-phase shares are legitimate — see docs/agent-authoring.md § Color
 //   Allocation Strategy).
 //   Non-dispatchable reference docs (description contains "NOT a dispatchable"
 //   or "Reference documentation") are excluded from the aggregation: they
@@ -581,7 +581,7 @@ if (existsSync(agentsDir)) {
   for (const [color, names] of colorMap) {
     if (names.length > 1) {
       collisions++;
-      warn(`color collision: ${color} shared by dispatchable agents ${names.sort().join(', ')} — confirm they never co-run in one wave (agents/AGENTS.md § Color Allocation Strategy)`);
+      warn(`color collision: ${color} shared by dispatchable agents ${names.sort().join(', ')} — confirm they never co-run in one wave (docs/agent-authoring.md § Color Allocation Strategy)`);
     }
   }
   if (collisions === 0) {
@@ -632,7 +632,7 @@ if (existsSync(agentsDir)) {
     if (missing.length > 0) {
       fail(
         `${agentFile}: repo-write agent (Edit+Write) is missing ${missing.join(' and ')} ` +
-          '— see .claude/rules/parallel-sessions.md § PSA-007 and agents/AGENTS.md § Authoring Convention',
+          '— see .claude/rules/parallel-sessions.md § PSA-007 and docs/agent-authoring.md § Git-Write Ban Requirement',
       );
     } else {
       pass(`${agentFile}: PSA-007 git-write ban present`);

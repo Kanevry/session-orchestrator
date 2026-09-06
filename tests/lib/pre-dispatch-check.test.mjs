@@ -10,13 +10,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+
 import { execFileSync } from 'node:child_process';
 
 import {
   checkUntrackedOverlap,
   listUntracked,
 } from '@lib/pre-dispatch-check.mjs';
+import { makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 // ---------------------------------------------------------------------------
 // Test repo helpers
@@ -35,7 +36,7 @@ function writeFile(rel, content = '') {
 }
 
 beforeEach(() => {
-  repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'predispatch-test-'));
+  repoDir = makeTmpDir('predispatch-test-');
   run('git', ['init', '-q', '--initial-branch=main']);
   run('git', ['config', 'user.email', 'test@example.com']);
   run('git', ['config', 'user.name', 'Test']);
@@ -45,7 +46,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  fs.rmSync(repoDir, { recursive: true, force: true });
+  removeTree(repoDir);
 });
 
 // ---------------------------------------------------------------------------
@@ -75,11 +76,11 @@ describe('listUntracked', () => {
   });
 
   it('returns [] when not in a git repo', () => {
-    const nonRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'non-git-'));
+    const nonRepo = makeTmpDir('non-git-');
     try {
       expect(listUntracked(nonRepo)).toEqual([]);
     } finally {
-      fs.rmSync(nonRepo, { recursive: true, force: true });
+      removeTree(nonRepo);
     }
   });
 });

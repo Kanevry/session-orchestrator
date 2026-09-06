@@ -26,8 +26,12 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { USAGE_PING_FIELDS } from '../../scripts/lib/telemetry/schema.mjs';
-import { validateRecord, ValidationError } from '../../server/ingest/validate.mjs';
+import {
+  USAGE_PING_FIELDS,
+  VALID_SESSION_PROFILES,
+  buildUsagePing,
+} from '../../scripts/lib/telemetry/schema.mjs';
+import { validateRecord, ValidationError, SESSION_PROFILES } from '../../server/ingest/validate.mjs';
 
 const START = '2026-07-20T00:00:00.000Z';
 
@@ -111,5 +115,66 @@ describe('telemetry parity: client whitelist <-> server usage-ping validator', (
     const err = captureValidationError(ping);
     expect(err).toBeInstanceOf(ValidationError);
     expect(err.field).toBe(field);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// session_profile — the OPTIONAL field whose VALUE is bounded on both sides
+// (2026-09-06). It was the only repo-authored free text on the wire: a STATE.md
+// carrying `session-profile: client-acme-private-repo` sent that string verbatim
+// and the server persisted it into raw_json. Client omission alone is not the
+// fix — a foreign or tampered client bypasses it — so the two whitelists must
+// stay in lockstep, which is exactly what this file exists to enforce.
+// ---------------------------------------------------------------------------
+
+describe('telemetry parity: session_profile whitelist (client omission <-> server rejection)', () => {
+  const PRIVATE_LOOKING = 'client-acme-private-repo';
+
+  it('the two whitelists are the same set (client schema.mjs <-> server validate.mjs)', () => {
+    expect([...SESSION_PROFILES].sort()).toEqual([...VALID_SESSION_PROFILES].sort());
+  });
+
+  it.each([...VALID_SESSION_PROFILES])('a whitelisted profile "%s" round-trips: emitted by the client AND accepted by the server', (profile) => {
+    const ping = buildUsagePing({
+      env: {},
+      now: START,
+      ownerConfig: {},
+      roster: { skills: new Set(), commands: new Set() },
+      sessionRecord: { session_type: 'deep' },
+      sessionProfile: profile,
+    });
+    expect(ping.session_profile).toBe(profile);
+    expect(() => validateRecord(validPing({ session_profile: profile }))).not.toThrow();
+  });
+
+  it('THE LEAK, both sides: a private-looking profile never leaves the client, and is rejected if some other client sends it', () => {
+    const ping = buildUsagePing({
+      env: {},
+      now: START,
+      ownerConfig: {},
+      roster: { skills: new Set(), commands: new Set() },
+      sessionRecord: { session_type: 'deep' },
+      sessionProfile: PRIVATE_LOOKING,
+    });
+    // client: absent from the wire entirely — not 'other', not null, not the string
+    expect('session_profile' in ping).toBe(false);
+    expect(JSON.stringify(ping)).not.toContain(PRIVATE_LOOKING);
+
+    // server: the same value, arriving anyway, is refused — so it never reaches
+    // raw_json. A length-only bound would have STORED it (24 chars, lowercase).
+    const err = captureValidationError(validPing({ session_profile: PRIVATE_LOOKING }));
+    expect(err).toBeInstanceOf(ValidationError);
+    expect(err.field).toBe('session_profile');
+    expect(err.message).not.toContain(PRIVATE_LOOKING); // SEC-009: never echo input
+  });
+
+  it('the server rejects a non-string / oversized / near-miss profile, and still accepts its ABSENCE', () => {
+    for (const bad of [42, null, {}, ['ultradeep'], 'Ultradeep', 'ultradeep ', 'x'.repeat(200)]) {
+      const err = captureValidationError(validPing({ session_profile: bad }));
+      expect(err).toBeInstanceOf(ValidationError);
+      expect(err.field).toBe('session_profile');
+    }
+    // optional: an omitted profile is the common case and must stay valid
+    expect(() => validateRecord(validPing())).not.toThrow();
   });
 });

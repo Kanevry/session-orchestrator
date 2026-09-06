@@ -30,7 +30,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import {
   classifyArgv,
@@ -41,6 +41,7 @@ import {
   tokenizeArgv,
   tokenizeShellCommand,
 } from '@lib/validate/check-test-git-config-target.mjs';
+import { removeTree } from '../../_helpers/tmp-fixture.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../..');
@@ -52,7 +53,7 @@ const tmpDirs = [];
 afterEach(() => {
   while (tmpDirs.length > 0) {
     try {
-      rmSync(/** @type {string} */ (tmpDirs.pop()), { recursive: true, force: true });
+      removeTree(/** @type {string} */ (tmpDirs.pop()));
     } catch {
       /* best-effort cleanup */
     }
@@ -280,6 +281,14 @@ describe('the repository that owns this check', () => {
 
     expect(result.toolError).toBe(false);
     expect(result.findings.map((f) => `${f.file}:${f.line}`)).toEqual([]);
-    expect(result.summary.applicable).toBeGreaterThan(50);
+    // Vacuum guard, not a target. The floor was 50 while fixtures called git
+    // directly; since 2026-09-06 forty-two fixture files route through
+    // tests/_helpers/tmp-fixture.mjs, whose `...NO_BACKGROUND_WRITER` spread is
+    // a token this static census cannot resolve to a subcommand, so those
+    // calls are invisible here (measured after the routing: applicable 34,
+    // findings 0). The census still answers "0 untargeted sites"; the floor
+    // only proves the scanner saw a non-trivial population. Revisit trigger:
+    // the census learning to resolve the helper's spread (then raise it).
+    expect(result.summary.applicable).toBeGreaterThan(20);
   });
 });

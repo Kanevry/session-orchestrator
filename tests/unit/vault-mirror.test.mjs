@@ -1,12 +1,16 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync, existsSync, readdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 
 // vault-mirror emits relative paths using the runtime's path.sep, so normalize
 // to forward slashes in assertions for Windows portability (Unix no-op).
 const forwardSlashes = (p) => (p ?? '').replaceAll(sep, '/');
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import {
+  fixtureGitSpawn,
+  makeTmpDir as makeFixtureTmpDir,
+  removeTree,
+} from '../_helpers/tmp-fixture.mjs';
 
 const MIRROR = resolve(process.cwd(), 'scripts/vault-mirror.mjs');
 
@@ -63,7 +67,7 @@ function runMirror(args, opts = {}) {
   // its newest foreign event against the sessions ledger, and `/evolve` mines it).
   // A test that silently writes into the substrate it is not testing is the same
   // class as tests/lib/worktree.test.mjs self-poisoning (#984).
-  const projectDir = opts.projectDir ?? mkdtempSync(join(tmpdir(), 'vault-mirror-events-'));
+  const projectDir = opts.projectDir ?? makeFixtureTmpDir('vault-mirror-events-');
   return spawnSync('node', [MIRROR, ...args], {
     encoding: 'utf8',
     env: {
@@ -81,7 +85,7 @@ function runMirror(args, opts = {}) {
 }
 
 function makeTmpDir() {
-  return mkdtempSync(join(tmpdir(), 'vault-mirror-test-'));
+  return makeFixtureTmpDir('vault-mirror-test-');
 }
 
 describe('vault-mirror CLI', () => {
@@ -90,7 +94,7 @@ describe('vault-mirror CLI', () => {
   afterEach(() => {
     for (const d of dirs) {
       try {
-        rmSync(d, { recursive: true, force: true });
+        removeTree(d);
       } catch {
         /* best-effort cleanup */
       }
@@ -1554,7 +1558,7 @@ describe('vault-mirror auto-commit (#31)', () => {
   afterEach(() => {
     for (const d of dirs) {
       try {
-        rmSync(d, { recursive: true, force: true });
+        removeTree(d);
       } catch {
         /* best-effort cleanup */
       }
@@ -1575,23 +1579,23 @@ describe('vault-mirror auto-commit (#31)', () => {
   }
 
   function gitInit(vaultDir) {
-    spawnSync('git', ['-C', vaultDir, 'init', '-q', '-b', 'main'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', vaultDir, 'config', 'user.email', 'test@example.com'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', vaultDir, 'config', 'user.name', 'Test'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', vaultDir, 'config', 'commit.gpgsign', 'false'], { encoding: 'utf8' });
+    fixtureGitSpawn(['-C', vaultDir, 'init', '-q', '-b', 'main']);
+    fixtureGitSpawn(['-C', vaultDir, 'config', 'user.email', 'test@example.com']);
+    fixtureGitSpawn(['-C', vaultDir, 'config', 'user.name', 'Test']);
+    fixtureGitSpawn(['-C', vaultDir, 'config', 'commit.gpgsign', 'false']);
     // Initial commit so HEAD exists
     writeFileSync(join(vaultDir, '.gitkeep'), '', 'utf8');
-    spawnSync('git', ['-C', vaultDir, 'add', '.gitkeep'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', vaultDir, 'commit', '-q', '-m', 'init'], { encoding: 'utf8' });
+    fixtureGitSpawn(['-C', vaultDir, 'add', '.gitkeep']);
+    fixtureGitSpawn(['-C', vaultDir, 'commit', '-q', '-m', 'init']);
   }
 
   function gitLog(vaultDir) {
-    const r = spawnSync('git', ['-C', vaultDir, 'log', '--oneline'], { encoding: 'utf8' });
+    const r = fixtureGitSpawn(['-C', vaultDir, 'log', '--oneline']);
     return r.stdout.trim().split('\n').filter(Boolean);
   }
 
   function gitStatus(vaultDir) {
-    const r = spawnSync('git', ['-C', vaultDir, 'status', '--porcelain'], { encoding: 'utf8' });
+    const r = fixtureGitSpawn(['-C', vaultDir, 'status', '--porcelain']);
     return r.stdout.trim().split('\n').filter(Boolean);
   }
 
@@ -1615,7 +1619,7 @@ describe('vault-mirror auto-commit (#31)', () => {
     // History: init + auto-commit = 2
     expect(gitLog(vaultDir)).toHaveLength(2);
     // Mirror dirs are clean post-commit (source.jsonl in vaultDir root is untracked but irrelevant)
-    const cached = spawnSync('git', ['-C', vaultDir, 'diff', '--cached', '--name-only', '--', '40-learnings', '50-sessions'], { encoding: 'utf8' });
+    const cached = fixtureGitSpawn(['-C', vaultDir, 'diff', '--cached', '--name-only', '--', '40-learnings', '50-sessions']);
     expect(cached.stdout.trim()).toBe('');
   });
 
@@ -1644,7 +1648,7 @@ describe('vault-mirror auto-commit (#31)', () => {
     // No new commit: only init
     expect(gitLog(vaultDir)).toHaveLength(1);
     // Verify nothing was staged for commit (the unstage path worked)
-    const cached = spawnSync('git', ['-C', vaultDir, 'diff', '--cached', '--name-only'], { encoding: 'utf8' });
+    const cached = fixtureGitSpawn(['-C', vaultDir, 'diff', '--cached', '--name-only']);
     expect(cached.stdout.trim()).toBe('');
     // Handwritten file still on disk, untouched
     expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'handwritten.md'))).toBe(true);
@@ -1750,7 +1754,7 @@ describe('vault-mirror auto-commit (#31)', () => {
     expect(commit.files).toBe(3);
     // source.jsonl lives in vaultDir root (not 40-learnings/ or 50-sessions/) so it
     // remains untracked — that's expected. Only assert mirror dirs are clean.
-    const cached = spawnSync('git', ['-C', vaultDir, 'diff', '--cached', '--name-only', '--', '40-learnings', '50-sessions'], { encoding: 'utf8' });
+    const cached = fixtureGitSpawn(['-C', vaultDir, 'diff', '--cached', '--name-only', '--', '40-learnings', '50-sessions']);
     expect(cached.stdout.trim()).toBe('');
   });
 
@@ -2043,7 +2047,7 @@ describe('regression #718 — vault-mirror per-record resilience', () => {
   afterEach(() => {
     for (const d of dirs) {
       try {
-        rmSync(d, { recursive: true, force: true });
+        removeTree(d);
       } catch {
         /* best-effort cleanup */
       }

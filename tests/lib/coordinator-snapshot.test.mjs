@@ -10,11 +10,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { realpath } from 'node:fs/promises';
+
+import { fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 vi.setConfig({ testTimeout: 15000 });
 
@@ -40,8 +40,9 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Author/committer identity only — hermetic config-isolation (no reliance on
+// the developer's ~/.gitconfig) is layered on top by fixtureGitSpawn.
 const GIT_ENV = {
-  ...process.env,
   GIT_AUTHOR_NAME: 'Test',
   GIT_AUTHOR_EMAIL: 'test@example.com',
   GIT_COMMITTER_NAME: 'Test',
@@ -53,7 +54,7 @@ const GIT_ENV = {
  * Throws on non-zero exit.
  */
 function git(cwd, ...args) {
-  const result = spawnSync('git', args, { cwd, encoding: 'utf8', env: GIT_ENV });
+  const result = fixtureGitSpawn(args, cwd, { env: GIT_ENV });
   if (result.status !== 0) {
     throw new Error(`git ${args.join(' ')} failed (exit ${result.status}):\n${result.stderr}`);
   }
@@ -64,9 +65,7 @@ function git(cwd, ...args) {
  * Same as git() but with backdated author + committer date.
  */
 function gitBackdated(cwd, ...args) {
-  const result = spawnSync('git', args, {
-    cwd,
-    encoding: 'utf8',
+  const result = fixtureGitSpawn(args, cwd, {
     env: {
       ...GIT_ENV,
       GIT_AUTHOR_DATE: '2020-01-01T12:00:00+0000',
@@ -80,11 +79,11 @@ function gitBackdated(cwd, ...args) {
 }
 
 /**
- * Create a minimal git repo with one commit. Returns realpath of repoDir.
+ * Create a minimal git repo with one commit. Returns realpath of repoDir
+ * (makeTmpDir resolves the macOS /var → /private/var symlink).
  */
 async function makeTempRepo() {
-  const dir = mkdtempSync(path.join(tmpdir(), 'so-snapshot-'));
-  const repoDir = await realpath(dir);
+  const repoDir = makeTmpDir('so-snapshot-');
 
   git(repoDir, 'init', '-q');
   git(repoDir, 'config', 'user.email', 'test@example.com');
@@ -102,10 +101,10 @@ async function makeTempRepo() {
  * Uses `git for-each-ref` which supports prefix filtering correctly.
  */
 function listSnapshotRefs(repoDir) {
-  const result = spawnSync(
-    'git',
+  const result = fixtureGitSpawn(
     ['for-each-ref', '--format=%(objectname) %(refname)', 'refs/so-snapshots/'],
-    { cwd: repoDir, encoding: 'utf8', env: GIT_ENV }
+    repoDir,
+    { env: GIT_ENV },
   );
   // for-each-ref exits 0 even when nothing matches.
   return result.stdout
@@ -136,7 +135,7 @@ describe.skipIf(!gitAvailable).sequential('coordinator-snapshot', () => {
 
   afterEach(() => {
     process.chdir(origCwd);
-    rmSync(repoDir, { recursive: true, force: true });
+    removeTree(repoDir);
   });
 
   // -------------------------------------------------------------------------

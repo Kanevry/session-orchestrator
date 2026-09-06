@@ -27,10 +27,11 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+
 import { dirname, join, resolve } from 'node:path';
+import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const HOOK_PATH = join(REPO_ROOT, '.husky', 'pre-commit');
@@ -53,7 +54,7 @@ const tmpDirs = [];
 afterEach(() => {
   while (tmpDirs.length > 0) {
     try {
-      rmSync(tmpDirs.pop(), { recursive: true, force: true });
+      removeTree(tmpDirs.pop());
     } catch {
       // best-effort cleanup
     }
@@ -68,13 +69,13 @@ afterEach(() => {
  *   Used to prove the gate reads the index, not the working copy.
  */
 function runGuardWithStaged(files, worktreeAfter = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'so-nul-guard-'));
+  const dir = makeTmpDir('so-nul-guard-');
   tmpDirs.push(dir);
-  execFileSync('git', ['init', '-q', dir]);
+  fixtureGit(['init', '-q', dir]);
   for (const [rel, content] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, rel)), { recursive: true });
     writeFileSync(join(dir, rel), content);
-    execFileSync('git', ['-C', dir, 'add', rel]);
+    fixtureGit(['-C', dir, 'add', rel]);
   }
   for (const [rel, content] of Object.entries(worktreeAfter)) {
     writeFileSync(join(dir, rel), content);

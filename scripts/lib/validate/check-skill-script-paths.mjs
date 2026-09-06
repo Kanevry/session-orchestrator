@@ -99,7 +99,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { listRepoFiles } from './repo-files.mjs';
+import { enumerateRepoFiles } from './enumerate-repo-files.mjs';
 import { forEachLine } from './markdown-fences.mjs';
 
 /** Documentation roots whose prose is treated as a claim about the repo. */
@@ -259,10 +259,16 @@ export function scanSkillScriptPaths({ pluginRoot, dirs = SCAN_DIRS, strictSh = 
   /** @type {string[]} */
   let files;
   try {
-    // The git index, never a `readdirSync` walk (#1143): a walk cannot see
-    // `.gitignore`, so a worktree under `.claude/worktrees/` or any ignored
-    // artefact would enter this census as if it were repository documentation.
-    files = listRepoFiles(pluginRoot, { dirs, exts: ['.md'] });
+    // The population is "exists in this repo, tracked or not" (#1248) — NOT
+    // "is versioned". A doc that cites a dead script is a defect the moment it
+    // is written; the bare git index cannot see it until it is staged, so the
+    // check reported clean on the exact tree carrying the bug (measured: an
+    // untracked `skills/zz-probe/SKILL.md` → `1 passed, 0 failed` before
+    // `git add -A`, `0 passed, 1 failed` after). `enumerateRepoFiles` still
+    // honours `.gitignore`, so the #1143 exposure a bare `readdirSync` walk
+    // would reintroduce (a worktree under `.claude/worktrees/`, gitignored
+    // `docs/specs/*.md`) stays closed — see that module's header.
+    files = enumerateRepoFiles({ repoRoot: pluginRoot, dirs, exts: ['.md'] });
   } catch (error) {
     findings.push({
       kind: 'tool-error',

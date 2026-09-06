@@ -36,6 +36,8 @@ import {
   loadRoster,
   normalizeOs,
   normalizeArch,
+  normalizeSessionProfile,
+  VALID_SESSION_PROFILES,
 } from '../../scripts/lib/telemetry/schema.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -494,9 +496,46 @@ describe('session_profile is a SECOND axis, never a session_type value', () => {
     expect(ping.session_type).not.toBe('ultradeep');
   });
 
-  it('an unrecognised profile is emitted VERBATIM — no degradation to "other"', () => {
-    const ping = buildUsagePing({ ...base, sessionRecord: { session_type: 'deep' }, sessionProfile: 'some-future-profile' });
-    expect(ping.session_profile).toBe('some-future-profile');
+  // THE LEAK (reproduced end-to-end by two independent Wave-1 reviewers,
+  // 2026-09-06): `session_profile` was the only repo-authored FREE TEXT on the
+  // wire. A repo whose STATE.md carries `session-profile: client-acme-private-repo`
+  // sent that string verbatim to the ingest server, where it was persisted in
+  // `raw_json`. Note the string is lowercase-and-hyphens — a SHAPE regex passes
+  // it; only the closed whitelist drops it.
+  it('THE LEAK: a repo-authored profile string is OMITTED from the ping, never sent (not even as "other")', () => {
+    for (const leak of ['client-acme-private-repo', 'kunde-müller-2026', 'internal_projectX', 'a'.repeat(200)]) {
+      const ping = buildUsagePing({ ...base, sessionRecord: { session_type: 'deep' }, sessionProfile: leak });
+      expect('session_profile' in ping).toBe(false);
+      expect(JSON.stringify(ping)).not.toContain(leak);
+      // and the omission must not corrupt the second axis
+      expect(ping.session_type).toBe('deep');
+    }
+  });
+
+  it('an unlisted profile on the SESSION RECORD is dropped too — both sources go through the whitelist', () => {
+    const ping = buildUsagePing({
+      ...base,
+      sessionRecord: { session_type: 'deep', session_profile: 'client-acme-private-repo' },
+    });
+    expect('session_profile' in ping).toBe(false);
+  });
+
+  it('an unlisted EXPLICIT profile is dropped rather than falling back to the record value (source precedence is resolved before normalization)', () => {
+    const ping = buildUsagePing({
+      ...base,
+      sessionRecord: { session_type: 'deep', session_profile: 'ultradeep' },
+      sessionProfile: 'client-acme-private-repo',
+    });
+    expect('session_profile' in ping).toBe(false);
+  });
+
+  it('normalizeSessionProfile: whitelisted in, everything else null', () => {
+    expect(VALID_SESSION_PROFILES).toEqual(['ultradeep']);
+    for (const ok of VALID_SESSION_PROFILES) expect(normalizeSessionProfile(ok)).toBe(ok);
+    expect(normalizeSessionProfile('  ultradeep  ')).toBe('ultradeep');
+    for (const bad of [undefined, null, '', '   ', 'Ultradeep', 'ultradeep-x', 'client-acme', 42, {}]) {
+      expect(normalizeSessionProfile(bad)).toBeNull();
+    }
   });
 
   it('ABSENT IS NOT EMPTY: with no profile the key is omitted, never null or ""', () => {

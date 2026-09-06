@@ -36,7 +36,7 @@ import {
   writeTelemetryState,
   TELEMETRY_JSON_PATH,
 } from './consent.mjs';
-import { buildUsagePing, projectUsagePing } from './schema.mjs';
+import { buildUsagePing, projectUsagePing, normalizeSessionProfile } from './schema.mjs';
 import { ensureAnonId } from './anon-id.mjs';
 import { peekAll, enqueue, clear, queueStats } from './queue.mjs';
 import { loadOwnerConfig } from '../owner-yaml.mjs';
@@ -90,7 +90,13 @@ function defaultSender({ env, timeoutMs }) {
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) {
-      throw new Error(`telemetry endpoint returned HTTP ${res.status}`);
+      // The status travels ON the error: `flush` needs it to tell a TRANSPORT
+      // failure (re-queue) from a SCHEMA rejection (evict — see
+      // `isSchemaRejection`). A bare Error carries no such distinction, and
+      // parsing the message string would be a second, drift-prone encoding.
+      const err = new Error(`telemetry endpoint returned HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
     }
   };
 }
@@ -131,6 +137,10 @@ function defaultSender({ env, timeoutMs }) {
  *  (c) TEMP-ROOT — `CLAUDE_PROJECT_DIR` (or the cwd) sits under the OS temp
  *      directory or `/tmp`, WHILE the identity is a real one. A real operator
  *      session runs from a real checkout.
+ *
+ * A FOURTH outcome is the guard's own failure: if any probe throws, the answer is
+ * `sandbox: true` with `reason: 'sandbox:probe-failed'`. An environment the guard
+ * cannot classify is treated as one it would have refused.
  *
  * (b) and (c) share one principle, and it is the whole design: **the guard
  * protects the DEFAULT host identity.** When the effective telemetry state path
@@ -185,11 +195,16 @@ export function detectSandbox({ env = process.env, statePath, cwd } = {}) {
 
     return { sandbox: false, reason: null };
   } catch {
-    // A guard that throws must never become a guard that permits — but it must
-    // also never break a real send. An unreadable path resolves to "not a
-    // sandbox"; conditions (a)/(b) cannot throw, so the only reachable failure
-    // here is a filesystem probe.
-    return { sandbox: false, reason: null };
+    // A guard that throws must never become a guard that permits — and until
+    // 2026-09-06 this catch said exactly that while doing the opposite
+    // (`{ sandbox: false }`, i.e. PERMIT on probe failure). It now fails CLOSED.
+    //
+    // What is refused is one ping, and the batch is not lost: `flush` returns
+    // `reason: 'sandbox:probe-failed'`, writes no queue mutation, and the next
+    // session's flush re-probes from scratch. What the old branch risked is the
+    // thing this guard exists to prevent — a real `anon_id` leaving an
+    // environment the guard could not classify.
+    return { sandbox: true, reason: 'sandbox:probe-failed' };
   }
 }
 
@@ -483,6 +498,61 @@ export function buildBatch({
 }
 
 // ---------------------------------------------------------------------------
+// Transport-boundary normalisation (the queue is not a trusted producer)
+// ---------------------------------------------------------------------------
+
+/**
+ * THE BUG THIS EXISTS FOR: a record written to the offline queue by an OLDER
+ * client — one built before `session_profile` was whitelisted — carries whatever
+ * `session-profile` that host's STATE.md held, e.g. a private repo name. `flush`
+ * forwarded queued batches to the sender VERBATIM, so the builder-side whitelist
+ * (`normalizeSessionProfile`, applied in `buildUsagePing`) was bypassed for every
+ * record that had ever been queued. Two consequences, both live:
+ *
+ *   (a) PRIVACY — the private string reaches the wire on every later flush.
+ *   (b) POISON QUEUE — the ingest server validates a batch ALL-OR-NOTHING, so
+ *       the unknown profile 400s the whole batch; the new record is queued and
+ *       the queue grows 1 → 2 → 3 … and never drains again.
+ *
+ * The fix is a boundary invariant, not a one-off patch: **a queued record can
+ * never carry what a freshly built one cannot.** Every queued entry passes the
+ * SAME two steps the builder applies — `projectUsagePing` field projection, then
+ * the `normalizeSessionProfile` whitelist (unlisted ⇒ the key is DROPPED, per
+ * that function's omit-don't-degrade contract).
+ *
+ * @param {unknown} batch A record as read back from the offline queue.
+ * @returns {object} The projected + normalised record safe to hand to the sender.
+ */
+export function sanitizeQueuedRecord(batch) {
+  const record = projectUsagePing(batch);
+  if ('session_profile' in record) {
+    const profile = normalizeSessionProfile(record.session_profile);
+    if (profile === null) delete record.session_profile;
+    else record.session_profile = profile;
+  }
+  return record;
+}
+
+/**
+ * Does this send failure mean "the server refused this PAYLOAD" (evict) rather
+ * than "the send did not get through" (re-queue)?
+ *
+ * `defaultSender` attaches `err.status`; an injected sender that throws a bare
+ * Error carries no status and therefore always routes to the re-queue branch —
+ * the pre-existing behaviour, unchanged.
+ *
+ * Only 400 (schema) and 422 (semantic) count. 408/429 and every 5xx are
+ * transport-class and MUST re-queue: a rate-limited batch is not a bad batch.
+ *
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+function isSchemaRejection(err) {
+  const status = Number(err?.status);
+  return status === 400 || status === 422;
+}
+
+// ---------------------------------------------------------------------------
 // Flush
 // ---------------------------------------------------------------------------
 
@@ -503,7 +573,8 @@ export function buildBatch({
  *                                         isolate a test from the host's real owner.yaml fleet flag.
  * `reason` values: `gated` (consent), `sandbox:*` (the sandbox guard refused —
  * no network, no queue mutation, no anon-ID mint), `debug`, `queued`, `sent`,
- * `no-record`, `build-error: …`.
+ * `rejected-evicted` (the server refused the payload with 400/422 — the batch is
+ * dropped instead of re-queued forever), `no-record`, `build-error: …`.
  *
  * @returns {Promise<{ sent: boolean, queued: boolean, state: string, reason: string }>}
  */
@@ -566,17 +637,31 @@ export async function flush({
     return { sent: false, queued: false, state: consent.state, reason: 'debug' };
   }
 
-  // Drain the existing queue together with the new record in ONE send.
-  const queuedBatches = peekAll({ path: queuePath }).map((entry) => entry.batch);
+  // Drain the existing queue together with the new record in ONE send. Every
+  // queued record is re-normalised at this boundary — see sanitizeQueuedRecord
+  // for the privacy + poison-queue defect that made this necessary.
+  const queuedBatches = peekAll({ path: queuePath }).map((entry) => sanitizeQueuedRecord(entry.batch));
   const batches = [...queuedBatches, record];
 
   const send = typeof sender === 'function' ? sender : defaultSender({ env, timeoutMs });
 
   try {
     await send(batches);
-  } catch {
-    // Send failed → only the NEW record joins the queue (queued batches remain
-    // in place since the queue was not cleared).
+  } catch (err) {
+    if (isSchemaRejection(err)) {
+      // The server refused the PAYLOAD. Re-queueing would replay the identical
+      // batch forever, which is the poison-queue class itself. Drop it.
+      //
+      // Named ceiling (BV-004): the ingest API validates a batch all-or-nothing
+      // and returns no per-record index, so the rejected record cannot be
+      // identified — the only bounded choice is to evict the WHOLE batch (the
+      // queued records AND the new one). Revisit if the server ever reports
+      // which entries failed; then evict only those.
+      clear({ path: queuePath });
+      return { sent: false, queued: false, state: consent.state, reason: 'rejected-evicted' };
+    }
+    // Transport failure → only the NEW record joins the queue (queued batches
+    // remain in place since the queue was not cleared).
     enqueue(record, { path: queuePath, now: nowIso });
     return { sent: false, queued: true, state: consent.state, reason: 'queued' };
   }

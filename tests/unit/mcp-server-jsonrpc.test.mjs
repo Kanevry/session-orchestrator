@@ -10,10 +10,11 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 // Derive repoRoot portably from this file's location (tests/unit/ -> repo root).
 // No hardcoded home path — the owner-leakage CI gate blocks absolute home paths.
@@ -115,14 +116,14 @@ describe('mcp-server.sh session_metrics — torn-write tolerance', () => {
   let tmpRepo;
 
   beforeEach(() => {
-    tmpRepo = mkdtempSync(join(tmpdir(), 'mcp-server-metrics-'));
+    tmpRepo = makeTmpDir('mcp-server-metrics-');
     // Minimal git init so `git rev-parse --show-toplevel` resolves inside
     // the fixture repo instead of falling through to the real repo root.
-    spawnSync('git', ['init', '-q'], { cwd: tmpRepo, encoding: 'utf8' });
+    fixtureGitSpawn(['init', '-q'], tmpRepo, { encoding: 'utf8' });
   });
 
   afterEach(() => {
-    rmSync(tmpRepo, { recursive: true, force: true });
+    removeTree(tmpRepo);
   });
 
   it('returns both real sessions when a malformed line sits between them, excluding the abandoned stub', () => {
@@ -246,18 +247,16 @@ describe('.mcp.json entrypoint — plugin-root resolution (GH#64)', () => {
   beforeEach(() => {
     // A temp dir with no git repository anywhere in its ancestry — the
     // reporter's situation (client launched from $HOME).
-    outsideRepo = mkdtempSync(join(tmpdir(), 'mcp-no-git-'));
-    const probe = spawnSync('git', ['rev-parse', '--show-toplevel'], {
-      cwd: outsideRepo,
-      encoding: 'utf8',
-    });
+    outsideRepo = makeTmpDir('mcp-no-git-');
+    const probe = fixtureGitSpawn(['rev-parse', '--show-toplevel'], outsideRepo, {
+      encoding: 'utf8'});
     // Precondition, not an assertion about the fix: if this dir were inside a
     // git tree the test would prove nothing.
     expect(probe.status).not.toBe(0);
   });
 
   afterEach(() => {
-    rmSync(outsideRepo, { recursive: true, force: true });
+    removeTree(outsideRepo);
   });
 
   it('never fails silently from a non-git cwd with no plugin-root variable set', () => {

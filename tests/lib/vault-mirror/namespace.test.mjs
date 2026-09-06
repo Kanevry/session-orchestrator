@@ -12,11 +12,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { fixtureGit, makeTmpDir, removeTree } from '../../_helpers/tmp-fixture.mjs';
 import {
   resolveRepoNamespace,
   _setNamespaceMapPath,
@@ -39,7 +39,7 @@ afterEach(() => {
   _resetPseudonymMapCache();
   for (const d of _tmpDirs) {
     try {
-      rmSync(d, { recursive: true, force: true });
+      removeTree(d);
     } catch {
       /* best-effort */
     }
@@ -50,7 +50,7 @@ afterEach(() => {
 
 /** Write a tmp namespace-map JSON file and pin it as the active map. Returns its path. */
 function writeMap(obj) {
-  const dir = mkdtempSync(join(tmpdir(), 'ns-map-test-'));
+  const dir = makeTmpDir('ns-map-test-');
   _tmpDirs.push(dir);
   const p = join(dir, 'namespace-map.json');
   writeFileSync(p, typeof obj === 'string' ? obj : JSON.stringify(obj), 'utf8');
@@ -293,15 +293,15 @@ describe('resolveRepoNamespace — pseudonym mapping', () => {
 describe('deriveRepo (#1039) — preferred-remote resolution + distinguishable fallback', () => {
   const ORIGINAL_CWD = process.cwd();
 
-  /** Create a tracked tmp dir; realpath so macOS /var → /private/var is stable. */
+  /** Create a tracked tmp dir; makeTmpDir resolves macOS /var → /private/var. */
   function makeDir(prefix) {
-    const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+    const dir = makeTmpDir(prefix);
     _tmpDirs.push(dir);
     return dir;
   }
 
   function git(args, cwd) {
-    return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    return fixtureGit(args, cwd, { stdio: ['ignore', 'pipe', 'pipe'] });
   }
 
   /** `git init` + one empty commit, so the repo is clonable. */

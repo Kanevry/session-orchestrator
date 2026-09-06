@@ -41,10 +41,12 @@
     ".codex-plugin/",
     ".agents/",
     ".cursor/",
+    ".orchestrator/policy/",
     "docs/*.md",
     "docs/telemetry/telemetry-claims.md",
     "NOTICE",
     "SECURITY.md",
+    "!skills/vault-sync/package-lock.json",
     "!scripts/tests/**",
     "!skills/vault-sync/tests/**",
     "!**/node_modules/**",
@@ -73,6 +75,8 @@
     "remark": "^15.0.0",
     "remark-parse": "^11.0.0",
     "unified": "^11.0.0",
+    "yaml": "^2.9.0",
+    "zod": "^3.25.76",
     "zx": "^8.1.0"
   },
   "devDependencies": {

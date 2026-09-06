@@ -16,17 +16,16 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
-  mkdtempSync,
   rmSync,
   writeFileSync,
   readFileSync,
   existsSync,
   appendFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+import { fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 import {
   computeDependencyHash,
   saveBaselineResult,
@@ -35,8 +34,9 @@ import {
   shouldSkipIncremental,
 } from '@lib/quality-gates-cache.mjs';
 
+// Author/committer identity only — the hermetic config-isolation (no reliance
+// on the developer's ~/.gitconfig) is layered on top by fixtureGitSpawn.
 const GIT_ENV = {
-  ...process.env,
   GIT_AUTHOR_NAME: 'Test',
   GIT_AUTHOR_EMAIL: 'test@example.com',
   GIT_COMMITTER_NAME: 'Test',
@@ -47,7 +47,7 @@ const gitAvailable =
   spawnSync('git', ['--version'], { encoding: 'utf8' }).status === 0;
 
 function git(cwd, ...args) {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: GIT_ENV });
+  const r = fixtureGitSpawn(args, cwd, { env: GIT_ENV });
   if (r.status !== 0) {
     throw new Error(`git ${args.join(' ')} failed (${r.status}): ${r.stderr}`);
   }
@@ -70,11 +70,11 @@ describe('computeDependencyHash', () => {
   let repoRoot;
 
   beforeEach(() => {
-    repoRoot = mkdtempSync(path.join(tmpdir(), 'qgc-hash-'));
+    repoRoot = makeTmpDir('qgc-hash-');
   });
 
   afterEach(() => {
-    rmSync(repoRoot, { recursive: true, force: true });
+    removeTree(repoRoot);
   });
 
   it('is deterministic across repeated calls with identical inputs', () => {
@@ -263,7 +263,7 @@ describe('saveBaselineResult + loadLatestBaselineResult round-trip', () => {
   let repoRoot;
 
   beforeEach(() => {
-    repoRoot = mkdtempSync(path.join(tmpdir(), 'qgc-save-'));
+    repoRoot = makeTmpDir('qgc-save-');
     writeFileSync(
       path.join(repoRoot, 'package.json'),
       JSON.stringify({ name: 'a', version: '1.0.0' }),
@@ -271,7 +271,7 @@ describe('saveBaselineResult + loadLatestBaselineResult round-trip', () => {
   });
 
   afterEach(() => {
-    rmSync(repoRoot, { recursive: true, force: true });
+    removeTree(repoRoot);
   });
 
   it('writes a single JSONL line with all required fields', () => {
@@ -366,7 +366,7 @@ describe('isCacheValid — reason codes', () => {
   let repoRoot;
 
   beforeEach(() => {
-    repoRoot = mkdtempSync(path.join(tmpdir(), 'qgc-valid-'));
+    repoRoot = makeTmpDir('qgc-valid-');
     writeFileSync(
       path.join(repoRoot, 'package.json'),
       JSON.stringify({ name: 'a', version: '1.0.0' }),
@@ -374,7 +374,7 @@ describe('isCacheValid — reason codes', () => {
   });
 
   afterEach(() => {
-    rmSync(repoRoot, { recursive: true, force: true });
+    removeTree(repoRoot);
   });
 
   it('returns no-record when latestRecord is null', () => {
@@ -516,7 +516,7 @@ describe('isCacheValid — TTL boundary', () => {
   let repoRoot;
 
   beforeEach(() => {
-    repoRoot = mkdtempSync(path.join(tmpdir(), 'qgc-ttl-'));
+    repoRoot = makeTmpDir('qgc-ttl-');
     writeFileSync(
       path.join(repoRoot, 'package.json'),
       JSON.stringify({ name: 'a' }),
@@ -524,7 +524,7 @@ describe('isCacheValid — TTL boundary', () => {
   });
 
   afterEach(() => {
-    rmSync(repoRoot, { recursive: true, force: true });
+    removeTree(repoRoot);
   });
 
   function recordAgedBy(ms) {
@@ -598,7 +598,7 @@ describe.skipIf(!gitAvailable)('shouldSkipIncremental', () => {
   let repoRoot;
 
   beforeEach(() => {
-    repoRoot = mkdtempSync(path.join(tmpdir(), 'qgc-skip-'));
+    repoRoot = makeTmpDir('qgc-skip-');
     writeFileSync(
       path.join(repoRoot, 'package.json'),
       JSON.stringify({ name: 'a', version: '1.0.0' }),
@@ -606,7 +606,7 @@ describe.skipIf(!gitAvailable)('shouldSkipIncremental', () => {
   });
 
   afterEach(() => {
-    rmSync(repoRoot, { recursive: true, force: true });
+    removeTree(repoRoot);
   });
 
   it('returns skip=false with no-record reason when cache is missing', () => {
@@ -783,7 +783,7 @@ describe.skipIf(!gitAvailable)('shouldSkipIncremental — Quality-wave Full-Gate
   let baseRef;
 
   beforeEach(() => {
-    repoRoot = mkdtempSync(path.join(tmpdir(), 'qgc-quality-'));
+    repoRoot = makeTmpDir('qgc-quality-');
     writeFileSync(
       path.join(repoRoot, 'package.json'),
       JSON.stringify({ name: 'a', version: '1.0.0' }),
@@ -810,7 +810,7 @@ describe.skipIf(!gitAvailable)('shouldSkipIncremental — Quality-wave Full-Gate
   });
 
   afterEach(() => {
-    rmSync(repoRoot, { recursive: true, force: true });
+    removeTree(repoRoot);
   });
 
   it('(baseline) without waveRole the scenario IS a genuine cache skip', () => {
@@ -886,7 +886,7 @@ describe('shouldSkipIncremental — Quality mandate precedes cache/git logic (#7
   let repoRoot;
 
   beforeEach(() => {
-    repoRoot = mkdtempSync(path.join(tmpdir(), 'qgc-quality-nocache-'));
+    repoRoot = makeTmpDir('qgc-quality-nocache-');
     writeFileSync(
       path.join(repoRoot, 'package.json'),
       JSON.stringify({ name: 'a', version: '1.0.0' }),
@@ -894,7 +894,7 @@ describe('shouldSkipIncremental — Quality mandate precedes cache/git logic (#7
   });
 
   afterEach(() => {
-    rmSync(repoRoot, { recursive: true, force: true });
+    removeTree(repoRoot);
   });
 
   it('waveRole "Quality" hard-returns the mandate even with no cache and no git repo', () => {
@@ -929,7 +929,7 @@ describe('shouldSkipIncremental — Quality waveRole case-insensitive matching (
   let repoRoot;
 
   beforeEach(() => {
-    repoRoot = mkdtempSync(path.join(tmpdir(), 'qgc-quality-case-'));
+    repoRoot = makeTmpDir('qgc-quality-case-');
     writeFileSync(
       path.join(repoRoot, 'package.json'),
       JSON.stringify({ name: 'a', version: '1.0.0' }),
@@ -937,7 +937,7 @@ describe('shouldSkipIncremental — Quality waveRole case-insensitive matching (
   });
 
   afterEach(() => {
-    rmSync(repoRoot, { recursive: true, force: true });
+    removeTree(repoRoot);
   });
 
   it('lowercase "quality" still hard-returns the mandate (skip=false)', () => {
@@ -979,7 +979,7 @@ describe('storage location', () => {
   let repoRoot;
 
   beforeEach(() => {
-    repoRoot = mkdtempSync(path.join(tmpdir(), 'qgc-loc-'));
+    repoRoot = makeTmpDir('qgc-loc-');
     writeFileSync(
       path.join(repoRoot, 'package.json'),
       JSON.stringify({ name: 'a' }),
@@ -987,7 +987,7 @@ describe('storage location', () => {
   });
 
   afterEach(() => {
-    rmSync(repoRoot, { recursive: true, force: true });
+    removeTree(repoRoot);
   });
 
   it('writes to exactly .orchestrator/metrics/baseline-results.jsonl', () => {

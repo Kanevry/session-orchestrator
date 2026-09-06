@@ -120,11 +120,11 @@ describe('checkPluginUpdate — version comparison', () => {
     expect(result.latest).toBe('3.24.0');
     expect(result.message).toContain('3.19.0');
     expect(result.message).toContain('3.24.0');
-    expect(result.message).toContain('5 Minors zurück');
+    expect(result.message).toContain('5 Minors behind');
     // The remedy has to be in the line: a warning the operator cannot act on
     // is the same silence with extra steps.
     expect(result.message).toContain('/plugin update session-orchestrator@kanevry');
-    expect(result.message).toContain('neu starten');
+    expect(result.message).toContain('restart Claude Code');
   });
 
   // BUG: an off-by-one plural or a `>=` in the minor comparison would make the
@@ -143,7 +143,7 @@ describe('checkPluginUpdate — version comparison', () => {
   it('warns on a major jump', async () => {
     installVersion('3.24.0');
     const major = await run({ fetchImpl: fakeFetch({ version: '4.0.0' }) });
-    expect(major.message).toContain('1 Major zurück');
+    expect(major.message).toContain('1 Major behind');
   });
 
   // BUG: a local checkout is routinely AHEAD of the registry between releases.
@@ -272,6 +272,60 @@ describe('checkPluginUpdate — kill switches', () => {
 
     expect(result).not.toBeNull();
     expect(fetchImpl.calls).toHaveLength(1);
+  });
+});
+
+describe('checkPluginUpdate — platform-aware instruction (W2-I11)', () => {
+  // BUG: the banner rendered German prose and a Claude-only `/plugin update`
+  // instruction unconditionally for every consumer. A Codex/Cursor/Pi user —
+  // reached because this probe compares against the public npm registry, not
+  // a Claude-only signal — got a remedy line naming a command their harness
+  // does not have. Each case below pins the sourced instruction for its
+  // platform; the German-word guard pins the language fix on every one of
+  // them, not just the default case.
+  const GERMAN_WORDS = /\b(installiert|verfügbar|zurück|danach)\b/;
+
+  it.each([
+    ['claude', '/plugin update session-orchestrator@kanevry'],
+    ['codex', 'codex plugin marketplace upgrade kanevry'],
+    ['cursor', 'node scripts/cursor-install.mjs'],
+    // BUG this pins (W4-F7): the old message named ONLY the checkout recipe
+    // (`node scripts/pi-install.mjs ... --settings-only`), which never updates
+    // an npm-installed copy — docs/pi-setup.md's PRIMARY path is
+    // `pi install npm:session-orchestrator`. Asserting that exact substring
+    // fails against the pre-fix message (it names only the checkout form).
+    ['pi', 'pi install npm:session-orchestrator'],
+  ])('renders the %s-specific update instruction in English', async (platform, expectedSubstring) => {
+    installVersion('3.19.0');
+    const result = await run({ platform, fetchImpl: fakeFetch({ version: '3.24.0' }) });
+
+    expect(result.message).toContain(expectedSubstring);
+    expect(result.message).not.toMatch(GERMAN_WORDS);
+  });
+
+  // BUG: an unrecognised or future platform value must still get an
+  // actionable remedy, not a message that silently drops the instruction.
+  it('falls back to the generic npm instruction for an unrecognised platform value', async () => {
+    installVersion('3.19.0');
+    const result = await run({
+      platform: 'some-future-harness',
+      fetchImpl: fakeFetch({ version: '3.24.0' }),
+    });
+
+    expect(result.message).toContain('npm update -g session-orchestrator');
+    expect(result.message).not.toMatch(GERMAN_WORDS);
+  });
+
+  // BUG: this is the exact defect this task fixes — with no `platform` opt
+  // AND no platform signal in `env` (the `run()` helper passes `env: {}`),
+  // the message must still default to English, not silently regress to the
+  // German-only text the module shipped with.
+  it('defaults to English with the claude instruction when no platform signal is present', async () => {
+    installVersion('3.19.0');
+    const result = await run({ fetchImpl: fakeFetch({ version: '3.24.0' }) });
+
+    expect(result.message).toContain('/plugin update session-orchestrator@kanevry');
+    expect(result.message).not.toMatch(GERMAN_WORDS);
   });
 });
 

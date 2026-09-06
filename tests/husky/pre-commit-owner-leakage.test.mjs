@@ -16,10 +16,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync, mkdtempSync, writeFileSync, rmSync, cpSync, mkdirSync, chmodSync, symlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, cpSync, mkdirSync, chmodSync, symlinkSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fixtureGit, fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const HOOK_PATH = join(REPO_ROOT, '.husky', 'pre-commit');
@@ -69,12 +69,12 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
     let tmpDir;
 
     beforeEach(() => {
-      tmpDir = mkdtempSync(join(tmpdir(), 'so-husky-owner-leakage-'));
+      tmpDir = makeTmpDir('so-husky-owner-leakage-');
       // Initialize a minimal git repo
-      execFileSync('git', ['init', '-q', tmpDir], { encoding: 'utf8' });
-      execFileSync('git', ['-C', tmpDir, 'config', 'user.email', 'test@example.com']);
-      execFileSync('git', ['-C', tmpDir, 'config', 'user.name', 'Test']);
-      execFileSync('git', ['-C', tmpDir, 'config', 'commit.gpgsign', 'false']);
+      fixtureGit(['init', '-q', tmpDir]);
+      fixtureGit(['-C', tmpDir, 'config', 'user.email', 'test@example.com']);
+      fixtureGit(['-C', tmpDir, 'config', 'user.name', 'Test']);
+      fixtureGit(['-C', tmpDir, 'config', 'commit.gpgsign', 'false']);
       // Copy the scanner into the same relative path it lives at in the real repo,
       // so the hook's `node scripts/lib/validate/check-owner-leakage.mjs` resolves.
       mkdirSync(join(tmpDir, 'scripts', 'lib', 'validate'), { recursive: true });
@@ -97,30 +97,47 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
     });
 
     afterEach(() => {
-      if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+      if (tmpDir) removeTree(tmpDir);
     });
 
     it('blocks commit when a planted leak file is staged', () => {
       // Plant a clear P1 (personal home path) leak
       writeFileSync(join(tmpDir, 'doc.md'), 'See /Users/bernhardgoetzendorfer/Projects/vault for notes.\n');
-      execFileSync('git', ['-C', tmpDir, 'add', 'doc.md']);
-      const result = spawnSync('git', ['-C', tmpDir, 'commit', '-m', 'leak attempt'], { encoding: 'utf8' });
+      fixtureGit(['-C', tmpDir, 'add', 'doc.md']);
+      const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'leak attempt']);
       expect(result.status).not.toBe(0);
       expect(result.stderr).toMatch(/Commit blocked|check-owner-leakage/);
     });
 
+    it('prints the scanner\'s own diagnostic line before the "Commit blocked" verdict (W4-F6)', () => {
+      // THE BUG: the stage ran the scanner with `>/dev/null 2>&1` and echoed one
+      // FIXED line — "privacy leak detected in tracked files" — for EVERY non-zero
+      // exit. The operator learned nothing about WHICH file, WHICH rule, or (worse)
+      // that the scanner had not run at all (`CP11 DISABLED`, an unrelated
+      // owner.yaml typo), which is what teaches --no-verify. The hook now prints the
+      // scanner's output tail; that is safe because every violation line passes
+      // through redactSpans() before it reaches stdout.
+      writeFileSync(join(tmpDir, 'doc.md'), 'See /Users/bernhardgoetzendorfer/Projects/vault for notes.\n');
+      fixtureGit(['-C', tmpDir, 'add', 'doc.md']);
+      const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'leak attempt']);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('FAIL:');
+      expect(result.stderr).toContain('doc.md:1');
+      expect(result.stderr).toContain('privacy leak detected');
+    });
+
     it('blocks commit when a planted P6 (private slug) leak is staged', () => {
       writeFileSync(join(tmpDir, 'notes.md'), '# Tracking buchhaltgenie deployment\n');
-      execFileSync('git', ['-C', tmpDir, 'add', 'notes.md']);
-      const result = spawnSync('git', ['-C', tmpDir, 'commit', '-m', 'leak attempt'], { encoding: 'utf8' });
+      fixtureGit(['-C', tmpDir, 'add', 'notes.md']);
+      const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'leak attempt']);
       expect(result.status).not.toBe(0);
       expect(result.stderr).toMatch(/Commit blocked|check-owner-leakage/);
     });
 
     it('allows commit on a clean fixture (negative path)', () => {
       writeFileSync(join(tmpDir, 'doc.md'), 'A perfectly fine document with no leaks.\n');
-      execFileSync('git', ['-C', tmpDir, 'add', 'doc.md']);
-      const result = spawnSync('git', ['-C', tmpDir, 'commit', '-m', 'clean commit'], { encoding: 'utf8' });
+      fixtureGit(['-C', tmpDir, 'add', 'doc.md']);
+      const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'clean commit']);
       expect(result.status).toBe(0);
     });
 
@@ -129,8 +146,8 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       // re-spelled with url-percent separators — which the old slash-form regex
       // would have MISSED — is caught end-to-end through the git hook.
       writeFileSync(join(tmpDir, 'enc.md'), 'leak: %2FUsers%2Fbernhardg%2Fsecret\n');
-      execFileSync('git', ['-C', tmpDir, 'add', 'enc.md']);
-      const result = spawnSync('git', ['-C', tmpDir, 'commit', '-m', 'encoded leak'], { encoding: 'utf8' });
+      fixtureGit(['-C', tmpDir, 'add', 'enc.md']);
+      const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'encoded leak']);
       expect(result.status).not.toBe(0);
       expect(result.stderr).toMatch(/Commit blocked|check-owner-leakage/);
     });
@@ -141,8 +158,8 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       // form — which the old case-sensitive regex MISSED (exploitable false
       // negative) — is blocked end-to-end through the git hook.
       writeFileSync(join(tmpDir, 'cap.md'), 'home: /Users/Bernhardg./Projects/secret\n');
-      execFileSync('git', ['-C', tmpDir, 'add', 'cap.md']);
-      const result = spawnSync('git', ['-C', tmpDir, 'commit', '-m', 'capitalized leak'], { encoding: 'utf8' });
+      fixtureGit(['-C', tmpDir, 'add', 'cap.md']);
+      const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'capitalized leak']);
       expect(result.status).not.toBe(0);
       expect(result.stderr).toMatch(/Commit blocked|check-owner-leakage/);
     });
@@ -151,8 +168,8 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       // A zero-width space wedged into the username breaks a contiguous-literal
       // match; the scanner now strips format chars from the canonical form.
       writeFileSync(join(tmpDir, 'zw.md'), 'p: /Users/bern\u200bhardg/secret\n');
-      execFileSync('git', ['-C', tmpDir, 'add', 'zw.md']);
-      const result = spawnSync('git', ['-C', tmpDir, 'commit', '-m', 'zero-width leak'], { encoding: 'utf8' });
+      fixtureGit(['-C', tmpDir, 'add', 'zw.md']);
+      const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'zero-width leak']);
       expect(result.status).not.toBe(0);
       expect(result.stderr).toMatch(/Commit blocked|check-owner-leakage/);
     });
@@ -164,12 +181,12 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       // tree and blocks.
       writeFileSync(join(tmpDir, 'fresh.md'), 'New file: /Users/bernhardg./private/path/here\n');
       // Verify the file is untracked
-      const statusBefore = execFileSync('git', ['-C', tmpDir, 'status', '--short'], { encoding: 'utf8' });
+      const statusBefore = fixtureGit(['-C', tmpDir, 'status', '--short']);
       expect(statusBefore).toContain('?? fresh.md');
       // Now stage it — this is the moment a pre-add scan would miss
-      execFileSync('git', ['-C', tmpDir, 'add', 'fresh.md']);
+      fixtureGit(['-C', tmpDir, 'add', 'fresh.md']);
       // And the hook must catch it
-      const result = spawnSync('git', ['-C', tmpDir, 'commit', '-m', 'fresh leak'], { encoding: 'utf8' });
+      const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'fresh leak']);
       expect(result.status).not.toBe(0);
     });
 
@@ -181,18 +198,17 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       // dynamically imports ../config/host-paths.mjs, which does not exist at this
       // relative path inside tmpDir, so CP11 degrades to [] (inert) and CP1–CP10
       // (which do not match this fixture text) leave the commit clean.
-      const namesDir = mkdtempSync(join(tmpdir(), 'so-husky-cp11-inert-names-'));
+      const namesDir = makeTmpDir('so-husky-cp11-inert-names-');
       const namesFile = join(namesDir, 'names.json');
       writeFileSync(namesFile, JSON.stringify(['zenithcorp']));
       writeFileSync(join(tmpDir, 'doc.md'), 'zenithcorp leak here\n');
-      execFileSync('git', ['-C', tmpDir, 'add', 'doc.md']);
+      fixtureGit(['-C', tmpDir, 'add', 'doc.md']);
 
-      const result = spawnSync('git', ['-C', tmpDir, 'commit', '-m', 'inert cp11 attempt'], {
-        encoding: 'utf8',
-        env: { ...process.env, SO_CONFIDENTIAL_NAMES_FILE: namesFile },
+      const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'inert cp11 attempt'], undefined, {
+        env: { SO_CONFIDENTIAL_NAMES_FILE: namesFile },
       });
 
-      rmSync(namesDir, { recursive: true, force: true });
+      removeTree(namesDir);
 
       expect(result.status).toBe(0);
     });
@@ -203,11 +219,11 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
     let namesDir;
 
     beforeEach(() => {
-      tmpDir = mkdtempSync(join(tmpdir(), 'so-husky-cp11-active-'));
-      execFileSync('git', ['init', '-q', tmpDir], { encoding: 'utf8' });
-      execFileSync('git', ['-C', tmpDir, 'config', 'user.email', 'test@example.com']);
-      execFileSync('git', ['-C', tmpDir, 'config', 'user.name', 'Test']);
-      execFileSync('git', ['-C', tmpDir, 'config', 'commit.gpgsign', 'false']);
+      tmpDir = makeTmpDir('so-husky-cp11-active-');
+      fixtureGit(['init', '-q', tmpDir]);
+      fixtureGit(['-C', tmpDir, 'config', 'user.email', 'test@example.com']);
+      fixtureGit(['-C', tmpDir, 'config', 'user.name', 'Test']);
+      fixtureGit(['-C', tmpDir, 'config', 'commit.gpgsign', 'false']);
 
       // Copy the scanner AND the four host-local helper modules it dynamically
       // imports for CP11, at their real relative paths, so getConfidentialNamePatterns()
@@ -233,36 +249,36 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       writeFileSync(hookDst, buildOwnerLeakageHookSlice());
       chmodSync(hookDst, 0o755);
 
-      namesDir = mkdtempSync(join(tmpdir(), 'so-husky-cp11-names-'));
+      namesDir = makeTmpDir('so-husky-cp11-names-');
     });
 
     afterEach(() => {
-      if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
-      if (namesDir) rmSync(namesDir, { recursive: true, force: true });
+      if (tmpDir) removeTree(tmpDir);
+      if (namesDir) removeTree(namesDir);
     });
 
     it('blocks the commit end-to-end and redacts the confidential name in the scanner output', () => {
       const namesFile = join(namesDir, 'names.json');
       writeFileSync(namesFile, JSON.stringify(['zenithcorp']));
       writeFileSync(join(tmpDir, 'doc.md'), 'zenithcorp leak here\n');
-      execFileSync('git', ['-C', tmpDir, 'add', 'doc.md']);
+      fixtureGit(['-C', tmpDir, 'add', 'doc.md']);
 
       // Env is passed ONLY via the spawnSync `env` option — never mutated on
       // process.env — so this test cannot leak SO_CONFIDENTIAL_NAMES_FILE into
       // any other test in this file or suite.
       const commitEnv = { ...process.env, SO_CONFIDENTIAL_NAMES_FILE: namesFile };
 
-      const result = spawnSync('git', ['-C', tmpDir, 'commit', '-m', 'cp11 leak attempt'], {
-        encoding: 'utf8',
+      const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'cp11 leak attempt'], undefined, {
         env: commitEnv,
       });
 
       // The hook blocks the commit end-to-end.
       expect(result.status).not.toBe(0);
-      // The hook's owner-leakage stage redirects the scanner's own stdout/stderr
-      // to /dev/null (`>/dev/null 2>&1`) and only echoes a FIXED, generic message
-      // on scanner failure — so the confidential name can never reach the
-      // git-commit capture through this path either way.
+      // The hook's owner-leakage stage now PRINTS the scanner's output tail
+      // (W4-F6) instead of discarding it, so this assertion is no longer carried
+      // by suppression: what keeps the confidential name out of the git-commit
+      // capture is the scanner's own choke-point redaction (redactSpans), and
+      // this row is what proves the two changes compose.
       expect(result.stdout).not.toContain('zenithcorp');
       expect(result.stderr).not.toContain('zenithcorp');
 
@@ -270,14 +286,16 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       // substituted instead) is only observable on the scanner's OWN stdout —
       // the hook swallows it (see above) — so invoke the scanner directly, the
       // same way the hook does: a RELATIVE script path with cwd: tmpDir (not
-      // an absolute scannerPath). mkdtempSync() returns the non-canonical
-      // macOS tmp form (/var/folders/... instead of /private/var/folders/...);
-      // the scanner's isMain check compares resolve(argv[1]) against
-      // fileURLToPath(import.meta.url), which IS canonicalized by Node's ESM
-      // loader — an absolute non-canonical argv[1] silently fails that
-      // comparison (isMain=false, runScan() never called, exit 0 with zero
-      // output). A relative path resolved via process.cwd() picks up the
-      // canonical form instead, exactly like the git hook's own invocation.
+      // an absolute scannerPath). tmpDir is already realpath-resolved
+      // (makeTmpDir, tests/_helpers/tmp-fixture.mjs), but the scanner's isMain
+      // check compares resolve(argv[1]) against fileURLToPath(import.meta.url),
+      // which IS canonicalized by Node's ESM loader — an absolute argv[1] built
+      // from a NON-canonical tmp path (the macOS mkdtempSync() default:
+      // /var/folders/... instead of /private/var/folders/...) would silently
+      // fail that comparison (isMain=false, runScan() never called, exit 0
+      // with zero output). A relative path resolved via process.cwd() picks up
+      // the canonical form regardless, exactly like the git hook's own
+      // invocation.
       const scannerResult = spawnSync('node', ['scripts/lib/validate/check-owner-leakage.mjs', tmpDir], {
         cwd: tmpDir,
         encoding: 'utf8',

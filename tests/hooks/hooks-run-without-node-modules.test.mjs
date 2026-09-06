@@ -45,9 +45,10 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+
 import path from 'node:path';
 import os from 'node:os';
+import { fixtureGit } from '../_helpers/tmp-fixture.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
 
@@ -97,7 +98,7 @@ async function makeSandbox() {
   for (const d of ['proj', 'home', 'cfg', 'vault', 'registry', 'tmp']) {
     await fs.mkdir(path.join(root, d), { recursive: true });
   }
-  execFileSync('git', ['init', '-q'], { cwd: root, stdio: 'ignore' });
+  fixtureGit(['init', '-q'], root, { stdio: 'ignore' });
   return root;
 }
 

@@ -25,19 +25,12 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawnSync, execFileSync } from 'node:child_process';
-import {
-  mkdtempSync,
-  mkdirSync,
-  writeFileSync,
-  rmSync,
-  chmodSync,
-  existsSync,
-  readFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, writeFileSync, chmodSync, existsSync, readFileSync } from 'node:fs';
+
 import { join, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -211,7 +204,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
   beforeEach(() => {
     ensureStubGlab();
-    tmp = mkdtempSync(join(tmpdir(), 'vw-test-'));
+    tmp = makeTmpDir('vw-test-');
     // Provide a CLAUDE.md with cross-repo.projects so the script doesn't no-op.
     // Tests that need a specific value override this in the test body.
     writeFileSync(
@@ -222,7 +215,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
   });
 
   afterEach(() => {
-    rmSync(tmp, { recursive: true, force: true });
+    removeTree(tmp);
   });
 
   // ── Test 1: both closed → tick posted, no flip yet ─────────────────────────
@@ -528,7 +521,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
   it('no cross-repo.projects configured → no-op exit 0 with notice', () => {
     // Override the CLAUDE.md set in beforeEach with one that has no cross-repo.projects
-    const emptyDir = mkdtempSync(join(tmpdir(), 'vw-noop-'));
+    const emptyDir = makeTmpDir('vw-noop-');
     writeFileSync(
       join(emptyDir, 'CLAUDE.md'),
       '## Session Config\npersistence: true\n# No cross-repo block\n',
@@ -546,7 +539,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
       }
     );
 
-    rmSync(emptyDir, { recursive: true, force: true });
+    removeTree(emptyDir);
 
     // Must exit 0, not fail
     expect(result.status).toBe(0);
@@ -622,8 +615,8 @@ describe('scripts/vault-integration-watcher.mjs', () => {
     // call resolves deterministically — proves the module-level REPO_SPEC
     // default wiring (no --repo override) shells out to the real chain, not
     // a stub.
-    execFileSync('git', ['init', '-q'], { cwd: tmp });
-    execFileSync('git', ['remote', 'add', 'gitlab', spec], { cwd: tmp });
+    fixtureGit(['init', '-q'], tmp);
+    fixtureGit(['remote', 'add', 'gitlab', spec], tmp);
 
     writeIssueFixture(tmp, '303', 'closed');
     writeIssueFixture(tmp, '304', 'closed');

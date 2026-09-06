@@ -7,15 +7,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { execFileSync, spawn } from 'node:child_process';
-import {
-  promises as fs,
-  existsSync,
-  mkdtempSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { spawn } from 'node:child_process';
+import { promises as fs, existsSync, realpathSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -26,6 +19,7 @@ import { enterWorktree } from '../../scripts/lib/autopilot/worktree-pipeline.mjs
 import { registerSelf, readRegistry } from '../../scripts/lib/session-registry.mjs';
 import { findPeers } from '../../scripts/lib/peer-discovery.mjs';
 import { acquire, writeOwnerProof, readLock } from '../../scripts/lib/session-lock.mjs';
+import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
 const SESSION_START_HOOK = path.join(REPO_ROOT, 'hooks/on-session-start.mjs');
@@ -327,7 +321,7 @@ describe('worktree promotion is a process boundary, not a live migration (#1069)
 
   /** Run git in `cwd` with stdout captured. */
   const git = (cwd, ...args) =>
-    execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    fixtureGit(args, cwd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
   beforeEach(() => {
     // Isolate from the host: no global/system git config (hooksPath, templates,
@@ -340,11 +334,11 @@ describe('worktree promotion is a process boundary, not a live migration (#1069)
 
     // realpath: macOS tmpdir is a /var → /private/var symlink and enterWorktree
     // resolves its basePath, so an unresolved path would fail the comparison.
-    basePath = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'so-two-root-')));
+    basePath = realpathSync(makeTmpDir('so-two-root-'));
     process.env.SO_SESSION_REGISTRY_DIR = path.join(basePath, 'registry');
 
     sourceRoot = path.join(basePath, 'srcrepo');
-    execFileSync('git', ['init', '-b', 'main', sourceRoot], { stdio: 'ignore' });
+    fixtureGit(['init', '-b', 'main', sourceRoot], undefined, { stdio: 'ignore' });
     git(sourceRoot, 'config', 'user.email', 'test@example.invalid');
     git(sourceRoot, 'config', 'user.name', 'Test');
     writeFileSync(path.join(sourceRoot, 'README.md'), '# fixture\n', 'utf8');
@@ -361,7 +355,7 @@ describe('worktree promotion is a process boundary, not a live migration (#1069)
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
-    rmSync(basePath, { recursive: true, force: true });
+    removeTree(basePath);
   });
 
   /** Source-session start: registry entry + owned lock + owner proof. */

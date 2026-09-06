@@ -32,6 +32,8 @@ Key principles (see [LANGUAGE.md](LANGUAGE.md) for the full list):
 
 This skill is _informed_ by the project's domain model — `CONTEXT.md` and any `docs/adr/`. The domain language gives names to good seams; ADRs record decisions the skill should not re-litigate. See [references/CONTEXT-FORMAT.md](./references/CONTEXT-FORMAT.md) and [references/ADR-FORMAT.md](./references/ADR-FORMAT.md).
 
+**When to load [references/domain-model.md](./references/domain-model.md):** before this skill's first pass on a repo with no `CONTEXT.md` yet, or one too thin to name the seams below — run its grilling interview to establish the domain vocabulary first. Skip it once `CONTEXT.md` already reflects the domain.
+
 ## Process
 
 ### 1. Explore

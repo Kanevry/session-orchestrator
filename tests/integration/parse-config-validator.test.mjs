@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
+
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 // fileURLToPath, not .pathname — Windows returns `/D:/...` via .pathname, which
 // resolve() then mangles to `D:\D:\...`.
@@ -39,11 +40,11 @@ function runParseConfigCaptureStderr(cwd) {
 describe('parse-config.mjs → validate-config.mjs integration (#182)', () => {
   let sandbox;
   beforeEach(() => {
-    sandbox = mkdtempSync(join(tmpdir(), 'pc-'));
-    execFileSync('git', ['init', '-q'], { cwd: sandbox });
+    sandbox = makeTmpDir('pc-');
+    fixtureGit(['init', '-q'], sandbox);
   });
   afterEach(() => {
-    rmSync(sandbox, { recursive: true, force: true });
+    removeTree(sandbox);
   });
 
   it('passes through a valid config unchanged', () => {
@@ -220,11 +221,11 @@ this line is prose where a key belongs
 describe('#1097 unparsable Session Config lines fail loud, never silently default', () => {
   let sandbox;
   beforeEach(() => {
-    sandbox = mkdtempSync(join(tmpdir(), 'pc-unparsable-'));
-    execFileSync('git', ['init', '-q'], { cwd: sandbox });
+    sandbox = makeTmpDir('pc-unparsable-');
+    fixtureGit(['init', '-q'], sandbox);
   });
   afterEach(() => {
-    rmSync(sandbox, { recursive: true, force: true });
+    removeTree(sandbox);
   });
 
   it('enforcement: warn — names the line on stderr and still emits config (exit 0)', () => {
@@ -286,11 +287,11 @@ custom-phases:
 describe('#1097 gate — enforcement fallback, truncation tail, control characters', () => {
   let sandbox;
   beforeEach(() => {
-    sandbox = mkdtempSync(join(tmpdir(), 'pc-gate-'));
-    execFileSync('git', ['init', '-q'], { cwd: sandbox });
+    sandbox = makeTmpDir('pc-gate-');
+    fixtureGit(['init', '-q'], sandbox);
   });
   afterEach(() => {
-    rmSync(sandbox, { recursive: true, force: true });
+    removeTree(sandbox);
   });
 
   it('an out-of-vocabulary enforcement value is rejected by the parser, never read as strict', () => {

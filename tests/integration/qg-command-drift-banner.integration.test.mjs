@@ -28,12 +28,13 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+
+import { writeFileSync } from 'node:fs';
+
 import { join } from 'node:path';
 
 import { checkQgCommandDrift } from '../../scripts/lib/qg-command-drift-banner.mjs';
+import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -76,15 +77,15 @@ describe('qg-command-drift-banner integration (MED-5 — real CLAUDE.md parse pa
   let tmpRepo;
 
   beforeEach(() => {
-    tmpRepo = mkdtempSync(join(tmpdir(), 'so-qg-drift-it-'));
+    tmpRepo = makeTmpDir('so-qg-drift-it-');
     // parse-config.mjs anchors project root at the first directory containing
     // .git (or CLAUDE.md). git init ensures the tmpdir is the root, preventing
     // walk-up to the real repo's CLAUDE.md.
-    execFileSync('git', ['init', '-q'], { cwd: tmpRepo });
+    fixtureGit(['init', '-q'], tmpRepo);
   });
 
   afterEach(() => {
-    rmSync(tmpRepo, { recursive: true, force: true });
+    removeTree(tmpRepo);
   });
 
   // -------------------------------------------------------------------------

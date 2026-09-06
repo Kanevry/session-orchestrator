@@ -16,7 +16,7 @@ The same skills and commands are available on all four harnesses; **enforcement 
 | **Node.js** | **24 or later** (`node --version`) — `package.json` `engines.node` is `>=24.0.0`. The plugin is ES modules and needs a real Node runtime. [Install Node.js](https://nodejs.org/). |
 | **A coding agent** | Claude Code, Codex CLI, Cursor IDE, or Pi. This is a workflow layer *on top of* one of them, not a replacement. |
 | **Harness version** | Codex CLI **0.144.4 or later** ([docs/codex-setup.md](docs/codex-setup.md)). No minimum is pinned for Claude Code, Cursor, or Pi — if `/plugin` (or the Cursor/Pi installer) runs, the plugin loads. |
-| **OS** | macOS and Linux are first-class and run in CI (`ubuntu-latest`, `macos-latest`). Windows runs natively (paths via `path.join`, tmp via `os.tmpdir()`) but is **not** covered by CI — treat it as best-effort. |
+| **OS** | macOS and Linux are first-class and run in CI (`ubuntu-latest`, `macos-latest`). Windows is **not** covered by CI and has not been tested natively — treat it as best-effort. The Node core is portable (paths via `path.join`, tmp via `os.tmpdir()`), but `hooks/hooks.json` invokes hook commands via `sh` (see line 14) and the optional MCP server (`scripts/mcp-server.sh`) is a Bash script that needs `jq` on `PATH` — both need WSL or Git Bash on Windows. |
 | **Git** | A git repository. Session-orchestrator reads git state at every session start and commits at close. |
 
 ## Install
@@ -48,7 +48,7 @@ Setup guides: [Codex](docs/codex-setup.md) · [Cursor IDE](docs/cursor-setup.md)
 
 Restart the harness afterwards, and re-run `npm install` in the plugin directory when the release adds dependencies. On Codex CLI, Cursor, and Pi the upgrade is `git pull` in your clone followed by the same install script you originally ran.
 
-Session-start tells you when the running copy is behind: `scripts/lib/plugin-update-banner.mjs` compares the version of the code **that is actually loaded** against the published npm version and warns in the session-start banner. It fails silent — offline, a non-2xx response, or a malformed answer produces *no statement*, never a false "up to date".
+Session-start tells you when the running copy is behind: `scripts/lib/plugin-update-banner.mjs` compares the version of the code **that is actually loaded** against the published npm version and warns in the session-start banner (minor or major; patch-only updates stay silent). It fails silent — offline, a non-2xx response, or a malformed answer produces *no statement*, never a false "up to date".
 
 Upgrading across a major version: **[docs/migration-v4.md](docs/migration-v4.md)** is the current one — v4.0.0 removes five skills, three commands and eight top-level scripts, each on a measured 90-day two-signal rule rather than a judgement call, and it names what replaces every removed invocation. [docs/migration-v3.md](docs/migration-v3.md) documents the older v2 → v3 path and the shape both guides follow (what changes · prerequisites · per-platform steps · what stays · known issues · rollback).
 
@@ -63,7 +63,7 @@ Remove the plugin through your harness's own plugin manager — `/plugin` in Cla
 - The `## Session Config` block you added to `CLAUDE.md` / `AGENTS.md`
 - `.claude/rules/*.md` if you vendored the rule library via `/bootstrap --sync-rules`
 
-Deleting `.orchestrator/metrics/` deletes your session history. Nothing was ever sent anywhere (see [Data & telemetry](#safety--data--telemetry)), so there is nothing else to revoke.
+Deleting `.orchestrator/metrics/` deletes your session history. Nothing is sent anywhere without your explicit consent (see [Data & telemetry](#safety--data--telemetry)) — the one exception is the session-start update check (`scripts/lib/plugin-update-banner.mjs`): a single anonymous `GET` to the npm registry, at most once per day per repo, comparing your installed version against the latest release. Set `SO_DISABLE_UPDATE_CHECK=1` (or `DO_NOT_TRACK=1`) to turn it off. Beyond that, there is nothing else to revoke.
 
 ## Quick Start
 
@@ -192,9 +192,9 @@ v4.0.0 is the first release that REMOVES public surfaces, so read [docs/migratio
 
 - **Five skills, three commands and eight top-level scripts are gone.** Removal followed a measured two-signal rule — 0 telemetry ∧ 0 fleet invocation over 90 days ∧ no runtime consumer — never a judgement call. Prose-invoked skills, which register 0 by construction, were exempt. `skills/domain-model/` was merged into `skills/architecture/` rather than dropped.
 - **`.claude/rules/` goes 61 → 26 files.** Forty-three machine-generated learning files were consolidated into eight thematic ones, each keeping its provenance markers so the reconcile engine still dedupes on them.
-- **The three largest instruction files are split, not shortened.** `session-start`, `session-end` and the wave loop keep every word; the bodies move into per-phase files under `references/`, and the top-level file becomes an index. Nothing was summarised away.
+- **The three largest instruction files are split, not shortened.** `session-start`, `session-end` and the wave loop keep every phase; the bodies move into per-phase files under `references/`, and the top-level file becomes an index that is heading-complete against the original. Nothing was summarised away.
 - **`ultradeep` is a profile over `deep`, not a fourth session type.** Seven waves with a blocking synthesis gate and a read-only review panel. Downstream tooling still sees `deep`, which is why it costs about eight touchpoints instead of forty-eight.
-- **A session-start banner now says when the plugin you are RUNNING is behind the one published.** This host had been running a copy five minors old for four weeks with no warning, because nothing anywhere compared installed against available.
+- **A session-start banner now says when the plugin you are RUNNING is behind the one published** (minor or major; patch-only updates stay silent). This host had been running a copy five minors old for four weeks with no warning, because nothing anywhere compared installed against available.
 - **Two instruments were corrected rather than tuned.** Telemetry attributed the operator's own second machine to the external fleet, and the abandoned-session rate was an artefact of backfilled records. Both now report what they measure.
 - **A root `AGENTS.md`, a root `plugin.json` and a portable `.agents/skills/` mirror.** The repo now speaks the cross-harness instruction conventions it documents, generated and validated rather than hand-maintained.
 

@@ -26,10 +26,9 @@
 
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, writeFileSync, cpSync, symlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import os from 'node:os';
 // #661: the scanner now exports its canonicalization helpers; the script is
 // import-guarded (the top-level scan + process.exit only run when invoked as the
 // CLI entry point), so importing these does NOT trigger a scan.
@@ -39,6 +38,7 @@ import {
   isOwnerLeakySegment,
   VAULT_CLEAR_SLUGS,
 } from '../../../scripts/lib/validate/check-owner-leakage.mjs';
+import { fixtureGitSpawn, makeTmpDir } from '../../_helpers/tmp-fixture.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -58,11 +58,11 @@ const CP1_LABEL = 'CP1 (personal home path — canonicalized)';
  * @returns {string} tmpdir path
  */
 function makeTmpRepo(files, { initGit = true } = {}) {
-  const root = mkdtempSync(join(os.tmpdir(), 'owner-leakage-test-'));
+  const root = makeTmpDir('owner-leakage-test-');
   if (initGit) {
-    spawnSync('git', ['init', '-b', 'main'], { cwd: root, encoding: 'utf8' });
-    spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: root, encoding: 'utf8' });
-    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: root, encoding: 'utf8' });
+    fixtureGitSpawn(['init', '-b', 'main'], root);
+    fixtureGitSpawn(['config', 'user.email', 'test@test.com'], root);
+    fixtureGitSpawn(['config', 'user.name', 'Test'], root);
   }
   for (const [relPath, content] of Object.entries(files)) {
     const abs = join(root, relPath);
@@ -71,7 +71,7 @@ function makeTmpRepo(files, { initGit = true } = {}) {
   }
   if (initGit) {
     // Stage all files so git ls-files can enumerate them
-    spawnSync('git', ['add', '-A'], { cwd: root, encoding: 'utf8' });
+    fixtureGitSpawn(['add', '-A'], root);
   }
   return root;
 }
@@ -82,7 +82,7 @@ function makeTmpRepo(files, { initGit = true } = {}) {
  * @param {string[]} names
  */
 function writeNamesFile(names) {
-  const namesDir = mkdtempSync(join(os.tmpdir(), 'owner-leakage-names-'));
+  const namesDir = makeTmpDir('owner-leakage-names-');
   const namesFile = join(namesDir, 'confidential-names.json');
   writeFileSync(namesFile, JSON.stringify(names));
   return namesFile;
@@ -1042,5 +1042,307 @@ describe('Subset invariant: VAULT_CLEAR_SLUGS ⊆ PRIVATE_SLUGS (#59)', () => {
   it.each([...VAULT_CLEAR_SLUGS])('carve-out member "%s" is a real PRIVATE_SLUGS entry (CP6 catches it)', (slug) => {
     const root = makeTmpRepo({ 'membership-check.md': `Reference to ${slug} here.\n` });
     expect(summarizeScan(runCheck(root))).toEqual({ status: 1, fails: 1, checkpoints: ['CP6'] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1244: CP11 must fail CLOSED and say so
+//
+// Three independent fail-OPEN paths, each of which made the scanner print
+// `PASS: no owner-privacy leakage found` and exit 0 while CP11 matched nothing
+// (or, for the third, while NOTHING ran at all). Every case below is red on the
+// pre-#1244 code and green after.
+// ---------------------------------------------------------------------------
+
+/** Write a loader that makes `js-yaml` unresolvable for the child process. */
+function writeYamlBlockingLoader(dir) {
+  const loader = join(dir, 'block-js-yaml.mjs');
+  writeFileSync(
+    loader,
+    [
+      "import { registerHooks } from 'node:module';",
+      'registerHooks({',
+      '  resolve(specifier, context, next) {',
+      "    if (specifier === 'js-yaml') {",
+      '      const err = new Error("Cannot find package \'js-yaml\'");',
+      "      err.code = 'ERR_MODULE_NOT_FOUND';",
+      '      throw err;',
+      '    }',
+      '    return next(specifier, context);',
+      '  },',
+      '});',
+      '',
+    ].join('\n'),
+  );
+  return loader;
+}
+
+describe('#1244: CP11 fails CLOSED when it was expected but could not run', () => {
+  it('js-yaml unresolvable + names configured via owner.yaml → CP11 DISABLED + exit 1 (was: silent PASS)', () => {
+    // THE BUG: getConfidentialNamePatterns() wrapped the dynamic imports, the
+    // config read and loadConfidentialNames in ONE bare `catch { return [] }`.
+    // With js-yaml missing, loadOwnerConfig() degrades to defaults, the names
+    // path resolves to '', CP11 matches nothing — and the scanner reported the
+    // clean verdict it never earned. Only the env route stayed fail-closed.
+    const configHome = makeTmpDir('owner-leakage-confighome-');
+    const namesDir = makeTmpDir('owner-leakage-names-');
+    const namesFile = join(namesDir, 'names.json');
+    writeFileSync(namesFile, JSON.stringify(['zenithcorp']));
+    writeFileSync(
+      join(configHome, 'owner.yaml'),
+      [
+        'owner:',
+        '  name: "Test Owner"',
+        '  language: "en"',
+        'tone:',
+        '  style: "direct"',
+        'efficiency:',
+        '  output-level: "full"',
+        '  preamble: "minimal"',
+        'hardware-sharing:',
+        '  enabled: false',
+        '  hash-salt: ""',
+        'paths:',
+        `  confidential-names-file: "${namesFile}"`,
+        '',
+      ].join('\n'),
+    );
+    const loader = writeYamlBlockingLoader(configHome);
+    const root = makeTmpRepo({ 'notes.md': 'Mentions zenithcorp explicitly.\n' });
+
+    const result = spawnSync(process.execPath, ['--import', loader, SCRIPT, root], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      // SO_CONFIDENTIAL_NAMES_FILE explicitly cleared: this exercises the
+      // owner.yaml route, which is the one that used to fail open.
+      env: { ...process.env, SO_CONFIG_HOME: configHome, SO_CONFIDENTIAL_NAMES_FILE: '' },
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('CP11 DISABLED');
+    expect(result.stdout).not.toContain('PASS: no owner-privacy leakage found');
+    // Privacy: the reason line must never echo the host-local path (this
+    // scanner's output is captured by a PUBLIC CI mirror).
+    expect(result.stderr).not.toContain(namesFile);
+    expect(result.stdout).not.toContain(namesFile);
+  });
+
+  it('names file configured but missing → CP11 DISABLED + exit 1 (was: silent PASS)', () => {
+    // Second shape of the same bug: loadConfidentialNames() returns null for a
+    // missing file exactly as it does for "unconfigured", so a typo'd path
+    // silently disabled the rule.
+    const namesDir = makeTmpDir('owner-leakage-names-');
+    const root = makeTmpRepo({ 'notes.md': 'Mentions zenithcorp explicitly.\n' });
+
+    const result = spawnSync(process.execPath, [SCRIPT, root], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { ...process.env, SO_CONFIDENTIAL_NAMES_FILE: join(namesDir, 'does-not-exist.json') },
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('CP11 DISABLED');
+  });
+
+  it('invoked through a symlinked path → still scans, prints and fails (was: zero output, exit 0)', () => {
+    // THE BUG: `isMain` compared resolve(argv[1]) against fileURLToPath(import.meta.url),
+    // which Node canonicalizes. Any invocation whose path traverses a symlink
+    // (on macOS every /tmp/… path) made isMain false — runScan() never ran, the
+    // process printed NOTHING and exited 0. A guard that never runs must not
+    // look like a guard that passed.
+    const stage = makeTmpDir('owner-leakage-symlink-');
+    const realDir = join(stage, 'real');
+    cpSync(join(REPO_ROOT, 'scripts'), join(realDir, 'scripts'), { recursive: true });
+    symlinkSync(realDir, join(stage, 'link'), 'dir');
+    const linkedScript = join(stage, 'link', 'scripts', 'lib', 'validate', 'check-owner-leakage.mjs');
+    const root = makeTmpRepo({ 'leak.md': 'p: /Users/bernhardg/secret\n' });
+
+    // Empty SO_CONFIG_HOME (no owner.yaml) + no names env: CP11 is unconfigured,
+    // so this row isolates the isMain defect from the CP11 fail-closed rows above.
+    // (The staged copy has no node_modules, so a REAL owner.yaml on the host would
+    // otherwise legitimately trip the js-yaml-missing CP11 DISABLED verdict.)
+    const result = spawnSync(process.execPath, [linkedScript, root], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: {
+        ...process.env,
+        SO_CONFIG_HOME: makeTmpDir('owner-leakage-nocfg-'),
+        SO_CONFIDENTIAL_NAMES_FILE: '',
+      },
+    });
+
+    expect(result.stdout).toContain('Check 11: owner-privacy leakage');
+    expect(result.status).toBe(1);
+    expect(summarizeScan(result)).toEqual({ status: 1, fails: 1, checkpoints: ['CP1'] });
+  });
+});
+
+describe('#1244 Q4: healthy-host regression — owner.yaml valid, has paths:, no names-file configured', () => {
+  it('SO_CONFIG_HOME owner.yaml (valid, paths.vault-dir set, no confidential-names-file) → PASS, no CP11 in stderr', () => {
+    // THE BUG THIS GUARDS AGAINST: the three rows above cover the DISABLED
+    // verdicts (CP11 expected but unusable) and an EMPTY SO_CONFIG_HOME (no
+    // owner.yaml at all) — neither is the operator's actual shape, which is an
+    // owner.yaml that EXISTS, is VALID, and carries a `paths:` section for
+    // something OTHER than CP11 (vault-dir here). A refactor that keys the
+    // configured/unconfigured branch on `existsSync(resolveOwnerYamlPath())`
+    // alone (instead of on whether `confidential-names-file` itself resolves
+    // to a non-empty path — see getConfidentialNamePatterns()'s `existsSync`
+    // check in host-paths.mjs's precedence chain) would turn EVERY commit red
+    // on every host that configured `paths:` for anything else. SO_CONFIG_HOME
+    // IS the private config dir — owner.yaml sits directly under it, not in a
+    // subdirectory (both Q2 and Q4 tripped on this while writing fixtures).
+    const configHome = makeTmpDir('owner-leakage-confighome-healthy-');
+    const vaultDir = join(configHome, 'vault');
+    writeFileSync(
+      join(configHome, 'owner.yaml'),
+      [
+        'owner:',
+        '  name: "Test Owner"',
+        '  language: "en"',
+        'tone:',
+        '  style: "direct"',
+        '  tonality: ""',
+        'efficiency:',
+        '  output-level: "full"',
+        '  preamble: "minimal"',
+        'hardware-sharing:',
+        '  enabled: false',
+        '  hash-salt: ""',
+        'paths:',
+        `  vault-dir: "${vaultDir}"`,
+        '',
+      ].join('\n'),
+    );
+    const root = makeTmpRepo({ 'README.md': '# Clean fixture repo\n\nNothing to see here.\n' });
+
+    const result = spawnSync(process.execPath, [SCRIPT, root], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      // SO_CONFIDENTIAL_NAMES_FILE explicitly cleared: only owner.yaml's
+      // (absent) paths.confidential-names-file governs CP11 here.
+      env: { ...process.env, SO_CONFIG_HOME: configHome, SO_CONFIDENTIAL_NAMES_FILE: '' },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('PASS');
+    expect(result.stderr).not.toContain('CP11');
+  });
+});
+
+describe('#1244 follow-up (W4-F6): an invalid paths: section only DISABLES CP11 when CP11 was configured', () => {
+  /**
+   * Build an owner.yaml whose four REQUIRED sections are valid and whose
+   * OPTIONAL `paths:` section is invalid (`vault-dir: 42` — a plain typo), with
+   * or without a `confidential-names-file` key inside that same broken section.
+   */
+  function writeOwnerYaml(configHome, { withNamesKey }) {
+    const lines = [
+      'owner:',
+      '  name: "Test Owner"',
+      '  language: "en"',
+      'tone:',
+      '  style: "direct"',
+      'efficiency:',
+      '  output-level: "full"',
+      '  preamble: "minimal"',
+      'hardware-sharing:',
+      '  enabled: false',
+      '  hash-salt: ""',
+      'paths:',
+      '  vault-dir: 42',
+    ];
+    if (withNamesKey) lines.push(`  confidential-names-file: "${withNamesKey}"`);
+    lines.push('');
+    writeFileSync(join(configHome, 'owner.yaml'), lines.join('\n'));
+  }
+
+  it('invalid paths: section with NO confidential-names-file → PASS exit 0, one WARN, no CP11 DISABLED', () => {
+    // THE BUG (Codex repro, 2026-09-06): the #1244 fail-closed fix keyed the
+    // DISABLED verdict on `droppedSections includes 'paths'` alone. A host that
+    // never configured CP11 but has an unrelated typo anywhere in `paths:` got
+    // `CP11 DISABLED` + exit 1 on EVERY commit — and because .husky/pre-commit
+    // suppressed the scanner's output, the operator saw "privacy leak detected"
+    // for a repo with no leak, which teaches --no-verify. The verdict now turns
+    // on whether the raw `paths.confidential-names-file` key is actually there.
+    const configHome = makeTmpDir('owner-leakage-dropped-paths-nokey-');
+    writeOwnerYaml(configHome, { withNamesKey: null });
+    const root = makeTmpRepo({ 'README.md': '# Clean fixture repo\n' });
+
+    const result = spawnSync(process.execPath, [SCRIPT, root], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { ...process.env, SO_CONFIG_HOME: configHome, SO_CONFIDENTIAL_NAMES_FILE: '' },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('PASS');
+    expect(result.stderr).not.toContain('CP11 DISABLED');
+    // Not silent either: the dropped section is named exactly once, as a WARN.
+    expect(result.stderr).toContain('CP11 inactive');
+    expect(result.stderr).toMatch(/paths/);
+  });
+
+  it('SAME invalid paths: section but WITH confidential-names-file → CP11 DISABLED + exit 1', () => {
+    // The other half of the same decision: the operator DID configure CP11, and
+    // the section carrying that configuration was discarded — so the rule cannot
+    // run and must not report the clean verdict it did not earn.
+    const namesDir = makeTmpDir('owner-leakage-dropped-paths-names-');
+    const namesFile = join(namesDir, 'names.json');
+    writeFileSync(namesFile, JSON.stringify(['zenithcorp']));
+    const configHome = makeTmpDir('owner-leakage-dropped-paths-key-');
+    writeOwnerYaml(configHome, { withNamesKey: namesFile });
+    const root = makeTmpRepo({ 'notes.md': 'Mentions zenithcorp explicitly.\n' });
+
+    const result = spawnSync(process.execPath, [SCRIPT, root], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { ...process.env, SO_CONFIG_HOME: configHome, SO_CONFIDENTIAL_NAMES_FILE: '' },
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('CP11 DISABLED');
+    expect(result.stdout).not.toContain('PASS: no owner-privacy leakage found');
+    // Privacy: the host-local path never reaches stdout/stderr (public CI mirror).
+    expect(result.stderr).not.toContain(namesFile);
+    expect(result.stdout).not.toContain(namesFile);
+  });
+});
+
+describe('#1244 follow-up (W4-F6): the inert degrade is scoped to the scanner\'s OWN direct helper imports', () => {
+  it('a missing TRANSITIVE module with names configured → CP11 DISABLED + exit 1 (was: inert, silent PASS)', () => {
+    // THE BUG (Codex debt item, 2026-09-06): the ERR_MODULE_NOT_FOUND degrade
+    // covered the error CODE alone, so ANY unresolvable module anywhere down the
+    // CP11 helper chain — not just the standalone single-file vendoring shape it
+    // was written for — silently returned zero patterns. A broken in-tree install
+    // then reported the clean verdict with names ACTIVELY configured, which is the
+    // exact fail-open #1244 set out to close. `err.url` names the module that could
+    // not be found, so a direct sibling (inert) is now distinguishable from a
+    // transitive (fail closed).
+    const stage = makeTmpDir('owner-leakage-transitive-');
+    const validateDir = join(stage, 'scripts', 'lib', 'validate');
+    const configDir = join(stage, 'scripts', 'lib', 'config');
+    mkdirSync(validateDir, { recursive: true });
+    mkdirSync(configDir, { recursive: true });
+    cpSync(SCRIPT, join(validateDir, 'check-owner-leakage.mjs'));
+    cpSync(join(REPO_ROOT, 'scripts', 'lib', 'validate', 'confidential-names.mjs'), join(validateDir, 'confidential-names.mjs'));
+    cpSync(join(REPO_ROOT, 'scripts', 'lib', 'config', 'host-paths.mjs'), join(configDir, 'host-paths.mjs'));
+    cpSync(join(REPO_ROOT, 'scripts', 'lib', 'owner-yaml.mjs'), join(stage, 'scripts', 'lib', 'owner-yaml.mjs'));
+    // scripts/lib/config/private-config-dir.mjs is DELIBERATELY not copied: it is a
+    // transitive of owner-yaml.mjs, never a direct import of the scanner.
+
+    const namesDir = makeTmpDir('owner-leakage-transitive-names-');
+    const namesFile = join(namesDir, 'names.json');
+    writeFileSync(namesFile, JSON.stringify(['zenithcorp']));
+    const root = makeTmpRepo({ 'notes.md': 'Mentions zenithcorp explicitly.\n' });
+
+    const result = spawnSync(process.execPath, [join(validateDir, 'check-owner-leakage.mjs'), root], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { ...process.env, SO_CONFIDENTIAL_NAMES_FILE: namesFile },
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('CP11 DISABLED');
+    expect(result.stdout).not.toContain('PASS: no owner-privacy leakage found');
   });
 });

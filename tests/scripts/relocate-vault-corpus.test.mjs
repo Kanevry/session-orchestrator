@@ -20,19 +20,11 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import {
-  mkdtempSync,
-  mkdirSync,
-  writeFileSync,
-  readFileSync,
-  rmSync,
-  existsSync,
-  readdirSync,
-  realpathSync,
-} from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fixtureGitSpawn, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -116,11 +108,11 @@ function createFixtureVault() {
     '---\ntype: session\nrepo: infrastructure/session-orchestrator\n---\n# existing\n');
 
   // Git init + initial commit so git mv has tracked files to operate on
-  spawnSync('git', ['init', vault], { encoding: 'utf8' });
-  spawnSync('git', ['-C', vault, 'config', 'user.email', 'test@test.local'], { encoding: 'utf8' });
-  spawnSync('git', ['-C', vault, 'config', 'user.name', 'Test'], { encoding: 'utf8' });
-  spawnSync('git', ['-C', vault, 'add', '-A'], { encoding: 'utf8' });
-  spawnSync('git', ['-C', vault, 'commit', '-m', 'init fixture'], { encoding: 'utf8' });
+  fixtureGitSpawn(['init', vault], undefined, { encoding: 'utf8' });
+  fixtureGitSpawn(['-C', vault, 'config', 'user.email', 'test@test.local'], undefined, { encoding: 'utf8' });
+  fixtureGitSpawn(['-C', vault, 'config', 'user.name', 'Test'], undefined, { encoding: 'utf8' });
+  fixtureGitSpawn(['-C', vault, 'add', '-A'], undefined, { encoding: 'utf8' });
+  fixtureGitSpawn(['-C', vault, 'commit', '-m', 'init fixture'], undefined, { encoding: 'utf8' });
 
   return vault;
 }
@@ -131,11 +123,11 @@ function createSourceRepoOnlyVault() {
   writeFile(vault, '50-sessions/source-only.md',
     '---\ntype: session\nid: source-only\nsource-repo: org/foo-bar\n---\n# source only\n');
 
-  spawnSync('git', ['init', vault], { encoding: 'utf8' });
-  spawnSync('git', ['-C', vault, 'config', 'user.email', 'test@test.local'], { encoding: 'utf8' });
-  spawnSync('git', ['-C', vault, 'config', 'user.name', 'Test'], { encoding: 'utf8' });
-  spawnSync('git', ['-C', vault, 'add', '-A'], { encoding: 'utf8' });
-  spawnSync('git', ['-C', vault, 'commit', '-m', 'init source-repo fixture'], { encoding: 'utf8' });
+  fixtureGitSpawn(['init', vault], undefined, { encoding: 'utf8' });
+  fixtureGitSpawn(['-C', vault, 'config', 'user.email', 'test@test.local'], undefined, { encoding: 'utf8' });
+  fixtureGitSpawn(['-C', vault, 'config', 'user.name', 'Test'], undefined, { encoding: 'utf8' });
+  fixtureGitSpawn(['-C', vault, 'add', '-A'], undefined, { encoding: 'utf8' });
+  fixtureGitSpawn(['-C', vault, 'commit', '-m', 'init source-repo fixture'], undefined, { encoding: 'utf8' });
 
   return vault;
 }
@@ -197,11 +189,11 @@ function createBackfillFixture(opts = {}) {
   writeFile(repos, `${repoName}/.orchestrator/metrics/sessions.jsonl`, jsonlBody);
 
   // Git init + commit the vault so the tracked tree is clean (dry-run must not dirty it)
-  spawnSync('git', ['init', vault], { encoding: 'utf8' });
-  spawnSync('git', ['-C', vault, 'config', 'user.email', 'test@test.local'], { encoding: 'utf8' });
-  spawnSync('git', ['-C', vault, 'config', 'user.name', 'Test'], { encoding: 'utf8' });
-  spawnSync('git', ['-C', vault, 'add', '-A'], { encoding: 'utf8' });
-  spawnSync('git', ['-C', vault, 'commit', '-m', 'init backfill fixture'], { encoding: 'utf8' });
+  fixtureGitSpawn(['init', vault], undefined, { encoding: 'utf8' });
+  fixtureGitSpawn(['-C', vault, 'config', 'user.email', 'test@test.local'], undefined, { encoding: 'utf8' });
+  fixtureGitSpawn(['-C', vault, 'config', 'user.name', 'Test'], undefined, { encoding: 'utf8' });
+  fixtureGitSpawn(['-C', vault, 'add', '-A'], undefined, { encoding: 'utf8' });
+  fixtureGitSpawn(['-C', vault, 'commit', '-m', 'init backfill fixture'], undefined, { encoding: 'utf8' });
 
   return { root, vault, repos, sid, repoName };
 }
@@ -250,7 +242,7 @@ function findManifests(vault) {
 
 afterEach(() => {
   for (const d of cleanups.splice(0)) {
-    try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(d); } catch { /* ignore */ }
   }
 });
 
@@ -629,8 +621,8 @@ describe('relocate-vault-corpus — dest-collision guard', () => {
       '---\ntype: session\n---\n# pre-existing dest\n',
     );
     // Stage and commit so git status is clean
-    spawnSync('git', ['-C', vault, 'add', '-A'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', vault, 'commit', '-m', 'add dest collision'], { encoding: 'utf8' });
+    fixtureGitSpawn(['-C', vault, 'add', '-A'], undefined, { encoding: 'utf8' });
+    fixtureGitSpawn(['-C', vault, 'commit', '-m', 'add dest collision'], undefined, { encoding: 'utf8' });
 
     const result = runScript(['--vault-dir', vault, '--apply', '--json']);
 
@@ -793,7 +785,7 @@ describe('relocate-vault-corpus — --with-backfill (#700)', () => {
     expect(findManifests(vault)).toHaveLength(0);
 
     // The tracked vault tree must stay clean (dry-run wrote nothing)
-    const status = spawnSync('git', ['-C', vault, 'status', '--porcelain'], { encoding: 'utf8' });
+    const status = fixtureGitSpawn(['-C', vault, 'status', '--porcelain'], undefined, { encoding: 'utf8' });
     expect(status.stdout.trim()).toBe('');
   });
 });
@@ -934,11 +926,11 @@ describe('relocate-vault-corpus — --repos-root defaulting', () => {
     writeFile(reposRoot, `acme-app/.orchestrator/metrics/sessions.jsonl`,
       `${JSON.stringify({ session_id: sid, branch: 'feat-thing', started_at: '2026-04-19T15:15:00Z' })}\n`);
 
-    spawnSync('git', ['init', vault], { encoding: 'utf8' });
-    spawnSync('git', ['-C', vault, 'config', 'user.email', 'test@test.local'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', vault, 'config', 'user.name', 'Test'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', vault, 'add', '-A'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', vault, 'commit', '-m', 'init'], { encoding: 'utf8' });
+    fixtureGitSpawn(['init', vault], undefined, { encoding: 'utf8' });
+    fixtureGitSpawn(['-C', vault, 'config', 'user.email', 'test@test.local'], undefined, { encoding: 'utf8' });
+    fixtureGitSpawn(['-C', vault, 'config', 'user.name', 'Test'], undefined, { encoding: 'utf8' });
+    fixtureGitSpawn(['-C', vault, 'add', '-A'], undefined, { encoding: 'utf8' });
+    fixtureGitSpawn(['-C', vault, 'commit', '-m', 'init'], undefined, { encoding: 'utf8' });
 
     // NO --repos-root flag → default = parent of vault = reposRoot, which holds acme-app
     const result = runScript(['--vault-dir', vault, '--with-backfill', '--json']);
@@ -987,11 +979,11 @@ describe('relocate-vault-corpus — Archiv exclusion', () => {
     writeFile(repos, `other-repo/.orchestrator/metrics/sessions.jsonl`,
       `${JSON.stringify({ session_id: 'unrelated-2026-01-01-0000', branch: 'main', started_at: '2026-01-01T00:00:00Z' })}\n`);
 
-    spawnSync('git', ['init', vault], { encoding: 'utf8' });
-    spawnSync('git', ['-C', vault, 'config', 'user.email', 'test@test.local'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', vault, 'config', 'user.name', 'Test'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', vault, 'add', '-A'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', vault, 'commit', '-m', 'init'], { encoding: 'utf8' });
+    fixtureGitSpawn(['init', vault], undefined, { encoding: 'utf8' });
+    fixtureGitSpawn(['-C', vault, 'config', 'user.email', 'test@test.local'], undefined, { encoding: 'utf8' });
+    fixtureGitSpawn(['-C', vault, 'config', 'user.name', 'Test'], undefined, { encoding: 'utf8' });
+    fixtureGitSpawn(['-C', vault, 'add', '-A'], undefined, { encoding: 'utf8' });
+    fixtureGitSpawn(['-C', vault, 'commit', '-m', 'init'], undefined, { encoding: 'utf8' });
 
     const result = runScript(['--vault-dir', vault, '--repos-root', repos, '--with-backfill', '--json']);
 

@@ -1,12 +1,15 @@
 <!-- source: session-orchestrator plugin (canonical: templates/_shared/journey-manifest.md) -->
 <!--
-  Copy to `.orchestrator/journey-manifest.md` in the target repo and fill in every
-  section. `/journey-audit` REFUSES to run without this file.
+  Retired with /journey-audit in 4.0.0 — kept as a template for a per-repo
+  product-truth manifest; no command consumes it.
 
-  The `## SAFETY` block is what gates R5 (the real end-to-end run against
-  production with a real account). Absent or empty → R5 is not dispatched and the
-  audit runs as a dry-run (R1–R4 + R7). Nothing else in this file can substitute
-  for it: the skill reads THIS heading, not your intent.
+  Copy to `.orchestrator/journey-manifest.md` in the target repo and fill in every
+  section. While `/journey-audit` existed, it refused to run without this file;
+  with the command removed, filling this in is optional documentation only.
+
+  The `## SAFETY` block described what gated R5 (the real end-to-end run against
+  production with a real account) when the skill still ran. Kept below for
+  reference in case a future consumer re-adopts the same manifest shape.
 
   Credentials: env-var NAMES only, never values. A value pasted here is a secret
   in a tracked file.
@@ -14,7 +17,8 @@
 
 # Journey Manifest — <REPO NAME>
 
-> Per-repo input for `/journey-audit`. Product truth, not code structure.
+> Per-repo product-truth manifest, not code structure.
+> Retired with `/journey-audit` in 4.0.0 — no command consumes this file today.
 > Last verified: <YYYY-MM-DD> by <operator>
 
 ## Personas & Einstiegspunkte

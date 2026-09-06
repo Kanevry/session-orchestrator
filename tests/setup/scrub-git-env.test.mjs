@@ -30,12 +30,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { scrubGitEnv, GIT_ENV_KEEP } from './scrub-git-env.mjs';
+import { removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const tmpDirs = [];
 afterEach(() => {
   while (tmpDirs.length > 0) {
     try {
-      rmSync(tmpDirs.pop(), { recursive: true, force: true });
+      removeTree(tmpDirs.pop());
     } catch {
       // best-effort cleanup
     }

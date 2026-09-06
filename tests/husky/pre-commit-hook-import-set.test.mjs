@@ -24,10 +24,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync, mkdtempSync, writeFileSync, mkdirSync, chmodSync, cpSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, cpSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+
 import { join, resolve } from 'node:path';
+import { fixtureGit, fixtureGitSpawn, makeTmpDir } from '../_helpers/tmp-fixture.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const HOOK_PATH = join(REPO_ROOT, '.husky', 'pre-commit');
@@ -86,11 +87,11 @@ describe('.husky/pre-commit — hook-import-set drift stage (#1224)', () => {
     let tmpDir;
 
     beforeEach(() => {
-      tmpDir = mkdtempSync(join(tmpdir(), 'so-husky-import-set-'));
-      execFileSync('git', ['init', '-q', tmpDir]);
-      execFileSync('git', ['-C', tmpDir, 'config', 'user.email', 'test@example.com']);
-      execFileSync('git', ['-C', tmpDir, 'config', 'user.name', 'Test']);
-      execFileSync('git', ['-C', tmpDir, 'config', 'commit.gpgsign', 'false']);
+      tmpDir = makeTmpDir('so-husky-import-set-');
+      fixtureGit(['init', '-q', tmpDir]);
+      fixtureGit(['-C', tmpDir, 'config', 'user.email', 'test@example.com']);
+      fixtureGit(['-C', tmpDir, 'config', 'user.name', 'Test']);
+      fixtureGit(['-C', tmpDir, 'config', 'commit.gpgsign', 'false']);
 
       // Minimal plugin root the generator can crawl: one manifest naming one
       // entry file, which imports one helper under scripts/lib/.
@@ -120,8 +121,8 @@ describe('.husky/pre-commit — hook-import-set drift stage (#1224)', () => {
 
     /** Stage everything and attempt a commit. */
     function commit(msg) {
-      execFileSync('git', ['-C', tmpDir, 'add', '-A']);
-      return spawnSync('git', ['-C', tmpDir, 'commit', '-m', msg], { encoding: 'utf8' });
+      fixtureGit(['-C', tmpDir, 'add', '-A']);
+      return fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', msg], undefined, { encoding: 'utf8' });
     }
 
     it('blocks a commit touching scripts/lib/ while the allowlist is stale', () => {
@@ -166,8 +167,8 @@ describe('.husky/pre-commit — hook-import-set drift stage (#1224)', () => {
         JSON.stringify({ generated_at: 'stale', head: 'stale', entries: [] }) + '\n',
       );
       writeFileSync(join(tmpDir, 'NOTES.md'), 'unrelated docs change\n');
-      execFileSync('git', ['-C', tmpDir, 'add', 'NOTES.md']);
-      const r = spawnSync('git', ['-C', tmpDir, 'commit', '-m', 'docs only'], { encoding: 'utf8' });
+      fixtureGit(['-C', tmpDir, 'add', 'NOTES.md']);
+      const r = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'docs only'], undefined, { encoding: 'utf8' });
       expect(r.status).toBe(0);
     });
   });

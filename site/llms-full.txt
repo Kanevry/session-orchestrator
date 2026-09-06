@@ -37,9 +37,9 @@ Nothing is learned silently. Sessions append plain-text JSONL records (sessions,
 
 aiat-llm-eval v1: an open standard for honest LLM session evaluation. Pre-registered rubric, deterministic checks before any LLM judge, three-state verdicts with explicit abstention (cannot-determine instead of fake zeros), no global score (the validator rejects overall/total/mean fields), no superlatives in conforming reports, reproducibility as an executable proof (--verify). A session scoring itself is labelled a self-evaluation. Spec: docs/eval/aiat-llm-eval-v1.md in the repository.
 
-## Numbers (measured 2026-09-06 in the v4.0.0 preparation tree at e4674109)
+## Numbers (measured 2026-09-06 in the v4.0.0 preparation tree at bc49301b)
 
-Version 4.0.0 · 43 skills · 25 commands · 14 typed sub-agents · 27 hook files (26 plugin-wired, 10 event types) · 26 always-on rule files · 18 ADRs · 36 validator modules · 14 destructive-command rules (10 blocking, 4 warning) · 661 vitest test files (13,962 static it()/test() definitions; the runtime total is higher because of parameterised blocks). The v4.0.0 release REMOVES public surfaces, so counts from the preceding 3.24 line (49 skills / 28 commands / 16 agents / 61 rules) are stale by construction.
+Version 4.0.0 · 43 skills · 25 commands · 14 typed sub-agents · 27 hook files (26 plugin-wired, 10 event types) · 26 always-on rule files · 18 ADRs · 45 modules under scripts/lib/validate/ (`find scripts/lib/validate -name '*.mjs' ! -name '*.test.mjs' | wc -l`) · 14 destructive-command rules (10 blocking, 4 warning) · 661 vitest test files (`git ls-files 'tests/**/*.test.mjs' | wc -l`; 13,529 top-level it()/test() call sites via `rg -c '^\s*(it|test)\(' tests --glob '*.test.mjs'` summed per file — the runtime total is higher because of parameterised blocks that expand at run time). The v4.0.0 release REMOVES public surfaces, so counts from the preceding 3.24 line (49 skills / 28 commands / 16 agents / 61 rules) are stale by construction.
 
 ## Install
 

@@ -143,6 +143,31 @@ const SESSION_TYPE_OTHER = 'other';
 const SESSION_TYPE_UNKNOWN = 'unknown';
 
 /**
+ * CLOSED whitelist of PUBLIC session-profile names that may reach the wire.
+ *
+ * WHY A WHITELIST AND NOT A REGEX: `session_profile` is copied from the STATE.md
+ * frontmatter key `session-profile`, which is written per repo by whoever runs
+ * `/session <alias>` — i.e. it is the only field on the usage-ping whose VALUE is
+ * repo-authored free text. Two independent Wave-1 reviewers reproduced the leak
+ * end-to-end (2026-09-06): `session-profile: client-acme-private-repo` travelled
+ * verbatim through `buildUsagePing` → `projectUsagePing` → the ingest server's
+ * `raw_json` column. A shape regex does NOT close it — that example string is
+ * already lowercase-and-hyphens and passes any such pattern. Only an
+ * enumeration of names that are public BY CONSTRUCTION does.
+ *
+ * Today exactly one profile exists: `ultradeep`, the 7-wave variant of a `deep`
+ * session (writer: `commands/session.md` § "Argument alias: ultradeep" → STATE.md
+ * frontmatter `session-profile`; wave shape: `skills/session-plan/SKILL.md`).
+ * Adding a profile there means adding it HERE and in the server's mirror
+ * (`server/ingest/validate.mjs` `SESSION_PROFILES`) — a deliberate two-line,
+ * reviewed edit, the same contract `ACCEPTED_VERSIONS` already uses server-side.
+ *
+ * NOT a member of VALID_SESSION_TYPES: the profile is a SECOND axis. An
+ * ultradeep session is `session_type: "deep"` PLUS `session_profile: "ultradeep"`.
+ */
+export const VALID_SESSION_PROFILES = Object.freeze(['ultradeep']);
+
+/**
  * Closed sets for os/arch client-side normalization. A value outside the set —
  * including a future Node os/arch string — degrades to 'other', so the client
  * never sends a value the server's enum would reject with a 400. These MUST
@@ -390,6 +415,29 @@ function normalizeSessionType(sessionType) {
 }
 
 /**
+ * Normalize a session PROFILE against the closed VALID_SESSION_PROFILES
+ * whitelist. Anything else — absent, blank, or an unlisted repo-authored value —
+ * returns `null`, and the caller OMITS the field.
+ *
+ * DELIBERATELY NOT MIRRORING normalizeSessionType's two-token report. That helper
+ * can distinguish ABSENT (`'unknown'`) from UNRECOGNISED (`'other'`) because both
+ * of its answers are public constants. Here the unrecognised VALUE is precisely
+ * what must not travel, and there is no third token that carries the distinction
+ * without carrying the string: an `'other'` profile would say "this host ran a
+ * profile we do not ship" — a fact of no product use, bought with a new wire
+ * value. So both cases collapse to omission, and the wire cannot tell them apart
+ * BY DESIGN. The local `session-profile` key is untouched either way.
+ *
+ * @param {unknown} profile
+ * @returns {string|null} a whitelisted profile name, or null (⇒ field omitted).
+ */
+export function normalizeSessionProfile(profile) {
+  if (!isNonEmptyString(profile)) return null;
+  const trimmed = profile.trim();
+  return VALID_SESSION_PROFILES.includes(trimmed) ? trimmed : null;
+}
+
+/**
  * Normalize an OS identifier (process.platform) against the closed OS_VALUES set.
  * An in-set value is kept verbatim; anything else degrades to 'other' — mirrors
  * normalizePlatform / normalizeSessionType so the client never emits a raw value
@@ -518,20 +566,29 @@ export function buildUsagePing({
   // SELF-DECLARED — a sandbox or a host whose owner.yaml is unreachable declares
   // `false` however honest it is. The authoritative classification is
   // server-side (`SO_INGEST_FLEET_ANON_IDS`, server/ingest/config.mjs).
-  // `session_profile` (STATE.md frontmatter `session-profile`) is emitted RAW and
-  // is deliberately NOT routed through normalizeSessionType: that helper degrades
-  // anything outside ['housekeeping','feature','deep'] to 'other', which is
-  // exactly the silent loss the profile exists to prevent. The contract is
+  // `session_profile` (STATE.md frontmatter `session-profile`) is bounded by the
+  // CLOSED VALID_SESSION_PROFILES whitelist — it was the one free-text value on
+  // the wire until 2026-09-06, and a repo-authored one at that (see the
+  // whitelist's own docblock for the reproduced leak). It is still deliberately
+  // NOT routed through normalizeSessionType: that helper degrades anything
+  // outside ['housekeeping','feature','deep'] to 'other', which is exactly the
+  // silent loss the profile exists to prevent. The contract is
   // `session_type: "deep"` PLUS `session_profile: "ultradeep"` — never
   // `session_type: "ultradeep"`, and never a profile flattened to 'other'.
   //
-  // ABSENT IS NOT EMPTY: with no profile the KEY IS OMITTED, matching every other
-  // optional ping field. `projectUsagePing` copies only keys that are `in` the
-  // input, so an omitted key never reaches the wire as `null`.
-  const profile =
-    isNonEmptyString(sessionProfile) ? sessionProfile.trim()
-      : isNonEmptyString(session.session_profile) ? session.session_profile.trim()
+  // ABSENT IS NOT EMPTY: with no profile — and with an UNLISTED one — the KEY IS
+  // OMITTED, matching every other optional ping field. `projectUsagePing` copies
+  // only keys that are `in` the input, so an omitted key never reaches the wire
+  // as `null`, and an unlisted profile never reaches it at all.
+  //
+  // SOURCE PRECEDENCE is resolved BEFORE normalization (explicit argument beats
+  // the session record), so an unlisted explicit profile is dropped rather than
+  // silently replaced by the record's value.
+  const rawProfile =
+    isNonEmptyString(sessionProfile) ? sessionProfile
+      : isNonEmptyString(session.session_profile) ? session.session_profile
         : null;
+  const profile = normalizeSessionProfile(rawProfile);
 
   const fleetSelfDeclared =
     consentState === undefined || consentState === null

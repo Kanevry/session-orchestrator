@@ -161,7 +161,12 @@ export const DEFAULT_BYTE_CEILING = 121000;
  * **96,757 B over 11 files** (8 consolidated + the 3 hand-written scoped rules
  * `testing.md` / `cli-design.md` / `bash-harness-pitfalls.md`), counted the
  * same way as `totalBytes` — frontmatter stripped, via
- * {@link countContentBytes}.
+ * {@link countContentBytes}. RE-MEASURED 2026-09-06 later the same day
+ * (`computeInstructionBudget({repoRoot}).bySurface.generated` @ `bc49301b` →
+ * `{ bytes: 109593, files: 11 }`): the live figure is **109,593 B over the same
+ * 11 files**, ×1.13 under the unchanged 124,000 ceiling — restored prose, not
+ * reconciliation growth (the consolidation pass had dropped 10 learnings'
+ * bodies, which were written back into the same 8 files).
  *
  * CORRECTED 2026-09-06, one wave after the line above was first written. Two
  * things in that first derivation no longer hold:

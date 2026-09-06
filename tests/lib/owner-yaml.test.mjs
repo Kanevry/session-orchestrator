@@ -900,3 +900,65 @@ describe('#820 per-section tolerance', () => {
     warnSpy.mockRestore();
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1244: a whole-file discard must not silently swallow a VALID paths: section
+// ---------------------------------------------------------------------------
+
+describe('loadOwnerConfig — whole-file discard retains a valid optional paths: section (#1244)', () => {
+  it('a PARTIAL owner.yaml (owner: + paths: only) keeps paths.confidential-names-file', () => {
+    // THE BUG: a partial owner.yaml — the realistic shape when an operator adds
+    // only the CP11 wiring — fails the REQUIRED-section check (no tone:, no
+    // efficiency:, no hardware-sharing:) and was discarded wholesale. The
+    // correctly-declared `paths.confidential-names-file` went with it, so the
+    // owner-leakage scanner's CP11 rule went silently inert while reporting PASS.
+    const dir = makeTmpDir();
+    const filePath = join(dir, 'owner.yaml');
+    writeFileSync(
+      filePath,
+      'owner:\n  name: "Test Owner"\n  language: "en"\npaths:\n  confidential-names-file: "/host/local/names.json"\n',
+      'utf8',
+    );
+
+    const result = loadOwnerConfig({ path: filePath });
+
+    // Contract for existing callers is unchanged: still a discard.
+    expect(result.source).toBe('defaults');
+    expect(result.errors.some((e) => e.includes('tone'))).toBe(true);
+    // …but the section that WAS valid survives, merged onto its default.
+    expect(result.config.paths['confidential-names-file']).toBe('/host/local/names.json');
+    expect(result.config.paths['vault-dir']).toBe('');
+    // Required sections are still the defaults, not the file's partial values.
+    expect(result.config.tone).toEqual(getDefaults().tone);
+  });
+
+  it('an INVALID optional section on the discard branch is reported via droppedSections', () => {
+    // The distinction a fail-closed consumer needs: "not configured" (no paths:
+    // key at all) must be distinguishable from "configured but unusable".
+    const dir = makeTmpDir();
+    const filePath = join(dir, 'owner.yaml');
+    writeFileSync(filePath, 'owner:\n  name: "Test Owner"\n  language: "en"\npaths: 42\n', 'utf8');
+
+    const result = loadOwnerConfig({ path: filePath });
+
+    expect(result.source).toBe('defaults');
+    expect(result.droppedSections).toEqual([
+      { section: 'paths', errors: ['paths must be an object when present'] },
+    ]);
+    expect(result.config.paths).toEqual(getDefaults().paths);
+  });
+
+  it('an unparseable owner.yaml is tagged reason "unparseable" (unknowable ≠ unconfigured)', () => {
+    // Without this tag a consumer cannot tell "the file says nothing is
+    // configured" from "the file could not be read at all" — the exact
+    // conflation that let CP11 report PASS with js-yaml missing.
+    const dir = makeTmpDir();
+    const filePath = join(dir, 'bad.yaml');
+    writeFileSync(filePath, '{ unclosed: [bracket\nstill going', 'utf8');
+
+    const result = loadOwnerConfig({ path: filePath });
+
+    expect(result.source).toBe('defaults');
+    expect(result.reason).toBe('unparseable');
+  });
+});

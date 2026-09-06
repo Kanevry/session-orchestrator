@@ -11,9 +11,10 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, chmodSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, mkdirSync, existsSync, chmodSync, readFileSync } from 'node:fs';
+
 import { join, resolve, sep, delimiter } from 'node:path';
+import { fixtureGitSpawn, makeTmpDir, removeTree } from '../../_helpers/tmp-fixture.mjs';
 
 // checker.mjs emits `file` fields using path.relative, which uses the runtime's
 // path.sep. Normalize to forward slashes in assertions for Windows portability.
@@ -48,11 +49,11 @@ function parseJson(out) {
 let vault;
 
 beforeEach(() => {
-  vault = mkdtempSync(join(tmpdir(), 'drift-check-'));
+  vault = makeTmpDir('drift-check-');
 });
 
 afterEach(() => {
-  if (vault && existsSync(vault)) rmSync(vault, { recursive: true, force: true });
+  if (vault && existsSync(vault)) removeTree(vault);
 });
 
 describe('mode handling', () => {
@@ -349,17 +350,13 @@ describe('check 3: issue-reference-freshness (auto-skip without glab)', () => {
 
 describe('check 3: issue-reference-freshness — #872 --repo host-pinning (SSH remote)', () => {
   it('auto-detects a --repo spec from an SSH remote and passes a value containing the host to glab', () => {
-    spawnSync('git', ['init', '--quiet'], { cwd: vault });
-    spawnSync(
-      'git',
-      ['remote', 'add', 'gitlab', 'git@gitlab.example.com:example-group/example-project.git'],
-      { cwd: vault },
-    );
+    fixtureGitSpawn(['init', '--quiet'], vault);
+    fixtureGitSpawn(['remote', 'add', 'gitlab', 'git@gitlab.example.com:example-group/example-project.git'], vault);
     writeFileSync(join(vault, 'CLAUDE.md'), "## What's Next\n- #123 upcoming\n");
 
     // PATH-shim a fake `glab` binary ahead of any real one so the resolved
     // --repo value is observable without depending on real GitLab auth.
-    const binDir = mkdtempSync(join(tmpdir(), 'drift-check-glab-stub-'));
+    const binDir = makeTmpDir('drift-check-glab-stub-');
     const captureFile = join(binDir, 'capture.txt');
     const glabStub = join(binDir, 'glab');
     writeFileSync(glabStub, `#!/bin/sh\necho "$@" >> "${captureFile}"\nexit 0\n`);
@@ -372,7 +369,7 @@ describe('check 3: issue-reference-freshness — #872 --repo host-pinning (SSH r
       expect(capture).toContain('--repo');
       expect(capture).toContain('gitlab.example.com');
     } finally {
-      rmSync(binDir, { recursive: true, force: true });
+      removeTree(binDir);
     }
   });
 });
@@ -393,15 +390,11 @@ describe('check 3: issue-reference-freshness — #872 --repo host-pinning (SSH r
 
 describe('check 3: issue-reference-freshness — explicit --repo CLI precedence over auto-detect', () => {
   it('an explicit --repo argv value reaches glab verbatim, not the SSH-remote-derived auto-detected spec', () => {
-    spawnSync('git', ['init', '--quiet'], { cwd: vault });
-    spawnSync(
-      'git',
-      ['remote', 'add', 'gitlab', 'git@gitlab.example.com:example-group/example-project.git'],
-      { cwd: vault },
-    );
+    fixtureGitSpawn(['init', '--quiet'], vault);
+    fixtureGitSpawn(['remote', 'add', 'gitlab', 'git@gitlab.example.com:example-group/example-project.git'], vault);
     writeFileSync(join(vault, 'CLAUDE.md'), "## What's Next\n- #123 upcoming\n");
 
-    const binDir = mkdtempSync(join(tmpdir(), 'drift-check-glab-stub-'));
+    const binDir = makeTmpDir('drift-check-glab-stub-');
     const captureFile = join(binDir, 'capture.txt');
     const glabStub = join(binDir, 'glab');
     writeFileSync(glabStub, `#!/bin/sh\necho "$@" >> "${captureFile}"\nexit 0\n`);
@@ -418,7 +411,7 @@ describe('check 3: issue-reference-freshness — explicit --repo CLI precedence 
       expect(capture).toContain('--repo explicit-owner/explicit-repo');
       expect(capture).not.toContain('gitlab.example.com');
     } finally {
-      rmSync(binDir, { recursive: true, force: true });
+      removeTree(binDir);
     }
   });
 });

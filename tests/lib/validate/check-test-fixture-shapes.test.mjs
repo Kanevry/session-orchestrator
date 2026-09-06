@@ -22,10 +22,11 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
+import { fixtureGitSpawn, removeTree } from '../../_helpers/tmp-fixture.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -42,7 +43,7 @@ afterEach(() => {
   while (tmpDirs.length > 0) {
     const dir = tmpDirs.pop();
     try {
-      rmSync(dir, { recursive: true, force: true });
+      removeTree(dir);
     } catch {
       // best-effort cleanup
     }
@@ -67,12 +68,12 @@ function runCheck(root) {
 function makeTmpRepo(setupFn) {
   const root = mkdtempSync(join(os.tmpdir(), 'fixture-shape-test-'));
   tmpDirs.push(root);
-  spawnSync('git', ['init', '-b', 'main'], { cwd: root, encoding: 'utf8' });
-  spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: root, encoding: 'utf8' });
-  spawnSync('git', ['config', 'user.name', 'Test'], { cwd: root, encoding: 'utf8' });
+  fixtureGitSpawn(['init', '-b', 'main'], root, { encoding: 'utf8' });
+  fixtureGitSpawn(['config', 'user.email', 'test@test.com'], root, { encoding: 'utf8' });
+  fixtureGitSpawn(['config', 'user.name', 'Test'], root, { encoding: 'utf8' });
   setupFn(root);
   // Stage all files so git ls-files can enumerate them
-  spawnSync('git', ['add', '-A'], { cwd: root, encoding: 'utf8' });
+  fixtureGitSpawn(['add', '-A'], root, { encoding: 'utf8' });
   return root;
 }
 

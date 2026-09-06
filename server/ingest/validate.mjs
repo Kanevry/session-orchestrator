@@ -54,6 +54,18 @@ const OSES = new Set(['aix', 'darwin', 'freebsd', 'linux', 'openbsd', 'sunos', '
 // falsely 400 a legitimate architecture the client did NOT normalize away.
 const ARCHES = new Set(['arm', 'arm64', 'ia32', 'loong64', 'mips', 'mipsel', 'ppc', 'ppc64', 'riscv64', 's390', 's390x', 'x64', 'other']);
 const DURATION_BUCKETS = new Set(['<15m', '15-60m', '1-3h', '>3h']);
+// OPTIONAL `session_profile` — MIRROR of VALID_SESSION_PROFILES in
+// scripts/lib/telemetry/schema.mjs. Unlike `session_type` (bounded by LENGTH
+// only, so a future client token cannot 400), this field carried the only
+// repo-authored FREE TEXT on the wire and was persisted verbatim into raw_json;
+// a length bound would have stored `client-acme-private-repo` unchanged. It is
+// therefore enum-bounded like `platform`/`duration_bucket`: a conforming client
+// omits anything unlisted, so only a foreign or tampered client can trip this.
+// A new profile is a reviewed one-line edit on BOTH sides, same contract as
+// ACCEPTED_VERSIONS above.
+// Exported for the client<->server parity guard (tests/telemetry/parity.test.mjs):
+// two lists in two trees stay in lockstep only if something compares them.
+export const SESSION_PROFILES = new Set(['ultradeep']);
 
 // Lowercase-only (no /i): the client always emits crypto.randomUUID(), which is
 // lowercase hex per the WHATWG spec, so an uppercase anon_id is malformed input
@@ -65,6 +77,7 @@ const MAX_ANON_ID = 36;
 const MAX_SENT_AT = 40;
 const MAX_PLUGIN_VERSION = 32;
 const MAX_SESSION_TYPE = 32;
+const MAX_SESSION_PROFILE = 32;
 const MAX_LIST_ITEMS = 100;
 const MAX_LIST_ITEM_LEN = 64;
 
@@ -199,6 +212,17 @@ function validateUsagePingV1(record, { fleetAnonIds } = {}) {
   const sessionType = requireString(record, 'session_type');
   if (sessionType.length > MAX_SESSION_TYPE) {
     throw new ValidationError(`session_type must be at most ${MAX_SESSION_TYPE} chars`, 'session_type');
+  }
+
+  // session_profile — OPTIONAL and additive (a pre-profile client omits it), but
+  // when present it must be a whitelisted PUBLIC profile name. Length-capped
+  // before the set lookup, mirroring the anon_id pattern above: cheap bound
+  // first, membership second, and nothing unbounded ever reaches raw_json.
+  if (record.session_profile !== undefined) {
+    const profile = record.session_profile;
+    if (typeof profile !== 'string' || profile.length > MAX_SESSION_PROFILE || !SESSION_PROFILES.has(profile)) {
+      throw new ValidationError('session_profile must be a known profile name when present', 'session_profile');
+    }
   }
 
   requireEnum(record, 'duration_bucket', DURATION_BUCKETS);
