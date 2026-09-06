@@ -766,6 +766,19 @@ mint (UUIDv7, semantic session ids) were rejected or dropped by readers built fo
 only — every resume looked foreign — and call sites that needed a repo root passed
 `undefined` instead, so fail-open paths ran on every invocation.
 
+This tag is also the first to carry the thirty-three commits of the 2026-08-22 → 2026-08-25
+line (`141d418..0626387`: 20 `fix`, 11 `feat`, 2 `docs`; 297 files, +24,535/−1,318 — measured
+2026-09-06 @ `befdda47`, `git log --format=%s v3.22.0..0626387` → 33 subjects). A `3.22.1` cut
+dated 2026-08-25 had changelogged that line, but the release commit never left its working
+copy — no push, no tag, no registry tarball — and the next day's work resumed from `0626387`
+without it. Its entries are carried below under *From the 2026-08-22 → 2026-08-25 line*. One
+fact sits under all of them: **a surface that said it was live, and a measurement that never
+had a caller.** Cursor advertised as a first-class platform and loaded only `.cursor/rules` —
+no slash commands, no skills, no hook bridge; `/session` was chat text. The same class shows up
+in the rest of the line: 18 probes with zero mechanical callers, three vault writers that could
+not report their own failure, gates that wrote and never read, and `detectPlatform()` walking
+to `$HOME` until 63 of 84 telemetry records said `platform=pi`.
+
 ### Added
 
 - **Eight core rules ship as sanitized copies, with a report-only leak scanner (#1098).**
@@ -792,6 +805,27 @@ only — every resume looked foreign — and call sites that needed a repo root 
   found the Phase-1.2.1 promotion site had been missing the call; it is now wired at
   session-start Phase 0.5, Phase 1.2.1, and both `parallel-aware-*` docs. A real
   `git worktree` two-root integration test goes phantom-peer red → green.
+
+#### From the 2026-08-22 → 2026-08-25 line
+
+- **Cursor is a native surface, not a rules overlay.** `.cursor/commands/*.md`
+  (27 slash-command wrappers), `.cursor/skills/<name>/SKILL.md` (47 wrappers),
+  `.cursor/hooks.json` → `scripts/lib/cursor-hook-bridge.mjs`. Same pattern as
+  Pi: one maintained body in `commands/` and `skills/`, generated adapters,
+  `validate-plugin` check (`check-cursor-adapter.mjs --check`). `cursor-install.mjs`
+  now links commands and skills and writes `hooks.json` for other projects.
+  Cursor has no Skill tool — commands Read `skills/<name>/SKILL.md`.
+- **The coordinator can see its agents, and a foreign model can build (#1113, #1150).**
+  Wave supervision plus `cursor-agent` CLI foreign dispatch (detached worktree,
+  filesystem-measured result, mandatory Claude review, `NEVER_FOREIGN_ROLES`).
+- **`/reconcile` ran for the first time in seven weeks** — 10 learnings became
+  conditional rules (`feat(rules)`).
+- **Express-path** gained a mechanical caller and a single documented reading.
+- **18 measurement probes** now have a mechanical caller (`feat(probes)`);
+  session-start no longer depends on prose to run them.
+- **Vault writers report their own failure**; the vault mirror reports that it
+  is healthy (`feat(vault)`, `feat(telemetry)`).
+- **Ingest server** counts answers; the weekly digest has a caller.
 
 ### Fixed
 
@@ -887,6 +921,36 @@ only — every resume looked foreign — and call sites that needed a repo root 
   one) plus a matching `hookTimeout` bump, and two further spawn-timeout assertions gained
   the same discriminating margin between contention and a genuine failure.
 
+#### From the 2026-08-22 → 2026-08-25 line
+
+- **Cursor hooks were a reference mapping that silent-no-op'd (#919).**
+  `hooks/hooks-cursor.json` is the live handler map. The bridge projects Cursor
+  stdin onto `tool_name` / `tool_input` and maps deny envelopes onto Cursor
+  `{ permission }`. `afterFileEdit` remains post-hoc (cannot unwrite).
+- **`detectPlatform()` walked to `$HOME` and found `~/.pi`** — 63 of 84
+  telemetry records carried `platform=pi` (`fix(platform)`).
+- **Identity compared the machine name, then the working copy, then DHCP**
+  (#1072, #1085 follow-through). Budget and lock judge the session. One machine,
+  one name.
+- **A vault probe wrote into the operator's real vault**; the mirror now writes
+  on the second run too (#1033).
+- **Guards that saw the wrong thing or discarded the right one** (#1029, #1130,
+  #1077, #1125, #979, and a second trio that measured nothing).
+- **Reconcile: a No stays a No**; three paths that turned a rule into silent
+  reject; gates that wrote and never read (EventDrop #484, #386, #385, #429);
+  a type registry is enough (#1042, #1151).
+- **STATE.md: a broken list item costs the item, never the document (#1111).**
+- **Telemetry: noop-silent mirror, recorded aborts, budget reaper (#1151, #1127).**
+  Consent question and flush no longer hang on prose.
+- **Privacy: the operator's machine name leaves the examples (#1151 Review).**
+- **Archive: a citation is not a declaration; foreign files are not mine
+  (#1112, #1123).**
+- **Scope manifest knows whom it belongs to, and the hook asks (#1123, #1082).**
+- **Security copy claimed SAST/Semgrep levels that never existed**; the private
+  npm scope no longer rides along with a copied baseline.
+- **A dying suite at import is counted as what it is**; a blocking guard now
+  says why.
+
 ### Changed
 
 - **Host-registry census counts `semantic_session_id` (#1066).** `hooks/on-session-start.mjs`
@@ -915,6 +979,12 @@ only — every resume looked foreign — and call sites that needed a repo root 
 Two of this session's diffs were authored by foreign models under the #1150 adapter —
 #1078 by composer-2.5, #1093 by grok-4.6 — each passing mandatory Claude review before
 landing. First production use of the foreign-dispatch path.
+
+npm 3.22.0 never contained the 2026-08-22 → 2026-08-25 line; 3.23.0 is the first registry
+tarball that does (`npm view session-orchestrator versions` @ 2026-09-06: 3.22.0, 3.23.0,
+3.24.0 — no 3.22.1). The 3.22.1 cut that first documented the line was a release commit that
+was never pushed, which is why those entries surface here, one release late, re-measured at
+`befdda47` rather than quoted.
 
 ## [3.22.0] - 2026-08-22
 
