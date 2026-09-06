@@ -181,7 +181,7 @@ For each of the 9 built-in analyzer learning types, apply these heuristics:
 - Read `.orchestrator/metrics/events.jsonl` (session + wave events) and the registry `sweep.log` at `~/.config/session-orchestrator/sessions/sweep.log`. Both are optional — missing files produce no candidates.
 - Invoke `scripts/lib/hardware-pattern-detector.mjs` → `detectHardwarePatterns({events, sweepLogEntries, thresholds})`. Thresholds come from Session Config `resource-thresholds` when present, falling back to `DEFAULT_THRESHOLDS`.
 - Five detection signals (aggregated per `(signal, host_class)` pair, ≥2 occurrences required):
-  - **oom-kill** — `orchestrator.session.stopped` with `exit_code: 137` or OOM-marker in `error`
+  - **oom-kill** — `orchestrator.turn.stopped` (or its deprecated alias `orchestrator.session.stopped`, which `hooks/on-stop.mjs` still emits with `deprecated: true` until **2027-03-06**) with `exit_code: 137` or OOM-marker in `error`. Both names are accepted for the deprecation window because every OOM record already on disk carries only the legacy name; the detector's set lives in `OOM_TERMINAL_EVENTS` (`scripts/lib/hardware-pattern-detector.mjs`) and drops the alias on that date.
   - **heartbeat-gap** — registry sweep-log entries with `gap_minutes` above `resource-thresholds.zombie-threshold-min`
   - **concurrent-session-pressure** — session-start events with `peer_count ≥ concurrent-sessions-warn`
   - **disk-full** — events whose `error` matches `ENOSPC` / "no space left"

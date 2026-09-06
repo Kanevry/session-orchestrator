@@ -70,6 +70,52 @@ export const USAGE_PING_FIELDS = Object.freeze([
   'commands',
 ]);
 
+/**
+ * ADDITIVE optional fields (schema v1, GitLab #1234). Deliberately a SECOND
+ * list rather than an extension of USAGE_PING_FIELDS above, for two reasons:
+ *
+ *  1. USAGE_PING_FIELDS is the REQUIRED v1 contract — `tests/telemetry/parity.mjs`
+ *     asserts, field by field, that the server independently REQUIRES every
+ *     member. An optional field is by definition not required, so putting it in
+ *     that list would force the parity guard to be weakened for all 15 fields to
+ *     accommodate one.
+ *  2. The frozen-list tripwire (`projectUsagePing` drops anything unlisted)
+ *     stays intact: the projection whitelist is the UNION of both lists, so a
+ *     leaky field still has to be added to a reviewed list before it can reach
+ *     the wire.
+ *
+ * Server tolerance: `server/ingest/validate.mjs` accepts unknown top-level
+ * fields and preserves them verbatim in `raw_json` (see its module docblock), so
+ * every member here round-trips through a server that predates it.
+ */
+export const USAGE_PING_OPTIONAL_FIELDS = Object.freeze([
+  'fleet_self_declared',
+  'session_record',
+  'session_profile',
+]);
+
+/**
+ * The full projection whitelist: required v1 fields + additive optional fields.
+ * `projectUsagePing` is driven from THIS, so neither list alone can leak a field.
+ */
+const USAGE_PING_PROJECTED_FIELDS = Object.freeze([...USAGE_PING_FIELDS, ...USAGE_PING_OPTIONAL_FIELDS]);
+
+/**
+ * `session_record` provenance tokens — WHICH source the session facts
+ * (`session_type`, `duration_bucket`) in this ping came from.
+ *
+ *  - `ledger`  — `.orchestrator/metrics/sessions.jsonl` had a matching record.
+ *  - `derived` — no ledger record; the facts were reconstructed from
+ *                `events.jsonl` (`orchestrator.session.started` + last event).
+ *  - `absent`  — neither source produced a session type. `session_type` is then
+ *                `'unknown'` and `duration_bucket` is NOT a measurement.
+ *
+ * Measured 2026-09-06 (d8 audit): this repo has NO sessions.jsonl, so 100 % of
+ * its pings took the `absent` path and were indistinguishable on the wire from
+ * a genuinely-measured `other` / `<15m` session — 32 such pings on the server.
+ */
+export const SESSION_RECORD_SOURCES = Object.freeze(['ledger', 'derived', 'absent']);
+
 /** Exact duration-bucket tokens (ASCII, stable wire values). */
 export const DURATION_BUCKETS = Object.freeze(['<15m', '15-60m', '1-3h', '>3h']);
 
@@ -83,6 +129,18 @@ const VALID_PLATFORMS = Object.freeze(['claude', 'codex', 'cursor', 'pi']);
 const VALID_SESSION_TYPES = Object.freeze(['housekeeping', 'feature', 'deep']);
 const PLATFORM_OTHER = 'other';
 const SESSION_TYPE_OTHER = 'other';
+/**
+ * The type was never measured — distinct from `'other'`, which means "measured,
+ * but not one of the three known modes". Conflating the two is the defect this
+ * token fixes: before it existed, a ping built with NO session record silently
+ * reported `'other'`, so "we could not tell" and "we looked and it was unusual"
+ * were the same wire value.
+ *
+ * NOT an enum widening server-side: `session_type` is validated as a bounded
+ * STRING (`server/ingest/validate.mjs` `requireString` + `MAX_SESSION_TYPE`),
+ * never against a closed set, so `'unknown'` is accepted by today's server.
+ */
+const SESSION_TYPE_UNKNOWN = 'unknown';
 
 /**
  * Closed sets for os/arch client-side normalization. A value outside the set —
@@ -121,7 +179,8 @@ function isNonEmptyString(v) {
 // ---------------------------------------------------------------------------
 
 /**
- * Project an arbitrary object onto the usage-ping whitelist (USAGE_PING_FIELDS).
+ * Project an arbitrary object onto the usage-ping whitelist (USAGE_PING_FIELDS
+ * PLUS USAGE_PING_OPTIONAL_FIELDS).
  * Fully data-driven: any key not on the whitelist — paths, repo names, prompts,
  * args, hostnames, rogue extras — is dropped. Array fields (skills, commands) are
  * copied as NEW arrays so no caller reference leaks into the projection.
@@ -132,7 +191,7 @@ function isNonEmptyString(v) {
 export function projectUsagePing(input) {
   if (!isPlainObject(input)) return {};
   const out = {};
-  for (const key of USAGE_PING_FIELDS) {
+  for (const key of USAGE_PING_PROJECTED_FIELDS) {
     if (key in input) {
       const v = input[key];
       out[key] = Array.isArray(v) ? [...v] : v;
@@ -321,7 +380,13 @@ function normalizePlatform(platform) {
 
 /** Normalize the session type to the closed enum (+ 'other' fallback). */
 function normalizeSessionType(sessionType) {
-  return VALID_SESSION_TYPES.includes(sessionType) ? sessionType : SESSION_TYPE_OTHER;
+  if (VALID_SESSION_TYPES.includes(sessionType)) return sessionType;
+  // ABSENT ≠ UNRECOGNISED. A missing/blank value means nothing was measured
+  // (`unknown`); a present-but-unlisted value means something WAS measured and
+  // is not one of the three modes (`other`). The old single-branch version
+  // returned `other` for both, which is how 394 pings from a host with no
+  // sessions.jsonl arrived looking like measured `other` sessions (d8, 2026-09-06).
+  return isNonEmptyString(sessionType) ? SESSION_TYPE_OTHER : SESSION_TYPE_UNKNOWN;
 }
 
 /**
@@ -404,6 +469,9 @@ export function buildUsagePing({
   env = process.env,
   now = new Date().toISOString(),
   roster,
+  consentState,
+  sessionRecordSource,
+  sessionProfile,
 } = {}) {
   const session = isPlainObject(sessionRecord) ? sessionRecord : {};
   const invocations = Array.isArray(skillInvocations) ? skillInvocations : [];
@@ -432,6 +500,44 @@ export function buildUsagePing({
     (kind === 'command' ? commandNames : skillNames).push(name);
   }
 
+  // ── fleet: a statement about the OPERATOR, derived from the RESOLVED consent
+  // state, not from a raw owner.yaml read ────────────────────────────────────
+  // The old expression was `ownerConfig?.telemetry?.enabled === true` — a
+  // statement about a FILE. Measured 2026-09-06 (d8): the operator's second Mac
+  // has consent granted but no `telemetry:` block in owner.yaml, so 394 of 490
+  // server records (80,4 %) counted the operator as an external user and every
+  // week's `fleet_vs_external` was wrong.
+  //
+  // `resolveConsent()` already answers this question correctly: it returns
+  // `enabled-fleet` for the owner.yaml opt-in AND `enabled-env` for
+  // `SO_TELEMETRY=1`, both of which are operator-side postures. Callers that
+  // pass `consentState` get that answer; the ownerConfig fallback below keeps
+  // the two-argument callers (and the CLI preview) behaviourally identical.
+  //
+  // CEILING, named because the client cannot close it: this is still
+  // SELF-DECLARED — a sandbox or a host whose owner.yaml is unreachable declares
+  // `false` however honest it is. The authoritative classification is
+  // server-side (`SO_INGEST_FLEET_ANON_IDS`, server/ingest/config.mjs).
+  // `session_profile` (STATE.md frontmatter `session-profile`) is emitted RAW and
+  // is deliberately NOT routed through normalizeSessionType: that helper degrades
+  // anything outside ['housekeeping','feature','deep'] to 'other', which is
+  // exactly the silent loss the profile exists to prevent. The contract is
+  // `session_type: "deep"` PLUS `session_profile: "ultradeep"` — never
+  // `session_type: "ultradeep"`, and never a profile flattened to 'other'.
+  //
+  // ABSENT IS NOT EMPTY: with no profile the KEY IS OMITTED, matching every other
+  // optional ping field. `projectUsagePing` copies only keys that are `in` the
+  // input, so an omitted key never reaches the wire as `null`.
+  const profile =
+    isNonEmptyString(sessionProfile) ? sessionProfile.trim()
+      : isNonEmptyString(session.session_profile) ? session.session_profile.trim()
+        : null;
+
+  const fleetSelfDeclared =
+    consentState === undefined || consentState === null
+      ? ownerConfig?.telemetry?.enabled === true
+      : consentState === 'enabled-fleet' || consentState === 'enabled-env';
+
   return {
     record_kind: 'usage-ping',
     schema_version: USAGE_PING_SCHEMA_VERSION,
@@ -442,9 +548,17 @@ export function buildUsagePing({
     arch: normalizeArch(process.arch),
     node_major: parseInt(process.versions.node, 10),
     ci: deriveCi(env),
-    fleet: ownerConfig?.telemetry?.enabled === true,
+    fleet: fleetSelfDeclared,
+    // DEPRECATED alias of `fleet_self_declared`, kept for one schema generation
+    // (removal: 2027-03-06 — see docs/telemetry.md § Schema evolution) so the
+    // server's existing `fleet` column stays comparable across the rename.
+    fleet_self_declared: fleetSelfDeclared,
     session_type: normalizeSessionType(session.session_type),
+    ...(profile !== null ? { session_profile: profile } : {}),
     duration_bucket: deriveDurationBucket(session.started_at, session.completed_at),
+    session_record: SESSION_RECORD_SOURCES.includes(sessionRecordSource)
+      ? sessionRecordSource
+      : 'absent',
     skills: filterRosterNames(skillNames, rosterSkills),
     commands: filterRosterNames(commandNames, rosterCommands),
   };

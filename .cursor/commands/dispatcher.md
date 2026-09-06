@@ -1,6 +1,6 @@
 ---
-description: Pick the next-best repo to work on across the portfolio — rank free repos, recommend one, claim its lease atomically, and route to the entry command
-argument-hint: [--dry-run] [--repo <name>]
+description: "Pick the next-best repo to work on across the portfolio — rank free repos, recommend one, claim its lease atomically, and route to the entry command"
+argument-hint: "[--dry-run] [--repo <name>]"
 ---
 
 # /dispatcher

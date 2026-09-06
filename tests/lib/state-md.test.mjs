@@ -6,6 +6,9 @@ import {
   serializeStateMd,
   parseRecommendations,
   updateFrontmatterFields,
+  readSessionProfile,
+  setSessionProfile,
+  SESSION_PROFILE_FIELD,
 } from '@lib/state-md.mjs';
 
 describe('barrel re-exports', () => {
@@ -159,5 +162,54 @@ body
     expect(parsed.frontmatter['recommended-mode']).toBeUndefined();
     expect(parsed.frontmatter['completion-rate']).toBe(0.85);
     expect(parsed.frontmatter.status).toBe('completed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// session-profile accessors (PRD 2026-09-06 ultradeep)
+// ---------------------------------------------------------------------------
+
+describe('session-profile frontmatter accessors', () => {
+  // THE BUG THIS CATCHES (TV-001): absence coerced into a value. A reader that
+  // returns '' / 'none' / undefined-as-string for a STATE.md with no profile
+  // makes "plain deep session" indistinguishable from "profile set to nothing",
+  // and a writer that leaves a placeholder key behind makes clearing the
+  // profile impossible. Both failures are silent — the file still parses.
+
+  const DOC = ['---', 'session: main-2026-09-06-deep-1', 'session-type: deep', 'status: active', '---', '', '## Current Wave', '', 'Wave 1', ''].join('\n');
+
+  it('reads null when the key is absent', () => {
+    expect(readSessionProfile(DOC)).toBeNull();
+    expect(DOC.includes(SESSION_PROFILE_FIELD)).toBe(false);
+  });
+
+  it('round-trips a profile and leaves session-type untouched', () => {
+    const withProfile = setSessionProfile(DOC, 'ultradeep');
+    expect(readSessionProfile(withProfile)).toBe('ultradeep');
+    expect(parseStateMd(withProfile).frontmatter['session-type']).toBe('deep');
+    expect(parseStateMd(withProfile).frontmatter.session).toBe('main-2026-09-06-deep-1');
+    expect(parseStateMd(withProfile).body).toBe(parseStateMd(DOC).body);
+  });
+
+  it('clearing removes the key entirely — absence stays absence', () => {
+    const cleared = setSessionProfile(setSessionProfile(DOC, 'ultradeep'), null);
+    expect(readSessionProfile(cleared)).toBeNull();
+    expect(SESSION_PROFILE_FIELD in parseStateMd(cleared).frontmatter).toBe(false);
+  });
+
+  it('reads null for a blank value rather than returning an empty string', () => {
+    const blank = updateFrontmatterFields(DOC, { [SESSION_PROFILE_FIELD]: '   ' });
+    expect(readSessionProfile(blank)).toBeNull();
+  });
+
+  it('refuses to write a placeholder instead of clearing', () => {
+    expect(() => setSessionProfile(DOC, '')).toThrow(TypeError);
+    expect(() => setSessionProfile(DOC, undefined)).toThrow(TypeError);
+  });
+
+  it('no-ops on a document without frontmatter instead of inventing one', () => {
+    const plain = '# Not a STATE.md\n';
+    expect(setSessionProfile(plain, 'ultradeep')).toBe(plain);
+    expect(readSessionProfile(plain)).toBeNull();
   });
 });

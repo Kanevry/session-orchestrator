@@ -1,6 +1,6 @@
 ---
-description: Reconcile learnings into .claude/rules/ proposals — on-demand version of session-end Phase 3.6.8
-argument-hint: [--dry-run]
+description: "Reconcile learnings into .claude/rules/ proposals — on-demand version of session-end Phase 3.6.8"
+argument-hint: "[--dry-run]"
 ---
 
 # /reconcile

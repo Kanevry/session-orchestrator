@@ -28,11 +28,33 @@ const EXPECTED_COST_TIERS = Object.freeze(['quick', 'standard', 'deep']);
 
 /**
  * Valid values for the optional `status` field (Epic #724 C1).
- * `completed` — record written by a normal /close flow.
- * `abandoned` — stub backfilled by the SessionEnd hook because the session
- *               terminated without running /close.
+ * `completed`  — record written by a normal /close flow.
+ * `abandoned`  — stub backfilled by the SessionEnd hook because the session
+ *                terminated without running /close.
+ * `unresolved` — the HONEST label for that same stub: "never reached /close" is
+ *                observed, but "abandoned" is an interpretation of it (a session
+ *                may have finished its work and merely skipped /close, or been
+ *                killed). GitLab #1234, added 2026-09-06.
+ *
+ * CEILING (BV-004) — `unresolved` currently has NO writer, and the emitter must
+ * not adopt it yet. Six EXECUTABLE phantom-stub filters key on the literal
+ * `abandoned` and none is inside this change's file scope, so flipping the
+ * emitter today would make every new stub invisible to all of them and re-open
+ * the #834 phantom-in-signal class fleet-wide. Census measured 2026-09-06 via
+ * `rg -n "status\s*(!==|===|!=|==)\s*[\"']abandoned[\"']" scripts hooks --glob '!*.test.mjs'`:
+ *   scripts/lib/session-schema/filters.mjs:56  (isRealSession — the shared helper,
+ *       imported by sessions-staleness-banner, auto-dream, dialectic-deriver,
+ *       harness-audit/categories/category4, evolve/autopilot-effectiveness)
+ *   scripts/lib/sessions-canonical.mjs:149,172
+ *   scripts/lib/eval/session-resolve.mjs:79
+ *   scripts/mcp-server.sh:195
+ *   scripts/compute-grounding-injection.sh:74
+ * REVISIT TRIGGER: once those six route through one predicate that accepts both
+ * `abandoned` and `unresolved`, switch `synthesizeRecord()` in
+ * `scripts/lib/session-close-backfill.mjs` to emit `unresolved` for inferred
+ * records — a one-line change, which is exactly why this value lands now.
  */
-const SESSION_STATUS = Object.freeze(['completed', 'abandoned']);
+const SESSION_STATUS = Object.freeze(['completed', 'abandoned', 'unresolved']);
 
 /**
  * Canonical ISO-8601 UTC timestamp regex — accepts `YYYY-MM-DDTHH:MM:SSZ`
@@ -459,6 +481,18 @@ function _validateOptionalFields(entry) {
       throw new ValidationError(
         `express_path must be a boolean (canonical), null, or the legacy {activated: boolean} object, got: ${shape}`
       );
+    }
+  }
+
+  // `session_profile` — optional wave-shape profile (PRD
+  // docs/prd/2026-09-06-ultradeep-session-profile.md). Non-empty string or
+  // null/absent; absent means "no profile" and is NOT coerced to a string.
+  // Deliberately NOT validated against a closed set: unlike `session_type`,
+  // no consumer branches on the value, so an unrecognised profile is a
+  // readable record with an unknown shape rather than a silent mislabel.
+  if (entry.session_profile !== undefined && entry.session_profile !== null) {
+    if (typeof entry.session_profile !== 'string' || entry.session_profile.length === 0) {
+      throw new ValidationError('session_profile must be a non-empty string or null');
     }
   }
 

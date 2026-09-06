@@ -176,7 +176,8 @@ describe('daily-fallback e2e: real `_flush` child subprocess', () => {
       schema_version: 1,
       ci: false,
       fleet: false,
-      session_type: 'other',
+      // #1234: NOT MEASURED is `unknown`; `other` now means measured-but-unrecognised.
+      session_type: 'unknown',
       duration_bucket: '<15m',
       skills: [],
       commands: [],

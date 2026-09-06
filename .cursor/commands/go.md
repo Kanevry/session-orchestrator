@@ -1,6 +1,6 @@
 ---
 description: Approve session plan and begin wave execution
-argument-hint: [optional instructions]
+argument-hint: "[optional instructions]"
 ---
 
 # /go

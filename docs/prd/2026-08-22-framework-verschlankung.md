@@ -220,13 +220,15 @@ Revision 1 nannte 8 Skills und 6 Skripte. Der Prüfer hat das zweite Signal für
 | `skills/mcp-builder/` | 3 ADRs | ❌ raus |
 | **`skills/contract-version-bump/`** | keine | ✅ Kandidat |
 | **`skills/skill-creator/`** | keine | ✅ Kandidat |
-| `scripts/lifecycle-sim-v6.mjs` | eigene Testdatei unter `tests/scripts/` | ⚠️ nur mit Test-Löschung |
-| `scripts/backfill-learnings-expires.mjs` | eigene Testdatei | ⚠️ nur mit Test-Löschung |
-| `scripts/migrate-learnings-jsonl.mjs` | als Konventions-Referenz zitiert von `scripts/migrate-cold-start-seed.mjs:146` | ❌ raus |
-| **`scripts/upload-social-preview.mjs`**, **`scripts/migrate-subagents-jsonl.mjs`**, **`scripts/fleet-instruction-scan.mjs`** | keine | ✅ Kandidaten (~653 LOC) |
+| `scripts/lifecycle-sim-v6.mjs` | eigene Testdatei unter `tests/scripts/` | ⚠️ nur mit Test-Löschung <!-- path-check: historical --> |
+| `scripts/backfill-learnings-expires.mjs` | eigene Testdatei | ⚠️ nur mit Test-Löschung <!-- path-check: historical --> |
+| `scripts/migrate-learnings-jsonl.mjs` | als Konventions-Referenz zitiert von `scripts/migrate-cold-start-seed.mjs:146` | ❌ raus <!-- path-check: historical --> |
+| **`scripts/upload-social-preview.mjs`**, **`scripts/migrate-subagents-jsonl.mjs`**, **`scripts/fleet-instruction-scan.mjs`** | keine | ✅ Kandidaten (~653 LOC) <!-- path-check: historical --> |
 | **`hooks/post-tooluse-frontend-slop.mjs`** + `frontend-slop-hook:`-Block | `orchestrator.frontend_slop.warning` = 0 von 27.530 Ereignissen **und** `enabled: false` | ✅ in beiden Dimensionen tot |
 
 **Verbleibende sichere Menge: 2 Skills, 3 Skripte (~653 LOC), 1 Hook.** Die Skills werden **degradiert** (aus der Standardliste genommen), nicht gelöscht — es sind Slash-Kommandos, ein Mensch kann sie morgen tippen.
+
+> **Nachtrag 2026-09-06 (360°-Audit § 5A).** Diese Tabelle ist der Stand vom 22. Aug und wird nicht nachgezogen — die ❌/✅-Spalte sagt, was die Prüfung damals ergab, nicht was heute im Repo liegt. Tatsächlich entfernt wurden alle acht oben genannten Top-Level-Skripte, `skills/daily/` und `skills/skill-creator/`; `scripts/migrate-learnings-jsonl.mjs` fiel mit, weil sein einziges zweites Signal — der Konventions-Kommentar in `scripts/migrate-cold-start-seed.mjs` — durch eine inline formulierte Konvention ersetzt wurde. <!-- path-check: historical -->
 
 Zwei Ereignisnamen mit 0 Records sind ausdrücklich **keine** Kandidaten: `orchestrator.session.lock.read_anomaly` und `orchestrator.session.lock.release_failed` sind Fehlerpfade; 0 kann korrekt sein (HR-105).
 

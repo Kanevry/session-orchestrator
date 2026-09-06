@@ -1,6 +1,6 @@
 ---
-description: Acknowledge templates-first policy for the current session — bypasses the pre-bash-templates-first hook for the remainder of the session
-argument-hint: [optional-reason]
+description: "Acknowledge templates-first policy for the current session — bypasses the pre-bash-templates-first hook for the remainder of the session"
+argument-hint: "[optional-reason]"
 ---
 
 # /templates-ack

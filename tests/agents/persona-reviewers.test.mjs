@@ -12,7 +12,17 @@
  *   - Each `tools:` field (if present) is a comma-separated string, not a JSON array
  *   - Each `description:` is a single-line inline string (no block-scalar markers)
  *   - All 3 agents pass validate-plugin.mjs (exit 0, 0 failed)
- *   - skills/wave-executor/wave-loop.md documents the wave-reviewer dispatch step
+ *
+ * REMOVED 2026-09-06 (#1157 split follow-up): the `wave-loop.md persona-reviewer
+ * dispatch step` describe asserted three strings existed in a skill markdown file
+ * (`/5a\.|persona-reviewer/`, `'wave-reviewers'`, `/no-op|absent|empty/`). It had no
+ * behavioural consumer and is a TV-002c prose pin — measured: after the whole
+ * 1,337-line loop body moved out of wave-loop.md into `references/`, the FIRST
+ * assertion still passed against the 39-line index, i.e. it never detected the
+ * section leaving. The behaviour it gestured at — `wave-reviewers` absent or `[]`
+ * is a no-op — is really covered by `tests/lib/config/wave-reviewers.test.mjs`
+ * (`returns all defaults on empty string`, `parses reviewers empty array []`,
+ * `treats a commented-out block as absent`).
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -135,27 +145,5 @@ describe('#339 — validate-plugin.mjs passes with all 3 agents present', () => 
   it('validate-plugin.mjs stdout contains Results: summary line', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Results:');
-  });
-});
-
-// ─── Test 7 (bonus): wave-loop.md documents persona-reviewer dispatch ─────────
-
-describe('#339 — wave-loop.md persona-reviewer dispatch step', () => {
-  const waveLoopMd = read('skills/wave-executor/wave-loop.md');
-
-  it('wave-loop.md contains a "5a" or persona-reviewer dispatch sub-step', () => {
-    expect(waveLoopMd).toMatch(/5a\.|Persona-reviewer dispatch|persona-reviewer/i);
-  });
-
-  it('wave-loop.md references wave-reviewers config field', () => {
-    expect(waveLoopMd).toContain('wave-reviewers');
-  });
-
-  it('wave-loop.md documents that wave-reviewers defaults to no-op when absent or empty', () => {
-    // Find the 5a section text
-    const dispatchMatch = waveLoopMd.match(/5a\.[\s\S]+?(?=\n\d+\.|$)/);
-    expect(dispatchMatch, 'step 5a section should be extractable').not.toBeNull();
-    const section = dispatchMatch[0];
-    expect(section).toMatch(/no-op|absent|empty/i);
   });
 });

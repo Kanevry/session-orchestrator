@@ -1274,7 +1274,8 @@ describe('Group I — checkLiveForeignSession (#908)', () => {
 // ---------------------------------------------------------------------------
 // Group J — CLI entry (#908 Befund 3)
 //
-// The staleness-annotation rule (skills/wave-executor/wave-loop.md, Trigger 3)
+// The staleness-annotation rule (skills/wave-executor/references/wave-loop-dispatch.md,
+// § Pre-Dispatch: Fact-Staleness Annotation, Trigger 3)
 // is executed by a coordinator LLM, which has Bash and cannot run an ESM
 // `import`. Without an executable entry point the rule is inert. Contract
 // mirrors scripts/lib/fetch-baseline.mjs (a lib module with a documented CLI):

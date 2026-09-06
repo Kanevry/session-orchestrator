@@ -1,6 +1,6 @@
 ---
 description: Aggregate cross-repo issue/MR/CI health across vault-registered projects into a single Markdown dashboard
-argument-hint: [--dry-run] [--repo <name>]
+argument-hint: "[--dry-run] [--repo <name>]"
 ---
 
 # /portfolio

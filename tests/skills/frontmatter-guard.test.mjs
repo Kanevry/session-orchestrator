@@ -114,9 +114,54 @@ describe('computeSchemaHash', () => {
     expect(h1).not.toBe(h2);
   });
 
-  it('empty string produces an 8-character hex string', () => {
-    const hash = computeSchemaHash('');
-    expect(hash).toMatch(/^[0-9a-f]{8}$/);
+  // NAMED BUG (2026-09-06 Wave 1): with no projects-baseline checkout,
+  // `readVaultSchema()` returns null and the caller passed the absent schemaText
+  // straight in. `digestSha256Short('')` produced `e3b0c442` — the SHA-256 of the
+  // empty string — a real-LOOKING token that is IDENTICAL on every baseline-less
+  // host, so a cache keyed on it reports "schema unchanged" having measured
+  // nothing. The previous version of this test asserted that hash was fine.
+  it('returns null for the empty string — never the empty-string hash e3b0c442', () => {
+    expect(computeSchemaHash('')).toBeNull();
+    expect(computeSchemaHash('')).not.toBe('e3b0c442');
+  });
+
+  it('returns null for null/undefined (the no-schema state)', () => {
+    expect(computeSchemaHash(null)).toBeNull();
+    expect(computeSchemaHash(undefined)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Degraded mode — no projects-baseline checkout reachable
+// ---------------------------------------------------------------------------
+//
+// NAMED BUG (2026-09-06 Wave 1): `SCHEMA_SOURCE_PATH` was hardcoded to
+// `$HOME/Projects/projects-baseline/...`, which does not exist on hosts whose
+// (optional, private) checkout lives elsewhere. `readVaultSchema()` degraded to
+// `null` correctly — and `generateFrontmatterSnippet()` then destructured it and
+// died with `Cannot destructure property 'typeEnum' of 'schema' as it is
+// undefined`, taking the pre-dispatch hook down with it.
+
+describe('generateFrontmatterSnippet degraded mode', () => {
+  it('does not throw when the schema is null', () => {
+    expect(() => generateFrontmatterSnippet(null)).not.toThrow();
+  });
+
+  it('does not throw when called with no argument at all', () => {
+    expect(() => generateFrontmatterSnippet()).not.toThrow();
+  });
+
+  it('the fallback snippet is a usable schema block, not a stub', () => {
+    const snippet = generateFrontmatterSnippet(null);
+    expect(typeof snippet).toBe('string');
+    expect(snippet).toContain('Vault Frontmatter Schema');
+    // Required fields and a representative type enum member must survive.
+    for (const field of ['id', 'type', 'created', 'updated']) {
+      expect(snippet).toContain(`\`${field}\``);
+    }
+    for (const t of ['reference', 'session', 'learning', 'daily', 'project']) {
+      expect(snippet).toContain(t);
+    }
   });
 });
 

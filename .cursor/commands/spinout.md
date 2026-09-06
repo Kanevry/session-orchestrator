@@ -1,6 +1,6 @@
 ---
-description: Guided 5-step venture-spinout / sanitized-fork runbook (copy + fresh-init + SNAPSHOT-FREEZE) — interactive, not scripted
-argument-hint: [--type venture|snapshot] [--dry-run]
+description: "Guided 5-step venture-spinout / sanitized-fork runbook (copy + fresh-init + SNAPSHOT-FREEZE) — interactive, not scripted"
+argument-hint: "[--type venture|snapshot] [--dry-run]"
 ---
 
 # /spinout

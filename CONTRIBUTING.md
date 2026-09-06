@@ -153,7 +153,7 @@ Agents are subagent definitions dispatched by the wave-executor during parallel 
 - Must be fully self-contained: include all review criteria, output formats, and instructions
 - The `<example>` blocks in the description are required by Claude Code for agent dispatch
 
-**Current agents:** see [docs/components.md](docs/components.md) for the full roster. The authoritative authoring spec — frontmatter contract, `sandbox-tier`, `output-schema`, validation commands — is [`agents/AGENTS.md`](agents/AGENTS.md).
+**Current agents:** see [docs/components.md](docs/components.md) for the full roster. The authoritative authoring spec — frontmatter contract, `sandbox-tier`, `output-schema`, validation commands — is [`docs/agent-authoring.md`](docs/agent-authoring.md) (moved out of `agents/` in 4.0.0: the plugin loader registers every `agents/*.md` as dispatchable by directory convention, and the spec was selected as an agent 5× fleet-wide).
 
 ### Hooks (`hooks/hooks.json`)
 

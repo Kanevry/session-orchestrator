@@ -46,11 +46,28 @@
  *                                sections (paths/dispatcher/vaults/baselines) — #820
  *   writeOwnerConfig(config, {path?}) — validates, writes YAML, creates dir
  *   getDefaults()              — returns sensible default config object
+ *
+ * ── Zero bare-specifier imports (GH#62/#63, GitLab #1230) ────────────────────
+ *
+ * `js-yaml` is resolved LAZILY inside {@link loadOwnerConfig} / {@link
+ * writeOwnerConfig} (see {@link getYaml}), never at module load. Importing this
+ * module therefore costs `node:fs` + `node:path` + `node:module` and nothing
+ * else, which is what keeps it safe on the hook import graph: before this
+ * change, `import yaml from 'js-yaml'` at the top of this file crashed FOUR
+ * hooks with `ERR_MODULE_NOT_FOUND` for anyone whose `node_modules` was absent
+ * (on-session-start, on-session-end, post-edit-validate,
+ * skill-invocation-telemetry — measured 2026-09-06 over a `hooks/` + `scripts/`
+ * copy with no `node_modules`, 4 of 27 hooks rc=1).
+ *
+ * When the package cannot be resolved both entry points DEGRADE rather than
+ * throw: they return their normal shape plus `reason: 'yaml-parser-missing'`
+ * (`source: 'defaults'` / `written: false`) and emit ONE rate-limited stderr
+ * WARN naming `npm install` as the fix.
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import yaml from 'js-yaml';
+import { createRequire } from 'node:module';
 import { resolvePrivateConfigDir } from './config/private-config-dir.mjs';
 
 // ---------------------------------------------------------------------------
@@ -59,6 +76,71 @@ import { resolvePrivateConfigDir } from './config/private-config-dir.mjs';
 
 /** Basename of the owner persona config file. */
 const OWNER_YAML_FILE = 'owner.yaml';
+
+// ---------------------------------------------------------------------------
+// Lazy js-yaml resolution (GH#62/#63, GitLab #1230)
+// ---------------------------------------------------------------------------
+
+/**
+ * Memoised `js-yaml` module, or `false` once resolution has failed.
+ * `null` = not yet attempted.
+ * @type {null | false | { load: Function, dump: Function }}
+ */
+let _yaml = null;
+
+/** Guards the one-per-process stderr WARN below. */
+let _yamlWarned = false;
+
+/**
+ * Resolve `js-yaml` at CALL time instead of at import time (GH#62/#63).
+ *
+ * WHY `createRequire` and not `await import('js-yaml')`: every caller of
+ * {@link loadOwnerConfig} consumes it SYNCHRONOUSLY. Measured 2026-09-06 with
+ * `rg -n --glob '!tests/**' 'loadOwnerConfig\(' scripts hooks skills` (minus
+ * this file and the unrelated async homonym in `owner-config-loader.mjs`):
+ * 9 call sites — 8 in code, 1 in `skills/session-start/SKILL.md:1113` — and
+ * `rg 'await\s+loadOwnerConfig'` over the same scope returns ZERO. Eight read
+ * `loadOwnerConfig().config` (`hooks/on-session-start.mjs:639`,
+ * `hooks/skill-invocation-telemetry.mjs:155`, `scripts/telemetry.mjs:81,130`,
+ * `scripts/vault-mirror.mjs:444`, `scripts/lib/telemetry/sync.mjs:202,269`,
+ * and the SKILL.md snippet); the ninth destructures the same sync return
+ * (`scripts/lib/soul-resolve.mjs:123`). `writeOwnerConfig` is likewise sync at
+ * its single call site, `scripts/lib/owner-interview.mjs:228`.
+ *
+ * Making either loader async would be a breaking change to all of them; a lazy
+ * `require()` keeps the sync contract and only fails at CALL time — where the
+ * failure is catchable — instead of at module load, where it is not.
+ *
+ * Same shape as the `getPicomatch()` pattern in `scripts/lib/rule-loader.mjs`
+ * and `scripts/lib/validate-vendored-rules.mjs`.
+ *
+ * @returns {{ load: Function, dump: Function } | null} the module, or `null`
+ *   when `node_modules` is absent / the package cannot be resolved.
+ */
+function getYaml() {
+  if (_yaml !== null) return _yaml === false ? null : _yaml;
+  try {
+    _yaml = createRequire(import.meta.url)('js-yaml');
+  } catch {
+    _yaml = false;
+  }
+  return _yaml === false ? null : _yaml;
+}
+
+/**
+ * Emit the one-per-process actionable WARN for a missing `js-yaml`. Kept to a
+ * SINGLE line and rate-limited to once per process, mirroring the GH#63
+ * degradation contract `hooks/on-stop.mjs` already satisfies: a missing package
+ * must never be louder than the fix it asks for.
+ */
+function warnYamlMissing() {
+  if (_yamlWarned) return;
+  _yamlWarned = true;
+  console.warn(
+    "WARN owner-yaml: 'js-yaml' is not installed — owner.yaml cannot be parsed or written; " +
+      "using defaults. Run 'npm install' in the plugin directory to restore it.",
+  );
+}
 
 /**
  * Re-export of the single host-private-config-dir resolver (#1223).
@@ -71,12 +153,14 @@ const OWNER_YAML_FILE = 'owner.yaml';
  * broke the GH#63 "degrade gracefully without node_modules" contract
  * (`ERR_MODULE_NOT_FOUND` in `tests/hooks/on-stop.test.mjs`).
  *
- * THIS module is itself still a bare-specifier node on the wider hook graph —
- * measured 2026-09-05 over `hooks/_lib/hook-import-set.json` (150 entries, head
- * 4b45130): `owner-yaml.mjs → js-yaml`, reachable from on-session-start,
- * on-session-end, post-edit-validate and skill-invocation-telemetry, all four of
- * which throw ERR_MODULE_NOT_FOUND without node_modules. That is the pre-existing
- * state, not a contract; only on-stop's subgraph is guaranteed bare-free.
+ * As of GitLab #1230 (2026-09-06) THIS module is no longer a bare-specifier node
+ * on that graph either: the `js-yaml` import it used to carry statically is now
+ * lazy (see {@link getYaml}), so the four hooks that reach this file —
+ * on-session-start, on-session-end, post-edit-validate,
+ * skill-invocation-telemetry — load without `node_modules` instead of dying with
+ * ERR_MODULE_NOT_FOUND. Keep it that way: any NEW static bare import added here
+ * re-breaks all four at once, in a file whose own unit tests would never notice
+ * (the repo always has `node_modules`).
  *
  * NOTE for `tests/husky/pre-commit-owner-leakage.test.mjs`: that test copies
  * the CP11 import chain FILE BY FILE into a tmp repo, so the leaf below is on
@@ -458,11 +542,16 @@ export function validateOwnerConfig(obj) {
  *
  * Defensive — never throws.
  *
+ * When `js-yaml` cannot be resolved (no `node_modules`), returns defaults with
+ * `source: 'defaults'`, `reason: 'yaml-parser-missing'` and one explanatory
+ * entry in `errors` — never throws, never crashes the importing hook (GH#62/#63).
+ *
  * @param {{ path?: string }} [opts]
  * @returns {{
  *   config: object,
  *   source: 'file'|'defaults'|'partial',
  *   errors: string[],
+ *   reason?: 'yaml-parser-missing',
  *   droppedSections?: Array<{ section: string, errors: string[] }>,
  *   sectionWarnings?: Array<{ section: string, errors: string[] }>,
  * }}
@@ -482,6 +571,19 @@ export function loadOwnerConfig(opts = {}) {
       config: getDefaults(),
       source: 'defaults',
       errors: [`failed to read owner.yaml: ${err.message}`],
+    };
+  }
+
+  const yaml = getYaml();
+  if (!yaml) {
+    warnYamlMissing();
+    return {
+      config: getDefaults(),
+      source: 'defaults',
+      reason: 'yaml-parser-missing',
+      errors: [
+        "yaml-parser-missing: 'js-yaml' is not installed, so owner.yaml could not be parsed (run 'npm install' in the plugin directory)",
+      ],
     };
   }
 
@@ -570,9 +672,13 @@ export function loadOwnerConfig(opts = {}) {
  *
  * Synchronous. Defensive — never throws.
  *
+ * When `js-yaml` cannot be resolved (no `node_modules`), returns
+ * `{ written: false, reason: 'yaml-parser-missing', errors: [...] }` — the file
+ * is left untouched rather than half-written (GH#62/#63).
+ *
  * @param {object} config
  * @param {{ path?: string }} [opts]
- * @returns {{ written: boolean, errors: string[] }}
+ * @returns {{ written: boolean, errors: string[], reason?: 'yaml-parser-missing' }}
  */
 export function writeOwnerConfig(config, opts = {}) {
   const filePath = opts.path ?? resolveOwnerYamlPath();
@@ -589,6 +695,18 @@ export function writeOwnerConfig(config, opts = {}) {
     return {
       written: false,
       errors: [`failed to create directory ${dir}: ${err.message}`],
+    };
+  }
+
+  const yaml = getYaml();
+  if (!yaml) {
+    warnYamlMissing();
+    return {
+      written: false,
+      reason: 'yaml-parser-missing',
+      errors: [
+        "yaml-parser-missing: 'js-yaml' is not installed, so owner.yaml could not be written (run 'npm install' in the plugin directory)",
+      ],
     };
   }
 

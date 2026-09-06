@@ -177,7 +177,10 @@ function handleRecordsPost(req, res, { config, db, rateLimiter, stats }) {
     const rows = [];
     for (const record of records) {
       try {
-        rows.push(validateRecord(record));
+        // #1234 — server-side fleet attribution. The stored `fleet` column is a
+        // SERVER verdict now, not the client's self-declaration; the client's own
+        // claim survives untouched in raw_json.
+        rows.push(validateRecord(record, { fleetAnonIds: config.fleetAnonIds }));
       } catch (err) {
         const field = err instanceof ValidationError ? (err.field ?? null) : null;
         return sendJson(res, 400, { error: 'validation_failed', field });

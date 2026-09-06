@@ -28,7 +28,7 @@
  * rule-loader.mjs uses); otherwise pure Node stdlib.
  */
 
-import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync, lstatSync, realpathSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -292,6 +292,45 @@ function readVaultIntegration(filePath) {
     /^(?:-\s+)?vault-integration:\s*\{[^}]*\}\s*(?:#.*)?$/m.test(content);
   const parsed = _parseVaultIntegration(content);
   return { present, vaultDir: parsed['vault-dir'] };
+}
+
+/**
+ * Are the two instruction files the SAME file by construction?
+ *
+ * Since the cross-harness portable surface landed, this repo's root `AGENTS.md`
+ * is GENERATED from `CLAUDE.md` (`scripts/generate-agents-skills.mjs`) as a
+ * byte-identical copy, and a consumer repo may instead symlink it. Three shapes
+ * therefore count as aliased: a symlink resolving to the same path, the same
+ * inode/device (symlink already resolved, or a hardlink), and byte-identical
+ * content.
+ *
+ * This matters because Check 7 exists to catch TWO INDEPENDENT files that
+ * disagree. Files that cannot disagree have nothing to diff — running the
+ * comparison on them would turn a check that skipped for years into a source of
+ * spurious findings the moment AGENTS.md appears. Check 9's probe 2a uses the
+ * same predicate to avoid reporting every CLAUDE.md defect twice.
+ *
+ * @param {string} pathA
+ * @param {string} pathB
+ * @returns {boolean}
+ */
+function instructionFilesAreAliased(pathA, pathB) {
+  if (!existsSync(pathA) || !existsSync(pathB)) return false;
+  try {
+    if (lstatSync(pathA).isSymbolicLink() || lstatSync(pathB).isSymbolicLink()) {
+      if (realpathSync(pathA) === realpathSync(pathB)) return true;
+    }
+    const a = statSync(pathA);
+    const b = statSync(pathB);
+    if (a.ino !== 0 && a.ino === b.ino && a.dev === b.dev) return true;
+  } catch {
+    // stat/realpath failure (race, permissions) — fall back to bytes
+  }
+  try {
+    return readFileSync(pathA).equals(readFileSync(pathB));
+  } catch {
+    return false;
+  }
 }
 
 function classifySection(heading) {
@@ -881,7 +920,19 @@ function main() {
       const claudeVi = readVaultIntegration(claudePath);
       const agentsVi = readVaultIntegration(agentsPath);
       if (!claudeVi.present && !agentsVi.present) {
+        // Nothing to compare — the SUBJECT of the check is absent from both
+        // files. This branch precedes the alias short-circuit on purpose: an
+        // absent vault-integration block is a different (and more informative)
+        // outcome than "the files cannot disagree".
         checksSkipped.push('vault-dir-parity: neither file has a vault-integration: block');
+      } else if (instructionFilesAreAliased(claudePath, agentsPath)) {
+        // Identical by construction (generated copy, symlink, or hardlink) —
+        // parity is SATISFIED, so the check RAN and found nothing. Reporting
+        // this as a skip would be wrong too: the invariant Check 7 guards is
+        // actively held here, it is simply held mechanically rather than by
+        // agreement, and re-deriving a diff between one file and itself can
+        // only manufacture noise.
+        vaultDirParityRan = true;
       } else {
         vaultDirParityRan = true;
         const claudeDir = claudeVi.vaultDir;
@@ -1182,7 +1233,16 @@ function main() {
       }
 
       // --- Probe 2a: cited-but-missing (CLAUDE.md / AGENTS.md citations) → errors[] ---
-      for (const instrName of ['CLAUDE.md', 'AGENTS.md']) {
+      // AGENTS.md is scanned as a SECOND file only when it is genuinely
+      // independent. When it is an alias of CLAUDE.md (this repo generates it
+      // byte-identically), scanning both would report every dangling citation
+      // TWICE — one defect, two errors, and in `--mode strict` a doubled exit
+      // surface for a file the operator cannot edit.
+      const aliasedInstruction = instructionFilesAreAliased(
+        join(vaultDir, 'CLAUDE.md'), join(vaultDir, 'AGENTS.md'),
+      );
+      const instrNames = aliasedInstruction ? ['CLAUDE.md'] : ['CLAUDE.md', 'AGENTS.md'];
+      for (const instrName of instrNames) {
         const filePath = join(vaultDir, instrName);
         if (!existsSync(filePath) || !statSync(filePath).isFile()) continue;
         const fcontent = readFileSync(filePath, 'utf8');

@@ -480,7 +480,11 @@ describe('checkSessionsStaleness — #1209b canonical collapse (duplicate sessio
   });
 });
 
-describe('session-start SKILL.md wiring (#724)', () => {
+// The Phase 4 body left skills/session-start/SKILL.md in the #1157 split; it now
+// lives verbatim in references/phase-4-ssot-environment-check.md. Retargeted at
+// the FILE THAT NOW HOLDS PHASE 4 — not relaxed to "somewhere under skills/" —
+// so a Phase-4 body that drops the probe still fails here.
+describe('session-start Phase 4 reference wiring (#724)', () => {
   it('references checkSessionsStaleness and sessions-staleness-banner.mjs in Phase 4', () => {
     const skillPath = path.resolve(
       path.dirname(new URL(import.meta.url).pathname),
@@ -488,7 +492,8 @@ describe('session-start SKILL.md wiring (#724)', () => {
       '..',
       'skills',
       'session-start',
-      'SKILL.md',
+      'references',
+      'phase-4-ssot-environment-check.md',
     );
     const content = fs.readFileSync(skillPath, 'utf8');
     expect(content).toContain('checkSessionsStaleness');

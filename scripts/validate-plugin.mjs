@@ -262,6 +262,54 @@ function runHookImportSetCheck() {
   return 1;
 }
 
+/**
+ * BLOCKING: the cross-harness portable surface (`AGENTS.md` +
+ * `.agents/skills/`) must match a fresh generation from `CLAUDE.md` +
+ * `skills/`. 7 of 8 surveyed harnesses read `AGENTS.md` and never `CLAUDE.md`,
+ * so a stale or absent copy means those harnesses silently see NO Session
+ * Config — a failure that is invisible from inside Claude Code, which is
+ * exactly why it needs a mechanical gate rather than a convention.
+ *
+ * `scripts/generate-agents-skills.mjs --check` owns the comparison (exit 1 on
+ * drift); this adapter only translates it. `runCheck()` cannot be reused — it
+ * spawns from `scripts/lib/validate/` and passes PLUGIN_ROOT positionally,
+ * while the generator takes `--plugin-root`. The in-sync marker is demanded
+ * for the same reason `runHookImportSetCheck()` demands one: a spawn whose
+ * path traverses a symlink can make the generator's CLI body a no-op that
+ * still exits 0.
+ *
+ * @returns {number} 0 when in sync, 1 on drift or a generator error.
+ */
+function runAgentsSurfaceCheck() {
+  console.log('--- Check: cross-harness portable surface (AGENTS.md + .agents/skills/) ---');
+  const script = path.join(SCRIPT_DIR, 'generate-agents-skills.mjs');
+  const result = spawnSync(
+    process.execPath,
+    [script, '--plugin-root', PLUGIN_ROOT, '--check'],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  const combined = ((result.stdout ?? '') + (result.stderr ?? '')).trim();
+
+  const inSync = combined.match(/agents-surface: (\d+) artefact\(s\), in sync/);
+  if (result.status === 0 && inSync) {
+    console.log(`  PASS: agents-surface: in sync (${inSync[1]} artefacts)`);
+    totalPass += 1;
+    return 0;
+  }
+  if (result.status === 0) {
+    console.log('  FAIL: agents-surface: generator exited 0 without reporting a comparison '
+      + `(no in-sync marker in output: ${JSON.stringify(combined.slice(0, 120))})`);
+    totalFail += 1;
+    return 1;
+  }
+  for (const line of combined.split('\n').filter((l) => l.startsWith('✗'))) {
+    console.log(`  FAIL: ${line.replace(/^✗\s*/, '')}`);
+    totalFail += 1;
+  }
+  console.log('        Remedy: node scripts/generate-agents-skills.mjs');
+  return 1;
+}
+
 // ---------------------------------------------------------------------------
 // Run all checks — same order as validate-plugin.sh
 // plugin.json checks are prerequisite; abort early if they fail.
@@ -336,6 +384,18 @@ if (runCheck('check-pi-prompts.mjs') !== 0) checkFailed = 1;
 
 process.stdout.write('\n');
 if (runCheck('check-cursor-adapter.mjs') !== 0) checkFailed = 1;
+
+// BLOCKING: the vendor-neutral portable surface — root AGENTS.md ↔ CLAUDE.md
+// alias, root plugin.json (agent-plugins.org 1.0.0) manifest-version parity
+// against package.json, and the .agents/skills/ mirror against the
+// agentskills.io field list. The generator's own --check runs first (below);
+// this checker is the INDEPENDENT oracle over the same artefacts, so a
+// generator bug cannot vouch for its own output.
+process.stdout.write('\n');
+if (runCheck('check-agents-skills.mjs') !== 0) checkFailed = 1;
+
+process.stdout.write('\n');
+if (runAgentsSurfaceCheck() !== 0) checkFailed = 1;
 
 process.stdout.write('\n');
 if (runCheck('check-session-plan-routing.mjs') !== 0) checkFailed = 1;
@@ -418,6 +478,16 @@ runCheck('check-doc-cli-commands.mjs');
 process.stdout.write('\n');
 if (runCheck('check-skill-script-paths.mjs') !== 0) checkFailed = 1;
 runStrictShAdvisory();
+
+// BLOCKING (#1157 follow-up): a relative markdown link under skills/, commands/,
+// agents/ or .claude/rules/ that does not resolve from the LINKING file's own
+// directory. The check above judges cited SCRIPT paths; this one judges links
+// between the instruction files themselves — the defect class a `references/`
+// split creates, where the moved text is byte-identical and every `./sibling.md`
+// in it now points one directory too deep. Three such links shipped broken on
+// 2026-09-06 and no gate saw them; the worst silently detached the six
+// session-end tail phases from their dispatcher.
+if (runCheck('check-skill-links.mjs') !== 0) checkFailed = 1;
 
 // WARN-only: a state-mutating `git` call in tests/ that names no target resolves
 // its destination from the ambient cwd (or an inherited GIT_DIR) — the 2026-08-19

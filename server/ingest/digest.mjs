@@ -87,6 +87,13 @@ const METRIC_FIELDS = [
   ['by_plugin_version', 'byPluginVersion'],
   ['top_skills', 'topSkills'],
   ['top_commands', 'topCommands'],
+  // `fleet_vs_external` counts the STORED `fleet` column, which since #1234 is
+  // the SERVER's verdict (`SO_INGEST_FLEET_ANON_IDS` promotion applied at
+  // storage time), not the client's self-declaration. Rows written BEFORE that
+  // change still carry the client's word — measured 2026-09-06, 394 of 490
+  // (80,4 %) of those misclassify the operator's own second Mac as external, so
+  // a fleet_vs_external computed over a pre-#1234 range is known-wrong and no
+  // re-run of this digest can repair it (the allowlist applies on INSERT).
   ['fleet_vs_external', 'fleetVsExternal'],
 ];
 
@@ -221,13 +228,90 @@ export function writeDigestArtifacts(digest, { outDir }) {
 // CLI seam
 // ---------------------------------------------------------------------------
 
+const ISO_WEEK_RE = /^\d{4}-W\d{2}$/;
+const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Resolve the digest range from CLI flags, falling back to the most recently
+ * COMPLETED ISO week when none are given.
+ *
+ * THE BUG THIS FIXES: `buildDigest(db, {week, fromDay, toDay})` has always
+ * accepted a range, but the CLI parsed only `--db`/`--out` and always called
+ * `buildDigest(db)`. So a week that was missed while the generator was not
+ * running could never be produced from the CLI — measured 2026-09-06, weeks
+ * W30–W32 hold raw records and NO `aggregates_weekly` rows, and there was no
+ * command that could fill them.
+ *
+ * `--week` supplies the aggregate KEY; `--from`/`--to` supply the day range.
+ * Given `--week` alone, the day range is derived from the ISO week so the
+ * common backfill case is one flag. Given `--from`/`--to` alone, the week key is
+ * derived from `--from`. Mixed flags are honoured exactly as passed — that is
+ * the escape hatch for a deliberately non-Mon..Sun range under a chosen key.
+ *
+ * @param {{ week?: string, from?: string, to?: string }} flags
+ * @returns {{ week: string, fromDay: string, toDay: string }}
+ * @throws {Error} on a malformed flag value — a silently-ignored bad range
+ *   would write a plausible-looking digest for the wrong days.
+ */
+export function resolveCliRange({ week, from, to } = {}) {
+  if (week === undefined && from === undefined && to === undefined) return computeWeekRange();
+
+  if (week !== undefined && !ISO_WEEK_RE.test(week)) {
+    throw new Error(`--week must be an ISO week (YYYY-Www), got: ${week}`);
+  }
+  for (const [flag, value] of [['--from', from], ['--to', to]]) {
+    if (value !== undefined && (!YMD_RE.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00Z`)))) {
+      throw new Error(`${flag} must be a calendar day (YYYY-MM-DD), got: ${value}`);
+    }
+  }
+
+  // Week → day range (Mon..Sun of that ISO week), used when the day flags are absent.
+  let derivedFrom;
+  let derivedTo;
+  if (week !== undefined) {
+    const [yearStr, weekStr] = week.split('-W');
+    // ISO-8601: week 1 is the week containing 4 January. Walk back to its Monday,
+    // then forward (weekNo - 1) weeks.
+    const jan4 = new Date(Date.UTC(Number(yearStr), 0, 4));
+    const week1Monday = new Date(jan4);
+    week1Monday.setUTCDate(jan4.getUTCDate() - ((jan4.getUTCDay() || 7) - 1));
+    const monday = new Date(week1Monday);
+    monday.setUTCDate(week1Monday.getUTCDate() + (Number(weekStr) - 1) * 7);
+    const sunday = new Date(monday);
+    sunday.setUTCDate(monday.getUTCDate() + 6);
+    derivedFrom = toYmd(monday);
+    derivedTo = toYmd(sunday);
+  }
+
+  const fromDay = from ?? derivedFrom;
+  const toDay = to ?? derivedTo;
+  if (fromDay === undefined || toDay === undefined) {
+    throw new Error('--from and --to must be given together (or use --week)');
+  }
+  if (fromDay > toDay) {
+    throw new Error(`--from (${fromDay}) must not be after --to (${toDay})`);
+  }
+
+  return {
+    week: week ?? isoWeekString(new Date(`${fromDay}T00:00:00Z`)),
+    fromDay,
+    toDay,
+  };
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   const args = process.argv.slice(2);
   let dbArg;
   let outArg;
+  let weekArg;
+  let fromArg;
+  let toArg;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--db') dbArg = args[++i];
     else if (args[i] === '--out') outArg = args[++i];
+    else if (args[i] === '--week') weekArg = args[++i];
+    else if (args[i] === '--from') fromArg = args[++i];
+    else if (args[i] === '--to') toArg = args[++i];
   }
 
   const config = resolveConfig();
@@ -240,8 +324,16 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
 
   const outDir = outArg || path.join(path.dirname(dbPath), 'digests');
 
+  let range;
+  try {
+    range = resolveCliRange({ week: weekArg, from: fromArg, to: toArg });
+  } catch (err) {
+    process.stderr.write(`digest: ${err.message}\n`);
+    process.exit(1);
+  }
+
   const db = openDb(dbPath);
-  const digest = buildDigest(db);
+  const digest = buildDigest(db, range);
   const { jsonPath, mdPath } = writeDigestArtifacts(digest, { outDir });
   closeDb(db);
 

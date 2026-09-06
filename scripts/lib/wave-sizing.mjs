@@ -3,7 +3,10 @@
  * Learning: coordinator-over-worktree-on-shared-files caused back-to-back regressions.
  */
 
-const VALID_SESSION_TYPES = ['housekeeping', 'feature', 'deep'];
+// 'unknown' is accepted because scripts/lib/session-close-backfill.mjs writes it for records whose
+// type it could not measure (4.0.0). It is NOT a mode anyone selects — isolation resolves as for
+// 'deep' (the conservative end). SSOT for the ledger enum: scripts/lib/session-schema/constants.mjs.
+const VALID_SESSION_TYPES = ['housekeeping', 'feature', 'deep', 'unknown'];
 const VALID_COLLISION_RISKS = ['low', 'medium', 'high'];
 const VALID_CONFIG_ISOLATIONS = ['auto', 'worktree', 'none'];
 const VALID_ENFORCEMENTS = ['strict', 'warn', 'off'];

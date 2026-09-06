@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1062 372" width="1062" height="372" role="img" aria-labelledby="wl-title wl-desc" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title id="wl-title">Session Orchestrator wave lifecycle</title>
+  <desc id="wl-desc">Flow diagram. Precondition: /bootstrap runs once per repository, then /session agrees the scope, then /go executes. /go runs five typed waves left to right: 1 Discovery (read-only audit), gate G1, 2 Impl-Core (primary code), gate G2, 3 Impl-Polish (integration and edge cases), gate G3, 4 Quality (simplification pass, then tests), gate G4 Full Gate, 5 Finalization (commit and close). Gates G1 to G3 are Quality-Lite (typecheck, lint, test); G4 is the Full Gate and additionally runs the full suite plus a debug-artifact scan. After wave 5, /close verifies every planned item, runs the Full Gate, files carryover issues, commits, and writes the session record.</desc>
+
+  <defs>
+    <marker id="wl-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94A3B8"/>
+    </marker>
+  </defs>
+
+  <!-- heading -->
+  <rect x="28" y="16" width="430" height="32" rx="6" fill="#1E293B"/>
+  <text x="44" y="37" font-size="14" font-weight="600" fill="#F8FAFC">Session Orchestrator — wave lifecycle and gates</text>
+
+  <!-- row A: the three commands -->
+  <rect x="28" y="68" width="196" height="48" rx="8" fill="#475569"/>
+  <text x="126" y="90" font-size="14" font-weight="600" fill="#F8FAFC" text-anchor="middle">/bootstrap</text>
+  <text x="126" y="106" font-size="11" fill="#E2E8F0" text-anchor="middle">once per repo — writes bootstrap.lock</text>
+
+  <line x1="228" y1="92" x2="248" y2="92" stroke="#94A3B8" stroke-width="2" marker-end="url(#wl-arrow)"/>
+
+  <rect x="252" y="68" width="196" height="48" rx="8" fill="#1F6FEB"/>
+  <text x="350" y="90" font-size="14" font-weight="600" fill="#FFFFFF" text-anchor="middle">/session [type]</text>
+  <text x="350" y="106" font-size="11" fill="#DBEAFE" text-anchor="middle">research + Q&#38;A — agree the scope</text>
+
+  <line x1="452" y1="92" x2="472" y2="92" stroke="#94A3B8" stroke-width="2" marker-end="url(#wl-arrow)"/>
+
+  <rect x="476" y="68" width="140" height="48" rx="8" fill="#1F6FEB"/>
+  <text x="546" y="90" font-size="14" font-weight="600" fill="#FFFFFF" text-anchor="middle">/go</text>
+  <text x="546" y="106" font-size="11" fill="#DBEAFE" text-anchor="middle">executes the waves</text>
+
+  <!-- /go down into wave 1 -->
+  <polyline points="546,116 546,134 93,134 93,146" fill="none" stroke="#94A3B8" stroke-width="2" marker-end="url(#wl-arrow)"/>
+
+  <!-- row B: waves and gates -->
+  <rect x="28" y="150" width="130" height="76" rx="8" fill="#0F766E"/>
+  <text x="93" y="180" font-size="13" font-weight="600" fill="#FFFFFF" text-anchor="middle">1 · Discovery</text>
+  <text x="93" y="198" font-size="11" fill="#CCFBF1" text-anchor="middle">read-only audit</text>
+  <text x="93" y="213" font-size="11" fill="#CCFBF1" text-anchor="middle">no writes</text>
+
+  <line x1="160" y1="188" x2="170" y2="188" stroke="#94A3B8" stroke-width="2" marker-end="url(#wl-arrow)"/>
+  <rect x="172" y="166" width="56" height="44" rx="6" fill="#64748B"/>
+  <text x="200" y="185" font-size="13" font-weight="700" fill="#FFFFFF" text-anchor="middle">G1</text>
+  <text x="200" y="200" font-size="9" fill="#F1F5F9" text-anchor="middle">lite</text>
+
+  <line x1="230" y1="188" x2="240" y2="188" stroke="#94A3B8" stroke-width="2" marker-end="url(#wl-arrow)"/>
+  <rect x="242" y="150" width="130" height="76" rx="8" fill="#1F6FEB"/>
+  <text x="307" y="180" font-size="13" font-weight="600" fill="#FFFFFF" text-anchor="middle">2 · Impl-Core</text>
+  <text x="307" y="198" font-size="11" fill="#DBEAFE" text-anchor="middle">primary code</text>
+  <text x="307" y="213" font-size="11" fill="#DBEAFE" text-anchor="middle">architecture first</text>
+
+  <line x1="374" y1="188" x2="384" y2="188" stroke="#94A3B8" stroke-width="2" marker-end="url(#wl-arrow)"/>
+  <rect x="386" y="166" width="56" height="44" rx="6" fill="#64748B"/>
+  <text x="414" y="185" font-size="13" font-weight="700" fill="#FFFFFF" text-anchor="middle">G2</text>
+  <text x="414" y="200" font-size="9" fill="#F1F5F9" text-anchor="middle">lite</text>
+
+  <line x1="444" y1="188" x2="454" y2="188" stroke="#94A3B8" stroke-width="2" marker-end="url(#wl-arrow)"/>
+  <rect x="456" y="150" width="130" height="76" rx="8" fill="#3B82F6"/>
+  <text x="521" y="180" font-size="13" font-weight="600" fill="#FFFFFF" text-anchor="middle">3 · Impl-Polish</text>
+  <text x="521" y="198" font-size="11" fill="#EFF6FF" text-anchor="middle">integration</text>
+  <text x="521" y="213" font-size="11" fill="#EFF6FF" text-anchor="middle">edge cases</text>
+
+  <line x1="588" y1="188" x2="598" y2="188" stroke="#94A3B8" stroke-width="2" marker-end="url(#wl-arrow)"/>
+  <rect x="600" y="166" width="56" height="44" rx="6" fill="#64748B"/>
+  <text x="628" y="185" font-size="13" font-weight="700" fill="#FFFFFF" text-anchor="middle">G3</text>
+  <text x="628" y="200" font-size="9" fill="#F1F5F9" text-anchor="middle">lite</text>
+
+  <line x1="658" y1="188" x2="668" y2="188" stroke="#94A3B8" stroke-width="2" marker-end="url(#wl-arrow)"/>
+  <rect x="670" y="150" width="130" height="76" rx="8" fill="#7C3AED"/>
+  <text x="735" y="180" font-size="13" font-weight="600" fill="#FFFFFF" text-anchor="middle">4 · Quality</text>
+  <text x="735" y="198" font-size="11" fill="#EDE9FE" text-anchor="middle">simplify first,</text>
+  <text x="735" y="213" font-size="11" fill="#EDE9FE" text-anchor="middle">then write tests</text>
+
+  <line x1="802" y1="188" x2="812" y2="188" stroke="#94A3B8" stroke-width="2" marker-end="url(#wl-arrow)"/>
+  <rect x="814" y="160" width="76" height="56" rx="6" fill="#D29922"/>
+  <text x="852" y="182" font-size="13" font-weight="700" fill="#1F2937" text-anchor="middle">G4</text>
+  <text x="852" y="199" font-size="10" font-weight="600" fill="#1F2937" text-anchor="middle">Full Gate</text>
+
+  <line x1="892" y1="188" x2="902" y2="188" stroke="#94A3B8" stroke-width="2" marker-end="url(#wl-arrow)"/>
+  <rect x="904" y="150" width="130" height="76" rx="8" fill="#238636"/>
+  <text x="969" y="180" font-size="13" font-weight="600" fill="#FFFFFF" text-anchor="middle">5 · Finalization</text>
+  <text x="969" y="198" font-size="11" fill="#DCFCE7" text-anchor="middle">commit + close</text>
+
+  <!-- gate legend -->
+  <rect x="28" y="246" width="880" height="30" rx="6" fill="#1E293B"/>
+  <text x="44" y="266" font-size="11" fill="#CBD5E1">G1–G3 = Quality-Lite gate (typecheck · lint · test) + inter-wave session-reviewer · G4 = Full Gate (adds the full suite and a debug-artifact scan)</text>
+
+  <!-- wave 5 down into /close -->
+  <polyline points="969,228 969,296" fill="none" stroke="#94A3B8" stroke-width="2" marker-end="url(#wl-arrow)"/>
+
+  <!-- row C -->
+  <rect x="28" y="300" width="862" height="48" rx="8" fill="#334155"/>
+  <text x="44" y="321" font-size="12" font-weight="600" fill="#F8FAFC">After the last wave: every planned item is verified against evidence, the Full Gate runs once more,</text>
+  <text x="44" y="338" font-size="12" font-weight="600" fill="#F8FAFC">unfinished work becomes carryover issues, files are staged individually, the session record is written.</text>
+
+  <rect x="904" y="300" width="130" height="48" rx="8" fill="#238636"/>
+  <text x="969" y="330" font-size="14" font-weight="600" fill="#FFFFFF" text-anchor="middle">/close</text>
+</svg>

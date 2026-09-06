@@ -10,12 +10,21 @@
  * Output: {findings[], metrics, duration_ms, [skipped_reason]}. Never throws.
  * Also appends one JSONL summary record to .orchestrator/metrics/vault-staleness.jsonl.
  *
- * Current limitation: we compare lastSync age against probe run time only —
- * not against the upstream repo's most-recent commit. Mapping vault slugs to
- * local repo paths is not reliably available from the probe's inputs. A future
- * iteration should resolve each slug to a repo path and run
- * `git log -1 --format=%aI` to obtain the true lastCommit timestamp, then
- * compute |lastCommit - lastSync| instead.
+ * Denominator (GitLab #1238): staleness is `lastCommit - lastSync` — how far the
+ * upstream repo advanced PAST the last sync — not `now - lastSync`. A mirror of a
+ * repo nobody has committed to in three weeks is CURRENT, not three weeks stale.
+ * `lastCommit` needs no slug→repo-path resolution: the vault sync writer already
+ * stamps it into the same `_overview.md` frontmatter it writes `lastSync` into,
+ * so both sides of the comparison come from one read of one file.
+ *
+ * Measured against the live vault before the fix (2026-09-05): 33 of 48 overviews
+ * reported "stale", 26 of them >7d, with a demonstrably healthy sync chain —
+ * because the clock, not the repo, was the denominator.
+ *
+ * Fallback: an overview WITHOUT `lastCommit` carries no repo-activity signal at
+ * all, so the wall-clock comparison is the only thing left. It is retained for
+ * that case only, marked `basis: 'probe-runtime'` in the evidence and carried at
+ * lower confidence, so a consumer can tell a measured delta from a guessed one.
  */
 
 import { existsSync, readFileSync, readdirSync, mkdirSync, appendFileSync } from 'node:fs';
@@ -173,6 +182,7 @@ export async function runProbe(projectRoot, config) {
       const slug = fm.slug || entry.name;
       const tier = fm.tier || undefined;
       const lastSync = fm.lastSync || undefined;
+      const lastCommit = fm.lastCommit || undefined;
 
       if (!lastSync) {
         metrics.stale_count++;
@@ -202,21 +212,33 @@ export async function runProbe(projectRoot, config) {
         continue;
       }
 
-      const delta = now - lastSyncMs;
+      // #1238 — the denominator. `lastCommit` is the repo's own newest activity,
+      // so `lastCommit - lastSync` measures what the mirror actually MISSED.
+      // A negative or zero delta means the sync ran at or after the newest
+      // commit: current, whatever the wall clock says.
+      const lastCommitMs = lastCommit ? Date.parse(lastCommit) : NaN;
+      const haveCommitBasis = !isNaN(lastCommitMs);
+      const basis = haveCommitBasis ? 'lastCommit' : 'probe-runtime';
+      const delta = haveCommitBasis ? lastCommitMs - lastSyncMs : now - lastSyncMs;
+
       if (delta > HOURS_24) {
         const severity = delta > HOURS_168 ? 'medium' : 'low';
         const dh = deltaHours(delta);
         metrics.stale_count++;
         findings.push({
           severity,
-          confidence: 0.9,
+          // A repo-anchored delta is a measurement; a clock-anchored one is the
+          // best available guess about a repo this probe cannot see.
+          confidence: haveCommitBasis ? 0.9 : 0.6,
           file_path: overviewPath,
           title: `[vault-staleness] ${slug}: ${formatDelta(delta)} since last sync`,
-          description:
-            `lastSync is ${formatDelta(delta)} old (threshold: 24h). ` +
-            `Note: this compares lastSync age against probe run time, not upstream lastCommit — ` +
-            `a future iteration will add repo-path resolution for a more precise delta.`,
-          evidence: { slug, tier, lastSync, delta_hours: dh },
+          description: haveCommitBasis
+            ? `The repo advanced ${formatDelta(delta)} past the last vault sync ` +
+              `(lastCommit ${lastCommit} vs lastSync ${lastSync}, threshold: 24h).`
+            : `lastSync is ${formatDelta(delta)} old (threshold: 24h). ` +
+              `No lastCommit in the frontmatter, so this compares against probe run time — ` +
+              `an idle repo reads as stale here. Add lastCommit to make the delta repo-anchored.`,
+          evidence: { slug, tier, lastSync, lastCommit, basis, delta_hours: dh },
         });
       }
     }
@@ -237,6 +259,8 @@ export async function runProbe(projectRoot, config) {
         slug: f.evidence.slug,
         severity: f.severity,
         last_sync: f.evidence.lastSync,
+        last_commit: f.evidence.lastCommit,
+        basis: f.evidence.basis,
         delta_hours: f.evidence.delta_hours,
         flag: 'stale-yes',
       })),

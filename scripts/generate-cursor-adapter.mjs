@@ -80,12 +80,40 @@ function parseFrontmatter(content) {
   return fields;
 }
 
+/**
+ * Values that YAML would read as a non-string scalar even though every
+ * character in them is "safe". `argument-hint: no` is a boolean, not the
+ * string "no"; `description: 3` is an integer. A consumer asserting
+ * `typeof value === 'string'` fails on a file that looks perfectly fine.
+ */
+const YAML_SCALAR_LOOKALIKE = /^(?:true|false|yes|no|on|off|null|nan|[-+]?\.?inf|~)$/i;
+
+/**
+ * A value safe to emit as a YAML *plain* (unquoted) scalar.
+ *
+ * Deliberately an ALLOW-list. Its predecessor was a deny-list of special
+ * characters, which is unenumerable by construction: it caught `[` and `:`
+ * but not a leading `-` (block-sequence entry), not surrounding whitespace,
+ * and not the scalar look-alikes above. An allow-list fails closed — an
+ * unforeseen shape gets quoted, which is never wrong, only noisier.
+ */
+const YAML_PLAIN_SAFE = /^[A-Za-z0-9_][A-Za-z0-9 _.,()/-]*$/;
+
+/**
+ * Render a frontmatter VALUE as YAML.
+ *
+ * @param {unknown} value
+ * @returns {string|null} the YAML scalar, or `null` when there is nothing to emit
+ */
 function yamlQuote(value) {
-  if (value === undefined || value === '') return null;
-  if (/[:#[\]{}&*!|>'"%@`]/.test(value) || value.includes('\n')) {
-    return JSON.stringify(value);
-  }
-  return value;
+  if (value === undefined || value === null || value === '') return null;
+  const text = String(value);
+  if (text.trim() === '') return null;
+  if (text !== text.trim()) return JSON.stringify(text);
+  if (!YAML_PLAIN_SAFE.test(text)) return JSON.stringify(text);
+  if (YAML_SCALAR_LOOKALIKE.test(text)) return JSON.stringify(text);
+  if (/^\d/.test(text)) return JSON.stringify(text);
+  return text;
 }
 
 function frontmatterLine(key, value) {
@@ -103,10 +131,16 @@ function renderCommand(commandFile) {
   const commandPath = path.join(COMMANDS_DIR, commandFile);
   const commandName = commandFile.replace(/\.md$/, '');
   const fields = parseFrontmatter(readFileSync(commandPath, 'utf8'));
+  // EVERY value goes through yamlQuote(). `argument-hint` did not, and its
+  // canonical form is a bare bracket list (`[mode] [--flag]`) — a YAML flow
+  // sequence, which is GH#54: Copilot CLI >= 1.0.65 silently DROPS a command
+  // file whose `argument-hint` is not a string. Fixed in `commands/` and
+  // `pi/prompts/` by 93b40dd (v3.16.0) and re-introduced here on every
+  // generation, because this mirror re-derived the frontmatter by hand.
   const frontmatter = [
     '---',
-    frontmatterLine('description', yamlQuote(fields.description) ?? fields.description),
-    frontmatterLine('argument-hint', fields['argument-hint']),
+    frontmatterLine('description', yamlQuote(fields.description)),
+    frontmatterLine('argument-hint', yamlQuote(fields['argument-hint'])),
     '---',
   ].filter(Boolean).join('\n');
 
@@ -132,9 +166,12 @@ function renderSkill(skillName) {
   const skillPath = path.join(SKILLS_DIR, skillName, 'SKILL.md');
   const fields = parseFrontmatter(readFileSync(skillPath, 'utf8'));
   const description = clampDescription(fields.description || `Session Orchestrator skill: ${skillName}`);
+  // Same rule as renderCommand: no frontmatter value is emitted raw. `name` is
+  // a directory basename today, so it is plain-safe in practice — routing it
+  // through yamlQuote() is what keeps that true after the next skill is added.
   const lines = [
     '---',
-    `name: ${skillName}`,
+    `name: ${yamlQuote(skillName)}`,
     `description: ${yamlQuote(description)}`,
   ];
   if (!isUserInvocable(fields['user-invocable'])) {

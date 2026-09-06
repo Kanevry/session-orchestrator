@@ -27,6 +27,8 @@
  */
 
 import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs';
 
 import {
   resolveConsent,
@@ -40,6 +42,9 @@ import { peekAll, enqueue, clear, queueStats } from './queue.mjs';
 import { loadOwnerConfig } from '../owner-yaml.mjs';
 import { readJsonlFile } from '../io.mjs';
 import { readCanonicalSessions } from '../sessions-canonical.mjs';
+import { resolvePrivateConfigDir } from '../config/private-config-dir.mjs';
+import { readSessionProfile } from '../state-md.mjs';
+import { resolveStateMdPath } from '../state-md/frontmatter-mutators.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -91,6 +96,138 @@ function defaultSender({ env, timeoutMs }) {
 }
 
 // ---------------------------------------------------------------------------
+// Sandbox guard (GitLab #1234)
+// ---------------------------------------------------------------------------
+
+/**
+ * THE BUG THIS EXISTS FOR: Wave-1 sandbox runs sent 6 production pings with a
+ * wrong session_type on 2026-09-06.
+ *
+ * Six agent sandboxes executed `hooks/on-session-end.mjs` from the repo checkout
+ * at 11:02:50–11:03:36Z. Each one resolved the OPERATOR's real `anon_id` and real
+ * consent from `~/.config/session-orchestrator/telemetry.json` — because
+ * `paths.mjs` computes that path from `homedir()` and does NOT honour
+ * `SO_CONFIG_HOME` — while `owner.yaml` was unreachable inside the sandbox and
+ * `sessions.jsonl` did not exist. Result: six real records on the ingest server,
+ * attributed to a real person, carrying `session_type: "other"` and `fleet: 0`.
+ * Same failure class as the d7-F2 registry leak: a bench harness whose SOURCE was
+ * faked but whose DESTINATION was not.
+ *
+ * The guard refuses the send. It runs AFTER the consent gate (so the documented
+ * outermost-seam invariant is untouched — see the module docblock) and BEFORE
+ * `buildBatch()`, so a refused send performs no network call, no queue write and
+ * NO anon-ID mint.
+ *
+ * Detection, three independent conditions — any ONE refuses:
+ *
+ *  (a) `SO_TELEMETRY_DISABLED` / `DO_NOT_TRACK` — already refused one layer up by
+ *      `resolveConsent()`; re-asserted here so the guard is complete on its own
+ *      and a future reordering cannot silently drop it.
+ *  (b) CONFIG-HOME SPLIT — `SO_CONFIG_HOME` / `XDG_CONFIG_HOME` declares a config
+ *      home, but the telemetry state is NOT read from inside it. That split IS
+ *      the leak: the caller believes it redirected the identity, and it did not.
+ *      A caller that redirects CONSISTENTLY (declared home + a `statePath`
+ *      inside it) has actually isolated itself and is permitted.
+ *  (c) TEMP-ROOT — `CLAUDE_PROJECT_DIR` (or the cwd) sits under the OS temp
+ *      directory or `/tmp`, WHILE the identity is a real one. A real operator
+ *      session runs from a real checkout.
+ *
+ * (b) and (c) share one principle, and it is the whole design: **the guard
+ * protects the DEFAULT host identity.** When the effective telemetry state path
+ * is itself throwaway — inside the declared config home, or under a temp root —
+ * there is no operator identity to leak and the send is permitted. That is what
+ * keeps a properly-isolated harness (this repo's convention: a tmp `HOME`, see
+ * `tests/_helpers/telemetry-isolation.mjs`) sendable, while the Wave-1 shape —
+ * a redirect that the state reader ignored, so the REAL anon_id was used —
+ * is refused.
+ *
+ * @param {object} [opts]
+ * @param {NodeJS.ProcessEnv} [opts.env]
+ * @param {string} [opts.statePath] — an explicit telemetry.json override, if any.
+ * @param {string} [opts.cwd]
+ * @returns {{ sandbox: boolean, reason: string|null }}
+ */
+export function detectSandbox({ env = process.env, statePath, cwd } = {}) {
+  try {
+    // (a) explicit opt-out env — belt to resolveConsent's braces.
+    if (env?.SO_TELEMETRY_DISABLED === '1') return { sandbox: true, reason: 'sandbox:telemetry-disabled' };
+    const dnt = (env?.DO_NOT_TRACK || '').trim();
+    if (dnt !== '' && dnt !== '0' && dnt.toLowerCase() !== 'false') {
+      return { sandbox: true, reason: 'sandbox:do-not-track' };
+    }
+
+    // The state path that will ACTUALLY be read — the identity at stake.
+    const effectiveStatePath = realOrSelf(statePath || TELEMETRY_JSON_PATH);
+
+    // (b) config-home split: a declared config home that the state path is not
+    //     inside. `resolvePrivateConfigDir` returns the homedir default when
+    //     nothing is declared, which is why the raw env vars are checked here —
+    //     an undeclared default is not a split, it is the normal case.
+    const declaredHome = (env?.SO_CONFIG_HOME || '').trim() || (env?.XDG_CONFIG_HOME || '').trim();
+    if (declaredHome !== '') {
+      const declaredDir = realOrSelf(resolvePrivateConfigDir({ env }));
+      if (!isUnder(effectiveStatePath, declaredDir)) {
+        return { sandbox: true, reason: 'sandbox:config-home-split' };
+      }
+    }
+
+    // (c) temp-root project WHILE the identity is real. Compare REAL paths:
+    //     macOS $TMPDIR is /var/folders/… symlinked to /private/var/folders/…,
+    //     so a string prefix on the raw values misses every macOS sandbox.
+    const tempRoots = [os.tmpdir(), '/tmp'].filter(Boolean).map(realOrSelf);
+    const identityIsThrowaway = tempRoots.some((root) => isUnder(effectiveStatePath, root));
+    if (!identityIsThrowaway) {
+      const project = realOrSelf((env?.CLAUDE_PROJECT_DIR || '').trim() || cwd || process.cwd());
+      if (tempRoots.some((root) => isUnder(project, root))) {
+        return { sandbox: true, reason: 'sandbox:temp-root' };
+      }
+    }
+
+    return { sandbox: false, reason: null };
+  } catch {
+    // A guard that throws must never become a guard that permits — but it must
+    // also never break a real send. An unreadable path resolves to "not a
+    // sandbox"; conditions (a)/(b) cannot throw, so the only reachable failure
+    // here is a filesystem probe.
+    return { sandbox: false, reason: null };
+  }
+}
+
+/** True when `candidate` IS `root` or lies beneath it (both already realpath'd). */
+function isUnder(candidate, root) {
+  return candidate === root || candidate.startsWith(`${root}${path.sep}`);
+}
+
+/**
+ * `fs.realpathSync` for a path that may not exist yet.
+ *
+ * Resolving the NEAREST EXISTING ANCESTOR and re-appending the remainder is the
+ * load-bearing part, not a nicety: on macOS `$TMPDIR` is `/var/folders/…`, a
+ * symlink to `/private/var/folders/…`. A plain `realpathSync` on a not-yet-created
+ * `<tmp>/telemetry.json` throws, the raw `/var/folders/…` string is returned, and
+ * it then fails to match the realpath'd `/private/var/folders/…` temp root — so
+ * every comparison against a path that does not exist yet silently comes out
+ * "not under the temp root". Measured while writing this guard's own tests.
+ *
+ * @param {string} p
+ * @returns {string}
+ */
+function realOrSelf(p) {
+  let abs = path.resolve(p);
+  const tail = [];
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(abs), ...tail);
+    } catch {
+      const parent = path.dirname(abs);
+      if (parent === abs) return path.resolve(p); // reached the root, nothing exists
+      tail.unshift(path.basename(abs));
+      abs = parent;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Batch build
 // ---------------------------------------------------------------------------
 
@@ -127,6 +264,104 @@ function mostRecentSession(records) {
     }
   }
   return best;
+}
+
+/**
+ * Read the session PROFILE (STATE.md frontmatter `session-profile`) for the repo
+ * that owns `metricsDir`.
+ *
+ * The profile is a SECOND axis beside `session_type`: an ultradeep session is
+ * `session_type: "deep"` PLUS `session_profile: "ultradeep"`. It deliberately
+ * does NOT go through `normalizeSessionType`, which would flatten any unknown
+ * value to `'other'` and destroy the only signal that distinguishes the 7-wave
+ * form from an ordinary deep session.
+ *
+ * ABSENT IS NOT EMPTY. No STATE.md, no frontmatter, or no `session-profile` key
+ * ⇒ `null` ⇒ the ping OMITS the field. A derived (ledger-less) ping therefore
+ * carries no profile rather than an invented one.
+ *
+ * Never throws.
+ *
+ * @param {string} metricsDir — `<repoRoot>/.orchestrator/metrics`.
+ * @returns {string|null}
+ */
+export function readSessionProfileForMetricsDir(metricsDir) {
+  try {
+    // metricsDir is `<repoRoot>/.orchestrator/metrics` by construction (every
+    // caller builds it that way); two levels up is the repo root.
+    const repoRoot = path.resolve(metricsDir, '..', '..');
+    return readSessionProfile(fs.readFileSync(resolveStateMdPath(repoRoot), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reconstruct the session facts a ping needs (`session_type`, `started_at`,
+ * `completed_at`) from `<metricsDir>/events.jsonl` when `sessions.jsonl` has no
+ * usable record.
+ *
+ * WHY THIS EXISTS: `buildBatch` keyed exclusively on `sessions.jsonl`, which is
+ * written by `/close`. Measured 2026-09-06 (d8): the fleet's real close rate is
+ * 21,3 % (429 clean closes / 2.016 distinct `session.started` ids over 90 days),
+ * and THIS repo has no `sessions.jsonl` at all — so `sessionForPing` was `{}` and
+ * every ping reported `session_type: "other"` / `duration_bucket: "<15m"` as if
+ * measured. `events.jsonl` is written on every SessionStart, independent of
+ * `/close`, so it is the source that survives a killed session.
+ *
+ * NEVER FABRICATES: when no `orchestrator.session.started` record carries a mode,
+ * `session_type` is returned absent, and the caller emits `'unknown'`.
+ *
+ * Deliberate simplification (named ceiling): the LAST `session.started` record
+ * wins and the LAST record of any kind supplies `completed_at`. That conflates a
+ * session with the tail of a peer's events in a shared working copy. It is the
+ * same precision the ledger path already offers (`mostRecentSession`), it costs
+ * one linear pass, and the `session_record: 'derived'` marker tells the reader it
+ * is a reconstruction. Revisit if events.jsonl ever carries interleaved sessions
+ * that must be told apart — the `session_id` field is already there for it.
+ *
+ * Never throws.
+ *
+ * @param {string} metricsDir
+ * @returns {{ session: object, source: 'derived'|'absent' }}
+ */
+export function deriveSessionFromEvents(metricsDir) {
+  try {
+    const events = readJsonlFile(path.join(metricsDir, 'events.jsonl'), { skipInvalid: true });
+    if (!Array.isArray(events) || events.length === 0) return { session: {}, source: 'absent' };
+
+    let startedAt = null;
+    let sessionType = null;
+    let lastTs = null;
+
+    for (const ev of events) {
+      if (!ev || typeof ev !== 'object') continue;
+      const ts = typeof ev.timestamp === 'string' && !Number.isNaN(Date.parse(ev.timestamp)) ? ev.timestamp : null;
+      if (ts && (lastTs === null || ts > lastTs)) lastTs = ts;
+      if (ev.event !== 'orchestrator.session.started') continue;
+      // `mode` is what session-start writes; `session_type` is the ledger's own
+      // name for the same fact. Read both — neither is guaranteed present.
+      const mode = typeof ev.session_type === 'string' ? ev.session_type : ev.mode;
+      const started = typeof ev.started_at === 'string' ? ev.started_at : ts;
+      if (started && (startedAt === null || started >= startedAt)) {
+        startedAt = started;
+        sessionType = typeof mode === 'string' && mode.trim() !== '' ? mode.trim() : null;
+      }
+    }
+
+    if (startedAt === null && sessionType === null) return { session: {}, source: 'absent' };
+
+    const session = {};
+    if (sessionType !== null) session.session_type = sessionType;
+    if (startedAt !== null) session.started_at = startedAt;
+    // completed_at is the last life-sign, never the wall clock — the same
+    // omit-never-fabricate contract session-close-backfill.mjs uses (#914 R1).
+    if (lastTs !== null && startedAt !== null && lastTs >= startedAt) session.completed_at = lastTs;
+
+    return { session, source: 'derived' };
+  } catch {
+    return { session: {}, source: 'absent' };
+  }
 }
 
 /**
@@ -169,6 +404,7 @@ export function buildBatch({
   now,
   statePath,
   persist = true,
+  consentState,
 } = {}) {
   try {
     const dir = metricsDir || path.join(process.cwd(), '.orchestrator', 'metrics');
@@ -181,6 +417,8 @@ export function buildBatch({
 
     let windowInvocations;
     let sessionForPing;
+    /** @type {'ledger'|'derived'|'absent'} */
+    let sessionRecordSource = 'ledger';
     if (sessionRecord && typeof sessionRecord.started_at === 'string' && !Number.isNaN(Date.parse(sessionRecord.started_at))) {
       const startMs = Date.parse(sessionRecord.started_at);
       windowInvocations = invocations.filter((rec) => {
@@ -188,15 +426,24 @@ export function buildBatch({
         return !Number.isNaN(t) && t >= startMs;
       });
       sessionForPing = sessionRecord;
+      sessionRecordSource = 'ledger';
     } else {
-      // No usable session record → 24h window + synthetic session (schema
-      // fallbacks yield session_type 'other' / duration_bucket '<15m').
+      // No usable LEDGER record → reconstruct from events.jsonl, which is
+      // written on every SessionStart and therefore survives a killed session
+      // (see deriveSessionFromEvents). Only when THAT also yields nothing does
+      // the ping fall back to `session_type: 'unknown'` — never to a
+      // measured-looking 'other'.
+      const derived = deriveSessionFromEvents(dir);
+      sessionForPing = derived.session;
+      sessionRecordSource = derived.source;
+
+      const derivedStartMs = Date.parse(sessionForPing.started_at);
       const cutoff = (Number.isNaN(Date.parse(nowIso)) ? Date.now() : Date.parse(nowIso)) - DAILY_FLUSH_MS;
+      const windowStart = Number.isNaN(derivedStartMs) ? cutoff : derivedStartMs;
       windowInvocations = invocations.filter((rec) => {
         const t = Date.parse(rec?.timestamp);
-        return !Number.isNaN(t) && t >= cutoff;
+        return !Number.isNaN(t) && t >= windowStart;
       });
-      sessionForPing = {};
     }
 
     const cfg = ownerConfig ?? loadOwnerConfig().config;
@@ -208,6 +455,9 @@ export function buildBatch({
       env,
       now: nowIso,
       roster,
+      consentState,
+      sessionRecordSource,
+      sessionProfile: readSessionProfileForMetricsDir(dir),
     });
 
     const target = statePath || TELEMETRY_JSON_PATH;
@@ -251,6 +501,10 @@ export function buildBatch({
  * @param {string} [opts.now]              ISO timestamp (sent_at, last_flush_at, rotation clock).
  * @param {object} [opts.ownerConfig]      Parsed owner.yaml (default: loaded here). Inject to
  *                                         isolate a test from the host's real owner.yaml fleet flag.
+ * `reason` values: `gated` (consent), `sandbox:*` (the sandbox guard refused —
+ * no network, no queue mutation, no anon-ID mint), `debug`, `queued`, `sent`,
+ * `no-record`, `build-error: …`.
+ *
  * @returns {Promise<{ sent: boolean, queued: boolean, state: string, reason: string }>}
  */
 export async function flush({
@@ -280,11 +534,28 @@ export async function flush({
     return { sent: false, queued: false, state: consent.state, reason: 'gated' };
   }
 
+  // SANDBOX GUARD — runs strictly between the consent gate and buildBatch, so a
+  // refused send performs no network call, no queue write and no anon-ID mint.
+  // See detectSandbox for the six production pings this exists to prevent.
+  const sandbox = detectSandbox({ env, statePath });
+  if (sandbox.sandbox) {
+    return { sent: false, queued: false, state: consent.state, reason: sandbox.reason };
+  }
+
   const nowIso = now || new Date().toISOString();
 
   // Build the batch (this lazily mints + persists the anon-ID — only reachable
   // here, i.e. strictly after the gate).
-  const { record, reason } = buildBatch({ metricsDir, env, ownerConfig: cfg, statePath, now: nowIso });
+  const { record, reason } = buildBatch({
+    metricsDir,
+    env,
+    ownerConfig: cfg,
+    statePath,
+    now: nowIso,
+    // The RESOLVED consent state is what `fleet` is derived from now — not a raw
+    // owner.yaml read. See buildUsagePing's fleet block (d8 root cause a).
+    consentState: consent.state,
+  });
   if (!record) {
     return { sent: false, queued: false, state: consent.state, reason: reason || 'no-record' };
   }

@@ -1482,6 +1482,63 @@ describe('Schema v2 — last_heartbeat + semantic_session_id (Epic #583, W2-I3)'
     expect(readLock({ repoRoot })).toBeNull();
   });
 
+  // #1229 — an OWN lock whose heartbeat has already aged past the TTL must be
+  // revivable by its owner.
+  //
+  // THE BUG: session-20's lock was reaped as stale at 2026-09-05T06:06Z by an
+  // unrelated session's SessionEnd, heartbeat 11.3 h old against a 4 h TTL —
+  // while the session was still working, inside session-start / session-plan.
+  // The only heartbeat call sites were the wave loop, on-stop and session-end,
+  // so a session that had not yet reached /go could not refresh its own lock at
+  // all. The repair adds a call site at the end of the SessionStart hook, and
+  // that repair only works if `updateHeartbeat()` treats an already-expired own
+  // lock as refreshable rather than as someone else's problem: a liveness gate
+  // here (`if (!isLockLive(existing)) return false`) would make the fix
+  // unreachable in exactly the situation it exists for.
+  it('#1229: revives an OWN lock whose heartbeat is already past the TTL', () => {
+    const stale = new Date(Date.now() - 11.3 * 60 * 60 * 1000).toISOString();
+    acquire({ sessionId: 'sess-1229', mode: 'deep', repoRoot });
+    const acquired = readLock({ repoRoot });
+    writeFileSync(
+      join(repoRoot, LOCK_PATH),
+      JSON.stringify({ ...acquired, started_at: stale, last_heartbeat: stale }),
+    );
+    // Precondition: this is the state the reaper acts on.
+    expect(isLockLive(readLock({ repoRoot }))).toBe(false);
+
+    const ok = updateHeartbeat({ sessionId: 'sess-1229', repoRoot });
+
+    expect(ok).toBe(true);
+    const after = readLock({ repoRoot });
+    expect(isLockLive(after)).toBe(true);
+    // The refresh moves ONLY the heartbeat — `started_at` still records when the
+    // session actually began, which is what an operator reads to judge age.
+    expect(after.started_at).toBe(stale);
+    expect(Date.parse(after.last_heartbeat)).toBeGreaterThan(Date.parse(stale));
+    expect(after.session_id).toBe('sess-1229');
+  });
+
+  // The same call from a DIFFERENT session must stay a no-op even when the lock
+  // is stale — otherwise the SessionStart heartbeat wiring above would keep a
+  // foreign, genuinely-dead lock alive forever and permanently disarm the
+  // stale-lock reaper. `updateHeartbeat()` IS the `touchIfOwn()` this needs; no
+  // wrapper was added because the guard is already here.
+  it('#1229: a foreign session cannot revive a stale lock', () => {
+    const stale = new Date(Date.now() - 11.3 * 60 * 60 * 1000).toISOString();
+    acquire({ sessionId: 'sess-1229-owner', mode: 'deep', repoRoot });
+    const acquired = readLock({ repoRoot });
+    writeFileSync(
+      join(repoRoot, LOCK_PATH),
+      JSON.stringify({ ...acquired, started_at: stale, last_heartbeat: stale }),
+    );
+
+    expect(updateHeartbeat({ sessionId: 'sess-1229-intruder', repoRoot })).toBe(false);
+
+    const after = readLock({ repoRoot });
+    expect(after.last_heartbeat).toBe(stale);
+    expect(isLockLive(after)).toBe(false);
+  });
+
   // L4: Old-schema lock (no last_heartbeat) is read with last_heartbeat == started_at.
   //
   // #595 (2026-08-15): this tolerance was evaluated for removal and RETAINED —

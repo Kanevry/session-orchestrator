@@ -146,7 +146,7 @@ function todayUtc() {
  *             anon_id: string, fleet: 0|1, raw_json: string }}
  * @throws {ValidationError}
  */
-function validateUsagePingV1(record) {
+function validateUsagePingV1(record, { fleetAnonIds } = {}) {
   // record_kind — literal 'usage-ping' (the dispatcher already matched it, but
   // re-assert so the validator is self-contained / independently testable).
   if (record.record_kind !== 'usage-ping') {
@@ -186,7 +186,15 @@ function validateUsagePingV1(record) {
   }
 
   requireBool(record, 'ci');
+  // `fleet` stays REQUIRED and boolean — it is the v1 contract and the parity
+  // guard asserts the server independently requires it. `fleet_self_declared`
+  // (schema v1, additive) is its successor name and is OPTIONAL: a client that
+  // predates the rename sends only `fleet`, a client that postdates it sends
+  // both with the same value for one schema generation.
   const fleet = requireBool(record, 'fleet');
+  if (record.fleet_self_declared !== undefined && typeof record.fleet_self_declared !== 'boolean') {
+    throw new ValidationError('fleet_self_declared must be a boolean when present', 'fleet_self_declared');
+  }
 
   const sessionType = requireString(record, 'session_type');
   if (sessionType.length > MAX_SESSION_TYPE) {
@@ -201,12 +209,28 @@ function validateUsagePingV1(record) {
   // Storage row. raw_json preserves the FULL record (including any unknown
   // top-level fields) so additive schema growth round-trips; the client IP is
   // never part of the record and therefore never lands here.
+  // SERVER-SIDE FLEET ATTRIBUTION (GitLab #1234). The stored `fleet` column is
+  // the classification the digest reads, and until now it was whatever the
+  // client declared. A client cannot be relied on for this: measured 2026-09-06,
+  // 394 of 490 records (80,4 %) were the operator's own host declaring itself
+  // external, because the client read the flag off an owner.yaml block that host
+  // does not have.
+  //
+  // An anon_id on the operator-supplied allowlist (`SO_INGEST_FLEET_ANON_IDS`)
+  // is stored as fleet REGARDLESS of what the record claims. The allowlist can
+  // only promote, never demote: a host that honestly declares itself fleet stays
+  // fleet even if the operator forgot to list it. The raw record — including its
+  // own `fleet` / `fleet_self_declared` claim — survives verbatim in `raw_json`,
+  // so the client's declaration and the server's verdict remain separable
+  // forever, and the disagreement rate stays measurable (HR-105).
+  const attributedFleet = fleet || (fleetAnonIds instanceof Set && fleetAnonIds.has(anonId.toLowerCase()));
+
   return {
     kind: 'usage-ping',
     schema_version: record.schema_version,
     received_day: todayUtc(),
     anon_id: anonId,
-    fleet: fleet ? 1 : 0,
+    fleet: attributedFleet ? 1 : 0,
     raw_json: JSON.stringify(record),
   };
 }
@@ -215,13 +239,13 @@ function validateUsagePingV1(record) {
 // Registry
 // ---------------------------------------------------------------------------
 
-/** @type {Map<string, (record: object) => object>} */
+/** @type {Map<string, (record: object, opts?: object) => object>} */
 export const REGISTRY = new Map();
 
 /**
  * Register (or override) a per-kind validator.
  * @param {string} kind — the record_kind discriminator.
- * @param {(record: object) => object} fn — validator returning a storage row.
+ * @param {(record: object, opts?: object) => object} fn — validator returning a storage row.
  */
 export function registerValidator(kind, fn) {
   REGISTRY.set(kind, fn);
@@ -231,11 +255,14 @@ export function registerValidator(kind, fn) {
  * Dispatch a record to its per-kind validator.
  *
  * @param {unknown} record
+ * @param {{ fleetAnonIds?: Set<string> }} [opts] — server-side attribution
+ *   inputs. OPTIONAL and additive: omitting it reproduces the pre-#1234
+ *   behaviour exactly (the row's `fleet` is then the client's own claim).
  * @returns {object} storage row
  * @throws {ValidationError} on non-object input, unknown record_kind, or any
  *   per-kind validation failure.
  */
-export function validateRecord(record) {
+export function validateRecord(record, opts = {}) {
   if (!isPlainObject(record)) {
     throw new ValidationError('record must be an object', 'record');
   }
@@ -244,7 +271,7 @@ export function validateRecord(record) {
   if (!validator) {
     throw new ValidationError('unknown record_kind', 'record_kind');
   }
-  return validator(record);
+  return validator(record, opts);
 }
 
 // v1 registration.

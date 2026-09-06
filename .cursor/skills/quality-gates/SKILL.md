@@ -1,6 +1,6 @@
 ---
 name: quality-gates
-description: Use this skill when referencing canonical quality check commands for typecheck, test, and lint. Defines 4 variants (Baseline, Incremental, Full Gate, Per-File) used by session-start, wave-executor, session-end, and session-reviewer. Reference skill — not invoked directly.
+description: "Use this skill when referencing canonical quality check commands for typecheck, test, and lint. Defines 4 variants (Baseline, Incremental, Full Gate, Per-File) used by session-start, wave-executor, session-end, and session-reviewer. Reference skill — not invoked directly."
 disable-model-invocation: true
 ---
 

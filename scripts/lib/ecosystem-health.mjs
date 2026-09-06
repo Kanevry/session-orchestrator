@@ -164,13 +164,27 @@ async function watchLoop(intervalS) {
 }
 
 /**
+ * Poll delay.
+ *
+ * The timer is deliberately NOT `unref()`d: it is the only handle this process
+ * holds (the two signal handlers do not keep the loop alive), so an unref'd
+ * timer drains the event loop and node exits 0 the instant the first tick is
+ * scheduled — a watcher that supervises nothing while looking like a clean
+ * shutdown, because it exits 0 with an empty stderr. Measured 2026-09-06 on the
+ * unref'd variant: `node scripts/lib/ecosystem-health.mjs --watch --interval=1`
+ * returned exit 0 after 48 ms instead of running until SIGTERM. Third copy of
+ * the #980 defect A1 measured in `scripts/lib/wave-transcript-tail.mjs` and
+ * `scripts/lib/convergence-monitor.mjs`; this one was missed when those two
+ * were fixed. Pinned by a DURATION assertion (an exit-code assertion cannot
+ * tell a healthy monitor from a dead one) in
+ * `tests/lib/ecosystem-health-watch.test.mjs`.
+ *
  * @param {number} ms
  * @returns {Promise<void>}
  */
 function sleep(ms) {
   return new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    t.unref?.();
+    setTimeout(resolve, ms);
   });
 }
 

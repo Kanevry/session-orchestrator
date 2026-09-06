@@ -29,7 +29,11 @@ Working **in this repo** does not need the installer — those paths are committ
 
 ## Configuration
 
-Cursor reads CLAUDE.md natively. Add a `## Session Config` section:
+**Where Cursor picks up project instructions — measured-or-unknown, 2026-09-06.** This page used to state flatly that "Cursor reads CLAUDE.md natively". That claim is **not substantiated**: the current Cursor rules documentation names `.cursor/rules` and `AGENTS.md` as the project-instruction surfaces and does not name `CLAUDE.md`, and nothing in this repo measures the behaviour. Treat native `CLAUDE.md` pickup as **unverified** rather than as fact.
+
+What follows from that, practically: put the `## Session Config` block where you can verify Cursor reads it. `scripts/cursor-install.mjs` and the orchestrator's own config parser (`scripts/parse-config.mjs`) read the block out of the repo's project-instruction file regardless of which client loaded it, so the block below is correct wherever you put it — but if Cursor is not surfacing your session settings, mirror the block into `AGENTS.md` (the Codex/Cursor-facing alias, see [`skills/_shared/instruction-file-resolution.md`](../skills/_shared/instruction-file-resolution.md)) before assuming a parser bug.
+
+Add a `## Session Config` section:
 
 ```markdown
 ## Session Config
@@ -64,7 +68,7 @@ Cursor has no Skill tool. Commands tell the agent to **Read** `skills/<name>/SKI
 | Interactive choices | AskUserQuestion tool | Numbered Markdown lists |
 | Agent dispatch | Agent() tool (parallel) | Sequential execution (no subagents) |
 | State directory | .claude/ | .cursor/ |
-| Config file | CLAUDE.md | CLAUDE.md (same!) |
+| Config file | CLAUDE.md | CLAUDE.md — native pickup **unverified**; Cursor's rules doc names `.cursor/rules` + `AGENTS.md` (see § Configuration) |
 | Task tracking | TaskCreate/TaskUpdate | Text-based checklists |
 | Pre-edit enforcement | PreToolUse hook (blocks) | `preToolUse` via cursor-hook-bridge (blocks) |
 | Command enforcement | PreToolUse hook (blocks) | `beforeShellExecution` via cursor-hook-bridge (blocks) |

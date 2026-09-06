@@ -7,15 +7,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Three commits so far (`ee8ea425` Wave 2, `e22a702e` Wave 3, `37169158` Wave 4; 71 files,
-+3,505/−678, measured `git diff --stat 2cb8708b..37169158`), no `BREAKING CHANGE:` footer and
-no `!` subject. Twelve Wave-2 follow-up issues land as mechanism: identity resolution
-folds onto the process-local reader on a third surface, seven ledger readers move onto one
-canonical `sessions.jsonl` collapse, and a `secret_masker.applied` guard closes its last
-two gaps. Wave 3 arms the schema-drift CI gate; Wave 4 is a 3-Opus-reviewer panel plus
-fixpass that closed 2 HIGH findings inside the panel's own Wave-2/3 diff.
+## [4.0.0] - 2026-09-06
+
+> **A MAJOR, because public surfaces are REMOVED** (see *Removed (BREAKING)* below).
+> This entry was folded out of `[Unreleased]` by hand at cut time. That is a manual
+> editorial act and not an automated one: `scripts/release.mjs` carries no writer for it —
+> `checkChangelogEntry()` (`release.mjs:283`) only REQUIRES a dated `## [4.0.0]` heading as
+> the topmost release with `[Unreleased]` emptied (`release.mjs:296`), and `--check`
+> separately requires HEAD to be present on BOTH remotes (`evaluateRemoteHeadParity`,
+> `release.mjs:556`) before it will tag. An earlier draft of this note asserted that the
+> script renames the heading; it does not, and a release trusting that would have failed
+> its own preflight. The reason the heading is written no earlier than the cut is the
+> `3.22.1` failure this repo already paid for once — a release section for a release that
+> never completed, unnoticed for 12 days (`e4674109`).
+
+**Predecessor commits (v3.24.0 → `e4674109`).** Three commits (`ee8ea425` Wave 2,
+`e22a702e` Wave 3, `37169158` Wave 4; 71 files, +3,505/−678, measured
+`git diff --stat 2cb8708b..37169158`), no `BREAKING CHANGE:` footer and no `!` subject.
+Twelve Wave-2 follow-up issues land as mechanism: identity resolution folds onto the
+process-local reader on a third surface, seven ledger readers move onto one canonical
+`sessions.jsonl` collapse, and a `secret_masker.applied` guard closes its last two gaps.
+Wave 3 arms the schema-drift CI gate; Wave 4 is a 3-Opus-reviewer panel plus fixpass that
+closed 2 HIGH findings inside the panel's own Wave-2/3 diff.
+
+**The 360° audit session (`main-2026-09-06-deep-1`) — what makes this a major.** Everything
+below marked *4.0.0 — audit session* is that session's own change set, which lands as this
+release's commit: 277 working-tree entries at fold time (`git status --short | wc -l`,
+2026-09-06), on top of 13 already-committed predecessors measuring 256 files, +13,537/−1,669
+(`git diff --stat v3.24.0..HEAD | tail -1`, same day). Fourteen read-only Discovery agents measured the plugin against its own
+telemetry, the 90-day fleet ledger and the vendor docs; the synthesis is
+[`docs/audits/2026-09-06-360-audit.md`](docs/audits/2026-09-06-360-audit.md), per-agent
+evidence under `docs/audits/2026-09-06-360-audit/w1/`. Nothing was removed on judgement: the
+rule was 0 telemetry ∧ 0 fleet invocation in 90 days ∧ no runtime consumer, and
+prose-invoked skills (0 by construction) were exempt. Upgrade guide:
+[`docs/migration-v4.md`](docs/migration-v4.md).
 
 ### Added
+
+#### 4.0.0 — audit session
+
+- **Root `AGENTS.md`, root `plugin.json`, and a portable `.agents/skills/` mirror — this repo
+  was previously invisible to Copilot CLI and to agent-plugins.org clients.** The root
+  `AGENTS.md` is byte-identical to `CLAUDE.md` (`diff -q AGENTS.md CLAUDE.md` → no
+  difference), so a harness that resolves project instructions from `AGENTS.md` now finds
+  this repo's own Session Config instead of nothing — before this there was no root
+  `AGENTS.md` at all, meaning the plugin's own repository could not read its own config on a
+  harness that looks for that filename. `plugin.json` declares
+  `$schema: https://agent-plugins.org/schemas/1.0.0/plugin.schema.json`, the cross-vendor
+  manifest shape Cursor, Amazon, Microsoft, OpenAI and Vercel converged on.
+  `.agents/skills/<name>/SKILL.md` mirrors all 43 skills (`ls .agents/skills | wc -l` → 43)
+  for harnesses that read that convention rather than a plugin manifest.
+- **`ultradeep` — a session PROFILE over `deep`, deliberately NOT a fourth session type.**
+  `/session ultradeep` resolves to `session-type: deep` + `session-profile: ultradeep` in
+  STATE.md frontmatter (`commands/session.md` § Argument alias). `session-type` never becomes
+  `ultradeep`: `VALID_SESSION_TYPES` is a closed set in
+  `scripts/lib/session-schema/constants.mjs`, and a fourth member would degrade silently in
+  two places (`telemetry/schema.mjs` maps an unknown type to `"other"`,
+  `session-close-backfill.mjs` labels it `housekeeping`). The profile changes only the wave
+  SHAPE — 7 waves with a coordinator-direct Synthesis-Gate at W2 (`agents: 0`, the one wave
+  whose whole job is to stop and ask before any code is written), per the new row at
+  `skills/session-plan/SKILL.md:336`. `SESSION_PROFILE_FIELD` in `scripts/lib/state-md.mjs`
+  is the reader; absent is not empty. Budgets (`ultradeep.max-*`) are deliberately NOT
+  implemented — the PRD defers thresholds until three runs have been measured. Spec:
+  [`docs/prd/2026-09-06-ultradeep-session-profile.md`](docs/prd/2026-09-06-ultradeep-session-profile.md).
+- **A plugin-update banner at session-start — the first code in this repo that compares
+  INSTALLED against AVAILABLE.** `scripts/lib/plugin-update-banner.mjs` (`checkPluginUpdate`,
+  imported lazily from `hooks/on-session-start.mjs:976`) reads the RUNNING package's own
+  `package.json` — resolved as `../..` from `scripts/lib/`, i.e. the loaded bytes, never
+  `$CLAUDE_PLUGIN_ROOT`, which is precisely what resolved to the checkout while a stale cache
+  copy was executing — and compares it against the npm `dist-tags.latest`. The measured gap:
+  this host ran the marketplace cache at **3.19.0** (installed 2026-08-09) while repo and npm
+  were at **3.24.0** — five minors, four weeks, no warning, because the freshness probe
+  shells out to `git -C <plugin-dir> log -1` against a FILE COPY and
+  `classifyVersionMismatch()` downgrades anything below a major jump to `info`. Contract:
+  fail SILENT, never optimistic — offline, non-2xx, malformed JSON, timeout and unusable
+  cache each return `null` ("no statement"), never "you are up to date" (the #1031 collapse
+  class).
+- **A telemetry sandbox guard — `detectSandbox()` in `scripts/lib/telemetry/sync.mjs`.**
+  This session's own read-only Wave-1 benches sent 6 production pings from agent sandboxes:
+  `hooks/on-session-end.mjs` ran from the repo checkout with `SO_CONFIG_HOME` redirected
+  while `owner.yaml` was unreachable inside the sandbox. The sender now refuses when
+  `SO_TELEMETRY_DISABLED=1` (`sandbox:telemetry-disabled`), `DO_NOT_TRACK` is set
+  (`sandbox:do-not-track`), the config home is split from the state dir
+  (`sandbox:config-home-split`), or the state dir resolves under a temp root
+  (`sandbox:temp-root` — matched after realpath, because macOS's `/var` → `/private/var`
+  symlink defeats a raw string prefix). Every refusal is reported with its `sandbox:*` reason
+  rather than as a silent no-op.
+- **[`docs/baseline.md`](docs/baseline.md) — the `projects-baseline` relationship written
+  down.** One line: the baseline is a **private, optional** companion repository, read when
+  present, degraded to a documented fallback when absent, required by nothing in this plugin
+  and needed by no public consumer. The measurement behind it: of 49 baseline-touching files,
+  17 are docs-only, 15 test-only, 13 soft, and only 4 hard-runtime — **2 of those 4 pointed
+  at a hardcoded `$HOME/Projects/projects-baseline` that does not exist**.
+
+#### Predecessor commits (v3.24.0 → `e4674109`)
 
 - **`scripts/lib/wave-executor/dispatch-common.mjs` (#1204).** Six symbols
   (`NEVER_FOREIGN_ROLES`, `DEFAULT_TIMEOUT_SEC`, `DEFAULT_KILL_GRACE_MS`, `isSafeRunId`,
@@ -61,6 +146,50 @@ fixpass that closed 2 HIGH findings inside the panel's own Wave-2/3 diff.
   modules, in sync`.
 
 ### Changed
+
+#### 4.0.0 — audit session
+
+- **43 generated rule files consolidated into 8 thematic ones; `.claude/rules/` goes 61 → 26
+  files.** Measured now: `ls .claude/rules/*.md | wc -l` → 26, of which **zero** still match
+  the generated-rule naming (`anti-pattern-*`, `proven-pattern-*`, `recurring-issue-*`,
+  `convention-*`, `fragile-*`); at `HEAD` (`e4674109`) the same directory held 61 files
+  (`git ls-tree -r --name-only HEAD .claude/rules/ | grep -c '\.md$'`). The eight
+  replacements are `identity-and-locks`, `guard-design`, `measurement-discipline`,
+  `test-hygiene`, `process-contracts`, `toolchain-and-build`, `git-and-worktrees`,
+  `review-and-adapter-contracts`. Grounds: the 43 files were delivered TWICE per dispatched
+  agent (natively plus via rule injection) — 112 kB, 46 % overhead — and 10 of them restated
+  an always-on rule's insight verbatim.
+- **The three largest instruction files are SPLIT into `references/`, not shortened.**
+  `skills/session-start/SKILL.md` 1,275 → 388 lines (9 reference files);
+  `skills/session-end/SKILL.md` 1,203 → 316 (6 reference files);
+  `skills/wave-executor/wave-loop.md` 1,337 → a 39-line index over 3 references
+  (`wave-loop-dispatch.md`, `wave-loop-review.md`, `wave-loop-scope-manifest.md`). Baselines
+  measured `git show HEAD:<path> | wc -l`, current `wc -l`. Content moved rather than
+  vanished: a phase you need is one hop away, a phase you do not need is no longer in every
+  agent's context.
+- **`orchestrator.session.stopped` → `orchestrator.turn.stopped` (GitLab #1234).** The
+  emitter fires per assistant TURN, not per session: measured over the 90-day fleet window,
+  **15,538 records against 2,016 distinct `orchestrator.session.started` ids = 7.7 per
+  session**, with 184 for one id — so six consumers reading it as a session-lifecycle signal
+  were wrong by that factor. `hooks/on-stop.mjs:489`/`:493` emits BOTH names from the same
+  payload object for one deprecation generation (so they cannot disagree); the legacy name
+  additionally carries `deprecated: true`, letting a reader tell at a glance that it matched
+  the old name. **Removal of `orchestrator.session.stopped`: 2027-03-06.** Readers switch the
+  name they match on and change nothing else. NOT affected: the SubagentStop branch keeps
+  emitting `orchestrator.agent.stopped`, whose per-agent cardinality is correct. Contract:
+  `docs/events-schema.md:92-93`.
+- **The telemetry `fleet` field becomes `fleet_self_declared`, and attribution moves
+  server-side.** The old name asserted something the client cannot know: 394 of 490 pings
+  were the operator's own second Mac, mis-attributed as "external", because the flag hung off
+  an `owner.yaml` line rather than off a person. The client field now says what it is —
+  self-declared, derived from the RESOLVED consent state (`enabled-fleet` / `enabled-env`)
+  rather than from a raw `owner.yaml` read (`scripts/lib/telemetry/schema.mjs:552-555`) — and
+  the authoritative classification is an anon-id allowlist in the ingest server
+  (`server/ingest/config.mjs`, `server/ingest/validate.mjs:190-196`). `fleet` remains in the
+  payload, identical in value for the whole generation so the server's existing column stays
+  comparable: **DEPRECATED 2026-09-06, removal 2027-03-06** (`docs/telemetry.md:42-43`).
+
+#### Predecessor commits (v3.24.0 → `e4674109`)
 
 - **Quality-gate ownership check now folds onto the process-local reader (#1205).**
   `quality-gate.mjs`'s private copy of `readOwnSessionIds()` is gone; the ownership check now
@@ -262,7 +391,53 @@ fixpass that closed 2 HIGH findings inside the panel's own Wave-2/3 diff.
   based since #1137, and the recorded PID has been consulted nowhere since #1151.
   `skills/_shared/parallel-aware-preamble.md` cross-references it.
 
-### Removed
+### Removed (BREAKING)
+
+Every entry under *4.0.0 — audit session* below is a REMOVED PUBLIC SURFACE and the reason
+this release is a major. Each names its replacement or states explicitly that there is none.
+Upgrade guide: [`docs/migration-v4.md`](docs/migration-v4.md).
+
+#### 4.0.0 — audit session
+
+- **5 skills removed** — `find skills -name SKILL.md | wc -l` → 43, against
+  `git ls-tree -r --name-only HEAD skills/ | grep -c 'SKILL.md$'` → 49 (the sixth delta is
+  the `domain-model` merge below):
+  - **`skills/daily/`** (plus `generate.sh`, its template and 2 test files) — **no
+    replacement.** 0 telemetry, 0 fleet invocations in 90 days, no runtime consumer; only its
+    own test and documentation referenced it. Recurring daily notes are a Routine / scheduled
+    task, not a session skill (`.claude/rules/loop-and-monitor.md` § LM-004).
+  - **`skills/skill-creator/`** — **replaced by Anthropic's official `skill-creator` plugin**
+    plus `claude plugin init`. 0/0/0 with 0 in-repo references.
+  - **`skills/ubiquitous-language/`** — **no replacement.** 0/0/0.
+  - **`skills/contract-version-bump/`** — **no replacement.** 0/0/0; one comment referenced
+    it.
+  - **`skills/journey-audit/`** — **no replacement.** 0 journey manifests exist fleet-wide,
+    so the skill was never runnable in the first place.
+- **3 commands removed** — `commands/*.md` 28 → 25, mirrored in `.cursor/commands/` and
+  `pi/prompts/` (both also 25): **`/contract-version-bump`**, **`/journey-audit`** (with
+  their skills above) and **`/autopilot-multi`**. **No replacement** for any of the three.
+  `/autopilot` is a different command, unaffected, and stays.
+- **8 top-level scripts removed** (`scripts/*.mjs`, 0 runtime callers each, with their test
+  files): `autopilot-multi.mjs`, `backfill-learnings.mjs`, `backfill-learnings-expires.mjs`,
+  `fleet-instruction-scan.mjs`, `lifecycle-sim-v6.mjs`, `migrate-learnings-jsonl.mjs`,
+  `migrate-subagents-jsonl.mjs`, `upload-social-preview.mjs` — **no replacement.** The two
+  `migrate-*` scripts were one-shot format migrations whose target format has been canonical
+  for several releases; the two `backfill-learnings*` scripts were one-shot ledger repairs.
+- **`skills/_shared/model-selection.md` removed — no replacement, 0 consumers.**
+- **`skills/domain-model/` removed and MERGED into `skills/architecture/references/`** — its
+  three files now live as `references/domain-model.md`, `references/ADR-FORMAT.md` and
+  `references/CONTEXT-FORMAT.md`. It was reference-only material with 4 inbound links, never
+  a dispatchable skill; `/architecture` is the entry point.
+- **Two non-agents moved OUT of `agents/`** — `agents/*.md` 16 → 14. The agent loader
+  registers every `.md` file in that directory as a dispatchable agent, and
+  `agents/AGENTS.md` — the authoring SPEC — was measurably dispatched as an agent 5 times. It
+  is now [`docs/agent-authoring.md`](docs/agent-authoring.md), and
+  `agents/memory-proposal-collector.md` is now
+  [`docs/memory-proposal-flow.md`](docs/memory-proposal-flow.md). Same content, no longer a
+  dispatch target. **Anything dispatching either by name must stop** — they are
+  documentation, and were only ever documentation.
+
+#### Predecessor commits (v3.24.0 → `e4674109`)
 
 - **`scripts/lib/webhook-url.mjs` deleted — zero callers repo-wide (#1168).** `resolveWebhookUrl`/
   `WebhookConfigError` and their test file (`tests/lib/webhook-url.test.mjs`, 192 lines) are gone,
@@ -273,6 +448,80 @@ fixpass that closed 2 HIGH findings inside the panel's own Wave-2/3 diff.
   `## Clank Event Bus` in the same edit, since it is no longer a subsection of the now-removed one.
 
 ### Fixed
+
+#### 4.0.0 — audit session
+
+- **`js-yaml` out of the eager hook import graph — 4 of 27 hooks crashed on every turn
+  without `node_modules`; now 0 (GH#62 / GH#63 / GitLab #1230).**
+  `scripts/lib/owner-yaml.mjs` carried a static `import yaml from 'js-yaml'` and sits on the
+  import graph of `on-session-start`, `on-session-end`, `post-edit-validate` and
+  `skill-invocation-telemetry` — so a skipped or interrupted `npm install`, a half-synced
+  plugin cache, or an EPERM sandbox killed all four at MODULE-LOAD time with
+  `ERR_MODULE_NOT_FOUND` and exit 1, on every single turn. `js-yaml` now resolves lazily
+  inside `loadOwnerConfig`/`writeOwnerConfig`. Measured 2026-09-06 @ `e4674109` with `hooks/`
+  and `scripts/` copied to a tmp dir carrying no `node_modules` anywhere up the tree:
+  **23/27 hooks exited 0 before the fix, 27/27 after.** Pinned by the new
+  `tests/hooks/hooks-run-without-node-modules.test.mjs`, which EXECUTES every hook instead of
+  reading source text — the pre-existing static-import guard would have accepted a lazy
+  `require()` of a package that does not exist. The `zx` half of #1230 is stale and now says
+  so: `scripts/lib/worktree/listing.mjs`'s `zx` imports are already lazy and caught, verified
+  by installing a `js-yaml` stub alone and watching all four hooks reach rc=0 with `zx` still
+  absent.
+- **`picomatch` declared in `package.json` dependencies.** It is imported by four runtime
+  modules (`rule-loader.mjs`, `command-blocker.mjs`, `validate-vendored-rules.mjs`,
+  `reconcile/emitter.mjs`) and was absent from the manifest at `HEAD`
+  (`git show HEAD:package.json | grep picomatch` → no match) — reachable only as somebody
+  else's transitive dependency, the GH#62 class exactly.
+- **The Cursor adapter generator wrote a malformed `argument-hint` into 24 of 28 command
+  files (GH#54).** `scripts/generate-cursor-adapter.mjs` now renders every frontmatter value
+  through `yamlQuote()`, which JSON-quotes anything failing `YAML_PLAIN_SAFE` (and anything
+  that looks like a YAML scalar, or starts with a digit). Measured after the fix:
+  `grep -c "argument-hint: \[" .cursor/commands/*.md` reports zero files carrying the array
+  shape. The regression survived for as long as it did because the generator was tested
+  against itself; it is now pinned against the spec.
+- **`generateFrontmatterSnippet()` THREW when the baseline was absent.**
+  `scripts/lib/frontmatter-guard.mjs` resolves the schema through
+  `resolveHostPath('baseline-path')` and treats a missing schema as `null` — the honest
+  outcome, with the documented fallback enum set — instead of raising inside a pre-dispatch
+  guard. `scripts/lib/vault-backfill/template.mjs` uses the same resolver.
+- **The session registry wrote into the operator's REAL host-private config from a
+  sandbox.** `scripts/lib/session-registry.mjs` now derives its `sessions/` directory from
+  `resolvePrivateConfigDir()` (`SO_CONFIG_HOME` > `XDG_CONFIG_HOME` >
+  `~/.config/session-orchestrator`) instead of its own homedir-only path, so a redirected
+  config home actually redirects it.
+- **`node scripts/parse-config.mjs --json` failed with `File not found: --json`.** The flag
+  is now an explicit NO-OP alias for the default (stdout has always been JSON), because the
+  bootstrap documentation names that exact command as THE validation command and
+  `cli-design.md` § JSON-First Output requires every CLI to accept `--json`.
+- **The vault-staleness probe measured against the clock instead of against the repo
+  (#1238).** `skills/discovery/probes/vault-staleness.mjs` now asks whether the upstream repo
+  advanced PAST the last sync, not what `now - lastSync` is — a mirror of a repo nobody has
+  committed to in three weeks is CURRENT, not three weeks stale. Both sides of the comparison
+  (`lastSync`, `lastCommit`) come from one read of the same `_overview.md` frontmatter.
+  Measured against the live vault before the fix (2026-09-05): **33 of 48 overviews reported
+  "stale", 26 of them >7d, with a demonstrably healthy sync chain.** An overview without
+  `lastCommit` still falls back to the wall-clock comparison, marked
+  `basis: 'probe-runtime'` and carried at lower confidence so a consumer can tell a measured
+  delta from a guessed one.
+- **The discovery-validator scanned the WRONG transcript, so effectively every violation it
+  recorded was the coordinator's own prose (#1191).** `input.transcript_path` on
+  `SubagentStop` is the PARENT/main session transcript, not the subagent's — measured
+  2026-09-02 on a seeded random sample of 60 violations: **100 % coordinator text,
+  scope-adjusted precision 0 %**, with `agent` reported as `"unknown"` in 90.8 % of 1,541
+  events. The hook now reads `<transcriptDir>/<session>/subagents/agent-<agent_id>.jsonl`
+  (the layout `subagent-telemetry.mjs` and `wave-transcript-tail.mjs` already use) and NEVER
+  falls back to the parent path: a scan of the wrong transcript is worse than no scan. Claims
+  are additionally collapsed per distinct normalised claim with an `occurrences` count
+  (`normalizeClaim()` / `dedupeViolations()` in `hooks/_lib/subagent-transcript.mjs`, #1198)
+  — the worst repo in the fleet held 3,360 records over 205 distinct claim texts, a ×16.4
+  duplication factor.
+- **The `ecosystem-health` watcher could never start.** Its trigger in
+  `monitors/monitors.json` was `on-skill-invoke:ecosystem-health` — self-referential: the
+  watcher could only start when the `ecosystem-health` skill ran, and that skill has 0
+  recorded invocations fleet-wide, so it never started once. The trigger is now
+  `on-skill-invoke:session-start`.
+
+#### Predecessor commits (v3.24.0 → `e4674109`)
 
 - **Two silent Session Config parsing bugs fixed across 39 block-shaped parsers
   (#1162).** New shared module `scripts/lib/config/block-preprocess.mjs` fixes both: (a) a

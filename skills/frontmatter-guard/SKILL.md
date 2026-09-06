@@ -94,13 +94,19 @@ The output is stable across calls for the same schema version. Regenerate only w
 
 ## Schema Source Path
 
-The canonical schema source is:
+The canonical schema source is `packages/zod-schemas/src/vault-frontmatter.ts` inside a **projects-baseline** checkout. That checkout is **optional and private** — see [`docs/baseline.md`](../../docs/baseline.md) — so the path is RESOLVED, never hardcoded. `resolveSchemaSourcePath()` resolves it in two tiers and returns `null` when nothing resolves. When the EXPLICIT tier is set it is used **alone** — probing past a wrong explicit value would silently read a different baseline than the one named:
 
-```
-~/Projects/projects-baseline/packages/zod-schemas/src/vault-frontmatter.ts
-```
+| Tier | Candidate | Set by |
+|---|---|---|
+| **explicit** (exclusive) | `<baseline-path>/packages/zod-schemas/src/vault-frontmatter.ts` | `SO_BASELINE_PATH` env, else `owner.yaml` `paths.baseline-path` (host-local, never committed) — via `resolveHostPath('baseline-path', …)` |
+| convention 1 | `<repoRoot>/../projects-baseline/packages/…` | sibling-checkout convention, the same one `scripts/sync-vault-schema.mjs` uses |
+| convention 2 | `~/Projects/projects-baseline/packages/…` | legacy default this module shipped with |
 
-`readVaultSchema()` reads this file on every call unless the in-memory mtime cache is current. The function returns `null` (no throw) when the file is absent or unreadable.
+Before this was resolved, convention 2 was the ONLY path and it was hardcoded: on a host whose checkout lives anywhere else, `readVaultSchema()` returned `null` and `generateFrontmatterSnippet()` then died with `Cannot destructure property 'typeEnum' of 'schema' as it is undefined`.
+
+`readVaultSchema()` reads the resolved file on every call unless the in-memory mtime cache is current. It returns `null` (no throw) when no candidate resolves or the file is unreadable.
+
+**Degraded mode.** With `null`, `generateFrontmatterSnippet()` does not throw: it falls back to an in-module enum/field set mirroring `skills/vault-sync/validator.mjs` (this repo's own in-tree copy of the schema, and what `vault-sync` actually validates against) and writes ONE stderr WARN per process. `computeSchemaHash()` returns `null` in that state — never the SHA-256 of the empty string, which would look like a real measurement and compare equal across every baseline-less host.
 
 The parsed output includes:
 

@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import {
   USAGE_PING_SCHEMA_VERSION,
   USAGE_PING_FIELDS,
+  USAGE_PING_OPTIONAL_FIELDS,
   DURATION_BUCKETS,
   projectUsagePing,
   deriveDurationBucket,
@@ -419,5 +420,116 @@ describe('normalizeArch — closed-set client-side normalization', () => {
     expect(normalizeArch('')).toBe('other');
     expect(normalizeArch(undefined)).toBe('other');
     expect(normalizeArch(64)).toBe('other');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GitLab #1234 BUG 1 — `fleet` was a statement about a FILE, not a person.
+// schema.mjs derived it as `ownerConfig?.telemetry?.enabled === true`. The
+// operator's second Mac has consent GRANTED but no `telemetry:` block in
+// owner.yaml, so it declared itself external: 394 of 490 server records
+// (80,4 %, measured 2026-09-06) counted the operator as an external user and
+// every week's `fleet_vs_external` was wrong. Now derived from the RESOLVED
+// consent state, so `SO_TELEMETRY=1` and a fleet-enabled owner.yaml both land
+// on the operator side.
+//
+// Merged in from the misplaced tests/lib/telemetry/fleet-and-session-record.test.mjs
+// (that directory does not exist in this repo; tests/telemetry/ is the suite's home,
+// and this file already owns buildUsagePing / projectUsagePing / the whitelists).
+// No network: nothing here calls flush().
+// ---------------------------------------------------------------------------
+
+const FLEET_NOW = '2026-09-06T12:00:00.000Z';
+
+describe('fleet is derived from the resolved consent state, not from an owner.yaml read', () => {
+  const base = { sessionRecord: {}, env: {}, now: FLEET_NOW, roster: { skills: new Set(), commands: new Set() } };
+
+  it('THE BUG: consent granted but no owner.yaml telemetry block still counts as fleet', () => {
+    // This is the operator's second Mac verbatim: ownerConfig has no telemetry
+    // block, yet the host is his. Pre-fix this produced fleet:false — 394 pings.
+    const ping = buildUsagePing({ ...base, ownerConfig: {}, consentState: 'enabled-fleet' });
+    expect(ping.fleet).toBe(true);
+    expect(ping.fleet_self_declared).toBe(true);
+  });
+
+  it('SO_TELEMETRY=1 (enabled-env) also resolves to the operator side', () => {
+    const ping = buildUsagePing({ ...base, ownerConfig: {}, consentState: 'enabled-env' });
+    expect(ping.fleet_self_declared).toBe(true);
+  });
+
+  it('a genuinely external install (stored per-user consent) stays external', () => {
+    const ping = buildUsagePing({ ...base, ownerConfig: {}, consentState: 'enabled-consent' });
+    expect(ping.fleet).toBe(false);
+    expect(ping.fleet_self_declared).toBe(false);
+  });
+
+  it('with no consentState supplied the legacy owner.yaml read is reproduced exactly', () => {
+    expect(buildUsagePing({ ...base, ownerConfig: { telemetry: { enabled: true } } }).fleet).toBe(true);
+    expect(buildUsagePing({ ...base, ownerConfig: {} }).fleet).toBe(false);
+  });
+
+  it('`fleet` and `fleet_self_declared` agree for the deprecation generation', () => {
+    for (const state of ['enabled-fleet', 'enabled-env', 'enabled-consent']) {
+      const p = buildUsagePing({ ...base, ownerConfig: {}, consentState: state });
+      expect(p.fleet).toBe(p.fleet_self_declared);
+    }
+  });
+});
+
+describe('session_profile is a SECOND axis, never a session_type value', () => {
+  const base = { env: {}, now: FLEET_NOW, ownerConfig: {}, roster: { skills: new Set(), commands: new Set() } };
+
+  it('THE BUG: a ping from an ultradeep session reports session_type "other" because the profile was routed through normalizeSessionType, losing the only signal that distinguishes the 7-wave form', () => {
+    // The defect shape, spelled out: `normalizeSessionType('ultradeep')` returns
+    // 'other', so routing the profile through it destroys the distinction AND
+    // corrupts session_type. The contract is deep + ultradeep, side by side.
+    const ping = buildUsagePing({
+      ...base,
+      sessionRecord: { session_type: 'deep' },
+      sessionProfile: 'ultradeep',
+    });
+    expect(ping.session_type).toBe('deep');
+    expect(ping.session_profile).toBe('ultradeep');
+    expect(ping.session_type).not.toBe('other');
+    expect(ping.session_type).not.toBe('ultradeep');
+  });
+
+  it('an unrecognised profile is emitted VERBATIM — no degradation to "other"', () => {
+    const ping = buildUsagePing({ ...base, sessionRecord: { session_type: 'deep' }, sessionProfile: 'some-future-profile' });
+    expect(ping.session_profile).toBe('some-future-profile');
+  });
+
+  it('ABSENT IS NOT EMPTY: with no profile the key is omitted, never null or ""', () => {
+    for (const sessionProfile of [undefined, null, '', '   ']) {
+      const ping = buildUsagePing({ ...base, sessionRecord: { session_type: 'deep' }, sessionProfile });
+      expect('session_profile' in ping).toBe(false);
+    }
+  });
+
+  it('survives the whitelist projection (it is on USAGE_PING_OPTIONAL_FIELDS)', () => {
+    expect(USAGE_PING_OPTIONAL_FIELDS).toContain('session_profile');
+    expect(projectUsagePing({ session_profile: 'ultradeep' }).session_profile).toBe('ultradeep');
+  });
+
+  // The ledger-less counterpart ("a derived ping carries NO profile rather than
+  // an invented one") lives with buildBatch in sync.test.mjs.
+});
+
+describe('the projection whitelist is the UNION of the required and optional lists', () => {
+  it('projects optional fields and still drops anything unlisted', () => {
+    const projected = projectUsagePing({
+      record_kind: 'usage-ping',
+      fleet_self_declared: true,
+      session_record: 'derived',
+      repo: '/Users/someone/secret-repo', // must never survive
+    });
+    expect(projected.fleet_self_declared).toBe(true);
+    expect(projected.session_record).toBe('derived');
+    expect('repo' in projected).toBe(false);
+  });
+
+  it('the two lists are disjoint (an optional field must not also be a required one)', () => {
+    const overlap = USAGE_PING_OPTIONAL_FIELDS.filter((f) => USAGE_PING_FIELDS.includes(f));
+    expect(overlap).toEqual([]);
   });
 });

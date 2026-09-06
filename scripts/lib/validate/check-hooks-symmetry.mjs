@@ -66,11 +66,33 @@ const DOCUMENTED_ASYMMETRIES = {
   // A handler missing on a shared event and NOT listed here → FAIL.
   handlerAsymmetries: {
     codex: {
-      // Codex 0.144.4 has no payload adapter (docs/codex-setup.md § Hook
-      // Surface and Trust): Edit/Write handlers expect Claude payload shapes,
-      // Bash guards expect tool_name === 'Bash'. Wiring them would be a silent
-      // no-op, not enforcement (#919-P2 class) — "pretending the payloads are
-      // compatible would create false enforcement".
+      // WHY these stay unwired — corrected 2026-09-06 against the shipped
+      // codex-cli 0.144.4 binary, because the previous rationale here was
+      // measurably wrong and pointed at the wrong repair.
+      //
+      // REFUTED: "no Codex bridge delivers tool_name (grep scripts/lib/codex/
+      // *.mjs -> 0 matches)". That grep measured OUR adapter code, not the
+      // Codex payload contract. There is no bridge because none is needed:
+      // `pre-tool-use.command.input`, embedded verbatim in the binary, lists
+      // `tool_name` and `tool_input` among its REQUIRED fields (with `cwd`,
+      // `hook_event_name`, `model`, `permission_mode`, `session_id`,
+      // `tool_use_id`, `transcript_path`, `turn_id`). The output envelope is
+      // `hookSpecificOutput.{hookEventName,permissionDecision,
+      // permissionDecisionReason}` — byte-identical to what `emitDeny()`
+      // writes, and Codex's own error strings show it enforces exactly that
+      // shape ("PreToolUse hook returned permissionDecision:deny without a
+      // non-empty permissionDecisionReason").
+      //
+      // THE ACTUAL BLOCKER is the tool-name VOCABULARY, not the payload shape.
+      // Codex ships no `Bash`, `Edit`, `Write` or `MultiEdit` tool — it has
+      // `shell` / `exec_command` / `unified_exec` / `apply_patch`
+      // (`strings -a <codex> | grep -c '"Bash"'` -> 0). Every handler below
+      // opens with an equality gate on a Claude tool name and returns
+      // `emitAllow()` otherwise, so wiring one produces a hook that runs,
+      // matches nothing and allows everything: FALSE enforcement, which is
+      // strictly worse than the registered gap (#919-P2 class). The repair is
+      // a tool-name map (see CODEX_TOOL_NAMES in scripts/lib/codex/
+      // plugin-contract.mjs), not a manifest entry.
       PreToolUse: [
         // pre-task-scope-disjoint (#1020): NOT ported by construction. The hook
         // matches the `Agent` dispatch tool, which this platform does not have —
@@ -94,22 +116,24 @@ const DOCUMENTED_ASYMMETRIES = {
         'pre-bash-destructive-guard.mjs',
         'pre-bash-staging-fence.mjs',
         'pre-bash-memory-propose-audit.mjs',
-        // pre-bash-sessions-ledger-guard (#958): same Bash-payload dependency
-        // as the guards above — it reads tool_name === 'Bash' and
-        // tool_input.command, neither of which any Codex bridge delivers
-        // (measured 2026-07-31: `grep -rn "tool_name" scripts/lib/codex/*.mjs`
-        // → 0 matches, exit 1). A manifest entry would be a silent no-op, not
-        // enforcement — #919-P2 class. Gap registered, not faked.
+        // pre-bash-sessions-ledger-guard (#958): same tool-name-vocabulary
+        // dependency as the guards above — it gates on tool_name === 'Bash',
+        // and Codex names its shell tools `shell` / `exec_command` /
+        // `unified_exec`. The fields it reads ARE delivered; the value it
+        // compares against never occurs. A manifest entry would be a silent
+        // no-op, not enforcement — #919-P2 class. Gap registered, not faked.
         'pre-bash-sessions-ledger-guard.mjs',
         'pre-bash-templates-first.mjs',
         'pre-bash-issue-budget.mjs',
         'enforce-commands.mjs',
       ],
-      // post-bash-write-verify (#942): needs tool_name === 'Bash', which no
-      // Codex bridge delivers — documented exception until an adapter exists.
-      // Measured 2026-07-31: `grep -rn "tool_name" scripts/lib/codex/*.mjs`
-      // → 0 matches (exit 1), so a manifest entry here would be a silent
-      // no-op, not enforcement. Same #919-P2 class as the PreToolUse block.
+      // post-bash-write-verify (#942): gates on tool_name === 'Bash', a value
+      // Codex never emits (its shell tools are `shell` / `exec_command` /
+      // `unified_exec`). Documented exception until a tool-name map exists —
+      // a manifest entry today would be a silent no-op, not enforcement. Same
+      // #919-P2 class as the PreToolUse block. `post-tool-use.command.input`
+      // at 0.144.4 does require `tool_name`, `tool_input` AND `tool_response`,
+      // so the port is a rename map, not a payload bridge.
       PostToolUse: [
         'post-edit-validate.mjs',
         'post-tooluse-frontend-slop.mjs',

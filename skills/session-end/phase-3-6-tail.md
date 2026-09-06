@@ -81,7 +81,7 @@ The proposals queue is populated mid-session by wave-executor agents calling `no
    }
    ```
 
-   Then iterate `batches` and emit one `AskUserQuestion` per batch. The verbatim template is `agents/memory-proposal-collector.md` § AUQ Question Template — keep the two in step:
+   Then iterate `batches` and emit one `AskUserQuestion` per batch. The verbatim template is `docs/memory-proposal-flow.md` § AUQ Question Template — keep the two in step:
 
    ```javascript
    AskUserQuestion({
@@ -129,7 +129,7 @@ The proposals queue is populated mid-session by wave-executor agents calling `no
 - Relation judgment (step 3b, #1016): `scripts/lib/learnings/candidates.mjs` (`buildCandidatePools`) · `scripts/lib/learnings/judgment.mjs` (`buildJudgmentInput`, `judgeCandidate`, `applyVerdict`, `JUDGMENT_DECISIONS`, `FAILURE_MODES`)
 - CLI: `scripts/memory-propose.mjs` (agents call this)
 - Hook: `hooks/pre-bash-memory-propose-audit.mjs` (audit trail)
-- Coordinator AUQ spec: `agents/memory-proposal-collector.md` (reference doc)
+- Coordinator AUQ spec: `docs/memory-proposal-flow.md` (reference doc)
 - Sibling phases: 3.6.5 Auto-Dream (#502), 3.6.6 Skill-Applied Judge (#645 L3), 3.6.7 Auto-Dialectic (#506)
 - Sibling call site of the same judgment pair: `skills/evolve/SKILL.md` § Step 3.3b (the `/evolve` producer for the `-0.2 if contradicted` branch)
 - Issues: #501 (this phase), #1016 (step 3b)

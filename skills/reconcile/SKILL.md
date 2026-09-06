@@ -356,6 +356,39 @@ If `written === 0` and `approved.length === 0`:
 
 ---
 
+## Consolidating and Dropping Generated Rules (merge contract)
+
+`.claude/rules/` grows one file per approved learning, so it accumulates. This
+repo consolidated 43 generated files (112,443 B, 46.2 % frontmatter+provenance
+overhead) into 8 thematic files plus 10 drops on 2026-09-06. Both operations
+are safe ONLY under the contract below — the full authoring spec is
+[`docs/rule-authoring.md`](../../docs/rule-authoring.md) § "Consolidated rules:
+N provenance pairs in ONE file". The three facts that decide whether a
+consolidation survives the next `/reconcile`:
+
+- **A target file may carry N provenance bullet PAIRS.** Frontmatter
+  `learning-key:` is a scalar, so at most one marker fits there; the other N−1
+  live in the body as `` - learning-key: `…` `` + `` - learning-id: `…` ``
+  bullets, which `engine.mjs` reads via `BODY_LEARNING_KEY_RE` /
+  `BODY_LEARNING_ID_RE`. One pair per absorbed learning — a missing pair
+  regenerates that learning as a standalone file on the next run.
+- **A merged file's `expires-at` is the EARLIEST of its parts**, never the
+  latest: it must not outlive its shortest-lived content.
+- **A dropped learning must be STAMPED before deletion, or it regenerates.**
+  `rm .claude/rules/<slug>.md` alone leaves `isProcessed()` false and no
+  on-disk marker, so the engine re-proposes it. Stamp it terminal first with
+  `markCandidateProcessed({ learningKey, outcome: 'rejected', fallbackSlug,
+  repoRoot })` from `scripts/lib/reconcile/idempotency.mjs` — the ONLY
+  sanctioned writer of `.orchestrator/runtime/reconcile-candidates.jsonl`
+  (never append to that file by hand; the read-side shape guard drops foreign
+  records and `mergeCandidates` rewrites the store in full).
+
+**Verify a consolidation with a dry run**, not by eye: `alreadyMaterialized`
+must equal absorbed + dropped. If it equals only the absorbed count, the drops
+were not stamped and the next run will resurrect them. Do the whole operation
+while `reconcile.enabled: false` in Session Config, so nothing regenerates
+underneath you mid-edit.
+
 ## Critical Rules
 
 - **NEVER** call `writeApprovedRules` before the operator has confirmed via AUQ — this is the

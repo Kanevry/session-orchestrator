@@ -37,6 +37,7 @@ import {
   HISTORY_ALLOWLIST,
   verifyLiveSite,
   evaluateDriftSweep,
+  isDependencyRangeOnly,
   evaluateRegistryCollision,
   evaluateLeakageGate,
   evaluateRemoteHeadParity,
@@ -58,6 +59,10 @@ function writeFixture(root, v) {
   const files = {
     'package.json': `{\n  "name": "session-orchestrator",\n  "version": "${v}",\n  "license": "MIT"\n}\n`,
     '.claude-plugin/plugin.json': `{\n  "name": "session-orchestrator",\n  "version": "${v}"\n}\n`,
+    // Root plugin.json — the agent-plugins.org manifest, a FOURTH version-bearing manifest
+    // since 4.0.0. It was missing from SURFACES on the 4.0.0 cut and validate-plugin caught it
+    // one gate later; this fixture row is what keeps the table honest from here.
+    'plugin.json': `{\n  "name": "session-orchestrator",\n  "version": "${v}"\n}\n`,
     '.claude-plugin/marketplace.json': `{\n  "plugins": [{\n    "name": "session-orchestrator",\n    "version": "${v}"\n  }]\n}\n`,
     '.codex-plugin/plugin.json': `{\n  "name": "session-orchestrator",\n  "version": "${v}+codex.20260731000000"\n}\n`,
     'hooks/hooks.json': `{"hooks":{"SessionStart":[{"hooks":[{"command":"echo '🎯 Session Orchestrator v${v} — /session'"}]}]}}\n`,
@@ -447,6 +452,61 @@ describe('evaluateDriftSweep', () => {
     expect(r.ok).toBe(false);
     expect(r.detail).toContain('site/index.html');
     expect(r.detail).toContain('site/impressum/index.html');
+  });
+
+  // THE BUG (measured on the 4.0.0 cut): `skills/vault-sync` pins `zod` at `^3.24.0`, so the
+  // sweep for the previous tag collected two files whose literal belongs to zod. Bumping them
+  // would corrupt a dependency range; allowlisting the two paths would leave the class open for
+  // the next dependency that lands on our version number. The verdict is decided per LINE.
+  it('does not read a caret-ranged dependency at the previous version as drift', () => {
+    const grep = {
+      status: 0,
+      stdout: 'skills/vault-sync/package.json:9:    "zod": "^3.24.0"\n',
+      stderr: '',
+    };
+    expect(evaluateDriftSweep(grep, '3.24.0', HISTORY_ALLOWLIST)).toMatchObject({ ok: true });
+  });
+
+  it('still fails when the SAME file also carries a bare literal on another line', () => {
+    // One ranged mention must not excuse the file: the second line is a real stale surface.
+    const grep = {
+      status: 0,
+      stdout: [
+        'skills/vault-sync/package.json:9:    "zod": "^3.24.0"',
+        'skills/vault-sync/package.json:3:  "version": "3.24.0"',
+      ].join('\n'),
+      stderr: '',
+    };
+    const r = evaluateDriftSweep(grep, '3.24.0', HISTORY_ALLOWLIST);
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('skills/vault-sync/package.json');
+  });
+
+  it('names each drifted file once, however many lines matched', () => {
+    const grep = {
+      status: 0,
+      stdout: 'site/index.html:4:v3.20.0\nsite/index.html:9:v3.20.0\n',
+      stderr: '',
+    };
+    const r = evaluateDriftSweep(grep, '3.20.0', HISTORY_ALLOWLIST);
+    expect(r.ok).toBe(false);
+    expect(r.detail.match(/site\/index\.html/g)).toHaveLength(1);
+  });
+
+  it('treats a bare path with no content as a hit — a file list cannot prove a range', () => {
+    // The `-l` shape stays fail-closed: no content, no excuse.
+    const grep = { status: 0, stdout: 'skills/vault-sync/package.json\n', stderr: '' };
+    expect(evaluateDriftSweep(grep, '3.24.0', HISTORY_ALLOWLIST).ok).toBe(false);
+  });
+
+  it.each([
+    ['    "zod": "^3.24.0"', true],
+    ['zod ~3.24.0 pinned', true],
+    ['we were at 3.24.0 back then', false],
+    ['"zod": "^3.24.0" and repo at 3.24.0', false],
+    ['nothing to see', false],
+  ])('isDependencyRangeOnly(%j) === %s', (line, expected) => {
+    expect(isDependencyRangeOnly(line, '3.24.0')).toBe(expected);
   });
 });
 

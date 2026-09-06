@@ -1,17 +1,71 @@
 /**
  * template.mjs — Canonical .vault.yaml template renderer for vault-backfill.
  *
- * Reads the template once from projects-baseline; subsequent calls use cache.
+ * Reads the template once from a projects-baseline checkout; subsequent calls
+ * use the cache. The checkout is optional — see docs/baseline.md.
  * Part of scripts/vault-backfill.mjs (Issue #241).
  */
 
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { resolveHostPath } from '../config/host-paths.mjs';
 
-export const TEMPLATE_PATH = process.env.PROJECTS_BASELINE_DIR
-  ? resolve(process.env.PROJECTS_BASELINE_DIR, 'templates/shared/.vault.yaml.template')
-  : resolve(homedir(), 'Projects/projects-baseline/templates/shared/.vault.yaml.template');
+/** Path of the template RELATIVE to a projects-baseline checkout root. */
+const TEMPLATE_REL_PATH = 'templates/shared/.vault.yaml.template';
+
+/** This file lives at `<repoRoot>/scripts/lib/vault-backfill/`. */
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+/**
+ * Candidate projects-baseline checkout roots. The baseline is optional and
+ * private (`docs/baseline.md`), so no host-specific directory name may be
+ * committed here.
+ *
+ * Two tiers, and the split is load-bearing:
+ *
+ *   EXPLICIT — `PROJECTS_BASELINE_DIR`, else `SO_BASELINE_PATH` / `owner.yaml`
+ *   `paths.baseline-path`. When the operator has SAID where the baseline is,
+ *   that answer is used ALONE. Probing past a wrong explicit value would resolve
+ *   a DIFFERENT baseline than the one named and report success — silently using
+ *   a corpus nobody asked for is worse than the abort, and it would hide the
+ *   typo forever.
+ *
+ *   CONVENTION — the sibling checkout `scripts/sync-vault-schema.mjs` already
+ *   uses, then the legacy `~/Projects` default this module shipped with. These
+ *   are guesses, so probing among them is exactly right.
+ *
+ * @returns {string[]} never empty
+ */
+function baselineCandidates() {
+  const envDir = (process.env.PROJECTS_BASELINE_DIR || '').trim();
+  if (envDir) return [envDir];
+  const hostDir = resolveHostPath('baseline-path', null);
+  if (typeof hostDir === 'string' && hostDir.trim() !== '') return [hostDir.trim()];
+  return [
+    resolve(REPO_ROOT, '..', 'projects-baseline'),
+    resolve(homedir(), 'Projects/projects-baseline'),
+  ];
+}
+
+/**
+ * Resolved absolute path of the canonical template.
+ *
+ * Import-time resolution is retained deliberately: the export is a plain string
+ * that `scripts/vault-backfill.mjs` and the tests both read directly. Ceiling:
+ * at most two `existsSync` calls at import. When no candidate exists the FIRST
+ * candidate is exported anyway, so `loadTemplate`'s die message names the path
+ * the operator most likely meant rather than `undefined`.
+ */
+export const TEMPLATE_PATH = (() => {
+  const candidates = baselineCandidates();
+  for (const base of candidates) {
+    const candidate = resolve(base, TEMPLATE_REL_PATH);
+    if (existsSync(candidate)) return candidate;
+  }
+  return resolve(candidates[0], TEMPLATE_REL_PATH);
+})();
 
 const TODAY = new Date().toISOString().slice(0, 10);
 
@@ -27,7 +81,10 @@ export function loadTemplate(dieFn) {
     dieFn(
       2,
       `canonical template not found at ${TEMPLATE_PATH} — ` +
-        `set PROJECTS_BASELINE_DIR env var or check projects-baseline checkout at $HOME/Projects/projects-baseline`,
+        `the projects-baseline checkout is optional and private (see docs/baseline.md). ` +
+        `Point at it with owner.yaml \`paths.baseline-path\` (host-local, never committed), ` +
+        `the SO_BASELINE_PATH env var, or PROJECTS_BASELINE_DIR; a sibling checkout at ` +
+        `../projects-baseline is picked up automatically.`,
     );
   }
 

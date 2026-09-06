@@ -2,11 +2,18 @@
  * tests/skills/session-start/historical-guard-wiring.test.mjs
  *
  * Regression: GL#621 stale-replay HISTORICAL guard wiring in session-start.
- * The HISTORICAL guard banner must remain present in SKILL.md prose at the four
+ * The HISTORICAL guard banner must remain present in the skill prose at the four
  * injection points where prior-session context is surfaced — the `active`/`paused`
  * resume branch (Phase 1.5), the Recommendations Banner, the Snapshot Recovery
  * subsection, and the Phase 6.5 Previous Sessions subsection — so the coordinator
  * never treats a stale record as a live instruction.
+ *
+ * Path note (#1157 references/ split): the first THREE injection points live in
+ * Phase 1.5, which moved verbatim to
+ * `references/phase-1-5-session-continuity.md`; the fourth (Phase 6.5 Memory
+ * Recall) stayed in SKILL.md. Each assertion below targets the file that owns its
+ * injection point — deliberately NOT a "banner appears somewhere in the skill"
+ * search, which would go green while three of the four sites were lost.
  *
  * Without this snapshot test the doc wiring is invisible to CI — the SSOT module
  * (`scripts/lib/historical-guard.mjs`) ships green even when SKILL.md drops the
@@ -25,15 +32,31 @@ import { HISTORICAL_GUARD_BANNER } from '@lib/historical-guard.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const SKILL_PATH = path.join(REPO_ROOT, 'skills/session-start/SKILL.md');
+const CONTINUITY_PATH = path.join(
+  REPO_ROOT,
+  'skills/session-start/references/phase-1-5-session-continuity.md',
+);
 
 describe('HISTORICAL guard wiring (#621, session-start)', () => {
   it('skills/session-start/SKILL.md exists at the expected path', () => {
     expect(existsSync(SKILL_PATH)).toBe(true);
   });
 
+  it('references/phase-1-5-session-continuity.md exists at the expected path', () => {
+    expect(existsSync(CONTINUITY_PATH)).toBe(true);
+  });
+
   it('the banner literal "NOT LIVE INSTRUCTIONS" is present in SKILL.md', () => {
     const body = readFileSync(SKILL_PATH, 'utf8');
     expect(body).toContain('NOT LIVE INSTRUCTIONS');
+  });
+
+  it('the SKILL.md Phase 1.5 stub routes to references/phase-1-5-session-continuity.md', () => {
+    const body = readFileSync(SKILL_PATH, 'utf8');
+    const idx15 = body.indexOf('## Phase 1.5: Session Continuity');
+    const idx16 = body.indexOf('## Phase 1.6', idx15);
+    expect(idx15).toBeGreaterThan(-1);
+    expect(body.slice(idx15, idx16)).toContain('references/phase-1-5-session-continuity.md');
   });
 
   it('embeds the byte-identical canonical banner literal from the SSOT module', () => {
@@ -47,7 +70,7 @@ describe('HISTORICAL guard wiring (#621, session-start)', () => {
   });
 
   it('the guard appears in the `status: active` resume region, before the Recommendations Banner heading', () => {
-    const body = readFileSync(SKILL_PATH, 'utf8');
+    const body = readFileSync(CONTINUITY_PATH, 'utf8');
     const idxActive = body.indexOf('`status: active` — previous session crashed');
     const idxGuard = body.indexOf('NOT LIVE INSTRUCTIONS');
     const idxNextHeading = body.indexOf('### Recommendations Banner (Epic #271 Phase A)');
@@ -60,7 +83,7 @@ describe('HISTORICAL guard wiring (#621, session-start)', () => {
   });
 
   it('the guard is present near the Snapshot Recovery subsection', () => {
-    const body = readFileSync(SKILL_PATH, 'utf8');
+    const body = readFileSync(CONTINUITY_PATH, 'utf8');
     const idxSnapshot = body.indexOf('### Snapshot Recovery (#196)');
     const guardInSnapshot = body.indexOf('NOT LIVE INSTRUCTIONS', idxSnapshot);
     const idxCurrentTaskBanner = body.indexOf('### Current-Task Banner', idxSnapshot);
@@ -72,7 +95,7 @@ describe('HISTORICAL guard wiring (#621, session-start)', () => {
   });
 
   it('the guard is present near the Recommendations Banner subsection', () => {
-    const body = readFileSync(SKILL_PATH, 'utf8');
+    const body = readFileSync(CONTINUITY_PATH, 'utf8');
     const idxRecBanner = body.indexOf('### Recommendations Banner (Epic #271 Phase A)');
     const guardInRec = body.indexOf('NOT LIVE INSTRUCTIONS', idxRecBanner);
     const idxIdleReset = body.indexOf('### Idle Reset', idxRecBanner);

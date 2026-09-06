@@ -954,6 +954,32 @@ async function main() {
     } catch { /* hook must remain non-blocking */ }
   }
 
+  // Plugin-update probe (#nnn, d7 R2) — "is the plugin that is RUNNING behind
+  // the plugin that is PUBLISHED?".
+  //
+  // MEASURED 2026-09-06: this host ran the marketplace-cache copy at 3.19.0
+  // (installed 2026-08-09) while repo and npm stood at the 3.24 line — five minors,
+  // four weeks, zero warnings, because NO code anywhere compared installed
+  // against available (`grep -rln "registry.npmjs.org\|dist-tags" scripts/
+  // hooks/ skills/` → only scripts/release.mjs, the publisher).
+  //
+  // Placement mirrors the probe block above: BEFORE the payload (the event
+  // carries both versions) and BEFORE flushBanner(), so the line rides the ONE
+  // systemMessage envelope. A second stdout object would be silently discarded
+  // (HR-106) — the failure mode the bannerLines docstring describes.
+  //
+  // Same measurement/display split as the probes: the request and the event
+  // fields happen regardless, `pushBanner` is gated on `bannerData`. Network,
+  // cache and kill-switch behaviour live in the module.
+  let pluginUpdate = null;
+  try {
+    const { checkPluginUpdate } = await import('../scripts/lib/plugin-update-banner.mjs');
+    pluginUpdate = await checkPluginUpdate({
+      cacheDir: path.join(projectRoot, '.orchestrator', 'runtime'),
+    });
+    if (pluginUpdate && bannerData) pushBanner(pluginUpdate.message);
+  } catch { /* hook must remain non-blocking */ }
+
   const payload = {
     platform,
     project: projectName,
@@ -965,6 +991,34 @@ async function main() {
     // makes the supersession rate measurable instead of inferred (HR-105).
     peers_superseded: mechanicalPeersSuperseded,
   };
+
+  // #nnn — installed/latest plugin version on the session record.
+  //
+  // HR-105: a verdict nothing records is unfalsifiable. `installed` is stamped
+  // on EVERY start (it is a local file read that cannot fail for network
+  // reasons), and `latest` whenever it is known — including the runs where
+  // checkPluginUpdate() stayed silent because the versions matched. Those runs
+  // are the DENOMINATOR of the probe's firing rate; without them the fleet can
+  // only ever see how often it warned, never how often it could have.
+  //
+  // Both keys are OMITTED rather than nulled when unknown (docs/events-schema.md
+  // optional-field convention: absent ≠ zero) — a kill-switched or offline
+  // session must not read as "latest is 0/unknown-but-measured".
+  try {
+    const { readInstalledPluginVersion, readCachedLatest, isUpdateCheckDisabled } =
+      await import('../scripts/lib/plugin-update-banner.mjs');
+    const installedVersion = readInstalledPluginVersion();
+    if (installedVersion) payload.plugin_version_installed = installedVersion;
+    // `latest` is gated on the kill switch, `installed` is not: reading this
+    // repo's own package.json is not the thing an operator switched off.
+    if (!isUpdateCheckDisabled()) {
+      const latestVersion =
+        pluginUpdate?.latest
+        ?? readCachedLatest({ cacheDir: path.join(projectRoot, '.orchestrator', 'runtime') })?.version
+        ?? null;
+      if (latestVersion) payload.plugin_version_latest = latestVersion;
+    }
+  } catch { /* telemetry never blocks the hook */ }
   if (bannerData) {
     payload.host_class = bannerData.host.host_class;
     payload.ram_free_gb = bannerData.resources.ram_free_gb;
@@ -999,6 +1053,30 @@ async function main() {
   // Single flush — see the bannerLines docstring for why this must stay the
   // only stdout write in the hook.
   flushBanner();
+
+  // #1229 — refresh the session-lock heartbeat at the END of this hook's run.
+  //
+  // MEASURED (STATE.md deviation 2026-09-05T06:08:46Z): session-20's lock was
+  // reaped as stale at 06:06Z by an UNRELATED session's SessionEnd, its
+  // heartbeat 11.3 h old against a 4 h TTL. The session was not idle — it was
+  // still inside session-start / session-plan, where no heartbeat writer
+  // existed: `updateHeartbeat()` was called only from the wave loop, from
+  // on-stop and from session-end. A session that never reached /go therefore
+  // aged out of its own lock while working.
+  //
+  // bootstrapLock() above stamps `last_heartbeat = started_at` at LOCK GENESIS,
+  // i.e. before the peer scan, the backfill and the Phase-4 probes have run.
+  // Stamping again here moves the clock to the end of the hook and — more
+  // importantly — makes session-start a heartbeat CALL SITE at all, so the
+  // cadence no longer begins only when the first wave starts.
+  //
+  // `updateHeartbeat()` already carries the same-session guard this needs (it
+  // returns false without writing when the lock belongs to another session),
+  // so no `touchIfOwn()` wrapper is warranted — see scripts/lib/session-lock.mjs.
+  try {
+    const { updateHeartbeat } = await import('../scripts/lib/session-lock.mjs');
+    updateHeartbeat({ repoRoot: projectRoot, sessionId });
+  } catch { /* hook must remain non-blocking */ }
 
   // Size-based rotation of events.jsonl (#251). Session-start is the single
   // rotation trigger — per-append overhead is rejected design. Any failure

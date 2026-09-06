@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-09-05T06:45:18.746Z",
-  "head": "4b4513031992a4146a71a87ea2fea6a9a1761cb5",
+  "generated_at": "2026-09-06T12:02:48.164Z",
+  "head": "e4674109b867d69332d05438bf2f7f5d63654ae0",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -71,6 +71,12 @@
         "on-stop.mjs",
         "post-subagent-discovery-validator.mjs",
         "subagent-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "hooks/_lib/subagent-transcript.mjs",
+      "reachable_from": [
+        "post-subagent-discovery-validator.mjs"
       ]
     },
     {
@@ -339,7 +345,8 @@
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -360,7 +367,8 @@
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -632,7 +640,8 @@
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -668,7 +677,8 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -763,7 +773,8 @@
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
         "pre-bash-staging-fence.mjs",
-        "pre-task-scope-disjoint.mjs"
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -844,7 +855,8 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -873,7 +885,8 @@
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-memory-propose-audit.mjs",
-        "pre-task-scope-disjoint.mjs"
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -915,7 +928,8 @@
         "pre-auq-clarity.mjs",
         "pre-bash-memory-propose-audit.mjs",
         "pre-bash-staging-fence.mjs",
-        "pre-task-scope-disjoint.mjs"
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -975,7 +989,8 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -995,7 +1010,8 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -1015,7 +1031,8 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -1110,6 +1127,12 @@
       ]
     },
     {
+      "file": "scripts/lib/plugin-update-banner.mjs",
+      "reachable_from": [
+        "on-session-start.mjs"
+      ]
+    },
+    {
       "file": "scripts/lib/resource-probe.mjs",
       "reachable_from": [
         "on-session-start.mjs"
@@ -1200,7 +1223,8 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -1220,7 +1244,8 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -1306,6 +1331,7 @@
       "file": "scripts/lib/skill-invocations-schema.mjs",
       "reachable_from": [
         "on-session-end.mjs",
+        "on-session-start.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -1313,6 +1339,23 @@
       "file": "scripts/lib/skill-judgments-schema.mjs",
       "reachable_from": [
         "on-session-end.mjs",
+        "on-session-start.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/state-md.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/state-md/body-sections.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -1333,7 +1376,16 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/state-md/recommendations.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -1353,7 +1405,8 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -1366,6 +1419,7 @@
       "file": "scripts/lib/sunset/walker.mjs",
       "reachable_from": [
         "on-session-end.mjs",
+        "on-session-start.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -1373,6 +1427,7 @@
       "file": "scripts/lib/telemetry/anon-id.mjs",
       "reachable_from": [
         "on-session-end.mjs",
+        "on-session-start.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -1396,6 +1451,7 @@
       "file": "scripts/lib/telemetry/queue.mjs",
       "reachable_from": [
         "on-session-end.mjs",
+        "on-session-start.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -1403,6 +1459,7 @@
       "file": "scripts/lib/telemetry/schema.mjs",
       "reachable_from": [
         "on-session-end.mjs",
+        "on-session-start.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -1410,6 +1467,7 @@
       "file": "scripts/lib/telemetry/sync.mjs",
       "reachable_from": [
         "on-session-end.mjs",
+        "on-session-start.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },

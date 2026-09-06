@@ -215,9 +215,12 @@ describe('learningKeyOf — the writer and the readers derive ONE key', () => {
 
 describe('learningKeyOf — a stamped key still resolves to its learning', () => {
   // Bug: a derivation change re-keys the stored contract. The key is stamped
-  // into 13 tracked `.claude/rules/*.md` provenance blocks; if the derivation
-  // moves, every one of them becomes a `dangling-learning-key` finding and the
-  // rule loses its traceability to the learning it was minted from.
+  // into 33 provenance bullets across 8 tracked `.claude/rules/*.md` files
+  // (measured 2026-09-06 after the 43->8 consolidation:
+  // `grep -c '^- learning-key:' .claude/rules/*.md` sums to 33); if the
+  // derivation moves, every one of them becomes a `dangling-learning-key`
+  // finding and the rule loses its traceability to the learning it was minted
+  // from.
   //
   // Golden pairs, harvested 2026-08-13 from the live store x the stamped rule
   // files: the (type, subject) side is the record as it sits in
@@ -225,32 +228,44 @@ describe('learningKeyOf — a stamped key still resolves to its learning', () =>
   // inlined), the expected key is READ AT RUNTIME out of the tracked rule file,
   // so this asserts derivation-vs-committed-artifact rather than
   // derivation-vs-my-expectation.
+  //
+  // The 43->8 consolidation (2026-09-06) merged the four single-learning files
+  // these pairs used to name into four multi-learning files, so the assertion
+  // moved from "the file's ONE stamped key" to "the file's stamped key SET
+  // contains this derivation exactly once". Same contract — a stamped key still
+  // has to resolve to its learning, in the file that absorbed it — and the
+  // exactly-once form additionally catches a double-stamp the single-exec form
+  // could not see.
   it.each([
     [
-      'anti-pattern-validate-config-cli-exit-code-is-not-a-schema-gate-under-enforcement-warn-73b1249.md',
+      'process-contracts.md',
       'anti-pattern',
       'validate-config CLI exit code is not a schema gate under enforcement:warn',
     ],
     [
-      'fragile-file-quality-gate-wrapper-needs-large-output-buffer-and-env-isolation-1f999bc.md',
+      'toolchain-and-build.md',
       'fragile-file',
       'quality-gate-wrapper-needs-large-output-buffer-and-env-isolation',
     ],
     [
-      'recurring-issue-session-registry-fresh-claim-files-must-be-age-gated-f1f3be4.md',
+      'identity-and-locks.md',
       'recurring-issue',
       'session-registry-fresh-claim-files-must-be-age-gated',
     ],
     [
-      'proven-pattern-nul-byte-corruption-needs-a-byte-level-pre-commit-gate-posix-tr-cmp-is-the-only-portable-detector-9d8032c.md',
+      'toolchain-and-build.md',
       'proven-pattern',
       'NUL-byte corruption needs a byte-level pre-commit gate; POSIX tr|cmp is the only portable detector',
     ],
-  ])('%s', (ruleFile, type, subject) => {
+  ])('%s carries the stamped key for %s', (ruleFile, type, subject) => {
     const body = readFileSync(join(RULES_DIR, ruleFile), 'utf8');
-    const stamped = /^[-*][ \t]+learning-key:[ \t]*`([^`]+)`/m.exec(body);
-    expect(stamped, `no learning-key stamped in ${ruleFile}`).not.toBeNull();
-    expect(learningKeyOf({ type, subject })).toBe(stamped[1]);
+    const stamped = [...body.matchAll(/^[-*][ \t]+learning-key:[ \t]*`([^`]+)`/gm)].map((m) => m[1]);
+    expect(stamped, `no learning-key stamped in ${ruleFile}`).not.toHaveLength(0);
+    // EXACTLY once, against the file's full stamped set — not "some file
+    // mentions it". Zero means the derivation drifted away from the committed
+    // artifact (the `dangling-learning-key` state); two means the merge
+    // double-stamped one learning.
+    expect(stamped.filter((k) => k === learningKeyOf({ type, subject }))).toHaveLength(1);
   });
 
   it('derives a key of the shape every stamped key already has', () => {
@@ -258,10 +273,14 @@ describe('learningKeyOf — a stamped key still resolves to its learning', () =>
     // Floor/ceiling per `testing.md` § Dynamic Artifact Counts — the corpus
     // grows — but "zero stamped keys of a shape the derivation cannot produce"
     // is a fixed invariant, not a count.
+    // ALL stamped keys, not the first per file: since the 43->8 consolidation a
+    // single file carries up to 8 of them, so a first-match-per-file census
+    // would audit 8 keys where 33 are stamped.
     const stamped = readdirSync(RULES_DIR)
       .filter((n) => n.endsWith('.md'))
-      .map((n) => /^[-*][ \t]+learning-key:[ \t]*`([^`]+)`/m.exec(readFileSync(join(RULES_DIR, n), 'utf8')))
-      .filter((m) => m !== null)
+      .flatMap((n) => [
+        ...readFileSync(join(RULES_DIR, n), 'utf8').matchAll(/^[-*][ \t]+learning-key:[ \t]*`([^`]+)`/gm),
+      ])
       .map((m) => m[1]);
 
     expect(stamped.length).toBeGreaterThanOrEqual(5);

@@ -5,11 +5,13 @@
  * peer-detection (F2, #168) and hooks/on-stop.mjs clean deregister + zombie
  * sweep (F3, #169).
  *
- * Registry location: `~/.config/session-orchestrator/sessions/active/<sessionId>.json`
- * Sweep log: `~/.config/session-orchestrator/sessions/sweep.log` (JSONL)
+ * Registry location: `<private-config-dir>/sessions/active/<sessionId>.json`
+ * Sweep log: `<private-config-dir>/sessions/sweep.log` (JSONL)
  *
- * Overridable via env var `SO_SESSION_REGISTRY_DIR` (points to the parent
- * `sessions/` directory, not `active/`) — used by tests for isolation.
+ * `<private-config-dir>` is `resolvePrivateConfigDir()` — `SO_CONFIG_HOME` >
+ * `XDG_CONFIG_HOME` > `~/.config/session-orchestrator`. `SO_SESSION_REGISTRY_DIR`
+ * overrides the whole `sessions/` directory (not `active/`) and outranks all
+ * three — used by tests for isolation.
  *
  * Heartbeat schema (per issue #167):
  *   {
@@ -27,7 +29,6 @@
  * deliberately, see `skills/_shared/state-ownership.md` § Schema v1 Sunset.
  */
 
-import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
@@ -36,16 +37,31 @@ import { digestSha256 } from './crypto-digest-utils.mjs';
 import { appendFileSync, mkdirSync } from 'node:fs';
 
 import { utcTimestamp, appendJsonl } from './common.mjs';
+import { resolvePrivateConfigDir } from './config/private-config-dir.mjs';
 
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
 
-/** Parent directory for all session-registry state. */
+/**
+ * Parent directory for all session-registry state.
+ *
+ * Precedence: `SO_SESSION_REGISTRY_DIR` (names the `sessions/` dir ITSELF —
+ * highest, and what every existing test uses for isolation) > the host-private
+ * config dir resolved by `resolvePrivateConfigDir()` (`SO_CONFIG_HOME` >
+ * `XDG_CONFIG_HOME` > `~/.config/session-orchestrator`).
+ *
+ * Hardcoding `~/.config` here was the #1223 hazard class in its registry form:
+ * a sandboxed probe run that set `SO_CONFIG_HOME=<tmp>` moved every OTHER
+ * host-private artefact but not this one, so the throwaway session registered
+ * itself in the operator's REAL registry and was then discovered as a live peer.
+ * `.trim()` guards the whitespace-only env value (`development.md` § Error
+ * Handling) — `'   '` is truthy and would otherwise be returned verbatim.
+ */
 export function registryBaseDir() {
-  const override = process.env.SO_SESSION_REGISTRY_DIR;
-  if (override && override.length > 0) return override;
-  return path.join(os.homedir(), '.config', 'session-orchestrator', 'sessions');
+  const override = (process.env.SO_SESSION_REGISTRY_DIR || '').trim();
+  if (override) return override;
+  return path.join(resolvePrivateConfigDir(), 'sessions');
 }
 
 /** Directory holding one JSON file per active session. */

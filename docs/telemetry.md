@@ -39,8 +39,11 @@ projection unit test enforces the drop of any non-whitelisted input field.
 | `arch` | CPU architecture (e.g. `arm64`, `x64`). |
 | `node_major` | Major Node.js version in use. |
 | `ci` | Boolean — whether the run was detected as a CI environment. |
-| `fleet` | Boolean — whether this send came from an operator's own fleet-mode host (`owner.yaml` opt-in), as opposed to an external install. |
-| `session_type` | One of `housekeeping`, `feature`, `deep`, `other`. |
+| `fleet` | Boolean — **DEPRECATED since 2026-09-06, removal 2027-03-06.** Identical in value to `fleet_self_declared` for the whole deprecation generation; kept so the server's existing `fleet` column stays comparable across the rename. |
+| `fleet_self_declared` | Boolean, optional — the client's own claim that this send came from an operator host. **Self-declared, and the name says so on purpose:** the authoritative classification is server-side (see below). Derived from the *resolved consent state* (`enabled-fleet` from an `owner.yaml` opt-in, or `enabled-env` from `SO_TELEMETRY=1`), no longer from a raw `owner.yaml` read. |
+| `session_profile` | Optional — the STATE.md frontmatter `session-profile` (e.g. `ultradeep`), emitted **verbatim**. A SECOND axis beside `session_type`, never a substitute for it: an ultradeep session is `session_type: "deep"` PLUS `session_profile: "ultradeep"`. Deliberately not normalized — degrading an unknown profile to `other` would destroy the only signal that distinguishes the 7-wave form. **Absent when no profile is set** (the key is omitted, never `null`), including on derived pings, which never invent one. |
+| `session_record` | Optional — WHICH source the session facts in this ping came from: `ledger` (a matching `sessions.jsonl` record), `derived` (reconstructed from `events.jsonl`), `absent` (neither). When `absent`, `session_type` is `unknown` and `duration_bucket` is **not a measurement**. |
+| `session_type` | One of `housekeeping`, `feature`, `deep`, `other`, `unknown`. `other` means MEASURED but not one of the three modes; `unknown` means NOT MEASURED. Before 2026-09-06 both collapsed to `other`. |
 | `duration_bucket` | One of `<15m`, `15-60m`, `1-3h`, `>3h` — a coarse bucket, never an exact duration. |
 | `skills[]` | Names of invoked skills, filtered against the shipped plugin roster — any name not in that roster becomes `"other"`. |
 | `commands[]` | Names of invoked slash-commands, same filtering rule as `skills[]`. |
@@ -190,6 +193,90 @@ failed one (#1138).
 - **Anonymous ID rotation:** every 90 days, independent of retention — a
   rotated ID cannot be linked back to the one it replaced.
 
+## When a ping is sent
+
+Two triggers, deliberately independent of each other:
+
+1. **SessionEnd** (`hooks/on-session-end.mjs`) — the mechanical close-time
+   flush.
+2. **SessionStart** (`backfillOnSessionStart` in
+   `scripts/backfill-abandoned-sessions.mjs`) — drains whatever the PREVIOUS
+   session left queued.
+
+Trigger 2 exists because trigger 1 fires only on a REGULAR close, and most
+sessions do not have one: measured 2026-09-06 over 90 fleet days, **429 clean
+closes against 2.016 distinct `session.started` ids = 21,3 %**. Roughly four
+sessions in five never reached the only code path that sends. SessionStart is
+the trigger that survives whatever killed the previous session — the same
+argument the abandoned-session backfill already makes for the ledger.
+
+The start-time flush is bounded (1,5 s POST budget), lazily imported, gated by
+the same consent check, and swallows every error: it can never delay or break a
+session start. A timeout is lossless — the batch lands in the offline queue.
+
+A ping no longer depends on `sessions.jsonl`. When the ledger has no matching
+record, `session_type` and `duration_bucket` are reconstructed from
+`events.jsonl` and the ping is stamped `session_record: "derived"`; when neither
+source has a type, it is `session_type: "unknown"` with `session_record:
+"absent"` — never a measured-looking `other`.
+
+### Sandbox guard
+
+The sender refuses to send when it is not running in a real operator session.
+This is not a nicety: on 2026-09-06 six agent sandboxes ran the SessionEnd hook
+from a repo checkout and sent **six real pings to the production ingest server**,
+minted against the operator's real `anon_id`, because `telemetry/paths.mjs`
+resolves `~/.config/session-orchestrator/` from `homedir()` and does not honour
+`SO_CONFIG_HOME` — faking the source never faked the destination.
+
+A send is refused (no network, no queue write, no anon-ID mint) when **any** of:
+
+- `SO_TELEMETRY_DISABLED=1` or `DO_NOT_TRACK` is set;
+- `SO_CONFIG_HOME` / `XDG_CONFIG_HOME` points somewhere other than the directory
+  the telemetry state is actually read from (unless the caller redirected the
+  state path too — that redirect succeeded, which is the opposite of the leak);
+- `CLAUDE_PROJECT_DIR`, or the cwd, sits under the OS temp directory or `/tmp`.
+
+If you invoke any telemetry writer by hand, export `SO_TELEMETRY_DISABLED=1`.
+
+## Server-side fleet attribution
+
+The `fleet` flag on the wire is **self-declared and was measurably wrong**.
+Until 2026-09-06 the client derived it as `ownerConfig?.telemetry?.enabled
+=== true` — a statement about a FILE, not about a person. The operator's
+second Mac has consent granted but no `telemetry:` block in `owner.yaml`,
+so it declared itself external: **394 of 490 server records (80,4 %)**
+counted the operator as an external user, and every week's
+`fleet_vs_external` was wrong by that margin.
+
+Two independent repairs, because the client alone cannot close this:
+
+1. **Client-side** — `fleet_self_declared` is derived from the resolved
+   consent state (`enabled-fleet` / `enabled-env`), so a host opted in via
+   `SO_TELEMETRY=1` is no longer mistaken for an external install. The name
+   states the limit: a sandbox, or a host whose `owner.yaml` is unreachable,
+   still declares `false` however honest it is.
+2. **Server-side (authoritative)** — set `SO_INGEST_FLEET_ANON_IDS` on the
+   ingest server to a comma-separated list of the operator's own `anon_id`
+   values. A matching record is **stored** as fleet regardless of what it
+   claims. The allowlist can only PROMOTE, never demote: a host that honestly
+   declares itself fleet stays fleet even if the operator forgot to list it.
+
+```
+SO_INGEST_FLEET_ANON_IDS=a3bb4907-…,c29cac99-…
+```
+
+The record survives verbatim in `raw_json`, including its own `fleet` /
+`fleet_self_declared` claim, so the client's declaration and the server's
+verdict remain separable forever and the disagreement rate stays measurable.
+`fleet_vs_external` in the weekly digest reads the stored column, i.e. the
+server verdict. **The allowlist applies at INSERT time**, so it cannot repair
+rows already written — a `fleet_vs_external` computed over a range that
+predates the change is known-wrong and re-running the digest will not fix it.
+
+Unset by default: with no `SO_INGEST_FLEET_ANON_IDS`, storage takes the
+client's word exactly as it did before.
+
 ## Schema evolution
 
 The schema is **additive-only** within a given `schema_version`: new
@@ -197,6 +284,27 @@ optional fields may appear, but no field is ever repurposed or removed
 without a version bump. The server accepts both the current and the
 immediately previous `schema_version`, so a slightly-outdated client is
 never hard-broken by a server-side schema update.
+
+Unknown top-level fields are accepted by the server and preserved verbatim
+inside `raw_json`, so an additive field round-trips through a server that
+predates it — which is what makes a *rename* safe: emit both names for one
+generation, then drop the old one.
+
+**In flight now (added 2026-09-06, schema v1, additive):**
+
+| Field | Status | Removal |
+|---|---|---|
+| `fleet_self_declared` | new name for `fleet` | — |
+| `fleet` | deprecated alias, same value | **2027-03-06** |
+| `session_record` | new (`ledger` \| `derived` \| `absent`) | — |
+| `session_profile` | new (verbatim STATE.md `session-profile`; omitted when unset) | — |
+
+Client-side the frozen whitelist is split in two: `USAGE_PING_FIELDS` (the
+REQUIRED v1 contract, which `tests/telemetry/parity.test.mjs` asserts the
+server independently requires field by field) and
+`USAGE_PING_OPTIONAL_FIELDS`. `projectUsagePing` projects the UNION, so the
+data-minimization tripwire still holds — a field must be on a reviewed list
+before it can reach the wire.
 
 ## Relationship to `telemetry-claims.md`
 

@@ -1,0 +1,29 @@
+# d11 — GitHub trending + overlap — 2026-09-06
+## Summary
+- Benchmark shifted: obra/superpowers (282,226★) has 14 skills, NO commands/, NO agents/, 1 session-start hook, plugin manifests for ~13 harnesses (.claude-plugin .codex-plugin .cursor-plugin .devin-plugin .hermes-plugin .kimi-plugin .opencode .pi .agents + AGENTS.md/CLAUDE.md/GEMINI.md). We: 28 commands / 50 skills / 16 agents / 27 hooks / 463 scripts / 61 rules.
+- GSD moved: gsd-build/get-shit-done (64,593★) → open-gsd/gsd-core (9,146★, MIT, Node ≥24): 70 commands, 71 skills (1:1 paired, gsd-* namespaced), 35 agents, 28 hooks incl. write/read/prompt/workflow/secret-read/agent-isolation/worktree-path guards, 44 capabilities/ dirs (pi, hermes, kimi, windsurf, opencode, ollama…), gsd-extract-learnings, gsd-mempalace-*, gsd-autonomous, gsd-profile-user; installer `npx @opengsd/gsd-core@latest`.
+- README comparison rows "Scope and command enforcement hooks → Other orchestrators: None" and "Cross-session learning → None" are FALSIFIED by gsd-core. Also "VCS → usually GitHub only", "Circuit breaker → Partial" unmeasured.
+- Distribution is the real gap: `npx skills add <owner>/<repo>` (vercel-labs `skills`, 38,365,913 downloads/month); BMAD installs that way. We: 1,165 dl/month, 3 of 4 install rows require git clone into ~/Projects + npm install + install script.
+- Not listed anywhere: 0 hits in hesreallyhim/awesome-claude-code, 0 in composio-community/awesome-claude-plugins, not in anthropics/claude-plugins-official. README:21 claims `session-orchestrator@claude-community` — unverified, catalog not found.
+- Forks: 11 enumerated, ALL ahead_by=0 (4 share one push timestamp = bot wave) → no signal.
+- Anthropic official plugins occupy our neighbourhood: claude-md-management, skill-creator (with evals), code-review, security-guidance, hookify, ralph-loop, session-report, feature-dev, project-artifact. Official marketplace = vendor directory; supports strict:false skill-bundle entries.
+- Direct overlaps: tigerless-labs/autoharness (2,202★, session→reflector→skill write/merge/prune ≈ /evolve); thedotmack/claude-mem (93,312★, persistent context ≈ our memory layer).
+- Unique remaining: multiple OPERATOR sessions in one working copy (session.lock, PSA-001..007, peer-scope manifests) — gsd's agent-isolation/worktree guards are in-run axis; owner-privacy-by-construction (owner.yaml outside repos + leakage scanner + CP11 redaction); rules derived from own measured telemetry; vault/Obsidian mirroring; cross-session messaging; dual GitLab+GitHub auto-detect.
+- Trend (from repos only): unit of distribution = skill not command (superpowers: skills/using-superpowers as entry, description "Use when starting any conversation…"); SKILL.md = cross-harness standard (agentskills/agentskills 25,075★, ~46 clients incl. Pi); AGENTS.md = cross-harness instruction file; install converges on one npx command; official marketplace = vendor directory.
+- Wrong side: 28 slash commands as primary surface (using-orchestrator exists but auto-skill-dispatch:false); hand-maintained per-harness hook manifests (gsd: managed-hooks-registry + capabilities/); install surface; not listed.
+## Adoption candidates
+1 agentskills-spec frontmatter validator (name+description) + README line `npx skills add Kanevry/session-orchestrator` — S — external Claude/Codex/Cursor users.
+2 Submit to official directory (clau.de/plugin-directory-submission; strict:false skill bundle if needed) + PRs to awesome-claude-code + awesome-claude-plugins — S — discoverability (0 today).
+3 using-orchestrator: trigger-rich description (intent phrases), auto-skill-dispatch default true in template + CLAUDE.md, README "A session in three commands" → intent wording — M — users need not learn 28 commands; Codex/Pi where commands are only prompt templates.
+4 a single install entry point wired as the package.json `bin` (gsd bin/install.js pattern) routing to codex/cursor/pi installers; README Install collapses to 2 lines — M — no clone, no manual npm install in cache.
+5 .cursor-plugin/ and .pi/extensions/ as real manifest dirs (superpowers pattern) — M — native install for Cursor/Pi.
+6 declarative hooks registry (hooks/registry.mjs) as SSOT generating hooks.json + cursor bridge + pi wiring; drift-check — L — no manifest drift; scope enforcement reachable on Codex.
+## Drop candidates
+1 skills/skill-creator → point to official skill-creator plugin + native `claude plugin eval`. 2 LLM-judge half of /eval (eval-judge, skill-applied-judge, judge: off, advisory) → native claude plugin eval; keep deterministic rubric. 3 tmux-layout + ADR-0007 as standard observation substrate → optional operator extra (native Monitor + statusline).
+## Positioning sentence
+"Session Orchestrator is the only session layer that treats multiple concurrent human agent sessions in one and the same working copy as a hazard — repo lock, peer-scope manifests, destructive-command guard — and keeps the operator's private context out of a public repo by construction."
+## README claims to fix
+comparison rows (hooks None, learning None, VCS, circuit breaker); components.md:70 "4 vs 4" runtime coverage vs superpowers 13+/gsd 44; tests badge "15,000+" (volume, TV-003); README:9 "same skills and commands run across all four" vs :180 (Codex scope enforcement unavailable, Cursor/Pi sequential); README:21 claude-community catalog unverified. README:78 hook-events line is the good example.
+## Open questions
+1 claude-community catalog real? 2 does gsd-core's session lock cover the operator axis (14 code hits in hooks not read) — most expensive open question before any positioning change. 3 npm 1,165/month with 2 real users = bot/mirror traffic; keep out of README. 4 BMAD/ruflo judged from root listing only. 5 agent-os docs behind external site. 6 forks_count 7 vs 11 enumerated.
+STATUS: done

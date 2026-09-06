@@ -1,7 +1,8 @@
 /**
  * Frontmatter-Guard library (issue #328).
  *
- * Reads the canonical vault-frontmatter Zod schema source and exposes helpers
+ * Reads the canonical vault-frontmatter Zod schema source — when a
+ * projects-baseline checkout is reachable on this host — and exposes helpers
  * for generating a contextual schema snippet that can be injected into agent
  * prompts before vault-write tasks.
  *
@@ -10,15 +11,103 @@
  */
 
 import { digestSha256Short } from './crypto-digest-utils.mjs';
+import { resolveHostPath } from './config/host-paths.mjs';
 import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-/** Absolute path to the canonical vault-frontmatter schema source. */
-const SCHEMA_SOURCE_PATH = join(
-  homedir(),
-  'Projects/projects-baseline/packages/zod-schemas/src/vault-frontmatter.ts',
-);
+/** Path of the schema source RELATIVE to a projects-baseline checkout root. */
+const SCHEMA_REL_PATH = 'packages/zod-schemas/src/vault-frontmatter.ts';
+
+/** This file lives at `<repoRoot>/scripts/lib/` — two levels up is the repo root. */
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/**
+ * Candidate projects-baseline checkout roots.
+ *
+ * The baseline is OPTIONAL and PRIVATE (see `docs/baseline.md`), so this list
+ * must never assume a particular operator layout — it carries no host-specific
+ * directory names.
+ *
+ * When the host-local override (`SO_BASELINE_PATH` / `owner.yaml`
+ * `paths.baseline-path`) is set it is used ALONE: probing past a wrong explicit
+ * value would silently read a DIFFERENT baseline than the one named. Degrading
+ * to `null` (and the documented fallback enum set) is the honest outcome there.
+ * Only when nothing is configured do the two CONVENTIONS apply — the sibling
+ * checkout `scripts/sync-vault-schema.mjs` already uses, then the legacy
+ * `~/Projects` default this module shipped with.
+ *
+ * @returns {string[]}
+ */
+function baselineCandidates() {
+  const configured = resolveHostPath('baseline-path', null);
+  if (typeof configured === 'string' && configured.trim() !== '') return [configured.trim()];
+  return [
+    resolve(REPO_ROOT, '..', 'projects-baseline'),
+    join(homedir(), 'Projects', 'projects-baseline'),
+  ];
+}
+
+/** @type {{ resolved: boolean, value: string|null }} */
+const _pathCache = { resolved: false, value: null };
+
+/**
+ * Resolve the canonical vault-frontmatter schema source, or `null` when no
+ * baseline checkout is reachable on this host.
+ *
+ * Ceiling: at most two `statSync` calls per invocation, and the result is
+ * memoised for the process lifetime. Revisit if the candidate list ever grows
+ * past a handful of entries — then it needs a real search, not a probe loop.
+ *
+ * @param {{ refresh?: boolean }} [opts] — `refresh: true` re-probes (tests only)
+ * @returns {string|null}
+ */
+export function resolveSchemaSourcePath({ refresh = false } = {}) {
+  if (!refresh && _pathCache.resolved) return _pathCache.value;
+  let found = null;
+  for (const base of baselineCandidates()) {
+    const candidate = join(base, SCHEMA_REL_PATH);
+    try {
+      if (statSync(candidate).isFile()) {
+        found = candidate;
+        break;
+      }
+    } catch {
+      /* candidate absent — try the next one */
+    }
+  }
+  _pathCache.resolved = true;
+  _pathCache.value = found;
+  return found;
+}
+
+/**
+ * Fallback enum/field set used when no baseline checkout is reachable.
+ *
+ * Values mirror `skills/vault-sync/validator.mjs` (`vaultNoteTypeSchema` /
+ * `vaultNoteStatusSchema`), which is this repo's own in-tree copy of the
+ * canonical schema and is what `vault-sync` actually validates against. Using
+ * it means a baseline-less host injects a snippet the local validator accepts,
+ * rather than throwing.
+ */
+const FALLBACK_SCHEMA = Object.freeze({
+  typeEnum: Object.freeze([
+    'note', 'daily', 'project', 'person', 'reference',
+    'idea', 'learning', 'session', 'peer-card', 'board',
+  ]),
+  statusEnum: Object.freeze([
+    'draft', 'active', 'verified', 'archived', 'production',
+    'mvp', 'idea', 'maintenance', 'planned', 'paused', 'dead',
+  ]),
+  requiredFields: Object.freeze(['id', 'type', 'created', 'updated']),
+  idRegex: '^[a-z0-9]+(?:-[a-z0-9]+)*$',
+  tagsRegex: '^[a-z0-9]+(?:-[a-z0-9]+)*(?:/[a-z0-9]+(?:-[a-z0-9]+)*)*$',
+  schemaText: null,
+});
+
+/** One WARN per process, not one per call — the condition is constant. */
+let _warnedFallback = false;
 
 /**
  * In-memory mtime cache so repeated calls within a single process invocation
@@ -93,9 +182,12 @@ function _parseSchema(text) {
  * @returns {{ typeEnum: string[], statusEnum: string[], requiredFields: string[], idRegex: string, tagsRegex: string, schemaText: string } | null}
  */
 export function readVaultSchema() {
+  const sourcePath = resolveSchemaSourcePath();
+  if (sourcePath === null) return null;
+
   let mtime;
   try {
-    mtime = statSync(SCHEMA_SOURCE_PATH).mtimeMs;
+    mtime = statSync(sourcePath).mtimeMs;
   } catch {
     // File missing or inaccessible
     return null;
@@ -107,7 +199,7 @@ export function readVaultSchema() {
 
   let text;
   try {
-    text = readFileSync(SCHEMA_SOURCE_PATH, 'utf8');
+    text = readFileSync(sourcePath, 'utf8');
   } catch {
     return null;
   }
@@ -122,10 +214,17 @@ export function readVaultSchema() {
  * Compute an 8-character SHA-256 hex prefix of the given schema source text.
  * Stable across calls for the same input — useful as a cache-busting token.
  *
- * @param {string} schemaText
- * @returns {string}
+ * Returns `null` when there is NO schema text (absent baseline checkout,
+ * `readVaultSchema()` → `null`). Hashing "nothing" previously produced
+ * `e3b0c442` — the SHA-256 of the empty string — which is a real-looking token
+ * that compares equal across every baseline-less host, so a cache keyed on it
+ * would report "schema unchanged" while having measured nothing at all.
+ *
+ * @param {string|null|undefined} schemaText
+ * @returns {string|null} 8-char hex prefix, or `null` when there is no schema
  */
 export function computeSchemaHash(schemaText) {
+  if (typeof schemaText !== 'string' || schemaText.length === 0) return null;
   return digestSha256Short(schemaText);
 }
 
@@ -133,11 +232,30 @@ export function computeSchemaHash(schemaText) {
  * Generate a deterministic Markdown snippet documenting the vault frontmatter
  * schema, suitable for injection into agent prompts before vault-write tasks.
  *
- * @param {{ typeEnum: string[], statusEnum: string[], requiredFields: string[], idRegex: string, tagsRegex: string }} schema
+ * Degrades instead of throwing when no schema is available: a host without a
+ * projects-baseline checkout gets `readVaultSchema() === null`, and destructuring
+ * that killed the caller with `Cannot destructure property 'typeEnum' of
+ * 'schema' as it is undefined`. The guard below falls back to FALLBACK_SCHEMA
+ * and warns ONCE on stderr — an injected snippet that is one schema-version
+ * behind is worth incomparably more than a crashed pre-dispatch hook.
+ *
+ * @param {{ typeEnum: string[], statusEnum: string[], requiredFields: string[], idRegex: string, tagsRegex: string }|null} [schema]
  * @returns {string}
  */
 export function generateFrontmatterSnippet(schema) {
-  const { typeEnum, statusEnum, requiredFields, idRegex, tagsRegex: _tagsRegex } = schema;
+  let source = schema;
+  if (source === null || typeof source !== 'object') {
+    if (!_warnedFallback) {
+      _warnedFallback = true;
+      process.stderr.write(
+        'frontmatter-guard: no projects-baseline schema reachable — using the in-module ' +
+          'fallback enum set (see docs/baseline.md). Set SO_BASELINE_PATH or ' +
+          'owner.yaml paths.baseline-path to read the canonical schema.\n',
+      );
+    }
+    source = FALLBACK_SCHEMA;
+  }
+  const { typeEnum, statusEnum, requiredFields, idRegex, tagsRegex: _tagsRegex } = source;
 
   const typeList = typeEnum.map((v) => `\`${v}\``).join(' | ');
   const statusList = statusEnum.map((v) => `\`${v}\``).join(' | ');

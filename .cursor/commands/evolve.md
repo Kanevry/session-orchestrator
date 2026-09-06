@@ -1,6 +1,6 @@
 ---
 description: Extract session patterns into reusable learnings
-argument-hint: [analyze|review|list|dialectic [--apply]]
+argument-hint: "[analyze|review|list|dialectic [--apply]]"
 ---
 
 # /evolve

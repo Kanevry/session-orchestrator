@@ -28,6 +28,16 @@ Apply these steps in order against the repo root. Stop at the first hit. Never m
 - Never read both files. Never concatenate, diff, or cross-validate them — the SSOT is whichever the rule selects.
 - The resolved kind (`claude` | `agents`) is part of the contract. Consumers that report paths in JSON output (e.g., `skills/claude-md-drift-check/checker.mjs`) must surface the resolved path so users on either platform can audit the result.
 
+## Interaction with the root `AGENTS.md` this repo now ships
+
+Since the cross-harness portable surface landed, this repo carries BOTH files at its root. That does not weaken the rule above — it is what makes the rule safe to hold while still serving foreign readers:
+
+- **Our own readers still never read both.** `resolveInstructionFile()` picks exactly one (`CLAUDE.md` wins ties), and every consumer listed below goes through it. Nothing merges, diffs, or cross-validates the two as sources.
+- **The root `AGENTS.md` exists for FOREIGN readers**, not for ours. 7 of 8 surveyed harnesses (Codex CLI, Cursor, Copilot CLI, OpenCode, Amp, Kiro, …) read `AGENTS.md`; only Claude Code reads `CLAUDE.md`, and only Copilot CLI reads both. Without a root `AGENTS.md` this repo's `## Session Config` was unreachable from six of them.
+- **It is byte-identical by construction, and generated.** `scripts/generate-agents-skills.mjs` copies `CLAUDE.md` verbatim; `--check` (wired into `scripts/validate-plugin.mjs`) fails CI on any divergence. **Never edit `AGENTS.md`** — edit `CLAUDE.md` and regenerate. A consumer repo may instead symlink it; both shapes are accepted by the drift gate.
+- **Why a copy and not a symlink here:** `package.json` `files[]` does not publish `CLAUDE.md`, so a symlink would be DANGLING in the npm tarball; and `core.symlinks` defaults to false on Windows without Developer Mode, where git materialises the link as a 10-byte regular file containing the literal text `CLAUDE.md` — a pointer with no Session Config, which is precisely the failure this file guards against.
+- **The invariant is "the two cannot disagree", not "exactly one file exists."** `claude-md-drift-check` Check 7 (`vault-dir-parity`) enforces it: alias-by-construction → parity satisfied; two independent files that diverge → error. Check 9's probe 2a uses the same predicate so a defect in `CLAUDE.md` is never reported twice.
+
 ## Reference implementations
 
 ### Bash one-liner (matches `skills/_shared/bootstrap-gate.md` style)

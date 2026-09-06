@@ -14,7 +14,8 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { openDb, closeDb, insertRecords } from '../../server/ingest/db.mjs';
-import { computeWeekRange, buildDigest, renderDigestMarkdown, writeDigestArtifacts } from '../../server/ingest/digest.mjs';
+import { computeWeekRange, buildDigest, renderDigestMarkdown, writeDigestArtifacts, resolveCliRange } from '../../server/ingest/digest.mjs';
+import { validateRecord } from '../../server/ingest/validate.mjs';
 
 const DIGEST_SCRIPT = fileURLToPath(new URL('../../server/ingest/digest.mjs', import.meta.url));
 
@@ -185,5 +186,105 @@ describe('CLI seam', () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('database not found');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GitLab #1234 BUG 4 — digest.mjs's CLI parsed only --db/--out and always called
+// buildDigest(db) with no range, although buildDigest(db, {week, fromDay, toDay})
+// has always accepted one. Weeks W30–W32 therefore hold raw records and NO
+// aggregates_weekly rows, with no command able to fill them.
+// (Merged in from the misplaced tests/server/fleet-attribution-and-digest-range.test.mjs;
+// tests/server/ does not exist in this repo and this file already owns digest.mjs.)
+// ---------------------------------------------------------------------------
+
+const RANGE_OPERATOR_ID = 'a3bb4907-1111-4222-8333-444444444444';
+const RANGE_EXTERNAL_ID = '2773675c-5555-4666-8777-888888888888';
+
+/** A wire-shaped usage-ping, fed through validateRecord to get a storage row. */
+function rangePing(overrides = {}) {
+  return {
+    record_kind: 'usage-ping',
+    schema_version: 1,
+    anon_id: RANGE_OPERATOR_ID,
+    sent_at: '2026-09-06T11:00:00.000Z',
+    plugin_version: '3.24.0',
+    platform: 'claude',
+    os: 'darwin',
+    arch: 'arm64',
+    node_major: 24,
+    ci: false,
+    fleet: false,
+    session_type: 'unknown',
+    duration_bucket: '<15m',
+    skills: [],
+    commands: [],
+    ...overrides,
+  };
+}
+
+describe('digest CLI range resolution', () => {
+  it('with no flags falls back to the most recently COMPLETED week', () => {
+    const r = resolveCliRange({});
+    expect(r.week).toMatch(/^\d{4}-W\d{2}$/);
+    expect(r.fromDay < r.toDay).toBe(true);
+  });
+
+  it('--week alone derives the Mon..Sun day range (ISO-8601, week 1 contains 4 January)', () => {
+    expect(resolveCliRange({ week: '2026-W31' })).toEqual({
+      week: '2026-W31', fromDay: '2026-07-27', toDay: '2026-08-02',
+    });
+  });
+
+  it('--from/--to alone derive the week key from --from', () => {
+    expect(resolveCliRange({ from: '2026-07-27', to: '2026-08-02' })).toEqual({
+      week: '2026-W31', fromDay: '2026-07-27', toDay: '2026-08-02',
+    });
+  });
+
+  it('rejects malformed values rather than silently digesting the wrong days', () => {
+    expect(() => resolveCliRange({ week: '2026-31' })).toThrow(/--week/);
+    expect(() => resolveCliRange({ from: '27.07.2026', to: '2026-08-02' })).toThrow(/--from/);
+    expect(() => resolveCliRange({ from: '2026-08-02' })).toThrow(/together/);
+    expect(() => resolveCliRange({ from: '2026-08-02', to: '2026-07-27' })).toThrow(/must not be after/);
+  });
+});
+
+describe('a ranged digest writes aggregates_weekly rows and is idempotent', () => {
+  /** Two records inside W31 and one outside it, so the range actually filters. */
+  function seed(db) {
+    const rows = [
+      { ...validateRecord(rangePing()), received_day: '2026-07-28' },
+      { ...validateRecord(rangePing({ anon_id: RANGE_EXTERNAL_ID })), received_day: '2026-07-30' },
+      { ...validateRecord(rangePing()), received_day: '2026-08-10' },
+    ];
+    insertRecords(db, rows);
+  }
+
+  it('produces rows for the requested week only, and re-running is a no-op upsert', () => {
+    const db = openDb(':memory:');
+    try {
+      seed(db);
+      const range = resolveCliRange({ week: '2026-W31' });
+
+      const first = buildDigest(db, range);
+      expect(first.week).toBe('2026-W31');
+      expect(first.summary.total).toBe(2); // the 2026-08-10 record is out of range
+
+      const rows = db.prepare('SELECT metric, value_json FROM aggregates_weekly WHERE week = ? ORDER BY metric').all('2026-W31');
+      expect(rows.length).toBe(9);
+      expect(rows.map((r) => r.metric)).toContain('fleet_vs_external');
+
+      // Idempotence: same key set, same values, no duplicate rows.
+      buildDigest(db, range);
+      const again = db.prepare('SELECT metric, value_json FROM aggregates_weekly WHERE week = ? ORDER BY metric').all('2026-W31');
+      expect(again).toEqual(rows);
+
+      // And the pre-fix path (no range) targets a DIFFERENT week — which is
+      // exactly why W30–W32 could never be produced from the CLI.
+      expect(db.prepare('SELECT COUNT(*) AS c FROM aggregates_weekly').get().c).toBe(9);
+    } finally {
+      closeDb(db);
+    }
   });
 });

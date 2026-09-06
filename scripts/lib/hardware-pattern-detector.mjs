@@ -49,9 +49,26 @@ export const HW_SIGNALS = Object.freeze([
 // Per-signal detectors — stateless, pure functions over arrays
 // ---------------------------------------------------------------------------
 
+/**
+ * Terminal turn-event names accepted by the OOM detector.
+ *
+ * `orchestrator.turn.stopped` is the canonical name; `orchestrator.session.stopped`
+ * is the DEPRECATED legacy alias `hooks/on-stop.mjs` still emits beside it
+ * (carrying `deprecated: true`) for one deprecation generation. BOTH must be
+ * accepted here: every OOM record already on disk carries only the legacy name,
+ * so a hard switch would blind this detector to the entire history it exists to
+ * mine — and the `≥2 occurrences` aggregation threshold makes that silent
+ * (fewer hits, never an error).
+ *
+ * REMOVAL: drop `'orchestrator.session.stopped'` from this set on 2027-03-06,
+ * the date `hooks/on-stop.mjs` stops emitting the legacy name. See
+ * `skills/evolve/SKILL.md` § hardware-pattern, which documents the same window.
+ */
+const OOM_TERMINAL_EVENTS = new Set(['orchestrator.turn.stopped', 'orchestrator.session.stopped']);
+
 function detectOomKill(events) {
   const hits = events.filter((e) => {
-    if (e.event !== 'orchestrator.session.stopped') return false;
+    if (!OOM_TERMINAL_EVENTS.has(e.event)) return false;
     if (e.exit_code === 137) return true;
     if (typeof e.error === 'string' && /out of memory|killed/i.test(e.error)) return true;
     return false;

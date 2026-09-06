@@ -215,8 +215,11 @@ function isWaveScopedEvent(evType, rec = {}) {
  * `wave_number`, every gate run would have instantiated or refreshed a
  * `WaveSummary`, advanced `latestWave`, and burnt the once-per-wave
  * `alreadyEmitted` keys — suppressing the genuine signal when the real wave
- * record arrived later. Several other high-volume types (`session.stopped`,
- * `memory.propose_invoked`) already carry a wave and sat in the same trap.
+ * record arrived later. Several other high-volume types (`turn.stopped` — and its
+ * deprecated alias `session.stopped`, GitLab #1234 — plus `memory.propose_invoked`)
+ * already carry a wave and sat in the same trap. The gate is an ALLOWLIST
+ * (`isWaveRelevantType`), so the rename needed no edit here: a new name is
+ * ignored by default, which is the correct default for this classifier.
  *
  * ## Where the pass count actually comes from (#980)
  *

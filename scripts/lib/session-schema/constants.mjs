@@ -56,8 +56,31 @@ export const SESSION_KEY_ALIASES = Object.freeze({
 // Enums / required field lists
 // ---------------------------------------------------------------------------
 
-/** Closed set of valid session_type values. */
-export const VALID_SESSION_TYPES = Object.freeze(['feature', 'deep', 'housekeeping']);
+/**
+ * Closed set of valid session_type values.
+ *
+ * `unknown` (GitLab #1234, added 2026-09-06) is NOT a fourth session MODE — it is
+ * the absence of a measurement, and it exists so a reconstructed record can say
+ * so instead of guessing. Measured 2026-09-06 over the 90-day fleet corpus: all
+ * 1.656 `abandoned` records carry `_session_type_inferred: true` + `total_waves: 0`
+ * and NO organically written `abandoned` record exists anywhere — i.e. every one
+ * of them was labelled `housekeeping` by `scripts/lib/session-close-backfill.mjs`
+ * because the enum left it no alternative, and that guess is what produced the
+ * fleet-wide "27 % close rate" figure (the real rate is 21,3 %).
+ *
+ * Only `synthesizeRecord()` in `scripts/lib/session-close-backfill.mjs` writes it,
+ * and only for records it also flags `_session_type_inferred` + `_synthetic`.
+ * A live session never becomes `unknown`: `/session` still resolves one of the
+ * three modes, and `scripts/lib/wave-sizing.mjs` (which THROWS on a fourth value)
+ * is only ever fed the live type, never a ledger record.
+ *
+ * Known mis-bucket, out of this change's scope: `normalizeSessionType()` in
+ * `scripts/lib/telemetry/schema.mjs:382` maps any non-empty unlisted value to
+ * `'other'` ("something WAS measured and is not one of the three modes"), which
+ * is the opposite of what `unknown` means — even though that module already
+ * defines `SESSION_TYPE_UNKNOWN = 'unknown'` for its absent-branch.
+ */
+export const VALID_SESSION_TYPES = Object.freeze(['feature', 'deep', 'housekeeping', 'unknown']);
 
 /**
  * Required fields for a schema_version=1 record. Validated by validateSession
@@ -131,4 +154,15 @@ export const OPTIONAL_FIELDS = Object.freeze([
   // into a note a human reads" ⊃ "schema-valid". A record missing it is a clean
   // vault-mirror skip, NOT a malformed record.
   'effectiveness',
+  // PRD docs/prd/2026-09-06-ultradeep-session-profile.md — `session_profile`
+  // names a WAVE-SHAPE variant on top of an unchanged `session_type`. It is
+  // additive and optional on purpose: `ultradeep` is deliberately NOT a member
+  // of VALID_SESSION_TYPES above, because that set is mirrored in
+  // scripts/lib/telemetry/schema.mjs (an unlisted type -> 'other') and in
+  // scripts/lib/wave-sizing.mjs (an unlisted type -> TypeError), where a new
+  // MODE would be MISLABELLED rather than rejected. That reasoning is unchanged
+  // by the `unknown` member added above: `unknown` is the absence of a
+  // measurement, not a mode, and nothing dispatches on it. Every historical
+  // record lacking the field validates unchanged.
+  'session_profile',
 ]);

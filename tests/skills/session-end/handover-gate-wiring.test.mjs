@@ -31,10 +31,36 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const SESSION_END_PATH = path.join(REPO_ROOT, 'skills/session-end/SKILL.md');
 const WAVE_LOOP_PATH = path.join(REPO_ROOT, 'skills/wave-executor/wave-loop.md');
 const SESSION_START_PATH = path.join(REPO_ROOT, 'skills/session-start/SKILL.md');
+// #1157 references/ split — each assertion targets the file that OWNS its prose:
+//   Phase 1 (incl. 1.65) -> skills/session-end/plan-verification.md
+//   Phase 5              -> skills/session-end/references/phase-5-issue-cleanup.md
+//   session-start 6.5.2  -> skills/session-start/references/phase-6-5-forced-reads.md
+//   wave-loop.md body    -> skills/wave-executor/references/wave-loop-{dispatch,review}.md
+const PLAN_VERIFICATION_PATH = path.join(REPO_ROOT, 'skills/session-end/plan-verification.md');
+const PHASE5_PATH = path.join(
+  REPO_ROOT,
+  'skills/session-end/references/phase-5-issue-cleanup.md',
+);
+const FORCED_READS_PATH = path.join(
+  REPO_ROOT,
+  'skills/session-start/references/phase-6-5-forced-reads.md',
+);
+const WAVE_LOOP_DISPATCH_PATH = path.join(
+  REPO_ROOT,
+  'skills/wave-executor/references/wave-loop-dispatch.md',
+);
+const WAVE_LOOP_REVIEW_PATH = path.join(
+  REPO_ROOT,
+  'skills/wave-executor/references/wave-loop-review.md',
+);
 
 describe('Handover Alignment Gate prose↔code wiring (#769, session-end)', () => {
   const sessionEndBody = readFileSync(SESSION_END_PATH, 'utf8');
-  const waveLoopBody = readFileSync(WAVE_LOOP_PATH, 'utf8');
+  const planVerificationBody = readFileSync(PLAN_VERIFICATION_PATH, 'utf8');
+  const phase5Body = readFileSync(PHASE5_PATH, 'utf8');
+  const waveLoopDispatchBody = readFileSync(WAVE_LOOP_DISPATCH_PATH, 'utf8');
+  const waveLoopReviewBody = readFileSync(WAVE_LOOP_REVIEW_PATH, 'utf8');
+  const forcedReadsBody = readFileSync(FORCED_READS_PATH, 'utf8');
   const sessionStartBody = readFileSync(SESSION_START_PATH, 'utf8');
 
   it('skills/session-end/SKILL.md exists at the expected path', () => {
@@ -51,28 +77,36 @@ describe('Handover Alignment Gate prose↔code wiring (#769, session-end)', () =
 
   describe('session-end: Phase 1.65 Handover Alignment Gate', () => {
     it('contains the 1.65 Handover Alignment Gate phase heading', () => {
-      expect(sessionEndBody).toContain('### 1.65 Handover Alignment Gate (#769)');
+      expect(planVerificationBody).toContain('### 1.65 Handover Alignment Gate (#769)');
+    });
+
+    it('the SKILL.md Phase 1 stub names the 1.65 gate and routes to plan-verification.md', () => {
+      const idx1 = sessionEndBody.indexOf('## Phase 1: Plan Verification');
+      const idx2 = sessionEndBody.indexOf('## Phase 2:', idx1);
+      const stub = sessionEndBody.slice(idx1, idx2);
+      expect(stub).toContain('1.65 Handover Alignment Gate');
+      expect(stub).toContain('plan-verification.md');
     });
 
     it('the 1.65 region references routeCandidates from scripts/lib/handover-gate.mjs', () => {
-      const idx165 = sessionEndBody.indexOf('### 1.65 Handover Alignment Gate (#769)');
-      const idx17 = sessionEndBody.indexOf('### 1.7 Metrics Collection', idx165);
-      const region = sessionEndBody.slice(idx165, idx17);
+      const idx165 = planVerificationBody.indexOf('### 1.65 Handover Alignment Gate (#769)');
+      const idx17 = planVerificationBody.indexOf('### 1.7 Metrics Collection', idx165);
+      const region = planVerificationBody.slice(idx165, idx17);
       expect(region).toContain('routeCandidates');
       expect(region).toContain('scripts/lib/handover-gate.mjs');
     });
 
     it("the 1.65 region references the cfg['handover-gate'] config key", () => {
-      const idx165 = sessionEndBody.indexOf('### 1.65 Handover Alignment Gate (#769)');
-      const idx17 = sessionEndBody.indexOf('### 1.7 Metrics Collection', idx165);
-      const region = sessionEndBody.slice(idx165, idx17);
+      const idx165 = planVerificationBody.indexOf('### 1.65 Handover Alignment Gate (#769)');
+      const idx17 = planVerificationBody.indexOf('### 1.7 Metrics Collection', idx165);
+      const region = planVerificationBody.slice(idx165, idx17);
       expect(region).toContain("cfg['handover-gate']");
     });
 
     it('the 1.65 region sits between Phase 1.6.6 and Phase 1.7', () => {
-      const idx166 = sessionEndBody.indexOf('#### 1.6.6 Record "What Not To Retry"');
-      const idx165 = sessionEndBody.indexOf('### 1.65 Handover Alignment Gate (#769)');
-      const idx17 = sessionEndBody.indexOf('### 1.7 Metrics Collection');
+      const idx166 = planVerificationBody.indexOf('#### 1.6.6 Record "What Not To Retry"');
+      const idx165 = planVerificationBody.indexOf('### 1.65 Handover Alignment Gate (#769)');
+      const idx17 = planVerificationBody.indexOf('### 1.7 Metrics Collection');
       expect(idx166).toBeGreaterThan(-1);
       expect(idx165).toBeGreaterThan(idx166);
       expect(idx17).toBeGreaterThan(idx165);
@@ -82,11 +116,12 @@ describe('Handover Alignment Gate prose↔code wiring (#769, session-end)', () =
   describe('session-end: durable open-question mark lives in Phase 5, not Phase 1.65', () => {
     it('Phase 5: Issue Cleanup heading exists', () => {
       expect(sessionEndBody).toContain('## Phase 5: Issue Cleanup');
+      expect(phase5Body).toContain('## Phase 5: Issue Cleanup');
     });
 
     it('the markOpenQuestionAnsweredOnDisk import site appears AFTER the Phase 5 heading (atomicity fix)', () => {
-      const idxPhase5 = sessionEndBody.indexOf('## Phase 5: Issue Cleanup');
-      const idxImport = sessionEndBody.indexOf(
+      const idxPhase5 = phase5Body.indexOf('## Phase 5: Issue Cleanup');
+      const idxImport = phase5Body.indexOf(
         'import { markOpenQuestionAnsweredOnDisk }',
         idxPhase5
       );
@@ -95,32 +130,37 @@ describe('Handover Alignment Gate prose↔code wiring (#769, session-end)', () =
     });
 
     it('Phase 1.65 explicitly defers the on-disk mark (do NOT call it in this phase)', () => {
-      const idx165 = sessionEndBody.indexOf('### 1.65 Handover Alignment Gate (#769)');
-      const idx17 = sessionEndBody.indexOf('### 1.7 Metrics Collection', idx165);
-      const region = sessionEndBody.slice(idx165, idx17);
+      const idx165 = planVerificationBody.indexOf('### 1.65 Handover Alignment Gate (#769)');
+      const idx17 = planVerificationBody.indexOf('### 1.7 Metrics Collection', idx165);
+      const region = planVerificationBody.slice(idx165, idx17);
       expect(region).toContain('Do **NOT** call `markOpenQuestionAnsweredOnDisk` in this phase');
     });
   });
 
   describe('wave-executor: open-question collection wiring', () => {
-    it('wave-loop.md references appendOpenQuestionOnDisk', () => {
-      expect(waveLoopBody).toContain('appendOpenQuestionOnDisk');
+    it('the wave-loop review reference file wires appendOpenQuestionOnDisk', () => {
+      expect(existsSync(WAVE_LOOP_REVIEW_PATH)).toBe(true);
+      expect(waveLoopReviewBody).toContain('appendOpenQuestionOnDisk');
     });
 
-    it('wave-loop.md contains an OPEN-QUESTIONS: agent-report-line instruction', () => {
-      expect(waveLoopBody).toContain('OPEN-QUESTIONS:');
+    it('the wave-loop dispatch reference file carries the OPEN-QUESTIONS: agent-report-line instruction', () => {
+      expect(existsSync(WAVE_LOOP_DISPATCH_PATH)).toBe(true);
+      expect(waveLoopDispatchBody).toContain('OPEN-QUESTIONS:');
     });
   });
 
   describe('session-start: Phase 6.5.2 forced-read wiring', () => {
     it('contains the Phase 6.5.2 Open Questions heading', () => {
       expect(sessionStartBody).toContain('## Phase 6.5.2: Open Questions (forced-read, #772)');
+      expect(forcedReadsBody).toContain('## Phase 6.5.2: Open Questions (forced-read, #772)');
     });
 
     it('the 6.5.2 region references readOpenQuestions AND wrapHistorical', () => {
-      const idx652 = sessionStartBody.indexOf('## Phase 6.5.2: Open Questions (forced-read, #772)');
-      const idx66 = sessionStartBody.indexOf('## Phase 6.6: Project Intelligence', idx652);
-      const region = sessionStartBody.slice(idx652, idx66);
+      // 6.5.2 is the LAST section of the forced-reads reference file, so the
+      // region runs to end-of-file rather than to the next phase heading.
+      const idx652 = forcedReadsBody.indexOf('## Phase 6.5.2: Open Questions (forced-read, #772)');
+      expect(idx652).toBeGreaterThan(-1);
+      const region = forcedReadsBody.slice(idx652);
       expect(region).toContain('readOpenQuestions');
       expect(region).toContain('wrapHistorical');
     });

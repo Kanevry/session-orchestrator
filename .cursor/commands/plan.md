@@ -1,6 +1,6 @@
 ---
 description: Plan a new project, feature, or retrospective with structured requirement gathering
-argument-hint: [new|feature|retro]
+argument-hint: "[new|feature|retro]"
 ---
 
 # /plan

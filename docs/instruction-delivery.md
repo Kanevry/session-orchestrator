@@ -632,6 +632,68 @@ Not read off the code — run, on two disjoint scopes, comparing the emitted sub
 
 ```console
 $ # hooks scope
+---
+
+## 8. Which harness reads which file (measured 2026-09-06)
+
+> Survey of 8 agent harnesses, W1 d10/d11 of session `main-2026-09-06-deep-1`.
+> The question this table settles: *when a foreign harness opens this repository,
+> what does it actually load?*
+
+| Harness | Instruction file | Skill discovery path |
+|---|---|---|
+| Claude Code | `CLAUDE.md` | plugin skills (`.claude-plugin/`) |
+| Codex CLI | `AGENTS.md` | `.codex-plugin` skills |
+| Cursor | `AGENTS.md` | `.agents/skills`, `.cursor/skills` |
+| Copilot CLI | `AGENTS.md` **and** `CLAUDE.md` | `.github/skills`, `.claude/skills`, `.agents/skills` |
+| OpenCode | `AGENTS.md` | `~/.claude/skills` |
+| Amp | `AGENTS.md` | `.agents/skills` |
+| Kiro | `AGENTS.md` | — |
+| Gemini CLI | `GEMINI.md` | `skills/<name>/SKILL.md` layout |
+| Pi | — | manifest skills |
+
+**The finding.** 7 of 8 read `AGENTS.md`; exactly one (Claude Code) reads only
+`CLAUDE.md`; exactly one (Copilot CLI) reads both. Measured the same day,
+`git ls-files | grep -i AGENTS.md` returned only `agents/AGENTS.md` (the
+sub-agent authoring spec) and one rule file — i.e. **this repo, opened in Codex
+CLI, OpenCode, Kiro or Amp, could not find its own `## Session Config`.** The
+gap was invisible from inside Claude Code, which is the only harness anyone here
+develops in.
+
+`.agents/skills/` is the intersection of the skill-discovery column: Cursor, Amp
+and Copilot CLI all read it, so one generated mirror serves three harnesses.
+
+### 8.1 `AGENTS.md` is generated, never edited
+
+The root `AGENTS.md` is a **byte-identical generated copy** of `CLAUDE.md`
+(`scripts/generate-agents-skills.mjs`), gated by that script's `--check` inside
+`scripts/validate-plugin.mjs`. Edit `CLAUDE.md` and regenerate; a hand-edit is a
+CI failure. Hand-maintenance is not an option this repo gets to pick — #726
+measured six divergent `AGENTS.md` strategies across the fleet.
+
+A symlink was the smaller diff and was rejected on three measurements:
+`package.json` `files[]` does not publish `CLAUDE.md` (a symlink would dangle in
+the npm tarball); `core.symlinks` defaults to false on Windows without Developer
+Mode, where git writes the link out as a 10-byte regular file containing the
+literal text `CLAUDE.md`; and `git ls-files -s | awk '$1=="120000"'` returned
+zero rows, so this repo — itself a template others copy — has no symlink
+precedent. The drift gate still ACCEPTS a symlink, for consumer repos that
+prefer one.
+
+The `.agents/skills/` mirror carries only the six frontmatter fields
+agentskills.io permits outside Claude Code (`name`, `description`, `license`,
+`compatibility`, `metadata`, `allowed-tools`); our `tools:` spelling maps onto
+`allowed-tools:`, and non-spec keys (`tags`, `model-preference*`, `color`,
+`args-schema`, …) fold into `metadata` as strings. The body is a pointer at
+`skills/<name>/SKILL.md`, never a copy of it — progressive disclosure keeps the
+whole mirror at 47,380 bytes across 43 files.
+
+Root `plugin.json` (agent-plugins.org 1.0.0) is the third artefact of the same
+surface. It is the **third** manifest carrying a version, alongside
+`.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`, while the release
+script bumps only `package.json` — `scripts/lib/validate/check-agents-skills.mjs`
+asserts all of them agree.
+
 ## Learnings Index (selected for your file scope)
 
 7 entries (3 matched your declared file scope, 4 general). One line each — this is an INDEX, not the corpus.

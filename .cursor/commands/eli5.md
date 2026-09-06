@@ -1,6 +1,6 @@
 ---
-description: Say the last answer again in plain words — same facts, in the order the operator needs them. Optional topic argument.
-argument-hint: [topic]
+description: "Say the last answer again in plain words — same facts, in the order the operator needs them. Optional topic argument."
+argument-hint: "[topic]"
 ---
 
 # /eli5

@@ -1,11 +1,18 @@
 # Vault & Docs Architecture — Umbrella Narrative
 
 **Audience:** Plugin contributors (Dev). New contributors who need to understand
-how the four documentation skills, one orchestrator skill, one agent, and two
-discovery probes fit together — what fires when, who owns which file, and how
+how the three documentation skills, one orchestrator skill, one agent, two
+vault-status writers, and two discovery probes fit together — what fires when, who owns which file, and how
 to recover when something breaks.
 
 **Status:** Living document. Tracks Epic #229 (Vault & Docs Orchestration).
+
+**Last verified:** 2026-09-06 at `e4674109`. The vault-file layout below was
+re-measured against the code that writes it — `scripts/lib/vault-status/narrative-mirror.mjs`
+(`resolveNarrativePath`) and `scripts/lib/vault-status/board-writer.mjs` (`resolveBoardPath`) —
+after the pre-#673/#674/#675 layout in this file was found stale by the 2026-09-06
+360°-Audit (`docs/audits/2026-09-06-360-audit/w1/d6-docs-drift.md`). The `daily` skill
+rows are gone with the skill itself (§ 5A of that audit).
 
 ---
 
@@ -48,6 +55,8 @@ Data flow within a single `/session feature → /go → /close` cycle:
                                 ↓
 ┌──────────────────────────────────────────────────────────────────┐
 │  session-start                                                   │
+│   Phase 1.7  vault-status board  (opt-in)                        │
+│     └─ this repo → in-progress in _active-sessions.md            │
 │   Phase 2.5  docs-orchestrator (opt-in)                          │
 │     └─ audience detection → docs-tasks block in STATE.md         │
 │        Source: skills/session-start/phase-2-5-docs-planning.md   │
@@ -78,6 +87,8 @@ Data flow within a single `/session feature → /go → /close` cycle:
 │   Phase 2.3  vault-staleness     (opt-in: stale projects)        │
 │   Phase 3.2  docs-verify         (per-task ok/partial/gap)       │
 │   Phase 3.7  vault-mirror        (sessions.jsonl → 50-sessions/) │
+│   Phase 3.7  narrative-mirror    (STATE.md → _session-narrative) │
+│   Phase 3.7c vault board         (this repo's row → closed)      │
 │        Source: skills/session-end/SKILL.md (phase markers)       │
 └──────────────────────────────────────────────────────────────────┘
                                 ↓
@@ -86,7 +97,10 @@ Data flow within a single `/session feature → /go → /close` cycle:
 │   01-projects/<slug>/  ← context.md / decisions.md / people.md   │
 │                          (docs-writer, Vault audience)           │
 │   01-projects/<slug>/  ← _overview.md (vault-mirror, no humans)  │
-│   03-daily/YYYY-MM-DD.md  (daily skill, idempotent)              │
+│   01-projects/<slug>/  ← _session-narrative.md                   │
+│                          (narrative-mirror, session-end 3.7)     │
+│   01-projects/_active-sessions.md                                │
+│                          (board-writer, start 1.7 / end 3.7c)    │
 │   40-learnings/<slug>.md  (vault-mirror, evolve hook)            │
 │   50-sessions/<id>.md     (vault-mirror, session-end Phase 3.7)  │
 └──────────────────────────────────────────────────────────────────┘
@@ -109,7 +123,8 @@ Data flow within a single `/session feature → /go → /close` cycle:
 | `vault-staleness` probes | `skills/discovery/probes-vault.md` + `skills/discovery/probes/vault-staleness.mjs` | `/discovery vault` (on-demand) and session-end Phase 2.3 (opt-in close-time gate) | `VAULT_DIR/01-projects/*/` `_overview.md` + narrative files | JSONL findings under `.orchestrator/metrics/vault-staleness.jsonl` and `vault-narrative-staleness.jsonl` | Vault/Ops (telemetry) |
 | `docs-orchestrator` | `skills/docs-orchestrator/SKILL.md` | session-start Phase 2.5, session-plan Step 1.5/1.8, session-end Phase 3.2 (all gated on `enabled: true`) | Session scope + Session Config audience list | `docs-tasks` block in STATE.md (write side); `### Documentation Coverage` block in final report (verify side) | All three (User / Dev / Vault) |
 | `docs-writer` agent | `agents/docs-writer.md` | Dispatched by `wave-executor` for each `Docs`-classified task | `diff`, `git-log`, `session-memory`, `affected-files` | Audience-targeted Markdown writes (Edit/Write); `[docs-orchestrator] Docs task complete` report line | All three (per task) |
-| `daily` | `skills/daily/SKILL.md` | User-invocable (`/daily`), idempotent | `VAULT_DIR/03-daily/`, `templates/daily.md.tpl` | `<vault>/03-daily/YYYY-MM-DD.md` (created or no-op) | Vault/Ops (PKM anchor) |
+| `narrative-mirror` | `scripts/lib/vault-status/narrative-mirror.mjs` (`mirrorNarrative`) | session-end Phase 3.7, gated on `vault-integration.enabled` | `.claude/STATE.md` narrative sections + the session record | `<vault>/01-projects/<repo-slug>/_session-narrative.md` (generator-marked) | Vault/Ops (durable per-repo narrative) |
+| `board-writer` | `scripts/lib/vault-status/board-writer.mjs` (`sweepBoard` / `mirrorBoard`) | session-start Phase 1.7 (`in-progress`) and session-end Phase 3.7c (`closed`), gated on `vault-integration.enabled` | live session registry + this repo's root | `<vault>/01-projects/_active-sessions.md` — one row per repo (generator-marked, idempotent, never touches `_overview.md`) | Vault/Ops (cross-repo occupancy board) |
 | `vault-mirror` | `skills/vault-mirror/SKILL.md` + `scripts/vault-mirror.mjs` | session-end Phase 3.7 (sessions); evolve Phase 3.5 (learnings) | `.orchestrator/metrics/sessions.jsonl`, `.orchestrator/metrics/learnings.jsonl` | `<vault>/50-sessions/<id>.md`, `<vault>/40-learnings/<slug>.md` (`_generator` marker `session-orchestrator-vault-mirror@1`) | Vault/Ops (telemetry → Markdown) |
 | `vault-backfill` CLI | `scripts/vault-backfill.mjs` | Manual, also surfaced via `/plan retro vault-backfill` sub-mode | `vault-integration.gitlab-groups` config + GitLab API | `.vault.yaml` per repo + Vault stub directories | Vault/Ops (one-shot migration) |
 
@@ -130,6 +145,15 @@ which audience. Never inline this table elsewhere — always cross-link.
 - **Vault/Ops** — strategic continuity across sessions. Targets:
   `<vault>/01-projects/<slug>/context.md`, `decisions.md`, `people.md`.
   Source: same.
+
+Those three are the **authored** half of a project folder and are the only vault
+files docs-writer may touch. The other four under `01-projects/` are **generated**
+and carry a `_` prefix plus a generator marker: `_overview.md` (vault-mirror),
+`_session-narrative.md` (narrative-mirror, #675), and — one level up, per vault
+rather than per project — `_active-sessions.md` (board-writer, #674). Editing a
+generated file by hand is not forbidden by a rule; it is simply overwritten on the
+next run. Source: the `resolveNarrativePath` / `resolveBoardPath` path builders in
+`scripts/lib/vault-status/`.
 
 The Session Config field `docs-orchestrator.audiences` accepts any subset of
 `[user, dev, vault]`; narrowing it (e.g., `[user, dev]` on a project without a
@@ -169,7 +193,7 @@ silent REVIEW-marker-only output. Source:
 
 ## 6. Non-Overlap Discipline
 
-Three forbidden cross-writes are enforced by the architecture, not just by
+Four forbidden cross-writes are enforced by the architecture, not just by
 convention:
 
 - **`<vault>/01-projects/*/_overview.md` is owned by `vault-mirror`.** The
@@ -179,11 +203,24 @@ convention:
   `skills/docs-orchestrator/audience-mapping.md` § Non-Overlap (vault-mirror
   row) and `skills/vault-mirror/SKILL.md` § Idempotency (the `_generator`
   marker `session-orchestrator-vault-mirror@1` is the discriminator).
-- **`<vault>/03-daily/YYYY-MM-DD.md` is owned by `daily`.** Idempotent by
-  design — re-running `/daily` opens the existing note, never overwrites.
-  Source: `skills/daily/SKILL.md` § Idempotency Guarantee. A second writer
-  would corrupt the day's scratch notes. Source:
-  `skills/docs-orchestrator/audience-mapping.md` § Non-Overlap (daily row).
+- **`<vault>/01-projects/_active-sessions.md` and
+  `<vault>/01-projects/<slug>/_session-narrative.md` are owned by the two
+  vault-status writers.** Both are generator-marked and rewritten wholesale on
+  the next session-start / session-end, so a hand edit is silently lost rather
+  than merged. `board-writer` additionally holds a cross-repo mutex at
+  `<vault>/.orchestrator/board.lock` while writing
+  (`scripts/lib/vault-status/board-lock.mjs`, #1180 — deliberately not beside
+  the board) because the board is the one vault file several repos write
+  concurrently.
+- **`<vault>/03-daily/*` remains a forbidden path for `docs-writer`, but no
+  plugin component writes it any more.** The `daily` skill was retired on
+  2026-09-06 (360°-Audit § 5A) and `templates/daily.md.tpl` is gone with it;
+  measured the same day, `03-daily/` survives in code only inside
+  `scripts/lib/frontmatter-guard.mjs`'s vault-subdirectory *detector*, which
+  reads paths and writes none. The forbidden-path entries in
+  `skills/docs-orchestrator/audience-mapping.md` § Non-Overlap and
+  `agents/docs-writer.md` still name `daily` as the owner; that is stale
+  attribution for a path the operator's own PKM now owns, not a live contract.
 - **`CLAUDE.md` may be remediated by `docs-writer` (Dev audience), but
   `claude-md-drift-check` only diagnoses it.** The two skills must not run
   on `CLAUDE.md` in parallel within the same wave. Source:
@@ -201,6 +238,7 @@ Concrete answer to "when does each component fire":
 
 | Phase | Skill / Probe | Gating |
 |-------|---------------|--------|
+| `/session` start, Phase 1.7 | `board-writer` marks this repo `in-progress` on `_active-sessions.md` | `vault-integration.enabled: true` |
 | `/session` start, Phase 2.5 | `docs-orchestrator` audience detection | `docs-orchestrator.enabled: true` |
 | `/session` start, Phase 4.5 | resource-health probe | always (env-aware) |
 | session-plan Step 1.5/1.8 | `docs-writer` registered + Docs role classified | `docs-orchestrator.enabled: true` |
@@ -210,9 +248,10 @@ Concrete answer to "when does each component fire":
 | `/close` Phase 2.3 | `vault-staleness` + `vault-narrative-staleness` probes | `vault-staleness.enabled: true` |
 | `/close` Phase 3.2 | `docs-orchestrator` verification | `docs-orchestrator.enabled: true` AND `docs-tasks` block present |
 | `/close` Phase 3.7 | `vault-mirror` (sessions) | `vault-integration.enabled: true` AND `mode != off` |
+| `/close` Phase 3.7 | `narrative-mirror` → `_session-narrative.md` | `vault-integration.enabled: true`; `mode: strict` blocks the close on failure, otherwise WARN |
+| `/close` Phase 3.7c | `board-writer` transitions this repo's row to `closed` | `vault-integration.enabled: true`; non-blocking |
 | evolve Phase 3.5 | `vault-mirror` (learnings) | same as above |
 | `/discovery vault` | `vault-staleness` probes (on-demand) | `.vault.yaml` present OR `vault-integration.enabled: true` |
-| `/daily` | `daily` skill | user-invocable; no Session Config gate |
 
 Sources: `skills/session-end/SKILL.md` (Phase markers), `docs/session-config-reference.md`
 (per-skill enabled-flag semantics), `skills/discovery/probes-vault.md` (probe

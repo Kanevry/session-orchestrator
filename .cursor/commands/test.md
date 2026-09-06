@@ -1,6 +1,6 @@
 ---
-description: Agentic end-to-end test orchestrator — drive web/macOS flows, evaluate UX rubric, reconcile issues
-argument-hint: [scope|profile-name] [--since <git-ref>] [--full]
+description: "Agentic end-to-end test orchestrator — drive web/macOS flows, evaluate UX rubric, reconcile issues"
+argument-hint: "[scope|profile-name] [--since <git-ref>] [--full]"
 ---
 
 # /test

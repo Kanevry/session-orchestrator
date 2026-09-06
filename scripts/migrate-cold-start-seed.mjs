@@ -143,7 +143,10 @@ if (applyFlag && dryRunFlag) {
   process.exit(1);
 }
 
-// Default is dry-run (matches scripts/migrate-learnings-jsonl.mjs convention).
+// Default is dry-run: a migration script writes only when `--apply` is passed, so an
+// invocation with no flags can never mutate a store. Repo-wide convention for every
+// `scripts/migrate-*` / `scripts/backfill-*` CLI; live example:
+// `scripts/migrate-sessions-jsonl.mjs` (`args.apply = false` default, `--apply` opts in).
 const dryRun = !applyFlag;
 
 // `--repos` is kept as the raw comma-separated string here (split later, at

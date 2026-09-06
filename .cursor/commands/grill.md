@@ -1,6 +1,6 @@
 ---
-description: Stress-test a plan, design, or PRD before any build — relentless one-question-at-a-time interrogation that hunts contradictions against the code and challenges assumptions. Composable; no HARD-GATE.
-argument-hint: [file-path-or-topic]
+description: "Stress-test a plan, design, or PRD before any build — relentless one-question-at-a-time interrogation that hunts contradictions against the code and challenges assumptions. Composable; no HARD-GATE."
+argument-hint: "[file-path-or-topic]"
 ---
 
 # /grill

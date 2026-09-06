@@ -1,6 +1,6 @@
 ---
-description: Cut a release — the order the steps must run in, and the criteria that abort a release
-argument-hint: [X.Y.Z]
+description: "Cut a release — the order the steps must run in, and the criteria that abort a release"
+argument-hint: "[X.Y.Z]"
 ---
 
 # /release

@@ -1,6 +1,6 @@
 ---
-description: Run an honest session-process evaluation (Standard v1, aiat-llm-eval/1.0) — score the last completed session against the pre-registered rubric-v1 dimensions
-argument-hint: [--session <id>] [--no-write] [--verify <run-id>]
+description: "Run an honest session-process evaluation (Standard v1, aiat-llm-eval/1.0) — score the last completed session against the pre-registered rubric-v1 dimensions"
+argument-hint: "[--session <id>] [--no-write] [--verify <run-id>]"
 ---
 
 # /eval

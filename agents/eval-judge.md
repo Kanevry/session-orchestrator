@@ -25,7 +25,7 @@ blended into the deterministic five-dimension tally and **never** produce or
 feed a global/overall score — they are visibly separated, advisory verdicts a
 reader can discard and still have a complete deterministic evaluation.
 
-> **Color rationale (AGENTS.md exception (b) — mutually-exclusive phase):** this
+> **Color rationale (`docs/agent-authoring.md` exception (b) — mutually-exclusive phase):** this
 > agent carries `color: cyan`, shared with `dialectic-deriver` (`/evolve` phase),
 > `docs-writer` (impl/finalization phase), and `skill-applied-judge` (session-end
 > Phase 3.6.6). This judge runs **solo**, dispatched coordinator-side during the

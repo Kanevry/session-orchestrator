@@ -76,9 +76,9 @@
  *   self-relative growth ratchet calibrated just above our own baseline.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { loadApplicableRules } from './rule-loader.mjs';
+import { loadApplicableRules, parseGlobsFrontmatter } from './rule-loader.mjs';
 
 /** Default directive ceiling (operator-chosen growth ratchet just above the ~457 baseline). */
 export const DEFAULT_CEILING = 480;
@@ -139,6 +139,71 @@ export const DEFAULT_CEILING = 480;
  * names.
  */
 export const DEFAULT_BYTE_CEILING = 121000;
+
+/**
+ * Default byte ceiling for the PATH-SCOPED rule surface — the third axis, and
+ * the one that closes this guard's largest blind spot.
+ *
+ * Both ceilings above measure ONLY always-on rules (`loadApplicableRules`
+ * with `scopePaths: []` returns nothing else), so every `globs:`-scoped rule
+ * file was invisible to this guard by construction. That blind spot was
+ * MEASURED, not hypothesised: on 2026-09-06 @ `e4674109` the reconciliation
+ * engine had accumulated **43 generated rule files / 112,443 B** in
+ * `.claude/rules/` — 46.2 % of it pure frontmatter+provenance overhead — while
+ * this guard reported a comfortable 470/480 directives over 15 files and could
+ * not have fired on that growth at any ceiling, because it never counted it.
+ * A wave agent paid those bytes twice (rule-injection block + native delivery,
+ * see `docs/instruction-delivery.md` §5).
+ *
+ * Derivation (HR-105 — a threshold whose firing rate nothing records is not a
+ * rule): measured 2026-09-06 after the 43→8 consolidation AND the
+ * harness-parity repair that followed it, the path-scoped surface is
+ * **96,757 B over 11 files** (8 consolidated + the 3 hand-written scoped rules
+ * `testing.md` / `cli-design.md` / `bash-harness-pitfalls.md`), counted the
+ * same way as `totalBytes` — frontmatter stripped, via
+ * {@link countContentBytes}.
+ *
+ * CORRECTED 2026-09-06, one wave after the line above was first written. Two
+ * things in that first derivation no longer hold:
+ *
+ *  - The base was **95,277 B**, measured while the 8 consolidated files still
+ *    carried `globs:` with no `paths:`. Adding `paths:` + `learning-key:` did
+ *    NOT move this number by a single byte — {@link countContentBytes} strips
+ *    frontmatter — so the +1,480 B is entirely the 8 × 185 B provenance note
+ *    the repair added to the BODIES. Written down because the number moved and
+ *    the cause was hand-editing, NOT the reconciliation growth this axis
+ *    exists to catch.
+ *  - "The ~30 % headroom is deliberately the SAME relative slack the byte
+ *    ceiling above carries" was simply false. {@link DEFAULT_BYTE_CEILING}
+ *    carries +5 % (121,000 / 115,730 = 1.046), not +30 %. The axes are NOT
+ *    calibrated alike, and saying they were hid a 6× difference in tolerance.
+ *
+ * The ceiling STAYS at 124,000 rather than re-deriving upward to
+ * 96,757 × 1.30 ≈ 126,000. The guard has never fired at this base, and raising
+ * an unfired ceiling to preserve a round multiplier is the threshold-patch
+ * `.claude/rules/development.md` § Guard & Threshold Design forbids. 124,000 is
+ * now ×1.28 over the live corpus — tighter than before, not looser.
+ * Re-derive it (never merely raise it) with:
+ *
+ *   `node -e "…parseGlobsFrontmatter over .claude/rules/*.md…"` — or simply
+ *   read `computeInstructionBudget().bySurface.generated` and re-apply ×1.30.
+ *
+ * What makes this ceiling reachable rather than decorative (HR-105 again — a
+ * threshold nobody can falsify is not a rule): the SAME measurement replayed
+ * against `git show HEAD:.claude/rules/*` at `e4674109`, i.e. the tree one
+ * commit before the consolidation, returns **137,410 B over 46 path-scoped
+ * files** — over this ceiling, so the guard WOULD have fired there and is
+ * silent at 96,757 B / 11 files now. Firing rate on the two states that exist:
+ * 1 of 2. That is the intended condition — reconciliation growth, not the
+ * hand-written corpus, which contributes 3 of the 11 files.
+ *
+ * (Note 137,410 is not the 112,443 B the audit quotes for the 43 generated
+ * files: that figure is raw bytes INCLUDING frontmatter and EXCLUDING the 3
+ * hand-written scoped rules; this axis strips frontmatter and counts all 46.
+ * Two different populations — see `.claude/rules/measurement-discipline.md`
+ * § "the unnamed population".)
+ */
+export const DEFAULT_GENERATED_BYTE_CEILING = 124000;
 
 /**
  * Read the `instruction-budget:` nested block from the `## Session Config`
@@ -413,6 +478,65 @@ function sumBytes(entries) {
 }
 
 /**
+ * Measure the PATH-SCOPED rule surface: every `.claude/rules/*.md` whose
+ * frontmatter carries `globs:` (or its `paths:` alias — issue #795), i.e.
+ * exactly the complement of the always-on set the three tier surfaces above
+ * measure.
+ *
+ * This cannot reuse `loadApplicableRules`: that loader takes a `scopePaths`
+ * list and returns the rules APPLICABLE to it, so with `scopePaths: []` it
+ * yields always-on rules only, and with a non-empty list it yields a
+ * scope-dependent subset. Neither answers "how big is the path-scoped corpus",
+ * which is a property of the DIRECTORY, not of any one wave's file scope. The
+ * frontmatter reading is still delegated (`parseGlobsFrontmatter`), so the
+ * always-on/path-scoped split stays decided in exactly one place.
+ *
+ * Named `generated` at the call site because reconciliation output is what
+ * grows here, but it deliberately measures every path-scoped file, including
+ * the hand-written ones — a ceiling that skipped them would report a number
+ * the operator cannot reproduce from `ls .claude/rules/` (HR-106: the banner
+ * reports what the rule judges).
+ *
+ * Bytes are counted with {@link countContentBytes} — frontmatter stripped —
+ * so this axis is directly comparable to `totalBytes` and to the tier
+ * surfaces. Never throws: an unreadable dir or file yields `{bytes:0,files:0}`
+ * / is skipped, matching this module's never-throw posture.
+ *
+ * @param {string} rulesDir
+ * @returns {{ bytes: number, files: number }}
+ */
+function measurePathScopedSurface(rulesDir) {
+  let names;
+  try {
+    names = readdirSync(rulesDir);
+  } catch {
+    return { bytes: 0, files: 0 };
+  }
+
+  let bytes = 0;
+  let files = 0;
+  for (const name of names) {
+    if (!name.endsWith('.md')) continue;
+    let content;
+    try {
+      content = readFileSync(join(rulesDir, name), 'utf8');
+    } catch {
+      continue; // unreadable file — skip, never throw
+    }
+    let globs;
+    try {
+      ({ globs } = parseGlobsFrontmatter(content));
+    } catch {
+      continue;
+    }
+    if (globs === null) continue; // always-on — already counted by the tier surfaces
+    files += 1;
+    bytes += countContentBytes(content);
+  }
+  return { bytes, files };
+}
+
+/**
  * Pure computation — always returns the full shape (never null, never throws).
  *
  * @param {object} [opts]
@@ -517,6 +641,10 @@ export function computeInstructionBudget(opts = {}) {
   const ceiling = typeof opts.ceiling === 'number' ? opts.ceiling : DEFAULT_CEILING;
   const byteCeiling =
     typeof opts.byteCeiling === 'number' ? opts.byteCeiling : DEFAULT_BYTE_CEILING;
+  const generatedByteCeiling =
+    typeof opts.generatedByteCeiling === 'number'
+      ? opts.generatedByteCeiling
+      : DEFAULT_GENERATED_BYTE_CEILING;
   // #893 fix: 'coordinator' used to fall through to the `null` (untiered)
   // branch below — silently measuring the WRONG rule set for a coordinator
   // context (it never excluded `tier: wave-only`). Now explicitly recognised
@@ -531,11 +659,13 @@ export function computeInstructionBudget(opts = {}) {
     perFile: [],
     ceiling,
     byteCeiling,
+    generatedByteCeiling,
     overDirectiveBudget: false,
     overByteBudget: false,
+    overGeneratedBudget: false,
     overBudget: false,
     severity: 'ok',
-    bySurface: { coordinator: 0, wave: 0, always: 0 },
+    bySurface: { coordinator: 0, wave: 0, always: 0, generated: { bytes: 0, files: 0 } },
   };
 
   let allEntries;
@@ -574,6 +704,13 @@ export function computeInstructionBudget(opts = {}) {
     coordinator: sumBytes(alwaysOnCoordinator),
     wave: sumBytes(alwaysOnWave),
     always: sumBytes(alwaysOnAll.filter((e) => e.tier === 'always')),
+    // The fourth surface is deliberately a different SHAPE from its three
+    // siblings ({bytes, files} vs. a bare byte number): a path-scoped corpus
+    // grows by FILE COUNT as much as by size — 43 files averaging 2.6 kB is
+    // the shape this axis exists to catch — and a bare number would hide that.
+    // It is also the only surface disjoint from `totalBytes`, which counts
+    // always-on rules exclusively.
+    generated: measurePathScopedSurface(rulesDir),
   };
 
   // Surface-selected entry set for the PRIMARY totals. `context: null`
@@ -605,7 +742,9 @@ export function computeInstructionBudget(opts = {}) {
   // long-standing boundary semantics rather than inventing a second rule.
   const overDirectiveBudget = totalDirectives > ceiling;
   const overByteBudget = totalBytes > byteCeiling;
-  const overBudget = overDirectiveBudget || overByteBudget;
+  // Third axis, same strict `>` boundary semantics as the two above.
+  const overGeneratedBudget = bySurface.generated.bytes > generatedByteCeiling;
+  const overBudget = overDirectiveBudget || overByteBudget || overGeneratedBudget;
 
   return {
     totalDirectives,
@@ -613,8 +752,10 @@ export function computeInstructionBudget(opts = {}) {
     perFile,
     ceiling,
     byteCeiling,
+    generatedByteCeiling,
     overDirectiveBudget,
     overByteBudget,
+    overGeneratedBudget,
     overBudget,
     severity: overBudget ? 'warn' : 'ok',
     bySurface,
@@ -655,6 +796,7 @@ export function checkInstructionBudget(opts = {}) {
       enabled: true,
       ceiling: DEFAULT_CEILING,
       'byte-ceiling': DEFAULT_BYTE_CEILING,
+      'generated-byte-ceiling': DEFAULT_GENERATED_BYTE_CEILING,
       mode: 'warn',
     };
   }
@@ -671,9 +813,19 @@ export function checkInstructionBudget(opts = {}) {
         ? cfg['byte-ceiling']
         : DEFAULT_BYTE_CEILING;
 
+  // Same precedence as the two axes above: explicit opt > Session Config >
+  // module default. Config-key is optional, so a repo that never heard of this
+  // axis still gets the measured default rather than `undefined`.
+  const generatedByteCeiling =
+    typeof opts.generatedByteCeiling === 'number'
+      ? opts.generatedByteCeiling
+      : typeof cfg['generated-byte-ceiling'] === 'number'
+        ? cfg['generated-byte-ceiling']
+        : DEFAULT_GENERATED_BYTE_CEILING;
+
   let budget;
   try {
-    budget = computeInstructionBudget({ ...opts, ceiling, byteCeiling });
+    budget = computeInstructionBudget({ ...opts, ceiling, byteCeiling, generatedByteCeiling });
   } catch {
     return null; // never throw out of the banner wrapper
   }
@@ -688,6 +840,15 @@ export function checkInstructionBudget(opts = {}) {
   }
   if (budget.overByteBudget) {
     axes.push(`bytes ${budget.totalBytes} > ${budget.byteCeiling}`);
+  }
+  if (budget.overGeneratedBudget) {
+    // Reported with its FILE COUNT, because the actionable lever on this axis
+    // is consolidating files, not trimming prose inside them (HR-106: the
+    // banner reports the number the rule judged).
+    axes.push(
+      `path-scoped ${budget.bySurface.generated.bytes} B over ` +
+        `${budget.bySurface.generated.files} files > ${budget.generatedByteCeiling} B`,
+    );
   }
 
   // `perFile` arrives sorted DESC by directive count. When ONLY the byte axis

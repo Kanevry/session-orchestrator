@@ -2,8 +2,8 @@
   {
     "name": "ecosystem-health",
     "command": "node \"${CLAUDE_PLUGIN_ROOT}\"/scripts/lib/ecosystem-health.mjs --watch",
-    "description": "Ecosystem repo health watcher (CI status, branch drift, stale baselines across vault-registered projects). Emits one NDJSON line per detected state change.",
-    "when": "on-skill-invoke:ecosystem-health"
+    "description": "Ecosystem repo health watcher (CI status, branch drift, stale baselines across vault-registered projects). Emits one NDJSON line per detected state change. Hung on session-start because the previous trigger (on-skill-invoke:ecosystem-health) was self-referential: it could only start when the ecosystem-health skill ran, and that skill has 0 recorded invocations fleet-wide, so the watcher never started once.",
+    "when": "on-skill-invoke:session-start"
   },
   {
     "name": "convergence-monitor",

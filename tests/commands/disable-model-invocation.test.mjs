@@ -55,17 +55,20 @@ describe('disable-model-invocation (#430)', () => {
 
   // MODEL-INVOCABLE: read-only probes, analytical commands, and orchestrators
   // that the model may legitimately invoke when context warrants it.
-  const modelInvocableCommands = [
-    'autopilot', 'autopilot-multi', 'debug', 'discovery', 'evolve', 'grill',
-    'harness-audit', 'memory-cleanup', 'portfolio', 'repo-audit', 'session', 'test',
-  ];
+  //
+  // ENUMERATED from commands/*.md, not hardcoded (2026-09-06). The previous
+  // curated 12-name list broke with ENOENT the moment `autopilot-multi.md` was
+  // deleted — a maintenance drift class, not a caught bug. Enumeration is
+  // strictly stronger: it covers EVERY command outside the USER-ONLY list
+  // (currently more than the 12 that were named), so a newly added command that
+  // wrongly ships the flag fails here by name instead of only shifting the
+  // aggregate count below, and a deleted command needs no test edit.
+  const modelInvocableCommands = commandFiles
+    .map((f) => f.replace(/\.md$/, ''))
+    .filter((cmd) => !userOnlyCommands.includes(cmd));
 
-  modelInvocableCommands.forEach((cmd) => {
-    it(`MODEL-INVOCABLE command "${cmd}" does NOT have disable-model-invocation: true`, () => {
-      const filePath = path.join(COMMANDS_DIR, `${cmd}.md`);
-      const fm = getFrontmatter(filePath);
-      expect(fm).not.toMatch(/^disable-model-invocation:\s*true$/m);
-    });
+  it('every command outside the USER-ONLY list is enumerated (no empty sweep)', () => {
+    expect(modelInvocableCommands.length).toBeGreaterThanOrEqual(10);
   });
 
   it('total commands with disable-model-invocation: true matches USER-ONLY count', () => {

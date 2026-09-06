@@ -2,7 +2,8 @@
  * tests/skills/wave-loop-scope-marker.test.mjs
  *
  * Pins the SCOPE_MARKER contract between the two halves of the #1020 chain:
- * `skills/wave-executor/wave-loop.md` § Pre-Dispatch: File-Scope Injection
+ * `skills/wave-executor/references/wave-loop-dispatch.md` § Pre-Dispatch:
+ * File-Scope Injection (split out of `wave-loop.md` in #1157)
  * documents the block a coordinator prepends to a dispatch prompt, and
  * `hooks/pre-task-scope-disjoint.mjs` extracts the scope back out of it.
  *
@@ -33,7 +34,13 @@ import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
 
 const REPO_ROOT = process.cwd();
 const HOOK = path.join(REPO_ROOT, 'hooks', 'pre-task-scope-disjoint.mjs');
-const WAVE_LOOP = path.join(REPO_ROOT, 'skills', 'wave-executor', 'wave-loop.md');
+const WAVE_LOOP = path.join(
+  REPO_ROOT,
+  'skills',
+  'wave-executor',
+  'references',
+  'wave-loop-dispatch.md'
+);
 
 /** Structural anchor for the section that owns the marker. Not the marker itself. */
 const SECTION_ANCHOR = 'File-Scope Injection (#1020)';
@@ -50,7 +57,10 @@ const SECTION_ANCHOR = 'File-Scope Injection (#1020)';
 function documentedInjectionBlock() {
   const body = readFileSync(WAVE_LOOP, 'utf8');
   const start = body.indexOf(SECTION_ANCHOR);
-  if (start === -1) throw new Error(`wave-loop.md no longer contains a "${SECTION_ANCHOR}" section`);
+  if (start === -1)
+    throw new Error(
+      `wave-loop-dispatch.md no longer contains a "${SECTION_ANCHOR}" section`
+    );
   const rest = body.slice(start);
   const end = rest.indexOf('\n#### ', 1);
   const section = end === -1 ? rest : rest.slice(0, end);
@@ -115,8 +125,8 @@ function makeProjectDir() {
 
 const WITNESS = 'skills/wave-executor/wave-loop.md';
 
-describe('wave-loop.md ↔ pre-task-scope-disjoint.mjs — SCOPE_MARKER contract (#1020)', () => {
-  it('the hook extracts a scope from the block wave-loop.md documents — proven by a collision DENY', () => {
+describe('wave-loop-dispatch.md ↔ pre-task-scope-disjoint.mjs — SCOPE_MARKER contract (#1020)', () => {
+  it('the hook extracts a scope from the block wave-loop-dispatch.md documents — proven by a collision DENY', () => {
     // Drift proof: if the documented marker stops matching the hook's
     // SCOPE_MARKER, both dispatches extract `[]`, no collision is computable,
     // and the second dispatch is ALLOWED — this test goes red on exactly the
@@ -131,7 +141,7 @@ describe('wave-loop.md ↔ pre-task-scope-disjoint.mjs — SCOPE_MARKER contract
   });
 
   it('the marker HEADLINE is what makes it extractable — the fenced paths alone are not', () => {
-    // Without this, the test above would also pass for a wave-loop.md whose
+    // Without this, the test above would also pass for a dispatch reference whose
     // marker line had been deleted entirely: it would then be pinning the
     // fence, not the marker contract.
     const block = documentedInjectionBlock();

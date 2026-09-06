@@ -1013,30 +1013,33 @@ describe('missing node_modules — graceful degradation (GH#63)', { timeout: 300
 //
 // The previous version scanned `readdir(hooks/)` — DIRECT hook imports only —
 // under the named ceiling "revisit if a hook helper chain grows a bare
-// dependency". THAT TRIGGER HAS FIRED. Measured 2026-09-05 over the committed
-// `hooks/_lib/hook-import-set.json` (150 entries, head 4b45130), the graph
-// carries two TRANSITIVE bare specifiers, both pre-existing:
+// dependency". THAT TRIGGER HAS FIRED, so the guard now walks the whole
+// COMMITTED graph (plus every hooks/**/*.mjs on disk, which keeps the old
+// direct-import coverage for the one hook the crawl does not reach) against a
+// DATED explicit allowlist — a NEW bare dependency, direct or transitive, goes
+// red.
+//
+// HISTORY, because the shrink is the interesting part. Measured 2026-09-05 over
+// `hooks/_lib/hook-import-set.json` (150 entries, head 4b45130) the graph carried
+// TWO transitive bare specifiers:
 //
 //   scripts/lib/owner-yaml.mjs       → js-yaml  (reachable from on-session-start,
 //                                                on-session-end, post-edit-validate,
 //                                                skill-invocation-telemetry)
 //   scripts/lib/worktree/listing.mjs → zx       (on-session-start)
 //
-// 4 of those 5 hooks throw ERR_MODULE_NOT_FOUND without node_modules; only
-// on-stop.mjs degrades (GH#63), because its own subgraph is bare-free. Removing
-// the two is a separate follow-up, not this guard's job. So the guard now walks
-// the whole COMMITTED graph (plus every hooks/**/*.mjs on disk, which keeps the
-// old direct-import coverage for the one hook the crawl does not reach) against
-// a DATED explicit allowlist — a THIRD bare dependency, direct or transitive,
-// goes red.
+// Re-measured 2026-09-06: ONE remains. GitLab #1230 made `js-yaml` resolve
+// LAZILY inside `loadOwnerConfig`/`writeOwnerConfig` via `createRequire`
+// (`scripts/lib/owner-yaml.mjs:123`), so it is no longer a static import and the
+// four hooks that reached it through that edge no longer crash without
+// node_modules. `zx` is the last one.
 //
 /**
- * Bare specifiers KNOWN to sit on the hook import graph, measured 2026-09-05 at
- * head 4b45130. This map may SHRINK (a dep removed) but must never grow without
- * a deliberate decision — growing it is the regression the guard exists to name.
+ * Bare specifiers KNOWN to sit on the hook import graph, re-measured 2026-09-06.
+ * This map may SHRINK (a dep removed, as `js-yaml` just was) but must never grow
+ * without a deliberate decision — growth is the regression the guard exists to name.
  */
 const KNOWN_BARE_GRAPH_DEPS = {
-  'scripts/lib/owner-yaml.mjs': ['js-yaml'],
   'scripts/lib/worktree/listing.mjs': ['zx'],
 };
 
@@ -1080,7 +1083,33 @@ describe('hooks static-import guard (GH#63 recurrence class)', () => {
       const specs = [...new Set(staticThirdPartyImports(source))];
       if (specs.length > 0) offenders[rel] = specs;
     }
-    expect(offenders).toEqual(KNOWN_BARE_GRAPH_DEPS);
+
+    // SUBSET, not equality. The docblock on KNOWN_BARE_GRAPH_DEPS promises the
+    // map "may SHRINK", and `toEqual` forbade exactly that: removing a bare dep —
+    // the outcome this guard exists to encourage — turned the test RED and made
+    // the allowlist edit a prerequisite for the improvement rather than a record
+    // of it. Caught 2026-09-06 when #1230 made `js-yaml` lazy.
+    //
+    // So the assertion is one-directional: every offender the scan finds must be
+    // ALLOWLISTED (growth = red), and an allowlist entry that no longer matches
+    // reality is reported as a stale entry rather than a failure — with the
+    // vacuum guard below keeping "found nothing at all" from passing as clean.
+    for (const [file, specs] of Object.entries(offenders)) {
+      expect(KNOWN_BARE_GRAPH_DEPS, `unallowlisted bare-import file: ${file} → ${specs.join(', ')}`)
+        .toHaveProperty([file]);
+      expect(specs.sort(), `new bare specifier in ${file}`).toEqual([...KNOWN_BARE_GRAPH_DEPS[file]].sort());
+    }
+
+    // Vacuum guard: the scan must have READ something. A crawl that silently
+    // reached zero files would satisfy the subset assertion above trivially.
+    expect(files.length).toBeGreaterThan(50);
+
+    const stale = Object.keys(KNOWN_BARE_GRAPH_DEPS).filter((f) => !(f in offenders));
+    if (stale.length > 0) {
+      process.stderr.write(
+        `NOTE: KNOWN_BARE_GRAPH_DEPS lists ${stale.join(', ')} — no longer a static bare import; drop the entry.\n`,
+      );
+    }
   });
 
   it('the detector itself flags a static zx import (fake-regression check)', () => {

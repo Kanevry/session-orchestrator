@@ -1,6 +1,6 @@
 ---
 description: "Run a 4-phase systematic debugging investigation before proposing any fix. Iron Law — NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST. Produces a `.orchestrator/debug/` artifact the fixer agent must reference."
-argument-hint: [bug-description-or-issue-ref]
+argument-hint: "[bug-description-or-issue-ref]"
 ---
 
 # /debug

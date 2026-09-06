@@ -123,6 +123,20 @@ describe('validate-plugin.mjs — current repo plugin', () => {
     expect(r.stdout).toContain('--- Check: hook-import-set drift (#1224) ---');
     expect(r.stdout).toMatch(/(PASS|FAIL): hook-import-set:/);
   });
+
+  // Same posture as the check above: the VERDICT is a property of the working
+  // tree, the WIRING is the invariant. An unwired portable-surface gate is the
+  // defect itself — a stale or absent root AGENTS.md is invisible from inside
+  // Claude Code (which reads CLAUDE.md), so nothing but a mechanical gate ever
+  // notices that Codex CLI / OpenCode / Kiro / Amp see no Session Config.
+  it('runs both halves of the cross-harness portable-surface gate', () => {
+    // Independent oracle (spec-legality of the artefacts on disk).
+    expect(r.stdout).toContain('--- Check A: root AGENTS.md ↔ CLAUDE.md alias ---');
+    expect(r.stdout).toContain('--- Check C: .agents/skills/ portable mirror ---');
+    // Generator drift gate (the artefacts still match a fresh generation).
+    expect(r.stdout).toContain('--- Check: cross-harness portable surface (AGENTS.md + .agents/skills/) ---');
+    expect(r.stdout).toMatch(/(PASS|FAIL): agents-surface:/);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -123,6 +123,42 @@ export function checkReleaseHygiene(repoRoot, driftCommits = DEFAULT_RELEASE_DRI
 }
 
 /**
+ * The plugin's own runtime output under `.orchestrator/` is not a stray.
+ *
+ * Measured on a fresh consumer repo: the very first `SessionStart` hook writes
+ * `.orchestrator/` state, and the banner rendered on that same run accused the
+ * operator of 5 files "neither tracked nor ignored" — all 5 written seconds
+ * earlier by the tool that was complaining (`find <consumer>/.orchestrator -type f`
+ * returned exactly the 5 reported files). A first-run accusation about the
+ * tool's own output is the single loudest false positive this probe can emit.
+ *
+ * Excluding here rather than having bootstrap append a `.gitignore` line is
+ * deliberate, and it does NOT weaken the check for genuine strays:
+ *
+ *   - `.orchestrator/` is only PARTLY ignorable. `.orchestrator/policy/*.json`
+ *     and `.orchestrator/steering/*.md` are meant to be TRACKED — `checkStaleArtifacts`
+ *     below depends on exactly that. A blanket ignore line would tell git to
+ *     ignore files the plugin wants versioned, which is a worse defect than the
+ *     one it fixes, and it would mutate a consumer repo uninvited.
+ *   - Untracked mass under `.orchestrator/` is already covered, by a check built
+ *     for it: `checkStaleArtifacts` (H3) counts untracked AGED files there with
+ *     its own retained-artifact carve-outs. Nothing goes unwatched.
+ *   - Everything outside `.orchestrator/` is untouched, which is where a real
+ *     "nothing currently decides" stray lives.
+ *
+ * Prefix match on the porcelain path. `git status --porcelain` quotes a path only
+ * when it carries special characters, so the optional leading quote is stripped
+ * before comparing.
+ *
+ * @param {string} porcelainPath path field of a `?? ` porcelain line
+ * @returns {boolean}
+ */
+function isOwnRuntimeArtifact(porcelainPath) {
+  const p = porcelainPath.replace(/^"/, '');
+  return p === '.orchestrator' || p.startsWith('.orchestrator/');
+}
+
+/**
  * H2 — Ignored working-tree ballast.
  *
  * Measured 6/6. Largest observed: a 7.4 GB working tree carrying 30.8 MB of
@@ -150,7 +186,7 @@ export function checkIgnoredBallast(repoRoot, ballastMb = DEFAULT_BALLAST_MB) {
   let untrackedUnignored = 0;
   for (const line of ignored.split('\n').filter(Boolean)) {
     if (line.startsWith('!! ')) ignoredPaths.push(line.slice(3));
-    else if (line.startsWith('?? ')) untrackedUnignored++;
+    else if (line.startsWith('?? ') && !isOwnRuntimeArtifact(line.slice(3))) untrackedUnignored++;
   }
 
   // Size only the top-level ignored entries — recursing every path would cost
@@ -183,7 +219,7 @@ export function checkIgnoredBallast(repoRoot, ballastMb = DEFAULT_BALLAST_MB) {
     findings.push({
       check: 'untracked-unignored',
       fixable: false,
-      message: `${untrackedUnignored} file(s) are neither tracked nor ignored — either commit them or add them to .gitignore, since nothing currently decides`,
+      message: `${untrackedUnignored} file(s) are neither tracked nor ignored (excluding the plugin's own .orchestrator/ runtime output) — either commit them or add them to .gitignore, since nothing currently decides`,
     });
   }
 

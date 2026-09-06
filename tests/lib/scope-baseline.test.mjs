@@ -831,7 +831,7 @@ describe('computeDrift()', () => {
  * Until #1039 the absent-`session-start-ref` branch of `computeDrift()` diffed
  * against the LITERAL `'origin/main...HEAD'` — two hard-codings in one string:
  * the remote NAME and the default BRANCH. In any repo missing either, that
- * diff threw, the function skipped, and `skills/wave-executor/wave-loop.md`
+ * diff threw, the function skipped, and `skills/wave-executor/references/wave-loop-review.md`
  * renders every `skipped === true` with no WARN at all. The tripwire was
  * permanently inert AND silent about it.
  *

@@ -24,9 +24,12 @@ import {
   flush,
   buildBatch,
   shouldDailyFlush,
+  detectSandbox,
+  deriveSessionFromEvents,
   TELEMETRY_ENDPOINT,
   POST_TIMEOUT_MS,
 } from '@lib/telemetry/sync.mjs';
+import { TELEMETRY_DIR } from '@lib/telemetry/paths.mjs';
 import { readTelemetryState } from '@lib/telemetry/consent.mjs';
 import { enqueue, queueStats, peekAll } from '@lib/telemetry/queue.mjs';
 import { maybeSpawnDailyFlush } from '../../hooks/skill-invocation-telemetry.mjs';
@@ -418,7 +421,12 @@ describe('buildBatch — window selection', () => {
     expect(record.skills).not.toContain('session-orchestrator:plan');
   });
 
-  it('falls back to session_type "other" and a 24h window when no session record exists', () => {
+  // #1234 — RENAMED + RE-ASSERTED. This case previously asserted `'other'`, which
+  // pinned the defect: a ping built with NO session source was indistinguishable
+  // on the wire from one that measured an unusual session. `unknown` is now the
+  // not-measured token and `other` keeps its measured-but-unrecognised meaning
+  // (tests/lib/telemetry/fleet-and-session-record.test.mjs holds both cases).
+  it('falls back to session_type "unknown" and a 24h window when no session record exists', () => {
     const nowMs = Date.parse(NOW);
     seedMetrics({
       invocations: [
@@ -429,7 +437,8 @@ describe('buildBatch — window selection', () => {
 
     const { record } = buildBatch({ env: {}, metricsDir, statePath, now: NOW, persist: false });
 
-    expect(record.session_type).toBe('other');
+    expect(record.session_type).toBe('unknown');
+    expect(record.session_record).toBe('absent');
     expect(record.duration_bucket).toBe('<15m');
     expect(record.skills).toContain('session-orchestrator:discovery');
     expect(record.skills).not.toContain('session-orchestrator:plan');
@@ -564,5 +573,260 @@ describe('maybeSpawnDailyFlush', () => {
     expect(args[0]).toContain('telemetry.mjs');
     expect(opts).toMatchObject({ detached: true, stdio: 'ignore' });
     expect(unref).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GitLab #1234 — sandbox send-refusal guard (merged in from the misplaced
+// tests/lib/telemetry/sandbox-guard.test.mjs; that directory does not exist in
+// this repo, tests/telemetry/ is the home of the telemetry suite).
+//
+// THE BUG THESE TESTS NAME: **Wave-1 sandbox runs sent 6 production pings with a
+// wrong session_type on 2026-09-06.** Six agent sandboxes executed
+// hooks/on-session-end.mjs from the repo checkout at 11:02:50–11:03:36Z. Each
+// resolved the operator's REAL anon_id and REAL consent out of
+// ~/.config/session-orchestrator/telemetry.json — telemetry/paths.mjs computes
+// that path from homedir() and never consults SO_CONFIG_HOME — while owner.yaml
+// was unreachable and sessions.jsonl absent. Six real records landed on the
+// ingest server attributed to a real person, all session_type: "other", fleet: 0.
+//
+// Existing coverage could not have caught it: every other test in this file
+// injects statePath/sender, so none exercises the shape where the state path is
+// DEFAULT while the config home has been redirected — the shape a sandbox has.
+//
+// NOTHING HERE TOUCHES THE NETWORK: flush() is always called with an injected
+// sender that records its calls, and every case asserts it was never invoked.
+// ---------------------------------------------------------------------------
+
+/** A cwd that is definitely NOT under a temp root, so condition (c) stays quiet. */
+const REAL_CWD = process.cwd();
+
+describe('detectSandbox — the three refusal conditions', () => {
+  it('(a) refuses under SO_TELEMETRY_DISABLED=1', () => {
+    const r = detectSandbox({
+      env: { SO_TELEMETRY_DISABLED: '1' },
+      statePath: join(tmpDir, 'telemetry.json'),
+      cwd: REAL_CWD,
+    });
+    expect(r).toEqual({ sandbox: true, reason: 'sandbox:telemetry-disabled' });
+  });
+
+  it('(a) refuses under DO_NOT_TRACK, and NOT under its falsy spellings', () => {
+    const at = (DO_NOT_TRACK) =>
+      detectSandbox({ env: { DO_NOT_TRACK }, statePath: join(tmpDir, 's.json'), cwd: REAL_CWD }).sandbox;
+    expect(at('1')).toBe(true);
+    expect(at('true')).toBe(true);
+    expect(at('0')).toBe(false);
+    expect(at('false')).toBe(false);
+    expect(at('')).toBe(false);
+  });
+
+  it('(b) THE Wave-1 SHAPE: SO_CONFIG_HOME declared, state still read from outside it', () => {
+    // Config home redirected, state path NOT redirected → the sender reads the
+    // operator's real telemetry.json regardless. Exactly what happened.
+    const r = detectSandbox({ env: { SO_CONFIG_HOME: join(tmpDir, 'fake-config') }, cwd: REAL_CWD });
+    expect(r).toEqual({ sandbox: true, reason: 'sandbox:config-home-split' });
+  });
+
+  it('(b) fires when the state path was redirected somewhere ELSE than the declared home', () => {
+    const r = detectSandbox({
+      env: { SO_CONFIG_HOME: join(tmpDir, 'declared') },
+      statePath: join(tmpDir, 'somewhere-else', 'telemetry.json'),
+      cwd: REAL_CWD,
+    });
+    expect(r).toEqual({ sandbox: true, reason: 'sandbox:config-home-split' });
+  });
+
+  it('(b) does NOT fire when the caller redirected CONSISTENTLY (hermetic-test shape)', () => {
+    const r = detectSandbox({
+      env: { SO_CONFIG_HOME: join(tmpDir, 'fake-config') },
+      statePath: join(tmpDir, 'fake-config', 'telemetry.json'),
+      cwd: REAL_CWD,
+    });
+    expect(r.sandbox).toBe(false);
+  });
+
+  it('(b) does NOT fire on an undeclared default — that is the normal case, not a split', () => {
+    expect(detectSandbox({ env: {}, cwd: REAL_CWD }).sandbox).toBe(false);
+    expect(detectSandbox({ env: { SO_CONFIG_HOME: TELEMETRY_DIR }, cwd: REAL_CWD }).sandbox).toBe(false);
+  });
+
+  it('(c) refuses a temp-root project while the identity is the REAL one', () => {
+    // No statePath → the real ~/.config/session-orchestrator/telemetry.json is
+    // the identity at stake. Uses a REAL mkdtemp path, so this also proves the
+    // macOS /var/folders → /private/var/folders realpath hop is handled: a raw
+    // prefix comparison against os.tmpdir() misses every macOS sandbox.
+    expect(detectSandbox({ env: { CLAUDE_PROJECT_DIR: tmpDir } }))
+      .toEqual({ sandbox: true, reason: 'sandbox:temp-root' });
+    expect(detectSandbox({ env: {}, cwd: tmpDir }))
+      .toEqual({ sandbox: true, reason: 'sandbox:temp-root' });
+  });
+
+  it('(c) does NOT fire when the IDENTITY is throwaway too — a properly isolated harness', () => {
+    // This repo's isolation convention (tests/_helpers/telemetry-isolation.mjs)
+    // points HOME at a tmp dir, so both the project AND the telemetry state live
+    // under the temp root. Nothing of the operator's can leak, so the send is
+    // permitted — otherwise the guard would break every telemetry e2e test.
+    const r = detectSandbox({ env: {}, statePath: join(tmpDir, 'telemetry.json'), cwd: tmpDir });
+    expect(r).toEqual({ sandbox: false, reason: null });
+  });
+
+  it('permits a real operator shape (no env redirect, real checkout)', () => {
+    expect(detectSandbox({ env: {}, cwd: REAL_CWD })).toEqual({ sandbox: false, reason: null });
+  });
+});
+
+describe('flush — a sandbox refusal performs NO network call and NO queue mutation', () => {
+  /** Consent granted on disk, so the refusal cannot be attributed to the consent gate. */
+  function grantedState(dir) {
+    const p = join(dir, 'telemetry.json');
+    writeFileSync(p, JSON.stringify({ schema_version: 1, consent: 'granted' }));
+    return p;
+  }
+
+  it('refuses a config-home-split run that has full consent — sender never called, queue untouched', async () => {
+    const sandboxStatePath = grantedState(tmpDir);
+    const sandboxQueuePath = join(tmpDir, 'sandbox-queue.ndjson');
+    mkdirSync(metricsDir, { recursive: true });
+
+    const calls = [];
+    const res = await flush({
+      // Declared config home ≠ where the state actually is: the Wave-1 shape.
+      env: { SO_CONFIG_HOME: join(tmpDir, 'declared-elsewhere') },
+      ownerConfig: {},
+      statePath: sandboxStatePath,
+      queuePath: sandboxQueuePath,
+      metricsDir,
+      sender: async (batches) => { calls.push(batches); },
+    });
+
+    expect(res.sent).toBe(false);
+    expect(res.queued).toBe(false);
+    expect(res.reason).toBe('sandbox:config-home-split');
+    // The load-bearing half: no send, and nothing written to the queue either.
+    expect(calls).toEqual([]);
+    expect(existsSync(sandboxQueuePath)).toBe(false); // queue file was never created
+  });
+
+  it('SO_TELEMETRY_DISABLED is refused by the consent gate BEFORE the sandbox guard (existing behaviour, re-verified)', async () => {
+    const sandboxStatePath = grantedState(tmpDir);
+    const calls = [];
+    const res = await flush({
+      env: { SO_TELEMETRY_DISABLED: '1' },
+      ownerConfig: {},
+      statePath: sandboxStatePath,
+      queuePath: join(tmpDir, 'q.ndjson'),
+      metricsDir: join(tmpDir, 'metrics'),
+      sender: async (b) => { calls.push(b); },
+    });
+    expect(res).toMatchObject({ sent: false, queued: false, state: 'disabled-env', reason: 'gated' });
+    expect(calls).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GitLab #1234 BUG 2 — a ping with NO session source was indistinguishable from
+// a measured one. buildBatch keyed exclusively on sessions.jsonl; when it was
+// absent `sessionForPing` was {} and the ping reported session_type: "other" /
+// duration_bucket: "<15m" — values that read as measurements. This repo has no
+// sessions.jsonl at all, which is how 32 such pings reached the server.
+// (Merged in from the misplaced tests/lib/telemetry/fleet-and-session-record.test.mjs.)
+// ---------------------------------------------------------------------------
+
+/** Write an events.jsonl into `dir` (the fallback source when sessions.jsonl is absent). */
+function writeEvents(dir, records) {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'events.jsonl'), records.map((r) => JSON.stringify(r)).join('\n') + '\n');
+}
+
+describe('session facts survive a missing sessions.jsonl (deriveSessionFromEvents)', () => {
+  it('derives type + window from orchestrator.session.started', () => {
+    writeEvents(tmpDir, [
+      { timestamp: '2026-09-06T08:00:00.000Z', event: 'orchestrator.session.started', mode: 'deep' },
+      { timestamp: '2026-09-06T11:30:00.000Z', event: 'orchestrator.agent.stopped' },
+    ]);
+    expect(deriveSessionFromEvents(tmpDir)).toEqual({
+      session: {
+        session_type: 'deep',
+        started_at: '2026-09-06T08:00:00.000Z',
+        completed_at: '2026-09-06T11:30:00.000Z',
+      },
+      source: 'derived',
+    });
+  });
+
+  it('reports `absent` — never a fabricated type — when events.jsonl does not exist', () => {
+    expect(deriveSessionFromEvents(join(tmpDir, 'nope'))).toEqual({ session: {}, source: 'absent' });
+  });
+
+  it('a started event with NO mode yields a window but no type (never invents one)', () => {
+    writeEvents(tmpDir, [{ timestamp: '2026-09-06T08:00:00.000Z', event: 'orchestrator.session.started' }]);
+    const { session } = deriveSessionFromEvents(tmpDir);
+    expect('session_type' in session).toBe(false);
+    expect(session.started_at).toBe('2026-09-06T08:00:00.000Z');
+  });
+});
+
+describe('buildBatch marks the provenance of every ping', () => {
+  const PROV_NOW = '2026-09-06T12:00:00.000Z';
+  const common = { env: {}, ownerConfig: {}, now: PROV_NOW, persist: false };
+
+  function grantedStatePath() {
+    const p = join(tmpDir, 'provenance-telemetry.json');
+    writeFileSync(p, JSON.stringify({ schema_version: 1, consent: 'granted', anon_id: '11111111-2222-4333-8444-555555555555' }));
+    return p;
+  }
+
+  it('ledger present → session_record "ledger"', () => {
+    const dir = join(tmpDir, 'm');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'sessions.jsonl'), JSON.stringify({
+      session_id: 's1', session_type: 'feature',
+      started_at: '2026-09-06T08:00:00.000Z', completed_at: '2026-09-06T11:00:00.000Z',
+    }) + '\n');
+    const { record } = buildBatch({ ...common, metricsDir: dir, statePath: grantedStatePath() });
+    expect(record.session_record).toBe('ledger');
+    expect(record.session_type).toBe('feature');
+  });
+
+  it('THE BUG: no ledger but events present → derived facts, not a measured-looking "other"', () => {
+    const dir = join(tmpDir, 'm2');
+    writeEvents(dir, [
+      { timestamp: '2026-09-06T08:00:00.000Z', event: 'orchestrator.session.started', mode: 'deep' },
+      { timestamp: '2026-09-06T11:30:00.000Z', event: 'orchestrator.agent.stopped' },
+    ]);
+    const { record } = buildBatch({ ...common, metricsDir: dir, statePath: grantedStatePath() });
+    expect(record.session_record).toBe('derived');
+    expect(record.session_type).toBe('deep');
+    expect(record.duration_bucket).toBe('>3h');
+  });
+
+  it('neither source → session_type "unknown", NOT "other", and session_record "absent"', () => {
+    const dir = join(tmpDir, 'm3');
+    mkdirSync(dir, { recursive: true });
+    const { record } = buildBatch({ ...common, metricsDir: dir, statePath: grantedStatePath() });
+    expect(record.session_type).toBe('unknown');
+    expect(record.session_record).toBe('absent');
+  });
+
+  it('a MEASURED but unrecognised type is still "other" — absent and unrecognised stay distinct', () => {
+    const dir = join(tmpDir, 'm4');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'sessions.jsonl'), JSON.stringify({
+      session_id: 's1', session_type: 'weird',
+      started_at: '2026-09-06T08:00:00.000Z', completed_at: '2026-09-06T08:05:00.000Z',
+    }) + '\n');
+    const { record } = buildBatch({ ...common, metricsDir: dir, statePath: grantedStatePath() });
+    expect(record.session_type).toBe('other');
+  });
+
+  // Pairs with the `session_profile` contract in schema.test.mjs: a ping built
+  // WITHOUT a ledger must carry no profile rather than an invented one.
+  it('a derived (ledger-less) ping carries NO session_profile rather than an invented one', () => {
+    const dir = join(tmpDir, 'mp');
+    writeEvents(dir, [{ timestamp: '2026-09-06T08:00:00.000Z', event: 'orchestrator.session.started', mode: 'deep' }]);
+    const { record } = buildBatch({ ...common, metricsDir: dir, statePath: grantedStatePath() });
+    expect(record.session_record).toBe('derived');
+    expect('session_profile' in record).toBe(false);
   });
 });

@@ -2,14 +2,20 @@
 
 > Loop engineering for AI coding agents. Turn ad-hoc sessions into a repeatable research, plan, wave-execute, close loop with verification gates. Runs on Claude Code, Codex CLI, Cursor, and Pi. MIT-licensed, local by default, no account.
 
-Version: 3.24.0 · npm: session-orchestrator · requires Node.js >= 24
+Version: 4.0.0 · npm: session-orchestrator · requires Node.js >= 24 (package.json engines) · Codex CLI >= 0.144.4; no minimum pinned for Claude Code, Cursor, or Pi
 
 ## Install
 
 - Claude Code: `/plugin marketplace add Kanevry/session-orchestrator` then `/plugin install session-orchestrator@kanevry` (afterwards run `npm install` once inside the plugin directory and restart Claude Code)
+- Upgrade: `/plugin update session-orchestrator@kanevry`, then restart. Session-start warns when the RUNNING copy is behind the published npm version, and stays silent rather than claiming "up to date" when it cannot tell.
+- Uninstall: remove the plugin through the harness's own plugin manager. `.orchestrator/` (bootstrap.lock, metrics JSONL, policy, steering), `STATE.md`, and the `## Session Config` block stay behind in the user's repo and are deleted by hand.
 - Codex CLI: `git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/codex-install.mjs`
 - Cursor IDE: same clone, then `node scripts/cursor-install.mjs /path/to/your/project`
 - Pi: `pi install npm:session-orchestrator`
+
+## Surface (measured 2026-09-06)
+
+43 skills · 25 commands · 14 typed sub-agents · 27 hook files (26 plugin-wired, 10 event types) · 26 always-on rule files · 18 ADRs · 14 destructive-command rules (10 blocking, 4 warning) · 661 vitest test files. Also ships a portable cross-harness surface: root AGENTS.md (byte-identical generated copy of CLAUDE.md), root plugin.json (agent-plugins.org 1.0.0), and a .agents/skills/ mirror of every skill.
 
 ## Links
 

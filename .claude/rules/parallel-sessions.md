@@ -267,7 +267,7 @@ The git index and stash are **shared resources of the working copy**, not a priv
 **Anti-patterns:**
 - A code-implementer subagent running `git add <its own files>` "to be helpful" before reporting done — even scoped to its own files, it still races the coordinator's own staging pass and any sibling's concurrent index write.
 - A subagent running `git stash` to "save progress" before switching tasks — the coordinator does not mid-task-switch a live agent; if this situation arises, the agent should report `blocked` and let the coordinator decide, never stash.
-- A subagent running `git commit --no-verify` "just this once to unblock the wave" — commits are the coordinator's exclusive responsibility per every `agents/*.md` authoring convention (see `agents/AGENTS.md` § Authoring Convention for the mandatory ban-line every repo-write agent definition must carry).
+- A subagent running `git commit --no-verify` "just this once to unblock the wave" — commits are the coordinator's exclusive responsibility per every `agents/*.md` authoring convention (see `docs/agent-authoring.md` § Authoring Convention for the mandatory ban-line every repo-write agent definition must carry).
 
 ## Anti-Patterns
 - Seeing unfamiliar changes and assuming they are "leftover mess" to clean up — they are likely active work.

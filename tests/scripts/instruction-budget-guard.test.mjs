@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import {
   computeInstructionBudget,
   checkInstructionBudget,
+  DEFAULT_GENERATED_BYTE_CEILING,
   loadInstructionBudgetConfig,
   _parseInstructionBudget,
   countDirectives,
@@ -578,6 +579,12 @@ describe('computeInstructionBudget — bySurface context-independence, asymmetri
       coordinator: TIER_ALWAYS_BYTES + TIER_COORD_BIG_BYTES + TIER_UNTAGGED_BYTES, // 70
       wave: TIER_ALWAYS_BYTES + TIER_WAVE_BYTES + TIER_UNTAGGED_BYTES, // 14
       always: TIER_ALWAYS_BYTES, // 5
+      // The fixture's rules all carry `globs:`? No — makeAsymmetricTierFixture
+      // builds always-on files only, so the path-scoped surface is empty. It is
+      // pinned here (rather than omitted) because this assertion is a strict
+      // toEqual on the whole bySurface object: leaving it out would make the
+      // test fail for a reason unrelated to what it is measuring.
+      generated: { bytes: 0, files: 0 },
     };
 
     expect(withWave.bySurface).toEqual(expectedBySurface);
@@ -964,11 +971,13 @@ describe('never throws on a missing rulesDir', () => {
       perFile: [],
       ceiling: 480,
       byteCeiling: 121000,
+      generatedByteCeiling: DEFAULT_GENERATED_BYTE_CEILING,
       overDirectiveBudget: false,
       overByteBudget: false,
+      overGeneratedBudget: false,
       overBudget: false,
       severity: 'ok',
-      bySurface: { coordinator: 0, wave: 0, always: 0 },
+      bySurface: { coordinator: 0, wave: 0, always: 0, generated: { bytes: 0, files: 0 } },
     });
   });
 
@@ -1192,5 +1201,112 @@ describe('checkInstructionBudget — Session Config gates', () => {
 
     expect(banner).not.toBeNull();
     expect(banner.message).toContain('directives 11 > 5');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Path-scoped ("generated") surface — the blind spot this axis closes.
+//
+// THE BUG THIS CATCHES: generated-rule growth was invisible to the budget
+// guard. `computeInstructionBudget` measures always-on rules only — it calls
+// `loadApplicableRules({scopePaths: []})`, which by construction returns
+// nothing that carries `globs:`. So on 2026-09-06 @ e4674109 the reconciliation
+// engine had accumulated 43 generated rule files / 112,443 B in .claude/rules/
+// (137,410 B over 46 files on this axis's own frontmatter-stripped count) while
+// the guard reported a healthy 470/480 directives over 15 files. No ceiling on
+// either pre-existing axis could have fired on that growth, because neither
+// axis ever counted a single byte of it.
+//
+// The fixture below is the minimal reproduction: a rules dir whose always-on
+// content is tiny and whose path-scoped content is large. Before
+// `bySurface.generated` existed, EVERY assertion in this test was unreachable —
+// there was no field to read and no third axis to breach.
+// ---------------------------------------------------------------------------
+describe('computeInstructionBudget — path-scoped surface (generated-rule growth blind spot)', () => {
+  /**
+   * One tiny always-on rule (no globs:) + `n` fat path-scoped rules.
+   * Returns the fixture dir plus the exact byte figures, so the assertions
+   * below never re-derive a number from the production heuristic.
+   */
+  function makeMixedFixture(n, bodyBytes) {
+    const dir = mkdtempSync(join(tmpdir(), 'instr-budget-generated-'));
+    tmpDirs.push(dir);
+    // Always-on: no globs:/paths: frontmatter at all.
+    writeFileSync(join(dir, 'always-on.md'), '# Always\n\n- one directive\n');
+    const body = 'x'.repeat(bodyBytes);
+    for (let i = 0; i < n; i += 1) {
+      writeFileSync(
+        join(dir, `generated-${i}.md`),
+        ['---', 'globs:', '  - "scripts/**"', '---', '', body, ''].join('\n'),
+      );
+    }
+    return dir;
+  }
+
+  it('counts path-scoped rule bytes AND files that the always-on axes structurally cannot see', () => {
+    const rulesDir = makeMixedFixture(3, 500);
+
+    const result = computeInstructionBudget({ rulesDir });
+
+    // The always-on axes see the one always-on file and nothing else — this is
+    // exactly the blind spot: 3 fat generated files contribute 0 to totalBytes.
+    expect(result.perFile).toHaveLength(1);
+    expect(result.perFile[0].file).toBe('always-on.md');
+    expect(result.totalBytes).toBeLessThan(200);
+
+    // The new axis sees all 3, and reports the FILE COUNT beside the bytes —
+    // a path-scoped corpus grows by file count as much as by size.
+    expect(result.bySurface.generated.files).toBe(3);
+    expect(result.bySurface.generated.bytes).toBeGreaterThan(1500);
+
+    // Disjoint from totalBytes by construction (always-on vs path-scoped).
+    expect(result.bySurface.generated.bytes).toBeGreaterThan(result.totalBytes);
+  });
+
+  it('breaches overBudget on the generated axis alone, while both always-on axes stay healthy', () => {
+    const rulesDir = makeMixedFixture(3, 500);
+
+    const result = computeInstructionBudget({ rulesDir, generatedByteCeiling: 100 });
+
+    expect(result.overDirectiveBudget).toBe(false);
+    expect(result.overByteBudget).toBe(false);
+    expect(result.overGeneratedBudget).toBe(true);
+    expect(result.overBudget).toBe(true);
+    expect(result.severity).toBe('warn');
+  });
+
+  it('names the generated axis with its file count in the banner (HR-106: report the number judged)', () => {
+    const emptyRoot = mkdtempSync(join(tmpdir(), 'instr-budget-generated-root-'));
+    tmpDirs.push(emptyRoot);
+    const rulesDir = makeMixedFixture(3, 500);
+
+    const banner = checkInstructionBudget({
+      repoRoot: emptyRoot,
+      rulesDir,
+      generatedByteCeiling: 100,
+    });
+
+    expect(banner).not.toBeNull();
+    expect(banner.message).toContain('path-scoped');
+    expect(banner.message).toContain('over 3 files');
+    expect(banner.message).toContain('> 100 B');
+  });
+
+  it('stays silent when the path-scoped surface is under the default ceiling', () => {
+    const emptyRoot = mkdtempSync(join(tmpdir(), 'instr-budget-generated-ok-'));
+    tmpDirs.push(emptyRoot);
+    const rulesDir = makeMixedFixture(3, 500);
+
+    // Guard the derivation itself: the default must sit well above this fixture,
+    // otherwise the "silent now" half of the ratchet is untested.
+    expect(DEFAULT_GENERATED_BYTE_CEILING).toBeGreaterThan(10_000);
+    expect(checkInstructionBudget({ repoRoot: emptyRoot, rulesDir })).toBeNull();
+  });
+
+  it('never throws on a missing rules dir — generated surface reports zeroes', () => {
+    const result = computeInstructionBudget({ rulesDir: join(tmpdir(), 'no-such-dir-xyz') });
+
+    expect(result.bySurface.generated).toEqual({ bytes: 0, files: 0 });
+    expect(result.overGeneratedBudget).toBe(false);
   });
 });

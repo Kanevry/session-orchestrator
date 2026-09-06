@@ -67,12 +67,31 @@ import { parseStateMd as defaultParseStateMd } from './state-md/yaml-parser.mjs'
 // Constants
 // ---------------------------------------------------------------------------
 
-/** session_type enum accepted by the schema — lock.mode is coerced against it. */
-const VALID_SESSION_TYPES = new Set(['feature', 'deep', 'housekeeping']);
+/**
+ * The three real session MODES — deliberately NOT the schema's VALID_SESSION_TYPES,
+ * which since GitLab #1234 also carries `unknown`. This set answers a narrower
+ * question: "is `gathered.mode` a MEASUREMENT?". `unknown` must never pass it, or
+ * an events record carrying `mode: 'unknown'` would be recorded as a measured type
+ * (`_session_type_inferred` absent) when it is the opposite.
+ */
+const MEASURED_SESSION_MODES = new Set(['feature', 'deep', 'housekeeping']);
+
+/**
+ * session_type written when nothing in events.jsonl measured the mode
+ * (GitLab #1234). Always paired with `_session_type_inferred` + `_synthetic`.
+ */
+const UNMEASURED_SESSION_TYPE = 'unknown';
 
 const EVENT_STARTED = 'orchestrator.session.started';
 const EVENT_LOCK_ACQUIRED = 'orchestrator.session.lock.acquired';
+// Both names for one generation (GitLab #1234): `hooks/on-stop.mjs` now emits
+// `orchestrator.turn.stopped` as the canonical name and keeps the legacy
+// `orchestrator.session.stopped` (with `deprecated: true`) beside it until
+// 2027-03-06. A terminal-event probe must accept EITHER, or every session that
+// closes after the legacy name is dropped silently loses its attested end and
+// falls back to the flagged `lastEventMs` estimate.
 const EVENT_STOPPED = 'orchestrator.session.stopped';
+const EVENT_TURN_STOPPED = 'orchestrator.turn.stopped';
 const EVENT_ENDED = 'orchestrator.session.ended';
 
 const EVENTS_REL = ['.orchestrator', 'metrics', 'events.jsonl'];
@@ -217,7 +236,7 @@ function collectSessionEvents(events, { sessionId, semanticSessionId }) {
       if (typeof ev.timestamp === 'string') startedAt = ev.timestamp;
       if (typeof ev.branch === 'string' && ev.branch.length > 0) branch = ev.branch;
       if (typeof ev.project === 'string') project = ev.project;
-    } else if (ev.event === EVENT_STOPPED || ev.event === EVENT_ENDED) {
+    } else if (ev.event === EVENT_STOPPED || ev.event === EVENT_TURN_STOPPED || ev.event === EVENT_ENDED) {
       if (!Number.isNaN(ts)) {
         lastTerminalMs = lastTerminalMs === null ? ts : Math.max(lastTerminalMs, ts);
       }
@@ -317,9 +336,9 @@ function synthesizeRecord({ recordId, synthetic, gathered, nowMs, status = 'aban
   // Guard the same monotonic invariant as before: never earlier than started_at.
   const completedIso = new Date(Math.max(startedMs, completedMs)).toISOString();
 
-  let sessionType = 'housekeeping';
+  let sessionType = UNMEASURED_SESSION_TYPE;
   let inferred = true;
-  if (gathered.mode && VALID_SESSION_TYPES.has(gathered.mode)) {
+  if (gathered.mode && MEASURED_SESSION_MODES.has(gathered.mode)) {
     sessionType = gathered.mode;
     inferred = false;
   }
@@ -356,7 +375,36 @@ function synthesizeRecord({ recordId, synthetic, gathered, nowMs, status = 'aban
     _backfill_incomplete_fields: incomplete,
   };
   if (branchFound) record.branch = gathered.branch;
-  if (inferred) record._session_type_inferred = true;
+  if (inferred) {
+    record._session_type_inferred = true;
+    // GitLab #1234 — BACKFILLER HONESTY, half landed 2026-09-06.
+    //
+    // `session_type` above is now `'unknown'`, not the old `'housekeeping'`
+    // DEFAULT that nothing in events.jsonl ever said. Measured 2026-09-06, all
+    // 1.656 `abandoned` records in the 90-day fleet window carry
+    // `_session_type_inferred: true` + `total_waves: 0`, and NO organically
+    // written `abandoned` record exists anywhere — that `housekeeping` guess is
+    // what produced the "27 % close rate" figure that turned out to be an
+    // artefact (the real rate is 21,3 %). VALID_SESSION_TYPES was widened with
+    // `unknown` in `scripts/lib/session-schema/constants.mjs` to make this
+    // sayable; historical records keep their `housekeeping` label verbatim
+    // (sessions.jsonl is append-only), so a reader wanting the honest
+    // population still filters on `_synthetic !== true` rather than on the type.
+    //
+    // The OTHER half is deliberately NOT landed: `status` stays `'abandoned'`
+    // even though `'unresolved'` is the honest word and the schema now accepts
+    // it. Six executable phantom-stub filters key on the literal `abandoned`
+    // (census + revisit trigger in `scripts/lib/session-schema/validator.mjs`
+    // § SESSION_STATUS) and none of them is in this change's file scope —
+    // flipping the emitter first would make every new stub invisible to all six
+    // and re-open the #834 phantom-in-signal class fleet-wide. Repoint those
+    // filters onto one both-accepting predicate, then flip this one line.
+    //
+    // `_synthetic: true` still carries the claim no enum can: this record was
+    // COMPOSED. A consumer that filters on `_synthetic !== true` gets only
+    // measured records without needing to know either enum.
+    record._synthetic = true;
+  }
   if (synthetic) record._synthetic_session_id = true;
   if (completedEstimated) record._completed_at_estimated = true;
   // #1068 AC3/AC4 — forensic supersede marker. sessions.jsonl is append-only,

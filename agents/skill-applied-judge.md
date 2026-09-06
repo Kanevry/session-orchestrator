@@ -22,7 +22,7 @@ gates any action** — not a sunset decision, not a C2 repair, not a promotion.
 Per #645 R9(b) the C2 repair gate stays deterministic; your judgment is a signal
 for humans and dashboards, not a control input.
 
-> **Color rationale (AGENTS.md exception (b) — mutually-exclusive phase):** this
+> **Color rationale (`docs/agent-authoring.md` exception (b) — mutually-exclusive phase):** this
 > agent carries `color: cyan`, shared with `dialectic-deriver` (`/evolve` phase)
 > and `docs-writer` (impl/finalization phase). The judge runs **solo** at
 > session-end Phase 3.6.6 and never co-runs in a dispatch wave, so the shared

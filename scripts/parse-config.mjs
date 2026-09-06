@@ -3,10 +3,16 @@
  * parse-config.mjs — Parse ## Session Config from CLAUDE.md or AGENTS.md and output validated JSON.
  * Part of Session Orchestrator v3.0.0 (originally parse-config.sh in v2).
  *
- * Usage: node scripts/parse-config.mjs [path/to/CLAUDE.md|AGENTS.md]
+ * Usage: node scripts/parse-config.mjs [--json] [path/to/CLAUDE.md|AGENTS.md]
  *   If no path given, walks up from cwd to find project root and uses its CLAUDE.md (or AGENTS.md).
  *
  * Output: Single JSON object to stdout with ALL config fields (defaults applied).
+ *   `--json` is an explicit NO-OP alias for that default — accepted because
+ *   `docs/session-config-template.md` (lines 13 and 965) documents
+ *   `node scripts/parse-config.mjs --json` as THE validation command, and the
+ *   flag used to be swallowed by the positional-path slot and rejected with
+ *   `File not found: --json` (exit 1). `cli-design.md` § JSON-First Output also
+ *   requires every CLI to accept `--json`.
  * Exit codes: 0 success, 1 error (message to stderr)
  *
  * Unparsable lines inside `## Session Config` (#1097) are reported per line on
@@ -94,10 +100,46 @@ function resolveConfigFile(argPath) {
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// Main — argument parsing
 // ---------------------------------------------------------------------------
+//
+// Exactly two recognised flags plus one optional positional path. `--json` is
+// accepted and IGNORED: stdout is already a single JSON object, and the
+// documented validation command passes the flag. Anything else starting with
+// `-` is rejected rather than silently treated as a filename, so a typo cannot
+// masquerade as a missing file.
 
-const argPath = process.argv[2] ?? null;
+const HELP_TEXT = `Usage: parse-config.mjs [--json] [path/to/CLAUDE.md|AGENTS.md]
+
+Parse the \`## Session Config\` block from CLAUDE.md (or AGENTS.md) and write
+the validated config to stdout as a single JSON object.
+
+Options:
+  --json     No-op alias for the default output (stdout is always JSON).
+  --help     Show this help and exit 0.
+
+Without a path, walks up from cwd to the project root and uses its CLAUDE.md,
+falling back to AGENTS.md. Exit codes: 0 success, 1 error (message on stderr).
+`;
+
+let argPath = null;
+for (const arg of process.argv.slice(2)) {
+  if (arg === '--help' || arg === '-h') {
+    process.stdout.write(HELP_TEXT);
+    process.exit(0);
+  } else if (arg === '--json') {
+    // no-op — the default output already IS JSON
+  } else if (arg.startsWith('-')) {
+    process.stderr.write(`parse-config.mjs: Unknown option: ${arg}\n\n${HELP_TEXT}`);
+    process.exit(1);
+  } else if (argPath === null) {
+    argPath = arg;
+  } else {
+    process.stderr.write(`parse-config.mjs: Unexpected extra argument: ${arg}\n\n${HELP_TEXT}`);
+    process.exit(1);
+  }
+}
+
 const configFile = resolveConfigFile(argPath);
 
 let content;

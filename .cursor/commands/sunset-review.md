@@ -1,6 +1,6 @@
 ---
-description: Identify unused / near-zero-use / stale skills, agents, and commands as Demote or Retire candidates (read-only; never deletes)
-argument-hint: [--kind skill|agent|command] [--window-days N]
+description: "Identify unused / near-zero-use / stale skills, agents, and commands as Demote or Retire candidates (read-only; never deletes)"
+argument-hint: "[--kind skill|agent|command] [--window-days N]"
 ---
 
 # /sunset-review

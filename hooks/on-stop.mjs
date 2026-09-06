@@ -16,7 +16,9 @@
  * JSONL format (`.orchestrator/metrics/events.jsonl`) — emitted via the canonical
  * `emitEvent()` so the JSONL record and the optional Clank webhook always carry the
  * SAME dotted event name (was: bare `stop`/`subagent_stop` in JSONL vs dotted in webhook):
- *   Stop:        {"timestamp":<ISO>,"event":"orchestrator.session.stopped","session_id":"...","semantic_session_id":"...","wave":<int>,"branch":"...","commit":"...","duration_ms":<int>,"duration_source":"session-lock"}
+ *   Stop:        {"timestamp":<ISO>,"event":"orchestrator.turn.stopped","session_id":"...","semantic_session_id":"...","wave":<int>,"branch":"...","commit":"...","duration_ms":<int>,"duration_source":"session-lock"}
+ *                + the SAME payload under the DEPRECATED legacy name (one generation, removal 2027-03-06):
+ *                {"timestamp":<ISO>,"event":"orchestrator.session.stopped",…same fields…,"deprecated":true}
  *                (`session_id` / `semantic_session_id` are omitted when unresolvable — #1068 AC1.
  *                 `duration_ms` + `duration_source` are omitted TOGETHER when no OWNED
  *                 session.lock is readable — never a fabricated 0, see K5 below.)
@@ -457,15 +459,38 @@ async function handleStop(input) {
   // #1183 — a malformed record throws EventValidationError BEFORE any side
   // effect (scripts/lib/events.mjs); this hook must never abort on that, so
   // the emit is wrapped rather than left to propagate.
+  //
+  // ── THE RENAME (GitLab #1234) ──────────────────────────────────────────────
+  // `orchestrator.session.stopped` is a TURN counter with a session's name. The
+  // Stop hook fires once per ASSISTANT TURN, not once per session: measured
+  // 2026-09-06 over 90 days, 15.538 records against 2.016 distinct
+  // `session.started` ids = 7,7 per session, with 184 for a single id. Six
+  // consumers read it as a session-lifecycle signal and are wrong by that factor.
+  //
+  // So the same payload now leaves under BOTH names for one generation:
+  //   - `orchestrator.turn.stopped`    — the correct name, what new readers use.
+  //   - `orchestrator.session.stopped` — unchanged shape PLUS `deprecated: true`,
+  //     so an existing reader keeps working and a NEW reader can tell at a glance
+  //     that it picked the legacy name.
+  // Removal of the legacy name: 2027-03-06 (docs/events-schema.md).
+  //
+  // The SubagentStop branch (`orchestrator.agent.stopped`) is deliberately NOT
+  // renamed — it is a different event and its per-agent cardinality is correct.
+  const stoppedPayload = {
+    ...(sessionId !== null ? { session_id: sessionId } : {}),
+    ...(semanticSessionId !== null ? { semantic_session_id: semanticSessionId } : {}),
+    wave,
+    ...(branch !== null ? { branch } : {}),
+    ...(commit !== null ? { commit } : {}),
+    ...duration,
+  };
+
   try {
-    await emitEvent('orchestrator.session.stopped', {
-      ...(sessionId !== null ? { session_id: sessionId } : {}),
-      ...(semanticSessionId !== null ? { semantic_session_id: semanticSessionId } : {}),
-      wave,
-      ...(branch !== null ? { branch } : {}),
-      ...(commit !== null ? { commit } : {}),
-      ...duration,
-    });
+    await emitEvent('orchestrator.turn.stopped', stoppedPayload);
+  } catch { /* telemetry never blocks the hook (#1183) */ }
+
+  try {
+    await emitEvent('orchestrator.session.stopped', { ...stoppedPayload, deprecated: true });
   } catch { /* telemetry never blocks the hook (#1183) */ }
 }
 

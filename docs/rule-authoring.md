@@ -258,6 +258,71 @@ Field-by-field:
 
 **Provenance is session-slug based, not issue-number based.** The only session-identity field the schema carries is `source_session` (a kebab-slug like `main-2026-07-03-session-1`) — there is currently no issue-number provenance field on a learning record or a generated rule. Adding issue-number provenance (linking a rule back to the GitHub/GitLab issue that motivated the learning) would require a schema addition to `scripts/lib/learnings/schema.mjs` — out of scope for this documentation pass.
 
+### Consolidated rules: N provenance pairs in ONE file (the merge contract)
+
+A rule file may ABSORB several generated rules. This is the supported way to
+stop `.claude/rules/` growing one 2.6 kB file per learning — measured
+2026-09-06 @ `e4674109`: 43 generated files / 112,443 B, 46.2 % of it pure
+frontmatter + provenance overhead, consolidated to 8 thematic files (33
+absorbed, 10 dropped). Four rules make a merge safe, and skipping any one of
+them silently loses a learning or regenerates it:
+
+1. **Frontmatter `learning-key:` is a SCALAR — so N−1 markers live in the
+   body.** `engine.mjs` reads BOTH forms: the frontmatter
+   `FRONTMATTER_LEARNING_KEY_RE` (`^learning-key: <value>`) and the body
+   bullets `BODY_LEARNING_KEY_RE` / `BODY_LEARNING_ID_RE`
+   (`` - learning-key: `<value>` `` / `` - learning-id: `<value>` ``). A merged
+   file therefore carries **one `- learning-key:` + `- learning-id:` bullet
+   PAIR per absorbed learning** in its `## Provenance` section, and may omit
+   the frontmatter scalar entirely. Removing a pair does not "tidy up" the
+   file — it makes that learning look unmaterialized, and the next
+   `/reconcile` regenerates it as a standalone rule.
+
+2. **`expires-at` is the EARLIEST of the absorbed dates.** A merged file must
+   not outlive its shortest-lived content: one date now covers several
+   learnings, so it must expire when the FIRST of them is due for review, not
+   the last. (Taking the latest would silently extend every other learning's
+   TTL past what its type registry granted it.) State the rule in the file
+   itself, so the next editor does not "fix" it upward.
+
+3. **Keep `globs:` only, and take the UNION.** The merged file loads for any
+   path any of its parts covered, so its `globs:` is the union of theirs.
+   `rule-loader.mjs` resolves `globs:` and `paths:` with `globs:` winning
+   SILENTLY when both are present (issue #795, `parseGlobsFrontmatter`) — so a
+   file carrying both duplicate keys ships the `paths:` block as dead bytes.
+   Write `globs:` alone.
+
+4. **Substance in, boilerplate out.** Each absorbed learning becomes an `###`
+   heading carrying its original rule sentence, plus its evidence line. What is
+   dropped is only the per-file repetition (the `# Auto-generated rule:` title,
+   the untrusted-content wrapper repeated 43×, the `evidence-digest` /
+   `evidence-digest-input` / `source-session` fields). Never drop an evidence
+   line to hit a byte target — an insight with no measurement behind it is the
+   thing `.claude/rules/measurement-discipline.md` exists to forbid.
+
+**Dropping a learning requires a stamp BEFORE the delete.** Deleting a
+generated rule file whose insight is already carried verbatim by a hand-written
+always-on rule is legitimate — but `rm` alone does not stick. `engine.mjs`
+treats a learning as `alreadyMaterialized` if EITHER the idempotency sidecar
+holds a terminal verdict for its `learning_key` (`isProcessed`) OR a
+`.claude/rules/*.md` file still carries its marker. Delete the file without
+stamping and both conditions go false, so the next `/reconcile` proposes it
+again. Stamp it first, via the store's only sanctioned writer:
+
+```js
+import { markCandidateProcessed } from '../scripts/lib/reconcile/idempotency.mjs';
+markCandidateProcessed({
+  learningKey: 'anti-pattern/<subject-slug>',
+  outcome: 'rejected',        // or 'already-on-disk' when it lives elsewhere
+  fallbackSlug: '<the .claude/rules slug>',
+  repoRoot,
+});
+```
+
+This writes `.orchestrator/runtime/reconcile-candidates.jsonl` (creating it if
+absent). Verify with a dry run: `alreadyMaterialized` must equal
+absorbed + dropped, not absorbed alone.
+
 ## Authoring Examples
 
 ### (a) Hand-authored always-on rule (no frontmatter)

@@ -7,9 +7,9 @@ Detailed component inventory and architecture reference for Session Orchestrator
 ```mermaid
 flowchart LR
     USER([Operator]) -->|invokes /session| COORD[Coordinator]
-    COORD -->|reads| SK[Skills<br/>49 user-facing]
-    COORD -->|invokes| CMD[Commands<br/>28 slash-cmds]
-    COORD -->|dispatches| AG[Agents<br/>15 typed sub-agents]
+    COORD -->|reads| SK[Skills<br/>43 user-facing]
+    COORD -->|invokes| CMD[Commands<br/>25 slash-cmds]
+    COORD -->|dispatches| AG[Agents<br/>14 typed sub-agents]
     AG -.->|parallel waves| W1[code-implementer]
     AG -.-> W2[test-writer]
     AG -.-> W3[security-reviewer]
@@ -18,29 +18,29 @@ flowchart LR
     COORD -->|writes| METRIC[.orchestrator/metrics/<br/>sessions · learnings · events]
 ```
 
-## Skills (49 user-facing)
+## Skills (43 user-facing)
 
 - **Lifecycle:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `quality-gates`, `using-orchestrator`
-- **Authoring:** `skill-creator`, `mcp-builder`, `hook-development`, `frontmatter-guard`, `contract-version-bump`
-- **Planning & discovery:** `plan`, `discovery`, `journey-audit`, `repo-audit`, `brainstorm`, `write-executable-plan`, `debug`, `claude-md-drift-check`, `grill`
-- **Architecture:** `architecture`, `domain-model`, `ubiquitous-language`
+- **Authoring:** `mcp-builder`, `hook-development`, `frontmatter-guard`
+- **Planning & discovery:** `plan`, `discovery`, `repo-audit`, `brainstorm`, `write-executable-plan`, `debug`, `claude-md-drift-check`, `grill`
+- **Architecture:** `architecture` (carries the former `domain-model` grilling flow plus the `CONTEXT.md`/ADR formats under `skills/architecture/references/`)
 - **Cross-session:** `evolve`, `convergence-monitoring`, `memory-cleanup`, `reconcile`, `sunset-review`, `eval`
-- **Vault & docs:** `vault-sync`, `vault-mirror`, `daily`, `docs-orchestrator`
+- **Vault & docs:** `vault-sync`, `vault-mirror`, `docs-orchestrator`
 - **Ecosystem:** `bootstrap`, `gitlab-ops`, `gitlab-portfolio`, `ecosystem-health`, `mode-selector`, `autopilot`, `dispatcher`, `remote-offload`, `spinout`, `npm-publish`
 - **Testing:** `test-runner`, `playwright-driver`, `peekaboo-driver`
 - **Content review:** `persona-panel`
 - **Operator ergonomics:** `eli5` (plain-language restatement of the last answer)
 - **Visualization:** `tmux-layout` (opt-in operator side-channel — [ADR-0007](adr/0007-tmux-visualization-substrate.md))
 
-## Commands (28)
+## Commands (25)
 
-`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/autopilot-multi`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/dispatcher`, `/reconcile`, `/spinout`, `/eval`, `/release`, `/contract-version-bump`, `/eli5`, `/journey-audit`.
+`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/dispatcher`, `/reconcile`, `/spinout`, `/eval`, `/release`, `/eli5`.
 
-## Agents (15 typed sub-agents)
+## Agents (14 typed sub-agents)
 
-`code-implementer`, `test-writer`, `ui-developer`, `db-specialist`, `security-reviewer`, `session-reviewer`, `docs-writer`, `architect-reviewer`, `qa-strategist`, `analyst`, `ux-evaluator`, `dialectic-deriver`, `memory-proposal-collector`, `skill-applied-judge`, `eval-judge`.
+`code-implementer`, `test-writer`, `ui-developer`, `db-specialist`, `security-reviewer`, `session-reviewer`, `docs-writer`, `architect-reviewer`, `qa-strategist`, `analyst`, `ux-evaluator`, `dialectic-deriver`, `skill-applied-judge`, `eval-judge`.
 
-Custom agents live in `agents/` (plugin) or `.claude/agents/` (project) as Markdown with YAML frontmatter. The authoring spec — required fields, body conventions, validation commands — is in [`agents/AGENTS.md`](../agents/AGENTS.md), following the canonical [code.claude.com/sub-agents](https://code.claude.com/docs/en/sub-agents) contract.
+Custom agents live in `agents/` (plugin) or `.claude/agents/` (project) as Markdown with YAML frontmatter. The authoring spec — required fields, body conventions, validation commands — is in [`docs/agent-authoring.md`](./agent-authoring.md), following the canonical [code.claude.com/sub-agents](https://code.claude.com/docs/en/sub-agents) contract.
 
 ## Hook event types (10)
 
@@ -54,13 +54,34 @@ Codex uses the curated six-event project subset `SessionStart`, `PreToolUse`, `P
 - **Policy & rules:** `.orchestrator/policy/blocked-commands.json` (destructive-command rules); `.claude/rules/parallel-sessions.md` (PSA-001..PSA-004).
 - **Codex:** `.codex-plugin/plugin.json` (tracked `+codex.<UTC timestamp>` version), compatibility config, agent role definitions, and the public marketplace/add/list lifecycle implemented by `scripts/codex-install.mjs`. Every run refreshes via `plugin add`; hook trust remains an operator decision in a fresh task through `/hooks`.
 - **Pi:** `package.json` `pi` manifest, `pi/extensions/session-orchestrator.ts` bridge, `hooks/hooks-pi.json`, `scripts/pi-install.mjs`.
+- **Portable cross-harness surface (generated, never hand-edited):** root `AGENTS.md` (byte-identical copy of `CLAUDE.md`), root `plugin.json` ([agent-plugins.org](https://agent-plugins.org) 1.0.0 schema), and `.agents/skills/<name>/SKILL.md` — a mirror of all 43 skills carrying only spec-legal frontmatter plus a pointer body (progressive disclosure; the mirror never duplicates the canonical instructions). Written by `scripts/generate-agents-skills.mjs`, drift-checked via its `--check` form inside `scripts/validate-plugin.mjs`.
 - **Scripts:** deterministic CLI tools (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot) plus shared lib under `scripts/lib/*.mjs`, all covered by the vitest suite.
 
 ## `/harness-audit` — Anthropic large-codebase rubric
 
 `scripts/harness-audit.mjs` runs **9 deterministic categories / 38 checks** over a repo and emits `.orchestrator/metrics/audit.jsonl`. Category 8 ("Large-Codebase Readiness") operationalises Anthropic's [Claude Code large-codebase best-practices](https://claude.com/blog/how-claude-code-works-in-large-codebases-best-practices-and-where-to-start) checklist — layered `CLAUDE.md` (or `AGENTS.md`), codebase-map presence, LSP/code-intelligence wiring, scoped test/lint commands, `permissions.deny`, and root-file leanness — as scored signals you can run on yourself and on consumer repos. Category 9 ("Skill-Health Surfacing") surfaces the #648 per-skill health pipeline — telemetry hygiene, scorer wiring, and an advisory-only verdict tally that never affects points; non-adoption always scores full points. These checks are intentionally orthogonal to repo-audit's baseline-compliance pass/fail; both surfaces ship.
 
-## Comparison vs. maestro-orchestrate
+## Comparisons
+
+Moved here from the README so that a claim about another project can carry its measurement next to it. Every row below names when and how it was measured; rows that could not be measured were **removed rather than softened** — an unverifiable comparison row is worse than none.
+
+### vs. `open-gsd/gsd-core`
+
+Surface counts measured 2026-09-06 by this repo's 360° ecosystem probe (`docs/audits/2026-09-06-360-audit/w1/d11-github-overlap.md`); session-orchestrator's own counts measured the same day with the commands listed in the [README](../README.md#what-you-get).
+
+| Axis | session-orchestrator | `open-gsd/gsd-core` |
+|---|---|---|
+| Commands / skills / agents | 25 / 43 / 14 | 70 / 71 / 35 |
+| Hook guards | 27 hook files, 10 event types | 28 hooks, incl. write / read / prompt / workflow / secret-read / agent-isolation / worktree-path guards |
+| Cross-session learning | `/evolve` + confidence-scored `learnings.jsonl`; reconcile turns eligible learnings into PROPOSED rules an operator approves one by one | `gsd-extract-learnings`, `gsd-mempalace-*` |
+| Harness coverage | Claude Code, Codex CLI, Cursor IDE, Pi (4) | 44 `capabilities/` directories (pi, hermes, kimi, windsurf, opencode, ollama, …) |
+| Install | marketplace / clone + installer script per harness | `npx @opengsd/gsd-core@latest` |
+
+**Two README rows were deleted here, not carried over.** The old README comparison table claimed "Scope and command enforcement hooks → Other orchestrators: None" and "Cross-session learning → Other orchestrators: None". Both are **false**: gsd-core ships 28 guard hooks and two learning subsystems (measurement above). Two further rows — "VCS integration → usually GitHub only" and "Circuit breaker → Partial" — were removed because no measurement of any named project backs them.
+
+**What is NOT established.** Whether gsd-core's session lock covers the *operator-session* axis (multiple concurrent human sessions in one working copy) is an **open question** — the probe counted 14 code hits in its hooks without reading them. Until that is read, treat the operator-session axis as the plausible distinguishing surface rather than a proven one. The surfaces this repo can point at concretely are: a heartbeat session lock plus peer-scope manifests and the PSA rule set (`.claude/rules/parallel-sessions.md`); owner privacy by construction (`owner.yaml` outside every repo plus a leakage scanner with name redaction); rules derived from this repo's own measured telemetry; Obsidian vault mirroring; and dual GitLab + GitHub auto-detection.
+
+### vs. `maestro-orchestrate`
 
 Both [`maestro-orchestrate`](https://github.com/josstei/maestro-orchestrate) and session-orchestrator coordinate multi-agent work in long-running AI coding sessions. They differ in scope and execution model:
 
@@ -70,6 +91,6 @@ Both [`maestro-orchestrate`](https://github.com/josstei/maestro-orchestrate) and
 | Runtime coverage | Claude Code + Codex CLI + Cursor IDE + Pi (4) | Gemini CLI + Claude Code + Codex + Qwen Code (4) |
 | VCS integration | GitLab + GitHub (auto-detected); hook events + commands wire to both | Runtime-agnostic; VCS work delegated to user |
 | Cross-session learning | Confidence-scored entries surfaced at session-start; opt-in `/evolve` review | Session archival without explicit learning extraction |
-| Specialist agents | 15 typed agents | 39 specialist agents across design/impl/review/debugging/security/compliance |
+| Specialist agents | 14 typed agents | 39 specialist agents across design/impl/review/debugging/security/compliance |
 
 The two plugins are complementary rather than competing: session-orchestrator focuses on a single wave-based lifecycle with VCS + learning integration, while maestro-orchestrate optimises for multi-runtime parallel specialist delivery.

@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  CODEX_NATIVE_EVENTS,
+  CODEX_TOOL_NAMES,
   DISALLOWED_EDIT_HANDLERS,
   parseCodexHookWrapperCommand,
   validateCodexPluginContract,
@@ -409,5 +411,44 @@ describe('validateCodexPluginContract', () => {
     writeHooks(hooksFile);
 
     expectRule(validateFixture(), 'handler-file');
+  });
+
+  // THE BUG this pins (2026-09-06): a wave task asked for `SessionEnd` to be
+  // wired into hooks-codex.json on the premise that "Codex documents it".
+  // Measured against the shipped codex-cli 0.144.4 binary, it does not exist —
+  // the binary embeds exactly 10 `*.command.input` schemas, none of them
+  // session-end or interrupt, and its manifest deserializer rejects unknown
+  // keys (`unexpected map key`). An unknown event key therefore does not
+  // degrade to "one hook missing", it takes the whole manifest — and every
+  // already-working hook — down with it. Widening CODEX_NATIVE_EVENTS from a
+  // changelog instead of from the binary re-opens exactly that.
+  it('keeps SessionEnd and Interrupt out of the measured Codex 0.144.4 native-event surface', () => {
+    expect(CODEX_NATIVE_EVENTS.has('SessionEnd')).toBe(false);
+    expect(CODEX_NATIVE_EVENTS.has('Interrupt')).toBe(false);
+    // The ten the binary actually carries a schema pair for.
+    expect([...CODEX_NATIVE_EVENTS].sort()).toEqual([
+      'PermissionRequest',
+      'PostCompact',
+      'PostToolUse',
+      'PreCompact',
+      'PreToolUse',
+      'SessionStart',
+      'Stop',
+      'SubagentStart',
+      'SubagentStop',
+      'UserPromptSubmit',
+    ]);
+  });
+
+  it('records a Codex tool vocabulary that contains none of the Claude tool names the PreToolUse guards gate on', () => {
+    // Not decoration: every guard in hooks/ opens with `tool_name !== 'Bash'`
+    // (or Edit/Write/MultiEdit) → emitAllow(). Wiring one into hooks-codex.json
+    // yields a hook that runs, matches nothing and allows everything. The day
+    // this assertion goes red is the day a tool-name map became possible.
+    for (const claudeTool of ['Bash', 'Edit', 'Write', 'MultiEdit']) {
+      expect(CODEX_TOOL_NAMES).not.toContain(claudeTool);
+    }
+    expect(CODEX_TOOL_NAMES).toContain('shell');
+    expect(CODEX_TOOL_NAMES).toContain('apply_patch');
   });
 });

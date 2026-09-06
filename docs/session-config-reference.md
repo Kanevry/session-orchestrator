@@ -76,11 +76,45 @@ Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `agents-per-wave` | integer or integer with overrides | `6` | Maximum parallel subagents per wave. Supports session-type overrides: `6 (deep: 18)` outputs `{"default": 6, "deep": 18}`. Plain integers remain plain. The override key names a session type but does **not** create one: there is no `session-type:` Session Config key — `parseSessionConfig()` emits none, so writing one into a repo's `## Session Config` block is inert prose. The session type comes from the `/session` argument (default `deep`, see `commands/session.md`) and is persisted to STATE.md frontmatter as `session-type:`, which is the only live read (`scripts/print-applicable-rules.mjs` rule mode-gating). |
+| `agents-per-wave` | integer or integer with overrides | `6` | Maximum parallel subagents per wave. Supports session-type overrides: `6 (deep: 18)` outputs `{"default": 6, "deep": 18}`. The override key set is OPEN — `_coerceInteger` (`scripts/lib/config/coercers.mjs`) parses whatever keys the parentheses contain, so `6 (deep: 18, ultradeep: 18)` outputs `{"default": 6, "deep": 18, "ultradeep": 18}` with no code change (see § Session Profile below). Plain integers remain plain. The override key names a session type but does **not** create one: there is no `session-type:` Session Config key — `parseSessionConfig()` emits none, so writing one into a repo's `## Session Config` block is inert prose. The session type comes from the `/session` argument (default `deep`, see `commands/session.md`) and is persisted to STATE.md frontmatter as `session-type:`, which is the only live read (`scripts/print-applicable-rules.mjs` rule mode-gating). |
 | `agent-mapping` | object | null | Optional mapping of role keys to agent names for explicit agent binding. Keys: `impl`, `test`, `db`, `ui`, `security`, `compliance`, `docs`, `perf`. Example: `{ impl: code-editor, test: test-specialist }`. Overrides auto-discovery when present. Values may carry a channel prefix — see § `agent-mapping` values below. |
 | `waves` | integer | `5` | Number of execution waves for feature and deep sessions. |
 | `recent-commits` | integer | `20` | Number of recent commits to display during session start git analysis. |
 | `special` | string | none | Repo-specific instructions. Freeform text that the orchestrator reads and follows during sessions. |
+
+### Session Profile — `session-profile` (NOT a Session Config key)
+
+`session-profile` names a WAVE-SHAPE variant on top of an unchanged `session-type`. It is listed here because it is easy to look for in the wrong place: **it is not a Session Config key and `parseSessionConfig()` does not emit one.** Writing `session-profile:` into a repo's `## Session Config` block is inert prose, exactly like `session-type:` (see the `agents-per-wave` row above).
+
+| Aspect | Value |
+|---|---|
+| Where it lives | STATE.md frontmatter (`session-profile: ultradeep`), written per session |
+| Who writes it | The `/session ultradeep` argument alias — `commands/session.md` |
+| Read/write API | `readSessionProfile` / `setSessionProfile` / `SESSION_PROFILE_FIELD` in `scripts/lib/state-md.mjs` |
+| Absent means | No profile. Never an empty string, never `none` — `readSessionProfile` returns `null` |
+| Session record | Optional `session_profile` field (`scripts/lib/session-schema/constants.mjs` `OPTIONAL_FIELDS`); records without it validate unchanged |
+| Defined values | `ultradeep` (7 waves, coordinator-direct Synthesis-Gate at wave 2) — spec: `docs/prd/2026-09-06-ultradeep-session-profile.md` |
+
+`session-type` NEVER becomes `ultradeep`: that value is a closed set in `scripts/lib/session-schema/constants.mjs`, `scripts/lib/wave-sizing.mjs` and `scripts/lib/session-close-backfill.mjs`, and an unknown member degrades SILENTLY there (telemetry maps it to `"other"`, the close-backfill labels it `housekeeping`). The profile field exists so no closed set has to change.
+
+**Sizing an ultradeep session** uses the open override key set:
+
+```yaml
+agents-per-wave: 6 (deep: 18, ultradeep: 18)
+waves: 5                # must be >= 7 for the ultradeep wave shape
+```
+
+Verified against the parser (2026-09-06, `scripts/lib/config/coercers.mjs`):
+
+```
+$ node -e "import('./scripts/lib/config/coercers.mjs').then(m => console.log(JSON.stringify(
+    m._coerceInteger(new Map([['agents-per-wave','6 (deep: 18, ultradeep: 18)']]), 'agents-per-wave', 6))))"
+{"default":6,"deep":18,"ultradeep":18}
+```
+
+Two consumers resolve that object to `.default` rather than to a mode key — `scripts/lib/resource-probe/evaluate.mjs` and `scripts/lib/wave-resource-gate.mjs` (see `heavy-repo` in § Environment Awareness) — so an `ultradeep: 18` override does NOT raise the resource gate's cap.
+
+**Budgets are deliberately absent.** The PRD's `ultradeep.max-agents-total` / `max-wall-clock-hours` / `max-output-tokens` / `on-breach` block (§ 7) is NOT implemented and no key of that name is read anywhere. It stays deferred until three ultradeep runs have been measured, per `.claude/rules/host-resources.md` HR-105 — a threshold whose firing rate nothing records is unfalsifiable. Do not add one ahead of the measurement.
 
 ### `agent-mapping` values — channel prefixes (#1150)
 
@@ -848,7 +882,7 @@ Memory proposals are one of five Epic #498 Phase 2 features that share the same 
 
 Together: F2.1 captures fresh insight mid-flight, F2.2 consolidates old insight at scale, F2.3 surfaces it at the start, F2.4/F2.5 distill it into the durable peer-card profiles.
 
-**Used by:** `scripts/lib/memory-proposals/{schema,store,collector,sink}.mjs`, `scripts/memory-propose.mjs`, `agents/memory-proposal-collector.md`, `hooks/pre-bash-memory-propose-audit.mjs`, `skills/session-end/SKILL.md` Phase 3.6.3.
+**Used by:** `scripts/lib/memory-proposals/{schema,store,collector,sink}.mjs`, `scripts/memory-propose.mjs`, `docs/memory-proposal-flow.md`, `hooks/pre-bash-memory-propose-audit.mjs`, `skills/session-end/SKILL.md` Phase 3.6.3.
 
 **Cross-reference:** issue #501, PRD F2.1 in the Learning-Memory Modernization PRD; issue #741.3 (`--dry-run` flag + `dry-run-ok` status). Sibling features: `memory.banner` (above, F2.3 / #505), `dialectic.cadence` (F2.5 / #506), Auto-Dream (F2.2 / #502, surfaced via `memory-cleanup-soft-limit`).
 
@@ -1615,24 +1649,23 @@ Set `express-path.enabled: false` when:
 - `skills/session-plan/SKILL.md` — Express Path Short-Circuit section (1-wave plan emission)
 - GitLab issue `#214` (foundation and codification)
 
-## Autopilot Multi-Story (#431)
+## Autopilot Multi-Story (#431) — removed
 
-Opt-in configuration for `autopilot --multi-story` (`scripts/autopilot-multi.mjs`). Controls how parallel story pipelines are isolated when N stories run concurrently. Projects that do not use `--multi-story` leave this block unset and are unaffected.
+The `autopilot` block and its single field `autopilot.bg-isolation` are **gone**, not
+deprecated. Their only reader was `scripts/autopilot-multi.mjs`, retired together with <!-- path-check: historical -->
+`commands/autopilot-multi.md` by the 2026-09-06 360°-Audit (§ 5A: 0 telemetry, 0 fleet
+invocations in 90 days, no runtime consumer).
 
-All fields live under a top-level `autopilot` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
+Verified 2026-09-06 at `e4674109`:
+`rg -n "bg-isolation|bgIsolation|deconflict-paths" scripts hooks tests` returns nothing;
+`scripts/parse-config.mjs` never parsed an `autopilot` key at all; `scripts/autopilot.mjs`
+has no `--multi-story` mode. Documenting the field as functional would therefore have been
+the exact failure the audit found elsewhere — a key an operator can set and no code can
+read. <!-- path-check: historical -->
 
-```yaml
-autopilot:
-  bg-isolation: worktree   # worktree | none (default: worktree)
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `autopilot.bg-isolation` | `worktree` \| `none` | `worktree` | Isolation mode for concurrent story pipelines. `worktree` (default): each story creates its own git worktree — safe for parallel writes, costs disk space and EnterWorktree latency. `none`: no worktrees; sub-sessions spawn directly in the main working tree — faster for monorepos with heavy build state but requires explicit file-scope deconfliction (see below). |
-
-**`bg-isolation: none` hard-error guard:** when `bg-isolation: none` AND `--max-stories > 1`, `autopilot-multi` requires `--deconflict-paths=<glob>` on the CLI to confirm that per-story file ownership is planned. Omitting the flag exits with code 1. This enforces the parallel-session discipline defined in `.claude/rules/parallel-sessions.md` PSA-001/002/003 — two agents editing the same file in the main tree simultaneously will corrupt each other's work.
-
-**Feature introduced by:** GitLab issue #431 (CC 2.1.143 `worktree.bgIsolation` changelog adoption). Implementation: `scripts/autopilot-multi.mjs` reads `config?.autopilot?.['bg-isolation']` via `scripts/parse-config.mjs`. Documentation: `skills/autopilot/SKILL.md` § Configuration.
+**If your Session Config still carries an `autopilot:` block, delete it.** It is inert: no
+parser reads it, so removing it changes no behaviour. Single-story `/autopilot` is
+unaffected and takes no Session Config block.
 
 ## Wave Reviewers
 

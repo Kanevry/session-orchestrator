@@ -1,6 +1,6 @@
 ---
 name: remote-offload
-description: Use when local resource pressure would shrink or coordinator-direct a wave, a wave plan carries heavy build/test/audit roles (test, ui, perf), or the operator says offload, remote host, or auslagern — reference for routing that wave role to a declared SSH-reachable host instead of reducing agent count
+description: "Use when local resource pressure would shrink or coordinator-direct a wave, a wave plan carries heavy build/test/audit roles (test, ui, perf), or the operator says offload, remote host, or auslagern — reference for routing that wave role to a declared SSH-reachable host instead of reducing agent count"
 disable-model-invocation: true
 ---
 

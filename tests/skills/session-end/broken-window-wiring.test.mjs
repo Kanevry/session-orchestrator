@@ -30,6 +30,15 @@ import {
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const SESSION_END_PATH = path.join(REPO_ROOT, 'skills/session-end/SKILL.md');
 const METRICS_PATH = path.join(REPO_ROOT, 'skills/session-end/metrics-collection.md');
+// #1157 references/ split: the three override sites live in three different files
+// now — 1.8 in plan-verification.md, 2.3 in references/phase-2-quality-gate.md,
+// 2.5 still inline in SKILL.md. Each is asserted at ITS OWN path below, so losing
+// any one site is still red (a union-search would go green on any two).
+const PLAN_VERIFICATION_PATH = path.join(REPO_ROOT, 'skills/session-end/plan-verification.md');
+const PHASE2_PATH = path.join(
+  REPO_ROOT,
+  'skills/session-end/references/phase-2-quality-gate.md',
+);
 
 describe('Broken-Window Budget prose↔code wiring (#730/H5, session-end)', () => {
   const body = readFileSync(SESSION_END_PATH, 'utf8');
@@ -79,16 +88,21 @@ describe('Broken-Window Budget prose↔code wiring (#730/H5, session-end)', () =
   });
 
   // (d) override event at >= 3 sites (Phase 1.8, 2.3, 2.5)
-  it('the SKILL.md emits orchestrator.finding.overridden at >= 3 override sites', () => {
-    const matches = body.match(/orchestrator\.finding\.overridden/g) || [];
-    expect(matches.length).toBeGreaterThanOrEqual(3);
+  const planVerification = readFileSync(PLAN_VERIFICATION_PATH, 'utf8');
+  const phase2 = readFileSync(PHASE2_PATH, 'utf8');
+
+  it('the session-end skill emits orchestrator.finding.overridden at >= 3 override sites', () => {
+    const count = (text) => (text.match(/orchestrator\.finding\.overridden/g) || []).length;
+    // One site per owning file — summed, never searched as one blob.
+    expect(count(planVerification) + count(phase2) + count(body)).toBeGreaterThanOrEqual(3);
   });
 
   it('the override event is wired at each of Phase 1.8, 2.3, and 2.5 (phase-tagged payloads)', () => {
-    // Each emit tags its originating phase in the payload — assert all three.
-    expect(body).toContain('"phase":"1.8"');
-    expect(body).toContain('"phase":"2.3"');
-    expect(body).toContain('"phase":"2.5"');
+    // Each emit tags its originating phase in the payload — assert all three, each
+    // in the file that owns that phase after the #1157 split.
+    expect(planVerification).toContain('"phase":"1.8"'); // Phase 1.8 Session Review
+    expect(phase2).toContain('"phase":"2.3"'); // Phase 2.3 Vault Staleness Check
+    expect(body).toContain('"phase":"2.5"'); // Phase 2.5 Custom Phases (still inline)
   });
 });
 

@@ -44,6 +44,15 @@ async function runHook({ projectDir, env = {}, stdin = null, registryDir = null,
         CLANK_EVENT_URL: '',
         // Isolate session registry writes to the per-test directory (#168).
         ...(registryDir ? { SO_SESSION_REGISTRY_DIR: registryDir } : {}),
+        // #nnn — the plugin-update probe queries registry.npmjs.org. Default it
+        // OFF for the whole suite for the same reason telemetryIsolationEnv()
+        // exists: `env: { ...process.env, … }` would otherwise turn every test
+        // in this file into a live network client (and the consent-nudge block
+        // below deliberately clears DO_NOT_TRACK, so the probe's own offline
+        // flags cannot be relied on here). The two tests that exercise the
+        // probe clear this key explicitly AND seed a fresh cache, so they never
+        // reach the network either.
+        SO_DISABLE_UPDATE_CHECK: '1',
         // Scrub the operator's own session id. The live Claude Code environment
         // exports CLAUDE_CODE_SESSION_ID (#1123), and `...process.env` above
         // would hand the hook a REAL id from the surrounding session — which is
@@ -1771,5 +1780,172 @@ describe('registry census → semantic n-increment (#1066)', { timeout: 15000 },
     expect(result.code).toBe(0);
     const session = await readSessionFile(dir);
     expect(session.semantic_session_id).toBe(`${branch}-${todayUtc()}-session-${expectedN}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plugin-update banner (#nnn) + session-start heartbeat (#1229)
+// ---------------------------------------------------------------------------
+
+/**
+ * Network contract for this block: every test seeds a FRESH, VALID
+ * `.orchestrator/runtime/plugin-latest.json`, so `checkPluginUpdate()` answers
+ * from the 24 h cache and never issues a request. `SO_DISABLE_UPDATE_CHECK` and
+ * `DO_NOT_TRACK` are cleared deliberately — with either set the probe returns
+ * null before doing anything, and a "banner is present" assertion would be
+ * testing nothing at all.
+ */
+describe('plugin-update banner (#nnn)', { timeout: 15000 }, () => {
+  /** Seed the latest-version cache as if it had been fetched `ageMs` ago. */
+  async function seedLatestCache(dir, version, ageMs = 60_000) {
+    const runtime = path.join(dir, '.orchestrator', 'runtime');
+    await fs.mkdir(runtime, { recursive: true });
+    await fs.writeFile(
+      path.join(runtime, 'plugin-latest.json'),
+      JSON.stringify({ version, fetched_at: new Date(Date.now() - ageMs).toISOString() }),
+    );
+  }
+
+  /** Env that lets the probe run (both kill switches off). */
+  const probeEnv = (extra = {}) => ({ SO_DISABLE_UPDATE_CHECK: '', DO_NOT_TRACK: '', ...extra });
+
+  const stdoutObjects = (stdout) =>
+    stdout.split('\n').filter((l) => l.trim().startsWith('{')).map((l) => JSON.parse(l));
+
+  // THE BUG: this host ran 3.19.0 from the marketplace cache while npm was at
+  // 3.24.0 — five minors, four weeks, no warning (measured 2026-09-06). And a
+  // banner emitted as its OWN stdout object would reproduce the silence a
+  // second way: Claude Code surfaces only the FIRST JSON object a SessionStart
+  // hook writes (HR-106), so the line has to ride the SAME systemMessage as the
+  // host banner or the operator never sees it.
+  it('surfaces the update warning inside the ONE systemMessage envelope', async () => {
+    const dir = await mkProjectTracked();
+    // Far ahead of anything this repo will ever be at, so the assertion does
+    // not rot at the next release.
+    await seedLatestCache(dir, '999.0.0');
+
+    const result = await runHook({ projectDir: dir, env: probeEnv() });
+
+    expect(result.code).toBe(0);
+    const objects = stdoutObjects(result.stdout);
+    expect(objects).toHaveLength(1);
+    const lines = objects[0].systemMessage.split('\n');
+    const update = lines.find((l) => l.includes('session-orchestrator') && l.includes('verfügbar'));
+    expect(update).toBeDefined();
+    expect(update).toContain('999.0.0');
+    expect(update).toContain('/plugin update session-orchestrator@kanevry');
+    // ...and the pre-existing host banner still rides the same object.
+    expect(objects[0].systemMessage).toContain('Host:');
+
+    // HR-105 falsifiability: both versions land on the session record, so the
+    // firing rate of this warning is measurable after the fact instead of
+    // inferred. `plugin_version_installed` is this repo's own package.json.
+    const [evt] = await readEvents(dir);
+    expect(evt.plugin_version_latest).toBe('999.0.0');
+    expect(evt.plugin_version_installed).toMatch(/^\d+\.\d+\.\d+/);
+    expect(evt.plugin_version_installed).not.toBe('999.0.0');
+  });
+
+  // THE BUG: the probe sits between the Phase-4 probes and the event payload.
+  // A run that yields no verdict — here an unparseable `latest`, the shape a
+  // corrupted or hand-edited cache produces — must cost nothing downstream: not
+  // the exit code, not the rest of the banner, not the session.started event.
+  // Without the hook's try/catch around the probe, a throw at this point takes
+  // the whole payload block with it and the session is never recorded at all.
+  it('a probe that yields no verdict costs neither the banner nor the event', async () => {
+    const dir = await mkProjectTracked();
+    await seedLatestCache(dir, 'not-a-version');
+
+    const result = await runHook({ projectDir: dir, env: probeEnv() });
+
+    expect(result.code).toBe(0);
+    const objects = stdoutObjects(result.stdout);
+    expect(objects).toHaveLength(1);
+    expect(objects[0].systemMessage).toContain('Host:');
+    // No verdict → no warning line. Silence, never an all-clear (#1031).
+    expect(objects[0].systemMessage).not.toContain('verfügbar');
+
+    const events = await readEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0].plugin_version_installed).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
+  // THE BUG: a probe that talks to a public registry on every session start
+  // with no off switch is telemetry the operator never agreed to.
+  it('stays silent and records no latest version when SO_DISABLE_UPDATE_CHECK=1', async () => {
+    const dir = await mkProjectTracked();
+    await seedLatestCache(dir, '999.0.0');
+
+    const result = await runHook({ projectDir: dir, env: { SO_DISABLE_UPDATE_CHECK: '1' } });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain('999.0.0');
+    const [evt] = await readEvents(dir);
+    expect(evt.plugin_version_latest).toBeUndefined();
+  });
+});
+
+describe('session-start heartbeat (#1229)', { timeout: 15000 }, () => {
+  // THE BUG (STATE.md deviation 2026-09-05T06:08:46Z): session-20's session.lock
+  // was reaped as stale at 06:06Z by an unrelated session's SessionEnd, its
+  // heartbeat 11.3 h old against a 4 h TTL — while the session was still inside
+  // session-start / session-plan. `updateHeartbeat()` was called only from the
+  // wave loop, on-stop and session-end, so a session that had not yet reached
+  // /go aged out of its own lock while working.
+  //
+  // bootstrapLock() stamps `last_heartbeat = started_at` at lock GENESIS, so the
+  // two are byte-identical until something refreshes them. A STRICTLY LATER
+  // heartbeat at the end of the run is therefore the exact, falsifiable witness
+  // that session-start is now a heartbeat call site: delete the refresh and
+  // `last_heartbeat === started_at` again.
+  it('refreshes the lock heartbeat at the END of the hook run', async () => {
+    const dir = await mkProjectTracked();
+
+    const result = await runHook({ projectDir: dir, useCwd: true });
+    expect(result.code).toBe(0);
+
+    const lock = JSON.parse(
+      await fs.readFile(path.join(dir, '.orchestrator', 'session.lock'), 'utf8'),
+    );
+    expect(Date.parse(lock.last_heartbeat)).toBeGreaterThan(Date.parse(lock.started_at));
+    // The refresh must not disturb ownership or any other field.
+    expect(lock.session_id).toBeTruthy();
+    expect(typeof lock.ttl_hours).toBe('number');
+  });
+
+  // THE BUG: a heartbeat writer that is not ownership-guarded would let one
+  // session's SessionStart keep a FOREIGN session's lock alive forever — the
+  // mirror image of #1229 and a far worse one, because the stale-lock reaper is
+  // then permanently disarmed. `updateHeartbeat()` carries that guard already;
+  // this pins that the wiring did not route around it.
+  it('never touches a lock owned by another session', async () => {
+    const dir = await mkProjectTracked();
+    const foreign = {
+      session_id: 'foreign-session-1229',
+      semantic_session_id: 'foreign-session-1229',
+      started_at: '2026-09-05T00:00:00.000Z',
+      last_heartbeat: '2026-09-05T00:00:00.000Z',
+      mode: 'deep',
+      pid: 99995,
+      host: 'some-other-host.local',
+      ttl_hours: 4,
+    };
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(path.join(dir, '.orchestrator', 'session.lock'), JSON.stringify(foreign));
+
+    const result = await runHook({ projectDir: dir, useCwd: true });
+    expect(result.code).toBe(0);
+
+    const lock = JSON.parse(
+      await fs.readFile(path.join(dir, '.orchestrator', 'session.lock'), 'utf8'),
+    );
+    // Either the foreign lock is untouched, or the reaper/bootstrap took it over
+    // for THIS session — what must never happen is our heartbeat landing on a
+    // lock that still names the foreign owner.
+    if (lock.session_id === 'foreign-session-1229') {
+      expect(lock.last_heartbeat).toBe('2026-09-05T00:00:00.000Z');
+    } else {
+      expect(lock.session_id).not.toBe('foreign-session-1229');
+    }
   });
 });

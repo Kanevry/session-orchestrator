@@ -506,3 +506,50 @@ describe('express_path — normalize/serialize/parse round-trip', () => {
     expect(normalizeSession(reparsed)).toEqual(normalized);
   });
 });
+
+// ---------------------------------------------------------------------------
+// session_profile — additive optional field (PRD 2026-09-06 ultradeep)
+// ---------------------------------------------------------------------------
+
+describe('session_profile — the profile is a FIELD, never a session_type', () => {
+  // THE BUG THIS CATCHES (TV-001): `ultradeep` implemented as a fourth
+  // session_type. That value is not rejected downstream — it is MISLABELLED:
+  // telemetry maps an unknown type to 'other' and the close-backfill labels it
+  // 'housekeeping'. Both are silent. The profile field exists precisely so the
+  // closed set stays closed, so the two halves are asserted together: the field
+  // is accepted, and the enum still refuses the same word.
+
+  it('accepts a record carrying session_profile', () => {
+    expect(validateSession({ ...VALID(), session_type: 'deep', session_profile: 'ultradeep' }))
+      .toMatchObject({ session_type: 'deep', session_profile: 'ultradeep' });
+  });
+
+  it('accepts a record WITHOUT session_profile (every historical record)', () => {
+    const entry = VALID();
+    expect('session_profile' in entry).toBe(false);
+    expect(validateSession(entry)).toMatchObject({ session_type: 'deep' });
+    expect(validateSession(entry).session_profile).toBeUndefined();
+  });
+
+  it('accepts an explicit null (absent, not a placeholder string)', () => {
+    expect(() => validateSession({ ...VALID(), session_profile: null })).not.toThrow();
+  });
+
+  it('rejects an empty string and a non-string — absence has exactly one spelling', () => {
+    expect(() => validateSession({ ...VALID(), session_profile: '' })).toThrow(ValidationError);
+    expect(() => validateSession({ ...VALID(), session_profile: 7 })).toThrow(ValidationError);
+  });
+
+  it('still rejects session_type: "ultradeep" even beside a valid profile', () => {
+    expect(() =>
+      validateSession({ ...VALID(), session_type: 'ultradeep', session_profile: 'ultradeep' })
+    ).toThrow(ValidationError);
+  });
+
+  it('survives the serialize → parse → normalize cycle', () => {
+    const normalized = normalizeSession({ ...VALID(), session_profile: 'ultradeep' });
+    const reparsed = JSON.parse(serializeSessionLineChecked(normalized));
+    expect(reparsed.session_profile).toBe('ultradeep');
+    expect(reparsed.session_type).toBe('deep');
+  });
+});

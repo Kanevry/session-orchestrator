@@ -69,7 +69,8 @@ async function mkRepo() {
  * Write a wave-scope.json under .claude/ inside the repo — the actual
  * resolution path per scope-gate.mjs findScopeFile() precedence
  * (.pi/.cursor/.codex/.claude), matching where the coordinator writes it
- * (skills/wave-executor/wave-loop.md). #801: the hook previously read a
+ * (skills/wave-executor/references/wave-loop-scope-manifest.md). #801: the hook
+ * previously read a
  * hardcoded (dead) .orchestrator/wave-scope.json path — see the dedicated
  * legacy-path test below that pins the fix.
  */

@@ -1,6 +1,6 @@
 ---
-description: Manual memory consolidation — review, consolidate, and prune memory files (Dream-equivalent)
-argument-hint: [--dry-run | --apply-pending]
+description: "Manual memory consolidation — review, consolidate, and prune memory files (Dream-equivalent)"
+argument-hint: "[--dry-run | --apply-pending]"
 ---
 
 # /memory-cleanup

@@ -333,6 +333,23 @@ Map roles to the configured wave count:
 | 4 | W1=Discovery, W2=Impl-Core+Impl-Polish, W3=Quality, W4=Finalization |
 | 5 | W1=Discovery, W2=Impl-Core, W3=Impl-Polish, W4=Quality, W5=Finalization |
 | 6+ | W1=Discovery, W2-W3=Impl-Core (split), W4-W5=Impl-Polish (split), W6=Quality+Finalization |
+| 7 + `session-profile: ultradeep` | W1=Research+Code-Discovery, W2=Synthesis-Gate (`coordinator-direct: true`, `agents: 0`), W3=Impl-Core, W4=Impl-Polish, W5=Review-Panel, W6=Quality, W7=Release/Finalization |
+
+The last row applies ONLY when STATE.md frontmatter carries `session-profile: ultradeep` (written by the `/session ultradeep` argument alias — see `commands/session.md`). `session-type` stays `deep`; the profile changes the wave SHAPE, nothing else. Without the profile, `waves: 7` falls back to the `6+` row. Spec: `docs/prd/2026-09-06-ultradeep-session-profile.md` § 5.
+
+**Ultradeep agent counts per wave** (caps, not targets — the Quality cap is still EARNED per the Step 3 rule):
+
+| W | Role | Agents | Writes? |
+|---|------|--------|---------|
+| 1 | Research + Code-Discovery | ≤ 18 (separately scoped) | No (read-only) |
+| 2 | Synthesis-Gate | 0 (coordinator-direct) | Coordinator only: audit report, STATE.md, plan |
+| 3 | Impl-Core | ≤ 8 | Yes |
+| 4 | Impl-Polish | ≤ 8 | Yes |
+| 5 | Review-Panel | 3 (read-only) | No |
+| 6 | Quality | `min(cap, ceil((HIGH+MED)/3))` | Tests only |
+| 7 | Release/Finalization | ≤ 4 | Yes |
+
+Wave 1 splits into two disjointly-scoped groups: **Research** agents (web-enabled, see `skills/wave-executor/SKILL.md` § Ultradeep Profile) and **Code-Discovery** agents (repo-only). Both are read-only. Wave 2 dispatches NO agents — the coordinator consolidates wave 1, writes `docs/audits/<YYYY-MM-DD>-<slug>.md`, and asks ONE blocking `AskUserQuestion` before wave 3.
 
 When roles are combined into a single wave, agents from both roles execute in that wave. The combined wave inherits the more restrictive verification level.
 
@@ -355,6 +372,20 @@ When `docs-orchestrator.enabled: true`, apply the following concrete dispatch ru
 **Splitting criteria for 6+ waves**: When Impl-Core or Impl-Polish span multiple waves, split by module or dependency boundary. Tasks with shared file dependencies go in the same wave; tasks touching independent modules go in separate waves. If no clear boundary exists, split by task count (distribute evenly).
 
 **Empty roles:** If a role has 0 tasks, skip its wave entirely. Do NOT dispatch an empty wave. Remaining waves retain their original role names but are renumbered sequentially (e.g., if Discovery has 0 tasks and waves=5: W1=Impl-Core, W2=Impl-Polish, W3=Quality, W4=Finalization). Update `total-waves` in the plan output to reflect the actual wave count.
+
+**Exception — a wave declared `coordinator-direct: true` is NEVER removed by the empty-role rule.** The rule's premise is "0 tasks means nothing to dispatch, so the wave is dead weight". For a coordinator-direct wave that premise is inverted: dispatching zero agents is the wave's PURPOSE, not evidence of its emptiness. Its plan item therefore carries BOTH markers and is emitted verbatim:
+
+```
+- wave: 2
+  role: Synthesis-Gate
+  coordinator-direct: true
+  agents: 0
+```
+
+- `agents: 0` on such an item is a DECLARATION, never a defect — do not "fix" it upward, and do not let the Step 3.5 constraint check or the Step 3 tier table raise it.
+- The wave still counts toward `total-waves` and still occupies its wave number; the renumbering above skips over it, it does not absorb it.
+- The ultradeep Synthesis-Gate (wave 2) is the only such wave today. Without this exception the empty-role rule deletes it — and it is the one wave whose entire job is to stop and ask before any code is written (`docs/prd/2026-09-06-ultradeep-session-profile.md` AC-4).
+- The exception is scoped to the MARKER, not to the profile: any future coordinator-direct wave inherits it without another edit here.
 
 ### Role Details
 
@@ -530,6 +561,24 @@ Present the plan in this format:
 
 Ready to execute? Use /go to begin.
 ```
+
+### Step 6.5: Heartbeat on the operator's answer (#1229)
+
+The wait between presenting this plan and the operator's answer is the LONGEST unheartbeated stretch in the whole flow — the coordinator can sit on it for hours, and a 4 h-TTL lock does not survive that. Measured: session-20's lock was reaped as stale by an unrelated SessionEnd with an 11.3 h-old heartbeat (STATE.md deviation 2026-09-05T06:08:46Z). `hooks/on-session-start.mjs` covers session entry; this is the second call site.
+
+**The FIRST thing to do when the operator answers** — whether the answer is `/go` or a change request routing to Step 7 — is refresh the lock:
+
+```js
+// #1229 — the plan-approval wait is the longest unheartbeated stretch in the flow.
+// Best-effort: a failure must NOT block the handoff to wave-executor.
+import { updateHeartbeat } from 'scripts/lib/session-lock.mjs';
+updateHeartbeat({ sessionId, repoRoot: process.cwd() });
+```
+
+- **Ownership-guarded — this cannot steal a peer's lock.** `updateHeartbeat` (`scripts/lib/session-lock.mjs`) reads the lock first and returns `false` WITHOUT writing when `session_id` differs from the one passed, when no lock exists, or when `sessionId` is empty. The write is reached only for a lock this session already owns.
+- **What it does not do:** nothing can beat while a blocking AskUserQuestion is pending, so the wait window itself stays unheartbeated. What this closes is the session RESUMING with an hours-stale heartbeat and carrying it into wave 1 and every later reaper pass.
+- `sessionId` is the identifier session-start Phase 1.2 `acquire()` established — the `session_id` field of `.orchestrator/session.lock`, matching STATE.md frontmatter `session:`.
+- Skip silently when `persistence: false` in Session Config — no `session.lock` exists in that mode.
 
 ## Step 7: Handle Plan Changes
 

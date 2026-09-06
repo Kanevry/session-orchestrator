@@ -15,7 +15,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { ReadableStream } from 'node:stream/web';
 import { TextEncoder } from 'node:util';
 import { createIngestServer } from '../../server/ingest/server.mjs';
-import { ACCEPTED_VERSIONS } from '../../server/ingest/validate.mjs';
+import { ACCEPTED_VERSIONS, validateRecord } from '../../server/ingest/validate.mjs';
+import { openDb, closeDb, insertRecords, querySummary } from '../../server/ingest/db.mjs';
 import { createRateLimiter, extractIp } from '../../server/ingest/rate-limit.mjs';
 
 // ---------------------------------------------------------------------------
@@ -619,5 +620,79 @@ describe('GET /healthz — response counters', () => {
     const body = await getHealth(ctx.base);
     expect(body.counters).toEqual({});
     expect(body.accepted_records).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GitLab #1234 BUG 3 — server-side fleet attribution. The stored `fleet` column
+// used to be whatever the client declared, and the client was wrong for 394 of
+// 490 records (80,4 %, measured 2026-09-06). `validateRecord(record, {fleetAnonIds})`
+// PROMOTES an allowlisted anon_id to fleet regardless of what it claimed, while
+// preserving the claim in raw_json so the disagreement stays measurable.
+// (Merged in from the misplaced tests/server/fleet-attribution-and-digest-range.test.mjs;
+// tests/server/ does not exist in this repo and this file already owns the
+// validate.mjs surface. Reuses this file's own validPing() fixture.)
+// ---------------------------------------------------------------------------
+
+const OPERATOR_ID = 'a3bb4907-1111-4222-8333-444444444444';
+const EXTERNAL_ID = '2773675c-5555-4666-8777-888888888888';
+
+/** A validator-shaped usage-ping owned by the operator, `fleet` left to the case. */
+function fleetPing(overrides = {}) {
+  return validPing({ anon_id: OPERATOR_ID, session_type: 'unknown', duration_bucket: '<15m', ...overrides });
+}
+
+describe('server-side fleet attribution (#1234)', () => {
+  it('THE BUG: an allowlisted anon_id that declares fleet:false is STORED as fleet', () => {
+    const row = validateRecord(fleetPing({ fleet: false }), { fleetAnonIds: new Set([OPERATOR_ID]) });
+    expect(row.fleet).toBe(1);
+  });
+
+  it('the client’s own claim survives verbatim in raw_json, so the disagreement stays measurable', () => {
+    const row = validateRecord(fleetPing({ fleet: false, fleet_self_declared: false }), {
+      fleetAnonIds: new Set([OPERATOR_ID]),
+    });
+    const raw = JSON.parse(row.raw_json);
+    expect(raw.fleet).toBe(false);
+    expect(raw.fleet_self_declared).toBe(false);
+    expect(row.fleet).toBe(1); // server verdict ≠ client claim, both recorded
+  });
+
+  it('promotes only — an honest fleet:true is never demoted by an absent allowlist', () => {
+    expect(validateRecord(fleetPing({ fleet: true }), { fleetAnonIds: new Set() }).fleet).toBe(1);
+  });
+
+  it('a non-allowlisted id keeps its declaration (external stays external)', () => {
+    const row = validateRecord(fleetPing({ anon_id: EXTERNAL_ID, fleet: false }), {
+      fleetAnonIds: new Set([OPERATOR_ID]),
+    });
+    expect(row.fleet).toBe(0);
+  });
+
+  it('omitting the options argument reproduces pre-change behaviour exactly', () => {
+    expect(validateRecord(fleetPing({ fleet: false })).fleet).toBe(0);
+    expect(validateRecord(fleetPing({ fleet: true })).fleet).toBe(1);
+  });
+
+  it('rejects a non-boolean fleet_self_declared, and accepts its absence', () => {
+    expect(() => validateRecord(fleetPing({ fleet_self_declared: 'yes' }))).toThrow(/fleet_self_declared/);
+    expect(() => validateRecord(fleetPing())).not.toThrow();
+  });
+
+  it('accepts session_type "unknown" and session_record "absent" (additive, no 400)', () => {
+    expect(() => validateRecord(fleetPing({ session_type: 'unknown', session_record: 'absent' }))).not.toThrow();
+  });
+
+  it('fleet_vs_external in the summary follows the SERVER verdict', () => {
+    const db = openDb(':memory:');
+    try {
+      insertRecords(db, [
+        validateRecord(fleetPing({ fleet: false }), { fleetAnonIds: new Set([OPERATOR_ID]) }),
+        validateRecord(fleetPing({ anon_id: EXTERNAL_ID, fleet: false }), { fleetAnonIds: new Set([OPERATOR_ID]) }),
+      ]);
+      expect(querySummary(db).fleetVsExternal).toEqual({ fleet: 1, external: 1 });
+    } finally {
+      closeDb(db);
+    }
   });
 });

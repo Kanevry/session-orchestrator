@@ -43,11 +43,80 @@ const REQUIRED_CODEX_EVENTS = [
   'Stop',
 ];
 
-const FORBIDDEN_CODEX_EVENTS = new Set([
-  'SessionEnd',
-  'PostToolUseFailure',
-  'PostToolBatch',
-  'CwdChanged',
+/**
+ * Every hook event the Codex runtime knows, MEASURED — not quoted from release
+ * notes. Read out of the `codex` binary shipped as codex-cli **0.144.4**
+ * (`@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex`,
+ * 2026-09-06), which embeds one JSON Schema pair per event:
+ *
+ *   strings -a <codex> | grep '"title": "'
+ *     -> pre-tool-use / post-tool-use / permission-request / pre-compact
+ *        / post-compact / session-start / subagent-start / subagent-stop
+ *        / user-prompt-submit / stop   .command.{input,output}   (10 pairs)
+ *
+ * The same binary carries the manifest deserializer's key list
+ * (`PreToolUse PermissionRequest PostToolUse PreCompact PostCompact
+ * SessionStart SubagentStart SubagentStop` + the substring-deduped `Stop` /
+ * `UserPromptSubmit`) directly beside its `unexpected map key` error string —
+ * so an event key outside this set is rejected, and rejecting one key rejects
+ * the manifest that carries it.
+ *
+ * **`SessionEnd` and `Interrupt` are NOT in it.** They are not merely unwired
+ * here: at 0.144.4 they do not exist, and adding either to hooks-codex.json
+ * risks taking every already-working hook down with it. Newer Codex releases
+ * (0.148+ async hooks, 0.150+ `Interrupt`) are documented-but-unverified on
+ * this host — re-measure against the shipped binary before widening this set,
+ * never against a changelog.
+ */
+export const CODEX_NATIVE_EVENTS = new Set([
+  'SessionStart',
+  'UserPromptSubmit',
+  'PreToolUse',
+  'PermissionRequest',
+  'PostToolUse',
+  'PreCompact',
+  'PostCompact',
+  'SubagentStart',
+  'SubagentStop',
+  'Stop',
+]);
+
+/**
+ * Claude hook events this repo wires that Codex 0.144.4 has no counterpart for.
+ * DERIVED from {@link CODEX_NATIVE_EVENTS} rather than hand-listed, so a new
+ * Claude event is forbidden on Codex by construction until someone measures it
+ * into the native set above.
+ */
+const FORBIDDEN_CODEX_EVENTS = new Set(
+  ['SessionEnd', 'PostToolUseFailure', 'PostToolBatch', 'CwdChanged', 'Interrupt']
+    .filter((event) => !CODEX_NATIVE_EVENTS.has(event)),
+);
+
+/**
+ * The tool-name vocabulary Codex puts in `tool_name`, measured at 0.144.4 from
+ * the same binary. This is the load-bearing incompatibility, and it is NOT the
+ * one the older comments in `check-hooks-symmetry.mjs` claimed.
+ *
+ * `pre-tool-use.command.input` REQUIRES `tool_name` and `tool_input` (alongside
+ * `cwd`, `hook_event_name`, `model`, `permission_mode`, `session_id`,
+ * `tool_use_id`, `transcript_path`, `turn_id`) — so the payload fields ARE
+ * delivered. What differs is their VALUES: Codex has no `Bash`, `Edit`, `Write`
+ * or `MultiEdit` tool (`strings -a <codex> | grep -c '"Bash"'` -> 0). Every
+ * PreToolUse guard in `hooks/` opens with an equality gate on one of those four
+ * names and returns `emitAllow()` otherwise, so wiring one here yields a
+ * handler that runs, matches nothing, and allows everything — false
+ * enforcement, which is worse than a registered gap.
+ *
+ * The adapter this actually needs is a tool-name MAP (shell/exec_command/
+ * unified_exec -> Bash, apply_patch -> Edit/Write), not a payload bridge.
+ */
+export const CODEX_TOOL_NAMES = Object.freeze([
+  'shell',
+  'exec_command',
+  'unified_exec',
+  'apply_patch',
+  'update_plan',
+  'view_image',
 ]);
 
 /**

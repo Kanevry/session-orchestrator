@@ -57,6 +57,10 @@ special: "any repo-specific instructions"   # freeform — orchestrator reads + 
 
 Read by: `skills/session-start/SKILL.md` (Phase 4.5), `skills/session-plan/SKILL.md`, `skills/wave-executor/wave-loop.md`.
 
+**The override key set is open.** `_coerceInteger` (`scripts/lib/config/coercers.mjs`) parses whatever keys stand inside the parentheses, so `agents-per-wave: 6 (deep: 18, ultradeep: 18)` is valid today with no code change — it yields `{"default": 6, "deep": 18, "ultradeep": 18}`.
+
+**`session-profile` is NOT a Session Config key — do not add one here.** The wave-shape profile (`ultradeep`) lives in STATE.md frontmatter, written per session by the `/session ultradeep` argument alias, and is absent by default. `parseSessionConfig()` emits no such key, so writing one into a repo's `## Session Config` block is inert prose — the same trap as `session-type:`. Full contract: [`session-config-reference.md` § Session Profile](./session-config-reference.md). The PRD's `ultradeep.max-*` budget block is deliberately NOT implemented and no key of that name is read anywhere (deferred until measured, HR-105).
+
 ## VCS & Infrastructure
 
 ```yaml
@@ -274,7 +278,7 @@ memory:
 
 Agents invoke via `SO_WAVE_AGENT=1 node scripts/memory-propose.mjs …`. The `SO_WAVE_AGENT=1` env-var is set automatically by the wave-executor boilerplate; direct CLI calls without it exit `3` (`rejected-wrong-context`).
 
-Read by: `scripts/lib/memory-proposals/{schema,store,collector,sink}.mjs`, `scripts/memory-propose.mjs`, `agents/memory-proposal-collector.md`, `hooks/pre-bash-memory-propose-audit.mjs`, `skills/session-end/SKILL.md` Phase 3.6.3.
+Read by: `scripts/lib/memory-proposals/{schema,store,collector,sink}.mjs`, `scripts/memory-propose.mjs`, `docs/memory-proposal-flow.md`, `hooks/pre-bash-memory-propose-audit.mjs`, `skills/session-end/SKILL.md` Phase 3.6.3.
 
 ## Auto-Dream Proposal Filter (#566)
 

@@ -120,6 +120,15 @@ export const SURFACES = [
     patterns: [/"version":\s*"(\d+\.\d+\.\d+)"/],
   },
   {
+    // Root `plugin.json` — the agent-plugins.org 1.0.0 manifest, added in 4.0.0. It is a
+    // FOURTH manifest carrying the version, and it was missing from this table on the 4.0.0
+    // cut: `--set-version` bumped the other three and `validate-plugin` then failed with
+    // "plugin.json version '3.24.0' != package.json version '4.0.0'". Exactly the incident
+    // class the table exists for, caught one gate later than it should have been.
+    file: 'plugin.json',
+    patterns: [/"version":\s*"(\d+\.\d+\.\d+)"/],
+  },
+  {
     file: '.claude-plugin/marketplace.json',
     patterns: [/"version":\s*"(\d+\.\d+\.\d+)"/g],
   },
@@ -422,7 +431,30 @@ export const MIN_PACKED_ENTRIES = 400;
 // ---------------------------------------------------------------------------
 
 /**
- * Drift sweep verdict over a `git grep -l` result.
+ * Is EVERY occurrence of `literal` on this line a dependency range (`^X.Y.Z` / `~X.Y.Z`)?
+ *
+ * One bare occurrence anywhere on the line is enough to call the whole line drift — a comment
+ * that also happens to mention a ranged dep must not be excused by that mention.
+ *
+ * @param {string} content — the matching line's text
+ * @param {string} literal — the previous release version, matched literally
+ * @returns {boolean}
+ */
+export function isDependencyRangeOnly(content, literal) {
+  let from = 0;
+  let seen = 0;
+  for (;;) {
+    const at = content.indexOf(literal, from);
+    if (at === -1) break;
+    seen += 1;
+    if (!(at > 0 && (content[at - 1] === '^' || content[at - 1] === '~'))) return false;
+    from = at + literal.length;
+  }
+  return seen > 0;
+}
+
+/**
+ * Drift sweep verdict over a `git grep` result (`-l` file list or `-n` line hits).
  *
  * `git grep` exit codes: 0 = matches found, 1 = no match (the success case
  * here), anything else = it did not run. Measured on git 2.x: a bad regex and
@@ -431,6 +463,20 @@ export const MIN_PACKED_ENTRIES = 400;
  * no-match case and the it-crashed case produced an empty hit list and the
  * same reassuring detail line, "no tracked file still carries X". A sweep that
  * never ran is not a clean sweep.
+ *
+ * ONE CLASS OF MATCH IS NOT OURS TO BUMP: a dependency RANGE that happens to equal our own
+ * previous version. `skills/vault-sync` pins `zod` at `^3.24.0` (the projects-baseline pin), so
+ * the 4.0.0 sweep collected two files whose literal belongs to zod and must NOT move when we
+ * release. The carve-out is deliberately a PREDICATE and not two allowlist rows: a per-path row
+ * fixes this instance and leaves the class open for the next dependency that lands on our version
+ * number — the unenumerable-table failure `.claude/rules/measurement-discipline.md` records. A
+ * caret- or tilde-prefixed literal is a range, and no version surface of this package is ever
+ * written as one (see SURFACES above: every pattern is an exact `"version": "X.Y.Z"`, `vX.Y.Z`
+ * or badge form), so the predicate cannot mask a stale surface.
+ *
+ * Accepts BOTH `git grep` output shapes. A bare `path` (from `-l`) carries no content and is
+ * therefore always a hit — the fail-closed reading, unchanged. `path:line:content` (from `-n`)
+ * is judged per line, and the file counts as drift as soon as ONE matching line is not a range.
  *
  * @param {{status: number, stdout?: string, stderr?: string}} grep
  * @param {string} prevTag — the previous release literal being swept for
@@ -444,10 +490,14 @@ export function evaluateDriftSweep(grep, prevTag, allowlist) {
       detail: `git grep did not run (exit ${grep.status}): ${(grep.stderr || '').trim().slice(0, 200)} — sweep for ${prevTag} is inconclusive`,
     };
   }
-  const hits = (grep.stdout || '')
-    .split('\n')
-    .filter(Boolean)
-    .filter((f) => !allowlist.test(f));
+  const hits = [];
+  for (const row of (grep.stdout || '').split('\n').filter(Boolean)) {
+    const withContent = row.match(/^(.+?):(\d+):(.*)$/);
+    const file = withContent ? withContent[1] : row;
+    if (allowlist.test(file)) continue;
+    if (withContent && isDependencyRangeOnly(withContent[3], prevTag)) continue;
+    if (!hits.includes(file)) hits.push(file);
+  }
   return {
     ok: hits.length === 0,
     detail: hits.length
@@ -732,7 +782,9 @@ async function preflight(repoRoot, target, { skipCi = false } = {}) {
     // one of them means the sweep is unnecessary.
     add('drift-sweep', false, `git tag -l failed (exit ${tagList.status}) — cannot determine the previous release to sweep for`);
   } else if (prevTag) {
-    const grep = run('git', ['grep', '-l', '--fixed-strings', prevTag, '--', '.'], { cwd: repoRoot });
+    // `-n` (not `-l`): the verdict needs the matching LINE, because a caret-ranged dependency
+    // that equals our previous version is not drift and a file list cannot show that.
+    const grep = run('git', ['grep', '-n', '--fixed-strings', prevTag, '--', '.'], { cwd: repoRoot });
     const sweep = evaluateDriftSweep(grep, prevTag, HISTORY_ALLOWLIST);
     add('drift-sweep', sweep.ok, sweep.detail);
   } else {

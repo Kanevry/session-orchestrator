@@ -40,6 +40,12 @@ import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import {
+  dedupeViolations,
+  findViolations,
+  normalizeClaim,
+} from '../../hooks/_lib/subagent-transcript.mjs';
+
 const HOOK = new URL('../../hooks/post-subagent-discovery-validator.mjs', import.meta.url).pathname;
 const EVENTS_REL = join('.orchestrator', 'metrics', 'events.jsonl');
 const TRANSCRIPT_REL = 'transcript.jsonl';
@@ -308,6 +314,119 @@ describe('post-subagent-discovery-validator hook', () => {
 
     expect(result.status).toBe(0);
     expect(readEvents()[0].agent).toBe('session-orchestrator:code-implementer');
+  });
+
+  // -------------------------------------------------------------------------
+  // #1218 — ATTRIBUTION PROVENANCE. `agent: "unknown"` on 3,026 of 3,360 fleet
+  // records (90.1%, measured 2026-09-06 in
+  // extern/aiat-barrierefrei-engine/.orchestrator/metrics/events.jsonl) said
+  // nothing about WHY: it is indistinguishable from a real agent type named
+  // "unknown", and from a resolution that was never attempted. Every record now
+  // carries `agent_source`, and the no-answer case carries the stdin keys the
+  // harness DID send.
+  // -------------------------------------------------------------------------
+
+  it('#1218 agent_type in the payload → agent_source "payload"', () => {
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    writeAgentTranscript(['The repo has 14 commits since the session-start ref.']);
+
+    const result = runHook(stopPayload(join(tmp, TRANSCRIPT_REL), { agent_type: 'discovery' }));
+
+    expect(result.status).toBe(0);
+    const events = readEvents();
+    expect(events[0].agent).toBe('discovery');
+    expect(events[0].agent_source).toBe('payload');
+  });
+
+  it('#1218 no agent_type but a sidecar meta → agent_source "meta" + the description that identifies the agent', () => {
+    // Measured 2026-09-06 over 20 real agent-*.meta.json sidecars in this
+    // repo's own session directory: 14 carry the useless class
+    // `general-purpose`, only 6 a plugin-qualified type. `description` is what
+    // actually names the agent, so it is carried alongside the type.
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    writeAgentTranscript(['The repo has 14 commits since the session-start ref.']);
+    writeFileSync(
+      join(tmp, SUBAGENTS_REL, `agent-${AGENT_ID}.meta.json`),
+      JSON.stringify({
+        agentType: 'general-purpose',
+        description: 'W1-d5 Scripts-Audit',
+        toolUseId: 'toolu_01X2kckU679yMpcMGsqNk4km',
+      }),
+      'utf8',
+    );
+
+    const result = runHook({
+      hook_event_name: 'SubagentStop',
+      agent_id: AGENT_ID,
+      transcript_path: join(tmp, TRANSCRIPT_REL),
+    });
+
+    expect(result.status).toBe(0);
+    const events = readEvents();
+    expect(events[0].agent).toBe('general-purpose');
+    expect(events[0].agent_source).toBe('meta');
+    expect(events[0].agent_description).toBe('W1-d5 Scripts-Audit');
+  });
+
+  it('#1218 neither payload nor sidecar → agent_source "none" + the sorted payload keys that WERE sent', () => {
+    // The honest gap. Without the key list the ledger cannot distinguish
+    // "harness sent no agent_type" from "the sidecar was unreadable", which is
+    // exactly the question the 90.1% could not answer.
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    writeAgentTranscript(['The repo has 14 commits since the session-start ref.']);
+
+    const result = runHook({
+      hook_event_name: 'SubagentStop',
+      agent_id: AGENT_ID,
+      transcript_path: join(tmp, TRANSCRIPT_REL),
+    });
+
+    expect(result.status).toBe(0);
+    const events = readEvents();
+    expect(events[0].agent).toBe('unknown');
+    expect(events[0].agent_source).toBe('none');
+    expect(events[0].payload_keys).toEqual(['agent_id', 'hook_event_name', 'transcript_path']);
+  });
+
+  it('#1218 payload_keys carries KEYS ONLY — never a value', () => {
+    // The record exists to attribute a claim; a value could smuggle a path or
+    // prose into it that has no business being there.
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    writeAgentTranscript(['The repo has 14 commits since the session-start ref.']);
+
+    const result = runHook({
+      hook_event_name: 'SubagentStop',
+      agent_id: AGENT_ID,
+      transcript_path: join(tmp, TRANSCRIPT_REL),
+      cwd: '/Users/secret/private-project',
+    });
+
+    expect(result.status).toBe(0);
+    const events = readEvents();
+    expect(events[0].payload_keys).toContain('cwd');
+    expect(JSON.stringify(events[0])).not.toContain('private-project');
+  });
+
+  it('#1218 a control character in the sidecar description is replaced, never carried', () => {
+    // A NUL in a tracked artefact makes it invisible to every grep-based audit
+    // (see .claude/rules/anti-pattern-a-nul-byte-…). events.jsonl is such an
+    // artefact and the description is harness-written prose we do not control.
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    writeAgentTranscript(['The repo has 14 commits since the session-start ref.']);
+    writeFileSync(
+      join(tmp, SUBAGENTS_REL, `agent-${AGENT_ID}.meta.json`),
+      JSON.stringify({ agentType: 'general-purpose', description: 'W1 d5\nAudit' }),
+      'utf8',
+    );
+
+    const result = runHook({
+      hook_event_name: 'SubagentStop',
+      agent_id: AGENT_ID,
+      transcript_path: join(tmp, TRANSCRIPT_REL),
+    });
+
+    expect(result.status).toBe(0);
+    expect(readEvents()[0].agent_description).toBe('W1 d5 Audit');
   });
 
   it('ENABLED + claim WITH an adjacent grep block → exit 0, NO violation', () => {
@@ -617,7 +736,13 @@ describe('post-subagent-discovery-validator hook', () => {
     expect(events[1].session_id).toBeUndefined();
   });
 
-  it('ENABLED + repeated real context → suppresses only repeated additionalContext', () => {
+  it('ENABLED + repeated real context → ONE ledger record, and only the first additionalContext (#1198)', () => {
+    // The pre-#1198 assertion here was `toHaveLength(2)`: the same claim, from
+    // the same session, wrote a second identical record every time a subagent
+    // stopped. That is the mechanism behind the measured duplication factor of
+    // 16.4 (3,360 records over 205 distinct claim_text values, 2026-09-06,
+    // extern/aiat-barrierefrei-engine). The ledger is a record of DISTINCT
+    // findings; the second write added no information and cost a record.
     writeClaudeMd(CLAUDE_MD_ENABLED);
     const transcript = writeTranscript(['4 of 4 callers opt-in to the helper. No grep was run.']);
     const payload = stopPayload(transcript, {
@@ -636,12 +761,17 @@ describe('post-subagent-discovery-validator hook', () => {
     expect(second.stdout.trim()).toBe('');
 
     const events = readEvents();
-    expect(events).toHaveLength(2);
+    expect(events).toHaveLength(1);
     expect(events[0].session_id).toBe('dedup-session-001');
-    expect(events[1].session_id).toBe('dedup-session-001');
+    // The stderr WARN still fires on the repeat — it is the coordinator's
+    // channel, and it names the suppression rather than hiding it.
+    expect(second.stderr).toContain('already recorded earlier in this session');
   });
 
-  it('ENABLED + concurrent repeated real context → only one process emits additionalContext', async () => {
+  it('ENABLED + concurrent repeated real context → ONE ledger record across 8 racing processes (#1198)', async () => {
+    // Cross-process: the ledger sentinel is an atomic `wx` create, so exactly
+    // one of eight concurrent hook processes may write the claim. Pre-#1198
+    // this asserted 8 records for one finding.
     writeClaudeMd(CLAUDE_MD_ENABLED);
     const transcript = writeTranscript(['4 of 4 callers opt-in to the helper. No grep was run.']);
     const payload = stopPayload(transcript, {
@@ -656,8 +786,33 @@ describe('post-subagent-discovery-validator hook', () => {
     expect(stdoutCount).toBe(1);
 
     const events = readEvents();
-    expect(events).toHaveLength(8);
+    expect(events).toHaveLength(1);
     expect(events.every((e) => e.session_id === 'parallel-dedup-session-001')).toBe(true);
+  });
+
+  it('ENABLED + the SAME claim repeated inside one transcript tail → ONE record carrying occurrences (#1198)', () => {
+    // The second duplication source: one agent restating its own finding in a
+    // progress note and again in its final report. `findViolations()` collapses
+    // them on the normalized key and counts them, so the ledger keeps the
+    // frequency without keeping the copies. Note the differing bullet markers —
+    // normalisation strips them, which is what makes the two shapes one key.
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([
+      [
+        '- 4 of 4 callers opt-in to the helper.',
+        'Some intervening prose that measures nothing.',
+        '* 4 of 4 callers opt-in to the helper.',
+        'More prose.',
+        '4 of 4 callers   opt-in to the helper.',
+      ].join('\n'),
+    ]);
+
+    const result = runHook(stopPayload(transcript, { session_id: 'occurrences-session-001' }));
+
+    expect(result.status).toBe(0);
+    const events = readEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].occurrences).toBe(3);
   });
 
   it('ENABLED + same session and agent in different project roots → both emit additionalContext', () => {
@@ -1242,5 +1397,158 @@ describe('post-subagent-discovery-validator hook', () => {
 
     expect(result.status).toBe(0);
     expect(readEvents()).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1218 — matcher PRECISION, measured on a labelled sample.
+//
+// The matcher used to be reachable only by spawning this hook with a sandbox
+// repo, a CLAUDE.md and a transcript on disk (~130 ms per case), which is why
+// its precision was asserted case-by-case and never MEASURED as a rate. Since
+// the engine moved to hooks/_lib/subagent-transcript.mjs it is a pure
+// function, so the whole sample runs as one table.
+//
+// SAMPLE PROVENANCE. The false-positive rows are verbatim `claim_text` values
+// from the fleet's worst-affected ledger, or minimal shapes of the classes
+// measured there (2026-09-06):
+//
+//   jq -r 'select(.event=="discovery_validator_violation")|.claim_text' \
+//     ~/Projects/extern/aiat-barrierefrei-engine/.orchestrator/metrics/events.jsonl \
+//     | sort -u | wc -l          # → 205 distinct over 3,360 records (×16.4)
+//
+// Of those 205, 201 still re-fire on the pre-#1218 matcher; 35 are markdown
+// table rows, 9 are ATX headings, and an independently drawn n=60 sample
+// (2026-09-02, docs/audits/2026-09-02-fleet-instruments.md) contained ZERO
+// true positives.
+//
+// MEASURED ON THIS TABLE (24 rows, 6 of them genuine violations):
+//   before #1218:  TP 6 · FP 13 · FN 0  → precision 0.3158, recall 1.0
+//   after  #1218:  TP 6 · FP  0 · FN 0  → precision 1.0,    recall 1.0
+// Recall is unchanged: not one true positive was traded for the precision.
+// On the full 205-claim corpus the same guards remove 43 firings (201 → 158,
+// −21.4%) and add none.
+//
+// A row is here to name ONE class. Adding a row without naming the class it
+// falsifies is how a table like this rots into volume (TV-001).
+// ---------------------------------------------------------------------------
+
+describe('#1218 claim-matcher precision (labelled sample)', () => {
+  /**
+   * `expect: true` = this text IS a PSA-006 violation and must be flagged.
+   * `expect: false` = it must NOT be flagged, for the reason in `why`.
+   */
+  const SAMPLE = [
+    // --- true distributional claims WITH evidence ---
+    { id: 'A1', expect: false, why: 'fenced grep block within ±5 lines', text:
+      'All 4 callers of resolveSubagentSidecar() pass an agentId.\n```bash\ngrep -rn "resolveSubagentSidecar(" hooks/ scripts/   # 4 matches @ HEAD e4674109\n```' },
+    { id: 'A2', expect: false, why: 'inline-code grep evidence', text:
+      'No remaining references to pathMatchesPattern: `grep -rn "pathMatchesPattern" hooks/` returned 0 matches on 2026-09-06.' },
+    { id: 'A3', expect: false, why: '#1218 German prose evidence, date-anchored', text:
+      'Gemessen 2026-09-06 @ e4674109: 4 von 4 Aufrufer nutzen den neuen Helper.' },
+    { id: 'A4', expect: false, why: '#1218 "Verifizierte Zahlen … HEAD <sha>"', text:
+      'Verifizierte Zahlen gegen HEAD e4674109: 205 Eintraege im Ledger, davon 3 ohne Beleg.' },
+    { id: 'A5', expect: false, why: 'fenced git|wc measurement for a #908 cardinal', text:
+      'The repo has 14 commits since the session-start ref.\n```\ngit log --oneline abc1234..HEAD | wc -l   # 14\n```' },
+
+    // --- true claims WITHOUT evidence (must still be caught) ---
+    { id: 'B1', expect: true, why: '"all N <ctx>" unmeasured', text:
+      'All 4 callers of resolveSubagentSidecar() pass an agentId.' },
+    { id: 'B2', expect: true, why: '"no remaining <ctx>" unmeasured', text:
+      'There are no remaining references to the old API in scripts/.' },
+    { id: 'B3', expect: true, why: '"100% of <ctx>" unmeasured', text:
+      '100% of callers opt-in to the new contract.' },
+    { id: 'B4', expect: true, why: 'German "N <noun> … davon N" unmeasured', text:
+      '8 Eintraege, davon 4 aus dem eigenen Dateiscope.' },
+    { id: 'B5', expect: true, why: '#908 bare cardinal unmeasured', text:
+      'The hook directory carries 412 lines of dead code.' },
+
+    // --- bullet / heading / table false positives ---
+    { id: 'C1', expect: false, why: 'ATX heading is a label, not an assertion', text:
+      '## Welle 1 abgeschlossen - 10/10 Lanes, 15 Commits' },
+    { id: 'C2', expect: false, why: 'ATX heading', text:
+      '### 15 Issues mit Beweiskette geschlossen' },
+    { id: 'C3', expect: false, why: 'markdown table row = structured status matrix', text:
+      '| **Welle 1** | 10/10 Lanes integriert, 26 Commits - vier statische Gates gruen | laeuft |' },
+    { id: 'C4', expect: false, why: 'markdown table row', text:
+      '| 127 Commits nicht auf main | offen - PR #1075 mergefaehig, sobald die Lanes durch sind |' },
+    { id: 'C5', expect: false, why: 'ATX heading', text:
+      '# Session-Bilanz - drei Wellen, 58 Commits' },
+
+    // --- score / config / version literal false positives ---
+    { id: 'D1', expect: false, why: 'YAML key: scalar — the number is a SETTING', text:
+      '  max-lines: 412 lines' },
+    { id: 'D2', expect: false, why: 'YAML list-item key', text:
+      '- name: 3 files' },
+    { id: 'D3', expect: false, why: 'JSON key line', text:
+      '  "open_issues": 130 issues, "closed": 19' },
+    { id: 'D4', expect: false, why: 'version literals — cardinal lookahead rejects digit+dot', text:
+      'Der Tag v0.15.0 markiert Release 3.24.0 im Changelog.' },
+    { id: 'D5', expect: false, why: 'score ratios — no artefact noun after the denominator', text:
+      'Die UX-Bewertung liegt bei 3/5 Punkten, PAC bei 23/29.' },
+
+    // --- plan / intent items, and the negative control for German evidence ---
+    { id: 'E1', expect: false, why: 'intent line ("Empfehlung:") states a plan, not a finding', text:
+      'Empfehlung: 3 Issues zuerst schliessen, dann die 12 Dateien migrieren.' },
+    { id: 'E2', expect: false, why: 'task-list checkbox', text:
+      '- [ ] 5 files auf den neuen Helper umstellen' },
+    { id: 'E3', expect: false, why: 'TODO line', text:
+      'TODO: 14 commits nachtraeglich signieren' },
+    { id: 'E4', expect: true, why: 'NEGATIVE CONTROL: a German marker with NO date/HEAD/sha anchor grants no evidence', text:
+      'Gemessen wurde nichts: 4 von 4 Aufrufer nutzen den neuen Helper.' },
+  ];
+
+  it.each(SAMPLE)('$id ($why)', ({ expect: shouldFlag, text }) => {
+    const fired = findViolations(text).violations.length > 0;
+    expect(fired).toBe(shouldFlag);
+  });
+
+  it('the sample as a RATE: precision 1.0 and recall 1.0 (the numbers in the header)', () => {
+    let tp = 0, fp = 0, fn = 0;
+    for (const row of SAMPLE) {
+      const fired = findViolations(row.text).violations.length > 0;
+      if (row.expect && fired) tp++;
+      else if (!row.expect && fired) fp++;
+      else if (row.expect && !fired) fn++;
+    }
+    expect({ tp, fp, fn }).toEqual({ tp: 6, fp: 0, fn: 0 });
+  });
+});
+
+describe('#1198 claim normalisation and dedup', () => {
+  it('normalizeClaim strips leading markers, collapses whitespace and lowercases', () => {
+    // The three shapes an agent writes the SAME finding in — a bullet in a
+    // progress note, a numbered item in a summary, a bare sentence in the
+    // final report — must all reduce to ONE key, or the ledger keeps three
+    // copies of one finding.
+    const shapes = [
+      '- 4 of 4 Callers opt-in.',
+      '2. 4 of 4   callers   opt-in.',
+      '> 4 of 4 callers opt-in.',
+      '#### 4 of 4 callers opt-in.',
+      '  4 of 4 callers opt-in.  ',
+    ];
+    const keys = new Set(shapes.map(normalizeClaim));
+    expect([...keys]).toEqual(['4 of 4 callers opt-in.']);
+  });
+
+  it('dedupeViolations collapses on the normalized key and counts occurrences', () => {
+    const out = dedupeViolations([
+      '- 14 commits since the ref',
+      '14 commits since the ref',
+      '* 92 learnings in the store',
+    ]);
+    expect(out.map((v) => [v.claim, v.occurrences])).toEqual([
+      ['- 14 commits since the ref', 2],
+      ['* 92 learnings in the store', 1],
+    ]);
+  });
+
+  it('dedupeViolations preserves DISTINCT claims — normalisation must not over-merge', () => {
+    // The fake-regression guard for the opposite failure: a normaliser that
+    // stripped too much (digits, punctuation) would fold two different findings
+    // into one and silently lose a violation.
+    const out = dedupeViolations(['14 commits since the ref', '15 commits since the ref']);
+    expect(out).toHaveLength(2);
   });
 });

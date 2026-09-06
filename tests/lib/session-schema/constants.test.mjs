@@ -63,8 +63,15 @@ describe('VALID_SESSION_TYPES', () => {
   // assertion. A closed enum's whole contract is the exact list, so `toEqual`
   // is strictly stronger than `toContain` × 3 plus a length pin — and it drops
   // a `toHaveLength(<literal>)` the test-value scanner flags.
-  it('is exactly [feature, deep, housekeeping] (closed enum)', () => {
-    expect([...VALID_SESSION_TYPES]).toEqual(['feature', 'deep', 'housekeeping']);
+  it('is exactly [feature, deep, housekeeping, unknown] (closed enum)', () => {
+    // GitLab #1234 widened this by ONE member. `unknown` is not a fourth session
+    // MODE — it is the absence of a measurement, written only by
+    // `synthesizeRecord()` for records it also flags `_session_type_inferred`.
+    // The exact-array assertion is what makes a fifth member a deliberate act:
+    // adding one silently would let a value reach `scripts/lib/wave-sizing.mjs`
+    // (which THROWS on an unlisted type) and `telemetry/schema.mjs` (which
+    // relabels it `other`) with no test to notice.
+    expect([...VALID_SESSION_TYPES]).toEqual(['feature', 'deep', 'housekeeping', 'unknown']);
   });
 });
 

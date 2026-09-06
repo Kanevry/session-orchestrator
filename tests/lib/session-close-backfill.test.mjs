@@ -710,7 +710,7 @@ describe('backfillAbandonedSession — TOCTOU marker', () => {
 // ---------------------------------------------------------------------------
 
 describe('backfillAbandonedSession — session_type coercion', () => {
-  it('coerces an invalid lock.mode ("session") to housekeeping + flags it inferred', async () => {
+  it('coerces an invalid lock.mode ("session") to unknown + flags it inferred', async () => {
     seedEvents([
       { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'feat/x' },
       {
@@ -726,7 +726,10 @@ describe('backfillAbandonedSession — session_type coercion', () => {
 
     expect(res.action).toBe('backfilled');
     const rec = readSessions()[0];
-    expect(rec.session_type).toBe('housekeeping');
+    // GitLab #1234: an unmeasurable mode now yields the honest `'unknown'`, not
+    // the old `'housekeeping'` guess. `'session'` must still NOT pass as a
+    // measurement — MEASURED_SESSION_MODES stays the three real modes.
+    expect(rec.session_type).toBe('unknown');
     expect(rec._session_type_inferred).toBe(true);
     expect(() => validateSession(rec)).not.toThrow();
   });
@@ -750,8 +753,9 @@ describe('backfillAbandonedSession — synthetic id', () => {
     expect(rec._synthetic_session_id).toBe(true);
     // Pattern: <branch>-<YYYY-MM-DD>-abandoned-<8 hex>
     expect(rec.session_id).toMatch(/^main-2026-05-27-abandoned-[0-9a-f]{8}$/);
-    // No lock.acquired → mode absent → session_type inferred housekeeping.
-    expect(rec.session_type).toBe('housekeeping');
+    // No lock.acquired → mode absent → session_type is the honest `'unknown'`
+    // (GitLab #1234; previously the `'housekeeping'` default).
+    expect(rec.session_type).toBe('unknown');
     expect(rec._session_type_inferred).toBe(true);
     expect(() => validateSession(rec)).not.toThrow();
     // The minted id must NOT be a UUID.

@@ -25,14 +25,19 @@ import { validateLearning } from '@lib/learnings.mjs';
 const HOST_M3 = 'macos-arm64-m3pro';
 const HOST_LINUX = 'linux-x86_64';
 
-function oom(timestamp, host_class) {
+function oom(timestamp, host_class, event = 'orchestrator.session.stopped') {
   return {
-    event: 'orchestrator.session.stopped',
+    event,
     timestamp,
     host_class,
     exit_code: 137,
     session: 'abc',
   };
+}
+
+/** Post-rename shape: the canonical turn-event name, no legacy alias present. */
+function oomTurn(timestamp, host_class) {
+  return oom(timestamp, host_class, 'orchestrator.turn.stopped');
 }
 
 function startedWithPeers(timestamp, host_class, peer_count) {
@@ -88,6 +93,48 @@ describe('detectHardwarePatterns — end to end', () => {
     expect(c[0].host_class).toBe(HOST_M3);
     expect(c[0].occurrences).toBe(3);
     expect(c[0].subject).toBe(`oom-kill::${HOST_M3}`);
+  });
+
+  it('detects OOM on the canonical `orchestrator.turn.stopped` name', () => {
+    // THE BUG: the detector matched ONLY `orchestrator.session.stopped`, which
+    // `hooks/on-stop.mjs` renamed to `orchestrator.turn.stopped` (the legacy
+    // name is still emitted beside it, flagged `deprecated: true`, until
+    // 2027-03-06). Post-rename records therefore produced ZERO hits — and the
+    // `>= 2 occurrences` aggregation makes that silent: fewer candidates, never
+    // an error. Falsification: narrow OOM_TERMINAL_EVENTS back to the legacy
+    // name only and this case goes red.
+    const events = [
+      oomTurn('2026-04-18T10:00:00Z', HOST_M3),
+      oomTurn('2026-04-18T11:00:00Z', HOST_M3),
+    ];
+    const c = detectHardwarePatterns({ events });
+    expect(c.length).toBe(1);
+    expect(c[0].subject).toBe(`oom-kill::${HOST_M3}`);
+    expect(c[0].occurrences).toBe(2);
+  });
+
+  it('aggregates legacy + canonical names into ONE candidate across the rename', () => {
+    // The other half of the deprecation window: history on disk carries only the
+    // legacy name, new records carry both. A hard switch to the new name alone
+    // would blind the detector to all existing history; accepting both must not
+    // instead split one host's OOMs into two sub-threshold groups.
+    const events = [
+      oom('2026-04-18T10:00:00Z', HOST_M3),
+      oomTurn('2026-04-18T11:00:00Z', HOST_M3),
+    ];
+    const c = detectHardwarePatterns({ events });
+    expect(c.length).toBe(1);
+    expect(c[0].occurrences).toBe(2);
+  });
+
+  it('ignores a terminal-looking event name outside the accepted pair', () => {
+    // Widening the accepted set is not opening it: `session.ended` carries no
+    // exit code semantics and must not become an OOM source.
+    const events = [
+      oom('2026-04-18T10:00:00Z', HOST_M3, 'orchestrator.session.ended'),
+      oom('2026-04-18T11:00:00Z', HOST_M3, 'orchestrator.session.ended'),
+    ];
+    expect(detectHardwarePatterns({ events })).toEqual([]);
   });
 
   it('separates occurrences across distinct host_class values', () => {

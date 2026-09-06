@@ -38,6 +38,21 @@ function numFromEnv(raw, fallback) {
 }
 
 /**
+ * Parse a comma-separated anon_id allowlist into a lowercase Set. Whitespace-safe
+ * (an entry that trims to empty is dropped), so `"a,,b, "` yields `{a, b}`.
+ * @param {string|undefined} raw
+ * @returns {Set<string>}
+ */
+function idSetFromEnv(raw) {
+  return new Set(
+    (raw || '')
+      .split(',')
+      .map((v) => v.trim().toLowerCase())
+      .filter((v) => v !== ''),
+  );
+}
+
+/**
  * Resolve the ingest-server configuration from an environment object.
  *
  * @param {Record<string, string|undefined>} [env=process.env]
@@ -51,6 +66,7 @@ function numFromEnv(raw, fallback) {
  *   trustProxy: boolean,
  *   retentionMonths: number,
  *   retentionIntervalMs: number,
+ *   fleetAnonIds: Set<string>,
  * }}
  */
 export function resolveConfig(env = process.env) {
@@ -70,5 +86,16 @@ export function resolveConfig(env = process.env) {
     trustProxy: trustProxyRaw === '1',
     retentionMonths: numFromEnv(env.SO_INGEST_RETENTION_MONTHS, 24),
     retentionIntervalMs: numFromEnv(env.SO_INGEST_RETENTION_INTERVAL_MS, 86400000),
+    // SERVER-SIDE FLEET ATTRIBUTION (GitLab #1234). The client's `fleet` /
+    // `fleet_self_declared` field is self-declared and was measurably wrong: on
+    // 2026-09-06, 394 of 490 records (80,4 %) were the operator's own second Mac
+    // declaring itself external, because the flag was read off an owner.yaml
+    // block that host does not have. An operator who knows their own anon_ids
+    // lists them here and the classification stops depending on the client being
+    // honest — or even correct.
+    //
+    // Empty by default: an unset var changes nothing, so the storage row keeps
+    // taking the client's word exactly as it did before.
+    fleetAnonIds: idSetFromEnv(env.SO_INGEST_FLEET_ANON_IDS),
   };
 }

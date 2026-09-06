@@ -25,6 +25,10 @@ describe('resolveConfig — documented v1 defaults', () => {
       trustProxy: true,
       retentionMonths: 24,
       retentionIntervalMs: 86400000,
+      // #1234 — server-side fleet attribution. Empty by default, so an unset
+      // SO_INGEST_FLEET_ANON_IDS leaves storage taking the client's word exactly
+      // as before; see tests/server/fleet-attribution-and-digest-range.test.mjs.
+      fleetAnonIds: new Set(),
     });
   });
 });
@@ -65,5 +69,29 @@ describe('resolveConfig — positive-number clamp (no NaN / zero / negative leak
 
   it('clamps a zero retention window back to the default (never prunes everything)', () => {
     expect(resolveConfig({ SO_INGEST_RETENTION_MONTHS: '0' }).retentionMonths).toBe(24);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GitLab #1234 BUG 3 — the stored `fleet` column was whatever the client
+// declared, and the client was wrong for 394 of 490 records (80,4 %, measured
+// 2026-09-06): the operator's own second Mac declared itself external.
+// `SO_INGEST_FLEET_ANON_IDS` is the server-side allowlist that makes the
+// classification independent of the client being honest — or even correct.
+// (Merged in from the misplaced tests/server/fleet-attribution-and-digest-range.test.mjs;
+// tests/server/ does not exist in this repo and this file already owns resolveConfig.)
+// ---------------------------------------------------------------------------
+
+const OPERATOR_ID = 'a3bb4907-1111-4222-8333-444444444444';
+const EXTERNAL_ID = '2773675c-5555-4666-8777-888888888888';
+
+describe('resolveConfig — SO_INGEST_FLEET_ANON_IDS', () => {
+  it('is an empty Set by default, so an unset var changes nothing', () => {
+    expect(resolveConfig({}).fleetAnonIds).toEqual(new Set());
+  });
+
+  it('parses a comma list whitespace-safely and lowercases', () => {
+    const { fleetAnonIds } = resolveConfig({ SO_INGEST_FLEET_ANON_IDS: ` ${OPERATOR_ID.toUpperCase()} , , ${EXTERNAL_ID}` });
+    expect([...fleetAnonIds].sort()).toEqual([EXTERNAL_ID, OPERATOR_ID].sort());
   });
 });

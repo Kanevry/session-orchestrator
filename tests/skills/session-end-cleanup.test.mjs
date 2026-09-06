@@ -53,6 +53,17 @@ const { detectAutoPromotedWorktree, isWorktreeClean } = await import(
 
 const PROJECT_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const SKILL_PATH = join(PROJECT_ROOT, 'skills', 'session-end', 'SKILL.md');
+// #1157 references/ split: the Phase 4a PROCEDURE moved verbatim to
+// references/phase-4a-worktree-cleanup.md; SKILL.md keeps the heading + a stub, so
+// the ordering assertion below still reads SKILL.md and the content assertions read
+// the reference file that owns the text.
+const PHASE4A_PATH = join(
+  PROJECT_ROOT,
+  'skills',
+  'session-end',
+  'references',
+  'phase-4a-worktree-cleanup.md',
+);
 
 // ---------------------------------------------------------------------------
 // Helper: program a deterministic sequence of execFileSync responses.
@@ -277,6 +288,9 @@ describe('isWorktreeClean() — #575 P3.2 clean-check', () => {
 
 describe('Phase 4a SKILL.md structure — #575 P3.2 documentation contract', () => {
   const content = readFileSync(SKILL_PATH, 'utf8');
+  const phase4a = readFileSync(PHASE4A_PATH, 'utf8');
+  // Phase 4a is the only section in its reference file → the file IS the region.
+  const p4aBlock = phase4a;
 
   it('SKILL.md contains Phase 4a section positioned between Phase 4 and Phase 5', () => {
     const p4Idx = content.indexOf('## Phase 4: Commit & Push');
@@ -289,45 +303,39 @@ describe('Phase 4a SKILL.md structure — #575 P3.2 documentation contract', () 
 
   it('Phase 4a section title references issue #575 P3.2', () => {
     expect(content).toContain('## Phase 4a: Auto-Promoted Worktree Cleanup (#575 P3.2)');
+    expect(phase4a).toContain('## Phase 4a: Auto-Promoted Worktree Cleanup (#575 P3.2)');
+  });
+
+  it('the SKILL.md Phase 4a stub routes to references/phase-4a-worktree-cleanup.md', () => {
+    const p4aIdx = content.indexOf('## Phase 4a');
+    const p4bIdx = content.indexOf('## Phase 4b', p4aIdx);
+    expect(content.slice(p4aIdx, p4bIdx)).toContain(
+      'references/phase-4a-worktree-cleanup.md',
+    );
   });
 
   it('Phase 4a documents PSA-003 compliance', () => {
-    const p4aIdx = content.indexOf('## Phase 4a');
-    const p5Idx = content.indexOf('## Phase 5');
-    const p4aBlock = content.slice(p4aIdx, p5Idx);
     expect(p4aBlock).toContain('PSA-003');
   });
 
   it('Phase 4a references #490 durableCommit ordering', () => {
-    const p4aIdx = content.indexOf('## Phase 4a');
-    const p5Idx = content.indexOf('## Phase 5');
-    const p4aBlock = content.slice(p4aIdx, p5Idx);
     expect(p4aBlock).toContain('#490');
     expect(p4aBlock).toContain('durableCommit');
   });
 
   it('Phase 4a includes 3-option AUQ (Behalten / Löschen / Manuell)', () => {
-    const p4aIdx = content.indexOf('## Phase 4a');
-    const p5Idx = content.indexOf('## Phase 5');
-    const p4aBlock = content.slice(p4aIdx, p5Idx);
     expect(p4aBlock).toContain('Behalten');
     expect(p4aBlock).toContain('Löschen');
     expect(p4aBlock).toContain('Manuell');
   });
 
   it('Phase 4a documents PSA-003 destructive-action authorisation for git worktree remove --force', () => {
-    const p4aIdx = content.indexOf('## Phase 4a');
-    const p5Idx = content.indexOf('## Phase 5');
-    const p4aBlock = content.slice(p4aIdx, p5Idx);
     // The AUQ must be required for `--force` removal — verify the rationale text exists.
     expect(p4aBlock).toMatch(/git worktree remove --force/);
     expect(p4aBlock).toMatch(/PSA-003.*destructive action safeguards|destructive action safeguards.*PSA-003/s);
   });
 
   it('Phase 4a references parseSessionId() from session-id.mjs', () => {
-    const p4aIdx = content.indexOf('## Phase 4a');
-    const p5Idx = content.indexOf('## Phase 5');
-    const p4aBlock = content.slice(p4aIdx, p5Idx);
     expect(p4aBlock).toContain('parseSessionId');
     expect(p4aBlock).toContain('scripts/lib/session-id.mjs');
   });

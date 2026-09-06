@@ -1,6 +1,6 @@
 ---
 description: Scaffold the minimum repo structure required by session-orchestrator
-argument-hint: [--upgrade <tier>]
+argument-hint: "[--upgrade <tier>]"
 ---
 
 # /bootstrap

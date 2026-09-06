@@ -23,11 +23,13 @@
  *      this leaf included — may pull a bare specifier. Putting the resolver in
  *      `owner-yaml.mjs` dragged `js-yaml` onto that subgraph and turned the GH#63
  *      contract red with `ERR_MODULE_NOT_FOUND: Cannot find package 'js-yaml'`.
- *      The claim is about on-stop's subgraph, NOT about the whole hook graph:
- *      measured 2026-09-05 over `hooks/_lib/hook-import-set.json` (150 entries,
- *      head 4b45130) that graph still carries two pre-existing bare specifiers
- *      (`owner-yaml.mjs → js-yaml`, `worktree/listing.mjs → zx`), and 4 of the 5
- *      hooks touched by them throw ERR_MODULE_NOT_FOUND without node_modules.
+ *      Since GitLab #1230 (2026-09-06) `owner-yaml.mjs` resolves `js-yaml`
+ *      lazily, so that particular collision can no longer recur — but the
+ *      constraint on THIS file is unchanged, because it is what let the resolver
+ *      be shared in the first place. Measured 2026-09-06 over a `hooks/` +
+ *      `scripts/` copy with no `node_modules`, the four hooks that reach
+ *      `owner-yaml.mjs` (on-session-start, on-session-end, post-edit-validate,
+ *      skill-invocation-telemetry) now load instead of throwing.
  *   2. `tests/husky/pre-commit-owner-leakage.test.mjs` copies the CP11 scanner's
  *      import chain FILE BY FILE into a tmp repo. Every repo-local import added
  *      to a file on that chain must be added to the copied-file list there.

@@ -37,6 +37,13 @@ import { validateVaultStaleness } from '@lib/config-schema.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const SKILL_PATH = join(REPO_ROOT, 'skills', 'session-end', 'SKILL.md');
+// #1157 references/ split — Phase 2 (incl. 2.3) and the Phase 6 Session Summary
+// template moved verbatim out of SKILL.md into references/. Each group below reads
+// the file that OWNS its prose; SKILL.md keeps a stub naming the phase.
+const PHASE2_PATH = join(REPO_ROOT, 'skills', 'session-end', 'references', 'phase-2-quality-gate.md');
+const SUMMARY_TEMPLATE_PATH = join(
+  REPO_ROOT, 'skills', 'session-end', 'references', 'session-summary-template.md',
+);
 
 // ---------------------------------------------------------------------------
 // Tmpdir helpers
@@ -273,18 +280,23 @@ describe('B — vault-staleness config schema', () => {
 // C — Phase 2.3 spec presence in SKILL.md
 // ---------------------------------------------------------------------------
 
-describe('C — Phase 2.3 spec presence in session-end/SKILL.md', () => {
+describe('C — Phase 2.3 spec presence in references/phase-2-quality-gate.md', () => {
   const skillContent = readFileSync(SKILL_PATH, 'utf8');
+  const phase2Content = readFileSync(PHASE2_PATH, 'utf8');
 
-  // Extract the Phase 2.3 section: from "### 2.3 Vault Staleness Check" to
-  // the next phase heading. Phase 2.5 (Custom Phases, #637) sits between 2.3 and
-  // Phase 3 and legitimately uses the `hard` enum — the slice must not span it.
-  const phase23Start = skillContent.indexOf('### 2.3 Vault Staleness Check');
-  const phase3Start = skillContent.indexOf('## Phase 2.5:');
-  const phase23Section =
-    phase23Start !== -1 && phase3Start !== -1
-      ? skillContent.slice(phase23Start, phase3Start)
-      : '';
+  // Extract the Phase 2.3 section. It is the LAST section of the Phase 2 reference
+  // file (Phase 2.5 Custom Phases — which legitimately uses the `hard` enum — stayed
+  // in SKILL.md), so the slice runs to end-of-file and still cannot span it.
+  const phase23Start = phase2Content.indexOf('### 2.3 Vault Staleness Check');
+  const phase23Section = phase23Start !== -1 ? phase2Content.slice(phase23Start) : '';
+
+  it('C0: the SKILL.md Phase 2 stub names Phase 2.3 and routes to the reference file', () => {
+    const idx2 = skillContent.indexOf('## Phase 2: Quality Gate');
+    const idx25 = skillContent.indexOf('## Phase 2.5:', idx2);
+    const stub = skillContent.slice(idx2, idx25);
+    expect(stub).toContain('2.3 Vault Staleness Check');
+    expect(stub).toContain('references/phase-2-quality-gate.md');
+  });
 
   it('C1: contains "### 2.3 Vault Staleness Check" heading', () => {
     expect(phase23Start).not.toBe(-1);
@@ -308,6 +320,11 @@ describe('C — Phase 2.3 spec presence in session-end/SKILL.md', () => {
   it('C3: the word "hard" does not appear anywhere in Phase 2.3 (#217 canonical fix)', () => {
     // "hard" was replaced by "strict" in issue #217 — must not be present
     expect(phase23Section).not.toMatch(/\bhard\b/);
+  });
+
+  it('C3: Phase 2.5 (which legitimately uses the `hard` enum) is NOT in the Phase 2 reference file', () => {
+    expect(phase2Content).not.toContain('## Phase 2.5:');
+    expect(skillContent).toContain('## Phase 2.5: Custom Phases (#637)');
   });
 
   it('C4: Phase 2.3 imports vault-staleness.mjs probe', () => {
@@ -341,13 +358,18 @@ describe('C — Phase 2.3 spec presence in session-end/SKILL.md', () => {
 
 describe('D — Phase 6 Final Report Docs Health line', () => {
   const skillContent = readFileSync(SKILL_PATH, 'utf8');
-
-  // Extract from "## Phase 6:" onwards (or "Phase 6:" heading) to end of file
+  // The Session Summary template moved to references/session-summary-template.md
+  // (#1157); the Docs Health line lives there, so the whole template file is the
+  // section under test.
+  const phase6Section = readFileSync(SUMMARY_TEMPLATE_PATH, 'utf8');
   const phase6Start = skillContent.indexOf('## Phase 6:');
-  const phase6Section = phase6Start !== -1 ? skillContent.slice(phase6Start) : '';
 
   it('D1: Phase 6 section exists', () => {
     expect(phase6Start).not.toBe(-1);
+  });
+
+  it('D1: the SKILL.md Phase 6 stub routes to references/session-summary-template.md', () => {
+    expect(skillContent.slice(phase6Start)).toContain('references/session-summary-template.md');
   });
 
   it('D1: Phase 6 Docs Health line contains "Vault staleness"', () => {

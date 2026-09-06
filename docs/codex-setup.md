@@ -67,7 +67,16 @@ Codex reports three distinct states that must not be conflated:
 
 ## Refresh and Explicit Cache Invalidation
 
-After pulling changes, rerun the installer:
+**If you installed via the short remote form** (`codex plugin marketplace add owner/repo`), the refresh is a marketplace upgrade, not a re-install. Measured 2026-09-06 on codex-cli 0.144.4 — `codex plugin marketplace upgrade --help`: *"Refresh configured Git marketplace snapshots. Omit MARKETPLACE_NAME to upgrade all configured Git marketplaces."*
+
+```bash
+codex plugin marketplace upgrade kanevry   # or omit the name to refresh all
+codex plugin add session-orchestrator@kanevry
+```
+
+`upgrade` re-fetches the Git snapshot; `plugin add` then re-installs the bundle from that refreshed snapshot. There is no local clone in this path, so "re-run the installer" does not apply to it.
+
+**If you installed from a local clone** (the maintainer path), rerun the installer after pulling:
 
 ```bash
 git pull
@@ -117,7 +126,51 @@ The plugin bundle includes the Codex role definitions under `.codex-plugin/agent
 
 The Codex hook command uses Codex's native `${PLUGIN_ROOT}` expansion. The wrapper also exports `CODEX_PLUGIN_ROOT="${PLUGIN_ROOT}"` for shared compatibility code and sets `SO_PLATFORM=codex` so Codex wins when multiple harness variables are present.
 
-Claude-only events (`SessionEnd`, `PostToolUseFailure`, `PostToolBatch`, and `CwdChanged`) are intentionally absent because Codex 0.144.4 does not expose them as supported project events. Claude Edit/Write payload handlers are also absent: Codex emits canonical `apply_patch` data, while those handlers currently expect Claude's Edit/Write payload shape. They will remain unwired until a real `apply_patch` adapter exists; pretending the payloads are compatible would create false enforcement. The same applies to the Bash-payload handlers, including `post-bash-write-verify.mjs` (#942): they gate on Claude's `tool_name === 'Bash'`, which no Codex bridge delivers, so wiring them today would be a silent no-op (the #919-P2 class). These per-event gaps are tracked as documented asymmetries in `scripts/lib/validate/check-hooks-symmetry.mjs` (Check 6, `handlerAsymmetries`) — an UNDOCUMENTED one-platform-only handler now fails validation.
+### What Codex actually exposes (measured 2026-09-06, codex-cli 0.144.4)
+
+The Codex runtime knows **ten** hook events. This is read out of the shipped binary, which embeds one JSON-Schema pair per event, not quoted from release notes:
+
+```
+$ strings -a "$(npm root -g)/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex" \
+    | grep '"title": "'
+  "title": "post-tool-use.command.input" / ".output"
+  "title": "permission-request.command.input" / ".output"
+  "title": "post-compact.command.input" / ".output"
+  "title": "pre-tool-use.command.input" / ".output"
+  "title": "pre-compact.command.input" / ".output"
+  "title": "session-start.command.input" / ".output"
+  "title": "subagent-start.command.input" / ".output"
+  "title": "subagent-stop.command.input" / ".output"
+  "title": "user-prompt-submit.command.input" / ".output"
+  "title": "stop.command.input" / ".output"
+```
+
+| Event | 0.144.4 | Wired here |
+|---|---|---|
+| `SessionStart` | yes | yes — banner + `on-session-start.mjs` |
+| `PostToolUse` | yes | yes — `loop-guard.mjs` |
+| `SubagentStop`, `Stop` | yes | yes — `on-stop.mjs` |
+| `PreToolUse`, `SubagentStart` | yes | declared, **empty** (see below) |
+| `UserPromptSubmit`, `PermissionRequest`, `PreCompact`, `PostCompact` | yes | no — this repo has no handler for them |
+| `SessionEnd`, `Interrupt` | **no — event does not exist** | n/a |
+| `PostToolUseFailure`, `PostToolBatch`, `CwdChanged` | no — Claude-only | n/a |
+
+**`SessionEnd` is not "Claude-only", it is absent**, and that distinction is load-bearing: the manifest deserializer rejects unknown keys (`unexpected map key` in the same binary), so adding one does not skip a hook — it can reject the whole manifest and take every already-working hook with it. `Interrupt` arrives in 0.150.0+ and async handlers (`"async": true`) in 0.148+; both are **documented upstream but unverified here**, because this host runs 0.144.4. Re-measure against the shipped binary before widening the set — the machine-readable copy is `CODEX_NATIVE_EVENTS` in `scripts/lib/codex/plugin-contract.mjs`.
+
+For the day `SessionEnd` does land: upstream caps it (and `Interrupt`) at a **1 s default / 3 s maximum** timeout, where every other event gets 600 s. `hooks/on-session-end.mjs` measures ~221 ms median, so it fits — but only just, and only while it stays that fast.
+
+### Why our PreToolUse guards stay unwired — the reason, corrected
+
+Earlier revisions of this page said the handlers were unwired because "no Codex bridge delivers `tool_name`". **That was measuring the wrong thing** — it grepped our own adapter code rather than the Codex payload contract. There is no bridge because none is needed:
+
+- `pre-tool-use.command.input` REQUIRES `tool_name` and `tool_input`, alongside `cwd`, `hook_event_name`, `model`, `permission_mode`, `session_id`, `tool_use_id`, `transcript_path`, `turn_id`.
+- The deny envelope is `hookSpecificOutput.{hookEventName, permissionDecision, permissionDecisionReason}` — byte-identical to what `emitDeny()` already writes, and Codex enforces exactly that shape (its own error text: *"PreToolUse hook returned permissionDecision:deny without a non-empty permissionDecisionReason"*). Codex additionally rejects `permissionDecision: "allow"` and `"ask"`; our allow path is a bare `exit 0` with no stdout, so it is compatible.
+
+The real blocker is the **tool-name vocabulary**. Codex has no `Bash`, `Edit`, `Write` or `MultiEdit` tool — `strings -a <codex> | grep -c '"Bash"'` returns `0`; its tools are `shell`, `exec_command`, `unified_exec`, `apply_patch`, `update_plan`, `view_image`. Every PreToolUse guard in `hooks/` opens with an equality gate on a Claude tool name and returns `emitAllow()` otherwise, so wiring `pre-bash-destructive-guard.mjs` or `enforce-scope.mjs` today produces a hook that runs, matches nothing, and allows everything — **false enforcement, which is worse than a registered gap** (#919-P2 class).
+
+Consequence to state plainly: **PSA-003 (destructive-command guard) and the file-scope guard are behavioural only on Codex today.** The repair is a tool-name map (`shell`/`exec_command`/`unified_exec` → `Bash`) for the Bash guards, plus an `apply_patch` payload adapter for the Edit/Write matchers specifically. Only the second half needs the adapter.
+
+These per-event gaps are tracked as documented asymmetries in `scripts/lib/validate/check-hooks-symmetry.mjs` (Check 6, `handlerAsymmetries`) — an UNDOCUMENTED one-platform-only handler fails validation.
 
 An empty `PreToolUse` or `SubagentStart` array means the event belongs to the validated Codex surface but currently has no payload-compatible handler. It does not mean installation or hook trust failed.
 

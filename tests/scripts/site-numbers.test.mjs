@@ -814,6 +814,29 @@ describe('no hand-maintained version literal on a shipped page', () => {
    */
   const HISTORICAL_MARKER = 'site-numbers:historical';
 
+  /**
+   * Net B, with the one boundary it was missing: the current version must occur as a version of
+   * its own, not as the TAIL of a longer number.
+   *
+   * Measured on the 4.0.0 cut: the guide's Node requirement carries `engines.node: ">=24.0.0"`,
+   * and `"24.0.0".includes("4.0.0")` is true — so a bare `includes()` reported the engine range
+   * as a hand-maintained version literal, on a line no release may touch. The docstring above
+   * had already noticed that `>=24.0.0` is one of exactly two other triples on these pages and
+   * concluded net A was safe because it requires a `v` prefix; net B has no prefix to lean on,
+   * which is why it needed this instead. A digit or a dot on either side means the match belongs
+   * to a different number.
+   *
+   * @param {string} line @param {string} version @returns {boolean}
+   */
+  function containsBareVersion(line, version) {
+    for (let at = line.indexOf(version); at !== -1; at = line.indexOf(version, at + 1)) {
+      const before = at > 0 ? line[at - 1] : '';
+      const after = line[at + version.length] ?? '';
+      if (!/[\d.]/.test(before) && !/[\d.]/.test(after)) return true;
+    }
+    return false;
+  }
+
   it('carries every version it shows in a data-metric cell, or marked historical', () => {
     // Every read below is of a TRACKED file under site/ plus package.json; the
     // rule fires on the module CLOSURE, not on what this test actually opens.
@@ -843,13 +866,27 @@ describe('no hand-maintained version literal on a shipped page', () => {
         for (const m of line.matchAll(/v\d+\.\d+\.\d+/g)) {
           offenders.push({ file: rel, line: i + 1, literal: m[0], net: 'v-prefixed release' });
         }
-        if (line.includes(currentVersion)) {
+        if (containsBareVersion(line, currentVersion)) {
           offenders.push({ file: rel, line: i + 1, literal: currentVersion, net: 'current package version' });
         }
       });
     }
 
     expect(offenders).toEqual([]);
+  });
+
+  // The carve-out above is only trustworthy if it still bites. Each row names the shape:
+  // a version reached the page on its own (red) or as part of a longer number (green).
+  it.each([
+    ['engines.node: "&gt;=24.0.0"', '4.0.0', false],
+    ['pinned at 14.0.0 today', '4.0.0', false],
+    ['4.0.0.1 build metadata', '4.0.0', false],
+    ['version 4.0.0', '4.0.0', true],
+    ['v4.0.0 shipped', '4.0.0', true],
+    ['(4.0.0)', '4.0.0', true],
+    ['nothing here', '4.0.0', false],
+  ])('containsBareVersion(%j, %j) === %s', (line, version, expected) => {
+    expect(containsBareVersion(line, version)).toBe(expected);
   });
 });
 

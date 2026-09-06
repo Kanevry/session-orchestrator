@@ -293,8 +293,8 @@ const IMPL = { role: 'Impl-Core' };
 describe('expandTestSiblings (#970)', () => {
   it('emits a GLOB sibling, never a computed concrete path', () => {
     // Hit-rate provenance (same-basename glob vs. naive 1:1 mirror) lives in
-    // skills/wave-executor/wave-loop.md § Scope Manifest #3 with its measurement
-    // footer — not restated here, so there is one number, not two.
+    // skills/wave-executor/references/wave-loop-scope-manifest.md § Scope Manifest #3
+    // with its measurement footer — not restated here, so there is one number, not two.
     expect(expandTestSiblings(['scripts/lib/scope-gate.mjs'], IMPL)).toEqual([
       'scripts/lib/scope-gate.mjs',
       'tests/**/scope-gate*.test.mjs',

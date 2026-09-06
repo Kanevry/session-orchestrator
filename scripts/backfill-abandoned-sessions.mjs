@@ -382,11 +382,57 @@ export async function backfillOnSessionStart({ repoRoot, limit = SESSION_START_L
     if (typeof repoRoot !== 'string' || repoRoot.length === 0) return null;
     // newestFirst is mandatory here — see runMigration's param docs for the
     // measured failure (budget burned on ancient already-recorded candidates).
-    return await runMigration({ repoRoot, apply: true, limit, newestFirst: true });
+    const summary = await runMigration({ repoRoot, apply: true, limit, newestFirst: true });
+    // The telemetry flush rides the SAME start-time trigger, for the same reason
+    // the backfill does — see flushTelemetryOnSessionStart.
+    await flushTelemetryOnSessionStart(repoRoot);
+    return summary;
   } catch {
     // Swallowed by contract — see the docblock. The hook is informational-only.
     return null;
   }
+}
+
+/** POST budget for the start-time telemetry drain (ms). Deliberately tighter than
+ *  the close-time budget: a session START must not wait on the network. Expiry is
+ *  LOSSLESS — flush() routes a timed-out batch into the offline queue. */
+const STARTUP_FLUSH_TIMEOUT_MS = 1500;
+
+/**
+ * SECOND FLUSH TRIGGER (GitLab #1234) — drain the PREVIOUS session's telemetry
+ * queue at the NEXT session's start.
+ *
+ * THE BUG THIS FIXES: the mechanical flush (#1138) lives only in
+ * `hooks/on-session-end.mjs`, which fires on a REGULAR close. Measured 2026-09-06
+ * over 90 fleet days, the real close rate is 21,3 % (429 clean closes / 2.016
+ * distinct `session.started` ids) — so roughly four sessions in five never reach
+ * the only code path that sends. This is the exact argument
+ * `backfillOnSessionStart` already makes for the ledger, applied to the ping:
+ * SessionStart is the trigger that survives whatever killed the last session.
+ *
+ * Three properties make this safe to run on the hot start path:
+ *  - LAZY IMPORT. `sync.mjs` is pulled in at CALL time, not module load. Loading
+ *    it statically would put the whole telemetry subtree onto the SessionStart
+ *    hook's import graph — the graph `tests/hooks/on-stop.test.mjs` guards for
+ *    bare specifiers, and the cost would be paid on every start whether or not
+ *    telemetry is even consented to.
+ *  - GATED, ALWAYS. `flush()` opens with `resolveConsent()`; with no consent it
+ *    returns before any network, queue write, or anon-ID mint.
+ *  - NEVER THROWS, NEVER BLOCKS A START. Every failure is swallowed, and the POST
+ *    is bounded at STARTUP_FLUSH_TIMEOUT_MS; a timeout queues the batch rather
+ *    than losing it.
+ *
+ * @param {string} repoRoot
+ * @returns {Promise<void>}
+ */
+async function flushTelemetryOnSessionStart(repoRoot) {
+  try {
+    const { flush } = await import('./lib/telemetry/sync.mjs');
+    await flush({
+      metricsDir: path.join(repoRoot, '.orchestrator', 'metrics'),
+      timeoutMs: STARTUP_FLUSH_TIMEOUT_MS,
+    });
+  } catch { /* fire-and-forget by contract */ }
 }
 
 function renderHuman(summary) {

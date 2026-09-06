@@ -1,6 +1,6 @@
 ---
-description: Start a development session (housekeeping, feature, deep)
-argument-hint: "[housekeeping|feature|deep]"
+description: Start a development session (housekeeping, feature, deep; ultradeep = deep + profile)
+argument-hint: "[housekeeping|feature|deep|ultradeep]"
 ---
 
 # Session Start
@@ -9,7 +9,22 @@ You are beginning a new development session. The user has invoked `/session` wit
 
 **Default rationale (measured, not assumed):** `deep` is the default because it is what operators actually run — 77.3 % of 489 recorded sessions across 5 repos, and 115 of 228 (50.4 %) in this repo's own `.orchestrator/metrics/sessions.jsonl`. The former `feature` default made the majority case the one that had to be typed out every time. A `deep` default costs a downgrade keystroke in the minority case; a `feature` default cost an upgrade keystroke in the majority case.
 
-**Argument validation:** Valid session types are `housekeeping`, `feature`, and `deep`. An explicit `$ARGUMENTS` value ALWAYS wins over the default — `/session housekeeping` and `/session feature` behave exactly as before. If `$ARGUMENTS` is not empty and does not match any valid type, inform the user: "Invalid session type '$ARGUMENTS'. Valid types: housekeeping, feature, deep." Then fall back to `deep`.
+**Argument validation:** Valid session types are `housekeeping`, `feature`, and `deep`. An explicit `$ARGUMENTS` value ALWAYS wins over the default — `/session housekeeping` and `/session feature` behave exactly as before. `ultradeep` is additionally accepted as an ARGUMENT ALIAS (see below); it is not a fourth type. If `$ARGUMENTS` is not empty and does not match any valid type or the alias, inform the user: "Invalid session type '$ARGUMENTS'. Valid types: housekeeping, feature, deep (alias: ultradeep)." Then fall back to `deep`.
+
+### Argument alias: `ultradeep` (PRD `docs/prd/2026-09-06-ultradeep-session-profile.md`)
+
+`/session ultradeep` is an alias, NOT a fourth `session_type`. Resolve it to TWO STATE.md frontmatter values and then continue exactly as a `deep` session would:
+
+```yaml
+session-type: deep          # what every downstream consumer sees
+session-profile: ultradeep  # the only place the alias survives
+```
+
+- **`session-type` NEVER becomes `ultradeep`.** The value is a closed set in `scripts/lib/session-schema/constants.mjs` (`VALID_SESSION_TYPES`) and in `scripts/lib/wave-sizing.mjs`; a fourth member would degrade silently in two places (`scripts/lib/telemetry/schema.mjs` maps an unknown type to `"other"`, `scripts/lib/session-close-backfill.mjs` labels it `housekeeping`). The alias exists so that no closed set has to change.
+- **`session-profile` is optional and absent by default.** A plain `/session deep` writes NO `session-profile` key. Absent means "no profile" — never write an empty string, `none`, or `null` to mean absence. Read/write helpers: `readSessionProfile` / `setSessionProfile` in `scripts/lib/state-md.mjs`.
+- **What the profile changes** is the WAVE SHAPE, not the session type: 7 waves with a coordinator-direct Synthesis-Gate at wave 2. See `skills/session-plan/SKILL.md` § Role-to-Wave Mapping and `skills/wave-executor/SKILL.md` § Ultradeep Profile.
+- **Precondition.** The profile needs 7 waves. If Session Config sets `waves` below 7, do NOT silently plan 5 waves under an ultradeep label — name the conflict to the user and let them raise `waves` or drop the alias.
+- **Budgets are deliberately not implemented yet** (PRD § 7): no `ultradeep.max-*` key is read anywhere. Do not invent one; the PRD defers thresholds until three runs have been measured.
 
 > **Not read from Session Config.** There is deliberately no `session-type:` (or equivalent) key in the `## Session Config` block — `scripts/lib/config.mjs` `parseSessionConfig()` does not emit one, so any such key in a repo's CLAUDE.md (or its Codex CLI equivalent AGENTS.md) is inert prose. The `session-type:` scalar that IS live lives in STATE.md frontmatter (read by `scripts/print-applicable-rules.mjs` for rule mode-gating) and is written per session, not configured per repo. Do not reintroduce a Session Config key here without wiring it into the parser first.
 

@@ -1,21 +1,29 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.24.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-4.0.0-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
-[![Tests](https://img.shields.io/badge/tests-15%2C000%2B-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
+[![Tests](https://img.shields.io/badge/tests-vitest-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
 
-Loop engineering for AI coding agents — turn ad-hoc sessions into a repeatable research → plan → wave-execute → close loop with verification gates. Runs on **Claude Code, Codex CLI, Cursor, and [Pi](docs/pi-setup.md)**.
+Loop engineering for AI coding agents — turn ad-hoc sessions into a repeatable research → plan → wave-execute → close loop with verification gates. Runs on **Claude Code, Codex CLI, Cursor IDE, and [Pi](docs/pi-setup.md)**, as a community plugin (MIT, community-maintained) for solo devs and small teams.
 
-The same skills and commands run across all four, with platform-adapted hooks and enforcement (see [Platform support](#platform-support)). Community plugin (MIT, community-maintained) for solo devs and small teams.
+The same skills and commands are available on all four harnesses; **enforcement depth differs** — scope enforcement is full on Claude Code, bridged on Cursor and Pi, and currently unavailable on Codex CLI (see [Platform support](#platform-support)).
+
+## Requirements
+
+| | |
+|---|---|
+| **Node.js** | **24 or later** (`node --version`) — `package.json` `engines.node` is `>=24.0.0`. The plugin is ES modules and needs a real Node runtime. [Install Node.js](https://nodejs.org/). |
+| **A coding agent** | Claude Code, Codex CLI, Cursor IDE, or Pi. This is a workflow layer *on top of* one of them, not a replacement. |
+| **Harness version** | Codex CLI **0.144.4 or later** ([docs/codex-setup.md](docs/codex-setup.md)). No minimum is pinned for Claude Code, Cursor, or Pi — if `/plugin` (or the Cursor/Pi installer) runs, the plugin loads. |
+| **OS** | macOS and Linux are first-class and run in CI (`ubuntu-latest`, `macos-latest`). Windows runs natively (paths via `path.join`, tmp via `os.tmpdir()`) but is **not** covered by CI — treat it as best-effort. |
+| **Git** | A git repository. Session-orchestrator reads git state at every session start and commits at close. |
 
 ## Install
 
-> **Prerequisite:** Node.js 24 or later (`node --version`). v3.x runs as ES modules and needs a real Node runtime. [Install Node.js](https://nodejs.org/).
-
 | Platform | Install |
 |---|---|
-| **Claude Code** | `/plugin marketplace add Kanevry/session-orchestrator` then `/plugin install session-orchestrator@kanevry` (run both inside Claude Code). Also listed on the official community catalog: `/plugin install session-orchestrator@claude-community` (that catalog can lag HEAD). |
+| **Claude Code** | `/plugin marketplace add Kanevry/session-orchestrator` then `/plugin install session-orchestrator@kanevry` (run both inside Claude Code). |
 | **Codex CLI** | `git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/codex-install.mjs` |
 | **Cursor IDE** | `git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/cursor-install.mjs /path/to/your/project` |
 | **Pi** | `pi install npm:session-orchestrator` — or dev-fallback: `git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/pi-install.mjs /path/to/your/project --settings-only` |
@@ -28,33 +36,40 @@ SO_DIR="$(dirname "$(find ~/.claude/plugins/cache -path '*session-orchestrator*'
 cd "$SO_DIR" && npm install
 ```
 
-If `SO_DIR` comes back empty, the plugin is not installed from a marketplace — check
-`/plugin list` inside Claude Code first.
+If `SO_DIR` comes back empty, the plugin is not installed from a marketplace — check `/plugin list` inside Claude Code first.
 
 Setup guides: [Codex](docs/codex-setup.md) · [Cursor IDE](docs/cursor-setup.md) · [Pi](docs/pi-setup.md). Per-IDE notes on `CLAUDE.md` vs `AGENTS.md`: [instruction-file-resolution](skills/_shared/instruction-file-resolution.md).
 
-## What makes it different
-
-- **Verification gates** — every wave ends at a typecheck/lint/test gate; a confidence-filtered session-reviewer catches regressions between waves, not only at the end.
-- **Wave orchestration** — five typed roles (Discovery → Impl-Core → Impl-Polish → Quality → Finalization), parallel subagents inside each wave, not one big batch.
-- **Persistent memory & learnings** — `STATE.md` survives crashes and resumes the next session; `/evolve` extracts confidence-scored patterns across sessions, nothing hidden.
-- **Multi-harness** — the same skills and commands run on Claude Code, Codex CLI, Cursor IDE, and Pi, with platform-adapted hooks and enforcement.
-
-## A session in three commands
+## Upgrade
 
 ```text
-/session feature    # research + Q&A — inspect git, issues, history, then agree on scope
-/go                 # execute in five typed waves (fixed roles), with a quality gate between each
-/close              # verify every item, commit cleanly, file carryover issues for the rest
+/plugin update session-orchestrator@kanevry     # Claude Code
 ```
 
-That is the whole loop. `/plan` and `/evolve` extend it (see [Lifecycle](#lifecycle-at-a-glance)), but you can start with just these three.
+Restart the harness afterwards, and re-run `npm install` in the plugin directory when the release adds dependencies. On Codex CLI, Cursor, and Pi the upgrade is `git pull` in your clone followed by the same install script you originally ran.
+
+Session-start tells you when the running copy is behind: `scripts/lib/plugin-update-banner.mjs` compares the version of the code **that is actually loaded** against the published npm version and warns in the session-start banner. It fails silent — offline, a non-2xx response, or a malformed answer produces *no statement*, never a false "up to date".
+
+Upgrading across a major version: **[docs/migration-v4.md](docs/migration-v4.md)** is the current one — v4.0.0 removes five skills, three commands and eight top-level scripts, each on a measured 90-day two-signal rule rather than a judgement call, and it names what replaces every removed invocation. [docs/migration-v3.md](docs/migration-v3.md) documents the older v2 → v3 path and the shape both guides follow (what changes · prerequisites · per-platform steps · what stays · known issues · rollback).
+
+## Uninstall
+
+Remove the plugin through your harness's own plugin manager — `/plugin` in Claude Code (marketplace entry `session-orchestrator@kanevry`), `codex plugin remove` on Codex CLI ([docs/codex-setup.md](docs/codex-setup.md)). On Cursor and Pi, delete the files the installer wrote into your project.
+
+**What stays behind in your repo** — none of it is removed by uninstalling, and all of it is plain text you can delete by hand:
+
+- `.orchestrator/` — `bootstrap.lock`, `metrics/` (your session and learning JSONL records), `policy/`, `steering/`, `runtime/`, `peers/`, `session.lock`
+- `STATE.md` under your harness's state directory (`.claude/STATE.md` on Claude Code — see [Platform support](#platform-support))
+- The `## Session Config` block you added to `CLAUDE.md` / `AGENTS.md`
+- `.claude/rules/*.md` if you vendored the rule library via `/bootstrap --sync-rules`
+
+Deleting `.orchestrator/metrics/` deletes your session history. Nothing was ever sent anywhere (see [Data & telemetry](#safety--data--telemetry)), so there is nothing else to revoke.
 
 ## Quick Start
 
-Run `/bootstrap` in your project repo first — it writes `.orchestrator/bootstrap.lock`, which session-start requires before `/session` will run.
+**1. Bootstrap the repo once.** Run `/bootstrap` in your project — it scaffolds the minimum structure and writes `.orchestrator/bootstrap.lock`, which session-start requires before `/session` will run.
 
-Add a `## Session Config` section to your project's `CLAUDE.md` (Claude Code and Cursor IDE) or `AGENTS.md` (Codex CLI and Pi) — see [instruction-file-resolution](skills/_shared/instruction-file-resolution.md) for which file each platform reads. The smallest valid config is seven fields:
+**2. Declare a Session Config.** Add a `## Session Config` section to your project's `CLAUDE.md` (Claude Code, Cursor IDE) or `AGENTS.md` (Codex CLI, Pi) — see [instruction-file-resolution](skills/_shared/instruction-file-resolution.md) for which file each platform reads. The smallest valid config is seven fields:
 
 ```yaml
 ## Session Config
@@ -68,36 +83,48 @@ persistence: true
 enforcement: warn
 ```
 
-Everything else is opt-in. See [`docs/session-config-template.md`](docs/session-config-template.md) for the full template and [`docs/session-config-reference.md`](docs/session-config-reference.md) for the canonical type and default reference.
+Everything else is opt-in. Full template: [`docs/session-config-template.md`](docs/session-config-template.md). Canonical types and defaults: [`docs/session-config-reference.md`](docs/session-config-reference.md).
 
-## What you get
+**3. What the first `/session` writes into your repo.** Nothing outside these paths, all plain text, all local:
 
-- **49 skills** for the session lifecycle (start, plan, execute, close, evolve), discovery, vault sync, MCP authoring, debugging, brainstorming, plan grilling, persona panels, cross-repo dispatch, learning→rule reconciliation, session-process eval, audits, and more
-- **28 slash commands** (`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/grill`, `/evolve`, `/autopilot`, `/dispatcher`, `/reconcile`, `/eval`, `/test`, `/debug`, …)
-- **15 typed subagents** (code-implementer, test-writer, security-reviewer, session-reviewer, qa-strategist, architect-reviewer, …)
-- **10 hook event types** enforcing scope, blocking destructive commands, gating templates-first, capturing telemetry — full on Claude Code; experimental, post-hoc, or bridged on the other platforms ([Platform support](#platform-support))
-- **15,000+ vitest tests** run on every commit ([telemetry methodology](docs/telemetry/telemetry-claims.md))
+```text
+.orchestrator/bootstrap.lock        # written by /bootstrap, the gate for every later run
+.orchestrator/current-session.json  # which session owns this working copy right now
+.orchestrator/session.lock          # heartbeat lock — stops two sessions colliding in one checkout
+.orchestrator/host.json             # host-local identity for peer-session detection
+.orchestrator/metrics/*.jsonl       # append-only session, learning, event and subagent records
+.orchestrator/steering/             # stable product/tech/structure context injected each session
+.claude/STATE.md                    # wave progress and deviations (harness-specific directory)
+```
 
-Full component inventory: [`docs/components.md`](docs/components.md).
+## A session in three commands
 
-## Lifecycle at a glance
+```text
+/session feature    # research + Q&A — inspect git, issues, history, then agree on scope
+/go                 # execute in five typed waves (fixed roles), with a quality gate between each
+/close              # verify every item, commit cleanly, file carryover issues for the rest
+```
+
+That is the whole loop. `/plan` and `/evolve` extend it, but you can start with just these three.
+
+## Lifecycle and waves
+
+![Session Orchestrator wave lifecycle: /bootstrap once per repo, then /session, then /go running five typed waves — Discovery, G1, Impl-Core, G2, Impl-Polish, G3, Quality, G4 Full Gate, Finalization — followed by /close](assets/wave-lifecycle.svg)
+
+The rendered diagram above ([`assets/wave-lifecycle.svg`](assets/wave-lifecycle.svg)) survives anywhere Markdown does. The Mermaid source below is the maintainable version of the same two flows:
 
 ```mermaid
 flowchart TD
-    A["/plan [feature|retro]"] -->|optional, defines WHAT| B["/session [type]"]
+    Z["/bootstrap"] -->|once per repo, writes bootstrap.lock| B["/session [type]"]
+    A["/plan [feature|retro]"] -->|optional, defines WHAT| B
     B -->|research + Q&A| C["/go"]
     C -->|5 waves with quality gates| D["/close"]
     D -->|verifies + commits| E["/evolve [analyze]"]
     E -->|extracts cross-session learnings| B
+    style Z fill:#475569,color:#fff
     style C fill:#1f6feb,color:#fff
     style D fill:#238636,color:#fff
 ```
-
-`/plan` is optional — you can create issues manually and jump straight to `/session`. `/evolve` runs deliberately after 5+ sessions, not automatically.
-
-## How it works
-
-Most agentic-coding tools jump straight into writing code. Session Orchestrator adds a structured loop on top: research first, agree on scope, then execute in five typed waves with verification gates between them.
 
 ```mermaid
 flowchart LR
@@ -112,11 +139,19 @@ flowchart LR
     style G4 fill:#d29922,color:#000
 ```
 
+`/plan` is optional — you can create issues manually and jump straight to `/session`. `/evolve` runs deliberately after 5+ sessions, not automatically. Both diagrams show the happy path; a failing gate stops the wave and hands the findings back.
+
+For sessions that outgrow five waves there is a named **`ultradeep` profile**: a profile over `session-type: deep` that runs seven waves — Research + Code-Discovery, a blocking coordinator Synthesis-Gate, Impl-Core, Impl-Polish, a read-only Review-Panel, Quality, Release — instead of a fourth session-type enum value. Downstream tooling still sees `deep`.
+
+## How it works
+
+Most agentic-coding tools jump straight into writing code. Session Orchestrator adds a structured loop on top: research first, agree on scope, then execute in typed waves with verification gates between them.
+
 When you type `/session feature`:
 
 1. **Phase analysis runs in parallel** — git state, open issues, recent commits, SSOT freshness, resource health, and prior-session memory are all inspected, then distilled into a structured Session Overview with a recommendation, not a wall of raw data.
 2. **You agree on scope** — through a tool-rendered picker (Claude Code) or a numbered list (Codex / Cursor / Pi). The orchestrator has an opinion and tells you what it would do.
-3. **The plan is decomposed into five waves** — Discovery (read-only), Impl-Core, Impl-Polish, Quality, Finalization. Each wave has a defined purpose and a deliverable; agent counts scale by session type.
+3. **The plan is decomposed into waves** — Discovery (read-only), Impl-Core, Impl-Polish, Quality, Finalization. Each wave has a defined purpose and a deliverable; agent counts scale by session type.
 4. **`/go` executes** — agents work in parallel within a wave. A session-reviewer audits the output between waves on eight dimensions; only findings at confidence ≥ 80 reach you.
 5. **`/close` ships it** — every planned item is verified, quality gates run full, and unfinished work becomes carryover issues. Files are staged individually, so parallel sessions can't stomp each other.
 
@@ -124,70 +159,65 @@ Two complementary commands round out the loop: **`/plan`** runs *before* a sessi
 
 The system is markdown-driven config plus a thin Node runtime — skills, commands, and agents are Markdown with YAML frontmatter; `scripts/lib/*.mjs` and `hooks/*.mjs` handle dispatch, validation, and telemetry. Everything is plain text: if something goes wrong, you can read every file and see what happened.
 
+## What you get
+
+Counts measured on 2026-09-06 with the command in brackets:
+
+- **43 skills** for the session lifecycle (start, plan, execute, close, evolve), discovery, vault sync, MCP authoring, debugging, brainstorming, plan grilling, persona panels, cross-repo dispatch, learning→rule reconciliation, session-process eval, and audits (`ls -d skills/*/ | grep -v _shared | wc -l`)
+- **25 slash commands** (`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/grill`, `/evolve`, `/autopilot`, `/dispatcher`, `/reconcile`, `/eval`, `/test`, `/debug`, …) (`ls commands/*.md | wc -l`)
+- **14 typed subagents** (code-implementer, test-writer, security-reviewer, session-reviewer, qa-strategist, architect-reviewer, …) (`ls agents/*.md | wc -l`)
+- **27 hook files across 10 event types**, enforcing scope, blocking destructive commands, gating templates-first, and capturing telemetry — full on Claude Code; experimental, post-hoc, or bridged elsewhere ([Platform support](#platform-support)) (`ls hooks/*.mjs | wc -l`)
+- **26 always-on rule files** and **18 ADRs** carrying the reasoning behind the mechanisms (`ls .claude/rules/*.md | wc -l`, `ls docs/adr/*.md | wc -l`)
+- **661 vitest test files** run on every commit — 13,962 static `it()`/`test()` definitions at that measurement, and the runtime total is higher because of parameterised blocks ([methodology](docs/telemetry/telemetry-claims.md)) (`find tests -name '*.test.mjs' | wc -l`)
+
+**Portable across harnesses by construction.** The repo ships a root `AGENTS.md` generated byte-identical from `CLAUDE.md`, a root `plugin.json` following the [agent-plugins.org](https://agent-plugins.org) 1.0.0 schema, and a `.agents/skills/<name>/SKILL.md` mirror of all 43 skills carrying spec-legal frontmatter plus a pointer body. All three are generated by `scripts/generate-agents-skills.mjs` and drift-checked in `scripts/validate-plugin.mjs` — never hand-edited.
+
+Full component inventory: [`docs/components.md`](docs/components.md). Version history and per-release detail: [CHANGELOG.md](CHANGELOG.md).
+
 ## Why this design
 
-- **Five typed waves, not one big batch.** Discovery first, so implementers start with shared context. Impl-Core before Impl-Polish, so architecture lands before integrations. Quality runs a *simplification pass* on AI-generated code **before** tests are written — otherwise tests pin the AI patterns into place.
-- **Inter-wave reviews, not just end-of-session.** Catching regressions between waves — not only at the end — stops a bad pattern from propagating into later work; the confidence floor filters speculative criticism so only high-signal findings reach you.
+- **Typed waves, not one big batch.** Discovery first, so implementers start with shared context. Impl-Core before Impl-Polish, so architecture lands before integrations. Quality runs a *simplification pass* on AI-generated code **before** tests are written — otherwise tests pin the AI patterns into place.
+- **Inter-wave reviews, not just end-of-session.** Catching regressions between waves stops a bad pattern from propagating into later work; the confidence floor filters speculative criticism so only high-signal findings reach you.
 - **State persists across crashes.** `STATE.md` records wave progress and deviations; the next `/session` offers to resume from the last completed wave.
-- **Hooks enforce, not just warn.** A pre-Bash guard blocks destructive shell commands, and pre-Edit scope enforcement blocks writes outside an agent's allowed paths — in main sessions and subagent waves alike (specifics in [Safety](#safety)). This hard enforcement is full on Claude Code; Cursor and Pi reach it through payload bridges; Codex is still pending a real `apply_patch` adapter (see [Platform support](#platform-support)).
+- **Hooks enforce, not just warn.** A pre-Bash guard blocks destructive shell commands, and pre-Edit scope enforcement blocks writes outside an agent's allowed paths — in main sessions and subagent waves alike ([Safety](#safety--data--telemetry)).
+- **Parallel *operator* sessions are treated as a hazard.** Two humans — or two of your own sessions — in the same working copy share one git index, one filesystem, one `STATE.md`. A heartbeat session lock, peer-scope manifests, and the PSA rule set in [`.claude/rules/parallel-sessions.md`](.claude/rules/parallel-sessions.md) exist for exactly that axis.
 - **Cross-session learning is opt-in and inspectable.** Every session writes a record; after 5+ sessions `/evolve analyze` extracts confidence-scored patterns you can read and prune. Nothing is hidden.
 - **VCS dual support, no lock-in.** Auto-detects GitLab or GitHub from your remote and drives the full lifecycle for both.
 
-## Recent highlights (v3.24.0)
+How this compares to other orchestrators — with the parts that are measured and the parts that are not: [`docs/components.md` § Comparisons](docs/components.md#comparisons).
 
-Every release is additive and backward-compatible. Highlights of the v3.24.0 line: parallel-session identity moves from repo-scoped to process-local, remote work gets a declared host channel, and four duplicated-copy classes collapse to one module each:
+## Recent highlights (v4.0.0)
 
-- **Parallel-session identity moves from repo-scoped to process-local (#1194 / #1188)** — `enforce-scope` now reads only process-local session ids (`readProcessLocalSessionIds`), so a peer's manifest in the same working copy is treated as foreign, not as your own; `memory-propose` authorizes off a process-local match of the raw session id rather than trusting the lock file alone. A peer's declared scope also gets its own place in the wave manifest now, as a `peer-session-<id>` record instead of a silent gap (#1195).
-- **Remote-offload: declare hosts, route heavy roles to a ready host instead of halving the wave (#1160)** — a `remote-hosts:` config block, an `ssh:<alias>` dispatch channel, and an offload decision wired into the resource gate right after the HR-004 cap (readiness is injected, never measured inside the gate itself). `skills/remote-offload/SKILL.md` is now the generic entry point, with adapters around the `offload` CLI.
-- **Four copy-classes collapsed to one module each (#1181 / #1182 / #1196 / #1197)** — atomic-JSON handling, subagent sidecar-path derivation, `expandHome`, and markdown-fence parsing each had 4–8 divergent copies; consolidating `atomic-json.mjs` also closed a data-loss path where a read-modify-write default silently replaced an unparsable or unreadable file.
-- **Refusals are now events, not silence (#1200 / #1201)** — `emitFinalWaveCompleted` writes `orchestrator.wave.final_refused` for six refusal paths, evolve and dialectic completions emit their own events, and reconcile's trigger set now lives in code (`KNOWN_TRIGGERS`) instead of being asserted in prose.
-- **Canonical session counting, fleet-wide (#1186)** — `site-numbers` and `vault-mirror --kind session` now count the same way everywhere: 289 raw lines in this repo's own ledger collapsed to 278 real sessions once double-counts were removed.
-- **Discovery-validator false positives cut — 186 of 400 measured hits were the harness's own gate-summary lines (#1198)** — a dedupe key and a gate-summary skip removed the noise; two brief claims about the masking order were also measured and refuted along the way.
-- **Three new mechanical guards land in `validate-plugin` (#1183 / #1184 / #1187)** — `emitEvent` try/catch coverage, validator-registration parity (every check actually wired in), and dead `.sh` citations in docs.
-- **The pre-push gate distinguishes a publish push from a scratch push; linked-worktree gates run green (15,829/0 on the remote host)** — a `.git` file (not a directory) in a linked worktree was previously misread as an untracked candidate, flagging 13 tracked files as missing.
-- **The AUQ clarity guard's delivery is proven live, not asserted (#1122)** — `check-auq-clarity` is wired into `validate-plugin` and blocks on the two hard hurdles at a measured 0% false-positive rate; its own wiring closes with a fake-regression proof, not a claim.
+v4.0.0 is the first release that REMOVES public surfaces, so read [docs/migration-v4.md](docs/migration-v4.md) before upgrading. Highlights of the v4.0.0 line: less surface, an instruction layer that loads on demand, and three instruments that were reporting numbers nobody could reproduce:
 
-Previous line (v3.23.0): three external bug reports fixed end-to-end (Codex session-id versions, missing `/close` fields, plugin-root resolution), the worktree-promotion process boundary, and three measurement fixes (host-registry numbering, the mode-selector's mis-shaped read, two regained Semgrep rules).
+- **Five skills, three commands and eight top-level scripts are gone.** Removal followed a measured two-signal rule — 0 telemetry ∧ 0 fleet invocation over 90 days ∧ no runtime consumer — never a judgement call. Prose-invoked skills, which register 0 by construction, were exempt. `skills/domain-model/` was merged into `skills/architecture/` rather than dropped.
+- **`.claude/rules/` goes 61 → 26 files.** Forty-three machine-generated learning files were consolidated into eight thematic ones, each keeping its provenance markers so the reconcile engine still dedupes on them.
+- **The three largest instruction files are split, not shortened.** `session-start`, `session-end` and the wave loop keep every word; the bodies move into per-phase files under `references/`, and the top-level file becomes an index. Nothing was summarised away.
+- **`ultradeep` is a profile over `deep`, not a fourth session type.** Seven waves with a blocking synthesis gate and a read-only review panel. Downstream tooling still sees `deep`, which is why it costs about eight touchpoints instead of forty-eight.
+- **A session-start banner now says when the plugin you are RUNNING is behind the one published.** This host had been running a copy five minors old for four weeks with no warning, because nothing anywhere compared installed against available.
+- **Two instruments were corrected rather than tuned.** Telemetry attributed the operator's own second machine to the external fleet, and the abandoned-session rate was an artefact of backfilled records. Both now report what they measure.
+- **A root `AGENTS.md`, a root `plugin.json` and a portable `.agents/skills/` mirror.** The repo now speaks the cross-harness instruction conventions it documents, generated and validated rather than hand-maintained.
 
-Full version history: [CHANGELOG.md](CHANGELOG.md).
-
-## Comparison
-
-| Capability | Session Orchestrator | Manual `CLAUDE.md` | Other orchestrators |
-|---|---|---|---|
-| Session lifecycle (start → plan → execute → close) | Full, automated | Manual | Partial |
-| Typed waves with quality gates | 5 roles, progressive verification | None | Batch execution |
-| Session persistence and crash recovery | `STATE.md` plus memory files | None | Partial |
-| Scope and command enforcement hooks | PreToolUse with strict / warn / off | None | None |
-| Circuit breaker and spiral detection | Per-agent, with recovery | None | Partial |
-| Cross-session learning | Confidence-scored learnings | None | None |
-| VCS integration (GitLab + GitHub) | Dual, auto-detected | Manual CLI | Usually GitHub only |
-| Session close with carryover | Verified, with issue creation | Manual | Partial |
-
-The design goal is engineering quality: every wave exits verified, every unfinished issue gets a carryover ticket, every session closes with a clean commit. A detailed head-to-head vs. [maestro-orchestrate](https://github.com/josstei/maestro-orchestrate) is in [`docs/components.md`](docs/components.md#comparison-vs-maestro-orchestrate).
+Full list, with the evidence for each claim: [CHANGELOG.md](CHANGELOG.md).
 
 ## Platform support
 
 | Feature | Claude Code | Codex CLI | Cursor IDE | Pi |
 |---|---|---|---|---|
-| All 28 commands | Native slash commands | Native plugin commands | Native `.cursor/commands` slash commands | Prompt templates |
+| All 25 commands | Native slash commands | Native plugin commands | Native `.cursor/commands` slash commands | Prompt templates |
 | Parallel agents | Agent tool | Multi-agent roles | Sequential only | Sequential (parallel planned) |
 | Session persistence | `.claude/STATE.md` | `.codex/STATE.md` | `.cursor/STATE.md` | `.pi/STATE.md` |
 | Scope enforcement | PreToolUse hooks | Unavailable — pending a real `apply_patch` adapter | `preToolUse` + `beforeShellExecution` via cursor-hook-bridge; `afterFileEdit` post-hoc | `tool_call` bridge |
 | AskUserQuestion | Native tool | Numbered-list fallback | Numbered-list fallback | Numbered-list fallback |
 | Quality gates | Full | Full | Full | Full |
 
-All platforms share the same skills, commands, and scripts; hooks use platform-specific adapters and event subsets. Codex intentionally wires only its six supported project event slots and omits Claude-only events plus Edit/Write payload handlers until a real Codex `apply_patch` adapter exists, so scope enforcement is currently unavailable there. Platform detection and adaptation live in `scripts/lib/platform.mjs`. **OS:** macOS and Linux are first-class and run in CI (`ubuntu-latest`, `macos-latest`). Windows runs natively (all paths via `path.join`, tmp via `os.tmpdir()`) but is **not** covered by CI — treat it as best-effort and run smoke tests locally when changing OS-sensitive code. Cursor and Pi have known event-coverage caveats — see [`docs/cursor-setup.md`](docs/cursor-setup.md) and [`docs/pi-setup.md`](docs/pi-setup.md).
+All platforms share the same skills, commands, and scripts; hooks use platform-specific adapters and event subsets. Codex intentionally wires only its six supported project event slots and omits Claude-only events plus Edit/Write payload handlers until a real Codex `apply_patch` adapter exists, so scope enforcement is currently unavailable there. Platform detection lives in `scripts/lib/platform.mjs`. Cursor and Pi have known event-coverage caveats — see [`docs/cursor-setup.md`](docs/cursor-setup.md) and [`docs/pi-setup.md`](docs/pi-setup.md).
 
-## Troubleshooting
+## Safety & data & telemetry
 
-**Codex plugin or hooks not loading.** Start with `codex plugin list --available --json`. Confirm `session-orchestrator@kanevry` is installed, enabled, unique, and at the tracked manifest version; then start a fresh task and review `/hooks`. Remove only the two allowlisted legacy IDs through `codex plugin remove`, and resolve marketplace conflicts through the public marketplace remove/add lifecycle before reinstalling. Any other pre-public plugin/config/cache/hook-state residue is unsupported: do not modify private Codex files; file an issue with `codex --version` plus the public plugin and marketplace list output. The full decision tree is in [`docs/codex-setup.md`](docs/codex-setup.md#troubleshooting).
+**Your data stays in your repo.** Session Orchestrator runs locally, requires no account, and writes its records as append-only JSONL under `.orchestrator/metrics/` in *your* repository — sessions, learnings, events, subagent records. Those files are yours: readable, greppable, deletable. Optional anonymous usage telemetry is **off until you explicitly consent** and is separate from the local records ([docs/telemetry.md](docs/telemetry.md) says exactly what it would collect and how to turn it off). Reported metrics describe *this* repository under its own conditions and will not transfer unchanged to yours ([details](docs/telemetry/telemetry-claims.md)).
 
-**"'node' not found on the hook PATH — plugin hooks are skipped."** The harness executes hook commands via `/bin/sh -c` with its own PATH — that shell does not source `~/.zshrc`/`~/.bashrc`, so Node installed via Homebrew (`/opt/homebrew/bin`), nvm, volta, or asdf can be invisible to hooks even though `node` works fine in your terminal. All hook commands route through [`hooks/run-node.sh`](hooks/run-node.sh), which resolves Node via `$SO_NODE_BIN` → PATH → well-known install dirs → nvm and degrades gracefully when nothing is found: hooks are skipped with **one** warning per 6 hours instead of a shell error on every tool call. Fixes, in order of preference: launch the harness from a shell where `node` resolves; export `SO_NODE_BIN=/abs/path/to/node`; or install Node 24+ to a standard location.
-
-## Safety
-
-`hooks/pre-bash-destructive-guard.mjs` blocks destructive shell commands (`git reset --hard`, `rm -rf`, `git push --force`, and more) in the main session *and* in subagent waves. Policy lives in `.orchestrator/policy/blocked-commands.json`. Bypass per session only for intentional maintenance:
+**Destructive-command guard.** `hooks/pre-bash-destructive-guard.mjs` enforces `.orchestrator/policy/blocked-commands.json` — 14 rules, of which 10 block outright (`git reset --hard`, `rm -rf`, `git push --force`, and more) and 4 warn — in the main session *and* in subagent waves. Bypass per session only for intentional maintenance:
 
 ```yaml
 allow-destructive-ops: true
@@ -195,13 +225,15 @@ allow-destructive-ops: true
 
 The rule source of truth is [`.claude/rules/parallel-sessions.md`](.claude/rules/parallel-sessions.md) (PSA-003), vendored to consumer repos via `/bootstrap`.
 
-`hooks/post-edit-import-probe.mjs` (PostToolUse on `Edit`/`Write`/`MultiEdit`) guards the other direction: a hook-reachable helper saved in a broken intermediate state makes *every* Bash/Edit/Write call fail with "Internal hook error — request blocked", host-wide, for every session sharing the working copy. Right after such a file is saved the probe runs ESLint `no-undef` on it (plus a child-process `import()` for `scripts/lib/**`) and reports the blast radius; it never blocks and always exits 0.
+**Import probe.** `hooks/post-edit-import-probe.mjs` (PostToolUse on `Edit`/`Write`/`MultiEdit`) guards the other direction: a hook-reachable helper saved in a broken intermediate state makes *every* Bash/Edit/Write call fail with "Internal hook error — request blocked", host-wide, for every session sharing the working copy. Right after such a file is saved the probe runs ESLint `no-undef` on it (plus a child-process `import()` for `scripts/lib/**`) and reports the blast radius; it never blocks and always exits 0. It only fires for files listed in the committed allowlist [`hooks/_lib/hook-import-set.json`](hooks/_lib/hook-import-set.json), regenerated by `node scripts/generate-hook-import-set.mjs`. Kill switch: `SO_DISABLED_HOOKS=post-edit-import-probe`.
 
-It only fires for files listed in the committed allowlist [`hooks/_lib/hook-import-set.json`](hooks/_lib/hook-import-set.json) — the transitive import closure of the hook entry files. Regenerate it with `node scripts/generate-hook-import-set.mjs` (the `--check` form is wired into `.husky/pre-commit` and `scripts/validate-plugin.mjs`, so the allowlist cannot rot). Kill switch:
+## Troubleshooting
 
-```bash
-SO_DISABLED_HOOKS=post-edit-import-probe
-```
+**Codex plugin or hooks not loading.** Start with `codex plugin list --available --json`. Confirm `session-orchestrator@kanevry` is installed, enabled, unique, and at the tracked manifest version; then start a fresh task and review `/hooks`. Remove only the two allowlisted legacy IDs through `codex plugin remove`, and resolve marketplace conflicts through the public marketplace remove/add lifecycle before reinstalling. Any other pre-public plugin/config/cache/hook-state residue is unsupported: do not modify private Codex files; file an issue with `codex --version` plus the public plugin and marketplace list output. Full decision tree: [`docs/codex-setup.md`](docs/codex-setup.md#troubleshooting).
+
+**"'node' not found on the hook PATH — plugin hooks are skipped."** The harness executes hook commands via `/bin/sh -c` with its own PATH — that shell does not source `~/.zshrc`/`~/.bashrc`, so Node installed via Homebrew, nvm, volta, or asdf can be invisible to hooks even though `node` works in your terminal. All hook commands route through [`hooks/run-node.sh`](hooks/run-node.sh), which resolves Node via `$SO_NODE_BIN` → PATH → well-known install dirs → nvm and degrades gracefully: hooks are skipped with **one** warning per 6 hours instead of a shell error on every tool call. Fixes, in order of preference: launch the harness from a shell where `node` resolves; export `SO_NODE_BIN=/abs/path/to/node`; or install Node 24+ to a standard location.
+
+**`/session` refuses to start.** It needs `.orchestrator/bootstrap.lock` — run `/bootstrap` first, or `/bootstrap --retroactive` if the repo already has a `## Session Config` block.
 
 ## Development
 
@@ -217,7 +249,7 @@ npm run typecheck # node --check on every .mjs file
 
 Two directories share the name *rules* and play opposite roles: [`rules/`](rules/README.md) is the **deliverable rule library** shipped *out* to consumer repos via `/bootstrap --sync-rules`, while [`.claude/rules/`](.claude/rules/) is this repo's own always-on rule set.
 
-Contributor docs: [Plugin Architecture (v3)](docs/plugin-architecture-v3.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [agent authoring spec](agents/AGENTS.md).
+Contributor docs: [Plugin Architecture (v3)](docs/plugin-architecture-v3.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [sub-agent authoring spec](docs/agent-authoring.md).
 
 ## Support & scope
 
@@ -230,18 +262,16 @@ What it is **not**:
 
 - **Not an official product of any agent vendor.** An independent, community-maintained project — not affiliated with, endorsed by, or sponsored by Anthropic, OpenAI, Cursor, or any agent it integrates with. (It is distributed through the Claude Code plugin marketplace, but is not an Anthropic product.)
 - **Not a replacement** for Claude Code / Codex CLI / Cursor / Pi. It is a workflow layer that runs *on top of* your existing agent — you still need one of those installed.
-- **Local by default.** Runs locally — no account required. Optional, strictly opt-in anonymous usage telemetry (off until you consent; see [docs/telemetry.md](docs/telemetry.md)).
-- **No guarantee that telemetry numbers transfer to your repo.** Reported test counts and metrics describe *this* repository under its own conditions ([details](docs/telemetry/telemetry-claims.md)). Your results will vary by stack, project size, and configuration.
+- **Not a multi-user product.** Single-operator by design; the parallel-session machinery protects one operator's concurrent sessions, not a shared team workspace.
 
 ## Documentation
 
-- [docs/ Router](docs/README.md) — living reference vs. public decision history vs. active work documents; what moved to the private Meta-Vault and why
+- [docs/ Router](docs/README.md) — living reference vs. public decision history vs. active work documents
 - [User Guide](docs/USER-GUIDE.md) — installation, config reference, workflow walkthrough, FAQ
 - [Components & Reference](docs/components.md) — full skill/command/agent/hook inventory, repository anatomy, comparisons
 - [Plugin Architecture (v3)](docs/plugin-architecture-v3.md) — contributor guide, layering, hook anatomy, testing
-- [Migration to v3](docs/migration-v3.md) — upgrade path from v2.x, known issues, rollback
-- [Telemetry](docs/telemetry.md) — what the optional opt-in usage telemetry collects, and how to turn it off
-- [Telemetry claims](docs/telemetry/telemetry-claims.md) — how reported metrics are measured, and why they may not transfer
+- [Migration guide](docs/migration-v3.md) — upgrade path, known issues, rollback
+- [Telemetry](docs/telemetry.md) · [Telemetry claims](docs/telemetry/telemetry-claims.md) — what is collected, how metrics are measured, why they may not transfer
 - [Example Configs](docs/examples/) — Session Config examples for Next.js, Express, Swift
 - [CHANGELOG.md](CHANGELOG.md) — version history
 
@@ -249,16 +279,11 @@ We follow [Conventional Commits](https://www.conventionalcommits.org/) — see [
 
 ## Learn the method behind it
 
-This plugin is a methodology turned into code. If you want the reasoning behind it — why execution runs in waves, why every wave ends at a verification gate, how to make an autonomous loop that actually finishes — those playbooks are taught hands-on at **[agenticbuilders.at](https://agenticbuilders.at)**:
-
-- **[Multi-Agent Orchestration](https://agenticbuilders.at/orchestrierung)** — leading several agents in coordinated waves: when parallelism pays, briefing subagents cleanly, turning failures into firm gates.
-- **[Loop Engineering](https://agenticbuilders.at/loop-engineering)** — designing autonomous loops that finish verifiably: done-conditions, verification gates, kill-switches.
-
-The plugin is free and MIT. The courses are for going deeper, not a requirement for using it.
+This plugin is a methodology turned into code. The reasoning behind it — why execution runs in waves, why every wave ends at a verification gate, how to make an autonomous loop that actually finishes — is taught hands-on at **[agenticbuilders.at](https://agenticbuilders.at)**: [Multi-Agent Orchestration](https://agenticbuilders.at/orchestrierung) and [Loop Engineering](https://agenticbuilders.at/loop-engineering). The plugin is free and MIT; the courses are for going deeper, not a requirement for using it.
 
 ## Links
 
-- [Homepage](https://session-orchestrator.com) · [Privacy Policy](https://gotzendorfer.at/en/session-orchestrator/privacy)
+[Homepage](https://session-orchestrator.com) · [Privacy Policy](https://gotzendorfer.at/en/session-orchestrator/privacy) · [npm](https://www.npmjs.com/package/session-orchestrator)
 
 ## License
 
