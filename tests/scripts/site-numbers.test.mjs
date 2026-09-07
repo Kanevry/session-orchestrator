@@ -98,6 +98,10 @@ function run(args, { root = REPO_ROOT } = {}) {
   const res = spawnSync(process.execPath, [SCRIPT, root, ...args], {
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024,
+    // Never let a fixture run reach api.github.com / api.npmjs.org: the usage
+    // metrics answer from the snapshot (SO_SITE_NUMBERS_OFFLINE=1). Measured
+    // 2026-09-07: CI went red when npm's live count moved past the snapshot.
+    env: { ...process.env, SO_SITE_NUMBERS_OFFLINE: '1' },
   });
   return { code: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
 }
