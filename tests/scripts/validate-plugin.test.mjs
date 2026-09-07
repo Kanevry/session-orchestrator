@@ -101,6 +101,11 @@ describe('validate-plugin.mjs — current repo plugin', () => {
     expect(r.stdout).toMatch(/PASS: \d+ headFallback contract\(s\) have exact requires parity \(\d+ required export\(s\)/);
   });
 
+  it('runs the registered Codex command discovery and freshness check', () => {
+    expect(r.status, r.stdout).toBe(0);
+    expect(r.stdout).toMatch(/PASS: \d+ unique Codex skills, command policies and generated files in sync/);
+  });
+
   it('output includes PASS lines for agent frontmatter', () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('PASS:');

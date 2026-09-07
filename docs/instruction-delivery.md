@@ -688,11 +688,18 @@ agentskills.io permits outside Claude Code (`name`, `description`, `license`,
 `skills/<name>/SKILL.md`, never a copy of it — progressive disclosure keeps the
 whole mirror at 47,380 bytes across 43 files.
 
-Root `plugin.json` (agent-plugins.org 1.0.0) is the third artefact of the same
-surface. It is the **third** manifest carrying a version, alongside
-`.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`, while the release
-script bumps only `package.json` — `scripts/lib/validate/check-agents-skills.mjs`
-asserts all of them agree.
+These are the two artifacts emitted by `scripts/generate-agents-skills.mjs`. Plugin
+manifests are maintained separately under `.claude-plugin/`, `.codex-plugin/` and
+`.cursor-plugin/`; `scripts/release.mjs` updates their versions with `package.json`.
+The initial 4.0.0 standard root `plugin.json` was moved to the native Cursor location
+because it intercepted Codex's skill path and version selection; see
+[Codex manifest compatibility](codex-setup.md#manifest-compatibility).
+
+Codex has a separate generated surface: `scripts/generate-codex-skills.mjs` writes
+`.codex-plugin/skills/` from the union of canonical command and skill names. Commands
+win same-name overlaps, and each adapter reads the canonical document before dispatch.
+The portable `.agents/skills/` mirrors continue to reference canonical skills directly;
+they do not replace the installed Codex command entrypoints.
 
 ## Learnings Index (selected for your file scope)
 

@@ -7,6 +7,7 @@ const MANIFEST_KEYS = new Set([
   'description',
   'keywords',
   'skills',
+  'commands',
   'mcpServers',
   'apps',
   'hooks',
@@ -206,6 +207,11 @@ function validateManifest(manifest, root, expectedBaseVersion, errors) {
   validatePathCollection(manifest.skills, '$.manifest.skills', 'directory', root, errors, {
     required: true,
   });
+  // Native [] suppresses Codex's conventional commands/ fallback. Nonempty
+  // paths would register automatic aliases beside our generated skill surface.
+  if (Object.hasOwn(manifest, 'commands') && (!Array.isArray(manifest.commands) || manifest.commands.length !== 0)) {
+    addError(errors, '$.manifest.commands', 'disabled-command-discovery', 'commands must be an empty array to disable automatic command conversion');
+  }
   validateMcpServers(manifest.mcpServers, root, errors);
   if (manifest.apps !== undefined) {
     validateContractPath(manifest.apps, '$.manifest.apps', 'file', root, errors);
