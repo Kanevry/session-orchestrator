@@ -67,6 +67,15 @@ import {
   rewrite,
   SPAN_RE,
   parseArgs,
+  main,
+  fetchUsageMetrics,
+  renderCensusLine,
+  rewriteCensusBlock,
+  syncCensusBlock,
+  syncCensusBlocks,
+  CENSUS_START,
+  CENSUS_END,
+  CENSUS_BLOCK_FILES,
   METRIC_IDS,
   CENSUS_SCHEMA,
 } from '../../scripts/site-numbers.mjs';
@@ -528,7 +537,10 @@ function synthFullRepo({ omit = [], snapshot = null, page = false } = {}) {
   }
 
   mkdirSync(join(root, 'site'), { recursive: true });
-  if (snapshot) put(['site', '_census.json'], JSON.stringify({ $schema: CENSUS_SCHEMA, metrics: snapshot }));
+  // The two usage metrics are snapshot-answered under SO_SITE_NUMBERS_OFFLINE=1
+  // (see run()), so every synthetic snapshot carries a value for them unless a
+  // test deliberately omits one.
+  if (snapshot) put(['site', '_census.json'], JSON.stringify({ $schema: CENSUS_SCHEMA, metrics: { 'npm-downloads-30d': '7', 'github-stars': '3', ...snapshot } }));
   if (page) {
     put(
       ['site', 'index.html'],
@@ -559,7 +571,15 @@ describe('census snapshot — fallback for the metrics a clone does not carry', 
     expect(res.missing).toEqual([]);
     expect(res.values.sessions).toBe('999');
     expect(res.values.learnings).toBe('999');
-    expect(res.fromSnapshot).toEqual(['sessions', 'learnings', 'counted-sha']);
+    // The two usage metrics join them: their source is the network, which a
+    // plain `collect()` never touches (#1080.1).
+    expect(res.fromSnapshot).toEqual([
+      'sessions',
+      'learnings',
+      'npm-downloads-30d',
+      'github-stars',
+      'counted-sha',
+    ]);
   });
 
   /**
@@ -605,13 +625,18 @@ describe('census snapshot — fallback for the metrics a clone does not carry', 
    * exit 2 — a build that carries every file it needs, refusing to build.
    */
   it('survives a tree without .git as long as the snapshot carries the sha', () => {
-    const root = synthFullRepo({ snapshot: { 'counted-sha': 'deadbee' } });
+    // The two usage metrics ride along in the snapshot: without a fetch (and
+    // `collect()` never fetches) they have no other source, so omitting them
+    // here would make this test fail for a reason that is not about `.git`.
+    const root = synthFullRepo({
+      snapshot: { 'counted-sha': 'deadbee', 'npm-downloads-30d': '11', 'github-stars': '22' },
+    });
     expect(headRef(root)).toBeNull(); // precondition: no ancestor git repo, else this proves nothing
 
     const res = collect(root);
     expect(res.missing).toEqual([]);
     expect(res.values['counted-sha']).toBe('deadbee');
-    expect(res.fromSnapshot).toEqual(['counted-sha']);
+    expect(res.fromSnapshot).toEqual(['npm-downloads-30d', 'github-stars', 'counted-sha']);
   });
 });
 
@@ -954,5 +979,321 @@ describe('safe-value allowlist — the served census, not just the served page',
     expect(res.stderr).toContain('version');
     // Byte-identical: the run refused, it did not half-write.
     expect(readFileSync(censusPath(root), 'utf8')).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two usage metrics (#1080.1) — the only ones sourced off this machine
+// ---------------------------------------------------------------------------
+
+/** Run `main()` IN-PROCESS so a stubbed `globalThis.fetch` is observable. */
+function runInProcess(args) {
+  const out = [];
+  const err = [];
+  const code = main(args, { stdout: (s) => out.push(s), stderr: (s) => err.push(s) });
+  return { code, stdout: out.join('\n'), stderr: err.join('\n') };
+}
+
+/** A full synthetic repo plus a page whose cells already match its own census. */
+function synthRepoWithCurrentPage(snapshot) {
+  const root = synthFullRepo({ snapshot });
+  const { values } = collect(root);
+  writeFileSync(
+    join(root, 'site', 'index.html'),
+    `<!doctype html><html><body>${METRIC_IDS.map(
+      (id) => `<span class="num" data-metric="${id}">${values[id]}</span>`,
+    ).join('\n')}</body></html>`,
+    'utf8',
+  );
+  return { root, values };
+}
+
+describe('usage metrics — --check answers from the snapshot and never opens a socket', () => {
+  /**
+   * BUG CAUGHT: a `--check` that fetches. It is the CI/build guard and runs on
+   * every pipeline: one HTTP call inside it makes the gate go red whenever
+   * npm's or GitHub's API is slow, offline, or rate-limiting this runner — a
+   * signal about someone else's uptime, reported as drift on our page. The
+   * stub throws rather than returning data, so any call at all fails the run
+   * loudly instead of silently succeeding with live numbers.
+   */
+  it('resolves both usage metrics offline, with fetch stubbed to throw', () => {
+    const original = globalThis.fetch;
+    const calls = [];
+    globalThis.fetch = (...a) => {
+      calls.push(a[0]);
+      throw new Error('a --check must not perform network I/O');
+    };
+    try {
+      const { root, values } = synthRepoWithCurrentPage(fullSnapshot());
+      expect(values['npm-downloads-30d']).toBe('999'); // the snapshot IS their truth between writes
+      expect(values['github-stars']).toBe('999');
+
+      const res = runInProcess([root, '--check', '--json', '--site', join(root, 'site')]);
+      expect(res.stderr).not.toContain('fetch failed');
+      expect(res.code).toBe(0);
+
+      const env = JSON.parse(res.stdout);
+      const npm = env.metrics.find((m) => m.metric === 'npm-downloads-30d');
+      expect(npm.value).toBe('999');
+      expect(npm.fromSnapshot).toBe(true);
+      expect(npm.source).toContain('api.npmjs.org');
+      expect(calls).toEqual([]); // the whole point
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
+describe('usage metrics — a failed fetch keeps the last real number', () => {
+  const throwingFetch = async () => {
+    throw new Error('boom');
+  };
+
+  /**
+   * BUG CAUGHT: writing a placeholder over a real number. A transient npm
+   * outage would otherwise replace "1165 downloads" with "n/a" (or 0) on the
+   * live page and, worse, in the tracked receipt — losing the last honest
+   * measurement to a network blip that has nothing to do with the repository.
+   */
+  it('warns and falls back to the snapshot on a transport error and on a non-2xx', async () => {
+    const root = synthFullRepo({ snapshot: fullSnapshot() });
+
+    const warns = [];
+    const usage = await fetchUsageMetrics(root, { fetchImpl: throwingFetch, warn: (s) => warns.push(s) });
+    expect(usage).toEqual({});
+    expect(warns[0]).toBe('WARN site-numbers: npm-downloads-30d fetch failed (boom), keeping snapshot 999');
+    expect(collect(root, { usage }).values['npm-downloads-30d']).toBe('999');
+
+    // A 503 body is not data: `res.ok === false` must fail, not be parsed.
+    const warns2 = [];
+    const usage2 = await fetchUsageMetrics(root, {
+      fetchImpl: async () => ({ ok: false, status: 503, json: async () => ({ downloads: 7 }) }),
+      warn: (s) => warns2.push(s),
+    });
+    expect(usage2).toEqual({});
+    expect(warns2.join('\n')).toContain('HTTP 503');
+
+    // A 200 with the wrong shape is not data either.
+    const warns3 = [];
+    const usage3 = await fetchUsageMetrics(root, {
+      fetchImpl: async () => ({ ok: true, json: async () => ({ error: 'not found' }) }),
+      warn: (s) => warns3.push(s),
+    });
+    expect(usage3).toEqual({});
+    expect(warns3.join('\n')).toContain('no numeric "downloads" field');
+
+    // The happy path still yields a plain integer string through collect().
+    const ok = await fetchUsageMetrics(root, {
+      fetchImpl: async (url) => ({
+        ok: true,
+        json: async () => (String(url).includes('npmjs') ? { downloads: 1165 } : { stargazers_count: 50 }),
+      }),
+      warn: () => {},
+    });
+    expect(ok).toEqual({ 'npm-downloads-30d': 1165, 'github-stars': 50 });
+    const live = collect(root, { usage: ok }).values;
+    expect(live['npm-downloads-30d']).toBe('1165');
+    expect(live['github-stars']).toBe('50');
+  });
+
+  /**
+   * BUG CAUGHT: shipping a placeholder when there is nothing to keep. With no
+   * snapshot value AND no fetch, the metric must have NO value — which the
+   * partial-census guard turns into a loud non-zero exit — rather than an
+   * empty string or "n/a" written into the page and the public receipt.
+   */
+  it('leaves the metric unresolved when no snapshot carries it, so the run fails', async () => {
+    // Explicitly drop the two usage values synthFullRepo seeds by default: this
+    // case is about the snapshot NOT carrying them.
+    const root = synthFullRepo({
+      snapshot: { 'counted-sha': 'deadbee', 'npm-downloads-30d': undefined, 'github-stars': undefined },
+    });
+
+    const warns = [];
+    await fetchUsageMetrics(root, { fetchImpl: throwingFetch, warn: (s) => warns.push(s) });
+    expect(warns.join('\n')).toContain('(none');
+
+    const res = collect(root, { usage: {} });
+    expect(res.missing).toEqual(['npm-downloads-30d', 'github-stars']);
+    expect(res.values['npm-downloads-30d']).toBeUndefined();
+
+    const cli = run(['--check', '--site', join(root, 'site')], { root });
+    expect(cli.code).toBe(2);
+    expect(cli.stderr).toContain('could not measure npm-downloads-30d, github-stars');
+  });
+});
+
+describe.each(CENSUS_BLOCK_FILES)('the census block in %s', (CENSUS_FILE) => {
+  const BEFORE = '# session-orchestrator\n\nhand-authored prose\n\n## Numbers\n\n';
+  const AFTER = '\n\nmore hand-authored prose, including a stray Version 1.2.3 literal.\n';
+
+  function llmsFixture(inner, file = CENSUS_FILE) {
+    const dir = mkTmp('site-numbers-llms-');
+    const site = join(dir, 'site');
+    mkdirSync(site, { recursive: true });
+    writeFileSync(join(site, file), `${BEFORE}${inner}${AFTER}`, 'utf8');
+    return site;
+  }
+
+  /** A page whose one metric cell already matches, so only the block can drift. */
+  function withPage(site) {
+    writeFileSync(
+      join(site, 'index.html'),
+      `<html><span class="num" data-metric="skills">${current.skills}</span></html>`,
+      'utf8',
+    );
+    return site;
+  }
+
+  /**
+   * BUG CAUGHT: a rewriter that reaches outside its markers. This file is
+   * hand-authored prose with ONE generated line in it; a regex that anchored on
+   * "Version" or on the paragraph instead of on the markers would silently eat
+   * neighbouring sentences — and nobody reads llms-full.txt often enough to
+   * notice. The assertion is byte-for-byte on both sides, not "contains".
+   */
+  it('replaces only the text between the markers', () => {
+    const site = llmsFixture(`${CENSUS_START}\nan older census line\n${CENSUS_END}`);
+    const file = join(site, CENSUS_FILE);
+
+    const res = syncCensusBlock(site, current, { write: true, file: CENSUS_FILE });
+    expect(res.present).toBe(true);
+    expect(res.error).toBeUndefined();
+    expect(res.written).toBe(true);
+
+    const after = readFileSync(file, 'utf8');
+    const { line } = renderCensusLine(current);
+    expect(after).toBe(`${BEFORE}${CENSUS_START}\n${line}\n${CENSUS_END}${AFTER}`);
+    expect(after).not.toContain('an older census line');
+
+    // Idempotent: a second run changes nothing and reports no drift.
+    const again = syncCensusBlock(site, current, { write: true, file: CENSUS_FILE });
+    expect(again.written).toBe(false);
+    expect(again.drift).toBe(false);
+    expect(readFileSync(file, 'utf8')).toBe(after);
+  });
+
+  /**
+   * BUG CAUGHT: a half-marked file treated as a no-op. Without the end marker
+   * there is no way to know where the block stops; appending or guessing would
+   * corrupt prose, and skipping silently would leave the surface frozen at
+   * whatever it said when the marker was lost. It must be loud.
+   */
+  it('is a hard error when the end marker is missing', () => {
+    const site = llmsFixture(`${CENSUS_START}\nan older census line\n`);
+    const before = readFileSync(join(site, CENSUS_FILE), 'utf8');
+
+    const res = syncCensusBlock(site, current, { write: true, file: CENSUS_FILE });
+    expect(res.error).toContain(CENSUS_END);
+    expect(res.written).toBeUndefined();
+    expect(readFileSync(join(site, CENSUS_FILE), 'utf8')).toBe(before); // untouched
+
+    expect(rewriteCensusBlock('no markers here', 'x').ok).toBe(false);
+
+    // …and it fails the run rather than only warning.
+    const cli = run(['--check', '--json', '--site', withPage(site)]);
+    expect(cli.code).toBe(1);
+    const block = JSON.parse(cli.stdout).censusBlocks.find((b) => b.name === CENSUS_FILE);
+    expect(block.error).toContain(CENSUS_END);
+    expect(cli.stderr).toContain('census block contract is broken');
+  });
+
+  /**
+   * BUG CAUGHT (#H1): a census surface the generator does not know about. Until
+   * 2026-09-07 `site/llms.txt` hand-maintained its own surface line and drifted
+   * to `661 vitest test files` while the repository (and every other surface)
+   * said 662 — and `--check` exited 0, because only llms-full.txt was judged.
+   * A count that no generator writes is a count nobody bumps.
+   *
+   * The assertion is END-TO-END through the CLI (not syncCensusBlock, which the
+   * test above already covers): drift must be REPORTED by --check and REPAIRED
+   * by --write, with every byte outside the markers handed back untouched.
+   */
+  it('reports drift under --check and rewrites it under --write, byte-exact outside the markers', () => {
+    const site = withPage(llmsFixture(`${CENSUS_START}\nan older census line\n${CENSUS_END}`));
+    const file = join(site, CENSUS_FILE);
+
+    const check = run(['--check', '--json', '--site', site]);
+    expect(check.code).toBe(1);
+    const before = JSON.parse(check.stdout).censusBlocks.find((b) => b.name === CENSUS_FILE);
+    expect(before.present).toBe(true);
+    expect(before.drift).toBe(true);
+    // …and the human mode names the file, on stdout (the --json run above must
+    // NOT: its stdout is the envelope and nothing else).
+    expect(run(['--check', '--site', site]).stdout).toContain(`DRIFT ${file}`);
+    expect(readFileSync(file, 'utf8')).toContain('an older census line'); // --check wrote nothing
+
+    const write = run(['--write', '--json', '--site', site]);
+    expect(write.code).toBe(0);
+    expect(JSON.parse(write.stdout).censusBlocks.find((b) => b.name === CENSUS_FILE).written).toBe(true);
+
+    const { line } = renderCensusLine(current);
+    expect(readFileSync(file, 'utf8')).toBe(`${BEFORE}${CENSUS_START}\n${line}\n${CENSUS_END}${AFTER}`);
+
+    // …and the run is clean afterwards, which is what makes it a repair rather
+    // than a rewrite that merely moved the drift.
+    expect(run(['--check', '--site', site]).code).toBe(0);
+  });
+
+  /**
+   * BUG CAUGHT (#H1): a listed census file with NO markers at all treated as a
+   * no-op. `rewriteCensusBlock` alone returns `{ok:false}` for that input, but
+   * the question this test asks is what the RUN does — a file in
+   * CENSUS_BLOCK_FILES that silently stops being filled is the same
+   * hand-maintained-derived-number failure the generator exists to end, and it
+   * looks identical to "this file has no census" from the outside.
+   */
+  it('is a hard error when the file carries neither marker', () => {
+    const site = withPage(llmsFixture('a hand-written surface line, no markers at all\n'));
+    const before = readFileSync(join(site, CENSUS_FILE), 'utf8');
+
+    const res = syncCensusBlock(site, current, { write: true, file: CENSUS_FILE });
+    expect(res.present).toBe(true);
+    expect(res.error).toBe('no census markers');
+    expect(readFileSync(join(site, CENSUS_FILE), 'utf8')).toBe(before);
+
+    for (const mode of ['--check', '--write']) {
+      const cli = run([mode, '--json', '--site', site]);
+      expect(cli.code, `${mode} must fail loudly`).toBe(1);
+      expect(JSON.parse(cli.stdout).censusBlocks.find((b) => b.name === CENSUS_FILE).error).toBe(
+        'no census markers',
+      );
+      expect(cli.stderr).toContain('census block contract is broken');
+    }
+  });
+
+  /**
+   * BUG CAUGHT: a file dropped from CENSUS_BLOCK_FILES, or an iteration that
+   * stops at the first entry. Both leave the remaining surfaces unjudged and
+   * report success — the exact shape of the #H1 defect.
+   */
+  it('is judged by syncCensusBlocks, once per listed file', () => {
+    const site = llmsFixture(`${CENSUS_START}\nan older census line\n${CENSUS_END}`);
+    const all = syncCensusBlocks(site, current);
+    expect(all).toHaveLength(CENSUS_BLOCK_FILES.length);
+    expect(all.map((b) => b.present)).toEqual(
+      CENSUS_BLOCK_FILES.map((f) => f === CENSUS_FILE), // only the fixture's file exists
+    );
+    expect(all.find((_, i) => CENSUS_BLOCK_FILES[i] === CENSUS_FILE).drift).toBe(true);
+  });
+});
+
+describe('the census line shape', () => {
+  /**
+   * BUG CAUGHT: both plain-text surfaces are in `SURFACES` in
+   * `scripts/release.mjs`, with DIFFERENT patterns — `/Version:\s*(…)/` for
+   * llms.txt (its top "Version: X" line) and `/Version\s+(…)/g` for
+   * llms-full.txt (this rendered line). The rendered line must therefore keep
+   * the colon-free shape: with a colon it would become a second, generated
+   * match for llms.txt's release pattern, and two writers for one literal is
+   * the divergence the release table exists to prevent.
+   */
+  it('carries a colon-free Version literal that release.mjs matches exactly once', () => {
+    const { line } = renderCensusLine(current);
+    const matches = [...line.matchAll(/Version\s+(\d+\.\d+\.\d+)/g)];
+    expect(matches).toHaveLength(1);
+    expect(matches[0][1]).toBe(current.version);
+    expect(line).not.toMatch(/Version:/);
   });
 });

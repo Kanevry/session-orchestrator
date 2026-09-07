@@ -40,8 +40,23 @@ export default [
     files: ["**/*.mjs", "**/*.js"],
   },
   {
+    // Browser-side site scripts: the page's own globals, not Node's. The
+    // vendored three.js build is third-party minified code and is ignored below.
+    files: ["site/assets/**/*.js"],
+    languageOptions: {
+      globals: {
+        window: "readonly", document: "readonly", navigator: "readonly",
+        getComputedStyle: "readonly", matchMedia: "readonly", devicePixelRatio: "readonly",
+        requestAnimationFrame: "readonly", cancelAnimationFrame: "readonly",
+        ResizeObserver: "readonly", IntersectionObserver: "readonly", CustomEvent: "readonly",
+        HTMLElement: "readonly", performance: "readonly",
+      },
+    },
+  },
+  {
     ignores: [
       "node_modules/**",
+      "site/vendor/**",
       ".orchestrator/**",
       ".claude/**",
       ".codex/**",

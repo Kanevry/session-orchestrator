@@ -1077,6 +1077,10 @@ function isAllowlisted(relPath, line) {
     'site/index.html',
     'site/impressum/index.html',
     'site/datenschutz/index.html',
+    // The German landing page (2026-09-07 redesign) carries the same publisher
+    // identity (JSON-LD @id + footer rel="author") as site/index.html. Exact
+    // path, never a site/de/ prefix — site/guide/index.html stays outside.
+    'site/de/index.html',
   ]);
   const inAllowlistedFile = ALLOWLISTED_URL_PATHS.has(norm);
 

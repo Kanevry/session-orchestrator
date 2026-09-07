@@ -66,6 +66,31 @@
  *   --write  rewrite the span contents in place, and refresh `site/_census.json`
  *            from the same measurement (only when --site is the repo's `site/`).
  *
+ * ## The two usage metrics (`npm-downloads-30d`, `github-stars`)
+ *
+ * These two are the only ones whose source is NOT this repository: they are
+ * fetched over the network, and only under `--write` (5 s timeout). `--check`
+ * never opens a socket — it compares the page against `site/_census.json`, which
+ * IS their truth between writes. That is what keeps the CI/build guard offline
+ * and deterministic; a `--check` that fetched would go red whenever npm's API
+ * was slow, which is a signal about npm and not about the page.
+ *
+ * On a fetch failure `--write` keeps the previous snapshot value and warns. It
+ * never writes a placeholder over a real number: the number on the page stays
+ * the last one that was actually measured, and the WARN names why it did not
+ * move. With no snapshot to keep, the metric simply has no value and the run
+ * fails loudly (the existing partial-census guard) rather than shipping "n/a".
+ *
+ * ## The census blocks in `site/llms-full.txt` and `site/llms.txt`
+ *
+ * The same measurement also fills a marker-bounded line in every file listed in
+ * `CENSUS_BLOCK_FILES` (`<!-- census:start -->` … `<!-- census:end -->`) — the
+ * two plain-text surfaces LLM crawlers read. Only the text BETWEEN the
+ * markers is rewritten; everything else in that file is hand-authored prose and
+ * is handed back byte-for-byte. A missing end marker is a hard error, never a
+ * silent skip — a generator that quietly stops filling a surface is the exact
+ * failure this file exists to end.
+ *
  * Exit codes (`.claude/rules/cli-design.md`):
  *   0 — no drift (--check) / files updated or already current (--write)
  *   1 — drift found (--check), or a contract violation in either mode
@@ -327,7 +352,7 @@ export function isDirty(root) {
       ['--no-optional-locks', 'status', '--porcelain', '--untracked-files=no'],
       { cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] },
     );
-    return out.split('\n').filter(Boolean).length > 0;
+    return out.split('\n').some(Boolean);
   } catch {
     return null;
   }
@@ -457,6 +482,37 @@ export const METRIC_DEFS = Object.freeze([
     provenance: false,
     source: 'jq length .orchestrator/policy/blocked-commands.json',
     compute: (root) => fmtCount(countBlockedCommands(root)),
+  },
+  {
+    id: 'npm-downloads-30d',
+    provenance: false,
+    // Network-sourced: absent from EVERY offline run, which is most of them
+    // (--check never fetches). The snapshot is therefore not a fresh-clone
+    // convenience here but the metric's normal answer between two --write runs.
+    snapshotFallback: true,
+    network: true,
+    url: 'https://api.npmjs.org/downloads/point/last-month/session-orchestrator',
+    field: 'downloads',
+    source:
+      'curl -s https://api.npmjs.org/downloads/point/last-month/session-orchestrator | jq .downloads   (fetched only under --write)',
+    compute: (root, ctx) => fmtCount(ctx?.usage?.['npm-downloads-30d'] ?? null),
+  },
+  {
+    id: 'github-stars',
+    provenance: false,
+    snapshotFallback: true,
+    network: true,
+    url: 'https://api.github.com/repos/Kanevry/session-orchestrator',
+    field: 'stargazers_count',
+    // The API answers unauthenticated requests but rejects ones without a
+    // User-Agent, and the Accept header pins the response schema version.
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'session-orchestrator-site-numbers',
+    },
+    source:
+      'curl -s https://api.github.com/repos/Kanevry/session-orchestrator | jq .stargazers_count   (fetched only under --write)',
+    compute: (root, ctx) => fmtCount(ctx?.usage?.['github-stars'] ?? null),
   },
   {
     id: 'counted-at',
@@ -606,7 +662,7 @@ export function writeCensusSnapshot(root, values) {
  *   `fromSnapshot` lists the metrics answered by `site/_census.json` because
  *   their live source was absent.
  */
-export function collect(root) {
+export function collect(root, ctx = {}) {
   const values = {};
   const missing = [];
   const warnings = [];
@@ -619,8 +675,8 @@ export function collect(root) {
     // LIVE FIRST, always. The snapshot is a fallback, never a cache: reading it
     // first (or memoising a live value into it) would freeze the page on the
     // last release's numbers while the repository moved on.
-    let v = def.compute(root);
-    if ((v === null || v === undefined || v === '') && def.snapshotFallback === true) {
+    let v = def.compute(root, ctx);
+    if ((v === null || v === undefined || v === '') && def.snapshotFallback) {
       if (snapshot === undefined) snapshot = readCensusSnapshot(root);
       const s = snapshot?.[def.id];
       if (s !== undefined) {
@@ -632,9 +688,17 @@ export function collect(root) {
     else values[def.id] = String(v);
   }
 
-  if (fromSnapshot.length > 0) {
+  // Only the REPOSITORY-sourced fallbacks are worth a warning. For the two
+  // network metrics the snapshot is not a degraded answer but the designed one
+  // between two `--write` runs — warning about them would fire on every single
+  // `--check`, and a warning that always fires is a broken instrument
+  // (`.claude/rules/host-resources.md` HR-101).
+  const localFallbacks = fromSnapshot.filter(
+    (id) => !METRIC_DEFS.find((d) => d.id === id)?.network,
+  );
+  if (localFallbacks.length > 0) {
     warnings.push(
-      `${fromSnapshot.join(', ')} read from ${CENSUS_FILE.join('/')} — the live source is absent under ${root} ` +
+      `${localFallbacks.join(', ')} read from ${CENSUS_FILE.join('/')} — the live source is absent under ${root} ` +
         '(expected in a fresh clone / tarball build; the snapshot is only as current as the last --write)',
     );
   }
@@ -660,6 +724,215 @@ export function collect(root) {
   }
 
   return { values, missing, warnings, fromSnapshot };
+}
+
+// ---------------------------------------------------------------------------
+// The two network metrics
+// ---------------------------------------------------------------------------
+
+/** Metrics whose source is an HTTP endpoint rather than this repository. */
+export const NETWORK_METRIC_DEFS = Object.freeze(METRIC_DEFS.filter((d) => d.network));
+
+/** Hard ceiling on a single usage fetch. Revisit if a source starts answering slower. */
+export const FETCH_TIMEOUT_MS = 5000;
+
+/**
+ * Fetch the usage metrics. CALLED ONLY UNDER `--write` — see the header for why
+ * `--check` must stay offline.
+ *
+ * Every failure mode (timeout, non-2xx, unparseable body, missing/non-numeric
+ * field) lands in the same place: a WARN naming the reason and the snapshot
+ * value that will be kept, and NO entry in the returned map. `collect()` then
+ * falls back to the snapshot exactly as it does for a fresh clone's ledgers —
+ * so a failed fetch degrades to "the last measured number", never to a
+ * placeholder written over a real one.
+ *
+ * @param {string} root repo root (its `site/_census.json` supplies the WARN's value)
+ * @param {{fetchImpl?: Function, timeoutMs?: number, warn?: (s:string)=>void}} [opts]
+ * @returns {Promise<Record<string, number>>} only the metrics that actually resolved
+ */
+export async function fetchUsageMetrics(root, opts = {}) {
+  // Offline switch (tests, air-gapped CI): SO_SITE_NUMBERS_OFFLINE=1 skips every
+  // network call and lets the snapshot answer, exactly like a failed fetch would,
+  // minus the per-metric WARN noise. Measured 2026-09-07: two fixture tests that
+  // spawned --write went red on a GitHub 403 rate limit; a test must never depend
+  // on api.github.com being reachable.
+  if (process.env.SO_SITE_NUMBERS_OFFLINE === '1') {
+    (opts.warn ?? ((m) => process.stderr.write(`${m}\n`)))(
+      'site-numbers: SO_SITE_NUMBERS_OFFLINE=1 — usage metrics answered from the snapshot',
+    );
+    return {};
+  }
+  const doFetch = opts.fetchImpl ?? globalThis.fetch;
+  const timeoutMs = opts.timeoutMs ?? FETCH_TIMEOUT_MS;
+  const warn = opts.warn ?? ((s) => process.stderr.write(`${s}\n`));
+  const out = {};
+  let snapshot;
+
+  for (const def of NETWORK_METRIC_DEFS) {
+    try {
+      const res = await doFetch(def.url, {
+        signal: AbortSignal.timeout(timeoutMs),
+        headers: def.headers ?? {},
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json();
+      const v = body?.[def.field];
+      if (typeof v !== 'number' || !Number.isFinite(v)) {
+        throw new Error(`no numeric "${def.field}" field in the response`);
+      }
+      out[def.id] = Math.trunc(v);
+    } catch (err) {
+      if (snapshot === undefined) snapshot = readCensusSnapshot(root);
+      const kept = snapshot?.[def.id];
+      warn(
+        `WARN site-numbers: ${def.id} fetch failed (${err?.message ?? String(err)}), keeping snapshot ` +
+          `${kept ?? '(none — this metric will have no value and the run will fail)'}`,
+      );
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// The marker-bounded census line in site/llms-full.txt
+// ---------------------------------------------------------------------------
+
+/** Files the census line lives in, relative to the SITE directory. */
+export const LLMS_FULL_FILE = 'llms-full.txt';
+export const LLMS_FILE = 'llms.txt';
+
+/**
+ * Every file carrying a marker-bounded census block.
+ *
+ * A CONSTANT LIST rather than a second code path per file: `site/llms.txt` used
+ * to hand-maintain its own "## Surface" line, and it drifted exactly as the page
+ * had — measured 2026-09-07 it claimed `661 vitest test files` while every other
+ * surface (and the repository) said 662, and `--check` exited 0 because the
+ * generator did not know that file existed. Adding a file to this array is the
+ * whole change needed to bring it under the guard.
+ */
+export const CENSUS_BLOCK_FILES = Object.freeze([LLMS_FULL_FILE, LLMS_FILE]);
+
+export const CENSUS_START = '<!-- census:start -->';
+export const CENSUS_END = '<!-- census:end -->';
+
+/**
+ * The metric ids the census line carries, with the label each one gets.
+ *
+ * A SUBSET of METRIC_IDS on purpose: the line is prose for a reader, not the
+ * machine receipt (`site/_census.json` is that, and carries all of them).
+ * `version`, `counted-at` and `counted-sha` are not in this list because they
+ * are rendered as the line's opening clause, not as `label value` pairs.
+ */
+export const CENSUS_LINE_FIELDS = Object.freeze([
+  { id: 'skills', label: 'skills' },
+  { id: 'commands', label: 'commands' },
+  { id: 'agents', label: 'agents' },
+  { id: 'hooks', label: 'hooks' },
+  { id: 'tests', label: 'test files' },
+  { id: 'sessions', label: 'sessions' },
+  { id: 'learnings', label: 'learnings' },
+  { id: 'npm-downloads-30d', label: 'npm downloads (30d)' },
+  { id: 'github-stars', label: 'GitHub stars' },
+]);
+
+/**
+ * Render the census line.
+ *
+ * The `Version X.Y.Z` opening is load-bearing beyond this file: `SURFACES` in
+ * `scripts/release.mjs` matches `/Version\s+(\d+\.\d+\.\d+)/g` against
+ * `site/llms-full.txt`, so the literal must keep exactly this shape or the
+ * release drift check stops seeing the surface it guards.
+ *
+ * @returns {{line: string, head: string, tail: string}}
+ *   `head` is the provenance clause (warn-only, like the spans), `tail` the
+ *   counts (real drift). Split so `--check` can tell the two apart.
+ */
+export function renderCensusLine(values) {
+  const head = `Version ${values.version} · counted ${values['counted-at']} at ${values['counted-sha']}`;
+  const tail = CENSUS_LINE_FIELDS.map((f) => `${f.label} ${values[f.id]}`).join(' · ');
+  return { line: `${head} · ${tail}`, head, tail };
+}
+
+/**
+ * Replace the text between the two markers, and nothing else.
+ *
+ * A start marker without an end marker is a HARD ERROR rather than an append:
+ * guessing where the block ends would let one bad edit swallow the rest of a
+ * hand-authored file.
+ *
+ * @returns {{ok: true, text: string, changed: boolean, current: string}
+ *          | {ok: false, reason: string}}
+ */
+export function rewriteCensusBlock(text, line) {
+  const start = text.indexOf(CENSUS_START);
+  const end = text.indexOf(CENSUS_END);
+  if (start === -1 && end === -1) return { ok: false, reason: 'no census markers' };
+  if (start === -1) return { ok: false, reason: `"${CENSUS_END}" without "${CENSUS_START}"` };
+  if (end === -1) return { ok: false, reason: `"${CENSUS_START}" without "${CENSUS_END}"` };
+  if (end < start) return { ok: false, reason: 'census markers are in the wrong order' };
+
+  const inner = text.slice(start + CENSUS_START.length, end);
+  const current = inner.trim();
+  const next = `${text.slice(0, start + CENSUS_START.length)}\n${line}\n${text.slice(end)}`;
+  return { ok: true, text: next, changed: next !== text, current };
+}
+
+/**
+ * Judge (and optionally rewrite) the census block of ONE file under `siteDir`.
+ *
+ * Mirrors the span policy: a difference only in the provenance clause is
+ * `stale` (warn-only — a claim about the past does not become false when HEAD
+ * moves), a difference in the counts is `drift`.
+ *
+ * @param {{write?:boolean, file?:string}} [opts] `file` is relative to `siteDir`
+ *   and defaults to `llms-full.txt`; `syncCensusBlocks` iterates CENSUS_BLOCK_FILES.
+ * @returns {{present:boolean, error?:string, drift?:boolean, stale?:boolean,
+ *            written?:boolean, file:string}}
+ */
+export function syncCensusBlock(siteDir, values, { write = false, file = LLMS_FULL_FILE } = {}) {
+  const abs = join(siteDir, file);
+  // Absent file: not this generator's business to create one. Every HTML
+  // fixture directory in the test suite is such a case.
+  if (!existsSync(abs) || !statSync(abs).isFile()) return { present: false, file: abs };
+
+  const { line, tail } = renderCensusLine(values);
+  const text = readFileSync(abs, 'utf8');
+  const res = rewriteCensusBlock(text, line);
+  if (!res.ok) return { present: true, file: abs, error: res.reason };
+
+  // Same split as the spans: `counted <date> at <sha>` lagging is a claim about
+  // the past, not a wrong number.
+  const provenanceOnly =
+    res.current !== line &&
+    res.current.startsWith(`Version ${values.version} · `) &&
+    res.current.endsWith(tail);
+  const out = {
+    present: true,
+    file: abs,
+    drift: res.current !== line && !provenanceOnly,
+    stale: provenanceOnly,
+    written: false,
+  };
+  if (write && res.changed) {
+    writeFileSync(abs, res.text, 'utf8');
+    out.written = true;
+  }
+  return out;
+}
+
+/**
+ * Judge (and optionally rewrite) EVERY file in `CENSUS_BLOCK_FILES`.
+ *
+ * One measurement, N surfaces — the same reason `writeCensusSnapshot` takes an
+ * already-computed `values` map: two census runs inside one invocation can
+ * disagree across midnight or a concurrent ledger append.
+ *
+ * @returns {Array<ReturnType<typeof syncCensusBlock>>} in CENSUS_BLOCK_FILES order
+ */
+export function syncCensusBlocks(siteDir, values, { write = false } = {}) {
+  return CENSUS_BLOCK_FILES.map((file) => syncCensusBlock(siteDir, values, { write, file }));
 }
 
 // ---------------------------------------------------------------------------
@@ -881,7 +1154,7 @@ export function main(argv = process.argv.slice(2), env = {}) {
     return 2;
   }
 
-  const { values, missing, warnings, fromSnapshot } = collect(root);
+  const { values, missing, warnings, fromSnapshot } = collect(root, { usage: env.usage });
   if (missing.length > 0) {
     stderr(
       `Error: could not measure ${missing.join(', ')} under ${root} — ` +
@@ -960,6 +1233,38 @@ export function main(argv = process.argv.slice(2), env = {}) {
       written,
     });
   }
+
+  // The marker-bounded census line in site/llms-full.txt. Judged with the same
+  // split as the spans (counts = drift, provenance = warn-only) and rewritten
+  // BETWEEN the markers only.
+  const censusDriftLines = [];
+  const censusBlocks = syncCensusBlocks(siteDir, values, { write: args.write });
+  for (const b of censusBlocks) {
+    if (b.error) {
+      stderr(
+        `Error: ${b.file}: ${b.error} — the census block contract is broken ` +
+          `(expected "${CENSUS_START}" … "${CENSUS_END}")`,
+      );
+      contractTotal += 1;
+    } else if (b.present) {
+      if (b.drift && !args.write) {
+        // Held back rather than printed here: under --json, stdout carries the
+        // envelope and NOTHING else (`cli-design.md` — data on stdout). Printing
+        // it inline put a bare DRIFT line in front of the JSON and made the
+        // envelope unparseable, which is the same class of silent failure as an
+        // unjudged surface: a consumer sees a parse error, not a drift report.
+        censusDriftLines.push(`DRIFT ${b.file}: the census block does not match this measurement`);
+        driftTotal += 1;
+      } else if (b.drift) {
+        driftTotal += 1;
+      } else if (b.stale) {
+        stderr(`stale ${b.file}: only the counted date/sha of the census block lags`);
+      }
+    }
+  }
+  // Kept as its own name in the --json envelope for the consumers that already
+  // read `llmsFull`; `censusBlocks` below carries all of them.
+  const llms = censusBlocks[CENSUS_BLOCK_FILES.indexOf(LLMS_FULL_FILE)];
 
   // The named silent-failure class: a generator that matches nothing, changes
   // nothing, and reports success. Zero spans means the markup contract is not in
@@ -1040,6 +1345,23 @@ export function main(argv = process.argv.slice(2), env = {}) {
           written: writtenTotal,
           rejected: rejectedTotal,
           fromSnapshot,
+          llmsFull: {
+            file: llms.present ? relative(root, llms.file) : null,
+            present: llms.present,
+            error: llms.error ?? null,
+            drift: llms.drift === true,
+            stale: llms.stale === true,
+            written: llms.written === true,
+          },
+          censusBlocks: censusBlocks.map((b, i) => ({
+            name: CENSUS_BLOCK_FILES[i],
+            file: b.present ? relative(root, b.file) : null,
+            present: b.present,
+            error: b.error ?? null,
+            drift: b.drift === true,
+            stale: b.stale === true,
+            written: b.written === true,
+          })),
           censusWritten,
           ok,
         },
@@ -1051,6 +1373,9 @@ export function main(argv = process.argv.slice(2), env = {}) {
     stdout(
       `site-numbers: wrote ${writtenTotal} value(s) across ${files.length} file(s) in ${siteDir}` +
         ` (${spanTotal} metric cells @ ${values['counted-sha']}${dirty ? '+dirty' : ''})` +
+        censusBlocks
+          .map((b, i) => (b.written ? ` + ${CENSUS_BLOCK_FILES[i]}` : ''))
+          .join('') +
         (censusWritten ? ` + ${CENSUS_FILE.join('/')}` : ''),
     );
   } else {
@@ -1062,6 +1387,7 @@ export function main(argv = process.argv.slice(2), env = {}) {
         stderr(`stale ${f.file}:${s.line} ${s.metric}: "${s.actual}" → would become "${s.expected}" on --write`);
       }
     }
+    for (const l of censusDriftLines) stdout(l);
     stdout(
       driftTotal === 0 && !noSpans && contractTotal === 0
         ? `site-numbers: ${spanTotal} metric cell(s) current across ${files.length} file(s)`
@@ -1078,4 +1404,14 @@ const isMain =
   process.argv[1] !== undefined &&
   resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 
-if (isMain) process.exit(main());
+if (isMain) {
+  const argv = process.argv.slice(2);
+  const parsed = parseArgs(argv);
+  // The ONLY network call in this file, and only on the write path — see the
+  // header. A `--check` (the CI/build guard) never reaches this branch.
+  const usage =
+    !parsed.error && parsed.write && !parsed.help && !parsed.version
+      ? await fetchUsageMetrics(resolve(parsed.root ?? process.cwd()))
+      : {};
+  process.exit(main(argv, { usage }));
+}

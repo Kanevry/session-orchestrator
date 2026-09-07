@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 400" width="960" height="400">
+  <title>Five steps with a check between each</title>
+  <!-- Static stand-in for the WebGL hero. Colours are hardcoded: an SVG loaded
+       through <img> cannot read the page CSS custom properties. -->
+  <g fill="#E8E0D2" stroke="#D8CFC0" stroke-width="2">
+    <rect x="40" y="170" width="140" height="90" rx="10"/>
+    <rect x="225" y="170" width="140" height="90" rx="10"/>
+    <rect x="410" y="170" width="140" height="90" rx="10"/>
+    <rect x="595" y="170" width="140" height="90" rx="10"/>
+    <rect x="780" y="170" width="140" height="90" rx="10"/>
+  </g>
+  <g fill="#171412" font-family="system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif" font-size="20" text-anchor="middle">
+    <text x="110" y="222">Read</text>
+    <text x="295" y="222">Build</text>
+    <text x="480" y="222">Polish</text>
+    <text x="665" y="222">Check</text>
+    <text x="850" y="222">Finish</text>
+  </g>
+  <g fill="#1d6b39">
+    <rect x="188" y="180" width="8" height="70" rx="3"/>
+    <rect x="209" y="180" width="8" height="70" rx="3"/>
+    <rect x="373" y="180" width="8" height="70" rx="3"/>
+    <rect x="394" y="180" width="8" height="70" rx="3"/>
+    <rect x="558" y="180" width="8" height="70" rx="3"/>
+    <rect x="579" y="180" width="8" height="70" rx="3"/>
+    <rect x="743" y="180" width="8" height="70" rx="3"/>
+    <rect x="764" y="180" width="8" height="70" rx="3"/>
+  </g>
+  <circle cx="572.5" cy="136" r="15" fill="#8a5a00"/>
+</svg>

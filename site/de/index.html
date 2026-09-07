@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session Orchestrator: liest zuerst, arbeitet in geprüften Schritten</title>
+<meta name="description" content="Kostenloser Zusatz für KI-Werkzeuge wie Claude Code. Liest dein Projekt, stimmt den Plan mit dir ab, arbeitet dann in geprüften Schritten. Open Source, MIT.">
+<link rel="canonical" href="https://session-orchestrator.com/de">
+<link rel="alternate" hreflang="en" href="https://session-orchestrator.com/">
+<link rel="alternate" hreflang="de" href="https://session-orchestrator.com/de">
+<link rel="alternate" hreflang="x-default" href="https://session-orchestrator.com/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Session Orchestrator">
+<meta property="og:url" content="https://session-orchestrator.com/de">
+<meta property="og:title" content="Session Orchestrator: liest zuerst, arbeitet in geprüften Schritten">
+<meta property="og:description" content="Kostenloser Zusatz für KI-Werkzeuge wie Claude Code. Liest dein Projekt, stimmt den Plan mit dir ab, arbeitet dann in geprüften Schritten. Open Source, MIT.">
+<meta property="og:image" content="https://session-orchestrator.com/de/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Fünf Stationen in einer Reihe mit Toren dazwischen, ein kleines Licht wandert hindurch.">
+<meta property="og:locale" content="de_AT">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Session Orchestrator: liest zuerst, arbeitet in geprüften Schritten">
+<meta name="twitter:description" content="Kostenloser Zusatz für KI-Werkzeuge wie Claude Code. Liest dein Projekt, stimmt den Plan mit dir ab, arbeitet dann in geprüften Schritten.">
+<meta name="twitter:image" content="https://session-orchestrator.com/de/og.png">
+<meta name="twitter:image:alt" content="Fünf Stationen in einer Reihe mit Toren dazwischen, ein kleines Licht wandert hindurch.">
+
+<!-- Entity consolidation (issue #1046): the site, the repository, the package
+     and the person who maintains them are one entity with stable @id anchors.
+     No rating, no review, no invented field: none of those would be true.
+     softwareVersion is deliberately absent: the version literal lives in the
+     markup under data-metric="version" and is written by one generator only. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://session-orchestrator.com/#website",
+      "url": "https://session-orchestrator.com/de",
+      "name": "Session Orchestrator",
+      "inLanguage": "de",
+      "publisher": { "@id": "https://www.gotzendorfer.at/#person" },
+      "about": { "@id": "https://session-orchestrator.com/#software" }
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://session-orchestrator.com/#software",
+      "name": "Session Orchestrator",
+      "url": "https://session-orchestrator.com/",
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "macOS, Linux",
+      "description": "An open-source plugin for coding agents. Work is split into five typed passes; write access is declared per wave and a verification gate runs between each.",
+      "license": "https://opensource.org/licenses/MIT",
+      "codeRepository": "https://github.com/Kanevry/session-orchestrator",
+      "downloadUrl": "https://www.npmjs.com/package/session-orchestrator",
+      "sameAs": [
+        "https://github.com/Kanevry/session-orchestrator",
+        "https://www.npmjs.com/package/session-orchestrator"
+      ],
+      "author": { "@id": "https://www.gotzendorfer.at/#person" },
+      "publisher": { "@id": "https://www.gotzendorfer.at/#person" },
+      "isAccessibleForFree": true,
+      "mainEntityOfPage": { "@id": "https://session-orchestrator.com/#website" }
+    },
+    {
+      "@type": "Person",
+      "@id": "https://www.gotzendorfer.at/#person",
+      "name": "Bernhard Götzendorfer",
+      "url": "https://www.gotzendorfer.at",
+      "sameAs": [
+        "https://www.gotzendorfer.at",
+        "https://github.com/Kanevry"
+      ]
+    },
+    {
+      "@type": "FAQPage",
+      "@id": "https://session-orchestrator.com/de#faq",
+      "inLanguage": "de",
+      "isPartOf": {
+        "@id": "https://session-orchestrator.com/#website"
+      },
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Ist das selbst ein Werkzeug, das Code schreibt?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Nein. Es ist ein Zusatz, der ein vorhandenes Code-Werkzeug ordnet. Den Code schreibt weiterhin das Werkzeug; hier wird festgelegt, was es zuerst liest, was es anfassen darf, und wann es stehenbleiben und sich prüfen lassen muss."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Mit welchen Werkzeugen läuft es?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Mit Claude Code vollständig. Codex CLI, Cursor IDE und Pi laufen mit Einschränkungen: bei Codex CLI ist die Schreibgrenze eine Vereinbarung statt ein Mechanismus, Cursor IDE prüft im Nachhinein, Pi ist über eine Brücke angebunden. Im Installations-Abschnitt steht der Weg für jedes davon."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Was ist der Unterschied zu Claude Code allein?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Vier Dinge: der Lese-Schritt vor jeder Änderung, ein Plan, dem du zustimmst, eine kurze Dateiliste pro Schritt, und eine automatische Prüfung dazwischen. Ohne die fängt das Werkzeug beim ersten Satz zu tippen an."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Schickt es Daten irgendwohin?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Kein Konto und kein Server. Alles läuft auf deinem Rechner. Nutzungsdaten werden nur geschickt, wenn du das einschaltest. Ab Werk ist das aus. Diese Website lädt nichts von einer fremden Domain."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Läuft es unter Windows?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Es läuft nativ unter Windows, aber Windows ist von den automatischen Testläufen nicht abgedeckt. macOS und Linux schon, also sind das die beiden Wege, die bei jeder Änderung geprüft werden."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Was kostet es?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Nichts. Es ist kostenlos und Open Source unter der MIT-Lizenz. Was dein Code-Werkzeug kostet, zahlst du weiterhin; daran ändert sich nichts."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Kann es mein Projekt kaputt machen?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Zerstörerische Shell-Befehle blockt eine Policy-Datei, keine höfliche Anweisung. Es überschreibt nie die bisherige Änderungsgeschichte deines Projekts. Es speichert die Änderungen am Ende einer Session fest, nachdem die Prüfungen gelaufen sind, und sagt dir, was es gespeichert hat."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Wer pflegt das?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Eine Person, Bernhard Götzendorfer. Fragen und Fehlermeldungen auf GitHub beantwortet er selbst. Du kriegst es so, wie es ist. Er pflegt es, so gut es sich ausgeht, sagt aber keine Antwortzeit zu."
+          }
+        }
+      ]
+    }
+  ]
+}
+</script>
+
+<link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
+<link rel="preload" as="font" type="font/woff2" href="/fonts/bricolage-grotesque-var.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
+<link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Zum Inhalt springen</a>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/">session-orchestrator <span class="muted">v<span class="num" data-metric="version">4.0.0</span></span></a>
+    <nav class="nav" aria-label="Hauptnavigation">
+      <a href="#for-everyone">Für alle</a>
+      <a href="#loop">Für Entwickler</a>
+      <a href="#install">Installieren</a>
+      <a href="/guide" lang="en">Guide (EN)</a>
+      <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
+    </nav>
+    <details class="nav-menu"><summary aria-label="Menü"></summary><nav class="nav" aria-label="Hauptnavigation">
+      <a href="#for-everyone">Für alle</a>
+      <a href="#loop">Für Entwickler</a>
+      <a href="#install">Installieren</a>
+      <a href="/guide" lang="en">Guide (EN)</a>
+      <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
+    </nav></details>
+    <p class="lang"><a href="/" lang="en">EN</a> <a href="/de" aria-current="page"><b>DE</b></a></p>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="sec hero-sec" id="top">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">01</span> / Was es ist</p>
+      <h1 class="h-display">Liest zuerst, fragt, und arbeitet dann in geprüften Schritten.</h1>
+      <p class="lede">Session Orchestrator ist ein kostenloser Zusatz für KI-Werkzeuge, die Code schreiben, zum Beispiel Claude Code. Für alle, die schon eine KI programmieren lassen und vorher den Plan sehen wollen. Open Source, eine Zeile zum Installieren.</p>
+      <p class="cta">
+        <a class="btn btn-primary" href="#install">In einer Zeile installieren</a>
+        <a class="btn btn-secondary" href="/guide">Guide lesen (EN)</a>
+      </p>
+<div id="hero" data-hero-state="init">
+  <canvas aria-hidden="true"></canvas>
+  <ol class="hero-alt"><li>Lesen</li><li>Bauen</li><li>Feilen</li><li>Prüfen</li><li>Abschließen</li></ol>
+  <noscript><img class="hero-fallback" src="/assets/hero-fallback.svg" alt="Fünf Blöcke in einer Reihe mit vier Toren dazwischen" width="960" height="400"></noscript>
+</div>
+    </div>
+  </section>
+
+  <section class="sec" id="for-everyone">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">02</span> / So funktioniert es</p>
+      <h2>Was es macht, in einfachen Worten</h2>
+      <p class="lede">Die meisten KI-Werkzeuge tippen los, bevor sie überhaupt geschaut haben, was da liegt. So entsteht die Reparatur am falschen Fehler, oder zwei Helfer ändern gleichzeitig dieselbe Datei.</p>
+
+      <div class="steps">
+        <div class="step">
+          <div>
+            <h3>Es liest zuerst.</h3>
+            <p>Bevor irgendetwas geändert wird, liest es deinen Projektordner: was zuletzt gemacht wurde, was offen ist, was kaputt ist. Danach sagt es dir, was es gefunden hat.</p>
+          </div>
+          <figure class="fig">
+            <img src="/img/reads-first-800.webp" srcset="/img/reads-first-400.webp 400w, /img/reads-first-800.webp 800w, /img/reads-first-1200.webp 1200w" sizes="(max-width: 600px) 100vw, 420px" width="800" height="800" loading="lazy" decoding="async" alt="Ein stiller Raum in Form eines aufgeschlagenen Buchs, der gelesen wird, bevor jemand etwas anfasst.">
+            <figcaption><span class="fig-ai">KI-generiert</span></figcaption>
+          </figure>
+        </div>
+
+        <div class="step">
+          <div>
+            <h3>Du stimmst den Plan ab.</h3>
+            <p>Es schlägt vor, was angefasst wird und was nicht. Du sagst passt, oder du änderst es. Vorher fängt nichts an.</p>
+          </div>
+          <figure class="fig">
+            <img src="/img/agree-scope-800.webp" srcset="/img/agree-scope-400.webp 400w, /img/agree-scope-800.webp 800w, /img/agree-scope-1200.webp 1200w" sizes="(max-width: 600px) 100vw, 420px" width="800" height="800" loading="lazy" decoding="async" alt="Eine Landkarte auf einem Tisch mit einem markierten Bereich und einem Stift daneben.">
+            <figcaption><span class="fig-ai">KI-generiert</span></figcaption>
+          </figure>
+        </div>
+
+        <div class="step">
+          <div>
+            <h3>Die Arbeit wird in fünf Teile zerlegt.</h3>
+            <p>Die Arbeit wird in fünf Schritte geteilt: lesen, bauen, feilen, prüfen, abschließen. Jeder Schritt hat seinen eigenen Helfer und eine kurze Liste der Dateien, die er anfassen darf.</p>
+          </div>
+          <figure class="fig">
+            <img src="/img/five-passes-800.webp" srcset="/img/five-passes-400.webp 400w, /img/five-passes-800.webp 800w, /img/five-passes-1200.webp 1200w" sizes="(max-width: 600px) 100vw, 420px" width="800" height="800" loading="lazy" decoding="async" alt="Fünf Podeste in einer Reihe, jedes eine Stufe höher, mit einem kleinen Licht auf dem letzten.">
+            <figcaption><span class="fig-ai">KI-generiert</span></figcaption>
+          </figure>
+        </div>
+
+        <div class="step">
+          <div>
+            <h3>Nach jedem Schritt eine Prüfung.</h3>
+            <p>Nach jedem Schritt läuft eine automatische Prüfung. Geht sie schief, startet der nächste Schritt nicht. Bitten hilft nix. Überspringen geht nicht, das ist gar nicht eingebaut.</p>
+          </div>
+          <figure class="fig">
+            <img src="/img/the-gate-800.webp" srcset="/img/the-gate-400.webp 400w, /img/the-gate-800.webp 800w, /img/the-gate-1200.webp 1200w" sizes="(max-width: 600px) 100vw, 420px" width="800" height="800" loading="lazy" decoding="async" alt="Ein geschlossenes Tor mit einem schmalen blauen Lichtstreifen am Rand.">
+            <figcaption><span class="fig-ai">KI-generiert</span></figcaption>
+          </figure>
+        </div>
+
+        <div class="step">
+          <div>
+            <h3>Was bleibt, wenn die Session vorbei ist.</h3>
+            <p>Eine schriftliche Notiz, was gemacht wurde und was nicht, dazu Hinweise für das nächste Mal. Still dazugelernt wird nichts.</p>
+          </div>
+          <figure class="fig">
+            <img src="/img/what-survives-800.webp" srcset="/img/what-survives-400.webp 400w, /img/what-survives-800.webp 800w, /img/what-survives-1200.webp 1200w" sizes="(max-width: 600px) 100vw, 420px" width="800" height="800" loading="lazy" decoding="async" alt="Ein geschlossenes Notizbuch mit einem kleinen Schloss obenauf.">
+            <figcaption><span class="fig-ai">KI-generiert</span></figcaption>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec signature" id="who">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">03</span> / Wer</p>
+      <h2>Gebaut von einer Person</h2>
+      <div class="grid-12">
+        <div class="col-7">
+          <p class="lede">Bernhard G&#246;tzendorfer, Wien. Keine Firma dahinter, kein Team. Das Werkzeug läuft jeden Tag in seinen eigenen Projekten; die Zahlen weiter unten kommen aus diesem Repository, gezählt von einem Skript, nicht von Hand.</p>
+          <p>Kostenlos. MIT-Lizenz. Quellcode auf <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a> und <a href="https://www.npmjs.com/package/session-orchestrator">npm</a>. GitHub und npm sind die zwei öffentlichen Orte, von denen Programmierer Code laden.</p>
+        </div>
+        <div class="col-4">
+          <ul class="stack">
+            <li><a class="btn btn-tertiary" href="https://www.gotzendorfer.at/de/?utm_source=session-orchestrator&amp;utm_medium=footer&amp;utm_campaign=cross-promo" rel="author">Mehr über Bernhard G&#246;tzendorfer</a></li>
+            <li><a href="https://www.gotzendorfer.at/de/blog/session-orchestrator-oss-tool-reift">Wie das Werkzeug in neun Tagen gereift ist</a></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="install">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">04</span> / Installieren</p>
+      <h2>Wähl dein Werkzeug</h2>
+      <p class="lede">Dasselbe Plugin, vier Wege zur Installation.</p>
+
+      <div class="cards">
+        <div class="card">
+          <h3>Claude Code</h3>
+          <p class="meta">Plugin-Marketplace</p>
+          <p class="cmd"><code>/plugin marketplace add Kanevry/session-orchestrator</code><button class="copy" type="button" data-copy="/plugin marketplace add Kanevry/session-orchestrator">Kopieren</button></p>
+          <p class="cmd"><code>/plugin install session-orchestrator@kanevry</code><button class="copy" type="button" data-copy="/plugin install session-orchestrator@kanevry">Kopieren</button></p>
+          <p class="small">Danach einmal <code>npm install</code> im Plugin-Cache laufen lassen und Claude Code neu starten.</p>
+          <p class="small"><b>Bekannt kaputt.</b> Die Zeile, die bis 2026-08-19 für diesen Schritt dokumentiert war, funktioniert nicht: <code>claude plugin dir</code> ist kein Unterbefehl von Claude Code, der Aufruf endet mit 1, und den Ausweichpfad, den er dann genommen hat, gibt es nicht. Der Ersatz darunter löst den Pfad stattdessen aus dem Plugin-Cache auf und wurde auf einer echten Installation durchgehend getestet.</p>
+          <p class="cmd"><code>cd "$(dirname "$(find ~/.claude/plugins/cache -name package.json -path '*session-orchestrator*' | head -1)")" &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd &quot;$(dirname &quot;$(find ~/.claude/plugins/cache -name package.json -path '*session-orchestrator*' | head -1)&quot;)&quot; &amp;&amp; npm install">Kopieren</button></p>
+        </div>
+
+        <div class="card">
+          <h3>Codex CLI</h3>
+          <p class="meta">Klonen und Installer</p>
+          <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Kopieren</button></p>
+          <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Kopieren</button></p>
+          <p class="cmd"><code>node scripts/codex-install.mjs</code><button class="copy" type="button" data-copy="node scripts/codex-install.mjs">Kopieren</button></p>
+          <p class="small">Liest <code>AGENTS.md</code> statt <code>CLAUDE.md</code>.</p>
+          <p class="small"><b>Keine Durchsetzung der Schreibgrenze.</b> Der Hook für den File-Scope läuft auf dieser Umgebung nicht. Die fünf Schritte und die Prüfungen funktionieren; die Schreibgrenze ist hier eine Vereinbarung, kein Mechanismus.</p>
+        </div>
+
+        <div class="card">
+          <h3>Cursor IDE</h3>
+          <p class="meta">Klonen und Installer</p>
+          <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Kopieren</button></p>
+          <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Kopieren</button></p>
+          <p class="cmd"><code>node scripts/cursor-install.mjs /absolute/path/to/your/project</code><button class="copy" type="button" data-copy="node scripts/cursor-install.mjs /absolute/path/to/your/project">Kopieren</button></p>
+          <p class="small"><b>Pfad nötig.</b> Der Projektpfad ist Pflicht. Ohne ihn meldet der Installer fälschlich Erfolg.</p>
+        </div>
+
+        <div class="card">
+          <h3>Pi</h3>
+          <p class="meta">Paketmanager</p>
+          <p class="cmd"><code>npm install -g --ignore-scripts @earendil-works/pi-coding-agent</code><button class="copy" type="button" data-copy="npm install -g --ignore-scripts @earendil-works/pi-coding-agent">Kopieren</button></p>
+          <p class="cmd"><code>pi install npm:session-orchestrator</code><button class="copy" type="button" data-copy="pi install npm:session-orchestrator">Kopieren</button></p>
+          <p class="small">Dieser Weg installiert seine Abhängigkeiten selbst; die anderen drei brauchen einmal <code>npm install</code>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="loop">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">05</span> / Für Entwickler</p>
+      <h2>Fünf Schritte, eine Prüfung dazwischen</h2>
+      <p class="lede">Der Schreibbereich wird pro Schritt (wave) vorab deklariert, und die Quality-Prüfung (gate) lässt sich nicht überspringen.</p>
+
+      <table class="table">
+        <caption class="sr">Fünf Schritte: wer sie ausführt, was sie schreiben dürfen, wie viele Dateien, und die Prüfung danach</caption>
+        <thead>
+          <tr><th scope="col">Schritt</th><th scope="col">Wer macht es</th><th scope="col">Darf schreiben</th><th scope="col">Dateien</th><th scope="col">Prüfung danach</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td data-label="Schritt">W1 Discovery</td>
+            <td data-label="Wer macht es">nur lesende Explorer</td>
+            <td data-label="Darf schreiben">nichts</td>
+            <td class="num" data-label="Dateien">0</td>
+            <td data-label="Prüfung danach">Befunde belegt</td>
+          </tr>
+          <tr>
+            <td data-label="Schritt">W2 Impl-Core</td>
+            <td data-label="Wer macht es">Code-, DB-, UI-Implementierer</td>
+            <td data-label="Darf schreiben">Kern des Features</td>
+            <td class="num" data-label="Dateien">12</td>
+            <td data-label="Prüfung danach">inkrementelle Prüfung</td>
+          </tr>
+          <tr>
+            <td data-label="Schritt">W3 Impl-Polish</td>
+            <td data-label="Wer macht es">Fix- und Integrations-Agenten</td>
+            <td data-label="Darf schreiben">Fehlerbehebungen, Randfälle</td>
+            <td class="num" data-label="Dateien">5</td>
+            <td data-label="Prüfung danach">inkrementelle Prüfung</td>
+          </tr>
+          <tr>
+            <td data-label="Schritt">W4 Quality</td>
+            <td data-label="Wer macht es">Vereinfacher, Test-Autor, lesendes Panel</td>
+            <td data-label="Darf schreiben">nur Tests</td>
+            <td class="num" data-label="Dateien">8</td>
+            <td data-label="Prüfung danach">volle Prüfung, nicht überspringbar</td>
+          </tr>
+          <tr>
+            <td data-label="Schritt">W5 Finalization</td>
+            <td data-label="Wer macht es">1 bis 2 Agenten</td>
+            <td data-label="Darf schreiben">SSOT, Issue-Aufräumen</td>
+            <td class="num" data-label="Dateien">2</td>
+            <td data-label="Prüfung danach">Abschluss-Review</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="small muted">Die Dateizahlen sind die deklarierten Schreibbereiche (file scope) einer Session, keine feste Quote. Ein Schritt deklariert seinen Bereich, bevor er läuft; die Zahlen ändern sich pro Session, die Regel nicht.</p>
+    </div>
+  </section>
+
+  <section class="sec" id="enforced">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">06</span> / Durchgesetzt</p>
+      <h2>Jede Behauptung nennt die Datei, die sie durchsetzt</h2>
+      <div class="grid-12">
+        <div class="col-4">
+          <p class="lede">Ein Satz in einem Prompt ist ein Wunsch. Diese fünf sind Code.</p>
+        </div>
+        <div class="col-8">
+      <table class="table proof">
+        <caption class="sr">Jede Behauptung und die Datei, die sie durchsetzt</caption>
+        <thead>
+          <tr><th scope="col">Behauptung</th><th scope="col">Durchgesetzt in</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td data-label="Behauptung">Der Schreibbereich eines Agenten steht fest, bevor er startet.</td>
+            <td data-label="Durchgesetzt in"><code>scripts/validate-wave-scope.mjs --assert-disjoint</code></td>
+          </tr>
+          <tr>
+            <td data-label="Behauptung">Ein Schreibzugriff außerhalb dieses Bereichs wird abgelehnt, nicht nur gemeldet.</td>
+            <td data-label="Durchgesetzt in"><code>hooks/enforce-scope.mjs</code></td>
+          </tr>
+          <tr>
+            <td data-label="Behauptung">Zerstörerische Shell-Befehle blockt eine Policy-Datei, kein Prompt.</td>
+            <td data-label="Durchgesetzt in"><code>.orchestrator/policy/blocked-commands.json</code>, 14 Regeln</td>
+          </tr>
+          <tr>
+            <td data-label="Behauptung">Ein Sub-Agent kann den Git-Index nie anfassen.</td>
+            <td data-label="Durchgesetzt in"><code>.claude/rules/parallel-sessions.md</code>, PSA-007</td>
+          </tr>
+          <tr>
+            <td data-label="Behauptung">Jeder geplante Punkt wird am Ende gegen Belege geprüft.</td>
+            <td data-label="Durchgesetzt in"><code>skills/session-end/SKILL.md</code></td>
+          </tr>
+        </tbody>
+      </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="measured">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">07</span> / Gemessen</p>
+      <h2>Gemessen in diesem Repository</h2>
+
+      <div class="cards">
+        <div class="card"><p class="n">v<span class="num" data-metric="version">4.0.0</span></p><p class="l">aktuelle Version</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="skills">43</span></p><p class="l">Skills</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="commands">25</span></p><p class="l">Slash-Befehle</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="agents">14</span></p><p class="l">typisierte Sub-Agenten</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="hooks">27</span></p><p class="l">Hook-Dateien</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="tests">664</span></p><p class="l">Testdateien</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="sessions">289</span></p><p class="l">Sessions in diesem Repository</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="learnings">201</span></p><p class="l">Learnings in diesem Repository</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">1165</span></p><p class="l">npm-Downloads, letzte 30 Tage</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="github-stars">50</span></p><p class="l">GitHub-Sterne</p></div>
+      </div>
+
+      <p class="small muted">Gezählt am <span class="num" data-metric="counted-at">2026-09-07</span> bei Commit <span class="num" data-metric="counted-sha">a4315993</span>. Das sind die Aufzeichnungen dieses Repositorys, keine Summe über alle Projekte.</p>
+    </div>
+  </section>
+
+  <section class="sec" id="faq">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">08</span> / Fragen</p>
+      <h2>Fragen, die Leute stellen</h2>
+
+      <div class="faq">
+        <details class="faq-item">
+          <summary>Ist das selbst ein Werkzeug, das Code schreibt?</summary>
+          <p>Nein. Es ist ein Zusatz, der ein vorhandenes Code-Werkzeug ordnet. Den Code schreibt weiterhin das Werkzeug; hier wird festgelegt, was es zuerst liest, was es anfassen darf, und wann es stehenbleiben und sich prüfen lassen muss.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Mit welchen Werkzeugen läuft es?</summary>
+          <p>Mit Claude Code vollständig. Codex CLI, Cursor IDE und Pi laufen mit Einschränkungen: bei Codex CLI ist die Schreibgrenze eine Vereinbarung statt ein Mechanismus, Cursor IDE prüft im Nachhinein, Pi ist über eine Brücke angebunden. Im Installations-Abschnitt steht der Weg für jedes davon.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Was ist der Unterschied zu Claude Code allein?</summary>
+          <p>Vier Dinge: der Lese-Schritt vor jeder Änderung, ein Plan, dem du zustimmst, eine kurze Dateiliste pro Schritt, und eine automatische Prüfung dazwischen. Ohne die fängt das Werkzeug beim ersten Satz zu tippen an.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Schickt es Daten irgendwohin?</summary>
+          <p>Kein Konto und kein Server. Alles läuft auf deinem Rechner. Nutzungsdaten werden nur geschickt, wenn du das einschaltest. Ab Werk ist das aus. Diese Website lädt nichts von einer fremden Domain.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Läuft es unter Windows?</summary>
+          <p>Es läuft nativ unter Windows, aber Windows ist von den automatischen Testläufen nicht abgedeckt. macOS und Linux schon, also sind das die beiden Wege, die bei jeder Änderung geprüft werden.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Was kostet es?</summary>
+          <p>Nichts. Es ist kostenlos und Open Source unter der MIT-Lizenz. Was dein Code-Werkzeug kostet, zahlst du weiterhin; daran ändert sich nichts.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Kann es mein Projekt kaputt machen?</summary>
+          <p>Zerstörerische Shell-Befehle blockt eine Policy-Datei, keine höfliche Anweisung. Es überschreibt nie die bisherige Änderungsgeschichte deines Projekts. Es speichert die Änderungen am Ende einer Session fest, nachdem die Prüfungen gelaufen sind, und sagt dir, was es gespeichert hat.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Wer pflegt das?</summary>
+          <p>Eine Person, Bernhard G&#246;tzendorfer. Fragen und Fehlermeldungen auf GitHub beantwortet er selbst. Du kriegst es so, wie es ist. Er pflegt es, so gut es sich ausgeht, sagt aber keine Antwortzeit zu.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="limits">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">09</span> / Grenzen</p>
+      <h2>Was das ist, und was nicht</h2>
+
+      <ul class="stack">
+        <li>Unabhängig und von der Community gepflegt. <b>Nicht verbunden mit Anthropic, OpenAI oder Cursor und von keiner dieser Firmen unterstützt.</b></li>
+        <li>Ausgeliefert wie es ist, ohne zugesicherte Reaktionszeiten, Pflege nach bestem Bemühen.</li>
+        <li>Lokal per Default. Kein Konto, kein Server. Nutzungsdaten werden nur geschickt, wenn du das einschaltest. Ab Werk ist das aus.</li>
+        <li>macOS und Linux sind voll unterstützt und von der CI abgedeckt. Windows läuft nativ, ist aber nicht CI-abgedeckt.</li>
+        <li>Eine Rangliste gibt es noch nicht, und auch keine Gesamtnote. Wo eine Zahl fehlt, steht das dort, statt zu raten. Eine Rangliste auf einer Messmethode, die noch nicht ehrlich ist, wäre schlechter als keine.</li>
+        <li>Die Durchsetzung auf Hook-Ebene ist nicht auf jeder Umgebung gleich. Die Liste unten ist der aktuelle Stand, keine Roadmap. Die Prüfungen sind überall identisch.</li>
+      </ul>
+
+      <table class="kv">
+        <caption class="sr">Durchsetzung auf Hook-Ebene je Umgebung</caption>
+        <tbody>
+          <tr><th scope="row">Claude Code</th><td>vollständig</td></tr>
+          <tr><th scope="row">Cursor IDE</th><td>wird im Nachhinein geprüft</td></tr>
+          <tr><th scope="row">Pi</th><td>über eine Brücke</td></tr>
+          <tr><th scope="row">Codex CLI</th><td>Durchsetzung des Schreibbereichs derzeit nicht verfügbar</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="sec end" id="start">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">10</span> / Los</p>
+      <h2>Eine Zeile, dann eine Session, die zuerst liest.</h2>
+      <p class="lede">MIT, kein Konto, und das Erste, was passiert: es sagt dir, was es gefunden hat, bevor es etwas anfasst.</p>
+      <p class="cta">
+        <a class="btn btn-primary" href="#install">In einer Zeile installieren</a>
+        <a class="btn btn-secondary" href="/guide">Guide lesen (EN)</a>
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <div class="cols">
+      <div>
+        <h2 class="small">Projekt</h2>
+        <ul class="stack">
+          <li><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/session-orchestrator">npm</a></li>
+          <li><a href="/guide">Guide (EN)</a></li>
+          <li><a href="/llms.txt">llms.txt</a></li>
+        </ul>
+      </div>
+      <div>
+        <h2 class="small">Rechtliches</h2>
+        <ul class="stack">
+          <li><a href="/impressum">Impressum</a></li>
+          <li><a href="/datenschutz">Datenschutz</a></li>
+          <li>MIT-Lizenz</li>
+        </ul>
+      </div>
+      <div class="author">
+        <h2 class="small">Autor</h2>
+        <p><a href="https://www.gotzendorfer.at/de/?utm_source=session-orchestrator&amp;utm_medium=footer&amp;utm_campaign=cross-promo" rel="author">Mehr über Bernhard G&#246;tzendorfer</a></p>
+      </div>
+    </div>
+    <p class="fig-ai">Illustrationen auf dieser Seite: KI-generiert (gpt-image-2).</p>
+  </div>
+</footer>
+
+<script src="/_vercel/insights/script.js" defer></script>
+<script src="/assets/ui.js" defer></script>
+<script type="module" src="/assets/hero.js"></script>
+</body>
+</html>

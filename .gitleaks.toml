@@ -35,6 +35,12 @@ paths = [
   # CI configuration (variables are mock values)
   ".gitlab-ci.yml",
 
+  # Vendored, minified third-party JS (three.js, MIT). Minified property chains
+  # such as `s.isInterleavedBufferAttribute` match the baseline-vault-token shape
+  # (measured 2026-09-07: 8 hits, all identifiers, no secret). The files are
+  # byte-identical copies of the npm tarball; see site/vendor/LICENSES.md.
+  "site/vendor/.*\\.min\\.js",
+
   # Test files
   ".*\\.test\\.ts",
   ".*\\.test\\.tsx",

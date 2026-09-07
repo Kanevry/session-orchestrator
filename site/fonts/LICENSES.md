@@ -1,32 +1,37 @@
 # Font licences
 
 All font files in this directory are self-hosted so the site makes **zero external
-requests** — that is both a performance property and a privacy property, and the
+requests**. That is both a performance property and a privacy property, and the
 privacy policy at `/datenschutz` asserts it. Do not replace any of these with a CDN
 link without changing that page too.
 
 | File | Family | Licence | Source |
 |---|---|---|---|
-| `archivo-var.woff2` | Archivo (variable, wght 100–900) | SIL Open Font License 1.1 | Google Fonts, latin subset |
+| `bricolage-grotesque-var.woff2` | Bricolage Grotesque (variable, wght 200–800) | SIL Open Font License 1.1 | Google Fonts, latin subset |
+| `source-sans-3-var.woff2` | Source Sans 3 (variable, wght 200–900) | SIL Open Font License 1.1 | Google Fonts, latin subset |
 | `ibm-plex-mono-400.woff2` | IBM Plex Mono 400 | SIL Open Font License 1.1 | Google Fonts, latin subset |
 | `ibm-plex-mono-500.woff2` | IBM Plex Mono 500 | SIL Open Font License 1.1 | Google Fonts, latin subset |
 
 The OFL permits redistribution of the font files as part of this site.
 
-## Why Archivo + IBM Plex Mono replaced Space Grotesk + Inter (2026-08-19)
+## Why Bricolage Grotesque + Source Sans 3 replaced Archivo (2026-09-07)
 
-Two measured reasons, not taste:
+Two reasons, both checkable:
 
-1. **Both replaced families are flagged `overused-font`** by the impeccable detector
-   (`npx impeccable detect https://session-orchestrator.com/` → 89 findings, Inter at
-   46 % of body text). A face that every generated page reaches for is a tell.
-2. **The new set is smaller and does more.** 3 files / 55,052 B against 7 files /
-   141,540 B — a 61 % cut — while the variable Archivo covers the full 100–900 range
-   instead of five fixed cuts. The current display idiom is thin and large
-   (measured: temporal.io 68px/300, oxide.computer 65px/400); the old set had no
-   weight below 400 at all, so that look was not reachable with it.
+1. **Family look with the author's own site.** Bricolage Grotesque is the display
+   face used there. Using it here makes the two sites read as one hand, which is the
+   point: one person maintains both.
+2. **Source Sans 3 for body text, because the obvious choices are flagged.** Inter,
+   Geist and Instrument Sans are reported as `overused-font` by the impeccable
+   detector, so a face that every generated page reaches for was ruled out. Source
+   Sans 3 is a variable 200–900 text face that sits under Bricolage without competing
+   with it.
 
-The old families (Space Grotesk, Inter, JetBrains Mono) were removed on 2026-08-19
-once every page had been switched over and `grep` confirmed zero remaining
-references — including the `<link rel="preload">` hints, which survive a
-@font-face swap silently and would have kept fetching a font nothing declared.
+Byte totals: old set 55,052 B in 3 files, new set 90,196 B in 4 files (measured
+2026-09-07 with `wc -c`). The new set is larger because it carries two variable
+families instead of one; all four files stay self-hosted and latin-subset.
+
+The removed family (Archivo) was deleted on 2026-09-07 once every page had been
+switched over. Check the `<link rel="preload">` hints when swapping a font: they
+survive a `@font-face` change silently and would keep fetching a file nothing
+declares.

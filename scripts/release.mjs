@@ -192,6 +192,14 @@ export const SURFACES = [
     checkOnly: true,
   },
   {
+    // The German landing page (2026-09-07 redesign) mirrors the EN metric cells
+    // one-to-one; same single writer (scripts/site-numbers.mjs --write), so it is
+    // checkOnly for the same reason as site/index.html above.
+    file: 'site/de/index.html',
+    patterns: [/data-metric="version"[^>]*>(\d+\.\d+\.\d+)</g],
+    checkOnly: true,
+  },
+  {
     file: 'site/llms.txt',
     patterns: [/Version:\s*(\d+\.\d+\.\d+)/],
   },

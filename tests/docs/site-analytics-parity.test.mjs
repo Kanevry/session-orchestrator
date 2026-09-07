@@ -22,7 +22,7 @@
  *     become false. This test is the only place those two facts meet.
  *
  *  3. `/datenschutz` stays internally consistent. Its sections are hand-numbered
- *     (`<p class="mark">04 — …`), listed in a hand-numbered table of contents,
+ *     (`<p class="mark">04 · …`), listed in a hand-numbered table of contents,
  *     and cross-referenced in prose as "Punkt 09". Inserting the analytics
  *     section renumbered seven of them; the next insertion will renumber more.
  *     A stale "Punkt 09" points the reader at the wrong section, which on a
@@ -104,7 +104,7 @@ describe('site/datenschutz: section numbering stays coherent', () => {
     const drift = toc
       .map((e) => {
         const body = html.split(`<section class="sec" id="${e.id}"`)[1] ?? '';
-        const mark = body.match(/<p class="mark">(\d+) — /)?.[1];
+        const mark = body.match(/<p class="mark">(\d+) · /)?.[1];
         return mark === e.num ? null : `#${e.id}: TOC ${e.num} vs. mark ${mark ?? 'fehlt'}`;
       })
       .filter(Boolean);

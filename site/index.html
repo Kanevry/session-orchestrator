@@ -3,27 +3,33 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Session Orchestrator — five typed passes, one gate between each</title>
-<meta name="description" content="An open-source plugin for coding agents. Work is split into five typed passes; write access is declared per wave and a verification gate runs between each.">
+<title>Session Orchestrator: it reads first, then works in checked steps</title>
+<meta name="description" content="A free add-on for AI coding tools like Claude Code. It reads your project, agrees a plan with you, then works in checked steps. Open source, MIT.">
 <link rel="canonical" href="https://session-orchestrator.com/">
-<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="alternate" hreflang="en" href="https://session-orchestrator.com/">
+<link rel="alternate" hreflang="de" href="https://session-orchestrator.com/de">
+<link rel="alternate" hreflang="x-default" href="https://session-orchestrator.com/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Session Orchestrator">
 <meta property="og:url" content="https://session-orchestrator.com/">
-<meta property="og:title" content="Session Orchestrator — five typed passes, one gate between each">
-<meta property="og:description" content="An open-source plugin for coding agents. Work is split into five typed passes; write access is declared per wave and a verification gate runs between each.">
+<meta property="og:title" content="Session Orchestrator: it reads first, then works in checked steps">
+<meta property="og:description" content="A free add-on for AI coding tools like Claude Code. It reads your project, agrees a plan with you, then works in checked steps. Open source, MIT.">
 <meta property="og:image" content="https://session-orchestrator.com/og.png">
-<meta property="og:image:alt" content="Session Orchestrator — five typed passes with a verification gate between each.">
-<meta property="og:locale" content="en">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Five stations in a row with gates between them and a small light moving through.">
+<meta property="og:locale" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Session Orchestrator — five typed passes, one gate between each">
-<meta name="twitter:description" content="An open-source plugin for coding agents. Write access is declared per wave and a verification gate runs between each.">
+<meta name="twitter:title" content="Session Orchestrator: it reads first, then works in checked steps">
+<meta name="twitter:description" content="A free add-on for AI coding tools like Claude Code. It reads your project, agrees a plan with you, then works in checked steps.">
 <meta name="twitter:image" content="https://session-orchestrator.com/og.png">
+<meta name="twitter:image:alt" content="Five stations in a row with gates between them and a small light moving through.">
 
 <!-- Entity consolidation (issue #1046): the site, the repository, the package
      and the person who maintains them are one entity with stable @id anchors.
-     No rating, no review, no invented field — none of those would be true.
+     No rating, no review, no invented field: none of those would be true.
      softwareVersion is deliberately absent: the version literal lives in the
      markup under data-metric="version" and is written by one generator only. -->
 <script type="application/ld+json">
@@ -62,1068 +68,501 @@
     {
       "@type": "Person",
       "@id": "https://www.gotzendorfer.at/#person",
-      "name": "Bernhard G\u00f6tzendorfer",
+      "name": "Bernhard Götzendorfer",
       "url": "https://www.gotzendorfer.at",
       "sameAs": [
         "https://www.gotzendorfer.at",
         "https://github.com/Kanevry"
       ]
+    },
+    {
+      "@type": "FAQPage",
+      "@id": "https://session-orchestrator.com/#faq",
+      "inLanguage": "en",
+      "isPartOf": {
+        "@id": "https://session-orchestrator.com/#website"
+      },
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Is this itself an AI that writes code?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No. It is an add-on that organises how an AI coding tool works. The tool still writes the code; this decides what it reads first, what it may touch, and when it has to stop and be checked."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Which tools does it work with?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Claude Code fully. Codex CLI, Cursor IDE and Pi run it with limits: on Codex CLI the short list of files a step may touch is not enforced, on Cursor IDE it is checked after the work is done, and Pi runs through a bridge. The install section lists the path for each."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "What is different from just using Claude Code?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Four things: the reading step before any change, a plan you agree to, a short list of files per step, and an automatic check between the steps. Without them the tool starts typing on the first sentence it reads."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Does it send data anywhere?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "No account and no server. Everything runs on your own machine. Usage data is sent only if you switch it on, and it is off until you do. This website loads nothing from another site."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Does it work on Windows?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "It runs natively on Windows, but Windows is not covered by the automated test runs. macOS and Linux are, so those two are the paths that get checked on every change."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "What does it cost?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Nothing. It is free and open source under the MIT licence. You still pay whatever your coding tool costs; that part is not affected."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Can it break my project?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Commands that would delete or overwrite work are blocked by a policy file, not by a polite instruction. It never overwrites the shared history of your project. It records the changes at the end of a session, after the checks have run, and it tells you what it recorded."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Who maintains it?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "One person, Bernhard Götzendorfer. Questions filed on GitHub are answered by him. It is shipped as-is, with best-effort maintenance and no service level agreement."
+          }
+        }
+      ]
     }
   ]
 }
 </script>
-<!-- Self-hosted, latin subset, OFL — see fonts/LICENSES.md.
-     Zero external subresources: nothing on this page reaches a third party.
-     Preload is limited to the two faces the first screen actually paints. -->
-<link rel="preload" as="font" type="font/woff2" href="fonts/archivo-var.woff2" crossorigin>
-<link rel="preload" as="font" type="font/woff2" href="fonts/ibm-plex-mono-400.woff2" crossorigin>
-<style>
-@font-face {
-  font-family: 'Archivo';
-  src: url('fonts/archivo-var.woff2') format('woff2');
-  font-weight: 100 900; font-style: normal; font-display: swap;
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: 'IBM Plex Mono';
-  src: url('fonts/ibm-plex-mono-400.woff2') format('woff2');
-  font-weight: 400; font-style: normal; font-display: swap;
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: 'IBM Plex Mono';
-  src: url('fonts/ibm-plex-mono-500.woff2') format('woff2');
-  font-weight: 500; font-style: normal; font-display: swap;
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* ---------------------------------------------------------------
-   Fliessband. One continuous axis carries the whole page.
-   Monochrome ground + exactly three state colours:
-     --run   the work itself, in flight
-     --hold  something is holding the work back
-     --pass  cleared
-   No brand accent. Colour is a state readout, never decoration —
-   and no state is carried by colour ALONE: every state also has a
-   distinct shape (filled dot / open bracket / closed box) and a
-   distinct glyph, so the page survives being read without colour.
 
-   Nothing on this page is delivered hidden. There is not a single
-   opacity-hiding rule in this file and not a single entrance
-   animation on content. Motion advances one line and nothing else.
-   ---------------------------------------------------------------*/
-:root{
-  --bg:#0a0b0c;
-  --bg-2:#101215;
-  --ink:#ececeb;
-  --ink-2:#9ea4a8;
-  --ink-3:#7b8286;
-  --line:#22262a;
-  --line-2:#343a3f;
-  /* Interactive borders only. WCAG 1.4.11 wants 3:1 for the boundary of a
-     control; --line-2 is 1.71:1 against the page and stays that way because it
-     also draws decorative hairlines, where 3:1 would be loud. Separate token,
-     separate job. 3.57:1 on --bg, 3.40:1 on --bg-2. */
-  --line-ui:#616a70;
-
-  --run:#e8a33d;
-  --hold:#f0705e;
-  --pass:#5fbf82;
-
-  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
-  --disp:"Archivo",-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;
-
-  --rail-x:12px;
-  --pad-l:56px;
-  --sec:34px;
-
-  /* the band's one honest constant: 1 file of declared write scope = --unit */
-  --unit:15px;
-  --plot-h:270px;
-  --gate-w:96px;
-  --lbl-w:112px;
-}
-
-*,*::before,*::after{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%}
-body{
-  margin:0;background:var(--bg);color:var(--ink);
-  font-family:var(--disp);font-weight:300;
-  font-size:16px;line-height:1.55;
-  letter-spacing:-0.005em;
-  -webkit-font-smoothing:antialiased;
-}
-h1,h2,h3,p,dl,dd,figure,figcaption,blockquote,ul,ol{margin:0}
-ul,ol{padding:0;list-style:none}
-a{color:inherit}
-img,svg{max-width:100%}
-::selection{background:var(--ink);color:var(--bg)}
-
-a:focus-visible,button:focus-visible,.skip:focus-visible,[tabindex]:focus-visible{
-  outline:2px solid var(--ink);outline-offset:3px;border-radius:2px;
-}
-
-.sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
-    clip-path:inset(50%);white-space:nowrap;border:0}
-.skip{position:absolute;left:-9999px;top:0;background:var(--ink);color:var(--bg);
-      padding:10px 16px;z-index:50;font-family:var(--mono);font-size:13px}
-.skip:focus{left:8px;top:8px}
-
-/* mono numerals line up in every column they appear in */
-.num,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums slashed-zero}
-
-/* ---------- page column + the spine ---------- */
-.page{position:relative;max-width:1280px;margin:0 auto;padding:0 24px 0 var(--pad-l)}
-.rail{position:absolute;top:0;bottom:0;left:var(--rail-x);width:1px;background:var(--line);pointer-events:none}
-.rail-fill{position:absolute;inset:0;transform-origin:top center;
-  background:linear-gradient(180deg,var(--line-2) 0%,var(--ink-3) 55%,var(--line-2) 100%)}
-
-/* section marker sitting on the spine */
-.mark{position:relative;font-family:var(--mono);font-size:13px;letter-spacing:.13em;
-      text-transform:uppercase;color:var(--ink-3);padding:0 0 11px}
-.mark::before{content:"";position:absolute;left:calc(-1 * var(--pad-l) + var(--rail-x) - 3px);top:7px;
-  width:7px;height:7px;border-radius:50%;background:var(--ink-3);box-shadow:0 0 0 4px var(--bg)}
-
-/* ---------- header ---------- */
-.top{display:flex;flex-wrap:wrap;gap:8px 26px;align-items:baseline;
-     padding:20px 0 16px;border-bottom:1px solid var(--line)}
-.brand{font-family:var(--mono);font-size:13px;letter-spacing:.02em;color:var(--ink);text-decoration:none}
-.brand b{font-weight:500}
-.nav{display:flex;flex-wrap:wrap;gap:6px 20px;margin-left:auto;font-family:var(--mono);font-size:13px}
-.nav a{color:var(--ink-2);text-decoration:none;padding:2px 0;border-bottom:1px solid transparent}
-.nav a:hover{color:var(--ink);border-bottom-color:var(--line-2)}
-
-/* ---------- hero ---------- */
-.hero{padding:24px 0 10px}
-.eyebrow{font-family:var(--mono);font-size:13px;letter-spacing:.09em;color:var(--ink-2);
-         text-transform:uppercase;margin-bottom:22px}
-h1{
-  font-family:var(--disp);font-weight:200;
-  font-size:clamp(33px,4.85vw,68px);
-  line-height:1.0;letter-spacing:-0.03em;
-  max-width:17ch;
-}
-.hero-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.02fr);gap:46px;margin-top:32px;align-items:start}
-.hero-grid>*{min-width:0}
-.lede{font-size:clamp(16px,1.32vw,19px);line-height:1.62;color:var(--ink-2);max-width:46ch;font-weight:300}
-.lede em{font-style:normal;color:var(--ink)}
-.cta{display:flex;flex-wrap:wrap;gap:12px;margin-top:24px}
-.btn{font-family:var(--mono);font-size:13px;text-decoration:none;padding:12px 20px;
-     border:1px solid transparent;display:inline-flex;align-items:center;justify-content:center;
-     min-height:44px;line-height:1.2}
-.btn-1{background:var(--ink);color:var(--bg);font-weight:500}
-.btn-1:hover{background:#fff}
-.btn-2{border-color:var(--line-ui);color:var(--ink)}
-.btn-2:hover{border-color:var(--ink-3)}
-.meta{margin-top:22px;font-family:var(--mono);font-size:13px;color:var(--ink-3);letter-spacing:.01em}
-
-/* ---------- transcript ---------- */
-.tape{border:1px solid var(--line);background:var(--bg-2);min-width:0}
-.tape-bar{display:flex;gap:14px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--line);
-          font-family:var(--mono);font-size:13px;color:var(--ink-3);letter-spacing:.06em;text-transform:uppercase}
-.tape pre{margin:0;padding:14px 14px 17px;overflow-x:auto;min-width:0;scrollbar-width:thin;
-  font-family:var(--mono);font-size:13px;line-height:1.46;color:var(--ink-2);
-  letter-spacing:0;font-weight:400}
-.tape .cmd{color:var(--ink);font-weight:500}
-.tape .sig,.tape .k{color:var(--ink-3)}
-.pass{color:var(--pass)}
-.hold{color:var(--hold)}
-.run{color:var(--run)}
-.tape-cap{margin-top:13px;color:var(--ink-2);font-size:15px;line-height:1.55;max-width:64ch}
-.tape-cap b{font-weight:400;color:var(--ink)}
-
-/* ---------- shared section head ---------- */
-.sec{padding:var(--sec) 0 8px;scroll-margin-top:20px}
-h2{font-family:var(--disp);font-weight:200;font-size:clamp(27px,3.05vw,42px);
-   line-height:1.05;letter-spacing:-0.026em;max-width:22ch}
-h3{font-family:var(--disp);font-weight:300;font-size:19px;letter-spacing:-0.015em;line-height:1.25}
-/* quiet sections: same voice, lower volume. Only hero, install and the loop
-   are allowed to be loud — 27 equally loud cards mean nothing is loud. */
-.sec.q{padding-top:40px}
-.sec.q h2{font-size:clamp(23px,1.85vw,27px);max-width:34ch;letter-spacing:-0.018em}
-.sec.q .sub{margin-top:9px;font-size:15px}
-.sub{margin-top:10px;color:var(--ink-2);font-size:clamp(15px,1.15vw,17.5px);max-width:52ch}
-
-/* ---------- 02 · the statement under the fold ---------- */
-.fold{padding:26px 0 2px}
-.fold .say{font-family:var(--disp);font-weight:200;
-  font-size:clamp(23px,2.75vw,38px);line-height:1.16;letter-spacing:-0.026em;max-width:26ch}
-.fold .say b{font-weight:300;color:var(--ink)}
-.fold .after{margin-top:20px;font-family:var(--disp);font-weight:300;font-size:16px;
-  line-height:1.6;color:var(--ink-2);max-width:56ch;letter-spacing:0}
-
-/* ---------- install ---------- */
-.harness{position:relative;padding:11px 0 2px;border-top:1px solid var(--line)}
-.harness:first-of-type{border-top:0}
-.harness::before{content:"";position:absolute;left:calc(-1 * var(--pad-l) + var(--rail-x) - 4px);top:18px;
-  width:9px;height:9px;border-radius:50%;background:var(--run);box-shadow:0 0 0 5px var(--bg)}
-.h-row{display:grid;grid-template-columns:minmax(0,210px) minmax(0,1fr);gap:24px;align-items:start}
-.h-row>*{min-width:0}
-.h-name{font-family:var(--disp);font-weight:200;font-size:clamp(21px,1.9vw,27px);
-  letter-spacing:-0.024em;line-height:1.05}
-.h-tag{margin-top:8px;font-family:var(--mono);font-size:13px;letter-spacing:.09em;
-  text-transform:uppercase;color:var(--ink-3)}
-.cmd{position:relative;min-width:0}
-pre.code{margin:0;border:1px solid var(--line);background:var(--bg-2);padding:12px 14px;
-  font-family:var(--mono);font-size:13px;line-height:1.55;color:var(--ink);
-  overflow-x:auto;min-width:0;font-weight:400}
-pre.code.soft{white-space:pre-wrap;overflow-wrap:anywhere;overflow-x:visible}
-pre.code .sig{color:var(--ink-3)}
-.copy{position:absolute;top:7px;right:7px;background:var(--bg-2);color:var(--ink-3);
-  border:1px solid var(--line-ui);font-family:var(--mono);font-size:13px;line-height:1;
-  padding:7px 9px;cursor:pointer;min-height:30px}
-.copy:hover{color:var(--ink);border-color:var(--ink-3)}
-.copy.is-done{color:var(--pass);border-color:var(--pass)}
-.note{margin-top:10px;font-size:15px;color:var(--ink-2);line-height:1.55;max-width:62ch}
-.note code,.rowfile{font-family:var(--mono);font-size:13px;color:var(--ink)}
-
-/* the "holds / broken" form: an OPEN bracket — never colour alone */
-.flag{margin-top:10px;padding:10px 12px;border:1px solid var(--hold);border-right:0;
-  font-size:15px;line-height:1.5;color:var(--ink-2);max-width:66ch}
-.flag>b{font-weight:500;color:var(--hold);font-family:var(--mono);font-size:13px;
-  letter-spacing:.09em;text-transform:uppercase;display:block;margin-bottom:4px}
-.flag>b::before{content:"\2715  ";}
-.flag pre.code{margin-top:8px}
-
-/* ---------- 04 · the band ---------- */
-.legend{display:flex;flex-wrap:wrap;gap:9px 26px;margin-top:14px;
-        font-family:var(--mono);font-size:13px;color:var(--ink-2);letter-spacing:.02em}
-.legend li{display:inline-flex;align-items:center;gap:9px}
-.gs{flex:none;width:19px;height:19px;display:inline-grid;place-items:center;
-    font-family:var(--mono);font-size:13px;line-height:1}
-.gs-pass{border:1px solid var(--pass);color:var(--pass)}
-.gs-hold{border:1px solid var(--hold);border-right:0;color:var(--hold)}
-.gs-run{border:0;color:var(--run);font-size:15px}
-
-.band{margin:16px 0 0 calc(-1 * var(--pad-l) + var(--rail-x));position:relative}
-.band-head{display:flex;flex-wrap:wrap;gap:4px 20px;align-items:baseline;
-  font-family:var(--mono);font-size:13px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-3);
-  padding-bottom:12px}
-.band-head .fig{color:var(--ink)}
-
-.plot{display:flex;align-items:flex-start;gap:0;position:relative}
-.plot>*{min-width:0}
-
-.yax{flex:0 0 62px;position:relative;height:var(--plot-h);
-  border-right:1px solid var(--line);margin-right:14px}
-.yax-ttl{position:absolute;left:-65px;top:50%;width:150px;margin-top:-9px;
-  transform:rotate(-90deg);text-align:center;
-  font-family:var(--mono);font-size:13px;letter-spacing:.11em;text-transform:uppercase;color:var(--ink-3)}
-.yt{position:absolute;right:9px;bottom:calc(var(--v) * var(--unit));
-  transform:translateY(50%);font-family:var(--mono);font-size:13px;color:var(--ink-3);
-  font-variant-numeric:tabular-nums}
-.yt::after{content:"";position:absolute;right:-9px;top:50%;width:6px;height:1px;background:var(--line-2)}
-.t0{--v:0}.t4{--v:4}.t8{--v:8}.t12{--v:12}
-
-.track{flex:1 1 auto;display:flex;align-items:flex-end;position:relative;
-  height:var(--plot-h);
-  border-bottom:1px solid var(--ink-3);
-  background-image:repeating-linear-gradient(to top,
-    transparent 0,transparent calc(4 * var(--unit) - 1px),
-    var(--line) calc(4 * var(--unit) - 1px),var(--line) calc(4 * var(--unit)));
-  background-size:100% calc(12 * var(--unit));
-  background-position:left bottom;background-repeat:no-repeat;
-  view-timeline-name:--band;view-timeline-axis:block}
-.track>*{min-width:0}
-.axis-fill{position:absolute;left:0;right:0;bottom:-7px;height:2px;background:var(--run);
-  transform-origin:left center}
-
-.st{flex:1 1 0;display:flex;flex-direction:column;justify-content:flex-end;
-  height:100%;padding:0 10px;position:relative}
-.st-head{position:absolute;left:10px;right:10px;top:0}
-.st-num{display:block;font-family:var(--mono);font-size:13px;letter-spacing:.13em;color:var(--ink-3)}
-.st-name{display:block;margin-top:3px;font-family:var(--disp);font-weight:200;
-  font-size:clamp(18px,1.7vw,26px);line-height:1.05;letter-spacing:-0.024em;color:var(--ink)}
-.st-col{display:flex;flex-direction:column;justify-content:flex-end;height:100%}
-.st-n{font-family:var(--mono);font-size:14px;color:var(--ink);letter-spacing:.02em;
-  margin-bottom:7px;font-variant-numeric:tabular-nums}
-.st-n span{color:var(--ink-3)}
-.st-bar{height:calc(var(--files) * var(--unit));border:1px solid var(--ink-2);background:var(--bg-2)}
-/* zero write scope is NOT a box of height zero. It is a line. */
-.st-bar.flat{height:3px;border:0;background:var(--ink);position:relative;z-index:2}
-.f0{--files:0}.f2{--files:2}.f5{--files:5}.f8{--files:8}.f12{--files:12}
-
-.gt{flex:0 0 var(--gate-w);display:flex;flex-direction:column;justify-content:flex-end;
-  height:100%;position:relative}
-.gt-head{position:absolute;left:0;right:0;top:0;text-align:center;
-  font-family:var(--mono);font-size:13px;letter-spacing:.13em;color:var(--ink-3)}
-.gt-col{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%}
-.gt-lines{display:flex;justify-content:center;gap:7px;width:100%;
-  height:calc(var(--plot-h) - 68px);margin-top:8px}
-.gt-lines i{width:1px;background:var(--pass)}
-.gt-label{position:absolute;left:2px;right:2px;top:100%;margin-top:16px;text-align:center;
-  font-family:var(--mono);font-size:13px;line-height:1.38;color:var(--ink-2);letter-spacing:.01em}
-.gt.full .gt-label{left:-9px;right:-9px;color:var(--ink);letter-spacing:.03em;text-transform:uppercase}
-.gt.full .gs-pass{box-shadow:0 0 0 3px var(--bg),0 0 0 4px var(--pass)}
-
-.band-cap{margin-top:58px;display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:20px 46px}
-.band-cap>*{min-width:0}
-.band-scale{font-family:var(--mono);font-size:13px;letter-spacing:.09em;text-transform:uppercase;
-  color:var(--ink-3);line-height:1.6}
-.band-point{font-size:16.5px;line-height:1.6;color:var(--ink-2);max-width:56ch}
-.band-point b{font-weight:400;color:var(--ink)}
-
-.closer{margin-top:18px;display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:0 56px;align-items:end}
-.closer>*{min-width:0}
-.pull{margin:0;font-family:var(--disp);font-weight:200;
-  font-size:clamp(20px,2.35vw,33px);line-height:1.18;letter-spacing:-0.024em;max-width:26ch}
-.pull b{font-weight:300;color:var(--ink)}
-.caption{padding-top:20px;border-top:1px solid var(--line);
-  color:var(--ink-2);font-size:15.5px;max-width:58ch;line-height:1.6}
-
-/* ---------- tables ---------- */
-table{width:100%;border-collapse:collapse;text-align:left;margin-top:16px}
-th{font-family:var(--mono);font-size:13px;letter-spacing:.11em;text-transform:uppercase;
-  color:var(--ink-3);border-bottom:1px solid var(--line-2);padding:0 18px 9px 0;vertical-align:bottom;font-weight:400}
-td{border-bottom:1px solid var(--line);padding:10px 18px 10px 0;vertical-align:top;
-  font-size:15px;color:var(--ink-2);line-height:1.5}
-td.w{color:var(--ink);font-family:var(--mono);font-size:14px;white-space:nowrap}
-td.n{font-family:var(--mono);font-size:15px;color:var(--ink);text-align:right;
-  font-variant-numeric:tabular-nums;white-space:nowrap}
-td.g{font-family:var(--mono);font-size:13px;white-space:nowrap;color:var(--ink-2)}
-td.g .gs{margin-right:7px;vertical-align:-4px}
-tr:last-child td{border-bottom:1px solid var(--line-2)}
-
-/* ---------- 06 · enforced ---------- */
-.rows{margin-top:14px;border-top:1px solid var(--line-2)}
-.row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px 40px;
-  padding:10px 0;border-bottom:1px solid var(--line);align-items:baseline}
-.row>*{min-width:0}
-.row .claim{font-size:17px;line-height:1.45;color:var(--ink);font-weight:300}
-.row .file{font-family:var(--mono);font-size:13px;line-height:1.55;color:var(--ink-2);overflow-wrap:anywhere}
-.row .file em{font-style:normal;color:var(--ink-3)}
-
-/* ---------- 07/09 · quiet lists ---------- */
-.cols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 40px;margin-top:14px}
-.cols>*{min-width:0}
-.col{border-top:1px solid var(--line);padding:8px 0 0}
-.col h3{color:var(--ink)}
-.col p{margin-top:7px;font-size:15px;color:var(--ink-2);line-height:1.5}
-.col .rowfile{display:block;margin-top:8px;color:var(--ink-3)}
-
-.plain{margin-top:14px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 44px}
-.plain>*{min-width:0}
-.plain li{padding:10px 0;border-top:1px solid var(--line);font-size:15px;color:var(--ink-2);line-height:1.5}
-.plain b{font-weight:400;color:var(--ink)}
-
-.matrix{display:flex;flex-wrap:wrap;gap:11px 30px;margin-top:22px;padding-top:18px;border-top:1px solid var(--line-2);
-  font-family:var(--mono);font-size:13px;color:var(--ink-2)}
-.matrix li{display:inline-flex;align-items:center;gap:9px}
-
-/* ---------- 08 · measured ---------- */
-.reads{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:0 18px;margin-top:16px}
-.reads>*{min-width:0}
-.read{border-top:1px solid var(--line);padding:12px 0 14px}
-.read .n{font-family:var(--disp);font-weight:200;font-size:clamp(30px,2.7vw,38px);
-  line-height:1;letter-spacing:-0.035em;color:var(--ink);font-variant-numeric:tabular-nums}
-.read .n.v{font-size:clamp(23px,1.75vw,26px)}
-.read .l{margin-top:8px;font-family:var(--mono);font-size:13px;color:var(--ink-3);
-  letter-spacing:.07em;text-transform:uppercase;line-height:1.4}
-.foot-note{margin-top:14px;font-family:var(--mono);font-size:13px;color:var(--ink-3);line-height:1.6;max-width:74ch}
-
-/* ---------- 10 · closing ---------- */
-.end{margin-top:var(--sec);padding:20px 0 2px;border-top:1px solid var(--line-2)}
-.end h2{max-width:16ch}
-.end .sub{margin-bottom:0}
-
-/* ---------- footer ---------- */
-.foot{margin-top:22px;border-top:1px solid var(--line);padding:14px 0 24px;
-  display:flex;flex-wrap:wrap;gap:10px 24px;align-items:baseline;
-  font-family:var(--mono);font-size:13px;color:var(--ink-3)}
-.foot a{color:var(--ink-2);text-decoration:none;border-bottom:1px solid transparent}
-.foot a:hover{color:var(--ink);border-bottom-color:var(--line-2)}
-.foot .right{margin-left:auto}
-
-/* ---------- responsive ---------- */
-@media (max-width:1180px){
-  :root{--gate-w:88px;--unit:14px;--plot-h:254px}
-  .st-name{font-size:21px}
-  .st{padding:0 7px}
-  .st-head{left:7px;right:7px}
-}
-@media (max-width:1180px){
-  .reads{grid-template-columns:repeat(4,minmax(0,1fr));gap:0 22px}
-}
-@media (max-width:1080px){
-  .plain{grid-template-columns:minmax(0,1fr);gap:0}
-  .hero-grid{grid-template-columns:minmax(0,1fr);gap:40px}
-  h1{max-width:15ch}
-  .closer,.band-cap{grid-template-columns:minmax(0,1fr);gap:24px 0}
-  .cols{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .row{grid-template-columns:minmax(0,1fr);gap:6px}
-}
-@media (max-width:900px){
-  /* touch targets: 44px minimum for anything tappable */
-  .nav a{padding:13px 0}
-  .foot{gap:2px 24px}
-  .foot a,.foot span{padding:12px 0}
-  .copy{min-height:44px;padding:12px 14px}
-  .brand{padding:13px 0;display:inline-block}
-  :root{--pad-l:34px;--rail-x:9px;--sec:54px;--unit:13px;--lbl-w:104px}
-  .hero{padding:40px 0 30px}
-  .fold{padding:48px 0 4px}
-
-  /* the band turns from an elevation into a plan: length carries the same
-     scale that height carried, one unit still equals one file. */
-  .band{margin-left:calc(-1 * var(--pad-l) + var(--rail-x));margin-top:28px}
-  .plot{display:block}
-  .yax{flex:none;width:auto;height:auto;border-right:0;margin:0 0 6px 0;
-    padding:0 0 24px 0;position:relative}
-  .yax-ttl{position:static;transform:none;width:auto;margin:0;text-align:left;display:block}
-  .yt{right:auto;top:auto;bottom:2px;left:calc(var(--lbl-w) + var(--v) * var(--unit));
-    transform:none;position:absolute}
-  .yt::after{right:auto;top:auto;left:0;bottom:-6px;width:1px;height:5px;background:var(--line-2)}
-  .track{display:block;height:auto;padding-bottom:0;
-    border-bottom:0;border-left:1px solid var(--ink-3);
-    margin-left:var(--lbl-w)}
-  .axis-fill{left:-7px;right:auto;top:0;bottom:0;width:2px;height:auto;transform-origin:center top}
-  .st{display:flex;flex-direction:row;align-items:center;gap:12px;height:auto;padding:9px 0}
-  .st-head{position:static;flex:0 0 auto;width:calc(var(--lbl-w) - 12px);margin-left:calc(-1 * var(--lbl-w));
-    padding-right:10px;text-align:right}
-  .st-num{display:inline;font-size:13px}
-  .st-name{display:block;margin-top:1px;font-size:16px;line-height:1.15}
-  .st-col{flex:1 1 auto;flex-direction:row;justify-content:flex-start;
-    align-items:center;gap:11px;height:auto}
-  .st-n{order:2;margin:0;font-size:14px}
-  .st-bar{width:calc(var(--files) * var(--unit));height:17px;flex:none}
-  .st-bar.flat{width:2px;height:17px;background:var(--ink)}
-  .gt{flex:none;display:flex;flex-direction:row;align-items:center;gap:12px;
-    height:auto;padding:5px 0 5px 0}
-  .gt-head{position:static;flex:0 0 auto;width:calc(var(--lbl-w) - 12px);
-    margin-left:calc(-1 * var(--lbl-w));padding-right:10px;text-align:right}
-  .gt-col{flex:1 1 auto;flex-direction:row;justify-content:flex-start;
-    align-items:center;gap:11px;height:auto}
-  .gt-lines{flex:1 1 auto;flex-direction:column;gap:3px;width:auto;min-width:22px;height:auto;margin:0}
-  .gt-lines i{width:100%;height:1px}
-  .gt-label{position:static;flex:0 0 auto;max-width:52%;margin:0;text-align:right}
-  .band-cap{margin-top:26px}
-
-  .h-row{grid-template-columns:minmax(0,1fr);gap:14px}
-  pre.code{white-space:pre-wrap;overflow-wrap:anywhere;overflow-x:visible}
-  .copy{position:static;display:inline-block;margin-top:8px}
-  .cols{grid-template-columns:minmax(0,1fr)}
-  .reads{grid-template-columns:repeat(2,minmax(0,1fr));gap:0 20px}
-  .closer{margin-top:38px}
-
-  /* the schedule table stacks and keeps its column names */
-  table thead{position:absolute;left:-9999px}
-  table tr{display:block;border-bottom:1px solid var(--line);padding:12px 0}
-  table tr:last-child{border-bottom:1px solid var(--line-2)}
-  table td{display:grid;grid-template-columns:96px minmax(0,1fr);gap:12px;border:0;padding:3px 0;
-    text-align:left;white-space:normal}
-  table td::before{content:attr(data-l);font-family:var(--mono);font-size:13px;letter-spacing:.09em;
-    text-transform:uppercase;color:var(--ink-3);line-height:1.5}
-  table td.n{text-align:left}
-}
-@media (max-width:520px){
-  .nav{margin-left:0;width:100%}
-  .btn{flex:1 1 auto;text-align:center}
-  .band-head{gap:2px 14px}
-}
-
-/* ---------------------------------------------------------------
-   Motion. Every element on this page is painted at full opacity in
-   the markup's own resting state: the band, the transcript, the
-   tables and the notes are complete in a cold screenshot, in print,
-   in a reader view, and with JavaScript switched off. The only two
-   animated things are 1px lines that advance — the spine on the
-   left, and the run-line under the band. Removing both loses no
-   information, which is the test a decoration has to pass.
-   ---------------------------------------------------------------*/
-@media (prefers-reduced-motion: no-preference){
-  .rail-fill{transform:scaleY(0);animation:railGrow linear both;animation-timeline:scroll(root block)}
-  @keyframes railGrow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
-
-  @supports (animation-timeline: view()){
-    .axis-fill{transform:scaleX(0);animation:fillX linear both;
-      animation-timeline:--band;animation-range:cover 14% cover 86%}
-    @keyframes fillX{from{transform:scaleX(0)}to{transform:scaleX(1)}}
-  }
-}
-@media (prefers-reduced-motion: no-preference) and (max-width:900px){
-  @supports (animation-timeline: view()){
-    .axis-fill{transform:scaleY(0);animation:fillY linear both;
-      animation-timeline:--band;animation-range:cover 6% cover 94%}
-    @keyframes fillY{from{transform:scaleY(0)}to{transform:scaleY(1)}}
-  }
-}
-
-/* ---------------------------------------------------------------
-   Print. The dark ground is a screen decision; on paper the sheet
-   inverts.
-
-   FIVE things are dropped, not two — an earlier version of this
-   comment claimed "only the two moving 1px lines", and a reviewer
-   measured eight on-screen elements disappearing. Precisely:
-     .rail, .axis-fill  the two scroll-driven lines. Paper has no
-                        scroll for them to answer to.
-     .copy              a clipboard button on paper is furniture.
-     .skip              a skip link needs a focus ring to exist.
-     .nav               six in-page anchors. THIS is the one that
-                        removes readable content: on screen it is a
-                        list of link texts. The same destinations
-                        appear again in the footer, so nothing
-                        becomes unreachable — but the claim
-                        "no content is hidden" was false, and a
-                        comment that overstates its own guarantee is
-                        worse than no comment.
-   ---------------------------------------------------------------*/
-@media print{
-  :root{
-    --bg:#fff;--bg-2:#fff;--ink:#111;--ink-2:#333;--ink-3:#555;
-    --line:#bbb;--line-2:#888;--line-ui:#666;--run:#8a5a00;--hold:#a3301c;--pass:#1d6b39;
-  }
-  body{background:#fff;color:#111;font-size:11pt}
-  .rail,.axis-fill,.copy,.skip,.nav{display:none}
-  .rail-fill{animation:none}
-  .page{max-width:none;padding-left:0}
-  .mark::before,.harness::before{display:none}
-  .band{margin-left:0}
-  .tape,pre.code{background:#fff;border-color:#bbb}
-  .sec,.fold,.hero{padding-top:22px}
-  .sec h2,.fold .say{break-after:avoid}
-  .plot,.st,.gt,tr,.row,.read,.col,.harness{break-inside:avoid}
-  a[href^="http"]::after{content:" (" attr(href) ")";font-size:8pt;color:#555}
-}
-</style>
+<link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
+<link rel="preload" as="font" type="font/woff2" href="/fonts/bricolage-grotesque-var.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
+<link rel="stylesheet" href="/assets/site.css">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 
-<div class="page">
-  <div class="rail" aria-hidden="true"><span class="rail-fill"></span></div>
-
-  <header class="top">
-    <a class="brand" href="#main">session&#8209;orchestrator <b>v<span class="num" data-metric="version">4.0.0</span></b></a>
-    <nav class="nav" aria-label="Sections">
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/">session-orchestrator <span class="muted">v<span class="num" data-metric="version">4.0.0</span></span></a>
+    <nav class="nav" aria-label="Main">
+      <a href="#for-everyone">For everyone</a>
+      <a href="#loop">For developers</a>
       <a href="#install">Install</a>
-      <a href="#loop">The loop</a>
-      <a href="#enforced">Enforced</a>
-      <a href="#measured">Measured</a>
-      <a href="#limits">Limits</a>
+      <a href="/guide">Guide</a>
       <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
     </nav>
-  </header>
+    <details class="nav-menu"><summary aria-label="Menu"></summary><nav class="nav" aria-label="Main">
+      <a href="#for-everyone">For everyone</a>
+      <a href="#loop">For developers</a>
+      <a href="#install">Install</a>
+      <a href="/guide">Guide</a>
+      <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
+    </nav></details>
+    <p class="lang"><a href="/" aria-current="page"><b>EN</b></a> <a href="/de" lang="de">DE</a></p>
+  </div>
+</header>
 
-  <main id="main" tabindex="-1">
+<main id="main">
 
-    <!-- ============ 01 · HERO ============ -->
-    <section class="hero">
-      <p class="mark">01 &nbsp;/&nbsp; work enters</p>
-      <p class="eyebrow">Plugin for Claude Code, Codex CLI, Cursor and Pi</p>
-      <h1>Most coding agents start writing before they know what changed.</h1>
+  <section class="sec hero-sec" id="top">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">01</span> / What it is</p>
+      <h1 class="h-display">It reads first, asks, then works in checked steps.</h1>
+      <p class="lede">Session Orchestrator is a free extra piece you install into an AI programming tool such as Claude Code. It is for people who already let an AI write code for them and want to see the plan first. Open source, one line to install.</p>
+      <p class="cta">
+        <a class="btn btn-primary" href="#install">Install in one line</a>
+        <a class="btn btn-secondary" href="/guide">Read the guide</a>
+      </p>
+<div id="hero" data-hero-state="init">
+  <canvas aria-hidden="true"></canvas>
+  <ol class="hero-alt"><li>Read</li><li>Build</li><li>Polish</li><li>Check</li><li>Finish</li></ol>
+  <noscript><img class="hero-fallback" src="/assets/hero-fallback.svg" alt="Five blocks in a row with four gates between them" width="960" height="400"></noscript>
+</div>
+    </div>
+  </section>
 
-      <div class="hero-grid">
-        <div>
-          <p class="lede">Session Orchestrator puts a loop in front: <em>research the repo, agree the scope,</em> then five typed passes with a verification gate between each. Open source, one line to install.</p>
-          <div class="cta">
-            <a class="btn btn-1" href="#install">Install in one line</a>
-            <a class="btn btn-2" href="#loop">See how the loop works</a>
+  <section class="sec" id="for-everyone">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">02</span> / How it works</p>
+      <h2>What it does, in plain words</h2>
+      <p class="lede">Most AI coding tools start typing before they understand what they are looking at. That is how you get a fix for the wrong problem, or two helpers changing the same file at the same time.</p>
+
+      <div class="steps">
+        <div class="step">
+          <div>
+            <h3>It reads first.</h3>
+            <p>Before anything is changed, it reads the project: what was done recently, what is open, what is broken. Then it says out loud what it found.</p>
           </div>
-          <p class="meta">v<span class="num" data-metric="version">4.0.0</span> &middot; MIT &middot; npm session-orchestrator &middot; Node.js &gt;= 24</p>
-        </div>
-
-        <div>
-          <figure class="tape">
-            <figcaption class="tape-bar"><span>session tape</span><span class="sig">main-2026-08-19-1</span></figcaption>
-<pre tabindex="0" role="region" aria-label="Transcript of one session, scrollable"><code><span class="sig">$</span> <span class="cmd">/session feature</span>
-  <span class="k">lock           </span> <span class="pass">acquired</span> · main-2026-08-19-1
-  <span class="k">git            </span> 14 commits · 3 dirty files
-  <span class="k">issues         </span> 7 open · 918 premise verified: <span class="hold">GAP</span>
-  <span class="k">ci             </span> pipeline 7204 <span class="pass">green</span> on d2de3ca
-  <span class="k">not-to-retry   </span> 1 approach <span class="hold">force-read</span>
-  <span class="k">recommend      </span> feature · 5 waves · <span class="run">6 agents</span> · confidence 0.82
-
-<span class="sig">$</span> <span class="cmd">/go</span>
-  <span class="k">W1</span>  Discovery      <span class="run">3 agents</span> · read-only
-  <span class="k">W2</span>  Impl-Core      <span class="run">6 agents</span> · 12 files · gate <span class="pass">pass</span>
-  <span class="k">W3</span>  Impl-Polish    <span class="run">4 agents</span> ·  5 files · gate <span class="pass">pass</span>
-  <span class="k">W4</span>  Quality        <span class="run">5 agents</span> ·  8 files · <span class="hold">FULL GATE</span> <span class="pass">pass</span>
-  <span class="k">W5</span>  Finalization   <span class="run">1 agent </span> ·  2 files · gate <span class="pass">pass</span>
-
-<span class="sig">$</span> <span class="cmd">/close</span>
-  <span class="k">verified       </span> <span class="pass">11 of 12</span> planned items
-  <span class="k">carryover      </span> <span class="hold">1 item -&gt; issue #1043</span>
-  <span class="k">committed      </span> 19 files · <span class="pass">pushed</span></code></pre>
+          <figure class="fig">
+            <img src="/img/reads-first-800.webp" srcset="/img/reads-first-400.webp 400w, /img/reads-first-800.webp 800w, /img/reads-first-1200.webp 1200w" sizes="(max-width: 600px) 100vw, 420px" width="800" height="800" loading="lazy" decoding="async" alt="A quiet room shaped like an open book, being read before anyone touches it.">
+            <figcaption><span class="fig-ai">AI-generated</span></figcaption>
           </figure>
-          <p class="tape-cap"><b>Above: one whole session.</b> The tool reads the repository first, says out loud what it thinks it should touch, then works through it in five passes, and finishes by reporting what got done and what did not. The lines that begin with a dollar sign are the three things a person types.</p>
+        </div>
+
+        <div class="step">
+          <div>
+            <h3>You agree the plan.</h3>
+            <p>It proposes what to touch and what to leave alone. You say yes, or change it. Nothing starts before that.</p>
+          </div>
+          <figure class="fig">
+            <img src="/img/agree-scope-800.webp" srcset="/img/agree-scope-400.webp 400w, /img/agree-scope-800.webp 800w, /img/agree-scope-1200.webp 1200w" sizes="(max-width: 600px) 100vw, 420px" width="800" height="800" loading="lazy" decoding="async" alt="A map on a table with a small marked area and a pen laid beside it.">
+            <figcaption><span class="fig-ai">AI-generated</span></figcaption>
+          </figure>
+        </div>
+
+        <div class="step">
+          <div>
+            <h3>The job is cut into five parts.</h3>
+            <p>The work is split into five steps: read, build, polish, check, finish. Each step has its own helper and its own short list of files it may touch.</p>
+          </div>
+          <figure class="fig">
+            <img src="/img/five-passes-800.webp" srcset="/img/five-passes-400.webp 400w, /img/five-passes-800.webp 800w, /img/five-passes-1200.webp 1200w" sizes="(max-width: 600px) 100vw, 420px" width="800" height="800" loading="lazy" decoding="async" alt="Five pedestals in a row, each a step higher, with a small light on the last one.">
+            <figcaption><span class="fig-ai">AI-generated</span></figcaption>
+          </figure>
+        </div>
+
+        <div class="step">
+          <div>
+            <h3>A check between every step.</h3>
+            <p>After each step an automatic check runs. If it fails, the next step does not start. Asking nicely does not help. Skipping is not built in.</p>
+          </div>
+          <figure class="fig">
+            <img src="/img/the-gate-800.webp" srcset="/img/the-gate-400.webp 400w, /img/the-gate-800.webp 800w, /img/the-gate-1200.webp 1200w" sizes="(max-width: 600px) 100vw, 420px" width="800" height="800" loading="lazy" decoding="async" alt="A closed gate with a thin blue line of light along its edge.">
+            <figcaption><span class="fig-ai">AI-generated</span></figcaption>
+          </figure>
+        </div>
+
+        <div class="step">
+          <div>
+            <h3>What stays when the session ends.</h3>
+            <p>A written record of what was done and what was not, plus notes for next time. Nothing is learned silently.</p>
+          </div>
+          <figure class="fig">
+            <img src="/img/what-survives-800.webp" srcset="/img/what-survives-400.webp 400w, /img/what-survives-800.webp 800w, /img/what-survives-1200.webp 1200w" sizes="(max-width: 600px) 100vw, 420px" width="800" height="800" loading="lazy" decoding="async" alt="A closed notebook with a small lock resting on top.">
+            <figcaption><span class="fig-ai">AI-generated</span></figcaption>
+          </figure>
         </div>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <!-- ============ 02 · THE STATEMENT UNDER THE FOLD ============ -->
-    <section class="fold">
-      <p class="mark">02 &nbsp;/&nbsp; the boundary</p>
-      <p class="say">You cannot make a language model careful by asking it to be careful. <b>You can take the ability away.</b></p>
-      <p class="after">An agent that is never handed the git index cannot break commit discipline — not because it behaved, but because there was nothing there to break. Everything below is that one move, applied five times.</p>
-    </section>
-
-    <!-- ============ 03 · INSTALL ============ -->
-    <section class="sec" id="install">
-      <p class="mark">03 &nbsp;/&nbsp; install</p>
-      <h2>Pick your harness</h2>
-      <p class="sub">Same plugin, four install paths.</p>
-
-      <div class="harness">
-        <div class="h-row">
-          <div>
-            <p class="h-name">Claude Code</p>
-            <p class="h-tag">plugin marketplace</p>
-          </div>
-          <div>
-            <div class="cmd">
-<pre class="code"><code>/plugin marketplace add Kanevry/session-orchestrator
-/plugin install session-orchestrator@kanevry</code></pre>
-            </div>
-            <p class="note">Then run <code>npm install</code> once inside the plugin cache and restart Claude Code.</p>
-            <div class="flag">
-              <b>known broken</b>
-              The one-liner documented for this step until 2026&#8209;08&#8209;19 does not work: <code>claude plugin dir</code> is not a subcommand Claude Code has, so it exits 1 and the fallback path it then used does not exist. The replacement below resolves the path from the plugin cache instead, and was run end to end on a real install:
-              <div class="cmd">
-<pre class="code soft"><code>cd "$(dirname "$(find ~/.claude/plugins/cache -name package.json -path '*session-orchestrator*' | head -1)")" &amp;&amp; npm install</code></pre>
-              </div>
-            </div>
-          </div>
+  <section class="sec signature" id="who">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">03</span> / Who</p>
+      <h2>Built by one person</h2>
+      <div class="grid-12">
+        <div class="col-7">
+          <p class="lede">Bernhard G&#246;tzendorfer, Vienna. No company behind it, no team. The tool runs his own projects every day; the numbers further down are from this project, counted by a script, not by hand.</p>
+          <p>Free. MIT licence. Source on <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a> and <a href="https://www.npmjs.com/package/session-orchestrator">npm</a>. GitHub and npm are the two public places programmers download code from.</p>
+        </div>
+        <div class="col-4">
+          <ul class="stack">
+            <li><a class="btn btn-tertiary" href="https://www.gotzendorfer.at/?utm_source=session-orchestrator&amp;utm_medium=footer&amp;utm_campaign=cross-promo" rel="author">More about Bernhard G&#246;tzendorfer</a></li>
+            <li>Read how it grew: <a href="https://www.gotzendorfer.at/en/blog/session-orchestrator-oss-tool-matures">How session-orchestrator matured in nine days</a></li>
+          </ul>
         </div>
       </div>
+    </div>
+  </section>
 
-      <div class="harness">
-        <div class="h-row">
-          <div>
-            <p class="h-name">Codex CLI</p>
-            <p class="h-tag">clone + installer</p>
-          </div>
-          <div>
-            <div class="cmd">
-<pre class="code"><code>git clone https://github.com/Kanevry/session-orchestrator.git
-cd session-orchestrator &amp;&amp; npm install
-node scripts/codex-install.mjs</code></pre>
-            </div>
-            <p class="note">Reads <code>AGENTS.md</code> instead of <code>CLAUDE.md</code>.</p>
-            <div class="flag">
-              <b>no scope enforcement</b>
-              The file-scope hook does not run on this harness. The five passes and the quality gates work; the write boundary is a convention here, not a mechanism.
-            </div>
-          </div>
+  <section class="sec" id="install">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">04</span> / Install</p>
+      <h2>Pick your tool</h2>
+      <p class="lede">Same plugin, four install paths.</p>
+
+      <div class="cards">
+        <div class="card">
+          <h3>Claude Code</h3>
+          <p class="meta">plugin marketplace</p>
+          <p class="cmd"><code>/plugin marketplace add Kanevry/session-orchestrator</code><button class="copy" type="button" data-copy="/plugin marketplace add Kanevry/session-orchestrator">Copy</button></p>
+          <p class="cmd"><code>/plugin install session-orchestrator@kanevry</code><button class="copy" type="button" data-copy="/plugin install session-orchestrator@kanevry">Copy</button></p>
+          <p class="small">Then run <code>npm install</code> once inside the plugin cache and restart Claude Code.</p>
+          <p class="small"><b>Known broken.</b> The one-liner documented for this step until 2026-08-19 does not work: <code>claude plugin dir</code> is not a subcommand Claude Code has, so it exits 1 and the fallback path it then used does not exist. The replacement below resolves the path from the plugin cache instead, and was run end to end on a real install.</p>
+          <p class="cmd"><code>cd "$(dirname "$(find ~/.claude/plugins/cache -name package.json -path '*session-orchestrator*' | head -1)")" &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd &quot;$(dirname &quot;$(find ~/.claude/plugins/cache -name package.json -path '*session-orchestrator*' | head -1)&quot;)&quot; &amp;&amp; npm install">Copy</button></p>
+        </div>
+
+        <div class="card">
+          <h3>Codex CLI</h3>
+          <p class="meta">clone and installer</p>
+          <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Copy</button></p>
+          <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Copy</button></p>
+          <p class="cmd"><code>node scripts/codex-install.mjs</code><button class="copy" type="button" data-copy="node scripts/codex-install.mjs">Copy</button></p>
+          <p class="small">Reads <code>AGENTS.md</code> instead of <code>CLAUDE.md</code>.</p>
+          <p class="small"><b>No scope enforcement.</b> The file-scope hook does not run on this harness. The five passes and the quality gates work; the write boundary is a convention here, not a mechanism.</p>
+        </div>
+
+        <div class="card">
+          <h3>Cursor IDE</h3>
+          <p class="meta">clone and installer</p>
+          <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Copy</button></p>
+          <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Copy</button></p>
+          <p class="cmd"><code>node scripts/cursor-install.mjs /absolute/path/to/your/project</code><button class="copy" type="button" data-copy="node scripts/cursor-install.mjs /absolute/path/to/your/project">Copy</button></p>
+          <p class="small"><b>Path required.</b> The project path is mandatory. Without it the installer reports success falsely.</p>
+        </div>
+
+        <div class="card">
+          <h3>Pi</h3>
+          <p class="meta">package manager</p>
+          <p class="cmd"><code>npm install -g --ignore-scripts @earendil-works/pi-coding-agent</code><button class="copy" type="button" data-copy="npm install -g --ignore-scripts @earendil-works/pi-coding-agent">Copy</button></p>
+          <p class="cmd"><code>pi install npm:session-orchestrator</code><button class="copy" type="button" data-copy="pi install npm:session-orchestrator">Copy</button></p>
+          <p class="small">This path installs its own dependencies; the other three need <code>npm install</code> once.</p>
         </div>
       </div>
+    </div>
+  </section>
 
-      <div class="harness">
-        <div class="h-row">
-          <div>
-            <p class="h-name">Cursor IDE</p>
-            <p class="h-tag">clone + installer</p>
-          </div>
-          <div>
-            <div class="cmd">
-<pre class="code"><code>git clone https://github.com/Kanevry/session-orchestrator.git
-cd session-orchestrator &amp;&amp; npm install
-node scripts/cursor-install.mjs /absolute/path/to/your/project</code></pre>
-            </div>
-            <div class="flag">
-              <b>path required</b>
-              The project path is mandatory. Without it the installer reports success falsely.
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="harness">
-        <div class="h-row">
-          <div>
-            <p class="h-name">Pi</p>
-            <p class="h-tag">package manager</p>
-          </div>
-          <div>
-            <div class="cmd">
-<pre class="code"><code>npm install -g --ignore-scripts @earendil-works/pi-coding-agent
-pi install npm:session-orchestrator</code></pre>
-            </div>
-            <p class="note">The only path that resolves dependencies on its own.</p>
-          </div>
-        </div>
-      </div>
-      <p class="sr" id="copy-live" role="status" aria-live="polite"></p>
-    </section>
-
-    <!-- ============ 04 · THE LOOP ============ -->
-    <section class="sec" id="loop">
-      <p class="mark">04 &nbsp;/&nbsp; five passes</p>
+  <section class="sec" id="loop">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">05</span> / For developers</p>
       <h2>Five passes, one gate between each</h2>
-      <p class="sub">Write access is declared per wave. The Quality gate cannot be skipped.</p>
+      <p class="lede">Write access is declared per wave, and the Quality gate cannot be skipped.</p>
 
-      <ul class="legend">
-        <li><span class="gs gs-run" aria-hidden="true">&#9679;</span>the work, in flight</li>
-        <li><span class="gs gs-hold" aria-hidden="true">&#10005;</span>a gate holding the work back — open bracket, cross</li>
-        <li><span class="gs gs-pass" aria-hidden="true">&#10003;</span>a gate that came back clean — closed box, check</li>
-      </ul>
-
-      <figure class="band">
-        <p class="band-head"><span class="fig">Fig. 1</span><span>wave loop &mdash; elevation of one session</span></p>
-
-        <div class="plot">
-          <div class="yax" aria-hidden="true">
-            <span class="yax-ttl">Files writable</span>
-            <span class="yt t12">12</span>
-            <span class="yt t8">8</span>
-            <span class="yt t4">4</span>
-            <span class="yt t0">0</span>
-          </div>
-
-          <div class="track">
-            <span class="axis-fill" aria-hidden="true"></span>
-
-            <div class="st f0">
-              <p class="st-head"><span class="st-num">W1</span><span class="st-name">Discovery</span></p>
-              <div class="st-col">
-                <p class="st-n">0 <span>files</span></p>
-                <div class="st-bar flat"></div>
-              </div>
-            </div>
-
-            <div class="gt">
-              <p class="gt-head">G1</p>
-              <div class="gt-col">
-                <span class="gs gs-pass" aria-hidden="true">&#10003;</span>
-                <span class="gt-lines" aria-hidden="true"><i></i><i></i></span>
-              </div>
-              <p class="gt-label"><span class="sr">Gate 1, cleared: </span>findings validated</p>
-            </div>
-
-            <div class="st f12">
-              <p class="st-head"><span class="st-num">W2</span><span class="st-name">Impl-Core</span></p>
-              <div class="st-col">
-                <p class="st-n">12 <span>files</span></p>
-                <div class="st-bar"></div>
-              </div>
-            </div>
-
-            <div class="gt">
-              <p class="gt-head">G2</p>
-              <div class="gt-col">
-                <span class="gs gs-pass" aria-hidden="true">&#10003;</span>
-                <span class="gt-lines" aria-hidden="true"><i></i><i></i></span>
-              </div>
-              <p class="gt-label"><span class="sr">Gate 2, cleared: </span>incremental gate</p>
-            </div>
-
-            <div class="st f5">
-              <p class="st-head"><span class="st-num">W3</span><span class="st-name">Impl-Polish</span></p>
-              <div class="st-col">
-                <p class="st-n">5 <span>files</span></p>
-                <div class="st-bar"></div>
-              </div>
-            </div>
-
-            <div class="gt">
-              <p class="gt-head">G3</p>
-              <div class="gt-col">
-                <span class="gs gs-pass" aria-hidden="true">&#10003;</span>
-                <span class="gt-lines" aria-hidden="true"><i></i><i></i></span>
-              </div>
-              <p class="gt-label"><span class="sr">Gate 3, cleared: </span>incremental gate</p>
-            </div>
-
-            <div class="st f8">
-              <p class="st-head"><span class="st-num">W4</span><span class="st-name">Quality</span></p>
-              <div class="st-col">
-                <p class="st-n">8 <span>files</span></p>
-                <div class="st-bar"></div>
-              </div>
-            </div>
-
-            <div class="gt full">
-              <p class="gt-head">G4</p>
-              <div class="gt-col">
-                <span class="gs gs-pass" aria-hidden="true">&#10003;</span>
-                <span class="gt-lines" aria-hidden="true"><i></i><i></i><i></i></span>
-              </div>
-              <p class="gt-label"><span class="sr">Gate 4, cleared: </span>Full gate<br>un-skippable</p>
-            </div>
-
-            <div class="st f2">
-              <p class="st-head"><span class="st-num">W5</span><span class="st-name">Finalization</span></p>
-              <div class="st-col">
-                <p class="st-n">2 <span>files</span></p>
-                <div class="st-bar"></div>
-              </div>
-            </div>
-
-            <div class="gt">
-              <p class="gt-head">G5</p>
-              <div class="gt-col">
-                <span class="gs gs-pass" aria-hidden="true">&#10003;</span>
-                <span class="gt-lines" aria-hidden="true"><i></i><i></i></span>
-              </div>
-              <p class="gt-label"><span class="sr">Gate 5, cleared: </span>final review</p>
-            </div>
-          </div>
-        </div>
-
-        <figcaption class="band-cap">
-          <p class="band-point"><b>Discovery has no height because it may write nothing.</b> A pass with an empty write scope is not a box of height zero — it is a line on the baseline. Every other pass is exactly as tall as the number of files it was allowed to open, and no pass can grow taller than the scope it declared before it started.</p>
-          <p class="band-scale">Scale &mdash; one unit of height equals one file in the declared write scope of that pass. Same five rows as text in the schedule below.</p>
-        </figcaption>
-      </figure>
-
-      <div class="closer">
-        <p class="pull">The file scope is not a request — <b>the union is computed and asserted disjoint before any agent starts.</b></p>
-        <p class="caption">Five passes over the work — each with a different job — and between each one an automatic check that has to come back clean before the next pass is allowed to start.</p>
-      </div>
-    </section>
-
-    <!-- ============ 05 · THE SCHEDULE ============ -->
-    <section class="sec q" id="schedule">
-      <p class="mark">05 &nbsp;/&nbsp; schedule</p>
-      <h2>The same five rows, as text</h2>
-
-      <table>
+      <table class="table">
         <caption class="sr">Five passes: who runs them, what they may write, how many files, and the gate that follows</caption>
         <thead>
           <tr><th scope="col">Pass</th><th scope="col">Who runs it</th><th scope="col">May write</th><th scope="col">Files</th><th scope="col">Gate after</th></tr>
         </thead>
         <tbody>
           <tr>
-            <td class="w" data-l="Pass">W1 Discovery</td>
-            <td data-l="Who runs it">read-only explorers</td>
-            <td data-l="May write">nothing</td>
-            <td class="n" data-l="Files">0</td>
-            <td class="g" data-l="Gate after"><span class="gs gs-pass" aria-hidden="true">&#10003;</span><span class="sr">cleared: </span>findings validated</td>
+            <td data-label="Pass">W1 Discovery</td>
+            <td data-label="Who runs it">read-only explorers</td>
+            <td data-label="May write">nothing</td>
+            <td class="num" data-label="Files">0</td>
+            <td data-label="Gate after">findings validated</td>
           </tr>
           <tr>
-            <td class="w" data-l="Pass">W2 Impl-Core</td>
-            <td data-l="Who runs it">code, db, ui implementers</td>
-            <td data-l="May write">core feature code</td>
-            <td class="n" data-l="Files">12</td>
-            <td class="g" data-l="Gate after"><span class="gs gs-pass" aria-hidden="true">&#10003;</span><span class="sr">cleared: </span>incremental gate</td>
+            <td data-label="Pass">W2 Impl-Core</td>
+            <td data-label="Who runs it">code, db, ui implementers</td>
+            <td data-label="May write">core feature code</td>
+            <td class="num" data-label="Files">12</td>
+            <td data-label="Gate after">incremental gate</td>
           </tr>
           <tr>
-            <td class="w" data-l="Pass">W3 Impl-Polish</td>
-            <td data-l="Who runs it">fix + integration agents</td>
-            <td data-l="May write">bug fixes, edges</td>
-            <td class="n" data-l="Files">5</td>
-            <td class="g" data-l="Gate after"><span class="gs gs-pass" aria-hidden="true">&#10003;</span><span class="sr">cleared: </span>incremental gate</td>
+            <td data-label="Pass">W3 Impl-Polish</td>
+            <td data-label="Who runs it">fix and integration agents</td>
+            <td data-label="May write">bug fixes, edges</td>
+            <td class="num" data-label="Files">5</td>
+            <td data-label="Gate after">incremental gate</td>
           </tr>
           <tr>
-            <td class="w" data-l="Pass">W4 Quality</td>
-            <td data-l="Who runs it">simplifiers, test-writer, read-only panel</td>
-            <td data-l="May write">tests only</td>
-            <td class="n" data-l="Files">8</td>
-            <td class="g" data-l="Gate after"><span class="gs gs-pass" aria-hidden="true">&#10003;</span><span class="sr">cleared: </span>full gate, un-skippable</td>
+            <td data-label="Pass">W4 Quality</td>
+            <td data-label="Who runs it">simplifiers, test-writer, read-only panel</td>
+            <td data-label="May write">tests only</td>
+            <td class="num" data-label="Files">8</td>
+            <td data-label="Gate after">full gate, un-skippable</td>
           </tr>
           <tr>
-            <td class="w" data-l="Pass">W5 Finalization</td>
-            <td data-l="Who runs it">1 to 2 agents</td>
-            <td data-l="May write">SSOT, issue cleanup</td>
-            <td class="n" data-l="Files">2</td>
-            <td class="g" data-l="Gate after"><span class="gs gs-pass" aria-hidden="true">&#10003;</span><span class="sr">cleared: </span>final review</td>
+            <td data-label="Pass">W5 Finalization</td>
+            <td data-label="Who runs it">1 to 2 agents</td>
+            <td data-label="May write">SSOT, issue cleanup</td>
+            <td class="num" data-label="Files">2</td>
+            <td data-label="Gate after">final review</td>
           </tr>
         </tbody>
       </table>
-      <p class="foot-note">File counts are the declared write scopes of the session in the tape above, not a fixed quota. A wave declares its scope before it runs; the numbers change per session, the rule does not.</p>
-    </section>
+      <p class="small muted">File counts are the declared write scopes of one session, not a fixed quota. A wave declares its scope before it runs; the numbers change per session, the rule does not.</p>
+    </div>
+  </section>
 
-    <!-- ============ 06 · ENFORCED ============ -->
-    <section class="sec q" id="enforced">
-      <p class="mark">06 &nbsp;/&nbsp; enforcement</p>
+  <section class="sec" id="enforced">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">06</span> / Enforced</p>
       <h2>Every claim names the file that enforces it</h2>
-      <p class="sub">A sentence in a prompt is a wish. These five are code paths.</p>
-
-      <div class="rows">
-        <div class="row">
-          <p class="claim">The write scope of an agent is fixed before it starts.</p>
-          <p class="file">scripts/validate-wave-scope.mjs <em>--assert-disjoint</em></p>
+      <div class="grid-12">
+        <div class="col-4">
+          <p class="lede">A sentence in a prompt is a wish. These five are code paths.</p>
         </div>
-        <div class="row">
-          <p class="claim">A write outside that scope is refused, not warned about.</p>
-          <p class="file">hooks/enforce-scope.mjs</p>
-        </div>
-        <div class="row">
-          <p class="claim">Destructive shell commands are blocked by policy, not by prompt.</p>
-          <p class="file">.orchestrator/policy/blocked-commands.json <em>&mdash; 14 rules</em></p>
-        </div>
-        <div class="row">
-          <p class="claim">A subagent can never touch the git index.</p>
-          <p class="file">.claude/rules/parallel-sessions.md <em>&mdash; PSA-007</em></p>
-        </div>
-        <div class="row">
-          <p class="claim">Every planned item is checked against evidence at close.</p>
-          <p class="file">skills/session-end/SKILL.md</p>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ 07 · WHAT SURVIVES ============ -->
-    <section class="sec q" id="survives">
-      <p class="mark">07 &nbsp;/&nbsp; after the session</p>
-      <h2>What survives the session</h2>
-      <p class="sub">Nothing is learned silently. Every write is confirmed by the operator, every artifact is plain text.</p>
-
-      <div class="cols">
-        <div class="col">
-          <h3>The record</h3>
-          <p>Learnings carry a confidence score and an expiry: 0.5 at the start, +0.15 on confirmation, &minus;0.2 on contradiction.</p>
-          <span class="rowfile">.orchestrator/metrics/</span>
-        </div>
-        <div class="col">
-          <h3>Rules are proposed, never applied</h3>
-          <p>Reconcile writes a proposal, the operator approves it. A rule that switches itself on is structurally impossible.</p>
-          <span class="rowfile">skills/reconcile/SKILL.md</span>
-        </div>
-        <div class="col">
-          <h3>What Not To Retry</h3>
-          <p>A failed approach is force-read at the next session start, so a dead end is not walked into twice.</p>
-          <span class="rowfile">.orchestrator/metrics/</span>
-        </div>
-        <div class="col">
-          <h3>Across repositories</h3>
-          <p><span class="rowfile">/portfolio</span> reads issues, merge requests and stale signals across every registered repo. Read-only.</p>
-        </div>
-        <div class="col">
-          <h3>Which repo next</h3>
-          <p><span class="rowfile">/dispatcher</span> ranks the free repos on backlog, staleness and readiness, then claims the lease atomically.</p>
-        </div>
-        <div class="col">
-          <h3>A session that crashed</h3>
-          <p>Shows up as force-closed from any other repository's session start, instead of holding a lock nobody can see.</p>
+        <div class="col-8">
+      <table class="table proof">
+        <caption class="sr">Each claim and the file that enforces it</caption>
+        <thead>
+          <tr><th scope="col">Claim</th><th scope="col">Enforced in</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td data-label="Claim">The write scope of an agent is fixed before it starts.</td>
+            <td data-label="Enforced in"><code>scripts/validate-wave-scope.mjs --assert-disjoint</code></td>
+          </tr>
+          <tr>
+            <td data-label="Claim">A write outside that scope is refused, not warned about.</td>
+            <td data-label="Enforced in"><code>hooks/enforce-scope.mjs</code></td>
+          </tr>
+          <tr>
+            <td data-label="Claim">Destructive shell commands are blocked by policy, not by prompt.</td>
+            <td data-label="Enforced in"><code>.orchestrator/policy/blocked-commands.json</code>, 14 rules</td>
+          </tr>
+          <tr>
+            <td data-label="Claim">A subagent can never touch the git index.</td>
+            <td data-label="Enforced in"><code>.claude/rules/parallel-sessions.md</code>, PSA-007</td>
+          </tr>
+          <tr>
+            <td data-label="Claim">Every planned item is checked against evidence at close.</td>
+            <td data-label="Enforced in"><code>skills/session-end/SKILL.md</code></td>
+          </tr>
+        </tbody>
+      </table>
         </div>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <!-- ============ 08 · MEASURED ============ -->
-    <section class="sec q" id="measured">
-      <p class="mark">08 &nbsp;/&nbsp; readings</p>
+  <section class="sec" id="measured">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">07</span> / Measured</p>
       <h2>Measured in this repository</h2>
 
-      <div class="reads">
-        <div class="read"><p class="n v">v<span class="num" data-metric="version">4.0.0</span></p><p class="l">current release</p></div>
-        <div class="read"><p class="n"><span class="num" data-metric="skills">43</span></p><p class="l">skills</p></div>
-        <div class="read"><p class="n"><span class="num" data-metric="commands">25</span></p><p class="l">slash commands</p></div>
-        <div class="read"><p class="n"><span class="num" data-metric="agents">14</span></p><p class="l">typed sub-agents</p></div>
-        <div class="read"><p class="n"><span class="num" data-metric="hooks">27</span></p><p class="l">hook files</p></div>
-        <div class="read"><p class="n"><span class="num" data-metric="tests">662</span></p><p class="l">test files</p></div>
-        <div class="read"><p class="n"><span class="num" data-metric="sessions">288</span></p><p class="l">sessions in this repo</p></div>
-        <div class="read"><p class="n"><span class="num" data-metric="learnings">198</span></p><p class="l">learnings in this repo</p></div>
+      <div class="cards">
+        <div class="card"><p class="n">v<span class="num" data-metric="version">4.0.0</span></p><p class="l">current release</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="skills">43</span></p><p class="l">skills</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="commands">25</span></p><p class="l">slash commands</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="agents">14</span></p><p class="l">typed sub-agents</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="hooks">27</span></p><p class="l">hook files</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="tests">664</span></p><p class="l">test files</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="sessions">289</span></p><p class="l">sessions in this repo</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="learnings">201</span></p><p class="l">learnings in this repo</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">1165</span></p><p class="l">npm downloads, last 30 days</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="github-stars">50</span></p><p class="l">GitHub stars</p></div>
       </div>
 
-      <p class="foot-note">Counted on <span class="num" data-metric="counted-at">2026-09-06</span> at commit <span class="num" data-metric="counted-sha">432b1871</span>. These are this repository's own records, not a fleet total.</p>
-    </section>
+      <p class="small muted">Counted on <span class="num" data-metric="counted-at">2026-09-07</span> at commit <span class="num" data-metric="counted-sha">a4315993</span>. These are this repository's own records, not a fleet total.</p>
+    </div>
+  </section>
 
-    <!-- ============ 09 · WHAT THIS IS NOT ============ -->
-    <section class="sec q" id="limits">
-      <p class="mark">09 &nbsp;/&nbsp; limits</p>
+  <section class="sec" id="faq">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">08</span> / Questions</p>
+      <h2>Questions people ask</h2>
+
+      <div class="faq">
+        <details class="faq-item">
+          <summary>Is this itself an AI that writes code?</summary>
+          <p>No. It is an add-on that organises how an AI coding tool works. The tool still writes the code; this decides what it reads first, what it may touch, and when it has to stop and be checked.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Which tools does it work with?</summary>
+          <p>Claude Code fully. Codex CLI, Cursor IDE and Pi run it with limits: on Codex CLI the short list of files a step may touch is not enforced, on Cursor IDE it is checked after the work is done, and Pi runs through a bridge. The install section lists the path for each.</p>
+        </details>
+        <details class="faq-item">
+          <summary>What is different from just using Claude Code?</summary>
+          <p>Four things: the reading step before any change, a plan you agree to, a short list of files per step, and an automatic check between the steps. Without them the tool starts typing on the first sentence it reads.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Does it send data anywhere?</summary>
+          <p>No account and no server. Everything runs on your own machine. Usage data is sent only if you switch it on, and it is off until you do. This website loads nothing from another site.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Does it work on Windows?</summary>
+          <p>It runs natively on Windows, but Windows is not covered by the automated test runs. macOS and Linux are, so those two are the paths that get checked on every change.</p>
+        </details>
+        <details class="faq-item">
+          <summary>What does it cost?</summary>
+          <p>Nothing. It is free and open source under the MIT licence. You still pay whatever your coding tool costs; that part is not affected.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Can it break my project?</summary>
+          <p>Commands that would delete or overwrite work are blocked by a policy file, not by a polite instruction. It never overwrites the shared history of your project. It records the changes at the end of a session, after the checks have run, and it tells you what it recorded.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Who maintains it?</summary>
+          <p>One person, Bernhard G&#246;tzendorfer. Questions filed on GitHub are answered by him. It is shipped as-is, with best-effort maintenance and no service level agreement.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="limits">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">09</span> / Limits</p>
       <h2>What this is, and what it is not</h2>
 
-      <ul class="plain">
+      <ul class="stack">
         <li>Independent and community-maintained. <b>Not affiliated with or endorsed by Anthropic, OpenAI, or Cursor.</b></li>
         <li>Shipped as-is, with no service level agreement and best-effort maintenance.</li>
         <li>Local by default. No account, no server. Telemetry is strictly opt-in.</li>
-        <li>macOS and Linux are first-class and covered by CI. Windows runs natively but is not CI-covered.</li>
-        <li>The eval standard refuses a global score, abstains with <b>cannot-determine</b> when a measurement is missing, and forbids superlatives. A leaderboard published before the comparison method is honest would be the exact failure the spec exists to prevent, so there is not one yet.</li>
+        <li>macOS and Linux are fully supported and covered by CI. Windows runs natively but is not CI-covered.</li>
+        <li>There is no leaderboard and no overall score. Where a number is missing, it says so instead of guessing. A ranking built on a comparison method that is not yet honest would be worse than none.</li>
         <li>Hook-level enforcement is not the same on every harness. The list below is the current state, not a roadmap. The quality gates are identical everywhere.</li>
       </ul>
 
-      <ul class="matrix">
-        <li><span class="gs gs-pass" aria-hidden="true">&#10003;</span>Claude Code &mdash; full</li>
-        <li><span class="gs gs-run" aria-hidden="true">&#9679;</span>Cursor IDE &mdash; post-hoc</li>
-        <li><span class="gs gs-run" aria-hidden="true">&#9679;</span>Pi &mdash; bridged</li>
-        <li><span class="gs gs-hold" aria-hidden="true">&#10005;</span>Codex CLI &mdash; scope enforcement currently unavailable</li>
-      </ul>
-    </section>
+      <table class="kv">
+        <caption class="sr">Hook-level enforcement per harness</caption>
+        <tbody>
+          <tr><th scope="row">Claude Code</th><td>full</td></tr>
+          <tr><th scope="row">Cursor IDE</th><td>checked after the work is done</td></tr>
+          <tr><th scope="row">Pi</th><td>through a bridge</td></tr>
+          <tr><th scope="row">Codex CLI</th><td>scope enforcement currently unavailable</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
 
-    <!-- ============ 10 · CLOSING ============ -->
-    <section class="end" id="start">
-      <p class="mark">10 &nbsp;/&nbsp; work leaves</p>
+  <section class="sec end" id="start">
+    <div class="wrap">
+      <p class="eyebrow"><span class="num">10</span> / Start</p>
       <h2>One line, then a session that reads first</h2>
-      <p class="sub">MIT, no account, and the first thing it does is tell you what it found before it touches anything.</p>
-      <div class="cta">
-        <a class="btn btn-1" href="#install">Install in one line</a>
-        <a class="btn btn-2" href="https://github.com/Kanevry/session-orchestrator">Read the source</a>
+      <p class="lede">MIT, no account, and the first thing it does is tell you what it found before it touches anything.</p>
+      <p class="cta">
+        <a class="btn btn-primary" href="#install">Install in one line</a>
+        <a class="btn btn-secondary" href="/guide">Read the guide</a>
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <div class="cols">
+      <div>
+        <h2 class="small">Project</h2>
+        <ul class="stack">
+          <li><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/session-orchestrator">npm</a></li>
+          <li><a href="/guide">Guide</a></li>
+          <li><a href="/llms.txt">llms.txt</a></li>
+        </ul>
       </div>
-    </section>
-  </main>
+      <div>
+        <h2 class="small">Legal</h2>
+        <ul class="stack">
+          <li><a href="/impressum">Imprint</a></li>
+          <li><a href="/datenschutz">Privacy</a></li>
+          <li>MIT licence</li>
+        </ul>
+      </div>
+      <div class="author">
+        <h2 class="small">Author</h2>
+        <p><a href="https://www.gotzendorfer.at/?utm_source=session-orchestrator&amp;utm_medium=footer&amp;utm_campaign=cross-promo" rel="author">More about Bernhard G&#246;tzendorfer</a></p>
+      </div>
+    </div>
+    <p class="fig-ai">Illustrations on this page: AI-generated (gpt-image-2).</p>
+  </div>
+</footer>
 
-  <footer class="foot">
-    <span>MIT</span>
-    <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
-    <a href="https://www.npmjs.com/package/session-orchestrator">npm</a>
-    <a href="/guide/">Guide</a>
-    <a href="https://www.gotzendorfer.at" rel="author">Maintainer</a>
-    <a href="/impressum/" class="right">Imprint</a>
-    <a href="/datenschutz/">Privacy</a>
-  </footer>
-</div>
-
-<script>
-(function () {
-  'use strict';
-
-  /* Copy buttons are CREATED here, not shipped in the markup: with
-     JavaScript off there is no button that silently does nothing.
-     Clipboard API first, execCommand fallback, and an aria-live line
-     so the result is announced rather than only coloured. */
-  var live = document.getElementById('copy-live');
-
-  function announce(msg) { if (live) { live.textContent = ''; live.textContent = msg; } }
-
-  function fallbackCopy(text) {
-    var ta = document.createElement('textarea');
-    ta.value = text;
-    ta.setAttribute('readonly', '');
-    ta.className = 'sr';
-    document.body.appendChild(ta);
-    ta.select();
-    var ok = false;
-    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
-    document.body.removeChild(ta);
-    return ok;
-  }
-
-  function flash(btn, ok) {
-    if (ok) {
-      btn.classList.add('is-done');
-      btn.textContent = 'copied';
-      announce('Copied to clipboard.');
-      window.setTimeout(function () {
-        btn.classList.remove('is-done');
-        btn.textContent = 'copy';
-      }, 1800);
-    } else {
-      announce('Copy failed. Select the command and copy it by hand.');
-    }
-  }
-
-  Array.prototype.forEach.call(document.querySelectorAll('.cmd'), function (host) {
-    var codeEl = host.querySelector('code');
-    if (!codeEl) { return; }
-    var btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'copy';
-    btn.textContent = 'copy';
-    btn.setAttribute('aria-label', 'Copy this command to the clipboard');
-    btn.addEventListener('click', function () {
-      var text = codeEl.textContent;
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(
-          function () { flash(btn, true); },
-          function () { flash(btn, fallbackCopy(text)); }
-        );
-      } else {
-        flash(btn, fallbackCopy(text));
-      }
-    });
-    host.appendChild(btn);
-  });
-})();
-</script>
-<!-- Vercel Web Analytics. Beides same-origin: das Skript liegt unter
-     /_vercel/insights/script.js auf DIESER Domain, der Beacon geht an
-     /_vercel/insights/view — deshalb traegt die CSP in vercel.json
-     (script-src 'self'; connect-src 'self') das ohne neuen Origin, und die
-     Zusage "keine Verbindungen zu Dritt-Servern" in /datenschutz bleibt wahr.
-     Der window.va-Stub ist die Warteschlange aus dem offiziellen HTML-Snippet;
-     er haelt Parity mit @vercel/analytics, das ihn ebenfalls immer setzt.
-     Deklariert in /datenschutz Punkt 04. Cookielos, kein localStorage. -->
-<script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>
-<script defer src="/_vercel/insights/script.js"></script>
+<script src="/_vercel/insights/script.js" defer></script>
+<script src="/assets/ui.js" defer></script>
+<script type="module" src="/assets/hero.js"></script>
 </body>
 </html>

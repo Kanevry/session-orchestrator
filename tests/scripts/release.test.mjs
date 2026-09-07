@@ -84,6 +84,8 @@ function writeFixture(root, v) {
       `<p>The wave executor shipped in v3.2.0 and has not changed shape since.</p>`,
       '',
     ].join('\n'),
+    // DE mirror of the landing page (2026-09-07): same cells, same single writer.
+    'site/de/index.html': `<p class="brand">session-orchestrator <span class="muted">v<span class="num" data-metric="version">${v}</span></span></p>\n`,
     'site/llms.txt': `Version: ${v} · npm: session-orchestrator\n`,
     'site/llms-full.txt': `Version ${v} · npm package: session-orchestrator\nVersion ${v} · 46 skills\n`,
     'package-lock.json': `{\n  "name": "session-orchestrator",\n  "version": "${v}",\n  "packages": { "": { "name": "session-orchestrator", "version": "${v}" } }\n}\n`,
@@ -185,7 +187,7 @@ describe('applyVersion', () => {
     expect(changed).toHaveLength(SURFACES.filter((s) => !s.checkOnly).length);
     // site/index.html stays stale here BY DESIGN — scripts/site-numbers.mjs
     // owns that write in the real --set-version flow. Scan it separately.
-    const rows = scanSurfaces(root, '3.19.0').filter((r) => r.file !== 'site/index.html');
+    const rows = scanSurfaces(root, '3.19.0').filter((r) => r.file !== 'site/index.html' && r.file !== 'site/de/index.html');
     expect(rows.filter((r) => !r.ok)).toEqual([]);
   });
 

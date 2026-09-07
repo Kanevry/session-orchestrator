@@ -1,0 +1,588 @@
+/* session-orchestrator.com design system
+   Single file, no build, no external requests.
+   Tokens and class names are fixed by docs/plans/2026-09-07-site-redesign-contract.md
+   (sections 2 and 3). Do not rename anything here without changing that file first. */
+
+/* ---------------------------------------------------------------
+   1. Fonts (self-hosted, latin subset, see /fonts/LICENSES.md)
+   --------------------------------------------------------------- */
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  src: url('/fonts/bricolage-grotesque-var.woff2') format('woff2');
+  font-weight: 200 800; font-style: normal; font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Source Sans 3';
+  src: url('/fonts/source-sans-3-var.woff2') format('woff2');
+  font-weight: 200 900; font-style: normal; font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('/fonts/ibm-plex-mono-400.woff2') format('woff2');
+  font-weight: 400; font-style: normal; font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('/fonts/ibm-plex-mono-500.woff2') format('woff2');
+  font-weight: 500; font-style: normal; font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* ---------------------------------------------------------------
+   2. Tokens
+   --------------------------------------------------------------- */
+:root{
+  --bg:            oklch(0.959 0.010 81.795);  /* #F5F1EA putty */
+  --surface:       oklch(1 0 0);               /* #FFFFFF */
+  --fg:            oklch(0.194 0.006 55.987);  /* #171412 */
+  --fg-2:          oklch(0.44 0.022 75.041);   /* #5A5145 muted text */
+  --line:          oklch(0.858 0.023 80.677);  /* #D8CFC0 hairline */
+  --accent:        oklch(0.346 0.074 256.04);  /* #1E3A5F ink-blue */
+  --accent-fg:     oklch(0.959 0.010 81.795);  /* #F5F1EA */
+  --signature:     oklch(0.346 0.074 256.04);  /* one full-bleed surface per page */
+  --signature-fg:  oklch(0.959 0.010 81.795);
+  --code-bg:       oklch(0.909 0.021 81.779);  /* #E8E0D2 sand */
+  --ring:          oklch(0.346 0.074 256.04);
+  --run:  #8a5a00; --hold: #a3301c; --pass: #1d6b39;   /* state colours, light */
+
+  --font-display: 'Bricolage Grotesque', 'Source Sans 3', system-ui, sans-serif;
+  --font-body:    'Source Sans 3', -apple-system, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono:    'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --text-display: clamp(2.25rem, 5vw, 3.5rem);
+  --text-h1: 2.5rem; --text-h2: 1.875rem; --text-h3: 1.25rem;
+  --text-lede: 1.1875rem;
+  --text-body: 1.0625rem;
+  --text-meta: 0.8125rem;
+  --text-code: 0.875rem;
+  --measure: 65ch; --measure-narrow: 46ch;
+
+  --radius: 8px;
+  --gap: 24px;
+  --sec-pad: clamp(48px, 7vw, 72px);
+}
+@media (prefers-color-scheme: dark){:root{
+  --bg:            oklch(0.207 0.008 67.392);  /* #1A1714 */
+  --surface:       oklch(0.244 0.011 60.947);  /* #241F1B */
+  --fg:            oklch(0.933 0.012 79.783);  /* #EDE8E0 */
+  --fg-2:          oklch(0.69 0.020 75.249);   /* #A39A8E */
+  --line:          oklch(0.295 0.008 75.257);  /* #2F2C28 */
+  --accent:        oklch(0.773 0.123 69.085);  /* #E8A657 amber */
+  --accent-fg:     oklch(0.207 0.008 67.392);
+  --signature:     oklch(0.52 0.100 256.04);   /* #406AA2 */
+  --signature-fg:  oklch(0.933 0.012 79.783);
+  --code-bg:       oklch(0.285 0.012 60.947);  /* Design H2: lifted off --surface */
+  --ring:          oklch(0.773 0.123 69.085);
+  --run:  #e8a33d; --hold: #f0705e; --pass: #5fbf82;
+}}
+
+/* ---------------------------------------------------------------
+   3. Base
+   --------------------------------------------------------------- */
+:root{ color-scheme: light dark; }
+*, *::before, *::after{ box-sizing: border-box; }
+html{ -webkit-text-size-adjust: 100%; scroll-behavior: smooth; scroll-padding-top: 5rem; }  /* Q3 MED-1 */
+body{
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: var(--text-body);
+  line-height: 1.6;
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+h1, h2, h3, h4{
+  font-family: var(--font-display);
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+  margin: 0 0 0.5em;
+  max-width: var(--measure);
+}
+h1{ font-size: var(--text-h1); }
+h2{ font-size: var(--text-h2); }
+h3{ font-size: var(--text-h3); line-height: 1.3; }
+p{ max-width: var(--measure); margin: 0 0 1em; }
+ul, ol{ max-width: var(--measure); }
+a{ color: var(--accent); text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+a:hover{ text-decoration-thickness: 2px; }
+code{ overflow-wrap: anywhere; }  /* Q3 MED-2 */
+img, svg, canvas, video{ max-width: 100%; }
+hr{ border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
+:focus-visible,
+a:focus-visible, button:focus-visible, summary:focus-visible,
+input:focus-visible, select:focus-visible, textarea:focus-visible,
+[tabindex]:focus-visible{
+  outline: 3px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+a, button, summary, .btn{ transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease; }
+
+/* ---------------------------------------------------------------
+   4. Layout
+   --------------------------------------------------------------- */
+.wrap{ max-width: 1180px; margin-inline: auto; padding-inline: 24px; }
+.grid-12{ display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: var(--gap); }
+.grid-12 > *{ min-width: 0; }  /* Design M6/H3: long code must not widen a column */
+.col-4{ grid-column: span 12; }
+.col-5{ grid-column: span 12; }
+.col-7{ grid-column: span 12; }
+.col-8{ grid-column: span 12; }
+@media (min-width: 760px){
+  .col-4{ grid-column: span 4; }
+  .col-5{ grid-column: span 5; }
+  .col-7{ grid-column: span 7; }
+  .col-8{ grid-column: span 8; }
+}
+.stack > * + *{ margin-top: 1rem; }
+.stack > h2 + *, .stack > h3 + *{ margin-top: 0.5rem; }
+.hr{ border: 0; border-top: 1px solid var(--line); margin: 0; height: 0; }
+.sec{ padding-block: var(--sec-pad); border-top: 1px solid var(--line); }
+.sec:first-of-type{ border-top: 0; }
+.sec.signature{
+  background: var(--signature);
+  color: var(--signature-fg);
+  border-top: 0;
+}
+.sec.signature h1, .sec.signature h2, .sec.signature h3, .sec.signature p{ color: var(--signature-fg); }
+.sec.signature a{ color: var(--signature-fg); text-decoration: underline; text-underline-offset: 3px; }
+.sec.signature .muted, .sec.signature .meta, .sec.signature .small{ color: var(--signature-fg); opacity: 0.85; }
+
+/* ---------------------------------------------------------------
+   5. Text roles
+   --------------------------------------------------------------- */
+.eyebrow{
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  margin: 0 0 0.75rem;
+}
+.eyebrow .num{ font-weight: 500; }
+.lede{ font-size: var(--text-lede); line-height: 1.6; color: var(--fg); max-width: var(--measure); }
+.meta{ font-size: var(--text-meta); color: var(--fg-2); }
+.marginalia{
+  font-size: var(--text-meta);
+  color: var(--fg-2);
+  max-width: var(--measure-narrow);
+  border-left: 1px solid var(--line);
+  padding-left: 12px;
+}
+.h-display{
+  font-family: var(--font-display);
+  font-size: var(--text-display);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  font-weight: 600;
+  margin: 0 0 0.4em;
+}
+.small{ font-size: var(--text-meta); }
+.muted{ color: var(--fg-2); }
+.num{ font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------------
+   6. Buttons
+   --------------------------------------------------------------- */
+.btn{
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 44px; padding: 10px 18px;
+  font-family: var(--font-body); font-size: var(--text-body); font-weight: 600;
+  line-height: 1.2;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: transparent; color: var(--fg);
+  text-decoration: none; cursor: pointer;
+}
+.actions{ display: flex; flex-wrap: wrap; gap: 8px; }  /* Design L8 */
+.actions .btn + .btn{ margin-left: 0; }
+.btn + .btn{ margin-left: 8px; }  /* Design L8 fallback outside .actions */
+.btn-primary{ background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.btn-primary:hover{ background: var(--fg); border-color: var(--fg); color: var(--bg); }
+.btn-secondary{ background: var(--surface); color: var(--fg); border-color: var(--line); }
+.btn-secondary:hover{ border-color: var(--accent); color: var(--accent); }
+.btn-tertiary{ background: transparent; border-color: transparent; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; padding-inline: 4px; }
+.btn-tertiary:hover{ color: var(--fg); }
+
+/* ---------------------------------------------------------------
+   7. Cards, steps, FAQ
+   --------------------------------------------------------------- */
+.card{
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: none;
+}
+.card > :last-child{ margin-bottom: 0; }
+.card{ min-width: 0; }
+.card > *{ max-width: 100%; }
+.cards{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: var(--gap);
+}
+@media (min-width: 760px){ .cards{ grid-template-columns: repeat(3, 1fr); } }
+
+/* Design M1: install steps are rows, not priced tiers. `.cards` keeps its grid
+   everywhere else; only #install opts out. */
+#install .cards{ display: block; }
+#install .card{
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: var(--gap);
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  padding: 24px 0;
+}
+#install .card:first-child{ border-top: 0; }
+/* coordinator W5: the row grid auto-placed every child alternately into the 260px
+   label column, clipping the first command of each tool. Only the tool name lives
+   in column 1; everything else stacks in column 2. */
+#install .card > h3{ grid-column: 1; grid-row: 1 / span 12; }
+#install .card > :not(h3){ grid-column: 2; }
+@media (max-width: 759px){ #install .card > h3, #install .card > :not(h3){ grid-column: 1; grid-row: auto; } }
+#install .card p{ font-size: var(--text-body); }  /* Design M7: not 13px kicker text */
+@media (max-width: 759.98px){
+  #install .card{ grid-template-columns: minmax(0, 1fr); gap: 12px; }
+}
+
+/* Metric tiles: many small numbers, so a tighter grid than the 3-up default.
+   The metrics grid is plain `.cards` inside #measured; `.cards.metrics` is
+   accepted too, so either markup lands on the same rules. */
+#measured .cards, .cards.metrics{ grid-template-columns: repeat(2, 1fr); gap: 12px; }
+@media (min-width: 600px){ #measured .cards, .cards.metrics{ grid-template-columns: repeat(3, 1fr); } }
+@media (min-width: 1024px){ #measured .cards, .cards.metrics{ grid-template-columns: repeat(5, 1fr); } }
+#measured .card, .cards.metrics .card{ padding: 14px 16px; }
+#measured .card .n, .cards.metrics .n{
+  font-family: var(--font-display);
+  font-size: var(--text-h2);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+#measured .card .l, .cards.metrics .l{
+  font-size: var(--text-meta);
+  color: var(--fg-2);
+  margin: 4px 0 0;
+}
+
+.steps{ counter-reset: step; list-style: none; margin: 0; padding: 0; max-width: none; }
+.step{
+  counter-increment: step;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--gap);
+  padding-block: 32px;
+  border-top: 1px solid var(--line);
+  align-items: start;
+}
+.step:first-child{ border-top: 0; }
+.step::before{
+  content: counter(step, decimal-leading-zero);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 2.5rem;
+  line-height: 1;
+  color: var(--fg-2);  /* Design M4: quieter than the eyebrow above it */
+  grid-column: 1;
+}
+/* Design M2: the numeral sits in its own 72px gutter, so a 3-line step no longer
+   leaves ~300px of dead space under the text. */
+@media (min-width: 760px){
+  .step{ grid-template-columns: 72px repeat(11, minmax(0, 1fr)); align-items: start; }
+  .step::before{ grid-column: 1; grid-row: 1; }
+  .step > *:not(.fig){ grid-column: 2 / span 6; }
+  .step > .fig{ grid-column: 8 / -1; grid-row: 1 / span 9; align-self: center; }
+}
+
+.steps .step > .fig{ max-width: 380px; margin-inline: auto; width: 100%; }
+
+.faq{ margin: 0; padding: 0; max-width: var(--measure); }
+.faq-item{ border-top: 1px solid var(--line); padding-block: 4px; }
+.faq-item:last-child{ border-bottom: 1px solid var(--line); }
+.faq-item > summary{
+  list-style: none;
+  cursor: pointer;
+  display: flex; align-items: center; gap: 12px;
+  min-height: 44px;
+  padding-block: 10px;
+  font-family: var(--font-display);
+  font-size: var(--text-h3);
+  font-weight: 600;
+}
+.faq-item > summary::-webkit-details-marker{ display: none; }
+.faq-item > summary::before{
+  content: "";
+  flex: 0 0 auto;
+  width: 14px; height: 14px;
+  background:
+    linear-gradient(var(--accent), var(--accent)) center / 14px 1.5px no-repeat,
+    linear-gradient(var(--accent), var(--accent)) center / 1.5px 14px no-repeat;
+}
+.faq-item[open] > summary::before{
+  background: linear-gradient(var(--accent), var(--accent)) center / 14px 1.5px no-repeat;
+}
+.faq-item[open] > summary{ border-bottom: 1px solid var(--line); }
+.faq-item > :not(summary){ padding-block: 8px; }
+
+/* ---------------------------------------------------------------
+   8. Tables
+   --------------------------------------------------------------- */
+.table, .kv, .proof{
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-body);
+  max-width: none;
+}
+.table th, .kv th, .proof th,
+.table td, .kv td, .proof td{
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.table th, .kv th, .proof th{
+  font-family: var(--font-body);
+  font-size: var(--text-meta);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-2);
+}
+.table-scroll, .kv-scroll, .proof-scroll{ overflow-x: auto; max-width: 100%; }
+.kv th{ width: 34%; text-transform: none; letter-spacing: 0; font-size: var(--text-body); color: var(--fg); }
+.proof td:last-child, .kv td code{ font-family: var(--font-mono); font-size: var(--text-code); }
+
+/* ---------------------------------------------------------------
+   9. Code
+   --------------------------------------------------------------- */
+.code{
+  background: var(--code-bg);
+  border: 1px solid var(--line);  /* Design H2 */
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--text-code);
+  line-height: 1.55;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  overflow-x: auto;
+  margin: 0 0 1rem;
+  max-width: 100%;
+}
+/* Design H1: the command scrolls, the button does not — it is pinned to the
+   right edge of the box instead of riding the same overflow track. */
+.cmd{
+  position: relative;
+  background: var(--code-bg);
+  border: 1px solid var(--line);  /* Design H2 */
+  font-family: var(--font-mono);
+  font-size: var(--text-code);
+  padding: 10px 76px 10px 14px;
+  border-radius: var(--radius);
+  max-width: 100%;
+  margin: 0 0 1rem;
+}
+.cmd > code, .cmd > span{ display: block; overflow-x: auto; white-space: nowrap; min-width: 0; }
+.copy{
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  min-height: 32px; padding: 4px 10px;
+  font-family: var(--font-body); font-size: var(--text-meta); font-weight: 600;
+  background: var(--surface); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 6px;
+  cursor: pointer;
+}
+.copy:hover{ border-color: var(--accent); color: var(--accent); }
+
+/* ---------------------------------------------------------------
+   10. Figures
+   --------------------------------------------------------------- */
+.fig{ margin: 0; }
+.fig img{ width: 100%; height: auto; border-radius: var(--radius); display: block;
+  border: 1px solid var(--line); }
+@media (prefers-color-scheme: dark){ .fig img{ filter: brightness(.92); } }
+.fig figcaption{ font-size: var(--text-meta); color: var(--fg-2); margin-top: 8px; }
+.fig-ai{ font-size: var(--text-meta); color: var(--fg-2); }
+
+/* ---------------------------------------------------------------
+   11. Hero
+   --------------------------------------------------------------- */
+#hero{
+  aspect-ratio: 16 / 9;
+  max-width: 100%;
+  border-radius: 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  position: relative;
+}
+#hero canvas{ display: block; width: 100%; height: 100%; }
+.hero-fallback{ width: 100%; height: auto; display: block; }
+.hero-alt{
+  list-style: none;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 12px 0 0; padding: 0;
+  font-size: var(--text-meta);
+  color: var(--fg-2);
+}
+.hero-alt li{ display: inline-flex; align-items: center; gap: 8px; }
+.hero-alt li:not(:last-child)::after{ content: "\2192"; color: var(--fg-2); }
+@media (min-width: 760px){
+  #hero{ aspect-ratio: 3.4 / 1; } /* coordinator W4: the ~9.6-unit row is width-fitted, so a slimmer box lets the scene fill ~50% of the height */
+}
+@media (max-width: 600px){  /* Design L6 */
+  #hero{ aspect-ratio: 4 / 3; }
+}
+
+/* ---------------------------------------------------------------
+   12. Header and footer
+   --------------------------------------------------------------- */
+.top{
+  position: sticky; top: 0; z-index: 20;
+  background: color-mix(in oklch, var(--bg) 92%, transparent);
+  backdrop-filter: saturate(1.4) blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+.top > .wrap{ display: flex; align-items: center; gap: 16px; min-height: 60px; flex-wrap: wrap; }
+.brand{
+  font-family: var(--font-display); font-weight: 600; font-size: 1.0625rem;
+  color: var(--fg); text-decoration: none; margin-right: auto;
+}
+a.brand:hover{ color: var(--accent); }  /* Design M5: p.brand must not react */
+.nav{ display: flex; align-items: center; gap: 18px; }
+.nav a{
+  color: var(--fg); text-decoration: none; font-size: var(--text-meta);
+}
+.nav a:hover{ color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.lang{ display: flex; align-items: center; gap: 8px; font-size: var(--text-meta); }
+.lang a, .foot a{ display: inline-block; min-height: 24px; padding-block: .25rem; }  /* Q3 MED-4 */
+.lang a{ color: var(--fg-2); text-decoration: none; }
+.lang a:hover{ color: var(--accent); }
+.lang a[aria-current], .lang a.active{ color: var(--fg); font-weight: 700; }
+.nav-menu{ position: relative; }
+.nav-menu > summary{
+  cursor: pointer; list-style: none; min-height: 44px;
+  display: flex; align-items: center; gap: 8px;
+  font-size: var(--text-meta);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 6px 10px;
+}
+.nav-menu > summary::-webkit-details-marker{ display: none; }
+.nav-menu > summary::after{ content: "Menu"; }
+/* Caret: two borders of an 8px square, rotated 45deg. */
+.nav-menu > summary::before{
+  content: "";
+  order: 2;
+  width: 8px; height: 8px;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+}
+.nav-menu[open] > summary::before{ transform: translateY(2px) rotate(-135deg); }
+.nav-menu[open] > .nav{ flex-direction: column; align-items: flex-start; gap: 10px; padding: 10px 0; }
+@media (max-width: 760px){
+  .top > .wrap{ min-height: 56px; }
+  .nav-menu:not([open]) .nav{ display: none; }
+  .nav-menu[open] .nav{ display: flex; }
+  .top > .wrap > .nav{ display: none; }
+}
+@media (min-width: 761px){
+  .nav-menu{ display: none; }
+}
+@media (min-width: 761px) and (max-width: 1023px){
+  .top > .wrap{ flex-wrap: nowrap; gap: 12px; }
+  .brand{ font-size: var(--text-meta); white-space: nowrap; }
+  .nav{ gap: 14px; }
+  .nav a{ font-size: var(--text-meta); white-space: nowrap; }
+}
+
+.foot{
+  border-top: 1px solid var(--line);
+  padding-block: 40px;
+  font-size: var(--text-meta);
+  color: var(--fg-2);
+}
+.foot a{ color: var(--fg-2); }
+.foot a:hover{ color: var(--accent); }
+.foot .cols{
+  display: grid; grid-template-columns: 1fr; gap: var(--gap);
+  margin-bottom: 24px;
+}
+@media (min-width: 760px){ .foot .cols{ grid-template-columns: repeat(3, 1fr); } }
+.foot .cols ul{ list-style: none; margin: 0; padding: 0; }
+.foot .cols li{ margin-bottom: 6px; }
+.foot .author{ color: var(--fg-2); max-width: var(--measure); }
+
+/* ---------------------------------------------------------------
+   13. Utilities
+   --------------------------------------------------------------- */
+.sr{
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+.skip{
+  position: absolute; left: -9999px; top: 0; z-index: 100;
+  background: var(--accent); color: var(--accent-fg);
+  padding: 10px 16px; border-radius: 0 0 var(--radius) 0;
+  text-decoration: none;
+}
+.skip:focus, .skip:focus-visible{ left: 0; }
+
+/* ---------------------------------------------------------------
+   14. Breakpoint adjustments
+   --------------------------------------------------------------- */
+@media (max-width: 760px){
+  /* Fixed layout keeps every cell inside the viewport instead of forcing an
+     intrinsic table width wider than the screen. */
+  .table, .kv{ table-layout: fixed; width: 100%; font-size: var(--text-meta); }
+  .table th, .table td, .kv th, .kv td{ padding: 8px 6px; overflow-wrap: anywhere; }
+  .kv th{ width: auto; }
+}
+@media (max-width: 600px){
+  h1{ font-size: 2rem; }
+  h2{ font-size: 1.5rem; }
+  .wrap{ padding-inline: 20px; }
+  .proof, .proof tbody, .proof tr, .proof td{ display: block; width: 100%; }
+  .proof thead{ position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); }
+  .proof tr{ border-bottom: 1px solid var(--line); padding-block: 8px; }
+  .proof td{ border-bottom: 0; padding: 4px 0; }
+  .proof td::before{
+    content: attr(data-label);
+    display: block;
+    font-size: var(--text-meta);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--fg-2);
+  }
+}
+@media (min-width: 1024px){
+  .marginalia{ font-size: var(--text-meta); }
+  .sec{ padding-block: var(--sec-pad); }
+}
+
+/* ---------------------------------------------------------------
+   15. Motion and print
+   --------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce){
+  html{ scroll-behavior: auto; }
+  *, *::before, *::after{
+    transition: none !important;
+    animation: none !important;
+  }
+}
+@media print{
+  body{ background: #fff; color: #000; }
+  .top, .foot, .skip{ position: static; }
+  #hero canvas, .copy{ display: none; }
+  a{ color: #000; }
+  .sec{ padding-block: 16px; border-top: 1px solid #000; }
+  .sec.signature{ background: #fff; color: #000; }
+  .card{ border: 1px solid #000; background: #fff; }
+}

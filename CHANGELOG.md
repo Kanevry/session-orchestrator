@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Public website redesigned (session-orchestrator.com): light-first design in the family look of the author's personal site (Bricolage Grotesque, Source Sans 3, IBM Plex Mono, all self-hosted; Archivo removed).
+- Two reading layers on the landing page: a plain-words layer for non-developers above a developer layer with install commands, the wave schedule, and the measured-claims table.
+- German landing page at `/de` with `hreflang` alternates (`en`, `de`, `x-default`), same section ids and census spans as the English page.
+- three.js hero (vendored `three@0.185.1`, two files: `three.module.min.js` + `three.core.min.js`), loaded via a lazy dynamic import skipped under `prefers-reduced-motion`, which renders the static `hero-fallback.svg` instead.
+- Six AI-generated illustrations (gpt-image-2), each captioned "AI-generated illustration (gpt-image-2)" in EN/DE.
+- FAQ section with `FAQPage` JSON-LD on both the EN and DE landing pages.
+- Author block linking to the personal site (root + `utm_source=session-orchestrator`), closing GitLab #1237.
+- `scripts/site-numbers.mjs` gained `npm-downloads-30d` and `github-stars`: fetched only under `--write` (5 s timeout, snapshot kept on failure), answered from the `site/_census.json` snapshot under `--check`; `SO_SITE_NUMBERS_OFFLINE=1` skips both metrics. Marker-bounded census blocks (`<!-- census:start -->` / `<!-- census:end -->`) added to `site/llms.txt` and `site/llms-full.txt` (GitLab #1080, points 1/3/5/6/7).
+- New tests: `tests/site/voice-gate.test.mjs` (em-dash, superlative, "we", emoji gate) and `tests/site/structure.test.mjs` (EN/DE parity, hreflang, asset presence, AI-illustration disclosure).
+- `vercel.json` cache headers for `/assets`, `/img`, `/vendor`; ESLint now ignores `site/vendor/**` (vendored three.js) and declares browser globals for `site/assets/**`.
+
 ## [4.0.0] - 2026-09-06
 
 > **A MAJOR, because public surfaces are REMOVED** (see *Removed (BREAKING)* below).
