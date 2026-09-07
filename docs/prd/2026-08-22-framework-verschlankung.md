@@ -13,7 +13,7 @@
 > Was von Revision 1 hält: die Messung 22/30, die Phasenzahlen, die 12 abgeschalteten Subsysteme, die Löschkandidaten — letztere um **6 von 8** gekürzt, weil sie die eigene Zwei-Signale-Regel nicht bestanden.
 > Das Ergebnis ist ein kleineres, richtigeres Dokument. Das Änderungsprotokoll steht am Ende.
 
-> Schwester-Dokument zu [`2026-08-22-wellen-supervision.md`](./2026-08-22-wellen-supervision.md). Bewusst getrennt: die Befunde hier haben null Überschneidung mit Supervision und hängen nicht an deren Messung.
+> Schwester-Dokument zu `2026-08-22-wellen-supervision.md` (geliefert mit Epic 1113 — bewusst ohne `#`, siehe Warnung oben — und am 2026-08-28 aus `docs/prd/` in den privaten Meta-Vault archiviert — `01-projects/session-orchestrator/prd/`; kein Repo-Pfad mehr). Bewusst getrennt: die Befunde hier haben null Überschneidung mit Supervision und hängen nicht an deren Messung.
 
 ---
 

@@ -48,7 +48,7 @@ import { AGENT_ID_RE, resolveSubagentSidecar } from './_lib/subagent-paths.mjs';
 if (!shouldRunHook('on-stop')) process.exit(0);
 
 import { emitEvent } from '../scripts/lib/events.mjs';
-import { getProjectDir } from '../scripts/lib/platform.mjs';
+import { detectPlatform, getProjectDir } from '../scripts/lib/platform.mjs';
 import { parseSessionId } from '../scripts/lib/session-id.mjs';
 import { heartbeat, logSweepEvent } from '../scripts/lib/session-registry.mjs';
 import { readLock, updateHeartbeat } from '../scripts/lib/session-lock.mjs';
@@ -772,7 +772,7 @@ async function main() {
       await handleStop(input);
     } finally {
       // terminalSequence is only meaningful for Stop (session-level) events.
-      process.stdout.write(buildTerminalSequenceJson());
+      process.stdout.write(buildTerminalSequenceJson(detectPlatform()));
     }
   }
 }
@@ -782,14 +782,35 @@ async function main() {
 // ---------------------------------------------------------------------------
 
 /**
+ * Display label per harness, keyed exactly like PLATFORM_UPDATE_INSTRUCTIONS in
+ * `scripts/lib/plugin-update-banner.mjs`.
+ * @type {Record<string, string>}
+ */
+const PLATFORM_NOTIFY_LABELS = {
+  claude: 'Claude Code',
+  codex:  'Codex',
+  cursor: 'Cursor',
+  pi:     'Pi',
+};
+
+/**
  * Emit a cross-platform desktop notification via the CC 2.1.141+ terminalSequence
  * output field. Supports OSC 9 (iTerm2, Windows Terminal, WezTerm, ConEmu) and
  * OSC 777 (Ghostty, urxvt, Warp). Both sequences are emitted together; unsupported
  * terminals silently ignore. Returns the JSON string to write to stdout.
+ * Pure: the caller resolves the platform, so this stays unit-testable.
+ * @param {string} [platform] - resolved harness key ('claude'|'codex'|'cursor'|'pi')
  * @returns {string}
  */
-function buildTerminalSequenceJson() {
-  const title = 'Claude Code';
+function buildTerminalSequenceJson(platform) {
+  // #1254: the notification LABEL follows the harness the session runs on.
+  // This is NOT in tension with the "Do NOT add a platform-detecting deregister
+  // branch here" note above — that note is scoped to DEREGISTRATION (the
+  // two-teardown-paths shape Epic #583 removed); a display label has no
+  // teardown semantics at all. Keys mirror PLATFORM_UPDATE_INSTRUCTIONS in
+  // scripts/lib/plugin-update-banner.mjs; unknown/undefined falls back to
+  // 'Claude Code' (the same signal-free default detectPlatform() returns).
+  const title = PLATFORM_NOTIFY_LABELS[platform] ?? 'Claude Code';
   const body  = 'Session stopped — your turn';
   const osc9   = `\x1b]9;${title}: ${body}\x07`;
   const osc777 = `\x1b]777;notify;${title};${body}\x07`;

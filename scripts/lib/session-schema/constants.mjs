@@ -5,7 +5,8 @@
  * Leaf module — no imports from siblings or parent.
  *
  * Exports: CURRENT_SESSION_SCHEMA_VERSION, SESSION_KEY_ALIASES,
- *          VALID_SESSION_TYPES, REQUIRED_FIELDS, AGENT_SUMMARY_FIELDS
+ *          VALID_SESSION_TYPES, VALID_SESSION_PROFILES, REQUIRED_FIELDS,
+ *          AGENT_SUMMARY_FIELDS
  */
 
 // ---------------------------------------------------------------------------
@@ -83,6 +84,38 @@ export const SESSION_KEY_ALIASES = Object.freeze({
 export const VALID_SESSION_TYPES = Object.freeze(['feature', 'deep', 'housekeeping', 'unknown']);
 
 /**
+ * CLOSED set of valid `session_profile` values — the SSOT for this enum
+ * (GitLab #1252). `scripts/lib/telemetry/schema.mjs` re-exports this constant
+ * rather than defining a second literal; `server/ingest/validate.mjs`
+ * `SESSION_PROFILES` is a deliberate MIRROR (the server tree must not import
+ * from `scripts/`) held in lockstep by `tests/telemetry/parity.test.mjs`.
+ *
+ * A profile names a WAVE-SHAPE variant on top of an UNCHANGED `session_type`:
+ * an ultradeep session is `session_type: "deep"` PLUS
+ * `session_profile: "ultradeep"` — never `session_type: "ultradeep"`.
+ * PRD: docs/prd/2026-09-06-ultradeep-session-profile.md. Writer:
+ * `commands/session.md` § "Argument alias: ultradeep" → STATE.md frontmatter
+ * `session-profile`; wave shape: `skills/session-plan/SKILL.md`.
+ *
+ * DELIBERATELY NOT A MEMBER of VALID_SESSION_TYPES above: that set is consumed
+ * by `scripts/lib/telemetry/schema.mjs` (an unlisted type → 'other') and by
+ * `scripts/lib/wave-sizing.mjs` (an unlisted type → TypeError), where a new
+ * MODE would be MISLABELLED rather than rejected. That reasoning is unchanged
+ * by the `unknown` member: `unknown` is the absence of a measurement, not a
+ * mode, and nothing dispatches on it.
+ *
+ * WHY A WHITELIST AND NOT A REGEX: the value is copied from repo-authored
+ * STATE.md frontmatter, i.e. it is the only usage-ping field whose VALUE is
+ * free text. Two Wave-1 reviewers reproduced the leak end-to-end (2026-09-06):
+ * `session-profile: client-acme-private-repo` travelled verbatim to the ingest
+ * server's `raw_json`. A shape regex does not close it — that string already
+ * passes any lowercase-and-hyphens pattern. Only an enumeration of names that
+ * are public BY CONSTRUCTION does. Adding a profile therefore means a reviewed
+ * edit HERE and in the server mirror.
+ */
+export const VALID_SESSION_PROFILES = Object.freeze(['ultradeep']);
+
+/**
  * Required fields for a schema_version=1 record. Validated by validateSession
  * before any write reaches disk.
  */
@@ -154,15 +187,9 @@ export const OPTIONAL_FIELDS = Object.freeze([
   // into a note a human reads" ⊃ "schema-valid". A record missing it is a clean
   // vault-mirror skip, NOT a malformed record.
   'effectiveness',
-  // PRD docs/prd/2026-09-06-ultradeep-session-profile.md — `session_profile`
-  // names a WAVE-SHAPE variant on top of an unchanged `session_type`. It is
-  // additive and optional on purpose: `ultradeep` is deliberately NOT a member
-  // of VALID_SESSION_TYPES above, because that set is mirrored in
-  // scripts/lib/telemetry/schema.mjs (an unlisted type -> 'other') and in
-  // scripts/lib/wave-sizing.mjs (an unlisted type -> TypeError), where a new
-  // MODE would be MISLABELLED rather than rejected. That reasoning is unchanged
-  // by the `unknown` member added above: `unknown` is the absence of a
-  // measurement, not a mode, and nothing dispatches on it. Every historical
-  // record lacking the field validates unchanged.
+  // `session_profile` — a WAVE-SHAPE variant on top of an unchanged
+  // `session_type`. Additive and optional on purpose: every historical record
+  // lacking the field validates unchanged. Value set + the full rationale for
+  // why it is NOT a VALID_SESSION_TYPES member: VALID_SESSION_PROFILES above.
   'session_profile',
 ]);

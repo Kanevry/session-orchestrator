@@ -169,6 +169,18 @@ export const PROBES = [
     // rationale.
   },
   {
+    id: 'telemetry-flush-health',
+    spec: local('./telemetry-flush-health-banner.mjs'),
+    fn: 'checkTelemetryFlushHealth',
+    network: false,
+    args: ({ repoRoot }) => ({ repoRoot }),
+    // No custom render/severityOf: the probe returns `{severity:'warn',
+    // message}` — exactly the shape the module-level defaults below read. It
+    // reports the LAST `orchestrator.telemetry.flush` record when that record
+    // is a `sandbox:*` refusal (#1255); the refusal reached the ledger and
+    // nothing else before this entry existed.
+  },
+  {
     id: 'ci-status',
     spec: local('./ci-status-banner.mjs'),
     fn: 'checkCiStatus',

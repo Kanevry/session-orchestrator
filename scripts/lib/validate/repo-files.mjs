@@ -179,6 +179,37 @@ function walk(absDir, matches, exclude, acc = []) {
 }
 
 /**
+ * Error codes that mean "this tracked path is not in the working tree" — a
+ * sparse checkout, or a deletion staged from somewhere else. Both are ordinary
+ * repository states, so the path is dropped from the census silently.
+ *
+ * Every OTHER stat error (EACCES on an unreadable parent, EIO, ELOOP, ENAMETOOLONG)
+ * describes a filesystem the caller cannot enumerate. Swallowing those returned a
+ * SHORTER census that looked exactly like a smaller repository, which is the
+ * failure mode a scanner can neither see nor report.
+ */
+const ABSENT_FROM_WORKTREE = Object.freeze(['ENOENT', 'ENOTDIR']);
+
+/**
+ * True when `absolute` is a regular file present in the working tree; false
+ * when it is absent for one of the {@link ABSENT_FROM_WORKTREE} reasons.
+ * Rethrows every other stat error.
+ *
+ * @param {string} absolute
+ * @returns {boolean}
+ */
+function isPresentFile(absolute) {
+  try {
+    return statSync(absolute).isFile();
+  } catch (err) {
+    if (ABSENT_FROM_WORKTREE.includes(/** @type {NodeJS.ErrnoException} */ (err).code)) {
+      return false;
+    }
+    throw err;
+  }
+}
+
+/**
  * Resolve the `dirs` option to absolute directories under `root`.
  * `'.'` (or an empty list) means the root itself.
  * @param {string} root
@@ -212,33 +243,36 @@ export function listRepoFiles(root, options = {}) {
 
   if (isGitToplevel(root, env)) {
     const pathspecs = dirs && dirs.length > 0 ? dirs.filter((d) => d !== '.') : [];
+    /** @type {string | null} */
+    let out = null;
     try {
-      const out = execFileSync('git', ['ls-files', '-z', '--', ...pathspecs], {
+      out = execFileSync('git', ['ls-files', '-z', '--', ...pathspecs], {
         cwd: root,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
         maxBuffer: 64 * 1024 * 1024,
         env,
       });
+    } catch {
+      // fall through to the walk — a git that answered rev-parse but failed
+      // ls-files leaves us with no index to trust.
+      //
+      // This catch covers the `ls-files` INVOCATION only. The census below is
+      // deliberately outside it: a stat error there is not "git has no index",
+      // and folding the two together would turn an unreadable working tree
+      // into a silent full-repo re-walk.
+      //
+      // `out` keeps its `null` initialiser here — no reassignment, so the
+      // `out !== null` test below is the single place the two paths diverge.
+    }
+    if (out !== null) {
       return out
         .split('\0')
         .filter(Boolean)
         .map((rel) => path.join(root, rel))
         .filter(matches)
-        // A tracked path can be absent from the working tree (sparse checkout,
-        // a deletion staged elsewhere). A scanner that then read it would
-        // report a tool-error for a file nobody removed.
-        .filter((absolute) => {
-          try {
-            return statSync(absolute).isFile();
-          } catch {
-            return false;
-          }
-        })
+        .filter(isPresentFile)
         .sort();
-    } catch {
-      // fall through to the walk — a git that answered rev-parse but failed
-      // ls-files leaves us with no index to trust.
     }
   }
 

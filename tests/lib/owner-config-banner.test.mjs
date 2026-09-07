@@ -11,6 +11,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { checkOwnerConfig } from '@lib/owner-config-banner.mjs';
+import { getDefaults, OPTIONAL_OBJECT_SECTIONS } from '@lib/owner-yaml.mjs';
 
 describe('checkOwnerConfig — clean load (no banner)', () => {
   it('returns null when source is "file" with no drops or warnings', () => {
@@ -148,5 +149,39 @@ describe('checkOwnerConfig — throwing loader (never throws)', () => {
     };
     expect(() => checkOwnerConfig({ loader })).not.toThrow();
     expect(checkOwnerConfig({ loader })).toBe(null);
+  });
+});
+
+describe('checkOwnerConfig — survived-section set parity with owner-yaml.mjs (#1262.4)', () => {
+  // Bug this catches: the banner used to carry a hand-mirrored copy of
+  // owner-yaml.mjs's unexported OPTIONAL_OBJECT_SECTIONS. If that copy drifts
+  // (a section added to owner-yaml.mjs but not to the banner, or vice versa),
+  // the #1244 discard-branch message names the wrong set — it would either
+  // claim a section was defaulted while it is live, or credit a section
+  // owner-yaml.mjs never merges. Driving every exported section AND one name
+  // outside the set through the discard branch pins both directions.
+  it('names every OPTIONAL_OBJECT_SECTIONS entry that survived, and no section outside the set', () => {
+    const defaults = getDefaults();
+    const config = JSON.parse(JSON.stringify(defaults));
+    // Make each exported optional-object section differ from its default.
+    for (const name of OPTIONAL_OBJECT_SECTIONS) {
+      config[name] = { ...defaults[name], 'so-1262-probe': 'differs-from-default' };
+    }
+    // A section OUTSIDE the exported set, likewise differing from its default.
+    config.tone = { style: 'direct', tonality: 'probe' };
+
+    const loader = () => ({
+      config,
+      source: 'defaults',
+      errors: ['owner.name is required and must be a non-empty string'],
+    });
+    const result = checkOwnerConfig({ loader });
+
+    expect(result.discarded).toBe(true);
+    for (const name of OPTIONAL_OBJECT_SECTIONS) {
+      expect(result.message).toContain(`"${name}"`);
+    }
+    expect(result.message).not.toContain('"tone"');
+    expect(result.message).toContain('kept, everything else defaulted');
   });
 });

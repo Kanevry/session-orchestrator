@@ -45,10 +45,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { execSync } from 'node:child_process';
+import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 import { runQualityGateWithRetry } from '@lib/quality-gate.mjs';
 
@@ -65,23 +64,23 @@ let repoRoot;
 let savedEnv;
 
 beforeEach(() => {
-  repoRoot = mkdtempSync(join(tmpdir(), 'qg-corrective-ctx-'));
+  repoRoot = makeTmpDir('qg-corrective-ctx-');
   mkdirSync(join(repoRoot, '.orchestrator', 'metrics', 'verification-failures'), {
     recursive: true,
   });
-  execSync('git init -q', { cwd: repoRoot });
-  execSync('git config user.email "test@test.local"', { cwd: repoRoot });
-  execSync('git config user.name "Test"', { cwd: repoRoot });
+  fixtureGit(['init', '-q'], repoRoot);
+  fixtureGit(['config', 'user.email', 'test@test.local'], repoRoot);
+  fixtureGit(['config', 'user.name', 'Test'], repoRoot);
   writeFileSync(join(repoRoot, 'A.txt'), 'a', 'utf8');
-  execSync('git add .', { cwd: repoRoot });
-  execSync('git commit -m init -q', { cwd: repoRoot });
+  fixtureGit(['add', '.'], repoRoot);
+  fixtureGit(['commit', '-m', 'init', '-q'], repoRoot);
   savedEnv = process.env[ENV_KEY];
 });
 
 afterEach(() => {
   if (savedEnv === undefined) delete process.env[ENV_KEY];
   else process.env[ENV_KEY] = savedEnv;
-  rmSync(repoRoot, { recursive: true, force: true });
+  removeTree(repoRoot);
 });
 
 /**

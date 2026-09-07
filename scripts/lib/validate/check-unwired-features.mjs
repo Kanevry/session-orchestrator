@@ -140,6 +140,31 @@
  * census behind `--list` — see `runCheckUnwiredFeatures`. The `findings` array
  * always carries every finding, so no programmatic consumer loses data.
  *
+ * ### S4 category split, measured 2026-09-07 (#1239)
+ *
+ * The single S4 class had grown into a broken instrument. Live run at that date
+ * (`node scripts/lib/validate/check-unwired-features.mjs . --list`) reported 53
+ * findings: S1=0, S2=0, S3=1, S4=52. Classifying the 52 by hand:
+ *
+ *   - **46 (88.5%)** were named by an INSTRUCTION surface (`skills/`, `commands/`,
+ *     `agents/`, `.claude/rules/`) that ALSO named at least one of the module's
+ *     exported symbols — i.e. an LLM is told to call it. That is this plugin's
+ *     architecture, not a defect, and a class firing on 88.5% of its own
+ *     population is what `.claude/rules/host-resources.md` § HR-101 forbids.
+ *     They are now `coordinator-invoked-module`, an ADVISORY kind: aggregated
+ *     into one CLI line, never a per-module WARN, and it does not change the
+ *     exit code (which was already 0 — see § Mode below).
+ *   - **1** was a corpus gap: `scripts/lib/vault-sync-baseline.mjs` is statically
+ *     imported by `skills/vault-sync/validator.mjs:71`, but `skills/**` was not an
+ *     edge source. Fixed by `S4_EDGE_DIRS` — code under `skills/` is code.
+ *   - **5** were true positives and remain `unreachable-library-module`.
+ *
+ * After the split, on the same tree: 5 unreachable, 46 coordinator-invoked, exit
+ * 0 unchanged. Per `.claude/rules/development.md` § Guard & Threshold Design this
+ * is a category separation, never a raised threshold — nothing is suppressed,
+ * both classes stay in `findings`, and either half collapsing to zero is itself
+ * pinned by a test.
+ *
  * ## Consumer scope, and why "prose-only" is a finding rather than an error
  *
  * Read sites are counted in `scripts/**` and `hooks/**` (`.mjs`/`.js`/`.cjs`),
@@ -212,6 +237,35 @@ const INSTRUCTION_FILES = Object.freeze(['CLAUDE.md', 'AGENTS.md']);
 
 /** Directories whose code counts as a runtime consumer. */
 const CONSUMER_DIRS = Object.freeze(['scripts', 'hooks']);
+
+/**
+ * S4-only EDGE sources: directories whose `.mjs` files are real code with real
+ * static imports, but which are not themselves S4 candidates.
+ *
+ * `skills/**\/*.mjs` is the measured instance. `skills/vault-sync/validator.mjs:71`
+ * statically imports `scripts/lib/vault-sync-baseline.mjs`, yet before 2026-09-07
+ * `skills/` was not walked at all, so that import was invisible and the imported
+ * module was reported unreachable — a CORPUS GAP, not a defect in the module.
+ *
+ * They are edge sources only: their own reachability is not judged here (a skill
+ * body invokes them by path, which is the same design boundary CLI entrypoints
+ * get), so they seed the walk and never appear in a finding. This does NOT make
+ * `skills/` a prose surface for S4 — markdown under `skills/` still names, never
+ * calls.
+ */
+const S4_EDGE_DIRS = Object.freeze(['skills']);
+
+/**
+ * INSTRUCTION surfaces: the directories whose markdown addresses an LLM that
+ * will act on it. Used only to split the S4 census (see
+ * `collectUnreachableLibraryModules` § Category split).
+ */
+const INSTRUCTION_DIRS = Object.freeze([
+  'skills',
+  'commands',
+  'agents',
+  path.join('.claude', 'rules'),
+]);
 
 /** Extensions that can hold a runtime read site. */
 const CODE_EXTENSIONS = Object.freeze(['.mjs', '.js', '.cjs']);
@@ -317,6 +371,7 @@ const ALLOWLIST = Object.freeze({
  * @typedef {{
  *   kind: 'unwired-config-key' | 'parser-orphan-config-key' | 'allowlist-missing-reason'
  *       | 'allowlist-stale' | 'orphaned-prose-module' | 'unreachable-library-module'
+ *       | 'coordinator-invoked-module'
  *       | 'tool-error',
  *   key: string,
  *   message: string,
@@ -738,7 +793,10 @@ function mentionedModuleTokens(lines) {
  *    one, which is the right direction for a check whose failure mode is being
  *    switched off. Revisit if a real module-resolver (import-specifier resolution
  *    relative to the importing file) becomes cheap, or if a collided basename is
- *    ever confirmed to mask a true positive.
+ *    ever confirmed to mask a true positive. The `coordinator-invoked-module`
+ *    DOWNGRADE is exempt: there a colliding basename must be named with its
+ *    `dirname/base` suffix, because that match moves a module OUT of the
+ *    reportable class and would otherwise hide a true unreachable sibling.
  *  - **Reachable ≠ executed.** A module imported by a hook that never takes that
  *    branch reads as wired here. Proving execution needs coverage data, not a graph.
  *  - **Reachable from SOME entrypoint is not reachable from the PROMISED one.**
@@ -755,14 +813,21 @@ function mentionedModuleTokens(lines) {
  * @returns {{findings: Finding[], scanned: {modules: number, roots: number, unreachable: number}}}
  */
 export function collectUnreachableLibraryModules(pluginRoot) {
-  const absolute = CONSUMER_DIRS.flatMap((dir) => walkCode(path.join(pluginRoot, dir))).sort();
-  const modules = absolute.map((file) => {
+  const candidates = CONSUMER_DIRS.flatMap((dir) => walkCode(path.join(pluginRoot, dir)))
+    .sort()
+    .map((file) => ({ file, edgeOnly: false }));
+  // Edge-only sources contribute imports without being judged (see S4_EDGE_DIRS).
+  const edges = S4_EDGE_DIRS.flatMap((dir) => walkCode(path.join(pluginRoot, dir)))
+    .sort()
+    .map((file) => ({ file, edgeOnly: true }));
+  const modules = [...candidates, ...edges].map(({ file, edgeOnly }) => {
     const body = readFileSync(file, 'utf8');
     const lines = body.split('\n');
     const relative = path.relative(pluginRoot, file);
     return {
       relative,
       base: path.basename(file),
+      edgeOnly,
       entrypoint: isCliEntrypoint(body),
       exports: collectExportedSymbols(body),
       // This file contributes NO edges — the S4 counterpart of the SELF_REL
@@ -791,7 +856,7 @@ export function collectUnreachableLibraryModules(pluginRoot) {
   /** @type {string[]} */
   const stack = [];
   for (const module of modules) {
-    if (!module.entrypoint && !wiringTokens.has(module.base)) continue;
+    if (!module.edgeOnly && !module.entrypoint && !wiringTokens.has(module.base)) continue;
     reachable.add(module.relative);
     stack.push(module.relative);
   }
@@ -816,7 +881,63 @@ export function collectUnreachableLibraryModules(pluginRoot) {
       !unreachable.some((other) => other.relative !== module.relative && other.mentions.has(module.base)),
   );
 
+  // Category split (see § Category split in the doc block above): an INSTRUCTION
+  // document that names both the module AND one of its exported symbols is an
+  // order addressed to a reader who will execute it — the same grammar
+  // discriminator S3 condition 5 uses, applied here to separate the plugin's
+  // architecture from the defect. Prose corpus is instruction surfaces only.
+  const instructionDocs = INSTRUCTION_DIRS.flatMap((dir) =>
+    walkCode(path.join(pluginRoot, dir), [], PROSE_EXTENSIONS, PROSE_EXCLUDED_DIRS),
+  )
+    .filter((file) => !PROSE_EXCLUDED_FILES.includes(path.basename(file)))
+    .sort()
+    .map((file) => ({ relative: path.relative(pluginRoot, file), body: readFileSync(file, 'utf8') }));
+
+  // Basename census for the downgrade half. A bare basename is only a valid
+  // module reference when it is UNIQUE in the corpus: `writer.mjs` names both
+  // `peer-cards/writer.mjs` and `reconcile/writer.mjs` (measured 2026-09-07),
+  // so a doc naming ONE of them would otherwise downgrade BOTH out of the
+  // reportable class — a true unreachable silently moved into the advisory
+  // half. For a colliding basename the doc must therefore carry at least the
+  // `dirname/base` suffix (`reconcile/writer.mjs`); unique basenames keep the
+  // cheaper bare match. Direction matters: this can only ever ADD findings back
+  // to the reportable class, never remove one.
+  /** @type {Map<string, number>} */
+  const basenameCount = new Map();
+  for (const module of modules) basenameCount.set(module.base, (basenameCount.get(module.base) ?? 0) + 1);
+
+  let coordinatorInvoked = 0;
   const findings = roots.map((module) => {
+    // Docs write POSIX separators regardless of host; `path.relative` does not.
+    const relativePosix = module.relative.split(path.sep).join('/');
+    const qualified = relativePosix.split('/').slice(-2).join('/');
+    const ambiguous = (basenameCount.get(module.base) ?? 0) > 1;
+    // Whole-token match, not substring: `body.includes('writer.mjs')` also fires
+    // inside `config-writer.mjs`, which downgrades a genuinely unreachable
+    // module into the advisory class on a doc that never named it. `tokenMatcher`
+    // is the same boundary the export half already uses (it rejects
+    // `[A-Za-z0-9_$-]` on either side), applied to the module reference.
+    const nameRe = tokenMatcher(ambiguous ? qualified : module.base);
+    const namesThisModule = (/** @type {string} */ body) => nameRe.test(body);
+    const invokers = instructionDocs.filter(
+      (doc) =>
+        namesThisModule(doc.body) &&
+        module.exports.some((symbol) => tokenMatcher(symbol).test(doc.body)),
+    );
+    if (invokers.length > 0) {
+      coordinatorInvoked += 1;
+      return /** @type {Finding} */ ({
+        kind: 'coordinator-invoked-module',
+        key: module.relative,
+        message:
+          `no hook, npm script, CI job or husky stage reaches it, but ${invokers
+            .slice(0, 2)
+            .map((doc) => doc.relative)
+            .join(' + ')} instructs a coordinator to call ` +
+          `${module.exports.slice(0, 3).join(', ')} — advisory: LLM-dispatch IS this plugin's ` +
+          'architecture. Re-check only if that instruction is ever removed',
+      });
+    }
     const dragged = [...module.mentions].filter(
       (token) => token !== module.base && [...unreachableSet].some((rel) => path.basename(rel) === token),
     );
@@ -826,14 +947,19 @@ export function collectUnreachableLibraryModules(pluginRoot) {
       key: module.relative,
       message:
         `exports ${module.exports.length} symbol(s) (${module.exports.slice(0, 3).join(', ')}) but no hook, ` +
-        `npm script, CI job or husky stage reaches it — transitively${tail}. Only markdown names it, and ` +
-        'prose is an instruction to an LLM, not a caller: wire it, delete it, or allowlist it with a reason',
+        `npm script, CI job or husky stage reaches it — transitively${tail}. No instruction surface names ` +
+        'one of its exports either: wire it, delete it, or allowlist it with a reason',
     });
   });
 
   return {
     findings,
-    scanned: { modules: modules.length, roots: roots.length, unreachable: unreachable.length },
+    scanned: {
+      modules: modules.length,
+      roots: roots.length,
+      unreachable: unreachable.length,
+      coordinatorInvoked,
+    },
   };
 }
 
@@ -844,7 +970,8 @@ export function collectUnreachableLibraryModules(pluginRoot) {
  * @returns {{
  *   ok: boolean,
  *   summary: {declaredKeys: number, consumerFiles: number, unwired: number, allowlisted: number,
- *             orphanedModules: number},
+ *             orphanedModules: number, unreachableModules: number,
+ *             coordinatorInvokedModules: number},
  *   sourcesScanned: string[],
  *   findings: Finding[],
  *   toolError: boolean,
@@ -862,6 +989,7 @@ export function inspectUnwiredFeatures(pluginRoot) {
       allowlisted: 0,
       orphanedModules: 0,
       unreachableModules: 0,
+      coordinatorInvokedModules: 0,
     },
     /** @type {string[]} */
     sourcesScanned: [],
@@ -972,7 +1100,8 @@ export function inspectUnwiredFeatures(pluginRoot) {
       flagged.add(finding.key);
       continue;
     }
-    result.summary.unreachableModules += 1;
+    if (finding.kind === 'coordinator-invoked-module') result.summary.coordinatorInvokedModules += 1;
+    else result.summary.unreachableModules += 1;
     findings.push(finding);
   }
 
@@ -1011,8 +1140,15 @@ export function runCheckUnwiredFeatures(pluginRoot, { list = false } = {}) {
     return 2;
   }
 
-  const { declaredKeys, consumerFiles, unwired, allowlisted, orphanedModules, unreachableModules } =
-    inspection.summary;
+  const {
+    declaredKeys,
+    consumerFiles,
+    unwired,
+    allowlisted,
+    orphanedModules,
+    unreachableModules,
+    coordinatorInvokedModules,
+  } = inspection.summary;
 
   // S4 is a BACKLOG, not a per-run alarm: 50 findings on the live tree against
   // 1-2 WARN lines from every sibling check. Printing all 50 every run is the
@@ -1020,11 +1156,24 @@ export function runCheckUnwiredFeatures(pluginRoot, { list = false } = {}) {
   // file's own header names. So the default carries the NUMBER (which ratchets,
   // and which a reviewer can compare run to run) plus the first few paths; the
   // full census is one `--list` away. Nothing is suppressed — only deferred.
+  //
+  // `coordinator-invoked-module` is deferred on the SAME terms and for a stronger
+  // reason: it is not a backlog but an ADVISORY class describing this plugin's
+  // architecture — an instruction surface tells an LLM to call the module.
+  // Measured 2026-09-07: 46 of the 52 findings the single S4 class carried.
+  // Printing 46 WARN lines for the design is the broken instrument HR-101 forbids.
+  const DEFERRED = Object.freeze(['unreachable-library-module', 'coordinator-invoked-module']);
   const s4 = inspection.findings.filter((item) => item.kind === 'unreachable-library-module');
   for (const item of inspection.findings) {
-    if (!list && item.kind === 'unreachable-library-module') continue;
+    if (!list && DEFERRED.includes(item.kind)) continue;
     console.log(`  WARN: [${item.kind}] ${item.key} — ${item.message}`);
   }
+  // No aggregate WARN for the advisory class: it describes this plugin's
+  // architecture and therefore fires on every run with no action attached — the
+  // 100%-firing instrument `.claude/rules/host-resources.md` HR-101 forbids,
+  // which only trains the operator to skim past the sibling WARNs that DO act.
+  // The PASS line below still carries its count (it ratchets, run to run), and
+  // `--list` still prints the per-module census.
   if (!list && s4.length > 0) {
     console.log(
       `  WARN: [unreachable-library-module] ${s4.length} library module(s) that no hook, npm script, ` +
@@ -1036,7 +1185,8 @@ export function runCheckUnwiredFeatures(pluginRoot, { list = false } = {}) {
   console.log(
     `  PASS: censused ${declaredKeys} declared key(s) from ${inspection.sourcesScanned.join(' + ') || '(no source)'} ` +
       `against ${consumerFiles} consumer file(s) — ${unwired} unwired, ${allowlisted} allowlisted, ` +
-      `${orphanedModules} prose-orphaned module(s), ${unreachableModules} unreachable module(s)`,
+      `${orphanedModules} prose-orphaned module(s), ${unreachableModules} unreachable module(s), ` +
+      `${coordinatorInvokedModules} coordinator-invoked module(s)`,
   );
   console.log('');
   console.log('Results: 1 passed, 0 failed');

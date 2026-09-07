@@ -26,9 +26,9 @@
 
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, cpSync, symlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, cpSync, symlinkSync, realpathSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 // #661: the scanner now exports its canonicalization helpers; the script is
 // import-guarded (the top-level scan + process.exit only run when invoked as the
 // CLI entry point), so importing these does NOT trigger a scan.
@@ -1344,5 +1344,241 @@ describe('#1244 follow-up (W4-F6): the inert degrade is scoped to the scanner\'s
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('CP11 DISABLED');
     expect(result.stdout).not.toContain('PASS: no owner-privacy leakage found');
+  });
+});
+
+describe('#1260: the platform assumption behind CP11 direct-sibling detection (err.url)', () => {
+  // WHY THIS TEST EXISTS. isMissingDirectSibling() in check-owner-leakage.mjs is
+  // `typeof err?.url === 'string' && CP11_DIRECT_SIBLING_URLS.has(err.url)`, and
+  // CP11_DIRECT_SIBLING_URLS is built as `new URL(spec, import.meta.url).href`.
+  // Both halves are UNWRITTEN CONTRACTS WITH NODE: that an ERR_MODULE_NOT_FOUND
+  // for a relative specifier carries `url`, that its value is exactly the
+  // resolved-href form the Set is keyed on, and that a BARE package specifier
+  // carries none. `engines.node >= 24` covers this today and nothing pins it —
+  // a future Node that drops, renames, or reformats `url` turns every standalone
+  // single-file copy of the scanner into an unconditional commit blocker, and
+  // there is no way to observe that from the scanner's own output.
+  //
+  // MEASURED IN A CHILD `node`, NEVER IN-PROCESS. Under vitest the import goes
+  // through the vite-node module runner, whose ERR_MODULE_NOT_FOUND carries NO
+  // `url` at all — an in-process probe measures the test runner, not the platform.
+  // The scanner runs as a plain-node CLI (spawnSync throughout this file), so the
+  // child process IS the production shape.
+
+  /**
+   * Probe a failing import in a real `node` child and return `{code, url}`.
+   * @param {string} specifier
+   * @param {string} prefix
+   */
+  function probeMissingImport(specifier, prefix) {
+    const dir = realpathSync(makeTmpDir(prefix));
+    writeFileSync(join(dir, 'importer.mjs'), `import ${JSON.stringify(specifier)};\n`);
+    const probe = join(dir, 'probe.mjs');
+    writeFileSync(
+      probe,
+      [
+        "const err = await import('./importer.mjs').then(() => null, (e) => e);",
+        "process.stdout.write(JSON.stringify({ code: err?.code ?? null, url: err?.url ?? null }));",
+        '',
+      ].join('\n'),
+    );
+    const result = spawnSync(process.execPath, [probe], { encoding: 'utf8', timeout: 20_000 });
+    expect(result.status).toBe(0);
+    return { ...JSON.parse(result.stdout), importerUrl: pathToFileURL(join(dir, 'importer.mjs')).href };
+  }
+
+  it('a RELATIVE specifier miss carries err.url as the resolved-href form CP11_DIRECT_SIBLING_URLS is keyed on', () => {
+    const { code, url, importerUrl } = probeMissingImport('./nope-xyz.mjs', 'cp11-errurl-relative-');
+
+    expect(code).toBe('ERR_MODULE_NOT_FOUND');
+    expect(typeof url).toBe('string');
+    // The exact identity the production Set relies on: `new URL(spec, importer).href`.
+    expect(url).toBe(new URL('./nope-xyz.mjs', importerUrl).href);
+  });
+
+  it('a BARE package miss carries no err.url, so it can never be classified as a direct sibling', () => {
+    const { code, url } = probeMissingImport(
+      'definitely-not-installed-pkg-xyz',
+      'cp11-errurl-bare-',
+    );
+
+    expect(code).toBe('ERR_MODULE_NOT_FOUND');
+    expect(url).toBe(null); // absent on the error object (JSON-transported as null)
+  });
+});
+
+describe('#1260: the DIRECT-SIBLING branch, exercised end-to-end via the documented single-file vendoring', () => {
+  /**
+   * The documented standalone shape (security.md § Owner-Privacy: "Reuse the same
+   * scanner"): EXACTLY ONE file copied out of the tree, so all three direct helper
+   * imports miss. Deliberately not an import-chain copy — copying a chain would
+   * make the import list itself the contract.
+   */
+  function standaloneCopy() {
+    const stage = makeTmpDir('owner-leakage-standalone-');
+    const copy = join(stage, 'check-owner-leakage.mjs');
+    cpSync(SCRIPT, copy);
+    return copy;
+  }
+
+  it('standalone copy with NO names configured → inert WARN, clean PASS, exit 0', () => {
+    const root = makeTmpRepo({ 'notes.md': 'Nothing confidential here.\n' });
+
+    const result = spawnSync(process.execPath, [standaloneCopy(), root], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { ...process.env, SO_CONFIDENTIAL_NAMES_FILE: '' },
+    });
+
+    // THE BUG THIS CATCHES: if `err.url` ever stops naming the missing relative
+    // sibling, isMissingDirectSibling() returns false for this very case, the
+    // scanner falls through to the transitive fail-closed path, and every
+    // standalone vendored copy blocks every commit unconditionally.
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('WARN: CP11 inert');
+    expect(result.stderr).not.toContain('CP11 DISABLED');
+    expect(result.stdout).toContain('PASS: no owner-privacy leakage found');
+  });
+
+  it('standalone copy WITH SO_CONFIDENTIAL_NAMES_FILE set → fails closed with the standalone-specific reason', () => {
+    const namesFile = writeNamesFile(['zenithcorp']);
+    const root = makeTmpRepo({ 'notes.md': 'Mentions zenithcorp explicitly.\n' });
+
+    const result = spawnSync(process.execPath, [standaloneCopy(), root], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { ...process.env, SO_CONFIDENTIAL_NAMES_FILE: namesFile },
+    });
+
+    // Distinguishes the DIRECT-SIBLING fail-closed (#1262) from the generic
+    // broken-install one: a misclassification here would still exit 1, so only
+    // the reason text falsifies it.
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('CP11 DISABLED');
+    expect(result.stderr).toContain('(standalone copy) — failing closed');
+    expect(result.stdout).not.toContain('PASS: no owner-privacy leakage found');
+    // Privacy: the host-local path never reaches stdout/stderr (public CI mirror).
+    expect(result.stderr).not.toContain(namesFile);
+    expect(result.stdout).not.toContain(namesFile);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W4 fix pass (F3/F4): the remaining CP11 loader verdicts, end-to-end
+//
+// F3 is a FAIL-OPEN: a configured names file whose entries are ALL rejected by
+// validation was classified 'empty' — the same class as the operator's `[]`
+// opt-out — so the scanner ran CP11 with zero patterns and printed the clean
+// verdict. F4 pins the 'malformed' verdict end-to-end (only 'missing' was) plus
+// the whitespace-only env value, which documents "whitespace = unconfigured".
+// ---------------------------------------------------------------------------
+
+describe("W4-F3/F4: 'empty' is an opt-out, 'all-dropped' and 'malformed' fail closed", () => {
+  /**
+   * Write RAW content (not necessarily a valid names list) to a host-local file
+   * outside any scanned root, and return its path.
+   * @param {string} raw
+   */
+  function writeRawNamesFile(raw) {
+    const namesFile = join(makeTmpDir('owner-leakage-rawnames-'), 'names.json');
+    writeFileSync(namesFile, raw);
+    return namesFile;
+  }
+
+  /**
+   * `configHome` defaults to an EMPTY tmp dir (no owner.yaml), so a row whose env
+   * value does not itself resolve a names file is decided by the fixture rather
+   * than by whatever the running operator configured host-locally.
+   * @param {string} root @param {string} namesEnv
+   */
+  function runWithNamesEnv(root, namesEnv) {
+    return spawnSync(process.execPath, [SCRIPT, root], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: {
+        ...process.env,
+        SO_CONFIG_HOME: makeTmpDir('owner-leakage-rawnames-cfg-'),
+        SO_CONFIDENTIAL_NAMES_FILE: namesEnv,
+      },
+    });
+  }
+
+  it('a deliberate `[]` names file → CP11 inactive, PASS, exit 0 (operator opt-out stays silent)', () => {
+    // Folding `[]` into the fail-closed class would block EVERY commit for any
+    // operator who disables CP11 that way — which is why 'empty' survives as its
+    // own status rather than being merged with 'all-dropped'.
+    const root = makeTmpRepo({ 'notes.md': 'Nothing confidential here.\n' });
+
+    const result = runWithNamesEnv(root, writeRawNamesFile('[]'));
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('PASS: no owner-privacy leakage found');
+    expect(result.stderr).not.toContain('CP11 DISABLED');
+  });
+
+  it('a names file whose entries are ALL rejected → CP11 DISABLED + exit 1 (was: silent PASS)', () => {
+    // THE BUG (F3): ["xxx…300", "yyy…400", 123, ""] parses fine, every entry is
+    // dropped (two oversized, one non-string, one blank), names.length === 0 —
+    // and the old 'empty' classification made the scanner treat that corrupted
+    // list as a deliberate opt-out: exit 0, `PASS`, CP11 carrying no patterns.
+    const namesFile = writeRawNamesFile(
+      JSON.stringify(['x'.repeat(300), 'y'.repeat(400), 123, '']),
+    );
+    const root = makeTmpRepo({ 'notes.md': 'Mentions zenithcorp explicitly.\n' });
+
+    const result = runWithNamesEnv(root, namesFile);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('CP11 DISABLED');
+    expect(result.stdout).not.toContain('PASS: no owner-privacy leakage found');
+    // Privacy: neither the reason line nor the loader WARN may echo the path.
+    expect(result.stderr).not.toContain(namesFile);
+    expect(result.stdout).not.toContain(namesFile);
+  });
+
+  it("a MALFORMED names file → CP11 DISABLED + exit 1, and the path never reaches the output (F4)", () => {
+    // Only the 'missing' verdict was pinned end-to-end. 'malformed' reaches the
+    // same fail-closed branch by a different route (JSON.parse throws), and it is
+    // also the branch whose loader WARN used to print the host-local path
+    // verbatim next to a FAIL the operator pastes into a public CI log (F1).
+    const namesFile = writeRawNamesFile('[ broken');
+    const root = makeTmpRepo({ 'notes.md': 'Mentions zenithcorp explicitly.\n' });
+
+    const result = runWithNamesEnv(root, namesFile);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('CP11 DISABLED');
+    expect(result.stdout).not.toContain('PASS: no owner-privacy leakage found');
+    expect(result.stderr).not.toContain(namesFile);
+    expect(result.stdout).not.toContain(namesFile);
+  });
+
+  it('the MISSING-file verdict also keeps the configured path out of stdout+stderr (F1)', () => {
+    // Same F1 regression, second branch: `loadConfidentialNames` used to WARN with
+    // `${namesPath}` before the scanner's path-free `disabledReason` was emitted,
+    // so the FAIL and the leak arrived in the same capture.
+    const namesFile = join(makeTmpDir('owner-leakage-absent-'), 'names.json'); // never written
+    const root = makeTmpRepo({ 'notes.md': 'Mentions zenithcorp explicitly.\n' });
+
+    const result = runWithNamesEnv(root, namesFile);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('CP11 DISABLED');
+    expect(result.stderr).not.toContain(namesFile);
+    expect(result.stdout).not.toContain(namesFile);
+  });
+
+  it('a whitespace-only SO_CONFIDENTIAL_NAMES_FILE reads as UNCONFIGURED → PASS, exit 0', () => {
+    // `'   '` is truthy, so a naive `env || fallback` treats it as a configured
+    // path (development.md § Env-var fallback whitespace trap). The loader trims
+    // first, so this must stay the silent ~99% default rather than a fail-closed
+    // "configured but unusable" verdict.
+    const root = makeTmpRepo({ 'notes.md': 'Nothing confidential here.\n' });
+
+    const result = runWithNamesEnv(root, '   ');
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('PASS: no owner-privacy leakage found');
+    expect(result.stderr).not.toContain('CP11 DISABLED');
   });
 });

@@ -36,12 +36,21 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, unlinkSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  existsSync,
+  unlinkSync,
+  chmodSync,
+} from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { listRepoFiles, listOnDiskFiles, EXCLUDED_DIRS } from '../../../scripts/lib/validate/repo-files.mjs';
+import { permsEnforced } from '../../_helpers/perms.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..', '..');
 
@@ -224,6 +233,69 @@ describe('repo-files — listRepoFiles', () => {
       'docs/tracked.md',
       'docs/untracked.md',
     ]);
+  });
+
+  it.skipIf(!permsEnforced())(
+    'rethrows a non-ENOENT stat error instead of shortening the census (#1253)',
+    () => {
+      // Two tracked paths, two DIFFERENT reasons statSync cannot answer for them:
+      //   docs/gone.md   → ENOENT   (deleted from the working tree) → dropped
+      //   locked/x.md    → EACCES   (parent directory unreadable)   → must THROW
+      // Before the fix both were swallowed identically, so an unreadable subtree
+      // produced a shorter file list that a caller cannot distinguish from a
+      // genuinely smaller repository.
+      const root = gitFixtureRoot();
+      const locked = path.join(root, 'locked');
+      mkdirSync(locked, { recursive: true });
+      writeFileSync(path.join(locked, 'x.md'), '# unreadable\n');
+      execFileSync('git', ['add', 'locked/x.md'], {
+        cwd: root,
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+
+      // ENOENT half: without the locked directory the census silently drops
+      // `docs/gone.md` and returns.
+      expect(rel(root, listRepoFiles(root, { dirs: ['docs'], exts: ['.md'] }))).toEqual([
+        'docs/tracked.md',
+      ]);
+
+      chmodSync(locked, 0o000);
+      try {
+        expect(() => listRepoFiles(root, { exts: ['.md'] })).toThrowError(
+          expect.objectContaining({ code: 'EACCES' }),
+        );
+      } finally {
+        // Restore before afterEach's removeTree, which cannot descend a 0o000 dir.
+        chmodSync(locked, 0o700);
+      }
+    },
+  );
+
+  it('drops a tracked path whose parent directory became a regular file (ENOTDIR)', () => {
+    // The sibling of the ENOENT case, and the reason `ABSENT_FROM_WORKTREE`
+    // carries two codes rather than one: when a tracked path's PARENT is
+    // replaced by a regular file, `statSync` reports ENOTDIR, not ENOENT. A
+    // one-code list would rethrow here and turn a merely-absent file into a
+    // tool error for every caller — the opposite direction of the EACCES case
+    // above, which MUST throw.
+    const root = gitFixtureRoot();
+    mkdirSync(path.join(root, 'nested'), { recursive: true });
+    writeFileSync(path.join(root, 'nested', 'child.md'), '# child\n');
+    execFileSync('git', ['add', 'nested/child.md'], {
+      cwd: root,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    // Present first — otherwise the assertion below passes for a census that
+    // never saw the path at all.
+    expect(rel(root, listRepoFiles(root, { dirs: ['nested'], exts: ['.md'] }))).toEqual([
+      'nested/child.md',
+    ]);
+
+    rmSync(path.join(root, 'nested'), { recursive: true, force: true });
+    writeFileSync(path.join(root, 'nested'), 'now a regular file\n');
+
+    expect(() => listRepoFiles(root, { exts: ['.md'] })).not.toThrow();
+    expect(rel(root, listRepoFiles(root, { dirs: ['nested'], exts: ['.md'] }))).toEqual([]);
   });
 
   it('never returns a tracked path that is absent from the working tree', () => {

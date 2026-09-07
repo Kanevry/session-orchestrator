@@ -7,7 +7,7 @@
  *
  *   1. Writes a per-agent fence file at .orchestrator/staging-fence/<id>.json
  *      with an intent entry for an OVERLAPPING staged path.
- *   2. Stages the overlapping file (via execSync `git add`) so it appears in
+ *   2. Stages the overlapping file (via fixtureGit `git add`) so it appears in
  *      `git diff --cached --name-only` when the commit-guard runs.
  *   3. Runs hooks/wave-scope-commit-guard.mjs.
  *
@@ -41,10 +41,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { spawn, spawnSync, execSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 // ---------------------------------------------------------------------------
 // Per-test isolated tmp git repo
@@ -66,11 +66,11 @@ const CHILD_SPAWN_TIMEOUT_MS = 17000;
 let spawnedChildren = [];
 
 beforeEach(() => {
-  repoRoot = mkdtempSync(join(tmpdir(), 'staging-fence-xproc-'));
+  repoRoot = makeTmpDir('staging-fence-xproc-');
   spawnedChildren = [];
-  execSync('git init -q', { cwd: repoRoot });
-  execSync('git config user.email test@example.com', { cwd: repoRoot });
-  execSync('git config user.name "Test"', { cwd: repoRoot });
+  fixtureGit(['init', '-q'], repoRoot);
+  fixtureGit(['config', 'user.email', 'test@example.com'], repoRoot);
+  fixtureGit(['config', 'user.name', 'Test'], repoRoot);
   mkdirSync(join(repoRoot, '.orchestrator', 'staging-fence'), { recursive: true });
 });
 
@@ -81,7 +81,7 @@ afterEach(() => {
     }
   }
   spawnedChildren = [];
-  rmSync(repoRoot, { recursive: true, force: true });
+  removeTree(repoRoot);
 });
 
 // ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ function stageFile(relPath, content = 'x\n') {
     mkdirSync(dir, { recursive: true });
   }
   writeFileSync(abs, content);
-  execSync(`git add ${JSON.stringify(relPath)}`, { cwd: repoRoot });
+  fixtureGit(['add', relPath], repoRoot);
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ describe('staging-fence cross-process race (PSA-004 sub-mode C, #552)', () => {
     const resultA = await runHook(repoRoot);
     // Unstage without depending on HEAD: `git rm --cached -- <file>` works
     // on a fresh repo where `git restore --staged` would fail (no HEAD).
-    execSync(`git rm --cached --quiet -- ${JSON.stringify('src/foo.ts')}`, { cwd: repoRoot });
+    fixtureGit(['rm', '--cached', '--quiet', '--', 'src/foo.ts'], repoRoot);
 
     stageFile('src/bar.ts');
     const resultB = await runHook(repoRoot);

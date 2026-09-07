@@ -203,7 +203,17 @@ describe('check-unwired-features — declared-but-unread census', () => {
     // Vacuum guard: an empty S4 census would satisfy the line above for the
     // wrong reason (`.claude/rules/host-resources.md` HR-105 — a class at 0%
     // is either genuinely rare or silently broken, and the two look alike).
-    expect(s4.length).toBeGreaterThan(10);
+    // The guard runs on the UNION of the two S4 kinds, because the 2026-09-07
+    // category split (#1239) moved 46 of the 52 findings into the advisory
+    // `coordinator-invoked-module` class without shrinking what was censused.
+    const s4Advisory = result.findings
+      .filter((f) => f.kind === 'coordinator-invoked-module')
+      .map((f) => f.key);
+    expect(s4.length + s4Advisory.length).toBeGreaterThan(10);
+    // …and neither half may collapse: a split that empties the reportable half
+    // is indistinguishable from one that classified everything as architecture.
+    expect(s4.length).toBeGreaterThan(0);
+    expect(s4Advisory.length).toBeGreaterThan(0);
   });
 });
 
@@ -379,24 +389,33 @@ function makeGraphFixture(parts) {
   return root;
 }
 
-/** @param {string} root @returns {string[]} reported module paths */
+/**
+ * @param {string} root
+ * @returns {string[]} module paths reported as `unreachable-library-module`
+ *   (the reportable half of S4 — `coordinator-invoked-module` is the advisory
+ *   half and is asserted on `findings` directly).
+ */
 const unreachableKeys = (root) =>
-  collectUnreachableLibraryModules(root).findings.map((f) => f.key);
+  collectUnreachableLibraryModules(root)
+    .findings.filter((f) => f.kind === 'unreachable-library-module')
+    .map((f) => f.key);
 
 describe('check-unwired-features — S4 unreachable-library-module census', () => {
   it('reports a module only markdown names, and stops once a hook actually imports it', () => {
-    // THE BUG: skills/session-start/SKILL.md Phase 4 named 19 banner probes with
-    // their symbols, and no hook reached one of them. S3 reads a symbol-naming
-    // document as wiring (its condition 5), so it stayed silent for all 19.
+    // THE BUG: skills/session-start/SKILL.md Phase 4 named 19 banner probes, and
+    // no hook reached one of them. S3 reads a symbol-naming document as wiring
+    // (its condition 5), so it stayed silent for all 19.
     // Fake-regression: the SAME module and the SAME prose, one import apart.
+    // The prose here names the FILE only — a document that also names an export
+    // is the `coordinator-invoked-module` class, pinned separately below.
     const proseOnly = makeGraphFixture({
       modules: { 'probe-banner.mjs': 'export function checkProbe() {\n  return 1;\n}\n' },
-      prose: 'Phase 4 invokes `scripts/lib/probe-banner.mjs` via `checkProbe({ repoRoot })`.\n',
+      prose: 'Phase 4 banners are refreshed from `scripts/lib/probe-banner.mjs`.\n',
     });
     const hookWired = makeGraphFixture({
       entry: "import { checkProbe } from '../scripts/lib/probe-banner.mjs';\nexport const r = checkProbe();\n",
       modules: { 'probe-banner.mjs': 'export function checkProbe() {\n  return 1;\n}\n' },
-      prose: 'Phase 4 invokes `scripts/lib/probe-banner.mjs` via `checkProbe({ repoRoot })`.\n',
+      prose: 'Phase 4 banners are refreshed from `scripts/lib/probe-banner.mjs`.\n',
     });
     try {
       expect(unreachableKeys(proseOnly)).toContain(join('scripts', 'lib', 'probe-banner.mjs'));
@@ -404,6 +423,132 @@ describe('check-unwired-features — S4 unreachable-library-module census', () =
     } finally {
       rmSync(proseOnly, { recursive: true, force: true });
       rmSync(hookWired, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a module whose prose names the FILE only in the unreachable class', () => {
+    // Regression guard for the 2026-09-07 category split (#1239). The split must
+    // narrow the class by the discriminator (prose naming an EXPORT), never by
+    // the weaker "some skill doc mentions the filename" — which every one of the
+    // 52 findings satisfied and would have emptied the class outright.
+    const root = makeGraphFixture({
+      modules: { 'dead-feature.mjs': 'export function runDeadFeature() {\n  return 1;\n}\n' },
+      prose: 'Cleanup is handled by `dead-feature.mjs` during session end.\n',
+    });
+    try {
+      expect(unreachableKeys(root)).toEqual([join('scripts', 'lib', 'dead-feature.mjs')]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('splits a module an instruction surface tells a coordinator to CALL into its own class', () => {
+    // THE BUG the split fixes: 46 of 52 findings (88.5%, measured 2026-09-07) were
+    // this shape — an instruction doc names the module AND an exported symbol, so
+    // an LLM is told to call it. That is the plugin's architecture, and a class
+    // firing at 88.5% is the broken instrument `.claude/rules/host-resources.md`
+    // HR-101 forbids. Same fixture as the guard above, one symbol apart.
+    const root = makeGraphFixture({
+      modules: { 'dead-feature.mjs': 'export function runDeadFeature() {\n  return 1;\n}\n' },
+      prose: 'Run `runDeadFeature()` from `dead-feature.mjs` in Phase 3.\n',
+    });
+    try {
+      const findings = collectUnreachableLibraryModules(root).findings;
+      const key = join('scripts', 'lib', 'dead-feature.mjs');
+      // Reclassified, never suppressed: absent from the unreachable set, present
+      // in `findings` — a programmatic consumer still sees the module.
+      expect(findings.find((f) => f.key === key)?.kind).toBe('coordinator-invoked-module');
+      expect(unreachableKeys(root)).toEqual([]);
+      expect(findings.map((f) => f.key)).toContain(key);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('downgrades only the module a doc names by PATH when the basename collides', () => {
+    // THE BUG: the downgrade matched `doc.body.includes(path.basename(file))`, so
+    // one doc naming `a/writer.mjs` moved EVERY `writer.mjs` into the advisory
+    // class — measured collision in this repo: `peer-cards/writer.mjs` vs
+    // `reconcile/writer.mjs`. Both modules export the SAME symbol here on
+    // purpose: the export half then cannot discriminate, so only the path half
+    // can, and the case goes red without the fix.
+    const root = makeGraphFixture({
+      modules: {
+        'a/writer.mjs': 'export function writeCard() {\n  return 1;\n}\n',
+        'b/writer.mjs': 'export function writeCard() {\n  return 2;\n}\n',
+      },
+      prose: 'Run `writeCard()` from `a/writer.mjs` in Phase 3.\n',
+    });
+    try {
+      const findings = collectUnreachableLibraryModules(root).findings;
+      const keyA = join('scripts', 'lib', 'a', 'writer.mjs');
+      const keyB = join('scripts', 'lib', 'b', 'writer.mjs');
+      expect(findings.find((f) => f.key === keyA)?.kind).toBe('coordinator-invoked-module');
+      expect(findings.find((f) => f.key === keyB)?.kind).toBe('unreachable-library-module');
+      expect(unreachableKeys(root)).toEqual([keyB]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not downgrade a module whose basename is only a SUBSTRING of a named one', () => {
+    // THE BUG (Codex, 2026-09-07): the downgrade matched `body.includes(base)`, so
+    // a doc naming `config-writer.mjs` also matched `writer.mjs` INSIDE it and moved
+    // a genuinely unreachable module into the advisory class — a real finding lost to
+    // a doc that never named it. Basenames are unique here on purpose, so the
+    // collision branch cannot mask the substring branch.
+    const root = makeGraphFixture({
+      modules: { 'writer.mjs': 'export function render() {\n  return 1;\n}\n' },
+      prose: 'Use config-writer.mjs and render().\n',
+    });
+    try {
+      const key = join('scripts', 'lib', 'writer.mjs');
+      const findings = collectUnreachableLibraryModules(root).findings;
+      expect(findings.find((f) => f.key === key)?.kind).toBe('unreachable-library-module');
+      expect(unreachableKeys(root)).toEqual([key]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('applies the same token boundary to the qualified path of a colliding basename', () => {
+    // The collision branch of the same defect: `includes('a/writer.mjs')` fires
+    // inside `xtra/a/writer.mjs`. Both fixture modules share `writer.mjs`, so the
+    // qualified `dirname/base` form is what is matched, and a doc naming a
+    // longer-prefixed path must downgrade neither.
+    const root = makeGraphFixture({
+      modules: {
+        'a/writer.mjs': 'export function writeCard() {\n  return 1;\n}\n',
+        'b/writer.mjs': 'export function writeCard() {\n  return 2;\n}\n',
+      },
+      prose: 'Run `writeCard()` from `xtra-a/writer.mjs` in Phase 3.\n',
+    });
+    try {
+      const keyA = join('scripts', 'lib', 'a', 'writer.mjs');
+      const keyB = join('scripts', 'lib', 'b', 'writer.mjs');
+      expect(unreachableKeys(root).sort()).toEqual([keyA, keyB].sort());
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('counts a static import from skills/ as an edge, so its target is not reported', () => {
+    // Corpus gap, not a defect: `skills/vault-sync/validator.mjs:71` statically
+    // imports `scripts/lib/vault-sync-baseline.mjs`, but `skills/**` was never
+    // walked, so the import was invisible and the target read as unreachable.
+    // Code under skills/ is code; only its MARKDOWN is prose.
+    const root = makeGraphFixture({
+      modules: { 'dead-feature.mjs': 'export function runDeadFeature() {\n  return 1;\n}\n' },
+    });
+    mkdirSync(join(root, 'skills'), { recursive: true });
+    writeFileSync(
+      join(root, 'skills', 'tool.mjs'),
+      "import { runDeadFeature } from '../scripts/lib/dead-feature.mjs';\nexport const r = runDeadFeature();\n",
+    );
+    try {
+      expect(collectUnreachableLibraryModules(root).findings).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -498,17 +643,25 @@ describe('check-unwired-features — S4 unreachable-library-module census', () =
       modules: {
         'ghost-a.mjs': 'export function a() {\n  return 1;\n}\n',
         'ghost-b.mjs': 'export function b() {\n  return 1;\n}\n',
+        'advised.mjs': 'export function runAdvised() {\n  return 1;\n}\n',
       },
+      prose: 'Run `runAdvised()` from `advised.mjs` in Phase 3.\n',
     });
     try {
       const aggregate = spawnSync('node', [SCRIPT, root], { encoding: 'utf8' });
       expect(aggregate.status).toBe(0);
       expect(aggregate.stdout).not.toMatch(/^ {2}FAIL:/m);
       expect(aggregate.stdout).toMatch(/WARN: \[unreachable-library-module\] 2 library module\(s\)/);
+      // The advisory class carries no WARN at all in the default output: it fires
+      // on every run with no action attached (HR-101). Its count still rides the
+      // PASS line, which is what ratchets run to run.
+      expect(aggregate.stdout).not.toMatch(/coordinator-invoked-module/);
+      expect(aggregate.stdout).toMatch(/1 coordinator-invoked module\(s\)/);
 
       const listed = spawnSync('node', [SCRIPT, root, '--list'], { encoding: 'utf8' });
       expect(listed.status).toBe(0);
       expect(listed.stdout.match(/WARN: \[unreachable-library-module\]/g)).toHaveLength(2);
+      expect(listed.stdout.match(/WARN: \[coordinator-invoked-module\]/g)).toHaveLength(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

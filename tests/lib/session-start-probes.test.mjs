@@ -443,6 +443,49 @@ describe('the built-in registry', () => {
     expect(out.bannerLines).toEqual([]);
   });
 
+  // BUG this catches (TV-001, #1255): the `telemetry-flush-health` entry was
+  // only ever exercised as "the module and the named export resolve" — nothing
+  // ran the REAL registry entry end-to-end. It carries NO custom
+  // render/severityOf, so it depends entirely on the module-level defaults
+  // reading `{severity:'warn', message}`; if that shape or the entry's `args`
+  // (which must pass `repoRoot` through, or the probe reads the WRONG repo's
+  // ledger and silently finds nothing) ever drift apart, the sandbox refusal
+  // this probe exists to surface goes back to being invisible — the exact
+  // pre-#1255 state, and indistinguishable from a healthy channel.
+  it('surfaces a sandbox refusal through the REAL telemetry-flush-health registry entry', async () => {
+    const registryProbe = PROBES.find((p) => p.id === 'telemetry-flush-health');
+    expect(registryProbe).toBeDefined();
+    expect(registryProbe.render).toBeUndefined();
+    expect(registryProbe.severityOf).toBeUndefined();
+
+    const dir = await mkTmp();
+    await fs.mkdir(path.join(dir, '.orchestrator', 'metrics'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'metrics', 'events.jsonl'),
+      [
+        JSON.stringify({ event: 'orchestrator.session.started' }),
+        JSON.stringify({
+          timestamp: '2026-09-07T05:04:55.138Z',
+          event: 'orchestrator.telemetry.flush',
+          outcome: 'skipped',
+          reason: 'sandbox:probe-failed',
+          schema_version: 1,
+        }),
+      ].join('\n') + '\n',
+      'utf8',
+    );
+    const { emit } = captureEmit();
+
+    const out = await runSessionStartProbes({ repoRoot: dir }, { probes: [registryProbe], emit });
+
+    expect(out.results[0]).toMatchObject({
+      id: 'telemetry-flush-health',
+      outcome: 'ran-warn',
+    });
+    const matching = out.bannerLines.filter((l) => l.includes('sandbox:probe-failed'));
+    expect(matching).toHaveLength(1);
+  });
+
   it('has a unique id per entry and a sane default budget', () => {
     const ids = PROBES.map((p) => p.id);
     expect(new Set(ids).size).toBe(ids.length);

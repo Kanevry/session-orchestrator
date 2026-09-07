@@ -37,8 +37,14 @@ import {
   normalizeOs,
   normalizeArch,
   normalizeSessionProfile,
-  VALID_SESSION_PROFILES,
+  // The re-export, deliberately aliased: it is a SHIM (GitLab #1252), and the
+  // identity assertion below is what keeps it readable as one rather than as a
+  // second definition of the whitelist.
+  VALID_SESSION_PROFILES as REEXPORTED_SESSION_PROFILES,
 } from '../../scripts/lib/telemetry/schema.mjs';
+// SSOT. Every assertion about the whitelist's CONTENT addresses this module;
+// `schema.mjs` only forwards it for importers that predate the split.
+import { VALID_SESSION_PROFILES } from '../../scripts/lib/session-schema/constants.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 /** The repo's real package.json version — the SSOT the dedup'd resolver reads. */
@@ -527,6 +533,15 @@ describe('session_profile is a SECOND axis, never a session_type value', () => {
       sessionProfile: 'client-acme-private-repo',
     });
     expect('session_profile' in ping).toBe(false);
+  });
+
+  it('the `schema.mjs` export is the SSOT array itself, not a copy of it', () => {
+    // Identity, not equality: `toEqual` would stay green if someone re-declared
+    // the whitelist here as a second literal, which is the exact drift the
+    // re-export exists to prevent. Frozen on both sides of the alias because
+    // the SSOT freezes it once.
+    expect(REEXPORTED_SESSION_PROFILES).toBe(VALID_SESSION_PROFILES);
+    expect(Object.isFrozen(REEXPORTED_SESSION_PROFILES)).toBe(true);
   });
 
   it('normalizeSessionProfile: whitelisted in, everything else null', () => {

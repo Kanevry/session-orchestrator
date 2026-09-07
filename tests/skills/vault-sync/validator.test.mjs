@@ -21,7 +21,8 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { removeTree } from '../../_helpers/tmp-fixture.mjs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -166,7 +167,7 @@ describe('wiki-link alias parsing', () => {
   it('does not warn for an existing target with a Markdown-table escaped alias separator', () => {
     const vaultDir = makeWikiLinkVault('[[real-target\\|Alias]]');
     const result = runValidator(vaultDir);
-    try { rmSync(vaultDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(vaultDir); } catch { /* ignore */ }
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout);
     expect(parsed.warnings.filter((w) => w.type === 'dangling-wiki-link')).toEqual([]);
@@ -175,7 +176,7 @@ describe('wiki-link alias parsing', () => {
   it('does not warn for an existing target with an anchor and escaped alias separator', () => {
     const vaultDir = makeWikiLinkVault('[[real-target#Heading\\|Alias]]');
     const result = runValidator(vaultDir);
-    try { rmSync(vaultDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(vaultDir); } catch { /* ignore */ }
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout);
     expect(parsed.warnings.filter((w) => w.type === 'dangling-wiki-link')).toEqual([]);
@@ -184,7 +185,7 @@ describe('wiki-link alias parsing', () => {
   it('warns for the actual missing target when an escaped alias separator is present', () => {
     const vaultDir = makeWikiLinkVault('[[missing-target\\|Alias]]', false);
     const result = runValidator(vaultDir);
-    try { rmSync(vaultDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(vaultDir); } catch { /* ignore */ }
     expect(result.status).toBe(0);
     const danglingWarnings = JSON.parse(result.stdout).warnings.filter((w) => w.type === 'dangling-wiki-link');
     expect(danglingWarnings).toHaveLength(1);
@@ -289,7 +290,7 @@ describe('link-target register (#833)', () => {
       'utf8',
     );
     const result = runValidator(dir);
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(dir); } catch { /* ignore */ }
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout);
     expect(parsed.status).toBe('ok');
@@ -325,7 +326,7 @@ describe('link-target register — id and aliases keys (#833)', () => {
       'canonical-id',
     );
     const result = runValidator(dir);
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(dir); } catch { /* ignore */ }
     expect(result.status).toBe(0);
     expect(danglingOf(result)).toEqual([]);
   });
@@ -336,7 +337,7 @@ describe('link-target register — id and aliases keys (#833)', () => {
       'second-alias',
     );
     const result = runValidator(dir);
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(dir); } catch { /* ignore */ }
     expect(result.status).toBe(0);
     expect(danglingOf(result)).toEqual([]);
   });
@@ -347,7 +348,7 @@ describe('link-target register — id and aliases keys (#833)', () => {
       'no-such-target',
     );
     const result = runValidator(dir);
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(dir); } catch { /* ignore */ }
     expect(result.status).toBe(0);
     const dangling = danglingOf(result);
     expect(dangling).toHaveLength(1);
@@ -362,7 +363,7 @@ describe('link-target register — id and aliases keys (#833)', () => {
       'scalar-alias',
     );
     const result = runValidator(dir);
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(dir); } catch { /* ignore */ }
     // Exit 1 because the schema rejects the scalar — but the run completed.
     expect(result.status).toBe(1);
     const parsed = JSON.parse(result.stdout);
@@ -409,7 +410,7 @@ describe('link-target register — case-insensitive NFC keys (#833)', () => {
       'source.md': note('source', 'See [[some-TOPIC]].'),
     });
     const result = runValidator(dir);
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(dir); } catch { /* ignore */ }
     expect(result.status).toBe(0);
     const dangling = JSON.parse(result.stdout).warnings.filter((w) => w.type === 'dangling-wiki-link');
     expect(dangling).toEqual([]);
@@ -426,7 +427,7 @@ describe('link-target register — case-insensitive NFC keys (#833)', () => {
       'source.md': note('source', `See [[${nfd}]].`),
     });
     const result = runValidator(dir);
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(dir); } catch { /* ignore */ }
     expect(result.status).toBe(0);
     const dangling = JSON.parse(result.stdout).warnings.filter((w) => w.type === 'dangling-wiki-link');
     expect(dangling).toEqual([]);
@@ -440,7 +441,7 @@ describe('link-target register — case-insensitive NFC keys (#833)', () => {
       'source.md': note('source', 'See [[Topic]].'),
     });
     const result = runValidator(dir);
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(dir); } catch { /* ignore */ }
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout);
     expect(parsed.warnings.filter((w) => w.type === 'dangling-wiki-link')).toEqual([]);
@@ -563,7 +564,7 @@ describe('fenced-code mis-pairing regression (Defect 1)', () => {
   it('a dangling link between a mid-line fence mention and the next real fence is still reported', () => {
     const dir = makeFencePairingVault();
     const result = runValidator(dir);
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(dir); } catch { /* ignore */ }
     expect(result.status).toBe(0);
     const dangling = danglingOf(result);
     expect(dangling.some((w) => w.message.includes('swallowed-dangling'))).toBe(true);
@@ -572,7 +573,7 @@ describe('fenced-code mis-pairing regression (Defect 1)', () => {
   it('a wikilink inside the real fenced block that follows is still suppressed', () => {
     const dir = makeFencePairingVault();
     const result = runValidator(dir);
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(dir); } catch { /* ignore */ }
     expect(result.status).toBe(0);
     const dangling = danglingOf(result);
     expect(dangling.some((w) => w.message.includes('in-block-target'))).toBe(false);
@@ -581,7 +582,7 @@ describe('fenced-code mis-pairing regression (Defect 1)', () => {
   it('a mid-line ``` mention does not open a fence — exactly 1 dangling warning total', () => {
     const dir = makeFencePairingVault();
     const result = runValidator(dir);
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(dir); } catch { /* ignore */ }
     expect(result.status).toBe(0);
     const dangling = danglingOf(result);
     expect(dangling).toHaveLength(1);
@@ -644,7 +645,7 @@ describe('remaining code-span false-positive shapes (Defect 3)', () => {
   ])('%s: a non-existent target inside the span produces NO dangling warning', (_label, bodyLines, target) => {
     const dir = makeSpanVault(bodyLines);
     const result = runValidator(dir);
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(dir); } catch { /* ignore */ }
     expect(result.status).toBe(0);
     const dangling = danglingOf(result);
     expect(dangling.some((w) => w.message.includes(target))).toBe(false);
@@ -659,7 +660,7 @@ describe('remaining code-span false-positive shapes (Defect 3)', () => {
       'A real dangling link outside any span: [[outside-dangling]].',
     ]);
     const result = runValidator(dir);
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(dir); } catch { /* ignore */ }
     expect(result.status).toBe(0);
     const dangling = danglingOf(result);
     expect(dangling).toHaveLength(1);
@@ -785,7 +786,7 @@ describe('vaultNoteTypeSchema enum coverage', () => {
     );
     const result = runValidator(vaultDir);
     try {
-      rmSync(vaultDir, { recursive: true, force: true });
+      removeTree(vaultDir);
     } catch { /* ignore */ }
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout);
@@ -799,7 +800,7 @@ describe('vaultNoteTypeSchema enum coverage', () => {
     );
     const result = runValidator(vaultDir);
     try {
-      rmSync(vaultDir, { recursive: true, force: true });
+      removeTree(vaultDir);
     } catch { /* ignore */ }
     expect(result.status).toBe(1);
     const parsed = JSON.parse(result.stdout);
@@ -825,7 +826,7 @@ describe('source-repo optional field (#725 D2)', () => {
       'id: test-src-repo\ntype: learning\ncreated: 2026-07-02\nupdated: 2026-07-02\nsource-repo: session-orchestrator',
     );
     const result = runValidator(vaultDir);
-    try { rmSync(vaultDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(vaultDir); } catch { /* ignore */ }
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout);
     expect(parsed.status).toBe('ok');
@@ -837,7 +838,7 @@ describe('source-repo optional field (#725 D2)', () => {
       'id: test-no-src-repo\ntype: learning\ncreated: 2026-07-02\nupdated: 2026-07-02',
     );
     const result = runValidator(vaultDir);
-    try { rmSync(vaultDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(vaultDir); } catch { /* ignore */ }
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout);
     expect(parsed.status).toBe('ok');
@@ -852,7 +853,7 @@ describe('source-repo optional field (#725 D2)', () => {
       'id: test-bad-src-repo\ntype: learning\ncreated: 2026-07-02\nupdated: 2026-07-02\nsource-repo: [not, a, string]',
     );
     const result = runValidator(vaultDir);
-    try { rmSync(vaultDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { removeTree(vaultDir); } catch { /* ignore */ }
     expect(result.status).toBe(1);
     const parsed = JSON.parse(result.stdout);
     expect(parsed.status).toBe('invalid');
@@ -872,7 +873,7 @@ describe('vault-dir guard', () => {
       env: { ...process.env, VAULT_DIR: undefined },
     });
     try {
-      rmSync(nonVaultDir, { recursive: true, force: true });
+      removeTree(nonVaultDir);
     } catch {
       /* ignore */
     }
@@ -893,7 +894,7 @@ describe('vault-dir guard', () => {
       env: { ...process.env, VAULT_DIR: vaultDir },
     });
     try {
-      rmSync(vaultDir, { recursive: true, force: true });
+      removeTree(vaultDir);
     } catch {
       /* ignore */
     }
@@ -937,7 +938,7 @@ describe('exclude glob is segment-anchored (#1013)', () => {
     });
   });
   afterAll(() => {
-    rmSync(vault, { recursive: true, force: true });
+    removeTree(vault);
   });
 
   it('mid-segment matches are no longer excluded: MYREADME.md / xarchive/ are checked and error', () => {
@@ -975,8 +976,8 @@ describe('skipped-without-frontmatter is visible in the envelope (#1013)', () =>
     cleanVault = makeTmpVault('vault-skipped-none-', { 'valid-note.md': VALID_FM });
   });
   afterAll(() => {
-    rmSync(vault, { recursive: true, force: true });
-    rmSync(cleanVault, { recursive: true, force: true });
+    removeTree(vault);
+    removeTree(cleanVault);
   });
 
   it('names the skipped files, and "0 skipped" stays distinguishable from "not counted"', () => {

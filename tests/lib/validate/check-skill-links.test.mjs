@@ -2,8 +2,8 @@
  * tests/lib/validate/check-skill-links.test.mjs
  *
  * Tests for scripts/lib/validate/check-skill-links.mjs — every relative markdown link under
- * skills/, commands/, agents/ and .claude/rules/ must resolve from the LINKING file's own
- * directory.
+ * skills/, commands/, agents/, .claude/rules/ and (since #1258) docs/ must resolve from the
+ * LINKING file's own directory.
  *
  * The bug each case names is the one that shipped on 2026-09-06: the #1157 `references/` split
  * moved phase blocks one directory DEEPER and carried their `./sibling.md` links along unchanged.
@@ -171,8 +171,8 @@ describe('enumeration', () => {
     expect(checkSkillLinks(root).ok).toBe(true);
   });
 
-  it('scans all four instruction surfaces', () => {
-    expect([...SCAN_DIRS]).toEqual(['skills', 'commands', 'agents', '.claude/rules']);
+  it('scans every instruction surface, docs/ included (#1258)', () => {
+    expect([...SCAN_DIRS]).toEqual(['skills', 'commands', 'agents', '.claude/rules', 'docs']);
     const root = makeFixture(
       Object.fromEntries(SCAN_DIRS.map((d) => [`${d}/x.md`, '[dead](nope.md)\n'])),
     );
@@ -187,6 +187,60 @@ describe('enumeration', () => {
 
   it('prunes node_modules by segment name anywhere in the path', () => {
     expect(PRUNE_DIRS.has('node_modules')).toBe(true);
+  });
+});
+
+describe('docs/ widening (#1258)', () => {
+  it('checks markdown under docs/ — the surface the checker was blind to before the widening', () => {
+    // Before #1258 this fixture reported clean: docs/ was not in SCAN_DIRS, so the two dangling
+    // PRD links measured on 2026-09-07 (a sibling-PRD and a runbook link, both to documents
+    // archived to the private Meta-Vault) were invisible to the gate.
+    const root = makeFixture({ 'docs/prd/a.md': 'Sister doc [b](./b.md).\n' });
+    const { ok, findings } = checkSkillLinks(root);
+    expect(ok).toBe(false);
+    expect(findings).toEqual([{ file: 'docs/prd/a.md', line: 1, target: './b.md' }]);
+  });
+
+  it('skips a GitLab -/issues/N renderer link while still flagging a dangling sibling on the same line', () => {
+    // The carve-out must be target-scoped, not line- or file-scoped: six of the eight docs/
+    // findings were `../../../-/issues/N`, which GitLab resolves and a filesystem checker never
+    // can. A real defect beside one of them must still surface.
+    const root = makeFixture({
+      'docs/nested/deep/x.md': 'See [#123](../../../-/issues/123), [!7](../../../-/merge_requests/7) and [gone](./missing.md).\n',
+    });
+    const { ok, findings, checked } = checkSkillLinks(root);
+    expect(checked).toBe(1); // only the sibling link was resolved at all
+    expect(ok).toBe(false);
+    expect(findings).toEqual([
+      { file: 'docs/nested/deep/x.md', line: 1, target: './missing.md' },
+    ]);
+  });
+
+  it('anchors the -/issues carve-out at both ends: a path traversing the segment is still a finding', () => {
+    // Right-unanchored, `docs/-/issues/12/../../secrets.md` matched the carve-out and was
+    // SKIPped although it is a real dangling link. An optional `#note_N` anchor stays skipped,
+    // because GitLab issue links legitimately carry one.
+    const root = makeFixture({
+      'docs/nested/deep/y.md':
+        'A [leak](../-/issues/12/../../secrets.md), an [issue](../../../-/issues/174) and a [note](../../../-/issues/174#note_5).\n',
+    });
+    const { ok, findings } = checkSkillLinks(root);
+    expect(ok).toBe(false);
+    expect(findings).toEqual([
+      { file: 'docs/nested/deep/y.md', line: 1, target: '../-/issues/12/../../secrets.md' },
+    ]);
+  });
+
+  it('honours an explicit dirs option so a dry-run needs no re-implementation of the predicate', () => {
+    const root = makeFixture({
+      'docs/a.md': '[dead](nope.md)\n',
+      'skills/demo/SKILL.md': '[dead](nope.md)\n',
+    });
+    expect(listMarkdown(root, { dirs: ['docs'] })).toEqual(['docs/a.md']);
+    const { findings } = checkSkillLinks(root, { dirs: ['docs'] });
+    expect(findings).toEqual([{ file: 'docs/a.md', line: 1, target: 'nope.md' }]);
+    // Default still spans every surface: same fixture, both findings.
+    expect(checkSkillLinks(root).findings).toHaveLength(2);
   });
 });
 

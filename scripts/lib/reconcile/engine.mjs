@@ -389,6 +389,28 @@ const BODY_LEARNING_ID_RE = /-\s*learning-id:\s*`([^`]+)`/g;
  * on disk: re-proposing it is the issue #484 defect (9 of 10 proposals in one
  * run were learnings a `.claude/rules/` file already covered).
  *
+ * **This scan is the AUTHORITATIVE half of the dedupe contract** (#1242). The
+ * `.claude/rules/*.md` files it reads are TRACKED, so they survive a fresh
+ * clone, a wiped working copy, and any loss of `.orchestrator/runtime/` (which
+ * is gitignored — `.gitignore:114`). The idempotency sidecar consulted beside
+ * it is a CACHE that can only SHORT-CIRCUIT this scan, never replace it: on a
+ * fresh clone the sidecar is empty and correctness rests entirely on the
+ * markers below. Measured 2026-09-07 on this repo: with the sidecar emptied,
+ * the run produced the identical 10 proposals and 30 "already materialized"
+ * rejections; with this scan disabled instead, 5 already-consolidated
+ * learnings were re-proposed.
+ *
+ * Both marker forms are load-bearing. Frontmatter `learning-key:` is a YAML
+ * SCALAR and can name exactly ONE learning, so a CONSOLIDATED rule file (one
+ * file absorbing N learnings) carries the remaining N-1 identities ONLY as
+ * `## Provenance` body bullets. Breaking {@link BODY_LEARNING_KEY_RE} would
+ * therefore silently re-propose most of a consolidated corpus while every
+ * single-learning file still deduped correctly — pinned by the "fresh clone,
+ * consolidated shape" test in `tests/lib/reconcile/engine.test.mjs`.
+ *
+ * `rule-loader.mjs` only EXCLUDES expired rules from injection; it never
+ * deletes a file, so an expired rule keeps deduping through these markers.
+ *
  * Gated the same way as {@link defaultLoadCandidatesForDedupe}: an absent
  * `repoRoot` yields empty sets rather than falling back to `process.cwd()`.
  * Never throws — a missing `.claude/rules/` dir or an unreadable file
@@ -555,14 +577,23 @@ async function runReconcileInner(
     // new learning could use — the #484 defect measured on a real repo was
     // exactly this: 9 of 10 proposals in one run were learnings that already
     // had a `.claude/rules/` file on disk, crowding out the tenth new one.
-    // Two independent sources both count as terminal, either is sufficient:
-    //   - the idempotency sidecar already carries a `processed_at` stamp for
-    //     this `learning_key` (`isProcessed`, previously computed but NEVER
-    //     called from this module — the other half of #484);
-    //   - a `.claude/rules/*.md` file already carries a matching
+    // Two independent sources both count as terminal, either is sufficient —
+    // but they are NOT peers (#1242). Their contract is:
+    //   - AUTHORITATIVE: a `.claude/rules/*.md` file already carries a matching
     //     `learning-key`/`learning-id` provenance marker, discovered by
-    //     scanning disk directly (covers the case where a rule was written
-    //     without ever going through this sidecar, e.g. hand-authored).
+    //     scanning disk directly. Those files are TRACKED, so this source alone
+    //     is sufficient on a fresh clone and covers rules written without ever
+    //     going through the sidecar (hand-authored, or consolidated by hand).
+    //   - CACHE: the idempotency sidecar already carries a `processed_at` stamp
+    //     for this `learning_key` (`isProcessed`, previously computed but NEVER
+    //     called from this module — the other half of #484). It lives in the
+    //     GITIGNORED `.orchestrator/runtime/` (`.gitignore:114`), so it is
+    //     absent on a fresh clone. It only SHORT-CIRCUITS the scan above (and
+    //     carries forward verdicts the scan can no longer see, e.g. an operator
+    //     decline (#1042) or a rule file since removed) — it never replaces it.
+    // Consequence: an empty sidecar must never change the verdict for a
+    // learning whose rule file exists. Pinned by the "fresh clone, consolidated
+    // shape" test in `tests/lib/reconcile/engine.test.mjs`.
     const { records: existingCandidates } = loadCandidatesForDedupe(repoRoot) ?? { records: [] };
     const materialized = readMaterializedProvenance(repoRoot) ?? { keys: new Set(), ids: new Set() };
 

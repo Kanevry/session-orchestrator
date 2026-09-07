@@ -535,6 +535,43 @@ describe('evaluateDriftSweep', () => {
     expect(evaluateDriftSweep(grep, '3.24.0', HISTORY_ALLOWLIST).ok).toBe(false);
   });
 
+  // THE BUG (measured 2026-09-07, mid-release): the sweep matched the previous tag as a bare
+  // SUBSTRING, so `4.0.0` hit inside `>=24.0.0` — `package.json`'s own engines field and a
+  // string quoting it. The cut could not proceed without rewording an engines constraint.
+  it.each([
+    ['package.json:22:    "node": ">=24.0.0"', true],
+    ['scripts/lib/secret-masker.mjs:221:  throw new Error("requires >=24.0.0");', true],
+    ['x.json:3:  "version": "14.0.0"', true],
+    ['x.json:3:  "version": "4.0.0.1"', true],
+    ['x.json:3:  "version": "4.0.0"', false],
+  ])('%s → clean=%s (version token, not substring)', (row, ok) => {
+    expect(evaluateDriftSweep({ status: 0, stdout: `${row}\n`, stderr: '' }, '4.0.0', HISTORY_ALLOWLIST).ok).toBe(ok);
+  });
+
+  // THE BUG: `package-lock.json` carried 72 hits for 4.0.0, every one a third-party dependency
+  // version. The lockfile is history by construction EXCEPT for the root package's own entry,
+  // which npm writes at the top of the file — that one must still be caught when stale.
+  it.each([
+    ['package-lock.json:400:      "version": "4.0.0"', true],
+    ['package-lock.json:812:      "node": ">=24.0.0"', true],
+    ['package-lock.json:3:  "version": "4.0.0"', false],
+  ])('%s → clean=%s (lockfile dependency vs root entry)', (row, ok) => {
+    expect(evaluateDriftSweep({ status: 0, stdout: `${row}\n`, stderr: '' }, '4.0.0', HISTORY_ALLOWLIST).ok).toBe(ok);
+  });
+
+  // THE BUG: a `//` comment and a `*` docblock line naming the previous major read as drift.
+  // No SURFACES pattern is ever a comment, so a comment line cannot hide a stale surface.
+  it.each([
+    ['scripts/lib/x.mjs:10:  // (pre-4.0.0 checkouts, …)', true],
+    ['scripts/lib/x.mjs:10: * @since 4.0.0', true],
+    ['scripts/lib/x.mjs:10:  /* moved in 4.0.0 */', true],
+    ['scripts/x.sh:4:# added in 4.0.0', true],
+    ['scripts/lib/x.mjs:10:const v = "4.0.0";', false],
+    ['notes/x.md:10:// not a code file, still drift 4.0.0', false],
+  ])('%s → clean=%s (comment prose in a code file)', (row, ok) => {
+    expect(evaluateDriftSweep({ status: 0, stdout: `${row}\n`, stderr: '' }, '4.0.0', HISTORY_ALLOWLIST).ok).toBe(ok);
+  });
+
   it.each([
     ['    "zod": "^3.24.0"', true],
     ['zod ~3.24.0 pinned', true],

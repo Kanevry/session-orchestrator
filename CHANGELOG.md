@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.1] - 2026-09-07
+
+A PATCH release, two work streams. Codex CLI command entrypoints (closing Epic #1263 and
+sub-issues #1264/#1265/#1266) make every `commands/*.md` and `skills/*/SKILL.md` entry
+discoverable and selectable inside Codex. A 5-wave mechanical-fix session (7 Discovery + 12
+Impl-Core + 5 Impl-Polish + a 4-reviewer/Codex-gpt-6-astra Quality panel with 5 fixers) closes
+16 follow-up issues surfaced by the `4.0.0` 360° audit. The site redesign already staged in
+`[Unreleased]` (session-orchestrator.com relaunch, closing GitLab #1237 and #1080 points
+1/3/5/6/7) folds in unchanged below as `### Changed`.
+
+### Added
+
+- **Codex command workflows are now discoverable and selectable skills — 51 unique generated
+  entries (25 command-backed, 26 skill-backed), closing an 8-command discovery gap (`close`,
+  `go`, `harness-audit`, `portfolio`, `release`, `session`, `templates-ack`, `test`) and
+  resolving 17 same-name command/skill overlaps in the command's favor (`cf0876c3`, Refs
+  #1263/#1264/#1265/#1266).** `scripts/generate-codex-skills.mjs` builds `.codex-plugin/skills/`
+  as the union of `commands/` and `skills/` names; each generated entry links via a
+  package-relative path to its canonical `commands/<name>.md` or `skills/<name>/SKILL.md`, so it
+  resolves from the installed bundle, not only the source checkout. Command adapters read the
+  full canonical command before resolving any internal skill call directly, avoiding recursive
+  dispatch back to the public entry. Trailing prompt text passes through as `$ARGUMENTS` — no
+  shell expansion, no global substitution.
+- **`disable-model-invocation: true` now maps to `agents/openai.yaml`
+  `policy.allow_implicit_invocation: false`, so `go`, `close`, `bootstrap`, `brainstorm`, `plan`,
+  and `release` keep requiring explicit selection under Codex too (`cf0876c3`, Refs
+  #1263/#1264).** All other commands retain their source setting.
+- **`scripts/lib/validate/check-codex-skills.mjs` independently re-derives the expected Codex
+  surface from the emitted artifacts, not from the generator's own expected text, and is wired
+  into `scripts/validate-plugin.mjs` (`cf0876c3`, Refs #1263/#1265).** It checks source-name
+  coverage, manifest registration, frontmatter/metadata types, invocation-policy booleans, and
+  canonical-link targets; its CLI also re-runs `generate-codex-skills.mjs --check`.
+- **Native Codex `commands: []` now suppresses the installer's automatic `commands/` migration
+  (`ae16dfcb`, Refs #1263/#1265/#1266).** Without it, a real install on Codex 0.153.3 added nine
+  `source-command-*` aliases (including `source-command-close`) beside the generated entries,
+  with no invocation policy attached. `scripts/lib/codex/plugin-contract.mjs` now requires
+  `commands` to be an empty array when present.
+- **The root `plugin.json` (added in 4.0.0) is replaced by `.cursor-plugin/plugin.json`,
+  Cursor's native manifest format (`cf0876c3`, Refs #1263/#1264).** Read-only `plugin/read`
+  probes on Codex CLI 0.153.3 and desktop 0.153.4 found the root Agent Plugins manifest
+  overrides Codex's own declared skill path (fixing it to `./skills`) and root version —
+  silently defeating the generated `.codex-plugin/skills/` surface even though every adapter
+  unit test passed. `package.json` `files[]` and `scripts/release.mjs`'s version-surface table
+  are updated accordingly (`.cursor-plugin/` added, root `plugin.json` removed).
+- **Installed acceptance verified end to end (`3862505c`, `a244b870`, Refs #1263/#1266).**
+  Public `codex plugin add session-orchestrator@local --json` produced enabled version
+  `4.0.0+codex.20260907174300`; Codex desktop 0.153.4 returns exactly 51 unique enabled skills
+  via both `plugin/read` and `skills/list`, no migration aliases, and all six explicit-only
+  commands retain `allow_implicit_invocation: false`. Visible-picker selection is **not yet
+  confirmed** — Computer Use cannot drive the Codex desktop app — and remains open under #1266
+  (see Notes).
+- **Documented the Codex command entrypoints across `README.md`, `docs/codex-setup.md`,
+  `docs/components.md`, `docs/migration-v4.md`, and `docs/instruction-delivery.md` (`cf0876c3`,
+  Refs #1263/#1266).**
+
 ### Changed
 
 - Public website redesigned (session-orchestrator.com): light-first design in the family look of the author's personal site (Bricolage Grotesque, Source Sans 3, IBM Plex Mono, all self-hosted; Archivo removed).
@@ -19,6 +74,126 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scripts/site-numbers.mjs` gained `npm-downloads-30d` and `github-stars`: fetched only under `--write` (5 s timeout, snapshot kept on failure), answered from the `site/_census.json` snapshot under `--check`; `SO_SITE_NUMBERS_OFFLINE=1` skips both metrics. Marker-bounded census blocks (`<!-- census:start -->` / `<!-- census:end -->`) added to `site/llms.txt` and `site/llms-full.txt` (GitLab #1080, points 1/3/5/6/7).
 - New tests: `tests/site/voice-gate.test.mjs` (em-dash, superlative, "we", emoji gate) and `tests/site/structure.test.mjs` (EN/DE parity, hreflang, asset presence, AI-illustration disclosure).
 - `vercel.json` cache headers for `/assets`, `/img`, `/vendor`; ESLint now ignores `site/vendor/**` (vendored three.js) and declares browser globals for `site/assets/**`.
+
+### Fixed
+
+- **`CHANGELOG.md`'s `[4.0.0]` entry and `docs/migration-v4.md` corrected two overclaims found
+  by post-tag review (`a4315993`).** `package.json` `files[]` admits the whole
+  `.orchestrator/policy/` directory, not a curated file list — the packlist test, not npm, is
+  what pins the shipped set to the tracked set. `pi-install.mjs --settings-only` actually
+  **rewrites** an existing Pi settings file (upsert), unlike `cursor-install.mjs`, which skips
+  existing destinations. Note for readers of the published `v4.0.0` tag: this correction lands
+  after that tag, so the tagged CHANGELOG text still carries the two overclaims — only `main`
+  and `4.0.1` have the corrected wording.
+- **`tests/scripts/site-numbers.test.mjs` fixtures run offline
+  (`SO_SITE_NUMBERS_OFFLINE=1`) (`4ea84d3e`).** Without it, the census-block tests fetched live
+  npm download counts and went red whenever the live count moved past the fixture snapshot
+  (measured in CI 2026-09-07: 1237 vs. 1165).
+- **`tests/lib/validate/check-auq-clarity.test.mjs` gets a 120 s hook timeout for its
+  `validate-plugin.mjs` spawn in `beforeAll` (`19b66e6e`).** GitLab pipelines 8790 and 8791
+  (2026-09-07) failed only here: the shared runner exceeded vitest's default 30 s `hookTimeout`
+  running the full validator (~12 s locally). Aligns with the sibling
+  `tests/scripts/validate-plugin.test.mjs`.
+
+#### 4.0.1 — mechanical-fix session (16 follow-up issues from the 4.0.0 audit)
+
+- **Reconcile-idempotency now has a contract and a regression test, not just a claim (#1242).**
+  Discovery found the acceptance criterion already held — tracked Provenance markers already
+  dedupe re-runs, a fresh-clone simulation regenerated 0 of 30 keys — so the delivered fix is a
+  contract doc (the scan is authoritative, the sidecar is a cache) plus a mutation-proven
+  fresh-clone consolidated-shape test, not new production code.
+- **`check-unwired-features.mjs`'s Category S4 no longer conflates "genuinely unreachable" with
+  "reachable only via coordinator dispatch" (#1239).** Discovery measured 52 raw S4 findings, 46
+  of them (88.5%) false positives — modules invoked only through a coordinator `Task`/skill
+  dispatch, never a static import. S4 now splits into 5 truly-unreachable findings and 46
+  coordinator-invoked findings reported as advisory rather than blocking, with `skills/`
+  recognised as a first-class reachability edge source; a same-wave fix-pass tightened the
+  coordinator-invoked match to token boundaries (a Codex-repro case where a bare substring match
+  over-matched) and dropped the advisory line's WARN severity per `host-resources.md` HR-101.
+  The check's exit code is unchanged.
+- **`inspectConfidentialNames()` is a new function; `loadConfidentialNames()` keeps its 4.0.0
+  `string[] | null` public contract (#1250).** This session's own Wave-2 refactor had changed
+  `loadConfidentialNames()`'s return shape to an object — a semver-breaking change the Wave-4
+  review panel and Codex gpt-6-astra both caught before the cut, not after. The fix reinstates
+  `loadConfidentialNames()` as a thin wrapper over the richer `inspectConfidentialNames()`. A new
+  `'all-dropped'` status (every entry in the confidential-names file invalid) now fails closed
+  instead of silently returning an empty list, and the loader's WARN on a missing/malformed file
+  is redacted to the file's basename — the same fix-pass had regressed the full path into
+  stderr, reopening the class of leak `check-owner-leakage.mjs` exists to prevent; found and
+  fixed inside this session's own review cycle, before release.
+- **`loadHostPaths()` no longer loads `owner.yaml` twice (#1251).** Health-check state now
+  passes through from the caller's single load instead of triggering a second read.
+- **Four small fixes under #1262: an env-configured standalone confidential-names copy now fails
+  closed instead of passing through silently (point 2); `docs/migration-v4.md` gained rollback
+  prose (point 3); `OPTIONAL_OBJECT_SECTIONS` is now an exported constant with a parity test,
+  replacing a duplicated mirror list (point 4); a stale comment on the full quality-gate path was
+  corrected (point 5).** Point 1 (a Codex-surface regeneration check) was dropped — Discovery
+  measured the existing set-equality pack test as the stronger pin, so no code change was needed.
+- **`VALID_SESSION_PROFILES` moved to a single source of truth in
+  `scripts/lib/session-schema/constants.mjs`, with `SHARED_LIST_BOUNDS`/`INGEST_LIST_BOUNDS`
+  parity enforced (#1252).** A re-export shim stayed at the old location for compatibility,
+  pinned by an identity test.
+- **Four git-fixture files and the two largest `rmSync` call sites now route through a shared
+  tmp-fixture helper instead of ad hoc cleanup; `listRepoFiles()` now swallows only
+  `ENOENT`/`ENOTDIR`, not every error (#1253).** This is a partial pass, not a sweep: 501 bare
+  **recursive** `rmSync` call sites remain unrouted (574 claimed → 524 measured → 501 after this
+  session) and are carried forward as #1268 with a Revisit-Trigger, not silently left
+  unmentioned.
+- **`check-skill-links.mjs` now scans `docs/` (previously skill/command files only), takes a
+  `dirs` option, and right-anchors its GitLab `-/issues` carve-out (#1258).** The carve-out was
+  previously unanchored and could match a URL fragment elsewhere in a line. Two dangling
+  documentation links were repaired, both pointing at content that had moved to the vault
+  archive.
+- **An unknown or valueless CLI flag on `generate-hook-import-set.mjs` now exits 2 with a usage
+  message instead of triggering the write (#1249).** `--out --check` no longer writes a file
+  literally named `--check` — the argv loop had read `--check` as `--out`'s value.
+- **A platform allowlist check now uses `Object.hasOwn()` (#1256).** Discovery's companion claim
+  in the same issue — that a related export was dead code — was checked against real call sites
+  and refuted; that half closes as "working as designed".
+- **Desktop notifications now carry a platform-aware label (#1254).** `detectPlatform()` drives
+  the OSC notify text so a Codex CLI session's notification reads differently from a Claude Code
+  session's.
+- **A new session-start probe, `telemetry-flush-health`, surfaces telemetry-sender problems that
+  were previously silent (#1255).** It tail-reads the last `orchestrator.telemetry.flush` event:
+  a `sandbox:*` refusal reason now renders as a WARN banner instead of nothing, and an
+  unreadable ledger renders explicitly as `ledger-unreadable` rather than falling through to
+  silence. The reason string is bounded to 120 characters with control characters stripped.
+- **The tests:src ratio census now resolves calls made through `fixtureGit`/`fixtureGitSpawn`
+  wrappers, including the `NO_BACKGROUND_WRITER` spread pattern, and strips comments before
+  reading a wrapped call's second positional argument (#1259).** Applicable call sites rose from
+  17 to 200 (measured 2026-09-07 on the release tree with
+  `node scripts/lib/validate/check-test-git-config-target.mjs .`) — the tokenizer previously
+  couldn't see wrapper calls at all — and the reporting floor was raised from 20 to 100 to match.
+- **Four tests now pin Node 24's `err.url` behaviour using a real spawned `node` child process,
+  not an in-process `vitest` failure (#1260).** An in-process `ERR_MODULE_NOT_FOUND` never
+  carries a `url` field, so the previous test could not observe the behaviour it claimed to pin.
+  The standalone single-file copy path is confirmed inert / fails closed for the same case.
+- **A Discovery premise was refuted before any code changed (#1257).** `vault-sync`'s
+  sub-package dependency pins looked accidental; they are intentional, because CI already
+  installs the sub-package separately. Documented in `skills/vault-sync/SKILL.md` §
+  Dependencies instead of "fixed".
+- **`release.mjs`'s drift sweep now judges version literals as whole tokens and skips comment
+  prose and lockfile dependency rows; its history allowlist admits nine files whose only literal
+  is prose history of the 4.0.0 major (`CLAUDE.md`, its generated twin `AGENTS.md`,
+  `CONTRIBUTING.md`, `NOTICE`, `.husky/pre-push`, `site/llms-full.txt`,
+  `skills/architecture/references/domain-model.md`, `skills/autopilot/SKILL.md`,
+  `templates/_shared/journey-manifest.md`).** Measured 2026-09-07 mid-release: `4.0.0` matched
+  inside `>=24.0.0` in package.json, 72 third-party rows in package-lock.json, and `// pre-4.0.0`
+  comments — none a version surface. The sweep's detail line now carries the total hit count
+  instead of truncating at five, which is how the last four files had stayed hidden.
+
+### Notes
+
+- **4.0.1 is a PATCH: no public export changed shape.** `loadConfidentialNames()` keeps its
+  `string[] | null` contract; the new exports (`inspectConfidentialNames`, `SHARED_LIST_BOUNDS`,
+  `INGEST_LIST_BOUNDS`, `OPTIONAL_OBJECT_SECTIONS`, `stripComments`, `wrapperHasCwd`,
+  `checkTelemetryFlushHealth`, `renderBanner`, `TAIL_BYTES`, and `VALID_SESSION_PROFILES` in
+  `constants.mjs`) are additive. Reviewed by a 4-reviewer panel plus Codex gpt-6-astra on the
+  packed tarball; 2 P1 + 3 P2 Codex findings were fixed before the cut, not after.
+- **Visible Codex picker confirmation (#1266) remains an operator step; not a release gate.**
+- **The telemetry ingest server was redeployed for this release (#1261).** Operational step, not
+  a code change — rollback tag `telemetry-ingest:1.0.0-pre401` kept in place; health confirmed
+  post-restart.
 
 ## [4.0.0] - 2026-09-06
 

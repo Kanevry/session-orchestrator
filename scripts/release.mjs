@@ -368,7 +368,18 @@ const INTENTIONAL_TEST_ASSET_PATHS = new Set([
 // tests/scripts/site-numbers.test.mjs, which forbids ANY vX.Y.Z and the current
 // package version outside a `data-metric` cell on EVERY shipped page, and
 // exempts exactly the lines marked `site-numbers:historical`.
-export const HISTORY_ALLOWLIST = /^(CHANGELOG\.md|README\.md|docs\/|tests\/|skills\/npm-publish\/|scripts\/release\.mjs|\.orchestrator\/|site\/leaderboard\.json|site\/guide\/index\.html|commands\/release\.md)/;
+// 4.0.1 (measured 2026-09-07): the 4.0.0 sweep would have flagged five files whose only literal
+// is PROSE HISTORY of the major ("moved out of agents/ in 4.0.0", "removed in 4.0.0",
+// "releases 4.0.0 would have blocked on itself") — CLAUDE.md, its generated twin AGENTS.md,
+// CONTRIBUTING.md, NOTICE and .husky/pre-push. None of them is a version SURFACE (no
+// `"version":`, badge or `vX.Y.Z` form), so they join the history allowlist rather than being
+// reworded to dodge the sweep.
+// Four more prose-history files surfaced once the detail line stopped truncating at five hits
+// (same 2026-09-07 sweep): site/llms-full.txt ("The v4.0.0 release REMOVES public surfaces" — its
+// version SURFACE is checked separately by the SURFACES row, so the sweep on it is redundant),
+// skills/architecture/references/domain-model.md ("Merged here in v4.0.0"), skills/autopilot/SKILL.md
+// ("4.0.0 — see docs/migration-v4.md") and templates/_shared/journey-manifest.md ("Retired … in 4.0.0").
+export const HISTORY_ALLOWLIST = /^(CHANGELOG\.md|README\.md|CLAUDE\.md|AGENTS\.md|CONTRIBUTING\.md|NOTICE|\.husky\/pre-push|docs\/|tests\/|skills\/npm-publish\/|skills\/architecture\/references\/domain-model\.md|skills\/autopilot\/SKILL\.md|templates\/_shared\/journey-manifest\.md|scripts\/release\.mjs|\.orchestrator\/|site\/leaderboard\.json|site\/guide\/index\.html|site\/llms-full\.txt|commands\/release\.md)/;
 
 /** Pure check over packed-entry lines. Returns violations: {name, line}[]. */
 export function checkLeakage(lines) {
@@ -449,26 +460,93 @@ export const MIN_PACKED_ENTRIES = 400;
 // ---------------------------------------------------------------------------
 
 /**
- * Is EVERY occurrence of `literal` on this line a dependency range (`^X.Y.Z` / `~X.Y.Z`)?
+ * A regex matching `literal` as a VERSION TOKEN, not as a substring.
+ *
+ * THE BUG (measured 2026-09-07, mid-release): the sweep matched the previous tag `4.0.0`
+ * inside `>=24.0.0` — `package.json`'s own engines field and a `scripts/lib/` string that
+ * quotes it — so a release could not be cut without either rewording an engines constraint or
+ * widening the allowlist over two files that carry no version surface at all. The boundary is
+ * therefore part of WHAT IS SWEPT FOR, not an allowlist row: `24.0.0`, `14.0.0` and `4.0.0.1`
+ * are different literals, at every path, forever.
+ *
+ * @param {string} literal — the previous release version
+ * @returns {RegExp} global regex; `4.0.0` matches only when not preceded by `[0-9.]` and not
+ *   continued by a further numeric component (`(?!\.?[0-9])`).
+ */
+function versionTokenRegex(literal) {
+  return new RegExp(`(?<![0-9.])${literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\.?[0-9])`, 'g');
+}
+
+/**
+ * Is EVERY token occurrence of `literal` on this line a dependency range (`^X.Y.Z` / `~X.Y.Z`)?
  *
  * One bare occurrence anywhere on the line is enough to call the whole line drift — a comment
- * that also happens to mention a ranged dep must not be excused by that mention.
+ * that also happens to mention a ranged dep must not be excused by that mention. Occurrences are
+ * counted with {@link versionTokenRegex}, so `>=24.0.0` is not an occurrence of `4.0.0` here
+ * either — otherwise a line pinning `^4.0.0` beside an engines constraint would read as drift.
  *
  * @param {string} content — the matching line's text
- * @param {string} literal — the previous release version, matched literally
+ * @param {string} literal — the previous release version, matched as a token
  * @returns {boolean}
  */
 export function isDependencyRangeOnly(content, literal) {
-  let from = 0;
+  const re = versionTokenRegex(literal);
   let seen = 0;
-  for (;;) {
-    const at = content.indexOf(literal, from);
-    if (at === -1) break;
+  for (let m = re.exec(content); m; m = re.exec(content)) {
     seen += 1;
-    if (!(at > 0 && (content[at - 1] === '^' || content[at - 1] === '~'))) return false;
-    from = at + literal.length;
+    const before = m.index > 0 ? content[m.index - 1] : '';
+    if (before !== '^' && before !== '~') return false;
   }
   return seen > 0;
+}
+
+/** Lockfiles whose dependency entries are third-party history, never our surface. */
+const LOCKFILE_BASENAMES = new Set(['package-lock.json', 'npm-shrinkwrap.json']);
+
+/** Code files in which a `//`, `*`, `/*` or `#` line is comment prose, never a version surface. */
+const CODE_COMMENT_EXTENSIONS = new Set(['.mjs', '.js', '.cjs', '.ts', '.sh']);
+
+/**
+ * Is this `path:line:content` row version HISTORY rather than a stale surface?
+ *
+ * Three classes, all measured on the 4.0.1 cut (2026-09-07) as FALSE POSITIVES of the raw
+ * substring sweep, and all expressed as PREDICATES for the same reason the range carve-out
+ * above is one: a per-path allowlist row fixes the instance and leaves the class open.
+ *
+ * 1. **Dependency range** — `^X.Y.Z` / `~X.Y.Z` (see {@link isDependencyRangeOnly}).
+ * 2. **Lockfile dependency entry** — `package-lock.json` carried 72 hits for `4.0.0`, every one
+ *    a third-party package version or an engines range. Our OWN entry there is still swept: the
+ *    root package's `"version"` line, which npm writes in the `packages[""]` record at the top
+ *    of the file. NAMED CEILING (BV-004): "at the top" is read as `line <= 20`, which covers
+ *    every lockfileVersion-3 file npm writes today (the root record starts at line 5). Revisit
+ *    trigger: a lockfile whose root `"version"` sits below line 20 — then key on the enclosing
+ *    JSON path instead of the line number.
+ * 3. **Comment prose in a code file** — `// (pre-4.0.0 checkouts, …)` and a `* since 4.0.0`
+ *    docblock line. No SURFACES pattern is ever a comment (every one is `"version": "X.Y.Z"`,
+ *    `vX.Y.Z` or a badge), so excusing comment lines cannot mask a stale surface.
+ *
+ * @param {string} file — repo-relative path
+ * @param {number} line — 1-based line number
+ * @param {string} content — the matching line's text
+ * @param {string} prevTag — the previous release literal being swept for
+ * @returns {boolean} true = history, skip the row
+ */
+function isHistoryRow(file, line, content, prevTag) {
+  if (!versionTokenRegex(prevTag).test(content)) return true;
+  if (isDependencyRangeOnly(content, prevTag)) return true;
+  const base = file.split('/').pop();
+  if (LOCKFILE_BASENAMES.has(base)) {
+    const isRootVersionLine = line <= 20 && new RegExp(`"version":\\s*"${prevTag.replace(/\./g, '\\.')}"`).test(content);
+    return !isRootVersionLine;
+  }
+  const dot = base.lastIndexOf('.');
+  const ext = dot === -1 ? '' : base.slice(dot);
+  if (CODE_COMMENT_EXTENSIONS.has(ext)) {
+    const trimmed = content.trim();
+    if (trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*')) return true;
+    if (ext === '.sh' && trimmed.startsWith('#')) return true;
+  }
+  return false;
 }
 
 /**
@@ -494,6 +572,13 @@ export function isDependencyRangeOnly(content, literal) {
  * written as one (see SURFACES above: every pattern is an exact `"version": "X.Y.Z"`, `vX.Y.Z`
  * or badge form), so the predicate cannot mask a stale surface.
  *
+ * THREE FURTHER CLASSES are history for the same reason, all measured 2026-09-07 mid-release
+ * and all decided by {@link isHistoryRow}, never by an allowlist row: a literal that is only a
+ * SUBSTRING of a longer version (`4.0.0` inside `>=24.0.0`), a `package-lock.json` /
+ * `npm-shrinkwrap.json` row that is not the root package's own `"version"` line (72 of the 72
+ * lockfile hits on that cut were third-party), and COMMENT PROSE in a code file
+ * (`// (pre-4.0.0 checkouts, …)`). See that function for each one's ceiling.
+ *
  * Accepts BOTH `git grep` output shapes. A bare `path` (from `-l`) carries no content and is
  * therefore always a hit — the fail-closed reading, unchanged, and the shape {@link collectDriftHits}
  * emits for a file it could not READ. `path:line:content` (from `-n`)
@@ -516,13 +601,13 @@ export function evaluateDriftSweep(grep, prevTag, allowlist) {
     const withContent = row.match(/^(.+?):(\d+):(.*)$/);
     const file = withContent ? withContent[1] : row;
     if (allowlist.test(file)) continue;
-    if (withContent && isDependencyRangeOnly(withContent[3], prevTag)) continue;
+    if (withContent && isHistoryRow(file, Number(withContent[2]), withContent[3], prevTag)) continue;
     if (!hits.includes(file)) hits.push(file);
   }
   return {
     ok: hits.length === 0,
     detail: hits.length
-      ? `still carry ${prevTag}: ${hits.slice(0, 5).join(', ')}`
+      ? `still carry ${prevTag} (${hits.length} file(s)): ${hits.slice(0, 5).join(', ')}${hits.length > 5 ? ', …' : ''}`
       : `no file outside the allowlist still carries ${prevTag} (tracked + untracked-not-ignored)`,
   };
 }

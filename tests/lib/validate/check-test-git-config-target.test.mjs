@@ -170,6 +170,74 @@ describe('inspectTestGitConfigTarget — the negative twins', () => {
     expect(result.summary.applicable).toBe(0);
   });
 
+  it('judges a fixture-helper call by its SECOND POSITIONAL, not by `cwd:`', () => {
+    // `fixtureGit(args, cwd, opts)` takes the target positionally. Reading it
+    // with the `cwd:` scan would report all four of these as untargeted; not
+    // reading the wrapper at all would report none of them, targeted or not.
+    const root = fixtureRoot(
+      [
+        "fixtureGit(['config', 'user.email', 'x'], dir);",
+        "fixtureGitSpawn(['-C', vault, 'commit', '-m', 'i'], undefined, { encoding: 'utf8' });",
+        "fixtureGit(['init', '-q', tmpDir]);",
+        "fixtureGit(['commit', '-m', 'x'], undefined, { encoding: 'utf8' });",
+      ].join('\n'),
+    );
+
+    const result = inspectTestGitConfigTarget(root);
+    expect(result.summary.applicable).toBe(4);
+    // Only the fourth names no destination anywhere: no cwd positional, no
+    // `-C`, no positional target of its own.
+    expect(result.findings.map((f) => `${f.line}:${f.command}`)).toEqual(['4:git commit -m x']);
+  });
+
+  it('an inline comment cannot stand in for the second positional, and `null`/absent are not targets', () => {
+    // The three shapes that hand the helper NO destination. The comment
+    // variant is the one that regressed: `wrapperHasCwd` read the raw tail, so
+    // the text `/* no cwd */` occupied the second-positional slot and the call
+    // measured as targeted — a comment saying "no cwd" counted AS a cwd.
+    // `null` is the same runtime story as `undefined` (both inherit the ambient
+    // cwd); an ABSENT second positional is the third. Both helpers, all three.
+    const root = fixtureRoot(
+      [
+        "fixtureGit(['config', 'user.name', 'x'], /* no cwd */ undefined);",
+        "fixtureGit(['config', 'user.name', 'x'], null);",
+        "fixtureGit(['commit', '-m', 'x']);",
+        "fixtureGitSpawn(['config', 'user.name', 'x'], /* no cwd */ undefined);",
+        "fixtureGitSpawn(['config', 'user.name', 'x'], null);",
+        "fixtureGitSpawn(['commit', '-m', 'x']);",
+      ].join('\n'),
+    );
+
+    const result = inspectTestGitConfigTarget(root);
+    expect(result.summary.applicable).toBe(6);
+    expect(result.summary.targeted).toBe(0);
+    expect(result.findings.map((f) => `${f.line}:${f.command}`)).toEqual([
+      '1:git config user.name x',
+      '2:git config user.name x',
+      '3:git commit -m x',
+      '4:git config user.name x',
+      '5:git config user.name x',
+      '6:git commit -m x',
+    ]);
+  });
+
+  it('the negative twin: a comment BESIDE a real target leaves the call targeted', () => {
+    // Stripping comments must not swallow the argument next to them, and a
+    // `cwd:` key inside a comment must not resurrect one.
+    const root = fixtureRoot(
+      [
+        "fixtureGit(['config', 'user.name', 'x'], /* the fixture repo */ dir);",
+        "fixtureGitSpawn(['config', 'user.name', 'x'], undefined, { cwd: dir });",
+        "fixtureGit(['config', 'user.name', 'x'], undefined /* cwd: dir */);",
+      ].join('\n'),
+    );
+
+    const result = inspectTestGitConfigTarget(root);
+    expect(result.summary.applicable).toBe(3);
+    // Lines 1 and 2 name a destination; line 3's only `cwd:` is commented out.
+    expect(result.findings.map((f) => f.line)).toEqual([3]);
+  });
+
   it('never judges a variable argv array, and says so in the summary', () => {
     const root = fixtureRoot("execFileSync('git', args, { encoding: 'utf8' });");
 
@@ -190,7 +258,9 @@ describe('argv tokenisation', () => {
     expect(tokenizeArgv("'-C', dir, ...args")).toEqual([
       { t: 'lit', v: '-C' },
       { t: 'expr' },
-      { t: 'spread' },
+      // The spread carries its identifier: `classifyArgv` decides on the NAME
+      // whether the spread is an allowlisted flag-only prefix or unknowable.
+      { t: 'spread', name: 'args' },
     ]);
   });
 
@@ -204,6 +274,20 @@ describe('argv tokenisation', () => {
     // `['-C', dir, ...args]`: the target IS known, the subcommand is not.
     // Guessing here is how a helper wrapper becomes a false positive.
     expect(classifyArgv(tokenizeArgv("'-C', dir, ...args")).subcommand).toBeNull();
+  });
+
+  it('skips the allowlisted flag-only spread, and only that one', () => {
+    // The bug: `[...NO_BACKGROUND_WRITER, 'commit', …]` — the shape every
+    // fixture helper emits — resolved to `subcommand: null`, so the call was
+    // mutating, untargeted AND counted in no bucket at all. The negative twin
+    // is the load-bearing half: an UNKNOWN spread must still refuse to guess,
+    // or the allowlist becomes a heuristic.
+    const known = classifyArgv(tokenizeArgv("...NO_BACKGROUND_WRITER, 'commit', '-m', 'x'"));
+    expect(known.subcommand).toBe('commit');
+    expect(known.hasArgvTarget).toBe(false);
+    expect(isMutating(known.subcommand, known.rest)).toBe(true);
+
+    expect(classifyArgv(tokenizeArgv("...OTHER, 'commit', '-m', 'x'")).subcommand).toBeNull();
   });
 
   it('does not mistake a global option VALUE for the subcommand', () => {
@@ -281,14 +365,17 @@ describe('the repository that owns this check', () => {
 
     expect(result.toolError).toBe(false);
     expect(result.findings.map((f) => `${f.file}:${f.line}`)).toEqual([]);
-    // Vacuum guard, not a target. The floor was 50 while fixtures called git
-    // directly; since 2026-09-06 forty-two fixture files route through
-    // tests/_helpers/tmp-fixture.mjs, whose `...NO_BACKGROUND_WRITER` spread is
-    // a token this static census cannot resolve to a subcommand, so those
-    // calls are invisible here (measured after the routing: applicable 34,
-    // findings 0). The census still answers "0 untargeted sites"; the floor
-    // only proves the scanner saw a non-trivial population. Revisit trigger:
-    // the census learning to resolve the helper's spread (then raise it).
-    expect(result.summary.applicable).toBeGreaterThan(20);
+    // Vacuum guard, not a target. The floor dropped to 20 while the census was
+    // blind to fixtures routed through tests/_helpers/tmp-fixture.mjs; that
+    // revisit trigger fired — since 2026-09-07 the census recognises
+    // `fixtureGit`/`fixtureGitSpawn` by name (measured that day: applicable
+    // 197, findings 0). The floor is set to roughly half the measured value so
+    // it proves the scanner still sees a non-trivial population without going
+    // red on ordinary fixture churn in either direction. Re-measured
+    // 2026-09-07 after the comment/`null` fix to `wrapperHasCwd`: applicable
+    // 198, findings 0 — the fix moved neither, i.e. no live call site had been
+    // passing on a comment. `applicable` drifts by a unit or two with ordinary
+    // fixture churn, which is precisely why the floor is not pinned to it.
+    expect(result.summary.applicable).toBeGreaterThan(100);
   });
 });

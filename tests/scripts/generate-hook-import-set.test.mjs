@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, symlinkSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
@@ -118,6 +118,47 @@ describe('generate-hook-import-set', () => {
     const check = spawnSync(process.execPath, [link, '--plugin-root', root, '--out', out, '--check'], { encoding: 'utf8' });
     expect(check.status).toBe(0);
     expect(check.stdout).toMatch(/\d+ modules, in sync/);
+  });
+
+  it('never writes the artefact on --help or on a usage error (GitLab #1249)', () => {
+    // The bug: main() looked flags up positionally with no unknown-arg branch,
+    // so `--help` (and any typo) fell through to writeFileSync — a read-only
+    // intent silently REWROTE the committed artefact.
+    const out = path.join(root, 'hooks', '_lib', 'hook-import-set.json');
+    const written = () => existsSync(out);
+
+    expect(main(['node', 'gen', '--plugin-root', root, '--out', out, '--help'])).toBe(0);
+    expect(written()).toBe(false);
+
+    expect(main(['node', 'gen', '--plugin-root', root, '--out', out, '--bogus'])).toBe(2);
+    expect(written()).toBe(false);
+
+    // A valued flag missing its value must not fall back to the default path.
+    expect(main(['node', 'gen', '--plugin-root', root, '--out'])).toBe(2);
+    expect(written()).toBe(false);
+
+    // …and the valid argv still writes, so the guard did not disable the CLI.
+    expect(main(['node', 'gen', '--plugin-root', root, '--out', out])).toBe(0);
+    expect(written()).toBe(true);
+  });
+
+  it('treats a FLAG as a missing value for --out/--plugin-root (GitLab #1249 follow-up)', () => {
+    // The bug: the argv loop took the next token as the value unconditionally,
+    // so `--out --check` consumed `--check` as the artefact PATH. Checking was
+    // silently disabled, the write branch ran, and a file literally named
+    // "--check" landed in the process cwd.
+    const cwd = process.cwd();
+    process.chdir(root);
+    try {
+      expect(main(['node', 'gen', '--out', '--check'])).toBe(2);
+      expect(main(['node', 'gen', '--plugin-root', '--out', 'x'])).toBe(2);
+      expect(existsSync(path.join(root, '--check'))).toBe(false);
+      expect(existsSync(path.join(root, '--out'))).toBe(false);
+      // Nothing at all was written into the tmp cwd by either invocation.
+      expect(readdirSync(root).sort()).toEqual(['hooks', 'scripts']);
+    } finally {
+      process.chdir(cwd);
+    }
   });
 
   it('the committed set covers the module of the 2026-09-04 incident', () => {

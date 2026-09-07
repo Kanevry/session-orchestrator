@@ -346,7 +346,8 @@ function resolvePlatformFromEnv(env) {
  * @param {"claude"|"codex"|"cursor"|"pi"} [opts.platform]  The harness driving
  *   this session, when the caller already knows it (the SessionStart hook
  *   computes this once and could pass it straight through). Falls back to
- *   {@link resolvePlatformFromEnv} on `opts.env` when omitted — never throws,
+ *   {@link resolvePlatformFromEnv} on `opts.env` when omitted OR when the value
+ *   is not one of the four keys above — never throws,
  *   never leaves the instruction generic just because the caller didn't wire
  *   the parameter through yet.
  * @returns {Promise<{severity: 'warn', message: string, installed: string, latest: string}|null>}
@@ -391,8 +392,15 @@ export async function checkPluginUpdate({
     return null;
   }
 
+  // Allowlist, not "any non-empty string": only a value this table actually has
+  // a recipe for may pre-empt env resolution — a typo or a future harness name
+  // (`'CLAUDE'`, `'clade'`) falls through to the env signal instead of silently
+  // degrading to the generic instruction. `Object.hasOwn`, never `in`: `in`
+  // would accept prototype keys (`'toString'`) as platforms.
   const resolvedPlatform =
-    typeof platform === 'string' && platform.length > 0 ? platform : resolvePlatformFromEnv(env);
+    typeof platform === 'string' && Object.hasOwn(PLATFORM_UPDATE_INSTRUCTIONS, platform)
+      ? platform
+      : resolvePlatformFromEnv(env);
   const instruction = PLATFORM_UPDATE_INSTRUCTIONS[resolvedPlatform] ?? GENERIC_UPDATE_INSTRUCTION;
 
   return {

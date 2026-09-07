@@ -36,14 +36,12 @@
  *  - Issue #820.
  */
 
-import { loadOwnerConfig, resolveOwnerYamlPath, getDefaults } from './owner-yaml.mjs';
-
-/**
- * OPTIONAL object sections (mirrors `owner-yaml.mjs`'s internal, unexported
- * `OPTIONAL_OBJECT_SECTIONS`) — the only sections the #1244 discard-branch
- * merge rule can carry through a whole-file discard.
- */
-const OPTIONAL_OBJECT_SECTION_NAMES = /** @type {const} */ (['paths', 'dispatcher']);
+import {
+  loadOwnerConfig,
+  resolveOwnerYamlPath,
+  getDefaults,
+  OPTIONAL_OBJECT_SECTIONS,
+} from './owner-yaml.mjs';
 
 /**
  * Format a `{ section, errors }` entry into a short `"name" (first error)` tag.
@@ -111,7 +109,7 @@ export function checkOwnerConfig({ loader = loadOwnerConfig } = {}) {
       const survivedSections = [];
       if (result.config && typeof result.config === 'object') {
         const defaults = getDefaults();
-        for (const name of OPTIONAL_OBJECT_SECTION_NAMES) {
+        for (const name of OPTIONAL_OBJECT_SECTIONS) {
           if (JSON.stringify(result.config[name]) !== JSON.stringify(defaults[name])) {
             survivedSections.push(name);
           }

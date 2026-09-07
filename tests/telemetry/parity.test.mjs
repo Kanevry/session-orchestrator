@@ -28,10 +28,19 @@ import { describe, it, expect } from 'vitest';
 
 import {
   USAGE_PING_FIELDS,
-  VALID_SESSION_PROFILES,
+  SHARED_LIST_BOUNDS,
   buildUsagePing,
 } from '../../scripts/lib/telemetry/schema.mjs';
-import { validateRecord, ValidationError, SESSION_PROFILES } from '../../server/ingest/validate.mjs';
+// The client-side whitelist's SSOT (GitLab #1252). `schema.mjs` re-exports the
+// same frozen array for legacy importers; the parity contract is between the
+// SSOT and the server's mirror, so it is the SSOT that is addressed here.
+import { VALID_SESSION_PROFILES } from '../../scripts/lib/session-schema/constants.mjs';
+import {
+  validateRecord,
+  ValidationError,
+  SESSION_PROFILES,
+  INGEST_LIST_BOUNDS,
+} from '../../server/ingest/validate.mjs';
 
 const START = '2026-07-20T00:00:00.000Z';
 
@@ -176,5 +185,41 @@ describe('telemetry parity: session_profile whitelist (client omission <-> serve
     }
     // optional: an omitted profile is the common case and must stay valid
     expect(() => validateRecord(validPing())).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// List bounds — the numeric half of the same two-tree contract (GitLab #1252).
+// The client caps `skills`/`commands` at MAX_NAMES entries of MAX_NAME_LENGTH
+// chars; the server rejects above MAX_LIST_ITEMS / MAX_LIST_ITEM_LEN. Two
+// hand-typed pairs in two trees, previously compared by nothing: a client
+// capping HIGHER than the server emits pings the server 400s.
+//
+// Only these TWO bounds are shared. The server's other five (MAX_ANON_ID,
+// MAX_SENT_AT, MAX_PLUGIN_VERSION, MAX_SESSION_TYPE, MAX_SESSION_PROFILE) are
+// SERVER-ONLY BY DESIGN — they bound input from any client, including foreign
+// or tampered ones, and have no client counterpart to keep in lockstep. Do not
+// "complete" this test by inventing five client constants to match them.
+// ---------------------------------------------------------------------------
+
+describe('telemetry parity: shared list bounds (client caps <-> server limits)', () => {
+  it('the two shared bounds are equal (schema.mjs SHARED_LIST_BOUNDS <-> validate.mjs INGEST_LIST_BOUNDS)', () => {
+    expect(SHARED_LIST_BOUNDS).toEqual(INGEST_LIST_BOUNDS);
+  });
+
+  it('a list at exactly the shared bound is accepted by the server', () => {
+    const name = 'x'.repeat(INGEST_LIST_BOUNDS.maxItemLength);
+    const skills = Array.from({ length: INGEST_LIST_BOUNDS.maxItems }, (_, i) => `${name.slice(0, -6)}${String(i).padStart(6, '0')}`);
+    expect(() => validateRecord(validPing({ skills }))).not.toThrow();
+  });
+
+  it('one item past either shared bound is rejected — so the client cap is what keeps real traffic valid', () => {
+    const overLong = validPing({ skills: ['x'.repeat(SHARED_LIST_BOUNDS.maxItemLength + 1)] });
+    expect(captureValidationError(overLong)).toBeInstanceOf(ValidationError);
+
+    const tooMany = validPing({
+      skills: Array.from({ length: SHARED_LIST_BOUNDS.maxItems + 1 }, (_, i) => `s${i}`),
+    });
+    expect(captureValidationError(tooMany)).toBeInstanceOf(ValidationError);
   });
 });

@@ -17,8 +17,11 @@
  *
  * Usage:
  *   node scripts/generate-hook-import-set.mjs [--plugin-root <dir>] [--out <file>] [--check]
+ *   node scripts/generate-hook-import-set.mjs --help
  *
- * Exit codes: 0 = written / in sync; 1 = drift (with --check) or usage error.
+ * Exit codes: 0 = written / in sync (or --help); 1 = drift (with --check);
+ * 2 = usage error (unknown flag, or a valued flag missing its value) — the
+ * write is NEVER performed on a usage error.
  */
 
 import { readFileSync, writeFileSync, existsSync, statSync, realpathSync } from 'node:fs';
@@ -178,19 +181,59 @@ export function buildArtifact(pluginRoot) {
 // CLI
 // ---------------------------------------------------------------------------
 
+const USAGE = [
+  'Usage: node scripts/generate-hook-import-set.mjs [--plugin-root <dir>] [--out <file>] [--check]',
+  '',
+  '  --plugin-root <dir>  repository/plugin root to crawl (default: the repo this script lives in)',
+  '  --out <file>         artefact path (default: <plugin-root>/hooks/_lib/hook-import-set.json)',
+  '  --check              re-crawl and diff against the committed artefact instead of writing',
+  '  --help, -h           print this help',
+  '',
+  'Exit codes: 0 = written / in sync; 1 = drift (with --check); 2 = usage error.',
+].join('\n');
+
 /**
  * @param {string[]} argv
  * @returns {number} process exit code
  */
 export function main(argv) {
   const args = argv.slice(2);
-  const flag = (name) => {
-    const i = args.indexOf(name);
-    return i >= 0 && i + 1 < args.length ? args[i + 1] : null;
-  };
-  const pluginRoot = path.resolve(flag('--plugin-root') ?? path.resolve(import.meta.dirname, '..'));
-  const out = path.resolve(flag('--out') ?? path.join(pluginRoot, 'hooks', '_lib', 'hook-import-set.json'));
-  const check = args.includes('--check');
+
+  /** @type {{'--plugin-root': string|null, '--out': string|null}} */
+  const valued = { '--plugin-root': null, '--out': null };
+  let check = false;
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--help' || arg === '-h') {
+      process.stdout.write(`${USAGE}\n`);
+      return 0;
+    }
+    if (arg === '--check') {
+      check = true;
+      continue;
+    }
+    if (arg === '--plugin-root' || arg === '--out') {
+      // A valued flag whose value is missing — or whose "value" is the next FLAG
+      // — is a usage error, not a silent default. Without the leading-dash test,
+      // `--out --check` swallows `--check` as the artefact path: checking is
+      // disabled, the WRITE branch runs, and a file literally named `--check`
+      // lands in the cwd.
+      const value = args[i + 1];
+      if (value === undefined || value.startsWith('-')) {
+        process.stderr.write(`✗ hook-import-set: ${arg} requires a value\n${USAGE}\n`);
+        return 2;
+      }
+      valued[arg] = value;
+      i += 1;
+      continue;
+    }
+    process.stderr.write(`✗ hook-import-set: unknown argument "${arg}"\n${USAGE}\n`);
+    return 2;
+  }
+
+  const pluginRoot = path.resolve(valued['--plugin-root'] ?? path.resolve(import.meta.dirname, '..'));
+  const out = path.resolve(valued['--out'] ?? path.join(pluginRoot, 'hooks', '_lib', 'hook-import-set.json'));
 
   const fresh = buildArtifact(pluginRoot);
 

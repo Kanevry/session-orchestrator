@@ -2,9 +2,10 @@
 
 Operator runbook for deploying the anonymous usage-telemetry ingest server
 (`server/ingest/`) to `https://telemetry.session-orchestrator.com`. Epic #841,
-S6 / GitLab #847; PRD
-[`docs/prd/2026-07-20-anonymous-usage-telemetry.md`](../prd/2026-07-20-anonymous-usage-telemetry.md)
-§2 "Deploy runbook".
+S6 / GitLab #847; PRD `2026-07-20-anonymous-usage-telemetry.md` §2 "Deploy
+runbook" — delivered and archived to the private Meta-Vault on 2026-07-25
+(`01-projects/session-orchestrator/prd/`), so it is no longer a path in this
+repo.
 
 This page is public (this repo is mirrored to GitHub) and contains
 **placeholders only** — no real hostnames, IPs, ssh aliases, or account names.

@@ -11,6 +11,7 @@ import {
   CURRENT_SESSION_SCHEMA_VERSION,
   SESSION_KEY_ALIASES,
   VALID_SESSION_TYPES,
+  VALID_SESSION_PROFILES,
   REQUIRED_FIELDS,
   AGENT_SUMMARY_FIELDS,
   OPTIONAL_FIELDS,
@@ -72,6 +73,26 @@ describe('VALID_SESSION_TYPES', () => {
     // (which THROWS on an unlisted type) and `telemetry/schema.mjs` (which
     // relabels it `other`) with no test to notice.
     expect([...VALID_SESSION_TYPES]).toEqual(['feature', 'deep', 'housekeeping', 'unknown']);
+  });
+});
+
+describe('VALID_SESSION_PROFILES', () => {
+  it('is frozen', () => {
+    expect(Object.isFrozen(VALID_SESSION_PROFILES)).toBe(true);
+  });
+
+  // GitLab #1252 moved the SSOT here from scripts/lib/telemetry/schema.mjs,
+  // which now re-exports it. Mirrors the exact-array pin above for the same
+  // reason: `session_profile` is copied from repo-authored STATE.md frontmatter,
+  // so only an enumeration of names that are public BY CONSTRUCTION keeps a
+  // private-looking value off the telemetry wire. A second member must be a
+  // deliberate act here AND in the server mirror (server/ingest/validate.mjs
+  // SESSION_PROFILES, held in lockstep by tests/telemetry/parity.test.mjs).
+  it('is exactly [ultradeep] (closed enum, and NOT a VALID_SESSION_TYPES member)', () => {
+    expect([...VALID_SESSION_PROFILES]).toEqual(['ultradeep']);
+    for (const profile of VALID_SESSION_PROFILES) {
+      expect(VALID_SESSION_TYPES).not.toContain(profile);
+    }
   });
 });
 

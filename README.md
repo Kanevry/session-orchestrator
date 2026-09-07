@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.0.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-4.0.1-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
 [![Tests](https://img.shields.io/badge/tests-vitest-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
 
@@ -171,14 +171,14 @@ The system is markdown-driven config plus a thin Node runtime — skills, comman
 
 ## What you get
 
-Counts measured on 2026-09-06 with the command in brackets:
+Counts measured on 2026-09-07 with the command in brackets:
 
 - **43 skills** for the session lifecycle (start, plan, execute, close, evolve), discovery, vault sync, MCP authoring, debugging, brainstorming, plan grilling, persona panels, cross-repo dispatch, learning→rule reconciliation, session-process eval, and audits (`ls -d skills/*/ | grep -v _shared | wc -l`)
 - **25 slash commands** (`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/grill`, `/evolve`, `/autopilot`, `/dispatcher`, `/reconcile`, `/eval`, `/test`, `/debug`, …) (`ls commands/*.md | wc -l`)
 - **14 typed subagents** (code-implementer, test-writer, security-reviewer, session-reviewer, qa-strategist, architect-reviewer, …) (`ls agents/*.md | wc -l`)
 - **27 hook files across 10 event types**, enforcing scope, blocking destructive commands, gating templates-first, and capturing telemetry — full on Claude Code; experimental, post-hoc, or bridged elsewhere ([Platform support](#platform-support)) (`ls hooks/*.mjs | wc -l`)
 - **26 always-on rule files** and **18 ADRs** carrying the reasoning behind the mechanisms (`ls .claude/rules/*.md | wc -l`, `ls docs/adr/*.md | wc -l`)
-- **664 vitest test files** run on every commit — 13,752 static `it()`/`test()` definitions at that measurement, and the runtime total is higher because of parameterised blocks ([methodology](docs/telemetry/telemetry-claims.md)) (`find tests -name '*.test.mjs' | wc -l`)
+- **667 vitest test files** run on every commit — 13,827 static `it()`/`test()` definitions at that measurement, and the runtime total is higher because of parameterised blocks ([methodology](docs/telemetry/telemetry-claims.md)) (`find tests -name '*.test.mjs' | wc -l`)
 
 **Portable across harnesses by construction.** `scripts/generate-agents-skills.mjs` generates root `AGENTS.md` byte-identical from `CLAUDE.md` and the `.agents/skills/<name>/SKILL.md` mirrors, with spec-legal frontmatter and pointers to canonical instructions. `scripts/generate-codex-skills.mjs` generates the Codex command entrypoints. Plugin validation checks both surfaces. Separate manifests under `.claude-plugin/`, `.codex-plugin/` and `.cursor-plugin/` register each harness's components; see [Codex manifest compatibility](docs/codex-setup.md#manifest-compatibility).
 
@@ -196,17 +196,15 @@ Full component inventory: [`docs/components.md`](docs/components.md). Version hi
 
 How this compares to other orchestrators — with the parts that are measured and the parts that are not: [`docs/components.md` § Comparisons](docs/components.md#comparisons).
 
-## Recent highlights (v4.0.0)
+## Recent highlights (v4.0.1)
 
-v4.0.0 is the first release that REMOVES public surfaces, so read [docs/migration-v4.md](docs/migration-v4.md) before upgrading. Highlights of the v4.0.0 line: less surface, an instruction layer that loads on demand, and three instruments that were reporting numbers nobody could reproduce:
+4.0.1 is a patch on top of 4.0.0 — if you're upgrading from before 4.0, read [docs/migration-v4.md](docs/migration-v4.md) first; nothing below removes anything further. Highlights of the v4.0.1 line: Codex command entrypoints, a redesigned public site, and a review-hardened owner-privacy scanner — plus the sixteen follow-ups the 4.0.0 review left open:
 
-- **Five skills, three commands and eight top-level scripts are gone.** Removal followed a measured two-signal rule — 0 telemetry ∧ 0 fleet invocation over 90 days ∧ no runtime consumer — never a judgement call. Prose-invoked skills, which register 0 by construction, were exempt. `skills/domain-model/` was merged into `skills/architecture/` rather than dropped.
-- **`.claude/rules/` goes 61 → 26 files.** Forty-three machine-generated learning files were consolidated into eight thematic ones, each keeping its provenance markers so the reconcile engine still dedupes on them.
-- **The three largest instruction files are split, not shortened.** `session-start`, `session-end` and the wave loop keep every phase; the bodies move into per-phase files under `references/`, and the top-level file becomes an index that is heading-complete against the original. Nothing was summarised away.
-- **`ultradeep` is a profile over `deep`, not a fourth session type.** Seven waves with a blocking synthesis gate and a read-only review panel. Downstream tooling still sees `deep`, which is why it costs about eight touchpoints instead of forty-eight.
-- **A session-start banner now says when the plugin you are RUNNING is behind the one published** (minor or major; patch-only updates stay silent). This host had been running a copy five minors old for four weeks with no warning, because nothing anywhere compared installed against available.
-- **Two instruments were corrected rather than tuned.** Telemetry attributed the operator's own second machine to the external fleet, and the abandoned-session rate was an artefact of backfilled records. Both now report what they measure.
-- **Generated root `AGENTS.md` and portable `.agents/skills/` mirrors.** Native plugin manifests keep each harness's component registration separate; Codex also receives generated command entrypoints.
+- **4.0.0 removed public surfaces and split the largest instruction files.** Five skills, three commands and eight top-level scripts were dropped on a measured two-signal rule (0 telemetry ∧ 0 fleet invocation over 90 days ∧ no runtime consumer, never a judgement call); `.claude/rules/` went 61 → 26 files; `session-start`, `session-end` and the wave loop keep every phase, with bodies moved into per-phase `references/` files. Full detail and upgrade steps: [docs/migration-v4.md](docs/migration-v4.md).
+- **Codex command workflows are now selectable skills.** `scripts/generate-codex-skills.mjs` generates 51 entries (25 command-backed, 26 skill-backed); `go`, `close`, and 6 others that were previously absent from the skill surface (`harness-audit`, `portfolio`, `release`, `session`, `templates-ack`, `test`) are now discoverable and invocable as `$session-orchestrator:<name>`. Native `commands: []` stops the installer from separately aliasing the source commands into policy-less duplicates. The intercepting standard root manifest moved to [`.cursor-plugin/plugin.json`](.cursor-plugin/plugin.json) so it no longer shadows Codex's own manifest resolution (Refs #1263).
+- **Public website redesigned**, including a German `/de` landing page.
+- **Review-driven hardening.** The owner-privacy scanner (CP11) now fails CLOSED on a corrupted or env-configured-but-unresolvable confidential-names list instead of silently degrading to allow, and no longer prints the names-file path into logs; `check-unwired-features` splits 46 coordinator-invoked modules out of its actionable finding set (52 → 5 unreachable), so the report names what an operator can actually act on; a new session-start probe (`telemetry-flush-health`) surfaces when the sandbox refused a telemetry flush instead of that failure staying silent.
+- **Sixteen follow-ups from the 4.0.0 review closed, and the patch itself was reviewed before the cut.** A four-reviewer panel plus an external Codex gpt-6-astra pass over the packed npm tarball found two P1 and three P2 defects in this session's own changes — a names-file path printed into the scanner's failing output, a deep-import contract change, a flag swallowed as a value, a substring match that hid a real finding, a comment that counted as a target — all fixed before publishing. The residual list lives in GitLab #1268–#1273.
 
 Full list, with the evidence for each claim: [CHANGELOG.md](CHANGELOG.md).
 

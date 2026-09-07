@@ -40,6 +40,37 @@
  * measures that second population so the gap is visible in the OUTPUT, not
  * only in this comment.
  *
+ * ## Wrapper-aware: `fixtureGit` / `fixtureGitSpawn` are git invocations
+ *
+ * Since 2026-09-06 most fixtures do not spawn `git` themselves — they call
+ * `fixtureGit(args, cwd, opts)` / `fixtureGitSpawn(…)` from
+ * `tests/_helpers/tmp-fixture.mjs`, which prepend `...NO_BACKGROUND_WRITER` and
+ * spawn the binary inside the helper. Two consequences, both measured
+ * 2026-09-07 against this tree:
+ *
+ *  - Resolving only the helper's own two `execFileSync`/`spawnSync` lines
+ *    (i.e. teaching {@link classifyArgv} to skip the allowlisted flag-only
+ *    spread, see {@link NOOP_PREFIX_SPREADS}) changes NOTHING: `applicable`
+ *    stays at **17**, because the token after the allowlisted spread is
+ *    `...args` — an unknown spread the census must still refuse to guess past.
+ *  - Recognising the two helpers BY NAME, and reading the argv array's first
+ *    element as the subcommand, lifts `applicable` to **~200** with **0**
+ *    findings (197 → 198 → 200 across the 2026-09-07 re-measurements as
+ *    sibling waves added fixtures; re-measure before quoting) — the census
+ *    then sees the real test population instead of a residue. That population is **244** `fixtureGit`/`fixtureGitSpawn` call
+ *    sites, measured 2026-09-07 with
+ *    `rg -o "\bfixtureGit(Spawn)?\s*\(" tests/ -g '*.mjs' | wc -l`
+ *    (the header claimed 239 until that re-measurement; `applicable` is the
+ *    smaller number because read-only and unresolved-argv calls are excluded).
+ *
+ * Wrapper-aware is therefore the mode this file implements. It costs one extra
+ * rule: the helper takes its target as the SECOND POSITIONAL, not as a `cwd:`
+ * key, and `undefined`, `null` or an ABSENT second positional all mean "no
+ * destination was handed to the helper" — see {@link wrapperHasCwd}, which
+ * judges the COMMENT-STRIPPED tail so an inline comment cannot stand in for the
+ * argument. Judging a wrapper call by the `cwd:` scan alone would have reported
+ * nearly every routed fixture as untargeted.
+ *
  * Further named gaps:
  *  - **A non-literal argv array is never judged.** `execFileSync('git', args, …)`
  *    cannot be classified from the call site; counted as `unresolvedArgv`.
@@ -163,6 +194,16 @@ const TARGET_DECLARING_GLOBALS = Object.freeze(['-C', '--git-dir', '--work-tree'
 /** Call shapes that hand an argv ARRAY to a `git` binary. */
 const ARGV_CALL_RE = /\b(?:execFileSync|execFile|spawnSync|spawn)\s*\(\s*['"]git['"]\s*,\s*/g;
 
+/**
+ * Call shapes that route a `git` argv through this suite's fixture helpers.
+ *
+ * `fixtureGit(args, cwd, opts)` / `fixtureGitSpawn(args, cwd, opts)` from
+ * `tests/_helpers/tmp-fixture.mjs` ARE git invocations — the binary is inside
+ * the helper. Recognising them by name is what makes the census reflect the
+ * real test population; see § Wrapper-aware in the header.
+ */
+const WRAPPER_CALL_RE = /\b(?:fixtureGit|fixtureGitSpawn)\s*\(/g;
+
 /** Call shapes that hand a SHELL STRING opening with `git` to a shell. */
 const SHELL_CALL_RE = /\b(?:execSync|exec)\s*\(\s*(['"`])\s*git\s/g;
 
@@ -226,15 +267,30 @@ function matchBracket(text, open, openChar, closeChar) {
 }
 
 /**
- * @typedef {{t:'lit', v:string} | {t:'spread'} | {t:'expr'}} ArgvToken
- *   `lit` a string literal · `spread` a `...rest` element · `expr` any other
+ * @typedef {{t:'lit', v:string} | {t:'spread', name:string} | {t:'expr'}} ArgvToken
+ *   `lit` a string literal · `spread` a `...rest` element, carrying the spread
+ *   identifier (`''` when it is not a plain identifier) · `expr` any other
  *   expression (an identifier, a member access, an interpolated template).
  *
  * The `spread`/`expr` split is load-bearing, not cosmetic: `['init','-q',dir]`
  * carries its target in an `expr` positional, while `['-C',dir,...args]`
  * carries an unknowable tail in a `spread`. Folding both to "opaque" is what
  * produced the first measurement's 11 false positives.
+ *
+ * The spread's NAME is load-bearing in turn — see {@link NOOP_PREFIX_SPREADS}.
  */
+
+/**
+ * Spread identifiers that are known to contain ONLY `git` global flags, so a
+ * leading `...NAME` may be skipped exactly as a literal `-c k=v` run is.
+ *
+ * An explicit allowlist, never a heuristic: any OTHER spread keeps the
+ * fail-closed `subcommand: null`, because guessing past an unknown spread is
+ * precisely what produced the 11 false positives named in the header.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const NOOP_PREFIX_SPREADS = new Set(['NO_BACKGROUND_WRITER']);
 
 /**
  * Tokenize a literal argv array body into ordered tokens.
@@ -245,13 +301,13 @@ function matchBracket(text, open, openChar, closeChar) {
 export function tokenizeArgv(inner) {
   /** @type {ArgvToken[]} */
   const tokens = [];
-  const re = /(['"])((?:\\.|(?!\1)[^\\])*)\1|`([^`$]*)`|(\.\.\.)[\w$.[\]]*|([A-Za-z_$][\w$.[\]]*|`[^`]*`)/g;
+  const re = /(['"])((?:\\.|(?!\1)[^\\])*)\1|`([^`$]*)`|(\.\.\.)([\w$.[\]]*)|([A-Za-z_$][\w$.[\]]*|`[^`]*`)/g;
   /** @type {RegExpExecArray|null} */
   let m;
   while ((m = re.exec(inner)) !== null) {
     if (m[2] !== undefined) tokens.push({ t: 'lit', v: m[2] });
     else if (m[3] !== undefined) tokens.push({ t: 'lit', v: m[3] });
-    else if (m[4] !== undefined) tokens.push({ t: 'spread' });
+    else if (m[4] !== undefined) tokens.push({ t: 'spread', name: m[5] ?? '' });
     else tokens.push({ t: 'expr' });
   }
   return tokens;
@@ -268,8 +324,13 @@ export function classifyArgv(tokens) {
   let index = 0;
   while (index < tokens.length) {
     const token = tokens[index];
-    // A non-literal in leading-flag position makes the subcommand unknowable;
-    // never guess past it.
+    // An ALLOWLISTED flag-only spread is skipped exactly like a `-c k=v` run.
+    if (token.t === 'spread' && NOOP_PREFIX_SPREADS.has(token.name)) {
+      index += 1;
+      continue;
+    }
+    // Any other non-literal in leading-flag position makes the subcommand
+    // unknowable; never guess past it.
     if (token.t !== 'lit') return { hasArgvTarget, subcommand: null, rest: [] };
     if (!token.v.startsWith('-')) break;
 
@@ -417,6 +478,84 @@ export function insideStringLiteral(body, index) {
 }
 
 /**
+ * Replace every comment in `text` with a single space, leaving string literals
+ * untouched.
+ *
+ * Not cosmetic: {@link wrapperHasCwd} judges the SECOND POSITIONAL textually,
+ * so an inline `/* … *\/` between the comma and the argument used to shift the
+ * argument out of view and the call read as targeted — a comment that says
+ * "no cwd" measured as a cwd. `inCommentLine` cannot serve here: it answers a
+ * question about a whole LINE, while this one runs inside a call expression.
+ *
+ * @param {string} text
+ * @returns {string} same length semantics, comments blanked to one space
+ */
+export function stripComments(text) {
+  let out = '';
+  /** @type {string|null} */
+  let quote = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote !== null) {
+      out += ch;
+      if (ch === '\\') {
+        out += text[i + 1] ?? '';
+        i += 1;
+      } else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    if (ch === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      i = end === -1 ? text.length : end + 1;
+      out += ' ';
+      continue;
+    }
+    if (ch === '/' && text[i + 1] === '/') {
+      const end = text.indexOf('\n', i);
+      i = end === -1 ? text.length : end - 1;
+      out += ' ';
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Decide whether a fixture-helper call names a working directory.
+ *
+ * `fixtureGit(args, cwd, opts)` takes the target as its SECOND POSITIONAL, not
+ * as a `cwd:` key — so the textual `cwd:` scan that judges a raw `execFileSync`
+ * would report every one of these as untargeted.
+ *
+ * Three shapes are explicitly NOT a target, because none of them hands the
+ * helper a destination: a literal `undefined` (the documented "the argv names
+ * the target" form), a literal `null` (same at runtime — `spawnSync` inherits
+ * the ambient cwd for both), and an ABSENT second positional. Judging is done
+ * on the COMMENT-STRIPPED tail: `fixtureGit([…], /* no cwd *\/ undefined)` read
+ * as targeted before 2026-09-07 — the comment, not the argument, was what the
+ * second-positional scan saw.
+ *
+ * @param {string} tail call arguments AFTER the argv array's `]`, bounded by
+ *   the call's closing paren
+ * @returns {boolean}
+ */
+export function wrapperHasCwd(tail) {
+  const clean = stripComments(tail);
+  const m = /^\s*,\s*/.exec(clean);
+  if (m) {
+    const second = clean.slice(m[0].length);
+    if (second !== '' && !/^(?:undefined|null)\b/.test(second) && !/^,/.test(second)) return true;
+  }
+  return CWD_OPTION_RE.test(clean);
+}
+
+/**
  * Scan one file for `git` invocations.
  *
  * @param {string} relative repo-relative path
@@ -428,7 +567,7 @@ export function scanFile(relative, body, tally) {
   /** @type {Array<{kind: string, file: string, line: number, form: string, command: string, message: string}>} */
   const findings = [];
 
-  /** @type {Array<{index: number, form: 'argv'|'shell', tokens: Array<string|null>, tail: string}>} */
+  /** @type {Array<{index: number, form: 'argv'|'shell'|'wrapper', tokens: Array<string|null>, tail: string}>} */
   const calls = [];
 
   ARGV_CALL_RE.lastIndex = 0;
@@ -451,6 +590,35 @@ export function scanFile(relative, body, tally) {
       form: 'argv',
       tokens: tokenizeArgv(after.slice(1, close)),
       tail: after.slice(close + 1),
+    });
+  }
+
+  WRAPPER_CALL_RE.lastIndex = 0;
+  while ((m = WRAPPER_CALL_RE.exec(body)) !== null) {
+    const openParen = m.index + m[0].length - 1;
+    const callEnd = matchBracket(body, openParen, '(', ')');
+    if (callEnd === -1) {
+      tally.unresolvedArgv += 1;
+      continue;
+    }
+    const argsText = body.slice(openParen + 1, callEnd);
+    const arrayStart = argsText.search(/\S/);
+    if (arrayStart === -1 || argsText[arrayStart] !== '[') {
+      // `fixtureGit(args, dir)` — a variable argv, unjudgeable like its
+      // `execFileSync` counterpart.
+      tally.unresolvedArgv += 1;
+      continue;
+    }
+    const close = matchBracket(argsText, arrayStart, '[', ']');
+    if (close === -1) {
+      tally.unresolvedArgv += 1;
+      continue;
+    }
+    calls.push({
+      index: m.index,
+      form: 'wrapper',
+      tokens: tokenizeArgv(argsText.slice(arrayStart + 1, close)),
+      tail: argsText.slice(close + 1),
     });
   }
 
@@ -487,11 +655,20 @@ export function scanFile(relative, body, tally) {
     }
     tally.applicable += 1;
 
-    // The options object: everything up to the end of the call expression.
+    // The options object: everything up to the end of the call expression. For
+    // a wrapper call `call.tail` is ALREADY bounded by the call's own closing
+    // paren, and its second positional — not a `cwd:` key — carries the target.
+    const isWrapper = call.form === 'wrapper';
     const callEnd = matchBracket(call.tail, call.tail.indexOf('('), '(', ')');
-    const optionsText = callEnd === -1 ? call.tail.slice(0, 400) : call.tail.slice(0, callEnd);
-    const opaqueOptions = OPAQUE_OPTIONS_RE.test(call.tail);
-    const hasCwd = CWD_OPTION_RE.test(optionsText);
+    const optionsText = isWrapper
+      ? call.tail
+      : callEnd === -1
+        ? call.tail.slice(0, 400)
+        : call.tail.slice(0, callEnd);
+    const opaqueOptions = !isWrapper && OPAQUE_OPTIONS_RE.test(call.tail);
+    const hasCwd = isWrapper
+      ? wrapperHasCwd(call.tail)
+      : CWD_OPTION_RE.test(optionsText);
     const hasEnvTarget = GIT_ENV_TARGET_RE.test(optionsText);
     const hasTarget =
       hasArgvTarget || hasCwd || hasEnvTarget || hasSubcommandTarget(subcommand, rest);
@@ -582,7 +759,10 @@ export function inspectTestGitConfigTarget(pluginRoot) {
       });
       return result;
     }
-    if (!/['"`]\s*git[\s'"`]/.test(body)) continue;
+    // Cheap prefilter. The second alternative is load-bearing since the census
+    // became wrapper-aware: a file that only calls `fixtureGit([...])` never
+    // writes the quoted binary name and would otherwise be skipped unseen.
+    if (!/['"`]\s*git[\s'"`]/.test(body) && !/\bfixtureGit(?:Spawn)?\s*\(/.test(body)) continue;
     findings.push(...scanFile(relative, body, tally));
   }
 

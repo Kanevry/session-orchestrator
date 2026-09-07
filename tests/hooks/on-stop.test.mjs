@@ -716,6 +716,39 @@ describe('SubagentStop stdout — additionalContext slot (#666)', { timeout: 150
     expect(typeof out.terminalSequence).toBe('string');
     expect(out.terminalSequence.length).toBeGreaterThan(0);
   });
+
+  // #1254: the notification title was hardcoded to 'Claude Code', so a Codex or
+  // Cursor operator got a desktop notification naming the wrong harness. The
+  // label now follows detectPlatform(); the sibling env markers are cleared so
+  // the unset case measures the fallback, not the ambient harness.
+  // Table-driven over every platform detectPlatform() can return: two cases
+  // pinned only `codex` and the fallback, so a label mapping that got `cursor`
+  // or `pi` wrong stayed green on exactly the harnesses the fix was for.
+  it.each([
+    ['codex', 'Codex'],
+    ['cursor', 'Cursor'],
+    ['pi', 'Pi'],
+    [undefined, 'Claude Code'],
+  ])('labels the notification for SO_PLATFORM=%s as %s', async (platform, label) => {
+    const dir = await track(await mkGitDir());
+    const stdin = JSON.stringify({ hook_event_name: 'Stop', session_id: U('ts-platform') });
+    const neutral = {
+      CLAUDE_PLUGIN_ROOT: undefined,
+      CODEX_PLUGIN_ROOT: undefined,
+      CURSOR_RULES_DIR: undefined,
+      PI_PLUGIN_ROOT: undefined,
+    };
+
+    const result = await runHook({
+      projectDir: dir,
+      stdin,
+      env: { ...neutral, SO_PLATFORM: platform },
+    });
+    const seq = JSON.parse(result.stdout).terminalSequence;
+    expect(seq).toContain(label);
+    // The fallback is the only case that may carry 'Claude Code'.
+    if (label !== 'Claude Code') expect(seq).not.toContain('Claude Code');
+  });
 });
 
 // ---------------------------------------------------------------------------

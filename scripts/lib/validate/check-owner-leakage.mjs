@@ -751,7 +751,7 @@ function rawConfidentialNamesKeyState(ownerYamlPath) {
  * be called only from runScan() — NOT at module top-level. This module is
  * dual-mode (CLI entry point AND importable library, `isMain` guard); a top-level
  * fs read would fire on every library import (e.g. pseudonym-map.mjs importing
- * isOwnerLeakySegment). loadConfidentialNames caches per path, so calling this
+ * isOwnerLeakySegment). inspectConfidentialNames caches per path, so calling this
  * once per scan reads the file at most once.
  *
  * STANDALONE-SAFE: the two host-local helper modules are DYNAMICALLY imported
@@ -803,7 +803,26 @@ async function getConfidentialNamePatterns() {
     };
   } catch (err) {
     if (err?.code === 'ERR_MODULE_NOT_FOUND' && isMissingDirectSibling(err)) {
-      // (a) standalone single-file vendoring — the documented degrade.
+      // (a) standalone single-file vendoring. The degrade is documented — but it
+      // must not swallow a CP11 that the operator DID configure (GitLab #1262).
+      // No helper resolved here, so the only configuration signal still readable
+      // is the raw env var: a literal mirror of ENV_KEYS['confidential-names-file']
+      // in scripts/lib/config/host-paths.mjs, which cannot be imported on this
+      // branch by construction.
+      //
+      // LIMIT (named, not hidden): an owner.yaml-configured names file is
+      // STRUCTURALLY undetectable in a standalone copy — resolveOwnerYamlPath()
+      // lives in the very module chain that failed to resolve, so there is no way
+      // to learn that owner.yaml even exists, let alone what it configures. Only
+      // the env route can fail closed here; the owner.yaml route degrades inert.
+      const envNamesPath = process.env.SO_CONFIDENTIAL_NAMES_FILE;
+      if (typeof envNamesPath === 'string' && envNamesPath.trim() !== '') {
+        return {
+          patterns: [],
+          disabledReason:
+            'CP11 configured via SO_CONFIDENTIAL_NAMES_FILE but the confidential-names helpers are not resolvable (standalone copy) — failing closed',
+        };
+      }
       return {
         patterns: [],
         inertWarn: 'CP11 inert — confidential-names helpers not resolvable (standalone copy)',
@@ -815,35 +834,60 @@ async function getConfidentialNamePatterns() {
 
   try {
     const { loadHostPaths, resolveHostPath } = helpers.hostPaths;
-    const { loadConfidentialNames } = helpers.confidentialNames;
-    const { loadOwnerConfig, resolveOwnerYamlPath } = helpers.ownerYaml;
+    const { inspectConfidentialNames } = helpers.confidentialNames;
+    const { resolveOwnerYamlPath } = helpers.ownerYaml;
 
-    // Load owner.yaml ONCE and hand the same result to loadHostPaths, so the
-    // env>owner.yaml>default precedence is unchanged while the load's own health
-    // (reason / droppedSections) stays visible here.
-    const owner = loadOwnerConfig();
-    const namesPath = resolveHostPath('confidential-names-file', '', loadHostPaths({ ownerLoader: () => owner }));
+    // ONE owner.yaml load. Since #1251 loadHostPaths() passes the loader's own
+    // health (source / reason / droppedSections) straight through, so the
+    // env>owner.yaml>default precedence and the load's diagnosis come from the
+    // same read — no second loadOwnerConfig() call to recover what was discarded.
+    const hostCtx = loadHostPaths();
+
+    // FAIL-CLOSED on an unknowable load (LOW-2). `loadHostPaths` has its own
+    // defensive catch that swallows a THROWING owner loader and returns
+    // `{ ownerConfig: undefined, env, source: undefined, reason: undefined }`.
+    // Without this branch that shape resolves `namesPath` to '' , fires no
+    // reason branch, and returns `{ patterns: [] }` — a silent PASS.
+    // Only the throw produces all-undefined: `loadOwnerConfig` returns
+    // `{ config: getDefaults(), source: 'defaults', errors: [] }` for a
+    // genuinely ABSENT owner.yaml (owner-yaml.mjs:587-590) and `source:
+    // 'defaults'` with a `reason` for every read/parse failure — so a missing
+    // file keeps taking the normal path below. Latent today (the loader
+    // returns on every error path), load-bearing if that ever changes.
+    if (
+      hostCtx.ownerConfig === undefined &&
+      hostCtx.source === undefined &&
+      hostCtx.reason === undefined
+    ) {
+      return {
+        patterns: [],
+        disabledReason:
+          'CP11 could not determine whether a confidential-names file is configured (owner config loader failed) — failing closed',
+      };
+    }
+
+    const namesPath = resolveHostPath('confidential-names-file', '', hostCtx);
 
     if (typeof namesPath !== 'string' || namesPath.trim() === '') {
       // Nothing resolves a names file. That is either (b) — genuinely
       // unconfigured — or a state in which the answer is UNKNOWABLE because the
       // owner.yaml that would carry it could not be read. Unknowable is (c).
       if (existsSync(resolveOwnerYamlPath())) {
-        if (owner.reason === 'yaml-parser-missing') {
+        if (hostCtx.reason === 'yaml-parser-missing') {
           return {
             patterns: [],
             disabledReason:
               "owner.yaml exists but 'js-yaml' is not installed, so a configured confidential-names-file cannot be resolved (run 'npm install')",
           };
         }
-        if (owner.reason === 'unparseable') {
+        if (hostCtx.reason === 'unparseable') {
           return {
             patterns: [],
             disabledReason:
               'owner.yaml exists but could not be parsed, so a configured confidential-names-file cannot be resolved',
           };
         }
-        if (owner.droppedSections?.some((d) => d.section === 'paths')) {
+        if (hostCtx.droppedSections?.some((d) => d.section === 'paths')) {
           // The paths: section was replaced by its default because SOME key in it
           // is invalid — which says nothing yet about whether CP11 was configured.
           // Re-read the RAW file for that one key (the loader does not expose it on
@@ -875,54 +919,42 @@ async function getConfidentialNamePatterns() {
       return { patterns: [] }; // (b) the ~99% default — inactive, silent.
     }
 
-    // A names file IS configured. loadConfidentialNames() returns null for BOTH
-    // "unusable" and "deliberately empty list", so classify the file first — an
-    // empty list is an operator choice (inactive, silent), a missing/malformed
-    // one is (c).
-    const unusable = classifyNamesFile(namesPath);
-    if (unusable) return { patterns: [], disabledReason: unusable };
-
-    const names = loadConfidentialNames({ namesPath });
-    if (!names) return { patterns: [] }; // readable, well-formed, zero usable entries.
+    // A names file IS configured. Since #1250 the loader REPORTS the class it
+    // used to collapse into `null`, so the verdict reads straight off `status` —
+    // no second read of the file to re-derive it. Only `[]` ('empty') is an
+    // operator choice (inactive, silent); 'missing'/'malformed'/'all-dropped'
+    // mean a configured guard cannot run, which is (c) and fails closed. The
+    // reasons carry no path (see above). `inspectConfidentialNames` is the
+    // discriminated entry point; `loadConfidentialNames` keeps its 4.0.0
+    // `string[] | null` shape for external deep-importers and cannot express
+    // this distinction.
+    const { status, names } = inspectConfidentialNames({ namesPath });
+    if (status === 'missing') {
+      return { patterns: [], disabledReason: 'a confidential-names-file is configured but does not exist' };
+    }
+    if (status === 'malformed') {
+      return {
+        patterns: [],
+        disabledReason: 'the configured confidential-names-file is unreadable or not a JSON array of names',
+      };
+    }
+    if (status === 'all-dropped') {
+      // W4 finding F3 (fail-open): the file listed entries and validation rejected
+      // every one of them (non-strings, blanks, over-long). That is a CORRUPTED
+      // list, not the `[]` opt-out — CP11 would run with zero patterns and report
+      // the clean verdict it never earned. Same class as 'malformed'.
+      return {
+        patterns: [],
+        disabledReason:
+          'every entry in the configured confidential-names-file was rejected as invalid or oversized',
+      };
+    }
+    if (status !== 'ok') return { patterns: [] }; // 'empty' — the operator's `[]` opt-out.
     return { patterns: names.map((name) => new RegExp(`\\b${escapeRegex(name)}\\b`, 'i')) };
   } catch (err) {
     // The helpers resolved but something below threw. CP11 cannot run — fail closed.
     return { patterns: [], disabledReason: `confidential-names resolution failed (${err?.name ?? 'Error'})` };
   }
-}
-
-/**
- * Classify a CONFIGURED confidential-names file as usable or not.
- *
- * `loadConfidentialNames()` collapses "file missing / unreadable / malformed /
- * not an array" and "well-formed but empty" into one `null` return, which is
- * exactly the distinction CP11's fail-closed verdict turns on. Rather than widen
- * that module's contract (it has four other consumers of its `null`), this reads
- * the file once more for classification only. It never returns file CONTENT — the
- * reason string carries the error CLASS alone, matching the confidential-names
- * privacy invariant and the no-path rule above.
- *
- * @param {string} namesPath
- * @returns {string|null} a reason string when unusable, null when usable.
- */
-function classifyNamesFile(namesPath) {
-  let raw;
-  try {
-    if (!existsSync(namesPath)) {
-      return 'a confidential-names-file is configured but does not exist';
-    }
-    raw = readFileSync(namesPath, 'utf8');
-  } catch (err) {
-    return `the configured confidential-names-file is unreadable (${err?.name ?? 'Error'})`;
-  }
-  try {
-    if (!Array.isArray(JSON.parse(raw))) {
-      return 'the configured confidential-names-file is not a JSON array';
-    }
-  } catch (err) {
-    return `the configured confidential-names-file contains malformed JSON (${err?.name ?? 'Error'})`;
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------

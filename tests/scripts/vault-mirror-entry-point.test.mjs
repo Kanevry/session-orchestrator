@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawnSync, execSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
+import { fixtureGit, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 // Entry-point invariant guard for #536 — `.orchestrator/pending-dream.md` and
 // `.orchestrator/dialectic-pending.md` cross-session sidecars MUST NEVER be
@@ -130,7 +131,7 @@ describe('vault-mirror entry-point invariant (#536)', () => {
   afterEach(() => {
     for (const d of dirs) {
       try {
-        rmSync(d, { recursive: true, force: true });
+        removeTree(d);
       } catch {
         /* best-effort cleanup */
       }
@@ -319,7 +320,7 @@ describe('vault-mirror session dedup — duplicated session_id (#1186c)', () => 
   afterEach(() => {
     for (const d of dirs) {
       try {
-        rmSync(d, { recursive: true, force: true });
+        removeTree(d);
       } catch {
         /* best-effort cleanup */
       }
@@ -444,7 +445,7 @@ describe('vault-mirror canonical-vault guard (#600)', () => {
   afterEach(() => {
     for (const d of dirs) {
       try {
-        rmSync(d, { recursive: true, force: true });
+        removeTree(d);
       } catch {
         /* best-effort cleanup */
       }
@@ -465,8 +466,8 @@ describe('vault-mirror canonical-vault guard (#600)', () => {
   }
 
   function gitInitWithOrigin(dir, originUrl) {
-    execSync('git init -q', { cwd: dir });
-    execSync(`git remote add origin ${originUrl}`, { cwd: dir });
+    fixtureGit(['init', '-q'], dir);
+    fixtureGit(['remote', 'add', 'origin', originUrl], dir);
   }
 
   it('canonical OK: vault with git origin .../agents/vault mirrors successfully (exit 0)', () => {
@@ -646,7 +647,7 @@ describe('vault-mirror secret-masker telemetry (#1025)', () => {
   afterEach(() => {
     for (const d of dirs) {
       try {
-        rmSync(d, { recursive: true, force: true });
+        removeTree(d);
       } catch {
         /* best-effort cleanup */
       }

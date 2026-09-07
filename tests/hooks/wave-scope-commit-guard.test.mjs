@@ -15,11 +15,11 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
-import { execSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import os from 'node:os';
+import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -56,12 +56,12 @@ async function runHook(cwd) {
  * Create a fresh tmp git repo. Returns its absolute path.
  */
 async function mkRepo() {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'wave-commit-guard-test-'));
-  execSync('git init -q', { cwd: dir });
+  const dir = makeTmpDir('wave-commit-guard-test-');
+  fixtureGit(['init', '-q'], dir);
   // git config a user — needed so future `git commit` calls would work, but
   // we only use `git add` + `git diff --cached` here. Defensive belt-and-braces.
-  execSync('git config user.email test@example.com', { cwd: dir });
-  execSync('git config user.name "Test"', { cwd: dir });
+  fixtureGit(['config', 'user.email', 'test@example.com'], dir);
+  fixtureGit(['config', 'user.name', 'Test'], dir);
   return dir;
 }
 
@@ -97,7 +97,7 @@ async function stageFile(repoDir, relPath, content = 'x\n') {
   const abs = path.join(repoDir, relPath);
   await fs.mkdir(path.dirname(abs), { recursive: true });
   await fs.writeFile(abs, content);
-  execSync(`git add ${JSON.stringify(relPath)}`, { cwd: repoDir });
+  fixtureGit(['add', relPath], repoDir);
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ const tmpDirs = [];
 
 afterEach(async () => {
   for (const d of tmpDirs.splice(0)) {
-    await fs.rm(d, { recursive: true, force: true });
+    removeTree(d);
   }
 });
 
@@ -244,7 +244,7 @@ describe('wave-scope-commit-guard — #553 G-M1 coverage gaps', { timeout: 20000
     await fs.writeFile(ignored, 'secret');
     let addSucceeded = true;
     try {
-      execSync('git add tmp/ignored.txt', { cwd: dir, stdio: 'pipe' });
+      fixtureGit(['add', 'tmp/ignored.txt'], dir, { stdio: 'pipe' });
     } catch {
       addSucceeded = false;
     }
@@ -360,7 +360,7 @@ describe('wave-scope-commit-guard — #553 G-L2 performance bound', { timeout: 3
       writes.push(fs.writeFile(path.join(otherDir, `f${i}.ts`), 'x'));
     }
     await Promise.all(writes);
-    execSync('git add src/ other/', { cwd: dir });
+    fixtureGit(['add', 'src/', 'other/'], dir);
 
     const start = performance.now();
     const result = await runHook(dir);

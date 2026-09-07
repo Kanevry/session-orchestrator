@@ -204,22 +204,48 @@ describe('resolveHostPath — confidential-names-file (#728a)', () => {
 });
 
 describe('loadHostPaths', () => {
-  it('returns the loaded ownerConfig and the passed env', () => {
+  it('returns the loaded ownerConfig, the passed env and the loader health fields', () => {
     const fakeEnv = { SO_VAULT_DIR: '/x' };
-    const ownerLoader = () => ({ config: { paths: { 'vault-dir': '/x' } } });
+    const ownerLoader = () => ({
+      config: { paths: { 'vault-dir': '/x' } },
+      source: 'file',
+    });
     const result = loadHostPaths({ env: fakeEnv, ownerLoader });
     expect(result).toEqual({
       ownerConfig: { paths: { 'vault-dir': '/x' } },
       env: { SO_VAULT_DIR: '/x' },
+      source: 'file',
+      reason: undefined,
+      droppedSections: undefined,
     });
   });
 
-  it('returns ownerConfig undefined when the ownerLoader throws (no rethrow)', () => {
+  // #1251: the health fields are the whole point of the widened shape — CP11 in
+  // check-owner-leakage.mjs reads reason/droppedSections from HERE instead of
+  // loading owner.yaml a second time.
+  it('passes through reason and droppedSections from the owner loader', () => {
+    const dropped = [{ section: 'paths', errors: ["paths.vault-dir must be a string"] }];
+    const ownerLoader = () => ({
+      config: {},
+      source: 'defaults',
+      reason: 'yaml-parser-missing',
+      droppedSections: dropped,
+    });
+    const result = loadHostPaths({ env: {}, ownerLoader });
+    expect(result.source).toBe('defaults');
+    expect(result.reason).toBe('yaml-parser-missing');
+    expect(result.droppedSections).toEqual(dropped);
+  });
+
+  it('returns ownerConfig and all health fields undefined when the ownerLoader throws (no rethrow)', () => {
     const ownerLoader = () => {
       throw new Error('loader exploded');
     };
     const result = loadHostPaths({ env: {}, ownerLoader });
     expect(result.ownerConfig).toBe(undefined);
+    expect(result.source).toBe(undefined);
+    expect(result.reason).toBe(undefined);
+    expect(result.droppedSections).toBe(undefined);
   });
 
   it('still returns the passed env when the ownerLoader throws', () => {

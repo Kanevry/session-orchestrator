@@ -38,6 +38,7 @@
 import { getPlatform, getPluginRoot } from '../platform.mjs';
 import { enumerateSurface } from '../sunset/walker.mjs';
 import { readPluginVersionFromPackageJson } from '../bootstrap-lock-freshness.mjs';
+import { VALID_SESSION_PROFILES } from '../session-schema/constants.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -124,8 +125,31 @@ const ROSTER_OTHER = 'other';
 const MAX_NAME_LENGTH = 64;
 const MAX_NAMES = 100;
 
+/**
+ * The two list bounds that are genuinely SHARED with the ingest server
+ * (`server/ingest/validate.mjs` `INGEST_LIST_BOUNDS` — MAX_LIST_ITEMS /
+ * MAX_LIST_ITEM_LEN). Exported so `tests/telemetry/parity.test.mjs` can compare
+ * the two trees instead of trusting two hand-typed numbers: a client that caps
+ * higher than the server emits pings the server 400s.
+ *
+ * The server's other five bounds (MAX_ANON_ID, MAX_SENT_AT, MAX_PLUGIN_VERSION,
+ * MAX_SESSION_TYPE, MAX_SESSION_PROFILE) are SERVER-ONLY BY DESIGN — they bound
+ * inputs from any client, including foreign or tampered ones, and have no client
+ * counterpart to keep in lockstep. Do not mirror them here.
+ */
+export const SHARED_LIST_BOUNDS = Object.freeze({
+  maxItems: MAX_NAMES,
+  maxItemLength: MAX_NAME_LENGTH,
+});
+
 /** Enum fallbacks. */
 const VALID_PLATFORMS = Object.freeze(['claude', 'codex', 'cursor', 'pi']);
+// DELIBERATE ASYMMETRY, not a drift: this is the TELEMETRY type set and omits
+// `'unknown'`, which session-schema/constants.mjs VALID_SESSION_TYPES carries.
+// There `unknown` is a storable ledger value; here it is a NORMALIZER FALLBACK
+// (SESSION_TYPE_UNKNOWN below) that must never be reachable from the input set,
+// or "we could not tell" would be indistinguishable from a measured type. Not
+// unified with constants.mjs for exactly that reason.
 const VALID_SESSION_TYPES = Object.freeze(['housekeeping', 'feature', 'deep']);
 const PLATFORM_OTHER = 'other';
 const SESSION_TYPE_OTHER = 'other';
@@ -145,27 +169,24 @@ const SESSION_TYPE_UNKNOWN = 'unknown';
 /**
  * CLOSED whitelist of PUBLIC session-profile names that may reach the wire.
  *
- * WHY A WHITELIST AND NOT A REGEX: `session_profile` is copied from the STATE.md
- * frontmatter key `session-profile`, which is written per repo by whoever runs
- * `/session <alias>` — i.e. it is the only field on the usage-ping whose VALUE is
- * repo-authored free text. Two independent Wave-1 reviewers reproduced the leak
- * end-to-end (2026-09-06): `session-profile: client-acme-private-repo` travelled
- * verbatim through `buildUsagePing` → `projectUsagePing` → the ingest server's
- * `raw_json` column. A shape regex does NOT close it — that example string is
- * already lowercase-and-hyphens and passes any such pattern. Only an
- * enumeration of names that are public BY CONSTRUCTION does.
+ * RE-EXPORT, not a definition (GitLab #1252): the SSOT is
+ * `scripts/lib/session-schema/constants.mjs` `VALID_SESSION_PROFILES`, whose
+ * docblock carries the reproduced leak and the whitelist-over-regex rationale.
  *
- * Today exactly one profile exists: `ultradeep`, the 7-wave variant of a `deep`
- * session (writer: `commands/session.md` § "Argument alias: ultradeep" → STATE.md
- * frontmatter `session-profile`; wave shape: `skills/session-plan/SKILL.md`).
- * Adding a profile there means adding it HERE and in the server's mirror
- * (`server/ingest/validate.mjs` `SESSION_PROFILES`) — a deliberate two-line,
- * reviewed edit, the same contract `ACCEPTED_VERSIONS` already uses server-side.
+ * Kept as a pure COMPATIBILITY SHIM, and measured as one: since 2026-09-07 no
+ * module in this repo imports the name from here (`rg -n VALID_SESSION_PROFILES
+ * scripts server hooks skills tests` — the two telemetry tests that used to now
+ * address constants.mjs). It stays because removing an export is a MAJOR change
+ * and this is a patch line; a deep importer outside the repo may still hold it.
+ * `tests/telemetry/schema.test.mjs` pins it with an IDENTITY assertion
+ * (`toBe`, not `toEqual`) so the shim can never quietly become a second
+ * definition of the whitelist.
  *
- * NOT a member of VALID_SESSION_TYPES: the profile is a SECOND axis. An
- * ultradeep session is `session_type: "deep"` PLUS `session_profile: "ultradeep"`.
+ * Adding a profile is a reviewed edit in constants.mjs AND in the server's
+ * mirror (`server/ingest/validate.mjs` `SESSION_PROFILES`) — the same two-tree
+ * contract `ACCEPTED_VERSIONS` already uses server-side.
  */
-export const VALID_SESSION_PROFILES = Object.freeze(['ultradeep']);
+export { VALID_SESSION_PROFILES };
 
 /**
  * Closed sets for os/arch client-side normalization. A value outside the set —

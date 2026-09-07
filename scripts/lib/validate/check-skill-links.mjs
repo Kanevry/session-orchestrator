@@ -43,13 +43,36 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, resolve, relative, sep } from 'node:path';
 
-/** Surfaces whose markdown is instruction, i.e. read and acted on. */
-export const SCAN_DIRS = Object.freeze(['skills', 'commands', 'agents', '.claude/rules']);
+/**
+ * Surfaces whose markdown is instruction, i.e. read and acted on.
+ *
+ * `docs/` joined the list in #1258 after the annotate-before-widen step the sibling
+ * `check-skill-script-paths.mjs` ran for #1208: a read-only re-scan (`dirs: ['docs']`,
+ * 2026-09-07) returned 92 files / 111 relative links / 8 findings — six of them GitLab
+ * `-/issues/N` renderer links now carved out by `SKIP_TARGET`, two of them genuinely dangling
+ * links to PRDs that had been archived to the private Meta-Vault. Both classes were resolved
+ * before the widening, so the widening itself lands at 0 findings.
+ */
+export const SCAN_DIRS = Object.freeze(['skills', 'commands', 'agents', '.claude/rules', 'docs']);
 
 /** Path segments that end the walk: vendored or machine-owned trees, never instruction. */
 export const PRUNE_DIRS = new Set(['node_modules', '.git', 'coverage', 'dist', '.pnpm']);
 
-const SKIP_TARGET = /^(https?:|mailto:|#|\/)/i;
+/**
+ * Targets this checker never resolves against the filesystem.
+ *
+ * The `-/issues/N` · `-/merge_requests/N` branch is a GitLab RENDERER convention, not a link
+ * defect: `../../../-/issues/174` is how a doc nested two levels deep points at the project's
+ * issue tracker, and GitLab resolves it correctly in its own Markdown view. It leaves the repo
+ * by construction, so a filesystem checker can only ever call it dangling. Measured 2026-09-07:
+ * 6 of the 8 `docs/` findings were exactly this shape, all in `docs/owner-config-schema.md`.
+ *
+ * The branch is anchored at BOTH ends. Left-unanchored it would still be a carve-out, but
+ * right-unanchored it swallowed every path that merely PASSES THROUGH such a segment —
+ * `docs/-/issues/12/../../secrets.md` is a genuinely dangling link and was SKIPped. The
+ * optional trailing `#note_123` is kept because GitLab issue links legitimately carry one.
+ */
+const SKIP_TARGET = /^(https?:|mailto:|#|\/)|(^|\/)-\/(issues|merge_requests)\/\d+(#[\w-]*)?$/i;
 const LINK_RE = /\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
 const INLINE_CODE_RE = /(`+)[^`]*?\1/g;
 
@@ -89,11 +112,15 @@ function fencedLineNumbers(text) {
  * these four directories would also be checked — there are none, and one would be a finding worth
  * seeing anyway.
  *
+ * @param {string} repoRoot
+ * @param {{dirs?: readonly string[]}} [options] `dirs` defaults to {@link SCAN_DIRS}; it exists so
+ *   an annotate-before-widen dry-run over a candidate surface needs no re-implementation of this
+ *   predicate (same shape as `scanSkillScriptPaths({ dirs })`).
  * @returns {string[]} repo-relative paths, sorted for stable output
  */
-export function listMarkdown(repoRoot) {
+export function listMarkdown(repoRoot, { dirs = SCAN_DIRS } = {}) {
   const out = [];
-  for (const dir of SCAN_DIRS) {
+  for (const dir of dirs) {
     const abs = join(repoRoot, dir);
     let entries;
     try { entries = readdirSync(abs, { recursive: true, withFileTypes: true }); } catch { continue; }
@@ -112,12 +139,15 @@ export function listMarkdown(repoRoot) {
 }
 
 /**
+ * @param {string} [repoRoot]
+ * @param {{dirs?: readonly string[]}} [options] `dirs` defaults to {@link SCAN_DIRS} — see
+ *   {@link listMarkdown}.
  * @returns {{ok: boolean, checked: number, files: number, findings: Array<{file: string, line: number, target: string}>}}
  */
-export function checkSkillLinks(repoRoot = process.cwd()) {
+export function checkSkillLinks(repoRoot = process.cwd(), { dirs = SCAN_DIRS } = {}) {
   const findings = [];
   let checked = 0;
-  const files = listMarkdown(repoRoot);
+  const files = listMarkdown(repoRoot, { dirs });
 
   for (const rel of files) {
     const abs = join(repoRoot, rel);

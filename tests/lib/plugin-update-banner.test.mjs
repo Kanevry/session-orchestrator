@@ -303,16 +303,24 @@ describe('checkPluginUpdate — platform-aware instruction (W2-I11)', () => {
     expect(result.message).not.toMatch(GERMAN_WORDS);
   });
 
-  // BUG: an unrecognised or future platform value must still get an
-  // actionable remedy, not a message that silently drops the instruction.
-  it('falls back to the generic npm instruction for an unrecognised platform value', async () => {
+  // BUG (#1256): the guard accepted ANY non-empty string as `platform`, so a
+  // typo or a foreign casing (`'clade'`, `'CLAUDE'`) pre-empted env resolution
+  // and degraded to the generic npm line — with no signal that the caller's
+  // value was junk. This pins BOTH halves in one assertion: the bad value is
+  // rejected, AND the fall-through direction is the env signal (codex here),
+  // not the generic instruction. It replaces the former
+  // "falls back to the generic instruction for an unrecognised platform value"
+  // case, which pinned exactly the degradation this fix removes.
+  it('rejects an unrecognised platform value and resolves from the env signal instead', async () => {
     installVersion('3.19.0');
     const result = await run({
-      platform: 'some-future-harness',
+      platform: 'clade',
+      env: { SO_PLATFORM: 'codex' },
       fetchImpl: fakeFetch({ version: '3.24.0' }),
     });
 
-    expect(result.message).toContain('npm update -g session-orchestrator');
+    expect(result.message).toContain('codex plugin marketplace upgrade kanevry');
+    expect(result.message).not.toContain('npm update -g session-orchestrator');
     expect(result.message).not.toMatch(GERMAN_WORDS);
   });
 

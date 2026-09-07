@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-09-06T19:04:31.959Z",
-  "head": "bc49301b3eed05b5b235376ecec4a931522d26bf",
+  "generated_at": "2026-09-07T18:36:32.142Z",
+  "head": "a244b8707aa5bb650673fce2e6cf548564b43e58",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -1274,7 +1274,8 @@
       "file": "scripts/lib/session-schema/constants.mjs",
       "reachable_from": [
         "on-session-end.mjs",
-        "on-session-start.mjs"
+        "on-session-start.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {

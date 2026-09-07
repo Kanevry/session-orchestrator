@@ -37,6 +37,16 @@ Phase 1 ships a self-contained validator that reads every `.md` file under `VAUL
 
 The inline Zod schema is vendored from the canonical source at `projects-baseline/packages/zod-schemas/src/vault-frontmatter.ts`. The skill is intentionally self-contained (no monorepo workspace dependency), so the schema is duplicated with a header comment pointing at the SSOT. Drift is to be caught by a future smoke test that imports the canonical schema and diffs the shape — NOT YET IMPLEMENTED. Until that test exists, any change to the canonical schema must be mirrored here in the same commit.
 
+### Dependencies
+
+`skills/vault-sync/package.json` pins `yaml ^2.5.0` / `zod ^3.24.0` — intentionally NOT the root's `yaml ^2.9.0` / `zod ^3.25.76`. This is not drift to fix:
+
+- Both CI hosts install this sub-package on its own, independent of the root install (`.gitlab-ci.yml:121` and `.github/workflows/test.yml:93`, both: `(cd skills/vault-sync && npm install --no-audit --no-fund)`).
+- The root `package.json` declares no `workspaces`, so `npm ci` at the root never touches this folder's deps; `skills/vault-sync/node_modules/` is the only place `zod` resolves for this skill (`scripts/lib/vault-archive.mjs:19-21`).
+- The `zod ^3.24.0` pin deliberately tracks the projects-baseline version, not this repo's own (`scripts/release.mjs:488`).
+
+The root's dependency versions are NOT the SSOT for this folder — do not "fix" this pin to match the root.
+
 ### How session-end invokes it
 
 ```

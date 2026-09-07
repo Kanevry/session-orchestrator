@@ -190,14 +190,17 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       expect(result.status).not.toBe(0);
     });
 
-    it('allows commit when a CP11 names-file is configured but the standalone-copied scanner lacks the confidential-names helper modules (inert degrade, #728a)', () => {
+    it('BLOCKS commit when a CP11 names-file is configured via env but the standalone-copied scanner lacks the confidential-names helpers (#1262 point 2)', () => {
       // This tmpDir setup (from beforeEach above) copies ONLY the scanner file —
       // the documented standalone single-file vendoring shape (security.md §
-      // Owner-Privacy). Configuring SO_CONFIDENTIAL_NAMES_FILE here must NOT crash
-      // the hook and must NOT block the commit: getConfidentialNamePatterns()
-      // dynamically imports ../config/host-paths.mjs, which does not exist at this
-      // relative path inside tmpDir, so CP11 degrades to [] (inert) and CP1–CP10
-      // (which do not match this fixture text) leave the commit clean.
+      // Owner-Privacy). getConfidentialNamePatterns() cannot resolve
+      // ../config/host-paths.mjs at this relative path, so no helper is available.
+      //
+      // THE BUG (#1262 point 2): that branch returned inert UNCONDITIONALLY, so a
+      // host that HAD configured CP11 got the clean verdict CP11 never earned —
+      // the same fail-open class #1244 closed for the transitive-import case. The
+      // env var is the one configuration signal still readable with zero helpers,
+      // so a non-empty SO_CONFIDENTIAL_NAMES_FILE now fails closed (exit 1).
       const namesDir = makeTmpDir('so-husky-cp11-inert-names-');
       const namesFile = join(namesDir, 'names.json');
       writeFileSync(namesFile, JSON.stringify(['zenithcorp']));
@@ -209,6 +212,24 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       });
 
       removeTree(namesDir);
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('CP11');
+      // Privacy: the host-local names path must never reach the (public-mirrored)
+      // hook output — the reason line carries the CLASS only.
+      expect(result.stderr).not.toContain(namesFile);
+    });
+
+    it('allows commit in the standalone copy when NO names-file is configured (documented inert degrade, #728a)', () => {
+      // The other half of the #1262 branch, kept pinned: with the env var unset
+      // the standalone copy is genuinely unconfigured, so CP11 stays inert and
+      // CP1–CP10 (which do not match this fixture text) leave the commit clean.
+      writeFileSync(join(tmpDir, 'doc.md'), 'zenithcorp leak here\n');
+      fixtureGit(['-C', tmpDir, 'add', 'doc.md']);
+
+      const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'inert cp11 unconfigured'], undefined, {
+        env: { SO_CONFIDENTIAL_NAMES_FILE: '' },
+      });
 
       expect(result.status).toBe(0);
     });
@@ -305,5 +326,40 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       expect(scannerResult.stdout).not.toContain('zenithcorp');
       expect(scannerResult.stdout).toContain('[REDACTED]');
     });
+
+    // W4 finding F1 — the CONFIGURED-BUT-UNUSABLE branches leaked the path.
+    //
+    // Until now only the standalone-copy row above asserted `not.toContain(namesFile)`,
+    // and that row never reaches the loader at all (its helpers do not resolve). The
+    // branches that DO run the loader — file missing, file malformed — are exactly the
+    // ones that both WARN and FAIL, so the host-local `/Users/<name>/…` path and the
+    // "Commit blocked" verdict landed in the SAME capture the operator pastes into a
+    // public CI log. The scanner's own `disabledReason` was always path-free; the
+    // loader's WARN was not.
+    const UNUSABLE_CASES = [
+      ['missing', null],
+      ['malformed', '[ broken'],
+    ];
+
+    it.each(UNUSABLE_CASES)(
+      'a %s configured names file blocks the commit WITHOUT echoing the host-local path (F1)',
+      (_label, rawContent) => {
+        const namesFile = join(namesDir, 'names.json');
+        if (rawContent !== null) writeFileSync(namesFile, rawContent);
+        writeFileSync(join(tmpDir, 'doc.md'), 'zenithcorp leak here\n');
+        fixtureGit(['-C', tmpDir, 'add', 'doc.md']);
+
+        const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'cp11 unusable'], undefined, {
+          env: { ...process.env, SO_CONFIDENTIAL_NAMES_FILE: namesFile },
+        });
+
+        // A guard that could not run must block, never report the clean verdict.
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain('CP11');
+        // …and the reason it gives may not carry the operator's own path.
+        expect(result.stderr).not.toContain(namesFile);
+        expect(result.stdout).not.toContain(namesFile);
+      },
+    );
   });
 });

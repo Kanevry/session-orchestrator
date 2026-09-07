@@ -805,6 +805,92 @@ describe('runReconcile — on-disk dedupe against .claude/rules/ provenance (iss
   });
 });
 
+/**
+ * A CONSOLIDATED rule document: one file absorbing N learnings, the shape the
+ * 2026-09-06 43→8 consolidation produced. Frontmatter `learning-key:` is a YAML
+ * scalar and can name only the FIRST key; the remaining N-1 live exclusively as
+ * `## Provenance` body bullets — mirroring `.claude/rules/guard-design.md` &
+ * friends verbatim.
+ */
+function consolidatedRuleDoc(learningKeys) {
+  return [
+    '---',
+    'auto-generated: false',
+    'alwaysApply: true',
+    `learning-key: ${learningKeys[0]}`,
+    'expires-at: 2099-09-30',
+    '---',
+    '',
+    '# Consolidated rule',
+    '',
+    '## Provenance',
+    '',
+    ...learningKeys.map((k) => `- learning-key: \`${k}\``),
+    '',
+  ].join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1242 — the dedupe contract, stated: the TRACKED `.claude/rules/`
+// provenance scan is AUTHORITATIVE, the gitignored sidecar is only a CACHE.
+//
+// TV-001 — the bug this catches that the #484 block above does NOT: the #484
+// test materializes ONE learning via the FRONTMATTER form. Breaking the
+// BODY-form scan (`BODY_LEARNING_KEY_RE`) leaves it fully green, because its
+// single key is also the frontmatter scalar. Yet the body form is the only
+// carrier of the N-1 further keys in every consolidated rule file this repo has
+// (8 files, 43 keys) — so that break would silently re-propose most of the
+// corpus on any machine whose sidecar is empty, i.e. every fresh clone.
+// ---------------------------------------------------------------------------
+
+describe('runReconcile — fresh clone (empty sidecar) still dedupes a consolidated rule file (#1242)', () => {
+  it('skips all 4 learnings of a consolidated rule whose frontmatter names 1 and whose Provenance body names all 4', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'reconcile-engine-fresh-clone-'));
+    try {
+      const subjects = ['consolidated-a', 'consolidated-b', 'consolidated-c', 'consolidated-d'];
+      const learningKeys = subjects.map((s) => `fragile-pattern/${s}`);
+
+      const rulesDir = join(repoRoot, '.claude', 'rules');
+      mkdirSync(rulesDir, { recursive: true });
+      writeFileSync(join(rulesDir, 'consolidated.md'), consolidatedRuleDoc(learningKeys), 'utf8');
+
+      const merge = vi.fn(() => ({ merged: [], written: true }));
+      const result = await runReconcile(
+        { repoRoot, now: new Date('2026-06-25T00:00:00Z') },
+        {
+          learnings: subjects.map((subject, i) =>
+            eligibleLearning({ subject, file_paths: [`scripts/lib/consolidated/${i}.mjs`] }),
+          ),
+          // Fresh clone: `.orchestrator/runtime/reconcile-candidates.jsonl` is
+          // gitignored, so a clone starts with NO sidecar records at all. The
+          // tracked rule file above must carry the whole verdict on its own.
+          loadCandidates: () => ({ records: [] }),
+          merge,
+        },
+      );
+
+      expect(result.summary.eligible).toBe(4);
+      // All four — not just the frontmatter one. This is the assertion that
+      // goes RED if BODY_LEARNING_KEY_RE breaks: keys would then hold only
+      // `fragile-pattern/consolidated-a`, giving alreadyMaterialized 1 and
+      // proposed 3.
+      expect(result.summary.alreadyMaterialized).toBe(4);
+      expect(result.summary.proposed).toBe(0);
+      expect(result.proposals).toEqual([]);
+
+      // Every rejection cites the ON-DISK reason, never the sidecar one — the
+      // sidecar is empty, so a rejection reading "already processed" would mean
+      // the cache had somehow decided a verdict it cannot hold here.
+      expect(result.rejected.map((r) => r.learningKey).sort()).toEqual([...learningKeys].sort());
+      for (const rejection of result.rejected) {
+        expect(rejection.reason).toContain('already materialized');
+      }
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Issue #1042 — an operator rejection must survive into the next run.
 //

@@ -40,17 +40,33 @@ const ENV_KEYS = /** @type {const} */ ({
  * merged with defaults, so a real owner.yaml without a `paths:` section yields
  * `ownerConfig.paths === undefined`. Callers must read defensively.
  *
- * @param {{ env?: Record<string, string|undefined>, ownerLoader?: () => { config: object } }} [opts]
- * @returns {{ ownerConfig: object|undefined, env: Record<string, string|undefined> }}
+ * HEALTH PASSTHROUGH (#1251): the owner loader reports HOW its result came about
+ * (`source`, `reason`, `droppedSections`). Discarding those forced callers that
+ * need them — CP11 in check-owner-leakage.mjs is the live one — to load owner.yaml
+ * a SECOND time just to see the health of the load this function already did. They
+ * are passed through verbatim; `ownerConfig` and `env` keep their exact prior
+ * meaning, so callers reading only those two (scripts/lib/config.mjs,
+ * scripts/lib/vault-mirror/namespace.mjs) are unaffected. On a throwing loader all
+ * three health fields stay `undefined`, exactly like `ownerConfig`.
+ *
+ * @param {{ env?: Record<string, string|undefined>, ownerLoader?: () => { config: object, source?: string, reason?: string, droppedSections?: Array<{section: string, errors: string[]}> } }} [opts]
+ * @returns {{ ownerConfig: object|undefined, env: Record<string, string|undefined>, source: string|undefined, reason: string|undefined, droppedSections: Array<{section: string, errors: string[]}>|undefined }}
  */
 export function loadHostPaths({ env = process.env, ownerLoader = loadOwnerConfig } = {}) {
   let ownerConfig;
+  let source;
+  let reason;
+  let droppedSections;
   try {
-    ownerConfig = ownerLoader().config;
+    const loaded = ownerLoader();
+    ownerConfig = loaded?.config;
+    source = loaded?.source;
+    reason = loaded?.reason;
+    droppedSections = loaded?.droppedSections;
   } catch {
     ownerConfig = undefined;
   }
-  return { ownerConfig, env };
+  return { ownerConfig, env, source, reason, droppedSections };
 }
 
 /**

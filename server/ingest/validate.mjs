@@ -81,6 +81,18 @@ const MAX_SESSION_PROFILE = 32;
 const MAX_LIST_ITEMS = 100;
 const MAX_LIST_ITEM_LEN = 64;
 
+// The two bounds above are the ONLY ones with a client counterpart
+// (`SHARED_LIST_BOUNDS` in scripts/lib/telemetry/schema.mjs: MAX_NAMES /
+// MAX_NAME_LENGTH). Exported for the parity guard — a client capping HIGHER
+// than the server emits pings the server 400s, and nothing else compares the
+// two numbers. The five MAX_* above (anon_id, sent_at, plugin_version,
+// session_type, session_profile) are server-only by design: they bound input
+// from ANY client, including foreign ones, and have no client twin to sync.
+export const INGEST_LIST_BOUNDS = Object.freeze({
+  maxItems: MAX_LIST_ITEMS,
+  maxItemLength: MAX_LIST_ITEM_LEN,
+});
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------

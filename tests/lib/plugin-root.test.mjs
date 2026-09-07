@@ -17,7 +17,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, readFileSync, utimesSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, utimesSync } from 'node:fs';
+import { removeTree } from '../_helpers/tmp-fixture.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertErrorShape } from '../_helpers/assert-error-shape.mjs';
 
@@ -134,11 +135,11 @@ describe('resolvePluginRoot — native PLUGIN_ROOT', () => {
   });
 
   afterEach(() => {
-    rmSync(nativeDir, { recursive: true, force: true });
-    rmSync(claudeDir, { recursive: true, force: true });
-    rmSync(codexDir, { recursive: true, force: true });
-    rmSync(cursorDir, { recursive: true, force: true });
-    rmSync(piDir, { recursive: true, force: true });
+    removeTree(nativeDir);
+    removeTree(claudeDir);
+    removeTree(codexDir);
+    removeTree(cursorDir);
+    removeTree(piDir);
   });
 
   it('returns the trimmed native root before simultaneous explicit-platform roots', () => {
@@ -158,7 +159,7 @@ describe('resolvePluginRoot — env-claude compatibility fallback', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
-    rmSync(tmpDir, { recursive: true, force: true });
+    removeTree(tmpDir);
   });
 
   it('returns CLAUDE_PLUGIN_ROOT when set to an existing directory', () => {
@@ -186,7 +187,7 @@ describe('resolvePluginRoot — env-codex compatibility fallback', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
-    rmSync(tmpDir, { recursive: true, force: true });
+    removeTree(tmpDir);
   });
 
   it('returns CODEX_PLUGIN_ROOT when CLAUDE_PLUGIN_ROOT is unset', () => {
@@ -204,7 +205,7 @@ describe('resolvePluginRoot — env-cursor', () => {
   });
 
   afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
+    removeTree(tmpDir);
   });
 
   it('returns the trimmed CURSOR_RULES_DIR legacy fallback', () => {
@@ -224,7 +225,7 @@ describe('resolvePluginRoot — env-pi compatibility fallback', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
-    rmSync(tmpDir, { recursive: true, force: true });
+    removeTree(tmpDir);
   });
 
   it('returns PI_PLUGIN_ROOT when CLAUDE_PLUGIN_ROOT and CODEX_PLUGIN_ROOT are unset', () => {
@@ -251,10 +252,10 @@ describe('resolvePluginRoot — env-precedence', () => {
   });
 
   afterEach(() => {
-    rmSync(claudeDir, { recursive: true, force: true });
-    rmSync(codexDir, { recursive: true, force: true });
-    rmSync(cursorDir, { recursive: true, force: true });
-    rmSync(piDir, { recursive: true, force: true });
+    removeTree(claudeDir);
+    removeTree(codexDir);
+    removeTree(cursorDir);
+    removeTree(piDir);
   });
 
   it('preserves Claude-first legacy precedence without explicit SO_PLATFORM', () => {
@@ -350,7 +351,7 @@ describe('resolvePluginRoot — walk-from-cwd (Level 5)', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
-    rmSync(tmpDir, { recursive: true, force: true });
+    removeTree(tmpDir);
   });
 
   it('finds the plugin root when cwd is inside the repo', () => {
@@ -411,7 +412,7 @@ describe('resolvePluginRoot — plugin-cache scan (Level 8, GH Kanevry/session-o
       expect(runIsolatedResolve(isolatedModule, sandbox, cachedHome, { CODEX_HOME: '   ' }))
         .toEqual({ ok: true, root: cached });
     } finally {
-      rmSync(sandbox, { recursive: true, force: true });
+      removeTree(sandbox);
     }
   });
 });
@@ -452,7 +453,7 @@ describe('resolvePluginRoot — plugin cache: newest wins by mtime', () => {
       utimesSync(older, new Date('2026-09-01T00:00:00Z'), new Date('2026-09-01T00:00:00Z'));
       expect(runIsolatedResolve(isolatedModule, sandbox, home)).toEqual({ ok: true, root: older });
     } finally {
-      rmSync(sandbox, { recursive: true, force: true });
+      removeTree(sandbox);
     }
   });
 });
@@ -542,7 +543,7 @@ describe('resolvePluginRoot — all-fail-throws-named-error', () => {
       expect(error.triedPaths).toContain(`CODEX_PLUGIN_ROOT=${missingCodex} (not a directory)`);
       expect(error.triedPaths).toContain('CLAUDE_PLUGIN_ROOT (empty after trim)');
     } finally {
-      rmSync(isolatedDir, { recursive: true, force: true });
+      removeTree(isolatedDir);
     }
   });
 

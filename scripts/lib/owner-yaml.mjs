@@ -196,8 +196,15 @@ const REQUIRED_SECTIONS = /** @type {const} */ (['owner', 'tone', 'efficiency', 
  * OPTIONAL object sections (#820) — a malformed entry is replaced by its
  * `getDefaults()` value and reported via `droppedSections` + a stderr WARN,
  * but does NOT discard the rest of the file.
+ *
+ * Exported (#1262.4) as the SSOT for consumers that must iterate exactly these
+ * sections — currently `scripts/lib/owner-config-banner.mjs`, which derived the
+ * #1244 "survived a whole-file discard" set from a hand-mirrored local copy.
+ * Frozen so a consumer cannot mutate the shared array.
  */
-const OPTIONAL_OBJECT_SECTIONS = /** @type {const} */ (['paths', 'dispatcher']);
+export const OPTIONAL_OBJECT_SECTIONS = /** @type {const} */ (
+  Object.freeze(['paths', 'dispatcher'])
+);
 
 /**
  * OPTIONAL list sections (#820) — malformed entries are passed through

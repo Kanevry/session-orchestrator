@@ -275,6 +275,11 @@ for f in autopilot-multi contract-version-bump journey-audit; do
 done
 ```
 
+`[ -L "$p" ]` checks the destination's TYPE, not who created it — it removes any symlink at that
+path regardless of origin. If you separately symlinked your own command under one of these three
+names, this recipe deletes that symlink too; a regular (non-symlink) file is the only thing it
+leaves untouched.
+
 Then restart Cursor. Same story for `.cursor/hooks.json`: the installer skips it outright once
 it exists (`:139-140`), so a `hooks.json` written before 4.0.0 is never re-synced with a new hook
 event automatically — re-check it by hand (diff it against a fresh `node scripts/cursor-install.mjs`
@@ -334,9 +339,10 @@ What you get back, and what you do not:
 - **What does NOT roll back automatically** is anything an installer wrote into YOUR project:
   `.cursor/commands/`, `.cursor/hooks.json`, Pi settings. The two installers behave
   differently: `cursor-install.mjs` skips any destination that already exists — a symlink or a
-  file (`scripts/cursor-install.mjs:69-73`; the `hooks.json` writer at `:139-140`) — so
-  re-running it from the 3.24.0 checkout only **adds** command links missing from your project;
-  it does not restore a link you removed yourself and does not resync an existing `hooks.json`.
+  file (`scripts/cursor-install.mjs:69-73`; the `hooks.json` writer at `:139-140`) — and
+  re-creates only the ones that are MISSING, so re-running it from the 3.24.0 checkout only
+  **adds** command links missing from your project; it does not restore a link you removed
+  yourself and does not resync an existing `hooks.json`.
   `pi-install.mjs --settings-only` **does** rewrite the Pi settings file: it reads it, upserts
   this package's entry and writes it back (`scripts/pi-install.mjs` `upsertPackage` /
   `writeSettings`), so re-running it from the 3.24.0 checkout re-points Pi at that checkout.

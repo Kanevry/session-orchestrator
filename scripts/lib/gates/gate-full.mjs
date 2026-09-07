@@ -72,9 +72,13 @@ const testCounts =
 // no name is what made the 2026-09-06 pre-push block unusable —
 // `files_failed: 1` out of 662, and reconstructing WHICH file cost a manual
 // re-materialisation of the tracked tree. An EMPTY array here is meaningful and
-// is NOT the absent case: it says the file-level summary was parsed and no path
-// could be read out of it (a non-vitest reporter, a truncated capture), which
-// is a parser gap worth seeing — the unmeasured case is the absent key.
+// is NOT the absent case: it means vitest reported file-level failures but the
+// file-name parser (`extractFailedTestFiles`) matched none of them out of the
+// captured output — a parser gap worth seeing. The consumer,
+// `failedFilesFromGateStdout()` in `scripts/run-quality-gate.mjs`, normalizes
+// this `[]` to `null` (same as the true-absent case) before it reaches its own
+// caller — so this array's "parsed but empty" distinction is visible here, in
+// this envelope, and nowhere downstream.
 const failedTestFiles = testResult.status === 'fail'
   ? extractFailedTestFiles(testResult.fullOutput ?? testResult.output ?? '')
   : [];
