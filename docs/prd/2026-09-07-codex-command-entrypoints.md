@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-07
 **Author:** Maintainer + Codex
-**Status:** Reviewed; implementation in progress
+**Status:** Implemented; installed discovery verified; desktop picker confirmation pending
 **Epic:** #1263 — implementation #1264, validation #1265, installed acceptance #1266
 **Appetite:** 1w ceiling; one focused implementation
 **Parent Project:** Session Orchestrator
@@ -27,15 +27,15 @@ People using the installed Session Orchestrator plugin in Codex desktop or CLI, 
 
 ### In-Scope
 
-- [ ] Generate one Codex-only skill tree at `.codex-plugin/skills/` from the union of canonical command and skill names. A command takes precedence over a same-named skill, producing one public entry per name inside the plugin.
-- [ ] Make each generated entry point to its canonical document, resolving references from the package location rather than the user's working directory.
-- [ ] Read the full command before invoking a canonical internal skill. Resolve internal skill calls to `skills/<name>/SKILL.md`, avoiding recursive dispatch to the public command adapter.
-- [ ] Map command `disable-model-invocation` to the supported Codex `policy.allow_implicit_invocation` boolean in `agents/openai.yaml`.
-- [ ] Define `$ARGUMENTS` as trailing user input; retain it as data. Do not perform shell expansion or global substitution in command documents.
-- [ ] Validate generated freshness, manifest wiring, unique names, canonical targets, and invocation policy. Test actual Codex discovery as well as the generator.
-- [ ] Move the incompatible standard root manifest to Cursor's native `.cursor-plugin/plugin.json`, preserving its declared skills/MCP scope and suppressing additional native discovery. Update package and release paths.
-- [ ] Declare native Codex `commands: []` so installation does not separately migrate canonical commands into aliases that lose invocation policy.
-- [ ] Document desktop selection, explicit CLI syntax, refresh behavior, and the distinction from native `/goal`. Refresh the local installation after verified integration.
+- [x] Generate one Codex-only skill tree at `.codex-plugin/skills/` from the union of canonical command and skill names. A command takes precedence over a same-named skill, producing one public entry per name inside the plugin.
+- [x] Make each generated entry point to its canonical document, resolving references from the package location rather than the user's working directory.
+- [x] Read the full command before invoking a canonical internal skill. Resolve internal skill calls to `skills/<name>/SKILL.md`, avoiding recursive dispatch to the public command adapter.
+- [x] Map command `disable-model-invocation` to the supported Codex `policy.allow_implicit_invocation` boolean in `agents/openai.yaml`.
+- [x] Define `$ARGUMENTS` as trailing user input; retain it as data. Do not perform shell expansion or global substitution in command documents.
+- [x] Validate generated freshness, manifest wiring, unique names, canonical targets, and invocation policy. Test actual Codex discovery as well as the generator.
+- [x] Move the incompatible standard root manifest to Cursor's native `.cursor-plugin/plugin.json`, preserving its declared skills/MCP scope and suppressing additional native discovery. Update package and release paths.
+- [x] Declare native Codex `commands: []` so installation does not separately migrate canonical commands into aliases that lose invocation policy.
+- [x] Document desktop selection, explicit CLI syntax, refresh behavior, and the distinction from native `/goal`. Refresh the local installation after verified integration.
 
 ### Out-of-Scope
 
@@ -187,3 +187,9 @@ No persisted user data or session schema changes. The additive user-facing API i
 - [Cursor native manifest reference](https://cursor.com/docs/reference/plugins) and its [official schema](https://github.com/cursor/plugins/blob/main/schemas/plugin.schema.json) support the replacement path and explicit component declarations. The manifest passes schema validation; native Cursor runtime execution is outside this Codex acceptance test.
 - Desktop UI automation is unavailable: the Computer Use tool rejects access to the Codex app for safety reasons. Actual desktop-binary discovery is verifiable; visible picker selection must be reported separately as unverified.
 - Codex's exact [0.153.3 command migration implementation](https://github.com/openai/codex/blob/rust-v0.153.3/codex-rs/core-plugins/src/command_migration/plugin.rs) and [manifest parser](https://github.com/openai/codex/blob/rust-v0.153.3/codex-rs/core-plugins/src/manifest.rs) establish the explicit empty-array migration control.
+
+### Acceptance result — 2026-09-07
+
+- **AC-1–AC-3:** passed. Independent review approved the implementation and both runtime integration corrections. The full local suite passed 16,609 tests (16 skipped); after the final migration control, all 143 affected contract/generator/installer/validator tests passed. Lint and typecheck passed. Package census contains all 51 adapters, 25 policy files, canonical documents and the native Cursor manifest, with no standard root manifest.
+- **AC-4 installed discovery:** passed through the public `codex plugin add session-orchestrator@local --json` lifecycle. The enabled installed version is `4.0.0+codex.20260907174300`. The desktop-bundled Codex 0.153.4 returns exactly 51 unique, enabled plugin skills in both `plugin/read` and `skills/list`, with no loading errors or migration aliases. All six explicit-only commands, including `go` and `close`, retain boolean `allow_implicit_invocation: false` in the installed policy files.
+- **AC-4 visible picker:** unverified because Computer Use refuses access to the Codex app. Reopen the picker in a fresh task, or restart Codex, and select the installed `go` and `close` skills without submitting a workflow. Track this remaining confirmation in #1266; no UI success is inferred from the API result.
