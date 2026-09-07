@@ -201,6 +201,8 @@ Moving the former root metadata to the native Cursor manifest lets Codex load it
 
 The Codex manifest registers one generated skill tree at `.codex-plugin/skills/`. It contains the union of names from `commands/` and `skills/`: when both contain the same name, the command takes precedence, giving the plugin one public entry for that name. OpenAI recommends converting reusable Markdown commands into skills. [OpenAI conversion guidance](https://developers.openai.com/plugins/guides/submit-claude-plugin)
 
+The manifest also declares top-level `"commands": []` to suppress the installer's automatic command migration. When that field was omitted, a public install with Codex 0.153.3 added nine `source-command-*` aliases alongside the generated entries, including `source-command-close`, without preserving invocation policy. The empty array selects no command sources; it does not register native slash commands. The generated skill tree remains the public invocation surface. [Codex 0.153.3 command-path parser](https://github.com/openai/codex/blob/rust-v0.153.3/codex-rs/core-plugins/src/manifest.rs#L203), [installer migration](https://github.com/openai/codex/blob/rust-v0.153.3/codex-rs/core-plugins/src/command_migration/plugin.rs)
+
 The generated files are adapters, not separate workflow bodies. Each links to its canonical command or skill using a package-relative path, so it also works from the installed bundle. Command adapters read the full command first and resolve internal skill calls directly to `skills/<name>/SKILL.md`, avoiding a recursive call to the public entry. Trailing prompt text supplies the command's `$ARGUMENTS` as data; the adapter does not shell-expand arguments or globally substitute them into command documents.
 
 Commands declaring `disable-model-invocation: true`, including `go` and `close`, receive `policy.allow_implicit_invocation: false` in `agents/openai.yaml`. This preserves explicit selection while disabling implicit skill invocation. Other commands retain their source setting. [OpenAI invocation policy](https://learn.chatgpt.com/docs/build-skills#optional-metadata)
@@ -280,4 +282,3 @@ codex mcp list | grep session-orchestrator   # the launch string should mention 
 ```
 
 The 0.144.4 minimum-version caveat above still stands: everything in this section was measured on **0.141.0**, below the documented minimum, and has not been re-verified on 0.144.4+ or on the reporter's 0.149.0-alpha.4.3.
-

@@ -89,6 +89,9 @@ export function validateCodexSkills(pluginRoot) {
     if (manifest?.skills !== `./${SKILL_ROOT}/`) {
       violations.push(`Codex manifest skills must register only ./${SKILL_ROOT}/`);
     }
+    if (!Array.isArray(manifest?.commands) || manifest.commands.length !== 0) {
+      violations.push('Codex manifest commands must be an explicit empty array to disable automatic command migration');
+    }
   } catch (error) {
     violations.push(`Codex manifest: invalid JSON (${error.message})`);
   }

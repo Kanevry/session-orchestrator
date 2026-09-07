@@ -29,7 +29,7 @@ function entry(name, kind) {
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'codex-skill-contract-'));
-  write('.codex-plugin/plugin.json', JSON.stringify({ skills: './.codex-plugin/skills/' }));
+  write('.codex-plugin/plugin.json', JSON.stringify({ skills: './.codex-plugin/skills/', commands: [] }));
   source('go', 'command', 'disable-model-invocation: true\n');
   source('plan', 'command', 'disable-model-invocation: true\n');
   source('plan', 'skill');
@@ -49,7 +49,7 @@ describe('Codex discovery contract, independent of generated text', () => {
   });
 
   it('rejects a manifest that leaves otherwise valid command adapters disconnected', () => {
-    write('.codex-plugin/plugin.json', JSON.stringify({ skills: './skills/' }));
+    write('.codex-plugin/plugin.json', JSON.stringify({ skills: './skills/', commands: [] }));
     expect(validateCodexSkills(root).violations.join('\n')).toMatch(/manifest.*skills/i);
   });
 
@@ -59,6 +59,11 @@ describe('Codex discovery contract, independent of generated text', () => {
       name: 'fixture', version: '1.0.0', skills: './.codex-plugin/skills/',
     }));
     expect(validateCodexSkills(root).violations.join('\n')).toMatch(/root.*manifest.*overrides.*Codex/i);
+  });
+
+  it.each([undefined, null, './commands/', ['./commands/']])('rejects automatic command migration when commands is %s', (commands) => {
+    write('.codex-plugin/plugin.json', JSON.stringify({ skills: './.codex-plugin/skills/', commands }));
+    expect(validateCodexSkills(root).violations.join('\n')).toMatch(/commands.*empty.*migration/i);
   });
 
   it('detects a missing command and an orphan registration together', () => {

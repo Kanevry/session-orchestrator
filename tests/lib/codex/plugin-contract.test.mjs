@@ -160,6 +160,31 @@ describe('validateCodexPluginContract', () => {
     expectRule(validateFixture(), 'unknown-key');
   });
 
+  it('accepts the native empty commands list that disables automatic command conversion', () => {
+    makeFixture();
+    writeManifest({ ...validManifest(), commands: [] });
+
+    expect(validateFixture()).toMatchObject({ ok: true, errors: [] });
+  });
+
+  it.each([
+    ['a command path', './commands/'],
+    ['a nonempty command list', ['./commands/']],
+    ['an object', {}],
+    ['null', null],
+    ['a boolean', false],
+  ])('rejects %s in the native commands opt-out', (_label, commands) => {
+    makeFixture();
+    writeManifest({ ...validManifest(), commands });
+
+    const verdict = validateFixture();
+    expectRule(verdict, 'disabled-command-discovery');
+    expect(verdict.errors).toContainEqual(expect.objectContaining({
+      path: '$.manifest.commands',
+      rule: 'disabled-command-discovery',
+    }));
+  });
+
   it('rejects an unknown interface key', () => {
     makeFixture();
     writeManifest({

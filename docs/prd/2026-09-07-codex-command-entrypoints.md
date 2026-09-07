@@ -34,12 +34,13 @@ People using the installed Session Orchestrator plugin in Codex desktop or CLI, 
 - [ ] Define `$ARGUMENTS` as trailing user input; retain it as data. Do not perform shell expansion or global substitution in command documents.
 - [ ] Validate generated freshness, manifest wiring, unique names, canonical targets, and invocation policy. Test actual Codex discovery as well as the generator.
 - [ ] Move the incompatible standard root manifest to Cursor's native `.cursor-plugin/plugin.json`, preserving its declared skills/MCP scope and suppressing additional native discovery. Update package and release paths.
+- [ ] Declare native Codex `commands: []` so installation does not separately migrate canonical commands into aliases that lose invocation policy.
 - [ ] Document desktop selection, explicit CLI syntax, refresh behavior, and the distinction from native `/goal`. Refresh the local installation after verified integration.
 
 ### Out-of-Scope
 
 - Changing what the existing session, wave, close, release, or other workflows do.
-- Adding Claude-style `commands` to the Codex manifest, or replacing native Codex commands.
+- Registering native Codex slash commands, or replacing built-in Codex commands. The empty `commands` field controls installer migration only.
 - Changing hook trust, wiring additional lifecycle hooks, or publishing an npm release.
 - Redesigning portable `.agents/skills/` discovery or eliminating pre-existing duplicate entries between repository and installed-plugin scopes.
 - Introducing a runtime service, an additional dependency, or a second set of maintained workflow bodies.
@@ -132,6 +133,8 @@ The manifest points exclusively to `./.codex-plugin/skills/`. Each `SKILL.md` ca
 
 **Runtime discovery correction (2026-09-07):** real probes found that a root `plugin.json` declaring the Agent Plugins schema intercepts native Codex discovery. Its loader fixes the skill path to `./skills` and uses the root version; the native overlay cannot override either. Move the root metadata to Cursor's supported `.cursor-plugin/plugin.json`, remove the standard `$schema`, retain its skills/MCP paths, and explicitly disable additional native rules/agents/commands/hooks discovery. The existing Cursor installer remains responsible for its command/hook adapters. Portable `AGENTS.md` and `.agents/skills/` generation stays unchanged. This avoids a duplicate distribution tree and restores the committed Codex cache identity. The independent validator rejects reintroduction of the intercepting root manifest.
 
+**Installed migration correction:** Codex 0.153.3 additionally migrates conventional `commands/` during installation when its native `commands` field is absent. The first actual refresh produced nine extra `source-command-*` aliases, without command invocation policies. Explicit `commands: []` selects no migration sources; generated command skills remain the only public command surface. The native manifest contract accepts this empty-array control and the independent adapter validator requires it. Reinstall under a new cache identity and verify the installed set, not only the source checkout.
+
 A separate artifact validator reads emitted files independently of the generator's expected text. It verifies source-name coverage, manifest registration, metadata types, policy booleans, and canonical links. Its CLI also runs the generator in read-only check mode and requires a valid structured result. Integrate this check into `scripts/validate-plugin.mjs`; retain the existing Codex hook/manifest contract check.
 
 ### Affected Files
@@ -140,6 +143,7 @@ A separate artifact validator reads emitted files independently of the generator
 - `scripts/lib/validate/check-codex-skills.mjs` — independent artifact/wiring validation and CLI integration.
 - `scripts/validate-plugin.mjs` — run the Codex skill check.
 - `.codex-plugin/plugin.json` — registered skill root and committed cache invalidation suffix.
+- `scripts/lib/codex/plugin-contract.mjs`, `tests/lib/codex/plugin-contract.test.mjs` — supported empty command-migration control.
 - `.codex-plugin/skills/` — generated artifacts only.
 - `plugin.json` → `.cursor-plugin/plugin.json`, `package.json`, `scripts/release.mjs`, `tests/scripts/release.test.mjs` — native Cursor registration, packaging and version parity after removing the Codex interception.
 - `tests/scripts/generate-codex-skills.test.mjs` — source-to-artifact regression tests.
@@ -182,3 +186,4 @@ No persisted user data or session schema changes. The additive user-facing API i
 - Actual worktree probes after the native-manifest correction discover 51 unique entries and the committed cache version on CLI 0.153.3 and the desktop-bundled CLI 0.153.4. [Codex loader source](https://github.com/openai/codex/blob/main/codex-rs/core-plugins/src/agent_plugin_manifest.rs) confirms the standard-root override limitation.
 - [Cursor native manifest reference](https://cursor.com/docs/reference/plugins) and its [official schema](https://github.com/cursor/plugins/blob/main/schemas/plugin.schema.json) support the replacement path and explicit component declarations. The manifest passes schema validation; native Cursor runtime execution is outside this Codex acceptance test.
 - Desktop UI automation is unavailable: the Computer Use tool rejects access to the Codex app for safety reasons. Actual desktop-binary discovery is verifiable; visible picker selection must be reported separately as unverified.
+- Codex's exact [0.153.3 command migration implementation](https://github.com/openai/codex/blob/rust-v0.153.3/codex-rs/core-plugins/src/command_migration/plugin.rs) and [manifest parser](https://github.com/openai/codex/blob/rust-v0.153.3/codex-rs/core-plugins/src/manifest.rs) establish the explicit empty-array migration control.
