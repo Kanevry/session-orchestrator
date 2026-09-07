@@ -293,7 +293,7 @@ describe('check-auq-clarity.mjs — wiring into validate-plugin.mjs', () => {
       maxBuffer: 64 * 1024 * 1024,
       timeout: 120_000,
     });
-  });
+  }, 120_000); // hook timeout: the shared GitLab runner needed >30 s on 2026-09-07 (pipelines 8790/8791); same value as tests/scripts/validate-plugin.test.mjs
 
   // CATCHES: the guard existing, being tested, and having no caller — the
   // documented "built, documented, tested, never switched on" class this file
