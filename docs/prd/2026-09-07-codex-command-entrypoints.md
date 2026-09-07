@@ -3,6 +3,7 @@
 **Date:** 2026-09-07
 **Author:** Maintainer + Codex
 **Status:** Reviewed; implementation in progress
+**Epic:** #1263 — implementation #1264, validation #1265, installed acceptance #1266
 **Appetite:** 1w ceiling; one focused implementation
 **Parent Project:** Session Orchestrator
 
