@@ -67,7 +67,7 @@ Codex reports three distinct states that must not be conflated:
 
 ## Refresh and Explicit Cache Invalidation
 
-**If you installed via the short remote form** (`codex plugin marketplace add owner/repo`), the refresh is a marketplace upgrade, not a re-install. Measured 2026-09-06 on codex-cli 0.144.4 — `codex plugin marketplace upgrade --help`: *"Refresh configured Git marketplace snapshots. Omit MARKETPLACE_NAME to upgrade all configured Git marketplaces."*
+**If you installed via the short remote form** (`codex plugin marketplace add owner/repo`), refresh the Git marketplace snapshot before updating the installed plugin. Measured 2026-09-06 on codex-cli 0.144.4 — `codex plugin marketplace upgrade --help`: *"Refresh configured Git marketplace snapshots. Omit MARKETPLACE_NAME to upgrade all configured Git marketplaces."*
 
 ```bash
 codex plugin marketplace upgrade kanevry   # or omit the name to refresh all
@@ -85,6 +85,8 @@ node scripts/codex-install.mjs
 ```
 
 Every installer run executes `codex plugin marketplace add` and `codex plugin add`, even when the marketplace is already configured. The repeated `plugin add` refreshes Codex's installed bundle from the current clone instead of treating installation as a one-time copy.
+
+After either refresh path, confirm the installed version with `codex plugin list --available --json` and start a fresh task. Reopen the skill picker and search for `go` or `close`; if the updated entries are still missing, fully restart Codex. Editing the source clone or regenerating skills alone does not refresh the installed bundle.
 
 The tracked Codex manifest uses a version such as `3.14.0+codex.20260717175716`. The base must match `package.json`; the `+codex.<YYYYMMDDHHmmss>` UTC suffix is the repository's explicit invalidation marker. When a shipped bundle needs a new cache identity, maintainers commit a new timestamp in `.codex-plugin/plugin.json`. The installer validates that committed value and never mutates the tracked manifest.
 
@@ -176,14 +178,42 @@ An empty `PreToolUse` or `SubagentStart` array means the event belongs to the va
 
 ## Usage
 
-After installation and hook review, start a fresh task. Session Orchestrator exposes the shared skill surface, including:
+After installation or refresh, start a fresh task. In the desktop composer, open the skill picker, search for `go` or `close`, and select the matching **Session Orchestrator** entry. In Codex CLI or the IDE extension, use `/skills` or mention the namespaced skill directly in your prompt. [OpenAI skill invocation](https://learn.chatgpt.com/docs/build-skills)
 
-- `/session [housekeeping|feature|deep]` — start a session
-- `/go` — execute the agreed plan
-- `/close` — end the session with verification
-- `/plan [new|feature|retro]` — plan a project or feature
-- `/discovery [scope]` — run quality probes
-- `/evolve [analyze|review|list]` — manage learnings
+```text
+$session-orchestrator:session feature   # start a session (housekeeping, feature or deep)
+$session-orchestrator:go                # execute the agreed plan
+$session-orchestrator:close             # verify and close the session
+$session-orchestrator:plan feature      # plan a project or feature (new, feature or retro)
+$session-orchestrator:discovery         # run quality probes; optionally add a scope
+$session-orchestrator:evolve analyze    # manage learnings (analyze, review or list)
+```
+
+These are skill invocations in the Codex prompt, not shell commands. Invoking `go` reads the full canonical `commands/go.md`, including its Express Path and prechecks; invoking `close` reads `commands/close.md`, including its state and ledger checks before the session-end workflow. Codex's native `/goal` is a separate feature. Typing `/go` or `/close` alone is not a portable invocation contract; select the skill or use its explicit namespaced form.
+
+### Manifest Compatibility
+
+The plugin uses `.codex-plugin/plugin.json` for Codex and `.cursor-plugin/plugin.json` for Cursor. It does not ship a root Agent Plugins `plugin.json`: on Codex CLI 0.153.3 and desktop runtime 0.153.4, that standard manifest takes precedence, fixes skill discovery to conventional `skills/`, and supplies the root version. The Codex overlay can supply hooks, apps and interface metadata, but cannot override that skill path or version. This was verified with read-only `plugin/read` probes on 2026-09-07. [Codex manifest parser](https://github.com/openai/codex/blob/main/codex-rs/core-plugins/src/agent_plugin_manifest.rs)
+
+Moving the former root metadata to the native Cursor manifest lets Codex load its generated entrypoints and cache suffix. Cursor keeps the declared skills and MCP paths; the manifest explicitly disables discovery of extra rules, agents, commands and hooks. Its existing installer supplies the Cursor command and hook adapters. This follows the [Cursor manifest reference](https://cursor.com/docs/reference/plugins); native Cursor loading has not been runtime-tested as part of this change.
+
+### Generated Command Skills
+
+The Codex manifest registers one generated skill tree at `.codex-plugin/skills/`. It contains the union of names from `commands/` and `skills/`: when both contain the same name, the command takes precedence, giving the plugin one public entry for that name. OpenAI recommends converting reusable Markdown commands into skills. [OpenAI conversion guidance](https://developers.openai.com/plugins/guides/submit-claude-plugin)
+
+The generated files are adapters, not separate workflow bodies. Each links to its canonical command or skill using a package-relative path, so it also works from the installed bundle. Command adapters read the full command first and resolve internal skill calls directly to `skills/<name>/SKILL.md`, avoiding a recursive call to the public entry. Trailing prompt text supplies the command's `$ARGUMENTS` as data; the adapter does not shell-expand arguments or globally substitute them into command documents.
+
+Commands declaring `disable-model-invocation: true`, including `go` and `close`, receive `policy.allow_implicit_invocation: false` in `agents/openai.yaml`. This preserves explicit selection while disabling implicit skill invocation. Other commands retain their source setting. [OpenAI invocation policy](https://learn.chatgpt.com/docs/build-skills#optional-metadata)
+
+Maintainers edit the canonical files, then regenerate and check the Codex surface from the plugin root:
+
+```bash
+node scripts/generate-codex-skills.mjs
+node scripts/generate-codex-skills.mjs --check
+node scripts/validate-plugin.mjs
+```
+
+`--check` reports stale generated files without writing them. Plugin validation also checks manifest wiring, command coverage, canonical targets and invocation policy. Commit the generated output with its source change, then follow [Refresh and Explicit Cache Invalidation](#refresh-and-explicit-cache-invalidation) to update the installed copy.
 
 ## Key Differences from Claude Code
 
@@ -203,6 +233,8 @@ Both platforms share session history and learnings through `.orchestrator/metric
 
 ## Platform Limitations
 
+Repository skills under `.agents/skills/` and installed-plugin skills can both appear in the picker. The generated union prevents duplicate names within the plugin; it does not remove pre-existing entries from other discovery scopes. Select the installed command entry whose path is under `.codex-plugin/skills/` when a repository also offers a same-named internal skill.
+
 Claude Code dispatches role-specialized agents with dedicated definitions. Codex maps implementation work through its configured roles, so task prompts carry specialization that is not represented by a dedicated role. A project can add more specific TOML definitions under `.codex/agents/` when needed.
 
 Hook enforcement is limited to the validated payload-compatible Codex subset described above. In particular, the absence of Claude-only events and Edit/Write handlers is deliberate rather than an installation workaround.
@@ -219,6 +251,7 @@ codex plugin list --available --json
 - **The target is missing, disabled, duplicated, or at the wrong version:** run `codex plugin marketplace list --json`, remove the exact target with `codex plugin remove session-orchestrator@kanevry` when present, and rerun `node scripts/codex-install.mjs` to reinstall and verify it.
 - **A `session-orchestrator@openai-curated` or `session-orchestrator@local` installation remains:** these are the only allowlisted legacy IDs. Remove the exact stale ID with `codex plugin remove session-orchestrator@openai-curated` or `codex plugin remove session-orchestrator@local`; unrelated plugins remain untouched.
 - **The `kanevry` marketplace points at another source:** confirm the conflict with `codex plugin marketplace list --json`, run `codex plugin marketplace remove kanevry`, then rerun the installer from the intended clone so it performs the public marketplace add and plugin add lifecycle.
+- **`go` or `close` is missing from the skill picker:** follow [the refresh steps](#refresh-and-explicit-cache-invalidation), verify the installed version, and restart Codex if reopening the picker does not load the new entries. Use the namespaced skill form from [Usage](#usage), rather than selecting the unrelated native Goal command.
 - **Plugin is installed and enabled but hooks do not fire:** start a fresh task or fully restart Codex, run `/hooks`, and review the trust state. Installation does not imply hook approval.
 - **Other pre-public plugin/config/cache/hook-state residue is suspected:** this state is unsupported. Do not modify private Codex files. File an issue with `codex --version`, `codex plugin list --available --json`, and `codex plugin marketplace list --json` output so the public recovery path can be diagnosed.
 - **Agent dispatch fails:** verify Codex multi-agent support and inspect the bundled or project-level role TOMLs.

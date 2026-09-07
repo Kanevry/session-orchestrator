@@ -24,7 +24,7 @@ change list: [CHANGELOG.md](../CHANGELOG.md).
 | `.claude/rules/` | 61 files (43 generated) | 26 files (43 generated → 8 thematic) |
 | Turn-stop event | `orchestrator.session.stopped` | `orchestrator.turn.stopped` (both emitted until 2027-03-06) |
 | Telemetry field | `fleet` | `fleet_self_declared` (both sent until 2027-03-06) |
-| Cross-harness manifest | none | root `AGENTS.md` + root `plugin.json` + `.agents/skills/` |
+| Cross-harness integration | native manifests | generated root `AGENTS.md` + `.agents/skills/`; separate Claude, Codex and Cursor manifests |
 | Session shapes | `housekeeping` / `feature` / `deep` | unchanged, plus the `ultradeep` PROFILE over `deep` |
 | Runtime | Node 24+, npm | unchanged |
 
@@ -126,6 +126,17 @@ New in 4.0.0 and relevant here: this repository now ships a **root `AGENTS.md`**
 instructions from `AGENTS.md` found nothing in this repo. If you keep your own
 `AGENTS.md`, nothing changes for you.
 
+The Codex command integration uses generated skills: search for `go` or `close` in the
+picker and select the **Session Orchestrator** entry, or invoke `$session-orchestrator:go` and
+`$session-orchestrator:close`. Refresh the installed plugin as above and restart Codex if
+the new entries do not appear. The native `/goal` command is separate.
+
+The initial 4.0.0 root Agent Plugins `plugin.json` has been replaced by a native Cursor
+manifest. Read-only probes on Codex 0.153.3 and desktop runtime 0.153.4 showed that the
+standard root manifest overrides Codex's declared skill directory and cache version.
+The separate native manifests avoid that conflict; details are in
+[Codex manifest compatibility](codex-setup.md#manifest-compatibility).
+
 ### 3c. Cursor IDE
 
 ```bash
@@ -145,8 +156,12 @@ But the three retired commands do **not** disappear from `.cursor/commands/` on 
 `hooks.json` written before 4.0.0 is never synchronised with a new hook event automatically.
 Both need the manual step in § 5 ("Cursor still shows the removed commands") below.
 
-A root `plugin.json` following the [agent-plugins.org](https://agent-plugins.org) 1.0.0
-schema now ships as well, for Cursor's plugin system.
+Cursor's plugin metadata now lives at `.cursor-plugin/plugin.json`, replacing the initial
+4.0.0 standard root `plugin.json`. The native manifest retains the canonical skills and
+MCP paths and explicitly disables additional component discovery; the installer above
+continues to supply commands and hooks. The shape follows the
+[official Cursor manifest reference](https://cursor.com/docs/reference/plugins); native
+Cursor loading was not runtime-tested during this compatibility repair.
 
 ### 3d. Pi
 

@@ -63,10 +63,9 @@ function writeFixture(root, v) {
   const files = {
     'package.json': `{\n  "name": "session-orchestrator",\n  "version": "${v}",\n  "license": "MIT"\n}\n`,
     '.claude-plugin/plugin.json': `{\n  "name": "session-orchestrator",\n  "version": "${v}"\n}\n`,
-    // Root plugin.json — the agent-plugins.org manifest, a FOURTH version-bearing manifest
-    // since 4.0.0. It was missing from SURFACES on the 4.0.0 cut and validate-plugin caught it
-    // one gate later; this fixture row is what keeps the table honest from here.
-    'plugin.json': `{\n  "name": "session-orchestrator",\n  "version": "${v}"\n}\n`,
+    // Cursor uses its native manifest so a root Agent Plugins manifest cannot
+    // intercept Codex's independently registered command surface.
+    '.cursor-plugin/plugin.json': `{\n  "name": "session-orchestrator",\n  "version": "${v}"\n}\n`,
     '.claude-plugin/marketplace.json': `{\n  "plugins": [{\n    "name": "session-orchestrator",\n    "version": "${v}"\n  }]\n}\n`,
     '.codex-plugin/plugin.json': `{\n  "name": "session-orchestrator",\n  "version": "${v}+codex.20260731000000"\n}\n`,
     'hooks/hooks.json': `{"hooks":{"SessionStart":[{"hooks":[{"command":"echo '🎯 Session Orchestrator v${v} — /session'"}]}]}}\n`,
@@ -185,6 +184,9 @@ describe('applyVersion', () => {
     );
     const changed = applyVersion(root, '3.19.0');
     expect(changed).toHaveLength(SURFACES.filter((s) => !s.checkOnly).length);
+    // Independent target assertion: omitting Cursor from SURFACES must fail
+    // even though the scan and rewrite share that same table.
+    expect(JSON.parse(readFileSync(join(root, '.cursor-plugin/plugin.json'), 'utf8')).version).toBe('3.19.0');
     // site/index.html stays stale here BY DESIGN — scripts/site-numbers.mjs
     // owns that write in the real --set-version flow. Scan it separately.
     const rows = scanSurfaces(root, '3.19.0').filter((r) => r.file !== 'site/index.html' && r.file !== 'site/de/index.html');

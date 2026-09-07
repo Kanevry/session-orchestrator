@@ -121,12 +121,10 @@ export const SURFACES = [
     patterns: [/"version":\s*"(\d+\.\d+\.\d+)"/],
   },
   {
-    // Root `plugin.json` — the agent-plugins.org 1.0.0 manifest, added in 4.0.0. It is a
-    // FOURTH manifest carrying the version, and it was missing from this table on the 4.0.0
-    // cut: `--set-version` bumped the other three and `validate-plugin` then failed with
-    // "plugin.json version '3.24.0' != package.json version '4.0.0'". Exactly the incident
-    // class the table exists for, caught one gate later than it should have been.
-    file: 'plugin.json',
+    // Cursor's native manifest replaces the root Agent Plugins manifest so
+    // Codex can load its own component paths and cache version independently.
+    // It remains a required version surface for every release.
+    file: '.cursor-plugin/plugin.json',
     patterns: [/"version":\s*"(\d+\.\d+\.\d+)"/],
   },
   {

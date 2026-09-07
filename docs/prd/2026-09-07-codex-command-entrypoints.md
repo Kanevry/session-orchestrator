@@ -33,6 +33,7 @@ People using the installed Session Orchestrator plugin in Codex desktop or CLI, 
 - [ ] Map command `disable-model-invocation` to the supported Codex `policy.allow_implicit_invocation` boolean in `agents/openai.yaml`.
 - [ ] Define `$ARGUMENTS` as trailing user input; retain it as data. Do not perform shell expansion or global substitution in command documents.
 - [ ] Validate generated freshness, manifest wiring, unique names, canonical targets, and invocation policy. Test actual Codex discovery as well as the generator.
+- [ ] Move the incompatible standard root manifest to Cursor's native `.cursor-plugin/plugin.json`, preserving its declared skills/MCP scope and suppressing additional native discovery. Update package and release paths.
 - [ ] Document desktop selection, explicit CLI syntax, refresh behavior, and the distinction from native `/goal`. Refresh the local installation after verified integration.
 
 ### Out-of-Scope
@@ -129,6 +130,8 @@ Add `scripts/generate-codex-skills.mjs`, following the existing generated-artifa
 
 The manifest points exclusively to `./.codex-plugin/skills/`. Each `SKILL.md` carries discovery metadata and a package-relative link to either `../../../commands/<name>.md` or `../../../skills/<name>/SKILL.md`. Command adapters carry the argument and dispatch rules above. Their `agents/openai.yaml` files provide recognizable display names and the effective invocation policy. The canonical documents remain packaged at their current paths, preserving their own relative references.
 
+**Runtime discovery correction (2026-09-07):** real probes found that a root `plugin.json` declaring the Agent Plugins schema intercepts native Codex discovery. Its loader fixes the skill path to `./skills` and uses the root version; the native overlay cannot override either. Move the root metadata to Cursor's supported `.cursor-plugin/plugin.json`, remove the standard `$schema`, retain its skills/MCP paths, and explicitly disable additional native rules/agents/commands/hooks discovery. The existing Cursor installer remains responsible for its command/hook adapters. Portable `AGENTS.md` and `.agents/skills/` generation stays unchanged. This avoids a duplicate distribution tree and restores the committed Codex cache identity. The independent validator rejects reintroduction of the intercepting root manifest.
+
 A separate artifact validator reads emitted files independently of the generator's expected text. It verifies source-name coverage, manifest registration, metadata types, policy booleans, and canonical links. Its CLI also runs the generator in read-only check mode and requires a valid structured result. Integrate this check into `scripts/validate-plugin.mjs`; retain the existing Codex hook/manifest contract check.
 
 ### Affected Files
@@ -138,9 +141,10 @@ A separate artifact validator reads emitted files independently of the generator
 - `scripts/validate-plugin.mjs` — run the Codex skill check.
 - `.codex-plugin/plugin.json` — registered skill root and committed cache invalidation suffix.
 - `.codex-plugin/skills/` — generated artifacts only.
+- `plugin.json` → `.cursor-plugin/plugin.json`, `package.json`, `scripts/release.mjs`, `tests/scripts/release.test.mjs` — native Cursor registration, packaging and version parity after removing the Codex interception.
 - `tests/scripts/generate-codex-skills.test.mjs` — source-to-artifact regression tests.
 - `tests/lib/validate/check-codex-skills.test.mjs` — malformed artifacts, disconnected manifest and CLI failure behavior.
-- `README.md`, `docs/codex-setup.md` — user-facing invocation, generation and refresh instructions.
+- `README.md`, `docs/codex-setup.md`, `docs/components.md`, `docs/migration-v4.md`, `docs/instruction-delivery.md` — invocation, generation, refresh and native-manifest compatibility.
 
 ### Implementation sequence and verification
 
@@ -163,6 +167,7 @@ No persisted user data or session schema changes. The additive user-facing API i
 | Invocation policy becomes ineffective metadata | Automatic execution of explicit-only commands | Native boolean policy plus independent artifact check | Implement |
 | Generated pointers work only in the source checkout | Installed commands cannot load their workflows | Package-relative links, package census and real Codex discovery | Implement |
 | Installed cache retains the old surface | Menu still lacks the commands after code changes | Committed cache suffix, public refresh and fresh discovery | Implement |
+| Standard root manifest overrides the Codex skill path/version | All adapter tests pass while real discovery remains unchanged | Native Cursor manifest, root-interception regression, probes with both CLI and desktop binaries | Implement |
 | Existing repository and plugin skill duplicates remain | Same-name entries may appear from different scopes | Preserve scope labels; test the plugin-qualified entry specifically | Defer |
 
 ### Dependencies and evidence
@@ -174,3 +179,6 @@ No persisted user data or session schema changes. The additive user-facing API i
 - [OpenAI conversion guidance](https://developers.openai.com/plugins/guides/submit-claude-plugin) recommends converting Markdown commands into skills.
 - [OpenAI skill metadata and invocation policy](https://learn.chatgpt.com/docs/build-skills) defines `agents/openai.yaml` and `allow_implicit_invocation`.
 - A temporary `plugin/read` probe on Codex CLI 0.153.3 verified namespaced discovery and interface metadata before implementation; it did not execute command workflows or change the user's installation.
+- Actual worktree probes after the native-manifest correction discover 51 unique entries and the committed cache version on CLI 0.153.3 and the desktop-bundled CLI 0.153.4. [Codex loader source](https://github.com/openai/codex/blob/main/codex-rs/core-plugins/src/agent_plugin_manifest.rs) confirms the standard-root override limitation.
+- [Cursor native manifest reference](https://cursor.com/docs/reference/plugins) and its [official schema](https://github.com/cursor/plugins/blob/main/schemas/plugin.schema.json) support the replacement path and explicit component declarations. The manifest passes schema validation; native Cursor runtime execution is outside this Codex acceptance test.
+- Desktop UI automation is unavailable: the Computer Use tool rejects access to the Codex app for safety reasons. Actual desktop-binary discovery is verifiable; visible picker selection must be reported separately as unverified.
