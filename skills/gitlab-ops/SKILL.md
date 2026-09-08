@@ -340,7 +340,7 @@ Bash calls when the current session contains no prior `Read` on a matching templ
 **When this matters:** before you or a subagent opens an MR, PR, or issue via CLI, a
 matching template must have been read in the current session:
 
-- GitHub: `.github/PULL_REQUEST_TEMPLATE.md` / `.github/ISSUE_TEMPLATE*`
+- GitHub: `.github/pull_request_template.md` / `.github/ISSUE_TEMPLATE*`
 - GitLab: `.gitlab/merge_request_templates/Default.md` / `.gitlab/issue_templates/*` <!-- path-check: example -->
 
 Accepted template paths are configured in `.orchestrator/policy/templates-policy.json`
