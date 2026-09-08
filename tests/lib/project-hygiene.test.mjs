@@ -316,6 +316,95 @@ describe('checkCiConfig', () => {
     const findings = checkCiConfig(root);
     expect(findings.map((f) => f.check)).not.toContain('ci-audit-job');
   });
+
+  it.each([
+    'corepack pnpm@11.13.1 --pm-on-fail=ignore audit --prod --audit-level=high',
+    'npx --yes pnpm@11.13.1 audit',
+    'pnpm -r audit',
+    'pnpm --filter web audit',
+    'npm --registry https://registry.npmjs.org audit',
+    'npm\t audit --omit=dev',
+    'yarn npm audit',
+    'bun audit',
+    'npm ci && env CI=1 pnpm audit',
+    "env -S 'npm audit'",
+    "env --split-string='corepack pnpm@11.13.1 audit'",
+    "env -S 'npm' audit",
+    'cargo audit',
+    'osv-scanner --recursive .',
+  ])('recognises the audit command in a CI script: %s', (command) => {
+    writeFileSync(join(root, 'package.json'), '{"name":"x"}');
+    writeFileSync(join(root, '.gitlab-ci.yml'), `audit:\n  script:\n    - ${command}\n`);
+    expect(checkCiConfig(root)).toEqual([]);
+  });
+
+  it.each([
+    'npm install && echo audit',
+    'npm install; echo "npm audit"',
+    'npm install # npm audit',
+    '# npm audit',
+    'npm run audit',
+    'pnpm audit-check',
+    'npm --registry audit install',
+    'pnpm --filter audit install',
+    'corepack enable pnpm && echo audit',
+    'printf "%s" "pip-audit"',
+    'npm install\n    - audit',
+    "env -S 'echo' npm audit",
+    "env -S 'echo ok; npm audit'",
+    'npm audit --help',
+    'pip-audit --version',
+    'osv-scanner -h',
+  ])('does not mistake arguments, comments or a later command for an audit: %s', (command) => {
+    writeFileSync(join(root, 'package.json'), '{"name":"x"}');
+    writeFileSync(join(root, '.gitlab-ci.yml'), `test:\n  script:\n    - ${command}\n`);
+    expect(checkCiConfig(root).map((finding) => finding.check)).toEqual(['ci-audit-job']);
+  });
+
+  it('reads GitHub run blocks without counting a job name or environment value as a command', () => {
+    writeFileSync(join(root, 'package.json'), '{"name":"x"}');
+    const workflows = join(root, '.github', 'workflows');
+    mkdirSync(workflows, { recursive: true });
+    const workflow = join(workflows, 'audit.yml');
+    const config = 'jobs:\n  test:\n    name: npm audit\n    env:\n      AUDIT_COMMAND: npm audit\n    steps:\n      - run: |\n          npm ci\n';
+    writeFileSync(workflow, config);
+    expect(checkCiConfig(root).map((finding) => finding.check)).toEqual(['ci-audit-job']);
+    writeFileSync(workflow, `${config}          corepack pnpm@11.13.1 --filter web audit\n`);
+    expect(checkCiConfig(root)).toEqual([]);
+  });
+
+  it('recognises a GitLab script array reused through a YAML alias', () => {
+    writeFileSync(join(root, 'package.json'), '{"name":"x"}');
+    writeFileSync(join(root, '.gitlab-ci.yml'), '.audit-commands: &audit\n  - corepack pnpm@11.13.1 audit\naudit:\n  script: *audit\n');
+    expect(checkCiConfig(root)).toEqual([]);
+  });
+
+  it('ignores a GitHub environment variable named run', () => {
+    writeFileSync(join(root, 'package.json'), '{}');
+    const workflows = join(root, '.github', 'workflows');
+    mkdirSync(workflows, { recursive: true });
+    writeFileSync(join(workflows, 'test.yml'), 'env:\n  run: npm audit\njobs:\n  test:\n    steps:\n      - run: npm test\n');
+    expect(checkCiConfig(root).map((finding) => finding.check)).toEqual(['ci-audit-job']);
+  });
+
+  it.each([
+    ['unused hidden template', '.audit-template:\n  script: npm audit\ntest:\n  script: npm test\n', false],
+    ['reference alongside an explicit audit', '.setup:\n  script: npm ci\ntest:\n  script:\n    - !reference [.setup, script]\n    - npm audit\n', true],
+    ['local reference to audit commands', '.audit-template:\n  script: npm audit\ntest:\n  script: !reference [.audit-template, script]\n', true],
+    ['extended audit template', '.audit-template:\n  script: npm audit\ntest:\n  extends: .audit-template\n', true],
+    ['overridden inherited audit script', '.audit-template:\n  script: npm audit\ntest:\n  extends: .audit-template\n  script: npm test\n', false],
+    ['inherited default audit', 'default:\n  before_script: npm audit\ntest:\n  script: npm test\n', true],
+    ['disabled default inheritance', 'default:\n  before_script: npm audit\ntest:\n  inherit:\n    default: false\n  script: npm test\n', false],
+    ['cyclic reference cannot hide a sibling audit', '.cycle:\n  script: !reference [.cycle, script]\nbroken:\n  script: !reference [.cycle, script]\naudit:\n  script: npm audit\n', true],
+    ['inputs header with an audit job', 'spec:\n  inputs:\n    stage:\n      default: test\n---\naudit:\n  script: npm audit\n', true],
+    ['audit prose in an inputs header', 'spec:\n  inputs:\n    command:\n      default: npm audit\n---\ntest:\n  script: npm test\n', false],
+    ['unrelated multiple documents', 'variables:\n  TEST: value\n---\naudit:\n  script: npm audit\n', false],
+    ['ambiguous third document after a header', 'spec:\n  inputs: {}\n---\ntest:\n  script: npm test\n---\naudit:\n  script: npm audit\n', false],
+  ])('checks only effective executable GitLab commands: %s', (_name, config, audited) => {
+    writeFileSync(join(root, 'package.json'), '{}');
+    writeFileSync(join(root, '.gitlab-ci.yml'), config);
+    expect(checkCiConfig(root).map((finding) => finding.check)).toEqual(audited ? [] : ['ci-audit-job']);
+  });
 });
 
 // ── Env documentation ────────────────────────────────────────────────────────

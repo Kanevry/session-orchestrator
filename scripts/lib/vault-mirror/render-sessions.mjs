@@ -473,12 +473,19 @@ export function generateSessionNote(entry, options = {}) {
   // that "repaired" that one too would be inventing a measurement.
   const waveRows = waves
     .map((w) => {
+      // #1276: lifecycle-only records omit every older count alias. Started
+      // measures participation; completed/planned-only counts retain their
+      // labels so a plan or a completion count never claims dispatch coverage.
+      const completedAgents = waveCount(w.agent_count_completed);
+      const plannedAgents = waveCount(w.agent_count_planned);
       const agentsCell =
         waveCount(w.agent_count) ??
         waveCount(w.agents) ??
         waveCount(w.agents_dispatched) ??
         waveCount(w.dispatched) ??
-        MISSING_CELL;
+        waveCount(w.agent_count_started) ??
+        (completedAgents === undefined ? undefined : `${completedAgents} completed`) ??
+        (plannedAgents === undefined ? MISSING_CELL : `${plannedAgents} planned`);
       const filesCell = waveCount(w.files_changed) ?? waveCount(w.files) ?? MISSING_CELL;
       const qualityCell =
         w.quality ?? w.quality_check ?? w.status ?? w.result ?? w.outcome ?? MISSING_CELL;

@@ -1520,10 +1520,15 @@ export function printPublishOutcome(outcome, target, io = {}) {
     log(`  ${outcome.release.detail}.`);
   } else {
     error(`\nRECONCILIATION: ${outcome.release.detail}`);
-    if (outcome.release.state === 'create-failed') {
-      error(`  Recover with: gh release create ${outcome.tag} --verify-tag --title ${outcome.tag} --notes-file <changelog excerpt>`);
+    const recovery = outcome.release.recovery;
+    if (recovery?.inspect) {
+      error(`  Inspect with: ${renderRecoveryCommand(recovery.inspect)}`);
+      if (outcome.release.state === 'create-failed' && recovery.create) {
+        error(`  Recover with: ${renderRecoveryCommand(recovery.create)}`);
+        error('  The notes file is retained for recovery; remove it after the release is reconciled.');
+      }
     } else {
-      error('  Inspect `gh release view` and its authentication/network state before attempting any create.');
+      error('  Resolve the GitHub repository identity before inspecting or creating the release.');
     }
   }
 
@@ -1551,6 +1556,11 @@ export function printPublishOutcome(outcome, target, io = {}) {
   log('  1. Rotate/delete the npm token: https://www.npmjs.com/settings/<user>/tokens');
   log('  2. pi.dev gallery indexes asynchronously — do not block on it.');
   return 0;
+}
+
+/** Render argv for a POSIX shell without interpreting paths as shell code. */
+function renderRecoveryCommand(argv) {
+  return argv.map((arg) => /^[\w./:@=+-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`).join(' ');
 }
 
 /**
@@ -1582,18 +1592,23 @@ export function printPublishOutcome(outcome, target, io = {}) {
  * @param {string} repoRoot
  * @param {string} target
  * @param {{runImpl?: Function, repoSpec?: string}} [deps] — injection seam for tests
- * @returns {{ok: boolean, created: boolean, tag: string, state: 'exists'|'created'|'unknown'|'create-failed', detail: string, argv?: string[]}}
+ * @returns {{ok: boolean, created: boolean, tag: string, state: 'exists'|'created'|'unknown'|'create-failed', detail: string, argv?: string[], recovery?: {inspect: string[], create?: string[]}}}
  */
 export function ensureGithubRelease(repoRoot, target, deps = {}) {
   const runImpl = deps.runImpl ?? run;
   const tag = `v${target}`;
-  const spec = deps.repoSpec ?? resolveRepoSpec({ repoRoot, vcs: 'github' });
-  // resolveRepoSpec returns undefined when it cannot auto-detect; its contract
-  // is that callers OMIT the flag rather than pass `-R undefined`.
-  const repoFlag = spec ? ['--repo', spec] : [];
+  let recovery;
 
   try {
-    const existing = runImpl('gh', ['release', 'view', tag, ...repoFlag], { cwd: repoRoot });
+    const spec = deps.repoSpec ?? resolveRepoSpec({ repoRoot, vcs: 'github' });
+    if (typeof spec !== 'string' || !spec.trim()) {
+      return { ok: false, created: false, tag, state: 'unknown', detail: 'GitHub repository identity could not be resolved' };
+    }
+    // Recovery must carry the same resolved identity as the real invocation.
+    // An absent identity cannot safely fall back to the caller's ambient repo.
+    const repoFlag = ['--repo', spec];
+    recovery = { inspect: ['gh', 'release', 'view', tag, ...repoFlag] };
+    const existing = runImpl(recovery.inspect[0], recovery.inspect.slice(1), { cwd: repoRoot });
     const viewOutput = `${existing.stdout || ''}\n${existing.stderr || ''}`.trim();
     if (existing.status === 0 && viewOutput) {
       return { ok: true, created: false, tag, state: 'exists', detail: `GitHub release ${tag} already exists — no-op` };
@@ -1607,6 +1622,7 @@ export function ensureGithubRelease(repoRoot, target, deps = {}) {
         created: false,
         tag,
         state: 'unknown',
+        recovery,
         detail: `could not determine whether GitHub release ${tag} exists (gh release view exited ${existing.status}: ${viewOutput.slice(0, 300) || 'empty output'})`,
       };
     }
@@ -1614,26 +1630,31 @@ export function ensureGithubRelease(repoRoot, target, deps = {}) {
     const notesDir = mkdtempSync(join(tmpdir(), 'release-ghnotes-'));
     const notesFile = join(notesDir, 'notes.md');
     let argv;
+    let retainNotes = false;
     try {
       writeFileSync(notesFile, `${changelogExcerpt(repoRoot, target)}\n`);
       argv = ['release', 'create', tag, ...repoFlag, '--verify-tag', '--title', tag, '--notes-file', notesFile];
       const created = runImpl('gh', argv, { cwd: repoRoot });
       if (created.status !== 0) {
+        // A recovery argv pointing to a file deleted by finally is unusable.
+        // Preserve only this failed-create excerpt; successful runs still clean up.
+        retainNotes = true;
         return {
           ok: false,
           created: false,
           tag,
           state: 'create-failed',
           argv,
+          recovery: { ...recovery, create: ['gh', ...argv] },
           detail: `gh release create exited ${created.status}: ${(created.stderr || created.stdout || '').trim().slice(0, 300)}`,
         };
       }
       return { ok: true, created: true, tag, state: 'created', argv, detail: `GitHub release ${tag} created (--verify-tag)` };
     } finally {
-      rmSync(notesDir, { recursive: true, force: true });
+      if (!retainNotes) rmSync(notesDir, { recursive: true, force: true });
     }
   } catch (err) {
-    return { ok: false, created: false, tag, state: 'unknown', detail: `gh could not be run: ${err.message}` };
+    return { ok: false, created: false, tag, state: 'unknown', ...(recovery ? { recovery } : {}), detail: `gh could not be run: ${err.message}` };
   }
 }
 
