@@ -14,6 +14,10 @@
 
 Intentionally absent: `package.json`, frameworks, tests, CI config. The feature that follows brings its own stack.
 
+Maintain the inherited `BOOTSTRAP_FILES` array and append every newly created
+relative file at creation. Preserve existing owner files and never reset this
+array when Fast is inherited by Standard or Deep.
+
 ## Step 1: Ensure Git Repo is Initialized
 
 ```bash
@@ -38,7 +42,12 @@ After `public-fallback.md` completes CLAUDE.md generation, continue to Step 2b t
 
 **If `PATH_TYPE = private`:**
 
-Use the baseline scripts at `$BASELINE_PATH` as directed by the baseline's own documentation. Proceed with baseline-driven CLAUDE.md generation, then continue to Step 2b.
+For Standard/Deep inheritance, `private-contract.md` already rendered the
+instruction file and stack into the repo. Preserve those files and continue
+to Step 2b; use its quality-gate command mapping for missing Session Config
+fields. Preserve the rendered README and `.gitignore` in subsequent Fast steps.
+For a standalone Fast tier, no archetype is selected: use `public-fallback.md`'s
+minimal Fast instruction-file generation and report `source: plugin-template`.
 
 **Step 2b: Verify Session Config block.** After writing or updating CLAUDE.md, check for the sentinel string `## Session Config`:
 
@@ -107,7 +116,8 @@ elif ls *.ts *.js package.json 2>/dev/null | head -1 | grep -q .; then STACK="no
 else STACK="generic"; fi
 ```
 
-Write `.gitignore` with the appropriate content:
+If absent, write `.gitignore` with the appropriate content and append `.gitignore`
+to `BOOTSTRAP_FILES`. Preserve an existing file.
 
 **Generic (no stack detected):**
 ```gitignore
@@ -166,6 +176,10 @@ Note: `.orchestrator/` is NOT gitignored — `bootstrap.lock` must be committed.
 
 Vendor the canonical always-on rules from the plugin's `rules/` library into `$REPO_ROOT/.claude/rules/`. `rules/` is the single source of truth for every distributable rule — never `cp` a rule file from anywhere else.
 
+`syncBootstrapRules` calls the canonical `scripts/lib/rules-sync.mjs` writer.
+Standalone Fast uses ordinary plugin rules without private archetype selection;
+inherited Fast passes the confirmed contract ID and records all created paths.
+
 Idempotency is handled by the writer itself:
 - Missing → create
 - Exists, plugin-owned (first line is the `<!-- source: session-orchestrator plugin ... -->` header) and byte-identical → skip silently
@@ -175,11 +189,28 @@ Idempotency is handled by the writer itself:
 Shell:
 ```bash
 mkdir -p "$REPO_ROOT/.claude"
-node "$PLUGIN_ROOT/scripts/lib/rules-sync.mjs" --repo-root "$REPO_ROOT"
-cp "$PLUGIN_ROOT/templates/_shared/loop.md" "$REPO_ROOT/.claude/loop.md"
+export PLUGIN_ROOT REPO_ROOT CONFIRMED_ARCHETYPE
+RULES_RESULT=$(node --input-type=module <<'NODE'
+import { pathToFileURL } from 'node:url';
+const { syncBootstrapRules } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`));
+const result = await syncBootstrapRules({ repoRoot: process.env.REPO_ROOT,
+  archetype: process.env.CONFIRMED_ARCHETYPE || undefined, minimal: !process.env.CONFIRMED_ARCHETYPE });
+process.stdout.write(`${JSON.stringify(result)}\n`);
+if (result.status === 'error') process.exitCode = 2;
+NODE
+) || exit 2
+printf '%s\n' "$RULES_RESULT"
+while IFS= read -r _file; do BOOTSTRAP_FILES+=("$_file"); done \
+  < <(printf '%s\n' "$RULES_RESULT" | jq -r '.created[]')
+if [[ ! -e "$REPO_ROOT/.claude/loop.md" && ! -L "$REPO_ROOT/.claude/loop.md" ]]; then
+  cp "$PLUGIN_ROOT/templates/_shared/loop.md" "$REPO_ROOT/.claude/loop.md"
+  BOOTSTRAP_FILES+=(.claude/loop.md)
+fi
 ```
 
-The command prints a JSON report (`written` / `skipped` / `preserved` / `errors` / `warnings` / `sanitizer`) and exits non-zero on any error. At fast tier `.orchestrator/bootstrap.lock` does not exist yet (Step 5 writes it), so archetype-scoped entries report `archetype-unknown` and are skipped — the always-on rules vendor regardless.
+The command prints a JSON report and exits non-zero on any error. At standalone
+Fast tier the lock and selected ID are absent, so scoped rules are skipped.
+Inherited Fast delivers private required targets through the same writer.
 
 Surface `errors[]` and `sanitizer[]` to the operator. `sanitizer[]` (issue #1098) carries `{file, line, kind, text}` records for citations that read fine inside the plugin repo and dangle once vendored (`repo-local-path`, `unresolvable-see-also`); the CLI also prints each to stderr as `rules-sync: sanitizer <kind> <file>:<line> — <text>`. **Report it, do not act on it automatically** — it never rewrites content and never changes the exit code, so a human decides whether the citation is a leak.
 
@@ -188,6 +219,9 @@ Why: PSA-003 destructive-command safeguards require every consumer repo to carry
 Why one writer (issue #1060): a literal `cp` from a second source directory bypasses the pre-write validator AND lands a file carrying no provenance header. On the next `--sync-rules` a headerless file is classified as a repo-private override and preserved forever, so the plugin can never update it again — and whichever rival copy is smaller silently wins.
 
 ## Step 4: Generate README.md
+
+If absent, write the stub below and append `README.md` to `BOOTSTRAP_FILES`.
+Preserve an existing README.
 
 ```markdown
 # <REPO_NAME>
@@ -207,6 +241,8 @@ Write `.orchestrator/bootstrap.lock` **atomically** (mktemp + mv prevents a corr
 process is interrupted mid-write):
 
 ```bash
+_LOCK_CREATED=false
+[[ -e "$REPO_ROOT/.orchestrator/bootstrap.lock" || -L "$REPO_ROOT/.orchestrator/bootstrap.lock" ]] || _LOCK_CREATED=true
 _LOCK_TMP=$(mktemp "$REPO_ROOT/.orchestrator/bootstrap.lock.XXXXXX")
 cat > "$_LOCK_TMP" << LOCK
 # .orchestrator/bootstrap.lock
@@ -219,6 +255,7 @@ plugin-version: <session-orchestrator plugin version — read from $PLUGIN_ROOT/
 bootstrapped-at: <current ISO 8601 UTC — same value as timestamp; distinct field for age-validation probe>
 LOCK
 mv "$_LOCK_TMP" "$REPO_ROOT/.orchestrator/bootstrap.lock"
+if [[ "$_LOCK_CREATED" = true ]]; then BOOTSTRAP_FILES+=(.orchestrator/bootstrap.lock); fi
 ```
 
 Set `source`:
@@ -231,10 +268,9 @@ Stage all created files and commit:
 
 ```bash
 cd "$REPO_ROOT"
-BOOTSTRAP_FILES=(CLAUDE.md AGENTS.md .gitignore README.md .orchestrator/bootstrap.lock .claude/rules/parallel-sessions.md)
 # Add only the files bootstrap created — no sweeping -u/-A to avoid catching pre-existing files
-for _f in "${BOOTSTRAP_FILES[@]}"; do
-  [[ -e "$_f" ]] && git add -- "$_f"
+for _f in ${BOOTSTRAP_FILES[@]+"${BOOTSTRAP_FILES[@]}"}; do
+  [[ -f "$_f" && ! -L "$_f" ]] && git add -- "$_f"
 done
 git commit -m "chore: bootstrap (fast)"
 ```

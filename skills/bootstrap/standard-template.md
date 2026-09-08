@@ -5,6 +5,20 @@
 
 Standard tier is a strict superset of Fast tier. Execute all Fast-tier steps first, then the Standard-specific steps below.
 
+Track actual newly created relative files in one `BOOTSTRAP_FILES` array across
+all inherited steps. Append each file when created; preserve the array across
+repeated steps. Never append an existing owner file or a directory.
+
+## Private Contract Preparation
+
+When `PATH_TYPE = private`, resolve `CONFIRMED_ARCHETYPE` with
+`private-contract.md` and execute its Scaffold section **before** the inherited
+Fast steps. Preserve its rendered metadata, manifests, source, README and CI.
+Add its reported created files to `BOOTSTRAP_FILES`. Skip the four public
+archetype sections below, then continue at Step 3a, S99 and the lock/quality-policy
+steps. Populate command expectations from the selected contract as described
+in `private-contract.md`.
+
 ## Step 1–7: Execute Fast Tier
 
 Read and execute `skills/bootstrap/fast-template.md` Steps 1–7 in full. Do not skip any step. The Fast commit (`chore: bootstrap (fast)`) is NOT made — Fast steps produce files only; the single commit happens at Standard Step 7 below.
@@ -21,9 +35,9 @@ Before executing the stack-specific steps, resolve the final archetype:
 ARCHETYPE = CONFIRMED_ARCHETYPE  # set by SKILL.md from intensity-heuristic or user selection
 ```
 
-Valid values: `static-html` | `node-minimal` | `nextjs-minimal` | `python-uv`
+For `PATH_TYPE = public`, valid values are `static-html` | `node-minimal` | `nextjs-minimal` | `python-uv`. Private IDs come only from the validated contract.
 
-If `ARCHETYPE` is `null` or unset at this point, default to `node-minimal`.
+On the public path only, if `ARCHETYPE` is `null` or unset, default to `node-minimal`. A private missing/invalid selection aborts before scaffolding; it never reaches the public sections.
 
 The sections below are conditional on `ARCHETYPE`. Execute only the section that matches.
 
@@ -592,12 +606,11 @@ indent_size = 2
 
 Canonical implementation in [`_shared-template.md#parallel-sessions-rule`](_shared-template.md).
 
-Run `node "$PLUGIN_ROOT/scripts/lib/rules-sync.mjs" --repo-root "$REPO_ROOT"` — it vendors every
-rule registered in `rules/_index.md` (idempotent: missing→create, identical→skip, differs→overwrite),
-and it is the only writer that applies the pre-write validator, the basename-collision guard and the
-copy-on-write branch that preserves repo-private rules. The shared partial also runs
-`cp "$PLUGIN_ROOT/templates/_shared/loop.md" "$REPO_ROOT/.claude/loop.md"` so bare `/loop` gets a
-repo-aware maintenance prompt. See shared partial for full shell command. Issues #155, #633, #1060.
+Execute the shared partial's `syncBootstrapRules` action. It supplies private
+required basenames to `scripts/lib/rules-sync.mjs`, preserving its manifest,
+pre-write validation and local-override checks. The partial appends actual newly
+created rule paths, and creates `.claude/loop.md` only when missing. See the
+shared partial for the executable shell command. Issues #155, #633, #1060.
 
 Note: Runs before S99. S99 no longer fetches `parallel-sessions.md` from the baseline — that entry
 was removed from the S99 manifest in #1060. The baseline copy carries no provenance header, so
@@ -611,8 +624,10 @@ Create the metrics directory and an empty learnings file so the `/evolve` skill 
 
 ```bash
 mkdir -p "$REPO_ROOT/.orchestrator/metrics"
-[[ -f "$REPO_ROOT/.orchestrator/metrics/learnings.jsonl" ]] || \
+if [[ ! -e "$REPO_ROOT/.orchestrator/metrics/learnings.jsonl" && ! -L "$REPO_ROOT/.orchestrator/metrics/learnings.jsonl" ]]; then
   : > "$REPO_ROOT/.orchestrator/metrics/learnings.jsonl"
+  BOOTSTRAP_FILES+=(.orchestrator/metrics/learnings.jsonl)
+fi
 ```
 
 **Idempotent.** Re-running bootstrap does not overwrite an existing file.
@@ -624,11 +639,13 @@ mkdir -p "$REPO_ROOT/.orchestrator/metrics"
 
 Canonical implementation in [`_shared-template.md#baseline-fetch`](_shared-template.md).
 
-OPT-IN: only fires when `baseline-ref` is in Session Config, `GITLAB_TOKEN` is set, and
+PRIVATE: applies the selected local contract rule union without network access, preserving existing files and excluding every plugin-owned basename. An invalid contract aborts.
+
+PUBLIC OPT-IN: only fires when `baseline-ref` is in Session Config, `GITLAB_TOKEN` is set, and
 `scripts/lib/fetch-baseline.mjs` exists. Fetches `.claude/rules/*.md` from the baseline GitLab
 project (default project 52) and writes `.claude/.baseline-fetch.lock`. Does NOT abort on failure.
-The rule manifest includes `owner-persona.md` (alongside `parallel-sessions.md`, `development.md`,
-and the rest of the always-on rules). See shared partial for full implementation.
+The private rule manifest comes from the selected contract. Every plugin-owned
+basename is excluded from either delivery path. See the shared partial.
 
 ---
 
@@ -649,6 +666,8 @@ Write `.orchestrator/bootstrap.lock` **atomically** (mktemp + mv prevents a corr
 process is interrupted mid-write):
 
 ```bash
+_LOCK_CREATED=false
+[[ -e "$REPO_ROOT/.orchestrator/bootstrap.lock" || -L "$REPO_ROOT/.orchestrator/bootstrap.lock" ]] || _LOCK_CREATED=true
 _LOCK_TMP=$(mktemp "$REPO_ROOT/.orchestrator/bootstrap.lock.XXXXXX")
 cat > "$_LOCK_TMP" << LOCK
 # .orchestrator/bootstrap.lock
@@ -661,6 +680,7 @@ plugin-version: <session-orchestrator plugin version — read from $PLUGIN_ROOT/
 bootstrapped-at: <current ISO 8601 UTC — same value as timestamp; distinct field for age-validation probe>
 LOCK
 mv "$_LOCK_TMP" "$REPO_ROOT/.orchestrator/bootstrap.lock"
+if [[ "$_LOCK_CREATED" = true ]]; then BOOTSTRAP_FILES+=(.orchestrator/bootstrap.lock); fi
 ```
 
 Set `source` using the same logic as fast-template Step 5:
@@ -673,8 +693,8 @@ Set `source` using the same logic as fast-template Step 5:
 
 Canonical implementation in [`_shared-template.md#quality-gate-policy`](_shared-template.md).
 
-Write `.orchestrator/policy/quality-gates.json` with package-manager-detected defaults (idempotent:
-skip if file already exists). Uses `scripts/lib/package-manager.mjs`; falls back to npm defaults.
+Write `.orchestrator/policy/quality-gates.json` from exact private contract gates,
+or package-manager defaults on the public path. Skip existing owner policy.
 See shared partial for full shell command. Issue #183.
 
 <!-- @include _shared-template.md#state-md-scaffold -->
@@ -701,15 +721,9 @@ Stage all created files and commit:
 
 ```bash
 cd "$REPO_ROOT"
-BOOTSTRAP_FILES=(
-  CLAUDE.md AGENTS.md .gitignore README.md .orchestrator/bootstrap.lock
-  .orchestrator/policy/quality-gates.json
-  package.json pyproject.toml tsconfig.json eslint.config.mjs .prettierrc
-  .editorconfig src/ tests/ .claude/
-)
 # Add only the files bootstrap created — no sweeping -u/-A to avoid catching pre-existing files
-for _f in "${BOOTSTRAP_FILES[@]}"; do
-  [[ -e "$_f" ]] && git add -- "$_f"
+for _f in ${BOOTSTRAP_FILES[@]+"${BOOTSTRAP_FILES[@]}"}; do
+  [[ -f "$_f" && ! -L "$_f" ]] && git add -- "$_f"
 done
 git commit -m "chore: bootstrap (standard)"
 ```

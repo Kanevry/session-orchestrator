@@ -5,6 +5,9 @@
 
 Deep tier is a strict superset of Standard tier. Execute all Standard-tier steps first, then the Deep-specific steps below.
 
+Keep the inherited `BOOTSTRAP_FILES` array. Append each new governance file by
+its relative filename when created; do not append existing files or directories.
+
 ## Step 1–8: Execute Standard Tier
 
 Read and execute `skills/bootstrap/standard-template.md` Steps 1–8 in full. Do not skip any step.
@@ -30,7 +33,13 @@ If `VCS` is empty or `none`, skip CI pipeline, issue templates, MR/PR template, 
 
 ## Step D1: CI Pipeline
 
-Create the CI pipeline file. Mutually exclusive — create exactly one based on `VCS`.
+When `PATH_TYPE = private`, keep the selected baseline's rendered CI and
+`ci.profile` from `private-contract.md`. Respect `ci.required: false`; do not
+create a generic Node pipeline for an exempt archetype. A required CI missing
+from staging already aborts. Resolve VCS mismatch explicitly before changing
+canonical CI. Skip the public D1 examples below and continue at D2.
+
+For `PATH_TYPE = public`, create exactly one pipeline based on `VCS`.
 
 ### If `VCS = gitlab`: `.gitlab-ci.yml`
 
@@ -492,12 +501,11 @@ If the call fails, log the structured message above and continue. Raw API respon
 
 Canonical implementation in [`_shared-template.md#parallel-sessions-rule`](_shared-template.md).
 
-Run `node "$PLUGIN_ROOT/scripts/lib/rules-sync.mjs" --repo-root "$REPO_ROOT"` — it vendors every
-rule registered in `rules/_index.md` (idempotent: missing→create, identical→skip, differs→overwrite),
-and it is the only writer that applies the pre-write validator, the basename-collision guard and the
-copy-on-write branch that preserves repo-private rules. The shared partial also runs
-`cp "$PLUGIN_ROOT/templates/_shared/loop.md" "$REPO_ROOT/.claude/loop.md"` so bare `/loop` gets a
-repo-aware maintenance prompt. See shared partial for full shell command. Issues #155, #633, #1060.
+Execute the shared partial's `syncBootstrapRules` action. It supplies private
+required basenames to `scripts/lib/rules-sync.mjs`, preserving its manifest,
+pre-write validation and local-override checks. The partial appends actual newly
+created rule paths, and creates `.claude/loop.md` only when missing. See the
+shared partial for the executable shell command. Issues #155, #633, #1060.
 
 Note: Runs before D99. D99 (via inherited S99) no longer fetches `parallel-sessions.md` from the
 baseline — that entry was removed from the S99 manifest in #1060. The baseline copy carries no
@@ -511,11 +519,13 @@ Deep tier creates both learnings and sessions metrics plus a schema-linking READ
 
 ```bash
 mkdir -p "$REPO_ROOT/.orchestrator/metrics"
-[[ -f "$REPO_ROOT/.orchestrator/metrics/learnings.jsonl" ]] || \
-  : > "$REPO_ROOT/.orchestrator/metrics/learnings.jsonl"
-[[ -f "$REPO_ROOT/.orchestrator/metrics/sessions.jsonl" ]] || \
-  : > "$REPO_ROOT/.orchestrator/metrics/sessions.jsonl"
-
+for _file in learnings.jsonl sessions.jsonl; do
+  if [[ ! -e "$REPO_ROOT/.orchestrator/metrics/$_file" && ! -L "$REPO_ROOT/.orchestrator/metrics/$_file" ]]; then
+    : > "$REPO_ROOT/.orchestrator/metrics/$_file"
+    BOOTSTRAP_FILES+=(".orchestrator/metrics/$_file")
+  fi
+done
+if [[ ! -e "$REPO_ROOT/.orchestrator/metrics/README.md" && ! -L "$REPO_ROOT/.orchestrator/metrics/README.md" ]]; then
 cat > "$REPO_ROOT/.orchestrator/metrics/README.md" <<'README'
 # Metrics
 
@@ -530,6 +540,8 @@ Schema: https://github.com/Kanevry/session-orchestrator
 **Do NOT gitignore** — these files are project artifacts intended to persist
 across sessions and contributors.
 README
+  BOOTSTRAP_FILES+=(.orchestrator/metrics/README.md)
+fi
 ```
 
 **Idempotent.** Existing files are preserved.
@@ -547,8 +559,10 @@ Standard-template Step S99 already executed as part of "Step 1–8: Execute Stan
 No additional fetch action is needed here.
 
 If S99 ran successfully, `.claude/rules/*.md` and `.claude/.baseline-fetch.lock` are already written
-to `$REPO_ROOT`. These files are included in the Deep commit at Step D8 via the `.claude/` entry
-in `BOOTSTRAP_FILES`. If S99 was skipped, rules arrive via the legacy Clank weekly sync MR path.
+to `$REPO_ROOT`. Their individual newly created paths remain in `BOOTSTRAP_FILES`
+for the Deep commit at Step D8. If the private contract applies, S99 already
+delivered its local filtered rule union. If public S99 was skipped, rules arrive
+via the legacy Clank weekly sync MR path.
 
 ---
 
@@ -580,6 +594,8 @@ Write `.orchestrator/bootstrap.lock` **atomically** (mktemp + mv prevents a corr
 process is interrupted mid-write):
 
 ```bash
+_LOCK_CREATED=false
+[[ -e "$REPO_ROOT/.orchestrator/bootstrap.lock" || -L "$REPO_ROOT/.orchestrator/bootstrap.lock" ]] || _LOCK_CREATED=true
 _LOCK_TMP=$(mktemp "$REPO_ROOT/.orchestrator/bootstrap.lock.XXXXXX")
 cat > "$_LOCK_TMP" << LOCK
 # .orchestrator/bootstrap.lock
@@ -592,6 +608,7 @@ plugin-version: <session-orchestrator plugin version — read from $PLUGIN_ROOT/
 bootstrapped-at: <current ISO 8601 UTC — same value as timestamp; distinct field for age-validation probe>
 LOCK
 mv "$_LOCK_TMP" "$REPO_ROOT/.orchestrator/bootstrap.lock"
+if [[ "$_LOCK_CREATED" = true ]]; then BOOTSTRAP_FILES+=(.orchestrator/bootstrap.lock); fi
 ```
 
 Set `source` using the same logic as fast-template Step 5.
@@ -604,16 +621,9 @@ Stage all created files and commit:
 
 ```bash
 cd "$REPO_ROOT"
-BOOTSTRAP_FILES=(
-  CLAUDE.md AGENTS.md .gitignore README.md .orchestrator/bootstrap.lock
-  .orchestrator/policy/quality-gates.json
-  package.json pyproject.toml tsconfig.json eslint.config.mjs .prettierrc
-  .editorconfig src/ tests/ CHANGELOG.md CODEOWNERS
-  .gitlab/ .github/ .claude/
-)
 # Add only the files bootstrap created — no sweeping -u/-A to avoid catching pre-existing files
-for _f in "${BOOTSTRAP_FILES[@]}"; do
-  [[ -e "$_f" ]] && git add -- "$_f"
+for _f in ${BOOTSTRAP_FILES[@]+"${BOOTSTRAP_FILES[@]}"}; do
+  [[ -f "$_f" && ! -L "$_f" ]] && git add -- "$_f"
 done
 git commit -m "chore: bootstrap (deep)"
 ```

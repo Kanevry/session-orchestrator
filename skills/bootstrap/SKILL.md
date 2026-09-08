@@ -42,8 +42,9 @@ Store `INVOCATION_MODE = transitive | direct`.
 
 **Before dispatching to any tier template**, read `skills/bootstrap/public-fallback.md` and execute Step 1 (PATH_TYPE detection). Store the result as `PATH_TYPE = private | public`. This detection is silent — no user interaction.
 
-- `private`: `plan-baseline-path` is present in Session Config AND the path exists on disk. Baseline templates will be used for CLAUDE.md generation and archetype file sourcing.
-- `public`: `plan-baseline-path` is absent, empty, or points to a non-existent path. Plugin-bundled templates from `templates/` will be used.
+- `private`: the existing host-local config resolution found a baseline directory and its reduced contract validated. Use `private-contract.md` for selection, templates, commands, CI and rules.
+- `public`: the resolved baseline is absent, empty, or points to a missing directory. Use plugin-bundled templates.
+- Existing but invalid configured baseline: abort before dispatch; report the reader's sanitized error reason.
 
 Pass `PATH_TYPE` into Phase 1 and all subsequent phases. All tier templates (`fast-template.md`, `standard-template.md`, `deep-template.md`) must consult `public-fallback.md` for CLAUDE.md generation and archetype file sourcing when `PATH_TYPE = public`.
 
@@ -59,7 +60,7 @@ Inputs to the heuristic:
 
 Output from Phase 1:
 - `RECOMMENDED_TIER` = `fast` | `standard` | `deep`
-- `RECOMMENDED_ARCHETYPE` = `static-html` | `node-minimal` | `nextjs-minimal` | `python-uv` | `null`
+- `RECOMMENDED_ARCHETYPE` = validated private contract ID, public ID, or `null`
 - `HEURISTIC_REASON` = one-sentence explanation of why this tier was chosen (shown to user)
 - `PATH_TYPE` = `private` (plan-baseline-path configured and path exists) | `public` (no baseline)
 
@@ -120,7 +121,16 @@ AskUserQuestion({
 })
 ```
 
-Store as `CONFIRMED_ARCHETYPE`. The tier/stack block contributes **1–2** questions; a first-run full bootstrap adds **6 more** from the owner interview (Phase 3.5, five questions) and dispatcher-autonomy capture (Phase 3.5.1, one question) — **7–9 total**.
+Store as `CONFIRMED_ARCHETYPE`.
+
+For `PATH_TYPE = private` and Standard/Deep, execute `private-contract.md`'s
+Select section now. Reuse a valid detected or explicit ID; when evidence is
+insufficient, select from the returned catalog before scaffolding. Tier flags
+skip tier confirmation, not required private archetype selection. Never pass a
+null private ID into the public default. On upgrades, validate the lock's ID
+against the currently configured contract before generating any files.
+
+The tier/stack block contributes **1–2** questions; a first-run full bootstrap adds **6 more** from the owner interview (Phase 3.5, five questions) and dispatcher-autonomy capture (Phase 3.5.1, one question) — **7–9 total**.
 
 ## Upgrade Flow (`--upgrade <tier>`)
 
@@ -139,7 +149,12 @@ Entered when `$ARGUMENTS` contains `--upgrade <tier>`. No scaffolding questions 
    `Error: Cannot downgrade from <CURRENT_TIER> to <TARGET_TIER>. Upgrade path is one-directional (fast → standard → deep).`
    Exit non-zero.
 
-4. **Compute delta.** Determine which files the target tier adds over the current tier:
+4. **Resolve source and compute delta.** Run Phase 0.5's read-only source
+   detection before dispatching any template. For a private contract, validate
+   the lock's archetype with `--archetype`; if the Fast lock has no archetype,
+   select from the returned catalog using `private-contract.md`. Use its staged,
+   additive scaffold and CI expectations; do not apply the public file matrix.
+   For the public path, determine which files the target tier adds:
    - `fast → standard`: all Standard-tier files (`package.json`/`pyproject.toml`, `tsconfig.json`, `eslint.config.mjs`, `.prettierrc`, `.editorconfig`, `tests/`, `src/`)
    - `standard → deep`: all Deep-tier files (CI pipeline, `CODEOWNERS`, `CHANGELOG.md`, issue templates, MR/PR template, branch protection)
    - `fast → deep`: union of both deltas (apply Standard first, then Deep)
@@ -148,7 +163,7 @@ Entered when `$ARGUMENTS` contains `--upgrade <tier>`. No scaffolding questions 
 
 6. **Apply delta files.** Execute only the relevant template steps for the missing files. Read the appropriate template (`standard-template.md` and/or `deep-template.md`) and execute ONLY the steps that produce the delta files. Do NOT re-run already-completed steps.
 
-7. **Update bootstrap.lock atomically.** Overwrite `.orchestrator/bootstrap.lock` with `tier: <TARGET_TIER>`. Preserve `archetype`, `timestamp` (update to now), and `source` from the existing lock. Write `plugin-version` from `$PLUGIN_ROOT/package.json` (current plugin version at upgrade time).
+7. **Update bootstrap.lock atomically.** Overwrite `.orchestrator/bootstrap.lock` with `tier: <TARGET_TIER>`. Preserve a validated existing `archetype`; when upgrading a null Fast archetype, record the newly confirmed ID and scaffold source. Update `timestamp` to now. Preserve the prior `source` otherwise. Write `plugin-version` from `$PLUGIN_ROOT/package.json` (current plugin version at upgrade time).
 
 8. **Commit.** Stage only the delta files that were just written and commit:
    ```bash
@@ -185,7 +200,11 @@ Entered when `$ARGUMENTS` contains `--retroactive`. Writes the lock file and, pe
 
    Store as `INFERRED_TIER`.
 
-4. **Infer archetype.** Best-effort detection from existing files:
+4. **Infer archetype.** Run Phase 0.5's read-only source detection. For a private
+   contract, use its detected `selected.id`; retain `null` with an explicit
+   `insufficient-evidence` report if no markers match. An invalid configured
+   contract aborts. Do not scaffold or apply rules in this retroactive flow.
+   For the public path, use best-effort detection from existing files:
    - `pyproject.toml` present → `python-uv`
    - `package.json` with `next` in dependencies → `nextjs-minimal`
    - `package.json` without `next` → `node-minimal`
@@ -296,7 +315,8 @@ Entered when `$ARGUMENTS` contains `--refresh-lock`. No scaffolding questions ar
 
 ## Sync-Rules Flow (`--sync-rules`)
 
-Entered when `$ARGUMENTS` contains `--sync-rules`. This is a standalone flow — it short-circuits the tier/archetype/scaffolding flow. No `bootstrap.lock` read, no template dispatched, no initial commit.
+Entered when `$ARGUMENTS` contains `--sync-rules`. This standalone flow skips tier
+selection, scaffolding and initial commit. Rule selection may read the lock ID.
 
 **Purpose:** Vendor canonical rules from the plugin's `rules/` library (`rules/always-on/*.md`, and in the future `rules/opt-in-stack/*.md` and `rules/opt-in-domain/*.md`) into the consumer repo's `.claude/rules/`. Plugin-sourced files (identified by a `<!-- source: session-orchestrator plugin … -->` header) are overwritten on re-run; files without that header are preserved as local overrides. See `rules/_index.md` for the canonical manifest and `scripts/lib/rules-sync.mjs` for the implementation.
 
@@ -304,13 +324,34 @@ Entered when `$ARGUMENTS` contains `--sync-rules`. This is a standalone flow —
 
 1. **Resolve plugin root.** The plugin's `rules/_index.md` lives next to `SKILL.md`'s plugin directory. Use the plugin root inferred by the harness (`PLUGIN_ROOT`).
 
-2. **Invoke `scripts/lib/rules-sync.mjs`.** Run the CLI entrypoint from the consumer repo:
+2. **Invoke the bootstrap rule action.** It reloads a configured private contract
+   and supplies required plugin basenames to `scripts/lib/rules-sync.mjs`.
+   With no baseline, the writer's public/default behavior is unchanged. Map an
+   explicit `--archetype ID` to `CONFIRMED_ARCHETYPE`, `--dry-run` to
+   `DRY_RUN=true`, and optional category selections to comma-separated
+   `RULES_CATEGORIES`; otherwise leave those variables unset. Run from the repo:
 
    ```bash
-   node "$PLUGIN_ROOT/scripts/lib/rules-sync.mjs" --repo-root "$(pwd)"
+   export PLUGIN_ROOT CONFIRMED_ARCHETYPE DRY_RUN RULES_CATEGORIES
+   node --input-type=module <<'NODE'
+   import { pathToFileURL } from 'node:url';
+   const { syncBootstrapRules } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`));
+   const categories = (process.env.RULES_CATEGORIES || '').split(',').map(value => value.trim()).filter(Boolean);
+   const result = await syncBootstrapRules({ repoRoot: process.cwd(), archetype: process.env.CONFIRMED_ARCHETYPE || undefined,
+     dryRun: process.env.DRY_RUN === 'true', categories: categories.length ? categories : null });
+   process.stdout.write(`${JSON.stringify(result)}\n`);
+   if (result.status === 'error') process.exitCode = 2;
+   NODE
    ```
 
-   The script reads `rules/_index.md` from the plugin, iterates `always-on/` sources, and writes each file into `.claude/rules/` under the target repo. Stdout is a JSON object with `written[]`, `skipped[]`, `preserved[]`, and `errors[]`. Exit 1 on any error, 0 otherwise.
+   The canonical writer reads all selected categories in `rules/_index.md` and
+   writes into `.claude/rules/`. Required private targets remain subject to its
+   provenance and pre-write checks. Explicit ID takes precedence over lock ID,
+   then repository markers. Invalid private contracts abort before writes.
+   A valid Fast lock with `archetype: null` and no matching markers retains
+   ordinary plugin rule delivery after contract validation.
+   Stdout includes `status`, `created[]`, `written[]`, `skipped[]`, `preserved[]`,
+   and `errors[]`. Any error exits non-zero.
 
    Add `--dry-run` to preview without writing.
 
@@ -351,7 +392,7 @@ Pass the following context into the template execution:
 Follow the template's instructions precisely. The template is responsible for creating all files and the initial git commit.
 
 **Platform note for CLAUDE.md generation:**
-When `PATH_TYPE = public`, read `skills/bootstrap/public-fallback.md` for the full platform-specific CLAUDE.md generation logic (claude init path for Claude Code; `_minimal` template synthesis for Codex/Cursor). When `PATH_TYPE = private`, use the baseline scripts at `$BASELINE_PATH`.
+When `PATH_TYPE = public`, read `skills/bootstrap/public-fallback.md` for the full platform-specific CLAUDE.md generation logic (claude init path for Claude Code; `_minimal` template synthesis for Codex/Cursor). When `PATH_TYPE = private`, use the validated, staged flow in `private-contract.md`.
 
 ## Phase 3.4: Vault-Registration Prompt (#190)
 
@@ -438,7 +479,14 @@ if (!isDispatcherAutonomyBlockPresent(content)) {
 
 > Closes session-orchestrator issue #110.
 
-After the tier template completes scaffolding (Phase 3), the Standard and Deep templates run an optional rules-fetch step that pulls canonical `.claude/rules/*.md` (and optionally `.claude/agents/*.md`) directly from the baseline GitLab project. The step is opt-in and only fires when:
+After scaffolding, the Standard and Deep templates execute S99. On the private
+path, it applies the selected contract's local rule union, rechecks conditional
+dependencies and preserves existing files. It excludes every plugin-owned
+basename and aborts on an invalid configured contract; see `private-contract.md`.
+
+On the public path, S99 retains the optional remote rules-fetch step. It pulls
+canonical `.claude/rules/*.md` directly from the configured baseline GitLab
+project, excluding all plugin-owned basenames. The remote step only fires when:
 
 - `baseline-ref` is present in Session Config
 - `GITLAB_TOKEN` env var is set

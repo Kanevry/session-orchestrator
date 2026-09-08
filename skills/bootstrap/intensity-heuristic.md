@@ -8,7 +8,7 @@
 After executing this algorithm, report:
 
 - `RECOMMENDED_TIER`: `fast` | `standard` | `deep`
-- `RECOMMENDED_ARCHETYPE`: `static-html` | `node-minimal` | `nextjs-minimal` | `python-uv` | `null`
+- `RECOMMENDED_ARCHETYPE`: a validated private contract ID, one of the public IDs, or `null`
 - `HEURISTIC_REASON`: one sentence explaining the recommendation (shown to user)
 - `ARCHETYPE_CONFIDENCE`: `high` | `low` (used to decide whether to ask the optional second question)
 
@@ -54,7 +54,13 @@ Examples:
 
 **Fast tier:** Always `RECOMMENDED_ARCHETYPE = null`, `ARCHETYPE_CONFIDENCE = high`. No stack needed — skip to output.
 
-**Private path (baseline configured):** Always `RECOMMENDED_ARCHETYPE = null` at this stage. The baseline's own archetype selector is used during Standard/Deep scaffolding. Set `ARCHETYPE_CONFIDENCE = high`.
+**Private path (valid configured contract):** Use `BOOTSTRAP_CONTRACT.selected.id`
+from Phase 0.5 and set `ARCHETYPE_CONFIDENCE = high` when markers match. An
+explicit user ID must pass the reader's `--archetype` lookup and takes priority.
+If no markers match, set `RECOMMENDED_ARCHETYPE = null` and
+`ARCHETYPE_CONFIDENCE = low`; select from the returned ordered catalog using
+`private-contract.md` before Standard/Deep scaffolding. Detection follows the
+exported signal predicates and priority; no public default applies here.
 
 **Public path + Standard or Deep:** Scan the prompt for these signals:
 
@@ -66,7 +72,7 @@ Examples:
 | python, py, data, daten, ml, machine learning, api (python context), django, fastapi, flask, pandas, numpy | `python-uv` | high |
 | Ambiguous — prompt mentions multiple stacks, no clear frontend/backend split, or is too vague (e.g., "Ich brauche ein Projekt", "neues Repo", "etwas bauen") | `node-minimal` (safe default) | `low` |
 
-When `ARCHETYPE_CONFIDENCE = low`, the bootstrap skill will ask a second `AskUserQuestion` to confirm the archetype. `node-minimal` is the pre-selected default for that question.
+On the public path, when `ARCHETYPE_CONFIDENCE = low`, the bootstrap skill will ask a second `AskUserQuestion` to confirm the archetype. `node-minimal` is the pre-selected default for that question.
 
 ## Step 5: Output
 
@@ -74,7 +80,7 @@ Return all four values to `SKILL.md` Phase 1:
 
 ```
 RECOMMENDED_TIER: fast | standard | deep
-RECOMMENDED_ARCHETYPE: static-html | node-minimal | nextjs-minimal | python-uv | null
+RECOMMENDED_ARCHETYPE: <validated private ID> | static-html | node-minimal | nextjs-minimal | python-uv | null
 HEURISTIC_REASON: <one sentence>
 ARCHETYPE_CONFIDENCE: high | low
 ```

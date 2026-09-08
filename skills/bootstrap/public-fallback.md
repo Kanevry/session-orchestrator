@@ -5,38 +5,50 @@
 
 ## Step 1: Detect PATH_TYPE (Silent — No User Interaction)
 
-Read `plan-baseline-path` from Session Config in `CLAUDE.md` (or `AGENTS.md` on Codex):
+Run the dependency-free local contract reader. It uses the existing configuration
+resolvers, with precedence `SO_BASELINE_PATH` → matching named baseline →
+`owner.yaml` `paths.baseline-path` → committed Session Config. Paths resolve
+host-locally and are never written into the contract result.
 
 ```bash
-BASELINE_PATH=$(grep -m1 "^plan-baseline-path:" "$REPO_ROOT/CLAUDE.md" 2>/dev/null | awk '{print $2}')
-# Expand leading ~ to $HOME so paths like ~/Projects/projects-baseline work correctly
-BASELINE_PATH="${BASELINE_PATH/#\~/$HOME}"
+BOOTSTRAP_CONTRACT=$(node "$PLUGIN_ROOT/scripts/baseline-archetypes.mjs" --repo "$REPO_ROOT") || exit 2
+PATH_TYPE=$(printf '%s' "$BOOTSTRAP_CONTRACT" | node --input-type=module -e '
+let input = ""; for await (const chunk of process.stdin) input += chunk;
+process.stdout.write(JSON.parse(input).status);
+')
+export BOOTSTRAP_CONTRACT PATH_TYPE
 ```
 
-Decision logic (evaluated in order — first match wins):
+| Reader outcome | Bootstrap behavior |
+|----------------|--------------------|
+| No configured baseline, empty value, or missing directory | `public`; use bundled templates |
+| Existing baseline with valid reduced schema v1 export | `private`; retain `archetypes` and `selected` |
+| Existing baseline with missing CLI, invalid export, unsafe source, or producer failure | Abort; report the sanitized error reason |
+| Valid private contract but no matching repository markers | `private`, `selected: null`; require selection for Standard/Deep |
 
-| Condition | PATH_TYPE |
-|-----------|-----------|
-| `plan-baseline-path` key is absent in Session Config | `public` |
-| `plan-baseline-path` key is present but value is empty | `public` |
-| Key is present, value is non-empty, AND `test -d "$BASELINE_PATH"` succeeds | `private` |
-| Key is present, value is non-empty, BUT path does not exist on disk | `public` |
-
-Set `PATH_TYPE = private | public`. Do not report this detection to the user — it is silent.
-
-> **Note on rules-fetch (Phase 3.5 of SKILL.md):** The optional rules-fetch step runs regardless of `PATH_TYPE`. Both private (with `plan-baseline-path` set) and public (without it) repos can opt into the fetch by setting `baseline-ref` in Session Config. The fetch is independent of how the initial scaffold was generated.
-
----
+Lookup is offline and read-only. A broken configured contract never silently
+switches to a public archetype. Missing directories retain the established
+public fallback. Never guess a baseline path or fetch one automatically.
 
 ## Private Path
 
-When `PATH_TYPE = private`, the baseline templates are used directly. No new logic is needed here — the existing tier-template flow (`fast-template.md`, `standard-template.md`, `deep-template.md`) already calls `$BASELINE_PATH` scripts for CLAUDE.md generation and archetype file sourcing. Continue with the calling template file's steps unchanged.
+Read and execute [`private-contract.md`](private-contract.md): use its selection,
+staged scaffold, command/CI expectations, and S99 rule projection. Keep
+`CONFIRMED_ARCHETYPE` as the validated contract ID throughout the tier flow.
+The optional remote rules fetch is only a public-path opt-in; a configured
+private baseline supplies selected rules locally.
 
 ---
 
 ## Public Path
 
 When `PATH_TYPE = public`, no `projects-baseline` is available. Use the plugin-bundled templates and platform-appropriate CLAUDE.md generation described below.
+
+For each file newly created by these steps, append its relative filename to the
+existing `BOOTSTRAP_FILES` array. This includes instruction files, minimal
+README/gitignore files and each copied template file. Preserve the accumulated
+array through inherited tiers; never append a directory or an existing owner
+file just because it is present.
 
 ### Detect Platform
 
