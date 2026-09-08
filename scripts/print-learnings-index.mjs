@@ -101,6 +101,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { findProjectRoot } from './lib/common.mjs';
+import { resolveStateArtifactPath } from './lib/state-md.mjs';
 import {
   CANDIDATE_POOL_SIZE,
   DEFAULT_MAX_GLOBAL,
@@ -141,7 +142,7 @@ Options:
                         agent's declared "Files:" scope. Preferred input.
                         Unreadable or malformed -> exit 1.
   --wave-scope <path>   Fallback scope source; reads "allowedPaths" (default:
-                        .claude/wave-scope.json). An EXPLICIT path that is
+                        active harness, then legacy). An EXPLICIT path that is
                         unreadable/malformed -> exit 1; the DEFAULT path being
                         absent -> stderr diagnostic + empty scope, exit 0.
   --task-text <text>    Optional agent task title/description. Feeds the token
@@ -314,7 +315,7 @@ if (scopePaths.length === 0) {
   const waveScopeExplicit = Boolean(opts['wave-scope']);
   const waveScopePath = waveScopeExplicit
     ? opts['wave-scope']
-    : join(repoRoot, '.claude', 'wave-scope.json');
+    : resolveStateArtifactPath(repoRoot, 'wave-scope.json');
   const doc = readJsonOrNull(waveScopePath, waveScopeExplicit, '--wave-scope');
   if (doc === null) {
     note(`wave-scope not found at ${waveScopePath} — using empty scope`);

@@ -11,9 +11,9 @@
  * it to each dispatched agent's prompt.
  *
  * Resolution:
- *   - scopePaths ← `allowedPaths` from `.claude/wave-scope.json`
+ *   - scopePaths ← `allowedPaths` from the active harness wave-scope.json
  *                  (override: --wave-scope <path>)
- *   - mode       ← `session-type:` frontmatter in `.claude/STATE.md`
+ *   - mode       ← `session-type:` frontmatter in the active harness STATE.md
  *                  (override: --mode <m>; unreadable → null = no mode gating)
  *   - hostClass  ← `host_class` from `.orchestrator/host.json` via readHostClass
  *                  (override: --host-class <c>; unreadable → null = no gating)
@@ -103,6 +103,7 @@ import { createHash } from 'node:crypto';
 import { findProjectRoot } from './lib/common.mjs';
 import { loadApplicableRules } from './lib/rule-loader.mjs';
 import { readHostClass } from './lib/autopilot/telemetry.mjs';
+import { resolveStateArtifactPath, resolveStateMdPath } from './lib/state-md.mjs';
 
 // ---------------------------------------------------------------------------
 // EPIPE hardening (regression follow-up on #876)
@@ -136,10 +137,10 @@ as an injectable Markdown block, for the wave-executor to prepend to each
 dispatched agent's prompt (#336 / #694).
 
 Options:
-  --wave-scope <path>   Path to wave-scope.json (default: .claude/wave-scope.json).
+  --wave-scope <path>   Path to wave-scope.json (default: active harness, then legacy).
                         Its "allowedPaths" array is used as scopePaths.
   --mode <m>            Override session mode (default: session-type: from
-                        .claude/STATE.md; unreadable -> no mode gating).
+                        active harness STATE.md; unreadable -> no mode gating).
   --host-class <c>      Override host class (default: host_class from
                         .orchestrator/host.json; unreadable -> no gating).
   --context <c>         Caller context for tier gating: 'wave' | 'coordinator'.
@@ -322,8 +323,8 @@ const repoRoot = findProjectRoot(process.cwd());
 const rulesDir = join(repoRoot, '.claude', 'rules');
 const waveScopePath = opts['wave-scope']
   ? opts['wave-scope']
-  : join(repoRoot, '.claude', 'wave-scope.json');
-const stateMdPath = join(repoRoot, '.claude', 'STATE.md');
+  : resolveStateArtifactPath(repoRoot, 'wave-scope.json');
+const stateMdPath = resolveStateMdPath(repoRoot);
 const hostJsonPath = join(repoRoot, '.orchestrator', 'host.json');
 
 // ---------------------------------------------------------------------------

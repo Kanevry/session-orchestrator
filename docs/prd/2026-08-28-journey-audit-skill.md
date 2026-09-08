@@ -32,7 +32,7 @@ Aktivierung) sind für jede Code-zentrische Prüfung unsichtbar.
 1. **Jede P0-Behauptung eines Agenten wird vom Koordinator einzeln nachgeprüft** (eigener grep/curl),
    bevor sie ins Dossier geht. Erstlauf: 2 Agentenfehler gefangen („instant unerreichbar" — war
    UI-wählbar; „USD auf Prod" — war Session-Artefakt), 3 P0 bestätigt.
-2. Dossier nach festem Format nach `docs/audits/YYYY-MM-DD-user-journey-audit.md` (P0 Geld/Kern,
+2. Dossier nach festem Format nach `docs/audits/YYYY-MM-DD-user-journey-audit.md` (P0 Geld/Kern, <!-- path-check: example -->
    P1 Flows, P1 UX, P2 Inhalt, P2 Plattform, Realdaten, Marketing-Hebel).
 3. Abschluss-AUQ: Fix-Wellen-Pakete (multiSelect) + Issue-Erzeugung; Issue-Batch nach
    Label-Taxonomie des Repos.
@@ -42,7 +42,7 @@ Aktivierung) sind für jede Code-zentrische Prüfung unsichtbar.
    Falle aus dem Erstlauf: `-p` druckt nur die LETZTE Nachricht — Prompt muss verlangen, dass der
    Vollbericht in der letzten Nachricht steht und keine Hintergrundprozesse laufen.
 
-### Manifest (`.orchestrator/journey-manifest.md` im Ziel-Repo)
+### Manifest (`.orchestrator/journey-manifest.md` im Ziel-Repo) <!-- path-check: example -->
 
 Personas + Einstiegspunkte, Wahrheits-SSOTs, Chat-Interview (Frage→Soll-Antwort), R5-SAFETY-Block,
 Credential-Quellen (env-Namen, nie Werte), Realdaten-Queries, bekannte Ausnahmen. <consumer-repo>

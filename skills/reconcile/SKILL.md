@@ -238,7 +238,7 @@ Exit after printing. Do not proceed to Phase 4.
 
 ## Phase 4: Write Pending Sidecar (Normal Mode Only)
 
-Write the proposals to `.orchestrator/metrics/reconcile-pending.md` as a human-readable
+Create the runtime proposal sidecar `.orchestrator/metrics/reconcile-pending.md` as a human-readable <!-- path-check: example -->
 record before presenting the AUQ. This sidecar is informational only — it lets the operator
 see the full proposal set in an editor alongside the AUQ prompt.
 

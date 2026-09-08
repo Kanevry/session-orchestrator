@@ -317,9 +317,10 @@ fi
 
 ## #state-md-scaffold — Step 6.6: STATE.md Scaffold (#184)
 
-Scaffold a placeholder `.claude/STATE.md` using the template at `skills/bootstrap/STATE.md.template`. The placeholder records `status: idle` — sessions overwrite it at Pre-Wave 1b.
+Scaffold a placeholder `.claude/STATE.md`. <!-- path-check: example -->
+Use the template at `skills/bootstrap/STATE.md.template`; the placeholder records `status: idle` — sessions overwrite it at Pre-Wave 1b.
 
-**Idempotency:** Skip if `.claude/STATE.md` already exists.
+**Idempotency:** Skip if `.claude/STATE.md` already exists. <!-- path-check: example -->
 
 ```bash
 STATE_FILE="$REPO_ROOT/.claude/STATE.md"

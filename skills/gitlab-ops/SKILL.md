@@ -111,7 +111,7 @@ done
 **Taxonomy convention — `priority` REVERSED to scoped `::` (supersedes #727 for this one axis).**
 
 - **`priority::<level>` is canonical.** #727's stated rationale was that "this repo mirrors to GitHub, which has no scoped-label semantics … while a migration would break every existing label reference and issue." Both halves were checked on 2026-07-25 and neither holds:
-  - **Issues are not mirrored at all.** `aiat-poc-infra/docs/github-mirror-runbook.md:1,5` describes a git **push-mirror** with GitHub as "read-only downstream"; `docs/gitlab-team-org-2026-06-21.md:45` confirms there is no two-way GitLab issue sync. Nothing crosses the boundary that a label rename could break.
+  - **Issues are not mirrored at all.** `aiat-poc-infra/docs/github-mirror-runbook.md:1,5` describes a git **push-mirror** with GitHub as "read-only downstream"; the external team-organization audit `docs/gitlab-team-org-2026-06-21.md:45` confirms there is no two-way GitLab issue sync. Nothing crosses the boundary that a label rename could break. <!-- path-check: example -->
   - **GitHub already uses the scoped form.** `gh api "repos/AIAT-AIandBusinessgrowth/aiat-barrierefrei-engine/labels"` returns `priority::high`, `priority::low`, `priority::med`, `priority::medium` across 77 open issues, and **zero** `priority:high`. Same pattern on `aiat-doc-vlm`. GitHub treats `::` as an ordinary string; it merely does not enforce mutual exclusion.
   - Volume agrees independently: **416 `priority::` against 249 `priority:` and 7 bare** at the time of the decision. Chasing the minority spelling would mean re-labelling the majority.
   Producers were migrated FIRST (this change); the label-data migration follows separately, because migrating data before producers means the divergence returns within a day.
@@ -340,8 +340,8 @@ Bash calls when the current session contains no prior `Read` on a matching templ
 **When this matters:** before you or a subagent opens an MR, PR, or issue via CLI, a
 matching template must have been read in the current session:
 
-- GitHub: `.github/PULL_REQUEST_TEMPLATE.md` / `.github/ISSUE_TEMPLATE*`
-- GitLab: `.gitlab/merge_request_templates/Default.md` / `.gitlab/issue_templates/*`
+- GitHub: `.github/pull_request_template.md` / `.github/ISSUE_TEMPLATE*`
+- GitLab: `.gitlab/merge_request_templates/Default.md` / `.gitlab/issue_templates/*` <!-- path-check: example -->
 
 Accepted template paths are configured in `.orchestrator/policy/templates-policy.json`
 (versioned, operator-editable). Default behaviour:

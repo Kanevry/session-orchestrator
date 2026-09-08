@@ -1,10 +1,11 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseStateMd } from '@lib/state-md/yaml-parser.mjs';
 import {
   evaluateFrontmatterSafe,
+  resolveStateArtifactPath,
   resolveStateMdPath,
   touchUpdatedField,
   updateFrontmatterFields,
@@ -25,6 +26,11 @@ custom-extension: keep-me
 `;
 
 const NO_FRONTMATTER = '# plain markdown without frontmatter\n';
+
+beforeEach(() => {
+  vi.stubEnv('SO_PLATFORM', 'claude');
+  vi.stubEnv('SO_STATE_DIR', '');
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -163,7 +169,7 @@ describe('resolveStateMdPath', () => {
   });
 
   // Pins the full SO_PLATFORM → state-dir routing table. Without it, a
-  // regression in preferredStateMdCandidate's switch (e.g. `case 'codex'`
+  // regression in the platform mapping (e.g. 'codex'
   // falling through to '.claude/STATE.md') is invisible: on a Codex / Cursor /
   // pi repo the create-on-first-write branch would silently plant STATE.md in
   // the wrong platform directory, and every later read resolves the stale one.
@@ -180,6 +186,33 @@ describe('resolveStateMdPath', () => {
       vi.stubEnv('SO_PLATFORM', platform);
 
       expect(resolveStateMdPath(root)).toBe(join(root, stateDir, 'STATE.md'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+function stateArtifactRepo() {
+  const root = mkdtempSync(join(tmpdir(), 'state-artifact-'));
+  for (const directory of ['.claude', '.codex', '.override']) {
+    mkdirSync(join(root, directory));
+    writeFileSync(join(root, directory, 'wave-scope.json'), '{}');
+  }
+  return root;
+}
+
+describe('resolveStateArtifactPath', () => {
+  // Bug: an override hid active-harness fallback, and absolute overrides were joined beneath repoRoot.
+  it.each([
+    ['relative override', () => '.override', '.override'],
+    ['absolute override', (root) => join(root, '.override'), '.override'],
+    ['missing override falls back to active harness before legacy', () => '.missing', '.codex'],
+  ])('honors %s', (_name, overrideFor, expectedDirectory) => {
+    const root = stateArtifactRepo();
+    try {
+      vi.stubEnv('SO_PLATFORM', 'codex');
+      vi.stubEnv('SO_STATE_DIR', overrideFor(root));
+      expect(resolveStateArtifactPath(root, 'wave-scope.json')).toBe(join(root, expectedDirectory, 'wave-scope.json'));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

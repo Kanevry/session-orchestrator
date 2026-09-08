@@ -26,14 +26,14 @@ This inverts the failure direction of every deny-capable hook in the repo: they
 are now **fail-open by protocol**. Three measured consequences from the migration
 are already codified as auto-generated rules:
 
-- `.claude/rules/proven-pattern-moving-a-guard-from-exit-code-signalling-to-stdout-json-inverts-its-failure-direction-re-verify-every-deny-path-afterwards-3aeb9fc.md`
+- `.claude/rules/guard-design.md`
   — every crash-, throw- and short-circuit path that was previously fail-closed
   must be re-examined, and allow-assertions in tests stop discriminating because
   allow and deny now share an exit code.
-- `.claude/rules/anti-pattern-console-log-process-exit-drops-stdout-above-the-pipe-buffer-on-an-exit-0-protocol-that-means-fail-open-91c32e4.md`
+- `.claude/rules/process-contracts.md`
   — `console.log` + `process.exit()` drops stdout past the 64 KiB pipe buffer; a
   truncated envelope reads as no-decision and the tool call is ALLOWED.
-- `.claude/rules/anti-pattern-a-protocol-migration-census-keyed-on-the-payload-misses-every-consumer-that-pins-only-the-channel-18f3d0a.md`
+- `.claude/rules/measurement-discipline.md`
   — a migration census keyed on the payload field name misses every consumer that
   pins only the exit code or the stream.
 
@@ -325,7 +325,7 @@ helper charges the recursion budget once per distinct payload.
 - Issue #1001 — degraded-notice rollout to ledger-guard + enforce-commands
 - Issue #997 — this ADR
 - [ADR 0006 — prompt-hook `continueOnBlock` migration](0006-prompt-hook-continueonblock.md) (nearest neighbour: hook handler types; explicitly does **not** cover degradation semantics)
-- `.claude/rules/proven-pattern-moving-a-guard-from-exit-code-signalling-to-stdout-json-inverts-its-failure-direction-re-verify-every-deny-path-afterwards-3aeb9fc.md`
-- `.claude/rules/anti-pattern-console-log-process-exit-drops-stdout-above-the-pipe-buffer-on-an-exit-0-protocol-that-means-fail-open-91c32e4.md`
-- `.claude/rules/anti-pattern-a-protocol-migration-census-keyed-on-the-payload-misses-every-consumer-that-pins-only-the-channel-18f3d0a.md`
+- `.claude/rules/guard-design.md`
+- `.claude/rules/process-contracts.md`
+- `.claude/rules/measurement-discipline.md`
 - [`.claude/rules/parallel-sessions.md`](../../.claude/rules/parallel-sessions.md) § PSA-003 (the enforcement an INACTIVE destructive-guard stops applying)

@@ -144,7 +144,7 @@ After learnings are written (Phase 3.6), run `node scripts/sweep-expired-learnin
 
 > Skip this phase if `memory-cleanup-threshold: 0` (kill-switch per PRD F2.2). Also skip on non-Claude-Code platforms (memory dir at `~/.claude/projects/` is Claude Code-only, mirrors Phase 3.5 gate).
 
-After learnings are written (Phase 3.6), determine whether to emit a **manual-cadence nudge** to run `/memory-cleanup --dry-run` in the next session. The decision uses MEMORY.md line count and a sessions-since-last-cleanup signal. There is no `memory-cleanup` agent in the registry, so the historical auto-dream subagent dispatch never fired (see #614) — the nudge replaces it. A manually-run `/memory-cleanup --dry-run` writes a complete-replacement MEMORY.md proposal (single fenced ` ```markdown ` block — never git-style diff hunks, see #717) to `.orchestrator/pending-dream.md` for the session after that to apply via `/memory-cleanup --apply-pending`.
+After learnings are written (Phase 3.6), determine whether to emit a **manual-cadence nudge** to run `/memory-cleanup --dry-run` in the next session. The decision uses MEMORY.md line count and a sessions-since-last-cleanup signal. There is no `memory-cleanup` agent in the registry, so the historical auto-dream subagent dispatch never fired (see #614) — the nudge replaces it. A manually-run `/memory-cleanup --dry-run` writes a complete-replacement MEMORY.md proposal (single fenced ` ```markdown ` block — never git-style diff hunks, see #717) to `.orchestrator/pending-dream.md` for the session after that to apply via `/memory-cleanup --apply-pending`. <!-- path-check: example -->
 
 1. Read `memory-cleanup-threshold` (default 5) and `memory-cleanup-soft-limit` (default 180) from `$CONFIG`.
 2. Invoke `shouldDispatchAutoDream` from `scripts/lib/auto-dream.mjs`:
@@ -169,7 +169,7 @@ After learnings are written (Phase 3.6), determine whether to emit a **manual-ca
    The `shouldDispatchAutoDream` decision helper and `scripts/lib/auto-dream.mjs` lib stay in use: they compute the signal that drives this nudge and back the manual `/memory-cleanup` path (`writePendingDream` / `readPendingDream` / `applyPendingDream`).
 5. Record the outcome (skipped / nudge-emitted) so Phase 6 Final Report can surface a line: `auto-dream: manual /memory-cleanup --dry-run recommended (cadence reached) — apply with /memory-cleanup --apply-pending next session`.
 
-The pending-dream sidecar at `.orchestrator/pending-dream.md` is intentionally outside the vault tree — vault-mirror (Phase 3.7) must exclude it from its scope so the proposal survives the session close without being mirrored into 50-sessions/.
+The pending-dream sidecar at `.orchestrator/pending-dream.md` is intentionally outside the vault tree — vault-mirror (Phase 3.7) must exclude it from its scope so the proposal survives the session close without being mirrored into 50-sessions/. <!-- path-check: example -->
 
 Cross-reference: PRD F2.2 acceptance criteria; `scripts/lib/auto-dream.mjs` API (`shouldDispatchAutoDream`, `readDreamSignals`, `writePendingDream`, `readPendingDream`, `applyPendingDream`).
 
@@ -242,7 +242,7 @@ Cross-reference: PRD §A L3 acceptance criteria (#645, epic #643); `scripts/lib/
 
 > Skip this phase if `dialectic.cadence: 0` (kill-switch per PRD F2.5 AC3). Also skip if `persistence` is `false` in Session Config.
 
-After learnings are written (Phase 3.6) and the auto-dream decision is made (Phase 3.6.5), determine whether to emit a **manual-cadence nudge** to run `/evolve --dialectic` in the next session. The decision uses sessions-since-last-dialectic counted against `.orchestrator/dialectic-last-run`. There is no `evolve` agent in the registry, and the nearest one (`dialectic-deriver`) is `sandbox-tier: read-only` and cannot write the sidecar — so the historical auto-dialectic subagent dispatch never fired (see #614). On trigger, emit the nudge and advance `.orchestrator/dialectic-last-run`; the timestamp is updated only when the nudge is emitted (not on skip), so the reminder surfaces once per cadence window rather than every session. A manually-run `/evolve --dialectic --dry-run` writes the proposed diff to `.orchestrator/dialectic-pending.md`.
+After learnings are written (Phase 3.6) and the auto-dream decision is made (Phase 3.6.5), determine whether to emit a **manual-cadence nudge** to run `/evolve --dialectic` in the next session. The decision uses sessions-since-last-dialectic counted against `.orchestrator/dialectic-last-run`. There is no `evolve` agent in the registry, and the nearest one (`dialectic-deriver`) is `sandbox-tier: read-only` and cannot write the sidecar — so the historical auto-dialectic subagent dispatch never fired (see #614). On trigger, emit the nudge and advance `.orchestrator/dialectic-last-run`; the timestamp is updated only when the nudge is emitted (not on skip), so the reminder surfaces once per cadence window rather than every session. A manually-run `/evolve --dialectic --dry-run` writes the proposed diff to `.orchestrator/dialectic-pending.md`. <!-- path-check: example -->
 
 1. Read `dialectic.cadence` (default 5), `dialectic.model` (default haiku), `dialectic.budget-tokens` (default 8000) from `$CONFIG`.
 
@@ -270,7 +270,7 @@ After learnings are written (Phase 3.6) and the auto-dream decision is made (Pha
 
 7. Record outcome (skipped / nudge-emitted) for Phase 6 Final Report: `auto-dialectic: manual /evolve --dialectic --dry-run recommended (cadence reached) — apply with /evolve --dialectic --apply next session`.
 
-The `.orchestrator/dialectic-pending.md` sidecar is intentionally outside the vault tree — vault-mirror (Phase 3.7) MUST exclude it from its scope.
+The `.orchestrator/dialectic-pending.md` sidecar is intentionally outside the vault tree — vault-mirror (Phase 3.7) MUST exclude it from its scope. <!-- path-check: example -->
 
 Cross-reference: PRD F2.5 acceptance criteria (#506); `scripts/lib/auto-dialectic.mjs` API.
 
@@ -323,7 +323,7 @@ After the auto-dialectic nudge decision is made (Phase 3.6.7), and when the reco
 
 3. If `surfaced.length === 0`: log `reconcile: 0 proposals above confidence floor (eligible=${summary.eligible}, rejected=${summary.rejected}, floor=${floor})` and continue. No AUQ, no sidecar write.
 
-4. **Write the human-readable proposal sidecar** `.orchestrator/metrics/reconcile-pending.md` so the operator can review raw content outside the AUQ:
+4. **Write the human-readable proposal sidecar** `.orchestrator/metrics/reconcile-pending.md` so the operator can review raw content outside the AUQ: <!-- path-check: example -->
 
    ```
    # Reconciliation Rule Proposals — <ISO timestamp>

@@ -23,7 +23,7 @@ If `DOCS_ENABLED` is not `true`, skip all remaining steps in this phase and proc
 Using signals already gathered in Phases 2–5 (git analysis, VCS issues, branch state, SSOT checks), apply the following heuristic to determine which audiences are likely affected. Record each match with its triggering signal for inclusion in the output block.
 
 **User audience** — flag as likely when any of the following are true:
-- Affected files include `README.md`, `docs/user/**/*.md`, `docs/getting-started.md`, or `examples/**/*.md`
+- Affected files include `README.md`, `docs/user/**/*.md`, `docs/getting-started.md`, or `examples/**/*.md` <!-- path-check: example -->
 - Open or recently closed issues reference CLI UX changes, new user-facing commands, or a breaking API change
 - New public commands are introduced (e.g. changes to `commands/` directory)
 - Install flow or setup instructions are modified

@@ -702,8 +702,9 @@ See shared partial for full shell command. Issue #183.
 
 Canonical implementation in [`_shared-template.md#state-md-scaffold`](_shared-template.md).
 
-Scaffold `.claude/STATE.md` from `skills/bootstrap/STATE.md.template` (idempotent: skip if
-already exists). On Codex CLI / Cursor IDE, substitute `.codex/` or `.cursor/` for `.claude/`.
+Scaffold `.claude/STATE.md` (idempotent: skip if it already exists). <!-- path-check: example -->
+Use `skills/bootstrap/STATE.md.template`.
+On Codex CLI / Cursor IDE, substitute `.codex/` or `.cursor/` for `.claude/`.
 See shared partial for full shell command. Issue #184.
 
 <!-- @include _shared-template.md#agents-scaffold -->

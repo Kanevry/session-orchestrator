@@ -8,7 +8,7 @@ Rules for mapping session scope to target audiences, content sources, and docume
 
 | Audience | Target files (globs) | Typical update triggers |
 |----------|----------------------|-------------------------|
-| User | `README.md`, `docs/user/**/*.md`, `docs/getting-started.md`, `examples/**/*.md` | new CLI command, breaking API change, install flow change, new user-facing feature, changed example output |
+| User | `README.md`, `docs/user/**/*.md`, `docs/getting-started.md`, `examples/**/*.md` | new CLI command, breaking API change, install flow change, new user-facing feature, changed example output <!-- path-check: example --> |
 | Dev | `CLAUDE.md` (or `AGENTS.md` on Codex CLI), `docs/dev/**/*.md`, `docs/adr/**/*.md` | architecture decision, major refactor, new module/subsystem, test coverage change, dependency upgrade, ADR-worthy choice |
 | Vault/Ops | `<vault>/01-projects/<slug>/context.md`, `<vault>/01-projects/<slug>/decisions.md`, `<vault>/01-projects/<slug>/people.md` | project status change, ownership transition, stack/infra decision, cross-project dependency, migration, archival event |
 

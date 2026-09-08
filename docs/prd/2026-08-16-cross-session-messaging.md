@@ -122,8 +122,8 @@ Out-of-Scope).
       (`analyst`, `qa-strategist`, `architect-reviewer`, `security-reviewer`,
       `ux-evaluator`, `eval-judge`, `skill-applied-judge`, `dialectic-deriver`) — deren
       Befund ist per Konstruktion erst am Ende vollständig, eine Zwischenmeldung hätte
-      keinen Adressatennutzen. (`agents/AGENTS.md` ist die Authoring-Spec und
-      `agents/memory-proposal-collector.md` laut eigenem Frontmatter Referenzdoku — beide
+      keinen Adressatennutzen. (`agents/AGENTS.md` ist die Authoring-Spec und <!-- path-check: historical -->
+      `agents/memory-proposal-collector.md` laut eigenem Frontmatter Referenzdoku — beide <!-- path-check: historical -->
       sind keine dispatchbaren Agenten und stehen deshalb in keiner der beiden Listen.)
 - [ ] **A5** `READ_ONLY_TOOLS` in `scripts/lib/validate/tier-inference.mjs` um
       `SendMessage` und `ListAgents` erweitern (mechanische Vorbedingung für A4, siehe § 4).
@@ -136,7 +136,7 @@ Out-of-Scope).
 - [ ] **B2** `docs/adr/0002-agent-teams-substrate.md` um einen datierten Nachtrag ergänzen:
       die „11-vs-1"-Prämisse ist überholt; der Adapter-Verdikt kollabiert zu **Stay**, weil
       die Gegenleistung entfallen ist. Die H3/H4-Vorbedingung wird nicht mehr gebraucht.
-- [ ] **B3** Neue `docs/adr/0013-cross-session-messaging.md`: Verdikt **Adopt** für die
+- [ ] **B3** Neue `docs/adr/0013-cross-session-messaging.md`: Verdikt **Adopt** für die <!-- path-check: planned #1053 -->
       Live-Achse, **Spike** für Remote Control, mit dem Messprotokoll als Evidenz.
 - [ ] **B4** `.claude/rules/loop-and-monitor.md`: LM-002a (Channels) um die Abgrenzung zu
       Cross-Session-Messaging ergänzen — Channels ist *extern → Session*, Messaging ist
@@ -247,7 +247,7 @@ Out-of-Scope).
   für den Git-Index.
 - **Roh-Socket / eigener Hook-Kanal.** Gemessen: 10 Frame-Formate an den Inbox-Socket,
   **0 zugestellt, 0 Fehlermeldungen**. Das Wire-Protokoll ist undokumentiert und der
-  Fehlermodus still. Für asynchrone Einspeisung bleibt `.orchestrator/STEER.md` die
+  Fehlermodus still. Für asynchrone Einspeisung bleibt `.orchestrator/STEER.md` die <!-- path-check: example -->
   einzige Fläche.
 - **Echter Token-/Kostenverbrauch als Automatisierungs-Quelle.** Gemessen: die CLI hat kein
   `usage`/`cost`-Kommando; `gateway` ist der Enterprise-OTEL-Pfad. In der Session ist der
@@ -463,14 +463,14 @@ Anbieter oder Pfad dieses Rechners enthalten.
 | `.claude/rules/parallel-sessions.md` | PSA-Entscheidungsbaum um den Peer-Informieren-Zweig; Zwei-Achsen-Begründung nachziehen |
 | `.claude/rules/loop-and-monitor.md` | LM-002a: Abgrenzung Channels ↔ Cross-Session-Messaging |
 | `scripts/lib/validate/tier-inference.mjs` | `READ_ONLY_TOOLS` um `SendMessage`, `ListAgents` |
-| `agents/*.md` (Auswahl) | `tools:` opt-in um `SendMessage`; `agents/AGENTS.md` § Authoring-Konvention nachziehen |
+| `agents/*.md` (Auswahl) | `tools:` opt-in um `SendMessage`; `agents/AGENTS.md` § Authoring-Konvention nachziehen <!-- path-check: historical --> |
 | `hooks/on-session-start.mjs` | A3a — Peer-Banner behält Registry-Semantik und weist aus, dass Liveness dort strukturell fehlt (Hook kann `ListAgents` nicht rufen) |
 | `skills/session-start/SKILL.md` | A3b — Koordinator ruft `ListAgents` und legt nativen Status über die Hook-Zeilen |
 | `scripts/lib/session-registry.mjs` | Heartbeat-Aktualisierung (C2) |
 | `scripts/lib/vault-status/board-writer.mjs` | `Host`-Spalte im Renderer |
 | `skills/vault-mirror/SKILL.md` + Mirror-Code | `host`-Feld im Notiz-Frontmatter |
 | `docs/adr/0002-agent-teams-substrate.md` | datierter Nachtrag, Verdikt → Stay |
-| `docs/adr/0013-cross-session-messaging.md` | **neu** |
+| `docs/adr/0013-cross-session-messaging.md` | **neu** <!-- path-check: planned #1053 --> |
 | `templates/_shared/rules/` | Regel-Kopie für ausgeliefernde Repos |
 | `docs/` (Runbook) | D1/D2/D3 |
 
