@@ -126,16 +126,17 @@ describe('#339 — agent YAML frontmatter structure', () => {
 // ─── Test 6: validate-plugin.mjs reports 0 failed ────────────────────────────
 
 describe('#339 — validate-plugin.mjs passes with all 3 agents present', () => {
-  // Spawn once per describe — validate-plugin.mjs forks ~21 grandchild
-  // processes; re-spawning per it() flakes under loaded-runner contention.
+  // Spawn once per describe. #1278: the full validator runs 40 sequential Node
+  // children; CI coverage took 25.95s here and killed its other smoke at 30s.
+  // Allow 60s for the scan and 5s for this hook to report a child failure.
   let result;
   beforeAll(() => {
     result = spawnSync('node', ['scripts/validate-plugin.mjs', REPO_ROOT], {
       encoding: 'utf8',
       cwd: REPO_ROOT,
-      timeout: 30_000,
+      timeout: 60_000,
     });
-  });
+  }, 65_000);
 
   it('exits 0 and reports 0 failed when run against the current repo', () => {
     expect(result.status, `validate-plugin.mjs exited ${result.status}; stderr: ${result.stderr}`).toBe(0);

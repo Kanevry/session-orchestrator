@@ -25,8 +25,11 @@ const SKIP_CONFIG_WITH_LINT = JSON.stringify({
   'test-command': 'skip',
   'lint-command': 'skip',
 });
-const VALIDATE_PLUGIN_CHILD_TIMEOUT_MS = 30_000;
-const VALIDATE_PLUGIN_TEST_TIMEOUT_MS = 35_000;
+// #1278: the full validator runs 40 sequential Node children. CI coverage took
+// 25.95s in the persona smoke and killed this smoke at 30s. Budget the complete
+// scan separately, with 5s for the enclosing test to report a child failure.
+const VALIDATE_PLUGIN_CHILD_TIMEOUT_MS = 60_000;
+const VALIDATE_PLUGIN_TEST_TIMEOUT_MS = 65_000;
 
 function formatSpawnSyncFailure(label, result) {
   const error = result.error
