@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.0.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-4.1.0-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
 [![Tests](https://img.shields.io/badge/tests-vitest-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
 
@@ -202,17 +202,15 @@ Full component inventory: [`docs/components.md`](docs/components.md). Version hi
 
 How this compares to other orchestrators — with the parts that are measured and the parts that are not: [`docs/components.md` § Comparisons](docs/components.md#comparisons).
 
-## Recent highlights (v4.0.1)
+## Recent highlights (v4.1.0)
 
-4.0.1 is a patch on top of 4.0.0 — if you're upgrading from before 4.0, read [docs/migration-v4.md](docs/migration-v4.md) first; nothing below removes anything further. Highlights of the v4.0.1 line: Codex command entrypoints, a redesigned public site, and a review-hardened owner-privacy scanner — plus the sixteen follow-ups the 4.0.0 review left open:
+Highlights of the v4.1.0 line:
 
-- **4.0.0 removed public surfaces and split the largest instruction files.** Five skills, three commands and eight top-level scripts were dropped on a measured two-signal rule (0 telemetry ∧ 0 fleet invocation over 90 days ∧ no runtime consumer, never a judgement call); `.claude/rules/` went 61 → 26 files; `session-start`, `session-end` and the wave loop keep every phase, with bodies moved into per-phase `references/` files. Full detail and upgrade steps: [docs/migration-v4.md](docs/migration-v4.md).
-- **Codex command workflows are now selectable skills.** `scripts/generate-codex-skills.mjs` generates 51 entries (25 command-backed, 26 skill-backed); `go`, `close`, and 6 others that were previously absent from the skill surface (`harness-audit`, `portfolio`, `release`, `session`, `templates-ack`, `test`) are now discoverable and invocable as `$session-orchestrator:<name>`. Native `commands: []` stops the installer from separately aliasing the source commands into policy-less duplicates. The intercepting standard root manifest moved to [`.cursor-plugin/plugin.json`](.cursor-plugin/plugin.json) so it no longer shadows Codex's own manifest resolution (Refs #1263).
-- **Public website redesigned**, including a German `/de` landing page.
-- **Review-driven hardening.** The owner-privacy scanner (CP11) now fails CLOSED on a corrupted or env-configured-but-unresolvable confidential-names list instead of silently degrading to allow, and no longer prints the names-file path into logs; `check-unwired-features` splits 46 coordinator-invoked modules out of its actionable finding set (52 → 5 unreachable), so the report names what an operator can actually act on; a new session-start probe (`telemetry-flush-health`) surfaces when the sandbox refused a telemetry flush instead of that failure staying silent.
-- **Sixteen follow-ups from the 4.0.0 review closed, and the patch itself was reviewed before the cut.** A four-reviewer panel plus an external Codex gpt-6-astra pass over the packed npm tarball found two P1 and three P2 defects in this session's own changes — a names-file path printed into the scanner's failing output, a deep-import contract change, a flag swallowed as a value, a substring match that hid a real finding, a comment that counted as a target — all fixed before publishing. The residual list lives in GitLab #1268–#1273.
+- **Privacy and session ownership.** The privacy scanner covers MDX and can include untracked files with `--include-untracked`. Native Codex task IDs now confirm session ownership; ambiguous inherited IDs remain unconfirmed.
+- **CI and release recovery.** Coverage verification now requires valid reports and measured thresholds. Audit detection checks executable workflow commands; GitHub release recovery retains the exact repository, tag and retry notes.
+- **Clearer onboarding.** README, English/German pages and the guide agree on installation and platform capabilities. Guide Copy buttons stay beside their command blocks, including on narrow screens.
 
-Full list, with the evidence for each claim: [CHANGELOG.md](CHANGELOG.md).
+If upgrading from before 4.0, read [the v4 migration guide](docs/migration-v4.md). Full changes and verification: [CHANGELOG.md](CHANGELOG.md).
 
 ## Platform support
 

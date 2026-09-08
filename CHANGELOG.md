@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-09-08
+
 ### Added
 
 - The owner-privacy scanner accepts `--include-untracked` to check new files before staging while respecting Git ignore rules. Tracked-only remains the default (#1267).
