@@ -836,6 +836,24 @@ function waveCells(markdown) {
     });
 }
 
+describe('wave agent lifecycle counters (#1276)', () => {
+  // The live 2026-09-07 session emitted only agent_count_{planned,started,
+  // completed}; its five Agents cells rendered "?". Unequal synthetic counts
+  // also distinguish planned participation from agents that actually ran.
+  it.each([
+    [{ agent_count_planned: 12, agent_count_started: 9, agent_count_completed: 6 }, '9'],
+    [{ agent_count_planned: 12, agent_count_started: 0, agent_count_completed: 0 }, '0'],
+    [{ agent_count_planned: 12, agent_count_completed: 6 }, '6 completed'],
+    [{ agent_count_planned: 12, agent_count_completed: 0 }, '0 completed'],
+    [{ agent_count_planned: 12 }, '12 planned'],
+    [{ agent_count_planned: 0 }, '0 planned'],
+    [{ agent_count: 0, agent_count_started: 9, agent_count_planned: 12 }, '0'],
+  ])('renders lifecycle counts %j as %s', (counts, expected) => {
+    const record = makeV1Entry({ waves: [{ wave: 1, role: 'Implementation', ...counts }] });
+    expect(waveCells(generateSessionNote(record)).map((cell) => cell.agents)).toEqual([expected]);
+  });
+});
+
 describe('#1074 golden production records — the wave table reads real producer keys', () => {
   /**
    * Nameable bug (TV-001): `detectSessionSchema`'s v2 clause requires

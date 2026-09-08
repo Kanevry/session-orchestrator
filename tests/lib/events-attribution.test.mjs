@@ -10,11 +10,8 @@
  * Isolation: every case builds a throwaway repo root (`mkdtemp`) carrying a
  * real `.orchestrator/session.lock` and `.claude/STATE.md`, and passes it as
  * `{ repoRoot }` — so nothing here reads or writes the live repo's ledger,
- * lock or STATE.md. `CLAUDE_CODE_SESSION_ID` is cleared per test because it is
- * the ONLY process-local identity source the fill consults (#1177 FX1 removed
- * STATE.md from the witness set — it is a shared working-copy file written by
- * the lock holder); leaving the ambient value in place would make the outcome
- * depend on the harness.
+ * lock or STATE.md. Both native session env vars and SO_PLATFORM are cleared
+ * per test; leaving ambient values would make attribution depend on the harness.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -30,6 +27,7 @@ const PEER_SEMANTIC = 'main-2026-09-02-session-9';
 
 let root;
 let savedSessionEnv;
+const SESSION_ENV_KEYS = ['CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID', 'SO_PLATFORM'];
 
 async function writeLock(semantic, uuid) {
   await mkdir(path.join(root, '.orchestrator'), { recursive: true });
@@ -59,10 +57,10 @@ async function writeStateMd(session) {
   );
 }
 
-async function writeWaveScope(scope) {
-  await mkdir(path.join(root, '.claude'), { recursive: true });
+async function writeWaveScope(scope, stateDir = '.claude') {
+  await mkdir(path.join(root, stateDir), { recursive: true });
   await writeFile(
-    path.join(root, '.claude', 'wave-scope.json'),
+    path.join(root, stateDir, 'wave-scope.json'),
     JSON.stringify(scope),
     'utf8',
   );
@@ -81,13 +79,15 @@ async function emitAndRead(payload = {}) {
 
 beforeEach(async () => {
   root = await mkdtemp(path.join(tmpdir(), 'events-attr-'));
-  savedSessionEnv = process.env.CLAUDE_CODE_SESSION_ID;
-  delete process.env.CLAUDE_CODE_SESSION_ID;
+  savedSessionEnv = Object.fromEntries(SESSION_ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of SESSION_ENV_KEYS) delete process.env[key];
 });
 
 afterEach(async () => {
-  if (savedSessionEnv === undefined) delete process.env.CLAUDE_CODE_SESSION_ID;
-  else process.env.CLAUDE_CODE_SESSION_ID = savedSessionEnv;
+  for (const key of SESSION_ENV_KEYS) {
+    if (savedSessionEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = savedSessionEnv[key];
+  }
   await rm(root, { recursive: true, force: true });
 });
 
@@ -207,6 +207,26 @@ describe('emitEvent — session correlation (#1177 FA3)', () => {
   ])('$label', async ({ setup, payload, expected }) => {
     await setup();
     expect(idKeys(await emitAndRead(payload))).toEqual(expected);
+  });
+});
+
+describe('emitEvent — native Codex attribution (#1274)', () => {
+  it.each([
+    { label: 'own native lock and wave', platform: 'codex', lockId: OWN_UUID, expected: { session_id: OWN_UUID, semantic_session_id: OWN_SEMANTIC, wave: 3 } },
+    { label: 'peer lock and STATE cannot override native Codex', platform: 'codex', lockId: PEER_UUID, expected: {} },
+    { label: 'ambiguous native env cannot confirm peer lock or wave', platform: '', lockId: PEER_UUID, expected: {} },
+  ])('$label', async ({ platform, lockId, expected }) => {
+    process.env.SO_PLATFORM = platform;
+    process.env.CODEX_THREAD_ID = OWN_UUID;
+    process.env.CLAUDE_CODE_SESSION_ID = PEER_UUID;
+    const semantic = lockId === OWN_UUID ? OWN_SEMANTIC : PEER_SEMANTIC;
+    await writeLock(semantic, lockId);
+    await writeStateMd(semantic);
+    await writeWaveScope({ wave: 3, session_id: lockId, semantic_session_id: semantic }, '.codex');
+    const record = await emitAndRead();
+    expect(Object.fromEntries(Object.entries(record).filter(
+      ([key]) => ['session_id', 'semantic_session_id', 'wave'].includes(key),
+    ))).toEqual(expected);
   });
 });
 

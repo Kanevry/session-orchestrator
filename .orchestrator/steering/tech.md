@@ -40,7 +40,7 @@ vitest coverage enforces four gates (fail build if below):
 - **No `require()`:** ESM-only. Use `import`/`export` everywhere.
 - **`ignore-scripts=true` in `.npmrc`:** postinstall scripts are blocked by default (SEC-020).
 - **Agent YAML pitfalls (cause "agents: Invalid input" failure):**
-  - `tools` field MUST be a comma-separated string, NOT a JSON array
+  - `tools` accepts a comma-separated string or JSON array; this repo prefers the string form
   - `description` MUST be a single-line inline string, NOT a block scalar (`>` or `|`)
   - All 4 fields (`name`, `description`, `model`, `color`) are required; `tools` is optional
 - **Plugin roots:** Claude uses `CLAUDE_PLUGIN_ROOT`; Codex hook manifests use native `${PLUGIN_ROOT}` and export `CODEX_PLUGIN_ROOT` for compatibility; Cursor uses `CURSOR_RULES_DIR`; Pi uses `PI_PLUGIN_ROOT`. Codex wrappers also set `SO_PLATFORM=codex` so explicit hook context wins over ambient detection.
@@ -53,9 +53,9 @@ vitest coverage enforces four gates (fail build if below):
 
 ## CI / Quality Gates
 
-- `npm test` runs vitest with coverage
+- `npm test` runs vitest; `npm run test:coverage` enables coverage
 - `npm run lint` runs ESLint v10 flat config
-- `npm run typecheck` runs the typecheck script (ESM type-check via `tsgo --noEmit` equivalent)
+- `npm run typecheck` runs `node --check` syntax validation on `.mjs` files
 - Schema-drift CI requires `SCHEMA_DRIFT_TOKEN` deploy-token (see `docs/ci-setup.md`)
 - Gitleaks 37-rule pre-commit hook active
 

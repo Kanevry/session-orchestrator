@@ -44,6 +44,8 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import yaml from 'js-yaml';
+import { tokenizeCommand, splitChainSegments, resolveSegmentVerb } from './command-blocker.mjs';
 
 /** Commits past the newest tag before release hygiene is worth mentioning. */
 export const DEFAULT_RELEASE_DRIFT_COMMITS = 50;
@@ -408,8 +410,8 @@ export function checkStaleArtifacts(repoRoot, ageDays = DEFAULT_ARTIFACT_AGE_DAY
 /**
  * H4 — CI configuration hygiene.
  *
- * Measured 5/6. Reports only what is decidable by presence, never by parsing
- * pipeline semantics. The dependency-audit gap is the load-bearing one: three
+ * Measured 5/6. Checks locally declared executable commands without evaluating
+ * pipeline conditions or external includes. The dependency-audit gap is the load-bearing one: three
  * of the tested repos carried known-vulnerable dependencies that no pipeline
  * would ever surface.
  *
@@ -438,19 +440,21 @@ export function checkCiConfig(repoRoot) {
     return findings;
   }
 
-  let ciText = '';
-  if (hasGitlab) ciText += safeRead(gitlabCi);
+  const ciConfigs = [];
+  if (hasGitlab) ciConfigs.push({ text: safeRead(gitlabCi), platform: 'gitlab' });
   if (hasGithub) {
     try {
       for (const f of readdirSync(ghWorkflows)) {
-        if (f.endsWith('.yml') || f.endsWith('.yaml')) ciText += safeRead(join(ghWorkflows, f));
+        if (f.endsWith('.yml') || f.endsWith('.yaml')) {
+          ciConfigs.push({ text: safeRead(join(ghWorkflows, f)), platform: 'github' });
+        }
       }
     } catch {
       /* unreadable workflows dir — fall through with what we have */
     }
   }
 
-  if (ciText && !/\b(npm|pnpm|yarn) audit\b|pip-audit|cargo audit|osv-scanner|dependency.?check/i.test(ciText)) {
+  if (ciConfigs.some(({ text }) => text) && !ciConfigs.some(hasAuditStep)) {
     findings.push({
       check: 'ci-audit-job',
       fixable: true,
@@ -459,6 +463,178 @@ export function checkCiConfig(repoRoot) {
   }
 
   return findings;
+}
+
+const GITLAB_COMMAND_FIELDS = ['script', 'before_script', 'after_script'];
+const GITLAB_GLOBAL_FIELDS = new Set([
+  'stages', 'types', 'variables', 'default', 'include', 'workflow',
+  'image', 'services', 'cache', 'before_script', 'after_script', 'spec',
+]);
+const GITLAB_REFERENCE = Symbol('gitlab-reference');
+const GITLAB_SCHEMA = yaml.DEFAULT_SCHEMA.extend([
+  new yaml.Type('!reference', {
+    kind: 'sequence',
+    construct: (path) => ({ [GITLAB_REFERENCE]: path }),
+  }),
+]);
+const AUDIT_VALUE_FLAGS = new Set([
+  '--filter', '-F', '--dir', '-C', '--prefix', '--cwd', '--registry',
+  '--userconfig', '--globalconfig', '--workspace', '-w', '--cache', '--pm-on-fail',
+]);
+const AUDIT_BOOLEAN_FLAGS = new Set([
+  '-r', '--recursive', '-s', '--silent', '-g', '--global', '--workspaces', '--offline',
+]);
+
+/** Inspect executable job/step locations, never arbitrary keys named run/script. */
+function hasAuditStep({ text, platform }) {
+  let config;
+  try {
+    if (platform === 'gitlab') {
+      const documents = yaml.loadAll(text, undefined, { schema: GITLAB_SCHEMA });
+      if (documents.length === 1) {
+        [config] = documents;
+      } else if (documents.length === 2 && isConfigMap(documents[0])
+        && Object.keys(documents[0]).length === 1 && isConfigMap(documents[0].spec)) {
+        // GitLab permits a spec header followed by --- and the job document.
+        // Header input defaults are data; unrelated multi-document YAML is ambiguous.
+        [, config] = documents;
+      } else {
+        return false;
+      }
+    } else {
+      config = yaml.load(text);
+    }
+  } catch {
+    return false;
+  }
+  if (!isConfigMap(config)) return false;
+  if (platform === 'github') {
+    if (!isConfigMap(config.jobs)) return false;
+    return Object.values(config.jobs).some((job) => isConfigMap(job)
+      && job.if !== false && Array.isArray(job.steps)
+      && job.steps.some((step) => isConfigMap(step) && step.if !== false
+        && typeof step.run === 'string' && hasAuditCommand(step.run)));
+  }
+
+  return Object.keys(config).some((name) => {
+    if (name.startsWith('.') || GITLAB_GLOBAL_FIELDS.has(name)) return false;
+    const job = resolveGitlabJob(config, name);
+    if (!job?.script || job.when === 'never') return false;
+    return GITLAB_COMMAND_FIELDS.some((field) => {
+      let commands = job[field];
+      if (!Object.hasOwn(job, field) && field !== 'script') {
+        const inherit = job.inherit?.default;
+        if (inherit === false || (Array.isArray(inherit) && !inherit.includes(field))) return false;
+        commands = Object.hasOwn(config.default ?? {}, field) ? config.default[field] : config[field];
+      }
+      return hasGitlabAuditCommands(commands, config);
+    });
+  });
+}
+
+function isConfigMap(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && !Object.hasOwn(value, GITLAB_REFERENCE);
+}
+
+/** Local extends uses later-parent/child replacement for command arrays. */
+function resolveGitlabJob(config, name, seen = new Set()) {
+  if (typeof name !== 'string' || !Object.hasOwn(config, name)
+    || !isConfigMap(config[name]) || seen.has(name)) return null;
+  seen.add(name);
+  const job = config[name];
+  let merged = {};
+  const parents = Array.isArray(job.extends) ? job.extends : [job.extends];
+  for (const parent of parents.filter((entry) => entry !== undefined)) {
+    const inherited = resolveGitlabJob(config, parent, seen);
+    // An unresolved later parent may override earlier commands. Only fields
+    // supplied by later local parents or the job itself remain evidence.
+    merged = inherited ? mergeGitlabJob(merged, inherited) : {};
+  }
+  seen.delete(name);
+  return mergeGitlabJob(merged, job);
+}
+
+function mergeGitlabJob(parent, child) {
+  const merged = { ...parent, ...child };
+  // Command fields replace wholesale; inherit is a map, so its default flag
+  // survives a child that overrides only inherit.variables.
+  if (isConfigMap(parent.inherit) && isConfigMap(child.inherit)) {
+    merged.inherit = { ...parent.inherit, ...child.inherit };
+  }
+  return merged;
+}
+
+/** Resolve only command strings/arrays and local !reference paths, with cycle guards. */
+function hasGitlabAuditCommands(commands, config) {
+  const seen = new WeakSet();
+  function visit(value) {
+    if (typeof value === 'string') return hasAuditCommand(value);
+    if (!value || typeof value !== 'object' || seen.has(value)) return false;
+    seen.add(value);
+    let found = false;
+    if (Array.isArray(value)) {
+      found = value.some(visit);
+    } else if (Array.isArray(value[GITLAB_REFERENCE])) {
+      let target = config;
+      for (const key of value[GITLAB_REFERENCE]) {
+        target = target && typeof target === 'object' && Object.hasOwn(target, key) ? target[key] : undefined;
+      }
+      found = visit(target);
+    }
+    seen.delete(value);
+    return found;
+  }
+  return visit(commands);
+}
+
+/**
+ * Bounded command recognition: wrappers and options may precede the audit
+ * subcommand, but another verb (install/run/echo) ends the search. Unknown
+ * value-taking flags and commands hidden in external includes are not resolved.
+ */
+function hasAuditCommand(command) {
+  return splitChainSegments(tokenizeCommand(command)).some((segment) => hasAuditSegment(segment));
+}
+
+function hasAuditSegment(segment, depth = 0) {
+  const resolved = resolveSegmentVerb(segment);
+  if (resolved.alt) return false;
+  let { verb, index } = resolved;
+  if (resolved.payloads.length > 0) {
+    if (depth >= 3 || resolved.payloads.length !== 1) return false;
+    const tokens = tokenizeCommand(resolved.payloads[0]);
+    const parts = splitChainSegments(tokens);
+    // env -S splits argv; it does not execute shell operators. Restrict this
+    // reuse of the shared tokenizer to one plain command with no redirects.
+    if (parts.length !== 1 || parts[0].length !== tokens.length
+      || tokens.some((token) => token.redirect)) return false;
+    const trailingArgs = index < 0 ? [] : segment.slice(index);
+    return hasAuditSegment([...tokens, ...trailingArgs], depth + 1);
+  }
+  if (verb === 'corepack' || verb === 'npx') {
+    index++;
+    while (['-y', '--yes', '--no-install', '--'].includes(segment[index]?.text)) index++;
+    verb = segment[index]?.text;
+  }
+  if (segment.slice(index + 1).some((token) => ['-h', '--help', '--version'].includes(token.text))) return false;
+  if (/^(?:pip-audit|osv-scanner|dependency-check(?:\.sh)?)$/.test(verb ?? '')) return true;
+  if (!/^(?:npm|pnpm|yarn|bun)(?:@[\w.+-]+)?$/.test(verb ?? '') && verb !== 'cargo') return false;
+  let i = index + 1;
+  while (segment[i]?.text.startsWith('-')) {
+    const flag = segment[i].text;
+    if (flag === '--') { i++; break; }
+    if (AUDIT_VALUE_FLAGS.has(flag)) {
+      if (!segment[i + 1] || segment[i + 1].redirect) return false;
+      i += 2;
+    } else if (AUDIT_BOOLEAN_FLAGS.has(flag) || /^--[\w-]+=/.test(flag)) {
+      i++;
+    } else {
+      return false;
+    }
+  }
+  if (/^yarn(?:@|$)/.test(verb) && segment[i]?.text === 'npm') i++;
+  return segment[i]?.text === 'audit';
 }
 
 /** @param {string} p @returns {string} */

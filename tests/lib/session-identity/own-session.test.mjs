@@ -12,10 +12,8 @@
  * own cost points the other way and is deliberate: a peer-owned `session.lock`
  * makes us enforce a peer's wave plan, which is a visible deny.
  *
- * NOTE ON ENV: `CLAUDE_CODE_SESSION_ID` is exported by the live harness, so it
- * is present in the vitest process. Every test therefore sets or deletes it
- * explicitly — a test that merely omits it would silently read the operator's
- * real session id and pass for the wrong reason.
+ * Native session IDs and SO_PLATFORM are isolated per test so an ambient
+ * Claude or Codex harness cannot silently supply the operator's real identity.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -32,17 +30,21 @@ import {
 } from '../../../scripts/lib/session-identity/own-session.mjs';
 
 const ENV_KEY = 'CLAUDE_CODE_SESSION_ID';
+const ENV_KEYS = [ENV_KEY, 'CODEX_THREAD_ID', 'SO_PLATFORM'];
 let tmp;
 let savedEnv;
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), 'own-session-test-'));
-  savedEnv = process.env[ENV_KEY];
+  savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of ENV_KEYS) delete process.env[key];
 });
 
 afterEach(() => {
-  if (savedEnv === undefined) delete process.env[ENV_KEY];
-  else process.env[ENV_KEY] = savedEnv;
+  for (const key of ENV_KEYS) {
+    if (savedEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = savedEnv[key];
+  }
   if (tmp) rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -64,6 +66,14 @@ function writeLock(fields) {
 }
 
 describe('readOwnSessionIds (#1123)', () => {
+  it('uses the same selected native identity as the process-local reader (#1274)', () => {
+    process.env.SO_PLATFORM = 'codex';
+    process.env.CODEX_THREAD_ID = 'CODEX-OWN';
+    process.env.CLAUDE_CODE_SESSION_ID = 'INHERITED-CLAUDE';
+    writeLock({ session_id: 'LOCK-SESSION' });
+    expect([...readOwnSessionIds(tmp)].sort()).toEqual(['CODEX-OWN', 'LOCK-SESSION']);
+  });
+
   it('UNIONS the hook payload id with the env var AND the lock ids', () => {
     // The bug this replaced a first-tier-wins reading to catch: with the tiers
     // gated, the READER's identity was a strict subset of the WRITER's. The
@@ -131,7 +141,7 @@ describe('readOwnSessionIds (#1123)', () => {
   });
 
   it('resolves BOTH lock ids when no payload and no env var exist', () => {
-    // The bug: harnesses that export no session env var (Codex CLI, Cursor) would
+    // The bug: harnesses that export no recognized session env var would
     // resolve NOTHING, every manifest would read `unknown`, and the whole
     // foreign-session check would be dead code on those platforms. Both ids are
     // needed because a manifest may name only the semantic form.
@@ -243,10 +253,10 @@ describe('classifyManifestSession (#1123)', () => {
 // process-local tiers ONLY, and never touches the working copy.
 
 describe('readProcessLocalSessionIds (#1177 FX1)', () => {
-  it('returns the hook payload ids and the env id, in tier order', () => {
+  it.each(['CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID'])('returns hook payload ids and %s in tier order', (key) => {
     expect(
       readProcessLocalSessionIds({
-        env: { CLAUDE_CODE_SESSION_ID: 'ENV' },
+        env: { [key]: 'ENV' },
         hookInput: { session_id: 'HOOK', parent_session_id: 'PARENT' },
       }),
     ).toEqual(['HOOK', 'PARENT', 'ENV']);
@@ -256,8 +266,21 @@ describe('readProcessLocalSessionIds (#1177 FX1)', () => {
     expect(readProcessLocalSessionIds({ env: {}, hookInput: null })).toEqual([]);
   });
 
-  it('drops a whitespace-only env id (truthy but matches nothing)', () => {
-    expect(readProcessLocalSessionIds({ env: { CLAUDE_CODE_SESSION_ID: '   ' } })).toEqual([]);
+  it.each(['CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID'])('drops a whitespace-only %s', (key) => {
+    expect(readProcessLocalSessionIds({ env: { [key]: '   ' } })).toEqual([]);
+  });
+
+  it('keeps invocation and parent IDs when native env IDs conflict (#1274)', () => {
+    expect(readProcessLocalSessionIds({
+      env: { CLAUDE_CODE_SESSION_ID: 'CLAUDE', CODEX_THREAD_ID: 'CODEX' },
+      hookInput: { sessionId: 'HOOK', parent_session_id: 'PARENT' },
+    })).toEqual(['HOOK', 'PARENT']);
+  });
+
+  it.each(['cursor', 'pi'])('does not borrow inherited IDs for explicit %s (#1274)', (platform) => {
+    expect(readProcessLocalSessionIds({
+      env: { SO_PLATFORM: platform, CLAUDE_CODE_SESSION_ID: 'CLAUDE', CODEX_THREAD_ID: 'CODEX' },
+    })).toEqual([]);
   });
 
   it('ignores a live session.lock in the cwd — only the env tier answers', () => {

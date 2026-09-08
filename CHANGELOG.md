@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The owner-privacy scanner accepts `--include-untracked` to check new files before staging while respecting Git ignore rules. Tracked-only remains the default (#1267).
+
+### Fixed
+
+- Privacy scanning includes MDX and preserves filenames containing Unicode or newlines. Failure output includes the scanned-file count, and the pre-commit regression verifies that an unavailable confidential-name policy blocks the commit (#1267, #1269).
+- Native Codex `CODEX_THREAD_ID` now participates in process-confirmed session ownership and event attribution. Explicit harness selection prevents inherited IDs from proving ownership; ambiguous IDs remain unconfirmed. Test workers isolate the invoking harness's identity (#1274).
+- GitHub release recovery prints commands with the exact repository and tag, retains failed-create notes for retry, and inspects uncertain release state before any creation (#1095).
+- CI audit detection examines executable GitHub steps and GitLab jobs, recognizes package-manager options and supported wrappers, and excludes metadata, comments, unused templates and help-only invocations. Local GitLab references, inheritance and `spec:inputs` headers are supported; external includes and dynamic conditions remain outside this heuristic (#1040).
+- Vault session notes render lifecycle agent counts, preserve measured zero, and label counts known only as completed or planned (#1276).
+- Guide copy buttons stay beside their command blocks, including multiline snippets and narrow screens (#1275).
+- Full-repository validation runs once before Vitest workers start, and its result is shared by the existing smoke assertions. This avoids four competing scans during coverage while retaining mandatory validation and failure propagation (#1278).
+- Coverage verification now requires generated reports and compares structured measurements with the canonical Vitest thresholds before writing its verified marker. Missing artifacts and low coverage previously passed through shell conditions that did not stop the CI job (#1279).
+
+### Changed
+
+- README, English/German landing pages, guide and machine-readable summaries now agree on installation prerequisites, active plugin-cache selection, Codex command skills, Pi package management, platform-specific enforcement and update-cache behavior (#1275).
+- Refreshed distribution evidence and submission drafts, corrected stable repository steering, and recorded the product-quality review with Chrome and backlog evidence (#824, #1080).
+- Release instructions now place the fully green preflight after commit, both remote pushes and exact-commit CI, matching the executable gate's requirements (#1277).
+
 ## [4.0.1] - 2026-09-07
 
 A PATCH release, two work streams. Codex CLI command entrypoints (closing Epic #1263 and

@@ -28,7 +28,7 @@
 | `docs/adr/` | 18 architecture decision records |
 | `.claude-plugin/` | Claude Code plugin manifest (`plugin.json`, `marketplace.json`) |
 | `.codex-plugin/` | Codex CLI plugin manifest |
-| `plugin.json` (root) | Portable plugin manifest — agent-plugins.org 1.0.0 schema, GENERATED, never hand-edited |
+| `.cursor-plugin/plugin.json` | Portable plugin manifest; kept outside root so Codex resolves its native manifest |
 | `AGENTS.md` (root) | Byte-identical GENERATED copy of `CLAUDE.md` for the 7 of 8 harnesses that read `AGENTS.md` |
 | `.agents/skills/` | Portable GENERATED mirror of all 43 skills — spec-legal frontmatter + pointer body, never duplicated instructions |
 | `skills/*/references/` | Progressive-disclosure detail split out of oversized SKILL.md bodies: `skills/session-start/references`, `skills/wave-executor/references`, `skills/session-end/references`, `skills/architecture/references` |

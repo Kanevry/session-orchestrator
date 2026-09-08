@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
  * check-owner-leakage.mjs — Scan tracked files for owner-privacy leakage patterns.
+ * Add --include-untracked to also scan new files that Git does not ignore.
  *
  * Implements the #462 audit trail durable CI guard (#471).
  * Canonicalization-before-matching refactor (issue #661): the historical
@@ -19,7 +20,7 @@
  * toward over-matching: this is a security guard, a false-positive is cheap, a
  * false-negative ships a leak to the public mirror.
  *
- * Usage: check-owner-leakage.mjs <plugin-root>
+ * Usage: check-owner-leakage.mjs <plugin-root> [--include-untracked]
  *
  * Forbidden patterns (canonical rules CP1–CP10):
  *   CP1  personal home path `/Users/bernhardg…` — matched on the CANONICAL form,
@@ -128,8 +129,9 @@ const isMain =
 
 // CLI: single positional arg required (only enforced when run directly).
 const pluginRoot = argv[2];
+const includeUntracked = argv.slice(3).includes('--include-untracked');
 if (isMain && !pluginRoot) {
-  console.error('Usage: check-owner-leakage.mjs <plugin-root>');
+  console.error('Usage: check-owner-leakage.mjs <plugin-root> [--include-untracked]');
   process.exit(1);
 }
 
@@ -789,9 +791,10 @@ function rawConfidentialNamesKeyState(ownerYamlPath) {
  * exists to block. The operator knows their own path; the CLASS of failure is what
  * this line has to convey.
  *
+ * @param {{ loadHostPaths?: typeof import('../config/host-paths.mjs').loadHostPaths }} [opts]
  * @returns {Promise<{ patterns: RegExp[], disabledReason?: string, inertWarn?: string }>}
  */
-async function getConfidentialNamePatterns() {
+export async function getConfidentialNamePatterns({ loadHostPaths } = {}) {
   let helpers;
   try {
     helpers = {
@@ -833,7 +836,7 @@ async function getConfidentialNamePatterns() {
   }
 
   try {
-    const { loadHostPaths, resolveHostPath } = helpers.hostPaths;
+    const { resolveHostPath } = helpers.hostPaths;
     const { inspectConfidentialNames } = helpers.confidentialNames;
     const { resolveOwnerYamlPath } = helpers.ownerYaml;
 
@@ -841,7 +844,7 @@ async function getConfidentialNamePatterns() {
     // health (source / reason / droppedSections) straight through, so the
     // env>owner.yaml>default precedence and the load's diagnosis come from the
     // same read — no second loadOwnerConfig() call to recover what was discarded.
-    const hostCtx = loadHostPaths();
+    const hostCtx = (loadHostPaths ?? helpers.hostPaths.loadHostPaths)();
 
     // FAIL-CLOSED on an unknowable load (LOW-2). `loadHostPaths` has its own
     // defensive catch that swallows a THROWING owner loader and returns
@@ -987,6 +990,7 @@ async function getConfidentialNamePatterns() {
 // adding: all 7 tracked `.jsonl` files pass (1525 -> 1532 scanned, 0 findings).
 const TEXT_EXTS = new Set([
   '.md',
+  '.mdx',
   '.mjs',
   '.js',
   '.ts',
@@ -1021,9 +1025,14 @@ function isTextFile(filePath) {
 
 function getTrackedFiles() {
   try {
-    const output = execFileSync('git', ['ls-files'], { cwd: pluginRoot, encoding: 'utf8' });
+    // NUL delimiters preserve Unicode, spaces and newlines without Git's quoted
+    // filename encoding. --exclude-standard applies only to untracked entries;
+    // tracked files remain visible even if an ignore rule now matches them.
+    const args = ['ls-files', '-z', '--cached'];
+    if (includeUntracked) args.push('--others', '--exclude-standard');
+    const output = execFileSync('git', args, { cwd: pluginRoot, encoding: 'utf8' });
     return output
-      .split('\n')
+      .split('\0')
       .filter(Boolean)
       .map((f) => join(pluginRoot, f));
   } catch {
@@ -1402,7 +1411,7 @@ if (violations.length === 0) {
 }
 
 console.log('');
-console.log(`Results: ${passed} passed, ${failed} failed`);
+console.log(`Results: ${passed} passed, ${failed} failed (${scanFiles.length} scanned files)`);
 process.exit(failed === 0 ? 0 : 1);
 }
 

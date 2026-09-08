@@ -6,28 +6,30 @@ Version 4.0.1 · npm package: session-orchestrator · requires Node.js >= 24 · 
 
 Cost: free, MIT licence. You still pay whatever your coding tool costs; that part is not affected.
 
-Windows: runs natively but is not covered by CI; macOS and Linux are.
+Windows: native use is untested. The Node core uses portable paths, but shell hooks and the optional MCP server need WSL or Git Bash. macOS and Linux are covered by CI.
 
 ## The loop
 
+Bootstrap once per project. In Codex, select `$session-orchestrator:bootstrap`, then `$session-orchestrator:session feature`, `$session-orchestrator:go`, and `$session-orchestrator:close` in the skill picker or invoke them in a message. The slash commands below describe the shared workflows on Claude Code, Cursor and Pi. Codex requires version 0.144.4 or later and a fresh task after plugin installation; review the hook bundle through `/hooks`.
+
 - /session [housekeeping|feature|deep] - research and Q&A: inspects git state, open issues, CI status, prior-session records, then presents one structured summary with a recommendation. Scope is agreed with the operator before any code.
-- /go - executes the agreed scope in five typed waves (Discovery, Impl-Core, Impl-Polish, Quality, Finalization) with parallel sub-agents and a quality gate (typecheck, test, lint) between waves. For work that outgrows five waves there is a named ultradeep profile - a profile over session-type deep, not a fourth enum value - running seven waves: Research plus Code-Discovery, a blocking coordinator Synthesis-Gate, Impl-Core, Impl-Polish, a read-only Review-Panel, Quality, Release.
+- /go - executes the agreed scope in five typed waves (Discovery, Impl-Core, Impl-Polish, Quality, Finalization) with quality checks between waves and a full configured test, typecheck and lint gate before completion. Claude Code and Codex can dispatch parallel agents; Cursor and Pi execute sequentially. For work that outgrows five waves there is a named ultradeep profile - a profile over session-type deep, not a fourth enum value - running seven waves: Research plus Code-Discovery, a blocking coordinator Synthesis-Gate, Impl-Core, Impl-Polish, a read-only Review-Panel, Quality, Release.
 - /close - verifies every planned item against evidence, runs the full gate one last time, files carryover issues for unfinished work, commits cleanly, mirrors to GitHub when configured, writes session records and learnings.
 
 ## Why waves and parallel sub-agents
 
-Containment, not raw speed: (a) file-scope deconfliction by construction - two agents in the same wave never write the same file; (b) context isolation per agent - one agent's confusion cannot leak into another's context window; (c) inter-wave review stops a bad pattern from propagating into later work; (d) the Quality wave runs a simplification pass on AI-generated code before tests are written, otherwise tests pin the AI patterns into place.
+Declared file scopes are checked for overlap before dispatch. Separate agent contexts and inter-wave reviews help contain mistakes, while the Quality wave simplifies code before adding tests. These measures reduce collisions and repeated errors; they do not provide filesystem isolation or guarantee correctness.
 
-## Guardrails (mechanisms, not assertions)
+## Guardrails and workflow rules
 
 - Destructive-command guard: 14 rules over git reset/checkout-discard/clean/stash, rm -rf, force-push, SQL DROP - 10 of them block outright and 4 warn (hooks/pre-bash-destructive-guard.mjs, policy in .orchestrator/policy/blocked-commands.json)
-- Scope enforcement: PreToolUse hook blocks writes outside an agent's declared file scope (hooks/enforce-scope.mjs)
-- Verification Iron Law: no completion claims without fresh verification evidence (.claude/rules/verification-before-completion.md)
-- Full Gate: typecheck + tests + lint + debug-artifact scan, mechanically un-skippable at the Quality wave and session end
+- Scope enforcement: on supported tools, the scope hook blocks out-of-scope edits in strict mode and reports them in warn mode (hooks/enforce-scope.mjs); off disables it.
+- Verification rule: the agent is instructed to support completion claims with fresh evidence (.claude/rules/verification-before-completion.md).
+- Full Gate: the workflow requires typecheck, tests, lint and a debug-artifact scan at the Quality wave and session end.
 - Session lock with heartbeat liveness per repo working copy (scripts/lib/session-lock.mjs)
-- Sub-agents may never run git add/commit/stash/push; the coordinator owns all VCS operations (PSA-007)
+- Subagents are instructed to leave git add/commit/stash/push to the coordinator (PSA-007). This is a workflow rule, not a sandbox that removes access to the git index.
 - 10 autopilot kill-switches in a frozen enum; echo-stub detection catches a test command that is secretly a no-op
-- Honest platform note: hard enforcement is full on Claude Code; Cursor is post-hoc; Pi is bridged; Codex CLI scope enforcement is currently unavailable. Quality gates run fully on all four.
+- Platform note: Claude Code supports the full hook workflow; Cursor bridges preToolUse and beforeShellExecution with additional post-edit checks; Pi uses a tool-call bridge. Codex CLI scope enforcement is unavailable. Quality checks run on all four.
 
 ## Memory and self-improvement
 
@@ -51,26 +53,26 @@ Generated by `node scripts/site-numbers.mjs --write`; the machine-readable recei
 
 ## Install
 
-- Claude Code: /plugin marketplace add Kanevry/session-orchestrator then /plugin install session-orchestrator@kanevry - afterwards run npm install once inside the plugin directory (hooks import zx) and restart Claude Code.
+- Claude Code: /plugin marketplace add Kanevry/session-orchestrator then /plugin install session-orchestrator@kanevry - afterwards run npm install once inside the plugin directory (the runtime imports npm packages) and restart Claude Code.
 - Codex CLI: git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/codex-install.mjs
 - Cursor IDE: same clone, then node scripts/cursor-install.mjs /path/to/your/project
 - Pi: pi install npm:session-orchestrator
 
-Portable cross-harness surface: a root AGENTS.md generated byte-identical from CLAUDE.md, a root plugin.json following the agent-plugins.org 1.0.0 schema, and a .agents/skills/<name>/SKILL.md mirror of every skill carrying only spec-legal frontmatter plus a pointer body. All three are generated by scripts/generate-agents-skills.mjs and drift-checked in scripts/validate-plugin.mjs; none is hand-edited.
+Portable cross-harness surface: a root AGENTS.md generated byte-identical from CLAUDE.md, a .cursor-plugin/plugin.json following the agent-plugins.org 1.0.0 schema, and a .agents/skills/<name>/SKILL.md mirror of every skill carrying only spec-legal frontmatter plus a pointer body. All three are generated by scripts/generate-agents-skills.mjs and drift-checked in scripts/validate-plugin.mjs; none is hand-edited.
 
-Upgrade: /plugin update session-orchestrator@kanevry then restart; on Codex CLI, Cursor and Pi it is git pull plus the same installer. Session-start compares the version of the code that is RUNNING against the published npm version and fails silent rather than claiming "up to date" from a failed lookup. Uninstall removes the plugin from the harness; .orchestrator/ (bootstrap.lock, metrics JSONL, policy, steering), STATE.md and the Session Config block stay in the user's repo as plain text.
+Upgrade: on Claude Code, /plugin update session-orchestrator@kanevry then restart. A Codex Git marketplace installation uses codex plugin marketplace upgrade kanevry followed by codex plugin add session-orchestrator@kanevry; a local clone uses git pull, npm install and node scripts/codex-install.mjs. Start a fresh task and reopen the skill picker after either Codex path. Cursor and the Pi clone fallback use git pull and their original installer; npm-installed Pi packages are managed through Pi. Session-start compares the version of the code that is RUNNING against the published npm version and fails silent rather than claiming "up to date" from a failed lookup. Uninstall removes the plugin from the harness; .orchestrator/ (bootstrap.lock, metrics JSONL, policy, steering), STATE.md and the Session Config block stay in the user's repo as plain text.
 
-Minimum config: a "## Session Config" section in CLAUDE.md (or AGENTS.md on Codex CLI) declaring test-command, typecheck-command, lint-command, agents-per-wave, waves, persistence, enforcement. Everything else is opt-in.
+Minimum config: a "## Session Config" section in CLAUDE.md on Claude Code, or AGENTS.md on Codex CLI and Pi, declaring test-command, typecheck-command, lint-command, agents-per-wave, waves, persistence, enforcement. Cursor supports AGENTS.md; native CLAUDE.md pickup is unverified, though the orchestrator parser reads it. Run bootstrap to create the required marker as well. Additional features and defaults are documented in docs/session-config-reference.md.
 
 ## Common questions
 
 - Is this itself an AI that writes code? No. It is an add-on that organises how an AI coding tool works. The tool still writes the code; this decides what it reads first, what it may touch, and when it has to stop and be checked.
-- Which tools does it work with? Claude Code fully. Codex CLI, Cursor IDE and Pi run it with limits: on Codex CLI the short list of files a step may touch is not enforced, on Cursor IDE it is checked after the work is done, and Pi runs through a bridge. The install section lists the path for each.
-- What is different from just using Claude Code? Four things: the reading step before any change, a plan you agree to, a short list of files per step, and an automatic check between the steps. Without them the tool starts typing on the first sentence it reads.
-- Does it send data anywhere? No account and no server. Everything runs on your own machine. Usage data is sent only if you switch it on, and it is off until you do. This website loads nothing from another site.
-- Does it work on Windows? It runs natively on Windows, but Windows is not covered by the automated test runs. macOS and Linux are, so those two are the paths that get checked on every change.
+- Which tools does it work with? Claude Code supports the full hook workflow. Codex CLI runs the workflows as selectable skills but cannot enforce file scope. Cursor bridges checks before tool and shell execution, with additional checks after edits. Pi uses a tool-call bridge. Parallel agents are available on Claude Code and Codex; Cursor and Pi run tasks sequentially.
+- What is different from just using Claude Code? It adds a repeatable session workflow: read the project, agree the scope, divide the work into steps with declared files, and check the results between steps. The session record carries progress and unfinished work into the next session.
+- Does it send data anywhere? The plugin runs locally without its own account. Optional usage telemetry is off until you consent. By default, session-start checks the npm registry for updates. Successful results are cached for 24 hours per repository; a failed request or cache write may cause another request at the next session. SO_DISABLE_UPDATE_CHECK=1 or DO_NOT_TRACK=1 disables the check. Your coding tool and configured services still use their own network connections. This website uses cookieless Vercel Web Analytics, described in its privacy policy.
+- Does it work on Windows? macOS and Linux are covered by CI. Native Windows use has not been tested. The Node core uses portable paths, but the shell-based hooks and optional MCP server need WSL or Git Bash. Treat Windows support as best-effort.
 - What does it cost? Nothing. It is free and open source under the MIT licence. You still pay whatever your coding tool costs; that part is not affected.
-- Can it break my project? Commands that would delete or overwrite work are blocked by a policy file, not by a polite instruction. It never overwrites the shared history of your project. It records the changes at the end of a session, after the checks have run, and it tells you what it recorded.
+- Can it break my project? It can still make mistakes. The destructive-command policy has 14 rules: 10 block commands and 4 warn. File-scope protection depends on your coding tool and enforcement setting. Review changes and keep backups; the checks reduce risk, but do not guarantee correct code.
 - Who maintains it? One person, Bernhard Götzendorfer. Questions filed on GitHub are answered by him. It is shipped as-is, with best-effort maintenance and no service level agreement.
 
 ## Links

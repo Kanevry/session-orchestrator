@@ -13,6 +13,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.mjs'],
+    // #1278: validate the repository once before workers, then share that run's
+    // result with the CLI/wiring assertions instead of four concurrent scans.
+    globalSetup: ['./tests/setup/validate-plugin.mjs'],
     // Strips git's repo-pointing environment once per worker. Those variables
     // outrank BOTH `cwd:` and `-C <path>`, so without this a fixture git call
     // writes into the INVOKING repository — measured on 2026-08-19, when it
@@ -33,8 +36,11 @@ export default defineConfig({
     // to decide whether a lock is this machine's (#1072). Measured 2026-08-24:
     // three suites reach that path with no redirect of their own. Opt out with
     // SO_HOST_ALIAS_GUARD_ALLOW_REAL=1.
+    // Native identity is isolated before test imports: ambient Codex/Claude
+    // IDs must not conflict with fixture IDs or prove fixture lock ownership.
     setupFiles: [
       './tests/setup/scrub-git-env.mjs',
+      './tests/setup/scrub-session-env.mjs',
       './tests/setup/vault-guard.mjs',
       './tests/setup/host-alias-guard.mjs',
     ],
@@ -62,7 +68,7 @@ export default defineConfig({
     hookTimeout: 30000,
     coverage: {
       provider: 'v8',
-      reporter: ['text', 'lcov'],
+      reporter: ['text', 'lcov', 'json-summary', 'cobertura'],
       include: ['scripts/lib/**/*.mjs', 'hooks/**/*.mjs'],
       exclude: [
         '**/__tests__/**',

@@ -9,7 +9,7 @@
  * git server dependency beyond the local repo.
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, inject } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -35,13 +35,9 @@ function run(args = []) {
   return spawnSync('node', [SCRIPT, ...args], {
     encoding: 'utf8',
     cwd: REPO_ROOT,
-    // 120s, not 30s: the validator forks ~21 grandchild processes, and a
-    // 30s wall-clock budget is a LOAD threshold, not a correctness one — it
-    // was measured tripping at CPU 100% while passing in isolation. A spawn
-    // timeout kills the child and leaves `status: null`, which reads as a
-    // validator failure rather than as contention (hence the `r.error`
-    // assertion at the first use site).
-    timeout: 120_000,
+    // These fixture cases abort at plugin.json; the complete live scan runs
+    // once in globalSetup before worker contention (#1278).
+    timeout: 10_000,
   });
 }
 
@@ -50,15 +46,11 @@ function run(args = []) {
 // ---------------------------------------------------------------------------
 
 describe('validate-plugin.mjs — current repo plugin', () => {
-  // Spawn once per describe — the heavy validator forks ~21 grandchild
-  // processes; re-spawning per it() flakes under loaded-runner contention.
+  // Preserve the CLI/wiring assertions over the actual pre-worker scan (#1278).
   let r;
-  // 120s hook timeout: vitest's default `hookTimeout` is 30s, which caps the
-  // spawn budget above no matter how high it is set. Both numbers have to move
-  // together or the hook aborts first with "Hook timed out".
   beforeAll(() => {
-    r = run([REPO_ROOT]);
-  }, 120_000);
+    r = inject('pluginValidation');
+  });
 
   it('exits 0 when run against the current repo plugin', () => {
     // Discriminates contention from a real failure: on a spawn timeout the

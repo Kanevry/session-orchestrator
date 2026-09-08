@@ -11,8 +11,7 @@
  * assertions there), so this file adds that gap coverage.
  */
 
-import { describe, it, expect } from 'vitest';
-import { Buffer } from 'node:buffer';
+import { describe, it, expect, inject } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,23 +24,6 @@ const SKIP_CONFIG_WITH_LINT = JSON.stringify({
   'test-command': 'skip',
   'lint-command': 'skip',
 });
-const VALIDATE_PLUGIN_CHILD_TIMEOUT_MS = 30_000;
-const VALIDATE_PLUGIN_TEST_TIMEOUT_MS = 35_000;
-
-function formatSpawnSyncFailure(label, result) {
-  const error = result.error
-    ? `${result.error.name}: ${result.error.message}`
-    : 'none';
-  return [
-    `${label} failed`,
-    `status=${result.status} signal=${result.signal ?? 'none'} error=${error}`,
-    `stdout (${Buffer.byteLength(result.stdout ?? '', 'utf8')} bytes):`,
-    result.stdout || '<empty>',
-    `stderr (${Buffer.byteLength(result.stderr ?? '', 'utf8')} bytes):`,
-    result.stderr || '<empty>',
-  ].join('\n');
-}
-
 function runGate(args) {
   return spawnSync('node', [path.join(ROOT, 'scripts/run-quality-gate.mjs'), ...args], {
     encoding: 'utf8',
@@ -96,18 +78,13 @@ describe('orchestrators e2e (post .sh→.mjs port)', () => {
   // ---------------------------------------------------------------------------
 
   it('validate-plugin.mjs reports at least 15 passed and 0 failed against this repo, exit 0', () => {
-    const r = spawnSync('node', [path.join(ROOT, 'scripts/validate-plugin.mjs')], {
-      encoding: 'utf8',
-      cwd: ROOT,
-      timeout: VALIDATE_PLUGIN_CHILD_TIMEOUT_MS,
-    });
-    if (r.status !== 0) {
-      throw new Error(formatSpawnSyncFailure('validate-plugin.mjs smoke', r));
-    }
+    // Actual full scan from globalSetup, before worker contention (#1278).
+    const r = inject('pluginValidation');
+    expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toContain('Results:');
     const match = r.stdout.match(/Results:\s+(\d+)\s+passed,\s+(\d+)\s+failed/);
     expect(match).not.toBeNull();
     expect(parseInt(match[1], 10)).toBeGreaterThanOrEqual(15);
     expect(parseInt(match[2], 10)).toBe(0);
-  }, VALIDATE_PLUGIN_TEST_TIMEOUT_MS);
+  });
 });

@@ -96,7 +96,7 @@
           "name": "Mit welchen Werkzeugen läuft es?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Mit Claude Code vollständig. Codex CLI, Cursor IDE und Pi laufen mit Einschränkungen: bei Codex CLI ist die Schreibgrenze eine Vereinbarung statt ein Mechanismus, Cursor IDE prüft im Nachhinein, Pi ist über eine Brücke angebunden. Im Installations-Abschnitt steht der Weg für jedes davon."
+            "text": "Claude Code unterstützt den vollständigen Hook-Ablauf. Codex CLI bietet die Abläufe als auswählbare Skills, kann aber die Schreibgrenze nicht durchsetzen. Cursor bindet Prüfungen vor Werkzeug- und Shell-Aufrufen sowie nach Änderungen über eine Brücke an. Pi nutzt eine Brücke für Werkzeugaufrufe. Parallele Agenten gibt es auf Claude Code und Codex; Cursor und Pi arbeiten Aufgaben nacheinander ab."
           }
         },
         {
@@ -104,7 +104,7 @@
           "name": "Was ist der Unterschied zu Claude Code allein?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Vier Dinge: der Lese-Schritt vor jeder Änderung, ein Plan, dem du zustimmst, eine kurze Dateiliste pro Schritt, und eine automatische Prüfung dazwischen. Ohne die fängt das Werkzeug beim ersten Satz zu tippen an."
+            "text": "Es ergänzt einen wiederholbaren Ablauf: Projekt lesen, Umfang abstimmen, die Arbeit in Schritte mit festgelegten Dateien teilen und die Ergebnisse dazwischen prüfen. Der Session-Eintrag hält Fortschritt und offene Arbeit für die nächste Session fest."
           }
         },
         {
@@ -112,7 +112,7 @@
           "name": "Schickt es Daten irgendwohin?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Kein Konto und kein Server. Alles läuft auf deinem Rechner. Nutzungsdaten werden nur geschickt, wenn du das einschaltest. Ab Werk ist das aus. Diese Website lädt nichts von einer fremden Domain."
+            "text": "Das Plugin läuft lokal ohne eigenes Konto. Optionale Nutzungsstatistik ist bis zu deiner Zustimmung ausgeschaltet. Beim Session-Start fragt es standardmäßig die npm-Registry nach Updates ab. Erfolgreiche Ergebnisse werden pro Repository 24 Stunden zwischengespeichert; schlägt die Anfrage oder das Speichern fehl, kann die nächste Session erneut anfragen. SO_DISABLE_UPDATE_CHECK=1 oder DO_NOT_TRACK=1 schaltet die Prüfung aus. Dein Code-Werkzeug und eingerichtete Dienste nutzen weiterhin ihre eigenen Netzwerkverbindungen. Diese Website nutzt cookiefreie Vercel Web Analytics, beschrieben in der Datenschutzerklärung."
           }
         },
         {
@@ -120,7 +120,7 @@
           "name": "Läuft es unter Windows?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Es läuft nativ unter Windows, aber Windows ist von den automatischen Testläufen nicht abgedeckt. macOS und Linux schon, also sind das die beiden Wege, die bei jeder Änderung geprüft werden."
+            "text": "macOS und Linux werden in der CI geprüft. Native Windows-Nutzung ist nicht getestet. Der Node-Kern nutzt portable Pfade, aber die Shell-Hooks und der optionale MCP-Server brauchen WSL oder Git Bash. Windows-Unterstützung erfolgt nach bestem Bemühen."
           }
         },
         {
@@ -136,7 +136,7 @@
           "name": "Kann es mein Projekt kaputt machen?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Zerstörerische Shell-Befehle blockt eine Policy-Datei, keine höfliche Anweisung. Es überschreibt nie die bisherige Änderungsgeschichte deines Projekts. Es speichert die Änderungen am Ende einer Session fest, nachdem die Prüfungen gelaufen sind, und sagt dir, was es gespeichert hat."
+            "text": "Fehler sind weiterhin möglich. Die Richtlinie für zerstörerische Befehle hat 14 Regeln: 10 blockieren, 4 warnen. Der Schutz des Schreibbereichs hängt vom Code-Werkzeug und der Einstellung zur Durchsetzung ab. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen senken das Risiko, garantieren aber keinen korrekten Code."
           }
         },
         {
@@ -189,9 +189,9 @@
     <div class="wrap">
       <p class="eyebrow"><span class="num">01</span> / Was es ist</p>
       <h1 class="h-display">Liest zuerst, fragt, und arbeitet dann in geprüften Schritten.</h1>
-      <p class="lede">Session Orchestrator ist ein kostenloser Zusatz für KI-Werkzeuge, die Code schreiben, zum Beispiel Claude Code. Für alle, die schon eine KI programmieren lassen und vorher den Plan sehen wollen. Open Source, eine Zeile zum Installieren.</p>
+      <p class="lede">Session Orchestrator ist ein kostenloser Zusatz für KI-Werkzeuge, die Code schreiben, zum Beispiel Claude Code. Für alle, die schon eine KI programmieren lassen und vorher den Plan sehen wollen. Open Source, mit Installationsschritten für jedes Werkzeug.</p>
       <p class="cta">
-        <a class="btn btn-primary" href="#install">In einer Zeile installieren</a>
+        <a class="btn btn-primary" href="#install">Installationsschritte ansehen</a>
         <a class="btn btn-secondary" href="/guide">Guide lesen (EN)</a>
       </p>
 <div id="hero" data-hero-state="init">
@@ -206,7 +206,7 @@
     <div class="wrap">
       <p class="eyebrow"><span class="num">02</span> / So funktioniert es</p>
       <h2>Was es macht, in einfachen Worten</h2>
-      <p class="lede">Die meisten KI-Werkzeuge tippen los, bevor sie überhaupt geschaut haben, was da liegt. So entsteht die Reparatur am falschen Fehler, oder zwei Helfer ändern gleichzeitig dieselbe Datei.</p>
+      <p class="lede">Eine KI-Session kann das falsche Problem lösen oder zwei Helfer gleichzeitig in dieselbe Datei schicken. Dieser Ablauf beginnt mit gemeinsamem Kontext und einem festgelegten Umfang vor der Umsetzung.</p>
 
       <div class="steps">
         <div class="step">
@@ -245,7 +245,7 @@
         <div class="step">
           <div>
             <h3>Nach jedem Schritt eine Prüfung.</h3>
-            <p>Nach jedem Schritt läuft eine automatische Prüfung. Geht sie schief, startet der nächste Schritt nicht. Bitten hilft nix. Überspringen geht nicht, das ist gar nicht eingebaut.</p>
+            <p>Jeder Schritt endet mit einer passenden Prüfung. Bei einem Fehler hält der Ablauf an, damit das Ergebnis vor dem nächsten Schritt korrigiert werden kann.</p>
           </div>
           <figure class="fig">
             <img src="/img/the-gate-800.webp" srcset="/img/the-gate-400.webp 400w, /img/the-gate-800.webp 800w, /img/the-gate-1200.webp 1200w" sizes="(max-width: 600px) 100vw, 420px" width="800" height="800" loading="lazy" decoding="async" alt="Ein geschlossenes Tor mit einem schmalen blauen Lichtstreifen am Rand.">
@@ -299,8 +299,9 @@
           <p class="cmd"><code>/plugin marketplace add Kanevry/session-orchestrator</code><button class="copy" type="button" data-copy="/plugin marketplace add Kanevry/session-orchestrator">Kopieren</button></p>
           <p class="cmd"><code>/plugin install session-orchestrator@kanevry</code><button class="copy" type="button" data-copy="/plugin install session-orchestrator@kanevry">Kopieren</button></p>
           <p class="small">Danach einmal <code>npm install</code> im Plugin-Cache laufen lassen und Claude Code neu starten.</p>
-          <p class="small"><b>Bekannt kaputt.</b> Die Zeile, die bis 2026-08-19 für diesen Schritt dokumentiert war, funktioniert nicht: <code>claude plugin dir</code> ist kein Unterbefehl von Claude Code, der Aufruf endet mit 1, und den Ausweichpfad, den er dann genommen hat, gibt es nicht. Der Ersatz darunter löst den Pfad stattdessen aus dem Plugin-Cache auf und wurde auf einer echten Installation durchgehend getestet.</p>
-          <p class="cmd"><code>cd "$(dirname "$(find ~/.claude/plugins/cache -name package.json -path '*session-orchestrator*' | head -1)")" &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd &quot;$(dirname &quot;$(find ~/.claude/plugins/cache -name package.json -path '*session-orchestrator*' | head -1)&quot;)&quot; &amp;&amp; npm install">Kopieren</button></p>
+          <p class="cmd"><code>claude plugin list --json</code><button class="copy" type="button" data-copy="claude plugin list --json">Kopieren</button></p>
+          <p class="small">Suche den aktivierten Eintrag <code>session-orchestrator@kanevry</code>. Ersetze den Platzhalter unten durch dessen <code>installPath</code>. Fehlt der Eintrag oder ist er deaktiviert, kläre das zuerst über <code>/plugin</code>. Bei mehreren Treffern die aktive Installation prüfen.</p>
+          <p class="cmd"><code>cd "/absolute/installPath/from/the/list" &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd &quot;/absolute/installPath/from/the/list&quot; &amp;&amp; npm install">Kopieren</button></p>
         </div>
 
         <div class="card">
@@ -309,7 +310,8 @@
           <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Kopieren</button></p>
           <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Kopieren</button></p>
           <p class="cmd"><code>node scripts/codex-install.mjs</code><button class="copy" type="button" data-copy="node scripts/codex-install.mjs">Kopieren</button></p>
-          <p class="small">Liest <code>AGENTS.md</code> statt <code>CLAUDE.md</code>.</p>
+          <p class="small">Braucht Codex CLI ab 0.144.4. Die Konfiguration steht in <code>AGENTS.md</code>. Öffne nach der Installation eine neue Aufgabe und prüfe die Plugin-Hooks über <code>/hooks</code>.</p>
+          <p class="small">Wähle die Session-Orchestrator-Skills: <code>$session-orchestrator:bootstrap</code>, danach <code>$session-orchestrator:session feature</code>, <code>$session-orchestrator:go</code> und <code>$session-orchestrator:close</code>. Siehe den <a href="/guide#first-session">Guide zur ersten Session (EN)</a>.</p>
           <p class="small"><b>Keine Durchsetzung der Schreibgrenze.</b> Der Hook für den File-Scope läuft auf dieser Umgebung nicht. Die fünf Schritte und die Prüfungen funktionieren; die Schreibgrenze ist hier eine Vereinbarung, kein Mechanismus.</p>
         </div>
 
@@ -319,7 +321,7 @@
           <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Kopieren</button></p>
           <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Kopieren</button></p>
           <p class="cmd"><code>node scripts/cursor-install.mjs /absolute/path/to/your/project</code><button class="copy" type="button" data-copy="node scripts/cursor-install.mjs /absolute/path/to/your/project">Kopieren</button></p>
-          <p class="small"><b>Pfad nötig.</b> Der Projektpfad ist Pflicht. Ohne ihn meldet der Installer fälschlich Erfolg.</p>
+          <p class="small"><b>Zielprojekt.</b> Gib den Projektpfad ausdrücklich an. Ohne Pfad verwendet der Installer das aktuelle Verzeichnis.</p>
         </div>
 
         <div class="card">
@@ -337,7 +339,7 @@
     <div class="wrap">
       <p class="eyebrow"><span class="num">05</span> / Für Entwickler</p>
       <h2>Fünf Schritte, eine Prüfung dazwischen</h2>
-      <p class="lede">Der Schreibbereich wird pro Schritt (wave) vorab deklariert, und die Quality-Prüfung (gate) lässt sich nicht überspringen.</p>
+      <p class="lede">Die Dateien werden pro Schritt (wave) vorab festgelegt. Vor dem Abschluss verlangt der Ablauf eine vollständige Qualitätsprüfung.</p>
 
       <table class="table">
         <caption class="sr">Fünf Schritte: wer sie ausführt, was sie schreiben dürfen, wie viele Dateien, und die Prüfung danach</caption>
@@ -369,9 +371,9 @@
           <tr>
             <td data-label="Schritt">W4 Quality</td>
             <td data-label="Wer macht es">Vereinfacher, Test-Autor, lesendes Panel</td>
-            <td data-label="Darf schreiben">nur Tests</td>
+            <td data-label="Darf schreiben">Vereinfachung und Tests</td>
             <td class="num" data-label="Dateien">8</td>
-            <td data-label="Prüfung danach">volle Prüfung, nicht überspringbar</td>
+            <td data-label="Prüfung danach">vollständige Qualitätsprüfung</td>
           </tr>
           <tr>
             <td data-label="Schritt">W5 Finalization</td>
@@ -389,37 +391,37 @@
   <section class="sec" id="enforced">
     <div class="wrap">
       <p class="eyebrow"><span class="num">06</span> / Durchgesetzt</p>
-      <h2>Jede Behauptung nennt die Datei, die sie durchsetzt</h2>
+      <h2>Prüfungen und die Regeln dahinter</h2>
       <div class="grid-12">
         <div class="col-4">
-          <p class="lede">Ein Satz in einem Prompt ist ein Wunsch. Diese fünf sind Code.</p>
+          <p class="lede">Ein Teil des Schutzes läuft als Code, ein Teil besteht aus Anweisungen an den Agenten. Die Wirkung hängt vom Werkzeug und der Konfiguration ab.</p>
         </div>
         <div class="col-8">
       <table class="table proof">
-        <caption class="sr">Jede Behauptung und die Datei, die sie durchsetzt</caption>
+        <caption class="sr">Jede Prüfung oder Ablaufregel mit ihrer Quelle</caption>
         <thead>
-          <tr><th scope="col">Behauptung</th><th scope="col">Durchgesetzt in</th></tr>
+          <tr><th scope="col">Behauptung</th><th scope="col">Quelle</th></tr>
         </thead>
         <tbody>
           <tr>
             <td data-label="Behauptung">Der Schreibbereich eines Agenten steht fest, bevor er startet.</td>
-            <td data-label="Durchgesetzt in"><code>scripts/validate-wave-scope.mjs --assert-disjoint</code></td>
+            <td data-label="Quelle"><code>scripts/validate-wave-scope.mjs --assert-disjoint</code></td>
           </tr>
           <tr>
-            <td data-label="Behauptung">Ein Schreibzugriff außerhalb dieses Bereichs wird abgelehnt, nicht nur gemeldet.</td>
-            <td data-label="Durchgesetzt in"><code>hooks/enforce-scope.mjs</code></td>
+            <td data-label="Behauptung">Auf unterstützten Werkzeugen blockiert strict Änderungen außerhalb des Bereichs; warn meldet sie.</td>
+            <td data-label="Quelle"><code>hooks/enforce-scope.mjs</code></td>
           </tr>
           <tr>
-            <td data-label="Behauptung">Zerstörerische Shell-Befehle blockt eine Policy-Datei, kein Prompt.</td>
-            <td data-label="Durchgesetzt in"><code>.orchestrator/policy/blocked-commands.json</code>, 14 Regeln</td>
+            <td data-label="Behauptung">Die Richtlinie für zerstörerische Befehle blockiert 10 Befehlsmuster und warnt bei 4.</td>
+            <td data-label="Quelle"><code>.orchestrator/policy/blocked-commands.json</code>, 14 Regeln</td>
           </tr>
           <tr>
-            <td data-label="Behauptung">Ein Sub-Agent kann den Git-Index nie anfassen.</td>
-            <td data-label="Durchgesetzt in"><code>.claude/rules/parallel-sessions.md</code>, PSA-007</td>
+            <td data-label="Behauptung">Sub-Agenten sind angewiesen, Staging und Commits dem Koordinator zu überlassen. Das ist eine Ablaufregel.</td>
+            <td data-label="Quelle"><code>.claude/rules/parallel-sessions.md</code>, PSA-007</td>
           </tr>
           <tr>
-            <td data-label="Behauptung">Jeder geplante Punkt wird am Ende gegen Belege geprüft.</td>
-            <td data-label="Durchgesetzt in"><code>skills/session-end/SKILL.md</code></td>
+            <td data-label="Behauptung">Der Abschlussablauf verlangt für jeden geplanten Punkt einen Beleg.</td>
+            <td data-label="Quelle"><code>skills/session-end/SKILL.md</code></td>
           </tr>
         </tbody>
       </table>
@@ -462,19 +464,19 @@
         </details>
         <details class="faq-item">
           <summary>Mit welchen Werkzeugen läuft es?</summary>
-          <p>Mit Claude Code vollständig. Codex CLI, Cursor IDE und Pi laufen mit Einschränkungen: bei Codex CLI ist die Schreibgrenze eine Vereinbarung statt ein Mechanismus, Cursor IDE prüft im Nachhinein, Pi ist über eine Brücke angebunden. Im Installations-Abschnitt steht der Weg für jedes davon.</p>
+          <p>Claude Code unterstützt den vollständigen Hook-Ablauf. Codex CLI bietet die Abläufe als auswählbare Skills, kann aber die Schreibgrenze nicht durchsetzen. Cursor bindet Prüfungen vor Werkzeug- und Shell-Aufrufen sowie nach Änderungen über eine Brücke an. Pi nutzt eine Brücke für Werkzeugaufrufe. Parallele Agenten gibt es auf Claude Code und Codex; Cursor und Pi arbeiten Aufgaben nacheinander ab.</p>
         </details>
         <details class="faq-item">
           <summary>Was ist der Unterschied zu Claude Code allein?</summary>
-          <p>Vier Dinge: der Lese-Schritt vor jeder Änderung, ein Plan, dem du zustimmst, eine kurze Dateiliste pro Schritt, und eine automatische Prüfung dazwischen. Ohne die fängt das Werkzeug beim ersten Satz zu tippen an.</p>
+          <p>Es ergänzt einen wiederholbaren Ablauf: Projekt lesen, Umfang abstimmen, die Arbeit in Schritte mit festgelegten Dateien teilen und die Ergebnisse dazwischen prüfen. Der Session-Eintrag hält Fortschritt und offene Arbeit für die nächste Session fest.</p>
         </details>
         <details class="faq-item">
           <summary>Schickt es Daten irgendwohin?</summary>
-          <p>Kein Konto und kein Server. Alles läuft auf deinem Rechner. Nutzungsdaten werden nur geschickt, wenn du das einschaltest. Ab Werk ist das aus. Diese Website lädt nichts von einer fremden Domain.</p>
+          <p>Das Plugin läuft lokal ohne eigenes Konto. Optionale Nutzungsstatistik ist bis zu deiner Zustimmung ausgeschaltet. Beim Session-Start fragt es standardmäßig die npm-Registry nach Updates ab. Erfolgreiche Ergebnisse werden pro Repository 24 Stunden zwischengespeichert; schlägt die Anfrage oder das Speichern fehl, kann die nächste Session erneut anfragen. SO_DISABLE_UPDATE_CHECK=1 oder DO_NOT_TRACK=1 schaltet die Prüfung aus. Dein Code-Werkzeug und eingerichtete Dienste nutzen weiterhin ihre eigenen Netzwerkverbindungen. Diese Website nutzt cookiefreie Vercel Web Analytics, beschrieben in der Datenschutzerklärung.</p>
         </details>
         <details class="faq-item">
           <summary>Läuft es unter Windows?</summary>
-          <p>Es läuft nativ unter Windows, aber Windows ist von den automatischen Testläufen nicht abgedeckt. macOS und Linux schon, also sind das die beiden Wege, die bei jeder Änderung geprüft werden.</p>
+          <p>macOS und Linux werden in der CI geprüft. Native Windows-Nutzung ist nicht getestet. Der Node-Kern nutzt portable Pfade, aber die Shell-Hooks und der optionale MCP-Server brauchen WSL oder Git Bash. Windows-Unterstützung erfolgt nach bestem Bemühen.</p>
         </details>
         <details class="faq-item">
           <summary>Was kostet es?</summary>
@@ -482,7 +484,7 @@
         </details>
         <details class="faq-item">
           <summary>Kann es mein Projekt kaputt machen?</summary>
-          <p>Zerstörerische Shell-Befehle blockt eine Policy-Datei, keine höfliche Anweisung. Es überschreibt nie die bisherige Änderungsgeschichte deines Projekts. Es speichert die Änderungen am Ende einer Session fest, nachdem die Prüfungen gelaufen sind, und sagt dir, was es gespeichert hat.</p>
+          <p>Fehler sind weiterhin möglich. Die Richtlinie für zerstörerische Befehle hat 14 Regeln: 10 blockieren, 4 warnen. Der Schutz des Schreibbereichs hängt vom Code-Werkzeug und der Einstellung zur Durchsetzung ab. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen senken das Risiko, garantieren aber keinen korrekten Code.</p>
         </details>
         <details class="faq-item">
           <summary>Wer pflegt das?</summary>
@@ -500,17 +502,17 @@
       <ul class="stack">
         <li>Unabhängig und von der Community gepflegt. <b>Nicht verbunden mit Anthropic, OpenAI oder Cursor und von keiner dieser Firmen unterstützt.</b></li>
         <li>Ausgeliefert wie es ist, ohne zugesicherte Reaktionszeiten, Pflege nach bestem Bemühen.</li>
-        <li>Lokal per Default. Kein Konto, kein Server. Nutzungsdaten werden nur geschickt, wenn du das einschaltest. Ab Werk ist das aus.</li>
-        <li>macOS und Linux sind voll unterstützt und von der CI abgedeckt. Windows läuft nativ, ist aber nicht CI-abgedeckt.</li>
+        <li>Lokal per Default, ohne eigenes Konto. Optionale Nutzungsstatistik ist ausgeschaltet; die npm-Update-Abfrage lässt sich separat deaktivieren.</li>
+        <li>macOS und Linux werden in der CI geprüft. Native Windows-Nutzung ist ungetestet; Shell-Hooks und der optionale MCP-Server brauchen WSL oder Git Bash.</li>
         <li>Eine Rangliste gibt es noch nicht, und auch keine Gesamtnote. Wo eine Zahl fehlt, steht das dort, statt zu raten. Eine Rangliste auf einer Messmethode, die noch nicht ehrlich ist, wäre schlechter als keine.</li>
-        <li>Die Durchsetzung auf Hook-Ebene ist nicht auf jeder Umgebung gleich. Die Liste unten ist der aktuelle Stand, keine Roadmap. Die Prüfungen sind überall identisch.</li>
+        <li>Die Durchsetzung auf Hook-Ebene ist nicht auf jeder Umgebung gleich. Die Liste unten ist der aktuelle Stand, keine Roadmap. Die konfigurierten Qualitätsprüfungen laufen auf allen vier Werkzeugen.</li>
       </ul>
 
       <table class="kv">
         <caption class="sr">Durchsetzung auf Hook-Ebene je Umgebung</caption>
         <tbody>
           <tr><th scope="row">Claude Code</th><td>vollständig</td></tr>
-          <tr><th scope="row">Cursor IDE</th><td>wird im Nachhinein geprüft</td></tr>
+          <tr><th scope="row">Cursor IDE</th><td>Brücke: Prüfungen vor Werkzeug- und Shell-Aufrufen sowie nach Änderungen</td></tr>
           <tr><th scope="row">Pi</th><td>über eine Brücke</td></tr>
           <tr><th scope="row">Codex CLI</th><td>Durchsetzung des Schreibbereichs derzeit nicht verfügbar</td></tr>
         </tbody>
@@ -521,10 +523,10 @@
   <section class="sec end" id="start">
     <div class="wrap">
       <p class="eyebrow"><span class="num">10</span> / Los</p>
-      <h2>Eine Zeile, dann eine Session, die zuerst liest.</h2>
+      <h2>Installieren, dann eine Session starten, die zuerst liest.</h2>
       <p class="lede">MIT, kein Konto, und das Erste, was passiert: es sagt dir, was es gefunden hat, bevor es etwas anfasst.</p>
       <p class="cta">
-        <a class="btn btn-primary" href="#install">In einer Zeile installieren</a>
+        <a class="btn btn-primary" href="#install">Installationsschritte ansehen</a>
         <a class="btn btn-secondary" href="/guide">Guide lesen (EN)</a>
       </p>
     </div>

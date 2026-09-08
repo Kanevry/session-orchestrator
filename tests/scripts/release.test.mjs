@@ -939,6 +939,9 @@ describe('ensureGithubRelease', () => {
         },
       });
       expect(unknown).toMatchObject({ ok: false, created: false, state: 'unknown' });
+      expect(unknown.recovery).toEqual({
+        inspect: ['gh', 'release', 'view', 'v3.21.0', '--repo', 'github.com/Owner/repo'],
+      });
       expect(unknown.detail).toContain('could not determine whether GitHub release');
       expect(calls).toHaveLength(1);
       expect(calls[0].args.slice(0, 2)).toEqual(['release', 'view']);
@@ -951,9 +954,64 @@ describe('ensureGithubRelease', () => {
       });
       expect(missing.ok).toBe(false);
       expect(missing.detail).toContain('ENOENT');
+      expect(missing.recovery).toEqual(unknown.recovery);
     } finally {
       removeTree(root);
     }
+  });
+
+  it('retains executable, quoted recovery commands and notes after a failed create', async () => {
+    // Exercise the actual outcome producer and rendered command with a shell
+    // function replacing gh. No test can publish, even if the argv is wrong.
+    fixtureGit(['init', '-q'], root);
+    fixtureGit(['remote', 'add', 'github', 'https://github.com/RecoveryOwner/release-repo.git'], root);
+    writeFileSync(join(root, 'CHANGELOG.md'), '# Changelog\n\n## [3.21.0] - 2026-08-19\n\n- recovery notes\n');
+    const notesRoot = join(root, "notes ' $(must-not-run)");
+    mkdirSync(notesRoot);
+    vi.stubEnv('TMPDIR', notesRoot);
+    try {
+      const runImpl = vi.fn()
+        .mockReturnValueOnce({ status: 1, stdout: '', stderr: 'release not found' })
+        .mockReturnValueOnce({ status: 1, stdout: '', stderr: 'temporary network failure' });
+      const outcome = await runPublishRelease(root, '3.21.0', {
+        publishImpl: () => ({ receipt: { confirmed: true, target: '3.21.0' }, propagation: { ok: true, detail: 'verified' } }),
+        tagAndPushImpl: () => ({ tag: 'v3.21.0', pushed: ['github'] }),
+        ensureGithubReleaseImpl: (repoRoot, target) => ensureGithubRelease(repoRoot, target, { runImpl }),
+        verifyLiveSiteImpl: async () => ({ ok: true, detail: 'verified' }),
+      });
+      // The JSON-mode payload must preserve the same usable argv.
+      const { recovery } = JSON.parse(JSON.stringify(outcome)).release;
+      expect(recovery.inspect).toEqual(['gh', 'release', 'view', 'v3.21.0', '--repo', 'github.com/RecoveryOwner/release-repo']);
+      expect(recovery.create).toEqual([
+        'gh', 'release', 'create', 'v3.21.0', '--repo', 'github.com/RecoveryOwner/release-repo',
+        '--verify-tag', '--title', 'v3.21.0', '--notes-file', expect.any(String),
+      ]);
+      expect(recovery.create).toEqual(['gh', ...runImpl.mock.calls[1][1]]);
+      const notesFile = recovery.create[recovery.create.indexOf('--notes-file') + 1];
+      expect(readFileSync(notesFile, 'utf8')).toContain('- recovery notes');
+      const stderr = [];
+      expect(printPublishOutcome(outcome, '3.21.0', { log: () => {}, error: (line) => stderr.push(line) })).toBe(1);
+      const commands = stderr.map((line) => line.match(/^ {2}(?:Inspect|Recover) with: (.+)$/)?.[1]).filter(Boolean);
+      const captured = commands.map((command) => {
+        const result = spawnSync('sh', ['-c', `gh() { "$SO_TEST_NODE" -e 'process.stdout.write(JSON.stringify(process.argv.slice(1)))' "$@"; }\n${command}`], {
+          cwd: root, encoding: 'utf8', env: { ...process.env, SO_TEST_NODE: process.execPath },
+        });
+        expect(result.status).toBe(0);
+        expect(result.stderr).toBe('');
+        return JSON.parse(result.stdout);
+      });
+      expect(captured).toEqual([recovery.inspect.slice(1), recovery.create.slice(1)]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('refuses an ambient repository when no GitHub identity can be resolved', () => {
+    const runImpl = vi.fn();
+    const result = ensureGithubRelease(root, '3.21.0', { repoSpec: '', runImpl });
+    expect(result).toMatchObject({ ok: false, state: 'unknown' });
+    expect(result.recovery).toBeUndefined();
+    expect(runImpl).not.toHaveBeenCalled();
   });
 });
 

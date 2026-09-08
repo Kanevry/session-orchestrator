@@ -25,9 +25,8 @@
  * `treats a commented-out block as absent`).
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, inject } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -126,15 +125,10 @@ describe('#339 — agent YAML frontmatter structure', () => {
 // ─── Test 6: validate-plugin.mjs reports 0 failed ────────────────────────────
 
 describe('#339 — validate-plugin.mjs passes with all 3 agents present', () => {
-  // Spawn once per describe — validate-plugin.mjs forks ~21 grandchild
-  // processes; re-spawning per it() flakes under loaded-runner contention.
+  // Share the actual full scan performed before workers started (#1278).
   let result;
   beforeAll(() => {
-    result = spawnSync('node', ['scripts/validate-plugin.mjs', REPO_ROOT], {
-      encoding: 'utf8',
-      cwd: REPO_ROOT,
-      timeout: 30_000,
-    });
+    result = inject('pluginValidation');
   });
 
   it('exits 0 and reports 0 failed when run against the current repo', () => {
