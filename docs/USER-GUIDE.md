@@ -198,6 +198,22 @@ You can also run the bootstrap flow explicitly, outside of any session:
 
 `--retroactive` is the recommended path for existing repos that predate the Bootstrap Gate — it adds the missing `CLAUDE.md` structure and lock file without touching your existing code or configuration.
 
+### Use a configured baseline
+
+Standard and Deep bootstrap can read the validated archetype contract from your
+configured local baseline. Existing project markers select a matching archetype;
+an empty or unrecognized project presents the baseline's available choices.
+The selected contract supplies templates, runtime and package-manager versions,
+commands, CI expectations, and required rules. Existing project files are
+preserved and reported for review.
+
+Configuration resolves from `SO_BASELINE_PATH`, a matching named baseline,
+`owner.yaml` paths, then the project's `plan-baseline-path`. Lookup is offline
+and does not install packages. An absent baseline uses the bundled public
+templates; an invalid configured contract stops before writing files. Missing
+quality gates are reported as unavailable. See [Baseline integration](baseline.md)
+for the contract and configuration details.
+
 ### Anti-bureaucracy promise
 
 - **Normal flow:** exactly 1 question (tier confirmation)

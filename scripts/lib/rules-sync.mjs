@@ -121,7 +121,7 @@ function listManifestCategories(indexContent) {
  * @param {string|null} explicitArchetype
  * @returns {{archetype: string|null, known: boolean}}
  */
-function resolveArchetype(repoRoot, explicitArchetype) {
+export function resolveArchetype(repoRoot, explicitArchetype) {
   if (explicitArchetype) {
     return { archetype: explicitArchetype.trim().toLowerCase(), known: true };
   }
@@ -194,6 +194,12 @@ function escapeRegex(s) {
  * at least one concrete bullet entry. This keeps `/bootstrap --sync-rules`
  * ready for future opt-in categories without requiring CLI changes.
  *
+ * `requiredBasenames` optionally adds explicitly required manifest entries,
+ * regardless of category or archetype scope. The caller supplies this data;
+ * this synchronous writer performs no external lookup. Every requested name
+ * must resolve uniquely in the full manifest before ANY file is written.
+ * Source validation, provenance, local overrides and dry-run still apply.
+ *
  * Vendoring sanitizer (issue #1098): every source file that reaches the write
  * decision is additionally scanned by `scanVendoringLeaks()`, and its findings
  * are collected into the additive `sanitizer[]` array. This runs in
@@ -214,7 +220,8 @@ function escapeRegex(s) {
  *   dryRun?: boolean,
  *   validate?: boolean,
  *   requireProvenance?: boolean,
- *   archetype?: string|null
+ *   archetype?: string|null,
+ *   requiredBasenames?: string[]|null
  * }} opts
  * @returns {{
  *   written: string[],
@@ -233,6 +240,7 @@ export function syncRules({
   validate = true,
   requireProvenance = true,
   archetype = null,
+  requiredBasenames = null,
 } = {}) {
   const written = [];
   const skipped = [];
@@ -268,13 +276,35 @@ export function syncRules({
     ? categories
     : listManifestCategories(indexContent);
   const entries = parseIndex(indexContent, selectedCategories);
+  const fullManifest = parseIndex(indexContent, listManifestCategories(indexContent));
+  const required = new Set();
+  if (requiredBasenames !== null) {
+    if (!Array.isArray(requiredBasenames)) {
+      errors.push({ file: '_index.md', reason: 'requiredBasenames must be an array of unique manifest basenames' });
+    } else {
+      for (const name of requiredBasenames) {
+        if (typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]*\.md$/.test(name) || required.has(name)) {
+          errors.push({ file: '_index.md', reason: 'invalid or duplicate required basename' });
+          continue;
+        }
+        required.add(name);
+        const matching = fullManifest.filter((entry) => basename(entry.relPath) === name);
+        if (matching.length !== 1) {
+          errors.push({ file: name, reason: 'required basename must resolve uniquely in _index.md' });
+        } else if (!entries.some((entry) => entry.relPath === matching[0].relPath)) {
+          entries.push(matching[0]);
+        }
+      }
+    }
+    if (errors.length > 0) return { written, skipped, preserved, errors, warnings, sanitizer };
+  }
 
   // Resolvability for the See-Also sanitizer is judged against the FULL
   // manifest, not `selectedCategories`: an archetype-scoped rule is a
   // legitimate citation target in every repo whose archetype matches, so
   // narrowing this to the current selection would report false leaks.
   const manifestBasenames = new Set(
-    parseIndex(indexContent, listManifestCategories(indexContent)).map((e) => basename(e.relPath)),
+    fullManifest.map((e) => basename(e.relPath)),
   );
 
   if (entries.length === 0) {
@@ -297,7 +327,7 @@ export function syncRules({
 
     // Archetype filter (issue #722 Epic A Wave 3) — evaluated before any
     // file IO, so a skip never triggers a spurious "source file not found".
-    if (archetypes !== null) {
+    if (archetypes !== null && !required.has(basename(relPath))) {
       if (!resolvedArchetype.known) {
         skipped.push({ file: relPath, reason: 'archetype-unknown' });
         continue;

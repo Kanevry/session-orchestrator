@@ -19,6 +19,7 @@ import {
   mkdirSync,
   writeFileSync,
   rmSync,
+  symlinkSync,
 } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -80,6 +81,9 @@ function makeTmpDir(prefix) {
 function writeFetchBaselineStub(pluginRoot, successfulBodies) {
   const scriptsLib = path.join(pluginRoot, 'scripts', 'lib');
   mkdirSync(scriptsLib, { recursive: true });
+  symlinkSync(path.join(repoRoot, 'scripts/lib/baseline-archetypes.mjs'), path.join(scriptsLib, 'baseline-archetypes.mjs'));
+  mkdirSync(path.join(pluginRoot, 'rules'), { recursive: true });
+  writeFileSync(path.join(pluginRoot, 'rules/_index.md'), readFileSync(path.join(repoRoot, 'rules/_index.md')));
 
   const entries = JSON.stringify(Object.entries(successfulBodies));
   writeFileSync(

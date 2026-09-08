@@ -109,6 +109,62 @@ describe('tryAcquireFileLock — contention', () => {
     expect(second.acquired).toBe(false);
     expect(second.reason).toBe('held');
     expect(second.existing.pid).toBe(process.pid);
+    expect(existsSync(`${lockPath}.acquire`)).toBe(false);
+  });
+
+  it.each([
+    ['dead holder', JSON.stringify({ pid: DEAD_PID, host: hostname() })],
+    ['live holder', JSON.stringify({ pid: process.pid, host: hostname() })],
+    ['foreign holder', JSON.stringify({ pid: DEAD_PID, host: 'another-host' })],
+    ['invalid body', 'not-json'],
+  ])('fails closed without stealing an acquisition guard with %s', async (_label, guardBody) => {
+    mkdirSync(join(dir, 'sub'), { recursive: true });
+    const guardPath = `${lockPath}.acquire`;
+    writeFileSync(guardPath, guardBody);
+    const original = JSON.stringify({ pid: DEAD_PID, host: hostname(), acquiredAt: new Date().toISOString() });
+    writeFileSync(lockPath, original);
+
+    const attempt = tryAcquireFileLock(lockPath);
+    expect(attempt.acquired).toBe(false);
+    expect(attempt.reason).toBe('held');
+    let called = false;
+    const bounded = await withFileLock(lockPath, () => { called = true; }, { timeoutMs: 0 });
+    expect(bounded).toMatchObject({ ok: false, reason: 'timeout' });
+    expect(called).toBe(false);
+    expect(readFileSync(guardPath, 'utf8')).toBe(guardBody);
+    expect(readFileSync(lockPath, 'utf8')).toBe(original);
+  });
+});
+
+describe('tryAcquireFileLock — acquisition guard cleanup', () => {
+  it.each(['readFileSync', 'linkSync'])('releases its guard after a primary %s failure', (operation) => {
+    mkdirSync(join(dir, 'sub'), { recursive: true });
+    if (operation === 'readFileSync') {
+      writeFileSync(lockPath, JSON.stringify({ pid: process.pid, host: hostname() }));
+    }
+    const original = nodeFs.default[operation];
+    const spy = vi.spyOn(nodeFs.default, operation).mockImplementation((...args) => {
+      const target = args[operation === 'linkSync' ? 1 : 0];
+      if (target === lockPath) throw Object.assign(new Error('fixture I/O error'), { code: 'EIO' });
+      return original(...args);
+    });
+
+    const result = tryAcquireFileLock(lockPath);
+    spy.mockRestore();
+    expect(result).toMatchObject({ acquired: false, reason: 'fs-error' });
+    expect(existsSync(`${lockPath}.acquire`)).toBe(false);
+  });
+
+  it.each(['warn', 'warnMessage'])('releases its guard when the %s callback throws', (callback) => {
+    mkdirSync(join(dir, 'sub'), { recursive: true });
+    const original = JSON.stringify({ pid: DEAD_PID, host: hostname() });
+    writeFileSync(lockPath, original);
+    expect(() => tryAcquireFileLock(lockPath, {
+      [callback]: () => { throw new Error('fixture warning callback failed'); },
+    })).toThrow('fixture warning callback failed');
+    expect(existsSync(`${lockPath}.acquire`)).toBe(false);
+    expect(readFileSync(lockPath, 'utf8')).toBe(original);
+    expect(tryAcquireFileLock(lockPath, { warn: () => {} }).acquired).toBe(true);
   });
 });
 
@@ -143,6 +199,24 @@ describe('tryAcquireFileLock — stale-pid override', () => {
     expect(readLockBody().pid).toBe(process.pid);
     expect(warnMessage).toHaveBeenCalledWith('unparseable body', lockPath, null);
   });
+
+  it.each([
+    ['dead PID', JSON.stringify({ pid: DEAD_PID, host: hostname(), acquiredAt: new Date().toISOString() })],
+    ['invalid body', 'not-json'],
+  ])('serializes competing takeover attempts for a primary lock with %s', (_label, original) => {
+    mkdirSync(join(dir, 'sub'), { recursive: true });
+    writeFileSync(lockPath, original);
+    let competing;
+    const result = tryAcquireFileLock(lockPath, {
+      holder: 'first',
+      warn: () => { competing = tryAcquireFileLock(lockPath, { holder: 'second', warn: () => {} }); },
+    });
+
+    expect(result.acquired).toBe(true);
+    expect(competing).toMatchObject({ acquired: false, reason: 'held' });
+    expect(readLockBody().holder).toBe('first');
+    expect(existsSync(`${lockPath}.acquire`)).toBe(false);
+  });
 });
 
 describe('tryAcquireFileLock — cross-host never overridden (PSA-003)', () => {
@@ -164,6 +238,7 @@ describe('tryAcquireFileLock — cross-host never overridden (PSA-003)', () => {
     expect(warn).not.toHaveBeenCalled();
     // The original cross-host lock body is untouched.
     expect(readLockBody().host).toBe('some-other-host');
+    expect(existsSync(`${lockPath}.acquire`)).toBe(false);
   });
 });
 
@@ -241,6 +316,7 @@ describe('tryAcquireFileLock — signalVanished', () => {
 
     expect(result.acquired).toBe(false);
     expect(result.reason).toBe('vanished');
+    expect(existsSync(`${lockPath}.acquire`)).toBe(false);
     spy.mockRestore();
   });
 
@@ -264,6 +340,7 @@ describe('tryAcquireFileLock — signalVanished', () => {
     expect(result.acquired).toBe(false);
     expect(result.reason).toBe('held');
     expect(result.existing).toBe(null);
+    expect(existsSync(`${lockPath}.acquire`)).toBe(false);
     spy.mockRestore();
   });
 });

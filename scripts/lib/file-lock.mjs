@@ -6,11 +6,12 @@
  * and the state-lock / staging-fence / session-lock blocks of session-lock.mjs).
  * Each copy independently re-implemented the same skeleton:
  *
- *   1. atomic create-or-fail via `linkSync(tmp, lock)` (POSIX mutex);
- *   2. on EEXIST → read + parse the existing body;
- *   3. same-host + dead-PID (or unparseable) → atomic override + WARN;
- *   4. live holder OR cross-host → poll until a deadline;
- *   5. owner-guarded release.
+ *   1. exclusive acquisition guard via `linkSync(tmp, lock + '.acquire')`;
+ *   2. atomic create-or-fail via `linkSync(tmp, lock)` (POSIX mutex);
+ *   3. on EEXIST → read + parse the existing body;
+ *   4. same-host + dead-PID (or unparseable) → guarded override + WARN;
+ *   5. release the acquisition guard; live/cross-host holders wait until a deadline;
+ *   6. owner-guarded primary-lock release.
  *
  * This module is the single home for that skeleton. It is a near-PURE primitive:
  * it imports ONLY scripts/lib/io.mjs (for writeJsonAtomicSync), the two host
@@ -27,6 +28,8 @@
  *     opinion of its own — every divergence between the five copies is a knob.
  *   - Cross-host locks are NEVER auto-overridden (PSA-003 hard invariant).
  *   - Overrides always go through writeJsonAtomicSync (tmp + renameSync).
+ *   - #1284 serializes acquisition and takeover: a stale observation must not
+ *     replace a different process's newly acquired lock.
  *
  * No external dependencies — Node 20+ stdlib + io.mjs only.
  */
@@ -258,6 +261,21 @@ function serializeBody(body, indent) {
  * overridden via writeJsonAtomicSync and a WARN is emitted. A live holder or a
  * cross-host body returns `{ acquired: false, reason: 'held' }`.
  *
+ * Every acquisition pass owns the exclusive sibling `${lockPath}.acquire`
+ * from before create/read through any takeover. This prevents a waiter from
+ * reading an old holder, observing its exit, then replacing a newer holder.
+ * All contenders must use this guarded implementation; legacy writers that
+ * ignore the sibling guard cannot participate safely in the same protocol.
+ *
+ * Crash-liveness tradeoff: the guard is held only for this synchronous pass,
+ * not for the caller's critical section. If its owner dies during the pass or
+ * cleanup fails, the guard remains and attempts return `held` immediately;
+ * withFileLock's normal deadline bounds polling. Even a dead-PID or malformed
+ * guard is NEVER stolen, because stale-guard replacement would repeat the same
+ * race. Recovery requires quiescing every process that can acquire this lock,
+ * verifying the guard is abandoned, then explicitly removing only that sibling.
+ * The primary lock retains its existing stale/host/owner protections.
+ *
  * The `signalVanished` knob reproduces memory-proposals/store.mjs's distinct
  * third state: when the lock file disappears between the EEXIST and the read
  * (concurrent release race), `{ acquired: false, reason: 'vanished' }` is
@@ -284,6 +302,30 @@ function serializeBody(body, indent) {
  *   | { acquired: false, reason: 'held'|'vanished'|'fs-error', existing?: object|null, error?: string }}
  */
 export function tryAcquireFileLock(lockPath, opts = {}) {
+  const guardPath = `${lockPath}.acquire`;
+  const guard = createExclusive(guardPath, {
+    pid: process.pid,
+    host: os.hostname(),
+    acquiredAt: new Date().toISOString(),
+    kind: 'acquisition-guard',
+  }, { indent: 2, tmpPrefix: `${opts.tmpPrefix ?? '.file.lock'}.acquire` });
+  if (!guard.ok) {
+    return guard.reason === 'exists'
+      ? { acquired: false, reason: 'held', existing: null }
+      : { acquired: false, reason: 'fs-error', error: guard.error };
+  }
+
+  try {
+    return tryAcquireGuardedFileLock(lockPath, opts);
+  } finally {
+    // Only this pass can own/remove this guard; no acquisition path replaces
+    // it. An unlink failure deliberately leaves subsequent attempts blocked.
+    try { fs.unlinkSync(guardPath); } catch { /* fail closed; see recovery above */ }
+  }
+}
+
+/** Caller must hold the acquisition guard throughout this synchronous pass. */
+function tryAcquireGuardedFileLock(lockPath, opts) {
   const {
     staleCheck = 'pid',
     staleMs,

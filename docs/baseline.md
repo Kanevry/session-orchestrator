@@ -19,7 +19,61 @@ A separate git repository (not vendored, not a submodule, not on npm) carrying:
   rules are read **from the baseline**, not from this plugin, so the plugin had to
   learn the baseline's frontmatter convention rather than the other way round.
 
-## How the plugin finds it
+## How bootstrap finds it
+
+Bootstrap resolves only explicit local configuration, in this order:
+
+1. `SO_BASELINE_PATH`
+2. A matching entry in the host-local `owner.yaml` `baselines` list
+3. `owner.yaml` `paths.baseline-path`
+4. `plan-baseline-path` in the repository's Session Config
+
+`scripts/baseline-archetypes.mjs --repo <repo>` reuses the existing configuration
+resolvers. Their diagnostics are contained in a bounded local process so paths
+and private match names cannot leak through the bootstrap CLI. An absent or
+missing directory keeps the public fallback. An existing directory with a
+missing producer, unsupported schema, invalid metadata or unsafe source is an
+explicit error; bootstrap does not silently switch to a public default.
+
+The local producer is the baseline's `archetype-manifest.mjs export` CLI. Its reduced v1
+JSON owns IDs, ordering, declarative detection signals, runtimes, package
+managers, UI/API/deploy metadata, command documentation, quality gates, CI,
+browser automation, and rule targets. No private package inventory or source
+evidence is imported into the plugin. Marker inference uses exported priorities;
+an unknown result is `insufficient-evidence`, requiring a selection from the
+returned catalog for Standard/Deep. `--archetype <id>` validates an explicit ID.
+
+The CLI is read-only, offline and dependency-free without a baseline. Commands
+in its JSON are data and are never evaluated. Only the explicit scaffold action
+in [`private-contract.md`](../skills/bootstrap/private-contract.md) invokes the
+configured baseline's local renderer, into temporary staging. It preserves
+existing destination files and excludes staged rules. Deep retains baseline CI
+and its exemption/requirement instead of generating a public Node pipeline.
+New instruction-file command slots come from exactly matching declared gate
+IDs. Missing test/typecheck/lint gates are reported as unavailable and use
+`false` placeholders, never inferred npm commands. Private verification reports
+declared gates separately from unavailable slots; the generic quality runner
+is unchanged and an unavailable slot must not be reported as a passed check.
+
+S99 recomputes the complete exported rule union after rendering, including
+dependency-conditional targets, and validates the baseline's local `rules`
+projection against it. Sources must stay under `.claude/rules/` or
+`templates/shared/.claude/rules/`, with no symlinks. All basenames owned by
+`rules/_index.md` are excluded, including scoped entries: `rules-sync.mjs` remains
+their sole writer. `syncBootstrapRules` passes the contract's required plugin
+basenames to that writer after validating the local export, so a public scope
+tag cannot silently omit a private requirement. Private S99 adds missing local rules and preserves existing
+ones; the public opt-in fetch retains its existing remote behavior with the
+same plugin-ownership exclusion. No baseline is downloaded or located by
+guessing sibling/private host paths.
+
+New private quality policies use the same exact `test`, `typecheck`, and `lint`
+gate IDs as new Session Config blocks. Missing slots use `false` with an
+unavailable explanation; existing owner policies remain unchanged. Bootstrap
+accumulates actual created relative paths through inherited tiers and stages
+those files individually.
+
+## Legacy vault and maintenance resolution
 
 Never by a hardcoded path. Resolution is host-local, most specific first:
 

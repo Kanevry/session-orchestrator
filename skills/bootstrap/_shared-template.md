@@ -24,21 +24,39 @@ Idempotency is handled by the writer itself:
 Shell:
 ```bash
 mkdir -p "$REPO_ROOT/.claude"
-node "$PLUGIN_ROOT/scripts/lib/rules-sync.mjs" --repo-root "$REPO_ROOT"
-cp "$PLUGIN_ROOT/templates/_shared/loop.md" "$REPO_ROOT/.claude/loop.md"
+export PLUGIN_ROOT REPO_ROOT CONFIRMED_ARCHETYPE
+RULES_RESULT=$(node --input-type=module <<'NODE'
+import { pathToFileURL } from 'node:url';
+const { syncBootstrapRules } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`));
+const result = await syncBootstrapRules({ repoRoot: process.env.REPO_ROOT, archetype: process.env.CONFIRMED_ARCHETYPE || undefined });
+process.stdout.write(`${JSON.stringify(result)}\n`);
+if (result.status === 'error') process.exitCode = 2;
+NODE
+) || exit 2
+printf '%s\n' "$RULES_RESULT"
+while IFS= read -r _file; do BOOTSTRAP_FILES+=("$_file"); done \
+  < <(printf '%s\n' "$RULES_RESULT" | jq -r '.created[]')
+if [[ ! -e "$REPO_ROOT/.claude/loop.md" && ! -L "$REPO_ROOT/.claude/loop.md" ]]; then
+  cp "$PLUGIN_ROOT/templates/_shared/loop.md" "$REPO_ROOT/.claude/loop.md"
+  BOOTSTRAP_FILES+=(.claude/loop.md)
+fi
 ```
 
 The command prints a JSON report (`written` / `skipped` / `preserved` / `errors` / `warnings` / `sanitizer`) and exits non-zero on any error. Surface `errors[]` to the operator; a non-empty `preserved[]` is normal and means a repo-private rule was left alone.
 
 Also surface `sanitizer[]` (issue #1098) — `{file, line, kind, text}` records for citations that read fine inside the plugin repo and dangle once vendored (`repo-local-path`, `unresolvable-see-also`). The CLI additionally prints each one to stderr as `rules-sync: sanitizer <kind> <file>:<line> — <text>`. **Report it to the operator; do not act on it automatically** — the sanitizer never rewrites content and never changes the exit code, because silently stripping a citation would change a rule's meaning at vendoring time. A human decides whether the citation is a leak.
 
-Archetype-scoped entries in `rules/_index.md` resolve from `.orchestrator/bootstrap.lock`, which does not exist yet at this step — they report `archetype-unknown` and are skipped. The always-on rules (including `parallel-sessions.md`) are universal and vendor regardless. Re-run `/bootstrap --sync-rules` after the lock is written to pick up the archetype-scoped ones.
+The wrapper re-reads a configured private contract and passes its required plugin
+basenames into the canonical writer. The full set must resolve uniquely before
+any rule is written; source/provenance validation and local preservation still
+apply. On the public path, normal archetype filtering is unchanged. The selected
+ID is explicit during bootstrap; later `/bootstrap --sync-rules` can use the lock.
 
 Why: PSA-003 destructive-command safeguards require every consumer repo to carry the parallel-sessions rule. See issue #155. The `loop.md` vendor gives bare `/loop` a repo-aware maintenance prompt (issue #633 Hebel 3).
 
-Why one writer (issue #1060): a literal `cp` from a second source directory bypasses the pre-write validator AND lands a file carrying no provenance header. On the next `--sync-rules` a headerless file is classified as a repo-private override and preserved forever — so the plugin can never update it again, and whichever rival copy is smaller silently wins. `rules/` is the only source with a manifest, archetype scoping, a basename-collision guard and a pre-write validator, so it is the only sanctioned writer to `.claude/rules/`.
+Why one writer (issue #1060): a literal `cp` from a second source directory bypasses the pre-write validator AND lands a file carrying no provenance header. On the next `--sync-rules` a headerless file is classified as a repo-private override and preserved forever — so the plugin can never update it again, and whichever rival copy is smaller silently wins. For every basename declared in `rules/_index.md`, `rules-sync.mjs` is the sole writer: it owns the manifest, archetype scoping, basename-collision guard and pre-write validation. S99 may deliver baseline-only rules after excluding all plugin-owned basenames.
 
-Note: This step runs before the baseline-fetch step (S99/D99), and S99 must NOT overwrite a rule that `rules/` owns. The baseline's copy carries no provenance header, so letting it win would permanently mark the target as a repo-private override — the exact failure described above. `.claude/rules/parallel-sessions.md` has therefore been removed from the S99 manifest. Any other basename present in BOTH `rules/_index.md` and the S99 manifest has the same defect and needs the same treatment.
+Note: This step runs before S99/D99. Both the private local rule projection and the optional public fetch filter every basename in `rules/_index.md`, including currently nonmatching scoped entries. `parallel-sessions.md` and any future plugin-owned rule therefore remain under the same single writer.
 
 ---
 
@@ -48,7 +66,13 @@ Copy the opinionated agent templates into the consumer repo:
 
 ```bash
 mkdir -p "$REPO_ROOT/.claude/agents"
-cp "$PLUGIN_ROOT/skills/bootstrap/templates/agents/"*.md "$REPO_ROOT/.claude/agents/"
+for _source in "$PLUGIN_ROOT/skills/bootstrap/templates/agents/"*.md; do
+  _target=".claude/agents/$(basename "$_source")"
+  if [[ ! -e "$REPO_ROOT/$_target" && ! -L "$REPO_ROOT/$_target" ]]; then
+    cp "$_source" "$REPO_ROOT/$_target"
+    BOOTSTRAP_FILES+=("$_target")
+  fi
+done
 ```
 
 This scaffolds 3 opinionated agents (`project-discovery`, `project-code-review`, `project-quality-gate`) following CLAUDE.md Agent Authoring Rules. Consumer repos should edit descriptions/bodies to match project specifics — but keep the frontmatter structure intact (validated by `agent-frontmatter-invalid` probe).
@@ -103,7 +127,13 @@ vault:
 
 ## #baseline-fetch — Step S99: (Optional) Fetch Canonical Rules + Agents from Baseline
 
-This step is OPT-IN and only executes when ALL of the following are true:
+For `PATH_TYPE = private` and a confirmed archetype, this step applies only the
+validated local contract rule targets from `private-contract.md`. It is offline,
+rechecks conditional dependencies after scaffolding, preserves existing files,
+and fails closed on an invalid configured contract.
+
+For `PATH_TYPE = public`, the existing remote fetch remains OPT-IN and only
+executes when ALL of the following are true:
 - `baseline-ref` is present in Session Config (e.g., `baseline-ref: main`)
 - `GITLAB_TOKEN` env var is set
 - The session-orchestrator plugin includes `scripts/lib/fetch-baseline.mjs`
@@ -116,6 +146,23 @@ Without this step, rules arrive in the repo via Clank's weekly baseline sync MRs
 **Implementation:**
 
 ```bash
+if [[ "${PATH_TYPE:-public}" = "private" ]]; then
+  export PLUGIN_ROOT REPO_ROOT CONFIRMED_ARCHETYPE
+  BASELINE_RULES_RESULT=$(node --input-type=module <<'NODE'
+import { pathToFileURL } from 'node:url';
+const { applyBaselineRules } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`));
+const result = await applyBaselineRules({
+  repoRoot: process.env.REPO_ROOT,
+  archetype: process.env.CONFIRMED_ARCHETYPE,
+});
+process.stdout.write(`${JSON.stringify(result)}\n`);
+if (result.status === 'error') process.exitCode = 2;
+NODE
+) || exit 2
+  printf '%s\n' "$BASELINE_RULES_RESULT"
+  while IFS= read -r _file; do BOOTSTRAP_FILES+=("$_file"); done \
+    < <(printf '%s\n' "$BASELINE_RULES_RESULT" | jq -r '.created[]')
+else
 BASELINE_REF=$(echo "$CONFIG" | jq -r '."baseline-ref" // empty')
 BASELINE_PROJECT_ID=$(echo "$CONFIG" | jq -r '."baseline-project-id" // "52"')
 
@@ -145,6 +192,19 @@ if [[ -n "$BASELINE_REF" && -n "${GITLAB_TOKEN:-}" && -n "${GITLAB_HOST:-}" && -
 .claude/rules/ai-agent.md
 .claude/rules/claude-code-usage.md
 MANIFEST
+  # Every plugin-owned basename is excluded, including currently unmatched scoped
+  # rules. rules-sync is their sole writer; ownership does not depend on scope.
+  export PLUGIN_ROOT RULES_MANIFEST
+  node --input-type=module <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+const { pluginRuleTargets } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`));
+const owned = new Set(pluginRuleTargets(process.env.PLUGIN_ROOT));
+const files = readFileSync(process.env.RULES_MANIFEST, 'utf8').split('\n')
+  .filter(file => file && !owned.has(path.posix.basename(file)));
+writeFileSync(process.env.RULES_MANIFEST, files.join('\n') + '\n');
+NODE
 
   echo "Fetching canonical rules from baseline (project $BASELINE_PROJECT_ID, ref $BASELINE_REF)…"
   # The .mjs CLI is single-file: it prints ONE file body to stdout, exit 0 on success
@@ -153,10 +213,13 @@ MANIFEST
   SUCCESS_LOG=$(mktemp)
   while IFS= read -r rule_path; do
     [[ -z "$rule_path" ]] && continue
+    _RULE_CREATED=false
+    [[ -e "$REPO_ROOT/$rule_path" || -L "$REPO_ROOT/$rule_path" ]] || _RULE_CREATED=true
     mkdir -p "$REPO_ROOT/$(dirname "$rule_path")"
     if node "$PLUGIN_ROOT/scripts/lib/fetch-baseline.mjs" \
          "$BASELINE_PROJECT_ID" "$rule_path" "$BASELINE_REF" > "$REPO_ROOT/$rule_path"; then
       printf '%s\n' "$rule_path" >> "$SUCCESS_LOG"
+      if [[ "$_RULE_CREATED" = true ]]; then BOOTSTRAP_FILES+=("$rule_path"); fi
     else
       # A 404 (or any error) for one rule must not abort the batch — drop the empty
       # target the redirect created and continue with the next manifest line.
@@ -167,6 +230,8 @@ MANIFEST
   if [[ -s "$SUCCESS_LOG" ]]; then
     FETCHED_JSON=$(jq -R . < "$SUCCESS_LOG" | jq -s .)
     LOCK_FILE="$REPO_ROOT/.claude/.baseline-fetch.lock"
+    _FETCH_LOCK_CREATED=false
+    [[ -e "$LOCK_FILE" || -L "$LOCK_FILE" ]] || _FETCH_LOCK_CREATED=true
     mkdir -p "$REPO_ROOT/.claude"
     FETCHED_JSON="$FETCHED_JSON" BASELINE_PROJECT_ID="$BASELINE_PROJECT_ID" \
       BASELINE_REF="$BASELINE_REF" LOCK_FILE="$LOCK_FILE" \
@@ -183,6 +248,7 @@ MANIFEST
       writeFileSync(process.env.LOCK_FILE, JSON.stringify(lock, null, 2) + '\n');
     "
     echo "Wrote .claude/.baseline-fetch.lock ($(wc -l < "$SUCCESS_LOG" | tr -d ' ') files)"
+    if [[ "$_FETCH_LOCK_CREATED" = true ]]; then BOOTSTRAP_FILES+=(.claude/.baseline-fetch.lock); fi
   else
     echo "WARNING: baseline fetch produced no files; rules will arrive via Clank sync MRs (legacy path)" >&2
   fi
@@ -191,23 +257,39 @@ MANIFEST
 else
   echo "Skipping baseline fetch: baseline-ref / GITLAB_TOKEN / GITLAB_HOST not configured (legacy Clank-sync path)"
 fi
+fi
 ```
 
-**Failure handling:** If the fetch fails, this step DOES NOT abort bootstrap. The repo still has its scaffold; rules will arrive via the legacy Clank weekly sync MR. The user is informed via stderr.
+**Failure handling:** A private contract/apply error aborts bootstrap. For the public optional remote path, if the fetch fails, this step DOES NOT abort bootstrap. The repo still has its scaffold; rules will arrive via the legacy Clank weekly sync MR. The user is informed via stderr.
 
-**Idempotency:** Re-running bootstrap on an existing repo will overwrite `.claude/rules/*.md` files. Local edits to baseline rules in a repo will be lost on re-fetch — this is intentional (rules are canonical). Repo-specific extensions belong in `.claude/rules/local/*.md` (not fetched).
+**Idempotency:** Private local rules preserve existing files and report them for review. On the public optional remote path, re-running bootstrap on an existing repo will overwrite `.claude/rules/*.md` files. Local edits to baseline rules in a repo will be lost on re-fetch — this is intentional (rules are canonical). Repo-specific extensions belong in `.claude/rules/local/*.md` (not fetched).
 
 ---
 
 ## #quality-gate-policy — Step 6.5: Quality-Gate Policy File (#183)
 
-Write the canonical quality-gate commands to `.orchestrator/policy/quality-gates.json`. Bootstrap detects the package manager and writes sensible defaults; users may hand-edit afterwards.
+Write canonical commands to `.orchestrator/policy/quality-gates.json`. A private
+contract supplies exact test/typecheck/lint IDs, with `false` and an unavailable
+reason for absent IDs. Public bootstrap retains package-manager defaults.
 
 **Idempotency:** Skip this step if `.orchestrator/policy/quality-gates.json` already exists. Do not overwrite user edits.
 
 ```bash
 POLICY_FILE="$REPO_ROOT/.orchestrator/policy/quality-gates.json"
-if [[ ! -f "$POLICY_FILE" ]]; then
+if [[ "${PATH_TYPE:-public}" = private ]]; then
+  export PLUGIN_ROOT REPO_ROOT CONFIRMED_ARCHETYPE
+  POLICY_RESULT=$(node --input-type=module <<'NODE'
+import { pathToFileURL } from 'node:url';
+const { writeBaselineQualityPolicy } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`));
+const result = await writeBaselineQualityPolicy({ repoRoot: process.env.REPO_ROOT, archetype: process.env.CONFIRMED_ARCHETYPE });
+process.stdout.write(`${JSON.stringify(result)}\n`);
+if (result.status === 'error') process.exitCode = 2;
+NODE
+) || exit 2
+  printf '%s\n' "$POLICY_RESULT"
+  while IFS= read -r _file; do BOOTSTRAP_FILES+=("$_file"); done \
+    < <(printf '%s\n' "$POLICY_RESULT" | jq -r '.created[]')
+elif [[ ! -e "$POLICY_FILE" && ! -L "$POLICY_FILE" ]]; then
   mkdir -p "$REPO_ROOT/.orchestrator/policy"
   # Detect package manager via scripts/lib/package-manager.mjs (falls back to npm defaults)
   PM_JSON="$(node --input-type=module -e "
@@ -226,6 +308,7 @@ if [[ ! -f "$POLICY_FILE" ]]; then
     "rationale": "Canonical quality-gate commands. Generated by bootstrap. Edit to change test/typecheck/lint invocations across skills. Schema: .orchestrator/policy/quality-gates.schema.json",
     "commands": $cmds
   }' > "$POLICY_FILE"
+  BOOTSTRAP_FILES+=(.orchestrator/policy/quality-gates.json)
   echo "Wrote $POLICY_FILE"
 fi
 ```
@@ -241,10 +324,11 @@ Use the template at `skills/bootstrap/STATE.md.template`; the placeholder record
 
 ```bash
 STATE_FILE="$REPO_ROOT/.claude/STATE.md"
-if [[ ! -f "$STATE_FILE" ]]; then
+if [[ ! -e "$STATE_FILE" && ! -L "$STATE_FILE" ]]; then
   mkdir -p "$REPO_ROOT/.claude"
   ISO_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   sed "s|<ISO>|$ISO_NOW|g" "$PLUGIN_ROOT/skills/bootstrap/STATE.md.template" > "$STATE_FILE"
+  BOOTSTRAP_FILES+=(.claude/STATE.md)
   echo "Wrote $STATE_FILE"
 fi
 ```

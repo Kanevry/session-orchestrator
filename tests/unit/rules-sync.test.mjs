@@ -126,6 +126,60 @@ describe('syncRules — fresh consumer repo', () => {
   });
 });
 
+describe('syncRules — explicitly required manifest basenames', () => {
+  function fixture() {
+    const pluginRoot = makeFakePluginRoot(tmp());
+    const index = join(pluginRoot, 'rules/_index.md');
+    writeFileSync(index, readFileSync(index, 'utf8') + '\n- `opt-in-stack/required.md` — scoped [archetypes: public-example]\n');
+    mkdirSync(join(pluginRoot, 'rules/opt-in-stack'), { recursive: true });
+    const source = join(pluginRoot, 'rules/opt-in-stack/required.md');
+    writeFileSync(source, '<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/required.md) -->\n# Required\n');
+    return { pluginRoot, repoRoot: tmp(), source, index };
+  }
+
+  it('includes required rules outside the selected categories and archetype without changing defaults', () => {
+    const context = fixture();
+    const normal = syncRules({ ...context, archetype: 'private-example' });
+    expect(normal.skipped).toContainEqual({ file: 'rules/opt-in-stack/required.md', reason: 'archetype-mismatch' });
+    const result = syncRules({ ...context, categories: ['always-on'], archetype: 'private-example', requiredBasenames: ['required.md'] });
+    expect(result.errors).toEqual([]);
+    expect(result.written).toContain('required.md');
+    expect(readFileSync(join(context.repoRoot, '.claude/rules/required.md'), 'utf8')).toBe(readFileSync(context.source, 'utf8'));
+  });
+
+  it.each([[['required.md', 'missing.md']], [['../required.md']], [['required.md', 'required.md']], ['required.md']])('validates the entire required set before any write: %j', (requiredBasenames) => {
+    const context = fixture();
+    const result = syncRules({ ...context, requiredBasenames });
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.written).toEqual([]);
+    expect(existsSync(join(context.repoRoot, '.claude'))).toBe(false);
+  });
+
+  it('rejects an ambiguous required basename before writing universal rules', () => {
+    const context = fixture();
+    writeFileSync(context.index, readFileSync(context.index, 'utf8') + '\n- `always-on/required.md` — duplicate\n');
+    const result = syncRules({ ...context, requiredBasenames: ['required.md'] });
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.written).toEqual([]);
+    expect(existsSync(join(context.repoRoot, '.claude'))).toBe(false);
+  });
+
+  it('keeps required rules subject to provenance validation, local preservation and dry runs', () => {
+    const context = fixture();
+    const options = { ...context, archetype: 'private-example', requiredBasenames: ['required.md'] };
+    const valid = readFileSync(context.source, 'utf8');
+    writeFileSync(context.source, '# Missing provenance\n');
+    expect(syncRules(options).errors).toContainEqual(expect.objectContaining({ reason: expect.stringContaining('validation-failed') }));
+    expect(existsSync(join(context.repoRoot, '.claude/rules/required.md'))).toBe(false);
+    writeFileSync(context.source, valid);
+    expect(syncRules({ ...options, dryRun: true }).written).toContain('required.md');
+    expect(existsSync(join(context.repoRoot, '.claude/rules/required.md'))).toBe(false);
+    writeFileSync(join(context.repoRoot, '.claude/rules/required.md'), '# Owner rule\n');
+    expect(syncRules(options).preserved).toContain('required.md');
+    expect(readFileSync(join(context.repoRoot, '.claude/rules/required.md'), 'utf8')).toBe('# Owner rule\n');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Test 2 — Re-run on same consumer (files up to date) → written=0, no errors
 // ---------------------------------------------------------------------------

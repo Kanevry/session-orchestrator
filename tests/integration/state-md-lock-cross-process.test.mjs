@@ -125,11 +125,115 @@ await withStateMdLock(
 `;
 }
 
+/** Pause a waiter after it has read the old lock, before its PID check. The
+ * third process records its first real acquisition attempt so the parent can
+ * resume the waiter even when correct serialization blocks that third process.
+ */
+function buildTakeoverRaceWorker({ repoRoot, counterPath }) {
+  return `
+import { withStateMdLock } from '${SESSION_LOCK_PATH}';
+import fs from 'node:fs';
+import path from 'node:path';
+const root = ${JSON.stringify(repoRoot)};
+const counter = ${JSON.stringify(counterPath)};
+const role = process.argv[2];
+const lock = path.join(root, '.orchestrator', 'state.lock');
+const mark = (name, value = 'ready') => fs.writeFileSync(path.join(root, name), value);
+const wait = async (name) => {
+  const deadline = Date.now() + 10000;
+  while (!fs.existsSync(path.join(root, name))) {
+    if (Date.now() >= deadline) throw new Error('worker coordination timed out: ' + name);
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+};
+if (role === 'waiter') {
+  const read = fs.readFileSync;
+  let intercepted = false;
+  fs.readFileSync = function(filename, ...args) {
+    const raw = read.call(this, filename, ...args);
+    if (!intercepted && filename === lock) {
+      intercepted = true;
+      mark('waiter-read-old-lock');
+      const deadline = Date.now() + 10000;
+      while (!fs.existsSync(path.join(root, 'resume-waiter'))) {
+        if (Date.now() >= deadline) throw new Error('waiter coordination timed out');
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      }
+    }
+    return raw;
+  };
+}
+if (role === 'new-holder') {
+  const link = fs.linkSync;
+  let intercepted = false;
+  fs.linkSync = function(source, destination) {
+    const observe = !intercepted && path.dirname(destination) === path.dirname(lock);
+    if (observe) intercepted = true;
+    try {
+      const result = link.call(this, source, destination);
+      if (observe) mark('new-holder-attempt', 'created');
+      return result;
+    } catch (error) {
+      if (observe) mark('new-holder-attempt', error.code);
+      throw error;
+    }
+  };
+}
+await withStateMdLock(root, async () => {
+  const value = Number(fs.readFileSync(counter, 'utf8'));
+  mark(role + '-entered');
+  if (role === 'owner') await wait('release-owner');
+  if (role === 'new-holder') await wait('release-new-holder');
+  fs.writeFileSync(counter, String(value + 1));
+}, { timeoutMs: ${LOCK_ACQUIRE_TIMEOUT_MS} });
+`;
+}
+
+async function waitForMarker(name) {
+  const filename = join(repoRoot, name);
+  const deadline = Date.now() + 10000;
+  while (!existsSync(filename)) {
+    if (Date.now() >= deadline) throw new Error(`coordination timed out: ${name}`);
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  return readFileSync(filename, 'utf8');
+}
+
 // ---------------------------------------------------------------------------
 // Cross-process mutex contract
 // ---------------------------------------------------------------------------
 
 describe('cross-process withStateMdLock — mutex contract', () => {
+  it('serializes a stale waiter with a new holder after the observed owner exits', async () => {
+    const counterPath = join(repoRoot, 'counter.txt');
+    writeFileSync(counterPath, '0', 'utf8');
+    writeFileSync(workerPath, buildTakeoverRaceWorker({ repoRoot, counterPath }), 'utf8');
+
+    const owner = runChild(workerPath, ['owner']);
+    await waitForMarker('owner-entered');
+    const waiter = runChild(workerPath, ['waiter']);
+    await waitForMarker('waiter-read-old-lock');
+    writeFileSync(join(repoRoot, 'release-owner'), 'go');
+    const ownerResult = await owner;
+    expect(ownerResult.code, ownerResult.stderr).toBe(0);
+
+    const newHolder = runChild(workerPath, ['new-holder']);
+    const attempt = await waitForMarker('new-holder-attempt');
+    expect(['created', 'EEXIST']).toContain(attempt);
+    // Without acquisition serialization, the third process now holds the
+    // replacement lock. Keep it inside its read-modify-write critical section
+    // while the waiter decides the already-read owner PID is dead.
+    if (attempt === 'created') await waitForMarker('new-holder-entered');
+    writeFileSync(join(repoRoot, 'resume-waiter'), 'go');
+    const waiterResult = await waiter;
+    writeFileSync(join(repoRoot, 'release-new-holder'), 'go');
+    const newHolderResult = await newHolder;
+    for (const result of [waiterResult, newHolderResult]) {
+      expect(result.code, result.stderr).toBe(0);
+    }
+    expect(Number(readFileSync(counterPath, 'utf8'))).toBe(3);
+  }, 30000);
+
   it('5 sibling Node processes incrementing a shared counter produce exactly 5', async () => {
     const counterPath = join(repoRoot, 'counter.txt');
     writeFileSync(counterPath, '0', 'utf8');
