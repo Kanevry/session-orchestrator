@@ -1,7 +1,7 @@
 /**
  * narrative-mirror.mjs — Durable per-repo narrative mirror (Epic #673 Phase 1, #675).
  *
- * At session-end, extract from a repo's `.claude/STATE.md` the DURABLE narrative —
+ * At session-end, extract from a repo's active `STATE.md` the DURABLE narrative —
  * `## Wave History`, `## Deviations`, `## What Not To Retry`, plus the mission-status
  * rollup — and idempotently mirror it into a generator-owned per-repo vault file, so a
  * reviewer or stand-in can read PER REPO what was done, what failed, and what not to
@@ -31,7 +31,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { emitEvent, sessionAttribution } from '../events.mjs';
-import { parseStateMd, parseMissionStatus } from '../state-md.mjs';
+import { parseStateMd, parseMissionStatus, resolveStateMdPath } from '../state-md.mjs';
 import {
   parseFrontmatter,
   toDate,
@@ -328,7 +328,7 @@ export function renderNarrative(opts) {
   lines.push(`# ${repo ?? 'unknown'} — Session Narrative`);
   lines.push('');
   lines.push(
-    '> Durable per-repo narrative mirrored from `.claude/STATE.md` (Epic #673). ' +
+    '> Durable per-repo narrative mirrored from the repo\'s active `STATE.md` (Epic #673). ' +
       'What was done, what failed, and what not to retry — readable without opening the repo.',
   );
   lines.push('');
@@ -909,7 +909,7 @@ async function runNarrativeMirror(opts) {
   }
 
   // Read STATE.md (best-effort; absent STATE.md → nothing to mirror).
-  const stateMdPath = path.join(repoRoot, '.claude', 'STATE.md');
+  const stateMdPath = resolveStateMdPath(repoRoot);
   let stateContents;
   try {
     stateContents = await readFile(stateMdPath, 'utf8');

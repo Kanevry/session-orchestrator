@@ -493,6 +493,33 @@ describe('mirrorNarrative', () => {
     expect(result.path).toContain('/01-projects/nostate/_session-narrative.md');
   });
 
+  describe('STATE.md routing', () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    it.each([
+      ['Codex-only repo', false, '.codex', undefined],
+      ['Codex alongside stale Claude state', true, '.codex', undefined],
+      ['explicit state-directory override', true, '.session-state', '.session-state'],
+      ['legacy Claude fallback when Codex state is absent', false, '.claude', undefined],
+    ])('mirrors the selected session for %s', async (_name, withStateMd, selectedDir, override) => {
+      const { repoRoot, vaultDir } = scaffold({ repoDirName: 'StateRouting', withStateMd });
+      vi.stubEnv('SO_PLATFORM', 'codex');
+      vi.stubEnv('SO_STATE_DIR', override);
+      vi.stubEnv('SO_VAULT_DIR', vaultDir);
+      fs.mkdirSync(path.join(repoRoot, selectedDir), { recursive: true });
+      fs.writeFileSync(
+        path.join(repoRoot, selectedDir, 'STATE.md'),
+        '---\nsession-id: main-x\n---\n\n## Wave History\n\n- Active session history.\n',
+      );
+
+      const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+
+      expect(result.action).toBe('written');
+      const written = fs.readFileSync(result.path, 'utf8');
+      expect(extractNarrative(written).waveHistory).toBe('- Active session history.');
+    });
+  });
+
   it('returns skipped-vault-disabled when repoRoot is empty', async () => {
     // hostPaths is inert here (the empty-repoRoot guard returns before any
     // config read) but is passed anyway — hostpaths-guard.test.mjs pins
