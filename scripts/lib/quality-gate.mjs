@@ -117,16 +117,18 @@ function resolveRepoRoot(explicit) {
  * Closed set of `degraded` reasons for {@link loadCommandsFromSessionConfigDetailed}.
  *
  * Its own enum, deliberately not shared with `ci-status-banner.mjs`'s
- * `DEGRADED_REASONS`: the members below are exactly the three ways THIS
+ * `DEGRADED_REASONS`: the members below are the ways THIS
  * config-read can fail, and an enum whose members are not exhaustively
  * reachable cannot be switched on exhaustively.
  *
+ *   - `invalid-repo-root` — no non-blank string root was supplied.
  *   - `script-missing` — `scripts/parse-config.mjs` is not on disk.
  *   - `spawn-failed`   — the subprocess exited non-zero, timed out, or wrote
  *                        nothing to stdout.
  *   - `parse-error`    — stdout was not parseable JSON (or the read threw).
  */
 export const CONFIG_READ_DEGRADED_REASONS = Object.freeze([
+  'invalid-repo-root',
   'script-missing',
   'spawn-failed',
   'parse-error',
@@ -168,13 +170,18 @@ function sessionConfigFileExists(repoRoot) {
  * `degraded` is OMITTED, not set to null, on the success path, so a strict
  * `toEqual({commands: {…}})` pin holds for every readable config.
  *
- * Never throws.
+ * Requires an explicit, non-blank repository root; callers that intend cwd
+ * must resolve that default before invoking this loader. Never throws.
  *
  * @param {string} repoRoot
  * @returns {{commands: {lint?: string, typecheck?: string, test?: string},
- *            degraded?: 'script-missing'|'spawn-failed'|'parse-error'}}
+ *            degraded?: 'invalid-repo-root'|'script-missing'|'spawn-failed'|'parse-error'}}
  */
 export function loadCommandsFromSessionConfigDetailed(repoRoot) {
+  // Node inherits cwd for undefined/null, which would read another repo's config.
+  if (typeof repoRoot !== 'string' || !repoRoot.trim()) {
+    return { commands: {}, degraded: 'invalid-repo-root' };
+  }
   try {
     const scriptPath = join(
       dirname(fileURLToPath(import.meta.url)),
@@ -229,9 +236,9 @@ export function loadCommandsFromSessionConfigDetailed(repoRoot) {
  * Returns a partial object — keys that fail to resolve are simply absent
  * (the caller falls through to DEFAULT_COMMANDS for those).
  *
- * Thin wrapper over {@link loadCommandsFromSessionConfigDetailed}; byte-identical
- * return value for every input, including every failure path. Callers that need
- * to tell a failed read from an empty config use the detailed variant.
+ * Returns the commands half of {@link loadCommandsFromSessionConfigDetailed},
+ * including an empty object for an invalid root. Callers that need to tell a
+ * failed read from an empty config use the detailed variant.
  *
  * Never throws.
  *

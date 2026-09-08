@@ -34,6 +34,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -310,18 +311,25 @@ describe('loadCommandsFromSessionConfigDetailed — A6: failed read vs empty con
     expect('degraded' in detailed).toBe(false);
   });
 
-  it('reports degraded=parse-error when the read itself throws', () => {
-    // The `parse-error` member was in the enum but no test ever produced it.
-    // Reachable without any mock: a NON-STRING repoRoot makes `join()` inside
-    // the try block throw, and the catch stamps `parse-error` (measured
-    // 2026-09-05: `123`, `{}`, `['/tmp']` all → `{commands:{},
-    // degraded:'parse-error'}`). That is a real caller shape — a repoRoot
-    // resolved from config can arrive as a non-string — and the contract that
-    // matters is that it NEVER throws out to the gate loop.
-    const detailed = loadCommandsFromSessionConfigDetailed(/** @type {any} */ (123));
+  it.each([undefined, null, '', ' \t\n ', 123])('rejects invalid repoRoot %j without reading ambient commands (#1231)', (invalidRoot) => {
+    writeFileSync(join(repoRoot, 'CLAUDE.md'), '# T\n## Session Config\ntest-command: fixture-test\nlint-command: fixture-lint\ntypecheck-command: fixture-typecheck\n');
+    // Give the real loader its own process so its ambient cwd is a fixture,
+    // independent of the checkout's config and the other tests' working dirs.
+    const moduleUrl = new URL('../../scripts/lib/quality-gate.mjs', import.meta.url).href;
+    const output = execFileSync(process.execPath, ['--input-type=module', '-e', `
+      import { loadCommandsFromSessionConfigDetailed as load } from ${JSON.stringify(moduleUrl)};
+      console.log(JSON.stringify({ invalid: load(${JSON.stringify(invalidRoot)}), explicit: load(process.cwd()) }));
+    `], {
+      cwd: repoRoot,
+      env: { ...process.env, SO_CONFIG_FILE: 'CLAUDE.md' },
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
 
-    expect(detailed.commands).toEqual({});
-    expect(detailed.degraded).toBe('parse-error');
+    expect(JSON.parse(output)).toEqual({
+      invalid: { commands: {}, degraded: 'invalid-repo-root' },
+      explicit: { commands: { test: 'fixture-test', lint: 'fixture-lint', typecheck: 'fixture-typecheck' } },
+    });
   });
 });
 
