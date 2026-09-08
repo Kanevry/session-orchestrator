@@ -140,11 +140,17 @@ let repo;
  * Run the CLI against a repo root.
  * @returns {{ status: number, stdout: string, stderr: string }}
  */
-function runCli(args, root = repo) {
+function runCli(args, root = repo, extraEnv = {}) {
   const res = spawnSync('node', [CLI, ...args], {
     encoding: 'utf8',
     maxBuffer: 20 * 1024 * 1024,
-    env: { ...process.env, CLAUDE_PROJECT_DIR: root },
+    env: {
+      ...process.env,
+      SO_PLATFORM: 'claude', SO_STATE_DIR: '',
+      CLAUDE_PLUGIN_ROOT: '', CODEX_PLUGIN_ROOT: '', CURSOR_RULES_DIR: '', PI_PLUGIN_ROOT: '',
+      CLAUDE_PROJECT_DIR: root,
+      ...extraEnv,
+    },
   });
   return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
 }
@@ -167,6 +173,29 @@ beforeAll(() => {
 
 afterAll(() => {
   rmSync(repo, { recursive: true, force: true });
+});
+
+describe('native wave-scope fallback', () => {
+  // Bug: default .claude scope selects another wave's learnings; explicit inputs must still win.
+  it.each([
+    ['native default', () => [], 'wave-executor-dispatch-order'],
+    ['explicit wave scope', (root) => ['--wave-scope', join(root, '.claude/wave-scope.json')], 'learnings-selector-trap'],
+    ['agent scope over explicit wave scope', (root) => ['--file-scope', join(root, 'agent.json'), '--wave-scope', join(root, '.codex/wave-scope.json')], 'learnings-selector-trap'],
+  ])('uses %s without requiring a native STATE.md', (_name, argsFor, expected) => {
+    const root = makeRepo('print-learnings-native-', { records: CORPUS, waveScope: { allowedPaths: ['scripts/lib/learnings/select.mjs'] } });
+    try {
+      mkdirSync(join(root, '.codex'));
+      writeJson(root, '.codex/wave-scope.json', { allowedPaths: ['skills/wave-executor/wave-loop.md'] });
+      writeJson(root, 'agent.json', ['scripts/lib/learnings/select.mjs']);
+      writeFileSync(join(root, '.claude', 'STATE.md'), '---\nsession-type: housekeeping\n---\n');
+      const result = runCli(['--json', '--no-event', '--max-global', '0', ...argsFor(root)], root, { SO_PLATFORM: 'codex', SO_STATE_DIR: '' });
+
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout).learnings.map((entry) => entry.subject)).toEqual([expected]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
