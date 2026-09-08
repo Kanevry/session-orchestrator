@@ -27,7 +27,7 @@
  *      inverting the very result under test (.claude/rules/bash-harness-pitfalls.md §4).
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, inject } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, cpSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
@@ -37,7 +37,6 @@ import { fileURLToPath } from 'node:url';
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..', '..');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'lib', 'validate', 'check-auq-clarity.mjs');
-const VALIDATE_PLUGIN = join(REPO_ROOT, 'scripts', 'validate-plugin.mjs');
 
 /**
  * A real, currently-clean template with a `header:` literal of 9 code points.
@@ -282,18 +281,11 @@ describe('check-auq-clarity.mjs — corpus reach beyond markdown', () => {
 // ---------------------------------------------------------------------------
 
 describe('check-auq-clarity.mjs — wiring into validate-plugin.mjs', () => {
-  // The orchestrator forks ~22 grandchildren and needs ~12s, over the 10s
-  // `testTimeout`; `hookTimeout` is 30s. Same hoist, same reason, as
-  // tests/scripts/validate-plugin.test.mjs and tests/agents/persona-reviewers.test.mjs.
+  // Share the actual pre-worker scan; keep the registration assertion (#1278).
   let r;
   beforeAll(() => {
-    r = spawnSync(process.execPath, [VALIDATE_PLUGIN, REPO_ROOT], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-      maxBuffer: 64 * 1024 * 1024,
-      timeout: 120_000,
-    });
-  }, 120_000); // hook timeout: the shared GitLab runner needed >30 s on 2026-09-07 (pipelines 8790/8791); same value as tests/scripts/validate-plugin.test.mjs
+    r = inject('pluginValidation');
+  });
 
   // CATCHES: the guard existing, being tested, and having no caller — the
   // documented "built, documented, tested, never switched on" class this file

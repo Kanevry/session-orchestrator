@@ -540,10 +540,10 @@ coverage:
     # tests (instrumentation overhead), so the inner cap is 1500s (25m) under
     # the 30m job ceiling — the cap must EXCEED the true instrumented runtime so
     # vitest writes the JSON before any tinypool exit-hang is killed. The
-    # cobertura artifact + the threshold-breach grep below are SEPARATE gates
-    # from test-green: the JSON `success` field reflects test pass/fail, not the
-    # coverage threshold.
-    - 'rm -f /tmp/cov-result.json'   # stale-file guard on reused shell-executor hosts
+    # coverage summary + Cobertura verifier is SEPARATE from test-green:
+    # the test JSON `success` field does not attest coverage thresholds.
+    # Clear every proof from prior runs before starting on a reused executor.
+    - 'rm -f /tmp/cov-result.json coverage/coverage-summary.json coverage/cobertura-coverage.xml .ci-markers/coverage.ok'
     # --exclude excludes the heavy 3-subprocess integration test from the v8-instrumented
     # coverage lane ONLY (it still runs in the `test:` shards). Per #691 durable fix: it flakes
     # only under v8 coverage instrumentation (contention-fragile in the slowest lane) and its
@@ -552,16 +552,15 @@ coverage:
     - 'timeout --preserve-status 1500s npm run test:coverage -- --exclude "tests/integration/multi-session-registry.test.mjs" --reporter=default --reporter=json --outputFile=/tmp/cov-result.json --no-color 2>&1 | tee /tmp/cov.log || true'
     - 'tail -60 /tmp/cov.log'
     - 'node scripts/ci/assert-vitest-green.mjs /tmp/cov-result.json'
-    # Verify the cobertura artifact was actually written.
-    - 'test -f coverage/cobertura-coverage.xml && echo "[ci] coverage artifact present"'
-    # Threshold gate: vitest prints "Coverage for X (n%) does not meet … below".
-    - '! grep -q "Coverage for .* .* below" /tmp/cov.log'
+    # A standalone command makes failure abort under errexit. The former
+    # `test ... && echo` and `! grep` steps both bypassed it (#1279).
+    - 'node scripts/ci/assert-coverage-green.mjs coverage/coverage-summary.json coverage/cobertura-coverage.xml'
     # Marker for pipeline-gate — MUST stay the LAST script line. `artifacts.when`
     # is `always` here (the cobertura report is wanted even on failure), so the
     # marker's guarantee is its POSITION, not the upload condition: any failing
     # line above aborts the job before the marker is ever written.
     - 'mkdir -p .ci-markers && echo "coverage verified $(date -u +%Y-%m-%dT%H:%M:%SZ)" > .ci-markers/coverage.ok'
-  coverage: '/^Lines\s+:\s+\d+(?:\.\d+)?%/'
+  coverage: '/^\[ci\] coverage verified: lines=\d+(?:\.\d+)?%/'
   artifacts:
     when: always
     reports:

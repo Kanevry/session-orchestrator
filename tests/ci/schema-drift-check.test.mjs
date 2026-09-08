@@ -1,9 +1,11 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { load as loadYaml } from 'js-yaml';
+import vitestConfig from '../../vitest.config.mjs';
 
 const YAML_PATH = resolve(process.cwd(), '.gitlab-ci.yml');
 const doc = loadYaml(readFileSync(YAML_PATH, 'utf8'));
@@ -46,20 +48,19 @@ afterEach(() => {
 });
 
 /**
- * Execute real script steps from the job under `sh`, exactly as the runner
- * would: GitLab aborts the step list at the first non-zero step, which is what
- * `&&` reproduces here. Nothing is re-typed — the strings come from the parsed
- * YAML, so a test can only pass against the job as committed.
+ * Execute real script steps with errexit and newline boundaries. An &&-joined
+ * list changes errexit semantics and hid the coverage gate's failures (#1279).
+ * Nothing is re-typed: the strings come from the parsed YAML.
  *
  * @param {string[]} steps script strings, in order
  * @param {Record<string,string>} env environment for the run (PATH is added)
  * @param {string} [pathPrefix] directory prepended to PATH (for command shims)
+ * @param {string} [cwd] isolated working directory
  */
-function runSteps(steps, env, pathPrefix) {
+function runSteps(steps, env, pathPrefix, cwd) {
   const PATH = pathPrefix ? `${pathPrefix}:${process.env.PATH}` : process.env.PATH;
-  // trim(): a YAML folded scalar ends in a newline, and a newline immediately
-  // before `&&` is a shell syntax error (exit 2) rather than a step boundary.
-  return spawnSync('sh', ['-c', steps.map((s) => s.trim()).join(' && ')], {
+  return spawnSync('sh', ['-c', `set -e\n${steps.join('\n')}`], {
+    cwd,
     encoding: 'utf8',
     timeout: 20_000,
     env: { PATH, ...env },
@@ -151,6 +152,133 @@ describe('schema-drift-check CI job (#279)', () => {
     // widening, such as adding 0 or 1 to the list.
     expect(job.allow_failure).toEqual({ exit_codes: [3] });
   });
+});
+
+// The real coverage job swallowed a missing XML file AND threshold failures in
+// pipeline 8817. Run its parsed steps, replacing only the expensive test process
+// with a result writer and relocating shared /tmp paths into an isolated cwd.
+const coverageJob = doc.coverage;
+const coverageMetrics = ['lines', 'functions', 'statements', 'branches'];
+const coverageThresholds = vitestConfig.test.coverage.thresholds;
+
+function coverageSummary() {
+  return { total: Object.fromEntries(coverageMetrics.map((metric) => [metric, {
+    total: 100, covered: coverageThresholds[metric], skipped: 0, pct: coverageThresholds[metric],
+  }])) };
+}
+
+function cobertura(summary) {
+  const { lines, branches } = summary.total;
+  return `<?xml version="1.0" ?>\n<coverage lines-valid="${lines.total}" lines-covered="${lines.covered}" line-rate="${lines.pct / 100}" branches-valid="${branches.total}" branches-covered="${branches.covered}" branch-rate="${branches.pct / 100}"><sources><source>fixture</source></sources><packages><package name="fixture"><classes><class name="fixture" filename="fixture.mjs"><methods/><lines><line number="1" hits="1"/></lines></class></classes></package></packages></coverage>\n`;
+}
+
+function runCoverageJob({ summary = coverageSummary(), xml, log = '', stale = false } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'so-coverage-job-'));
+  tmpDirs.push(dir);
+  mkdirSync(join(dir, 'bin'));
+  mkdirSync(join(dir, 'coverage'));
+  symlinkSync(resolve('scripts'), join(dir, 'scripts'), 'dir');
+  if (stale) {
+    writeFileSync(join(dir, 'coverage/coverage-summary.json'), JSON.stringify(coverageSummary()));
+    writeFileSync(join(dir, 'coverage/cobertura-coverage.xml'), cobertura(coverageSummary()));
+    mkdirSync(join(dir, '.ci-markers'));
+    writeFileSync(join(dir, '.ci-markers/coverage.ok'), 'stale marker');
+  }
+  writeFileSync(join(dir, 'write-results.mjs'), `
+    import { writeFileSync } from 'node:fs';
+    if (process.env.COV_SUMMARY !== undefined) writeFileSync('coverage/coverage-summary.json', process.env.COV_SUMMARY);
+    if (process.env.COV_XML !== undefined) writeFileSync('coverage/cobertura-coverage.xml', process.env.COV_XML);
+    writeFileSync('cov-result.json', JSON.stringify({ success: true, numTotalTests: 6000, numPassedTests: 6000, numFailedTests: 0, numFailedTestSuites: 0 }));
+    process.stdout.write(process.env.COV_LOG);
+  `);
+  writeFileSync(join(dir, 'bin/timeout'), '#!/bin/sh\nexec "$TEST_NODE" write-results.mjs\n', { mode: 0o755 });
+  const env = { TEST_NODE: process.execPath, COV_LOG: log };
+  if (summary !== null) env.COV_SUMMARY = typeof summary === 'string' ? summary : JSON.stringify(summary);
+  if (xml !== null) env.COV_XML = xml ?? cobertura(typeof summary === 'object' && summary?.total ? summary : coverageSummary());
+  const steps = coverageJob.script.map((step) => step
+    .replaceAll('/tmp/cov-result.json', 'cov-result.json').replaceAll('/tmp/cov.log', 'cov.log'));
+  return { ...runSteps(steps, env, join(dir, 'bin'), dir), marker: existsSync(join(dir, '.ci-markers/coverage.ok')) };
+}
+
+describe('coverage CI job fails closed before its verified marker (#1279)', () => {
+  it('accepts complete reports exactly at the configured thresholds', () => {
+    const result = runCoverageJob();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.marker).toBe(true);
+    const match = result.stdout.match(new RegExp(coverageJob.coverage.slice(1, -1), 'm'));
+    expect(match, 'GitLab must find the verified coverage line').not.toBeNull();
+    expect(Number(match[0].match(/\d+(?:\.\d+)?/)[0])).toBe(coverageThresholds.lines);
+  });
+
+  it.each([
+    ['missing Cobertura', { xml: null }],
+    ['empty Cobertura', { xml: '' }],
+    ['malformed Cobertura', { xml: '<coverage><packages></coverage>' }],
+    ['Cobertura with totals but no body', { xml: cobertura(coverageSummary()).replace(/<sources>[\s\S]*<\/packages>/, '') }],
+    ['Cobertura with only an unknown child', { xml: cobertura(coverageSummary()).replace(/<sources>[\s\S]*<\/packages>/, '<junk/>') }],
+    ['contradictory duplicate XML attributes', { xml: cobertura(coverageSummary()).replace('line-rate="', 'line-rate="0" line-rate="') }],
+    ['missing summary', { summary: null }],
+    ['truncated summary', { summary: '{"total":' }],
+    ['unknown summary shape', { summary: { result: 'success' } }],
+  ])('rejects %s even when all tests passed', (_name, input) => {
+    const result = runCoverageJob(input);
+    expect(result.status).not.toBe(0);
+    expect(result.marker).toBe(false);
+  });
+
+  it.each(coverageMetrics)('rejects %s below its canonical floor regardless of log wording', (metric) => {
+    const summary = coverageSummary();
+    summary.total[metric].covered--;
+    summary.total[metric].pct--;
+    const log = metric === 'lines'
+      ? `ERROR: Coverage for lines (${summary.total.lines.pct}%) does not meet global threshold (${coverageThresholds.lines}%)\n`
+      : metric === 'branches' ? 'Coverage for branches (59%) below\n' : '';
+    const result = runCoverageJob({ summary, log });
+    expect(result.status).not.toBe(0);
+    expect(result.marker).toBe(false);
+  });
+
+  it('rejects incomplete or contradictory numeric coverage data', () => {
+    for (const corrupt of [
+      (summary) => { delete summary.total.statements; },
+      (summary) => { summary.total.functions.pct = '100'; },
+      (summary) => { summary.total.statements.covered = 101; },
+      (summary) => { summary.total.statements.pct = 100; },
+    ]) {
+      const summary = coverageSummary();
+      corrupt(summary);
+      const result = runCoverageJob({ summary });
+      expect(result.status).not.toBe(0);
+      expect(result.marker).toBe(false);
+    }
+  });
+
+  it('cannot reuse prior reports or a prior verified marker after an incomplete run', () => {
+    const result = runCoverageJob({ summary: null, xml: null, stale: true });
+    expect(result.status).not.toBe(0);
+    expect(result.marker).toBe(false);
+  });
+
+  it('the configured Vitest reporters produce both CI artifacts in a real instrumented run', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-coverage-reporters-'));
+    tmpDirs.push(dir);
+    symlinkSync(resolve('node_modules'), join(dir, 'node_modules'), 'dir');
+    writeFileSync(join(dir, 'fixture.mjs'), 'export function choose(value) { return value ? 1 : 2; }\n');
+    writeFileSync(join(dir, 'fixture.test.mjs'), "import { it, expect } from 'vitest'; import { choose } from './fixture.mjs'; it('covers both branches', () => { expect(choose(true)).toBe(1); expect(choose(false)).toBe(2); });\n");
+    writeFileSync(join(dir, 'vitest.config.mjs'), `import config from ${JSON.stringify(pathToFileURL(resolve('vitest.config.mjs')).href)};
+      export default { ...config, test: { ...config.test, include: ['fixture.test.mjs'], setupFiles: [], globalSetup: [], maxWorkers: 1,
+        coverage: { ...config.test.coverage, enabled: true, include: ['fixture.mjs'], exclude: [] } } };\n`);
+    const result = spawnSync(process.execPath, [resolve('node_modules/vitest/vitest.mjs'), 'run'], {
+      cwd: dir, encoding: 'utf8', timeout: 20_000,
+    });
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    const verified = runCoverageJob({
+      summary: readFileSync(join(dir, 'coverage/coverage-summary.json'), 'utf8'),
+      xml: readFileSync(join(dir, 'coverage/cobertura-coverage.xml'), 'utf8'),
+    });
+    expect(verified.status, verified.stderr).toBe(0);
+    expect(verified.marker).toBe(true);
+  }, 25_000);
 });
 
 // ---------------------------------------------------------------------------

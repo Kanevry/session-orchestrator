@@ -19,7 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI audit detection examines executable GitHub steps and GitLab jobs, recognizes package-manager options and supported wrappers, and excludes metadata, comments, unused templates and help-only invocations. Local GitLab references, inheritance and `spec:inputs` headers are supported; external includes and dynamic conditions remain outside this heuristic (#1040).
 - Vault session notes render lifecycle agent counts, preserve measured zero, and label counts known only as completed or planned (#1276).
 - Guide copy buttons stay beside their command blocks, including multiline snippets and narrow screens (#1275).
-- Full-repository validator smoke tests have a targeted 60-second child budget and 65-second enclosing test/hook budget after the aggregate scan exceeded 30 seconds in CI coverage. All checks and assertions remain enabled (#1278).
+- Full-repository validation runs once before Vitest workers start, and its result is shared by the existing smoke assertions. This avoids four competing scans during coverage while retaining mandatory validation and failure propagation (#1278).
+- Coverage verification now requires generated reports and compares structured measurements with the canonical Vitest thresholds before writing its verified marker. Missing artifacts and low coverage previously passed through shell conditions that did not stop the CI job (#1279).
 
 ### Changed
 
