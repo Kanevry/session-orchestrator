@@ -316,14 +316,14 @@ indicates a translucent/blurred background that uses:
 - `.glassEffect()` — correct Liquid Glass API
 - `.glassEffect(.regular)` / `.glassEffect(.prominent)` — parametrised Liquid Glass
 - Solid color backgrounds (no blur) — these are not Liquid Glass candidates
-- Explicitly documented exceptions in `docs/apple-hig-exceptions.md`
+- Explicitly documented exceptions in `docs/apple-hig-exceptions.md` <!-- path-check: example -->
 
 **Severity mapping:**
 
 | Condition | Severity |
 |---|---|
 | Non-compliant surface, no documented exception | MEDIUM |
-| Non-compliant surface, documented exception in `docs/apple-hig-exceptions.md` | LOW |
+| Non-compliant surface, documented exception in `docs/apple-hig-exceptions.md` | LOW <!-- path-check: example --> |
 
 **Evidence required:**
 - Peekaboo screenshot of the non-compliant surface (referenced in `evidence_path`).

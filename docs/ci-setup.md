@@ -123,7 +123,7 @@ jobs, so a half-revert or a template refresh flipping one site back to
    check diffs real content rather than passing on a broken comparison.
 
 Per `.claude/rules/security.md` § SEC-005, this token's lifecycle belongs in
-`.claude/docs/SECRETS-INVENTORY.md` once one exists — that file is not present
+`.claude/docs/SECRETS-INVENTORY.md` once one exists — that file is not present <!-- path-check: example -->
 in this repo (measured 2026-09-02: no `.claude/docs/` directory tracked), so
 the inventory is not adopted here and this section remains the sole record.
 

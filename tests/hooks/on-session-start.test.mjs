@@ -16,6 +16,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { isRoot } from '../_helpers/perms.mjs';
 import { telemetryIsolationEnv } from '../_helpers/telemetry-isolation.mjs';
+import { brokenModuleBoot } from '../_helpers/broken-module-boot.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -30,10 +31,10 @@ const EVENTS_RELPATH = path.join('.orchestrator', 'metrics', 'events.jsonl');
 
 /**
  * Spawn the hook with the given environment overrides and collect result.
- * @param {{ projectDir: string, env?: Record<string,string> }} opts
+ * @param {{ projectDir: string, env?: Record<string,string>, execArgv?: string[] }} opts
  * @returns {Promise<{ code: number|null, stdout: string, stderr: string, pid: number|undefined }>}
  */
-async function runHook({ projectDir, env = {}, stdin = null, registryDir = null, useCwd = false }) {
+async function runHook({ projectDir, env = {}, stdin = null, registryDir = null, useCwd = false, execArgv = [] }) {
   return new Promise((resolve) => {
     const spawnOpts = {
       env: {
@@ -75,7 +76,7 @@ async function runHook({ projectDir, env = {}, stdin = null, registryDir = null,
     // runner's own repository worktrees. Opt-in keeps the
     // "nonexistent-project-dir graceful fallback" test working.
     if (useCwd) spawnOpts.cwd = projectDir;
-    const child = spawn(process.execPath, [HOOK], spawnOpts);
+    const child = spawn(process.execPath, [...execArgv, HOOK], spawnOpts);
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d; });
@@ -982,21 +983,33 @@ describe('mechanical session.lock writer (#584 + #587)', { timeout: 15000 }, () 
     expect(lock.mode).toBe('feature');
   });
 
-  it('T5: writes a fresh heartbeat and the default four-hour TTL', async () => {
+  it('T5: preserves creation time and refreshes the heartbeat after startup work, with the default four-hour TTL', async () => {
     const dir = await mkProjectTracked();
-    await runHook({ projectDir: dir });
+    // #1283: hook duration is not bounded by one second. Advance only the
+    // child's Date clock during the late startup probes; the real bootstrap
+    // and final heartbeat writer must stamp different instants without sleeps.
+    const clockBoot = "import { mock } from 'node:test'; "
+      + "mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-09-08T10:00:00.000Z') });";
+    const result = await runHook({
+      projectDir: dir,
+      env: { SO_DISABLE_STARTUP_PROBES: undefined },
+      execArgv: [
+        '--import', `data:text/javascript;base64,${Buffer.from(clockBoot).toString('base64')}`,
+        ...brokenModuleBoot({
+          moduleBasename: '/scripts/lib/session-start-probes.mjs',
+          workingSource: "import { mock } from 'node:test';\n"
+            + 'export async function runSessionStartProbes() {\n'
+            + "  mock.timers.setTime(Date.parse('2026-09-08T10:00:05.000Z'));\n"
+            + '  return { bannerLines: [] };\n'
+            + '}\n',
+        }),
+      ],
+    });
 
     const lock = await readSessionLock(dir);
-    expect(typeof lock.last_heartbeat).toBe('string');
-    expect(typeof lock.started_at).toBe('string');
-    const heartbeatMs = Date.parse(lock.last_heartbeat);
-    const startedMs = Date.parse(lock.started_at);
-    expect(Number.isFinite(heartbeatMs)).toBe(true);
-    expect(Number.isFinite(startedMs)).toBe(true);
-    // On bootstrap, last_heartbeat MUST equal started_at (the helper sets
-    // them identically). Allow up to 1s drift in case a future change
-    // updates last_heartbeat separately.
-    expect(Math.abs(heartbeatMs - startedMs)).toBeLessThanOrEqual(1000);
+    expect(result.code).toBe(0);
+    expect(lock.started_at).toBe('2026-09-08T10:00:00.000Z');
+    expect(lock.last_heartbeat).toBe('2026-09-08T10:00:05.000Z');
     expect(lock.ttl_hours).toBe(4);
   });
 

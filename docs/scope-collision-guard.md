@@ -25,6 +25,8 @@ Two things follow, and both are the point of #1020:
 
 `<state-dir>` is the first of `.pi` / `.cursor` / `.codex` / `.claude` that carries a `wave-scope.json` — the same precedence `findScopeFile()` and the hook's `waveKeyOf()` use.
 
+Step 1 also offers an opt-in path diagnostic: run `materialize-wave-scope.mjs` from the project root with `--warn-missing` to name absent concrete paths and their agents on stderr (#1235). Relative paths resolve from the working directory, not `<state-dir>`. A warning does not fail the command or change its stdout or either declaration shape. For a file the wave deliberately creates, repeat `--new-file PATH` as needed; every exception must exactly match a declared path and pass scope validation before any writes begin. Grants containing `*` or ending in `/` are skipped under the existing glob/prefix grammar; `?` and braces are literal. The canonical invocation and handling steps are in `skills/wave-executor/references/wave-loop-scope-manifest.md` § 3.1.
+
 ### 2.1 Why `--union` runs last
 
 A union computed over colliding scopes **launders the defect into the artefact meant to prevent it**: `allowedPaths` then grants the contested file, and every later gate — `--assert-subset`, `enforce-scope` Gate 7, the commit guard — sees a perfectly legal write. `validate()` in `validate-wave-scope.mjs` enforces the order in code: `--assert-subset` → `--assert-disjoint` → `--union`, and `--union` returns early because it is a QUERY MODE that replaces the manifest echo on stdout.

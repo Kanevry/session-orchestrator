@@ -2,8 +2,8 @@
 
 This directory holds three distinct classes of document. Knowing which class a
 file belongs to tells you whether to trust it as current, read it as history,
-or look for it in the (private) Meta-Vault instead. See `docs/prd/2026-07-08-docs-public-split.md`
-(Epic #774) for the sanitation project that established this split.
+or look for it in the (private) Meta-Vault instead. The archived, private PRD `docs/prd/2026-07-08-docs-public-split.md` <!-- path-check: historical -->
+(Epic #774) records the sanitation project that established this split; it is kept in the private Meta-Vault.
 
 ## The three classes
 
@@ -100,11 +100,11 @@ Two things worth knowing about this split:
 
 ### Superseded design notes
 
-Because `docs/specs/` is gitignored, a correction written INTO a spec can never be committed — so the correction lives here instead. `docs/specs/2026-05-26-parallel-aware-sessions-design.md` (parallel-aware sessions) specifies PID-based lock liveness (`stale-pid-dead`). That is **superseded**: liveness is heartbeat-age based since #1137 (`isLockLive`; `acquire()` knows only `stale-heartbeat`), and the recorded PID is consulted nowhere since #1151 — it was the PID of the short-lived subprocess that wrote the lock, dead within a second. Read the local spec only with that correction applied.
+Because `docs/specs/` is gitignored, a correction written INTO a spec can never be committed — so the correction lives here instead. `docs/specs/2026-05-26-parallel-aware-sessions-design.md` (parallel-aware sessions) specifies PID-based lock liveness (`stale-pid-dead`). That is **superseded**: liveness is heartbeat-age based since #1137 (`isLockLive`; `acquire()` knows only `stale-heartbeat`), and the recorded PID is consulted nowhere since #1151 — it was the PID of the short-lived subprocess that wrote the lock, dead within a second. Read the local spec only with that correction applied. <!-- path-check: historical -->
 
 ## See Also
 
-- `docs/prd/2026-07-08-docs-public-split.md` — the epic that established this split (S1–S8, issues #775–#782).
+- `docs/prd/2026-07-08-docs-public-split.md` — archived in the private Meta-Vault; the epic that established this split (S1–S8, issues #775–#782). <!-- path-check: historical -->
 - `docs/session-config-reference.md` — full Session Config field reference, including the two guards named above.
 - `docs/pm-skills-marketplace.md` — when to install `phuryn/pm-skills` alongside this plugin, and the overlap table against `/grill`, `/brainstorm`, `/plan`, `/discovery`.
 - `README.md` — top-level project overview; links into this router for anything docs-specific.

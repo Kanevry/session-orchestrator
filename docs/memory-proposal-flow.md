@@ -1,4 +1,4 @@
-<!-- Moved in v4.0.0 from `agents/memory-proposal-collector.md` (audit 2026-09-06 § 5A). It never was a dispatchable agent — it documents a coordinator-direct flow — but Claude Code's plugin loader registers every `agents/*.md` by directory convention and the manifest's `agents` key is additive-only, so no manifest entry could exclude it. Living under `docs/` removes the registration instead of bounding it. -->
+<!-- Moved in v4.0.0 from `agents/memory-proposal-collector.md` (audit 2026-09-06 § 5A). It never was a dispatchable agent — it documents a coordinator-direct flow — but Claude Code's plugin loader registers every `agents/*.md` by directory convention and the manifest's `agents` key is additive-only, so no manifest entry could exclude it. Living under `docs/` removes the registration instead of bounding it. --> <!-- path-check: historical -->
 
 # Memory Proposal Collector (Reference Documentation)
 
@@ -270,13 +270,13 @@ resolver, which is the correct failure mode.
 | `scripts/lib/memory-proposals/sink.mjs` | `promoteAndClear()` (composes `writeApproved()` + `clearProposalsJsonl()` behind the write-before-clear guard, #797/#828), `archiveRejected()` |
 | `agents/dialectic-deriver.md` | Similar coordinator-invoked pattern (compare: deriver dispatches as a subagent because it only reads files; this flow does not dispatch because it calls AUQ) |
 | `.claude/rules/ask-via-tool.md` §AUQ-004 | Authoritative rule prohibiting AUQ inside subagents |
-| `.claude/STATE.md` Wave History — D3 | Locked decisions: pagination=4, FIFO order, label format, decision tree |
+| `.claude/STATE.md` Wave History — D3 | Locked decisions: pagination=4, FIFO order, label format, decision tree <!-- path-check: example --> |
 
 ---
 
 ## Design Decisions (Locked — D3, Wave 1)
 
-These decisions are recorded in `.claude/STATE.md` Wave History line D3 and are not open
+These decisions are recorded in `.claude/STATE.md` Wave History line D3 and are not open <!-- path-check: example -->
 for revision within this session:
 
 - **Batch size**: 4 proposals per AUQ call (not 3, not 5).

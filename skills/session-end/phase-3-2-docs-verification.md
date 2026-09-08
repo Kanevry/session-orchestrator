@@ -57,7 +57,7 @@ The following mini-table mirrors `skills/docs-orchestrator/audience-mapping.md` 
 
 | Audience | Target file patterns |
 |----------|----------------------|
-| `user` | `README.md`, `docs/user/**/*.md`, `docs/getting-started.md`, `examples/**/*.md` |
+| `user` | `README.md`, `docs/user/**/*.md`, `docs/getting-started.md`, `examples/**/*.md` <!-- path-check: example --> |
 | `dev` | `CLAUDE.md` (or `AGENTS.md` on Codex CLI), `docs/dev/**/*.md`, `docs/adr/**/*.md` |
 | `vault` | `<vault>/01-projects/<slug>/context.md`, `<vault>/01-projects/<slug>/decisions.md`, `<vault>/01-projects/<slug>/people.md` |
 

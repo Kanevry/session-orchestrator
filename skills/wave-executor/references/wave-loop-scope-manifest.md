@@ -61,13 +61,13 @@ Before each wave dispatch:
 2. Validate by piping through `node "$PLUGIN_ROOT/scripts/validate-wave-scope.mjs"` (`$PLUGIN_ROOT` — see "Shell variables used in this section" above). If validation fails (exit 1), fix the JSON based on stderr errors and retry.
 3. **`allowedPaths` is COMPUTED from one canonical declaration array — never hand-transcribed (#1020/#1083).** Transcribing either declaration shape or the union by hand produced scope divergences. Globs stay verbatim (`scripts/*.sh`) — the enforcement hook resolves them at check time.
 
-   **3.1 — materialize both declaration shapes once.** Build one JSON array from the session plan, one `{id, files}` record for every agent plus exactly one `coordinator` record for the coordinator's planned direct edits. `files` arrays, their entries and their order are the plan's verbatim declarations. Materialize it ONCE and capture the aggregate-sidecar path:
+   **3.1 — materialize both declaration shapes once.** Build one JSON array from the session plan, one `{id, files}` record for every agent plus exactly one `coordinator` record for the coordinator's planned direct edits. `files` arrays, their entries and their order are the plan's verbatim declarations. Run from the **project root**, materialize it ONCE and capture the aggregate-sidecar path:
 
    ```bash
    WAVE_SCOPE_RECORDS='[{"id":"W3-I1","files":["scripts/example.mjs"]},{"id":"coordinator","files":["skills/wave-executor/wave-loop.md"]}]'
    WAVE_SCOPES_SIDECAR="$(
      printf '%s' "$WAVE_SCOPE_RECORDS" | node "$PLUGIN_ROOT/scripts/materialize-wave-scope.mjs" \
-       --state-dir "$STATE_DIR" --wave "$WAVE"
+       --state-dir "$STATE_DIR" --wave "$WAVE" --warn-missing
    )"
    [ -n "$WAVE_SCOPES_SIDECAR" ] || { echo "materialize-wave-scope produced no sidecar path" >&2; exit 1; }
    ```
@@ -80,6 +80,10 @@ Before each wave dispatch:
    value as well, so this guard and that refusal are belt and braces.
 
    `materialize-wave-scope.mjs` validates the COMPLETE input before writing; it writes `<state-dir>/filescopes/wave-<N>/<agent-id>.json` as each bare `files` array first, then writes `<state-dir>/filescopes/wave-<N>.scopes.json` as the unchanged aggregate record array last. Its human stdout is only that final sidecar path, so the command substitution above is the canonical `$WAVE_SCOPES_SIDECAR`. On error, do not continue with a partial declaration set; correct the plan and run the one command again.
+
+   **Check missing-path warnings before dispatch (#1235).** The recipe opts into `--warn-missing`: each absent concrete path is named with its agent on stderr. Relative paths resolve from the current project working directory, never from `$STATE_DIR`. A warning does not fail materialization or alter stdout, declaration bytes, ordering, or session binding. Grants containing `*` or ending in `/` retain their existing glob/prefix meaning and are skipped; `?` and braces remain literal path characters.
+
+   For each file the plan intentionally creates, append **`--new-file PATH`**, repeating the option for multiple files. Each exception must exactly match a path already declared in a `files` array and pass the same path validation. Invalid or undeclared exceptions fail before any scope file is written, even without `--warn-missing`. This explicit declaration suppresses only that path's warning; the materializer never guesses a filename or rewrites a grant. Without `--warn-missing`, existing callers keep their quiet missing-path behavior.
 
    The per-agent path IS `$AGENT_FILESCOPE_JSON` — the same file `--assert-subset` (#796 below), Grounding Injection (#85), the Learnings-Index (#1014) and File-Scope Injection (#1020) consume. Never write a `$TMPDIR` copy: it degrades to a signal-free allow when an injector cannot find the addressable wave-keyed file. The coordinator's record is materialized as `coordinator.json` and included in the aggregate, so its direct edits are covered by the two checks below.
 

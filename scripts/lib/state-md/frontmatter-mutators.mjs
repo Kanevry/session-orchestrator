@@ -11,9 +11,10 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
-import { dirname, join, resolve as resolvePath } from 'node:path';
+import { dirname, resolve as resolvePath } from 'node:path';
 import { parseStateMd, serializeStateMd } from './yaml-parser.mjs';
 import { withStateMdLock } from '../session-lock.mjs';
+import { resolveStateDir } from '../platform.mjs';
 
 /**
  * Sets frontmatter.updated to the given ISO 8601 timestamp and returns the
@@ -70,33 +71,26 @@ export function updateFrontmatterFields(contents, fields) {
 // writeFileSync(STATE)` migrate to `await writeStateMd(repoRoot, contents => …)`,
 // which mechanically serialises concurrent writers via `withStateMdLock`.
 
-// Canonical STATE.md path candidates (matches harness-audit category1 order).
-const STATE_MD_CANDIDATES = [
-  '.claude/STATE.md',
-  '.codex/STATE.md',
-  '.cursor/STATE.md',
-  '.pi/STATE.md',
-];
+// Legacy fallback order; the requested artifact's active harness always wins.
+const STATE_DIR_CANDIDATES = ['.claude', '.codex', '.cursor', '.pi'];
 
-function preferredStateMdCandidate() {
-  const envStateDir = process.env.SO_STATE_DIR;
-  if (typeof envStateDir === 'string' && envStateDir.length > 0) {
-    return join(envStateDir, 'STATE.md');
-  }
-  switch (process.env.SO_PLATFORM) {
-    case 'codex': return '.codex/STATE.md';
-    case 'cursor': return '.cursor/STATE.md';
-    case 'pi': return '.pi/STATE.md';
-    default: return '.claude/STATE.md';
-  }
-}
-
-function orderedStateMdCandidates() {
-  const preferred = preferredStateMdCandidate();
-  return [
-    preferred,
-    ...STATE_MD_CANDIDATES.filter((candidate) => candidate !== preferred),
-  ];
+/**
+ * Resolve a state artifact independently of other files in the state directory.
+ * Check SO_STATE_DIR, the detected active harness, then legacy harness directories.
+ * If none exist, return the preferred path for create-on-first-write callers.
+ * In particular, an existing legacy STATE.md must not redirect a native scope.
+ *
+ * @param {string|undefined} repoRoot
+ * @param {string} filename - Artifact filename, such as STATE.md or wave-scope.json.
+ * @returns {string} Absolute artifact path.
+ */
+export function resolveStateArtifactPath(repoRoot, filename) {
+  const root = repoRoot ?? process.cwd();
+  const override = (process.env.SO_STATE_DIR ?? '').trim();
+  const active = resolveStateDir();
+  const directories = [...new Set([override || active, active, ...STATE_DIR_CANDIDATES])];
+  const candidates = directories.map((directory) => resolvePath(root, directory, filename));
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
 }
 
 /**
@@ -110,13 +104,7 @@ function orderedStateMdCandidates() {
  * @returns {string}  Absolute path to STATE.md.
  */
 export function resolveStateMdPath(repoRoot) {
-  const root = repoRoot ?? process.cwd();
-  const candidates = orderedStateMdCandidates();
-  for (const candidate of candidates) {
-    const abs = resolvePath(join(root, candidate));
-    if (existsSync(abs)) return abs;
-  }
-  return resolvePath(join(root, candidates[0]));
+  return resolveStateArtifactPath(repoRoot, 'STATE.md');
 }
 
 // ---------------------------------------------------------------------------

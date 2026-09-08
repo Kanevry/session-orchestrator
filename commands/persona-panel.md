@@ -111,7 +111,7 @@ Resolves catalog and target, prints the planned dispatch list (persona names, mo
 /persona-panel docs/design-doc.md --grounding re-derive
 ```
 
-Each dispatched persona is instructed to independently re-derive supporting sources via Read/Grep/Glob rather than trusting a "Sources" section already present in `docs/design-doc.md`, and reports them as `derived_sources`. Advisory-only — `final_verdict` is unaffected.
+Each dispatched persona is instructed to independently re-derive supporting sources via Read/Grep/Glob rather than trusting a "Sources" section already present in the input document (for example, `docs/design-doc.md`), and reports them as `derived_sources`. Advisory-only — `final_verdict` is unaffected. <!-- path-check: example -->
 
 ## Related
 

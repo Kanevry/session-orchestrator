@@ -13,10 +13,13 @@ let sandbox;
 
 beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), 'bls-test-'));
+  vi.stubEnv('SO_PLATFORM', 'claude');
+  vi.stubEnv('SO_STATE_DIR', '');
 });
 
 afterEach(() => {
   rmSync(sandbox, { recursive: true, force: true });
+  vi.unstubAllEnvs();
 });
 
 /**
@@ -812,4 +815,39 @@ describe('#1071 — repoRoot binds STATE.md / sessions.jsonl / bootstrap.lock', 
   // branch-1..6 cases already pass absolute sandbox paths, so any regression
   // that joined repoRoot onto a caller-supplied absolute path (e.g. `join()`
   // instead of `resolve()`) turns THOSE red first. TV-004 — do not add a sibling.
+});
+
+describe('active harness recommendations', () => {
+  // Bug: the default reader returned null or stale Claude recommendations on Codex.
+  it.each([
+    ['native-only', '.codex', '.codex'],
+    ['native alongside Claude', '.claude', '.codex'],
+    ['legacy fallback', '.claude', '.claude'],
+  ])('reads the selected state for %s', async (_name, firstDir, selectedDir) => {
+    vi.stubEnv('SO_PLATFORM', 'codex');
+    vi.stubEnv('SO_STATE_DIR', '');
+    writeFixture(`${firstDir}/STATE.md`, VALID_STATE_MD.replace('recommended-mode: deep', 'recommended-mode: housekeeping'));
+    writeFixture(`${selectedDir}/STATE.md`, VALID_STATE_MD);
+
+    const signals = await buildLiveSignals({ repoRoot: sandbox, _scanBacklog: nullScanBacklog });
+
+    expect(signals.recommendedMode).toBe('deep');
+    expect(signals.topPriorities).toEqual([301, 302, 303]);
+  });
+
+  // Bug: adopting automatic resolution must not override an explicit caller path.
+  it('keeps relative and absolute statePath overrides above the state-directory override', async () => {
+    vi.stubEnv('SO_PLATFORM', 'codex');
+    vi.stubEnv('SO_STATE_DIR', '.session-state');
+    writeFixture('.session-state/STATE.md', VALID_STATE_MD.replace('recommended-mode: deep', 'recommended-mode: housekeeping'));
+    const explicit = writeFixture('chosen.md', VALID_STATE_MD);
+
+    const relative = await buildLiveSignals({ repoRoot: sandbox, statePath: 'chosen.md', _scanBacklog: nullScanBacklog });
+    const absolute = await buildLiveSignals({ repoRoot: sandbox, statePath: explicit, _scanBacklog: nullScanBacklog });
+    const automatic = await buildLiveSignals({ repoRoot: sandbox, _scanBacklog: nullScanBacklog });
+
+    expect(relative.recommendedMode).toBe('deep');
+    expect(absolute.recommendedMode).toBe('deep');
+    expect(automatic.recommendedMode).toBe('housekeeping');
+  });
 });

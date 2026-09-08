@@ -23,6 +23,7 @@ export { parseStateMd, serializeStateMd } from './state-md/yaml-parser.mjs';
 export {
   touchUpdatedField,
   updateFrontmatterFields,
+  resolveStateArtifactPath,
   resolveStateMdPath,
   writeStateMd,
   updateFrontmatterFieldsOnDisk,

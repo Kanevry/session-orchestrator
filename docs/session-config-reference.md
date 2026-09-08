@@ -588,7 +588,7 @@ This guard converts the manual post-copy `git diff` check (used to rescue the 07
 
 ### Heavy-Repo Preflight (HR-003/HR-004, baseline #60)
 
-`templates/shared/.claude/rules/heavy-repo.md` documents two Session Config fields for repos large enough that default parallelism risks resource pressure (HR-001 indicators: checkout > 50 MB, DB surface > 100 tables, prior parallel agent count > 15, build time > 90s, generated artifacts > 200 MB). Both fields are now wired end-to-end (previously documented but silently dropped by the parser):
+The two Session Config fields below apply to repos large enough that default parallelism risks resource pressure (HR-001 indicators: checkout > 50 MB, DB surface > 100 tables, prior parallel agent count > 15, build time > 90s, generated artifacts > 200 MB). The parser accepts both fields; their runtime effects and remaining limits are listed below:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -636,7 +636,7 @@ Requires:
 
 If the fetch fails (network error, auth error, missing file), bootstrap continues without aborting — rules will arrive via the legacy Clank sync path. A warning is printed.
 
-See: session-orchestrator issue #110, projects-baseline `docs/REPO-STATUS.md`.
+See: session-orchestrator issue #110, projects-baseline `docs/REPO-STATUS.md`. <!-- path-check: example -->
 
 ### baseline-project-id
 
@@ -968,7 +968,7 @@ broken-window-budget:
 
 ## Dialectic-Deriver (#506)
 
-Opt-in mode for `/evolve --dialectic` and session-end Phase 3.6.7 auto-trigger. When `cadence > 0`, session-end auto-dispatches `/evolve --dialectic --dry-run` after every N sessions to produce a proposed update to USER.md/AGENT.md peer cards (#503). The dry-run writes a sidecar at `.orchestrator/dialectic-pending.md`; the operator applies via `/evolve --dialectic --apply` in a subsequent session. Set `cadence: 0` as a kill-switch.
+Opt-in mode for `/evolve --dialectic` and session-end Phase 3.6.7 auto-trigger. When `cadence > 0`, session-end auto-dispatches `/evolve --dialectic --dry-run` after every N sessions to produce a proposed update to USER.md/AGENT.md peer cards (#503). The dry-run writes a sidecar at `.orchestrator/dialectic-pending.md`; the operator applies via `/evolve --dialectic --apply` in a subsequent session. Set `cadence: 0` as a kill-switch. <!-- path-check: example -->
 
 All fields live under a top-level `dialectic` object in your Session Config (CLAUDE.md or AGENTS.md):
 
@@ -989,7 +989,7 @@ dialectic:
 
 **Cross-reference:** PRD F2.5 (#506) — Honcho's "reasoning at consolidation time" insight, adopted without SaaS/AGPL/per-message-LLM-cost.
 
-**Auto-trigger behavior:** When `cadence > 0` AND sessions-since-last-dialectic ≥ cadence AND (≥1 new session OR ≥1 new learning since last run), session-end Phase 3.6.7 dispatches the deriver in dry-run mode. The diff sidecar lands at `.orchestrator/dialectic-pending.md` (gitignored, vault-mirror-excluded). When `cadence: 0`, the auto-trigger is permanently skipped; manual `/evolve --dialectic` always works.
+**Auto-trigger behavior:** When `cadence > 0` AND sessions-since-last-dialectic ≥ cadence AND (≥1 new session OR ≥1 new learning since last run), session-end Phase 3.6.7 dispatches the deriver in dry-run mode. The diff sidecar lands at `.orchestrator/dialectic-pending.md` (gitignored, vault-mirror-excluded). When `cadence: 0`, the auto-trigger is permanently skipped; manual `/evolve --dialectic` always works. <!-- path-check: example -->
 
 **Token cost:** With defaults (cadence: 5, budget-tokens: 8000, output 4000, model haiku), ~12k tokens every 5 sessions. At haiku pricing this is ~$0.02/run. Surfaced in Final Report.
 
@@ -997,7 +997,9 @@ dialectic:
 
 ## Eval (#803)
 
-Opt-in configuration for the Standard v1 evaluation harness (aiat-llm-eval PRD, `docs/prd/2026-07-16-aiat-llm-eval.md` §S6) and the forthcoming `/eval` skill (Session-Prozess-Eval — lands in a later wave of Epic #803). This section documents the config surface only; the skill that reads it is not yet shipped as of this parser's introduction.
+Opt-in configuration for the Standard v1 evaluation harness and the `/eval` skill (Session-Prozess-Eval). The current workflow is documented in `skills/eval/SKILL.md`.
+
+The original config proposal is in the archived PRD `docs/prd/2026-07-16-aiat-llm-eval.md` §S6 (Epic #803). <!-- path-check: historical -->
 
 All fields live under a top-level `eval` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
 
@@ -1447,7 +1449,7 @@ frontend-slop-hook:
 
 **Used by:** `hooks/post-tooluse-frontend-slop.mjs` (parser/loader: `scripts/lib/config/frontend-slop-hook.mjs`).
 
-**Cross-reference:** detector rule markers (`<!-- rule:<id> -->`) live in `.claude/rules/frontend.md` (Absolute Bans / Motion / Layout sections). Mirrors the opt-in / default-on contrast against `loop-guard`.
+**Cross-reference:** detector rule markers (`<!-- rule:<id> -->`) live in `rules/opt-in-stack/frontend.md` (Absolute Bans / Motion / Layout sections). Mirrors the opt-in / default-on contrast against `loop-guard`.
 
 ## Loop Guard (#619)
 
@@ -1653,7 +1655,7 @@ Set `express-path.enabled: false` when:
 
 The `autopilot` block and its single field `autopilot.bg-isolation` are **gone**, not
 deprecated. Their only reader was `scripts/autopilot-multi.mjs`, retired together with <!-- path-check: historical -->
-`commands/autopilot-multi.md` by the 2026-09-06 360°-Audit (§ 5A: 0 telemetry, 0 fleet
+`commands/autopilot-multi.md` by the 2026-09-06 360°-Audit (§ 5A: 0 telemetry, 0 fleet <!-- path-check: historical -->
 invocations in 90 days, no runtime consumer).
 
 Verified 2026-09-06 at `e4674109`:

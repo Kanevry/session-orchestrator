@@ -118,5 +118,6 @@ After reload, use the same commands:
 - **Prompts or skills not visible**: verify the project is trusted in Pi, then restart or reload.
 - **Package not loaded**: confirm `.pi/settings.json` or `~/.pi/agent/settings.json` contains the local checkout path under `packages`.
 - **Hooks not firing**: confirm `package.json` still has the `pi.extensions` entry and `hooks/hooks-pi.json` exists.
+- **No import-probe warning after an edit**: Pi wires the probe through `tool_result`; file eligibility, ESLint resolution, and `no-undef` configuration still apply. See [import-probe coverage and ESLint troubleshooting](USER-GUIDE.md#import-probe-warnings-and-missing-eslint).
 - **Config ignored**: ensure the file has a `## Session Config` header in `AGENTS.md` or `CLAUDE.md`.
 - **Runtime error from hooks**: run `npm install` in the Session Orchestrator checkout so hook dependencies are present.

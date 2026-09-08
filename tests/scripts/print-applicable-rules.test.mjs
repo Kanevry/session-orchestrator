@@ -30,7 +30,7 @@ import {
   readFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -51,7 +51,13 @@ let repoRoot;
 function runCli(args, extraEnv = {}) {
   const res = spawnSync('node', [CLI, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, CLAUDE_PROJECT_DIR: repoRoot, ...extraEnv },
+    env: {
+      ...process.env,
+      SO_PLATFORM: 'claude', SO_STATE_DIR: '',
+      CLAUDE_PLUGIN_ROOT: '', CODEX_PLUGIN_ROOT: '', CURSOR_RULES_DIR: '', PI_PLUGIN_ROOT: '',
+      CLAUDE_PROJECT_DIR: repoRoot,
+      ...extraEnv,
+    },
   });
   return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
 }
@@ -80,6 +86,58 @@ beforeAll(() => {
 
 afterAll(() => {
   rmSync(repoRoot, { recursive: true, force: true });
+});
+
+function nativeRuleRepo({ nativeState = true, legacy = true, nativeDir = '.codex' } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'print-rules-native-'));
+  mkdirSync(join(root, '.claude', 'rules'), { recursive: true });
+  mkdirSync(join(root, nativeDir), { recursive: true });
+  writeFileSync(join(root, '.claude', 'rules', 'scoped.md'), '---\nglobs: [scripts/**]\n---\nNative scope rule\n');
+  writeFileSync(join(root, '.claude', 'rules', 'deep.md'), '---\nmode: deep\n---\nDeep rule\n');
+  writeFileSync(join(root, '.claude', 'rules', 'housekeeping.md'), '---\nmode: housekeeping\n---\nHousekeeping rule\n');
+  writeFileSync(join(root, nativeDir, 'wave-scope.json'), JSON.stringify({ allowedPaths: ['scripts/native.mjs'] }));
+  if (nativeState) writeFileSync(join(root, nativeDir, 'STATE.md'), '---\nsession-type: deep\n---\n');
+  if (legacy) {
+    writeFileSync(join(root, '.claude', 'STATE.md'), '---\nsession-type: housekeeping\n---\n');
+    writeFileSync(join(root, '.claude', 'wave-scope.json'), JSON.stringify({ allowedPaths: ['docs/stale.md'] }));
+  }
+  return root;
+}
+
+describe('native state and scope routing', () => {
+  // Bug: default .claude paths lose native rules; deriving scope from STATE loses it before native STATE exists.
+  it.each([
+    ['native-only', { legacy: false }, ['deep.md', 'scoped.md'], { SO_PLATFORM: 'codex' }],
+    ['conflicting Claude artifacts', {}, ['deep.md', 'scoped.md'], { SO_PLATFORM: 'codex' }],
+    ['native scope without native STATE', { nativeState: false }, ['housekeeping.md', 'scoped.md'], { SO_PLATFORM: 'codex' }],
+    // Hook-child SO_PLATFORM assignments do not reach later CLI invocations.
+    ['Codex compatibility root only', {}, ['deep.md', 'scoped.md'], { SO_PLATFORM: '', CODEX_PLUGIN_ROOT: '/fixture/plugin' }],
+    ['Cursor compatibility root only', { nativeDir: '.cursor' }, ['deep.md', 'scoped.md'], { SO_PLATFORM: '', CURSOR_RULES_DIR: '/fixture/plugin' }],
+    ['Pi compatibility root only', { nativeDir: '.pi' }, ['deep.md', 'scoped.md'], { SO_PLATFORM: '', PI_PLUGIN_ROOT: '/fixture/plugin' }],
+  ])('selects rules for %s', (_name, fixture, expected, platformEnv) => {
+    const root = nativeRuleRepo(fixture);
+    try {
+      const result = runCli(['--json'], { CLAUDE_PROJECT_DIR: root, ...platformEnv });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout).rules.map((rule) => basename(rule.path)).sort()).toEqual(expected);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Bug: automatic native paths can accidentally replace the operator's explicit scope or mode.
+  it('keeps explicit scope and mode above SO_STATE_DIR', () => {
+    const root = nativeRuleRepo();
+    try {
+      const result = runCli(['--json', '--wave-scope', join(root, '.claude', 'wave-scope.json'), '--mode', 'housekeeping'], {
+        CLAUDE_PROJECT_DIR: root, SO_PLATFORM: 'codex', SO_STATE_DIR: '.codex',
+      });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout).rules.map((rule) => basename(rule.path))).toEqual(['housekeeping.md']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

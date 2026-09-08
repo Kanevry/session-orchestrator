@@ -482,7 +482,9 @@ Read by: `scripts/lib/config/dialectic.mjs`, `scripts/lib/auto-dialectic.mjs`, `
 
 ## Eval (#803)
 
-Opt-in configuration for the Standard v1 evaluation harness and the forthcoming `/eval` skill (Session-Prozess-Eval — PRD `docs/prd/2026-07-16-aiat-llm-eval.md` §S6, follow-up wave of Epic #803). This section documents the config surface only; the skill consumer lands in a later wave.
+Opt-in configuration for the Standard v1 evaluation harness and `/eval` (Session-Prozess-Eval); see `skills/eval/SKILL.md` for the current workflow.
+
+The original config proposal is in the archived PRD `docs/prd/2026-07-16-aiat-llm-eval.md` §S6 (Epic #803). <!-- path-check: historical -->
 
 ```yaml
 eval:

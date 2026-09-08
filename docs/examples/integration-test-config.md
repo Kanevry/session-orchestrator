@@ -109,7 +109,7 @@ These scenarios map config fields to observable behaviors during a full `/sessio
 
 **Fields exercised:** `persistence`, `ssot-files`, `ssot-freshness-days`
 
-- `/session feature` creates `.claude/STATE.md` with `status: active`
+- `/session feature` creates `.claude/STATE.md` with `status: active` <!-- path-check: example -->
 - Each wave updates STATE.md `current-wave` and appends to `## Wave History`
 - `/close` sets STATE.md `status: completed`
 - Session memory file is created at `~/.claude/projects/<project>/memory/session-<date>.md`

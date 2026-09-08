@@ -35,8 +35,8 @@ This skill accepts two optional flags. Default (no flag) runs the interactive 4-
 
 | Flag | Behavior |
 |---|---|
-| `--dry-run` | Run Phases 1-3 read-only; instead of mutating MEMORY.md / topic files, write a complete-body MEMORY.md proposal (single fenced block — never a unified-diff) to `.orchestrator/pending-dream.md` (atomic). Exit 0. |
-| `--apply-pending` | Read `.orchestrator/pending-dream.md`; refuse if older than 14 days (`stale`) or if MEMORY.md changed since the producing --dry-run (`stale-index`, #788); apply diff; delete pending file; print `auto-dream applied: -<X> lines, +<Y> entries`. Exit 0. |
+| `--dry-run` | Run Phases 1-3 read-only; instead of mutating MEMORY.md / topic files, write a complete-body MEMORY.md proposal (single fenced block — never a unified-diff) to `.orchestrator/pending-dream.md` (atomic). Exit 0. <!-- path-check: example --> |
+| `--apply-pending` | Read `.orchestrator/pending-dream.md`; refuse if older than 14 days (`stale`) or if MEMORY.md changed since the producing --dry-run (`stale-index`, #788); apply diff; delete pending file; print `auto-dream applied: -<X> lines, +<Y> entries`. Exit 0. <!-- path-check: example --> |
 
 Flags are mutually exclusive — passing both is an error. Absence of both = legacy interactive mode (Phases 1-4 below).
 

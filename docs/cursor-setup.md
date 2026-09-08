@@ -96,5 +96,6 @@ Switch freely between Claude Code, Codex, and Cursor on the same project — all
 - **`/session` missing**: Confirm `.cursor/commands/session.md` exists. Reload Cursor. If this is another project, re-run `node scripts/cursor-install.mjs .`
 - **Rules not loading**: Ensure `.cursor/rules/` exists with `.mdc` files; `000-session-orchestrator.mdc` has `alwaysApply: true`
 - **Hooks not firing**: Confirm `.cursor/hooks.json` exists. Open Cursor Settings → Hooks. Restart Cursor if it was open during install.
+- **No import-probe warning after an edit**: Cursor wires the probe through `postToolUse` and `afterFileEdit`; it still needs an eligible file and ESLint with the project's `no-undef` rule enabled for C1. See [import-probe coverage and ESLint troubleshooting](USER-GUIDE.md#import-probe-warnings-and-missing-eslint).
 - **`'node' not found` in hook PATH**: See README troubleshooting. `hooks/run-node.sh` resolves Homebrew/nvm Node.
 - **State files not created**: Check `.cursor/` is writable

@@ -2,7 +2,7 @@
 
 **Datum:** 2026-08-16
 **Gegenstand:** die Produktdomain plus die Kanäle, über die das Werkzeug tatsächlich gefunden und installiert wird
-**Verfahren:** 8-Rollen-Panel über drei Domains; dieses Dokument enthält den Teil, der dieses Repo betrifft. Die vollständige Auswertung inklusive der Geschwister-Domains liegt im Host-App-Repo unter `docs/audits/2026-08-16-seo-geo-audit.md`.
+**Verfahren:** 8-Rollen-Panel über drei Domains; dieses Dokument enthält den Teil, der dieses Repo betrifft. Die vollständige Auswertung inklusive der Geschwister-Domains liegt im Host-App-Repo unter `docs/audits/2026-08-16-seo-geo-audit.md`. <!-- path-check: example -->
 
 ---
 
@@ -178,6 +178,6 @@ Heute: **369 getrackte Markdown-Dateien, davon null auf einer eigenen Domain.** 
 
 ## Verweise
 
-- Vollständiges Audit über alle Domains: `docs/audits/2026-08-16-seo-geo-audit.md` (Host-App-Repo)
+- Vollständiges Audit über alle Domains: `docs/audits/2026-08-16-seo-geo-audit.md` (Host-App-Repo) <!-- path-check: example -->
 - Issues: #824 (Katalog-Submits, mit frischer Messung kommentiert) · #1043 (Deploy) · #1044 (Recht) · #1045 (Duplikate/Header) · #1046 (Entität) · #978 (Release-als-ein-Dispatch, berührt die npm-Lücke)
 - Vorarbeit: `docs/distribution/2026-07-18-distribution-options.md` · `docs/distribution/submission-kit.md` · `docs/prd/2026-07-25-session-orchestrator-com-redesign.md` (dessen Faktenlage ist überholt — siehe Statusabgleich im Panel-Bericht)

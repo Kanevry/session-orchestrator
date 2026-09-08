@@ -123,10 +123,12 @@ Data flow within a single `/session feature → /go → /close` cycle:
 | `vault-staleness` probes | `skills/discovery/probes-vault.md` + `skills/discovery/probes/vault-staleness.mjs` | `/discovery vault` (on-demand) and session-end Phase 2.3 (opt-in close-time gate) | `VAULT_DIR/01-projects/*/` `_overview.md` + narrative files | JSONL findings under `.orchestrator/metrics/vault-staleness.jsonl` and `vault-narrative-staleness.jsonl` | Vault/Ops (telemetry) |
 | `docs-orchestrator` | `skills/docs-orchestrator/SKILL.md` | session-start Phase 2.5, session-plan Step 1.5/1.8, session-end Phase 3.2 (all gated on `enabled: true`) | Session scope + Session Config audience list | `docs-tasks` block in STATE.md (write side); `### Documentation Coverage` block in final report (verify side) | All three (User / Dev / Vault) |
 | `docs-writer` agent | `agents/docs-writer.md` | Dispatched by `wave-executor` for each `Docs`-classified task | `diff`, `git-log`, `session-memory`, `affected-files` | Audience-targeted Markdown writes (Edit/Write); `[docs-orchestrator] Docs task complete` report line | All three (per task) |
-| `narrative-mirror` | `scripts/lib/vault-status/narrative-mirror.mjs` (`mirrorNarrative`) | session-end Phase 3.7, gated on `vault-integration.enabled` | `.claude/STATE.md` narrative sections + the session record | `<vault>/01-projects/<repo-slug>/_session-narrative.md` (generator-marked) | Vault/Ops (durable per-repo narrative) |
+| `narrative-mirror` | `scripts/lib/vault-status/narrative-mirror.mjs` (`mirrorNarrative`) | session-end Phase 3.7, gated on `vault-integration.enabled` | Generated session-state narrative sections (see input note below) + the session record | `<vault>/01-projects/<repo-slug>/_session-narrative.md` (generator-marked) | Vault/Ops (durable per-repo narrative) |
 | `board-writer` | `scripts/lib/vault-status/board-writer.mjs` (`sweepBoard` / `mirrorBoard`) | session-start Phase 1.7 (`in-progress`) and session-end Phase 3.7c (`closed`), gated on `vault-integration.enabled` | live session registry + this repo's root | `<vault>/01-projects/_active-sessions.md` — one row per repo (generator-marked, idempotent, never touches `_overview.md`) | Vault/Ops (cross-repo occupancy board) |
 | `vault-mirror` | `skills/vault-mirror/SKILL.md` + `scripts/vault-mirror.mjs` | session-end Phase 3.7 (sessions); evolve Phase 3.5 (learnings) | `.orchestrator/metrics/sessions.jsonl`, `.orchestrator/metrics/learnings.jsonl` | `<vault>/50-sessions/<id>.md`, `<vault>/40-learnings/<slug>.md` (`_generator` marker `session-orchestrator-vault-mirror@1`) | Vault/Ops (telemetry → Markdown) |
 | `vault-backfill` CLI | `scripts/vault-backfill.mjs` | Manual, also surfaced via `/plan retro vault-backfill` sub-mode | `vault-integration.gitlab-groups` config + GitLab API | `.vault.yaml` per repo + Vault stub directories | Vault/Ops (one-shot migration) |
+
+The narrative mirror reads narrative sections from the generated `.claude/STATE.md` input, together with the session record. <!-- path-check: example -->
 
 ---
 
@@ -138,7 +140,7 @@ table), which is the **single source of truth** for which files belong to
 which audience. Never inline this table elsewhere — always cross-link.
 
 - **User** — external/internal users of the repo. Targets: `README.md`,
-  `docs/user/**/*.md`, `docs/getting-started.md`, `examples/**/*.md`. Source:
+  `docs/user/**/*.md`, `docs/getting-started.md`, `examples/**/*.md`. Source: <!-- path-check: example -->
   `skills/docs-orchestrator/audience-mapping.md` § Audiences & File Patterns.
 - **Dev** — contributors to the repo, including future Claude sessions.
   Targets: `CLAUDE.md`, `docs/dev/**/*.md`, `docs/adr/**/*.md`. Source: same.

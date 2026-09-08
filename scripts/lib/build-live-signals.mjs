@@ -16,7 +16,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { parseStateMd, parseRecommendations } from './state-md.mjs';
+import { parseStateMd, parseRecommendations, resolveStateMdPath } from './state-md.mjs';
 import { normalizeSession, tailRealSessions } from './session-schema.mjs';
 import { parseBootstrapLock } from './bootstrap-lock-freshness.mjs';
 import { scanBacklog, DEFAULT_BACKLOG_LIMIT } from './backlog-scan.mjs';
@@ -41,7 +41,7 @@ import { readCanonicalSessions } from './sessions-canonical.mjs';
  *   sessions.jsonl than the one it was reporting on — measured as
  *   `recentSessions: []` against a checkout holding 245 session records.
  *   An explicit absolute `statePath`/`sessionsPath`/`lockPath` still wins.
- * @param {string} [opts.statePath]      — defaults to '<repoRoot>/.claude/STATE.md'
+ * @param {string} [opts.statePath]      — defaults to the active harness STATE.md, with legacy fallback
  * @param {string} [opts.sessionsPath]   — defaults to '<repoRoot>/.orchestrator/metrics/sessions.jsonl'
  * @param {string} [opts.lockPath]       — defaults to '<repoRoot>/.orchestrator/bootstrap.lock'
  * @param {Array}  [opts.learnings]      — pre-surfaced top-N learnings; defaults to []
@@ -61,10 +61,9 @@ export async function buildLiveSignals(opts = {}) {
       : process.cwd();
   // `resolve(root, p)` returns `p` unchanged when `p` is absolute — explicit
   // per-file overrides therefore keep precedence over repoRoot.
-  const statePath = resolve(
-    repoRoot,
-    typeof opts.statePath === 'string' ? opts.statePath : '.claude/STATE.md'
-  );
+  const statePath = typeof opts.statePath === 'string'
+    ? resolve(repoRoot, opts.statePath)
+    : resolveStateMdPath(repoRoot);
   const sessionsPath = resolve(
     repoRoot,
     typeof opts.sessionsPath === 'string'

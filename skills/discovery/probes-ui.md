@@ -142,6 +142,6 @@ fpRisk: low | medium | high
 
 **Default Severity:** Per-rule (high for the absolute-ban tells, low for advisory quality nits). `fpRisk` is reported so triage can weight high-FP rules (`ai-purple-gradient`) more skeptically.
 
-> **Precision boundary (honest):** this regex tier cannot resolve CSS cascade, so `side-stripe-border` flags any ≥2px side accent even when the element is unrounded — `.claude/rules/frontend.md` bans those (>1px accent), but a cascade-aware detector would narrow further. The heavier static-HTML + browser tiers are deliberately omitted (cost ≫ value for a probe/hook). See `scripts/lib/frontend-detect/rules.mjs`.
+> **Precision boundary (honest):** this regex tier cannot resolve CSS cascade, so `side-stripe-border` flags any ≥2px side accent even when the element is unrounded — `rules/opt-in-stack/frontend.md` bans those (>1px accent), but a cascade-aware detector would narrow further. The heavier static-HTML + browser tiers are deliberately omitted (cost ≫ value for a probe/hook). See `scripts/lib/frontend-detect/rules.mjs`.
 
 ---
