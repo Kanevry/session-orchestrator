@@ -27,10 +27,11 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
+import { parse } from '@babel/parser';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import {
   classifyArgv,
@@ -357,6 +358,68 @@ describe('runCheckTestGitConfigTarget — WARN-only contract', () => {
 });
 
 describe('the repository that owns this check', () => {
+  it('recognises the exported fixture Git wrappers and their prefix spreads from the helper source', () => {
+    // A helper/prefix rename must fail here if the scanner keeps its old names;
+    // literal-name fixtures above cannot detect that producer/consumer drift.
+    const ast = parse(readFileSync(join(REPO_ROOT, 'tests/_helpers/tmp-fixture.mjs'), 'utf8'), {
+      sourceType: 'module',
+    });
+    const wrappers = ast.program.body
+      .filter((node) => node.type === 'ExportNamedDeclaration' && node.declaration?.type === 'FunctionDeclaration')
+      .flatMap(({ declaration }) => declaration.body.body
+        .filter((statement) => statement.type === 'ReturnStatement'
+          && statement.argument?.type === 'CallExpression'
+          && statement.argument.arguments[0]?.type === 'StringLiteral'
+          && statement.argument.arguments[0].value === 'git')
+        .map(({ argument: call }) => {
+          const elements = call.arguments[1].elements;
+          const forwardedArgs = elements.findIndex((element) => element.type === 'SpreadElement'
+            && element.argument.name === declaration.params[0].name);
+          expect(forwardedArgs).toBeGreaterThanOrEqual(0);
+          return {
+            name: declaration.id.name,
+            callee: call.callee.name,
+            prefixes: elements.slice(0, forwardedArgs)
+              .filter((element) => element.type === 'SpreadElement')
+              .map((element) => element.argument.name),
+          };
+        }));
+    expect(wrappers.length).toBeGreaterThan(0);
+    expect(new Set(wrappers.flatMap(({ prefixes }) => prefixes)).size).toBeGreaterThan(0);
+
+    const cases = wrappers.flatMap(({ name, callee, prefixes }) => {
+      const prefix = prefixes.map((identifier) => `...${identifier}, `).join('');
+      // Wrapper-only files deliberately contain no quoted git binary: they
+      // must also get through the scanner's cheap prefilter on their own.
+      return [
+        { name: `${name}-global.mjs`, body: `${name}(['config', '--global', 'user.name', 'x']);`, targetless: false },
+        { name: `${name}-local-target.mjs`, body: `${name}(['config', '--local', 'user.name', 'x'], dir);`, targetless: false },
+        { name: `${name}-local-ambient.mjs`, body: `${name}(['config', '--local', 'user.name', 'x']);`, targetless: true },
+        { name: `${name}-raw-global.mjs`, body: `${callee}('git', [${prefix}'config', '--global', 'user.name', 'x']);`, targetless: false },
+        { name: `${name}-raw-local-target.mjs`, body: `${callee}('git', [${prefix}'config', '--local', 'user.name', 'x'], { cwd: dir });`, targetless: false },
+        { name: `${name}-raw-local-ambient.mjs`, body: `${callee}('git', [${prefix}'config', '--local', 'user.name', 'x']);`, targetless: true },
+      ];
+    });
+    // One call per file keeps a later call's cwd from targeting an earlier one.
+    const root = fixtureRoot(cases[0].body, cases[0].name);
+    cases.slice(1).forEach(({ name, body }) => writeFileSync(join(root, 'tests', name), body));
+
+    const result = inspectTestGitConfigTarget(root);
+
+    expect(result.toolError).toBe(false);
+    expect(result.summary).toMatchObject({
+      applicable: cases.length,
+      targeted: cases.filter(({ targetless }) => !targetless).length,
+      unresolvedArgv: 0,
+      unresolvedOptions: 0,
+    });
+    expect(result.findings.map(({ file, command }) => ({ file, command }))).toEqual(
+      cases.filter(({ targetless }) => targetless)
+        .map(({ name }) => ({ file: `tests/${name}`, command: 'git config --local user.name x' }))
+        .sort((a, b) => a.file.localeCompare(b.file)),
+    );
+  });
+
   it('has no state-mutating git call in tests/ without an explicit target', () => {
     // A live-tree assertion. It is also the premise of the WARN-only decision
     // recorded in validate-plugin.mjs: this census was 0 on the day it landed,
