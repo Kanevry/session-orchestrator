@@ -1,0 +1,51 @@
+# Product quality review — 2026-09-08
+
+## Scope and baseline
+
+Reviewed the plugin runtime, all 133 open GitLab issues, recent closed issues, repository instructions, npm packaging, the public GitHub README, English/German landing pages and guide, and distribution directories. Work started from `e79ccb745e5208b33d5496f517f43c5e2113b0a2` (4.0.1), clean and synchronized with origin. Baseline GitLab pipeline 8817 passed all 17 jobs; GitHub Tests run 34155631481 passed all four jobs. No open merge requests or public GitHub issues/PRs were present.
+
+Three parallel agents handled backlog/runtime, privacy/identity and public surfaces. Authors and reviewers exchanged areas; review findings were reproduced before repairs. This is a prioritized quality pass, not a claim that all 133 backlog items were completed.
+
+## What works well
+
+- The core workflow is concrete: discovery, scope selection, execution in waves, verification and recorded handover. Safety mechanisms have source references and meaningful failure-case tests.
+- Release publication has an explicit npm receipt boundary and checks exact-commit CI on GitLab and GitHub. The GitHub macOS matrix complements GitLab's Linux checks.
+- Shared-checkout hazards are addressed through session locks, process-confirmed ownership, scope declarations and git-index rules. Native Codex collaboration can use the same runtime artifacts once its session identity is recognized.
+- The site is readable without a client application, has canonical/language links and a sitemap, and keeps visible FAQs aligned with structured data. Its measured inventory is generated rather than hand-maintained.
+- The npm package includes the documented runtime and setup material. Pi already indexes the package; a fresh gallery submission is unnecessary.
+
+## Repairs in this session
+
+| Issue | Trigger and resulting behavior | Verification |
+| --- | --- | --- |
+| #1267 | Private owner material in MDX was outside the privacy scan. MDX is now included; optional `--include-untracked` includes new files while honoring ignore rules. Default behavior stays tracked-only. | Temporary git repositories, ignored/untracked/tracked combinations, Unicode and newline filenames. |
+| #1269 | Fail-closed hook behavior could be weakened without the old assertion noticing. Failure output now includes scan context and the hook regression checks actual rejection. | Mutation check: removing the rejection makes the test fail. |
+| #1095 | Release reconciliation could print an incomplete command or delete the notes file needed to retry. Recovery now includes exact repository, tag and retained notes; uncertain states inspect first. | Exact argv through a POSIX shell, creation success/failure, unknown release state and missing repository. |
+| #1040 | CI metadata, comments or command strings could look like audit coverage; legitimate package-manager options were missed. Recognition now checks executable workflow locations and command verbs, with bounded local GitLab references/inheritance. | Negative metadata/echo/template fixtures plus real audit commands, options, wrappers and GitLab syntax. External includes and dynamic conditions remain outside this local heuristic. |
+| #1274 | Native `CODEX_THREAD_ID` was omitted from process identity, leaving this session's manifest unbound. The shared identity reader now recognizes it and rejects ambiguous native IDs unless a harness is explicitly selected. | Native CLI/event/ownership regressions; independent raw-vs-semantic and peer-lock fixtures; live scope binding in this Codex session. |
+| #1275 | Public installation and protection claims differed from the runtime. README, EN/DE, guide and `llms` files now describe actual prerequisites, install paths, Codex skills, Cursor bridges, strict/warn behavior and update-cache semantics. | README package links, HTML/anchor/copy payload checks and matching FAQ JSON-LD. |
+| #1276 | Vault notes displayed ? despite documented lifecycle counters. Started counts now render, completed/planned-only counts retain labels, and measured zero stays zero. | Seven synthetic precedence cases and the unchanged live-ledger regression pass. |
+| #1275 | Guide Copy buttons had no positioned command container and appeared over the hero. Each of eight buttons now belongs to its command block, including multiline code. | Chrome visual reproduction and recheck at 320px; all buttons remain within their blocks; real click reports Copied. |
+
+README installation now uses the enabled entry's `installPath` from `claude plugin list --json`. The old `find ... | head -1` recipe could choose an unrelated or stale cache. Upgrade/removal distinguishes npm-managed Pi packages from the clone fallback. Repository-only links resolve on npm as well as GitHub. Stable steering files now point to the actual Cursor manifest and distinguish ordinary tests from coverage runs.
+
+## Visual and discoverability checks
+
+Chrome checked the live baseline and the revised local EN/DE/guide pages. At 320 CSS pixels and scale 1, all three had document width 320; the guide's intentionally offscreen screen-reader status text was excluded from visual-overflow findings. The revised desktop homepage retained clear hierarchy and readable installation links. The baseline narrow-table concern in #1080 did not reproduce.
+
+The local Chrome console showed the analytics request blocked by the user's content blocker. The live baseline also showed extension messaging errors and an unsupported Permissions-Policy feature warning; these did not establish an application runtime failure. This review did not modify user extensions or weaken response headers.
+
+Google's [AI search guidance](https://developers.google.com/search/docs/appearance/ai-features) requires no special AI file or additional schema. Work therefore focused on truthful visible content, matching structured data and usable installation paths. `llms.txt` remains a reader convenience. No ranking, conversion or Search Console improvement was measured.
+
+## Backlog and distribution decisions
+
+- #973 (generated root AGENTS parity) and #1059 (agent-authoring contract) already have implementation evidence; reconcile them against current source instead of implementing them again.
+- #1080's previously remaining narrow-screen concern is covered by the Chrome measurements above; the other shipped improvements were checked against current site source.
+- #1263/#1266 still need the visible Codex picker acceptance evidence specified by their issues. API enumeration alone does not establish that acceptance.
+- #1079's GitHub administrator-enforcement setting is still disabled. Changing it requires understanding the mirror/deployment path; this review leaves the configuration in place.
+- #824 remains the distribution follow-through tracker. The [updated submission kit](../distribution/submission-kit.md) contains verified destinations and unsent drafts. The highest-value opportunity is refreshing Anthropic's existing April alpha pin, followed by an Awesome Codex listing and correction of the already-open Awesome Claude Code recommendation.
+- Startup advisories included stale user notes, accumulated learnings and old runtime artifacts. They were not bulk-deleted during product work. The backlog contains broader architectural and memory-lifecycle work that warrants separate acceptance criteria.
+
+## Validation and delivery record
+
+The first canonical full gate passed typecheck and lint, but exposed the renderer bug above plus two 30-second timeouts under heavy host contention. Those two suites passed unchanged together in 9.20 seconds; the validator child took 8.741 seconds. The final full gate uses Vitest's supported VITEST_MAX_WORKERS=4 setting, preserving every test, check and timeout. Standalone plugin validation passed 229 checks with 0 failures. Native identity passed an independent eight-case ownership probe, and the site suites passed 151 tests. The final canonical gate passed in 243 seconds: 16,787 tests across 667 files, typecheck with zero errors and lint with zero warnings. No gate was stubbed or bypassed. Exact-commit CI remains a separate publication gate.

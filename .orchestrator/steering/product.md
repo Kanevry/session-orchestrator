@@ -22,12 +22,13 @@ The plugin ships as a Claude Code plugin (`.claude-plugin/`), a Codex plugin (`.
 Pi package (`package.json` `pi` manifest), activated via `CLAUDE.md` (Claude Code / Cursor) or
 `AGENTS.md` (Codex CLI / Pi).
 
-Since the v4.0.0 preparation it also ships a **portable cross-harness surface**, all three artefacts
-GENERATED and drift-checked by `scripts/generate-agents-skills.mjs` (`--check` inside
-`scripts/validate-plugin.mjs`), never hand-edited: a root `AGENTS.md` that is a byte-identical copy of
-`CLAUDE.md`; a root `plugin.json` following the agent-plugins.org 1.0.0 schema; and `.agents/skills/`,
-a mirror of every skill carrying only spec-legal frontmatter plus a pointer body. Oversized skill
-bodies are split into `skills/<name>/references/` for progressive disclosure.
+The **portable cross-harness surface** is generated and drift-checked by
+`scripts/generate-agents-skills.mjs`: root `AGENTS.md` is byte-identical to `CLAUDE.md`, and
+`.agents/skills/` carries spec-legal frontmatter with pointers to canonical skills.
+`scripts/generate-codex-skills.mjs` separately generates Codex command entrypoints.
+The portable manifest lives at `.cursor-plugin/plugin.json`; there is no root `plugin.json`,
+because it would shadow Codex's native manifest resolution. Oversized skill bodies are split
+into `skills/<name>/references/` for progressive disclosure.
 
 ## Target Users
 
@@ -58,7 +59,7 @@ bodies are split into `skills/<name>/references/` for progressive disclosure.
 - Multi-user / team shared sessions (single-operator design)
 - Hosting or SaaS delivery — plugin is installed locally, not deployed
 - IDE extensions beyond Cursor IDE YAML config
-- Non-Claude AI runtimes (no OpenAI / Gemini support planned)
+- Direct model-provider integrations; execution belongs to the supported coding harness
 - Paid tiers, licensing enforcement, or usage metering
 
 ## Surface Size (re-measure, never quote)

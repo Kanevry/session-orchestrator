@@ -391,6 +391,10 @@ a, button, summary, .btn{ transition: color 120ms ease, background-color 120ms e
   margin: 0 0 1rem;
 }
 .cmd > code, .cmd > span{ display: block; overflow-x: auto; white-space: nowrap; min-width: 0; }
+.cmd > pre.code{
+  background: transparent; border: 0; padding: 0; margin: 0;
+  white-space: pre; min-width: 0;
+}
 .copy{
   position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
   min-height: 32px; padding: 4px 10px;
