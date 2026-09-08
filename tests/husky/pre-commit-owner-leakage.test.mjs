@@ -100,10 +100,10 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       if (tmpDir) removeTree(tmpDir);
     });
 
-    it('blocks commit when a planted leak file is staged', () => {
+    it.each(['md', 'mdx'])('blocks commit when a planted .%s leak file is staged', (ext) => {
       // Plant a clear P1 (personal home path) leak
-      writeFileSync(join(tmpDir, 'doc.md'), 'See /Users/bernhardgoetzendorfer/Projects/vault for notes.\n');
-      fixtureGit(['-C', tmpDir, 'add', 'doc.md']);
+      writeFileSync(join(tmpDir, `doc.${ext}`), 'See /Users/bernhardgoetzendorfer/Projects/vault for notes.\n');
+      fixtureGit(['-C', tmpDir, 'add', `doc.${ext}`]);
       const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'leak attempt']);
       expect(result.status).not.toBe(0);
       expect(result.stderr).toMatch(/Commit blocked|check-owner-leakage/);
@@ -134,9 +134,10 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       expect(result.stderr).toMatch(/Commit blocked|check-owner-leakage/);
     });
 
-    it('allows commit on a clean fixture (negative path)', () => {
-      writeFileSync(join(tmpDir, 'doc.md'), 'A perfectly fine document with no leaks.\n');
-      fixtureGit(['-C', tmpDir, 'add', 'doc.md']);
+    it('allows a clean MDX commit while an untracked draft contains a leak (#1267 default)', () => {
+      writeFileSync(join(tmpDir, 'doc.mdx'), '<Note>A perfectly fine document with no leaks.</Note>\n');
+      writeFileSync(join(tmpDir, 'draft.md'), '/Users/bernhardg/private\n');
+      fixtureGit(['-C', tmpDir, 'add', 'doc.mdx']);
       const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'clean commit']);
       expect(result.status).toBe(0);
     });

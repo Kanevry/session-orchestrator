@@ -80,8 +80,8 @@ function readLockIds(repoRoot) {
  *      handled right now (`session_id` / `sessionId`, plus `parent_session_id`
  *      for a sub-agent invocation, whose coordinator is equally us). The only
  *      tier that is per-INVOCATION rather than per-working-copy.
- *   2. `CLAUDE_CODE_SESSION_ID` — process-scoped, absent on harnesses that
- *      export no session env var.
+ *   2. The native process-scoped id (`CLAUDE_CODE_SESSION_ID` or
+ *      `CODEX_THREAD_ID`), selected by {@link readProcessLocalSessionIds}.
  *   3. `session.lock` `session_id` / `semantic_session_id` — repo-GLOBAL, and
  *      the identity the WRITER of a manifest uses: `wave-scope.json`'s
  *      `session` field comes from `sessionAttribution()`, which reads this same
@@ -138,19 +138,11 @@ function readLockIds(repoRoot) {
  *   never as a mismatch.
  */
 export function readOwnSessionIds(repoRoot, { hookInput = null } = {}) {
-  const ids = new Set();
+  const ids = new Set(readProcessLocalSessionIds({ hookInput }));
   const add = (value) => {
     const trimmed = typeof value === 'string' ? value.trim() : '';
     if (trimmed) ids.add(trimmed);
   };
-
-  // Source 1 — the harness's statement about THIS invocation.
-  if (hookInput && typeof hookInput === 'object') {
-    for (const key of ['session_id', 'sessionId', 'parent_session_id']) add(hookInput[key]);
-  }
-
-  // Source 2 — process-scoped env var.
-  add(process.env.CLAUDE_CODE_SESSION_ID);
 
   // Source 3 — repo-global lock file (the manifest writer's own identity).
   try {
@@ -190,6 +182,14 @@ export function readOwnSessionIds(repoRoot, { hookInput = null } = {}) {
  * rather than unioning is the fix — a better signal REPLACES a worse one
  * (`.claude/rules/host-resources.md` § HR-102).
  *
+ * Native env identity (#1274): an explicit SO_PLATFORM selects ONLY its own
+ * variable (claude → CLAUDE_CODE_SESSION_ID, codex → CODEX_THREAD_ID). Cursor
+ * and Pi have no native env source here. Without a valid explicit selection,
+ * a single non-empty native id, or two equal ids, is usable; conflicting ids
+ * are ambiguous and contribute nothing. This prevents an inherited parent
+ * harness's id from confirming a peer lock. Hook invocation/parent ids remain
+ * valid independently. No filesystem/platform detection is an identity proof.
+ *
  * Never throws.
  *
  * @param {{ env?: object, hookInput?: object|null }} [opts]
@@ -211,8 +211,19 @@ export function readProcessLocalSessionIds({ env = process.env, hookInput = null
   if (hookInput && typeof hookInput === 'object') {
     for (const key of ['session_id', 'sessionId', 'parent_session_id']) add(hookInput[key]);
   }
-  // Tier 2 — process-scoped env var.
-  add(env?.CLAUDE_CODE_SESSION_ID);
+  // Tier 2 — select a native process id without importing the platform module
+  // into this hook-safe leaf or using shared repository markers as evidence.
+  const trim = (value) => typeof value === 'string' ? value.trim() : '';
+  const platform = trim(env?.SO_PLATFORM);
+  const claudeId = trim(env?.CLAUDE_CODE_SESSION_ID);
+  const codexId = trim(env?.CODEX_THREAD_ID);
+  if (platform === 'claude') add(claudeId);
+  else if (platform === 'codex') add(codexId);
+  else if (platform !== 'cursor' && platform !== 'pi') {
+    // Invalid/absent SO_PLATFORM is not an explicit choice (platform.mjs uses
+    // the same trimmed allowlist). Disagreement must never become a union.
+    if (!claudeId || !codexId || claudeId === codexId) add(claudeId || codexId);
+  }
 
   return ids;
 }

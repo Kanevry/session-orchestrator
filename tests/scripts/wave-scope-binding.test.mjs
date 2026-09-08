@@ -33,7 +33,7 @@ describe('wave-scope-binding CLI (#1153 P4)', () => {
   const run = (args, env = {}) => spawnSync(process.execPath, [CLI, ...args], {
     encoding: 'utf8',
     cwd: tmp,
-    env: { ...process.env, CLAUDE_CODE_SESSION_ID: OWN_ID, ...env },
+    env: { ...process.env, CLAUDE_CODE_SESSION_ID: OWN_ID, CODEX_THREAD_ID: '', SO_PLATFORM: '', ...env },
     timeout: 20_000,
   });
 
@@ -66,9 +66,15 @@ describe('wave-scope-binding CLI (#1153 P4)', () => {
     if (tmp && existsSync(tmp)) rmSync(tmp, { recursive: true, force: true });
   });
 
-  it('prints both binding keys and emits NO event when the lock names this process', () => {
+  it.each([
+    { label: 'Claude', env: {} },
+    { label: 'native Codex (#1274)', env: { CLAUDE_CODE_SESSION_ID: '', CODEX_THREAD_ID: OWN_ID } },
+    { label: 'Codex with inherited Claude (#1274)', env: { SO_PLATFORM: ' codex ', CLAUDE_CODE_SESSION_ID: 'PEER', CODEX_THREAD_ID: OWN_ID } },
+    { label: 'Claude with inherited Codex (#1274)', env: { SO_PLATFORM: 'claude', CODEX_THREAD_ID: 'PEER' } },
+    { label: 'matching native IDs (#1274)', env: { CODEX_THREAD_ID: OWN_ID } },
+  ])('$label: prints both binding keys and emits NO event for its own lock', ({ env }) => {
     writeLock({ session_id: OWN_ID, semantic_session_id: 'main-2026-01-01-session-1' });
-    const res = run(['--wave', '2', '--role', 'Impl-Core', '--repo-root', tmp]);
+    const res = run(['--wave', '2', '--role', 'Impl-Core', '--repo-root', tmp], env);
     expect(res.status).toBe(0);
     expect(JSON.parse(res.stdout.trim())).toEqual({
       session_id: OWN_ID,
@@ -104,14 +110,14 @@ describe('wave-scope-binding CLI (#1153 P4)', () => {
   // hand-merge that keeps a key whose value is unavailable writes
   // `"session_id": ""` (FOREIGN to every reader → enforcement skipped), or
   // silently drops a field of the draft it was supposed to pass through.
-  const runMerge = (draft, args = []) => spawnSync(
+  const runMerge = (draft, args = [], env = {}) => spawnSync(
     process.execPath,
     [CLI, '--merge', ...args],
     {
       encoding: 'utf8',
       cwd: tmp,
       input: typeof draft === 'string' ? draft : JSON.stringify(draft),
-      env: { ...process.env, CLAUDE_CODE_SESSION_ID: OWN_ID },
+      env: { ...process.env, CLAUDE_CODE_SESSION_ID: OWN_ID, CODEX_THREAD_ID: '', SO_PLATFORM: '', ...env },
       timeout: 20_000,
     },
   );
@@ -124,9 +130,11 @@ describe('wave-scope-binding CLI (#1153 P4)', () => {
     blockedCommands: ['rm -rf'],
   };
 
-  it('--merge with a lock present: binding keys added, every other field untouched', () => {
+  it('--merge with a native Codex lock: binding keys added, every other field untouched (#1274)', () => {
     writeLock({ session_id: OWN_ID, semantic_session_id: 'main-2026-01-01-session-1' });
-    const res = runMerge(DRAFT, ['--wave', '9', '--role', 'Impl-Core', '--repo-root', tmp]);
+    const res = runMerge(DRAFT, ['--wave', '9', '--role', 'Impl-Core', '--repo-root', tmp], {
+      SO_PLATFORM: 'codex', CODEX_THREAD_ID: OWN_ID, CLAUDE_CODE_SESSION_ID: 'INHERITED-PEER',
+    });
     expect(res.status).toBe(0);
     expect(JSON.parse(res.stdout.trim())).toEqual({
       ...DRAFT,
@@ -178,11 +186,20 @@ describe('wave-scope-binding CLI (#1153 P4)', () => {
     }
   });
 
-  it('prints {} for a PEER-owned lock — a foreign id is never handed back', () => {
+  it.each([
+    { label: 'Claude', env: {} },
+    { label: 'native Codex (#1274)', env: { CLAUDE_CODE_SESSION_ID: '', CODEX_THREAD_ID: OWN_ID } },
+    { label: 'explicit Codex rejects inherited peer ID (#1274)', env: { SO_PLATFORM: 'codex', CLAUDE_CODE_SESSION_ID: 'PEER-UUID-1111', CODEX_THREAD_ID: OWN_ID } },
+    { label: 'conflicting Claude peer and Codex own IDs (#1274)', env: { CLAUDE_CODE_SESSION_ID: 'PEER-UUID-1111', CODEX_THREAD_ID: OWN_ID } },
+    { label: 'conflicting Codex peer and Claude own IDs (#1274)', env: { CODEX_THREAD_ID: 'PEER-UUID-1111' } },
+    { label: 'explicit Claude rejects inherited peer ID (#1274)', env: { SO_PLATFORM: 'claude', CODEX_THREAD_ID: 'PEER-UUID-1111' } },
+    { label: 'explicit Codex has no native ID (#1274)', env: { SO_PLATFORM: 'codex', CLAUDE_CODE_SESSION_ID: 'PEER-UUID-1111' } },
+  ])('$label: prints {} for a PEER-owned lock', ({ env }) => {
     // The fail-closed direction: `attributionForRecord()` confirms the lock's
     // raw id against this process's own identity and returns {} on a mismatch.
     writeLock({ session_id: 'PEER-UUID-1111', semantic_session_id: 'main-2026-01-01-session-9' });
-    const res = run(['--wave', '3', '--role', 'Impl', '--repo-root', tmp]);
+    const res = run(['--wave', '3', '--role', 'Impl', '--repo-root', tmp], env);
+    expect(res.status).toBe(0);
     expect(JSON.parse(res.stdout.trim())).toEqual({});
     expect(readEvents().filter((e) => e.event === 'orchestrator.scope.unbound_manifest')).toHaveLength(1);
   });

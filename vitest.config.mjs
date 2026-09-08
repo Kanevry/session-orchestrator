@@ -33,8 +33,11 @@ export default defineConfig({
     // to decide whether a lock is this machine's (#1072). Measured 2026-08-24:
     // three suites reach that path with no redirect of their own. Opt out with
     // SO_HOST_ALIAS_GUARD_ALLOW_REAL=1.
+    // Native identity is isolated before test imports: ambient Codex/Claude
+    // IDs must not conflict with fixture IDs or prove fixture lock ownership.
     setupFiles: [
       './tests/setup/scrub-git-env.mjs',
+      './tests/setup/scrub-session-env.mjs',
       './tests/setup/vault-guard.mjs',
       './tests/setup/host-alias-guard.mjs',
     ],

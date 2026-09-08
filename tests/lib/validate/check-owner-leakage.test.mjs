@@ -37,7 +37,9 @@ import {
   matchOwnerPath,
   isOwnerLeakySegment,
   VAULT_CLEAR_SLUGS,
+  getConfidentialNamePatterns,
 } from '../../../scripts/lib/validate/check-owner-leakage.mjs';
+import { loadHostPaths } from '../../../scripts/lib/config/host-paths.mjs';
 import { fixtureGitSpawn, makeTmpDir } from '../../_helpers/tmp-fixture.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -95,13 +97,14 @@ function writeNamesFile(names) {
  * a real host-local names file.
  * @param {string} root
  * @param {string[]|null} [names]
+ * @param {string[]} [args]
  */
-function runCheck(root, names) {
+function runCheck(root, names, args = []) {
   const env =
     names === undefined
       ? process.env
       : { ...process.env, SO_CONFIDENTIAL_NAMES_FILE: names === null ? '' : writeNamesFile(names) };
-  return spawnSync(process.execPath, [SCRIPT, root], { encoding: 'utf8', timeout: 20_000, env });
+  return spawnSync(process.execPath, [SCRIPT, root, ...args], { encoding: 'utf8', timeout: 20_000, env });
 }
 
 /** Count occurrences of substring in string */
@@ -154,6 +157,16 @@ const SCAN_CASES = [
     name: 'CP1: plain /Users/<owner>/ path in a tracked .md',
     files: { 'leak.md': '# test\nPath: /Users/bernhardg/secret/config.txt\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CP1: tracked MDX content is scanned (#1267)',
+    files: { 'post.mdx': '<Note>See /Users/bernhardg/private</Note>\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CLEAN: tracked MDX content without leakage (#1267)',
+    files: { 'post.mdx': '<Note>See ~/Projects/example</Note>\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
   },
   {
     name: 'CP1: bare trailing-dot home path at end-of-line (#631)',
@@ -703,6 +716,23 @@ describe('check-owner-leakage CLI — checkpoint scan verdicts', () => {
   });
 });
 
+describe('#1267: untracked scan opt-in', () => {
+  it.each([
+    { args: [], expected: { status: 0, fails: 0, checkpoints: [] }, scanned: 1 },
+    { args: ['--include-untracked'], expected: { status: 1, fails: 1, checkpoints: ['CP1'] }, scanned: 2 },
+  ])('args $args respect Git ignores and the tracked-only default', ({ args, expected, scanned }) => {
+    const root = makeTmpRepo({ 'tracked.md': 'Clean tracked content\n' });
+    writeFileSync(join(root, '.gitignore'), 'ignored.mdx\n');
+    writeFileSync(join(root, '.git', 'info', 'exclude'), 'local-only.md\n');
+    writeFileSync(join(root, 'draft café.mdx'), '/Users/bernhardg/private\n');
+    writeFileSync(join(root, 'ignored.mdx'), 'buchhaltgenie\n');
+    writeFileSync(join(root, 'local-only.md'), 'buchhaltgenie\n');
+    const result = runCheck(root, null, args);
+    expect(summarizeScan(result)).toEqual(expected);
+    expect(result.stdout).toContain(`${scanned} scanned files`);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Report-format contract — the two report shapes the table normalizes away.
 // ---------------------------------------------------------------------------
@@ -717,12 +747,14 @@ describe('check-owner-leakage CLI — report format', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('  PASS:');
     expect(countOccurrences(result.stdout, '  FAIL:')).toBe(0);
+    expect(result.stdout).toContain('2 scanned files');
   });
 
   it('names the offending file and line number in the FAIL line', () => {
     const root = makeTmpRepo({ 'leak.md': '# doc\nrun: /Users/bernhardg./Projects/foo/bar.mjs\n' });
     const result = runCheck(root);
     expect(failLines(result)[0]).toContain(`leak.md:2 — ${CP1_LABEL}`);
+    expect(result.stdout).toContain('1 scanned files');
   });
 });
 
@@ -1076,6 +1108,33 @@ function writeYamlBlockingLoader(dir) {
   );
   return loader;
 }
+
+describe('#1269: CP11 owner-loader health', () => {
+  it.each([
+    { name: 'throwing owner loader', throws: true, disabled: true },
+    { name: 'absent owner file with healthy defaults', throws: false, disabled: false },
+  ])('$name', async ({ throws, disabled }) => {
+    // Use the real host-path loader to exercise its defensive all-undefined
+    // result, which the current disk-backed owner loader cannot produce.
+    const result = await getConfidentialNamePatterns({
+      loadHostPaths: () => loadHostPaths({
+        env: {},
+        ownerLoader: () => {
+          if (throws) throw new Error('unreadable private owner path');
+          return { config: { paths: {} }, source: 'defaults' };
+        },
+      }),
+    });
+    expect(result.patterns).toEqual([]);
+    if (disabled) {
+      expect(result.disabledReason).toMatch(/owner config loader failed.*failing closed/);
+      expect(result.disabledReason).not.toContain('unreadable private owner path');
+    } else {
+      expect(result.disabledReason).toBeUndefined();
+      expect(result.inertWarn).toBeUndefined();
+    }
+  });
+});
 
 describe('#1244: CP11 fails CLOSED when it was expected but could not run', () => {
   it('js-yaml unresolvable + names configured via owner.yaml → CP11 DISABLED + exit 1 (was: silent PASS)', () => {

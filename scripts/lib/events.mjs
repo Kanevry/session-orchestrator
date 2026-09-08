@@ -27,8 +27,8 @@
  *   3. **Never a peer's id (#1123).** A shared working copy means
  *      `session.lock` can name a PEER session that won the acquire race. The
  *      lock alone therefore does not prove ownership; the fill happens only
- *      when a PROCESS-LOCAL id (`CLAUDE_CODE_SESSION_ID`, or a hook payload's
- *      `session_id`) equals the lock's raw `session_id`. STATE.md is NOT a
+ *      when a confirmed native PROCESS-LOCAL id (`CLAUDE_CODE_SESSION_ID` or
+ *      `CODEX_THREAD_ID`) equals the lock's raw `session_id`. STATE.md is NOT a
  *      witness here (#1177 FX1): it is a shared working-copy file written by
  *      the lock holder, so under a peer-owned lock both agreed about the peer
  *      and the union stamped the peer's ids. See {@link attributionForRecord}.
@@ -124,7 +124,7 @@ const STATE_DIR_CANDIDATES = ['.claude', '.codex', '.cursor', '.pi'];
  * when one exists it decides alone.**
  *
  *   - No lock (CI, a bare script) → `{}`. Nothing to attribute to.
- *   - No process-local id (`CLAUDE_CODE_SESSION_ID` absent) → `{}`. Ownership is
+ *   - No confirmed process-local id (absent or ambiguous native env) → `{}`. Ownership is
  *     UNPROVEN, and an unproven attribution is exactly the peer-id write #1123
  *     forbids; an absent key costs a correlation, a wrong key costs a false one.
  *   - A process-local id that equals the lock's raw `session_id` → fill BOTH
