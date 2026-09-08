@@ -285,6 +285,15 @@ Structured requirement gathering, PRD generation, and issue creation. Accepts on
 
 **Optional:** `plan-baseline-path` in Session Config (for `/plan new` repo scaffolding from your own baseline). When absent, `/bootstrap` falls back to plugin-bundled minimal templates. Not required for `/plan feature` or `/plan retro`.
 
+**Optional private capability context:** For new-project or session planning, you can
+supply a small catalog excerpt or authorize a particular offline, read-only local
+catalog lookup and state that its planning destination is private/internal. The
+planner uses at most five matches to explain reuse alternatives and remaining
+contract checks. Existing authorization carries forward. Missing or unsuitable
+context leaves ordinary planning available; a match does not authorize adoption.
+Private findings stay out of public output and generated repositories. This needs
+no new Session Config key; see the [shared procedure](../skills/_shared/private-capability-context.md).
+
 ---
 
 ## 4. Session Types

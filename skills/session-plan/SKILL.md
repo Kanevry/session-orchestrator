@@ -48,6 +48,18 @@ This skill receives the agreed session scope from session-start. The scope inclu
 
 These are passed via the conversation context (not a file). Parse the preceding session-start output to extract the agreed scope.
 
+## Optional private capability context
+
+Before either the express path or task decomposition, apply
+[Private capability context](../_shared/private-capability-context.md) when the
+owner explicitly supplies or authorizes a local catalog lookup for a known
+private/internal planning audience. Reuse the bounded findings already supplied
+by `/plan new` when applicable; do not repeat the same lookup. This step does not
+require persistence. With no authorized context, or a public/unknown audience,
+skip it without a prompt or lookup and continue the existing flow. Eligible
+source references inform reuse alternatives and verification tasks; a catalog
+match does not expand the agreed implementation scope or disable the express path.
+
 ## Express Path Short-Circuit (#214)
 
 > Check this **before Step 0**. If the express path is active, this skill emits a minimal 1-wave plan and exits — no role decomposition, no wave splitting, no agent count computation.
