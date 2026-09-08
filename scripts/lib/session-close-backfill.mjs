@@ -25,7 +25,8 @@
  * `'abandoned'` — the session itself claims to have finished normally).
  *
  * ── ID BRIDGE ────────────────────────────────────────────────────────────────
- *   sessions.jsonl records are keyed by SEMANTIC ids (`main-2026-05-27-session-1`).
+ *   Legacy sessions.jsonl records are keyed by semantic ids; native records
+ *   use the harness UUID with a separate `semantic_session_id` label.
  *   events.jsonl carries the harness UUID on `session.started` / `stop` / `ended`.
  *   The bridge is the `orchestrator.session.lock.acquired` event, which is the
  *   only record carrying BOTH `session_id` (UUID) and `semantic_session_id`.
@@ -62,6 +63,7 @@ import { validateSession as defaultValidateSession } from './session-schema/vali
 import { serializeSessionLineChecked as defaultSerialize } from './session-schema.mjs';
 import { resolveStateMdPath as defaultResolveStateMdPath } from './state-md/frontmatter-mutators.mjs';
 import { parseStateMd as defaultParseStateMd } from './state-md/yaml-parser.mjs';
+import { canonicalizeSessions } from './sessions-canonical.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -178,7 +180,8 @@ function canonicalIso(value, fallbackMs) {
  */
 function collectSessionEvents(events, { sessionId, semanticSessionId }) {
   const uuids = new Set();
-  if (isUuid(sessionId)) uuids.add(sessionId);
+  const nativeId = isUuid(sessionId) ? sessionId : null;
+  if (nativeId) uuids.add(nativeId);
 
   let mode = null;
   let semanticFromLock = null;
@@ -197,10 +200,13 @@ function collectSessionEvents(events, { sessionId, semanticSessionId }) {
     const isLock = ev.event === EVENT_LOCK_ACQUIRED;
     const isEnded = ev.event === EVENT_ENDED && typeof ev.semantic_session_id === 'string';
     if (!isLock && !isEnded) continue;
-    const matchesUuid = isUuid(sessionId) && ev.session_id === sessionId;
-    const matchesSemantic =
+    const matchesUuid = nativeId && ev.session_id === nativeId;
+    // A label can be reused. Once a native UUID is known, a same-label event
+    // from another UUID must not expand the session whose work we recover.
+    const matchesSemantic = !nativeId && (
       (semanticSessionId && ev.semantic_session_id === semanticSessionId) ||
-      (!isUuid(sessionId) && sessionId && ev.semantic_session_id === sessionId);
+      (sessionId && ev.semantic_session_id === sessionId)
+    );
     if (!matchesUuid && !matchesSemantic) continue;
     if (typeof ev.session_id === 'string') uuids.add(ev.session_id);
     if (isLock) {
@@ -453,6 +459,48 @@ function isBackfillStub(record) {
 }
 
 /**
+ * Find the newest ledger record for one physical session. Shared by the close
+ * precheck and backfill dedupe; no file I/O or mutation.
+ *
+ * Native identity wins over the attribution label. A conflicting native UUID
+ * vetoes a label match. Legacy records without a native join remain readable;
+ * when both start times are known they must name the same instant.
+ *
+ * @param {object[]} records parsed JSONL records, in append order
+ * @param {{sessionId?: string|null, semanticSessionId?: string|null, startedAt?: string|null}} ids
+ * @returns {object|null} existing record, or null when no identity matches
+ */
+export function findRecordedSession(records, { sessionId = null, semanticSessionId = null, startedAt = null } = {}) {
+  // Identity strength cannot resurrect an overwritten/superseded stub. Use
+  // the canonical reader, while retaining append order across surviving keys.
+  const canonical = new Set(canonicalizeSessions(records));
+  const nativeId = isUuid(sessionId) ? sessionId : isUuid(semanticSessionId) ? semanticSessionId : null;
+  const label = semanticSessionId || sessionId;
+  const startMs = typeof startedAt === 'string' ? Date.parse(startedAt) : NaN;
+  let legacyMatch = null;
+  for (let i = records.length - 1; i >= 0; i--) {
+    const record = records[i];
+    if (!canonical.has(record)) continue;
+    if (!record || typeof record !== 'object' || Array.isArray(record)
+      || typeof record.session_id !== 'string' || !record.session_id) continue;
+    const nativeKeys = [record.session_id, record.raw_session_id].filter(isUuid);
+    if (nativeId && nativeKeys.length > 0) {
+      if (nativeKeys.every((id) => id === nativeId)) return record;
+      continue;
+    }
+    if (!label || (record.session_id !== label && record.semantic_session_id !== label)) continue;
+    // A backfill's fallback timestamp is explicitly unmeasured; treating it as
+    // a conflicting start would defeat idempotence on the very next close.
+    const incompleteStart = Array.isArray(record._backfill_incomplete_fields)
+      && record._backfill_incomplete_fields.includes('started_at');
+    const recordStart = !incompleteStart && typeof record.started_at === 'string' ? Date.parse(record.started_at) : NaN;
+    if (Number.isFinite(startMs) && Number.isFinite(recordStart) && startMs !== recordStart) continue;
+    legacyMatch ??= record;
+  }
+  return legacyMatch;
+}
+
+/**
  * Classify what sessions.jsonl already holds for this identity (#1068 AC3/AC4).
  *
  * Reads the (small) sessions.jsonl exactly once and returns one of:
@@ -469,23 +517,12 @@ function isBackfillStub(record) {
  *
  * @param {Function} readFileSync
  * @param {string} sessionsPath
- * @param {{recordId: string, sessionId: string|null}} ids
+ * @param {{recordId: string, sessionId: string|null, semanticSessionId?: string|null, startedAt?: string|null}} ids
  */
-function classifyExisting(readFileSync, sessionsPath, { recordId, sessionId }) {
+function classifyExisting(readFileSync, sessionsPath, { recordId, sessionId, semanticSessionId = recordId, startedAt = null }) {
   const sessionRecords = readJsonlSafe(readFileSync, sessionsPath);
-  // Both keys count: the semantic record id, and — defensively — a prior record
-  // keyed directly by the UUID.
-  const uuidKey = isUuid(sessionId) ? sessionId : null;
-  const byId = (id) =>
-    id === null ? [] : sessionRecords.filter((r) => r && r.session_id === id);
-  // Key preference is UNCHANGED from the pre-#1068 dedupe: the semantic
-  // recordId wins whenever any record carries it, and the UUID key is only the
-  // defensive fallback.
-  const semanticMatches = byId(recordId);
-  const matches = semanticMatches.length > 0 ? semanticMatches : byId(uuidKey);
-  if (matches.length === 0) return { kind: 'absent' };
-
-  const newest = matches[matches.length - 1];
+  const newest = findRecordedSession(sessionRecords, { sessionId, semanticSessionId, startedAt });
+  if (!newest) return { kind: 'absent' };
   if (isBackfillStub(newest)) {
     return { kind: 'stub', matchedId: newest.session_id, stubId: newest.session_id };
   }
@@ -650,6 +687,15 @@ export async function backfillAbandonedSession({
         if (dupe) return dupe;
       }
 
+      // Dedupe rejected any foreign native identity above. Do not now reuse
+      // that session's semantic key: canonical readers collapse by session_id.
+      // Keep the existing legacy key convention unless the key is occupied.
+      const semanticRecordId = recordId;
+      if (isUuid(sessionId) && recordId !== sessionId
+        && readJsonlSafe(readFileSync, sessionsPath).some((record) => record?.session_id === recordId)) {
+        recordId = sessionId;
+      }
+
       // -- Liveness guard — never overwrite a FOREIGN live lock, and never ----
       // record OUR OWN live lock as 'abandoned' (#863 defect 1). Before this
       // fix, the guard below only ever ran when `foreign` was true — the
@@ -720,6 +766,7 @@ export async function backfillAbandonedSession({
         nowMs,
         rawSessionId: isUuid(sessionId) ? sessionId : null,
       });
+      if (recordId !== semanticRecordId) record.semantic_session_id = semanticRecordId;
       let validated;
       try {
         validated = validateSession(record);
@@ -831,17 +878,12 @@ export async function backfillAbandonedSession({
  *   as "otherwise 0, flagged in `_backfill_incomplete_fields`" — the same
  *   contract the abandoned path already carries and the same reason it exists.
  *
- *   CONSTRAINT specific to this path: STATE.md's `session` field is already
- *   the SEMANTIC id, never the raw harness UUID — unlike
- *   `backfillAbandonedSession` (which usually receives the UUID directly from
- *   SessionEnd stdin), this function has no UUID to seed `collectSessionEvents`'s
- *   `uuids` set with. Events therefore only surface here when a
- *   `lock.acquired` breadcrumb bridges the UUID to this exact semantic id
- *   (`ev.semantic_session_id === recordId`) — the SAME bridge condition
- *   `backfillAbandonedSession`'s synthetic-id fallback exists to handle when
- *   ABSENT. Without that bridge, `gathered` stays empty and the record still
- *   validates (started_at/completed_at both fall back to `now`, flagged
- *   incomplete) — degraded but never blocked.
+ *   A native `session-id` in STATE.md seeds event correlation directly and
+ *   keys the new record; `session` is retained as `semantic_session_id`.
+ *   Legacy STATE.md without a native UUID keeps its semantic record key and
+ *   needs a lock.acquired/session.ended bridge to recover UUID-scoped events.
+ *   Without either identity route, timestamps fall back to `now` and are
+ *   flagged incomplete rather than fabricated from STATE.md body prose.
  *
  * Never throws. Returns one of:
  *   { action: 'backfilled', sessionId, record }              — written to disk
@@ -910,31 +952,43 @@ export async function backfillCompletedFromStateMd({
         return { action: 'skipped-not-completed', status: stateStatus ?? null };
       }
 
-      const recordId = parsed.frontmatter?.session;
-      if (typeof recordId !== 'string' || recordId.length === 0) {
+      const semanticSessionId = parsed.frontmatter?.session;
+      if (typeof semanticSessionId !== 'string' || semanticSessionId.length === 0) {
         return { action: 'skipped-no-session-id' };
       }
+      const stateSessionId = parsed.frontmatter?.['session-id'];
+      const nativeId = isUuid(stateSessionId) ? stateSessionId : isUuid(semanticSessionId) ? semanticSessionId : null;
+      let recordId = nativeId ?? semanticSessionId;
 
       // -- Dedupe, or SUPERSEDE a backfill stub (#1068 AC3) ---------------------
       // This is the authoritative writer of the pair: STATE.md's own
       // `status: completed` is the session's truth claim about itself, and it
-      // arrives with an identity-complete key (the semantic id). When the only
+      // arrives with the native UUID or legacy semantic key. When the only
       // thing on file for that identity is a reconstructed `abandoned` stub,
       // the stub is a measurement this record refutes — so we append the fuller
       // record (carrying `supersedes: <stub id>`) instead of skipping. An
       // authoritative record already on file still short-circuits exactly as
       // before.
       const sessionsPath = path.join(repoRoot, ...SESSIONS_REL);
-      const existing = classifyExisting(readFileSync, sessionsPath, { recordId, sessionId: recordId });
+      const existing = classifyExisting(readFileSync, sessionsPath, {
+        recordId,
+        sessionId: nativeId,
+        semanticSessionId,
+        startedAt: parsed.frontmatter?.started_at,
+      });
       if (existing.kind === 'canonical') {
         return { action: 'skipped-already-recorded', sessionId: existing.matchedId };
       }
       const supersedes = existing.kind === 'stub' ? existing.stubId : null;
+      // Preserve a matched stub's key for its append-only replacement. Without
+      // event timestamps or a raw join on a legacy stub, a new UUID key would
+      // leave two canonical sessions: its supersedes proof is unattestable.
+      if (supersedes) recordId = supersedes;
 
       // -- Derive whatever is derivable from events.jsonl (never STATE.md body) -
       const eventsPath = path.join(repoRoot, ...EVENTS_REL);
       const events = readJsonlSafe(readFileSync, eventsPath);
-      const gathered = collectSessionEvents(events, { sessionId: null, semanticSessionId: recordId });
+      const gathered = collectSessionEvents(events, { sessionId: nativeId, semanticSessionId });
 
       // -- Synthesize + validate (round-trip gate) BEFORE any disk mutation ----
       const record = synthesizeRecord({
@@ -953,6 +1007,7 @@ export async function backfillCompletedFromStateMd({
         // same fail-quiet posture as `isUuid(sessionId) ? sessionId : null`.
         rawSessionId: gathered.uuids?.size === 1 ? [...gathered.uuids][0] : null,
       });
+      if (nativeId && semanticSessionId !== nativeId) record.semantic_session_id = semanticSessionId;
       let validated;
       try {
         validated = validateSession(record);

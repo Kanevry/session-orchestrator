@@ -22,9 +22,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-import { backfillAbandonedSession, backfillCompletedFromStateMd, isUuid } from '@lib/session-close-backfill.mjs';
+import { backfillAbandonedSession, backfillCompletedFromStateMd, findRecordedSession, isUuid } from '@lib/session-close-backfill.mjs';
 import { validateSession } from '@lib/session-schema/validator.mjs';
 import { serializeStateMd } from '@lib/state-md/yaml-parser.mjs';
+import { canonicalizeSessions } from '@lib/sessions-canonical.mjs';
 
 const UUID = '11111111-2222-4333-8444-555555555555';
 const OTHER_UUID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -314,6 +315,18 @@ describe('backfillAbandonedSession — carryover sentinel (#773)', () => {
 // ---------------------------------------------------------------------------
 
 describe('backfillAbandonedSession — dedupe', () => {
+  it('does not reuse a ledger key occupied by a different native session', async () => {
+    seedSessions([{ session_id: 'main-2026-05-27-session-1', raw_session_id: OTHER_UUID, status: 'completed', started_at: '2026-05-26T14:00:00.000Z' }]);
+    seedEvents([{ timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' }]);
+
+    const first = await backfillAbandonedSession({ repoRoot, sessionId: UUID, semanticSessionId: 'main-2026-05-27-session-1', now: NOW_MS });
+    const second = await backfillAbandonedSession({ repoRoot, sessionId: UUID, semanticSessionId: 'main-2026-05-27-session-1', now: NOW_MS });
+
+    expect(first.record).toMatchObject({ session_id: UUID, raw_session_id: UUID, semantic_session_id: 'main-2026-05-27-session-1' });
+    expect(second).toEqual({ action: 'skipped-already-recorded', sessionId: UUID });
+    expect(canonicalizeSessions(readSessions())).toHaveLength(2);
+  });
+
   it('skips when the semantic id is already recorded in sessions.jsonl', async () => {
     seedEvents([
       { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
@@ -841,11 +854,17 @@ describe('backfillCompletedFromStateMd — #429', () => {
     session: 'main-2026-05-27-session-1',
   };
 
-  it('(a) no-op when a record for the STATE.md session id already exists', async () => {
-    writeStateMd(COMPLETED_FRONTMATTER);
+  it.each([
+    ['legacy semantic key', {}, 'main-2026-05-27-session-1', {}],
+    ['native key', { 'session-id': UUID }, UUID, { semantic_session_id: 'main-2026-05-27-session-1' }],
+    ['legacy key with a native join', { 'session-id': UUID }, 'main-2026-05-27-session-1', { raw_session_id: UUID }],
+    ['legacy key with a matching start', { 'session-id': UUID }, 'main-2026-05-27-session-1', {}],
+  ])('(a) no-op when a record for the STATE.md session already exists: %s', async (_name, nativeState, recordId, identity) => {
+    writeStateMd({ ...COMPLETED_FRONTMATTER, ...nativeState });
     seedSessions([
       {
-        session_id: 'main-2026-05-27-session-1',
+        session_id: recordId,
+        ...identity,
         session_type: 'deep',
         started_at: STARTED_AT,
         completed_at: '2026-05-27T15:00:00.000Z',
@@ -861,9 +880,72 @@ describe('backfillCompletedFromStateMd — #429', () => {
     const res = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
 
     expect(res.action).toBe('skipped-already-recorded');
-    expect(res.sessionId).toBe('main-2026-05-27-session-1');
+    expect(res.sessionId).toBe(recordId);
     // The pre-existing record is untouched (still exactly one record).
     expect(readSessions()).toHaveLength(1);
+  });
+
+  it('preserves the latest canonical completion when an older same-key stub has a stronger native join', async () => {
+    writeStateMd({ ...COMPLETED_FRONTMATTER, 'session-id': UUID });
+    const completion = {
+      session_id: 'main-2026-05-27-session-1',
+      started_at: STARTED_AT,
+      status: 'completed',
+      total_agents: 8,
+      total_files_changed: 12,
+    };
+    seedSessions([
+      { session_id: 'main-2026-05-27-session-1', raw_session_id: UUID, started_at: STARTED_AT, status: 'abandoned', _backfill_source: 'events-jsonl' },
+      completion,
+    ]);
+
+    const precheck = findRecordedSession(readSessions(), { sessionId: UUID, semanticSessionId: 'main-2026-05-27-session-1', startedAt: STARTED_AT });
+    const result = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+
+    expect(precheck).toEqual(completion);
+    expect(result).toEqual({ action: 'skipped-already-recorded', sessionId: 'main-2026-05-27-session-1' });
+    expect(canonicalizeSessions(readSessions())).toEqual([completion]);
+    expect(readSessions()).toHaveLength(2);
+  });
+
+  it.each([
+    ['different native join', { raw_session_id: OTHER_UUID }],
+    ['legacy record with a different start', {}],
+  ])('keeps sessions sharing a label separate in dedupe, event recovery and repeated close: %s', async (_name, priorIdentity) => {
+    // Production identity shape: native session_id + semantic_session_id on
+    // current records, semantic session_id + raw_session_id on older ones.
+    writeStateMd({ ...COMPLETED_FRONTMATTER, 'session-id': UUID });
+    seedSessions([{
+      session_id: 'main-2026-05-27-session-1',
+      ...priorIdentity,
+      status: 'completed',
+      started_at: '2026-05-26T14:00:00.000Z',
+      completed_at: '2026-05-26T17:00:00.000Z',
+    }]);
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      { timestamp: '2026-05-27T17:00:00.000Z', event: 'orchestrator.session.ended', session_id: UUID },
+      { timestamp: '2026-05-27T18:00:00.000Z', event: 'orchestrator.session.lock.acquired', session_id: OTHER_UUID, semantic_session_id: 'main-2026-05-27-session-1', mode: 'feature' },
+      { timestamp: '2026-05-27T18:01:00.000Z', event: 'orchestrator.session.started', session_id: OTHER_UUID, branch: 'peer' },
+      { timestamp: '2026-05-27T18:15:00.000Z', event: 'orchestrator.session.ended', session_id: OTHER_UUID },
+    ]);
+
+    const first = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+    const second = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+
+    expect(first.action).toBe('backfilled');
+    expect(first.record).toMatchObject({
+      session_id: UUID,
+      raw_session_id: UUID,
+      semantic_session_id: 'main-2026-05-27-session-1',
+      started_at: STARTED_AT,
+      completed_at: '2026-05-27T17:00:00.000Z',
+      session_type: 'unknown',
+      status: 'completed',
+    });
+    expect(second).toEqual({ action: 'skipped-already-recorded', sessionId: UUID });
+    expect(readSessions()).toHaveLength(2);
+    expect(readSessions()[0]).toMatchObject({ session_id: 'main-2026-05-27-session-1', started_at: '2026-05-26T14:00:00.000Z' });
   });
 
   it('(b) backfills a status:completed record tagged _backfill_source:state-md-completed when none exists', async () => {
@@ -1086,12 +1168,12 @@ describe('backfillCompletedFromStateMd — supersedes a backfill stub (#1068 AC3
   // the TOCTOU marker FILE — a `.orchestrator/metrics/` artifact any cleanup
   // sweep may remove. The status half of the predicate is what makes the
   // termination a property of the data instead of the filesystem.
-  it('does not supersede again once the stub has been superseded (no unbounded chain)', async () => {
-    writeStateMd(COMPLETED_FRONTMATTER);
+  it.each([{}, { 'session-id': UUID }])('does not supersede again once the stub has been superseded (no unbounded chain): %j', async (nativeState) => {
+    writeStateMd({ ...COMPLETED_FRONTMATTER, ...nativeState });
     seedSessions([abandonedStub()]);
-    seedEvents([
-      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
-    ]);
+    // No event bridge or native timestamps: the replacement must still count
+    // as one canonical session, even with an inferred fallback started_at.
+    seedEvents([]);
 
     const first = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
     expect(first.action).toBe('superseded');
@@ -1099,6 +1181,7 @@ describe('backfillCompletedFromStateMd — supersedes a backfill stub (#1068 AC3
 
     const second = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
 
+    expect(canonicalizeSessions(readSessions())).toHaveLength(1);
     expect(second.action).toBe('skipped-already-recorded');
     expect(second.sessionId).toBe(SEMANTIC);
     expect(readSessions()).toHaveLength(2);
