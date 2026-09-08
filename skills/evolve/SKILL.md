@@ -634,7 +634,7 @@ const result = await runDialecticDeriver({
 ```
 
 ### Step 6.4: Diff Output & Apply Gate
-- If dry-run (default): present diff inline; write to `.orchestrator/dialectic-pending.md` (atomic tmp+rename); EXIT. Suggestion: "Re-run with `/evolve --dialectic --apply` to apply."
+- If dry-run (default): present diff inline; write to `.orchestrator/dialectic-pending.md` (atomic tmp+rename); EXIT. Suggestion: "Re-run with `/evolve --dialectic --apply` to apply." <!-- path-check: example -->
 - If `--apply`: call `mergePeerCard(existingBody, managedUpdates)` from `scripts/lib/peer-cards/merger.mjs` for each card target, then `writePeerCard(repoRoot, 'user', mergedUserCard)` and `writePeerCard(repoRoot, 'agent', mergedAgentCard)` from `scripts/lib/peer-cards/writer.mjs`. Update the `updated:` frontmatter.
 - Report: `Dialectic-derived: M deltas to USER.md, N deltas to AGENT.md. Dry-run | Applied. Tokens: in=<X> out=<Y>.`
 
@@ -666,7 +666,7 @@ await recordDialecticRun({
 - `status: 'budget-exceeded'` → emit `{status:'budget-exceeded', used:N, budget:M}`, do NOT truncate
 - `status: 'would-empty-card'` → warn + require `--allow-emptying` flag
 - `status: 'empty-input'` → exit clean with message "dialectic: skipped (no input)"
-- subagent crash → log ⚠, exit cleanly (do NOT write to `.orchestrator/dialectic-pending.md`)
+- subagent crash → log ⚠, exit cleanly (do NOT write to `.orchestrator/dialectic-pending.md`) <!-- path-check: example -->
 
 **Telemetry (#1200, #1206) — emitted by `scripts/dialectic-deriver.mjs` for THREE of the five
 outcomes.** `budget-exceeded`, `would-empty-card`, and `empty-input` are `runDialecticDeriver()`

@@ -99,5 +99,7 @@ Setting `telemetry:\n  enabled: true` in the host-local `~/.config/session-orche
 
 The decision persists host-locally in `~/.config/session-orchestrator/telemetry.json`; once `consent` is non-`null` (granted or denied), `resolveConsent().prompt` stays `false` and this phase never fires again on that host — no repeat prompting across repos or sessions.
 
-Cross-reference: GitLab #845 (Epic #841); `docs/prd/2026-07-20-anonymous-usage-telemetry.md` §3 FA1/FA5; `docs/telemetry.md`; consent API in `scripts/lib/telemetry/consent.mjs` (`resolveConsent`, `grantConsent`, `denyConsent`, `isHeadless`, `readTelemetryState`).
+Cross-reference: GitLab #845 (Epic #841); `docs/telemetry.md`; consent API in `scripts/lib/telemetry/consent.mjs` (`resolveConsent`, `grantConsent`, `denyConsent`, `isHeadless`, `readTelemetryState`).
+
+Historical design: archived PRD `docs/prd/2026-07-20-anonymous-usage-telemetry.md` §3 FA1/FA5. <!-- path-check: historical -->
 

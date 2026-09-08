@@ -45,7 +45,7 @@ change list: [CHANGELOG.md](../CHANGELOG.md).
 | `node scripts/fleet-instruction-scan.mjs`, `lifecycle-sim-v6.mjs`, `upload-social-preview.mjs` | **removed** | No replacement. | <!-- path-check: historical -->
 | dispatching `AGENTS.md` as an agent | **removed as a dispatch target** | It was never an agent — it is the authoring spec, now [`docs/agent-authoring.md`](./agent-authoring.md). Read it; do not dispatch it. |
 | dispatching `memory-proposal-collector` as an agent | **removed as a dispatch target** | Now [`docs/memory-proposal-flow.md`](./memory-proposal-flow.md). |
-| citing `skills/_shared/model-selection.md` | **removed** | No replacement; it had zero consumers. |
+| citing `skills/_shared/model-selection.md` | **removed** | No replacement; it had zero consumers. <!-- path-check: historical --> |
 | Session Config `autopilot.bg-isolation` | **removed** | No replacement — delete the `autopilot:` block from your `CLAUDE.md`/`AGENTS.md`, it was the block's only field and is now inert (`scripts/parse-config.mjs` never parsed it). |
 | Session Config `webhooks.<kind>.url` | **removed** (pre-4.0.0, `ce6a28aa`) | No replacement — `scripts/lib/webhook-url.mjs` had zero callers. The still-live Clank Event Bus webhook (`CLANK_EVENT_SECRET`/`CLANK_EVENT_URL`) is unrelated and unaffected. | <!-- path-check: historical -->
 
@@ -221,7 +221,7 @@ node scripts/validate-plugin.mjs
 
 **Nothing breaks at runtime.** A citation in a consumer repo's `CLAUDE.md` (or `AGENTS.md`) to
 `daily`, `skill-creator`, `ubiquitous-language`, `contract-version-bump`, `journey-audit`,
-`domain-model` or `skills/_shared/model-selection.md` is prose. No loader resolves it, no hook
+`domain-model` or `skills/_shared/model-selection.md` is prose. No loader resolves it, no hook <!-- path-check: historical -->
 reads it, and the session starts normally.
 
 **But `claude-md-drift-check` may flag it** as a dangling citation, and if you run it with

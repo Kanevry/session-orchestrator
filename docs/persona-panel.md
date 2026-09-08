@@ -70,8 +70,8 @@ written to `.orchestrator/persona-panel/`.
 **Scenario:** A climate-research brief (`wfk-2.1.5.md`) needs sign-off from a domain physicist
 and an AI/ML expert before it is submitted. Both must agree.
 
-**Catalog files:** `.claude/personas/klima-physicist.md`,
-`.claude/personas/klima-ai-expert.md`
+**Catalog files:** `.claude/personas/klima-physicist.md`, <!-- path-check: example -->
+`.claude/personas/klima-ai-expert.md` <!-- path-check: example -->
 
 ```bash
 /persona-panel docs/research/wfk-2.1.5.md \
@@ -182,8 +182,8 @@ The command exits with code 1. CI pipelines and wave-executor hooks can gate on 
 **Scenario:** An AI accountant (Sophie) produces invoice analysis JSON. A tax-advisor persona
 and a DSGVO-compliance persona must both approve before the output is delivered to the client.
 
-**Catalog files:** `.claude/personas/accounting-tax-advisor.md`,
-`.claude/personas/accounting-compliance.md`
+**Catalog files:** `.claude/personas/accounting-tax-advisor.md`, <!-- path-check: example -->
+`.claude/personas/accounting-compliance.md` <!-- path-check: example -->
 
 ```bash
 /persona-panel sophie-outputs/2026-05-19/invoice-12345.json \

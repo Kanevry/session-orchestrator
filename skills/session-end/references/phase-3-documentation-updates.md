@@ -117,7 +117,9 @@ try { await flush(); } catch { /* nie blockierend — der Close darf durch Telem
 
 **Semantics.** `flush()` is fire-and-forget with an internal ~3s timeout. When the ingest endpoint is unreachable (offline), events stay in the bounded host-local queue (oldest-dropped on overflow) and are retried on a later close — nothing is lost or blocked. A one-line result MAY be surfaced in the Phase 6 close summary (`Telemetry: sent` / `queued` / `gated`), but a failure NEVER renders an error banner: under no circumstances may telemetry make `/close` fail or take materially longer than ~3s. The gate lives in the module (fail-closed via `resolveConsent`), so this phase carries no config-key check of its own beyond the `persistence: false` skip above.
 
-Cross-reference: GitLab #844 (Epic #841); `docs/prd/2026-07-20-anonymous-usage-telemetry.md` FA3; `docs/telemetry.md`; flush API in `scripts/lib/telemetry/sync.mjs` (`flush` — fire-and-forget, gated, never-throw).
+Cross-reference: GitLab #844 (Epic #841); `docs/telemetry.md`; flush API in `scripts/lib/telemetry/sync.mjs` (`flush` — fire-and-forget, gated, never-throw).
+
+Historical design: archived PRD `docs/prd/2026-07-20-anonymous-usage-telemetry.md` FA3. <!-- path-check: historical -->
 
 ### 3.5 Session Memory
 

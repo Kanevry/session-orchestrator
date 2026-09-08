@@ -208,7 +208,7 @@ Replace `<YYYY-MM-DD>` with today's date in ISO 8601 format (e.g., `2026-04-16`)
 mkdir -p "$REPO_ROOT/.gitlab/issue_templates"
 ```
 
-Write `.gitlab/issue_templates/Bug.md`:
+In the consuming repository, create `.gitlab/issue_templates/Bug.md`: <!-- path-check: example -->
 
 ```markdown
 ## Summary
@@ -239,7 +239,7 @@ Write `.gitlab/issue_templates/Bug.md`:
 <!-- Screenshots, logs, related issues -->
 ```
 
-Write `.gitlab/issue_templates/Feature.md`:
+In the consuming repository, create `.gitlab/issue_templates/Feature.md`: <!-- path-check: example -->
 
 ```markdown
 ## Summary
@@ -334,7 +334,7 @@ labels: enhancement
 mkdir -p "$REPO_ROOT/.gitlab/merge_request_templates"
 ```
 
-Write `.gitlab/merge_request_templates/Default.md`:
+In the consuming repository, create `.gitlab/merge_request_templates/Default.md`: <!-- path-check: example -->
 
 ```markdown
 ## Summary

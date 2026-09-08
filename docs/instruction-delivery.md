@@ -105,7 +105,7 @@ to remove.
 Note the shape of the mistake, because this repo already has a rule for it: a census
 keyed on the payload (`loadApplicableRules` in `*.mjs`) misses every consumer that
 pins only the channel (`print-applicable-rules.mjs` invoked from prose). See
-`.claude/rules/anti-pattern-a-protocol-migration-census-keyed-on-the-payload-misses-every-consumer-that-pins-only-the-channel-18f3d0a.md`.
+`.claude/rules/measurement-discipline.md`.
 
 ### 1.3 A second delivery source outside this repo's control
 

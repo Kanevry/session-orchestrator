@@ -963,7 +963,7 @@ Session Orchestrator persists session state so you can resume after crashes, pau
 
 ### STATE.md
 
-Lives at `.claude/STATE.md` in your project. Contains YAML frontmatter (`session-type`, `branch`, `issues`, `started`, `status`, `current-wave`, `total-waves`) and a Markdown body tracking the Current Wave, Wave History, and any Deviations from the plan. Written by the wave-executor after each wave; read by session-start on the next `/session` invocation.
+Lives at `.claude/STATE.md` in your project. Contains YAML frontmatter (`session-type`, `branch`, `issues`, `started`, `status`, `current-wave`, `total-waves`) and a Markdown body tracking the Current Wave, Wave History, and any Deviations from the plan. Written by the wave-executor after each wave; read by session-start on the next `/session` invocation. <!-- path-check: example -->
 
 ### Session Continuity
 
@@ -1385,6 +1385,28 @@ If agents consistently time out during wave execution:
 - Reduce `agents-per-wave` in Session Config (fewer parallel agents = less resource contention)
 - Switch from `deep` to `feature` session type if you do not need the extra agent count
 - Check that your machine has sufficient resources for parallel agent execution
+
+### Import-probe warnings and missing ESLint
+
+The post-edit import probe checks edited `.mjs`, `.js`, and `.cjs` files only when the path is listed in the project's `hooks/_lib/hook-import-set.json` and the hook is enabled. It reports likely hook breakage as a warning and always exits 0. Its two checks have different coverage:
+
+- **C1 — ESLint:** reports `no-undef` and fatal/parse errors. Install ESLint with the project's package manager and enable `no-undef` in the **project's ESLint configuration**; the probe does not enable that rule itself. Other lint rules remain the full lint command's responsibility.
+- **C2 — import:** loads allowlisted files under `scripts/lib/**` in a child process to detect errors during module loading. It does not import hook entrypoints or call exported functions. An undefined identifier reached only when a function runs can therefore escape C2 even when importing the module succeeds.
+
+ESLint lookup tries these paths in order: the project's `node_modules/.bin/eslint`, the project's `node_modules/eslint/bin/eslint.js`, then the same two paths under the plugin root. A consumer installation may have no plugin development dependencies, so the project's ESLint installation matters. `SO_IMPORT_PROBE_ESLINT` overrides this search with an explicit script path; use an absolute path to the ESLint entry script. An empty or nonexistent override disables C1 **without falling back** to either installation.
+
+When no ESLint is available, C1 is normally silent and only eligible C2 checks remain. For an edit that reaches the checks, `SO_IMPORT_PROBE_TRACE=1` writes `probe:eslint-unavailable` to stderr when ESLint cannot be located. This trace diagnoses unavailable ESLint; it does not diagnose every timeout or configuration failure. A timed-out ESLint or an unreadable/non-JSON report is skipped, so silence does not prove that C1 ran successfully.
+
+The shipped event wiring is:
+
+| Harness | Import-probe event |
+|---------|--------------------|
+| Claude Code | `PostToolUse` for edit/write tools |
+| Cursor | `postToolUse` and `afterFileEdit` |
+| Pi | `tool_result` for edit/write tools |
+| Codex | **Unwired:** the current Codex hook manifest has no import-probe handler |
+
+Codex does not currently run this probe automatically, and reinstalling the same bundle does not add that missing handler. Use the project's normal lint and tests for verification there. Implementation: [`hooks/post-edit-import-probe.mjs`](../hooks/post-edit-import-probe.mjs); event manifests: [Claude Code](../hooks/hooks.json), [Cursor](../hooks/hooks-cursor.json), [Pi](../hooks/hooks-pi.json), [Codex](../hooks/hooks-codex.json).
 
 ### Design review skipped unexpectedly
 

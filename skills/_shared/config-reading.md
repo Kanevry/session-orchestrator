@@ -166,7 +166,9 @@ Rule files at `.claude/rules/*.md` may carry an optional `globs:` YAML frontmatt
 
 Parse-error rules carry no meta, so they pass every gate (fail-open: never silently dropped).
 
-**Call shape.** `loadApplicableRules({ rulesDir, scopePaths = [], mode = null, hostClass = null, now = Date.now() })`. The `mode` / `hostClass` / `now` params are strictly optional and default to "no gating", so the original #336 two-key call shape stays 100% backward-compatible. In the wired path, `scripts/print-applicable-rules.mjs` resolves `scopePaths` from `wave-scope.json` `allowedPaths`, `mode` from `session-type:` in `.claude/STATE.md`, and `hostClass` from `.orchestrator/host.json` (`readHostClass`) — each overridable via a CLI flag and each degrading to `null`/`[]` when unreadable.
+**Call shape.** `loadApplicableRules({ rulesDir, scopePaths = [], mode = null, hostClass = null, now = Date.now() })`. The `mode` / `hostClass` / `now` params are strictly optional and default to "no gating", so the original #336 two-key call shape stays 100% backward-compatible. In the wired path, `scripts/print-applicable-rules.mjs` resolves `scopePaths` from `wave-scope.json` `allowedPaths`;
+`mode` from `session-type:` in the active harness's `STATE.md` (state-directory override first, then active-harness and legacy fallback);
+and `hostClass` from `.orchestrator/host.json` (`readHostClass`) — each overridable via a CLI flag and each degrading to `null`/`[]` when unreadable.
 
 **Where in the config-reading flow this hook fires.** After `parse-config.mjs` completes and `$CONFIG` is populated (Phase 2 of session-start / wave-executor pre-wave setup), and after `wave-scope.json` is written, but before the agent prompt for the wave is assembled. The CLI is invoked at the wave boundary so that each wave gets a fresh rule set scoped to its `allowedPaths`. It does NOT run at session-start for the coordinator prompt; the coordinator always receives all always-on rules regardless of scope.
 

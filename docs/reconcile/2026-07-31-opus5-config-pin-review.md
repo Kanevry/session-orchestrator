@@ -34,7 +34,7 @@ Evidence — `grep -rn "^model:" agents/*.md` (16 pins):
 | `haiku` | 3 | dialectic-deriver, eval-judge, skill-applied-judge | **KEEP** — deliberate cost pin (cheap judges); do NOT change |
 | `opus` | 1 | ux-evaluator | **SAFE** — alias tier pin, rides the Opus-5 family |
 
-No agent carries a hard version-ID pin. `agents/AGENTS.md:59` lists `claude-opus-4-7,
+No agent carries a hard version-ID pin. `agents/AGENTS.md:59` <!-- path-check: historical --> lists `claude-opus-4-7,
 claude-sonnet-4-6, …` but that is a **documentation comment** enumerating allowed values, not
 a live pin. W1's `inherit` migration is complete and Opus-5-safe.
 
@@ -57,7 +57,7 @@ a live pin. W1's `inherit` migration is complete and Opus-5-safe.
 - **Why it is stale, not broken:** `claude-opus-4-7` remains a valid model ID; it will not
   error under Opus 5. But it pins the personas to Opus **4.7** and trades away the automatic
   upgrade to Opus 5.
-- **Why the pin is not justified:** per `agents/AGENTS.md`, a full-ID pin is warranted only
+- **Why the pin is not justified:** per `agents/AGENTS.md`, a full-ID pin is warranted only <!-- path-check: historical -->
   by a *demonstrated version dependency* (dated-snapshot reproducibility, or a known
   regression on newer models for this exact prompt). The persona-panel rationale is a **tier**
   argument ("Opus finds real problems Sonnet misses"), NOT a version argument ("4-7

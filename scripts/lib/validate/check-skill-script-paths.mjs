@@ -3,11 +3,13 @@
  * Check: every `scripts/**.mjs` path cited in `skills/`, `commands/`,
  * `agents/` and `docs/` either EXISTS or is annotated as deliberately absent
  * (#1176). Extended (#1187) to also cite `scripts/**.sh` and `hooks/**.sh` —
- * see "## Mode: BLOCKING for `.mjs`, ADVISORY for `.sh`" below for why that
+ * see "## Mode" below for why that
  * half is advisory, not blocking. `docs/` joined `SCAN_DIRS` in #1208, after
  * the 22 dead paths it carried at the time (9 `.mjs`, all ADR/reference
  * prose) were annotated — see that section below for the census and why
  * widening the scan root had to wait for the annotation pass, not precede it.
+ * #1241 adds blocking repo-rooted `.md` paths quoted as complete inline-code
+ * spans, with the same annotations and fence handling. Scan roots stay fixed.
  *
  * ## Why
  *
@@ -50,7 +52,7 @@
  * looking misplaced. A malformed marker (unknown class, or `planned` without a
  * `#<iid>`) is itself a finding for the same reason — it must never fail silent.
  *
- * ## Mode: BLOCKING for `.mjs`, ADVISORY for `.sh` (#1187)
+ * ## Mode: BLOCKING for `.mjs` / `.md`, ADVISORY for `.sh` (#1187)
  *
  * Unlike `check-doc-cli-commands.mjs`, the oracle here is the repository's own
  * filesystem, not a locally installed third-party binary — there is no version
@@ -114,6 +116,22 @@ export const SCAN_DIRS = Object.freeze(['skills', 'commands', 'agents', 'docs'])
  * every existing annotation and fence-skip test unchanged.
  */
 const CITATION_RE = /scripts\/[a-zA-Z0-9_/-]*\.(?:mjs|sh)|hooks\/[a-zA-Z0-9_/-]*\.sh/g;
+
+/**
+ * A complete inline-code span, including spans delimited by multiple backticks.
+ * Consume the outer span before judging its content, so a quoted command that
+ * contains backticks cannot donate a nested path-looking substring.
+ */
+const INLINE_CODE_RE = /(?<!`)(`+)(.+?)(?<!`)\1(?!`)/g;
+
+/**
+ * #1241's bounded grammar: a literal repo-rooted .md path, optionally followed
+ * by :line, :line:end / :line-end, and #anchor. Only the file is checked.
+ * URLs, commands, absolute paths, skill-relative references/, variables and
+ * globs are outside this grammar. Matching is line-local; revisit if the
+ * instruction corpus adopts multiline path spans or another target root.
+ */
+const MARKDOWN_CITATION_RE = /^((?:docs|skills|commands|agents|templates|rules|scripts|hooks|tests|\.(?:claude|codex|cursor|pi|orchestrator|gitlab|github))\/[a-zA-Z0-9_./-]+\.md)(?::\d+(?:[:-]\d+)?)?(?:#[^\s`]+)?$/;
 
 /**
  * Filename fragments that mark a citation as an ILLUSTRATIVE placeholder —
@@ -211,6 +229,10 @@ export function extractCitations(lines) {
     for (const hit of raw.matchAll(CITATION_RE)) {
       citations.push({ line: lineNumber, path: hit[0] });
     }
+    for (const span of raw.matchAll(INLINE_CODE_RE)) {
+      const hit = span[2].match(MARKDOWN_CITATION_RE);
+      if (hit) citations.push({ line: lineNumber, path: hit[1] });
+    }
   };
 
   // A blockquoted fence is still a fence — the shared tracker strips the `>`
@@ -234,12 +256,12 @@ export function extractCitations(lines) {
 
 /**
  * Census the documentation corpus for dead `scripts/**.mjs`/`.sh` and
- * `hooks/**.sh` citations.
+ * `hooks/**.sh` citations, plus repo-rooted `.md` inline-code paths.
  *
  * @param {{pluginRoot: string, dirs?: string[], strictSh?: boolean}} options
  *   `strictSh` (default `false`) promotes a dead `.sh` citation from
  *   `severity: 'warn'` to `severity: 'fail'` — see the module docblock
- *   "Mode: BLOCKING for `.mjs`, ADVISORY for `.sh`" for why the default stays
+ *   "Mode" for why the default stays
  *   advisory in this release.
  * @returns {{ok: boolean, summary: object, findings: {kind: string, file: string, line: number, path: string, annotation: string | null, message: string, severity: 'fail' | 'warn'}[], toolError: boolean}}
  */
@@ -344,10 +366,11 @@ export function scanSkillScriptPaths({ pluginRoot, dirs = SCAN_DIRS, strictSh = 
         summary.existing += 1;
         continue;
       }
-      // An illustrative placeholder name needs no marker — see
+      // A script placeholder name needs no marker — see
       // `isPlaceholderCitation`'s docblock for the closed fragment list and
-      // its named ceiling.
-      if (isPlaceholderCitation(citation.path)) {
+      // its named ceiling. Markdown examples require explicit annotations:
+      // a real missing docs/foobar.md must not disappear because of its name.
+      if (path.extname(citation.path) !== '.md' && isPlaceholderCitation(citation.path)) {
         summary.placeholders += 1;
         continue;
       }
@@ -366,7 +389,7 @@ export function scanSkillScriptPaths({ pluginRoot, dirs = SCAN_DIRS, strictSh = 
       }
       if (marker && !marker.ok) continue; // already reported as bad-annotation
 
-      // `.mjs` is blocking exactly as before this module grew a `.sh` half.
+      // `.mjs` and `.md` are blocking.
       // `.sh` is advisory (`warn`) unless the caller opted into `strictSh`.
       const isSh = path.extname(citation.path) === '.sh';
       const severity = isSh && !strictSh ? 'warn' : 'fail';
@@ -405,7 +428,7 @@ export function scanSkillScriptPaths({ pluginRoot, dirs = SCAN_DIRS, strictSh = 
  * @returns {number} 0 = clean, 1 = findings, 2 = tool error
  */
 export function runCheckSkillScriptPaths(pluginRoot, { strictSh = false } = {}) {
-  console.log('--- Check: scripts/*.mjs (+ *.sh) paths cited in skills/commands/agents exist ---');
+  console.log('--- Check: script and Markdown paths cited in skills/commands/agents/docs exist ---');
   const inspection = scanSkillScriptPaths({ pluginRoot, strictSh });
 
   for (const item of inspection.findings) {
@@ -427,7 +450,7 @@ export function runCheckSkillScriptPaths(pluginRoot, { strictSh = false } = {}) 
   const blockingCount = inspection.findings.filter((f) => f.severity !== 'warn').length;
   if (inspection.ok) {
     console.log(
-      `  PASS: ${s.citations} script citation(s) in ${s.filesScanned} doc file(s) — ` +
+      `  PASS: ${s.citations} file citation(s) in ${s.filesScanned} doc file(s) — ` +
         `${s.existing} exist, ${s.annotated} annotated as deliberately absent, ` +
         `${s.placeholders} placeholder(s)` +
         (s.warnings > 0 ? `, ${s.warnings} advisory .sh warning(s) (see --strict-sh)` : ''),

@@ -282,6 +282,83 @@ describe('scanSkillScriptPaths — .sh extension (#1187)', () => {
   });
 });
 
+describe('repo-rooted Markdown citations (#1241)', () => {
+  it('blocks a planted dead Markdown citation through both CLI outputs', () => {
+    // Bug: dead Markdown pointers were invisible, including real names that
+    // happen to contain a script-placeholder fragment such as "bar".
+    const root = fixtureRoot('Read `docs/barrier-rollout.md:12:18#phase`.\n');
+    try {
+      const human = spawnSync('node', [checkScript, root], { encoding: 'utf8' });
+      const json = spawnSync('node', [checkScript, root, '--json'], { encoding: 'utf8' });
+      expect(human.status).toBe(1);
+      expect(human.stdout).toContain('  FAIL: [missing-path] skills/demo/SKILL.md:1 docs/barrier-rollout.md');
+      expect(json.status).toBe(1);
+      expect(JSON.parse(json.stdout)).toMatchObject({
+        ok: false,
+        findings: [{ kind: 'missing-path', line: 1, path: 'docs/barrier-rollout.md', severity: 'fail' }],
+      });
+    } finally {
+      removeTree(root);
+    }
+  });
+
+  it('resolves line ranges and anchors against the file, including hidden roots', () => {
+    // Bug: checking a citation suffix as part of its filename falsely rejects
+    // a real target; script-placeholder names must still count as existing.
+    const result = scanFixture(
+      '`docs/my-guide.md#phase` and `docs/my-guide.md:12#phase`\n' +
+      '`docs/my-guide.md:12:18` and ``.claude/rules/foobar.md:12-18#phase``\n',
+      ['docs/my-guide.md', '.claude/rules/foobar.md'],
+    );
+    expect(result.findings).toEqual([]);
+    expect(result.summary.existing).toBe(4);
+  });
+
+  it('requires annotations for examples and keeps each marker with its own cited line', () => {
+    // Bug: adding Markdown extraction without adding it to citedLines lets a
+    // Markdown marker exempt the next script; the reverse must also stay closed.
+    const result = scanFixture(
+      '`docs/old.md` <!-- path-check: historical -->\n' +
+      '`scripts/dead.mjs`\n' +
+      '<!-- path-check: planned #1241 -->\n`docs/future.md`\n' +
+      '`scripts/old.mjs` <!-- path-check: historical -->\n' +
+      '`docs/foo.md`\n' +
+      '`docs/my-example.md` <!-- path-check: example -->\n',
+    );
+    expect(result.findings.map(({ line, path: citedPath, severity }) => ({ line, path: citedPath, severity }))).toEqual([
+      { line: 2, path: 'scripts/dead.mjs', severity: 'fail' },
+      { line: 6, path: 'docs/foo.md', severity: 'fail' },
+    ]);
+    expect(result.summary.annotated).toBe(4);
+    expect(result.summary.placeholders).toBe(0);
+  });
+
+  it('collects only a complete repo-rooted path inside an inline span outside fences', () => {
+    // Bug: a substring scan invents citations inside commands, URLs, absolute
+    // paths and skill-relative references; a separate scanner loses fences.
+    const { citations } = extractCitations([
+      '`https://example.test/docs/dead.md` `/tmp/docs/dead.md` `cat docs/dead.md`',
+      '`references/phase.md` docs/bare.md ``use `docs/nested.md` here``',
+      '> ~~~', '> `docs/fenced.md`', '> ~~~',
+      '`skills/demo/SKILL.md` and `.github/PULL_REQUEST_TEMPLATE.md`',
+    ]);
+    expect(citations).toEqual([
+      { line: 6, path: 'skills/demo/SKILL.md' },
+      { line: 6, path: '.github/PULL_REQUEST_TEMPLATE.md' },
+    ]);
+  });
+
+  it('reports a Markdown citation hidden behind an unclosed fence', () => {
+    // Bug: the recovery collector must also see Markdown, or an unmatched
+    // opener still hides the very pointers this extension is meant to check.
+    const result = scanFixture('```\n`docs/swallowed.md`\n');
+    expect(result.findings.map(({ kind, line, path: citedPath }) => ({ kind, line, path: citedPath }))).toEqual([
+      { kind: 'unbalanced-fence', line: 1, path: '-' },
+      { kind: 'missing-path', line: 2, path: 'docs/swallowed.md' },
+    ]);
+  });
+});
+
 describe('isPlaceholderCitation', () => {
   it.each([
     ['scripts/example.sh', true],

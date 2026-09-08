@@ -1,4 +1,4 @@
-<!-- Moved in v4.0.0 from `agents/AGENTS.md` (audit 2026-09-06 § 5A). It never was an agent: Claude Code's plugin loader registers every `agents/*.md` by directory convention and the manifest's `agents` key is additive-only, so no manifest entry could exclude it — only pseudo-frontmatter (`name: agents-authoring-spec`, `tools: Read`) kept the false registration bounded. Living under `docs/` removes the registration instead of bounding it. -->
+<!-- Moved in v4.0.0 from `agents/AGENTS.md` (audit 2026-09-06 § 5A). It never was an agent: Claude Code's plugin loader registers every `agents/*.md` by directory convention and the manifest's `agents` key is additive-only, so no manifest entry could exclude it — only pseudo-frontmatter (`name: agents-authoring-spec`, `tools: Read`) kept the false registration bounded. Living under `docs/` removes the registration instead of bounding it. --> <!-- path-check: historical -->
 
 # Sub-Agent Authoring Conventions (`agents/**`)
 
@@ -11,7 +11,7 @@
 > plugin loader registers every `agents/*.md` as a dispatchable agent by
 > directory convention, and the manifest's `agents` key is documented as
 > *additive* ("in addition to those in the `agents/` directory"), so it cannot
-> exclude a path. As `agents/AGENTS.md` this file was therefore a registered
+> exclude a path. As `agents/AGENTS.md` this file was therefore a registered <!-- path-check: historical -->
 > agent — first an unnamed one with **full tool access**, later a contained one
 > whose pseudo-frontmatter capped `tools` at `Read`. Moving it out of the
 > directory removes the registration rather than bounding it. The same applies

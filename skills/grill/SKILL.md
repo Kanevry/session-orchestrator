@@ -33,7 +33,7 @@ Read `soul.md` in this skill directory before anything else. It defines WHO you 
 Establish *what* you are grilling and ground yourself in the *code* before asking the user anything.
 
 1. **Resolve the target.** Parse `$ARGUMENTS`:
-   - A file path (e.g. `docs/prd/2026-06-09-export.md`, `STATE.md`, a spec) → read it in full.
+   - A file path (e.g. `docs/prd/2026-06-09-export.md`, `STATE.md`, a spec) → read it in full. <!-- path-check: example -->
    - A topic/slug or empty → grill the plan or idea already present in the current conversation. If there is no plan in context, ask the user — via AUQ — to state the plan in one or two sentences before continuing.
 2. **Ground in the codebase.** Read the project's domain language if present (`CONTEXT.md`, `.orchestrator/steering/*.md`, relevant `docs/adr/*`), then Grep/Glob the areas the plan touches. Build a short mental model of what the code *actually* does today. This is what lets you run the code-contradiction tactic.
 3. **State the target back.** In 1–2 plain-text sentences, summarize what you understand the plan to be and what you've grounded it against. This catches a wrong target before you waste a grill on it.

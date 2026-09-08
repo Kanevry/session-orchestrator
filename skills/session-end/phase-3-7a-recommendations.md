@@ -95,6 +95,6 @@ await withDurableCommit(
 );
 ```
 
-- Use the platform-resolved `<state-dir>/STATE.md` path (e.g. `~/.claude/STATE.md` on Claude Code) — NOT a hardcoded `.claude/STATE.md`.
+- Use the platform-resolved `<state-dir>/STATE.md` path (e.g. `~/.claude/STATE.md` on Claude Code) — NOT a hardcoded `.claude/STATE.md`. <!-- path-check: example -->
 - The `files` array is staged individually by `durableCommit` (PSA-004: never `git add .`/`-A`); the existing `SAFE_BRANCH_RE` branch-name allowlist + cwd-confinement guards in `durable-telemetry.mjs` apply unchanged.
 - `enabled: false` short-circuits before any git command runs, so the local-execution path performs zero VCS mutation — Phase 4 (`git add` + commit) remains the single staging point for local closes.
