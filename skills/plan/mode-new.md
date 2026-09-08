@@ -40,6 +40,15 @@ Agent({ subagent_type: "Explore", description: "Check ecosystem for conflicts",
 5. **Core problem being solved** — Open-ended. Claude suggests structure if answer is vague.
 6. **GitLab group** — Select the GitLab host explicitly, then discover available groups dynamically. Run `ls $BASELINE_PATH/templates/` for project types, and check for a groups config in `$BASELINE_PATH/config/` or run `glab api --hostname "$GITLAB_HOST" "groups?per_page=100&min_access_level=10"` to discover GitLab groups — read each entry's `full_path` field. (`glab` has no `group` subcommand at all — invoking one exits 1 with `Unknown command "group"`.) Present findings via AskUserQuestion.
 
+### Optional private capability context — after Wave 1
+
+Before Wave 2 research, apply [Private capability context](../_shared/private-capability-context.md)
+only when the owner has explicitly supplied or authorized a local catalog lookup
+for an explicitly private/internal planning audience. Use eligible findings to
+inform the existing shared-patterns research and reuse alternatives; keep the
+archetype research and questions below. With no authorized context, or with a
+public/unknown audience, skip this optional step without a prompt or a lookup.
+
 ### Wave 2 — Technical Details (5 questions, dynamic per archetype)
 
 **Pre-wave agents:**
