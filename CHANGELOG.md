@@ -19,11 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI audit detection examines executable GitHub steps and GitLab jobs, recognizes package-manager options and supported wrappers, and excludes metadata, comments, unused templates and help-only invocations. Local GitLab references, inheritance and `spec:inputs` headers are supported; external includes and dynamic conditions remain outside this heuristic (#1040).
 - Vault session notes render lifecycle agent counts, preserve measured zero, and label counts known only as completed or planned (#1276).
 - Guide copy buttons stay beside their command blocks, including multiline snippets and narrow screens (#1275).
+- Full-repository validator smoke tests have a targeted 60-second child budget and 65-second enclosing test/hook budget after the aggregate scan exceeded 30 seconds in CI coverage. All checks and assertions remain enabled (#1278).
 
 ### Changed
 
 - README, English/German landing pages, guide and machine-readable summaries now agree on installation prerequisites, active plugin-cache selection, Codex command skills, Pi package management, platform-specific enforcement and update-cache behavior (#1275).
 - Refreshed distribution evidence and submission drafts, corrected stable repository steering, and recorded the product-quality review with Chrome and backlog evidence (#824, #1080).
+- Release instructions now place the fully green preflight after commit, both remote pushes and exact-commit CI, matching the executable gate's requirements (#1277).
 
 ## [4.0.1] - 2026-09-07
 

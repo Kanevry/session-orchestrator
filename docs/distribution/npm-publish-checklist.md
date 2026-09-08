@@ -44,7 +44,7 @@ npm pack --dry-run
 
 1. **Do not publish.** An npm publish is not revocable — a leaked file stays in that tarball version forever, and unpublishing burns the version number.
 2. Identify whether the hit is a real leak or a pattern false-positive. Read the matched line: the gate reports the pattern name and the offending `npm notice` line.
-3. If it is a real leak: fix `package.json` `files` (add the path, or a `!` negation), re-run `npm pack --dry-run`, and re-run `--check`. Never silence the pattern.
+3. If it is a real leak: fix `package.json` `files` (add the path, or a `!` negation), re-run `npm pack --dry-run`, then follow section 4 through a fully green `--check`. Never silence the pattern.
 4. If the pattern genuinely over-matches: fix it in `LEAKAGE_PATTERNS` **with a test in `tests/scripts/release.test.mjs`** — never by editing prose in this file. An intentional distributed test asset is different: retain it only through an exact path allowlist at the leakage boundary; never bypass a segment or `templates/**` broadly.
 
 **Blind-scan guard.** A leak scan that parses *no* entries reports "0 leaks" with total confidence. The gate therefore also asserts a floor on parsed packed entries (`MIN_PACKED_ENTRIES` in `scripts/release.mjs`) — that single number catches an npm output-format change, an `npm notice` prefix rename, and a `files` edit that drops whole trees. Current ballpark, measured with `npm pack --dry-run` on 2026-08-21: **805 files, 2.9 MB packed, 9.0 MB unpacked.** (830 before `package.json` `files` gained `!scripts/tests/**` and `!skills/vault-sync/tests/**`.) A sudden drop means the scan went blind; a sudden jump means something leaked back in.
@@ -55,9 +55,10 @@ These are *not* part of `--check` — run the repo's normal quality gate before 
 
 ```bash
 node scripts/check-package-manager.mjs   # must exit 0 — npm-canonical guard
-npm run typecheck
-npm test
+npm run quality-gate                    # typecheck, tests and lint
 ```
+
+Commit the version and editorial changes, then push to both `origin` and `github`. Wait for CI to pass on that exact commit on both platforms. Finally run `node scripts/release.mjs --check --json` and require every row to pass before publishing. The preflight requires a clean working tree and both remote branches at HEAD, so it cannot be fully green immediately after an uncommitted version bump.
 
 CI green on the exact commit being published is a separate, non-negotiable gate — see `commands/release.md` § Abort criteria. Local green is not evidence of CI green.
 
