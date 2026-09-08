@@ -22,7 +22,7 @@
  * `allowedPaths` never grants a peer's territory to this wave's agents.
  */
 
-import { readdirSync, readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeJsonAtomicSync } from './lib/io.mjs';
@@ -49,6 +49,12 @@ Options:
                       it, orphans are reported and RETAINED, never deleted.
   --json              Emit {ok, aggregatePath, perAgentPaths, removedOrphans,
                       retainedOrphans} to stdout.
+  --warn-missing      Warn on stderr about absent concrete scope paths, resolved
+                      from the project working directory (not --state-dir).
+                      Glob/prefix grants containing * or ending / are skipped.
+  --new-file <path>   Suppress a missing-path warning for an intended new file.
+                      Repeatable; each path must exactly match a declared scope
+                      path and pass scope validation, even without --warn-missing.
   -h, --help          Show this help and exit 0.
 
 Output:
@@ -85,13 +91,16 @@ class WriteError extends Error {}
 
 /**
  * @param {string[]} argv
- * @returns {{ stateDir: string, wave: number, session: string|null, json: boolean, help: boolean }}
+ * @returns {{ stateDir: string, wave: number, session: string|null, json: boolean,
+ *             warnMissing: boolean, newFiles: string[], help: boolean }}
  */
 export function parseCliArgs(argv) {
   let stateDir;
   let waveRaw;
   let session = null;
   let json = false;
+  let warnMissing = false;
+  const newFiles = [];
   let help = false;
 
   for (let index = 0; index < argv.length; index++) {
@@ -100,16 +109,22 @@ export function parseCliArgs(argv) {
       json = true;
       continue;
     }
+    if (arg === '--warn-missing') {
+      warnMissing = true;
+      continue;
+    }
     if (arg === '--help' || arg === '-h') {
       help = true;
       continue;
     }
-    if (arg === '--state-dir' || arg === '--wave' || arg === '--session') {
+    if (arg === '--state-dir' || arg === '--wave' || arg === '--session' || arg === '--new-file') {
       const value = argv[index + 1];
       if (value === undefined || value.startsWith('--')) {
         throw new InputError(`${arg} requires a value`);
       }
-      if (arg === '--state-dir') {
+      if (arg === '--new-file') {
+        newFiles.push(value);
+      } else if (arg === '--state-dir') {
         if (stateDir !== undefined) throw new InputError('--state-dir may be specified only once');
         stateDir = value;
       } else if (arg === '--session') {
@@ -128,7 +143,7 @@ export function parseCliArgs(argv) {
     throw new InputError(`unknown argument: ${arg}`);
   }
 
-  if (help) return { stateDir: '', wave: 0, session, json, help: true };
+  if (help) return { stateDir: '', wave: 0, session, json, warnMissing, newFiles, help: true };
   if (stateDir === undefined) throw new InputError('--state-dir is required');
   if (waveRaw === undefined) throw new InputError('--wave is required');
   if (stateDir.length === 0 || /[\0\r\n]/.test(stateDir)) {
@@ -140,7 +155,7 @@ export function parseCliArgs(argv) {
 
   const wave = Number(waveRaw);
   if (!Number.isSafeInteger(wave)) throw new InputError('--wave must be a safe positive integer');
-  return { stateDir, wave, session, json, help: false };
+  return { stateDir, wave, session, json, warnMissing, newFiles, help: false };
 }
 
 /**
@@ -157,18 +172,17 @@ function isRecord(value) {
  * are rejected because no scope consumer can safely interpret them verbatim.
  *
  * @param {unknown} value
- * @param {number} recordIndex
- * @param {number} fileIndex
+ * @param {string} description
  */
-function validateScopePath(value, recordIndex, fileIndex) {
+function validateScopePath(value, description) {
   if (typeof value !== 'string' || value.length === 0 || value.trim().length === 0) {
-    throw new InputError(`record #${recordIndex} files[${fileIndex}] must be a non-empty string`);
+    throw new InputError(`${description} must be a non-empty string`);
   }
   if (/[\0\r\n]/.test(value)) {
-    throw new InputError(`record #${recordIndex} files[${fileIndex}] must not contain NUL or newline characters`);
+    throw new InputError(`${description} must not contain NUL or newline characters`);
   }
   if (value.split(/[\\/]+/).includes('..')) {
-    throw new InputError(`record #${recordIndex} files[${fileIndex}] must not contain path traversal`);
+    throw new InputError(`${description} must not contain path traversal`);
   }
 }
 
@@ -210,7 +224,7 @@ export function validateScopeRecords(value) {
       throw new InputError(`record #${recordIndex} (${record.id}) must have a files string array`);
     }
     for (let fileIndex = 0; fileIndex < record.files.length; fileIndex++) {
-      validateScopePath(record.files[fileIndex], recordIndex, fileIndex);
+      validateScopePath(record.files[fileIndex], `record #${recordIndex} files[${fileIndex}]`);
     }
   }
 
@@ -218,6 +232,42 @@ export function validateScopeRecords(value) {
     throw new InputError(`input must contain exactly one coordinator record; found ${coordinatorCount}`);
   }
   return value;
+}
+
+/**
+ * Validate exceptions before any published declarations can be invalidated.
+ * Keep exact spelling: these are diagnostic exceptions, never scope rewrites.
+ *
+ * @param {string[]} newFiles
+ * @param {Array<{id: string, files: string[]}>} records
+ * @returns {Set<string>}
+ */
+function validateNewFiles(newFiles, records) {
+  const declared = new Set(records.flatMap(({ files }) => files));
+  for (const file of newFiles) {
+    validateScopePath(file, '--new-file');
+    if (!declared.has(file)) throw new InputError(`--new-file path is not declared in scope records: ${file}`);
+  }
+  return new Set(newFiles);
+}
+
+/**
+ * Missing-file diagnostics are opt-in and never change scope grants or stdout.
+ * `*` and trailing `/` are the scope consumer's glob/prefix grammar; `?` and
+ * braces are literal names (scripts/lib/scope-gate.mjs isGlobScopeEntry).
+ *
+ * @param {Array<{id: string, files: string[]}>} records
+ * @param {Set<string>} newFiles
+ */
+function warnMissingPaths(records, newFiles) {
+  for (const { id, files } of records) {
+    for (const file of files) {
+      if (newFiles.has(file) || file.includes('*') || file.endsWith('/')) continue;
+      if (!existsSync(resolve(file))) {
+        process.stderr.write(`materialize-wave-scope: WARN ${id}: declared path not found: ${file}\n`);
+      }
+    }
+  }
 }
 
 
@@ -462,14 +512,18 @@ export function main() {
       return;
     }
     const records = validateScopeRecords(readStdinJson());
+    const newFiles = validateNewFiles(args.newFiles, records);
     const { aggregatePath, perAgentPaths, removedOrphans, retainedOrphans } =
       materializeWaveScope(records, args);
+
+    if (args.warnMissing) warnMissingPaths(records, newFiles);
 
     // stderr carries ONLY the anomalous cases. Measured constraint, not taste:
     // the corpus pins byte-empty stderr on this command's success path
     // (tests/scripts/materialize-wave-scope.test.mjs and
     // tests/integration/wave-scope-producer.test.mjs), and a wave with no
-    // orphans IS the success path. Both lists always reach --json.
+    // orphans IS the success path unless missing-path diagnostics are explicitly
+    // requested above. Both orphan lists always reach --json.
     for (const file of removedOrphans) {
       process.stderr.write(`materialize-wave-scope: removed orphaned declaration ${file} (id absent from this wave's records)\n`);
     }

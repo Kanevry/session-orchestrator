@@ -36,11 +36,11 @@ function makeStateDir() {
   return stateDir;
 }
 
-function runCli({ stateDir, wave = 7, scopes = VALID_SCOPES, args = [] }) {
+function runCli({ stateDir, wave = 7, scopes = VALID_SCOPES, args = [], cwd = REPO_ROOT }) {
   const result = spawnSync(process.execPath, [SCRIPT, '--state-dir', stateDir, '--wave', String(wave), ...args], {
     input: JSON.stringify(scopes),
     encoding: 'utf8',
-    cwd: REPO_ROOT,
+    cwd,
   });
   return {
     code: result.status,
@@ -118,6 +118,94 @@ describe('materialize-wave-scope.mjs — canonical two-shape materialization', (
       removedOrphans: [],
       retainedOrphans: [],
     });
+  });
+
+  // BUG CAUGHT (#1235): a misspelled scope path silently becomes a live grant.
+  // Diagnostics must use the project CWD, keep both declaration shapes intact,
+  // and leave existing callers' stdout/stderr contracts untouched.
+  it.each([
+    { mode: 'human', args: [] },
+    { mode: 'JSON', args: ['--json'] },
+  ])('warns about absent concrete paths only when opted in ($mode)', ({ args }) => {
+    const stateDir = makeStateDir();
+    const sourceDir = makeStateDir();
+    writeFileSync(join(sourceDir, 'existing.mjs'), 'export {};\n');
+    writeFileSync(join(stateDir, 'typo.mjs'), 'this is state, not source\n');
+    const scopes = [
+      { id: 'W7-I1', files: ['existing.mjs', 'typo.mjs', join(sourceDir, 'existing.mjs')] },
+      { id: 'peer-session-other', files: ['existing.mjs'] },
+      { id: 'coordinator', files: ['missing.md'] },
+    ];
+    const defaultResult = runCli({ stateDir, scopes, args, cwd: sourceDir });
+    const before = [aggregatePath(stateDir), agentPath(stateDir, 'W7-I1'), agentPath(stateDir, 'coordinator')]
+      .map((file) => readFileSync(file, 'utf8'));
+
+    const warned = runCli({ stateDir, scopes, args: [...args, '--warn-missing'], cwd: sourceDir });
+
+    expect(defaultResult.code).toBe(0);
+    expect(defaultResult.stderr).toBe('');
+    expect(warned.code).toBe(0);
+    expect(warned.stdout).toBe(defaultResult.stdout);
+    expect(warned.stderr.trim().split('\n')).toEqual([
+      expect.stringMatching(/WARN.*W7-I1.*typo\.mjs/),
+      expect.stringMatching(/WARN.*coordinator.*missing\.md/),
+    ]);
+    expect([aggregatePath(stateDir), agentPath(stateDir, 'W7-I1'), agentPath(stateDir, 'coordinator')]
+      .map((file) => readFileSync(file, 'utf8'))).toEqual(before);
+    expect(existsSync(agentPath(stateDir, 'peer-session-other'))).toBe(false);
+  });
+
+  // BUG CAUGHT (#1235): treating every absent grant as a typo produces noise
+  // for globs/new files, while guessing extra glob syntax hides literal typos.
+  it('skips scope globs and repeatable exact new-file exceptions without hiding literal ? or braces', () => {
+    const stateDir = makeStateDir();
+    const scopes = [
+      { id: 'W7-I1', files: ['scripts/*.mjs', 'new/', 'new.mjs', 'another.mjs', 'what?.mjs', '{a,b}.mjs'] },
+      { id: 'coordinator', files: [] },
+    ];
+
+    const result = runCli({
+      stateDir,
+      scopes,
+      args: ['--warn-missing', '--new-file', 'new.mjs', '--new-file', 'another.mjs'],
+      cwd: stateDir,
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.stderr.trim().split('\n')).toEqual([
+      expect.stringMatching(/WARN.*W7-I1.*what\?\.mjs/),
+      expect.stringMatching(/WARN.*W7-I1.*\{a,b\}\.mjs/),
+    ]);
+    expect(JSON.parse(readFileSync(aggregatePath(stateDir), 'utf8'))).toEqual(scopes);
+  });
+
+  // BUG CAUGHT (#1235): a typo in an exception can silently suppress the wrong
+  // diagnosis, or invalidate a published wave before CLI input is validated.
+  it.each([
+    { reason: 'undeclared', values: ['undeclared.mjs'], error: /not declared/ },
+    { reason: 'not an exact match', values: ['./new.mjs'], error: /not declared/ },
+    { reason: 'traversal', values: ['../escape.mjs'], error: /path traversal/ },
+    { reason: 'blank', values: ['   '], error: /non-empty string/ },
+    { reason: 'newline', values: ['bad\npath.mjs'], error: /newline characters/ },
+    { reason: 'missing value', values: [], error: /requires a value/ },
+  ])('rejects $reason new-file exceptions before touching an existing wave', ({ values, error }) => {
+    const stateDir = makeStateDir();
+    runCli({ stateDir });
+    const before = readFileSync(aggregatePath(stateDir), 'utf8');
+
+    const result = runCli({
+      stateDir,
+      scopes: [{ id: 'coordinator', files: ['new.mjs'] }],
+      args: ['--new-file', ...values],
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toMatch(/--new-file/);
+    expect(result.stderr).toMatch(error);
+    expect(readFileSync(aggregatePath(stateDir), 'utf8')).toBe(before);
+    expect(JSON.parse(readFileSync(agentPath(stateDir, 'W7-I1'), 'utf8'))).toEqual(VALID_SCOPES[0].files);
+    expect(JSON.parse(readFileSync(agentPath(stateDir, 'coordinator'), 'utf8'))).toEqual(VALID_SCOPES[1].files);
   });
 
   it('rejects malformed declarations before creating any scope file', () => {
