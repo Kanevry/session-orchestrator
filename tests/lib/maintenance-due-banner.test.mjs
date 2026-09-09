@@ -23,6 +23,7 @@ import {
   MAINTENANCE_TOTAL_SIGNALS,
   MAINTENANCE_MIN_LEARNINGS,
   HOUSEKEEPING_COOLDOWN_DAYS,
+  TAIL_CHUNK_BYTES,
 } from '@lib/maintenance-due-banner.mjs';
 
 let tmpRepo;
@@ -190,6 +191,42 @@ describe('checkMaintenanceDue', () => {
     expect(computed.undeterminable).toEqual([]);
   });
 
+  // BUG (#1290 item 2): the ledger is now read BACKWARDS in TAIL_CHUNK_BYTES
+  // chunks. A chunked reader that parses the partial line at the front of each
+  // chunk sees a record split across the boundary as two halves, neither of
+  // which is valid JSON — so a repo that HAS run /evolve is reported as "never"
+  // and nagged forever. Nothing in the suite could catch this: every other
+  // fixture is a few hundred bytes, well inside one chunk.
+  it('finds an evolve record split across the tail-scan chunk boundary', async () => {
+    writeLearnings(MAINTENANCE_MIN_LEARNINGS + 5);
+
+    const evolveLine = JSON.stringify({
+      event: 'orchestrator.evolve.completed',
+      timestamp: '2026-09-01T10:00:00.000Z',
+    });
+    // Size everything AFTER the evolve line so the boundary — counted from the
+    // file's END, which is where the scan starts — falls INSIDE that line.
+    const afterBytes = TAIL_CHUNK_BYTES - 1 - Math.floor(evolveLine.length / 2);
+    const filler = (i) =>
+      JSON.stringify({ event: 'subagent_stop', timestamp: '2026-09-02T00:00:00.000Z', i }) + '\n';
+    let tail = '';
+    for (let i = 0; tail.length + filler(i).length <= afterBytes; i += 1) tail += filler(i);
+    tail += 'x'.repeat(afterBytes - tail.length - 1) + '\n'; // pad to the exact byte
+    expect(tail.length).toBe(afterBytes);
+
+    const head = [0, 1, 2].map((i) => filler(i)).join('');
+    fs.mkdirSync(metricsDir(), { recursive: true });
+    fs.writeFileSync(
+      path.join(metricsDir(), 'events.jsonl'),
+      head + evolveLine + '\n' + tail,
+      'utf8',
+    );
+
+    const computed = await computeMaintenanceDue({ repoRoot: tmpRepo, config: {} });
+    expect(computed.due.map((d) => d.id)).not.toContain('evolve');
+    expect(computed.undeterminable).toEqual([]);
+  });
+
   // BUG: a stale pending proposal is archaeology, not a nudge — re-raising a
   // months-old sidecar every start is the HR-101 failure mode again.
   it('counts a fresh pending sidecar and ignores an aged one', async () => {
@@ -239,9 +276,10 @@ describe('checkMaintenanceDue', () => {
     expect(computed.total).toBe(5);
   });
 
-  // BUG: `decideAndRecordAutoDialectic` advances `.orchestrator/dialectic-last-run`.
-  // A probe calling it would consume the signal it reports — every session start
-  // would silently reset the cadence the session-end phase depends on.
+  // BUG: a dialectic signal read that advances `.orchestrator/dialectic-last-run`
+  // would consume the signal it reports — every session start would silently reset
+  // the cadence. Only the side-effect-free `shouldDispatchAutoDialectic()` may be
+  // called here (the recording wrapper was removed in #1288).
   it('writes nothing to the repo it measures', async () => {
     writeLearnings(MAINTENANCE_MIN_LEARNINGS + 5, 3);
     const before = fs.readdirSync(path.join(tmpRepo, '.orchestrator'), { recursive: true }).sort();

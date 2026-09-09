@@ -114,8 +114,9 @@
  * `CHANGELOG.md` is excluded from the prose corpus for the same reason: it is an
  * append-only record of what a PAST release shipped, so it names the symbols of
  * code that may since have died. Counting it silenced a true positive
- * (`soul-resolve.mjs`, whose only live claim is in `.claude/rules/owner-persona.md`
- * but whose symbols appear in a 2026-06 changelog entry).
+ * (`soul-resolve.mjs` — since DELETED as dead: its only live claim was in
+ * `.claude/rules/owner-persona.md`, while its symbols appeared in a 2026-06
+ * changelog entry).
  *
  * ## S4 `unreachable-library-module` — the question the machine can answer
  *
@@ -777,11 +778,11 @@ function mentionedModuleTokens(lines) {
  * ## Cluster roots — one defect, one line
  *
  * Only the ROOT of each unreachable cluster is reported: a module no OTHER
- * unreachable module references. `scripts/lib/owner-config.mjs` has no importer
- * and drags its whole 7-file `owner-config/` subtree down with it; reporting the
- * six interior files would multiply one deletion into seven findings that all
- * disappear together. Measured on the live tree: 71 unreachable modules collapse
- * to 50 roots. This is category separation in the sense of
+ * unreachable module references. A drag-cluster looks like this: an unimported
+ * top-level module whose own subtree of interior files goes down with it —
+ * reporting the interior files too would multiply one deletion into N findings
+ * that all disappear together. Measured on the live tree: 71 unreachable modules
+ * collapse to 50 roots. This is category separation in the sense of
  * `.claude/rules/development.md` § Guard & Threshold Design — a structural split,
  * never a raised threshold.
  *

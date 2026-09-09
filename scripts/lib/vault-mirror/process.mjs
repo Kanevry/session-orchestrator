@@ -879,7 +879,8 @@ export async function processSession(rawEntry, _lineNum, ctx) {
   // This is deliberately REDUNDANT with the renderer's status mapping (#909,
   // render-sessions.mjs) — see that module's header. The filter removes one
   // status from the vault; the mapping keeps every OTHER status honest, and
-  // guards the generators' other entry point (the render.mjs barrel).
+  // guards the generators' other entry point (this module imports
+  // render-learnings.mjs and render-sessions.mjs directly — no barrel).
   if (!isRealSession(entry)) {
     return emitEntryAction(_lineNum, ctx, {
       action: 'skipped-abandoned',

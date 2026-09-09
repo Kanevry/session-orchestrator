@@ -20,8 +20,7 @@
  * pipeline).
  *
  * Both emitters are best-effort and try/catch-wrapped — same posture as
- * `emitReconcileCompleted` in `scripts/lib/reconcile/engine.mjs` and
- * `decideAndRecordAutoDialectic` in `scripts/lib/auto-dialectic.mjs` — because
+ * `emitReconcileCompleted` in `scripts/lib/reconcile/engine.mjs` — because
  * `emitEvent()` THROWS `EventValidationError` on a malformed record, and a
  * telemetry failure must never break the `/evolve` pipeline itself.
  *

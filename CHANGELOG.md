@@ -16,12 +16,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `issue-budget.max-per-session` now accepts the same per-session-type override syntax as `agents-per-wave` (`12 (feature: 6)`), resolved against the current session's `session-type:` (read from STATE.md) via the new `resolveMaxPerSession()` / `readSessionTypeFromStateMd()` in `scripts/lib/issue-budget.mjs`. The parser (`scripts/lib/config/issue-budget.mjs`) now returns two keys — `max-per-session` (always numeric) and `max-per-session-raw` (the unresolved value) — plus `session-type-resolved` on the loaded config.
 - `scripts/lib/telemetry/pricing.mjs` — a per-model USD-per-million-token price table (`PRICING_TABLE_DATE: 2026-09-09`) covering uncached input, cache-read, cache-creation and output rates, used by `scripts/lib/session-token-rollup.mjs` to compute `total_cost_usd` per session (gated on `schema_version >= 2`; older records are reported as `legacy_v1_records` rather than silently summed in).
 
+### Security
+
+- **`js-yaml` `^4.3.1` → `^4.3.2`** (GHSA-2883-xcg3-v3hh, high) — pipeline #512 on `main` had failed in `npm-audit` on the old range; `npm audit --omit=dev --audit-level=high` now exits 0.
+
 ### Changed
 
 - `hooks/subagent-telemetry.mjs` schema_version 2 (#1244) — `token_input` is redefined from raw `usage.input_tokens` to BILLABLE PROMPT VOLUME (uncached + cache_read + cache_creation). Under prompt caching the old value understated real prompt volume by up to ~65,646× on one measured agent (56 vs 3,676,179 tokens). New additive fields `token_input_uncached`, `token_cache_read`, `token_cache_creation`, `model`. This is a SERIES BREAK — v1 and v2 `token_input` values are not comparable, and `scripts/lib/session-token-rollup.mjs` sums only `schema_version >= 2` records.
 - `hooks/pre-bash-issue-budget.mjs` now charges per STATEMENT rather than per whole command; `hooks/_lib/vcs-create-matcher.mjs` additionally matches `gh|glab api … POST …/issues`.
 - `docs/USER-GUIDE.md` § 4 Session Types and § 6 The Wave Pattern rewritten around the four resolved shapes (housekeeping/feature/deep/ultradeep) and a pointer to `scripts/session-shape.mjs --help`; the retired 3/4/5/6+ role-combination mapping table and the stale `housekeeping=2/feature=6/deep=6-10` agent-count table are replaced with the shape's actual per-type ceilings.
 - `docs/components.md` — the Scripts exemplar list extended with `session-shape`, `maintenance-due-banner`, `tail-runner`, `issue-budget-reconcile`, `telemetry/pricing`.
+- **Dead-code sweep (`check-unwired-features.mjs`)** — deleted `scripts/lib/soul-resolve.mjs`, `scripts/lib/owner-config-loader.mjs`, `scripts/lib/owner-config.mjs` + `scripts/lib/owner-config/` (7 files), `scripts/lib/multi-provider-build/{templating,providers}.mjs`, and the `scripts/lib/vault-mirror/render.mjs` barrel, plus their 12 test files — unreachable-library-module findings 5 → 2 (the 2 remaining are #1293). `.claude/rules/owner-persona.md`, `docs/owner-config-schema.md`, and `scripts/lib/owner-config.example.yaml` now describe the live `owner-yaml.mjs` surface instead of the removed loader.
+- **#1288** — `decideAndRecordAutoDialectic` wrapper removed from `scripts/lib/auto-dialectic.mjs` (its only caller, session-end Phase 3.6.7, was already retired); `orchestrator.dialectic.nudge_decided` retired to a historical catalog row in `docs/events-schema.md`.
+- **#1290 (items 1+2)** — `resolveSessionShape` now rejects out-of-set `configIsolation`/`configEnforcement` up front instead of only where `buildWave` happens to reach the resolver (previously the housekeeping shape could swallow `configIsolation: 'worktre'` unnoticed); `maintenance-due-banner.mjs` tail-scans `events.jsonl` backwards in 256 KiB chunks instead of reading the whole file (probe 31→17 ms on a 7.9 MB ledger). Item 3 deferred.
+- **Rules** — 10 `/reconcile`-generated learnings absorbed into the 4 thematic files `toolchain-and-build.md`, `guard-design.md`, `identity-and-locks.md`, `review-and-adapter-contracts.md` per the merge contract (`docs/rule-authoring.md` § "Consolidated rules"); generated surface 128,999 → 120,906 B / 11 files (ceiling 124,000).
+- **Peer card** — `.orchestrator/peers/AGENT.md` frontmatter restored to the top of the file (a managed block had been hand-prepended above it in `1be450a0`); the 2026-09-07 dialectic sidecar merged (9 sections replaced, 1 added).
+- **Docs/citations** — `skills/wave-executor/SKILL.md` + `references/wave-loop-review.md` now cite `scripts/lib/workspace.mjs` for `restoreCoordinatorCwd()` (was `worktree.mjs`, which does not export it); `.claude/rules/security.md` dropped a citation to a heading that no longer exists; `.claude/rules/development.md` § Documentation gained a rule requiring an `rg` sweep for the old path whenever an exported symbol or module moves, in the SAME change (#1221 item 7).
+
+### Notes
+
+- **Housekeeping/VCS** — 21 stale `status:in-progress` labels cleared; #1213 closed (→ #1291); 4 merged `codex/*` branches + 2 sibling worktrees removed; 5 merged `feat/*` branches deleted on the GitHub mirror.
 
 ## [4.1.0] - 2026-09-08
 

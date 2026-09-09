@@ -2,12 +2,11 @@
  * tests/integration/owner-persona-flow.test.mjs
  *
  * End-to-end integration tests for the Owner Persona pipeline:
- *   D2 interview → owner.yaml write → D3 soul.md slot resolution.
+ *   D2 interview → owner.yaml write → load round-trip.
  *
  * Modules under test:
- *   scripts/lib/owner-yaml.mjs    — loadOwnerConfig, writeOwnerConfig, validateOwnerConfig, getDefaults
+ *   scripts/lib/owner-yaml.mjs    — loadOwnerConfig, writeOwnerConfig, validateOwnerConfig
  *   scripts/lib/owner-interview.mjs — getInterviewQuestions, applyInterviewAnswers, runOwnerInterview
- *   scripts/lib/soul-resolve.mjs  — resolveSoul, loadAndResolveSoul
  *
  * Isolation: every test uses a unique tmp dir under os.tmpdir().
  * Real ~/.config/session-orchestrator/owner.yaml is never touched.
@@ -19,18 +18,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 
-import { getDefaults, loadOwnerConfig, writeOwnerConfig, validateOwnerConfig } from '@lib/owner-yaml.mjs';
+import { loadOwnerConfig, writeOwnerConfig, validateOwnerConfig } from '@lib/owner-yaml.mjs';
 import { getInterviewQuestions, applyInterviewAnswers, runOwnerInterview } from '@lib/owner-interview.mjs';
-import { resolveSoul, loadAndResolveSoul } from '@lib/soul-resolve.mjs';
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Absolute path to the real soul.md template used as the integration fixture. */
-const SOUL_MD_PATH = join(
-  new URL('../../skills/session-start/soul.md', import.meta.url).pathname,
-);
 
 // ---------------------------------------------------------------------------
 // Tmp-dir lifecycle
@@ -51,31 +40,6 @@ afterEach(() => {
 function ownerYamlPath() {
   return join(tmpDir, 'owner.yaml');
 }
-
-// ---------------------------------------------------------------------------
-// Test 1: Default-fallback path
-// No owner.yaml → loadAndResolveSoul resolves all known slots from getDefaults().
-// ---------------------------------------------------------------------------
-
-describe('Default-fallback path (no owner.yaml)', () => {
-  it('resolves all {{slot}} references to defaults when no owner.yaml exists', () => {
-    // Point ownerConfigPath at a path that does not exist inside our tmp dir
-    const nonExistentCfg = join(tmpDir, 'nonexistent.yaml');
-    const { resolved, source } = loadAndResolveSoul(SOUL_MD_PATH, { ownerConfigPath: nonExistentCfg });
-
-    // Source should be 'defaults' because file does not exist
-    expect(source).toBe('defaults');
-
-    // No {{ }} placeholders should remain in the resolved output
-    expect(resolved).not.toMatch(/\{\{/);
-
-    // Default values from getDefaults() must appear in the resolved text
-    const defaults = getDefaults();
-    expect(resolved).toContain(defaults.tone.style);          // 'neutral'
-    expect(resolved).toContain(defaults.efficiency['output-level']); // 'full'
-    expect(resolved).toContain(defaults.efficiency.preamble); // 'minimal'
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Test 2: Interview → write → load round-trip
@@ -203,59 +167,6 @@ describe('Hardware-sharing consent generates hash-salt', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test 4: Slot resolution after interview
-// Write a custom owner.yaml → resolve soul.md → verify substituted values appear.
-// ---------------------------------------------------------------------------
-
-describe('Slot resolution after interview write', () => {
-  it('resolves soul.md slots using values from a tmp owner.yaml', () => {
-    const tmpPath = ownerYamlPath();
-
-    // Write a known config with non-default values
-    const writeResult = writeOwnerConfig(
-      {
-        owner: { name: 'TestUser', language: 'de' },
-        tone: { style: 'direct', tonality: '' },
-        efficiency: { 'output-level': 'ultra', preamble: 'minimal' },
-        'hardware-sharing': { enabled: false, 'hash-salt': '' },
-      },
-      { path: tmpPath },
-    );
-    expect(writeResult.written).toBe(true);
-
-    const { resolved, source } = loadAndResolveSoul(SOUL_MD_PATH, { ownerConfigPath: tmpPath });
-
-    expect(source).toBe('file');
-
-    // Known slot values must appear in the resolved output
-    expect(resolved).toContain('direct');
-    expect(resolved).toContain('ultra');
-    expect(resolved).toContain('minimal');
-
-    // No {{ }} placeholders should remain (all known slots resolved)
-    expect(resolved).not.toMatch(/\{\{owner\.language\}\}/);
-    expect(resolved).not.toMatch(/\{\{tone\.style\}\}/);
-    expect(resolved).not.toMatch(/\{\{efficiency\.output-level\}\}/);
-    expect(resolved).not.toMatch(/\{\{efficiency\.preamble\}\}/);
-  });
-
-  it('resolveSoul pure function substitutes values from an inline config object', () => {
-    const template = 'Style: {{tone.style}}. Level: {{efficiency.output-level}}. Pre: {{efficiency.preamble}}.';
-    const ownerConfig = {
-      owner: { name: 'x', language: 'de' },
-      tone: { style: 'friendly', tonality: '' },
-      efficiency: { 'output-level': 'lite', preamble: 'verbose' },
-      'hardware-sharing': { enabled: false, 'hash-salt': '' },
-    };
-
-    const { resolved, warnings } = resolveSoul(template, ownerConfig);
-
-    expect(resolved).toBe('Style: friendly. Level: lite. Pre: verbose.');
-    expect(warnings).toHaveLength(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Test 5: Force re-interview archives existing yaml
 // ---------------------------------------------------------------------------
 
@@ -327,27 +238,6 @@ describe('runOwnerInterview default (skipIfExists)', () => {
     expect(result.status).toBe('pending');
     expect(Array.isArray(result.questions)).toBe(true);
     expect(result.questions.length).toBe(5);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test 7: resolveSoul leaves unknown slots in place and emits a warning
-// ---------------------------------------------------------------------------
-
-describe('resolveSoul unknown slot handling', () => {
-  it('leaves unknown slots in place and records a warning', () => {
-    const template = 'Known: {{tone.style}}. Unknown: {{custom.slot}}.';
-    const config = getDefaults();
-
-    const { resolved, warnings } = resolveSoul(template, config);
-
-    // Known slot replaced with default
-    expect(resolved).toContain('neutral');
-    // Unknown slot left verbatim
-    expect(resolved).toContain('{{custom.slot}}');
-    // Warning emitted for the unknown slot
-    expect(warnings.length).toBe(1);
-    expect(warnings[0]).toContain('custom.slot');
   });
 });
 

@@ -44,10 +44,11 @@
  * | `memory-cleanup`  | `shouldDispatchAutoDream().trigger === true`                          | `auto-dream.mjs` |
  * | `pending-sidecar` | a pending dream/dialectic proposal younger than 14 days is unapplied   | `.orchestrator/*-pending*.md` |
  *
- * Only SIDE-EFFECT-FREE signal functions are called. `decideAndRecordAutoDialectic`
- * is deliberately NOT used: it advances the last-run stamp, so a probe calling
- * it would consume the very signal it reports (and silence itself at session
- * end).
+ * Only SIDE-EFFECT-FREE signal functions are called — never a variant that
+ * advances `.orchestrator/dialectic-last-run`, because a probe that writes the
+ * stamp would consume the very signal it reports. (The former recording wrapper
+ * around this signal was removed in #1288; only the pure decision function
+ * remains.)
  *
  * Never throws. `computeMaintenanceDue` always returns the full shape;
  * `checkMaintenanceDue` returns the banner object or `null`.
@@ -55,7 +56,7 @@
  * @module scripts/lib/maintenance-due-banner
  */
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 import { computeReconcileNudge } from './reconcile-nudge-banner.mjs';
@@ -118,13 +119,59 @@ function isoDay(ts) {
 }
 
 /**
+ * Backwards-scan chunk size (#1290 item 2).
+ *
+ * NAMED CEILING: 256 KiB is ~800 records in this repo's ledger, so the common
+ * case — a repo that ran /evolve within its recent history — answers after a
+ * handful of reads instead of loading the whole 7.9 MB file. The scan is
+ * UNBOUNDED in the worst case ON PURPOSE: "never ran" is a claim about every
+ * line and cannot be made from a tail, so a repo with no `evolve.completed`
+ * record still walks the file to its start — just in chunks, never all at once
+ * in one string.
+ *
+ * REVISIT TRIGGER: the maintenance probe's median passes 1000 ms (half
+ * `PROBE_BUDGET_MS`), or one repo's `events.jsonl` passes 50 MB. Either means
+ * the "never ran" walk has become the cost that matters and the answer needs an
+ * index rather than a scan.
+ */
+export const TAIL_CHUNK_BYTES = 256 * 1024;
+
+/**
+ * Scan a buffer of COMPLETE lines backwards for the newest evolve record.
+ *
+ * @param {Buffer} buf
+ * @returns {{lastAt: string|null}|null} null ⇒ no record in this buffer
+ */
+function scanEvolveLines(buf) {
+  if (buf.length === 0) return null;
+  const lines = buf.toString('utf8').split('\n');
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    if (!line || !line.includes(EVOLVE_EVENT)) continue; // cheap pre-filter before JSON.parse
+    try {
+      const rec = JSON.parse(line);
+      if (rec?.event !== EVOLVE_EVENT) continue;
+      return { lastAt: typeof rec.timestamp === 'string' ? rec.timestamp : null };
+    } catch {
+      continue; // a malformed line is not evidence either way — keep scanning
+    }
+  }
+  return null;
+}
+
+/**
  * Find the most recent `orchestrator.evolve.completed` record.
  *
- * Tail-scan: the interesting answer is the LAST occurrence, and a repo that has
- * run /evolve recently hits on the first few lines. The whole file is read once
- * (7.7 MB in the largest repo here, ~10 ms) — a partial tail read would report
- * "never" for a run recorded early in the ledger, which is the one wrong answer
- * this signal must not give.
+ * Reads the ledger BACKWARDS in {@link TAIL_CHUNK_BYTES} chunks and stops at
+ * the first hit, because the interesting answer is the LAST occurrence. The
+ * former implementation `readFileSync`-ed the whole file (7.9 MB here, 30–44 ms)
+ * to answer a question the last few kilobytes usually settle.
+ *
+ * The one bug a naive chunked scan introduces is a record SPLIT across a chunk
+ * boundary: the bytes before the first newline of a chunk are the tail of a line
+ * whose head is in the chunk not read yet, so they are CARRIED, never parsed
+ * here. Splitting on the 0x0A byte is safe on UTF-8 — no continuation byte can
+ * equal a newline — so a multibyte character never splits a line either.
  *
  * @param {string} repoRoot
  * @returns {{ok: boolean, lastAt: string|null}} `ok: false` ⇒ the ledger exists
@@ -133,25 +180,43 @@ function isoDay(ts) {
 function readLastEvolveRun(repoRoot) {
   const file = path.join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
   if (!existsSync(file)) return { ok: true, lastAt: null }; // fresh repo: genuinely never
-  let raw;
+  let fd;
   try {
-    raw = readFileSync(file, 'utf8');
+    fd = openSync(file, 'r');
+    let pos = fstatSync(fd).size;
+    /** Partial line at the FRONT of everything read so far. */
+    let carry = Buffer.alloc(0);
+
+    while (pos > 0) {
+      const length = Math.min(TAIL_CHUNK_BYTES, pos);
+      pos -= length;
+      const buf = Buffer.alloc(length);
+      readSync(fd, buf, 0, length, pos);
+      const block = carry.length > 0 ? Buffer.concat([buf, carry]) : buf;
+      const firstNewline = block.indexOf(0x0a);
+      if (firstNewline === -1) {
+        carry = block; // no complete line yet — a line longer than one chunk
+        continue;
+      }
+      const hit = scanEvolveLines(block.subarray(firstNewline + 1));
+      if (hit) return { ok: true, lastAt: hit.lastAt };
+      carry = block.subarray(0, firstNewline);
+    }
+
+    // pos === 0: the carry is the file's FIRST line, complete by construction.
+    const hit = scanEvolveLines(carry);
+    return { ok: true, lastAt: hit ? hit.lastAt : null };
   } catch {
     return { ok: false, lastAt: null };
-  }
-  const lines = raw.split('\n');
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i];
-    if (!line || !line.includes(EVOLVE_EVENT)) continue; // cheap pre-filter before JSON.parse
-    try {
-      const rec = JSON.parse(line);
-      if (rec?.event !== EVOLVE_EVENT) continue;
-      return { ok: true, lastAt: typeof rec.timestamp === 'string' ? rec.timestamp : null };
-    } catch {
-      continue; // a malformed line is not evidence either way — keep scanning
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* best-effort */
+      }
     }
   }
-  return { ok: true, lastAt: null };
 }
 
 /**

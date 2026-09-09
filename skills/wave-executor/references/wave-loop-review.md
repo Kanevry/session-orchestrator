@@ -9,7 +9,7 @@
 **Step 2.0 — Restore coordinator CWD (#219):** BEFORE reading any agent output or running any quality check, restore the coordinator's working directory. Claude Code's `Agent` tool with `isolation: "worktree"` `chdir()`s into each worktree internally and does NOT restore it on agent return. Subsequent Edit/Write/Bash calls would silently route to whichever worktree's tree CWD last drifted into.
 
 ```js
-import { restoreCoordinatorCwd } from '$PLUGIN_ROOT/scripts/lib/worktree.mjs';
+import { restoreCoordinatorCwd } from '$PLUGIN_ROOT/scripts/lib/workspace.mjs';
 
 const cwd = await restoreCoordinatorCwd();
 if (cwd.restored) {

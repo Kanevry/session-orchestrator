@@ -147,7 +147,7 @@ Cross-references:
   }
   ```
 - The scanner runs against the staged tree (`git ls-files` sees staged-but-not-committed files), closing the `git add <leak> && git commit` gap. This was the root cause of three pre-#494 CI red incidents (deep-1, deep-2, deep-3); the hook is the durable fix.
-- `git commit --no-verify` bypass remains available but logs a warning per `.claude/rules/development.md` Git Safety Protocol — use only after triage.
+- `git commit --no-verify` bypass remains available but logs a warning per this repo's git conventions (`.claude/rules/development.md`) — use only after triage.
 - Regression test: every repo using this pattern should have a husky test asserting hook contains the scanner invocation, plus E2E tests that plant leaks in a tmp git repo and assert the commit is blocked. Reference: `tests/husky/pre-commit-owner-leakage.test.mjs`.
 
 ## Settings-Allowlist Token Guard (SEC-021, #728b)

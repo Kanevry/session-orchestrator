@@ -2,9 +2,10 @@
  * owner-yaml.mjs — owner.yaml schema, validator, parser, writer (Issue #161, D1).
  *
  * Implements the public Owner Persona Layer API: schema validation, disk I/O,
- * and sensible defaults. Intentionally separate from `owner-config.mjs` (which
- * ships the richer D2-era schema with schema-version, metadata, and extended
- * fields). This module targets the simpler D1 surface defined in the #161 epic.
+ * and sensible defaults. This module IS the live owner-config surface — the
+ * richer D2-era schema (`owner-config.mjs`, with `schema-version`, `metadata`,
+ * and extended fields) was removed on 2026-09-09; this module's D1 surface
+ * from the #161 epic is now the only one.
  *
  * ── Schema (schema-version: 1) ───────────────────────────────────────────────
  *
@@ -95,17 +96,17 @@ let _yamlWarned = false;
  * Resolve `js-yaml` at CALL time instead of at import time (GH#62/#63).
  *
  * WHY `createRequire` and not `await import('js-yaml')`: every caller of
- * {@link loadOwnerConfig} consumes it SYNCHRONOUSLY. Measured 2026-09-06 with
+ * {@link loadOwnerConfig} consumes it SYNCHRONOUSLY. Measured 2026-09-09 with
  * `rg -n --glob '!tests/**' 'loadOwnerConfig\(' scripts hooks skills` (minus
- * this file and the unrelated async homonym in `owner-config-loader.mjs`):
- * 9 call sites — 8 in code, 1 in `skills/session-start/SKILL.md:1113` — and
- * `rg 'await\s+loadOwnerConfig'` over the same scope returns ZERO. Eight read
- * `loadOwnerConfig().config` (`hooks/on-session-start.mjs:639`,
- * `hooks/skill-invocation-telemetry.mjs:155`, `scripts/telemetry.mjs:81,130`,
- * `scripts/vault-mirror.mjs:444`, `scripts/lib/telemetry/sync.mjs:202,269`,
- * and the SKILL.md snippet); the ninth destructures the same sync return
- * (`scripts/lib/soul-resolve.mjs:123`). `writeOwnerConfig` is likewise sync at
- * its single call site, `scripts/lib/owner-interview.mjs:228`.
+ * this file itself — this is the sole loader now, no other async homonym
+ * exists): 8 call sites, all synchronous — `rg 'await\s+loadOwnerConfig'`
+ * over the same scope returns ZERO. All eight read `loadOwnerConfig().config`
+ * (`hooks/on-session-start.mjs:639`, `hooks/skill-invocation-telemetry.mjs:155`,
+ * `scripts/telemetry.mjs:81,130`, `scripts/vault-mirror.mjs:444`,
+ * `scripts/lib/telemetry/sync.mjs:513,643`, and
+ * `skills/session-start/references/phase-6-7-memory-banner-telemetry-consent.md:53`).
+ * `writeOwnerConfig` is likewise sync at its single call site,
+ * `scripts/lib/owner-interview.mjs:228`.
  *
  * Making either loader async would be a breaking change to all of them; a lazy
  * `require()` keeps the sync contract and only fails at CALL time — where the

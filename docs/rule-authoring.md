@@ -285,12 +285,19 @@ them silently loses a learning or regenerates it:
    TTL past what its type registry granted it.) State the rule in the file
    itself, so the next editor does not "fix" it upward.
 
-3. **Keep `globs:` only, and take the UNION.** The merged file loads for any
-   path any of its parts covered, so its `globs:` is the union of theirs.
-   `rule-loader.mjs` resolves `globs:` and `paths:` with `globs:` winning
-   SILENTLY when both are present (issue #795, `parseGlobsFrontmatter`) — so a
-   file carrying both duplicate keys ships the `paths:` block as dead bytes.
-   Write `globs:` alone.
+3. **Keep BOTH `globs:` and `paths:`, as byte-identical mirrors, each the
+   UNION of the parts.** The merged file loads for any path any of its parts
+   covered, so both lists are the union of theirs — never `globs:` alone.
+   `rule-loader.mjs` resolves `globs:` for wave-time injection, while Claude
+   Code's OWN native rule loader reads ONLY `paths:` and treats a rule
+   lacking it as unconditional, always-on (`check-rules.mjs` check #1108,
+   measured this session) — a `globs:`-only merged file is scoped everywhere
+   it is inspected and loads everywhere it is used, exactly the
+   instruction-budget failure consolidation exists to prevent. `rule-loader.mjs`
+   still resolves `globs:` and `paths:` with `globs:` winning SILENTLY when
+   both are present (issue #795, `parseGlobsFrontmatter`), but keeping the two
+   lists identical makes that precedence moot — there is no divergent value
+   left for it to pick between.
 
 4. **Substance in, boilerplate out.** Each absorbed learning becomes an `###`
    heading carrying its original rule sentence, plus its evidence line. What is

@@ -326,6 +326,26 @@ export function resolveSessionShape(opts = {}) {
   const effectiveProfile = profile ?? null;
   // `unknown` is not a fourth mode — it is "not measured". Shape it as deep.
   const shapeType = sessionType === 'unknown' ? 'deep' : sessionType;
+
+  // Up-front input validation (#1290 item 1). Before this, `configIsolation`
+  // and `configEnforcement` were validated only where `buildWave` happened to
+  // reach `resolveIsolation` — so a shape whose waves ALL short-circuit to
+  // `none` never judged them at all, and `configIsolation: 'worktre'` produced
+  // a normal-looking housekeeping shape. Validation happens by CALLING the two
+  // owning resolvers rather than by re-listing their value sets: `wave-sizing.mjs`
+  // has owned both since #194, does not export the arrays, and a copy here would
+  // be exactly the second definition this module exists to abolish.
+  try {
+    resolveIsolation({ agentCount: 1, sessionType: shapeType, configIsolation });
+    resolveEnforcement({ isolation: 'none', configEnforcement });
+  } catch (err) {
+    // Re-prefixed so the CLI's `session-shape: ` strip + EXIT_INPUT mapping
+    // treats it like every other input error of this module.
+    throw new TypeError(`session-shape: ${err instanceof Error ? err.message : String(err)}`, {
+      cause: err,
+    });
+  }
+
   const maxTurnsDefault = MAX_TURNS_DEFAULT[shapeType];
   const resolvedMaxTurns =
     typeof maxTurns === 'number' && Number.isFinite(maxTurns) && maxTurns > 0

@@ -1,3 +1,11 @@
+---
+id: agent-card
+type: peer-card
+target: agent
+created: "2026-05-25T17:34:29.831Z"
+updated: "2026-09-09T08:38:51.637Z"
+source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-2026-05-28-1152", "evolve-2026-05-30-0913", "evolve-2026-07-04-session-3-reviewed-no-changes", "main-2026-08-05-deep-1", "main-2026-09-06-session-17", "main-2026-09-09-session-10"]
+---
 
 <!-- BEGIN MANAGED: guard-and-protocol-migration -->
 ## Guard and protocol-migration discipline
@@ -6,14 +14,6 @@
 - When migrating an output protocol (channel, envelope, exit-code semantics), enumerate consumers by WHO SPAWNS the binary — never by grepping the payload field name. A consumer that pins only the channel or the exit code is structurally invisible to a payload grep and surfaces only at the Full Gate. Cross-check the census with a second, differently-shaped measurement.
 - A Discovery census is a claim about the PAST the moment a later wave changes the surface it measured. Before re-briefing a count/scope-map into a downstream wave, re-verify it at the current HEAD — a mid-session refactor (e.g. an earlier wave decoupling a module) silently invalidates the earlier map.
 <!-- END MANAGED: guard-and-protocol-migration -->
----
-id: agent-card
-type: peer-card
-target: agent
-created: "2026-05-25T17:34:29.831Z"
-updated: "2026-08-05T14:11:24.716Z"
-source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-2026-05-28-1152", "evolve-2026-05-30-0913", "evolve-2026-07-04-session-3-reviewed-no-changes", "main-2026-08-05-deep-1"]
----
 
 <!-- BEGIN MANAGED: parallelism-and-file-discipline -->
 ## Parallelism and file discipline
@@ -23,6 +23,7 @@ source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-20
 - When 2+ planned tasks share >50% file scope, merge them into one agent before W2 dispatch to avoid parallel-write conflicts.
 - When 2 agents both want to edit a shared file, have one localize its changes to a sister file — prefer clean separation over coord-merge work.
 - Do not dispatch concurrent agents to edit CLAUDE.md; collect proposed YAML additions verbatim in agent reports and apply them coord-direct in W5 Finalization.
+- When an implementer needs to compare a file's prior state or test against a known-good baseline, name `git show HEAD:<file>` explicitly in the dispatch prompt. Two separate implementer agents reached for `git stash` for exactly this need in the same session (a PSA-007 violation each time, even when self-corrected) — offering the stash-free alternative up front removes the temptation rather than relying on the agent to recall the rule.
 <!-- END MANAGED: parallelism-and-file-discipline -->
 
 <!-- BEGIN MANAGED: wave-execution -->
@@ -37,6 +38,8 @@ source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-20
 - When a test-writer agent runs tests against production code, then mutates the SUT to a known-broken state and re-runs to observe failure, this falsifiability cycle proves the test catches the regression it claims to cover. Mutation+revert cycles are expected in test delivery.
 - When a wave ships a fix for a recurring anti-pattern, run a pattern-replication audit on the rest of the diff before W4 closes — the agent who just fixed the bug is the most likely to re-introduce it elsewhere in the same change set. A single-agent review misses the recurrence; a multi-reviewer W4 panel catches it. Add a 1-line grep of the diff for other instances of the just-fixed pattern.
 - MEDIUM findings discovered in-session (during W3/W4) should be folded and documented in STATE.md Deviations rather than filed as carryover issues. Exceptions: MEDIUM findings that require redesign (scope change beyond the current agent's file boundary) stay as blockers.
+- Before calling `materialize-wave-scope.mjs`, verify every coordinator-declared file path (especially test paths) with `ls` or an equivalent existence check. A manifest that declares a phantom path grants no real access to it — the actual write permission for the real files then comes silently from a broader glob expansion, not from the declared scope, which hides a planning defect until someone greps for it.
+- Instruct dispatched agents to fold any post-report hook-triggered addendum (e.g. a PSA-006 discovery-validator correction) INTO a re-sent, complete final report, rather than leaving the addendum standing alone as the last message. The coordinator reads only the LAST message from an agent; an addendum-only final message displaces the actual report and forces a SendMessage follow-up to recover it (measured: 5 such recoveries in one session, ~2-5 min each).
 <!-- END MANAGED: wave-execution -->
 
 <!-- BEGIN MANAGED: discovery-and-scope-adjustment -->
@@ -61,6 +64,8 @@ source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-20
 - ESLint `eqeqeq` rejects `x == null`; write `x === null || x === undefined` explicitly or use nullish-coalescing.
 - `existsSync(target)` is not an authorization check — it answers "does this path exist", not "is this the RIGHT path". For any write-gate where writing to the wrong target is the failure mode (vault mirror, deploy target, backup destination), guard on an IDENTITY probe (git remote get-url origin, a sentinel marker file, a known UUID) and host-qualify the match (`endsWith('host.tld/org/repo')`) so a same-named repo on a different host is still rejected. Fail closed: any non-zero probe exit OR non-matching identity is a whole-run `exit(2)`, not a per-entry skip. Provide a load-bearing env-var bypass for tests that legitimately target non-canonical tmp dirs, and cover the guard black-box with the bypass off.
 - When wiring automation or telemetry into an existing seam (e.g., post-tool-batch hook), grep for the WRITER of the trigger field across scripts/, skills/, and hooks/, not just the reader. A seam that is tested and read but never written is dormant — distinguish wired from live in your issue tracking.
+- A plain `await import()` smoke-probe only exercises module top-level evaluation; a `ReferenceError` inside a hoisted exported function body (never called at import time) is invisible to it. Pair the probe with ESLint `no-undef` (static, analyses the function body) — this is the difference between catching the defect pre-commit and an 8-minute host-wide Bash/Edit lock, measured when a hook-imported module was saved mid-rename with an undefined identifier.
+- Never leave a module imported by a live PreToolUse/PostToolUse hook in a stale intermediate state (e.g. mid-rename of a function or constant), even briefly. Every Edit/Write in the working copy re-triggers that hook's import; a `ReferenceError` there blocks Bash/Edit for every session sharing the working copy, not just the one editing it, and the only recovery channel available is one the hook itself doesn't block (e.g. the Monitor tool).
 <!-- END MANAGED: architecture-and-code-patterns -->
 
 <!-- BEGIN MANAGED: ci-and-verification -->
@@ -91,4 +96,10 @@ source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-20
 - On resuming a crashed session, the STATE.md mission premise may be hallucinated. Before continuing any work, grep-verify the referenced issues and PRDs against the actual issue tracker + code repo. If all referenced issues are CLOSED or unrelated, reground the mission to actual code + learnings before proceeding.
 - The crashed session's `.claude/wave-scope.json` (if present and valid) is the definitive artifact for work planned vs completed. Its `allowedPaths` show which files the wave intended to touch. Diff against working-tree state to identify the gap.
 - After work from a crashed session is verified sound (existing tests green, grep-confirms the code is on-target), the cross-batch watermark tokens (e.g., `last_wave`) are preserved by gating on `semantic_session_id` equality in on-session-start. This prevents double-emission of wave.started on resume.
-<!-- END MANAGED: crashed-session-recovery -->
+<!-- END MANAGED: crashed-session-recovery --><!-- BEGIN MANAGED: review-discipline-refutation-mandate -->
+## Review discipline — the refutation mandate
+
+- Dispatch review panels with an explicit instruction to REFUTE the coordinator's premises and the wave's own green gate, not merely to confirm them. Across three separate sessions this repeatedly surfaced real defects a green Full Gate, existing tests, and the author's own check all passed: a fail-open branch written to guard against fail-open, `argv[1]` triggering a probed module's own main-guard, a documented callback interface that never matched the real async call shape, and coordinator measurement errors (a chmod test recipe that discriminated nothing, a name-census counting the scanner's own denylist). A clean gate is never evidence that a refutation-mandated pass would find nothing.
+- Budget for the expected residue: a panel run under this mandate against its own preceding wave typically returns 1 HIGH + several MEDIUM findings even at 0-failure Full Gate. A short fixpass (3-4 agents, ~20-30 min) is the normal cost of this pattern, not a plan-scope overrun.
+- When a reviewer reports a finding, require it to cite the specific measurement (command + file scope), not just a claim — this is the same discipline that resolves disputed counts: most "wrong number" disputes turn out to be two correctly-measured but differently-scoped populations, not a measurement error.
+<!-- END MANAGED: review-discipline-refutation-mandate -->

@@ -332,6 +332,28 @@ describe('resolveSessionShape — validation', () => {
     expect(() => resolveSessionShape({ sessionType: 'deep', profile: 'turbo' })).toThrow(TypeError);
   });
 
+  it('rejects an out-of-set configIsolation / configEnforcement even for a shape whose waves never dispatch (#1290)', () => {
+    // Bug: both values used to be judged ONLY where `buildWave` reached
+    // `resolveIsolation` — and the housekeeping shape short-circuits every wave
+    // to `none`, so a typo like `isolation: worktre` in Session Config produced
+    // a normal-looking single-wave shape and no error anywhere.
+    expect(() =>
+      resolveSessionShape({ sessionType: 'housekeeping', configIsolation: 'worktre' }),
+    ).toThrow(TypeError);
+    expect(() =>
+      resolveSessionShape({ sessionType: 'housekeeping', configEnforcement: 'strikt' }),
+    ).toThrow(TypeError);
+    // …while an ABSENT value still means "not configured" and shapes normally.
+    expect(resolveSessionShape({ sessionType: 'housekeeping' }).totalWaves).toBe(1);
+    expect(
+      resolveSessionShape({
+        sessionType: 'housekeeping',
+        configIsolation: undefined,
+        configEnforcement: undefined,
+      }).totalWaves,
+    ).toBe(1);
+  });
+
   it("shapes session_type 'unknown' as deep rather than throwing", () => {
     // Bug: `unknown` is a VALID_SESSION_TYPES member (the ABSENCE of a
     // measurement, written only by the close-backfill). Throwing on it would

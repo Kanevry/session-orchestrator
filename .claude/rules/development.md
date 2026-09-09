@@ -62,6 +62,7 @@ Enforced by ESLint flat config (`eslint.config.js`) + Prettier. `no-console` is 
 - Detailed rules in `.claude/rules/` with path-scoping.
 - API docs via JSDoc/TSDoc on public functions (inline, code-surface documentation — the implementer's job; standalone/narrative docs like README and CLAUDE.md are the docs-writer's, see `agents/code-implementer.md` § Rules).
 - No README.md bloat — keep it minimal, link to docs.
+- After moving or renaming an exported symbol or module path, `rg` for the OLD path across `docs/ skills/ commands/ .claude/rules/` and fix every prose citation in the SAME change — a separate "doc catch-up" commit means the corpus was wrong in between (#1221 item 7).
 
 ## Corpus Freeze Marker (FROZEN-MANIFEST)
 

@@ -438,11 +438,12 @@ describe('CLI contract against the live repo', () => {
   });
 
   it('--strict-sh flips a dead .sh citation to a blocking exit code', () => {
-    // A FIXTURE, deliberately — never the live repo. The live corpus already
-    // carries one dead `.sh` citation this checker CAN see (tracked in
-    // OUT-OF-SCOPE), so a live-repo assertion of `status: 1` here would pin
-    // that defect and go red the moment its doc owner fixes it — exactly the
-    // anti-pattern this file's own header warns against.
+    // A FIXTURE, deliberately — never the live repo. The live corpus's set of
+    // dead paths moves as citations get annotated as deliberately absent or
+    // new ones appear (see the checker's own summary line for the current
+    // count — never pinned here), so a live-repo assertion of `status: 1`
+    // would go stale the moment that set changes — exactly the anti-pattern
+    // this file's own header warns against.
     const root = fixtureRoot('Run `scripts/ghost.sh` please.\n');
     try {
       const nonStrict = spawnSync('node', [checkScript, root], { encoding: 'utf8' });

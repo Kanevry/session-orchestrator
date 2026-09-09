@@ -5,8 +5,9 @@
  * `owner.yaml`, the self-alias ledger) moves with it, so the precedence has to
  * live in exactly ONE place. Before #1223 three copies with three different
  * precedences existed: `owner-yaml.mjs`'s import-time homedir-only
- * `OWNER_YAML_PATH`, `owner-config-loader.mjs`'s XDG-only + untrimmed
- * `resolveOwnerConfigPath()`, and `host-identity.mjs`'s `_privateDir()`. The
+ * `OWNER_YAML_PATH`, the now-removed `owner-config-loader.mjs`'s XDG-only +
+ * untrimmed `resolveOwnerConfigPath()`, and `host-identity.mjs`'s
+ * `_privateDir()`. The
  * live consequence: `SO_CONFIG_HOME=<sandbox>` moved the alias ledger but NOT
  * owner.yaml, which kept being read from the operator's REAL home — the
  * CLAUDE.md (Codex CLI alias: AGENTS.md) "vault-dir resolves HOST-LOCALLY"

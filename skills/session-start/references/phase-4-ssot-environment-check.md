@@ -78,7 +78,7 @@
    | `evolve` | no `orchestrator.evolve.completed` on record AND ≥ `MAINTENANCE_MIN_LEARNINGS` (20) active learnings | `events.jsonl` + `computeReconcileNudge` |
    | `sweep` | the dry-run expiry sweep would archive ≥ 1 entry | `scripts/lib/learnings/expiry-sweep.mjs` |
    | `reconcile` | `computeReconcileNudge().nudge === true` | `scripts/lib/reconcile-nudge-banner.mjs` (reused whole) |
-   | `dialectic` | `shouldDispatchAutoDialectic().trigger === true` | `scripts/lib/auto-dialectic.mjs` (never `decideAndRecordAutoDialectic` — that advances the last-run stamp and would consume the signal it reports) |
+   | `dialectic` | `shouldDispatchAutoDialectic().trigger === true` | `scripts/lib/auto-dialectic.mjs` — the side-effect-free decision function; a variant that advanced the last-run stamp would consume the signal it reports (the former recording wrapper was removed in #1288) |
    | `memory-cleanup` | `shouldDispatchAutoDream().trigger === true` | `scripts/lib/auto-dream.mjs` |
    | `pending-sidecar` | an unapplied pending dream/dialectic proposal younger than `SIDECAR_MAX_AGE_DAYS` (14) | `.orchestrator/*-pending*.md` |
 
