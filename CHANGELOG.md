@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **CI (#1294)** — GitLab `test` job: 3 shards (was 2), inner vitest cap 840 s (was 600 s), job timeout 15 min (was 10), per-shard floor 2500 tests. Measured 2026-09-09: a degraded autoscaler VM ran every test file 3–4× slower and killed a green shard at the 600 s cap twice while its sibling shard finished in 206 s.
 - `hooks/subagent-telemetry.mjs` schema_version 2 (#1244) — `token_input` is redefined from raw `usage.input_tokens` to BILLABLE PROMPT VOLUME (uncached + cache_read + cache_creation). Under prompt caching the old value understated real prompt volume by up to ~65,646× on one measured agent (56 vs 3,676,179 tokens). New additive fields `token_input_uncached`, `token_cache_read`, `token_cache_creation`, `model`. This is a SERIES BREAK — v1 and v2 `token_input` values are not comparable, and `scripts/lib/session-token-rollup.mjs` sums only `schema_version >= 2` records.
 - `hooks/pre-bash-issue-budget.mjs` now charges per STATEMENT rather than per whole command; `hooks/_lib/vcs-create-matcher.mjs` additionally matches `gh|glab api … POST …/issues`.
 - `docs/USER-GUIDE.md` § 4 Session Types and § 6 The Wave Pattern rewritten around the four resolved shapes (housekeeping/feature/deep/ultradeep) and a pointer to `scripts/session-shape.mjs --help`; the retired 3/4/5/6+ role-combination mapping table and the stale `housekeeping=2/feature=6/deep=6-10` agent-count table are replaced with the shape's actual per-type ceilings.
