@@ -46,7 +46,10 @@ function block(file, heading) {
   return code.split('\n').map(line => line.slice(indent)).join('\n');
 }
 function execute(script, { root, baseline, repo }) {
-  return spawnSync('bash', ['-euo', 'pipefail', '-c', script], { cwd: repo, timeout: 15000, encoding: 'utf8', env: {
+  // 60 s, not 15 s: each block spawns several node processes; on a loaded shared
+  // runner 15 s produced status:null (SIGTERM by the timeout) on GitLab #9048 shard 3/3
+  // twice while the same code passed on #9047 and locally (2026-09-09, #1298.10).
+  return spawnSync('bash', ['-euo', 'pipefail', '-c', script], { cwd: repo, timeout: 60000, encoding: 'utf8', env: {
     ...process.env, SO_CONFIG_HOME: path.join(root, 'owner-config'), SO_BASELINE_PATH: baseline, REPO_ROOT: repo,
     PLUGIN_ROOT: pluginRoot, CONFIRMED_ARCHETYPE: 'sample-web', REPO_NAME: 'sample-project', PATH_TYPE: 'private', CONFIG: '{}', GITLAB_TOKEN: '', GITLAB_HOST: '', DRY_RUN: '', RULES_CATEGORIES: '',
   } });
