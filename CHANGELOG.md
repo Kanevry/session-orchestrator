@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/lib/scope-echo.mjs` + CLI + `orchestrator.wave_dispatch.scope_echo_checked` event (#1092) — soft receive-side signal that a dispatched agent echoed its declared file-scope back in its report; a named ceiling, never blocking. Additive `applicable: false` + `reason: 'scope-empty'` payload keys fire for an EMPTY declared scope, so consumers filter that never-instructed population out of the echo rate; the CLI gained `--help` and now exits 1 with a stderr WARN on an unreadable scope file instead of failing silently.
+- `native_source` + `resume_linkage` fields on `orchestrator.session.started` (#1091) — measurement only, answers whether Claude Code preserves the raw `session_id` across a native `resume` instead of guessing.
+- `references/` splits of the `bootstrap`/`discovery`/`evolve`/`session-plan`/`wave-executor` SKILL.md bodies (#1246) — byte-identical extraction; line counts 641→444, 571→404, 720→264, 620→478, 541→414.
+
+### Changed
+
+- `hooks/hooks.json` `SessionStart` matcher now `startup|resume|clear|compact` (was missing `resume`); on a resume whose raw `session_id` matches the prior lock, the prior semantic id is reused and wave high-water marks (`last_wave`/`last_batch`) are preserved instead of reset (#1091).
+- `hooks/_lib/lock-bootstrap.mjs` force-refreshes a stale-looking lock only when the re-entry source AND the semantic label both match, AND `existingLock.session_id === predecessorSessionId` (the raw id our own previous hook run recorded in `current-session.json`) — a bare label match alone can collide across repos, and this third, predecessor-witness conjunct is the only one tied to something WE wrote about ourselves.
+- 10 `/reconcile`-generated rules absorbed into the thematic rule files (generated surface 140,482 → 123,747 B / 11 files, headroom 253 B against the 124,000 B ceiling; idempotency `alreadyMaterialized` 40 → 50).
+- `scripts/ci/assert-vitest-green.mjs` kill-artifact hint now reads `[ci] KILL ARTEFACT — … (NOT a test failure)` instead of a bare `[ci] hint: …` (#1294 b) — the false-green-vs-real-failure distinction is now visible at a glance in CI logs.
+- `.claude/rules/security.md` gained a VCS-anchor caveat — the GitHub mirror's `main` is pushed directly from the operator's machine, not via CI (#1079); `docs/github-mirror-protection.md` re-measured state (2026-09-09 @ `c2e19604`) and the required remediation order; `enforce_admins` deliberately left `false` until the push-path change lands.
+- Dead `globs:`/`paths:` frontmatter entries removed from 3 rules (`bash-harness-pitfalls.md`, `cli-design.md`, `testing.md`) — `rule-scoping` drift-check warnings 11 → 1; `**/*Tests*` in `testing.md` deliberately kept (fleet intent for consumer Swift repos, #445; pinned by `tests/skills/config-reading-glob-rules.test.mjs`).
+
+### Fixed
+
+- `check-unwired-features` root filter no longer masks two roots sharing a basename — a colliding basename now needs the qualified `dirname/base` form to downgrade out of the reportable class (#1293).
+- `tests/scripts/pack-policy-floor.test.mjs` accepts npm 12's keyed-object `npm pack --dry-run --json` shape (was red on the v4.2.0 tag push).
+
+### Notes
+
+- 4.2.0 published to npm 2026-09-09 20:45 UTC.
+- GH#68 (Codex command entry points missing after an update) answered — fixed since 4.0.1; see `docs/codex-setup.md` § Refresh and Explicit Cache Invalidation.
+
 ## [4.2.0] - 2026-09-09
 
 ### Added

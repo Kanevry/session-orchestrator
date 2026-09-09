@@ -588,6 +588,47 @@ describe('check-unwired-features — S4 unreachable-library-module census', () =
     }
   });
 
+  // THE BUG (#1293): the root filter suppressed a module whenever ANY other
+  // unreachable module mentioned its bare basename. `owner.mjs` naming
+  // `index.mjs` therefore masked BOTH `a/index.mjs` and `b/index.mjs` at once
+  // — the live instance was `locks/index.mjs` + `worktree/index.mjs`, which
+  // only resurfaced when the masking module was deleted for an unrelated
+  // reason. The mention sits in CODE, not a comment: `mentionedModuleTokens`
+  // skips comment-only lines. The second row is the over-correction guard:
+  // making an ambiguous basename never suppress would re-report every
+  // interior member of a drag cluster, which the cluster-root collapse exists
+  // to prevent — a qualified `a/index.mjs` mention is a real reference and
+  // must collapse that root, and only that one.
+  it.each([
+    {
+      name: 'keeps both differently-pathed roots when one module mentions their BARE colliding basename',
+      mention: "'index.mjs'",
+      aUnreachable: true,
+      bUnreachable: true,
+    },
+    {
+      name: 'still collapses the ONE colliding root a module names by its qualified path',
+      mention: "'a/index.mjs'",
+      aUnreachable: false,
+      bUnreachable: true,
+    },
+  ])('$name', ({ mention, aUnreachable, bUnreachable }) => {
+    const root = makeGraphFixture({
+      modules: {
+        'a/index.mjs': 'export function fromA() {\n  return 1;\n}\n',
+        'b/index.mjs': 'export function fromB() {\n  return 2;\n}\n',
+        'owner.mjs': `export const target = ${mention};\n`,
+      },
+    });
+    try {
+      const keys = unreachableKeys(root);
+      expect(keys.includes(join('scripts', 'lib', 'a', 'index.mjs'))).toBe(aUnreachable);
+      expect(keys.includes(join('scripts', 'lib', 'b', 'index.mjs'))).toBe(bUnreachable);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('does not report a CLI entrypoint, whose markdown-only invocation is the design', () => {
     // The deliberate boundary. Treating entrypoints as non-roots was measured at
     // 268/467 modules (57.5%) versus 73 (15.6%) — straight into HR-101's

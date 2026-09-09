@@ -795,9 +795,18 @@ function mentionedModuleTokens(lines) {
  *    switched off. Revisit if a real module-resolver (import-specifier resolution
  *    relative to the importing file) becomes cheap, or if a collided basename is
  *    ever confirmed to mask a true positive. The `coordinator-invoked-module`
- *    DOWNGRADE is exempt: there a colliding basename must be named with its
- *    `dirname/base` suffix, because that match moves a module OUT of the
- *    reportable class and would otherwise hide a true unreachable sibling.
+ *    DOWNGRADE is exempt, and since #1293 so is the CLUSTER-ROOT filter: in both
+ *    a colliding basename must be named with its `dirname/base` suffix, because
+ *    those matches move a module OUT of the reportable class and would otherwise
+ *    hide a true unreachable sibling. Measured cost of leaving the root filter
+ *    on bare basenames: `locks/index.mjs` and `worktree/index.mjs` were both
+ *    suppressed by a third unreachable module that merely mentioned bare
+ *    `index.mjs`, and only resurfaced when that module was deleted for an
+ *    unrelated reason. Remaining ceiling: two ambiguous roots whose mentioning
+ *    module ALSO carries the qualified form (e.g. an unreachable module that
+ *    literally writes `locks/index.mjs`) are still suppressed — correct when it
+ *    is a real reference, a mask when it is prose. Revisit if a qualified
+ *    mention is ever confirmed to hide a root.
  *  - **Reachable ≠ executed.** A module imported by a hook that never takes that
  *    branch reads as wired here. Proving execution needs coverage data, not a graph.
  *  - **Reachable from SOME entrypoint is not reachable from the PROMISED one.**
@@ -840,6 +849,10 @@ export function collectUnreachableLibraryModules(pluginRoot) {
       // module an operator flagged. Measured 2026-08-28 on the first S4
       // allowlist entry: 52 → 51 unreachable modules plus one bogus stale line.
       mentions: relative === SELF_REL ? new Set() : mentionedModuleTokens(lines),
+      // Raw text, kept for the QUALIFIED (`dirname/base`) re-check in the
+      // root filter below: `mentionedModuleTokens` strips the directory, so
+      // a colliding basename can only be disambiguated against the body.
+      rawBody: relative === SELF_REL ? '' : body,
     };
   });
 
@@ -877,10 +890,38 @@ export function collectUnreachableLibraryModules(pluginRoot) {
     (module) => !reachable.has(module.relative) && !module.entrypoint && module.exports.length > 0,
   );
   const unreachableSet = new Set(unreachable.map((module) => module.relative));
-  const roots = unreachable.filter(
-    (module) =>
-      !unreachable.some((other) => other.relative !== module.relative && other.mentions.has(module.base)),
-  );
+  // Basename census, shared by the root filter below and the downgrade half
+  // further down. A bare basename is only a valid module reference when it is
+  // UNIQUE in the corpus: `writer.mjs` names both `peer-cards/writer.mjs` and
+  // `reconcile/writer.mjs` (measured 2026-09-07), so a doc naming ONE of them
+  // would otherwise downgrade BOTH out of the reportable class — a true
+  // unreachable silently moved into the advisory half. For a colliding basename
+  // the reference must therefore carry at least the `dirname/base` suffix
+  // (`reconcile/writer.mjs`); unique basenames keep the cheaper bare match.
+  // Direction matters in both consumers: this can only ever ADD findings back to
+  // the reportable class, never remove one.
+  /** @type {Map<string, number>} */
+  const basenameCount = new Map();
+  for (const module of modules) basenameCount.set(module.base, (basenameCount.get(module.base) ?? 0) + 1);
+
+  const roots = unreachable.filter((module) => {
+    // A bare-basename mention only suppresses when the basename is UNIQUE
+    // (see the census above). When it collides, the mentioning module must name
+    // the `dirname/base` form in its body — otherwise ONE unreachable module
+    // mentioning bare `index.mjs` masks EVERY differently-pathed `index.mjs`
+    // root at once (#1293: `locks/index.mjs` + `worktree/index.mjs` were masked
+    // by a third unreachable module until that module was deleted for an
+    // unrelated reason).
+    const ambiguous = (basenameCount.get(module.base) ?? 0) > 1;
+    const qualified = module.relative.split(path.sep).slice(-2).join('/');
+    const qualifiedRe = ambiguous ? tokenMatcher(qualified) : null;
+    return !unreachable.some(
+      (other) =>
+        other.relative !== module.relative &&
+        other.mentions.has(module.base) &&
+        (qualifiedRe === null || qualifiedRe.test(other.rawBody)),
+    );
+  });
 
   // Category split (see § Category split in the doc block above): an INSTRUCTION
   // document that names both the module AND one of its exported symbols is an
@@ -893,19 +934,6 @@ export function collectUnreachableLibraryModules(pluginRoot) {
     .filter((file) => !PROSE_EXCLUDED_FILES.includes(path.basename(file)))
     .sort()
     .map((file) => ({ relative: path.relative(pluginRoot, file), body: readFileSync(file, 'utf8') }));
-
-  // Basename census for the downgrade half. A bare basename is only a valid
-  // module reference when it is UNIQUE in the corpus: `writer.mjs` names both
-  // `peer-cards/writer.mjs` and `reconcile/writer.mjs` (measured 2026-09-07),
-  // so a doc naming ONE of them would otherwise downgrade BOTH out of the
-  // reportable class — a true unreachable silently moved into the advisory
-  // half. For a colliding basename the doc must therefore carry at least the
-  // `dirname/base` suffix (`reconcile/writer.mjs`); unique basenames keep the
-  // cheaper bare match. Direction matters: this can only ever ADD findings back
-  // to the reportable class, never remove one.
-  /** @type {Map<string, number>} */
-  const basenameCount = new Map();
-  for (const module of modules) basenameCount.set(module.base, (basenameCount.get(module.base) ?? 0) + 1);
 
   let coordinatorInvoked = 0;
   const findings = roots.map((module) => {

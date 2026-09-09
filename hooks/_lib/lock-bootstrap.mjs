@@ -39,6 +39,23 @@ import path from 'node:path';
 import { writeJsonAtomicSync } from '../../scripts/lib/io.mjs';
 
 /**
+ * Native SessionStart `source` values that are a RE-ENTRY into the same logical
+ * session rather than a new one (#1091).
+ *
+ * SSOT for both consumers — the SessionStart hook's high-water-mark
+ * preservation and the force-refresh gate below — so a later widening
+ * ("`fork` is a re-entry too") can never reach one side only. It lives HERE,
+ * in the leaf module, because the hook already imports this file while the
+ * reverse direction would pull the whole hook's closure into a helper.
+ *
+ * `startup` is deliberately absent: a fresh process start must never inherit a
+ * predecessor's markers or take over its lock.
+ *
+ * @type {ReadonlySet<string>}
+ */
+export const SAME_LOGICAL_SESSION_SOURCES = new Set(['resume', 'clear', 'compact']);
+
+/**
  * Bootstrap the session.lock for this hook invocation.
  *
  * Best-effort: every internal failure is swallowed, the helper returns null
@@ -55,6 +72,16 @@ import { writeJsonAtomicSync } from '../../scripts/lib/io.mjs';
  *   field is populated by mirroring sessionId for backward-compatible display only.
  * @param {string} opts.mode — session mode (e.g. "deep", "feature").
  * @param {number} [opts.ttlHours=4] — lock TTL in hours.
+ * @param {string|null} [opts.nativeSource=null] — the native SessionStart
+ *   `source` (`startup`|`resume`|`clear`|`compact`), when the harness sent one.
+ *   Only consulted for the same-logical-session force-refresh below; every
+ *   existing caller that omits it keeps its pre-#1091 behaviour exactly.
+ * @param {string|null} [opts.predecessorSessionId=null] — the raw `session_id`
+ *   recorded in `.orchestrator/current-session.json` by our OWN previous run of
+ *   this hook. It is the third, load-bearing conjunct of the re-entry
+ *   force-refresh below: without it a same-host semantic-label collision (#1066)
+ *   lets one session take over a live peer's lock. Omitting it (the default)
+ *   disables the re-entry force-refresh entirely — fail-closed.
  * @param {Function} [opts._acquireImpl] — DI for tests (defaults to importing acquire from session-lock.mjs).
  * @param {Function} [opts._forceAcquireImpl] — DI for tests (defaults to importing forceAcquire from session-lock.mjs).
  * @param {Function} [opts._emitEventImpl] — DI for tests (defaults to importing emitEvent from events.mjs).
@@ -66,6 +93,8 @@ export async function bootstrapLock({
   semanticSessionId,
   mode,
   ttlHours = 4,
+  nativeSource = null,
+  predecessorSessionId = null,
   _acquireImpl,
   _forceAcquireImpl,
   _emitEventImpl,
@@ -106,6 +135,53 @@ export async function bootstrapLock({
 
   if (!acquireResult || typeof acquireResult !== 'object') return null;
 
+  // #1091 F2 — a same-logical-session re-entry whose RAW id the harness did not
+  // preserve. `resume` entered the SessionStart matcher in #1091, so this hook
+  // now runs on re-entry: if Claude Code mints a fresh raw `session_id` there,
+  // `acquire()` returns `reason:'active'` with THIS SESSION'S OWN predecessor
+  // lock as `existingLock` (its heartbeat is fresh, so it is live by
+  // definition), `shouldForce` is false, and the hook bails — leaving the
+  // session running for up to the 4 h TTL without owning its own lock, while
+  // `recordConflictSignal()` below names the session's own former self as a
+  // foreign conflict.
+  //
+  // THREE conjuncts gate the force, and all three are load-bearing:
+  //   (a) `SAME_LOGICAL_SESSION_SOURCES.has(nativeSource)` — the harness itself
+  //       says this is a re-entry rather than a fresh start;
+  //   (b) `existingLock.semantic_session_id === semanticSessionId` — the lock's
+  //       label is written by this same bootstrap, so an equal label means the
+  //       predecessor was minted from the same (branch, date, mode, n) tuple;
+  //   (c) `existingLock.session_id === predecessorSessionId` — the RAW id our
+  //       own previous hook run recorded in current-session.json is the raw id
+  //       the live lock carries.
+  //
+  // (a)+(b) alone are NOT enough (security review, #1066): semantic labels are
+  // measurably collidable on one host — two sessions minted the SAME label when
+  // the host-wide registry contributed nothing to the n-increment — so a
+  // `/clear` in session B would take over session A's LIVE lock. (c) is the only
+  // conjunct tied to a witness WE wrote about OURSELVES; it is deliberately not
+  // `resumeLinkage === 'raw-id'`, which is true exactly when the raw id was
+  // PRESERVED — the complement of the fresh-raw-id case this branch exists for.
+  //
+  // NOT gated on process liveness, deliberately: `pid` on a session.lock is the
+  // ephemeral hook subprocess that WROTE it, so `isPidAliveOnHost(lock.pid)`
+  // reports "dead" for essentially every lock including live heartbeating ones
+  // (7/7 measured, #1137) — a vacuous predicate that would widen this branch to
+  // every source, not narrow it. `isLockLive()` is no help either: under
+  // `reason:'active'` acquire() has already established it is true
+  // (session-lock.mjs `classifyExisting`).
+  //
+  // Ceiling (BV-004), named rather than claimed closed: the residual is a peer
+  // that wrote `current-session.json` LAST with our semantic label — that peer's
+  // raw id is what we read as `predecessorSessionId`, so if it also owns the
+  // live lock, conjunct (c) holds for the wrong session. `current-session.json`
+  // carries no session field of its own (see
+  // `.claude/rules/identity-and-locks.md` § shared repo artefacts), which is
+  // exactly why this is a ceiling and not a proof. Revisit when the lock or
+  // current-session.json carries a durable logical-session id of its own.
+  const isSameLogicalReentry =
+    typeof nativeSource === 'string' && SAME_LOGICAL_SESSION_SOURCES.has(nativeSource);
+
   const shouldForce =
     acquireResult.ok !== true && (
       // #1137: 'stale-heartbeat' replaced the former 'stale-pid-dead' /
@@ -115,7 +191,14 @@ export async function bootstrapLock({
       acquireResult.reason === 'stale-heartbeat' ||
       (acquireResult.reason === 'active' &&
         acquireResult.existingLock &&
-        acquireResult.existingLock.session_id === sessionId)
+        (acquireResult.existingLock.session_id === sessionId ||
+          (isSameLogicalReentry &&
+            typeof semanticSessionId === 'string' &&
+            semanticSessionId.length > 0 &&
+            acquireResult.existingLock.semantic_session_id === semanticSessionId &&
+            typeof predecessorSessionId === 'string' &&
+            predecessorSessionId.length > 0 &&
+            acquireResult.existingLock.session_id === predecessorSessionId)))
     );
 
   if (!acquireResult.ok && shouldForce) {

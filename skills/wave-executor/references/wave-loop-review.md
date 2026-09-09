@@ -119,6 +119,19 @@ Log every non-`pass` result as an event to `.orchestrator/metrics/events.jsonl` 
 
    Cross-reference `.claude/rules/verification-before-completion.md` § VBC-004 Exception 2: a subagent's `STATUS: done` is a claim that needs its own verification — this step is that verification for the file-write side effect. `$WAVE_PREDISPATCH_HEAD` is the HEAD snapshot captured before this wave dispatched (same snapshot used by `### 3c. File-level grounding`). When `persistence: false` (no STATE.md), still perform the check and surface any violation in the wave progress update; only the deviation-write is skipped.
 
+3d-bis. **Scope-echo check (#1092)** (per agent, INFORMATIONAL — never blocks): the send-side `orchestrator.wave_dispatch.scope_checked` record says what the guard saw in the prompt the coordinator handed to the dispatch tool; nothing observes the receive side. This step collects the one signal that is available — the agent's own echo of the digest injected in `wave-loop-dispatch.md` § Pre-Dispatch: File-Scope Injection.
+
+   For each agent that reported, write its final report text to a file and run:
+
+   ```bash
+   node scripts/lib/scope-echo.mjs --scope-file "<state-dir>/filescopes/wave-<N>/<agent-id>.json" \
+     --report-file "<report.txt>" --wave <N> --agent-id "<agent-id>" --emit
+   ```
+
+   `checkScopeEcho` prints the verdict as JSON and `--emit` appends one `orchestrator.wave_dispatch.scope_echo_checked` record (payload: `docs/events-schema.md`; counts, digests and closed enums only — no path, no prompt text). `match: false` or `echoed: false` is logged in the wave progress update as `scope-echo: <agent> missing|mismatch` and changes NOTHING else — no re-dispatch, no deviation write, no gate.
+
+   **What it proves:** the agent's final report carried the digest the coordinator handed it, i.e. the injected line survived the round trip into the agent's context and back. **What it does not prove:** that the model read the `FILE-SCOPE` block, understood it, or obeyed it — the digest is in the prompt, so it can be copied without ever looking at the paths (BV-004 ceiling, `docs/scope-collision-guard.md` § 4.2). Obedience is still measured at write time (`enforce-scope.mjs`) and by the W5 verification pass.
+
 3e. **Collect Open Questions** (Close Handover-Alignment-Gate, PRD 2026-07-07): scan every completed agent's report from this wave for an optional `OPEN-QUESTIONS:` line (see the report-line convention in `wave-loop-dispatch.md` `#### Agent-Type Resolution` — an agent MAY emit `OPEN-QUESTIONS: <question> | context: <...> | candidates: <opt A / opt B>`; most agents emit none). For each such line found:
 
    - Parse the question text (portion before the first ` | `).

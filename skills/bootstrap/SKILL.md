@@ -180,136 +180,21 @@ Entered when `$ARGUMENTS` contains `--upgrade <tier>`. No scaffolding questions 
 
 ## Retroactive Flow (`--retroactive`)
 
-Entered when `$ARGUMENTS` contains `--retroactive`. Writes the lock file and, per #182, optionally patches missing mandatory Session Config fields with defaults.
+Adopts an existing repo that already has `CLAUDE.md`/`AGENTS.md` + `## Session Config` but no `bootstrap.lock` — infers tier from file inventory and patches missing mandatory Session Config fields with defaults.
 
-**Purpose:** Adopt an existing repo that already has `CLAUDE.md` + `## Session Config` but was bootstrapped manually (no `bootstrap.lock`). Writes the lock so the gate passes on all future invocations, and ensures the Session Config block satisfies the validated schema defined in `scripts/lib/config-schema.mjs`.
+See [references/bootstrap-retroactive-flow.md](references/bootstrap-retroactive-flow.md).
 
-**Steps:**
-
-1. **Verify preconditions.** Confirm `CLAUDE.md` (or `AGENTS.md`) exists and contains `## Session Config`. If not, abort: `Error: CLAUDE.md with Session Config required for retroactive bootstrap.`
-
-2. **Check lock not already present.** If `.orchestrator/bootstrap.lock` already exists and has valid `version` + `tier` fields, report: `bootstrap.lock already present (tier: <tier>). Nothing to do.` and exit 0 (idempotent).
-
-3. **Infer tier from file inventory.** Examine the repo root:
-
-   | Condition (evaluated in order) | Inferred Tier |
-   |---|---|
-   | CI file present (`.gitlab-ci.yml` OR `.github/workflows/`) AND `CHANGELOG.md` present | `deep` |
-   | Package manifest present (`package.json` OR `pyproject.toml`) | `standard` |
-   | Neither of the above | `fast` |
-
-   Store as `INFERRED_TIER`.
-
-4. **Infer archetype.** Run Phase 0.5's read-only source detection. For a private
-   contract, use its detected `selected.id`; retain `null` with an explicit
-   `insufficient-evidence` report if no markers match. An invalid configured
-   contract aborts. Do not scaffold or apply rules in this retroactive flow.
-   For the public path, use best-effort detection from existing files:
-   - `pyproject.toml` present → `python-uv`
-   - `package.json` with `next` in dependencies → `nextjs-minimal`
-   - `package.json` without `next` → `node-minimal`
-   - No manifest → `null`
-
-   Store as `INFERRED_ARCHETYPE`.
-
-5. **Write bootstrap.lock.** Create `.orchestrator/` if needed, then write:
-   ```yaml
-   # .orchestrator/bootstrap.lock
-   version: 1
-   tier: <INFERRED_TIER>
-   archetype: <INFERRED_ARCHETYPE or null>
-   timestamp: <current ISO 8601 UTC>
-   source: retroactive
-   plugin-version: <current plugin version from $PLUGIN_ROOT/package.json>
-   ```
-
-6. **Patch Session Config (#182).** Run the validator against the current `## Session Config` block; append any missing mandatory fields with defaults. The 7 mandatory fields (per `scripts/lib/config-schema.mjs`) are: `test-command`, `typecheck-command`, `lint-command`, `agents-per-wave`, `waves`, `persistence`, `enforcement`.
-
-   ```bash
-   CONFIG_OUT="$(node "$PLUGIN_ROOT/scripts/parse-config.mjs" 2>&1 >/dev/null)"
-   # parse-config.mjs emits validation warnings to stderr when enforcement=warn.
-   # Grep for 'must be' lines (issued by validate-config.mjs) to detect missing fields.
-   MISSING_FIELDS="$(echo "$CONFIG_OUT" | grep -oE '(test-command|typecheck-command|lint-command|agents-per-wave|waves|persistence|enforcement)' | sort -u || true)"
-   if [[ -n "$MISSING_FIELDS" ]]; then
-     # Detect package manager to pick sensible defaults for commands.
-     PM_DEFAULTS="$(node --input-type=module -e "
-       import {detectPackageManager, defaultQualityGateCommands} from '$PLUGIN_ROOT/scripts/lib/package-manager.mjs';
-       const pm = detectPackageManager(process.cwd());
-       const cmds = defaultQualityGateCommands(pm);
-       console.log('test-command: ' + cmds.test.command);
-       console.log('typecheck-command: ' + cmds.typecheck.command);
-       console.log('lint-command: ' + cmds.lint.command);
-     " 2>/dev/null)"
-
-     CONFIG_FILE="CLAUDE.md"
-     [[ -f "AGENTS.md" ]] && CONFIG_FILE="AGENTS.md"
-
-     # Append each missing field under the ## Session Config block.
-     for field in $MISSING_FIELDS; do
-       case "$field" in
-         test-command|typecheck-command|lint-command)
-           default_line="$(echo "$PM_DEFAULTS" | grep "^$field:")" ;;
-         agents-per-wave) default_line="agents-per-wave: 6" ;;
-         waves)           default_line="waves: 5" ;;
-         persistence)     default_line="persistence: true" ;;
-         enforcement)     default_line="enforcement: warn" ;;
-       esac
-       # Insert after `## Session Config` line if not already present.
-       grep -q "^$field:" "$CONFIG_FILE" \
-         || awk -v insert="$default_line" '/^## Session Config/ && !done { print; print ""; print insert; done=1; next } { print }' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" \
-         && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
-     done
-     echo "Patched $CONFIG_FILE with defaults for: $MISSING_FIELDS"
-   fi
-   ```
-
-   This patch is best-effort: existing fields are never overwritten. If no fields are missing, this step is a no-op.
-
-7. **Commit.** Stage the lock file (and the patched config file, if it changed) and commit:
-   ```bash
-   mkdir -p .orchestrator
-   git add .orchestrator/bootstrap.lock
-   # Also stage CLAUDE.md/AGENTS.md if step 6 patched it.
-   git diff --name-only --cached CLAUDE.md AGENTS.md 2>/dev/null | head -1 >/dev/null || {
-     [[ -f CLAUDE.md ]] && git diff --quiet CLAUDE.md || git add CLAUDE.md
-     [[ -f AGENTS.md ]] && git diff --quiet AGENTS.md || git add AGENTS.md
-   }
-   git commit -m "chore: bootstrap lock (retroactive)"
-   ```
-
-8. **Report.** Print: `Retroactive bootstrap complete. Lock written (tier: <INFERRED_TIER>, source: retroactive).` Include a second line `Patched Session Config: <fields>` when step 6 applied any patches, otherwise `No config changes.`.
+**Read WHEN:** `$ARGUMENTS` contains `--retroactive`.
 
 ---
 
 ## Refresh-Lock Flow (`--refresh-lock`)
 
-Entered when `$ARGUMENTS` contains `--refresh-lock`. No scaffolding questions are asked, and — unlike the Retroactive Flow above — this is NOT a no-op once the lock already has valid `version`/`tier` fields: refreshing is the load-bearing action.
+Acknowledges the current plugin version and resets the freshness clock on an already-valid `bootstrap.lock` (`refreshed-at` + `refreshed-plugin-version`) without disturbing its original bootstrap provenance or re-running scaffolding.
 
-**Purpose (#57):** Acknowledge the current plugin version and reset the freshness clock on an existing, already-valid `bootstrap.lock` without disturbing its original bootstrap provenance. This closes the gap left by the Retroactive Flow: once a lock already has `version` + `tier`, re-running `/bootstrap --retroactive` reports "bootstrap.lock already present ... Nothing to do." and changes nothing — exactly the no-op the bootstrap-lock-freshness probe (#186/#290) was recommending as its remediation. `--refresh-lock` is the actual remediation for a present-but-stale or version-drifted lock.
+See [references/bootstrap-refresh-lock-flow.md](references/bootstrap-refresh-lock-flow.md).
 
-**Steps:**
-
-1. **Precondition check.** Read `.orchestrator/bootstrap.lock`. If missing, or present but missing a non-empty `version` or `tier` field, abort with: `Error: No valid bootstrap.lock found. Run /bootstrap or /bootstrap --retroactive first.` Do not fabricate a lock — this flow only refreshes an existing one.
-
-2. **Resolve the current plugin version.** Read `plugin-version` from `$PLUGIN_ROOT/package.json` (same source Phase 4 uses).
-
-3. **Call the refresh writer.**
-
-   ```js
-   import { refreshBootstrapLock } from '$PLUGIN_ROOT/scripts/lib/bootstrap-lock-refresh.mjs';
-   const result = refreshBootstrapLock({
-     repoRoot: REPO_ROOT,
-     currentPluginVersion: PLUGIN_VERSION,
-   });
-   ```
-
-   `refreshBootstrapLock` writes (or replaces, if already present) exactly two lines — `refreshed-at: <ISO 8601 UTC>` and `refreshed-plugin-version: <current plugin version>` — via the same atomic tmp-file + rename pattern used by the Retroactive Flow's lock write: write to a sibling tmp file, then rename over the target so the lock is never observed half-written. **Every other line of the lock — `bootstrapped-at`, `timestamp`, `plugin-version`, `tier`, `archetype`, `source`, … — is left byte-identical.** This is the provenance-honesty guarantee: a refresh is an acknowledgement, not a re-bootstrap. On failure (`result.ok === false`), surface `result.message` and stop — do not retry with a fabricated lock.
-
-4. **No auto-commit.** Unlike the Retroactive Flow, `--refresh-lock` does not stage or commit. The refreshed lock is a small, reviewable diff (two changed/added lines); the user commits it alongside their own work at their own cadence.
-
-5. **Report.** Print: `Lock refreshed (refreshed-at: <now>, plugin-version: <current>). Original bootstrap provenance unchanged.`
-
-**Idempotency.** Running `/bootstrap --refresh-lock` twice in a row replaces the same two lines in place — it never duplicates them.
+**Read WHEN:** `$ARGUMENTS` contains `--refresh-lock`.
 
 ---
 
@@ -477,103 +362,21 @@ if (!isDispatcherAutonomyBlockPresent(content)) {
 
 ## Phase 3.6: (Optional) Rules-Fetch Bridge
 
-> Closes session-orchestrator issue #110.
+Pulls canonical `.claude/rules/*.md` from the configured baseline GitLab project on the public path (or applies the private contract's local rule union), writes `.claude/.baseline-fetch.lock`, and falls back to the legacy Clank sync flow on any fetch failure.
 
-After scaffolding, the Standard and Deep templates execute S99. On the private
-path, it applies the selected contract's local rule union, rechecks conditional
-dependencies and preserves existing files. It excludes every plugin-owned
-basename and aborts on an invalid configured contract; see `private-contract.md`.
+See [references/bootstrap-rules-fetch-bridge.md](references/bootstrap-rules-fetch-bridge.md).
 
-On the public path, S99 retains the optional remote rules-fetch step. It pulls
-canonical `.claude/rules/*.md` directly from the configured baseline GitLab
-project, excluding all plugin-owned basenames. The remote step only fires when:
-
-- `baseline-ref` is present in Session Config
-- `GITLAB_TOKEN` env var is set
-- `scripts/lib/fetch-baseline.mjs` is present in the plugin
-- A GitLab host is resolvable from the `gitlab-host` Session Config key (or the `GITLAB_HOST` env var) — never a hardcoded default
-
-When triggered, the step:
-
-1. Loops over a default rule manifest, invoking `node scripts/lib/fetch-baseline.mjs <project_id> <file_path> <baseline-ref>` once per rule. The CLI prints one file body to stdout (exit 0 success; 1 auth, 2 not-found, 3 network) — bootstrap redirects stdout to the target path and skips failures so a single 404 cannot abort the batch.
-2. Fetches each rule listed in the default manifest from the configured `baseline-project-id` (default `52`) at the configured `baseline-ref`
-3. Writes `.claude/.baseline-fetch.lock` (via an inline `node --input-type=module -e`) recording what was fetched
-4. Populates `.claude/.baseline-cache/` for offline fallback on subsequent invocations
-
-When the fetch fails (network error, auth, missing file), bootstrap **does not abort**. Rules will arrive in the repo via Clank's weekly baseline sync MRs (the legacy path). A warning is printed.
-
-**Why opt-in:** Repos without `baseline-ref` continue to receive rules via the existing Clank sync flow. The fetch bridge is a faster on-demand alternative for newly-bootstrapped repos that want current rules immediately.
-
-**Local edits:** Re-running bootstrap with `baseline-ref` set will overwrite `.claude/rules/*.md` (rules are canonical). Repo-specific extensions belong in `.claude/rules/local/*.md` (not fetched, not overwritten).
-
-See `standard-template.md` (Step S99) and `deep-template.md` (Step D99) for the implementation, and `docs/session-config-reference.md` for the `baseline-ref` and `baseline-project-id` field definitions.
-
-### `.claude/.baseline-fetch.lock` Schema
-
-The lock file is committed to git and records what was fetched.
-
-```yaml
-# .claude/.baseline-fetch.lock
-version: 1
-project_id: 52
-baseline_ref: main
-fetched_at: 2026-04-17T13:42:00Z   # ISO 8601 UTC
-files:
-  - .claude/rules/development.md
-  - .claude/rules/security.md
-  - .claude/rules/...
-```
-
-| Field | Description |
-|---|---|
-| `version` | Lock file schema version. Currently `1`. |
-| `project_id` | GitLab project ID the files were fetched from. |
-| `baseline_ref` | The git ref (branch/tag/SHA) at fetch time. |
-| `fetched_at` | ISO 8601 UTC timestamp. |
-| `files` | List of fetched file paths (relative to repo root). |
+**Read WHEN:** Phase 3 (Dispatch to Template) reaches step S99/D99, or when investigating `.claude/.baseline-fetch.lock` contents.
 
 ---
 
 ## Ecosystem-Health Flow (`--ecosystem-health`)
 
-Entered when `$ARGUMENTS` contains `--ecosystem-health`. This is a **standalone flow** — it does not scaffold repo structure and does not write `bootstrap.lock`. Dispatch immediately; do not proceed to Phase 1.
+A **standalone flow** — does not scaffold repo structure or write `bootstrap.lock`. Walks the ecosystem-health wizard and writes `.orchestrator/policy/ecosystem.json`.
 
-**Purpose:** Populate the `health-endpoints`, `pipelines`, and `criticalIssueLabels` configuration consumed by `skills/ecosystem-health/SKILL.md`. Runs the interactive wizard in `scripts/lib/ecosystem-wizard.mjs`, which detects CI provider + package manager automatically and prompts the user for the remaining values.
+See [references/bootstrap-ecosystem-health-flow.md](references/bootstrap-ecosystem-health-flow.md).
 
-**Steps:**
-
-1. **Run the wizard.**
-
-   ```bash
-   node "$PLUGIN_ROOT/scripts/lib/ecosystem-wizard.mjs" --repo-root "$(pwd)"
-   ```
-
-   The wizard will:
-   - Detect CI provider (`.gitlab-ci.yml` → `gitlab`; `.github/workflows/` → `github`; else `none`)
-   - Detect package manager from lockfile
-   - Prompt for health endpoints (format: `Name|URL`, comma-separated)
-   - Prompt for CI pipeline identifiers (format: `id` or `id:label`, comma-separated)
-   - Prompt for critical issue labels (comma-separated strings)
-
-2. **Wizard writes two files** (or skips each if already present):
-   - `CLAUDE.md` (or `AGENTS.md`) — appends `ecosystem-health:` block inside `## Session Config`
-   - `.orchestrator/policy/ecosystem.json` — full policy file (schema: `.orchestrator/policy/ecosystem.schema.json`)
-
-3. **No auto-commit.** The wizard prints what it wrote. The user reviews with `git status && git diff` and commits manually.
-
-**Report:** The wizard prints a one-line summary per file:
-
-```
-Ecosystem-Health Wizard complete.
-Written: .orchestrator/policy/ecosystem.json, CLAUDE.md
-Skipped (already present): (none)
-
-Review changes with: git status && git diff
-```
-
-**Idempotency:** Safe to re-run. If both output files are already present with matching content, the wizard exits 0 with "Nothing to do." To update, remove the existing `ecosystem-health:` key from Session Config and delete `.orchestrator/policy/ecosystem.json`, then re-run.
-
-See `skills/ecosystem-health/wizard.md` for the full prompt spec and schema details.
+**Read WHEN:** `$ARGUMENTS` contains `--ecosystem-health`.
 
 ---
 

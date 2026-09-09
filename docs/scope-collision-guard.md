@@ -143,6 +143,12 @@ Why it exists: the in-ledger `scopeSignals` counter (§ 4.1, rows 5/6) is a **wa
 
 **Payload discipline.** Counts and closed enums only, plus `agent_id` (the coordinator's own dispatch description, clamped) and the optional session attribution: no prompt body, no declared path, no glob. Issue #1092's acceptance criterion 3 is the rule, and the reason is concrete — this record also travels over the optional Clank Event-Bus webhook with no redaction, and paths under `01-projects/` carry private project slugs.
 
+**The receive side now has a SOFT self-report signal (#1092).** Beside the fenced `FILE-SCOPE` block the coordinator injects one line naming the `scopeDigest` of that agent's own scope file (`scripts/lib/scope-echo.mjs --instruction`); post-wave, `checkScopeEcho` compares the digest the agent echoed in its report and emits one `orchestrator.wave_dispatch.scope_echo_checked` record per agent (`skills/wave-executor/references/wave-loop-review.md` step 3d-bis). It is informational — a missing or mismatched echo blocks nothing.
+
+**Its ceiling, named (BV-004).** The digest is *handed to the agent in the prompt*, so an agent that never read a single path can still copy the line. The signal therefore proves only that the injected line survived the round trip into the agent's context and back — strictly more than the zero receive-side signal that preceded it, and strictly less than obedience, which stays measured at write time (`enforce-scope.mjs`) and by the W5 pass. Revisit when the platform exposes a prompt-assembly boundary, at which point the digest can be computed against the assembled prompt rather than echoed by its reader.
+
+A cryptographic proof still needs that platform boundary: no mechanism inside this repo can distinguish a copied digest from a read one.
+
 **Revisit-Trigger** (verbatim from issue #1092, for the transport half this section deliberately does NOT close):
 
 > Implement when the platform exposes a stable prompt-assembly hook or when a coordinator-owned digest event can be proven against the real dispatched transcript.

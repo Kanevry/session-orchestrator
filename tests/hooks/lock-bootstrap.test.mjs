@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, mkdirSync
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 
-import { bootstrapLock } from '../../hooks/_lib/lock-bootstrap.mjs';
+import { bootstrapLock, SAME_LOGICAL_SESSION_SOURCES } from '../../hooks/_lib/lock-bootstrap.mjs';
 
 // ── sandbox helpers ──────────────────────────────────────────────────────────
 
@@ -860,5 +860,142 @@ describe('bootstrapLock — owner-proof persistence at genesis (#987 Part 1)', (
       .find((s) => s.includes('owner-proof write failed'));
     expect(warn).toBeDefined();
     expect(warn).toContain('⚠ lock-bootstrap: owner-proof write failed (fs-error) — /close degrades to proof-less release behaviour');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Same-logical-session force-refresh on a native re-entry (#1091 F2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('bootstrapLock — same-logical-session force-refresh (#1091 F2)', () => {
+  /**
+   * Acquire stub reporting a LIVE lock owned by a different RAW id but carrying
+   * the given semantic label — the shape a session's own predecessor leaves
+   * behind when the harness mints a fresh raw session_id on re-entry.
+   */
+  function makeActiveAcquire({ rawId, semanticId }) {
+    return vi.fn(() => ({
+      ok: false,
+      reason: 'active',
+      existingLock: {
+        session_id: rawId,
+        semantic_session_id: semanticId,
+        started_at: '2026-09-09T11:00:00.000Z',
+        last_heartbeat: '2026-09-09T11:00:00.000Z',
+        mode: 'deep',
+        pid: 88888,
+        host: 'test-host',
+        ttl_hours: 4,
+      },
+    }));
+  }
+
+  it('force-refreshes a live lock carrying OUR semantic label when the source is a re-entry', async () => {
+    // Catches: with `resume` in the SessionStart matcher (#1091), a re-entry
+    // that brings a new raw session_id sees `reason:'active'` on its OWN
+    // predecessor lock (fresh heartbeat ⇒ live by definition). shouldForce was
+    // false, so the hook bailed and the session ran for up to the 4 h TTL
+    // without owning its lock, while recordConflictSignal() logged its own
+    // former self as a foreign conflict.
+    const forceStub = makeAcquireStub();
+    const result = await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'new-raw-id',
+      semanticSessionId: 'main-2026-09-09-deep-1',
+      mode: 'deep',
+      nativeSource: 'resume',
+      // (c): the raw id our OWN previous hook run recorded in
+      // current-session.json IS the raw id the live lock carries.
+      predecessorSessionId: 'previous-raw-id',
+      _acquireImpl: makeActiveAcquire({
+        rawId: 'previous-raw-id',
+        semanticId: 'main-2026-09-09-deep-1',
+      }),
+      _forceAcquireImpl: forceStub,
+      _emitEventImpl: noopEmit,
+    });
+
+    expect(forceStub).toHaveBeenCalledTimes(1);
+    expect(result).not.toBeNull();
+    expect(result.session_id).toBe('new-raw-id');
+    // The bail path must not have run: no foreign-conflict breadcrumb.
+    expect(readCurrentSession()).toBeNull();
+  });
+
+  // THREE independent conjuncts gate shouldForce: (a) native-source re-entry,
+  // (b) semantic-label match, (c) the live lock's raw id equals the raw id our
+  // OWN previous hook run recorded. Each row below defeats exactly one of them
+  // while satisfying the other two, so each row is its own falsifier.
+  it.each([
+    {
+      name: 'a live lock whose semantic label differs — that is a real peer',
+      nativeSource: 'resume',
+      existingRawId: 'peer-raw-id',
+      existingSemanticId: 'main-2026-09-09-feature-9',
+      ourSemanticId: 'main-2026-09-09-deep-2',
+      predecessorSessionId: 'peer-raw-id',
+    },
+    {
+      // `startup` is not a re-entry: a new process inheriting a matching label
+      // (e.g. after the n-counter memories were lost) must defer to the lock
+      // holder rather than take the worktree.
+      name: 'a fresh startup, even when the labels match',
+      nativeSource: 'startup',
+      existingRawId: 'other-raw-id',
+      existingSemanticId: 'main-2026-09-09-deep-1',
+      ourSemanticId: 'main-2026-09-09-deep-1',
+      predecessorSessionId: 'other-raw-id',
+    },
+    {
+      // #1066: two sessions on ONE host measurably minted the SAME semantic
+      // label (the host-wide registry contributed nothing to the n-increment).
+      // With only (a)+(b), a `/clear` in session B took over session A's LIVE
+      // lock. The live lock's raw id is not our predecessor's, so it is a peer.
+      name: 'a #1066 label collision — the live lock is not our predecessor',
+      nativeSource: 'clear',
+      existingRawId: 'peer-that-minted-the-same-label',
+      existingSemanticId: 'main-2026-09-09-deep-1',
+      ourSemanticId: 'main-2026-09-09-deep-1',
+      predecessorSessionId: 'our-actual-predecessor-raw-id',
+    },
+    {
+      // No predecessor witness at all (current-session.json absent/unparseable,
+      // or a first run): fail-closed — an unwitnessed label match is exactly the
+      // #1066 shape.
+      name: 'a label match with NO recorded predecessor',
+      nativeSource: 'resume',
+      existingRawId: 'some-raw-id',
+      existingSemanticId: 'main-2026-09-09-deep-1',
+      ourSemanticId: 'main-2026-09-09-deep-1',
+      predecessorSessionId: null,
+    },
+  ])(
+    'never force-refreshes $name',
+    async ({ nativeSource, existingRawId, existingSemanticId, ourSemanticId, predecessorSessionId }) => {
+      const forceStub = makeAcquireStub();
+      const result = await bootstrapLock({
+        repoRoot: sandbox,
+        sessionId: 'new-raw-id',
+        semanticSessionId: ourSemanticId,
+        mode: 'deep',
+        nativeSource,
+        predecessorSessionId,
+        _acquireImpl: makeActiveAcquire({ rawId: existingRawId, semanticId: existingSemanticId }),
+        _forceAcquireImpl: forceStub,
+        _emitEventImpl: noopEmit,
+      });
+
+      expect(forceStub).not.toHaveBeenCalled();
+      expect(result).toBeNull();
+      expect(readCurrentSession()?.conflict_with_session_id).toBe(existingRawId);
+    },
+  );
+
+  it('pins SAME_LOGICAL_SESSION_SOURCES membership exactly — a widening must be deliberate', () => {
+    // Catches: adding a fifth source (`fork`, …) silently widens the
+    // force-refresh gate AND the hook's high-water-mark preservation branch,
+    // which share this Set as their SSOT. `startup` must stay OUT.
+    expect([...SAME_LOGICAL_SESSION_SOURCES].sort()).toEqual(['clear', 'compact', 'resume']);
+    expect(SAME_LOGICAL_SESSION_SOURCES.has('startup')).toBe(false);
   });
 });

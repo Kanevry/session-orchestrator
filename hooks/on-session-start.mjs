@@ -54,6 +54,11 @@ import { detectColdStart, consumeMarker } from '../scripts/lib/cold-start-detect
 import { parseSessionId } from '../scripts/lib/session-id.mjs';
 import { readTelemetryState, resolveConsent, isCiEnv } from '../scripts/lib/telemetry/consent.mjs';
 import { loadOwnerConfig } from '../scripts/lib/owner-yaml.mjs';
+// SSOT for the "is this a re-entry into the same logical session?" question
+// (#1091). Defined in the lock-bootstrap leaf module, which this hook already
+// loads, so the preservation branch below and the lock force-refresh gate can
+// never drift apart.
+import { SAME_LOGICAL_SESSION_SOURCES } from './_lib/lock-bootstrap.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -336,6 +341,9 @@ async function readStdinJson(timeoutMs = 500) {
  * Best-effort: any persistence failure is swallowed (hook must remain non-blocking).
  */
 async function resolveSessionId(input, projectRoot) {
+  const nativeSource = typeof input?.source === 'string' && input.source.length > 0
+    ? input.source
+    : null;
   const fromStdin = (input && (input.session_id || input.sessionId)) ?? null;
   const parsedStdinId = parseSessionId(fromStdin);
   const rawStdinSessionId = parsedStdinId?.format === 'uuid' ? fromStdin : null;
@@ -364,61 +372,136 @@ async function resolveSessionId(input, projectRoot) {
     source = 'generated-uuid';
   }
 
+  const sessionFilePath = path.join(projectRoot, '.orchestrator', 'current-session.json');
+
+  // Read the PREVIOUS current-session.json BEFORE minting a semantic id: on a
+  // same-logical-session re-entry it decides whether a new id is minted at all
+  // (#1091 F1 below). Best-effort — absent/unparseable leaves prev = null.
+  let prev = null;
+  try {
+    prev = JSON.parse(await readFile(sessionFilePath, 'utf8'));
+    if (typeof prev !== 'object' || prev === null) prev = null;
+  } catch { /* absent / unparseable → no linkage, no preservation */ }
+
+  // #1091 F1 — raw-id linkage on a same-logical-session re-entry.
+  //
+  // resolveSemanticSessionId() has NO self-exclusion: it projects every active
+  // session (including OUR OWN lock and registry entry) to n and returns
+  // maxN + 1. So a second SessionStart of the SAME session mints
+  // `…-session-31` where the first minted `…-session-30`, the
+  // `prev.semantic_session_id === semanticSessionId` preservation branch below
+  // is FALSE, and last_wave / last_batch / last_wave_completed /
+  // wave_start_sha are dropped — re-opening #612, #980 and #1193. Before
+  // #1091 that path was unreachable on Claude Code because `resume` was absent
+  // from the SessionStart matcher; adding it made it live.
+  //
+  // The trustworthy linkage is the RAW id: Claude Code preserves `session_id`
+  // across a native resume, and current-session.json records the raw id the
+  // previous invocation of this hook resolved. When it matches, this is
+  // provably the same logical session and its semantic label is REUSED rather
+  // than re-minted. When it does NOT match, today's behaviour stands (fresh
+  // id, no preservation) — that is the "unverified restart" #1091 defines, and
+  // guessing continuity there would adopt a foreign session's high-water marks
+  // (`.claude/rules/identity-and-locks.md` — a working-copy artefact is not an
+  // identity witness).
+  //
+  // Sources: `clear` and `compact` are re-entries into the same logical
+  // session for exactly the reason the comment block below states (the UUID
+  // changes, the semantic label does not); `resume` is the third per #1091.
+  // `startup` is deliberately absent — a fresh process start must never
+  // inherit a predecessor's markers.
+  let resumeLinkage = 'none';
+  if (
+    nativeSource !== null
+    && SAME_LOGICAL_SESSION_SOURCES.has(nativeSource)
+    && prev
+    && prev.session_id === sessionId
+    && typeof prev.semantic_session_id === 'string'
+    && prev.semantic_session_id.length > 0
+  ) {
+    semanticSessionId = prev.semantic_session_id;
+    resumeLinkage = 'raw-id';
+  }
+
   // Derive a descriptive semantic label for either raw-id source. Best-effort:
   // a failure leaves it null without changing the physical raw session_id.
-  try {
-    const semCandidate = await deriveSemanticCandidate({
-      projectRoot,
-      mode: normalizedMode,
-    });
-    if (semCandidate) semanticSessionId = semCandidate;
-  } catch { /* best effort — leave semanticSessionId = null */ }
+  if (semanticSessionId === null) {
+    try {
+      const semCandidate = await deriveSemanticCandidate({
+        projectRoot,
+        mode: normalizedMode,
+      });
+      if (semCandidate) semanticSessionId = semCandidate;
+    } catch { /* best effort — leave semanticSessionId = null */ }
+  }
 
   try {
-    const dir = path.join(projectRoot, '.orchestrator');
-    await mkdir(dir, { recursive: true });
-    const sessionFilePath = path.join(dir, 'current-session.json');
+    await mkdir(path.dirname(sessionFilePath), { recursive: true });
 
     // High-water-mark preservation (#612 root-cause fix).
-    // SessionStart fires on startup|clear|compact|resume of the SAME logical
-    // session. On clear/compact/resume the UUID `session_id` changes but the
-    // `semantic_session_id` (branch+date+mode+n) stays stable. A naive full
-    // overwrite of current-session.json drops the `last_wave` / `last_batch`
-    // markers written mid-session by post-tool-batch-wave-signal.mjs, which
-    // makes the next PostToolBatch re-read last_wave as absent→0 and re-emit a
-    // duplicate orchestrator.wave.started{N} with no intervening
-    // wave.completed. To prevent that, PRESERVE last_wave/last_batch across a
-    // SessionStart of the SAME logical session (matching semantic id), while
-    // still RESETTING them for a genuinely new session (different/absent
-    // semantic id, or an unparseable prior file). Best-effort: a read failure
-    // must never throw — we simply fall through to the reset path.
+    // SessionStart fires once per source in the matcher of the platform's
+    // hooks file — `startup|resume|clear|compact` on Claude Code and Codex
+    // (`resume` was ABSENT from hooks.json until #1091, so on Claude Code this
+    // hook never ran on a native resume), `startup|reload|new|resume|fork` on
+    // pi, and every source on Cursor (empty matcher). Several of those sources
+    // are re-entries into the SAME logical session. On clear/compact the UUID
+    // `session_id` changes while the `semantic_session_id`
+    // (branch+date+mode+n) stays stable; whether Claude Code PRESERVES the raw
+    // `session_id` across a native resume is what #1091 measures via
+    // `native_source` + `resume_linkage` on `orchestrator.session.started` —
+    // nothing here ASSUMES either answer, it only reacts to the raw id it can
+    // observe. A naive full overwrite of current-session.json drops the
+    // `last_wave` / `last_batch` markers written mid-session by
+    // post-tool-batch-wave-signal.mjs, which makes the next PostToolBatch
+    // re-read last_wave as absent→0 and re-emit a duplicate
+    // orchestrator.wave.started{N} with no intervening wave.completed.
+    //
+    // Three cases, exactly one of which preserves nothing:
+    //   'raw-id'   — same-logical-session source AND the recorded raw
+    //                session_id equals ours → the semantic label was reused
+    //                above, markers PRESERVED. (#1091 F1)
+    //   'semantic' — the freshly minted label equals the recorded one →
+    //                markers PRESERVED. The pre-#1091 behaviour, unchanged.
+    //   'none'     — a genuinely new session, or an unverified restart
+    //                (raw id changed, label re-minted) → markers RESET.
+    // Best-effort throughout: `prev` is null on a read/parse failure, which
+    // lands in 'none' and therefore on the reset path.
     const preserved = {};
     if (typeof semanticSessionId === 'string' && semanticSessionId.length > 0) {
-      try {
-        const prevRaw = await readFile(sessionFilePath, 'utf8');
-        const prev = JSON.parse(prevRaw);
-        if (prev && prev.semantic_session_id === semanticSessionId) {
-          if (Object.prototype.hasOwnProperty.call(prev, 'last_wave')) {
-            preserved.last_wave = prev.last_wave;
-          }
-          if (Object.prototype.hasOwnProperty.call(prev, 'last_batch')) {
-            preserved.last_batch = prev.last_batch;
-          }
-          // #1193 — the final-wave completion marker must survive a
-          // clear/compact too: dropping it re-arms a duplicate SessionEnd
-          // `orchestrator.wave.completed` for a wave already closed.
-          if (Object.prototype.hasOwnProperty.call(prev, 'last_wave_completed')) {
-            preserved.last_wave_completed = prev.last_wave_completed;
-          }
-          // #980 — the OPEN half of the wave-diff pair, written by
-          // post-tool-batch-wave-signal.mjs. Dropping it across a /clear leaves
-          // the running wave with no start point, so the next
-          // `orchestrator.wave.completed` silently omits `files_changed`.
-          if (Object.prototype.hasOwnProperty.call(prev, 'wave_start_sha')) {
-            preserved.wave_start_sha = prev.wave_start_sha;
-          }
+      // Two ways into the SAME logical session, both preserving:
+      //   1. `resumeLinkage === 'raw-id'` — the raw session_id matched on a
+      //      resume/clear/compact re-entry, so the label above was REUSED
+      //      (#1091 F1). Reachable since `resume` entered the matcher.
+      //   2. semantic match — the freshly minted label equals the recorded
+      //      one. This is the case the branch already covered (a clear or
+      //      compact whose discovery view happened to re-mint the same n),
+      //      and it stays untouched.
+      // Anything else (different or absent semantic id, unparseable prior
+      // file, `startup`) is a genuinely new session and RESETS the markers.
+      if (resumeLinkage === 'none' && prev && prev.semantic_session_id === semanticSessionId) {
+        resumeLinkage = 'semantic';
+      }
+      if (prev && (resumeLinkage === 'raw-id' || prev.semantic_session_id === semanticSessionId)) {
+        if (Object.prototype.hasOwnProperty.call(prev, 'last_wave')) {
+          preserved.last_wave = prev.last_wave;
         }
-      } catch { /* absent / unparseable → no preservation (reset) */ }
+        if (Object.prototype.hasOwnProperty.call(prev, 'last_batch')) {
+          preserved.last_batch = prev.last_batch;
+        }
+        // #1193 — the final-wave completion marker must survive a
+        // clear/compact too: dropping it re-arms a duplicate SessionEnd
+        // `orchestrator.wave.completed` for a wave already closed.
+        if (Object.prototype.hasOwnProperty.call(prev, 'last_wave_completed')) {
+          preserved.last_wave_completed = prev.last_wave_completed;
+        }
+        // #980 — the OPEN half of the wave-diff pair, written by
+        // post-tool-batch-wave-signal.mjs. Dropping it across a /clear leaves
+        // the running wave with no start point, so the next
+        // `orchestrator.wave.completed` silently omits `files_changed`.
+        if (Object.prototype.hasOwnProperty.call(prev, 'wave_start_sha')) {
+          preserved.wave_start_sha = prev.wave_start_sha;
+        }
+      }
     }
 
     // Epic #583 W5-F1c — surface semantic_session_id (Q5 H1 / Issue #587 completion).
@@ -441,7 +524,19 @@ async function resolveSessionId(input, projectRoot) {
     );
   } catch { /* best effort */ }
 
-  return { sessionId, semanticSessionId, mode: normalizedMode };
+  return {
+    sessionId,
+    semanticSessionId,
+    mode: normalizedMode,
+    nativeSource,
+    resumeLinkage,
+    // The raw session_id our OWN previous run of this hook recorded, or null.
+    // Surfaced (rather than kept local) because bootstrapLock() needs it as the
+    // third conjunct of the #1091 F2 force-refresh — see the call site in main().
+    predecessorSessionId: typeof prev?.session_id === 'string' && prev.session_id.length > 0
+      ? prev.session_id
+      : null,
+  };
 }
 
 /**
@@ -711,7 +806,12 @@ async function main() {
   // v3.1.0 multi-session registry (#168). All steps best-effort — failures
   // must never break the hook, which is informational-only.
   const input = await stdinPromise;
-  const { sessionId, semanticSessionId, mode } = await resolveSessionId(input, projectRoot);
+  // #1091 — the native SessionStart `source` (Claude Code: startup|resume|
+  // clear|compact), plus the linkage decision resolveSessionId() derived from
+  // it (see SAME_LOGICAL_SESSION_SOURCES). Both are surfaced on the event so
+  // #1091 gets its measurement instead of an inference.
+  const { sessionId, semanticSessionId, mode, nativeSource, resumeLinkage, predecessorSessionId } =
+    await resolveSessionId(input, projectRoot);
   // getPlatform() ALREADY implements the SO_PLATFORM override as step 1 of its
   // precedence — and, unlike a bare `??`, it validates the value against the
   // four-platform allowlist and trims it. The former `process.env.SO_PLATFORM ??
@@ -737,6 +837,13 @@ async function main() {
       semanticSessionId,
       mode,
       ttlHours: 4,
+      nativeSource,
+      // The raw session_id our OWN previous run of this hook recorded. It is the
+      // third conjunct of the same-logical-session force-refresh (#1091 F2): a
+      // semantic-label match alone is collidable on one host (#1066), so the
+      // live lock must ALSO carry our predecessor's raw id before we take it
+      // over. `prev` is read above, before the semantic id is minted.
+      predecessorSessionId,
     });
   } catch { /* hook must remain non-blocking */ }
 
@@ -1007,6 +1114,21 @@ async function main() {
     // makes the supersession rate measurable instead of inferred (HR-105).
     peers_superseded: mechanicalPeersSuperseded,
   };
+
+  // #1091 — record the native SessionStart source so "does the same raw
+  // session_id repeat under source=resume?" becomes answerable from
+  // events.jsonl instead of guessed. OMITTED when the harness sends no source
+  // (docs/events-schema.md optional-field convention: absent ≠ measured-empty).
+  if (nativeSource) payload.native_source = nativeSource;
+
+  // #1091 F1 — WHICH linkage the source produced: 'raw-id' (prior raw
+  // session_id matched → semantic label reused, high-water marks preserved),
+  // 'semantic' (the freshly minted label happened to equal the recorded one),
+  // or 'none' (a new session, or an unverified restart whose continuity is
+  // deliberately not guessed). Same optional-field convention as
+  // `native_source`: OMITTED when the harness sends no source at all, so a
+  // Codex/Cursor row is never read as a measured 'none'.
+  if (nativeSource) payload.resume_linkage = resumeLinkage;
 
   // #nnn — installed/latest plugin version on the session record.
   //

@@ -553,6 +553,14 @@ Marker line plus fenced block, in that order: `hooks/pre-task-scope-disjoint.mjs
 
 > **Registration note.** That hook was armed in `hooks/hooks.json` on 2026-08-14, after a green Full Gate. Its `PreToolUse` matcher is **`Agent`** — measured over 12 archived transcripts of this repo, `Agent` accounts for 147 of 147 dispatch `tool_use` blocks. A `Task` matcher would hit the unrelated todo family (`TaskCreate`/`TaskUpdate`/`TaskGet`/…) and never once fire on a dispatch: armed and inert, the failure mode that reads as done. It is deliberately absent from `hooks-codex.json` / `hooks-cursor.json` / `hooks-pi.json` — those platforms have no `Agent` dispatch tool, so the asymmetry is registered in `DOCUMENTED_ASYMMETRIES` rather than papered over with a matcher that can never fire.
 
+**Scope-echo line (#1092).** Immediately AFTER the fenced `FILE-SCOPE` block, append one more line — the receive-side counterpart of the hook's send-side `scope_checked` record. Get it from the CLI, never hand-typed:
+
+```bash
+node scripts/lib/scope-echo.mjs --scope-file "$AGENT_FILESCOPE_JSON" --instruction
+```
+
+It prints exactly one line (`renderScopeEchoInstruction` in `scripts/lib/scope-echo.mjs`), naming the `scopeDigest` of that agent's own scope file: `End your final report with the line: SCOPE-DIGEST: <8-hex>`. Append it verbatim. It prints NOTHING when the scope file is empty, missing or unreadable — Discovery waves therefore inject nothing here, exactly as they inject no `FILE-SCOPE` block. The post-wave comparison is `wave-loop-review.md` step 3d-bis; what the echo does and does not prove is stated there.
+
 #### Structured Reasoning (STATE:/PLAN:) — opt-in via `reasoning-output: true` (#79)
 
 When `$CONFIG.reasoning-output` is `true`, append the following block to every agent prompt. The pattern is adapted from the BitGN PAC Agent's Soft-SGR: short structured transparency lines before tool invocations, without forcing structured output. Leave the block OUT when the flag is `false` (default) — this preserves exact legacy prompt behavior.

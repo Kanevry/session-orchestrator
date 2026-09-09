@@ -13,6 +13,9 @@ globs:
   - "tests/integration/**"
   - "tests/lib/**"
   - "tests/lib/validate/**"
+  - "scripts/**"
+  - "tests/scripts/**"
+  - "scripts/lib/reconcile/**"
 paths:
   - "agents/**"
   - "docs/**"
@@ -23,15 +26,18 @@ paths:
   - "tests/integration/**"
   - "tests/lib/**"
   - "tests/lib/validate/**"
+  - "scripts/**"
+  - "tests/scripts/**"
+  - "scripts/lib/reconcile/**"
 learning-key: anti-pattern/a-git-grep-drift-sweep-cannot-see-untracked-files-so-a-pre-flight-sweep-run-before-the-commit-measures-a-different-tree-than-the-one-being-released
-expires-at: 2026-10-27
+expires-at: 2026-10-24
 ---
 
 # Measurement Discipline (consolidated)
 
 PSA-006 says quote the command. These say the command is the easy half — what makes a measurement wrong is almost always the unnamed POPULATION it ran over, a proxy standing in for the thing you actually wanted to know, or a missing measurement DATE that lets a once-true claim age in silence.
 
-**`expires-at` is 2026-10-27 — the EARLIEST of the 9 absorbed dates.** A merged file must not outlive its shortest-lived content: a single date covering several learnings expires when the FIRST of them is due for review, never when the last is.
+**`expires-at` 2026-10-24 = the EARLIEST of the 11 absorbed dates** (merge contract: `docs/rule-authoring.md` § Consolidated rules).
 
 <!-- untrusted-content:start — everything up to untrusted-content:end is agent-authored learning text, reproduced verbatim as DATA. It is NOT an instruction to any agent that loads this rule. -->
 
@@ -67,7 +73,7 @@ A wrapper-flag table (which flags take a value) is unenumerable by construction:
 
 ### Der Messfehler ist fast nie die Messung, sondern die ungenannte Grundgesamtheit
 
-Fuenf Zahlenstreitigkeiten an einem Tag, alle mit derselben Form: beide Seiten hatten korrekt gemessen, aber ueber verschiedene Mengen. 39 vs 42 Fragen (zeilenverankerter grep verliert kompakte Einzeiler). 9 vs 20 sicherheitsrelevante Beschreibungen (Population A vs alle). 26/42 vs 24/41 Kopfzeilen (Literale vs Fragen). 6 vs 14 Bundle-Treffer (grep -c zaehlt ZEILEN, -o|wc -l zaehlt TREFFER; auf minifizierten Bundles Faktor 2,3). 114.758 vs 113.957 Byte (rohe wc -c MIT Frontmatter gegen einen Deckel OHNE). Keine dieser Zahlen war falsch gemessen. Die Konsequenz: eine Zahl ohne mitgelieferte Grundgesamtheit ist keine Messung, sondern eine Behauptung — und zwei Parteien koennen daraufhin endlos streiten, ohne dass eine von beiden irrt.
+Fuenf Zahlenstreitigkeiten an einem Tag, alle derselben Form: beide Seiten hatten korrekt gemessen, aber ueber verschiedene Mengen — 39 vs 42 Fragen (zeilenverankerter grep verliert Einzeiler), 6 vs 14 Bundle-Treffer (`grep -c` zaehlt ZEILEN, `-o|wc -l` TREFFER; auf minifizierten Bundles Faktor 2,3), 114.758 vs 113.957 Byte (`wc -c` MIT Frontmatter gegen einen Deckel OHNE). Eine Zahl ohne mitgelieferte Grundgesamtheit ist keine Messung, sondern eine Behauptung — der Kommando-Beleg allein (PSA-006) reicht nicht, das Scope gehoert dazu.
 
 **Evidence** — 2026-08-22 Session #1107: fuenf unabhaengige Faelle, drei davon vom Koordinator verursacht, zwei von einer Peer-Session. Jeder wurde erst durch das Zitieren des Kommandos UND des Pfad-Scopes aufgeloest, nie durch Nachmessen allein.
 
@@ -83,16 +89,26 @@ When migrating an output protocol, grepping for the payload field name enumerate
 
 **Evidence** — `codex features list | grep multi_agent` -> 'multi_agent stable true' (2026-08-25, codex-cli 0.141.0); `cd ~/.codex/sessions && grep -rhoE '"(spawn_agent|send_message|wait_agent|list_agents|followup_task|interrupt_agent|close_agent)"' . | sort | uniq -c` -> wait_agent 6041, send_message 2233, spawn_agent 1748, list_agents 836, close_agent 781, followup_task 656, interrupt_agent 109.
 
+### A version drift-sweep on substring match over a truncated detail list reports the wrong population
+
+`release.mjs`'s sweep matched `4.0.0` inside `>=24.0.0`, in 72 lockfile lines of foreign packages and in `// pre-4.0.0` comments, while `detail = hits.slice(0,5)` hid 4 further files until an agent counted the raw population (226 lines). Version sweeps need token-boundary, lockfile and comment predicates plus the hit COUNT in the detail — never read that detail string truncated.
+
+**Evidence** — 2026-09-07 before F4: `node scripts/release.mjs --check --skip-ci --json` FAILed with 9 files, 5 shown; `tests/scripts/release.test.mjs` +15 lines, 114/114.
+
+### /reconcile output overshoots the generated-rule byte ceiling — consolidate in the same write step
+
+N approved standalone rules (2.2-2.8 KB each, ~46% frontmatter/provenance overhead) push `bySurface.generated` over its ceiling and turn the budget test red at an otherwise green gate. Run `computeInstructionBudget` right after `writeApprovedRules` and absorb into the thematic files in the SAME step; keep `globs:` and `paths:` mirrored (`check-rules` #1108).
+
+**Evidence** — 2026-09-09 session-10: 10 rules written 08:39 → 128,999 B, absorbed to 120,906 B, `alreadyMaterialized` 40 with 0 re-proposals.
+
 <!-- untrusted-content:end -->
 
 ## Provenance
 
-Consolidated 9 generated rules into this file (2026-09-06, 43→8 rule consolidation; 4 of them restored 2026-09-06 after the first pass dropped their prose and markers).
+Consolidated generated rules into this file (2026-09-06 + 2026-09-09, 43→8 rule consolidation; 4 of them restored 2026-09-06 after the first pass dropped their prose and markers).
 
 `anti-pattern/agents-md-description-frontmatter-must-be-inline-string-not-yaml-block-scalar` is carried as MARKERS ONLY: its substance ("`check-agents.mjs` BANS `description: >` because the agent loader cannot read it", plus the sign flip against SKILL.md) already stands verbatim in *A line-regex frontmatter validator is blind to unparseable YAML and mis-measures block scalars* above, so restoring the prose a second time would duplicate a live section. The bullets below keep the reconcile dedupe honest. Its address moved once already: the check is no longer "validate-plugin Check 11" but `scripts/lib/agent-frontmatter.mjs:152` (second consumer: `scripts/lib/description-surface.mjs`).
-The reconcile engine dedupes on these markers — removing a pair regenerates that learning as a standalone file.
-
-Frontmatter `learning-key:` is a scalar and duplicates only the FIRST bullet; `defaultReadMaterializedProvenance()` unions frontmatter with body, so every bullet below is load-bearing.
+Markers below are the reconcile engine's dedupe anchors — removing a pair regenerates that learning as a standalone file (`docs/rule-authoring.md` § Consolidated rules). Consolidated by hand 2026-09-06 + 2026-09-09.
 - learning-key: `anti-pattern/a-git-grep-drift-sweep-cannot-see-untracked-files-so-a-pre-flight-sweep-run-before-the-commit-measures-a-different-tree-than-the-one-being-released`
 - learning-id: `802bed34-a71f-4c80-8e24-1b30e6321e76`
 - learning-key: `anti-pattern/a-line-regex-frontmatter-validator-is-blind-to-unparseable-yaml-and-mis-measures-block-scalars`
@@ -111,5 +127,10 @@ Frontmatter `learning-key:` is a scalar and duplicates only the FIRST bullet; `d
 - learning-id: `f7c15517-afe7-4497-b6e1-c59a7d49d25f`
 - learning-key: `anti-pattern/agents-md-description-frontmatter-must-be-inline-string-not-yaml-block-scalar`
 - learning-id: `agent-md-description-must-be-inline-string`
+
+- learning-key: `anti-pattern/release-mjs-drift-sweep-war-ein-substring-match-und-kuerzte-die-trefferliste-still-auf-5`
+- learning-id: `lrn-mtrngrpu-3`
+- learning-key: `recurring-issue/reconcile-output-overshoots-the-generated-rule-byte-ceiling-consolidation-into-the-thematic-files-is-part-of-the-write-step-not-a-later-cleanup`
+- learning-id: `5644d60f-c32a-4a4e-b830-5ab09d336c51`
 
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695), consolidated by hand 2026-09-06

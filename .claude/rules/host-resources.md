@@ -111,10 +111,10 @@ where no threshold could read it.
 ```bash
 for d in ~/Projects/*/; do f="$d/.orchestrator/metrics/events.jsonl"; [ -f "$f" ] && \
   jq -c 'select(.event=="orchestrator.session.started")' "$f"; done | \
-  jq -s 'length as $n | {n: $n,
-    pressure_soft: ([.[]|select(.memory_pressure_pct_free != null and .memory_pressure_pct_free < 30)]|length),
-    peers_over:    ([.[]|select((.peer_sessions_count // 0) >= 5)]|length),
-    cpu_over:      ([.[]|select(.cpu_load_pct > 90)]|length)}'
+  jq -s '{n: INDEX(.session_id)|length,
+    pressure_soft: [.[]|select(.memory_pressure_pct_free != null and .memory_pressure_pct_free < 30)]|length,
+    peers_over: [.[]|select((.peer_sessions_count // 0) >= 5)]|length,
+    cpu_over: [.[]|select(.cpu_load_pct > 90)]|length}'
 ```
 
 A class above ~10% goes back to HR-101. A class at 0% across a few hundred

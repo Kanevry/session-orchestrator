@@ -258,8 +258,10 @@ if (isMain) {
     const inFlight = inFlightFilesFromLogFile(logPath);
     if (inFlight.length > 0) {
       console.error(
-        `[ci] hint: ${inFlight.length} test file(s) in-flight when killed ` +
-          `(likely hang/slowdown): ${inFlight.join(', ')}`,
+        `[ci] KILL ARTEFACT — the shard timed out or was killed before vitest wrote its ` +
+          `result file (NOT a test failure). ${inFlight.length} file(s) were merely in-flight ` +
+          `at the kill: ${inFlight.join(', ')}. Re-run the shard; if it repeats, check runner ` +
+          `load/sharding before suspecting these files.`,
       );
     }
   }

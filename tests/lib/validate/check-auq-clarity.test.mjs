@@ -46,7 +46,7 @@ const SCRIPT = join(REPO_ROOT, 'scripts', 'lib', 'validate', 'check-auq-clarity.
 const CLEAN_TEMPLATE = 'skills/bootstrap/SKILL.md';
 
 /** A real template whose option list ends in an ellipsis -> `optionCountUnknown`. */
-const ELLIPSIS_TEMPLATE = 'skills/evolve/SKILL.md';
+const ELLIPSIS_TEMPLATE = 'skills/evolve/references/evolve-analyze-mode.md';
 
 /** A real Cursor rule carrying a prose-fallback question (population C-mdc). */
 const MDC_TEMPLATE = '.cursor/rules/000-session-orchestrator.mdc';

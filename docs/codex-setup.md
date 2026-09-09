@@ -88,6 +88,14 @@ Every installer run executes `codex plugin marketplace add` and `codex plugin ad
 
 After either refresh path, confirm the installed version with `codex plugin list --available --json` and start a fresh task. Reopen the skill picker and search for `go` or `close`; if the updated entries are still missing, fully restart Codex. Editing the source clone or regenerating skills alone does not refresh the installed bundle.
 
+### Command entry points missing after an update (GH#68)
+
+**Symptom:** the skill picker shows `session-start` but not `session`, `go`, or `close`.
+
+**Cause:** Codex caches a plugin snapshot at install time; in our 0.153.x probes, running `codex plugin update` alone did not refresh `.codex-plugin/skills/`.
+
+**Fix:** remove the plugin, then re-add it (the refresh steps above); verify with `codex plugin list --json` that the installed version is ≥ 4.0.1 and carries 51 skill entries. 4.0.1+ ships the generated entrypoints (`scripts/generate-codex-skills.mjs`).
+
 The tracked Codex manifest uses a version such as `3.14.0+codex.20260717175716`. The base must match `package.json`; the `+codex.<YYYYMMDDHHmmss>` UTC suffix is the repository's explicit invalidation marker. When a shipped bundle needs a new cache identity, maintainers commit a new timestamp in `.codex-plugin/plugin.json`. The installer validates that committed value and never mutates the tracked manifest.
 
 ## Configuration

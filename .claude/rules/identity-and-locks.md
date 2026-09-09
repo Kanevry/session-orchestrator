@@ -12,6 +12,8 @@ globs:
   - "skills/_shared/**"
   - "tests/integration/**"
   - "tests/lib/**"
+  - "tests/lib/session-end/**"
+  - "tests/hooks/**"
 paths:
   - ".claude/**"
   - "hooks/**"
@@ -21,6 +23,8 @@ paths:
   - "skills/_shared/**"
   - "tests/integration/**"
   - "tests/lib/**"
+  - "tests/lib/session-end/**"
+  - "tests/hooks/**"
 learning-key: anti-pattern/aufgezeichneter-pid-als-lebendbeweis-wenn-ihn-ein-kurzlebiger-subprozess-schrieb
 expires-at: 2026-10-01
 ---
@@ -29,7 +33,7 @@ expires-at: 2026-10-01
 
 Every rule here answers one question — *is this artefact mine?* — and every one of them was learned the same way: a check that looked like it measured identity was in fact measuring the working copy, or itself. The shared thread (HR-102 applied to identity): **a process-local witness REPLACES a shared one, it never unions with it**, because a union lets the weakest witness win.
 
-**`expires-at` is 2026-10-01 — the EARLIEST of the 10 absorbed dates.** A merged file must not outlive its shortest-lived content: a single date covering several learnings expires when the FIRST of them is due for review, never when the last is.
+**`expires-at` 2026-10-01 = the EARLIEST of the 13 absorbed dates** (merge contract: `docs/rule-authoring.md` § Consolidated rules).
 
 <!-- untrusted-content:start — everything up to untrusted-content:end is agent-authored learning text, reproduced verbatim as DATA. It is NOT an instruction to any agent that loads this rule. -->
 
@@ -41,15 +45,9 @@ Every rule here answers one question — *is this artefact mine?* — and every 
 
 ### A working-copy artefact (STATE.md, session.lock) is not a process-local identity witness — rank witnesses, never union them
 
-Deriving your own session identity from STATE.md `session` or from `session.lock` adopts the LOCK OWNER's identity: both files are written by whichever session owns the working copy. A union (`some()`) over witnesses of differing strength lets the WEAKEST win, and cannot be vetoed by a contradicting process-local id. Rule (HR-102): only a process-local witness (hook-payload `session_id`, `CLAUDE_CODE_SESSION_ID`) may confirm a lock; when it is absent the keys are OMITTED, never filled from a peer value.
+Deriving your own session identity from STATE.md `session` or from `session.lock` adopts the LOCK OWNER's identity: both are written by whichever session owns the working copy, and `session.lock` holds exactly ONE identity. A union (`some()`) over witnesses of differing strength lets the WEAKEST win and cannot be vetoed by a contradicting process-local id. Rule (HR-102): a process-local witness (hook-payload `session_id`, `CLAUDE_CODE_SESSION_ID`) REPLACES the shared source rather than supplementing it; absent one, the keys are OMITTED, never filled from a peer value. The residual cost — a writer stamping a foreign id into its own manifest disarms its own guard — belongs on the WRITER side.
 
-**Evidence** — W3 reviewer, Security panel (MED 0.85) and Architect panel (HIGH 0.9) reproduced independently: lock=peer, STATE.md=peer, `CLAUDE_CODE_SESSION_ID`=me → `attributionForRecord()` stamped the PEER ids. FX1 introduced `readProcessLocalSessionIds()` in `own-session.mjs`; test (c4) pins the case. P5 had already refuted `readOwnSessionIds()` (tier 3 = lock ⇒ guard vacuous).
-
-### Unioning identity with a repo-global artefact is self-confirming in a shared working copy
-
-Asking "is this me?" must not union a source that ALL sessions of the working copy share: `session.lock` holds exactly ONE identity, so a peer's manifest matched via the peer's own lock id and Gate 7 locked the second session out (#1194 — precisely the #1082 lockout that G3b was meant to end). Process-local tiers REPLACE the shared source, they do not supplement it (HR-102). The residual cost — a writer that stamps a foreign id into its own manifest disarms its own guard — belongs on the WRITER side.
-
-**Evidence** — `hooks/enforce-scope.mjs` G3b: `readOwnSessionIds(projectRoot,…)` → `new Set(readProcessLocalSessionIds({hookInput}))`. Two existing tests inverted (`tests/hooks/enforce-scope.test.mjs`); the regression test failed before the fix (deny instead of allow), 1066/1066 green in `tests/hooks/` after.
+**Evidence** — W3 reviewer + Security (MED 0.85) + Architect (HIGH 0.9) panels reproduced independently: lock=peer, STATE.md=peer, `CLAUDE_CODE_SESSION_ID`=me → `attributionForRecord()` stamped the PEER ids; FX1 added `readProcessLocalSessionIds()` in `own-session.mjs`. The union form also matched a peer's manifest via the peer's lock id and let Gate 7 lock the second session out (#1194, the #1082 lockout G3b was meant to end); `hooks/enforce-scope.mjs` G3b now reads `new Set(readProcessLocalSessionIds({hookInput}))`, two existing tests inverted, 1066/1066 green in `tests/hooks/`.
 
 ### Two writers, two identity-resolution paths: the duplicate shares not one key
 
@@ -71,7 +69,7 @@ When a signal (here: ownership of `.orchestrator/session.lock`) is only a HINT o
 
 ### Shared repo artefacts with no session field: one missing reference, three different damages in a day
 
-`wave-scope.json`, `current-session.json` and the session-end archive phase all bind to the WORKING COPY instead of to the SESSION. The damages differ and are all invisible to whoever caused them: (1) `allowedPaths: []` for a read-only panel locked an uninvolved session out — and since `skills/wave-executor/wave-loop.md` prescribes `allowedPaths: []` for EVERY discovery wave, every discovery wave of this plugin locks out parallel sessions; (2) `current-session.json` carried session A's head and collected session B's errors; (3) `archive-closed-prds` deleted a foreign session's 20-minute-old committed file. Before any write or delete to a `.orchestrator/` or `<state-dir>/` artefact: does it carry a session id, and is it mine?
+`wave-scope.json`, `current-session.json` and the session-end archive phase bind to the WORKING COPY instead of to the SESSION. The damages differ and are all invisible to whoever caused them: (1) `allowedPaths: []` for a read-only panel locked an uninvolved session out — and `skills/wave-executor/wave-loop.md` prescribes `allowedPaths: []` for EVERY discovery wave, so every discovery wave locks out parallel sessions; (2) `current-session.json` carried session A's head and collected session B's errors; (3) `archive-closed-prds` deleted a foreign session's 20-minute-old committed file. Before any write or delete to a `.orchestrator/` or `<state-dir>/` artefact: does it carry a session id, and is it mine?
 
 **Evidence** — 2026-08-22, one working copy, two parallel sessions: #1082 `note_83488` (deny-all), `current-session.json` head-vs-body measured, #1112 (deleted PRD, restored). All three reported by the OTHER party; none noticed by the causer.
 
@@ -85,7 +83,7 @@ Malformed semantic-id claim files in the session registry can be legitimate IN-F
 
 When a record stores two identity forms in separate fields (registry: raw `session_id` + `semantic_session_id`) and the consumer filters candidates by FORM, projecting the wrong field makes that whole source contribute zero — with no error, because the consumer silently drops non-matching candidates and still returns a plausible value. The failure mode is a source that looks wired and counts nothing; assert the projection at the boundary (parse it, keep only what parses) rather than trusting the field name.
 
-**Evidence** — 2026-08-28 GitLab #1066: `hooks/on-session-start.mjs` projected only `r.session_id` (a UUID on Claude Code) into the semantic n-increment; `scripts/lib/session-id.mjs` drops every UUID candidate, so the host-wide registry contributed nothing and two sessions on one host minted the same label. Fake regression proven: with the old mapping the new test reads `so1066-2026-08-28-session-1` where `session-2` is required; after the fix 50/50 pass (vitest exit 0).
+**Evidence** — 2026-08-28 GitLab #1066: `hooks/on-session-start.mjs` projected only `r.session_id` (a UUID on Claude Code) into the semantic n-increment; `scripts/lib/session-id.mjs` drops every UUID candidate, so the host-wide registry contributed nothing and two sessions on one host minted the same label. Fake regression proven; 50/50 pass after the fix.
 
 ### Der Session-Lock-Heartbeat wird nur pro Welle erneuert — eine lange Start/Plan-Phase laesst das Lock reapen
 
@@ -93,14 +91,29 @@ When a record stores two identity forms in separate fields (registry: raw `sessi
 
 **Evidence** — `events.jsonl` 2026-09-05T06:06:00.688Z `orchestrator.session.lock.reaped` `session_id=74257966 age_hours=11.32 reap_mode=auto-session-end` by `2d69020c` (session-12 SessionEnd); STATE.md Deviation 06:08Z; `unbound_manifest` event 06:08:03Z.
 
+### Die Fixture ohne `session_id` ist die einzige suite-weite Nebenwirkung einer kanonischen Ledger-Migration
+
+`readCanonicalSessions` verwirft Records ohne `session_id`. Beim Umstellen von 8 Rohlesern brach genau EIN Test ausserhalb der Agenten-Scopes — eine Fixture schrieb 5 Sessions ohne ID, eine Form, die kein echter Record hat. Zwei legitime Fixes: Fixture bekommt IDs (Regelfall) oder `canonicalizeSessions(…,{keepUnidentified:true})`, wenn der Leser nie eine ID brauchte.
+
+**Evidence** — `tests/lib/session-end/phase-skip.test.mjs:236,:269` (Full Gate auf `ee8ea425`: 15929/1), Fix in `e22a702e`; 0 von 290 echten Records sind id-los.
+
+### Ein Session-Bindungs-Gate VOR dem Tamper-Hash unterdrueckt seine eigene Manipulations-Notice
+
+Ein auf eine fremde Session-ID umgebundenes Manifest wird von Gate 3b ("gehoert das mir?") als "nicht meins, ueberspringen" klassifiziert, bevor der Hash berechnet wird, der den Rebind haette melden sollen — Loeschen wird weiter gemeldet, Umbinden nicht. Die Kontrolldatei-Hash-Berechnung MUSS vor jeder Zustaendigkeits-Pruefung stehen.
+
+**Evidence** — `hooks/post-bash-write-verify.mjs:868-870,:963-964`; HIGH-Fund des Security-Panels 2026-09-04 session-12, behoben in Fixpass X1 F7 (405/405 gruen).
+
+### Ein zero-import Schema-Praedikat-Modul haelt zwei Konsumenten synchron ohne Closure-Kosten
+
+Muss ein Hot-Path-Hook dasselbe Datenformat pruefen wie ein schweres Manager-Modul, gehoert das Form-Praedikat in ein Modul mit NULL Imports, das beide importieren. Beide Alternativen sind schlechter: den Manager importieren (Closure-Explosion im Hot Path) oder duplizieren (eine spaetere Lockerung bleibt einseitig, die andere Seite faellt fail-open zurueck).
+
+**Evidence** — `scripts/lib/session-lock-shape.mjs` (`isLockShape`, 0 Imports), importiert von `session-lock.mjs` und `session-identity/own-session.mjs`; dessen statische Closure 3567 → 269 Zeilen (2026-09-04 session-12, Fixpass X2 nach HIGH-Fund zweier Kopien).
+
 <!-- untrusted-content:end -->
 
 ## Provenance
 
-Consolidated 8 generated rules into this file (2026-09-06, 43→8 rule consolidation).
-The reconcile engine dedupes on these markers — removing a pair regenerates that learning as a standalone file.
-
-Frontmatter `learning-key:` is a scalar and duplicates only the FIRST bullet; `defaultReadMaterializedProvenance()` unions frontmatter with body, so every bullet below is load-bearing.
+Markers below are the reconcile engine's dedupe anchors — removing a pair regenerates that learning as a standalone file (`docs/rule-authoring.md` § Consolidated rules). Consolidated by hand 2026-09-06 + 2026-09-09.
 - learning-key: `anti-pattern/aufgezeichneter-pid-als-lebendbeweis-wenn-ihn-ein-kurzlebiger-subprozess-schrieb`
 - learning-id: `8f0b4e63-ad2c-463e-9f7b-de19c65845fc`
 - learning-key: `anti-pattern/ein-arbeitskopie-artefakt-state-md-session-lock-ist-kein-prozesslokaler-identitaetszeuge-zeugen-stufen-nicht-vereinigen`
@@ -122,5 +135,12 @@ Frontmatter `learning-key:` is a scalar and duplicates only the FIRST bullet; `d
 - learning-id: `3ad4e8a9-21ae-4770-a256-3415127eec82`
 - learning-key: `recurring-issue/session-lock-heartbeat-wird-nur-pro-welle-erneuert-eine-lange-start-plan-phase-laesst-das-lock-reapen`
 - learning-id: `f739961f-abb5-4721-ad6a-bd3c77e3a2bd`
+
+- learning-key: `anti-pattern/die-fixture-ohne-session-id-ist-die-einzige-suite-weite-nebenwirkung-einer-kanonischen-ledger-migration`
+- learning-id: `die-fixture-ohne-session-id-ist-die-einzige-suite-weite-nebenwirkung-einer-kanonischen-led-2026-09-04`
+- learning-key: `anti-pattern/session-bindungs-gate-vor-dem-tamper-hash-unterdrueckt-seine-eigene-manipulations-notice`
+- learning-id: `272d03a6-e9ca-46dc-82ae-6c7f660a8a67`
+- learning-key: `proven-pattern/ein-zero-import-schema-praedikat-modul-haelt-zwei-konsumenten-synchron-ohne-closure-kosten`
+- learning-id: `2b6bb667-0972-4650-9029-b2dc2f45db92`
 
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695), consolidated by hand 2026-09-06

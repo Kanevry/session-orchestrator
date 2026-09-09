@@ -16,9 +16,10 @@
  * `tests/lib/learnings-expiry-sweep.test.mjs` and are NOT re-tested here.
  *
  * The final block is different in kind: it EXTRACTS the invocation from
- * skills/evolve/SKILL.md § 3.5(5) and executes it verbatim against a fixture
- * repo, because that command string — not any flag list spelled out here — is
- * /evolve's only store-write path.
+ * skills/evolve/references/evolve-analyze-mode.md § 3.5(5) (split out of
+ * skills/evolve/SKILL.md by #1246; body moved byte-identical) and executes it
+ * verbatim against a fixture repo, because that command string — not any flag
+ * list spelled out here — is /evolve's only store-write path.
  *
  * Each test creates its own tempdir; never touches the real
  * .orchestrator/metrics/learnings.jsonl.
@@ -625,7 +626,7 @@ function fencedBlocksMentioning(markdown, needle) {
   return blocks.filter((b) => b.includes(needle));
 }
 
-describe('skills/evolve/SKILL.md § 3.5(5) — the named invocation, executed', () => {
+describe('skills/evolve/references/evolve-analyze-mode.md § 3.5(5) — the named invocation, executed', () => {
   // TV-001 — the bug: /evolve's ONLY store-write path is a command string in a
   // SKILL body, and every test above spells its own flags out and passes
   // explicit --file/--archive. So the CLI's contract can move while the tests
@@ -644,7 +645,7 @@ describe('skills/evolve/SKILL.md § 3.5(5) — the named invocation, executed', 
   // tests/husky/pre-commit-nul-byte-guard.test.mjs, which executes a
   // marker-delimited block out of the hook it guards.
   it('runs verbatim against a fixture repo: exit 0, one JSON line, store rewritten, sidecar consumed', () => {
-    const skillPath = path.resolve(process.cwd(), 'skills/evolve/SKILL.md');
+    const skillPath = path.resolve(process.cwd(), 'skills/evolve/references/evolve-analyze-mode.md');
     const blocks = fencedBlocksMentioning(
       readFileSync(skillPath, 'utf8'),
       'sweep-expired-learnings.mjs',

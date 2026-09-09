@@ -1,18 +1,14 @@
 ---
 globs:
   - "**/*.test.*"
-  - "**/*.spec.*"
   - "**/*Tests*"
   - tests/**
   - vitest.config.*
-  - playwright.config.*
 paths:
   - "**/*.test.*"
-  - "**/*.spec.*"
   - "**/*Tests*"
   - tests/**
   - vitest.config.*
-  - playwright.config.*
 tier: wave-only
 review-date: 2026-10-23
 ---
@@ -129,7 +125,7 @@ Since the 2026-05-20 cutover, CI runs on the Hetzner Linux Docker autoscaler —
 
 - **Diagnostic signal:** if local `npm test` is green and a CI shard fails closed with a missing-result-file (`ENOENT`) or a killed-mid-flight error (not assertion failures), the shard ran out of wall-time under its inner `timeout` cap. Diagnose from the job log, not from a process count:
   - The `test:` job dumps a `tail -40` of the captured reporter log on failure — read it to see which files were still running at the kill.
-  - The `--log=<path>` in-flight hint (`scripts/ci/assert-vitest-green.mjs` `inFlightFilesFromLog`) is BEST-EFFORT: in non-TTY CI the `❯` glyph marks failed-in-summary files, not in-progress, so the hint can be empty exactly on a true mid-flight hang. Treat a populated hint as a lead, an empty hint as "inconclusive — read the `tail -40` dump".
+  - The `--log=<path>` in-flight hint (`assert-vitest-green.mjs`'s `[ci] KILL ARTEFACT — … (NOT a test failure)` line) is BEST-EFFORT: in non-TTY CI the `❯` glyph marks failed-in-summary files, not in-progress, so it can be empty on a true mid-flight hang. Populated = a lead; empty = "inconclusive — read the `tail -40` dump".
   - Compare the failing shard's runtime against the other shards: a single shard far over the others points at a slow/hung file, not whole-runner starvation.
 
 **Mitigations, in order of effort:**

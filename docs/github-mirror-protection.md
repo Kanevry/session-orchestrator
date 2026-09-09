@@ -19,11 +19,20 @@ github  https://github.com/Kanevry/session-orchestrator.git                  # p
 ```
 
 - `origin` (GitLab) is the review path: every change lands via a Merge Request.
-- `github` (the mirror) is pushed **directly** by `git push github HEAD` in
-  `skills/session-end/SKILL.md` (see the `github-mirror-push` block, roughly
-  lines 781–825) — no MR, no review, no gate. Any session's `/close` does this
+- `github` (the mirror) is pushed **directly** by `git push github HEAD` in the
+  `github-mirror-push` block of `skills/session-end/SKILL.md` (`:238`, measured
+  2026-09-09) — no MR, no review, no gate. Any session's `/close` does this
   the moment a `github` remote exists (the block does not actually re-check the
   `mirror: github` Session Config key at runtime, only the remote's presence).
+  `scripts/release.mjs` (`:1333-1338`) does the same for `main` + the tag on
+  every `--publish`.
+- **The push runs on the operator's machine, not in CI.** There is no GitLab CI
+  mirror job and no CI variable holding a GitHub token (`glab api
+  projects/:id/variables` → only `SCHEMA_DRIFT_TOKEN`, measured 2026-09-09).
+  The credential is the local `gh auth git-credential` helper (macOS keychain)
+  — a gh-CLI OAuth token (`gho_…`) on account `Kanevry`, not a classic PAT;
+  `gh auth status` shows it as `Token: gho_***`. So "rotate the CI secret" is
+  not an available mitigation here — the credential lives on one laptop.
 - The GitHub mirror's `main` branch is what a **Vercel Git integration**
   deploys from. `vercel.json` in this repo sets security headers (CSP, HSTS)
   and redirects. So a push to `github`'s `main` is not "just a mirror update"
@@ -41,7 +50,13 @@ A compromised mirror token, or any admin-scoped push, can therefore:
 
 That is an escalation surface, not "just some stale mirror content".
 
-## Current measured state (2026-08-28 @ `70a1ca9`, read-only `gh api`)
+## Current measured state (2026-09-09 @ `c2e19604`, read-only `gh api`)
+
+```bash
+gh api repos/Kanevry/session-orchestrator/branches/main/protection
+gh api repos/Kanevry/session-orchestrator/rulesets     # → []  (no ruleset layer at all)
+gh auth status --hostname github.com                   # → account Kanevry (keyring), gho_*** OAuth token
+```
 
 ```json
 {
@@ -49,8 +64,12 @@ That is an escalation surface, not "just some stale mirror content".
   "branch": "main",
   "enforce_admins": false,
   "required_status_checks": { "strict": true, "contexts": ["test (ubuntu-latest)", "test (macos-latest)", "security"] },
-  "required_pull_request_reviews": false,
+  "required_pull_request_reviews": null,
+  "restrictions": null,
   "allow_force_pushes": false,
+  "allow_deletions": false,
+  "required_linear_history": true,
+  "rulesets": [],
   "token_scopes": ["admin:public_key", "gist", "read:org", "repo", "workflow"],
   "findings": [
     { "id": "enforce-admins-disabled", "severity": "high", "message": "enforce_admins is false — an admin-scoped push (or token) bypasses required_status_checks entirely." },
@@ -58,6 +77,10 @@ That is an escalation surface, not "just some stale mirror content".
   ]
 }
 ```
+
+Unchanged since the 2026-08-28 reading: same two findings, same values. Note
+`required_pull_request_reviews` and `restrictions` are `null` (absent), not
+`false` — there is no review requirement and no push allowlist on the mirror.
 
 Reproduce with `node scripts/github-protection-audit.mjs` (see § Running the audit below).
 
@@ -76,6 +99,9 @@ is "push anything to `main`, unreviewed, checks or no checks."
 `enforce_admins` stays `false` and the token is not rotated or narrowed in
 this session — see § Required order below for why flipping it first would be
 actively harmful, and do these steps in order, not this one alone.
+**Re-confirmed 2026-09-09 (#1079):** still docs-only. The push-path change
+(Step 1) is a separate follow-up issue; `enforce_admins` stays `false` until it
+lands.
 
 ## Required order — do not skip ahead
 
@@ -88,23 +114,28 @@ exact SHA being pushed — which a bare `git push` from a local mirror step can
 never satisfy (there is no PR, so no check run is ever attached to that SHA
 before the push happens). The next `/close` would fail outright.
 
-So the order is load-bearing, not a suggestion:
+So the order is load-bearing, not a suggestion. Exactly three steps, in this
+sequence — (1) push path, (2) token, (3) `enforce_admins`:
 
 ### Step 1 (repo change, reviewable via MR) — stop pushing straight to protected `main`
 
-Change the `github-mirror-push` block in `skills/session-end/SKILL.md` so it
-no longer writes `main` directly. Two options, either is acceptable:
+Change **both** direct writers so neither targets `main`: the
+`github-mirror-push` block in `skills/session-end/SKILL.md` (`:238`) and the
+remote loop in `scripts/release.mjs` (`:1333-1338`). Two options, either is
+acceptable:
 
-- **Option A — branch + PR.** Push to `mirror/<date>` (or `mirror/<session-id>`)
-  instead of `main`, then open (or auto-merge, if the repo's protection allows
-  it later) a PR. Keeps the mirror push mechanism simple; adds a PR per close.
-- **Option B — deploy-key / bot identity with an explicit admin bypass.** Use a
-  dedicated deploy key or GitHub App installation scoped to `contents:write`
-  on this one repo, and add that bot identity to the branch protection's
-  "allow specified actors to bypass required pull requests" list (GitHub
-  Enterprise/Team feature — verify plan tier supports it before committing to
-  this path). Keeps the direct-push mechanism but makes the bypass an
-  explicit, auditable allowlist entry instead of "any admin token".
+- **Option A — `mirror/<session-id>` branch + PR with auto-merge.** Push to
+  `mirror/<session-id>` instead of `main`, open a PR, and enable auto-merge so
+  the required status checks gate the merge rather than blocking the push.
+  Keeps the mirror push mechanism simple; adds a PR per close.
+- **Option B — bot identity on a ruleset bypass list.** Use a dedicated deploy
+  key or GitHub App installation scoped to `contents:write` on this one repo,
+  and add that bot identity to a repository **ruleset**'s bypass-actors list.
+  Note `gh api .../rulesets` → `[]` today (2026-09-09), so this option means
+  creating the ruleset layer, not editing one — and verify the plan tier
+  supports bypass actors before committing to this path. Keeps the direct-push
+  mechanism but makes the bypass an explicit, auditable allowlist entry
+  instead of "any admin token".
 
 This step is a normal code change — it goes through the GitLab MR review path
 like everything else in this repo. It is **not** a `gh api` operator action.
@@ -133,7 +164,17 @@ gh auth status --hostname github.com
 node scripts/github-protection-audit.mjs
 ```
 
-A fine-grained PAT reports differently from a classic PAT under
+**Revoking the old credential:** it is a gh-CLI OAuth token, not a PAT, so it
+is not managed at `https://github.com/settings/tokens` — revoke it with
+`gh auth logout --hostname github.com` or from the account's OAuth-App
+authorisation list at `https://github.com/settings/applications` (revoke the
+"GitHub CLI" entry), never the PAT settings page. Swap the git credential
+helper onto the new fine-grained PAT first, then revoke the OAuth token, so
+the mirror push keeps working throughout. A later `gh auth login` re-requests
+gh CLI's own OAuth scopes from scratch — that re-grant is unrelated to, and
+does not restore, the token revoked here.
+
+A fine-grained PAT reports differently from a gh-CLI OAuth token under
 `gh auth status` (no bracketed scope list — fine-grained tokens carry their
 permissions server-side, not as a local scope string). If `token_scopes`
 comes back empty for a fine-grained token, treat that as expected, not as a

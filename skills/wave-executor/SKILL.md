@@ -121,83 +121,9 @@ Store this value for use throughout the session — it is needed by the simplifi
 
 ## Pre-Wave 1b: Initialize STATE.md
 
-> Skip this section entirely if `persistence: false`.
+> Skip entirely if `persistence: false`. Otherwise, before dispatching Wave 1, write `<state-dir>/STATE.md` (YAML frontmatter + Markdown body), then VALIDATE `total-waves` against the resolved shape — do not skip this step, a plan whose wave count the shape does not produce must never be dispatched silently. Full template, the shape-mismatch AUQ procedure, and the Docs Tasks Persistence extension (A3 / #230): [references/wave-executor-state-init.md](references/wave-executor-state-init.md).
 
-Before dispatching Wave 1, write `<state-dir>/STATE.md` with YAML frontmatter and Markdown body:
-
-```yaml
----
-schema-version: 1
-session-type: feature|deep|housekeeping
-branch: <current branch>
-issues: [<issue numbers from plan>]
-started_at: <ISO 8601 timestamp with timezone>
-status: active
-current-wave: 0
-total-waves: <from session plan>
----
-```
-
-```markdown
-## Current Wave
-
-Wave 0 — Initializing
-
-## Wave History
-
-(none yet)
-
-## Deviations
-
-(none yet)
-```
-
-Create the `<state-dir>` directory if needed (`mkdir -p <state-dir>`) before writing. This file is the persistent state record — other skills and resumed sessions read it.
-
-**Then VALIDATE `total-waves` against the resolved shape — do not skip this.** A plan whose wave count the shape does not produce must never be dispatched silently:
-
-```bash
-node scripts/session-shape.mjs --repo-root "$PWD" \
-  --session-type <session-type> [--profile <session-profile>] [--known-scope true|false] \
-  --no-event | jq .totalWaves
-```
-
-`--no-event` is used HERE because the plan-time run already recorded `orchestrator.session.shape_resolved` — this is a re-read, not a second resolution. Compare the printed number with the plan's wave count (the value just written to `total-waves`):
-
-- **Equal** → continue to Wave 1.
-- **Mismatch** → STOP. Surface it via `AskUserQuestion` per `.claude/rules/ask-via-tool.md`, with the shape's number and the plan's number both in the option descriptions: **re-plan to the shape (Recommended)** — rebuild the wave plan at the shape's wave count, the only outcome that keeps STATE.md, the ledger and the dispatch loop describing the same session — versus **proceed with a logged Deviation**, which requires appending the divergence to STATE.md `## Deviations` (`appendDeviationOnDisk()` from `scripts/lib/state-md.mjs`) before the first dispatch.
-
-#### Pre-Wave 1b Extension: Docs Tasks Persistence (A3 / #230)
-
-After writing the base STATE.md frontmatter above, conditionally persist the docs tasks block emitted by session-plan:
-
-**Condition:** BOTH of the following must be true:
-1. The session plan contains a `### Docs Tasks (machine-readable)` section with a YAML code block.
-2. `$CONFIG."docs-orchestrator".enabled` is `true`.
-
-If either condition is false → omit the `docs-tasks` field entirely. Do NOT write an empty key (`docs-tasks: []`). Absence means "no docs tasks planned this session" — downstream consumers (session-end Phase 3.2) treat absence the same as an empty list.
-
-When the condition is met, parse the YAML block from the session plan's `### Docs Tasks (machine-readable)` section and append the following field to the STATE.md YAML frontmatter (alongside the base fields above):
-
-```yaml
-docs-tasks:
-  - id: <task id from plan>
-    audience: <user|dev|vault>
-    target-pattern: <glob pattern from plan>
-    rationale: <rationale string from plan>
-    wave: <wave number the task is assigned to>
-    status: planned
-```
-
-Each entry's `status` is initialized to `planned`. session-end Phase 3.2 (Docs Verify) writes the terminal value per task: `ok` (diff is substantive), `partial` (diff region contains `<!-- REVIEW: source needed -->` markers), or `gap` (no matching diff). wave-executor does NOT perform intermediate status updates — `planned` remains until session-end runs.
-
-> **Schema note:** `schema-version: 1` now includes the optional `docs-tasks` array. The field is backwards-compatible — its absence is a valid schema-version-1 STATE.md meaning "no docs tasks planned". Readers MUST treat a missing `docs-tasks` key identically to `docs-tasks: []`.
-
-> **Ownership clarification:** session-plan does NOT write STATE.md directly. The wave-executor owns ALL STATE.md writes — initialization here (Pre-Wave 1b) is the canonical write point for `docs-tasks`. session-plan only emits the source `### Docs Tasks (machine-readable)` block for the coordinator to consume. See `skills/_shared/state-ownership.md` for the full ownership matrix.
-
-> **Consumer cross-reference:** session-end reads `STATE.md` frontmatter's `docs-tasks` field (if present) during Phase 3.2 Docs Verify — see `skills/session-end/SKILL.md`. The field is also readable by the docs-writer agent if it needs to know which tasks were planned for the current session.
-
-> **Ownership:** STATE.md is owned by the wave-executor. Only the wave-executor writes to it (initialization + post-wave updates). session-end reads it for metrics extraction and sets `status: completed`. session-start reads it only for continuity checks (Phase 0.5). No other skill should write to STATE.md.
+**Read WHEN:** before the first wave dispatches, every session with `persistence: true`; the VALIDATE step must not be skipped.
 
 ## Wave Execution Loop
 
@@ -442,58 +368,7 @@ The diff JSON block (`{ new_errors, resolved_errors, baseline_count, current_cou
 
 ## Inter-Wave Quality-Gate (with Auto-Fix Loop — #521)
 
-After each wave, run the Quality-Gate. If `verification-auto-fix.enabled: true`
-in Session Config, the gate uses `runQualityGateWithRetry()` from
-`scripts/lib/quality-gate.mjs` which dispatches up to `max-retries` (default 2)
-fixer-agent dispatches on failure.
-
-**Quality-wave Full-Gate mandate (#724 C6):** the inter-wave gate following the **Quality wave** is ALWAYS the Full Gate (typecheck + test + lint) — never the cached Incremental short-circuit. The wave-executor threads the wave's `waveRole` into `shouldSkipIncremental` (see `wave-loop.md § Baseline cache check`); when `waveRole === 'Quality'` the cache is bypassed mechanically, so a valid cache or a narrow diff cannot downgrade the Quality-wave close-safety gate. See `skills/quality-gates/SKILL.md § Variant 3: Full Gate` — its dual consumers are session-end (Phase 2) and the Quality wave, and its Baseline-Cache invariant records that both are un-skippable.
-
-### Invocation
-
-```javascript
-import { runQualityGateWithRetry } from '../../scripts/lib/quality-gate.mjs';
-
-const result = await runQualityGateWithRetry({
-  maxRetries: config['verification-auto-fix']?.['max-retries'] ?? 2,
-  repoRoot: process.cwd(),
-  dispatchFixer: async ({ failures, correctiveContext, changedFiles }) => {
-    // Coordinator dispatches a code-implementer fixer subagent here with:
-    //   - failures (gate + output)
-    //   - correctiveContext (from .orchestrator/current-session.json)
-    //   - changedFiles (since last green SHA)
-    // Subagent's task: fix the failing gate, never broaden scope.
-    await dispatchFixerSubagent({ failures, correctiveContext, changedFiles });
-  },
-});
-```
-
-### Decision flow
-
-- `result.ok === true` → Wave green, proceed to next wave or session-end.
-- `result.ok === false` → Hard abort.
-  - quality-gate.mjs writes `.orchestrator/metrics/verification-failures/<ts>.json` (diagnostics bundle — automatic, redacted per `redactDiagnosticsBundle()`).
-  - **Coordinator** (not fixer-subagent) appends a deviation entry to STATE.md via `appendDeviationOnDisk()` — see `wave-loop.md` § STATE.md Deviation — Auto-Fix Result.
-  - Wave execution is blocked; operator must manually fix or disable auto-fix.
-- `result.attempts > 1` → **Coordinator** logs a Deviation in STATE.md via `appendDeviationOnDisk()`: `auto-fix used N retries to clear Wave <wave>`.
-
-### Skip Conditions
-
-- `verification-auto-fix.enabled: false` (default) → fall back to single-shot
-  quality-gate, abort on first failure (current behavior preserved per PRD § 3
-  Gherkin negative path).
-- `verification-auto-fix.max-retries: 0` → equivalent to disabled.
-
-### Anti-pattern (BE-012 awareness)
-
-The fixer-agent prompt MUST include a reminder of `.claude/rules/testing.md` § "Test Quality — False-Positive Prevention"
-"test-the-mock" anti-pattern. A fix that makes tests green by mocking out the
-real failure is a regression vector. The fixer prompt should explicitly say:
-"Do NOT change test mocks to make tests pass. Fix the actual code defect."
-
-### Heartbeat cadence at inter-wave checkpoints (#590-3)
-
-After each quality-gate PASS, the coordinator refreshes the session-lock heartbeat via the post-wave STATE.md step. See `wave-loop.md § 3a. Post-Wave: Update STATE.md` — step 5 contains the `updateHeartbeat` instruction and best-effort framing. The `sessionId` passed to `updateHeartbeat` is the session identifier established by session-start Phase 1.2 `acquire()` and stored in `.orchestrator/session.lock` (its `session_id` field); it matches the STATE.md frontmatter `session:` field written during Pre-Wave 1b initialization.
+> **Reference:** See [references/wave-executor-quality-gate.md](references/wave-executor-quality-gate.md) for the invocation, decision flow, skip conditions, the BE-012 test-the-mock anti-pattern reminder, the Quality-wave Full-Gate mandate (#724 C6), and the inter-wave heartbeat cadence (#590-3). Read after each wave completes, before proceeding to the next wave or session-end.
 
 ## Agent-Status Telemetry (#565)
 

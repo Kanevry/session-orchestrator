@@ -33,18 +33,15 @@ git resolves `info/exclude` from `--git-common-dir`, never from the per-worktree
 
 ### "git stash fuer eine Baseline" ist die wiederkehrende PSA-007-Form
 
-Zwei verschiedene Implementierer-Agenten griffen in derselben Session unabhaengig zu `git stash`, um kurz den Vor-Zustand einer Datei zu sehen oder zu testen (P4: stash/pop um validate-plugin gegen den alten Stand zu pruefen; P10: stash push der eigenen Datei) — beides ohne Datenverlust, aber beides ein PSA-007-Verstoss im geteilten Index. Der Bedarf dahinter ("ich brauche kurz den alten Dateiinhalt") hat eine stash-freie Antwort: `git show HEAD:<file>`. Jeder Implementierer-Auftrag sollte das explizit anbieten, statt zu hoffen, dass niemand zu stash greift.
+Zwei Implementierer-Agenten griffen in derselben Session unabhaengig zu `git stash`, um kurz den Vor-Zustand einer Datei zu sehen — PSA-007-Verstoss im geteilten Index, beide ohne Datenverlust. Das Verbot steht in `parallel-sessions.md` § PSA-007; was fehlte, ist die stash-freie Antwort auf den Bedarf dahinter: `git show HEAD:<file>`. Jeder Implementierer-Auftrag sollte sie explizit anbieten, statt zu hoffen, dass niemand zu stash greift.
 
-**Evidence** — 2026-09-02: `.claude/STATE.md` Deviations — "Wave 3 PSA-007 violation: agent P4 (#1200) ran `git stash && node scripts/validate-plugin.mjs; git stash pop`" (18:02Z, kein Verlust); Wave-3-Verlauf P10: "PSA-007 (stash push own file, self-corrected)".
+**Evidence** — 2026-09-02 `.claude/STATE.md` Deviations: P4 (#1200) `git stash && node scripts/validate-plugin.mjs; git stash pop` (18:02Z), P10 stash push der eigenen Datei (selbst korrigiert).
 
 <!-- untrusted-content:end -->
 
 ## Provenance
 
-Consolidated 2 generated rules into this file (2026-09-06, 43→8 rule consolidation; the second restored 2026-09-06 after the first pass dropped its prose and markers).
-The reconcile engine dedupes on these markers — removing a pair regenerates that learning as a standalone file.
-
-Frontmatter `learning-key:` is a scalar and duplicates only the FIRST bullet; `defaultReadMaterializedProvenance()` unions frontmatter with body, so every bullet below is load-bearing.
+Markers below are the reconcile engine's dedupe anchors — removing a pair regenerates that learning as a standalone file (`docs/rule-authoring.md` § Consolidated rules). Consolidated by hand 2026-09-06 + 2026-09-09.
 - learning-key: `anti-pattern/in-a-linked-worktree-the-gitdir-that-rev-parse-returns-is-not-the-one-git-reads-excludes-from`
 - learning-id: `9c6cd166-8798-471a-a952-7694e9a7857b`
 - learning-key: `recurring-issue/git-stash-fuer-eine-baseline-ist-die-wiederkehrende-psa-007-form-zwei-vorfaelle-in-einer-session`

@@ -626,7 +626,8 @@ describe('multi-session registry (#168)', { timeout: 15000 }, () => {
 // High-water-mark preservation across SessionStart (#612 root-cause fix)
 // ---------------------------------------------------------------------------
 //
-// SessionStart fires on startup|clear|compact|resume. On clear/compact/resume
+// SessionStart fires on startup|resume|clear|compact (hooks.json; `resume`
+// added in #1091). On clear/compact/resume
 // of the SAME logical session the UUID session_id changes but the
 // semantic_session_id stays stable. The hook must therefore PRESERVE the
 // last_wave / last_batch high-water marks (written mid-session by
@@ -684,7 +685,23 @@ describe('high-water-mark preservation across SessionStart (#612)', { timeout: 1
     await fs.writeFile(eventsPath, kept.length > 0 ? kept.join('\n') + '\n' : '', 'utf8');
   }
 
-  it('preserves last_wave when the prior session file carries the SAME semantic_session_id', async () => {
+  const ALL_MARKERS = {
+    last_wave: 3,
+    last_batch: { batch_id: 'wave3-batch1', batch_size: 6 },
+    last_wave_completed: 2,
+    wave_start_sha: '0123456789abcdef0123456789abcdef01234567',
+  };
+
+  it('preserves ALL four high-water marks when the prior session file carries the SAME semantic_session_id (#612/#980/#1193)', async () => {
+    // Catches, in one spawn, three distinct escapes that share one branch:
+    //   #612  — a dropped last_wave/last_batch makes the next PostToolBatch
+    //           re-emit a duplicate orchestrator.wave.started{N}.
+    //   #1193 — a dropped last_wave_completed re-arms a duplicate SessionEnd
+    //           orchestrator.wave.completed for a wave already closed.
+    //   #980  — a dropped wave_start_sha leaves the running wave with no start
+    //           point, so wave.completed silently omits files_changed.
+    // The preservation branch copies all four together, so asserting them
+    // field-by-field in separate cases bought spawns, not catch-power.
     const dir = await mkProjectTracked();
     // First run establishes the semantic_session_id this fixture resolves to
     // (derived from branch+date+mode+history; we read it back rather than
@@ -708,8 +725,7 @@ describe('high-water-mark preservation across SessionStart (#612)', { timeout: 1
           pid: 12345,
           source: 'stdin',
           timestamp: '2026-05-28T00:00:00.000Z',
-          last_wave: 3,
-          last_batch: { batch_id: 'wave3-batch1', batch_size: 6 },
+          ...ALL_MARKERS,
         },
         null,
         2,
@@ -718,152 +734,25 @@ describe('high-water-mark preservation across SessionStart (#612)', { timeout: 1
     );
 
     // A clear/compact/resume of the SAME logical session re-fires SessionStart.
-    // The semantic id resolves identically, so last_wave/last_batch MUST survive.
+    // The semantic id resolves identically, so every marker MUST survive.
     await runHook({ projectDir: dir });
     const after = await readSessionFile(dir);
     expect(after.semantic_session_id).toBe(firstSemanticId);
-    expect(Object.prototype.hasOwnProperty.call(after, 'last_wave')).toBe(true);
     expect(after.last_wave).toBe(3);
     expect(after.last_batch).toEqual({ batch_id: 'wave3-batch1', batch_size: 6 });
-  });
-
-  it('preserves last_wave_completed when the prior session file carries the SAME semantic_session_id (#1193)', async () => {
-    // Catches: dropping the final-wave completion marker across a
-    // clear/compact/resume re-arms a DUPLICATE SessionEnd
-    // orchestrator.wave.completed for a wave already closed. Deleting the
-    // preservation block in hooks/on-session-start.mjs left the suite green
-    // until this case existed.
-    const dir = await mkProjectTracked();
-    await runHook({ projectDir: dir });
-    const firstSemanticId = (await readSessionFile(dir)).semantic_session_id;
-    expect(typeof firstSemanticId).toBe('string');
-
-    await clearSemanticIdMemory(dir);
-    await fs.writeFile(
-      path.join(dir, '.orchestrator', 'current-session.json'),
-      JSON.stringify(
-        {
-          session_id: 'prev-uuid-cccc',
-          semantic_session_id: firstSemanticId,
-          pid: 12345,
-          source: 'stdin',
-          timestamp: '2026-05-28T00:00:00.000Z',
-          last_wave: 2,
-          last_wave_completed: 2,
-        },
-        null,
-        2,
-      ) + '\n',
-      'utf8',
-    );
-
-    await runHook({ projectDir: dir });
-    const after = await readSessionFile(dir);
-    expect(after.semantic_session_id).toBe(firstSemanticId);
-    expect(Object.prototype.hasOwnProperty.call(after, 'last_wave_completed')).toBe(true);
     expect(after.last_wave_completed).toBe(2);
-  });
-
-  it('preserves wave_start_sha when the prior session file carries the SAME semantic_session_id (#980)', async () => {
-    // Catches: post-tool-batch-wave-signal.mjs stamps wave_start_sha as the OPEN
-    // half of the wave diff. A /clear + resume mid-wave rewrote
-    // current-session.json without it, so the wave's own `wave.completed` came
-    // out with no start point and silently omitted `files_changed` — a hole the
-    // last_wave/last_wave_completed cases above could not see.
-    const dir = await mkProjectTracked();
-    await runHook({ projectDir: dir });
-    const firstSemanticId = (await readSessionFile(dir)).semantic_session_id;
-    expect(typeof firstSemanticId).toBe('string');
-
-    await clearSemanticIdMemory(dir);
-    await fs.writeFile(
-      path.join(dir, '.orchestrator', 'current-session.json'),
-      JSON.stringify(
-        {
-          session_id: 'prev-uuid-eeee',
-          semantic_session_id: firstSemanticId,
-          pid: 12345,
-          source: 'stdin',
-          timestamp: '2026-05-28T00:00:00.000Z',
-          last_wave: 4,
-          wave_start_sha: '0123456789abcdef0123456789abcdef01234567',
-        },
-        null,
-        2,
-      ) + '\n',
-      'utf8',
-    );
-
-    await runHook({ projectDir: dir });
-    const after = await readSessionFile(dir);
-    expect(after.semantic_session_id).toBe(firstSemanticId);
     expect(after.wave_start_sha).toBe('0123456789abcdef0123456789abcdef01234567');
   });
 
-  it('resets wave_start_sha when the prior session file carries a DIFFERENT semantic_session_id (#980)', async () => {
-    // The other half: a foreign session's start sha must never seed this
-    // session's diff, which would attribute its commits to our first wave.
-    const dir = await mkProjectTracked();
-    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
-    await fs.writeFile(
-      path.join(dir, '.orchestrator', 'current-session.json'),
-      JSON.stringify(
-        {
-          session_id: 'stale-uuid-ffff',
-          semantic_session_id: 'some-other-branch-2020-01-01-deep-9',
-          pid: 54321,
-          source: 'stdin',
-          timestamp: '2020-01-01T00:00:00.000Z',
-          wave_start_sha: '0123456789abcdef0123456789abcdef01234567',
-        },
-        null,
-        2,
-      ) + '\n',
-      'utf8',
-    );
-
-    await runHook({ projectDir: dir });
-    const after = await readSessionFile(dir);
-    expect(Object.prototype.hasOwnProperty.call(after, 'wave_start_sha')).toBe(false);
-  });
-
-  it('resets last_wave_completed when the prior session file carries a DIFFERENT semantic_session_id (#1193)', async () => {
-    // The other half: a stale session's completion marker must NOT suppress the
-    // new session's own final wave.completed.
-    const dir = await mkProjectTracked();
-    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
-    await fs.writeFile(
-      path.join(dir, '.orchestrator', 'current-session.json'),
-      JSON.stringify(
-        {
-          session_id: 'stale-uuid-dddd',
-          semantic_session_id: 'some-other-branch-2020-01-01-deep-9',
-          pid: 54321,
-          source: 'stdin',
-          timestamp: '2020-01-01T00:00:00.000Z',
-          last_wave: 2,
-          last_wave_completed: 2,
-        },
-        null,
-        2,
-      ) + '\n',
-      'utf8',
-    );
-
-    await runHook({ projectDir: dir });
-    const after = await readSessionFile(dir);
-    expect(after.semantic_session_id).not.toBe('some-other-branch-2020-01-01-deep-9');
-    expect(Object.prototype.hasOwnProperty.call(after, 'last_wave_completed')).toBe(false);
-  });
-
-  it('resets last_wave when the prior session file carries a DIFFERENT semantic_session_id', async () => {
+  it('resets ALL four high-water marks when the prior session file carries a DIFFERENT semantic_session_id (#612/#980/#1193)', async () => {
+    // The other half: a foreign/stale session's marks must never seed this
+    // session — an inherited wave_start_sha attributes its commits to our first
+    // wave, and an inherited last_wave_completed suppresses our own final
+    // wave.completed.
     const dir = await mkProjectTracked();
     // The hook creates .orchestrator/ on its own, but we seed current-session.json
     // BEFORE the run, so create the dir first.
     await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
-    // Pre-seed a current-session.json for a DIFFERENT logical session that had
-    // progressed to wave 3. The hook will resolve its own (different) semantic
-    // id this run, so the marks belong to a stale session and must be dropped.
     await fs.writeFile(
       path.join(dir, '.orchestrator', 'current-session.json'),
       JSON.stringify(
@@ -873,8 +762,7 @@ describe('high-water-mark preservation across SessionStart (#612)', { timeout: 1
           pid: 54321,
           source: 'stdin',
           timestamp: '2020-01-01T00:00:00.000Z',
-          last_wave: 3,
-          last_batch: { batch_id: 'stale-batch', batch_size: 2 },
+          ...ALL_MARKERS,
         },
         null,
         2,
@@ -888,6 +776,8 @@ describe('high-water-mark preservation across SessionStart (#612)', { timeout: 1
     expect(after.semantic_session_id).not.toBe('some-other-branch-2020-01-01-deep-9');
     expect(Object.prototype.hasOwnProperty.call(after, 'last_wave')).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(after, 'last_batch')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(after, 'last_wave_completed')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(after, 'wave_start_sha')).toBe(false);
   });
 });
 
@@ -2001,5 +1891,342 @@ describe('session-start heartbeat (#1229)', { timeout: 15000 }, () => {
     } else {
       expect(lock.session_id).not.toBe('foreign-session-1229');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// native_source measurement field (#1091)
+// ---------------------------------------------------------------------------
+
+describe('native_source on the session-start event (#1091)', { timeout: 15000 }, () => {
+  it('records native_source when stdin carries a source, and omits the key when it does not', async () => {
+    // Catches: the SessionStart `source` was never carried onto
+    // orchestrator.session.started, so "does the same raw session_id repeat
+    // under source=resume?" was unanswerable from events.jsonl — the exact
+    // measurement #1091's Revisit-Trigger waits on. A null/"" write would be
+    // equally wrong (docs/events-schema.md: absent != measured-empty), so the
+    // negative half is asserted in the same case.
+    const withSource = await mkProjectTracked();
+    await runHook({
+      projectDir: withSource,
+      stdin: JSON.stringify({
+        session_id: '00000000-0000-4000-8000-000000000001',
+        source: 'resume',
+      }),
+    });
+    const resumeEvt = (await readEvents(withSource))[0];
+    expect(resumeEvt.native_source).toBe('resume');
+
+    const noSource = await mkProjectTracked();
+    await runHook({
+      projectDir: noSource,
+      stdin: JSON.stringify({ session_id: '00000000-0000-4000-8000-000000000002' }),
+    });
+    const plainEvt = (await readEvents(noSource))[0];
+    expect(Object.prototype.hasOwnProperty.call(plainEvt, 'native_source')).toBe(false);
+    // resume_linkage follows the same optional-field convention on the very
+    // same no-source run (absent != measured-none), so it is asserted here
+    // rather than paying a second spawn for an identical fixture.
+    expect(Object.prototype.hasOwnProperty.call(plainEvt, 'resume_linkage')).toBe(false);
+  });
+
+  it.each([
+    ['a number', 123],
+    ['an object', {}],
+    ['an empty string', ''],
+  ])('omits native_source when the harness sends %s as source', async (_label, source) => {
+    // Catches: `typeof input?.source === 'string' && input.source.length > 0`
+    // relaxed to a bare truthiness or `!= null` check. Either would write a
+    // non-source value (or `''`) onto orchestrator.session.started, and any
+    // downstream group-by on native_source would then count a junk bucket as a
+    // measured harness source.
+    const dir = await mkProjectTracked();
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: '00000000-0000-4000-8000-000000000003', source }),
+    });
+    const evt = (await readEvents(dir))[0];
+    expect(Object.prototype.hasOwnProperty.call(evt, 'native_source')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resume_linkage — high-water-mark preservation across a native resume (#1091 F1)
+// ---------------------------------------------------------------------------
+
+describe('resume_linkage across a native resume (#1091 F1)', { timeout: 20000 }, () => {
+  /** Read current-session.json for a project dir. */
+  async function readSession(dir) {
+    return JSON.parse(
+      await fs.readFile(path.join(dir, '.orchestrator', 'current-session.json'), 'utf8'),
+    );
+  }
+
+  /** Overlay mid-session high-water marks written by post-tool-batch-wave-signal.mjs. */
+  async function seedWaveMarkers(dir) {
+    const file = path.join(dir, '.orchestrator', 'current-session.json');
+    const body = JSON.parse(await fs.readFile(file, 'utf8'));
+    Object.assign(body, {
+      last_wave: 3,
+      last_batch: 7,
+      last_wave_completed: 2,
+      wave_start_sha: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+    });
+    await fs.writeFile(file, JSON.stringify(body, null, 2) + '\n', 'utf8');
+  }
+
+  const UUID_A = '00000000-0000-4000-8000-0000000010a1';
+  const UUID_B = '00000000-0000-4000-8000-0000000010b2';
+
+  it('reuses the semantic id and preserves the wave markers when resume repeats the raw session_id', async () => {
+    // Catches: adding `resume` to the SessionStart matcher (#1091) made this
+    // hook run on re-entry, where resolveSemanticSessionId() — which has NO
+    // self-exclusion (nextN = maxN + 1) — mints `…-session-N+1` from the
+    // session's OWN lock/registry entry. The preservation branch keys on the
+    // semantic id, so it went FALSE and last_wave / last_batch /
+    // last_wave_completed / wave_start_sha were dropped, re-arming #612
+    // (duplicate wave.started), #1193 (duplicate wave.completed) and #980
+    // (files_changed omitted) on a path the hook previously never saw.
+    // Deliberately does NOT clear the n-counter memories: the whole point is
+    // that the linkage holds while the mint counter advances.
+    const dir = await mkProjectTracked();
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: UUID_A, source: 'startup' }),
+    });
+    const first = await readSession(dir);
+    expect(first.session_id).toBe(UUID_A);
+    await seedWaveMarkers(dir);
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: UUID_A, source: 'resume' }),
+    });
+
+    const second = await readSession(dir);
+    expect(second.semantic_session_id).toBe(first.semantic_session_id);
+    expect(second.last_wave).toBe(3);
+    expect(second.last_batch).toBe(7);
+    expect(second.last_wave_completed).toBe(2);
+    expect(second.wave_start_sha).toBe('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+
+    const events = await readEvents(dir);
+    expect(events.at(-1).native_source).toBe('resume');
+    expect(events.at(-1).resume_linkage).toBe('raw-id');
+  });
+
+  it('mints a fresh semantic id and preserves nothing when resume brings a DIFFERENT raw session_id', async () => {
+    // The other half of the same decision: without a raw-id match there is no
+    // verified continuity, so continuity must NOT be guessed — adopting the
+    // prior markers there would inherit a foreign session's high-water state.
+    const dir = await mkProjectTracked();
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: UUID_A, source: 'startup' }),
+    });
+    const first = await readSession(dir);
+    await seedWaveMarkers(dir);
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: UUID_B, source: 'resume' }),
+    });
+
+    const second = await readSession(dir);
+    expect(second.session_id).toBe(UUID_B);
+    expect(second.semantic_session_id).not.toBe(first.semantic_session_id);
+    expect(Object.prototype.hasOwnProperty.call(second, 'last_wave')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(second, 'wave_start_sha')).toBe(false);
+
+    const events = await readEvents(dir);
+    expect(events.at(-1).resume_linkage).toBe('none');
+  });
+  /**
+   * Drop the two n-counter memories (host-wide registry slot + the
+   * `orchestrator.session.lock.acquired` mint ledger) so the NEXT run re-mints
+   * the SAME semantic label instead of advancing to `…-session-N+1`.
+   * Same surgical shape as the #612 fixture: only the mint records are
+   * stripped, never the `orchestrator.session.started` lines.
+   */
+  async function reclaimSemanticSlot(dir) {
+    await fs.rm(path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active'), {
+      recursive: true,
+      force: true,
+    });
+    const eventsPath = path.join(dir, EVENTS_RELPATH);
+    let raw;
+    try {
+      raw = await fs.readFile(eventsPath, 'utf8');
+    } catch {
+      return;
+    }
+    const kept = raw
+      .split('\n')
+      .filter((l) => l.length > 0 && !l.includes('orchestrator.session.lock.acquired'));
+    await fs.writeFile(eventsPath, kept.length > 0 ? kept.join('\n') + '\n' : '', 'utf8');
+  }
+
+  it.each([
+    ['sends no session_id at all', {}],
+    ['sends a non-UUID (semantic) session_id', { session_id: 'main-2020-01-01-deep-9' }],
+  ])('reports resume_linkage none and preserves no markers when the resume %s', async (_label, idPayload) => {
+    // Catches the "self-fulfilling comparison" guard-design class: a fallback
+    // that, when stdin carries no trustworthy raw id, read the raw id back out
+    // of current-session.json would make `prev.session_id === sessionId`
+    // TRUE BY CONSTRUCTION. The hook would then adopt whatever markers that
+    // file holds — which on a shared working copy is a LIVE PEER's high-water
+    // state — and report it as verified 'raw-id' linkage. The hook must mint a
+    // fresh randomUUID() instead, leaving the comparison false.
+    const dir = await mkProjectTracked();
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: UUID_A, source: 'startup' }),
+    });
+    const first = await readSession(dir);
+    expect(first.session_id).toBe(UUID_A);
+    await seedWaveMarkers(dir);
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ ...idPayload, source: 'resume' }),
+    });
+
+    const second = await readSession(dir);
+    expect(second.session_id).not.toBe(UUID_A);
+    expect(second.session_id).not.toBe('main-2020-01-01-deep-9');
+    expect(Object.prototype.hasOwnProperty.call(second, 'last_wave')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(second, 'last_batch')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(second, 'last_wave_completed')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(second, 'wave_start_sha')).toBe(false);
+
+    const events = await readEvents(dir);
+    expect(events.at(-1).resume_linkage).toBe('none');
+  });
+
+  it('reports resume_linkage semantic and preserves the markers when a clear re-mints the SAME label under a new raw id', async () => {
+    // Catches: collapsing the three-value resume_linkage into a boolean, or
+    // deleting the pre-#1091 semantic-match arm now that the raw-id arm exists.
+    // A /clear mints a NEW raw session_id, so this is the ONLY arm that keeps
+    // the markers alive across a clear — losing it re-arms #612/#980/#1193 on
+    // the most common re-entry there is, while the raw-id test above stays
+    // green.
+    const dir = await mkProjectTracked();
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: UUID_A, source: 'clear' }),
+    });
+    const first = await readSession(dir);
+    await seedWaveMarkers(dir);
+    await reclaimSemanticSlot(dir);
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: UUID_B, source: 'clear' }),
+    });
+
+    const second = await readSession(dir);
+    expect(second.session_id).toBe(UUID_B);
+    expect(second.semantic_session_id).toBe(first.semantic_session_id);
+    expect(second.last_wave).toBe(3);
+    expect(second.wave_start_sha).toBe('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+
+    const events = await readEvents(dir);
+    expect(events.at(-1).resume_linkage).toBe('semantic');
+  });
+
+  // -------------------------------------------------------------------------
+  // #1091 F2 — the bootstrapLock() re-entry force-refresh, exercised through
+  // the hook rather than through the helper's DI seam. Both cases below share
+  // one fixture and differ ONLY in the predecessor witness that
+  // current-session.json carries, which is exactly the conjunct the wiring can
+  // drop without any existing test noticing.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Rewrite the live lock so it names `lockSessionId` while keeping OUR
+   * semantic label and a fresh heartbeat (so acquire() classifies it 'active',
+   * not 'stale-heartbeat'), and point current-session.json's raw id at
+   * `predecessorSessionId`.
+   */
+  async function seedForeignRawIdLock(dir, { lockSessionId, predecessorSessionId }) {
+    const lockPath = path.join(dir, '.orchestrator', 'session.lock');
+    const lock = JSON.parse(await fs.readFile(lockPath, 'utf8'));
+    lock.session_id = lockSessionId;
+    lock.last_heartbeat = new Date().toISOString();
+    await fs.writeFile(lockPath, JSON.stringify(lock, null, 2) + '\n', 'utf8');
+
+    const sessionPath = path.join(dir, '.orchestrator', 'current-session.json');
+    const body = JSON.parse(await fs.readFile(sessionPath, 'utf8'));
+    body.session_id = predecessorSessionId;
+    await fs.writeFile(sessionPath, JSON.stringify(body, null, 2) + '\n', 'utf8');
+    return lock.semantic_session_id;
+  }
+
+  const FOREIGN_RAW_ID = '00000000-0000-4000-8000-00000000f0f0';
+
+  it('takes over the live lock on a resume whose raw id changed, when current-session.json names that lock as OUR predecessor', async () => {
+    // Catches: dropping `nativeSource` / `predecessorSessionId` from the
+    // bootstrapLock() call site in hooks/on-session-start.mjs. Without them the
+    // re-entry force never fires, acquire() returns reason:'active' against the
+    // session's OWN predecessor lock, and the session runs for up to the 4h TTL
+    // without owning its lock while recordConflictSignal() names its former
+    // self as a foreign conflict (#1091 F2).
+    const dir = await mkProjectTracked();
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: UUID_A, source: 'startup' }),
+      useCwd: true,
+    });
+    await seedForeignRawIdLock(dir, {
+      lockSessionId: FOREIGN_RAW_ID,
+      predecessorSessionId: FOREIGN_RAW_ID,
+    });
+    await reclaimSemanticSlot(dir);
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: UUID_B, source: 'resume' }),
+      useCwd: true,
+    });
+
+    const lock = JSON.parse(
+      await fs.readFile(path.join(dir, '.orchestrator', 'session.lock'), 'utf8'),
+    );
+    expect(lock.session_id).toBe(UUID_B);
+  });
+
+  it('leaves a live lock alone on a resume whose raw id changed, when current-session.json names a DIFFERENT predecessor', async () => {
+    // The negative half, and the reason the predecessor witness exists at all:
+    // semantic labels are measurably collidable on one host (#1066), so
+    // source+label alone would let a /resume in session B force-take session
+    // A's LIVE lock. Only a raw id WE recorded about OURSELVES distinguishes
+    // the two, and this case is the only thing that fails if that conjunct is
+    // deleted.
+    const dir = await mkProjectTracked();
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: UUID_A, source: 'startup' }),
+      useCwd: true,
+    });
+    await seedForeignRawIdLock(dir, {
+      lockSessionId: FOREIGN_RAW_ID,
+      predecessorSessionId: '00000000-0000-4000-8000-0000000000cc',
+    });
+    await reclaimSemanticSlot(dir);
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ session_id: UUID_B, source: 'resume' }),
+      useCwd: true,
+    });
+
+    const lock = JSON.parse(
+      await fs.readFile(path.join(dir, '.orchestrator', 'session.lock'), 'utf8'),
+    );
+    expect(lock.session_id).toBe(FOREIGN_RAW_ID);
   });
 });

@@ -272,13 +272,19 @@ describe(`CLI --log diagnostic (exit-code contract unchanged, message enriched)`
     return spawnSync('node', [SCRIPT, ...args], { encoding: 'utf8' });
   }
 
-  it(`missing JSON + log with in-flight files ${ARROW} lists them, still exits 1`, () => {
+  it(`missing JSON + log with in-flight files ${ARROW} marks it a kill artefact, still exits 1`, () => {
     const logPath = join(dir, 'vitest.log');
     writeFileSync(logPath, HANG_LOG);
     const missingJson = join(dir, 'no-result.json');
     const r = run([missingJson, `--log=${logPath}`]);
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain('2 test file(s) in-flight when killed');
+    // Regression pin: a revert to the ambiguous "N test file(s) in-flight when
+    // killed" phrasing (misread as real failures in pipeline #514) must go red.
+    // `KILL ARTEFACT` is the stable discriminator; the count is checked by
+    // shape (not the full sentence) so a wording tweak elsewhere in the hint
+    // doesn't false-fail this pin.
+    expect(r.stderr).toContain('KILL ARTEFACT');
+    expect(r.stderr).toMatch(/2 file\(s\)/);
     expect(r.stderr).toContain('tests/slow/alpha.test.mjs');
     expect(r.stderr).toContain('tests/slow/beta.test.mjs');
   });
@@ -288,7 +294,7 @@ describe(`CLI --log diagnostic (exit-code contract unchanged, message enriched)`
     const r = run([missingJson]);
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('FAIL-CLOSED: cannot read result file');
-    expect(r.stderr).not.toContain('in-flight when killed');
+    expect(r.stderr).not.toContain('KILL ARTEFACT');
   });
 
   it(`missing JSON + --log pointing at a nonexistent file ${ARROW} graceful fallback, exits 1, no hint`, () => {
@@ -296,7 +302,7 @@ describe(`CLI --log diagnostic (exit-code contract unchanged, message enriched)`
     const r = run([missingJson, `--log=${join(dir, 'absent.log')}`]);
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('FAIL-CLOSED: cannot read result file');
-    expect(r.stderr).not.toContain('in-flight when killed');
+    expect(r.stderr).not.toContain('KILL ARTEFACT');
   });
 
   it(`green JSON ${ARROW} exits 0 regardless of --log`, () => {

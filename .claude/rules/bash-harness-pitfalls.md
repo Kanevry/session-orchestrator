@@ -1,13 +1,11 @@
 ---
 globs:
   - "**/*.sh"
-  - "**/*.bash"
   - scripts/**
   - tests/**
   - .husky/**
 paths:
   - "**/*.sh"
-  - "**/*.bash"
   - scripts/**
   - tests/**
   - .husky/**
