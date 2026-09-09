@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dead `globs:`/`paths:` frontmatter entries removed from 3 rules (`bash-harness-pitfalls.md`, `cli-design.md`, `testing.md`) — `rule-scoping` drift-check warnings 11 → 1; `**/*Tests*` in `testing.md` deliberately kept (fleet intent for consumer Swift repos, #445; pinned by `tests/skills/config-reading-glob-rules.test.mjs`).
 
 ### Fixed
+- **GitHub Actions `test (ubuntu-latest)`** — the unsharded Linux run was wrapped in `timeout --preserve-status 240s`; the suite now exceeds that (killed at exactly 240 s on `c2e19604` and `d4c51bd8`, vitest never wrote its result file → `FAIL-CLOSED`). Raised to 840 s, matching the GitLab shard cap from #1294 (a); the job's `timeout-minutes: 15` already covers it.
 
 - `check-unwired-features` root filter no longer masks two roots sharing a basename — a colliding basename now needs the qualified `dirname/base` form to downgrade out of the reportable class (#1293).
 - `tests/scripts/pack-policy-floor.test.mjs` accepts npm 12's keyed-object `npm pack --dry-run --json` shape (was red on the v4.2.0 tag push).

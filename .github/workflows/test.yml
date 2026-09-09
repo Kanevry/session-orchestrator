@@ -123,7 +123,7 @@ jobs:
         shell: bash
         run: |
           rm -f /tmp/vitest-result.json   # stale-file guard (defensive; runners are ephemeral)
-          timeout --preserve-status 240s npm test -- --reporter=verbose --reporter=json --outputFile=/tmp/vitest-result.json --no-color 2>&1 | tee /tmp/vitest.raw.log || true
+          timeout --preserve-status 840s npm test -- --reporter=verbose --reporter=json --outputFile=/tmp/vitest-result.json --no-color 2>&1 | tee /tmp/vitest.raw.log || true
           sed -r 's/\x1b\[[0-9;]*[mK]//g' /tmp/vitest.raw.log > /tmp/vitest.log || cp /tmp/vitest.raw.log /tmp/vitest.log
           tail -80 /tmp/vitest.log
           # Fail-closed JSON verifier is the SINGLE authority on pass/fail. It replaces the
