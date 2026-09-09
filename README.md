@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.1.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-4.2.0-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
 [![Tests](https://img.shields.io/badge/tests-vitest-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
 
@@ -202,13 +202,13 @@ Full component inventory: [`docs/components.md`](docs/components.md). Version hi
 
 How this compares to other orchestrators — with the parts that are measured and the parts that are not: [`docs/components.md` § Comparisons](docs/components.md#comparisons).
 
-## Recent highlights (v4.1.0)
+## Recent highlights (v4.2.0)
 
-Highlights of the v4.1.0 line:
+Highlights of the v4.2.0 line:
 
-- **Privacy and session ownership.** The privacy scanner covers MDX and can include untracked files with `--include-untracked`. Native Codex task IDs now confirm session ownership; ambiguous inherited IDs remain unconfirmed.
-- **CI and release recovery.** Coverage verification now requires valid reports and measured thresholds. Audit detection checks executable workflow commands; GitHub release recovery retains the exact repository, tag and retry notes.
-- **Clearer onboarding.** README, English/German pages and the guide agree on installation and platform capabilities. Guide Copy buttons stay beside their command blocks, including on narrow screens.
+- **One place resolves a session into its shape.** `node scripts/session-shape.mjs` turns a mode (housekeeping/feature/deep, optional ultradeep profile) into waves, per-wave agent caps, isolation and enforcement, and records the result as an event. Housekeeping is now the maintenance loop (drift-check, sweep, evolve, reconcile, dialectic, memory-cleanup), driven by the session-start `maintenance-due` probe instead of close-time nudges.
+- **Honest cost numbers.** Subagent telemetry schema v2 counts cache-read and cache-creation tokens (previously under-reported ~65,000×); a per-model price table rolls up USD per session. The issue-budget ledger is reconciled against the session record at close.
+- **Leaner tree.** A dead-code sweep removed 13 unreachable library modules and their tests; `js-yaml` patched for GHSA-2883-xcg3-v3hh; ten reconciled learnings absorbed into the thematic rule files so the generated-rule surface stays under budget.
 
 If upgrading from before 4.0, read [the v4 migration guide](docs/migration-v4.md). Full changes and verification: [CHANGELOG.md](CHANGELOG.md).
 

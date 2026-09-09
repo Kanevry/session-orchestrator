@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-09-09
+
 ### Added
 
 - `scripts/session-shape.mjs` (+ `scripts/lib/session-shape.mjs`) — the one place a `/session` mode + optional `--profile` resolves into an execution shape (wave count, roles, per-wave agent caps, Discovery on/off, per-wave `max-turns`). Replaces prose that answered "how many waves does a `deep` session have" in 27 places and disagreed with itself in 8 of them (measured 2026-09-09). Emits `orchestrator.session.shape_resolved`. Housekeeping is now always 1 coordinator-direct maintenance-loop wave; feature is 3 waves; deep is 5 (4 with `--known-scope true`); the `ultradeep` profile is a fixed 7 waves and ignores `waves` outright (`wavesConfigHonored: false` — PRD AC-9's "`waves < 7` is an error" is dropped). Documented in `docs/session-config-reference.md` § Session Shapes and `docs/session-config-template.md`.
