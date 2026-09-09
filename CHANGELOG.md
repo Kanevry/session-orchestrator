@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **`js-yaml` `^4.3.1` → `^4.3.2`** (GHSA-2883-xcg3-v3hh, high) — pipeline #512 on `main` had failed in `npm-audit` on the old range; `npm audit --omit=dev --audit-level=high` now exits 0.
+- **`vitest` + `@vitest/coverage-v8` `^4.1.5` → `^4.1.11`** (GHSA: path traversal / arbitrary file read via `@vitest/mocker` redirect mock, moderate; dev-only) — `npm audit` now reports 0 vulnerabilities at any level; the two scaffolding templates (`templates/node-minimal`, `templates/nextjs-minimal`) move from `^3.1.0` to `^4.1.11` so Dependabot stops failing on them (`dependency_file_not_supported`, no lockfile in a template).
 
 ### Changed
 
