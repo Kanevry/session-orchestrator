@@ -69,7 +69,11 @@ beforeAll(() => {
     throw new Error(`npm pack --dry-run --json failed (exit ${r.status}): ${(r.stderr || '').trim().slice(-400)}`);
   }
   const parsed = JSON.parse(r.stdout);
-  packedPaths = (parsed?.[0]?.files ?? []).map((f) => f.path);
+  // npm <= 11 emits `[ { files } ]`; npm >= 12.0.2 emits `{ "<name>": { files } }`
+  // (measured 2026-09-09: npm 12.0.2 returned the keyed object, and reading `[0]`
+  // produced an empty packlist that failed the pre-push gate of the 4.2.0 tag push).
+  const entry = Array.isArray(parsed) ? parsed[0] : Object.values(parsed ?? {})[0];
+  packedPaths = (entry?.files ?? []).map((f) => f.path);
   if (packedPaths.length === 0) {
     throw new Error('npm pack --dry-run --json returned an empty file list — packlist not measurable');
   }
