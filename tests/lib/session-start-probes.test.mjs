@@ -120,7 +120,7 @@ describe('runSessionStartProbes — fail-open', () => {
       await fakeProbe(dir, 'fine', CLEAN),
     ];
 
-    const out = await runSessionStartProbes({ repoRoot: dir }, { probes, emit });
+    const out = await runSessionStartProbes({ repoRoot: dir }, { probes, emit, timeoutMs: 30_000 });
 
     expect(out.results).toEqual([
       expect.objectContaining({ id: 'boom', outcome: 'error' }),
@@ -146,7 +146,7 @@ describe('runSessionStartProbes — fail-open', () => {
       args: () => ({}),
     }];
 
-    const out = await runSessionStartProbes({ repoRoot: dir }, { probes, emit });
+    const out = await runSessionStartProbes({ repoRoot: dir }, { probes, emit, timeoutMs: 30_000 });
 
     expect(out.results).toEqual([
       expect.objectContaining({ id: 'ghost', outcome: 'skipped', reason: 'module-absent' }),
@@ -207,7 +207,7 @@ describe('runSessionStartProbes — what did not run is recorded', () => {
       await fakeProbe(dir, 'local', CLEAN),
     ];
 
-    const out = await runSessionStartProbes({ repoRoot: dir }, { probes, emit });
+    const out = await runSessionStartProbes({ repoRoot: dir }, { probes, emit, timeoutMs: 30_000 });
 
     expect(out.results).toContainEqual(
       expect.objectContaining({
@@ -260,7 +260,7 @@ describe('runSessionStartProbes — what did not run is recorded', () => {
       `export function probe() { return { severity: 'warn', message: 'mirror state unknown', degraded: 'cli-missing' }; }`,
     )];
 
-    const out = await runSessionStartProbes({ repoRoot: dir }, { probes, emit });
+    const out = await runSessionStartProbes({ repoRoot: dir }, { probes, emit, timeoutMs: 30_000 });
 
     expect(out.results[0]).toMatchObject({ id: 'degraded', outcome: 'ran-warn' });
     expect(out.bannerLines).toContain('mirror state unknown');
@@ -278,7 +278,7 @@ describe('runSessionStartProbes — telemetry destination', () => {
     const probes = [await fakeProbe(dir, 'fine', CLEAN)];
 
     // The REAL emitter, on purpose — the pin is what is under test.
-    await runSessionStartProbes({ repoRoot: dir }, { probes });
+    await runSessionStartProbes({ repoRoot: dir }, { probes, timeoutMs: 30_000 });
 
     const ledger = path.join(dir, '.orchestrator', 'metrics', 'events.jsonl');
     const lines = (await fs.readFile(ledger, 'utf8')).trim().split('\n');
