@@ -11,7 +11,7 @@
 > - `memory.proposals.enabled` is `false` (default: `true`)
 > - `.orchestrator/metrics/proposals.jsonl` does not exist OR contains zero entries
 
-After learnings are written (Phase 3.6) and BEFORE auto-dream dispatch (Phase 3.6.5), collect agent-proposed memory entries written during this session and present them to the operator via `AskUserQuestion` multiSelect. Approved entries flow to `learnings.jsonl` with `_provenance: agent-proposed@<wave-id>`. Rejected entries are archived to `.orchestrator/proposals.rejected.log`.
+After learnings are written (Phase 3.6) and BEFORE the Skill-Applied Judge (Phase 3.6.6 — Phase 3.6.5 is retired), collect agent-proposed memory entries written during this session and present them to the operator via `AskUserQuestion` multiSelect. Approved entries flow to `learnings.jsonl` with `_provenance: agent-proposed@<wave-id>`. Rejected entries are archived to `.orchestrator/proposals.rejected.log`.
 
 The proposals queue is populated mid-session by wave-executor agents calling `node scripts/memory-propose.mjs --type ... --subject ... --insight ... --evidence ... --confidence ...`. The CLI enforces:
 - Quota per wave (default 5, configurable via `memory.proposals.quota-per-wave`)
@@ -138,40 +138,29 @@ The proposals queue is populated mid-session by wave-executor agents calling `no
 
 > Best-effort, non-blocking. Skip silently if the sweep script errors or `.orchestrator/metrics/learnings.jsonl` is absent.
 
-After learnings are written (Phase 3.6), run `node scripts/sweep-expired-learnings.mjs --json` (dry-run) against the learnings store. If the summary reports `archived > 0`, follow with `node scripts/sweep-expired-learnings.mjs --apply --json` to move the stale-past-grace entries into `.orchestrator/metrics/learnings-archive.jsonl` (append-only, never deleted). Note the resulting counts for the Phase 6 Final Report; any error surfaces on stderr with a non-zero exit (`1` usage error, `2` sweep failure) and never blocks close — the CLI does not write to `.orchestrator/metrics/sweep.log` (that path is the session-registry's own sweep log, unrelated to this CLI).
+**MECHANICAL since 2026-09-09.** This phase is no longer a two-command prose recipe ("run `--json`, then `--apply --json` when `archived > 0`") — that recipe was the reason the apply path had ZERO session-end callers: measured across three consumer repos, 0 sweeps had ever been applied and 628 learnings were resident in the active stores. The dry-run decision already lives in `planTailPhases()`; the APPLY half now lives in `scripts/lib/session-end/tail-runner.mjs`.
 
-### 3.6.5 Auto-Dream Dispatch (#502, F2.2)
+After learnings are written (Phase 3.6) and `planTailPhases()` has produced its `plan` (see § "Phase 3.6.x Tail — Mechanical Skip-Plan" in `references/phase-3-documentation-updates.md`), call `runTailPhases` ONCE and read the `3.6.4` slot of its keyed result:
 
-> Skip this phase if `memory-cleanup-threshold: 0` (kill-switch per PRD F2.2). Also skip on non-Claude-Code platforms (memory dir at `~/.claude/projects/` is Claude Code-only, mirrors Phase 3.5 gate).
+```javascript
+import { runTailPhases } from '${PLUGIN_ROOT}/scripts/lib/session-end/tail-runner.mjs';
 
-After learnings are written (Phase 3.6), determine whether to emit a **manual-cadence nudge** to run `/memory-cleanup --dry-run` in the next session. The decision uses MEMORY.md line count and a sessions-since-last-cleanup signal. There is no `memory-cleanup` agent in the registry, so the historical auto-dream subagent dispatch never fired (see #614) — the nudge replaces it. A manually-run `/memory-cleanup --dry-run` writes a complete-replacement MEMORY.md proposal (single fenced ` ```markdown ` block — never git-style diff hunks, see #717) to `.orchestrator/pending-dream.md` for the session after that to apply via `/memory-cleanup --apply-pending`. <!-- path-check: example -->
+const tail = await runTailPhases({ repoRoot: process.cwd(), plan });
+const sweep = tail['3.6.4'];
+// { ran: true, scanned, archived, archivePath } | { ran: false, reason: 'plan-skip' | 'no-plan' | 'error', error? }
+```
 
-1. Read `memory-cleanup-threshold` (default 5) and `memory-cleanup-soft-limit` (default 180) from `$CONFIG`.
-2. Invoke `shouldDispatchAutoDream` from `scripts/lib/auto-dream.mjs`:
+- `runTailPhases` delegates to `runExpiredSweep({ repoRoot, plan, now })` — the same module's single-phase entry point — and returns a KEYED shape so a caller keeps working when a second phase becomes mechanical. Today exactly one phase is: 3.6.3, 3.6.5–3.6.8 stay coordinator-executed because they are AUQ-gated or need a subagent dispatch a library function cannot make.
+- **Never throws, fails CLOSED.** Any error yields `{ ran: false, reason: 'error' }` and the close proceeds. Stale-past-grace entries move into `.orchestrator/metrics/learnings-archive.jsonl` (append-only, never deleted).
+- **Report** `sweep.ran`, `sweep.scanned` and `sweep.archived` in the Phase 6 Final Report, e.g. `expired-sweep: 12 archived of 640 scanned`. When `ran: false`, report the `reason` instead — a skipped sweep is a stated outcome, never silence.
+- **The proof it ran is the event `orchestrator.learnings.sweep_applied`** in `.orchestrator/metrics/events.jsonl` (payload source `session-end-3.6.4`, which separates it from the standalone CLI). A close claiming a sweep with no such event did not sweep.
 
-   ```javascript
-   import { shouldDispatchAutoDream } from '${PLUGIN_ROOT}/scripts/lib/auto-dream.mjs';
-   import { resolveMemoryDir } from '${PLUGIN_ROOT}/scripts/lib/memory-paths.mjs';
-   const repoRoot = process.cwd();
-   const memoryDir = resolveMemoryDir(repoRoot);
-   const decision = await shouldDispatchAutoDream({
-     repoRoot,
-     memoryDir,
-     threshold: config['memory-cleanup-threshold'] ?? 5,
-     softLimit: config['memory-cleanup-soft-limit'] ?? 180,
-   });
-   ```
-3. If `decision.trigger === false`: log `auto-dream: not triggered (${decision.reason})` and continue. Emit no nudge.
-4. If `decision.trigger === true`: **do not dispatch a subagent** — there is no `memory-cleanup` agent in `agents/`, so the historical `Agent({…})` dispatch pointed at the agent name `memory-cleanup` (a subagent type that was never built) and never fired (see #614). Instead, emit a manual-cadence nudge and continue:
+The standalone `node scripts/sweep-expired-learnings.mjs --apply --json` CLI remains available for manual/out-of-session use; it is no longer the session-end path.
 
-   `auto-dream: cadence reached (${decision.reason}) — run /memory-cleanup --dry-run manually in the next session, then apply the proposal with /memory-cleanup --apply-pending.`
+### 3.6.5 Auto-Dream Dispatch (#502, F2.2) — RETIRED
 
-   The `shouldDispatchAutoDream` decision helper and `scripts/lib/auto-dream.mjs` lib stay in use: they compute the signal that drives this nudge and back the manual `/memory-cleanup` path (`writePendingDream` / `readPendingDream` / `applyPendingDream`).
-5. Record the outcome (skipped / nudge-emitted) so Phase 6 Final Report can surface a line: `auto-dream: manual /memory-cleanup --dry-run recommended (cadence reached) — apply with /memory-cleanup --apply-pending next session`.
-
-The pending-dream sidecar at `.orchestrator/pending-dream.md` is intentionally outside the vault tree — vault-mirror (Phase 3.7) must exclude it from its scope so the proposal survives the session close without being mirrored into 50-sessions/. <!-- path-check: example -->
-
-Cross-reference: PRD F2.2 acceptance criteria; `scripts/lib/auto-dream.mjs` API (`shouldDispatchAutoDream`, `readDreamSignals`, `writePendingDream`, `readPendingDream`, `applyPendingDream`).
+> **RETIRED 2026-09-09.** The nudge is replaced by the session-start `maintenance-due` probe (`checkMaintenanceDue`, `scripts/lib/maintenance-due-banner.mjs`), whose `memory-cleanup` signal reuses the very same `shouldDispatchAutoDream` decision — a nudge emitted while the operator is closing down was read by nobody. Its decider is also gone from `planTailPhases()` in `scripts/lib/session-end/phase-skip.mjs`; the heading stays because other docs cite it.
+> The housekeeping session runs `/memory-cleanup` itself (see `skills/session-start/SKILL.md` Phase 7 — the maintenance loop). `scripts/lib/auto-dream.mjs` (`shouldDispatchAutoDream`, `readDreamSignals`, `writePendingDream`, `readPendingDream`, `applyPendingDream`) stays in use: the probe reads it, and `/memory-cleanup --dry-run` / `--apply-pending` still write and consume `.orchestrator/pending-dream.md`. <!-- path-check: example -->
 
 ### 3.6.6 Skill-Applied Judge (#645, L3)
 
@@ -181,7 +170,7 @@ Cross-reference: PRD F2.2 acceptance criteria; `scripts/lib/auto-dream.mjs` API 
 >
 > When skipped, log `skill-judge: disabled (skill-evolution.judge=false)` (or `persistence=false`) and return. **This is the disabled-path guarantee:** with the judge off, only L1 (`skill-invocations.jsonl`, written by the PreToolUse hook) and L2 (`scripts/lib/skill-health/join.mjs`) records exist — no judgment, no error, zero L3 code executes. Do NOT import `scripts/lib/skill-judge.mjs` on the disabled path.
 
-After learnings are written (Phase 3.6) and the auto-dream decision is made (Phase 3.6.5), and when the judge is enabled, run a **bounded, read-only LLM-judge** over this session's selected skills to emit ADVISORY per-skill applied/completed judgments to `.orchestrator/metrics/skill-judgments.jsonl`.
+After learnings are written (Phase 3.6), and when the judge is enabled, run a **bounded, read-only LLM-judge** over this session's selected skills to emit ADVISORY per-skill applied/completed judgments to `.orchestrator/metrics/skill-judgments.jsonl`.
 
 **The #614 distinction (the whole point of L3's Design A):** unlike the 3.6.5 / 3.6.7 nudge-only paths — which cannot dispatch a live subagent because the target read-only agents (`memory-cleanup`, `dialectic-deriver`) cannot write their own sidecars — L3 performs a **LIVE read-only dispatch**. This is #614-safe because the read-only `skill-applied-judge` agent **RETURNS JSON** and the **COORDINATOR writes the sidecar**, not the agent. A read-only agent that returns judgments is allowed; a read-only agent that must write a file is the #614 trap.
 
@@ -238,41 +227,10 @@ After learnings are written (Phase 3.6) and the auto-dream decision is made (Pha
 
 Cross-reference: PRD §A L3 acceptance criteria (#645, epic #643); `scripts/lib/skill-judge.mjs` API (`runSkillJudge`, `validateModel`, `estimateInputTokens`, `checkBudget`, `buildJudgePrompt`, `parseJudgeResponse`); `scripts/lib/skill-judgments-schema.mjs` (`appendSkillJudgment`, `readSkillJudgments`, `validateSkillJudgment`); agent `agents/skill-applied-judge.md`.
 
-### 3.6.7 Auto-Dialectic Dispatch (#506, F2.5)
+### 3.6.7 Auto-Dialectic Dispatch (#506, F2.5) — RETIRED
 
-> Skip this phase if `dialectic.cadence: 0` (kill-switch per PRD F2.5 AC3). Also skip if `persistence` is `false` in Session Config.
-
-After learnings are written (Phase 3.6) and the auto-dream decision is made (Phase 3.6.5), determine whether to emit a **manual-cadence nudge** to run `/evolve --dialectic` in the next session. The decision uses sessions-since-last-dialectic counted against `.orchestrator/dialectic-last-run`. There is no `evolve` agent in the registry, and the nearest one (`dialectic-deriver`) is `sandbox-tier: read-only` and cannot write the sidecar — so the historical auto-dialectic subagent dispatch never fired (see #614). On trigger, emit the nudge and advance `.orchestrator/dialectic-last-run`; the timestamp is updated only when the nudge is emitted (not on skip), so the reminder surfaces once per cadence window rather than every session. A manually-run `/evolve --dialectic --dry-run` writes the proposed diff to `.orchestrator/dialectic-pending.md`. <!-- path-check: example -->
-
-1. Read `dialectic.cadence` (default 5), `dialectic.model` (default haiku), `dialectic.budget-tokens` (default 8000) from `$CONFIG`.
-
-2. Invoke `decideAndRecordAutoDialectic` from `scripts/lib/auto-dialectic.mjs`:
-   ```javascript
-   import { decideAndRecordAutoDialectic } from '${PLUGIN_ROOT}/scripts/lib/auto-dialectic.mjs';
-   const decision = await decideAndRecordAutoDialectic({
-     repoRoot: process.cwd(),
-     cadence: config.dialectic?.cadence ?? 5,
-   });
-   ```
-   Same return shape as `shouldDispatchAutoDialectic` (`{trigger, reason, signals}`) — `decideAndRecordAutoDialectic` calls it internally and additionally emits the mechanical `orchestrator.dialectic.nudge_decided` telemetry record on all four return paths (#1200 part c), so the nudge decision is observable without depending on this prose actually reaching step 5/7.
-
-3. If `decision.trigger === false`: log `auto-dialectic: not triggered (${decision.reason})` and continue. Emit no nudge. Do NOT update `.orchestrator/dialectic-last-run`.
-
-4. **AC4 precondition guard:** Even if cadence met, if `signals.sessionsSinceLast === 0 && signals.learningsSinceLast === 0`, skip with reason `no-new-input-since-last-run`. The Final Report (Phase 6) MUST include the literal string `dialectic: skipped (no new input since last run)`.
-
-5. If `decision.trigger === true`: **do not dispatch a subagent** (see #614 — no `evolve` agent exists; `dialectic-deriver` is read-only and cannot write the sidecar). Instead, emit a manual-cadence nudge and continue:
-
-   `auto-dialectic: cadence reached (${decision.reason}) — run /evolve --dialectic --dry-run manually in the next session, review .orchestrator/dialectic-pending.md, then apply with /evolve --dialectic --apply.`
-
-   The `shouldDispatchAutoDialectic` decision helper and `scripts/lib/auto-dialectic.mjs` lib stay in use: they compute the cadence signal that drives this nudge.
-
-6. When the nudge is emitted (cadence reached), update `.orchestrator/dialectic-last-run` via `writeDialecticLastRun({ repoRoot, isoTimestamp: new Date().toISOString() })` so the cadence counter advances and the nudge does not repeat every session. Atomic; failures non-fatal.
-
-7. Record outcome (skipped / nudge-emitted) for Phase 6 Final Report: `auto-dialectic: manual /evolve --dialectic --dry-run recommended (cadence reached) — apply with /evolve --dialectic --apply next session`.
-
-The `.orchestrator/dialectic-pending.md` sidecar is intentionally outside the vault tree — vault-mirror (Phase 3.7) MUST exclude it from its scope. <!-- path-check: example -->
-
-Cross-reference: PRD F2.5 acceptance criteria (#506); `scripts/lib/auto-dialectic.mjs` API.
+> **RETIRED 2026-09-09.** The nudge is replaced by the session-start `maintenance-due` probe (`checkMaintenanceDue`, `scripts/lib/maintenance-due-banner.mjs`), whose `dialectic` signal reads the side-effect-free `shouldDispatchAutoDialectic` (never `decideAndRecordAutoDialectic`, which would consume the very signal it reports). Its decider is also gone from `planTailPhases()` in `scripts/lib/session-end/phase-skip.mjs`; the heading stays because other docs cite it.
+> The housekeeping session runs `/evolve dialectic` itself (see `skills/session-start/SKILL.md` Phase 7 — the maintenance loop): dry-run first, review `.orchestrator/dialectic-pending.md`, then apply. `scripts/lib/auto-dialectic.mjs` (`shouldDispatchAutoDialectic`, `decideAndRecordAutoDialectic`, `writeDialecticLastRun`) and the read-only `dialectic-deriver` agent stay in use on that manual path. <!-- path-check: example -->
 
 > **Dialectic chain rationale** — design choices in the manual `/evolve --dialectic` chain (`/evolve → runDialecticDeriver → dispatchAgent → Agent`). Session-end no longer auto-dispatches this chain (see #614 — the `evolve` agent never existed); the rationale below applies when you run `/evolve --dialectic` manually:
 > - **/evolve → subagent (not direct invoke):** the manual `/evolve --dialectic` skill spawns a subagent so the dialectic pass runs in a fresh context window — keeping the deriver's input-heavy payload (top-50 learnings + last-10 sessions + 2 peer cards + steering) out of the invoking coordinator's context, and letting the deriver run as Haiku while the coordinator stays Opus.
@@ -286,7 +244,7 @@ Cross-reference: PRD F2.5 acceptance criteria (#506); `scripts/lib/auto-dialecti
 > - `reconcile.enabled` is `false` (default: `false` — opt-in; this is the silent no-op path for all repos that have not opted in)
 > - `.orchestrator/metrics/learnings.jsonl` does not exist OR contains zero entries
 
-After the auto-dialectic nudge decision is made (Phase 3.6.7), and when the reconcile engine is enabled, run the **reconciliation engine** to turn high-confidence learnings into conditional-rule proposals and present them to the operator via `AskUserQuestion` multiSelect. Approved proposals flow to `.claude/rules/` via `writeApprovedRules`. Rejected proposals are archived to `.orchestrator/reconcile.rejected.log`. The engine NEVER writes `.claude/rules/` itself — every write is operator-AUQ-gated (#693 FA2/FA3 brandmauer).
+After the Skill-Applied Judge (Phase 3.6.6 — Phase 3.6.7 is retired), and when the reconcile engine is enabled, run the **reconciliation engine** to turn high-confidence learnings into conditional-rule proposals and present them to the operator via `AskUserQuestion` multiSelect. Approved proposals flow to `.claude/rules/` via `writeApprovedRules`. Rejected proposals are archived to `.orchestrator/reconcile.rejected.log`. The engine NEVER writes `.claude/rules/` itself — every write is operator-AUQ-gated (#693 FA2/FA3 brandmauer).
 
 #### Coordinator-direct procedure
 

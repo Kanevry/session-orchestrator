@@ -205,7 +205,7 @@ Group issues by:
 
 ## Phase 4: SSOT & Environment Check
 
-> Always runs; every finding is a NON-BLOCKING banner in the Session Overview (never a gate — the Full Gate is the Quality wave's job). Covers SSOT freshness, the Baseline quality commands (resolved `.orchestrator/policy/quality-gates.json` → Session Config → defaults, each availability-checked with `command -v`), Pencil design status, plugin + `bootstrap.lock` freshness, and the banner-probe family registered in `scripts/lib/session-start-probes.mjs` (vault-staleness, telemetry-flush-health, ci-status, qg-command-drift, peer-cards, loop-readiness, instruction-budget, reconcile-nudge, sessions-staleness, sessions-integrity, owner-config, moc-staleness, context-coverage, claude-md-budget-lint, tests:src-ratio, project-hygiene, mirror-issues, git-config-drift). Per-probe module path, return contract and exact banner wording: [`references/phase-4-ssot-environment-check.md`](references/phase-4-ssot-environment-check.md).
+> Always runs; every finding is a NON-BLOCKING banner in the Session Overview (never a gate — the Full Gate is the Quality wave's job). Covers SSOT freshness, the Baseline quality commands (resolved `.orchestrator/policy/quality-gates.json` → Session Config → defaults, each availability-checked with `command -v`), Pencil design status, plugin + `bootstrap.lock` freshness, and the banner-probe family registered in `scripts/lib/session-start-probes.mjs` (vault-staleness, telemetry-flush-health, ci-status, qg-command-drift, peer-cards, loop-readiness, instruction-budget, maintenance-due, sessions-staleness, sessions-integrity, owner-config, moc-staleness, context-coverage, claude-md-budget-lint, tests:src-ratio, project-hygiene, mirror-issues, git-config-drift). Per-probe module path, return contract and exact banner wording: [`references/phase-4-ssot-environment-check.md`](references/phase-4-ssot-environment-check.md).
 
 ## Phase 4.5: Resource Health (v3.1.0)
 
@@ -279,6 +279,20 @@ Surface context from previous sessions:
 - ALWAYS verify current state in actual code — never assume based on memory or SSOT alone
 
 **For `housekeeping` sessions:**
+
+A housekeeping session IS the **maintenance loop** — the one place the repo's own upkeep runs, which is why the session-start `maintenance-due` probe (`checkMaintenanceDue`, `scripts/lib/maintenance-due-banner.mjs`) recommends exactly this session type, and why the retired session-end nudges (Phase 3.6.5 auto-dream, 3.6.7 auto-dialectic) no longer exist: a nudge fired at close asks the operator to do here what he can only do here.
+
+Propose the **ordered default scope** below in the Phase 8 Q&A. Every step is AUQ-gated — the operator selects which of them run, none of them runs unasked:
+
+1. **Drift-check as a work-list** — `checker.mjs --mode warn` (procedure below); its `errors[]`/`warnings[]` become candidate scope.
+2. **Expired-learnings sweep** — the same sweep session-end 3.6.4 applies mechanically (`runTailPhases` / `runExpiredSweep`), run here when the `sweep` signal is due.
+3. **`/evolve analyze`** — extract this period's session patterns into learnings.
+4. **`/reconcile`** — turn high-confidence learnings into operator-approved `.claude/rules/` proposals.
+5. **`/evolve dialectic`** — dry-run first, review `.orchestrator/dialectic-pending.md`, then apply. This step dispatches the read-only `dialectic-deriver` agent, so **"coordinator-direct" means no wave-executor, not zero subagents**. <!-- path-check: example -->
+6. **`/memory-cleanup`** — `--dry-run` writes the MEMORY.md proposal to `.orchestrator/pending-dream.md`; `--apply-pending` applies it. <!-- path-check: example -->
+
+Operator-selected issues (from Phase 6) are appended AFTER this loop, not interleaved with it — the loop's outputs (new learnings, new rules) are inputs the issue work should already see.
+
 - Focus on git cleanup, documentation currency, CI health
 - Skip deep research — prioritize operational tasks
 - Run token efficiency check: `bash "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/token-audit.sh"` and include findings in Session Overview. Flag any HIGH/WARN items as recommended housekeeping tasks.
@@ -335,11 +349,13 @@ When all conditions are met, the CLI emits the banner on stderr:
 ```
 Express path activated — <N> tasks, coordinator-direct, no inter-wave checks.
 ```
-Carry that banner into Phase 9 and hand off to session-plan as usual — session-plan short-circuits to a 1-wave `coordinator-direct` plan, which is the artifact `/go` detects. Tasks are then executed coordinator-direct (bypassing wave-executor, subagent dispatch and inter-wave checkpoints) and a Deviations entry is logged in STATE.md. Silent no-op when any condition fails — proceeds normally to Phase 9.
+Carry that banner into Phase 9 and hand off to session-plan as usual — session-plan short-circuits to a 1-wave `coordinator-direct` plan, which is the artifact `/go` detects. That 1-wave plan is not a special case: it EQUALS the housekeeping shape `scripts/session-shape.mjs` resolves (`totalWaves: 1`, `coordinatorDirect: true`, one `Housekeeping` wave with `agentCap: 0`), so the express path and the ordinary housekeeping path emit the same shape and differ only in scope size. Tasks are then executed coordinator-direct (bypassing wave-executor, subagent dispatch and inter-wave checkpoints) and a Deviations entry is logged in STATE.md. Silent no-op when any condition fails — proceeds normally to Phase 9.
 
 **See `phase-8-5-express-path.md` for full details.**
 
 ## Phase 9: Handoff to Session Plan
+
+> **Record the wave shape ONCE, here, at plan time.** Run `node scripts/session-shape.mjs --repo-root "$PWD" --session-type <housekeeping|feature|deep> [--profile ultradeep] [--known-scope true|false] --task-count <N>` — the CLI wraps `resolveAndRecordSessionShape` / `resolveSessionShape` from `scripts/lib/session-shape.mjs`, prints ONE JSON line (`totalWaves`, `discovery`, `coordinatorDirect`, `waves[]`, `notes[]`) and records the event `orchestrator.session.shape_resolved`. session-plan CONSUMES that JSON instead of re-deriving the wave count; never hand-write a wave count that the shape already answers. Add `--no-event` only for a planning dry-run.
 
 After user alignment:
 1. Invoke the **session-plan** skill with the agreed scope

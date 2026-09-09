@@ -6,11 +6,23 @@
  * the close-out abort-attractor: six phases, each ~50 lines of coordinator prose,
  * that in the overwhelming majority of sessions do nothing (no proposals queued,
  * nothing expired, under cadence, judge off, reconcile off). This aggregator
- * computes — side-effect-free — WHICH of the six should actually run, so the
+ * computes — side-effect-free — WHICH of them should actually run, so the
  * coordinator loads only the detail procedure for the `run: true` phases and
  * emits a one-line `skippedReport` for the rest.
  *
- * Every one of the six phases already ships a mechanical fast-path in its own lib
+ * FOUR phases are still LIVE and decided here: 3.6.3, 3.6.4, 3.6.6, 3.6.8.
+ * TWO are RETIRED (2026-09-09) and always emit a `run: false` entry with
+ * `inputSource: 'retired'`: 3.6.5 Auto-Dream and 3.6.7 Auto-Dialectic. Both
+ * nudges are now computed once at SESSION-START by the `maintenance-due` probe
+ * (`scripts/lib/maintenance-due-banner.mjs`), which runs the same
+ * `shouldDispatchAutoDream` / `shouldDispatchAutoDialectic` signals and
+ * recommends `/session housekeeping`. Measured across three consumer repos the
+ * close-time nudges fired (`orchestrator.dialectic.nudge_decided`,
+ * `decided: true`, sessions_since 23/8/6) and were never acted on — computing
+ * them at every close was pure cost. The plan SHAPE is unchanged (still six
+ * entries, same ids, same order) so every reader keeps working.
+ *
+ * Each of the four live phases already ships a mechanical fast-path in its own lib
  * (a config kill-switch, an `existsSync` short-circuit, or a cadence/trigger
  * decision). This module WRAPS those existing signals — it never re-implements
  * their logic. Config gates run FIRST as the cheap short-circuit (no disk touch),
@@ -34,9 +46,10 @@
  * @property {boolean} run         - true → coordinator runs the detail procedure.
  * @property {string}  reason      - human-readable reason for the decision.
  * @property {string}  inputSource - which signal drove the decision
- *   ('config-gate' | 'proposals.jsonl' | 'sweep-dry-run' | 'auto-dream-signal' |
- *    'skill-invocations.jsonl' | 'auto-dialectic-signal' | 'reconcile-dry-run' |
- *    'learnings.jsonl' | 'probe-error').
+ *   ('config-gate' | 'proposals.jsonl' | 'sweep-dry-run' |
+ *    'skill-invocations.jsonl' | 'reconcile-dry-run' | 'learnings.jsonl' |
+ *    'retired' | 'probe-error'). `'retired'` is emitted only by the two
+ *    permanently-skipped phases 3.6.5 / 3.6.7 — no signal was consulted at all.
  * @property {string[]} [targets] - 3.6.8 only, RUN decisions only: the effective
  *   reconcile write-targets (issue #1099). Additive — absent on every other phase.
  * @property {string|null} [baselineRoot] - 3.6.8 only, RUN decisions only: the
@@ -52,11 +65,38 @@ import path from 'node:path';
 
 import { collectProposals } from '../memory-proposals/collector.mjs';
 import { sweepExpiredLearnings } from '../learnings/expiry-sweep.mjs';
-import { shouldDispatchAutoDream } from '../auto-dream.mjs';
-import { shouldDispatchAutoDialectic } from '../auto-dialectic.mjs';
 import { readSkillInvocations } from '../skill-invocations-schema.mjs';
 import { runReconcileFromPhaseSkip, resolveEffectiveTargets } from '../reconcile/engine.mjs';
-import { resolveMemoryDir } from '../memory-paths.mjs';
+
+// NOTE (2026-09-09): `shouldDispatchAutoDream` / `shouldDispatchAutoDialectic`
+// are deliberately NOT imported here any more — 3.6.5 and 3.6.7 are retired and
+// the two signals are computed once at session-start by the `maintenance-due`
+// probe. Re-adding either import is the regression this module's test suite
+// guards against.
+
+// ---------------------------------------------------------------------------
+// Shared path resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the learnings store + archive sidecar paths for a repo.
+ *
+ * Exported because `session-end/tail-runner.mjs` (the APPLY counterpart to the
+ * 3.6.4 dry-run decision below) must sweep exactly the pair this decision
+ * probed. Two hand-written `path.join(repoRoot, '.orchestrator', 'metrics', …)`
+ * recipes are one rename away from the planner deciding on one store while the
+ * runner rewrites another.
+ *
+ * @param {string} repoRoot
+ * @returns {{filePath: string, archivePath: string}}
+ */
+export function resolveLearningsPaths(repoRoot) {
+  const dir = path.join(repoRoot, '.orchestrator', 'metrics');
+  return {
+    filePath: path.join(dir, 'learnings.jsonl'),
+    archivePath: path.join(dir, 'learnings-archive.jsonl'),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Decision constructors
@@ -92,6 +132,23 @@ function mkProbeError(phase, err) {
   return decision(phase, true, `probe-error: ${msg}`, 'probe-error');
 }
 
+/** Phase ids retired on 2026-09-09 — kept in the plan, never decided. */
+const RETIRED_PHASES = new Set(['3.6.5', '3.6.7']);
+
+/** The reason string every retired phase carries, verbatim. */
+const RETIRED_REASON = 'retired 2026-09-09 — replaced by session-start maintenance-due probe';
+
+/**
+ * Permanent skip for a retired phase. No signal is read and no config key is
+ * consulted — not even a kill-switch, because there is nothing left to switch.
+ *
+ * @param {string} phase
+ * @returns {PhaseDecision}
+ */
+function mkRetired(phase) {
+  return mkSkip(phase, RETIRED_REASON, 'retired');
+}
+
 // ---------------------------------------------------------------------------
 // Config / platform helpers
 // ---------------------------------------------------------------------------
@@ -99,17 +156,6 @@ function mkProbeError(phase, err) {
 /** persistence is off only when explicitly `false`; absent → treated as on. */
 function isPersistenceOff(cfg) {
   return cfg && cfg.persistence === false;
-}
-
-/**
- * MEMORY.md (Auto-Dream signal source) lives under `~/.claude/projects/` — a
- * Claude Code-only path. Absent platform → treated as Claude Code (the common
- * coordinator context); any explicit non-Claude platform gates 3.6.5 off.
- */
-function isClaudePlatform(platform) {
-  if (platform === undefined || platform === null || platform === '') return true;
-  const p = String(platform).toLowerCase();
-  return p === 'claude' || p === 'claude-code' || p === 'claudecode';
 }
 
 // ---------------------------------------------------------------------------
@@ -149,50 +195,14 @@ async function decideMemoryProposals({ repoRoot, cfg }) {
 async function decideExpiredSweep({ repoRoot }) {
   const phase = '3.6.4';
   try {
-    const filePath = path.join(repoRoot, '.orchestrator', 'metrics', 'learnings.jsonl');
+    const { filePath, archivePath } = resolveLearningsPaths(repoRoot);
     if (!existsSync(filePath)) return mkSkip(phase, 'learnings.jsonl absent', 'learnings.jsonl');
-    const archivePath = path.join(
-      repoRoot,
-      '.orchestrator',
-      'metrics',
-      'learnings-archive.jsonl',
-    );
     const res = await sweepExpiredLearnings({ filePath, archivePath, dryRun: true });
     if (!res || res.archived === 0) {
       return mkSkip(phase, `nothing archive-eligible (scanned=${res?.scanned ?? 0})`, 'sweep-dry-run');
     }
     const plural = res.archived === 1 ? 'y' : 'ies';
     return mkRun(phase, `${res.archived} entr${plural} archive-eligible`, 'sweep-dry-run');
-  } catch (err) {
-    return mkProbeError(phase, err);
-  }
-}
-
-/**
- * 3.6.5 Auto-Dream nudge (#502). Config gate (kill-switch threshold=0, platform)
- * → then `shouldDispatchAutoDream` (trigger:false branches → skip).
- */
-async function decideAutoDream({ repoRoot, cfg, platform, memoryDir }) {
-  const phase = '3.6.5';
-  try {
-    const threshold = cfg?.['memory-cleanup-threshold'] ?? 5;
-    if (threshold === 0) {
-      return mkSkip(phase, 'kill-switch (memory-cleanup-threshold=0)', 'config-gate');
-    }
-    if (!isClaudePlatform(platform)) {
-      return mkSkip(phase, 'non-Claude-Code platform (memory dir unavailable)', 'config-gate');
-    }
-    // #1071: same root as the `repoRoot` handed to shouldDispatchAutoDream below —
-    // a cwd-derived memory dir made the two halves of this decision disagree.
-    const dir = memoryDir ?? resolveMemoryDir(repoRoot);
-    const dec = await shouldDispatchAutoDream({
-      repoRoot,
-      memoryDir: dir,
-      threshold,
-      softLimit: cfg?.['memory-cleanup-soft-limit'] ?? 180,
-    });
-    if (!dec.trigger) return mkSkip(phase, dec.reason, 'auto-dream-signal');
-    return mkRun(phase, dec.reason, 'auto-dream-signal');
   } catch (err) {
     return mkProbeError(phase, err);
   }
@@ -235,25 +245,6 @@ async function decideSkillJudge({ repoRoot, cfg, sessionId }) {
       return mkSkip(phase, 'empty-input (no selected skills this session)', 'skill-invocations.jsonl');
     }
     return mkRun(phase, `${judged.size} selected skill(s) to judge`, 'skill-invocations.jsonl');
-  } catch (err) {
-    return mkProbeError(phase, err);
-  }
-}
-
-/**
- * 3.6.7 Auto-Dialectic nudge (#506). Config gate (persistence, kill-switch
- * cadence=0) → then `shouldDispatchAutoDialectic` (the reference implementation
- * of the no-new-input-since-last-run pattern via `.orchestrator/dialectic-last-run`).
- */
-async function decideAutoDialectic({ repoRoot, cfg }) {
-  const phase = '3.6.7';
-  try {
-    if (isPersistenceOff(cfg)) return mkSkip(phase, 'persistence=false', 'config-gate');
-    const cadence = cfg?.dialectic?.cadence ?? 5;
-    if (cadence === 0) return mkSkip(phase, 'kill-switch (dialectic.cadence=0)', 'config-gate');
-    const dec = await shouldDispatchAutoDialectic({ repoRoot, cadence });
-    if (!dec.trigger) return mkSkip(phase, dec.reason, 'auto-dialectic-signal');
-    return mkRun(phase, dec.reason, 'auto-dialectic-signal');
   } catch (err) {
     return mkProbeError(phase, err);
   }
@@ -354,37 +345,45 @@ export function buildSkippedReport(plan) {
 // ---------------------------------------------------------------------------
 
 /**
- * Compute the run/skip plan for the six session-end Phase 3.6.x tail phases.
+ * Compute the run/skip plan for the six session-end Phase 3.6.x tail phase ids
+ * — four decided from live signals, two permanently retired (see the module
+ * header). The plan keeps all six entries, in id order, so readers that index
+ * by phase id are unaffected by the retirement.
  *
- * NEVER throws — each phase probe fail-opens to `run: true`, and the top-level
- * guard converts any unexpected error into an all-run plan so the coordinator
- * runs the full tail rather than silently skipping it.
+ * NEVER throws — each live phase probe fail-opens to `run: true`, and the
+ * top-level guard converts any unexpected error into an all-run plan so the
+ * coordinator runs the full tail rather than silently skipping it. The two
+ * retired phases stay `run: false` even on that error path: fail-open exists to
+ * avoid LOSING a phase, and a retired phase has no procedure left to lose.
  *
  * @param {object} args
  * @param {string}  args.repoRoot   Absolute repo root.
  * @param {object}  args.config     Parsed Session Config object (from parse-config.mjs).
  * @param {string|null} [args.sessionId] Current session id (for the 3.6.6 judged-set filter).
- * @param {string}  [args.platform] Platform id ('claude' | 'codex' | 'cursor' | …).
- * @param {string}  [args.memoryDir] Optional Auto-Dream memory dir override (default resolveMemoryDir(repoRoot)).
+ * @param {string}  [args.platform] ACCEPTED AND IGNORED since the 3.6.5 retirement
+ *   (2026-09-09) — the platform gate existed only for the Auto-Dream memory dir.
+ *   Kept in the signature because live callers still pass it.
+ * @param {string}  [args.memoryDir] ACCEPTED AND IGNORED, same reason as `platform`.
  * @returns {Promise<TailPlan>}
  */
-export async function planTailPhases({ repoRoot, config, sessionId, platform, memoryDir } = {}) {
+export async function planTailPhases({ repoRoot, config, sessionId } = {}) {
   const cfg = config ?? {};
   try {
     const plan = await Promise.all([
       decideMemoryProposals({ repoRoot, cfg }),
       decideExpiredSweep({ repoRoot }),
-      decideAutoDream({ repoRoot, cfg, platform, memoryDir }),
+      mkRetired('3.6.5'),
       decideSkillJudge({ repoRoot, cfg, sessionId }),
-      decideAutoDialectic({ repoRoot, cfg }),
+      mkRetired('3.6.7'),
       decideReconcile({ repoRoot, cfg }),
     ]);
     return { plan, skippedReport: buildSkippedReport(plan) };
   } catch (err) {
-    // Top-level fail-open guard: run the full tail rather than lose it silently.
+    // Top-level fail-open guard: run the full LIVE tail rather than lose it
+    // silently. Retired phases are never resurrected by an error.
     const msg = err && err.message ? err.message : String(err);
     const plan = ['3.6.3', '3.6.4', '3.6.5', '3.6.6', '3.6.7', '3.6.8'].map((p) =>
-      decision(p, true, `probe-error: ${msg}`, 'probe-error'),
+      RETIRED_PHASES.has(p) ? mkRetired(p) : decision(p, true, `probe-error: ${msg}`, 'probe-error'),
     );
     return { plan, skippedReport: buildSkippedReport(plan) };
   }

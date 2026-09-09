@@ -468,6 +468,27 @@ describe('evaluateWaveResourceGate — heavy-repo preflight cap (#60)', () => {
     expect(result.reasons.some((r) => r.includes('heavy-repo: true caps agents-per-wave to 4 (HR-004)'))).toBe(true);
   });
 
+  test('stays mode-blind after the resolveAgentCap migration: `6 (deep: 18)` resolves to 6, never 18', async () => {
+    // The migration hazard (wave 3): this gate has no session mode in scope
+    // (`waveRole` is "Impl-Core", not "deep"), so passing a guessed `'deep'` to
+    // the now-shared, mode-AWARE resolver would silently lift the ceiling from 6
+    // to 18 — leaving plannedAgents 12 uncapped on a heavy repo. `{default: 6,
+    // deep: 18}` is this repo's own committed Session Config value.
+    const config = makeConfig({
+      'heavy-repo': true,
+      'agents-per-wave': { default: 6, deep: 18 },
+    });
+    const result = await evaluateWaveResourceGate({
+      config,
+      plannedAgents: 12,
+      waveRole: 'Impl-Core',
+      probeOverride: makeOverride(),
+    });
+    expect(result.decision).toBe('reduce');
+    expect(result.agents).toBe(6);
+    expect(result.reasons.some((r) => r.includes('heavy-repo: true caps agents-per-wave to 6 (HR-004)'))).toBe(true);
+  });
+
   test('does not clamp when plannedAgents is already within the heavy-repo cap', async () => {
     const config = makeConfig({ 'heavy-repo': true, 'agents-per-wave': 8 });
     const result = await evaluateWaveResourceGate({

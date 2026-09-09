@@ -14,9 +14,9 @@
  * (PRD docs/prd/2026-09-06-ultradeep-session-profile.md AC-2 / AC-4.)
  *
  * NOT A PROSE PIN (`.claude/rules/test-value.md` TV-002c). No sentence is
- * asserted. Three STRUCTURES are extracted and compared as data: the
- * Role-to-Wave table row, the per-wave agent-count table, and the plan item
- * that carries the exception's two markers.
+ * asserted. Since 2026-09-09 the wave table is CODE (`scripts/lib/session-shape.mjs`);
+ * this file checks the prose→code seam and the plan item that carries the
+ * exception's two markers, extracted as data.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -33,17 +33,6 @@ function tableRows(text) {
     .filter((l) => l.trim().startsWith('|') && l.trim().endsWith('|'))
     .map((l) => l.trim().slice(1, -1).split('|').map((c) => c.trim()))
     .filter((cells) => !cells.every((c) => /^-{2,}$/.test(c.replace(/:/g, ''))));
-}
-
-/** `W1=Role, W2=Other (note, note)` → { 1: 'Role', 2: 'Other' } */
-function parseWaveMapping(cell) {
-  const out = {};
-  for (const part of cell.split(/,\s*(?=W\d+\s*=)/)) {
-    const m = part.match(/^W(\d+)\s*=\s*(.+)$/);
-    if (!m) continue;
-    out[Number(m[1])] = m[2].replace(/\s*\(.*$/, '').trim();
-  }
-  return out;
 }
 
 /** Key/value pairs of the first fenced block after `marker`, `- ` bullets stripped. */
@@ -63,45 +52,30 @@ function planItemAfter(text, marker) {
   return out;
 }
 
-const ultradeepRow = tableRows(SKILL).find(
-  (cells) => cells.length === 2 && cells[0].includes('ultradeep')
-);
+const { resolveSessionShape } = await import('@lib/session-shape.mjs');
 
-describe('ultradeep 7-wave shape (skills/session-plan/SKILL.md)', () => {
-  it('the Role-to-Wave table carries a row keyed on the profile', () => {
-    expect(ultradeepRow).toBeDefined();
-    expect(ultradeepRow[0]).toContain('session-profile');
+describe('ultradeep 7-wave shape — prose cites the shape, the shape carries the table', () => {
+  // Since 2026-09-09 the wave table lives in scripts/lib/session-shape.mjs
+  // (tests/lib/session-shape.test.mjs pins its numbers). What THIS file now
+  // guards is the seam: session-plan must route the coordinator to that
+  // resolver for the ultradeep profile, and the resolver must still produce
+  // the Synthesis-Gate the empty-role exception below protects. If either
+  // half regresses, a 7-wave plan silently becomes something else.
+  it('§ Role-to-Wave Mapping routes to scripts/session-shape.mjs with the --profile ultradeep flag', () => {
+    const section = SKILL.slice(SKILL.indexOf('### Role-to-Wave Mapping'), SKILL.indexOf('**Empty roles:**'));
+    expect(section).toContain('scripts/session-shape.mjs');
+    expect(section).toContain('--profile ultradeep');
+    // No second table may compete with the resolver: a 2-column W1=…,W7=… row is the retired form.
+    expect(tableRows(section).find((c) => c.length === 2 && /W1\s*=/.test(c[1]))).toBeUndefined();
   });
 
-  it('maps exactly 7 waves, with the Synthesis-Gate at wave 2', () => {
-    const mapping = parseWaveMapping(ultradeepRow[1]);
-    expect(Object.keys(mapping).map(Number).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7]);
-    expect(mapping[2]).toBe('Synthesis-Gate');
-    expect(mapping[7]).toBe('Release/Finalization');
-  });
-
-  it('declares the wave-2 cell with BOTH markers the exception keys on', () => {
-    // Either marker alone is not enough: `agents: 0` without
-    // `coordinator-direct: true` is exactly what the empty-role rule deletes.
-    const waveTwoCell = ultradeepRow[1].split(/,\s*(?=W\d+\s*=)/)[1];
-    expect(waveTwoCell).toMatch(/coordinator-direct.*true/);
-    expect(waveTwoCell).toMatch(/agents.*0/);
-  });
-
-  it('the per-wave agent-count table sizes wave 2 at zero and the others above zero', () => {
-    const counts = {};
-    for (const cells of tableRows(SKILL)) {
-      if (cells.length !== 4) continue;
-      const wave = Number(cells[0]);
-      if (!Number.isInteger(wave) || wave < 1 || wave > 7) continue;
-      counts[wave] = { role: cells[1], agents: cells[2] };
-    }
-    expect(Object.keys(counts).map(Number).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7]);
-    expect(counts[2].role).toBe('Synthesis-Gate');
-    expect(counts[2].agents).toMatch(/^0\b/);
-    // Every other wave dispatches somebody — a table where the gate is not the
-    // singular zero would mean the zero carries no information.
-    for (const w of [1, 3, 4, 5, 7]) expect(counts[w].agents).not.toMatch(/^0\b/);
+  it('the resolver yields exactly 7 waves with a coordinator-direct, zero-agent Synthesis-Gate at wave 2', () => {
+    const shape = resolveSessionShape({ sessionType: 'deep', profile: 'ultradeep', waves: 5, agentsPerWave: 6 });
+    expect(shape.totalWaves).toBe(7);
+    expect(shape.waves.map((w) => w.n)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(shape.waves[1]).toMatchObject({ role: 'Synthesis-Gate', coordinatorDirect: true, agentCap: 0 });
+    for (const n of [1, 3, 4, 5, 7]) expect(shape.waves[n - 1].agentCap).toBeGreaterThan(0);
+    expect(shape.waves[6].role).toBe('Release/Finalization');
   });
 });
 

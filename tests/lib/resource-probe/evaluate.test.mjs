@@ -337,6 +337,18 @@ describe('evaluate() — heavy-repo preflight cap (#60)', () => {
     expect(result.recommended_agents_per_wave_cap).toBe(4);
   });
 
+  it('stays mode-blind after the resolveAgentCap migration: `6 (deep: 18)` resolves to 6, never 18', () => {
+    // The migration hazard (wave 3): `evaluate()` has no session mode in scope,
+    // so passing a guessed `'deep'` to the now-shared, mode-AWARE resolver would
+    // silently lift the ceiling from 6 to 18 and un-cap waves on a loaded host.
+    // `{ default: 6, deep: 18 }` is this repo's own committed Session Config value.
+    const result = evaluate(HEALTHY_SNAPSHOT, DEFAULT_THRESHOLDS, {
+      heavyRepo: true,
+      agentsPerWave: { default: 6, deep: 18 },
+    });
+    expect(result.recommended_agents_per_wave_cap).toBe(6);
+  });
+
   it('is inert when heavyRepo is not true', () => {
     const result = evaluate(HEALTHY_SNAPSHOT, DEFAULT_THRESHOLDS, { heavyRepo: false, agentsPerWave: 4 });
     expect(result.recommended_agents_per_wave_cap).toBe(null);

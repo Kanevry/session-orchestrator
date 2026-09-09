@@ -384,6 +384,26 @@ function _validateOptionalFields(entry) {
       );
     }
   }
+  // #1244 — cache buckets, cost estimate and the token-contract marker.
+  // Same non-negative-finite-or-null contract as the two totals above;
+  // total_cost_usd is fractional and null means "unknown model", never 0.
+  for (const field of [
+    'total_token_input_uncached',
+    'total_token_cache_read',
+    'total_token_cache_creation',
+    'total_cost_usd',
+    '_token_schema',
+  ]) {
+    const value = entry[field];
+    if (value !== undefined && value !== null) {
+      if (!Number.isFinite(value) || value < 0) {
+        throw new ValidationError(
+          `${field} must be a non-negative finite number or null, got: ${value}`
+        );
+      }
+    }
+  }
+
   // subagents_with_tokens: non-negative integer (never null — it is always a count, defaulting to 0).
   if (entry.subagents_with_tokens !== undefined && entry.subagents_with_tokens !== null) {
     if (

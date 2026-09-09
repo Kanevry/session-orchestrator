@@ -183,7 +183,7 @@ describe('subagent-telemetry hook', () => {
     expect(rec.agent_id).toBe('test-writer-agent-1');
     expect(rec.agent_type).toBe('test-writer');
     expect(rec.duration_ms).toBe(45000);
-    expect(rec.schema_version).toBe(1);
+    expect(rec.schema_version).toBe(2);
     expect(typeof rec.timestamp).toBe('string');
   });
 
@@ -220,7 +220,7 @@ describe('subagent-telemetry hook', () => {
 
     // Both records must have the required schema_version
     for (const rec of records) {
-      expect(rec.schema_version).toBe(1);
+      expect(rec.schema_version).toBe(2);
       expect(rec.agent_id).toBe('agent-A');
     }
   });
@@ -284,7 +284,13 @@ describe('subagent-telemetry hook', () => {
     // asserts the #950 change did not move it. It still bites: folding the
     // cache_* siblings in would read 19259/3562-scale, and summing snapshots
     // instead of deduping would read 16.
-    expect(records[0].token_input).toBe(4);
+    // Under schema_version 2 (#1244) `token_input` is BILLABLE PROMPT VOLUME:
+    // 4 uncached + 37544 cache_read + 22817 cache_creation = 60365. The OTel
+    // alias keeps the raw uncached 4 (the semantic that field carries).
+    expect(records[0].token_input).toBe(60365);
+    expect(records[0].token_input_uncached).toBe(4);
+    expect(records[0].token_cache_read).toBe(37544);
+    expect(records[0].token_cache_creation).toBe(22817);
     expect(records[0]['gen_ai.usage.input_tokens']).toBe(4);
 
     // Folded in from the consolidated dedup case above — the only two record
@@ -452,7 +458,10 @@ describe('subagent-telemetry hook', () => {
     // Hardcoded literals — the FINAL block of each message.id group: 12 + 7 and
     // 900 + 250. Summing every snapshot (the pre-#963 behaviour) reads
     // 38019/1450; keeping the first reads 23000/0.
-    expect(records[0].token_input).toBe(19);
+    // #1244: token_input is the billable volume — 19 uncached + 22981
+    // cache_read + 2000 cache_creation = 25000; the OTel alias stays at 19.
+    expect(records[0].token_input).toBe(25000);
+    expect(records[0].token_input_uncached).toBe(19);
     expect(records[0].token_output).toBe(1150);
     expect(records[0]['gen_ai.usage.input_tokens']).toBe(19);
     expect(records[0]['gen_ai.usage.output_tokens']).toBe(1150);
@@ -559,6 +568,100 @@ describe('subagent-telemetry hook', () => {
     // Hardcoded literals — absent output side contributes 0, not null.
     expect(records[0].token_input).toBe(300);
     expect(records[0].token_output).toBe(60);
+  });
+
+  // -------------------------------------------------------------------------
+  // #1244 — cache tokens are BILLABLE PROMPT VOLUME. Measured 2026-09-09:
+  // reading only `usage.input_tokens` understated one real agent by 65,646x
+  // (56 recorded vs 3,676,179 in its transcript).
+  // -------------------------------------------------------------------------
+
+  it('sums cache_read and cache_creation into token_input (the 65,646x understatement)', async () => {
+    // Two requestIds, each with a partial snapshot and a final block, all four
+    // usage fields present on every block and a `message.model`. Under the
+    // pre-#1244 recipe token_input reads 3 (1 + 2) — the bug this pins.
+    // Billable volume: (1 + 2) uncached + (900000 + 100000) cache_read
+    //                + (5000 + 1000) cache_creation = 1,006,003.
+    const transcriptPath = seedTranscripts({
+      agentId: 'cache-agent',
+      subagent:
+        '{"type":"assistant","requestId":"req_C1","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"cache_read_input_tokens":900000,"cache_creation_input_tokens":5000,"output_tokens":7}}}\n' +
+        '{"type":"assistant","requestId":"req_C1","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1,"cache_read_input_tokens":900000,"cache_creation_input_tokens":5000,"output_tokens":700}}}\n' +
+        '{"type":"assistant","requestId":"req_C2","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":2,"cache_read_input_tokens":100000,"cache_creation_input_tokens":1000,"output_tokens":300}}}\n',
+    });
+
+    const result = runHook(
+      JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_id: 'cache-agent',
+        duration_ms: 3000,
+        transcript_path: transcriptPath,
+      }),
+    );
+    expect(result.status).toBe(0);
+
+    const records = await readSubagents(join(tmp, JSONL_REL));
+    expect(records).toHaveLength(1);
+    expect(records[0].token_input).toBe(1_006_003);
+    expect(records[0].token_input_uncached).toBe(3);
+    expect(records[0].token_cache_read).toBe(1_000_000);
+    expect(records[0].token_cache_creation).toBe(6000);
+    expect(records[0].token_output).toBe(1000);
+  });
+
+  it('keeps the raw uncached value in gen_ai.usage.input_tokens and adds the two cache aliases', async () => {
+    // OTel semantics are unchanged by #1244: `gen_ai.usage.input_tokens` is the
+    // UNCACHED count, deliberately != token_input. Collapsing the two would
+    // silently redefine an exported OTel field.
+    const transcriptPath = seedTranscripts({
+      agentId: 'otel-agent',
+      subagent:
+        '{"type":"assistant","requestId":"req_O1","message":{"role":"assistant","model":"claude-haiku-4-5-20251001","usage":{"input_tokens":11,"cache_read_input_tokens":220,"cache_creation_input_tokens":33,"output_tokens":44}}}\n',
+    });
+
+    const result = runHook(
+      JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_id: 'otel-agent',
+        duration_ms: 3000,
+        transcript_path: transcriptPath,
+      }),
+    );
+    expect(result.status).toBe(0);
+
+    const records = await readSubagents(join(tmp, JSONL_REL));
+    expect(records[0]['gen_ai.usage.input_tokens']).toBe(11);
+    expect(records[0]['gen_ai.usage.cache_read_input_tokens']).toBe(220);
+    expect(records[0]['gen_ai.usage.cache_creation_input_tokens']).toBe(33);
+    expect(records[0]['gen_ai.usage.output_tokens']).toBe(44);
+    expect(records[0].token_input).toBe(264);
+    // The model id is what makes the record priceable downstream.
+    expect(records[0].model).toBe('claude-haiku-4-5-20251001');
+  });
+
+  it('stamps schema_version 2 on new records (the v1/v2 token_input boundary)', async () => {
+    // The rollup refuses to sum a v1 record into a v2 total, so a producer that
+    // still stamps 1 would make every new record invisible to the session total.
+    const transcriptPath = seedTranscripts({
+      agentId: 'ver-agent',
+      subagent:
+        '{"type":"assistant","requestId":"req_V","message":{"role":"assistant","usage":{"input_tokens":5,"output_tokens":6}}}\n',
+    });
+
+    const result = runHook(
+      JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_id: 'ver-agent',
+        duration_ms: 3000,
+        transcript_path: transcriptPath,
+      }),
+    );
+    expect(result.status).toBe(0);
+
+    const records = await readSubagents(join(tmp, JSONL_REL));
+    expect(records[0].schema_version).toBe(2);
+    // No model in the transcript → null, never a guessed default.
+    expect(records[0].model).toBeNull();
   });
 
   // -------------------------------------------------------------------------

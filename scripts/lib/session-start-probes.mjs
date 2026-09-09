@@ -260,9 +260,16 @@ export const PROBES = [
     args: ({ repoRoot }) => ({ repoRoot }),
   },
   {
-    id: 'reconcile-nudge',
-    spec: local('./reconcile-nudge-banner.mjs'),
-    fn: 'checkReconcileNudge',
+    // Replaces the former `reconcile-nudge` entry AND the two session-end
+    // nudges (3.6.5 auto-dream, 3.6.7 auto-dialectic): one reading of the whole
+    // maintenance loop, at the one moment the operator can act on it. The
+    // reconcile signal is not lost — `maintenance-due-banner.mjs` calls
+    // `computeReconcileNudge` wholesale as its S3, so `reconcile-nudge-banner.mjs`
+    // remains a live dependency, just no longer its own registry entry (a
+    // second entry would double-report the same finding).
+    id: 'maintenance-due',
+    spec: local('./maintenance-due-banner.mjs'),
+    fn: 'checkMaintenanceDue',
     network: false,
     args: ({ repoRoot, config }) => ({ repoRoot, config }),
   },

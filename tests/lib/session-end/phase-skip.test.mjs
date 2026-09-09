@@ -25,8 +25,27 @@ vi.mock('@lib/reconcile/engine.mjs', async (importActual) => {
   return { ...actual, runReconcileFromPhaseSkip: vi.fn(actual.runReconcileFromPhaseSkip) };
 });
 
+// #retire-3.6.5/3.6.7 (2026-09-09): both nudges moved to the session-start
+// `maintenance-due` probe. The bug this spies on is the RESURRECTION — a future
+// edit re-adding either signal call to planTailPhases would silently restore the
+// per-close cost that measurement retired. Wrapping (not replacing) keeps every
+// other consumer of these modules on the real implementation.
+vi.mock('@lib/auto-dream.mjs', async (importActual) => {
+  const actual = await importActual();
+  return { ...actual, shouldDispatchAutoDream: vi.fn(actual.shouldDispatchAutoDream) };
+});
+vi.mock('@lib/auto-dialectic.mjs', async (importActual) => {
+  const actual = await importActual();
+  return { ...actual, shouldDispatchAutoDialectic: vi.fn(actual.shouldDispatchAutoDialectic) };
+});
+
 import { planTailPhases, buildSkippedReport } from '@lib/session-end/phase-skip.mjs';
 import { runReconcileFromPhaseSkip } from '@lib/reconcile/engine.mjs';
+import { shouldDispatchAutoDream } from '@lib/auto-dream.mjs';
+import { shouldDispatchAutoDialectic } from '@lib/auto-dialectic.mjs';
+
+/** The verbatim reason every retired phase carries (phase-skip.mjs RETIRED_REASON). */
+const RETIRED_REASON = 'retired 2026-09-09 — replaced by session-start maintenance-due probe';
 
 // ---------------------------------------------------------------------------
 // tmp helpers
@@ -110,14 +129,14 @@ describe('A — all-skip on an empty repo with default config', () => {
     expect(byId(p, '3.6.4')).toMatchObject({ run: false, inputSource: 'learnings.jsonl' });
     expect(byId(p, '3.6.4').reason).toBe('learnings.jsonl absent');
 
-    expect(byId(p, '3.6.5')).toMatchObject({ run: false, inputSource: 'auto-dream-signal' });
-    expect(byId(p, '3.6.5').reason).toContain('under-thresholds');
+    expect(byId(p, '3.6.5')).toMatchObject({ run: false, inputSource: 'retired' });
+    expect(byId(p, '3.6.5').reason).toBe(RETIRED_REASON);
 
     expect(byId(p, '3.6.6')).toMatchObject({ run: false, inputSource: 'config-gate' });
     expect(byId(p, '3.6.6').reason).toBe('disabled (skill-evolution.judge=false)');
 
-    expect(byId(p, '3.6.7')).toMatchObject({ run: false, inputSource: 'auto-dialectic-signal' });
-    expect(byId(p, '3.6.7').reason).toBe('no-new-input-since-last-run');
+    expect(byId(p, '3.6.7')).toMatchObject({ run: false, inputSource: 'retired' });
+    expect(byId(p, '3.6.7').reason).toBe(RETIRED_REASON);
 
     expect(byId(p, '3.6.8')).toMatchObject({ run: false, inputSource: 'config-gate' });
     expect(byId(p, '3.6.8').reason).toBe('disabled (reconcile.enabled=false)');
@@ -129,11 +148,11 @@ describe('A — all-skip on an empty repo with default config', () => {
 // ---------------------------------------------------------------------------
 
 describe('B — config-gate short-circuits', () => {
-  it('persistence:false gates 3.6.3 / 3.6.7 / 3.6.8 with config-gate reason', async () => {
+  it('persistence:false gates 3.6.3 / 3.6.8 with config-gate reason', async () => {
     const root = makeRepo();
     const { plan: p } = await plan(root, defaultConfig({ persistence: false }));
 
-    for (const id of ['3.6.3', '3.6.7', '3.6.8']) {
+    for (const id of ['3.6.3', '3.6.8']) {
       expect(byId(p, id)).toMatchObject({ run: false, reason: 'persistence=false', inputSource: 'config-gate' });
     }
     // 3.6.4 has no persistence gate — still decided by its own input probe.
@@ -165,41 +184,6 @@ describe('B — config-gate short-circuits', () => {
     });
   });
 
-  it('memory-cleanup-threshold:0 kill-switch gates 3.6.5', async () => {
-    const root = makeRepo();
-    const { plan: p } = await plan(root, defaultConfig({ 'memory-cleanup-threshold': 0 }));
-    expect(byId(p, '3.6.5')).toMatchObject({
-      run: false,
-      reason: 'kill-switch (memory-cleanup-threshold=0)',
-      inputSource: 'config-gate',
-    });
-  });
-
-  it('dialectic.cadence:0 kill-switch gates 3.6.7', async () => {
-    const root = makeRepo();
-    const { plan: p } = await plan(root, defaultConfig({ dialectic: { cadence: 0 } }));
-    expect(byId(p, '3.6.7')).toMatchObject({
-      run: false,
-      reason: 'kill-switch (dialectic.cadence=0)',
-      inputSource: 'config-gate',
-    });
-  });
-
-  it('non-Claude platform gates 3.6.5 (memory dir unavailable)', async () => {
-    const root = makeRepo();
-    const { plan: p } = await planTailPhases({
-      repoRoot: root,
-      config: defaultConfig(),
-      sessionId: 'sess-A',
-      platform: 'codex',
-      memoryDir: join(root, 'no-such-memory-dir'),
-    });
-    expect(byId(p, '3.6.5')).toMatchObject({
-      run: false,
-      reason: 'non-Claude-Code platform (memory dir unavailable)',
-      inputSource: 'config-gate',
-    });
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -231,20 +215,6 @@ describe('C — input smuggled → phase flips to run:true', () => {
     expect(byId(p, '3.6.4').reason).toContain('archive-eligible');
   });
 
-  it('3.6.5 flips to run when sessions-since-cleanup reaches the threshold', async () => {
-    const root = makeRepo();
-    const sessions = Array.from({ length: 5 }, (_, i) => ({
-      // #1209: readDreamSignals now reads the CANONICAL ledger, which drops id-less
-      // records (no real record lacks one — emit-session.mjs refuses them).
-      session_id: `main-2026-07-0${i + 1}-session-1`,
-      started_at: `2026-07-0${i + 1}T00:00:00Z`,
-    }));
-    writeJsonl(metric(root, 'sessions.jsonl'), sessions);
-    const { plan: p } = await plan(root, defaultConfig());
-    expect(byId(p, '3.6.5')).toMatchObject({ run: true, inputSource: 'auto-dream-signal' });
-    expect(byId(p, '3.6.5').reason).toContain('cadence-threshold-met');
-  });
-
   it('3.6.6 flips to run when judge enabled AND this session has selected skills', async () => {
     const root = makeRepo();
     writeJsonl(metric(root, 'skill-invocations.jsonl'), [
@@ -267,20 +237,6 @@ describe('C — input smuggled → phase flips to run:true', () => {
       reason: 'empty-input (no selected skills this session)',
       inputSource: 'skill-invocations.jsonl',
     });
-  });
-
-  it('3.6.7 flips to run when cadence met with new input', async () => {
-    const root = makeRepo();
-    const sessions = Array.from({ length: 5 }, (_, i) => ({
-      // #1209: readDreamSignals now reads the CANONICAL ledger, which drops id-less
-      // records (no real record lacks one — emit-session.mjs refuses them).
-      session_id: `main-2026-07-0${i + 1}-session-1`,
-      started_at: `2026-07-0${i + 1}T00:00:00Z`,
-    }));
-    writeJsonl(metric(root, 'sessions.jsonl'), sessions);
-    const { plan: p } = await plan(root, defaultConfig());
-    expect(byId(p, '3.6.7')).toMatchObject({ run: true, inputSource: 'auto-dialectic-signal' });
-    expect(byId(p, '3.6.7').reason).toContain('cadence-threshold-met');
   });
 
   it('3.6.8 flips to run when reconcile enabled AND an eligible high-confidence learning exists', async () => {
@@ -500,5 +456,81 @@ describe('G — decideReconcile forwards min-rule-days / min-insight-chars to ru
     expect(vi.mocked(runReconcileFromPhaseSkip)).toHaveBeenCalledTimes(1);
     const callArgs = vi.mocked(runReconcileFromPhaseSkip).mock.calls[0][0];
     expect(callArgs.maxProposalsPerRun).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R — 3.6.5 / 3.6.7 retirement contract (2026-09-09)
+//
+// Both nudges moved to the session-start `maintenance-due` probe. The bug class
+// guarded here is the silent RESURRECTION: a future edit re-wiring either
+// signal into planTailPhases would restore the per-close cost that measurement
+// retired, and the plan-shape assertions in Group A would stay green.
+// ---------------------------------------------------------------------------
+
+describe('R — retired 3.6.5 / 3.6.7', () => {
+  it('never calls shouldDispatchAutoDream / shouldDispatchAutoDialectic', async () => {
+    const root = makeRepo();
+    // Plant exactly the input that used to flip BOTH phases to run:true — five
+    // ledger sessions past the cadence threshold. Under the retirement neither
+    // signal is consulted at all, so neither spy may record a call.
+    writeJsonl(metric(root, 'sessions.jsonl'), Array.from({ length: 5 }, (_, i) => ({
+      session_id: `main-2026-07-0${i + 1}-session-1`,
+      started_at: `2026-07-0${i + 1}T00:00:00Z`,
+    })));
+    vi.mocked(shouldDispatchAutoDream).mockClear();
+    vi.mocked(shouldDispatchAutoDialectic).mockClear();
+
+    const { plan: p } = await plan(root, defaultConfig());
+
+    expect(vi.mocked(shouldDispatchAutoDream)).toHaveBeenCalledTimes(0);
+    expect(vi.mocked(shouldDispatchAutoDialectic)).toHaveBeenCalledTimes(0);
+    expect(byId(p, '3.6.5')).toMatchObject({ run: false, reason: RETIRED_REASON, inputSource: 'retired' });
+    expect(byId(p, '3.6.7')).toMatchObject({ run: false, reason: RETIRED_REASON, inputSource: 'retired' });
+  });
+
+  it('stays retired regardless of the config keys that used to gate them', async () => {
+    const root = makeRepo();
+    const configs = [
+      defaultConfig(),
+      defaultConfig({ persistence: false }),
+      defaultConfig({ 'memory-cleanup-threshold': 0 }),
+      defaultConfig({ dialectic: { cadence: 0 } }),
+    ];
+    for (const cfg of configs) {
+      const { plan: p } = await plan(root, cfg);
+      expect(byId(p, '3.6.5')).toMatchObject({ run: false, reason: RETIRED_REASON, inputSource: 'retired' });
+      expect(byId(p, '3.6.7')).toMatchObject({ run: false, reason: RETIRED_REASON, inputSource: 'retired' });
+    }
+  });
+
+  it('stays retired on a non-Claude platform (the platform arg is accepted and ignored)', async () => {
+    const root = makeRepo();
+    const { plan: p } = await planTailPhases({
+      repoRoot: root,
+      config: defaultConfig(),
+      sessionId: 'sess-A',
+      platform: 'codex',
+    });
+    expect(byId(p, '3.6.5')).toMatchObject({ run: false, reason: RETIRED_REASON, inputSource: 'retired' });
+    expect(byId(p, '3.6.7')).toMatchObject({ run: false, reason: RETIRED_REASON, inputSource: 'retired' });
+  });
+
+  it('keeps the retired entries skipped while the live phases fail open', async () => {
+    // A config whose getters throw: every config-reading phase hits its own
+    // try/catch and fail-opens to run:true. Fail-open exists so a phase is never
+    // silently LOST — a retired phase has no procedure left to lose, so it must
+    // not be resurrected by an error either.
+    const boom = new Proxy({}, { get() { throw new Error('config exploded'); } });
+    const { plan: p } = await planTailPhases({ repoRoot: makeRepo(), config: boom });
+
+    expect(p).toHaveLength(6);
+    for (const id of ['3.6.3', '3.6.6', '3.6.8']) {
+      expect(byId(p, id)).toMatchObject({ run: true, inputSource: 'probe-error' });
+    }
+    // 3.6.4 reads no config at all, so it still decides from its own input.
+    expect(byId(p, '3.6.4')).toMatchObject({ run: false, inputSource: 'learnings.jsonl' });
+    expect(byId(p, '3.6.5')).toMatchObject({ run: false, reason: RETIRED_REASON, inputSource: 'retired' });
+    expect(byId(p, '3.6.7')).toMatchObject({ run: false, reason: RETIRED_REASON, inputSource: 'retired' });
   });
 });

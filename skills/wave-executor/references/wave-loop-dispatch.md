@@ -123,6 +123,8 @@ After resolving `isolation`, compute the wave's enforcement via `resolveEnforcem
 
 Before dispatching, verify the wave's agent count does not exceed `$CONFIG.agents-per-wave` — if it does, warn the user and request plan revision.
 
+`sessionType` for `resolveIsolation` is the session type the shape was resolved for, and the wave's `coordinatorDirect` and `writes` flags are READ FROM the shape's wave entry (`scripts/session-shape.mjs` → `waves[]`) rather than inferred from the role name. The dispatch-side marker is unchanged: the coordinator still keys the table below on `coordinator-direct: true` in the wave-plan item — the shape says which waves are expected to carry it, the plan item is what the coordinator acts on.
+
 **Coordinator-direct waves (`coordinator-direct: true`) dispatch NOTHING — and that is not a silent drop.** Keyed on the marker, never on a profile name (`skills/session-plan/SKILL.md` keys its matching empty-role exception the same way), so any future coordinator-direct wave inherits this:
 
 | Step | Behaviour when the wave-plan item carries `coordinator-direct: true` |

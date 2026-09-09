@@ -79,6 +79,8 @@ ultradeep:                    # <!-- consistency:exempt:parity-exempt-ultradeep-
 
 Prüfung nur am Inter-Wave-Checkpoint (nie mitten in einer Welle). 80 % → WARN, 100 % → AUQ bzw. harter Stop nach der laufenden Welle. Budgets werden erst nach drei gemessenen Läufen scharf (HR-105: keine Schwelle ohne Firing-Rate).
 
+**Update 2026-09-09 — die Kosten-Seite der Vorbedingung ist jetzt messbar.** `hooks/subagent-telemetry.mjs` schema_version 2 (#1244) korrigiert `token_input` von reinem `usage.input_tokens` auf die abrechenbare Prompt-Menge (unkached + cache_read + cache_creation) — vorher war die Zahl unter Prompt-Caching um bis zu 65.646× untermessen. `scripts/lib/telemetry/pricing.mjs` (`PRICING_TABLE_DATE: '2026-09-09'`) liefert Preise pro Bucket; `scripts/lib/session-token-rollup.mjs` summiert `total_cost_usd` nur über `schema_version >= 2`-Records und meldet ältere als `legacy_v1_records`, statt sie stillschweigend einzurechnen. Die drei bereits gefahrenen ultradeep-Läufe (§1 Problem) sind damit aus überlebenden Transkripten retro-messbar, sofern deren `subagents.jsonl`-Records noch vorliegen — die "nach drei gemessenen Läufen"-Vorbedingung ist also erfüllbar, nicht mehr nur eine zukünftige Hoffnung. Rohe v1-Kosten (vor diesem Fix) bleiben Serienbrüche und dürfen nicht mit v2-Zahlen gemittelt werden.
+
 ## 8. Kostenformel
 
 `cost(session) = Σ_agents (token_in × price_in + token_out × price_out) + coordinator_tokens`; `overhead_ratio = total_token_output(ultradeep) / MEDIAN_DEEP_5W`. Rohdaten: `subagents.jsonl` (`token_input`, `token_output`, `total_cost_usd`), `sessions.jsonl` (`total_token_output`, `total_agents`). Baseline deep/5w: Median 3.362.514 Output-Tokens (n = 49; Maximum 2.013.195.505 ist korrupt und wird ausgeschlossen), `total_agents` Median 12 (n = 744). Wirtschaftlich, wenn `overhead_ratio ≤ 3.5` bei ≥ 2× geschlossenen Issues; nach dem dritten Lauf neu messen.
@@ -93,7 +95,7 @@ Prüfung nur am Inter-Wave-Checkpoint (nie mitten in einer Welle). 80 % → WARN
 - **AC-6** While the profile is active, the telemetry client shall emit `session_type: "deep"` and `session_profile: "ultradeep"`; never `session_type: "ultradeep"`.
 - **AC-7** When any `ultradeep.max-*` budget reaches 100 % at an inter-wave checkpoint, the system shall stop dispatching further waves and surface an AskUserQuestion.
 - **AC-8** If a session closes with the profile active and no file under `docs/audits/` was created, session-end shall record `ultradeep_missing_audit` in `events.jsonl`.
-- **AC-9** The system shall reject `/session ultradeep` in a repo whose Session Config sets `waves < 7`, naming the conflict.
+- ~~**AC-9** The system shall reject `/session ultradeep` in a repo whose Session Config sets `waves < 7`, naming the conflict.~~ **Dropped 2026-09-09** — the profile owns its wave count (`resolveSessionShape()` in `scripts/lib/session-shape.mjs`); `waves` is ignored outright and reported as `wavesConfigHonored: false` (plus `wavesConfigIgnoredValue` carrying the ignored number) rather than rejected. An explicit ignore-and-report was judged strictly more useful than an error the operator has to repair before the session may even start.
 
 ## 10. Tests (je ein benannter Bug, TV-001)
 
@@ -104,7 +106,7 @@ Prüfung nur am Inter-Wave-Checkpoint (nie mitten in einer Welle). 80 % → WARN
 | 5 | `tests/lib/wave-executor/research-tool-grant.test.mjs` | write-fähiger Agent erhält Web-Tools |
 | 6 | `tests/telemetry/profile-field.test.mjs` | `session_type: ultradeep` im Ping → serverseitig `other` |
 | 7 | `tests/lib/ultradeep-budget.test.mjs` | Budget-Prüfung killt Agenten mitten in der Welle |
-| 9 | `tests/lib/config-schema-ultradeep.test.mjs` | `waves: 5` + Profil → 2 Wellen still verloren |
+| 9 | `tests/lib/session-shape.test.mjs` | `waves: 5` + Profil → 2 Wellen still verloren (Datei existierte nie unter dem alten Namen `config-schema-ultradeep.test.mjs`; korrigiert 2026-09-09 auf den Pfad, den `scripts/lib/session-shape.mjs` tatsächlich testet — die frühere AC-9-Ablehnung ist ohnehin gedroppt, siehe § 9) |
 
 ## 11. Migration
 

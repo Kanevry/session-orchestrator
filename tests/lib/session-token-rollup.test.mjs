@@ -64,10 +64,14 @@ afterEach(() => {
  */
 function stopRecord({ session, agent, input, output }) {
   return {
+    // schema_version 2 since #1244 — the rollup sums the v2 contract only, so a
+    // v1 golden here would make every summation case assert the exclusion path
+    // instead of the summation it is named for. The v1 exclusion has its own
+    // case at the bottom of this file.
     timestamp: '2026-08-03T06:56:15.159Z',
     event: 'stop',
     agent_id: agent,
-    schema_version: 1,
+    schema_version: 2,
     agent_type: 'Explore',
     parent_session_id: session,
     duration_ms: 340813,
@@ -376,6 +380,14 @@ describe('rollupSessionTokens — null sentinel when no token data', () => {
       total_token_output: null,
       subagents_with_tokens: 0,
       matched_records: 0,
+      total_token_input_uncached: null,
+      total_token_cache_read: null,
+      total_token_cache_creation: null,
+      total_cost_usd: null,
+      cost_records_priced: 0,
+      cost_records_total: 0,
+      legacy_v1_records: 0,
+      _token_schema: 2,
     });
   });
 });
@@ -403,6 +415,14 @@ describe('rollupSessionTokens — absent subagents file', () => {
       total_token_output: null,
       subagents_with_tokens: 0,
       matched_records: 0,
+      total_token_input_uncached: null,
+      total_token_cache_read: null,
+      total_token_cache_creation: null,
+      total_cost_usd: null,
+      cost_records_priced: 0,
+      cost_records_total: 0,
+      legacy_v1_records: 0,
+      _token_schema: 2,
     });
   });
 });
@@ -521,6 +541,14 @@ describe('rollupSessionTokens — edge cases', () => {
       total_token_output: null,
       subagents_with_tokens: 0,
       matched_records: 0,
+      total_token_input_uncached: null,
+      total_token_cache_read: null,
+      total_token_cache_creation: null,
+      total_cost_usd: null,
+      cost_records_priced: 0,
+      cost_records_total: 0,
+      legacy_v1_records: 0,
+      _token_schema: 2,
     });
   });
 
@@ -532,5 +560,88 @@ describe('rollupSessionTokens — edge cases', () => {
 
     expect(result.total_token_input).toBeNull();
     expect(result.matched_records).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1244 — the v1/v2 token contract boundary and the per-record cost estimate.
+// ---------------------------------------------------------------------------
+
+describe('rollupSessionTokens — schema_version 2 (#1244)', () => {
+  let dir;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'rollup-v2-'));
+  });
+
+  afterEach(() => {
+    if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const write = (records) => {
+    const p = join(dir, 'subagents.jsonl');
+    writeFileSync(p, records.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+    return p;
+  };
+
+  const stop = (over = {}) => ({
+    timestamp: '2026-09-09T10:00:00.000Z',
+    event: 'stop',
+    agent_id: 'a1',
+    schema_version: 2,
+    parent_session_id: 'S',
+    subagent_transcript_found: true,
+    duration_ms: 1000,
+    token_input: 1100,
+    token_input_uncached: 100,
+    token_cache_read: 1000,
+    token_cache_creation: 0,
+    token_output: 10,
+    model: 'claude-opus-5',
+    ...over,
+  });
+
+  it('never sums a v1 record into a v2 total', () => {
+    // v1 token_input is raw uncached input; v2 token_input is billable prompt
+    // volume. Adding them produces a number describing neither — and the v1
+    // record must still be VISIBLE, not silently dropped.
+    const path = write([
+      stop({ agent_id: 'v2' }),
+      stop({ agent_id: 'v1', schema_version: 1, token_input: 999_999, token_output: 5 }),
+    ]);
+
+    const r = rollupSessionTokens({ parentSessionId: 'S', subagentsPath: path });
+    expect(r.total_token_input).toBe(1100);
+    expect(r.total_token_output).toBe(10);
+    expect(r.legacy_v1_records).toBe(1);
+    expect(r.subagents_with_tokens).toBe(1);
+    expect(r._token_schema).toBe(2);
+    expect(r.total_token_cache_read).toBe(1000);
+    expect(r.total_token_input_uncached).toBe(100);
+  });
+
+  it('total_cost_usd is null when any priced record has an unknown model, with priced/total counts', () => {
+    // A cost covering only part of the session reads as covering all of it —
+    // so one unpriceable agent nulls the total and the counts say how much was
+    // coverable.
+    const path = write([
+      stop({ agent_id: 'known' }),
+      stop({ agent_id: 'unknown', model: 'gpt-5.6-sol' }),
+    ]);
+
+    const r = rollupSessionTokens({ parentSessionId: 'S', subagentsPath: path });
+    expect(r.total_cost_usd).toBeNull();
+    expect(r.cost_records_priced).toBe(1);
+    expect(r.cost_records_total).toBe(2);
+
+    // With the unknown-model record removed, the cost is a real number:
+    // 100 uncached * $5/MTok + 1000 cache_read * $0.5/MTok + 10 out * $25/MTok.
+    const known = rollupSessionTokens({
+      parentSessionId: 'S',
+      subagentsPath: write([stop({ agent_id: 'known' })]),
+    });
+    expect(known.total_cost_usd).toBeCloseTo(100 * 5e-6 + 1000 * 0.5e-6 + 10 * 25e-6, 12);
+    expect(known.cost_records_priced).toBe(1);
+    expect(known.cost_records_total).toBe(1);
   });
 });

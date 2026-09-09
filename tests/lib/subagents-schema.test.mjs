@@ -69,8 +69,8 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('constants', () => {
-  it('CURRENT_SCHEMA_VERSION is 1', () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(1);
+  it('CURRENT_SCHEMA_VERSION is 2 (#1244 — cache-token contract)', () => {
+    expect(CURRENT_SCHEMA_VERSION).toBe(2);
   });
 
   it('VALID_EVENTS contains start and stop', () => {
@@ -361,5 +361,53 @@ describe('readSubagents', () => {
     const records = await readSubagents(filePath);
     expect(records[0].agent_type).toBeNull();
     expect(records[0].parent_session_id).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1244 — schema_version 2 fields. The bug: a validator that accepts only the
+// CURRENT version rejects the append-only v1 history it must keep reading.
+// ---------------------------------------------------------------------------
+
+describe('subagents-schema — schema_version 2 (#1244)', () => {
+  const base = {
+    timestamp: '2026-09-09T10:00:00.000Z',
+    event: 'stop',
+    agent_id: 'a1',
+    duration_ms: 1000,
+  };
+
+  it('validates a v2 record carrying the four token buckets and a model id', () => {
+    const entry = {
+      ...base,
+      schema_version: 2,
+      token_input: 1100,
+      token_input_uncached: 100,
+      token_cache_read: 1000,
+      token_cache_creation: 0,
+      token_output: 10,
+      model: 'claude-opus-5',
+      'gen_ai.usage.cache_read_input_tokens': 1000,
+      'gen_ai.usage.cache_creation_input_tokens': 0,
+    };
+    expect(() => validateSubagent(entry)).not.toThrow();
+  });
+
+  it('still validates a v1 record (append-only ledger must stay readable)', () => {
+    expect(() => validateSubagent({ ...base, schema_version: 1, token_input: 42 })).not.toThrow();
+  });
+
+  it('rejects a negative cache bucket and a non-string model', () => {
+    expect(() => validateSubagent({ ...base, schema_version: 2, token_cache_read: -1 })).toThrow(
+      /token_cache_read/,
+    );
+    expect(() => validateSubagent({ ...base, schema_version: 2, model: 7 })).toThrow(/model/);
+  });
+
+  it('assumes v1 for a versionless legacy record, never the current version', () => {
+    // Stamping CURRENT would relabel raw-input-only token semantics as billable
+    // volume and let the rollup sum them into a v2 total.
+    expect(normalizeSubagent({ ...base }).schema_version).toBe(1);
+    expect(migrateLegacySubagent({ ...base }).schema_version).toBe(1);
   });
 });

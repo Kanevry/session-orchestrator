@@ -17,10 +17,12 @@
  * Decision flow:
  *   G1 tool filter — only Bash is gated.
  *   G2 command is a non-empty string.
- *   G3 matcher — `gh|glab … issue create|new` only. PR/MR creation passes.
+ *   G3 matcher — `gh|glab … issue create|new` plus the REST route
+ *      (`gh|glab api … /issues`, #1163) only. PR/MR creation passes.
  *      Verb-resolved since #1145, so a wrapped (`nohup`), absolute-path or
  *      env-prefixed create is seen; a `--help` invocation is not (it creates
- *      nothing).
+ *      nothing). Since #1163 the matcher returns EVERY create statement of the
+ *      chain, and the cap charges ONE unit per statement.
  *   G4 config — `issue-budget` from CLAUDE.md/AGENTS.md. `mode: off` → allow.
  *   G3b bulk — a create inside a shell LOOP body creates an unknowable number
  *      of issues (#1145). `strict` → deny; `warn` → allow with an explicit
@@ -29,7 +31,8 @@
  *   G5 exemption — priority::critical / carryover class / broken-window /
  *      the overflow collector itself bypass the cap unconditionally, keeping
  *      the session-end promises at SKILL.md:319 and :1113 intact.
- *   G6 charge the counter in .orchestrator/runtime/issue-budget/<hash>.json
+ *   G6 charge the counter ONCE PER ISSUE-CREATE STATEMENT in
+ *      .orchestrator/runtime/issue-budget/<hash>.json
  *      (one file per session since #1141 — see scripts/lib/issue-budget.mjs
  *      `budgetStateRel`).
  *      under cap → allow; over cap + `warn` → allow with stderr notice;
@@ -50,13 +53,16 @@
 import { readStdin, emitAllow, emitDeny, emitWarn } from '../scripts/lib/io.mjs';
 import { resolveProjectDir } from '../scripts/lib/platform.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
-import { isIssueCreate, isLoopedIssueCreate, extractTitle } from './_lib/vcs-create-matcher.mjs';
+import { findIssueCreateStatements, isLoopedIssueCreate } from './_lib/vcs-create-matcher.mjs';
 import {
   loadIssueBudgetConfig,
   resolveIssueBudgetSessionId,
   chargeIssueBudget,
   classifyExemption,
   formatBlockReason,
+  readBudgetState,
+  writeBudgetState,
+  budgetStatePath,
 } from '../scripts/lib/issue-budget.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
@@ -145,7 +151,13 @@ async function resolveSessionId(input, projectDir) {
  *
  * NAMED CEILING (BV-004): a loop is detected by `do`/`done` in command position
  * (see `isLoopedIssueCreate`), so an UNROLLED bulk create — 50 create statements
- * chained with `&&` — is not a "loop" and is charged 50, correctly. Revisit this
+ * chained with `&&` — is not a "loop". Since #1163 it is charged 50, once per
+ * issue-create STATEMENT: until then this comment CLAIMED that behaviour while
+ * the code called `chargeIssueBudget` exactly once per Bash tool call with the
+ * whole command string, so `glab issue create --title A && glab issue create
+ * --title B` charged 1 for 2 (measured 2026-09-09). The claim is now true
+ * because `findIssueCreateStatements` supplies the per-statement units and the
+ * exemption is classified per statement too. Revisit this
  * choice if the overflow triage of a per-session counter file
  * (`.orchestrator/runtime/issue-budget/<hash>.json`) shows operators routinely
  * hitting this deny on loops over a KNOWN literal word list; the cheap answer
@@ -176,6 +188,59 @@ function formatLoopDenyReason(config) {
   ].join('\n');
 }
 
+/**
+ * Park every chargeable statement of a command that does NOT fit under the cap,
+ * and return a `formatBlockReason`-shaped verdict for the deny envelope.
+ *
+ * ## Why this is not `chargeIssueBudget`
+ *
+ * `chargeIssueBudget` decides ONE creation against the current count, and its
+ * strict branch parks only when the count is ALREADY at the cap. A chain of
+ * statements that straddles the cap (count 11, max 12, three creates) has no
+ * single call shape in that API: the first statement would be ALLOWED and
+ * counted, and the deny that follows would leave that count standing for an
+ * issue nobody created. So the fit is judged for the chain as a whole and the
+ * whole chain is parked — count and exempt untouched, because nothing ran.
+ *
+ * The exemption CLASSIFICATION still comes from the shared core
+ * (`classifyExemption`, applied by the caller); what is local here is only the
+ * bookkeeping write, through the module's own public `writeBudgetState`.
+ *
+ * An identity-less invocation (no session key) must not write at all — the
+ * legacy flat path is shared across sessions and writing it would reset a live
+ * session's count and drop its parked overflow. Same rule `chargeIssueBudget`'s
+ * `persist` applies; the deny still happens, only unrecorded.
+ *
+ * @param {{ projectDir: string, sessionId: string|null,
+ *           state: { count: number, exempt: number, overflow: object[], sessionId: string|null },
+ *           chargeable: Array<{ text: string, title: string|null }>,
+ *           config: { "max-per-session": number, mode: string, overflow: string },
+ *           now?: string }} opts
+ * @returns {{ count: number, max: number, overflowPath: string,
+ *             overflowSink: string, overflowCount: number }}
+ */
+function parkOverflow({
+  projectDir,
+  sessionId,
+  state,
+  chargeable,
+  config,
+  now = new Date().toISOString(),
+}) {
+  state.sessionId = sessionId;
+  for (const s of chargeable) {
+    state.overflow.push({ title: s.title ?? null, command: String(s.text).slice(0, 500), at: now });
+  }
+  if (sessionId !== null) writeBudgetState(projectDir, state);
+  return {
+    count: state.count,
+    max: config['max-per-session'],
+    overflowPath: budgetStatePath(projectDir, sessionId),
+    overflowSink: config.overflow,
+    overflowCount: state.overflow.length,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -191,8 +256,11 @@ async function main() {
   const command = input?.tool_input?.command;
   if (typeof command !== 'string' || command.length === 0) return emitAllow();
 
-  // G3 — shared matcher. Only ISSUE creation is capped; `pr`/`mr` create pass.
-  if (!isIssueCreate(command)) return emitAllow();
+  // G3 — shared matcher, PER STATEMENT (#1163). Only ISSUE creation is capped;
+  // `pr`/`mr` create pass. An empty list is the old `!isIssueCreate(command)`
+  // short-circuit, unchanged.
+  const statements = findIssueCreateStatements(command);
+  if (statements.length === 0) return emitAllow();
 
   const projectDir = resolveProjectDir() || process.cwd();
 
@@ -202,9 +270,12 @@ async function main() {
 
   // G3b — bulk creation whose multiplicity is not computable (#1145). The
   // exemption is asked FIRST, through the same classifier chargeIssueBudget
-  // uses, so a looped carryover sweep keeps its unconditional pass.
+  // uses, so a looped carryover sweep keeps its unconditional pass. It is asked
+  // on the FIRST issue-create statement's text, which is the very statement
+  // `isLoopedIssueCreate` judges — classifying it on the whole command would
+  // let an exempt NEIGHBOUR statement lift the loop deny.
   const uncountableBulk =
-    isLoopedIssueCreate(command) && !classifyExemption(command).exempt;
+    isLoopedIssueCreate(command) && !classifyExemption(statements[0].text).exempt;
   if (uncountableBulk && config.mode === 'strict') {
     // Nothing is charged and nothing is parked — the command is handed back
     // whole, which is what makes unrolling it the correct next action.
@@ -213,26 +284,50 @@ async function main() {
 
   const sessionId = await resolveSessionId(input, projectDir);
 
-  // G5 + G6 — exemption check and counter charge live in the shared core so
-  // the programmatic path (scripts/lib/spiral-carryover.mjs runCli) decides
-  // identically.
-  const verdict = chargeIssueBudget({
-    repoRoot: projectDir,
-    sessionId,
-    command,
-    title: extractTitle(command),
-    config,
-  });
-
-  if (verdict.decision === 'exempt') {
-    process.stderr.write(
-      `ℹ pre-bash-issue-budget: exempt (${verdict.reason}) — cap not charged ` +
-        `(${verdict.count}/${verdict.max})\n`,
-    );
-    return emitAllow();
+  // G5 pre-flight — a Bash call is ATOMIC from this hook's point of view: a
+  // deny refuses the WHOLE command, so not one of its statements runs. Charging
+  // statement-by-statement until one blocks would therefore count creations
+  // that never happened (and double-count them when the operator re-issues the
+  // command unrolled). So the fit is decided BEFORE any charge, and a command
+  // that does not fit parks every chargeable statement without counting any.
+  const chargeable = statements.filter((s) => !classifyExemption(s.text).exempt);
+  if (config.mode === 'strict' && chargeable.length > 0) {
+    const state = readBudgetState(projectDir, sessionId);
+    if (state.count + chargeable.length > config['max-per-session']) {
+      return emitDeny(formatBlockReason(parkOverflow({
+        projectDir, sessionId, state, chargeable, config,
+      })));
+    }
   }
 
-  if (verdict.decision === 'warn') {
+  // G6 — charge ONE unit per issue-create STATEMENT. The decision itself stays
+  // in the shared core (scripts/lib/issue-budget.mjs), so the programmatic path
+  // (scripts/lib/spiral-carryover.mjs runCli) decides identically; what changed
+  // in #1163 is only HOW MANY times it is asked. Each statement is judged on
+  // its OWN text: `glab issue create --title REAL && glab issue create
+  // --label carryover --title X` is 1 charge + 1 exemption, never 2 exemptions.
+  const verdicts = statements.map((s) =>
+    chargeIssueBudget({
+      repoRoot: projectDir,
+      sessionId,
+      command: s.text,
+      title: s.title,
+      config,
+    }),
+  );
+  const verdict = verdicts[verdicts.length - 1];
+  const exemptions = verdicts.filter((v) => v.decision === 'exempt');
+  const blocked = verdicts.find((v) => v.decision === 'block');
+
+  if (exemptions.length > 0) {
+    const reasons = [...new Set(exemptions.map((v) => v.reason))].join(', ');
+    process.stderr.write(
+      `ℹ pre-bash-issue-budget: ${exemptions.length} exempt statement(s) (${reasons}) — ` +
+        `cap not charged (${verdict.count}/${verdict.max})\n`,
+    );
+  }
+
+  if (verdicts.some((v) => v.decision === 'warn')) {
     process.stderr.write(
       `⚠ pre-bash-issue-budget: session cap exceeded — ${verdict.count}/${verdict.max} ` +
         `issues created (mode: warn — allowing). Set \`issue-budget.mode: strict\` to enforce.\n`,
@@ -240,7 +335,9 @@ async function main() {
     return emitAllow();
   }
 
-  if (verdict.decision === 'block') {
+  if (exemptions.length === statements.length) return emitAllow();
+
+  if (blocked) {
     // Single channel (#906). formatBlockReason's multi-line text — overflow
     // store path, the [Backlog-Sammel] fold-in promise, the exemption list and
     // the cap-raising hint — used to go to stderr AND to a duplicated `exit 2`
@@ -249,7 +346,7 @@ async function main() {
     // to Claude (the actor that must re-file or defer the issue), while the
     // operator gets the first line as the systemMessage headline. Under exit 0
     // a stderr write would only reach the debug log — dead, but alive-looking.
-    emitDeny(formatBlockReason(verdict));
+    return emitDeny(formatBlockReason(blocked));
   }
 
   // A PERMITTED bulk create is charged ONCE, which is an undercount by

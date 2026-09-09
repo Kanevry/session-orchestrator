@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/session-shape.mjs` (+ `scripts/lib/session-shape.mjs`) — the one place a `/session` mode + optional `--profile` resolves into an execution shape (wave count, roles, per-wave agent caps, Discovery on/off, per-wave `max-turns`). Replaces prose that answered "how many waves does a `deep` session have" in 27 places and disagreed with itself in 8 of them (measured 2026-09-09). Emits `orchestrator.session.shape_resolved`. Housekeeping is now always 1 coordinator-direct maintenance-loop wave; feature is 3 waves; deep is 5 (4 with `--known-scope true`); the `ultradeep` profile is a fixed 7 waves and ignores `waves` outright (`wavesConfigHonored: false` — PRD AC-9's "`waves < 7` is an error" is dropped). Documented in `docs/session-config-reference.md` § Session Shapes and `docs/session-config-template.md`.
+- `scripts/lib/maintenance-due-banner.mjs` — one session-start probe (`maintenance-due`) replacing the standalone `reconcile-nudge` probe and the session-end Phase 3.6.5/3.6.7 auto-dream/auto-dialectic nudges. Six ANDed signals (evolve, sweep, reconcile, dialectic, memory-cleanup, pending-sidecar), a 7-day housekeeping cooldown, banner `⚠ maintenance due: N of 6 (…) — run /session housekeeping.`. Motivated by measurement: `orchestrator.evolve.completed` fired zero times across consumer repos while 628 learnings sat unprocessed, and the auto-dialectic nudge recorded `decided: true` while nobody ever ran it.
+- `scripts/lib/session-end/tail-runner.mjs` (`runTailPhases`) — the mechanical APPLY half of session-end Phase 3.6.4's Expired-Learnings Sweep, closing a gap where the dry-run decision ran every close but nothing ever applied it (census: 0 sweeps applied, 628 learnings resident, across three consumer repos). Emits `orchestrator.learnings.sweep_applied`.
+- `scripts/lib/issue-budget-reconcile.mjs` — a close-time cross-check between a session's recorded issue creations and what the issue-budget ledger actually charged, emitting `orchestrator.issue_budget.reconciled` with verdict `match` / `escaped` / `no-ledger` / `stale-record`. Motivated by a session record with 26 recorded issue creations and no ledger file under either accounting key.
+- `issue-budget.max-per-session` now accepts the same per-session-type override syntax as `agents-per-wave` (`12 (feature: 6)`), resolved against the current session's `session-type:` (read from STATE.md) via the new `resolveMaxPerSession()` / `readSessionTypeFromStateMd()` in `scripts/lib/issue-budget.mjs`. The parser (`scripts/lib/config/issue-budget.mjs`) now returns two keys — `max-per-session` (always numeric) and `max-per-session-raw` (the unresolved value) — plus `session-type-resolved` on the loaded config.
+- `scripts/lib/telemetry/pricing.mjs` — a per-model USD-per-million-token price table (`PRICING_TABLE_DATE: 2026-09-09`) covering uncached input, cache-read, cache-creation and output rates, used by `scripts/lib/session-token-rollup.mjs` to compute `total_cost_usd` per session (gated on `schema_version >= 2`; older records are reported as `legacy_v1_records` rather than silently summed in).
+
+### Changed
+
+- `hooks/subagent-telemetry.mjs` schema_version 2 (#1244) — `token_input` is redefined from raw `usage.input_tokens` to BILLABLE PROMPT VOLUME (uncached + cache_read + cache_creation). Under prompt caching the old value understated real prompt volume by up to ~65,646× on one measured agent (56 vs 3,676,179 tokens). New additive fields `token_input_uncached`, `token_cache_read`, `token_cache_creation`, `model`. This is a SERIES BREAK — v1 and v2 `token_input` values are not comparable, and `scripts/lib/session-token-rollup.mjs` sums only `schema_version >= 2` records.
+- `hooks/pre-bash-issue-budget.mjs` now charges per STATEMENT rather than per whole command; `hooks/_lib/vcs-create-matcher.mjs` additionally matches `gh|glab api … POST …/issues`.
+- `docs/USER-GUIDE.md` § 4 Session Types and § 6 The Wave Pattern rewritten around the four resolved shapes (housekeeping/feature/deep/ultradeep) and a pointer to `scripts/session-shape.mjs --help`; the retired 3/4/5/6+ role-combination mapping table and the stale `housekeeping=2/feature=6/deep=6-10` agent-count table are replaced with the shape's actual per-type ceilings.
+- `docs/components.md` — the Scripts exemplar list extended with `session-shape`, `maintenance-due-banner`, `tail-runner`, `issue-budget-reconcile`, `telemetry/pricing`.
+
 ## [4.1.0] - 2026-09-08
 
 ### Added

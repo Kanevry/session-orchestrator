@@ -53,11 +53,28 @@
  * be reconstruction, not correction. Consumers comparing token totals across the
  * 2026-08-11 boundary must treat it as a series break.
  *
+ * ## Schema-version boundary — v1 and v2 token_input are different quantities (#1244)
+ *
+ * Since 2026-09-09 (`schema_version: 2`) a stop record's `token_input` is
+ * BILLABLE PROMPT VOLUME — uncached + cache_read + cache_creation — where v1
+ * held raw `usage.input_tokens` only. Under prompt caching those differ by up
+ * to five orders of magnitude (measured: 56 vs 3,676,179 on one agent), so
+ * summing them together produces a number describing neither. This module
+ * therefore sums ONLY `schema_version >= 2` token-bearing records into
+ * `total_token_*` and reports the excluded ones as `legacy_v1_records`: the
+ * boundary is DECLARED, never silent.
+ *
+ * `total_cost_usd` is computed per record via `costUsd()` and is null when ANY
+ * priced record carries a model the price table does not know — a partial cost
+ * is worse than no cost, because it reads as a complete one. `cost_records_priced`
+ * / `cost_records_total` say how much of the session the estimate covers.
+ *
  * @module session-token-rollup
  */
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { costUsd } from './telemetry/pricing.mjs';
 
 // ---------------------------------------------------------------------------
 // Default subagents.jsonl path (relative to cwd, mirroring the rest of the
@@ -86,11 +103,28 @@ function isTokenBearing(record) {
 }
 
 /**
+ * Is this record inside the schema_version 2 token contract? (#1244)
+ * @param {object} record
+ * @returns {boolean}
+ */
+function isV2(record) {
+  return typeof record?.schema_version === 'number' && record.schema_version >= 2;
+}
+
+/**
  * @typedef {Object} TokenRollupResult
  * @property {number|null} total_token_input  - Sum of token_input across TOKEN-BEARING matched records; null when none had a non-null value.
  * @property {number|null} total_token_output - Sum of token_output across TOKEN-BEARING matched records; null when none had a non-null value.
  * @property {number}      subagents_with_tokens - Count of distinct agent_ids with at least one token-bearing record. This is the numerator of the honest coverage ratio.
  * @property {number}      matched_records    - Total count of JSONL records matched by parentSessionId. Counts start records, phantom stops and pre-#949 records alike, so it is NOT the denominator for a token-coverage ratio — dividing by it is what made healthy sessions read as 12% covered.
+ * @property {number|null}  total_token_input_uncached - Sum of token_input_uncached across v2 token-bearing records.
+ * @property {number|null}  total_token_cache_read     - Sum of token_cache_read across v2 token-bearing records.
+ * @property {number|null}  total_token_cache_creation - Sum of token_cache_creation across v2 token-bearing records.
+ * @property {number|null}  total_cost_usd     - Σ costUsd() over v2 token-bearing records; null when ANY of them carries an unknown model (never 0 — see telemetry/pricing.mjs).
+ * @property {number}       cost_records_priced - How many token-bearing records the price table could price.
+ * @property {number}       cost_records_total  - How many token-bearing records were candidates for pricing.
+ * @property {number}       legacy_v1_records  - Token-bearing records EXCLUDED from every total above because their schema_version < 2 (their token_input is a different quantity).
+ * @property {2}            _token_schema      - The token contract these totals were computed under.
  */
 
 /**
@@ -112,6 +146,14 @@ export function rollupSessionTokens({
     total_token_output: null,
     subagents_with_tokens: 0,
     matched_records: 0,
+    total_token_input_uncached: null,
+    total_token_cache_read: null,
+    total_token_cache_creation: null,
+    total_cost_usd: null,
+    cost_records_priced: 0,
+    cost_records_total: 0,
+    legacy_v1_records: 0,
+    _token_schema: 2,
   };
 
   if (typeof parentSessionId !== 'string' || parentSessionId.length === 0) {
@@ -157,9 +199,20 @@ export function rollupSessionTokens({
   // Aggregate — skip null/undefined token values.
   let sumInput = null;
   let sumOutput = null;
+  let sumUncached = null;
+  let sumCacheRead = null;
+  let sumCacheCreation = null;
+  let sumCost = null;
+  let costPriced = 0;
+  let costTotal = 0;
+  let costUnknownModel = false;
+  let legacyV1 = 0;
 
   // Track distinct agent_ids that contributed at least one non-null token.
   const agentsWithTokens = new Set();
+
+  const addNonNegative = (acc, value) =>
+    typeof value === 'number' && value >= 0 ? (acc ?? 0) + value : acc;
 
   for (const record of matched) {
     // Provenance gate (#949) — a record whose tokens describe the PARENT
@@ -169,23 +222,47 @@ export function rollupSessionTokens({
     // which is true, instead of a fabricated 0.
     if (!isTokenBearing(record)) continue;
 
+    // Schema gate (#1244) — a v1 record's token_input is raw uncached input,
+    // a different quantity from a v2 record's billable prompt volume. Count it
+    // so the boundary is visible, never sum it.
+    if (!isV2(record)) {
+      legacyV1 += 1;
+      continue;
+    }
+
     const inp = record.token_input;
     const out = record.token_output;
 
-    if (typeof inp === 'number' && inp >= 0) {
-      sumInput = (sumInput ?? 0) + inp;
-    }
-    if (typeof out === 'number' && out >= 0) {
-      sumOutput = (sumOutput ?? 0) + out;
-    }
+    sumInput = addNonNegative(sumInput, inp);
+    sumOutput = addNonNegative(sumOutput, out);
+    sumUncached = addNonNegative(sumUncached, record.token_input_uncached);
+    sumCacheRead = addNonNegative(sumCacheRead, record.token_cache_read);
+    sumCacheCreation = addNonNegative(sumCacheCreation, record.token_cache_creation);
 
     // Count this agent as having tokens if either field is a non-null number.
-    if (
-      (typeof inp === 'number' && inp >= 0) ||
-      (typeof out === 'number' && out >= 0)
-    ) {
+    const hasTokens =
+      (typeof inp === 'number' && inp >= 0) || (typeof out === 'number' && out >= 0);
+    if (hasTokens) {
       if (record.agent_id !== undefined && record.agent_id !== null) {
         agentsWithTokens.add(record.agent_id);
+      }
+
+      // Cost: every token-bearing v2 record is a pricing candidate. One unknown
+      // model poisons the SESSION total — a cost covering some of the agents
+      // reads as covering all of them.
+      costTotal += 1;
+      const cost = costUsd({
+        model: record.model,
+        tokenInputUncached: record.token_input_uncached,
+        tokenCacheRead: record.token_cache_read,
+        tokenCacheCreation: record.token_cache_creation,
+        tokenOutput: record.token_output,
+      });
+      if (cost === null) {
+        costUnknownModel = true;
+      } else {
+        costPriced += 1;
+        sumCost = (sumCost ?? 0) + cost;
       }
     }
   }
@@ -195,5 +272,13 @@ export function rollupSessionTokens({
     total_token_output: sumOutput,
     subagents_with_tokens: agentsWithTokens.size,
     matched_records: matched.length,
+    total_token_input_uncached: sumUncached,
+    total_token_cache_read: sumCacheRead,
+    total_token_cache_creation: sumCacheCreation,
+    total_cost_usd: costUnknownModel ? null : sumCost,
+    cost_records_priced: costPriced,
+    cost_records_total: costTotal,
+    legacy_v1_records: legacyV1,
+    _token_schema: 2,
   };
 }

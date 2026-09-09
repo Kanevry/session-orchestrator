@@ -61,6 +61,14 @@
  * of starts is a broken instrument to be re-aimed, not a policy to obey.
  */
 
+// `session-shape.mjs` is the ONE exported `agents-per-wave` resolver; this
+// module used to carry a private third copy. Import-graph note (this file is
+// hook-reachable via `hooks/_lib/hook-import-set.json`): `session-shape.mjs`
+// statically imports only `session-schema/constants.mjs`, a pure-data leaf, and
+// defers `events.mjs` to a lazy `await import()` — so nothing runs at module
+// load here that did not run before.
+import { resolveAgentCap } from '../session-shape.mjs';
+
 // ---------------------------------------------------------------------------
 // Verdict precedence helper
 // ---------------------------------------------------------------------------
@@ -252,29 +260,19 @@ function concurrencySignal(snapshot, concWarn) {
 }
 
 /**
- * Resolve an `agentsPerWave` option value into a plain numeric cap, or `null`
- * when no cap should apply. Mirrors `resolveApwCap()` in
- * `../wave-resource-gate.mjs` — kept as a local pure helper here rather than
- * a cross-module import since both sites are ≤10 lines and evolve
- * independently per their own gate's options shape.
+ * The session type this module resolves `agents-per-wave` FOR: none.
  *
- * `evaluate()` has no session-mode input in scope, so the object shape
- * resolves to `cap.default` — the documented HR-003 convention writes the
- * override as `<default> (mode: <higher-ceiling>)`, i.e. `default` is the
- * MORE restrictive of the pair, so this can only under-apply a looser
- * mode-specific ceiling, never let a heavy repo exceed its base cap.
+ * `evaluate()` has no session-mode input in scope, so it deliberately asks
+ * `resolveAgentCap` for no type and takes the `.default` fallback. The HR-003
+ * convention writes the override as `<default> (mode: <higher-ceiling>)`, i.e.
+ * `default` is the MORE restrictive of the pair — under-applying a looser
+ * mode-specific ceiling is safe, while passing a guessed `'deep'` here would
+ * silently RAISE a heavy repo's ceiling to the deep override on a loaded host.
+ * Naming the absence is what keeps that from being written by accident.
  *
- * @param {number|{default: number, [mode: string]: number}|*} cap
- * @returns {number|null}
+ * @type {undefined}
  */
-function resolveAgentsPerWaveCap(cap) {
-  if (typeof cap === 'number') return Number.isFinite(cap) ? cap : null;
-  if (cap !== null && typeof cap === 'object' && !Array.isArray(cap)) {
-    const def = cap.default;
-    return typeof def === 'number' && Number.isFinite(def) ? def : null;
-  }
-  return null;
-}
+const MODE_BLIND_SESSION_TYPE = undefined;
 
 /**
  * Evaluate a snapshot against `resource-thresholds` (from Session Config #166)
@@ -423,7 +421,7 @@ export function evaluate(snapshot, thresholds, options = {}) {
   // the live-probe signals already computed.
   // ---------------------------------------------------------------------------
   const { heavyRepo, agentsPerWave } = options;
-  const resolvedApwCap = resolveAgentsPerWaveCap(agentsPerWave);
+  const resolvedApwCap = resolveAgentCap(agentsPerWave, MODE_BLIND_SESSION_TYPE);
   if (heavyRepo === true && resolvedApwCap !== null) {
     cap = cap === null ? resolvedApwCap : Math.min(cap, resolvedApwCap);
   }

@@ -53,8 +53,9 @@
  *             a spaced subshell is a statement like any other. "Resolved verb"
  *             means: after leading `VAR=value` assignments, after transparent
  *             process wrappers (`nohup`, `command`, `sudo`, `env`, `timeout`,
- *             `xargs`, `exec`), and basename-normalised, so an absolute path
- *             (`/opt/homebrew/bin/glab`) resolves to `glab` (#1145).
+ *             `exec`), and basename-normalised, so an absolute path
+ *             (`/opt/homebrew/bin/glab`) resolves to `glab` (#1145). `xargs` is
+ *             NOT one of those wrappers — see the named ceiling below.
  *   NO MATCH: the words inside a quoted string, a `#` comment, or a here-doc
  *             body (they are data, not a command); a single token that merely
  *             CONTAINS the three words (`"glab issue create"` runs a binary of
@@ -95,6 +96,28 @@
  *     triage of a per-session counter file
  *     (`.orchestrator/runtime/issue-budget/<hash>.json`, #1141) or in a
  *     transcript census of real create calls.
+ *   - An `xargs`-driven create is NOT matched, and `xargs` is deliberately not
+ *     a transparent wrapper: `command-blocker.mjs` classes it as an INTERPRETER
+ *     (`SHELL_EXEC_INTERPRETERS`), because unwrapping it there would LOOSEN the
+ *     destructive-command guard that shares this lexer. Measured 2026-09-09
+ *     against this file — all four shapes yield 0 statements, so neither the
+ *     cap nor the loop-deny sees them:
+ *
+ *         xargs glab issue create --title X                          → 0
+ *         echo X | xargs -I% glab issue create --title %             → 0
+ *         seq 1 50 | xargs -I% gh api -X POST …/issues -f title=%    → 0
+ *         xargs -n1 glab issue create                                → 0
+ *
+ *     Widening this one shape means changing what `resolveSegmentVerb` reports
+ *     for `xargs` — read by the four OTHER consumers of that resolver
+ *     (`grep -rln resolveSegmentVerb scripts/ hooks/`, 2026-09-09:
+ *     `scripts/lib/project-hygiene.mjs`, `scripts/lib/scope-gate.mjs`,
+ *     `hooks/pre-bash-sessions-ledger-guard.mjs`,
+ *     `hooks/pre-bash-destructive-guard.mjs`) — so it is a deliberate
+ *     cross-consumer change, never a local patch here.
+ *     Pinned by `tests/hooks/vcs-create-matcher.test.mjs`. Revisit when an
+ *     `xargs`-driven create shows up in a transcript census or in the overflow
+ *     triage of a per-session counter file.
  *   - A paren glued to the verb (`(glab issue create …)`) is not reached: it
  *     lexes as the single word `(glab`. This is `command-blocker.mjs`'s own
  *     named ceiling on `COMMAND_POSITION_KEYWORDS` (#1145), inherited here
@@ -205,7 +228,113 @@ function matchReading(verb, tokens, index) {
     host: m[1] === 'gh' ? 'github' : 'gitlab',
     kind: /** @type {'pr'|'mr'|'issue'} */ (m[2]),
     verb: /** @type {'create'|'new'} */ (m[3]),
+    via: /** @type {'cli'} */ ('cli'),
   };
+}
+
+/**
+ * A REST path whose LAST segment is `issues` — the issue COLLECTION endpoint,
+ * which is the only one a POST creates an issue on.
+ *
+ * Deliberately anchored at the end (`?` allowed for a query string): the
+ * sub-resources `.../issues/12/notes` and `.../issues/12` are a comment and an
+ * update, neither of which creates an issue. Matching them would charge the cap
+ * for a note.
+ */
+const ISSUE_COLLECTION_PATH = /(^|\/)issues(\?|$)/;
+
+/** `-f` / `-F` / `--field` / `--raw-field` — the payload flags both CLIs take. */
+const FIELD_FLAGS = new Set(['-f', '-F', '--field', '--raw-field']);
+
+/**
+ * Recognise the REST-API route to issue creation: `gh api` / `glab api`
+ * against an `/issues` collection path (#1163 BUG-2).
+ *
+ * ## Why this is not an optional extra
+ *
+ * Measured 2026-09-09 over a 13-shape census of the matcher: every `api` form
+ * was a MISS, i.e. a COMPLETE silent bypass of the issue-budget cap and of the
+ * templates-first gate —
+ *
+ *     glab api --method POST projects/1/issues -f title=X   → isIssueCreate false
+ *     gh api repos/o/r/issues -f title=X                     → isIssueCreate false
+ *     gh api -X POST repos/o/r/issues -f title=X             → isIssueCreate false
+ *
+ * All three file a real issue. The subcommand route (`glab issue create`) was
+ * gated from the start, so an agent that hit the cap could reach the same
+ * effect through `api` with no counter moving at all.
+ *
+ * ## The narrow shape (guard-design: widen the matcher, not the bypass)
+ *
+ * A LIST call must not match — `gh api repos/o/r/issues` is the single most
+ * common read in this repo's own tooling, and charging it would make the cap
+ * fire on reads. So the accepted shape is: verb `gh`/`glab`, next token `api`,
+ * an `/issues` COLLECTION path somewhere in the argument list, AND either
+ *   - an explicit POST method (`--method POST`, `--method=POST`, `-X POST`,
+ *     `-XPOST`), or
+ *   - a `title=` payload field (`-f title=…`), which only a create carries.
+ * An explicit NON-POST method (`--method GET`, `-X PATCH`) is a hard NO-MATCH
+ * even when a `title=` field is present: an update is not a creation.
+ *
+ * `--help` short-circuits here exactly as it does for the subcommand route.
+ *
+ * NAMED CEILING (BV-004): the payload flags are read as `-f title=…` token
+ * pairs and `--field=title=…` is NOT recognised (neither CLI accepts that
+ * spelling today). A create whose whole body arrives via `--input -` on stdin
+ * matches only through the explicit POST method, which is the shape both CLIs
+ * require for that form. Revisit if a census of real create calls shows an
+ * `api` shape reaching neither condition.
+ *
+ * @param {string} verb — basename-normalised verb from resolveSegmentVerb
+ * @param {Array<{ text: string, quoted: boolean }>} tokens — the whole statement
+ * @param {number} index — token index the verb resolved to
+ * @returns {{ host: 'github'|'gitlab', kind: 'issue', verb: 'create', via: 'api' } | null}
+ */
+function matchApiReading(verb, tokens, index) {
+  if (verb !== 'gh' && verb !== 'glab') return null;
+  const sub = tokens[index + 1];
+  if (!sub || sub.quoted || sub.text !== 'api') return null;
+
+  let method = null;
+  let hasTitleField = false;
+  let issuePath = false;
+
+  for (let i = index + 2; i < tokens.length; i++) {
+    const tok = tokens[i];
+    const text = tok.text;
+    if (!tok.quoted && text === '--help') return null;
+    if (!tok.quoted && (text === '--method' || text === '-X')) {
+      method = tokens[i + 1]?.text ?? '';
+      i += 1;
+      continue;
+    }
+    if (!tok.quoted && text.startsWith('--method=')) {
+      method = text.slice('--method='.length);
+      continue;
+    }
+    if (!tok.quoted && text.startsWith('-X') && text.length > 2) {
+      method = text.slice(2);
+      continue;
+    }
+    if (!tok.quoted && FIELD_FLAGS.has(text)) {
+      const value = tokens[i + 1]?.text ?? '';
+      if (value.startsWith('title=')) hasTitleField = true;
+      i += 1;
+      continue;
+    }
+    // A path is an operand, quoted or not — `gh api "repos/o/r/issues"` is the
+    // same call as the bare form, and quoting an operand is not concealment the
+    // way quoting a whole COMMAND is.
+    if (ISSUE_COLLECTION_PATH.test(text)) issuePath = true;
+  }
+
+  if (!issuePath) return null;
+  if (method !== null) {
+    if (!/^post$/i.test(method)) return null;
+  } else if (!hasTitleField) {
+    return null;
+  }
+  return { host: verb === 'gh' ? 'github' : 'gitlab', kind: 'issue', verb: 'create', via: 'api' };
 }
 
 /**
@@ -233,7 +362,9 @@ function matchStatement(tokens) {
   }
   for (const reading of [resolved, resolved.alt]) {
     if (!reading || typeof reading.verb !== 'string' || reading.index < 0) continue;
-    const shape = matchReading(reading.verb, tokens, reading.index);
+    const shape =
+      matchReading(reading.verb, tokens, reading.index) ??
+      matchApiReading(reading.verb, tokens, reading.index);
     if (shape) return shape;
   }
   return null;
@@ -267,7 +398,85 @@ function findCreateStatement(command) {
  *   `null` when no statement in the command is a `gh`/`glab` create/new call.
  */
 export function matchVcsCreate(command) {
-  return findCreateStatement(command)?.shape ?? null;
+  const shape = findCreateStatement(command)?.shape;
+  if (!shape) return null;
+  // The `via` marker is deliberately NOT part of THIS return shape: the sibling
+  // suite `tests/unit/hook-issue-budget.test.mjs` pins it by `toEqual` on the
+  // exact three keys, and a fourth key would fail those assertions without any
+  // behaviour changing. Consumers that need the route ask
+  // {@link findIssueCreateStatements}, which carries it.
+  return { host: shape.host, kind: shape.kind, verb: shape.verb };
+}
+
+/**
+ * Read the `--title` (subcommand route) or `-f title=…` (api route) value off
+ * ONE statement's tokens.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} tokens
+ * @returns {string|null}
+ */
+function titleFromTokens(tokens) {
+  for (let i = 0; i < tokens.length; i++) {
+    const text = tokens[i].text;
+    if (text === '--title') {
+      const value = tokens[i + 1]?.text;
+      return typeof value === 'string' ? value.trim() || null : null;
+    }
+    if (text.startsWith('--title=')) {
+      return text.slice('--title='.length).trim() || null;
+    }
+    if (FIELD_FLAGS.has(text)) {
+      const value = tokens[i + 1]?.text ?? '';
+      if (value.startsWith('title=')) return value.slice('title='.length).trim() || null;
+      i += 1;
+    }
+  }
+  return null;
+}
+
+/**
+ * EVERY issue-create statement in the command chain, in source order (#1163
+ * BUG-1).
+ *
+ * ## Why the callers cannot keep using {@link isIssueCreate} alone
+ *
+ * `isIssueCreate` answers "does this command create an issue?" — a BOOLEAN,
+ * which is exactly one issue short of what a QUANTITY gate needs. Measured
+ * 2026-09-09 against `hooks/pre-bash-issue-budget.mjs` before this change:
+ * `glab issue create --title A && glab issue create --title B` charged the cap
+ * ONCE for TWO issues, because the hook called `chargeIssueBudget` once per
+ * Bash tool call with the whole command string. The segmentation to answer it
+ * correctly was already here — nothing consumed it per statement.
+ *
+ * Each record carries the tokens the caller must judge (never the whole
+ * command): a chain may mix an exempt create with a chargeable one, and
+ * classifying the exemption on the joined command text would exempt BOTH —
+ * the same class of hole as the bypass-scoping regression documented on
+ * {@link matchesBypass}.
+ *
+ * `text` is the statement rebuilt from its tokens (quotes already resolved by
+ * the lexer, arguments joined by single spaces). It is a CLASSIFICATION INPUT
+ * for `classifyExemption`, never something to re-execute.
+ *
+ * @param {string} command
+ * @returns {Array<{ shape: { host: string, kind: string, verb: string, via: string },
+ *                   tokens: Array<{ text: string, quoted: boolean }>,
+ *                   text: string,
+ *                   title: string|null }>}
+ */
+export function findIssueCreateStatements(command) {
+  const out = [];
+  for (const tokens of statementsOf(command)) {
+    const shape = matchStatement(tokens);
+    if (!shape || shape.kind !== 'issue') continue;
+    out.push({
+      shape,
+      tokens,
+      text: tokens.map((t) => t.text).join(' '),
+      title: titleFromTokens(tokens),
+    });
+  }
+  return out;
 }
 
 /**
@@ -463,16 +672,5 @@ export function extractTitle(command) {
 
   const found = findCreateStatement(command);
   const tokens = found ? found.tokens : statementsOf(command).flat();
-
-  for (let i = 0; i < tokens.length; i++) {
-    const text = tokens[i].text;
-    if (text === '--title') {
-      const value = tokens[i + 1]?.text;
-      return typeof value === 'string' ? value.trim() || null : null;
-    }
-    if (text.startsWith('--title=')) {
-      return text.slice('--title='.length).trim() || null;
-    }
-  }
-  return null;
+  return titleFromTokens(tokens);
 }

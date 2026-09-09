@@ -4,7 +4,7 @@ Sub-reference for the wave-executor skill. Defines safety mechanisms for agent e
 
 ## Circuit Breaker
 
-1. **MaxTurns enforcement**: Read `max-turns` from Session Config (default: auto — housekeeping=8, feature=15, deep=25). Include this instruction in EVERY agent prompt:
+1. **MaxTurns enforcement**: Read the wave's `maxTurns` from the resolved shape (`scripts/session-shape.mjs` / `scripts/lib/session-shape.mjs`; a Session Config `max-turns: auto` is expanded per session type THERE, not here). Include this instruction in EVERY agent prompt:
    ```
    TURN LIMIT: You have a maximum of [N] turns. If you cannot complete within [N] turns, report PARTIAL with what you accomplished and what remains.
    ```
@@ -92,6 +92,8 @@ The function never throws — it always returns a result object. Treat `skipped:
    | 3–4 | housekeeping | `none` |
    | 3–4 | feature / deep | `worktree` |
    | ≥ 5 | any | `worktree` |
+
+   `sessionType` for `resolveIsolation` comes from the resolved shape (the same `session-type` the shape was resolved for), not from a value re-derived at dispatch time.
 
    Rationale: the verified learning `coordinator-over-worktree-on-shared-files` (confidence 0.75) shows that small waves on partitioned scopes merge cleaner when run in-place. Two consecutive deep-session regressions (2026-04-20 07:30, 09:00) were worktree base-ref staleness on ≤2-agent waves editing the same SKILL.md. Graduated default makes worktree the tool for parallelism, not the default tax on every wave.
 

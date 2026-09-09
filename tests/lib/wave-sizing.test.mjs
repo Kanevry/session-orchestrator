@@ -8,6 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { resolveIsolation, resolveEnforcement } from '@lib/wave-sizing.mjs';
+import { VALID_SESSION_TYPES } from '@lib/session-schema/constants.mjs';
 
 // ---------------------------------------------------------------------------
 // resolveIsolation — graduation table
@@ -187,5 +188,23 @@ describe('resolveEnforcement', () => {
 
   it('throws TypeError for invalid configEnforcement', () => {
     expect(() => resolveEnforcement({ isolation: 'none', configEnforcement: 'moderate' })).toThrow(TypeError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SSOT — the session-type enum is IMPORTED, not re-declared
+// ---------------------------------------------------------------------------
+
+describe('VALID_SESSION_TYPES is the SSOT set (same members as session-schema/constants)', () => {
+  // wave-sizing.mjs does not export its accepted set, so the parity proof is
+  // BEHAVIOURAL: a representative SSOT member is accepted and a non-member is
+  // rejected. Iterating the whole enum added nothing falsifiable — it compared
+  // VALID_SESSION_TYPES with itself, and both sides move together.
+  it('accepts an SSOT member and rejects a value outside the enum', () => {
+    expect(VALID_SESSION_TYPES).toContain('housekeeping');
+    expect(() => resolveIsolation({ agentCount: 3, sessionType: 'housekeeping' })).not.toThrow();
+
+    expect(VALID_SESSION_TYPES).not.toContain('ultradeep');
+    expect(() => resolveIsolation({ agentCount: 3, sessionType: 'ultradeep' })).toThrow(TypeError);
   });
 });

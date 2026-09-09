@@ -34,6 +34,8 @@ import path from 'node:path';
 import { writeJsonAtomicSync } from './io.mjs';
 import { resolveInstructionFile } from './common.mjs';
 import { _parseIssueBudget } from './config/issue-budget.mjs';
+import { parseStateMd } from './state-md/yaml-parser.mjs';
+import { resolveStateMdPath } from './state-md/frontmatter-mutators.mjs';
 
 /**
  * Legacy single-slot counter file, relative to the repo root.
@@ -149,23 +151,94 @@ export function classifyExemption(command) {
 }
 
 /**
+ * Resolve the effective cap for one session type out of a parsed config.
+ *
+ * Precedence is `raw[sessionType] ?? raw.default ?? cfg['max-per-session']` —
+ * an unknown or absent session type falls through to the default, never to a
+ * hard-coded number, and a config parsed before the override syntax existed
+ * (no `max-per-session-raw` key at all) still resolves via the last term.
+ *
+ * @param {{ "max-per-session"?: number, "max-per-session-raw"?: number|Record<string, number> }} cfg
+ * @param {string|null|undefined} sessionType — e.g. `feature`, `deep`, `housekeeping`
+ * @returns {number} non-negative integer cap
+ */
+export function resolveMaxPerSession(cfg, sessionType) {
+  const fallback =
+    Number.isInteger(cfg?.['max-per-session']) && cfg['max-per-session'] >= 0
+      ? cfg['max-per-session']
+      : 12;
+  const raw = cfg?.['max-per-session-raw'];
+  if (Number.isInteger(raw) && raw >= 0) return raw;
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const key = typeof sessionType === 'string' ? sessionType.trim().toLowerCase() : '';
+    const override = key === '' ? undefined : raw[key];
+    if (Number.isInteger(override) && override >= 0) return override;
+    if (Number.isInteger(raw.default) && raw.default >= 0) return raw.default;
+  }
+  return fallback;
+}
+
+/**
+ * Read `session-type:` from the active STATE.md frontmatter.
+ *
+ * Never throws: a missing STATE.md, unparseable frontmatter, or an absent /
+ * non-string `session-type` all yield `null`, which `resolveMaxPerSession`
+ * reads as "use the default". The hook path runs on every Bash call, so a
+ * broken STATE.md must degrade to today's behaviour rather than fail.
+ *
+ * @param {string} repoRoot
+ * @returns {string|null}
+ */
+export function readSessionTypeFromStateMd(repoRoot) {
+  try {
+    const filePath = resolveStateMdPath(repoRoot);
+    if (!existsSync(filePath)) return null;
+    const parsed = parseStateMd(readFileSync(filePath, 'utf8'));
+    const value = parsed?.frontmatter?.['session-type'];
+    return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Load the `issue-budget` config from the repo's instruction file
  * (CLAUDE.md / AGENTS.md). Reads only that one file and only that one block —
  * `parseSessionConfig()` is deliberately NOT used here so the hook path does
  * not pay for host-path resolution and owner.yaml I/O on every Bash call.
  *
+ * `max-per-session` is returned ALREADY RESOLVED for the current session type
+ * (read from the active STATE.md frontmatter), so every existing consumer that
+ * treats it as a plain number keeps working and automatically gains the
+ * per-session-type override. The unresolved value stays available under
+ * `max-per-session-raw`, and `session-type-resolved` records which type the
+ * resolution used (`null` when STATE.md is absent or carries no session-type).
+ *
  * @param {string} repoRoot
- * @returns {{ "max-per-session": number, mode: string, overflow: string }}
+ * @returns {{ "max-per-session": number, "max-per-session-raw": number|Record<string, number>, "session-type-resolved": string|null, mode: string, overflow: string }}
  */
 export function loadIssueBudgetConfig(repoRoot) {
-  const defaults = { 'max-per-session': 12, mode: 'strict', overflow: 'collect-issue' };
+  const defaults = {
+    'max-per-session': 12,
+    'max-per-session-raw': 12,
+    'session-type-resolved': null,
+    mode: 'strict',
+    overflow: 'collect-issue',
+  };
+  let parsed;
   try {
     const resolved = resolveInstructionFile(repoRoot);
     if (!resolved) return defaults;
-    return _parseIssueBudget(readFileSync(resolved.path, 'utf8'));
+    parsed = _parseIssueBudget(readFileSync(resolved.path, 'utf8'));
   } catch {
     return defaults;
   }
+  const sessionType = readSessionTypeFromStateMd(repoRoot);
+  return {
+    ...parsed,
+    'max-per-session': resolveMaxPerSession(parsed, sessionType),
+    'session-type-resolved': sessionType,
+  };
 }
 
 /**

@@ -348,11 +348,46 @@ export function deriveSessionFromEvents(metricsDir) {
     let startedAt = null;
     let sessionType = null;
     let lastTs = null;
+    // `orchestrator.session.shape_resolved` (scripts/lib/session-shape.mjs) is
+    // the plan-time measurement: it fires AFTER the operator picked a mode, and
+    // it is the only event carrying `session_profile`. `session.started`'s mode
+    // predates the choice, and the STATE.md profile read below evaporates the
+    // moment STATE.md is rewritten — so when a shape record exists it wins for
+    // BOTH fields. Latest wins; absent ⇒ the pre-existing behaviour, unchanged.
+    //
+    // "Latest" is decidable only for a record carrying a parseable timestamp. An
+    // UNDATED record has no place in that order and must never displace a dated
+    // one (the earlier `ts === null` disjunct inverted exactly that). It is kept
+    // separately and used only when no dated shape record exists AND the
+    // pre-existing sources below yielded nothing.
+    let shapeType = null;
+    let shapeProfile = null;
+    let shapeTs = null;
+    let undatedShapeType = null;
+    let undatedShapeProfile = null;
 
     for (const ev of events) {
       if (!ev || typeof ev !== 'object') continue;
       const ts = typeof ev.timestamp === 'string' && !Number.isNaN(Date.parse(ev.timestamp)) ? ev.timestamp : null;
       if (ts && (lastTs === null || ts > lastTs)) lastTs = ts;
+      if (ev.event === 'orchestrator.session.shape_resolved') {
+        const type = typeof ev.session_type === 'string' && ev.session_type.trim() !== '' ? ev.session_type.trim() : null;
+        // OMITTED, never null, when the session has no profile — only a
+        // present string may overwrite an earlier reading.
+        const profile =
+          typeof ev.session_profile === 'string' && ev.session_profile.trim() !== '' ? ev.session_profile.trim() : null;
+        if (ts !== null) {
+          if (shapeTs === null || ts >= shapeTs) {
+            shapeTs = ts;
+            if (type !== null) shapeType = type;
+            if (profile !== null) shapeProfile = profile;
+          }
+        } else if (undatedShapeType === null && undatedShapeProfile === null) {
+          undatedShapeType = type;
+          undatedShapeProfile = profile;
+        }
+        continue;
+      }
       if (ev.event !== 'orchestrator.session.started') continue;
       // `mode` is what session-start writes; `session_type` is the ledger's own
       // name for the same fact. Read both — neither is guaranteed present.
@@ -364,10 +399,24 @@ export function deriveSessionFromEvents(metricsDir) {
       }
     }
 
-    if (startedAt === null && sessionType === null) return { session: {}, source: 'absent' };
+    if (shapeType !== null) sessionType = shapeType;
+    // An undated shape record is the weakest reading there is: it wins over
+    // nothing at all, and over nothing else. A dated shape record (shapeTs) or
+    // a `session.started` mode both outrank it.
+    // Type and profile are read as a PAIR from the same record, so the undated
+    // fallback is taken as a pair too — never spliced onto a type another source
+    // supplied.
+    let profile = shapeProfile;
+    if (shapeTs === null && sessionType === null) {
+      sessionType = undatedShapeType;
+      profile = undatedShapeProfile;
+    }
+
+    if (startedAt === null && sessionType === null && profile === null) return { session: {}, source: 'absent' };
 
     const session = {};
     if (sessionType !== null) session.session_type = sessionType;
+    if (profile !== null) session.session_profile = profile;
     if (startedAt !== null) session.started_at = startedAt;
     // completed_at is the last life-sign, never the wall clock — the same
     // omit-never-fabricate contract session-close-backfill.mjs uses (#914 R1).

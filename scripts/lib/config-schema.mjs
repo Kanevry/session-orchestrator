@@ -86,6 +86,8 @@ export function validateSessionConfig(config) {
     });
   }
 
+  validateIssueBudget(config['issue-budget'], errors);
+
   validateVaultIntegration(config['vault-integration'], errors);
   validateVaultSync(config['vault-sync'], errors);
 
@@ -122,6 +124,83 @@ export function validateSessionConfig(config) {
     return { ok: false, errors, warnings };
   }
   return { ok: true, config, warnings };
+}
+
+/**
+ * Validate the `issue-budget` block's cap, including the per-session-type
+ * override form (#session-shape) — `12 (feature: 6)` parses to
+ * `{ default: 12, feature: 6 }` and lands on `max-per-session-raw`, while
+ * `max-per-session` stays the resolved NUMBER every consumer reads.
+ *
+ * Mirrors `validateAgentsPerWave` in shape, with two deliberate differences:
+ * the floor is 0 (`max-per-session: 0` is a valid "no issue may be created"
+ * setting) and the override key set is free-form, because the session-type
+ * vocabulary is owned by session-start, not by this schema.
+ *
+ * @param {unknown} block — `config['issue-budget']`
+ * @param {Array<{path: string, rule: string, message: string}>} errors
+ */
+function validateIssueBudget(block, errors) {
+  if (block === undefined || block === null) return;
+  if (typeof block !== 'object' || Array.isArray(block)) {
+    errors.push({
+      path: 'issue-budget',
+      rule: 'object',
+      message: `issue-budget must be an object (got ${JSON.stringify(block)})`,
+    });
+    return;
+  }
+
+  const resolved = block['max-per-session'];
+  if (resolved !== undefined && (!Number.isInteger(resolved) || resolved < 0)) {
+    errors.push({
+      path: 'issue-budget.max-per-session',
+      rule: 'integer>=0',
+      message: `issue-budget.max-per-session must be an integer >= 0 (got ${JSON.stringify(resolved)})`,
+    });
+  }
+
+  const raw = block['max-per-session-raw'];
+  if (raw === undefined || raw === null) return;
+
+  if (Number.isInteger(raw)) {
+    if (raw < 0) {
+      errors.push({
+        path: 'issue-budget.max-per-session-raw',
+        rule: 'integer>=0',
+        message: `issue-budget.max-per-session-raw must be an integer >= 0 (got ${raw})`,
+      });
+    }
+    return;
+  }
+
+  if (typeof raw === 'object' && !Array.isArray(raw)) {
+    const defaultVal = raw['default'];
+    if (!Number.isInteger(defaultVal) || defaultVal < 0) {
+      errors.push({
+        path: 'issue-budget.max-per-session-raw.default',
+        rule: 'integer>=0',
+        message: `issue-budget.max-per-session-raw.default must be an integer >= 0 (got ${JSON.stringify(defaultVal)})`,
+      });
+    }
+    for (const [k, v] of Object.entries(raw)) {
+      if (k === 'default') continue;
+      if (!Number.isInteger(v) || v < 0) {
+        errors.push({
+          path: `issue-budget.max-per-session-raw.${k}`,
+          rule: 'integer>=0',
+          message: `issue-budget.max-per-session-raw.${k} must be an integer >= 0 (got ${JSON.stringify(v)})`,
+        });
+      }
+    }
+    return;
+  }
+
+  errors.push({
+    path: 'issue-budget.max-per-session-raw',
+    rule: 'integer-or-object',
+    message: `issue-budget.max-per-session-raw must be an integer >= 0 or an object with numeric entries (got ${JSON.stringify(raw)})`,
+  });
 }
 
 function validateAgentsPerWave(value, errors) {

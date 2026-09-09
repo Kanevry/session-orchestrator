@@ -92,104 +92,35 @@ describe('validateSession — token fields (Epic #644) — valid values', () => 
 });
 
 // ---------------------------------------------------------------------------
-// Error paths — total_token_input
+// Error paths — one case per (field, rejected value). Each asserts BOTH the
+// error CLASS and that the message names the offending field: a validator that
+// threw the right class while naming the wrong field would leave the operator
+// hunting the wrong key, and the previous split pairs only checked one of the
+// two per case.
 // ---------------------------------------------------------------------------
 
-describe('validateSession — total_token_input constraint violations', () => {
-  it('throws ValidationError when total_token_input is negative', () => {
-    const entry = { ...BASE(), total_token_input: -5 };
+describe('validateSession — token-field constraint violations', () => {
+  it.each([
+    // NaN/Infinity: typeof 'number' and `NaN < 0` is false, so a typeof-only
+    // guard let both through — Number.isFinite is what rejects them (#644 W4).
+    ['total_token_input', -5, 'negative'],
+    ['total_token_input', '1000', 'a numeric string'],
+    ['total_token_input', NaN, 'NaN'],
+    ['total_token_input', Infinity, 'Infinity'],
+    ['total_token_output', -1, 'negative'],
+    ['total_token_output', true, 'a boolean'],
+    ['subagents_with_tokens', 2.5, 'a non-integer float'],
+    ['subagents_with_tokens', -1, 'negative'],
+    ['subagents_with_tokens', '3', 'a numeric string'],
+  ])('rejects %s when it is %s, naming the field in the message', (field, value) => {
+    const entry = { ...BASE(), [field]: value };
 
     expect(() => validateSession(entry)).toThrow(ValidationError);
-  });
-
-  it('throws ValidationError when total_token_input is negative — error message names the field', () => {
-    const entry = { ...BASE(), total_token_input: -5 };
-
-    expect(() => validateSession(entry)).toThrow(/total_token_input/);
-  });
-
-  it('throws ValidationError when total_token_input is a string', () => {
-    const entry = { ...BASE(), total_token_input: '1000' };
-
-    expect(() => validateSession(entry)).toThrow(ValidationError);
-  });
-
-  it('throws ValidationError when total_token_input is NaN', () => {
-    const entry = { ...BASE(), total_token_input: NaN };
-
-    // NaN is typeof 'number' and NaN < 0 is false, so a typeof-only guard let it
-    // through. The validator now uses Number.isFinite (mirrors lease_ttl_seconds),
-    // which rejects NaN/Infinity — a NaN token count is meaningless (#644 W4 fix).
-    expect(() => validateSession(entry)).toThrow(ValidationError);
-  });
-
-  it('throws ValidationError when total_token_input is Infinity', () => {
-    const entry = { ...BASE(), total_token_input: Infinity };
-    expect(() => validateSession(entry)).toThrow(ValidationError);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Error paths — total_token_output
-// ---------------------------------------------------------------------------
-
-describe('validateSession — total_token_output constraint violations', () => {
-  it('throws ValidationError when total_token_output is negative', () => {
-    const entry = { ...BASE(), total_token_output: -1 };
-
-    expect(() => validateSession(entry)).toThrow(ValidationError);
-  });
-
-  it('throws ValidationError when total_token_output is negative — error message names the field', () => {
-    const entry = { ...BASE(), total_token_output: -1 };
-
-    expect(() => validateSession(entry)).toThrow(/total_token_output/);
-  });
-
-  it('throws ValidationError when total_token_output is a boolean', () => {
-    const entry = { ...BASE(), total_token_output: true };
-
-    expect(() => validateSession(entry)).toThrow(ValidationError);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Error paths — subagents_with_tokens
-// ---------------------------------------------------------------------------
-
-describe('validateSession — subagents_with_tokens constraint violations', () => {
-  it('throws ValidationError when subagents_with_tokens is a non-integer number (float)', () => {
-    const entry = { ...BASE(), subagents_with_tokens: 2.5 };
-
-    expect(() => validateSession(entry)).toThrow(ValidationError);
-  });
-
-  it('throws ValidationError when subagents_with_tokens is a float — error message names the field', () => {
-    const entry = { ...BASE(), subagents_with_tokens: 2.5 };
-
-    expect(() => validateSession(entry)).toThrow(/subagents_with_tokens/);
-  });
-
-  it('throws ValidationError when subagents_with_tokens is negative', () => {
-    const entry = { ...BASE(), subagents_with_tokens: -1 };
-
-    expect(() => validateSession(entry)).toThrow(ValidationError);
-  });
-
-  it('throws ValidationError when subagents_with_tokens is a string', () => {
-    const entry = { ...BASE(), subagents_with_tokens: '3' };
-
-    expect(() => validateSession(entry)).toThrow(ValidationError);
+    expect(() => validateSession(entry)).toThrow(new RegExp(field));
   });
 
   it('accepts subagents_with_tokens: 1 (valid integer)', () => {
     const entry = { ...BASE(), subagents_with_tokens: 1 };
-
-    expect(() => validateSession(entry)).not.toThrow();
-  });
-
-  it('accepts subagents_with_tokens: 10 (valid integer, larger value)', () => {
-    const entry = { ...BASE(), subagents_with_tokens: 10 };
 
     expect(() => validateSession(entry)).not.toThrow();
   });
@@ -222,5 +153,44 @@ describe('validateSession — return value with token fields', () => {
     validateSession(entry);
 
     expect(entry).toEqual(original);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1244 — cache buckets, the cost estimate and the token-contract marker.
+// ---------------------------------------------------------------------------
+
+describe('#1244 session token fields', () => {
+  it('accepts a v2 rollup record carrying all five new fields', () => {
+    const entry = {
+      ...BASE(),
+      total_token_input: 1100,
+      total_token_output: 10,
+      total_token_input_uncached: 100,
+      total_token_cache_read: 1000,
+      total_token_cache_creation: 0,
+      total_cost_usd: 0.0026,
+      _token_schema: 2,
+    };
+    expect(() => validateSession(entry)).not.toThrow();
+  });
+
+  it('accepts null for each of them (unknown is not zero)', () => {
+    for (const field of [
+      'total_token_input_uncached',
+      'total_token_cache_read',
+      'total_token_cache_creation',
+      'total_cost_usd',
+    ]) {
+      expect(() => validateSession({ ...BASE(), [field]: null })).not.toThrow();
+    }
+  });
+
+  it('rejects a negative or non-finite value on each new numeric field', () => {
+    expect(() => validateSession({ ...BASE(), total_token_cache_read: -1 })).toThrow(ValidationError);
+    expect(() => validateSession({ ...BASE(), total_cost_usd: Number.NaN })).toThrow(ValidationError);
+    expect(() => validateSession({ ...BASE(), total_token_cache_creation: Infinity })).toThrow(
+      ValidationError,
+    );
   });
 });

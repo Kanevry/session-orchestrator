@@ -18,6 +18,8 @@ Express path activated — <N> tasks, coordinator-direct, no inter-wave checks.
 
 If the banner is present (and the session-plan output emitted a 1-wave Express Path plan per `skills/session-plan/SKILL.md` § "Express Path Short-Circuit"):
 
+**The express 1-wave plan IS the housekeeping shape.** `node scripts/session-shape.mjs --repo-root "$PWD" --session-type housekeeping --no-event` resolves to a single wave with `coordinatorDirect: true` — the express path is not a bespoke shortcut but that shape executed. Consequently, when the session type is `housekeeping`, the coordinator-direct execution runs the **maintenance loop first** (drift-check, expired sweep, `/evolve analyze`, `/reconcile`, `/evolve dialectic`, `/memory-cleanup` — ordered scope, gates and proving artefacts in `skills/wave-executor/SKILL.md` § Housekeeping Sessions — the Maintenance Loop), and **then** the selected issues in dependency order.
+
 1. **Execute the agreed tasks directly** as coordinator actions, in dependency order. Do NOT dispatch subagents. Do NOT invoke the wave-executor skill.
 2. **Append the Express Path deviation to STATE.md** before invoking session-end. Use `appendDeviationOnDisk()` from `scripts/lib/state-md.mjs` — the on-disk wrapper takes the STATE.md lock automatically, serialising any concurrent writers. This step ensures the audit trail exists BEFORE session-end finalizes the file. Equivalent one-liner via Bash:
    ```bash

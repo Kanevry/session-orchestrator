@@ -29,11 +29,15 @@
 
    > **#701.2 DOC NOTE — `completed_at >= started_at` guard:** This invariant is enforced mechanically by `scripts/emit-session.mjs`. The writer applies `clampTimestampsMonotonic()` (from `scripts/lib/session-schema/timestamps.mjs`) before `validateSession()`, clamping any inversion of `completed_at < started_at` to `started_at` and recording forensics in `_clamped: true` / `_original_completed_at`. Previously-inverted entries (e.g. `main-2026-06-21-session-4`) are already corrected. **No per-session coordinator action is needed** — the writer enforces the invariant at write time. Do not add defensive clamping logic here; the canonical guard lives in `emit-session.mjs`.
 
-1a. **Token Rollup (#644)** — before emitting the JSONL record, aggregate token usage from `subagents.jsonl` and merge the three token fields onto the in-memory `$METRICS_ENTRY` JSON object. The join key is the session's UUID (`session_id` / `parent_session_id` on subagents.jsonl — the UUID form, not the semantic slug).
+1a. **Token Rollup (#644, extended #1244)** — before emitting the JSONL record, aggregate token usage from `subagents.jsonl` and merge the rollup fields onto the in-memory `$METRICS_ENTRY` JSON object. The join key is the session's UUID (`session_id` / `parent_session_id` on subagents.jsonl — the UUID form, not the semantic slug).
 
-   **Semantics:** `null` totals mean "no token data was captured for this session" — this is NOT the same as zero cost. Do NOT coerce null to 0 when displaying or summing across sessions.
+   **This prose step is the ONLY path by which the hook's token fix reaches `sessions.jsonl`** — `rollupSessionTokens()` has no other production caller, so skipping or partially copying this step leaves the entire #1244 cache-token fix inert at the session level while the per-agent ledger looks correct.
+
+   **Semantics:** `null` totals mean "no token data was captured for this session" — this is NOT the same as zero cost. Do NOT coerce null to 0 when displaying or summing across sessions. The same holds for `total_cost_usd`: `null` means "at least one agent ran on a model the price table does not know", never "$0".
 
    **Provenance (#949):** the rollup sums ONLY records carrying `subagent_transcript_found: true` — the flag the producer sets when it read the subagent's own transcript. Pre-#949 records carry the PARENT transcript's running totals and are excluded, so a session made up entirely of them now reports `null` rather than a fabricated sum (73 historical sessions, 96,148,781 phantom tokens, measured 2026-08-11). Two consequences for readers: totals already written into `sessions.jsonl` before 2026-08-11 were produced by the unfiltered recipe and are a series break, not a trend; and `matched_records` counts start records and phantom stops alike, so it is NOT the denominator for a coverage ratio — use `subagents_with_tokens` against the session's real agent count.
+
+   **Schema boundary (#1244, 2026-09-09):** from `schema_version: 2` a subagent record's `token_input` is BILLABLE PROMPT VOLUME (uncached + cache_read + cache_creation); v1 records held raw uncached input only and are therefore EXCLUDED from every total and reported as `legacy_v1_records`. Sessions spanning the boundary are a second series break — do not trend across it.
 
    Example (coordinator pseudo-code — adapt to your shell/JS context):
 
@@ -42,14 +46,24 @@
    import { rollupSessionTokens } from '../../scripts/lib/session-token-rollup.mjs';
 
    const rollup = rollupSessionTokens({ parentSessionId: SESSION_UUID });
-   // rollup: { total_token_input, total_token_output, subagents_with_tokens, matched_records }
-   // Merge into the record — all three fields are optional in schema v1 (additive).
-   metricsEntry.total_token_input   = rollup.total_token_input;   // number | null
-   metricsEntry.total_token_output  = rollup.total_token_output;  // number | null
-   metricsEntry.subagents_with_tokens = rollup.subagents_with_tokens; // number (0 when no coverage)
+   // rollup: { total_token_input, total_token_output, subagents_with_tokens, matched_records,
+   //           total_token_input_uncached, total_token_cache_read, total_token_cache_creation,
+   //           total_cost_usd, cost_records_priced, cost_records_total, legacy_v1_records,
+   //           _token_schema }
+   // Merge into the record — every field below is optional in the session schema (additive).
+   metricsEntry.total_token_input           = rollup.total_token_input;            // number | null
+   metricsEntry.total_token_output          = rollup.total_token_output;           // number | null
+   metricsEntry.subagents_with_tokens       = rollup.subagents_with_tokens;        // number (0 when no coverage)
+   metricsEntry.total_token_input_uncached  = rollup.total_token_input_uncached;   // number | null
+   metricsEntry.total_token_cache_read      = rollup.total_token_cache_read;       // number | null
+   metricsEntry.total_token_cache_creation  = rollup.total_token_cache_creation;   // number | null
+   metricsEntry.total_cost_usd              = rollup.total_cost_usd;               // number | null (null = unknown model)
+   metricsEntry._token_schema               = rollup._token_schema;                // 2
    ```
 
-   Or, from a bash context, call the rollup via a helper node invocation and `jq`-merge the three fields into `$METRICS_ENTRY` before step 2:
+   Report `cost_records_priced / cost_records_total` and `legacy_v1_records` in the session summary when either is non-zero — an unpriced or excluded remainder is what makes a cost figure honest.
+
+   Or, from a bash context, call the rollup via a helper node invocation and `jq`-merge the fields into `$METRICS_ENTRY` before step 2:
 
    ```bash
    ROLLUP_JSON=$(node -e "
@@ -63,13 +77,18 @@
    METRICS_ENTRY=$(printf '%s' "$METRICS_ENTRY" | jq \
      --argjson r "${ROLLUP_JSON:-{}}" \
      '. + {
-       total_token_input:    ($r.total_token_input // null),
-       total_token_output:   ($r.total_token_output // null),
-       subagents_with_tokens: ($r.subagents_with_tokens // 0)
+       total_token_input:           ($r.total_token_input // null),
+       total_token_output:          ($r.total_token_output // null),
+       subagents_with_tokens:       ($r.subagents_with_tokens // 0),
+       total_token_input_uncached:  ($r.total_token_input_uncached // null),
+       total_token_cache_read:      ($r.total_token_cache_read // null),
+       total_token_cache_creation:  ($r.total_token_cache_creation // null),
+       total_cost_usd:              ($r.total_cost_usd // null),
+       _token_schema:               ($r._token_schema // 2)
      }')
    ```
 
-   **If the rollup call fails** (e.g., `subagents.jsonl` absent, parse error), set all three fields to `null` / `0` and continue — the rollup is non-blocking. A session without token data still writes cleanly.
+   **If the rollup call fails** (e.g., `subagents.jsonl` absent, parse error), set the numeric totals to `null` / `0` and continue — the rollup is non-blocking. A session without token data still writes cleanly.
 
 2. Append the prepared JSONL entry (from Phase 1.7, now including token fields from step 1a) via the validating writer `scripts/emit-session.mjs` (issue #249):
    ```bash

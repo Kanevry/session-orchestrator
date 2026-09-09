@@ -64,6 +64,33 @@
  * `subagent_transcript_found: true` as token-bearing; summing across the
  * history double-counts the parent once per subagent.
  *
+ * TOKEN-DATA PROVENANCE — SERIES BREAK 2026-09-09 (schema_version 2, #1244).
+ * Until this fix `token_input` was the raw `usage.input_tokens` sum only, and
+ * `cache_read_input_tokens` / `cache_creation_input_tokens` were read nowhere in
+ * the repo. Under prompt caching virtually the whole prompt is cache traffic, so
+ * that number described a rounding error rather than the run: measured
+ * 2026-09-09 on agent af50d1eda37099e17, the ledger recorded token_input 56
+ * where its transcript holds 56 + 3,528,536 cache_read + 147,587 cache_creation
+ * = 3,676,179 — an understatement of 65,646×; session-wide 1,518 vs 85,271,214.
+ * (token_output was within ~11% and is unaffected.)
+ *
+ * From schema_version 2 onward:
+ *   token_input            = uncached + cache_read + cache_creation
+ *                            (BILLABLE PROMPT VOLUME — a redefinition, not a
+ *                            widening: v1 and v2 values are not comparable)
+ *   token_input_uncached   = raw usage.input_tokens          (additive)
+ *   token_cache_read       = usage.cache_read_input_tokens   (additive)
+ *   token_cache_creation   = usage.cache_creation_input_tokens (additive)
+ *   model                  = message.model, or null          (additive; enables pricing)
+ *   gen_ai.usage.input_tokens stays the RAW UNCACHED value (OTel semantic), so
+ *   it is deliberately ≠ token_input under v2. Two new OTel aliases carry the
+ *   cache buckets.
+ *
+ * FORWARD-ONLY. Nothing recomputes the v1 history, so consumers MUST gate any
+ * v2 sum on `schema_version >= 2` — `scripts/lib/session-token-rollup.mjs` does
+ * exactly that and reports the excluded v1 records as `legacy_v1_records`
+ * rather than silently folding them in.
+ *
  * A SECOND, independent defect rode along until #950: the requestId dedup kept
  * the FIRST usage block per id, which on a streaming transcript is a partial
  * snapshot (typically `output_tokens: 1`). Any record written before #950 —
@@ -391,13 +418,27 @@ function readStdinJson() {
  * so the present side still sums and the aggregate stays valid.
  *
  * NEVER throws. Any failure (missing/unreadable path, 0 assistant turns, parse
- * error) yields { tokenInput: null, tokenOutput: null } so the hook still exits 0.
+ * error) yields an all-null result so the hook still exits 0.
+ *
+ * Four buckets, not two (#1244 / schema_version 2): `input_tokens`,
+ * `cache_read_input_tokens`, `cache_creation_input_tokens` and `output_tokens`
+ * are accumulated SEPARATELY per deduped turn, because they are billed at three
+ * different rates. `model` is captured from `message.model` of the last kept
+ * block that carries one (null when absent) — it is what makes a cost estimate
+ * possible at all downstream.
  *
  * @param {string|undefined|null} transcriptPath — absolute path from stdin
- * @returns {{ tokenInput: number|null, tokenOutput: number|null }}
+ * @returns {{ tokenInputUncached: number|null, tokenCacheRead: number|null,
+ *   tokenCacheCreation: number|null, tokenOutput: number|null, model: string|null }}
  */
 function extractTranscriptUsage(transcriptPath) {
-  const nullResult = { tokenInput: null, tokenOutput: null };
+  const nullResult = {
+    tokenInputUncached: null,
+    tokenCacheRead: null,
+    tokenCacheCreation: null,
+    tokenOutput: null,
+    model: null,
+  };
   try {
     if (typeof transcriptPath !== 'string' || !transcriptPath.trim()) return nullResult;
     if (!fs.existsSync(transcriptPath)) return nullResult;
@@ -447,9 +488,15 @@ function extractTranscriptUsage(transcriptPath) {
       // Dedup by requestId — keep the LAST usage block per id (#950). The
       // repeats are cumulative streaming snapshots, so overwriting is what
       // promotes the partial first snapshot to the response's real total.
+      // Model id rides along with the usage block (#1244): it is per-turn data
+      // and the only thing that makes the record priceable downstream.
+      const turnModel = typeof obj.message?.model === 'string' && obj.message.model
+        ? obj.message.model
+        : null;
+
       const requestId = obj.requestId;
       if (typeof requestId === 'string' && requestId) {
-        byRequestId.set(requestId, usage);
+        byRequestId.set(requestId, { usage, model: turnModel });
         continue;
       }
 
@@ -461,9 +508,9 @@ function extractTranscriptUsage(transcriptPath) {
       // usable identity; anything else falls through to the individual count.
       const messageId = obj.message?.id;
       if (typeof messageId === 'string' && messageId) {
-        byMessageId.set(messageId, usage);
+        byMessageId.set(messageId, { usage, model: turnModel });
       } else {
-        unkeyable.push(usage);
+        unkeyable.push({ usage, model: turnModel });
       }
     }
 
@@ -472,23 +519,34 @@ function extractTranscriptUsage(transcriptPath) {
     // No assistant turns with usage → leave fields null (forward-compat).
     if (kept.length === 0) return nullResult;
 
-    let tokenInput = 0;
+    let tokenInputUncached = 0;
+    let tokenCacheRead = 0;
+    let tokenCacheCreation = 0;
     let tokenOutput = 0;
-    for (const usage of kept) {
+    let model = null;
+    for (const { usage, model: turnModel } of kept) {
       // Per-turn clamp (#624): add a turn's value ONLY when it is a non-negative
       // integer. A poisoned value (negative, NaN, float like 10.5) is skipped so
       // the good turns survive. An absent side contributes 0, not null.
       const inTok = usage.input_tokens;
+      const cacheRead = usage.cache_read_input_tokens;
+      const cacheCreation = usage.cache_creation_input_tokens;
       const outTok = usage.output_tokens;
-      if (Number.isInteger(inTok) && inTok >= 0) tokenInput += inTok;
+      if (Number.isInteger(inTok) && inTok >= 0) tokenInputUncached += inTok;
+      if (Number.isInteger(cacheRead) && cacheRead >= 0) tokenCacheRead += cacheRead;
+      if (Number.isInteger(cacheCreation) && cacheCreation >= 0) tokenCacheCreation += cacheCreation;
       if (Number.isInteger(outTok) && outTok >= 0) tokenOutput += outTok;
+      if (turnModel !== null) model = turnModel;
     }
 
-    // The aggregate is guaranteed a non-negative integer by per-turn clamping
-    // above (Σ of non-negative integers), so emit it directly.
+    // The aggregates are guaranteed non-negative integers by per-turn clamping
+    // above (Σ of non-negative integers), so emit them directly.
     return {
-      tokenInput,
+      tokenInputUncached,
+      tokenCacheRead,
+      tokenCacheCreation,
       tokenOutput,
+      model,
     };
   } catch {
     return nullResult;
@@ -657,7 +715,7 @@ async function main() {
     timestamp: new Date().toISOString(),
     event,
     agent_id: agentId,
-    schema_version: 1,
+    schema_version: 2,
     ...(agentType !== null ? { agent_type: agentType } : {}),
     ...(parentSessionId !== null ? { parent_session_id: parentSessionId } : {}),
   };
@@ -705,23 +763,51 @@ async function main() {
     // NO fallback to input.transcript_path: that path is the parent session
     // transcript, and reading it is the #949 defect (every stop inherited the
     // parent's running totals). A phantom stop gets null — the honest value.
-    const { tokenInput, tokenOutput } = subagentTranscriptFound
-      ? extractTranscriptUsage(subagentTranscriptPath)
-      : { tokenInput: null, tokenOutput: null };
-    if (tokenInput !== null) record.token_input = tokenInput;
+    const { tokenInputUncached, tokenCacheRead, tokenCacheCreation, tokenOutput, model } =
+      subagentTranscriptFound
+        ? extractTranscriptUsage(subagentTranscriptPath)
+        : {
+            tokenInputUncached: null,
+            tokenCacheRead: null,
+            tokenCacheCreation: null,
+            tokenOutput: null,
+            model: null,
+          };
+
+    // schema_version 2 (#1244): `token_input` is now BILLABLE PROMPT VOLUME —
+    // uncached + cache_read + cache_creation — and the three components are
+    // written additively beside it. See the file header § TOKEN-DATA PROVENANCE
+    // for the 2026-09-09 series break this creates.
+    if (tokenInputUncached !== null) {
+      record.token_input =
+        tokenInputUncached + (tokenCacheRead ?? 0) + (tokenCacheCreation ?? 0);
+      record.token_input_uncached = tokenInputUncached;
+      record.token_cache_read = tokenCacheRead;
+      record.token_cache_creation = tokenCacheCreation;
+    }
     if (tokenOutput !== null) record.token_output = tokenOutput;
+
+    // Model id (#1244) — null when the transcript exposes none. Cost is NOT
+    // computed here: pricing lives in scripts/lib/telemetry/pricing.mjs and is
+    // applied by the session rollup, so this hot-path hook keeps its import
+    // graph unchanged.
+    record.model = model;
 
     // Cost is best-effort / forward-compat (#624): the native transcript does
     // NOT expose total_cost_usd today, so this is null in practice. No rate
-    // table — use the native cost only, default null when absent.
+    // table is applied HERE — use the native cost only, default null when absent.
     const totalCostUsd =
       typeof input.total_cost_usd === 'number' && Number.isFinite(input.total_cost_usd) && input.total_cost_usd >= 0
         ? input.total_cost_usd
         : null;
     record.total_cost_usd = totalCostUsd;
 
-    // OTel alias — #411 additive, schema_version=1 backwards-compat
-    record['gen_ai.usage.input_tokens'] = tokenInput;
+    // OTel alias — #411 additive. `gen_ai.usage.input_tokens` stays the RAW
+    // UNCACHED value (OTel semantic), which is why it is deliberately NOT equal
+    // to `token_input` under schema_version 2.
+    record['gen_ai.usage.input_tokens'] = tokenInputUncached;
+    record['gen_ai.usage.cache_read_input_tokens'] = tokenCacheRead;
+    record['gen_ai.usage.cache_creation_input_tokens'] = tokenCacheCreation;
     record['gen_ai.usage.output_tokens'] = tokenOutput;
     record['gen_ai.system'] = 'anthropic';
   }

@@ -76,11 +76,32 @@ Some sub-configs live in dedicated policy files under `.orchestrator/policy/`:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `agents-per-wave` | integer or integer with overrides | `6` | Maximum parallel subagents per wave. Supports session-type overrides: `6 (deep: 18)` outputs `{"default": 6, "deep": 18}`. The override key set is OPEN — `_coerceInteger` (`scripts/lib/config/coercers.mjs`) parses whatever keys the parentheses contain, so `6 (deep: 18, ultradeep: 18)` outputs `{"default": 6, "deep": 18, "ultradeep": 18}` with no code change (see § Session Profile below). Plain integers remain plain. The override key names a session type but does **not** create one: there is no `session-type:` Session Config key — `parseSessionConfig()` emits none, so writing one into a repo's `## Session Config` block is inert prose. The session type comes from the `/session` argument (default `deep`, see `commands/session.md`) and is persisted to STATE.md frontmatter as `session-type:`, which is the only live read (`scripts/print-applicable-rules.mjs` rule mode-gating). |
+| `agents-per-wave` | integer or integer with overrides | `6` | Maximum parallel subagents per wave. Supports session-type overrides: `6 (deep: 18)` outputs `{"default": 6, "deep": 18}`. The override key set is OPEN — `_coerceInteger` (`scripts/lib/config/coercers.mjs`) parses whatever keys the parentheses contain, so `6 (deep: 18, ultradeep: 18)` outputs `{"default": 6, "deep": 18, "ultradeep": 18}` with no code change (see § Session Profile below). Plain integers remain plain. The override key names a session type but does **not** create one: there is no `session-type:` Session Config key — `parseSessionConfig()` emits none, so writing one into a repo's `## Session Config` block is inert prose. The session type comes from the `/session` argument (default `deep`, see `commands/session.md`) and is persisted to STATE.md frontmatter as `session-type:`, which is the only live read (`scripts/print-applicable-rules.mjs` rule mode-gating). **Resolution for wave shaping** is `resolveAgentCap(cap, sessionType)` in `scripts/lib/session-shape.mjs` — the one EXPORTED resolver. `wave-resource-gate.mjs` and `resource-probe/evaluate.mjs` both import and call this same function for their resource-ceiling checks, but each does so through a local `MODE_BLIND_SESSION_TYPE` constant (`undefined`) instead of the session's real type — two mode-blind CALL SITES, not separate resolvers — so `resolveAgentCap` sees no type and takes the `.default` fallback unconditionally; a difference between their answer and the wave-shape answer is expected, not a bug. Ultradeep looks up `ultradeep` → `deep` → `default`, in that order (`resolveUltradeepCap()`), so a repo that only configured `6 (deep: 18)` still gets 18 under the profile. See § Session Shapes below. |
 | `agent-mapping` | object | null | Optional mapping of role keys to agent names for explicit agent binding. Keys: `impl`, `test`, `db`, `ui`, `security`, `compliance`, `docs`, `perf`. Example: `{ impl: code-editor, test: test-specialist }`. Overrides auto-discovery when present. Values may carry a channel prefix — see § `agent-mapping` values below. |
-| `waves` | integer | `5` | Number of execution waves for feature and deep sessions. |
+| `waves` | integer | `5` | Base wave count, read by `resolveSessionShape()` (`scripts/lib/session-shape.mjs`) as the value it reports back in `wavesConfigHonored` / `wavesConfigIgnoredValue` — it is **not** a free dial per session type. `feature` and `deep` (no profile) each have exactly one natural wave count and IGNORE a `waves` value that disagrees with it (recorded in the shape's `notes`, never used to re-combine roles — the former 3/4/6+ role-combination tables are RETIRED as of 2026-09-09). The `ultradeep` profile ignores `waves` outright regardless of its value (`wavesConfigHonored: false`) — PRD `2026-09-06-ultradeep-session-profile.md` AC-9 ("`waves < 7` is an error") was dropped in favour of this explicit ignore-and-report. See § Session Shapes below for the authoritative per-shape wave counts. |
 | `recent-commits` | integer | `20` | Number of recent commits to display during session start git analysis. |
 | `special` | string | none | Repo-specific instructions. Freeform text that the orchestrator reads and follows during sessions. |
+
+### Session Shapes
+
+`scripts/lib/session-shape.mjs` is the one place a `/session` mode + optional `--profile` becomes an execution shape (wave count, roles, agent caps, Discovery on/off, per-wave `max-turns`), driven via the CLI wrapper `scripts/session-shape.mjs`:
+
+```
+node scripts/session-shape.mjs --repo-root <path> --session-type <housekeeping|feature|deep> \
+     [--profile ultradeep] [--known-scope true|false] [--task-count <n>] [--no-event]
+```
+
+It prints one JSON line (`resolveSessionShape()`'s return value) and, unless `--no-event`, records `orchestrator.session.shape_resolved` to `.orchestrator/metrics/events.jsonl`. Four shapes, resolved 2026-09-09 (decided by the operator, superseding the prose it replaces — see the module's own header for the full rationale):
+
+| Shape | Waves | Roles (agent cap) | Discovery | Coordinator-direct |
+|---|---|---|---|---|
+| `housekeeping` | **1** | Housekeeping (0 — coordinator runs the maintenance loop directly: drift-check, sweep, evolve, reconcile, dialectic, memory-cleanup) | n/a | yes, the whole wave |
+| `feature` | **3** | Impl-Core (4) → Impl-Polish+Quality (4) → Finalization (2) | no | no |
+| `deep` (unknown scope) | **5** | Discovery (8) → Impl-Core (10) → Impl-Polish (8) → Quality (6) → Finalization (4) | yes | no |
+| `deep` (`--known-scope true`) | **4** | Impl-Core (10) → Impl-Polish (8) → Quality (6) → Finalization (4) | no (dropped, rest renumbered) | no |
+| `deep` + `--profile ultradeep` | **7**, fixed — ignores `waves` | Research+Code-Discovery (18) → **Synthesis-Gate (0, coordinator-direct, blocking AskUserQuestion)** → Impl-Core (8) → Impl-Polish (8) → Review-Panel (3, read-only) → Quality (6) → Release/Finalization (4) | yes (wave 1) | wave 2 only |
+
+Raw caps are the `agents-per-wave` value BEFORE the session-type override resolves (`agentCapRaw` in the JSON); `agentCap` is the resolved number. `max-turns` (`auto`) expands per shape — see the `max-turns` row below. This table is descriptive of the module's committed defaults; the module itself, not this table, is the SSOT — re-run the CLI with `--no-event` to confirm before citing a number from here in an automated check.
 
 ### Session Profile — `session-profile` (NOT a Session Config key)
 
@@ -270,15 +291,19 @@ issue-budget:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `issue-budget.max-per-session` | integer | `12` | Non-exempt issues one session may create before the cap bites. `0` is valid (blocks everything non-exempt). Malformed or negative values fall back to `12`. |
+| `issue-budget.max-per-session` | integer or integer with overrides | `12` | Non-exempt issues one session may create before the cap bites. `0` is valid (blocks everything non-exempt). Malformed or negative values fall back to `12`. **Accepts the same session-type override syntax `agents-per-wave` uses**: `12 (feature: 6)` parses via `_coerceInteger` into `{default: 12, feature: 6}`. The override key set is OPEN — any session-type label the operator writes, because the vocabulary lives in session-start, not in this parser. |
 | `issue-budget.mode` | string | `strict` | `strict` blocks over-cap creations (exit 2 from the hook) and parks them as overflow; `warn` allows them with a stderr notice; `off` disables the gate entirely (no counter is written). |
 | `issue-budget.overflow` | string | `collect-issue` | Where session-end drains parked creations. `collect-issue` files exactly ONE `[Backlog-Sammel] <session-id>, N zurückgestellte Punkte` issue (`type::backlog`, `priority::low`) whose body is a checklist of the parked items; `vault-note` writes a single Markdown file under `vault/00-inbox/` instead. |
+
+**Override resolution (#1163-adjacent, load-bearing split).** `_parseIssueBudget()` (`scripts/lib/config/issue-budget.mjs`) returns TWO keys: `"max-per-session"` (always a plain number — the resolved `.default`, so the three existing consumers that treat it as a number never see `[object Object]`) and `"max-per-session-raw"` (the full parsed value, number or override object). `loadIssueBudgetConfig()` (`scripts/lib/issue-budget.mjs`) resolves the effective cap for the CURRENT session by reading `session-type:` off the active STATE.md frontmatter (`readSessionTypeFromStateMd()`, never throws — a missing/unparseable STATE.md yields `null`, read as "use the default") and calling `resolveMaxPerSession(cfg, sessionType)`, whose precedence is `raw[sessionType] ?? raw.default ?? cfg['max-per-session']`. The resolved session type is also returned as `"session-type-resolved"` (`null` when STATE.md carries none) so a caller can tell the resolution actually happened rather than fallen through.
 
 **Exemptions (load-bearing).** `priority::critical`, the carryover class (`[Carryover]`, `[SPIRAL]`/`[FAILED]`, `type::carryover`, a bare `carryover` label) and `broken-window` closure issues bypass the cap unconditionally. Without those exemptions the cap would break the standing session-end promises in `skills/session-end/SKILL.md` (Phase 1.8 "non-deselectable" SPIRAL/FAILED carryover, and the Critical Rule "ALWAYS create issues for unfinished PLANNED work"). Exempt creations are counted in the state file's `exempt` field for observability but never blocked.
 
 **Counter file:** `.orchestrator/runtime/issue-budget/<sha256(sessionId)[0..16]>.json` — `{ sessionId, count, exempt, overflow: [...] }`, ONE file per session (#1141: the former single `issue-budget.json` slot was reset by whichever session wrote last, so two sessions in one working copy silently disabled each other's cap). Identity-less callers still use the legacy flat path; `budgetStatePath(repoRoot, sessionId)` in `scripts/lib/issue-budget.mjs` is the resolver.
 
-**Used by:** `hooks/pre-bash-issue-budget.mjs` (shell path, PreToolUse/Bash), `scripts/lib/spiral-carryover.mjs` `runCli()` (programmatic path), `scripts/lib/issue-budget.mjs` (shared decision core), `skills/session-end/SKILL.md` Phase 5 Step 3b (overflow drain). Parser: `scripts/lib/config/issue-budget.mjs`.
+**Close-time reconcile (#1163).** The cap is enforced by a PreToolUse hook, which only sees the shell routes it pattern-matches — every unmatched creation route (a GUI-created issue, an unmatched CLI form) is a silent zero: no ledger line, no error, indistinguishable from "created nothing". `scripts/lib/issue-budget-reconcile.mjs` closes that gap at session-end by comparing two independently-produced numbers: `recorded` (`record.issues_created.length` from the session record) against `charged + exempt` (summed over BOTH the semantic-id and raw-id ledger keys — which key a given session's counter file used depends on a condition, `resolveIssueBudgetSessionId`, that can change mid-session). It emits `orchestrator.issue_budget.reconciled` with a `verdict`: `match` (recorded ≤ charged + exempt), `escaped` (`recorded > charged + exempt` — some creations bypassed the hook), `no-ledger` (`recorded > 0` and no counter file existed under either key — the hook never ran once), or `stale-record` (a ledger exists but the record shows 0 recorded with a positive charge). Fail-open by contract: nothing in this module throws, and a close-time cross-check that could abort the close would be strictly worse than one that reports `no-ledger`.
+
+**Used by:** `hooks/pre-bash-issue-budget.mjs` (shell path, PreToolUse/Bash, now charges **per statement** rather than per whole command — see `hooks/_lib/vcs-create-matcher.mjs`, which also matches `gh|glab api … POST …/issues`), `scripts/lib/spiral-carryover.mjs` `runCli()` (programmatic path), `scripts/lib/issue-budget.mjs` (shared decision core + `resolveMaxPerSession`/`readSessionTypeFromStateMd`), `scripts/lib/issue-budget-reconcile.mjs` (close-time cross-check), `skills/session-end/SKILL.md` Phase 5 Step 3b (overflow drain). Parser: `scripts/lib/config/issue-budget.mjs`.
 
 ## Slopcheck (Package Legitimacy Gate) (#520)
 
@@ -306,6 +331,8 @@ slopcheck:
 | `persistence` | boolean | `true` | Enable session resumption via STATE.md and session memory files. |
 | `memory-cleanup-threshold` | integer | `5` | Recommend `/memory-cleanup` after N accumulated session memory files. |
 | `memory-cleanup-soft-limit` | integer | `180` | Hard ceiling on accumulated memory files before the cleanup nudge escalates from a soft suggestion to a strong recommendation. PRD F2.2 / issue #502. Used by `scripts/lib/auto-dream.mjs`. |
+
+**Nudge retirement (2026-09-09, #1246-adjacent).** The two session-end nudges that used to read these thresholds — Phase 3.6.5 Auto-Dream and Phase 3.6.7 Auto-Dialectic — are RETIRED as standalone close-time prompts: measured across consumer repos, the auto-dialectic nudge recorded `decided: true` while nobody ever ran it, and memory-cleanup had run in only 1 of 3 repos, because both fired at the moment the operator is closing down, not the moment they can act. `shouldDispatchAutoDream()` and `shouldDispatchAutoDialectic()` are unchanged as pure signal functions and still consult these two keys — but they are now called from the session-START `maintenance-due` probe (`scripts/lib/maintenance-due-banner.mjs`, see § Reconcile below), which reads them as two of its six signals and reports a single `⚠ maintenance due: N of 6 …` banner at the one moment the operator can actually run `/session housekeeping`.
 | `learning-expiry-days` | integer | `30` | Legacy/default expiry window used by review/extend flows. New analyzer learnings preserve a candidate-supplied `expires_at` or derive expiry from `LEARNING_TTL_DAYS[type]` (for example, `autonomy-verdict` is 90 days). |
 | `learnings-surface-top-n` | integer | `15` | Cap on how many learnings the session-start Phase 5.6 and session-plan Step 0.5 sections surface, ranked by confidence descending. `0` = do not surface any learnings. Applies to Project Intelligence output. |
 | `learning-decay-rate` | float (0.0 ≤ x < 1.0) | `0.05` | Confidence decay applied to every untouched learning at session-end (after touched-set update, before prune). `0.0` = disable decay. A learning starting at `0.5` confidence survives ~10 untouched sessions with default decay. |
@@ -315,8 +342,8 @@ slopcheck:
 | `reasoning-output` | boolean | `false` | Enable STATE:/PLAN: structured reasoning markers in agent prompts. When true, agents emit short transparency lines before tool calls. Opt-in — adds prompt overhead. |
 | `grounding-check` | boolean | `true` | Enable file-level grounding verification in session-end Phase 1.1a (planned vs touched files). When true, session-end compares each agent's declared file scope against `git diff --name-only $SESSION_START_REF..HEAD` and reports scope creep + incomplete coverage. Informational — does not block session close. |
 | `grounding-injection-max-files` | integer | `3` | Max files with recent `edit-format-friction` stagnation history to inject as line-numbered GROUNDING blocks into each agent's prompt before dispatch (wave-executor pre-dispatch step). Per-agent scope; selects top N by recency. `0` disables the feature. Gated on `persistence: true`. (#85) |
-| `isolation` | string | `auto` | Agent isolation mode: `worktree`, `none`, or `auto`. `auto` resolves per-wave via the graduated default (#194): ≤2 agents → `none`, 3–4 agents on feature/deep → `worktree`, ≥5 agents → `worktree`, housekeeping 3–4 → `none`. Explicit `worktree` or `none` overrides the graduation. See [isolation graduation](#isolation-graduation) below. |
-| `max-turns` | integer or string | `auto` | Maximum agent turns before PARTIAL. Auto: housekeeping=8, feature=15, deep=25. |
+| `isolation` | string | `auto` | Agent isolation mode: `worktree`, `none`, or `auto`. `auto` resolves per-wave via the graduated default (#194): ≤2 agents → `none`, 3–4 agents on feature/deep → `worktree`, ≥5 agents → `worktree`, housekeeping 3–4 → `none`. Explicit `worktree` or `none` overrides the graduation. The resolved value surfaces per wave as `waves[].isolation` in the session shape's JSON output (`scripts/session-shape.mjs`) — a coordinator-direct or read-only wave resolves `none` without consulting the graduation at all. See [isolation graduation](#isolation-graduation) below. |
+| `max-turns` | integer or string | `auto` | Maximum agent turns before PARTIAL. Auto expands PER SESSION TYPE inside the resolved shape (`scripts/lib/session-shape.mjs` `MAX_TURNS_DEFAULT`, § Session Shapes above): housekeeping=8, feature=15, deep=25 (`maxTurnsDefault` in the shape JSON, applied to every wave). The `ultradeep` profile does **not** use one flat number — it sets `max-turns` PER WAVE: 40 for the Research+Code-Discovery wave, 25 for Impl-Core/Impl-Polish/Quality, 15 for Release/Finalization (the Synthesis-Gate wave is coordinator-direct and carries no `max-turns` at all). |
 | `auto-commit-per-wave` | boolean | `false` | Automatically commit each wave's work after the Quality-Lite gate passes. Checkpoint commits per wave reduce the risk of data loss from `git stash` collisions in parallel sessions (V3.3 RESCUE incident — see GitLab #214). When `false`, all work is committed at session-end via `/close`. Requires `persistence: true`; the flag is silently ignored when `persistence: false`. Trade-off: each wave produces an additional commit; git log shows N+1 commits instead of 1. Use `/simplify` or `git rebase -i --autosquash` before final close to squash if a clean history is desired. **Implementation note:** the procedural commit sequence (`scripts/lib/auto-commit.mjs`) is deferred to V3.6. Until then, setting this flag to `true` triggers a session-start warning that auto-commits are not yet active — the flag is a no-op but is validated so projects can opt in early. <!-- path-check: historical --> |
 
 ### enforcement-gates: the five gate keys (#800/#915)
@@ -981,7 +1008,7 @@ dialectic:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `dialectic.cadence` | integer | `5` | Number of sessions between auto-dialectic dispatches. Set to `0` to disable all dispatches (kill-switch). Non-integer and negative values silently fall back to default. |
+| `dialectic.cadence` | integer | `5` | Number of sessions between auto-dialectic dispatches. Set to `0` to disable all dispatches (kill-switch). Non-integer and negative values silently fall back to default. **The dispatch moment moved (2026-09-09):** `shouldDispatchAutoDialectic()` is still the decision function this key feeds, but session-end Phase 3.6.7's own auto-trigger nudge is retired as a standalone close-time prompt — see § Persistence & Safety above "Nudge retirement". The session-start `maintenance-due` probe now calls it as one of six signals, so a due dialectic surfaces where the operator can act on it (session start), not where they are closing down. |
 | `dialectic.model` | string | `haiku` | Model tier for the critique call. Must be one of `haiku`, `sonnet`, `opus`. **Fail-fast**: unknown values cause parse-config.mjs to exit 1 at startup — NOT silently ignored. |
 | `dialectic.budget-tokens` | integer | `8000` | Input token budget per call. Output budget is fixed at 4000 (per #506). Non-integer and negative values fall back to default. |
 
@@ -1316,6 +1343,8 @@ Read by: `scripts/lib/config/evolve.mjs` (parser), `skills/evolve/SKILL.md` Step
 
 Opt-in configuration for the learning→conditional-rule reconciliation engine (Epic #693). When enabled, the reconciliation engine runs at session-end Phase 3.6.8 and proposes new `.claude/rules/` entries derived from accumulated learnings. The proposal is always operator-AUQ-gated — rules are **never** auto-applied. FA3 (#696) delivers proposals via `AskUserQuestion`; FA4 (#697) adds the guardrail config block documented here. When `enabled: false` (the default), Phase 3.6.8 is a silent no-op and the engine never runs.
 
+**The former `reconcile-nudge` session-start probe is SUBSUMED (2026-09-09), not replaced 1:1.** `reconcile-nudge-banner.mjs`'s `computeReconcileNudge()` function is unchanged and still the reconcile-specific signal — but it is no longer surfaced as its own standalone banner. `scripts/lib/maintenance-due-banner.mjs` now calls it wholesale as one of six ANDed maintenance signals (`reconcile: computeReconcileNudge().nudge === true`) behind the single session-start `maintenance-due` probe, alongside `evolve`, `sweep`, `dialectic`, `memory-cleanup` and `pending-sidecar`. The reconcile signal is therefore not lost — it is reported as `⚠ maintenance due: N of 6 (…) — run /session housekeeping.` rather than as its own line, with a 7-day cooldown after any housekeeping session (`HOUSEKEEPING_COOLDOWN_DAYS`) so a repo that just ran the loop stays silent instead of re-nagging.
+
 All fields live under a top-level `reconcile` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
 
 ```yaml
@@ -1595,7 +1624,9 @@ Both variables must be set for the fire-and-forget POST to fire. Setting only `C
 
 ## Express Path (#214)
 
-Codified coordinator-direct flow for housekeeping and simple single-issue sessions. When the express path activates, session-start Phase 8.5 skips the full 5-wave plan decomposition and runs all tasks directly as the coordinator — no subagents dispatched, no inter-wave checkpoints.
+Codified coordinator-direct flow for housekeeping and simple single-issue sessions. When the express path activates, session-start Phase 8.5 skips session-plan's full wave decomposition and runs all tasks directly as the coordinator — no subagents dispatched, no inter-wave checkpoints.
+
+**Relationship to § Session Shapes (2026-09-09).** The 1-wave `coordinator-direct` plan session-plan emits when the express path is active is the SAME shape `resolveSessionShape({sessionType: 'housekeeping'})` now resolves for EVERY housekeeping session, express-path gate or not — a single coordinator-direct "Housekeeping" wave running the maintenance loop (drift-check, sweep, evolve, reconcile, dialectic, memory-cleanup). Express path is the ACTIVATION GATE that decides whether the coordinator runs those tasks inline right now (its 3 conditions below); the housekeeping shape decides the wave STRUCTURE, and is unconditional for the type since the former 3/4/6+-wave role-combination mapping was retired 2026-09-09 for every session type. Housekeeping therefore has no "full 5-wave flow" left to fall back to — see the corrected condition-matrix note below.
 
 > **Historical context:** The 13 coordinator-direct sessions documented in the project `CLAUDE.md` (2026-04 series: vault-mirror GH#31, phased-rollout #307, v3.2.0 release, Architecture-DDD-Trio, etc.) were running this pattern implicitly without a codified path. Issue #214 codifies it so that future housekeeping sessions gain the express path automatically without needing to know to opt in manually.
 
@@ -1603,12 +1634,12 @@ All fields live under a top-level `express-path` object in your Session Config h
 
 ```yaml
 express-path:
-  enabled: true   # default true; set false to always use the full 5-wave flow
+  enabled: true   # default true; set false to always run session-plan's full decomposition flow
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `express-path.enabled` | boolean | `true` | When `true`, session-start Phase 8.5 evaluates the express-path activation conditions. When `false`, the evaluation is skipped and the full session-plan 5-wave flow always runs. |
+| `express-path.enabled` | boolean | `true` | When `true`, session-start Phase 8.5 evaluates the express-path activation conditions. When `false`, the evaluation is skipped and session-plan always runs its full decomposition flow — for a housekeeping session that flow still resolves to the same 1-wave shape (§ Session Shapes), since `express-path.enabled` only gates whether the coordinator runs it INLINE right now, not the wave count. |
 
 ### Activation conditions
 
@@ -1618,7 +1649,7 @@ All three conditions must be true simultaneously for the express path to activat
 2. Session type is `housekeeping` (confirmed in session-start Phase 8 Q&A)
 3. Agreed issue scope is ≤ 3 issues AND no parallel agents are required
 
-When any condition is false, the full 5-wave flow runs as before — the check is a transparent no-op.
+**When any condition is false, session-plan runs its full decomposition flow as before** — the express-path check is a transparent no-op on the PLAN, not on the wave shape. For `feature` and `deep` sessions this was always their own resolved shape (3 and 5 waves respectively, per § Session Shapes) and is unaffected by this gate. For a `housekeeping` session that fails the gate (≥4 issues, or parallel agents required), the older documentation here described a fallback to "the full 5-wave flow" — that fallback no longer exists: `resolveSessionShape({sessionType: 'housekeeping'})` returns the same 1-wave coordinator-direct maintenance-loop shape unconditionally, so the practical difference the gate still makes is whether the coordinator executes that one wave INLINE (gate passed) or session-plan emits it as a normal — still 1-wave, still coordinator-direct — plan for wave-executor to run (gate failed).
 
 ### What changes when express path is active
 
@@ -1631,9 +1662,9 @@ When any condition is false, the full 5-wave flow runs as before — the check i
 
 Set `express-path.enabled: false` when:
 
-- You want all housekeeping sessions to go through the standard quality-gate pipeline (Discovery + Quality waves).
+- You want session-plan to emit housekeeping's maintenance-loop wave as a normal wave-executor plan instead of running it inline as the coordinator — the wave STRUCTURE is unchanged either way (§ Session Shapes), only whether it runs inline or through the wave-executor dispatch/checkpoint machinery.
 - The session involves ≥ 4 issues (the scope check already prevents activation, but disabling makes the intent explicit).
-- You are running an automated `/autopilot` loop and want predictable wave counts across session types.
+- You are running an automated `/autopilot` loop and want a predictable inline-vs-dispatched execution path across session types.
 
 ### Condition matrix
 

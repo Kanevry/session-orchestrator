@@ -251,4 +251,6 @@ import { setSessionProfile } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
 contents = setSessionProfile(contents, 'ultradeep');
 ```
 
+**The profile owns its wave count; the STATE.md write does not compute one.** `total-waves` comes from the resolved shape — `node scripts/session-shape.mjs --repo-root "$PWD" --session-type deep --profile ultradeep …` (`resolveSessionShape` / `resolveAndRecordSessionShape` in `scripts/lib/session-shape.mjs`), whose `totalWaves` field is authoritative and is recorded once as `orchestrator.session.shape_resolved`. The former AC-9 rule (the profile must honour the Session Config `waves:` value) is DROPPED as of 2026-09-09: a profile that cannot set its own wave count is not a wave-shape variant. Write `total-waves` from `shape.totalWaves`, never from a hand-derived number, and never from `waves:` when a profile is present — the shape's `wavesConfigHonored` flag and `notes[]` already say which of the two won.
+
 For every other argument, write **nothing** — absence is the contract, never `''`, `none` or `null` as a value. `setSessionProfile(contents, null)` deletes a stale key inherited from a previous session's record; it throws on an empty-string profile, so never pass one.

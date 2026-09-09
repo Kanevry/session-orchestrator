@@ -8,7 +8,7 @@ model-preference-codex: gpt-5.4
 model-preference-cursor: claude-opus-4-6
 description: >
   Creates a structured wave execution plan with role-based assignment after user alignment.
-  Decomposes agreed tasks into configurable waves (default 5) with optimal agent assignment,
+  Decomposes agreed tasks into waves resolved from the session mode by `scripts/session-shape.mjs`, with optimal agent assignment,
   dependency ordering, and inter-wave checkpoints. Activated by session-start after Q&A phase completes.
 ---
 
@@ -93,6 +93,8 @@ Emit this 1-wave plan and exit the skill immediately (do not continue to Step 1 
 Express path — no inter-wave checks. Use /go to begin.
 ```
 
+> The express path's 1-wave plan is the same shape housekeeping resolves to — one wave with `coordinatorDirect: true` and no dispatched agents (`scripts/session-shape.mjs --session-type housekeeping`). The express path stays as written above; it does not need to call the shape resolver to know that.
+
 **When express-path banner is absent or `express-path.enabled: false`:** Proceed to Step 0 and the full planning flow as normal.
 
 ## Step 0: Read Session Config
@@ -100,11 +102,11 @@ Express path — no inter-wave checks. Use /go to begin.
 Read and parse Session Config per `skills/_shared/config-reading.md`. Store result as `$CONFIG`.
 
 Extract these fields for planning:
-- `waves` (default: 5) — number of execution waves
-- `agents-per-wave` (default: 6, may have session-type overrides per `config-reading.md`) — max parallel agents per wave
-- `isolation` (default: auto) — `worktree` / `none` / `auto` (auto = worktree for feature/deep, none for housekeeping)
-- `enforcement` (default: warn) — `strict` / `warn` / `off`
-- `max-turns` (default: auto) — agent turn budget (auto = housekeeping: 8, feature: 15, deep: 25)
+- `waves` — number of execution waves; resolved by `scripts/session-shape.mjs` (`totalWaves`), do not compute by hand. The shape reports in `wavesConfigHonored` whether the configured value was used at all, and says why in `notes`.
+- `agents-per-wave` (may have session-type overrides per `config-reading.md`) — the operator's ceiling; the per-wave cap that actually binds is resolved by `scripts/session-shape.mjs` (`waves[].agentCap`), do not compute by hand.
+- `isolation` — Session Config input (`worktree` / `none` / `auto`) that feeds `configIsolation` into the graduated per-wave rule (`resolveIsolation`, issue #194, in `scripts/lib/wave-sizing.mjs`: an explicit config value always wins; otherwise ≤2 agents → `none`, ≥5 agents → `worktree`, 3-4 agents → `none` for housekeeping else `worktree`). The RESOLVED value for a given wave is `waves[].isolation` in the shape's JSON output (`scripts/session-shape.mjs`) — a wave with `coordinatorDirect: true`, or a read-only wave, resolves `none` without calling `resolveIsolation` at all. Do not compute by hand; the plan header's `Isolation:` line is copied straight from that wave entry.
+- `enforcement` (default: warn) — Session Config input (`strict` / `warn` / `off`) that feeds `configEnforcement` into `resolveEnforcement` (same module); the resolved per-wave value is `waves[].enforcement`. Isolation `none` auto-promotes `warn` to `strict`, since the scope-enforcement hook is then the only barrier left.
+- `max-turns` — agent turn budget; resolved by `scripts/session-shape.mjs` (`waves[].maxTurns`), do not compute by hand.
 - `agent-mapping` (optional) — explicit role-to-agent bindings
 - `persistence` (default: true) — whether to use STATE.md and learnings
 
@@ -223,11 +225,18 @@ When `docs-orchestrator.enabled: true`, session-start Phase 2.5 emits a delimite
 
 **If the block is absent:** Do not fabricate Docs tasks. The Docs role remains empty; apply the empty-role rule from Step 2.
 
-- Housekeeping sessions: skip Steps 1.8, 2, and 3 — all tasks go into a single consolidated wave:
-  - No role classification — all tasks treated as generic housekeeping work
-  - Agent count: fixed at 1-2 per task (from wave-template.md housekeeping row), capped by `agents-per-wave`
-  - File-scope deconfliction (Step 3.5) still applies within the single wave
-  - Wave plan output uses: `### Wave 1: Housekeeping ([N agents])`
+- Housekeeping sessions: skip Steps 1.8, 2, and 3 — housekeeping is the **maintenance loop**, one coordinator-direct wave. `total-waves: 1` and the wave's `coordinatorDirect: true` come from the shape (`scripts/session-shape.mjs --session-type housekeeping`), not from this prose.
+  - No role classification — no wave-executor dispatch, no per-role agent sizing.
+  - **Default scope, in this order:**
+    1. drift-check — `node skills/claude-md-drift-check/checker.mjs --mode warn`
+    2. expired-learnings sweep — `node scripts/sweep-expired-learnings.mjs --json`, then `--apply --json` when the dry run reports `archived > 0`
+    3. `/evolve analyze`
+    4. `/reconcile`
+    5. `/evolve dialectic` — dry-run first, then `--apply`
+    6. `/memory-cleanup`
+  - Operator-selected housekeeping issues are appended AFTER the six maintenance items, in the order the operator picked them.
+  - **Why coordinator-direct:** four of the six are AUQ-gated, and `AskUserQuestion` does not exist inside a dispatched agent (`.claude/rules/ask-via-tool.md` AUQ-004) — a wave-executor dispatch would strand the decision. "Coordinator-direct" means no wave-executor, NOT zero subagents: item 5 dispatches the read-only `dialectic-deriver` subagent directly.
+  - Wave plan output uses: `### Wave 1: Housekeeping (coordinator-direct, 0 agents)`
 
 Record the assigned role next to each task before proceeding to Step 2.
 
@@ -323,7 +332,7 @@ Every item in the wave plan output carries an implicit `status: brainstormed` at
 
 ## Step 2: Wave Assignment
 
-Distribute tasks across waves using 5 named roles. Read `waves` from Session Config (default: 5) and map roles to wave numbers.
+Distribute tasks across the waves the session shape returned; each wave carries its own `role`. Which roles exist, and how many waves there are, is resolved by `scripts/session-shape.mjs` — see § Role-to-Wave Mapping below.
 
 ### Wave Roles
 
@@ -337,33 +346,30 @@ Distribute tasks across waves using 5 named roles. Read `waves` from Session Con
 
 ### Role-to-Wave Mapping
 
-Map roles to the configured wave count:
+The wave list is not derived here. Resolve it ONCE at plan time from the session mode:
 
-| `waves` | Mapping |
-|---------|---------|
-| 3 | W1=Discovery+Impl-Core, W2=Impl-Polish+Quality, W3=Finalization |
-| 4 | W1=Discovery, W2=Impl-Core+Impl-Polish, W3=Quality, W4=Finalization |
-| 5 | W1=Discovery, W2=Impl-Core, W3=Impl-Polish, W4=Quality, W5=Finalization |
-| 6+ | W1=Discovery, W2-W3=Impl-Core (split), W4-W5=Impl-Polish (split), W6=Quality+Finalization |
-| 7 + `session-profile: ultradeep` | W1=Research+Code-Discovery, W2=Synthesis-Gate (`coordinator-direct: true`, `agents: 0`), W3=Impl-Core, W4=Impl-Polish, W5=Review-Panel, W6=Quality, W7=Release/Finalization |
+```bash
+node scripts/session-shape.mjs --repo-root "$PWD" --session-type <housekeeping|feature|deep> \
+  [--profile ultradeep] [--known-scope true|false] --task-count <N>
+```
 
-The last row applies ONLY when STATE.md frontmatter carries `session-profile: ultradeep` (written by the `/session ultradeep` argument alias — see `commands/session.md`). `session-type` stays `deep`; the profile changes the wave SHAPE, nothing else. Without the profile, `waves: 7` falls back to the `6+` row. Spec: `docs/prd/2026-09-06-ultradeep-session-profile.md` § 5.
+Run it **with** event emission (no `--no-event`) — that record (`orchestrator.session.shape_resolved` in `.orchestrator/metrics/events.jsonl`) is the canonical record of this session's shape. Use `--no-event` only for a throwaway planning dry-run.
 
-**Ultradeep agent counts per wave** (caps, not targets — the Quality cap is still EARNED per the Step 3 rule):
+It prints one JSON line carrying:
 
-| W | Role | Agents | Writes? |
-|---|------|--------|---------|
-| 1 | Research + Code-Discovery | ≤ 18 (separately scoped) | No (read-only) |
-| 2 | Synthesis-Gate | 0 (coordinator-direct) | Coordinator only: audit report, STATE.md, plan |
-| 3 | Impl-Core | ≤ 8 | Yes |
-| 4 | Impl-Polish | ≤ 8 | Yes |
-| 5 | Review-Panel | 3 (read-only) | No |
-| 6 | Quality | `min(cap, ceil((HIGH+MED)/3))` | Tests only |
-| 7 | Release/Finalization | ≤ 4 | Yes |
+- `totalWaves` — the wave count
+- `waves[]` — one record per wave: `n`, `role`, `agentCap`, `agentCapRaw`, `coordinatorDirect`, `writes`, `maxTurns`, `verification`, `qualityEarned`, `allowedPaths`
+- `discovery` — whether a Discovery wave is part of the shape
+- `wavesConfigHonored` — whether the Session Config `waves` value was used
+- `notes` — human-readable reasons for any of the above
+
+**The plan's wave list IS that output.** The coordinator fills tasks into the returned waves and NEVER adds, removes, or renumbers a wave — the sole exception is the empty-role rule below (and its coordinator-direct carve-out). `--known-scope true` is what drops the Discovery wave on a deep session; `--profile ultradeep` is what selects the ultradeep shape, and it applies ONLY when STATE.md frontmatter carries `session-profile: ultradeep` (written by the `/session ultradeep` argument alias — see `commands/session.md`). `session-type` stays `deep`; the profile changes the wave SHAPE, nothing else, and it ignores the Session Config `waves` value (the shape says so in `wavesConfigHonored` / `notes`). Spec: `docs/prd/2026-09-06-ultradeep-session-profile.md` § 5.
+
+**Ultradeep agent counts per wave:** take each wave's cap from that wave's `agentCap` in the shape — there is no second table here to disagree with it. The caps are ceilings, not targets, and the Quality wave's cap is still EARNED per the Step 3 rule (the shape marks it `qualityEarned: true`); Research and Code-Discovery share wave 1's cap across their two separately-scoped groups; the Synthesis-Gate wave carries `agentCap: 0` with `coordinatorDirect: true` and writes only the coordinator's own artifacts (audit report, STATE.md, plan).
 
 Wave 1 splits into two disjointly-scoped groups: **Research** agents (web-enabled, see `skills/wave-executor/SKILL.md` § Ultradeep Profile) and **Code-Discovery** agents (repo-only). Both are read-only. Wave 2 dispatches NO agents — the coordinator consolidates wave 1, writes `docs/audits/<YYYY-MM-DD>-<slug>.md`, and asks ONE blocking `AskUserQuestion` before wave 3.
 
-When roles are combined into a single wave, agents from both roles execute in that wave. The combined wave inherits the more restrictive verification level.
+When roles are combined into a single wave, agents from both roles execute in that wave.
 
 **Docs role dispatch rule (conditional — `docs-orchestrator.enabled: true` only):**
 
@@ -377,13 +383,11 @@ When `docs-orchestrator.enabled: true`, apply the following concrete dispatch ru
 - **NEVER add a 6th wave** for Docs. Docs always occupies an existing wave slot.
 - When `docs-orchestrator.enabled` is `false` (default), this rule has no effect — the Docs role does not exist.
 
-**Cross-role constraint in combined waves:** Tasks from different roles within a combined wave CANNOT be merged into a single agent (different scope permissions — e.g., Discovery is read-only, Impl-Core has write access). If the combined wave exceeds `agents-per-wave`, defer the lower-priority role's tasks: in W1=Discovery+Impl-Core, defer Impl-Core tasks to the next applicable wave. In W2=Impl-Polish+Quality, defer Quality tasks to a separate phase within the same wave.
+**Cross-role constraint in combined waves:** Tasks from different roles within a combined wave (the feature shape's `Impl-Polish+Quality` is the one today) CANNOT be merged into a single agent — the roles carry different scope permissions. If the combined wave's tasks exceed its `agentCap`, defer the lower-priority role's tasks: in `Impl-Polish+Quality`, defer Quality tasks to a separate phase within the same wave.
 
-> Example: When Discovery+Impl-Core are combined (3-wave config), the wave runs Incremental quality checks (Impl-Core's level) rather than no verification (Discovery's level).
+> A combined wave's `verification` field in the shape already carries the more restrictive of its two roles' levels — read it, do not re-derive it.
 
-**Splitting criteria for 6+ waves**: When Impl-Core or Impl-Polish span multiple waves, split by module or dependency boundary. Tasks with shared file dependencies go in the same wave; tasks touching independent modules go in separate waves. If no clear boundary exists, split by task count (distribute evenly).
-
-**Empty roles:** If a role has 0 tasks, skip its wave entirely. Do NOT dispatch an empty wave. Remaining waves retain their original role names but are renumbered sequentially (e.g., if Discovery has 0 tasks and waves=5: W1=Impl-Core, W2=Impl-Polish, W3=Quality, W4=Finalization). Update `total-waves` in the plan output to reflect the actual wave count.
+**Empty roles:** If a role has 0 tasks, skip its wave entirely. Do NOT dispatch an empty wave. Remaining waves retain their original role names but are renumbered sequentially, and `total-waves` in the plan output is updated to reflect the actual wave count. **This rule never applies to Discovery.** Discovery is dropped exactly once, at shape-resolution time, by passing `--known-scope true` to `scripts/session-shape.mjs` (§ Role-to-Wave Mapping above) — the shape itself renumbers the remaining waves and reports the new count as `totalWaves` in its JSON output, before the coordinator ever sees a wave list to assign tasks into. Applying this rule to Discovery by hand, after the fact, would be a second, competing renumbering of a decision the shape already made. The empty-role rule below is for the roles that stay ON the wave list after the shape is fixed (e.g., Docs, Quality) and whose task count can still fall to 0 during Step 1/1.8 classification.
 
 **Exception — a wave declared `coordinator-direct: true` is NEVER removed by the empty-role rule.** The rule's premise is "0 tasks means nothing to dispatch, so the wave is dead weight". For a coordinator-direct wave that premise is inverted: dispatching zero agents is the wave's PURPOSE, not evidence of its emptiness. Its plan item therefore carries BOTH markers and is emitted verbatim:
 
@@ -458,17 +462,9 @@ Score the session scope to determine optimal agent counts per wave. Skip for hou
 
 ### Agent Count by Tier
 
-| Session Type | Tier | Discovery | Impl-Core | Impl-Polish | Quality | Finalization |
-|-------------|------|-----------|-----------|-------------|---------|-------------|
-| feature | simple | 2-3 | 3-4 | 2-3 | 2 | 1 |
-| feature | moderate | 4-5 | 5-6 | 4-5 | 3-4 | 2 |
-| feature | complex | 5-6 | 6 | 5-6 | 4 | 2 |
-| deep | simple | 3-4 | 4-6 | 3-4 | 3 | 2 |
-| deep | moderate | 5-6 | 6-8 | 5-6 | 4-5 | 2-3 |
-| deep | complex | 6-8 | 8-10 | 6-8 | 6 | 3-4 |
-| housekeeping | (fixed) | — | 2 | 1 | 1 | 1 |
+The caps themselves are **not** derived from the tier: each wave's ceiling is `waves[].agentCap` from the shape (`scripts/session-shape.mjs`, § Role-to-Wave Mapping above), and `agentCapRaw` is that cap before the Session Config `agents-per-wave` ceiling was applied.
 
-> Housekeeping sessions skip Discovery (tasks are predefined) and use fixed agent counts regardless of complexity.
+What the tier score decides is **relaxation DOWNWARD only**: a simple-tier session may plan fewer agents than the wave's `agentCap` where the briefed work does not fill it. It may never plan more — the cap is a hard ceiling, and a moderate or complex tier does not raise it.
 
 > **The Quality column is a CAP, not a target.** Every other column sizes to briefed work; the Quality column historically sized to the tier alone, so capacity went looking for work (tests written because a slot existed, not because a gap was measured). Quality capacity must be EARNED by measured demand. Compute the effective count as `min(<tier cap>, ceil((HIGH + MED gaps from the most recent qa-strategist run) / 3))`.
 > - **0 HIGH and 0 MED gaps → the Quality role has 0 test-writing tasks**, and its wave is skipped by the Step 2 empty-role rule. This does NOT touch the read-only review panel (security-reviewer / qa-strategist / architect-reviewer) — that panel reviews, it does not write tests, and it keeps running as configured.
@@ -503,7 +499,7 @@ For each role's wave, distribute its classified tasks across the allocated agent
 
 > **Template Reference:** See `wave-template.md` in this skill directory for the agent specification format, isolation settings, and count tables.
 
-For each wave, define agents using the template format in `wave-template.md`. Apply the agent count table based on session type, capped by `agents-per-wave` from Session Config.
+For each wave, define agents using the template format in `wave-template.md`. The per-wave ceiling is that wave's `agentCap` from the shape (§ Role-to-Wave Mapping) — it already carries the `agents-per-wave` Session Config ceiling.
 
 If project intelligence (learnings) suggests different sizing based on historical data, prefer the historical recommendation over the formula.
 

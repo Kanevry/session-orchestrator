@@ -45,10 +45,6 @@ describe('Express Path persistence contract (#320)', () => {
     );
     const body = readFileSync(specPath, 'utf8');
 
-    it('declares the Step 4 post-session-end verification', () => {
-      expect(body).toContain('4. After session-end completes successfully:');
-    });
-
     it('contains an explicit "Persistence contract:" heading line', () => {
       expect(body).toContain('Persistence contract:');
     });

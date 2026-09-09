@@ -486,6 +486,26 @@ describe('the built-in registry', () => {
     expect(matching).toHaveLength(1);
   });
 
+  // BUG: `maintenance-due` SUBSUMES `reconcile-nudge` — it calls
+  // `computeReconcileNudge` wholesale as its S3. Leaving both entries in the
+  // registry double-reports the same finding on every session start, which is
+  // exactly the banner-noise failure (`.claude/rules/host-resources.md` §
+  // HR-101) the consolidation was built to remove. Dropping `maintenance-due`
+  // instead loses five other signals with no trace.
+  it('registers maintenance-due in place of reconcile-nudge', () => {
+    const ids = PROBES.map((p) => p.id);
+    expect(ids).toContain('maintenance-due');
+    expect(ids).not.toContain('reconcile-nudge');
+
+    const entry = PROBES.find((p) => p.id === 'maintenance-due');
+    expect(entry.fn).toBe('checkMaintenanceDue');
+    expect(entry.network).toBe(false);
+    expect(entry.args({ repoRoot: '/tmp/x', config: { a: 1 } })).toEqual({
+      repoRoot: '/tmp/x',
+      config: { a: 1 },
+    });
+  });
+
   it('has a unique id per entry and a sane default budget', () => {
     const ids = PROBES.map((p) => p.id);
     expect(new Set(ids).size).toBe(ids.length);

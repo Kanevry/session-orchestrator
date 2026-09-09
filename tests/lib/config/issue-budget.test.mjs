@@ -9,7 +9,12 @@
 import { describe, it, expect } from 'vitest';
 import { _parseIssueBudget } from '@lib/config/issue-budget.mjs';
 
-const DEFAULTS = { 'max-per-session': 12, mode: 'strict', overflow: 'collect-issue' };
+const DEFAULTS = {
+  'max-per-session': 12,
+  'max-per-session-raw': 12,
+  mode: 'strict',
+  overflow: 'collect-issue',
+};
 
 describe('_parseIssueBudget — defaults', () => {
   it('returns defaults when the block is absent', () => {
@@ -39,6 +44,7 @@ describe('_parseIssueBudget — explicit values', () => {
     ].join('\n');
     expect(_parseIssueBudget(content)).toEqual({
       'max-per-session': 3,
+      'max-per-session-raw': 3,
       mode: 'warn',
       overflow: 'vault-note',
     });
@@ -58,6 +64,7 @@ describe('_parseIssueBudget — explicit values', () => {
     ].join('\n');
     expect(_parseIssueBudget(content)).toEqual({
       'max-per-session': 25,
+      'max-per-session-raw': 25,
       mode: 'off',
       overflow: 'vault-note',
     });
@@ -67,6 +74,7 @@ describe('_parseIssueBudget — explicit values', () => {
     const content = ['- **issue-budget:**', '  max-per-session: 4', '  mode: off', ''].join('\n');
     expect(_parseIssueBudget(content)).toEqual({
       'max-per-session': 4,
+      'max-per-session-raw': 4,
       mode: 'off',
       overflow: 'collect-issue',
     });
@@ -107,8 +115,76 @@ describe('_parseIssueBudget — block boundaries', () => {
     ].join('\n');
     expect(_parseIssueBudget(content)).toEqual({
       'max-per-session': 2,
+      'max-per-session-raw': 2,
       mode: 'strict',
       overflow: 'collect-issue',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-session-type override syntax (`12 (feature: 6)`)
+// ---------------------------------------------------------------------------
+//
+// TV-001 bug this catches: without the numeric/raw split, the parsed override
+// OBJECT reaches `chargeIssueBudget`'s `state.count < max` comparison and the
+// block message, where it surfaces as `[object Object]` — a cap that can never
+// be reached, i.e. the gate silently off.
+describe('_parseIssueBudget — per-session-type override', () => {
+  it('parses `12 (feature: 6)` into default 12 + feature 6 with a NUMERIC max-per-session', () => {
+    const parsed = _parseIssueBudget('issue-budget:\n  max-per-session: 12 (feature: 6)\n');
+    expect(parsed['max-per-session']).toBe(12);
+    expect(typeof parsed['max-per-session']).toBe('number');
+    expect(parsed['max-per-session-raw']).toEqual({ default: 12, feature: 6 });
+  });
+
+  it('parses several overrides in one value', () => {
+    const parsed = _parseIssueBudget(
+      'issue-budget:\n  max-per-session: 12 (feature: 6, housekeeping: 3)\n',
+    );
+    expect(parsed['max-per-session-raw']).toEqual({ default: 12, feature: 6, housekeeping: 3 });
+  });
+
+  it('keeps a plain integer numeric on BOTH keys', () => {
+    const parsed = _parseIssueBudget('issue-budget:\n  max-per-session: 12\n');
+    expect(parsed['max-per-session']).toBe(12);
+    expect(parsed['max-per-session-raw']).toBe(12);
+  });
+
+  // THE BUG (TV-001): `catch { break }` discarded the WHOLE value, so the
+  // built-in 12 won — an operator who wrote a STRICTER cap got the stock cap
+  // back from one typo in the override. The old fixture used `12 (feature: x)`,
+  // where the fallback and the intended value are the same number, so the
+  // assertion could not tell the two apart. 7 can.
+  it('a malformed override does not silently restore the stock cap: 7 (feature: x) yields 7, never 12', () => {
+    const parsed = _parseIssueBudget('issue-budget:\n  max-per-session: 7 (feature: x)\n');
+    expect(parsed['max-per-session']).toBe(7);
+    expect(parsed['max-per-session-raw']).toBe(7);
+  });
+
+  it('warns on stderr naming the key when it drops a malformed override', () => {
+    const errs = [];
+    const orig = process.stderr.write;
+    process.stderr.write = (chunk) => { errs.push(String(chunk)); return true; };
+    try {
+      _parseIssueBudget('issue-budget:\n  max-per-session: 7 (feature: x)\n');
+    } finally {
+      process.stderr.write = orig;
+    }
+    expect(errs.join('')).toContain('max-per-session');
+  });
+
+  it('a malformed value with NO valid base still falls back to 12, silently', () => {
+    const errs = [];
+    const orig = process.stderr.write;
+    process.stderr.write = (chunk) => { errs.push(String(chunk)); return true; };
+    let parsed;
+    try {
+      parsed = _parseIssueBudget('issue-budget:\n  max-per-session: many\n');
+    } finally {
+      process.stderr.write = orig;
+    }
+    expect(parsed['max-per-session']).toBe(12);
+    expect(errs.join('')).toBe('');
   });
 });

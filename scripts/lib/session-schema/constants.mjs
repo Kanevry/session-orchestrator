@@ -161,6 +161,12 @@ export const OPTIONAL_FIELDS = Object.freeze([
   'total_token_input',
   'total_token_output',
   'subagents_with_tokens',
+  // #1244 — cache buckets + cost estimate (additive, optional).
+  'total_token_input_uncached',
+  'total_token_cache_read',
+  'total_token_cache_creation',
+  'total_cost_usd',
+  '_token_schema',
   // Epic #724 C1 — SessionEnd close-through backfill provenance fields.
   // `status` distinguishes normally-closed ('completed') from hook-backfilled
   // ('abandoned') records. The `_backfill_*` markers record how a stub was

@@ -1346,3 +1346,145 @@ describe('readJsonlSafe — ENOENT vs other read failures (#1210)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// D4 Task B — `orchestrator.session.shape_resolved` as the session_type/profile
+// source. `lock.acquired` fires at SessionStart, BEFORE the operator types
+// `/session <type>`, so nearly every abandoned stub was labelled
+// `_session_type_inferred: true` even though the session demonstrably reached
+// plan time; and no other event carries `session_profile` at all, so an
+// abandoned ultradeep run was indistinguishable from an abandoned deep one.
+// ---------------------------------------------------------------------------
+
+describe('backfillAbandonedSession — shape_resolved is the session_type source', () => {
+  /** started + lock.acquired (mode `housekeeping`, the pre-`/session` carry-over). */
+  const baseEvents = () => [
+    { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+    {
+      timestamp: '2026-05-27T14:01:00.000Z',
+      event: 'orchestrator.session.lock.acquired',
+      session_id: UUID,
+      semantic_session_id: 'main-2026-05-27-session-1',
+      mode: 'housekeeping',
+    },
+  ];
+
+  function shapeEvent(extra) {
+    return {
+      timestamp: '2026-05-27T14:20:00.000Z',
+      event: 'orchestrator.session.shape_resolved',
+      session_id: UUID,
+      semantic_session_id: 'main-2026-05-27-session-1',
+      total_waves: 5,
+      shape_version: 1,
+      ...extra,
+    };
+  }
+
+  it('THE BUG: shape_resolved beats lock.acquired.mode and clears _session_type_inferred', async () => {
+    seedEvents([...baseEvents(), shapeEvent({ session_type: 'deep' })]);
+
+    const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS });
+
+    expect(res.action).toBe('backfilled');
+    const rec = readSessions()[0];
+    expect(rec.session_type).toBe('deep');
+    expect(rec._session_type_inferred).toBeUndefined();
+    expect(rec._synthetic).toBeUndefined();
+    expect(() => validateSession(rec)).not.toThrow();
+  });
+
+  it('writes session_profile ONLY when the event carries it (never null/empty)', async () => {
+    seedEvents([...baseEvents(), shapeEvent({ session_type: 'deep', session_profile: 'ultradeep' })]);
+
+    expect((await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS })).action).toBe('backfilled');
+    const rec = readSessions()[0];
+    expect(rec.session_profile).toBe('ultradeep');
+
+    // Same shape record WITHOUT the (omitted-when-absent) profile key → the
+    // record must not carry the key at all: a written null would read as
+    // "measured, no profile".
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'close-backfill-'));
+    tmpDirs.push(other);
+    const prev = repoRoot;
+    repoRoot = other;
+    try {
+      seedEvents([...baseEvents(), shapeEvent({ session_type: 'deep' })]);
+      expect((await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS })).action).toBe('backfilled');
+      const bare = readSessions()[0];
+      expect('session_profile' in bare).toBe(false);
+    } finally {
+      repoRoot = prev;
+    }
+  });
+
+  it('ignores an unrecognised session_type / session_profile instead of writing it', async () => {
+    seedEvents([
+      ...baseEvents(),
+      shapeEvent({ session_type: 'ultradeep', session_profile: 'client-acme-private-repo' }),
+    ]);
+
+    expect((await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS })).action).toBe('backfilled');
+    const rec = readSessions()[0];
+    // Unknown type ignored → falls back to the lock mode, which IS measured.
+    expect(rec.session_type).toBe('housekeeping');
+    expect('session_profile' in rec).toBe(false);
+    expect(() => validateSession(rec)).not.toThrow();
+  });
+
+  it('the LATEST of two disagreeing shape_resolved records wins', async () => {
+    seedEvents([
+      ...baseEvents(),
+      shapeEvent({ timestamp: '2026-05-27T14:20:00.000Z', session_type: 'feature' }),
+      shapeEvent({ timestamp: '2026-05-27T15:40:00.000Z', session_type: 'deep' }),
+    ]);
+
+    expect((await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS })).action).toBe('backfilled');
+    const rec = readSessions()[0];
+    expect(rec.session_type).toBe('deep');
+    expect(rec._session_type_inferred).toBeUndefined();
+  });
+
+  it('a shape_resolved with an unparseable timestamp never overrides a later, well-dated one', async () => {
+    // File order deliberately puts the undated record LAST: the old predicate
+    // (`Number.isNaN(ts) => ordered`) let it win, so `feature` — a type no dated
+    // record ever carried — landed in sessions.jsonl with the inferred flag
+    // CLEARED, i.e. as a measurement.
+    seedEvents([
+      ...baseEvents(),
+      shapeEvent({ timestamp: '2026-05-27T15:40:00.000Z', session_type: 'deep', session_profile: 'ultradeep' }),
+      shapeEvent({ timestamp: 'not-a-timestamp', session_type: 'feature' }),
+    ]);
+
+    expect((await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS })).action).toBe('backfilled');
+    const rec = readSessions()[0];
+    expect(rec.session_type).toBe('deep');
+    expect(rec.session_profile).toBe('ultradeep');
+    expect(rec._session_type_inferred).toBeUndefined();
+  });
+
+  it('an undated shape_resolved is used only when nothing dated exists — and stays inferred', async () => {
+    seedEvents([...baseEvents(), shapeEvent({ timestamp: undefined, session_type: 'deep' })]);
+
+    expect((await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS })).action).toBe('backfilled');
+    const rec = readSessions()[0];
+    expect(rec.session_type).toBe('deep');
+    // Low confidence: an unorderable record cannot be proven to be the LAST
+    // resolution, so the honesty flag stays on.
+    expect(rec._session_type_inferred).toBe(true);
+    expect(() => validateSession(rec)).not.toThrow();
+  });
+
+  it('bridges on semantic_session_id when no native UUID is given', async () => {
+    seedEvents([...baseEvents(), shapeEvent({ session_type: 'feature' })]);
+
+    const res = await backfillAbandonedSession({
+      repoRoot,
+      sessionId: 'main-2026-05-27-session-1',
+      now: NOW_MS,
+    });
+
+    expect(res.action).toBe('backfilled');
+    expect(readSessions()[0].session_type).toBe('feature');
+  });
+});

@@ -947,6 +947,99 @@ describe('session facts survive a missing sessions.jsonl (deriveSessionFromEvent
   });
 });
 
+// ---------------------------------------------------------------------------
+// D4 Task B — `orchestrator.session.shape_resolved` is the plan-time
+// measurement: it fires AFTER the operator picked a mode (so `session.started`'s
+// `mode` predates the choice) and it is the ONLY event carrying
+// `session_profile` — the STATE.md read (`readSessionProfileForMetricsDir`)
+// returns null the moment STATE.md is rewritten, which made every abandoned
+// ultradeep run look like a plain deep one on the wire.
+// ---------------------------------------------------------------------------
+
+describe('deriveSessionFromEvents prefers shape_resolved (D4 Task B)', () => {
+  it('THE BUG: reads type + profile from shape_resolved, overriding session.started mode', () => {
+    writeEvents(tmpDir, [
+      { timestamp: '2026-09-06T08:00:00.000Z', event: 'orchestrator.session.started', mode: 'housekeeping' },
+      {
+        timestamp: '2026-09-06T08:20:00.000Z',
+        event: 'orchestrator.session.shape_resolved',
+        session_type: 'deep',
+        session_profile: 'ultradeep',
+        total_waves: 7,
+      },
+      { timestamp: '2026-09-06T11:30:00.000Z', event: 'orchestrator.agent.stopped' },
+    ]);
+    expect(deriveSessionFromEvents(tmpDir)).toEqual({
+      session: {
+        session_type: 'deep',
+        session_profile: 'ultradeep',
+        started_at: '2026-09-06T08:00:00.000Z',
+        completed_at: '2026-09-06T11:30:00.000Z',
+      },
+      source: 'derived',
+    });
+  });
+
+  it('falls back to session.started + NO profile when no shape_resolved event exists', () => {
+    writeEvents(tmpDir, [
+      { timestamp: '2026-09-06T08:00:00.000Z', event: 'orchestrator.session.started', mode: 'feature' },
+    ]);
+    const { session } = deriveSessionFromEvents(tmpDir);
+    expect(session.session_type).toBe('feature');
+    expect('session_profile' in session).toBe(false);
+  });
+
+  it('a shape_resolved without a profile key carries no profile (absent is not empty)', () => {
+    writeEvents(tmpDir, [
+      { timestamp: '2026-09-06T08:00:00.000Z', event: 'orchestrator.session.started', mode: 'housekeeping' },
+      { timestamp: '2026-09-06T08:20:00.000Z', event: 'orchestrator.session.shape_resolved', session_type: 'deep' },
+    ]);
+    const { session } = deriveSessionFromEvents(tmpDir);
+    expect(session.session_type).toBe('deep');
+    expect('session_profile' in session).toBe(false);
+  });
+
+  it('the LATEST shape_resolved wins when a session re-resolved its shape', () => {
+    writeEvents(tmpDir, [
+      { timestamp: '2026-09-06T08:00:00.000Z', event: 'orchestrator.session.started', mode: 'housekeeping' },
+      { timestamp: '2026-09-06T08:20:00.000Z', event: 'orchestrator.session.shape_resolved', session_type: 'feature' },
+      { timestamp: '2026-09-06T09:00:00.000Z', event: 'orchestrator.session.shape_resolved', session_type: 'deep' },
+    ]);
+    expect(deriveSessionFromEvents(tmpDir).session.session_type).toBe('deep');
+  });
+
+  it('a shape_resolved with an unparseable timestamp never overrides a later, well-dated one', () => {
+    // The old predicate (`ts === null` counted as "ordered") inverted latest-wins
+    // for exactly this record: an UNDATED shape event won over every dated one,
+    // and its type travelled to the ingest server as a measurement.
+    writeEvents(tmpDir, [
+      { timestamp: '2026-09-06T08:00:00.000Z', event: 'orchestrator.session.started', mode: 'housekeeping' },
+      {
+        timestamp: '2026-09-06T09:00:00.000Z',
+        event: 'orchestrator.session.shape_resolved',
+        session_type: 'deep',
+        session_profile: 'ultradeep',
+      },
+      { timestamp: 'not-a-timestamp', event: 'orchestrator.session.shape_resolved', session_type: 'feature' },
+      { event: 'orchestrator.session.shape_resolved', session_type: 'feature' },
+    ]);
+    const { session } = deriveSessionFromEvents(tmpDir);
+    expect(session.session_type).toBe('deep');
+    expect(session.session_profile).toBe('ultradeep');
+  });
+
+  it('an undated shape_resolved falls through to session.started rather than winning', () => {
+    writeEvents(tmpDir, [
+      { timestamp: '2026-09-06T08:00:00.000Z', event: 'orchestrator.session.started', mode: 'feature' },
+      { timestamp: 'not-a-timestamp', event: 'orchestrator.session.shape_resolved', session_type: 'deep', session_profile: 'ultradeep' },
+    ]);
+    const { session } = deriveSessionFromEvents(tmpDir);
+    expect(session.session_type).toBe('feature');
+    // Type and profile are read as a pair — the profile does not survive alone.
+    expect('session_profile' in session).toBe(false);
+  });
+});
+
 describe('buildBatch marks the provenance of every ping', () => {
   const PROV_NOW = '2026-09-06T12:00:00.000Z';
   const common = { env: {}, ownerConfig: {}, now: PROV_NOW, persist: false };
@@ -998,6 +1091,38 @@ describe('buildBatch marks the provenance of every ping', () => {
     }) + '\n');
     const { record } = buildBatch({ ...common, metricsDir: dir, statePath: grantedStatePath() });
     expect(record.session_type).toBe('other');
+  });
+
+  // The SEAM, untested until now: `deriveSessionFromEvents` / the ledger record
+  // pass `session_profile` through UNVALIDATED — the whitelist lives one layer
+  // down in `normalizeSessionProfile` (schema.mjs), applied inside
+  // `buildUsagePing`. That guard is real, but nothing pinned that the two are
+  // actually wired to each other, so a free-text profile (a private repo name is
+  // the live shape of this) reaching the wire would have been a green-suite
+  // change. Deliberately NOT duplicating the enum check at derivation: a second
+  // copy is a second thing to drift, and this test proves the single one bites.
+  it('a free-text session_profile from the ledger never reaches the uploaded record', () => {
+    const dir = join(tmpDir, 'mprofile');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'sessions.jsonl'), JSON.stringify({
+      session_id: 's1', session_type: 'deep', session_profile: 'client-acme-private-repo',
+      started_at: '2026-09-06T08:00:00.000Z', completed_at: '2026-09-06T11:00:00.000Z',
+    }) + '\n');
+    const { record } = buildBatch({ ...common, metricsDir: dir, statePath: grantedStatePath() });
+    expect(record.session_record).toBe('ledger');
+    expect(record.session_type).toBe('deep');
+    expect('session_profile' in record).toBe(false);
+  });
+
+  it('a WHITELISTED session_profile from the ledger does reach the uploaded record', () => {
+    const dir = join(tmpDir, 'mprofile-ok');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'sessions.jsonl'), JSON.stringify({
+      session_id: 's1', session_type: 'deep', session_profile: 'ultradeep',
+      started_at: '2026-09-06T08:00:00.000Z', completed_at: '2026-09-06T11:00:00.000Z',
+    }) + '\n');
+    const { record } = buildBatch({ ...common, metricsDir: dir, statePath: grantedStatePath() });
+    expect(record.session_profile).toBe('ultradeep');
   });
 
   // Pairs with the `session_profile` contract in schema.test.mjs: a ping built

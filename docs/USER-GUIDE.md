@@ -96,7 +96,7 @@ enforcement: warn
 vcs: github
 ```
 
-If you skip this step, the plugin uses sensible defaults: `feature` type, 6 agents per wave, 5 waves, and auto-detected VCS. See [`docs/session-config-template.md`](session-config-template.md) for the full field walkthrough.
+If you skip this step, the plugin uses sensible defaults: `feature` type (a fixed 3-wave shape — see [`docs/session-config-reference.md`](session-config-reference.md#session-shapes) § Session Shapes for the full per-type wave/agent-cap table), 6 agents per wave, and auto-detected VCS. See [`docs/session-config-template.md`](session-config-template.md) for the full field walkthrough.
 
 ### Run your first session
 
@@ -314,25 +314,34 @@ no new Session Config key; see the [shared procedure](../skills/_shared/private-
 
 ## 4. Session Types
 
-### Housekeeping
+Wave count, roles, and per-wave agent caps are resolved by one module — `scripts/lib/session-shape.mjs` — not derived by hand from `waves`/`agents-per-wave`. Run the CLI yourself to see exactly what a given mode resolves to before starting a session:
+
+```
+node scripts/session-shape.mjs --repo-root "$PWD" --session-type <housekeeping|feature|deep> \
+  [--profile ultradeep] [--known-scope true|false] --no-event
+```
+
+It prints one JSON line (`totalWaves`, `waves[]` with each wave's `role`/`agentCap`/`maxTurns`/`verification`, `discovery`, `wavesConfigHonored`, `notes`) and, without `--no-event`, records `orchestrator.session.shape_resolved` to `.orchestrator/metrics/events.jsonl`.
+
+### Housekeeping — the maintenance loop
 
 Best for: git cleanup, SSOT refresh, CI fixes, branch merges, documentation updates.
 
-- **Execution model:** Serial (no wave structure)
-- **Agents:** 1-2 per task
+- **Execution model:** **1 coordinator-direct wave.** Housekeeping *is* the maintenance loop: drift-check → expired-learnings sweep → `/evolve analyze` → `/reconcile` → `/evolve dialectic` → `/memory-cleanup`, then any operator-selected housekeeping issues appended in the order picked. No wave-executor dispatch for the loop itself — most of those steps are `AskUserQuestion`-gated, and AUQ does not exist inside a dispatched subagent.
+- **Agents:** 0 dispatched for the loop (the coordinator runs it directly); the dialectic step dispatches the read-only `dialectic-deriver` subagent.
 - **Typical duration:** Short
-- **Use when:** Your repo needs maintenance, not new features
+- **Use when:** Your repo needs maintenance, not new features — or when the session-start `maintenance-due` banner tells you it's overdue.
 
 ```
 /session housekeeping
 ```
 
-### Feature
+### Feature — 3 waves
 
 Best for: frontend/backend feature work, implementing issues, standard development.
 
-- **Execution model:** 5 waves with parallel agents
-- **Agents:** 4-6 per wave (configurable)
+- **Execution model:** 3 waves — Impl-Core → Impl-Polish+Quality → Finalization.
+- **Agents:** capped at 4 / 4 / 2 respectively (subject to `agents-per-wave`).
 - **Typical duration:** Medium
 - **Use when:** You have feature issues to implement
 
@@ -340,17 +349,30 @@ Best for: frontend/backend feature work, implementing issues, standard developme
 /session feature
 ```
 
-### Deep
+### Deep — 5 waves (4 when scope is already known)
 
 Best for: complex backend work, security audits, database refactoring, architecture changes.
 
-- **Execution model:** 5 waves with parallel agents
-- **Agents:** Up to 10-18 per wave (configurable)
+- **Execution model:** 5 waves — Discovery → Impl-Core → Impl-Polish → Quality → Finalization. When the agreed scope is already fully known (`--known-scope true`), Discovery is dropped and the rest renumbered to 4 waves.
+- **Agents:** capped at 8 / 10 / 8 / 6 / 4 per wave respectively (subject to `agents-per-wave`).
 - **Typical duration:** Longer
 - **Use when:** The work requires extensive discovery, testing, or touches critical systems
 
 ```
 /session deep
+```
+
+### Ultradeep — 7 fixed waves (a profile over `deep`)
+
+Best for: sessions that outgrow 5 waves — large audits, work needing web research before implementation, or a release that benefits from an independent review panel.
+
+- **Execution model:** a **fixed 7-wave shape** — Research+Code-Discovery → Synthesis-Gate (coordinator-direct, 0 agents, blocking `AskUserQuestion`) → Impl-Core → Impl-Polish → Review-Panel (read-only) → Quality → Release/Finalization. It IGNORES the `waves` Session Config value outright (`wavesConfigHonored: false`) — there is no "waves < 7 is an error" check; the profile just reports that it ignored the configured number.
+- **Agents:** capped at 18 / 0 / 8 / 8 / 3 / 6 / 4 per wave respectively; `max-turns` is set PER WAVE (40 / — / 25 / 25 / 25 / 25 / 15), not one flat number.
+- **Typical duration:** Longest
+- **Use when:** `/session deep` would work but the scope needs research first, or you want a dedicated review panel before Quality.
+
+```
+/session deep --profile ultradeep    # or the /session ultradeep alias, per commands/session.md
 ```
 
 ---
@@ -397,8 +419,8 @@ Add a `## Session Config` section to your project's Session Config host file to 
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `agents-per-wave` | integer | `6` | Maximum number of parallel subagents per wave. Higher values increase parallelism but use more resources. |
-| `waves` | integer | `5` | Number of execution waves for feature and deep sessions. |
+| `agents-per-wave` | integer | `6` | Maximum number of parallel subagents per wave. Higher values increase parallelism but use more resources. Supports the per-type override syntax `6 (deep: 18)` — see [§ 4 Session Types](#4-session-types). |
+| `waves` | integer | `5` | Base wave count. The wave count actually used is resolved per session type by `scripts/session-shape.mjs` (see [§ 4 Session Types](#4-session-types)) — `feature` and `deep` each have one natural shape and ignore a disagreeing `waves` value; the `ultradeep` profile ignores it outright. |
 | `pencil` | string | none | Path to a `.pen` design file (relative to project root). Enables design-code alignment reviews after Impl-Core and Impl-Polish waves. |
 | `cross-repos` | list | none | Related repositories under `~/Projects/`. The orchestrator checks their git state and critical issues during session start. |
 | `ssot-files` | list | none | Single Source of Truth files to track for freshness (e.g., `STATUS.md`, `STATE.md`). Flagged if older than 5 days. |
@@ -439,7 +461,7 @@ Add a `## Session Config` section to your project's Session Config host file to 
 | `cold-start.silence-after-sessions` | integer | `1` | Consecutive silent sessions (no commits, no learnings) before the cold-start detector fires a nudge. PRD F1.3 / issue #500. |
 | `enforcement` | string | `warn` | Hook enforcement level for scope and command restrictions: `strict`, `warn`, or `off`. |
 | `isolation` | string | `auto` | Agent isolation mode: `worktree`, `none`, or `auto`. `auto` resolves per-wave via the graduated default (#194): ≤2 agents → `none`, 3–4 agents on feature/deep → `worktree`, ≥5 agents → `worktree`, housekeeping 3–4 → `none`. See Section 15 "Isolation Graduation" below. |
-| `max-turns` | integer or string | `auto` | Max agent turns before PARTIAL. Auto: housekeeping=8, feature=15, deep=25. |
+| `max-turns` | integer or string | `auto` | Max agent turns before PARTIAL. Auto-resolves per session shape (`scripts/lib/session-shape.mjs`): 8 for housekeeping, 15 for feature, 25 for deep — applied to every wave. The `ultradeep` profile sets it PER WAVE instead (40 for Research+Code-Discovery, 25 for Impl-Core/Impl-Polish/Quality, 15 for Release/Finalization). See [§ 4 Session Types](#4-session-types). |
 
 > **Security:** Do not embed credentials, API keys, or auth tokens in Session Config fields — especially `health-endpoints` URLs. These values are stored in your config host file (`CLAUDE.md` / `AGENTS.md`) which may be committed to version control. Use header-based auth or separate secret management instead.
 
@@ -459,7 +481,7 @@ See [examples](examples/) for project-specific configurations (Next.js, Express 
 
 ## 6. The Wave Pattern
 
-Feature and deep sessions execute work in structured waves, each assigned one of 5 roles. Each wave has a specific purpose, and agents within a wave run in parallel.
+Feature and deep sessions execute work in structured waves drawn from the same 5 named roles (some combined into one wave, depending on session type — see [§ 4 Session Types](#4-session-types)). Each wave has a specific purpose, and agents within a wave run in parallel.
 
 ### Wave Structure
 
@@ -473,14 +495,15 @@ Feature and deep sessions execute work in structured waves, each assigned one of
 
 ### Role-to-Wave Mapping
 
-Roles map dynamically to the configured wave count (default: 5):
+**As of 2026-09-09, this mapping is resolved by `scripts/session-shape.mjs` per session type — it is no longer a function of the `waves` config value.** The former table (`waves: 3/4/5/6+` → a re-combined role mapping) is retired; a `waves` value that disagrees with a type's natural shape is now IGNORED and reported in the shape's `notes`, never used to re-combine roles. See [§ 4 Session Types](#4-session-types) for the CLI, and the per-type wave lists there:
 
-| `waves` | Mapping |
-|---------|---------|
-| 3 | W1=Discovery+Impl-Core, W2=Impl-Polish+Quality, W3=Finalization |
-| 4 | W1=Discovery, W2=Impl-Core+Impl-Polish, W3=Quality, W4=Finalization |
-| 5 | W1=Discovery, W2=Impl-Core, W3=Impl-Polish, W4=Quality, W5=Finalization |
-| 6+ | W1=Discovery, W2-W3=Impl-Core (split), W4-W5=Impl-Polish (split), W6=Quality+Finalization |
+| Session type | Waves | Roles |
+|---|---|---|
+| `housekeeping` | 1 | Housekeeping (coordinator-direct maintenance loop) |
+| `feature` | 3 | Impl-Core → Impl-Polish+Quality → Finalization |
+| `deep` (scope not yet known) | 5 | Discovery → Impl-Core → Impl-Polish → Quality → Finalization |
+| `deep` (scope known) | 4 | Impl-Core → Impl-Polish → Quality → Finalization |
+| `deep` + `ultradeep` profile | 7 (fixed, ignores `waves`) | Research+Code-Discovery → Synthesis-Gate → Impl-Core → Impl-Polish → Review-Panel → Quality → Release/Finalization |
 
 ### Wave Details
 
@@ -501,13 +524,15 @@ One or two agents update SSOT files, close or update issues, write session hando
 
 ### Agent Counts by Session Type
 
+These are the shape table's RAW per-wave ceilings (`agentCapRaw` in the `scripts/session-shape.mjs` JSON) — not a range the orchestrator picks within by feel:
+
 | Session Type | Discovery | Impl-Core | Impl-Polish | Quality | Finalization |
 |-------------|-----------|-----------|-------------|---------|-------------|
-| housekeeping | 2 | 2 | 1 | 1 | 1 |
-| feature | 4-6 | 6 | 4-6 | 4 | 2 |
-| deep | 6-8 | 6-10 | 6-8 | 6 | 2-4 |
+| housekeeping | — | — (0, coordinator-direct) | — | — | — |
+| feature | — | 4 | 4 (combined w/ Quality) | *(combined)* | 2 |
+| deep | 8 | 10 | 8 | 6 | 4 |
 
-The `agents-per-wave` config value caps the maximum. These counts are guidelines — the orchestrator adjusts based on task complexity.
+**The number actually used (`agentCap`) is `min(raw, agents-per-wave)`.** With the documented default `agents-per-wave: 6`, a `deep` session's Discovery/Impl-Core/Impl-Polish waves are clipped DOWN to 6 — the 8/10/8 above only apply once you raise the cap for that type, e.g. `agents-per-wave: 6 (deep: 18)` (this plugin's own committed config). `feature`'s 4/4/2 already sit under the default 6 and are unaffected by it. These are still ceilings, not targets — the orchestrator adjusts DOWN based on task complexity, per the tier guidance below.
 
 The **Quality column is a cap, not a target**: since this version, test-writing capacity is need-gated on measured demand — roughly one test-writer per three HIGH/MED gaps the review panel actually found, capped by the number above. If no gaps were measured, the Quality wave writes no tests and is skipped (the read-only review panel still runs); with no measurement signal at all, the orchestrator allocates a conservative 1-2 rather than the full cap.
 
@@ -571,18 +596,21 @@ After you choose a direction, the orchestrator decomposes the work into a role-b
 ```
 ## Wave Plan (Session: feature)
 
-### Wave 1: Discovery (4 agents)
-- Agent 1: Audit API endpoint structure → src/api/ → map current routes
-- Agent 2: Verify database schema → prisma/schema.prisma → check relations
+A `feature` session resolves to 3 waves — no Discovery wave; see [§ 4 Session Types](#4-session-types).
+
+### Wave 1: Impl-Core (4 agents)
+- Agent 1: Implement new API route → src/api/users.ts → endpoint returns 200
+- Agent 2: Add database migration → prisma/schema.prisma → check relations
 ...
 
-### Wave 2: Impl-Core (6 agents)
-- Agent 1: Implement new API route → src/api/users.ts → endpoint returns 200
+### Wave 2: Impl-Polish+Quality (4 agents)
+- Agent 1: Build frontend form component → src/components/ → wired to the new route
+- Agent 2: Write and run tests → tests/api/users.test.mjs → passing
 ...
 
 ### Inter-Wave Checkpoints
 - After Impl-Core: Design review (Pencil configured)
-- After Quality: Full quality gate
+- After Impl-Polish+Quality: Full quality gate
 
 Ready to execute? Use /go to begin.
 ```
@@ -598,13 +626,12 @@ You can request changes to the plan. When satisfied:
 Waves execute automatically. Agents within each wave run in parallel. Between waves, the orchestrator reviews results, runs checks, and adapts the plan if needed. You see progress updates after each wave:
 
 ```
-## Wave 2 (Impl-Core) Complete ✓
+## Wave 1 (Impl-Core) Complete ✓
 - Agent 1: done — API route implemented, returns correct schema
 - Agent 2: done — Database migration created
-- Agent 3: done — Frontend form component built
 - Tests: 3 new passing | TypeScript: 0 errors
 - Design: ALIGNED
-- Adaptations for Impl-Polish: none
+- Adaptations for Impl-Polish+Quality: none
 ```
 
 ### Step 5: Close the session
@@ -1188,7 +1215,7 @@ Read-only display of all active learnings with confidence scores and expiry date
 
 ## 18. Adaptive Wave Sizing
 
-Instead of fixed agent counts, the orchestrator scores session complexity and adjusts agent allocation dynamically.
+Instead of always dispatching a wave's full agent-cap ceiling, the orchestrator scores session complexity and relaxes agent allocation downward when the briefed work does not need the full cap.
 
 ### Complexity Scoring
 Three factors are scored (0-2 points each):
@@ -1202,18 +1229,11 @@ Three factors are scored (0-2 points each):
 ### Complexity Tiers
 - **Simple** (0-1 points): fewer agents per wave
 - **Moderate** (2-3 points): standard allocation
-- **Complex** (4-6 points): maximum agents per wave
+- **Complex** (4-6 points): up to the wave's cap
 
-### Dynamic Scaling Between Waves
-After each wave, agent count is adjusted based on performance:
-- All agents fast + no issues → reduce next wave
-- Failures or broken code → add fix agents
-- Scope expansion → scale up
-- Quality regressions → targeted fix agents
+The tier score relaxes agent count **downward only** — a simple-tier session may plan fewer agents than the wave's `agentCap` where the briefed work does not fill it. It never raises the count above that cap; a moderate or complex tier does not scale it up. The cap itself comes from the resolved session shape (`waves[].agentCap`, see [`docs/session-config-reference.md`](session-config-reference.md#session-shapes) § Session Shapes) — it is not derived from the tier, and the `agents-per-wave` config value is the ceiling that cap was already built against.
 
-The `agents-per-wave` config value always caps the maximum.
-
-> **Note:** Housekeeping sessions skip complexity scoring and use fixed counts.
+> **Note:** Housekeeping has no tier at all — it is a single coordinator-direct wave (0 dispatched agents) running the fixed maintenance loop, not a scored/scaled wave.
 
 ---
 
@@ -1306,7 +1326,7 @@ Yes. Between each wave, the orchestrator reviews results and can adapt the plan.
 
 ### How many agents run in parallel?
 
-This is controlled by the `agents-per-wave` setting in your Session Config. The default is 6. For deep sessions, you can increase this to 10-18. All agents within a single wave run in parallel; the orchestrator waits for all of them to complete before starting the next wave.
+This is controlled by the `agents-per-wave` setting in your Session Config, using the override form `6 (deep: 18)` to raise the ceiling for deep sessions specifically — see [`docs/session-config-reference.md`](session-config-reference.md#session-shapes) § Session Shapes for the full per-wave cap table. Note that a plain `deep` session's own raw wave caps top out at 10 (the Impl-Core wave) regardless of the override value configured; an override of 18 only actually binds under the `ultradeep` profile (`/session ultradeep`), whose Research+Code-Discovery wave is the one wave sized at 18. All agents within a single wave run in parallel; the orchestrator waits for all of them to complete before starting the next wave.
 
 ### Do I need Pencil?
 

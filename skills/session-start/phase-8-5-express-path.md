@@ -4,6 +4,8 @@
 
 After the user confirms the session type and scope via the Q&A above, evaluate whether the **Express Path** applies before handing off to session-plan. The express path collapses the full 5-wave plan into a single coordinator-direct phase for lightweight sessions.
 
+> **The 1-wave plan is not a special artifact — it EQUALS the housekeeping shape.** `resolveSessionShape` in `scripts/lib/session-shape.mjs` (CLI: `node scripts/session-shape.mjs --repo-root "$PWD" --session-type housekeeping --task-count <N>`) already resolves `housekeeping` to `totalWaves: 1`, `coordinatorDirect: true`, one `Housekeeping` wave with `agentCap: 0` and `verification: 'full'`. Express path and ordinary housekeeping therefore emit the SAME shape and differ only in scope size; the shape is recorded once at Phase 9 as `orchestrator.session.shape_resolved`.
+
 **Do not evaluate these conditions by hand — run the CLI (#1119, #1146).**
 
 ```bash
@@ -87,19 +89,20 @@ Express path activated — <N> tasks, coordinator-direct, no inter-wave checks.
 
 Hand off to Phase 9 as usual. The coordinator then executes the 1-wave plan session-plan emits directly, without dispatching subagents:
 
-1. Proceed to Phase 9 (session-plan handoff) carrying the banner. session-plan short-circuits to the 1-wave `coordinator-direct` plan; `/go` detects it and does NOT invoke wave-executor.
-2. For each agreed task (in dependency order): execute as a direct coordinator action — read files, make changes, run quality checks inline. No subagents, no inter-wave checkpoints.
-3. Log the express-path activation in STATE.md `## Deviations` section: `Express path: N tasks executed coord-direct (express-path.enabled: true, session-type: housekeeping, scope: N issues)` — written BEFORE session-end is invoked. Then invoke `skills/session-end/SKILL.md` directly.
-4. After session-end completes successfully: verify STATE.md `status` is `completed` and `## Deviations` contains the express-path entry from step 3. If either is missing, warn the user with a one-line note and instructions to re-run `/close` manually. Then return the final session summary to the user.
+1. Proceed to Phase 9 (session-plan handoff) carrying the banner. session-plan short-circuits to the 1-wave `coordinator-direct` plan — the same shape `scripts/session-shape.mjs` resolves for `housekeeping`; `/go` detects it and does NOT invoke wave-executor.
+2. **Run the maintenance loop FIRST** (`skills/session-start/SKILL.md` Phase 7, "For housekeeping sessions"): drift-check work-list, expired sweep, `/evolve analyze`, `/reconcile`, `/evolve dialectic` (dry-run then apply), `/memory-cleanup` — each AUQ-gated. `coordinator-direct` means no wave-executor, NOT zero subagents: the dialectic step dispatches the read-only `dialectic-deriver`. The operator-selected tasks run after the loop, because the loop's outputs (new learnings, new rules) are inputs the task work should already see.
+3. For each agreed task (in dependency order): execute as a direct coordinator action — read files, make changes, run quality checks inline. No subagents, no inter-wave checkpoints.
+4. Log the express-path activation in STATE.md `## Deviations` section: `Express path: N tasks executed coord-direct (express-path.enabled: true, session-type: housekeeping, scope: N issues)` — written BEFORE session-end is invoked. Then invoke `skills/session-end/SKILL.md` directly.
+5. After session-end completes successfully: verify STATE.md `status` is `completed` and `## Deviations` contains the express-path entry from step 4. If either is missing, warn the user with a one-line note and instructions to re-run `/close` manually. Then return the final session summary to the user.
 
 **Persistence contract:**
 
-Step 1 is the Phase 9 handoff and ends the session-start turn — the operator types `/go` next, exactly as on the normal path. Steps 2–4 then MUST all happen within a SINGLE coordinator turn, the one `/go` opens. Specifically:
+Step 1 is the Phase 9 handoff and ends the session-start turn — the operator types `/go` next, exactly as on the normal path. Steps 2–5 then MUST all happen within a SINGLE coordinator turn, the one `/go` opens. Specifically:
 
-- Step 2 (execute tasks) happens first in that turn's main flow.
-- Step 3a (deviations log) is written BEFORE session-end is invoked. The coordinator calls `appendDeviation()` from `scripts/lib/state-md.mjs` to append the `Express path:` bullet to the `## Deviations` section while STATE.md is still `status: active`.
-- Step 3b (invoke session-end) flips `status` to `completed`, writes the metrics record to `.orchestrator/metrics/sessions.jsonl`, and runs the standard close flow. Session-end has no Express Path-specific logic — it treats this run identically to any other completed session.
-- Step 4 (verification) is the coordinator's final action before returning control. The verification check uses `parseStateMd()` from `scripts/lib/state-md.mjs` to read the file and check `frontmatter.status === 'completed'` and that the body contains the literal string `Express path:`.
+- Step 2 (maintenance loop) and step 3 (execute tasks) happen first in that turn's main flow, in that order.
+- Step 4a (deviations log) is written BEFORE session-end is invoked. The coordinator calls `appendDeviation()` from `scripts/lib/state-md.mjs` to append the `Express path:` bullet to the `## Deviations` section while STATE.md is still `status: active`.
+- Step 4b (invoke session-end) flips `status` to `completed`, writes the metrics record to `.orchestrator/metrics/sessions.jsonl`, and runs the standard close flow. Session-end has no Express Path-specific logic — it treats this run identically to any other completed session.
+- Step 5 (verification) is the coordinator's final action before returning control. The verification check uses `parseStateMd()` from `scripts/lib/state-md.mjs` to read the file and check `frontmatter.status === 'completed'` and that the body contains the literal string `Express path:`.
 
 When `/go` is invoked and session-plan emitted a 1-wave Express Path plan (per `skills/session-plan/SKILL.md` § "Express Path Short-Circuit"), the `/go` command MUST detect this and route to coord-direct execution + session-end auto-invocation, NOT to wave-executor. See `commands/go.md` for the detection branch — that plan is the artifact `/go` keys on, which is why Phase 8.5 hands off to session-plan rather than skipping it.
 

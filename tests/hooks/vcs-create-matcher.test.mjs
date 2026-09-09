@@ -32,6 +32,7 @@ import {
   isIssueCreate,
   isLoopedIssueCreate,
   extractTitle,
+  findIssueCreateStatements,
   matchesBypass,
 } from '../../hooks/_lib/vcs-create-matcher.mjs';
 import { tokenizeCommand, splitChainSegments } from '@lib/command-blocker.mjs';
@@ -190,5 +191,115 @@ describe('vcs-create-matcher — unchanged surfaces after the widening', () => {
     expect(matchesBypass('cd /r && gh pr create --dry-run', ['gh pr create --dry-run'])).toBe(true);
     expect(matchesBypass('nohup gh pr create --dry-run', ['gh pr create --dry-run'])).toBe(false);
     expect(matchesBypass('gh issue create --label botanical', ['gh issue create --label bot'])).toBe(false);
+  });
+});
+
+describe('vcs-create-matcher — the REST-API route (#1163 BUG-2)', () => {
+  // THE BUG (TV-001): every `api` shape was a MISS, i.e. a complete silent
+  // bypass of both consumers. Measured 2026-09-09 against the pre-fix file:
+  // all three of these returned false while each files a real issue.
+  it('matches glab api --method POST …/issues and gh api …/issues', () => {
+    expect(isIssueCreate('glab api --method POST projects/1/issues -f title=X')).toBe(true);
+    expect(isIssueCreate('gh api repos/o/r/issues -f title=X')).toBe(true);
+    expect(isIssueCreate('gh api -X POST repos/o/r/issues -f title=X')).toBe(true);
+    expect(isIssueCreate('gh api -XPOST repos/o/r/issues')).toBe(true);
+    expect(isIssueCreate('glab api --method=POST projects/1/issues')).toBe(true);
+  });
+
+  it('marks the route via: api and keeps matchVcsCreate at its three-key shape', () => {
+    const [stmt] = findIssueCreateStatements('glab api --method POST projects/1/issues -f title=X');
+    expect(stmt.shape).toEqual({ host: 'gitlab', kind: 'issue', verb: 'create', via: 'api' });
+    // The sibling suite pins matchVcsCreate by equality on three keys; adding a
+    // fourth there would break assertions no behaviour change justifies.
+    expect(matchVcsCreate('glab issue create --title x')).toEqual({
+      host: 'gitlab', kind: 'issue', verb: 'create',
+    });
+  });
+
+  it('does not match glab api GET …/issues — a list is not a creation', () => {
+    expect(isIssueCreate('gh api repos/o/r/issues')).toBe(false);
+    expect(isIssueCreate('gh api repos/o/r/issues?state=open')).toBe(false);
+    expect(isIssueCreate('glab api --method GET projects/1/issues')).toBe(false);
+    // An explicit non-POST method wins even over a title payload: an update is
+    // not a creation.
+    expect(isIssueCreate('gh api -X PATCH repos/o/r/issues -f title=X')).toBe(false);
+    // A sub-resource is a comment/update endpoint, never the issue collection.
+    expect(isIssueCreate('gh api --method POST repos/o/r/issues/12/comments -f body=x')).toBe(false);
+    // Unrelated API calls stay invisible.
+    expect(isIssueCreate('gh api --method POST repos/o/r/labels -f name=x')).toBe(false);
+    expect(isIssueCreate('glab api --method POST projects/1/issues --help')).toBe(false);
+  });
+
+  it('extracts the -f title= payload as the overflow label', () => {
+    expect(
+      extractTitle('glab api --method POST projects/1/issues -f "title=Broken parser"'),
+    ).toBe('Broken parser');
+    expect(extractTitle('gh api repos/o/r/issues --field title=X')).toBe('X');
+  });
+
+  // NAMED CEILINGS (BV-004). Pinned so the widening above stays DELIBERATE: if
+  // one of these ever starts matching, it happened by accident and this test
+  // says so rather than the behaviour changing silently.
+  it('keeps bash -c / $( ) / xargs as documented misses', () => {
+    expect(isIssueCreate("bash -c 'glab api --method POST projects/1/issues -f title=X'")).toBe(
+      false,
+    );
+    expect(isIssueCreate('x=$(gh api repos/o/r/issues -f title=X)')).toBe(false);
+    expect(isIssueCreate("bash -c 'glab issue create --title X'")).toBe(false);
+  });
+
+  // `xargs` was listed in this file's header as a TRANSPARENT WRAPPER it
+  // unwraps — measured 2026-09-09, it is not: `command-blocker.mjs` classes it
+  // as an interpreter (`SHELL_EXEC_INTERPRETERS`), so every xargs-driven create
+  // is a total miss — 0 statements, hence no charge AND no loop-deny either.
+  // The header now says so; this test keeps the documented ceiling honest, so a
+  // future widening (which would have to change what `resolveSegmentVerb`
+  // reports for `xargs` for four other consumers too) is deliberate.
+  it('xargs-driven create is a documented miss (named ceiling) — 0 statements, no loop-deny', () => {
+    const shapes = [
+      'xargs glab issue create --title X',
+      'echo X | xargs -I% glab issue create --title %',
+      'seq 1 50 | xargs -I% gh api -X POST repos/o/r/issues -f title=%',
+      'xargs -n1 glab issue create',
+    ];
+    for (const cmd of shapes) {
+      expect(findIssueCreateStatements(cmd)).toEqual([]);
+      expect(isIssueCreate(cmd)).toBe(false);
+      expect(isLoopedIssueCreate(cmd)).toBe(false);
+    }
+  });
+});
+
+describe('vcs-create-matcher — per-statement enumeration (#1163 BUG-1)', () => {
+  // THE BUG (TV-001): the hook charged ONCE per Bash call because the matcher
+  // only ever answered a boolean. Measured 2026-09-09: `A && B` charged 1 for 2.
+  it('returns one record per issue-create statement in the chain', () => {
+    const found = findIssueCreateStatements(
+      'glab issue create --title A\nglab issue create --title B',
+    );
+    expect(found).toHaveLength(2);
+    expect(found.map((s) => s.title)).toEqual(['A', 'B']);
+  });
+
+  it('scopes each statement text so an exempt neighbour cannot cover a real create', () => {
+    const found = findIssueCreateStatements(
+      'glab issue create --title REAL && glab issue create --label carryover --title X',
+    );
+    expect(found).toHaveLength(2);
+    expect(found[0].text).not.toContain('carryover');
+    expect(found[1].text).toContain('carryover');
+  });
+
+  it('counts pr/mr creates out and mixes the api route in', () => {
+    const found = findIssueCreateStatements(
+      'gh pr create --title p; glab issue create --title A; gh api repos/o/r/issues -f title=B',
+    );
+    expect(found.map((s) => s.shape.via)).toEqual(['cli', 'api']);
+    expect(found.map((s) => s.title)).toEqual(['A', 'B']);
+  });
+
+  it('is empty for a non-create command', () => {
+    expect(findIssueCreateStatements('ls -la')).toEqual([]);
+    expect(findIssueCreateStatements('echo "glab issue create"')).toEqual([]);
   });
 });

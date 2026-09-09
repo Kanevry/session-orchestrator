@@ -84,7 +84,7 @@ Everything else is opt-in. Full template: [`docs/session-config-template.md`](do
 
 ```text
 /session feature    # research + Q&A — inspect git, issues, history, then agree on scope
-/go                 # execute in five typed waves (fixed roles), with a quality gate between each
+/go                 # execute in typed waves sized by session type (feature: 3, deep: 5) — quality gate between each
 /close              # verify every item, commit cleanly, file carryover issues for the rest
 ```
 

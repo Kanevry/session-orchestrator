@@ -36,8 +36,8 @@ These seven fields are enforced by `scripts/lib/config-schema.mjs`. Validation i
 test-command: npm test                # non-empty string — quality-gate test runner
 typecheck-command: npm run typecheck   # non-empty string — canonical typecheck runner
 lint-command: npm run lint             # non-empty string — Full Gate lint runner
-agents-per-wave: 6                     # integer ≥ 2 (or { default: 6, deep: 18 })
-waves: 5                               # integer ≥ 3 — execution wave count
+agents-per-wave: 6                     # integer ≥ 2 (or { default: 6, deep: 18 }) — see § Session Structure
+waves: 5                               # integer ≥ 3 — base count; actual wave count is resolved per session type by `scripts/session-shape.mjs`
 persistence: true                      # boolean — STATE.md + memory file resumption
 enforcement: warn                      # strict | warn | off — hook strictness AND validator gate
 ```
@@ -50,12 +50,14 @@ Controls wave count, parallelism, and freeform per-repo notes the orchestrator m
 
 ```yaml
 agents-per-wave: 6                     # integer or "6 (deep: 18)" override syntax
-waves: 5                               # integer ≥ 3
+waves: 5                               # integer ≥ 3 — base count only; resolved shape may ignore it (see below)
 recent-commits: 20                     # how many commits to display at session-start
 special: "any repo-specific instructions"   # freeform — orchestrator reads + obeys
 ```
 
 Read by: `skills/session-start/SKILL.md` (Phase 4.5), `skills/session-plan/SKILL.md`, `skills/wave-executor/wave-loop.md`.
+
+**Wave count, roles and per-wave agent caps are resolved by `scripts/session-shape.mjs`, not derived from `waves` by hand.** Housekeeping is always 1 coordinator-direct maintenance-loop wave; feature is 3 waves (Impl-Core / Impl-Polish+Quality / Finalization); deep is 5 waves (4 when the scope is already known — Discovery is dropped); the `ultradeep` profile is a fixed 7-wave shape that IGNORES `waves` entirely (`wavesConfigHonored: false`). `agents-per-wave` resolves via `resolveAgentCap()` in the same module. Full table: [`session-config-reference.md` § Session Shapes](./session-config-reference.md#session-shapes).
 
 **The override key set is open.** `_coerceInteger` (`scripts/lib/config/coercers.mjs`) parses whatever keys stand inside the parentheses, so `agents-per-wave: 6 (deep: 18, ultradeep: 18)` is valid today with no code change — it yields `{"default": 6, "deep": 18, "ultradeep": 18}`.
 
@@ -151,7 +153,7 @@ reasoning-output: false                # opt-in STATE:/PLAN: agent transparency 
 grounding-check: true                  # session-end Phase 1.1a planned-vs-touched diff
 grounding-injection-max-files: 3       # 0 disables (#85)
 isolation: auto                        # worktree | none | auto (graduated default #194)
-max-turns: auto                        # housekeeping=8, feature=15, deep=25
+max-turns: auto                        # per session shape (scripts/lib/session-shape.mjs): 8/15/25; ultradeep is per-wave 40/25/15
 auto-commit-per-wave: false            # opt-in: commit after each wave's Quality-Lite PASS (default false; V3.6 plumbing)
 ```
 

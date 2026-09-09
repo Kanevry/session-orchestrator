@@ -364,3 +364,88 @@ describe('heavy-repo × isolation cross-field warning (HR-003, baseline #60)', (
     expect(result.warnings).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// issue-budget — per-session-type override validation
+// ---------------------------------------------------------------------------
+//
+// TV-001 bug this catches: an override value that is not a non-negative
+// integer (`12 (feature: x)`) reaching a consumer that compares a counter
+// against it — a cap that can never be reached, i.e. the gate silently off.
+describe('validateSessionConfig — issue-budget', () => {
+  it('accepts a plain numeric cap', () => {
+    const result = validateSessionConfig(
+      baseConfig({
+        'issue-budget': {
+          'max-per-session': 12,
+          'max-per-session-raw': 12,
+          mode: 'strict',
+          overflow: 'collect-issue',
+        },
+      }),
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts 0 as a cap (blocks every non-exempt creation)', () => {
+    expect(
+      validateSessionConfig(
+        baseConfig({ 'issue-budget': { 'max-per-session': 0, 'max-per-session-raw': 0 } }),
+      ).ok,
+    ).toBe(true);
+  });
+
+  it('accepts the per-session-type override object', () => {
+    const result = validateSessionConfig(
+      baseConfig({
+        'issue-budget': {
+          'max-per-session': 12,
+          'max-per-session-raw': { default: 12, feature: 6, housekeeping: 0 },
+        },
+      }),
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects a non-integer override value (the `12 (feature: x)` shape)', () => {
+    const result = validateSessionConfig(
+      baseConfig({
+        'issue-budget': {
+          'max-per-session': 12,
+          'max-per-session-raw': { default: 12, feature: 'x' },
+        },
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.errors.map((e) => e.path)).toContain('issue-budget.max-per-session-raw.feature');
+  });
+
+  it('rejects a negative override value', () => {
+    const result = validateSessionConfig(
+      baseConfig({
+        'issue-budget': { 'max-per-session': 12, 'max-per-session-raw': { default: 12, feature: -1 } },
+      }),
+    );
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects an override object with a missing default', () => {
+    const result = validateSessionConfig(
+      baseConfig({ 'issue-budget': { 'max-per-session': 12, 'max-per-session-raw': { feature: 6 } } }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.errors.map((e) => e.path)).toContain('issue-budget.max-per-session-raw.default');
+  });
+
+  it('rejects a non-integer resolved max-per-session', () => {
+    const result = validateSessionConfig(
+      baseConfig({ 'issue-budget': { 'max-per-session': 'many' } }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.errors.map((e) => e.path)).toContain('issue-budget.max-per-session');
+  });
+
+  it('stays silent when the block is absent (opt-in key)', () => {
+    expect(validateSessionConfig(baseConfig()).ok).toBe(true);
+  });
+});

@@ -80,6 +80,32 @@
     - After the artefact exists, reset `overflow` to `[]` in the counter file and record the collector issue ID / note path in the Phase 6 Final Report under `### Zurückgestellt (issue-budget)`.
     - **Never exempt-by-accident:** the cap never applied to `priority::critical`, the carryover class (`[Carryover]`, SPIRAL/FAILED, `type::carryover`), or `broken-window` closure issues, so nothing on the Phase 1.65 carry-list can ever appear in `overflow[]`. The promises at Phase 1.8 ("SPIRAL / FAILED agent carryover … non-deselectable") and the Critical Rule "ALWAYS create issues for unfinished PLANNED work" stay intact by construction.
     - Fail-open: a missing or malformed counter file means "no overflow" — log a WARN and continue the close.
+    - **3b.2 — Reconcile the record against the ledger (#1163 follow-up):** the drain answers "what did the cap park?"; this answers the prior question "did the cap ever run?". Call `reconcileIssueBudget` from `scripts/lib/issue-budget-reconcile.mjs` on the **in-memory session record** — the one Phase 3.7 is about to append to `.orchestrator/metrics/sessions.jsonl`, not a record read back from it. `issues_created` has NO code producer anywhere in this repo: it is the coordinator's own hand-assembled count, which is exactly why cross-checking it against a mechanically-written ledger is meaningful — the two halves have independent producers.
+
+      ```js
+      import {
+        reconcileIssueBudget,
+        emitIssueBudgetReconciled,
+        formatIssueBudgetReconcileWarn,
+      } from '${PLUGIN_ROOT}/scripts/lib/issue-budget-reconcile.mjs';
+
+      const reconcile = reconcileIssueBudget({
+        repoRoot,
+        record: sessionRecord,          // in-memory, pre-write (Phase 3.7 appends it later)
+        sessionId: accountingSessionId, // semantic key
+        rawSessionId,                   // raw lock/registry key — BOTH are summed, never preferred
+        config: config['issue-budget'],
+      });
+      await emitIssueBudgetReconciled(repoRoot, reconcile);
+      console.log(formatIssueBudgetReconcileWarn(reconcile));
+      ```
+
+      `reconcile.verdict` is one of `match` (everything the record claims is accounted for), `no-ledger` (`recorded > 0` and no counter file existed under EITHER key — the hook never charged a single create, so the cap was silently OFF; measured once at 26 recorded creations with no counter file), `escaped` (a ledger exists but `recorded > charged + exempt`), or `stale-record` (the ledger has spend and the record claims none — there the RECORD is the suspect half). `emitIssueBudgetReconciled` writes `orchestrator.issue_budget.reconciled` to `.orchestrator/metrics/events.jsonl`; `formatIssueBudgetReconcileWarn(result)` renders one info line on `match` and a path-quoting warning otherwise — print it in the Phase 6 Final Report under `### Zurückgestellt (issue-budget)`. Never throws, never blocks the close.
+
+      **Two ordering constraints, both load-bearing:**
+      1. **After the drain.** The drain resets `overflow[]` to `[]` and files the collector issue (itself exempt) — reconciling before it would read an overflow count that is about to change and miss the collector's own exempt charge.
+      2. **Before `reapStaleBudgetFiles`.** The reap deletes counter files; THIS session's file is exempt by age, but a session whose accounting key flipped mid-session has spend under a second key that is NOT exempt. Reaping first can therefore remove the very file this check reads, turning a real `escaped` into a false `no-ledger`.
+
     - **Then reap stale counter files (#1151):** the per-session split (#1141) writes one file per accounting session and nothing ever deleted them, so `.orchestrator/runtime/issue-budget/` grew without bound in every working copy. After the drain, sweep files older than 14 days; THIS session's file is exempt regardless of age, and the call is best-effort (it never throws, so it can never abort the close).
 
       ```js

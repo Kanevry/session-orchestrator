@@ -15,6 +15,8 @@ import path from 'node:path';
 import {
   classifyExemption,
   loadIssueBudgetConfig,
+  resolveMaxPerSession,
+  readSessionTypeFromStateMd,
   resolveIssueBudgetSessionId,
   chargeIssueBudget,
   readBudgetState,
@@ -62,6 +64,8 @@ describe('loadIssueBudgetConfig', () => {
   it('returns the documented defaults when no block is present', () => {
     expect(loadIssueBudgetConfig(repoRoot)).toEqual({
       'max-per-session': 12,
+      'max-per-session-raw': 12,
+      'session-type-resolved': null,
       mode: 'strict',
       overflow: 'collect-issue',
     });
@@ -71,6 +75,8 @@ describe('loadIssueBudgetConfig', () => {
     writeConfig('## Session Config\n\nissue-budget:\n  max-per-session: 2\n  mode: warn\n');
     expect(loadIssueBudgetConfig(repoRoot)).toEqual({
       'max-per-session': 2,
+      'max-per-session-raw': 2,
+      'session-type-resolved': null,
       mode: 'warn',
       overflow: 'collect-issue',
     });
@@ -505,5 +511,105 @@ describe('budget state file', () => {
     chargeN(1, { 'max-per-session': 5, mode: 'strict', overflow: 'collect-issue' });
     writeFileSync(p, '{not json', 'utf8');
     expect(readBudgetState(repoRoot, 's1')).toEqual({ sessionId: 's1', count: 0, exempt: 0, overflow: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-session-type cap resolution (`12 (feature: 6)`)
+// ---------------------------------------------------------------------------
+//
+// TV-001 bug this catches: a `feature` session silently running on the `deep`
+// cap (or, before the numeric/raw split, on `[object Object]` — an unreachable
+// cap, i.e. the gate off).
+
+/** Write a STATE.md carrying one `session-type:` into the tmp repo. */
+function writeStateMd(sessionType) {
+  mkdirSync(path.join(repoRoot, '.claude'), { recursive: true });
+  const fm = ['---', 'schema-version: 1'];
+  if (sessionType !== null) fm.push(`session-type: ${sessionType}`);
+  fm.push('session: t-1', '---', '', '# State', '');
+  writeFileSync(path.join(repoRoot, '.claude', 'STATE.md'), fm.join('\n'), 'utf8');
+}
+
+describe('resolveMaxPerSession', () => {
+  const cfg = { 'max-per-session': 12, 'max-per-session-raw': { default: 12, feature: 6 } };
+
+  it('resolves the override for a matching session type', () => {
+    expect(resolveMaxPerSession(cfg, 'feature')).toBe(6);
+  });
+
+  it('falls back to the default for a type with no override', () => {
+    expect(resolveMaxPerSession(cfg, 'deep')).toBe(12);
+  });
+
+  it('falls back to the default for an unknown / absent session type', () => {
+    expect(resolveMaxPerSession(cfg, 'no-such-mode')).toBe(12);
+    expect(resolveMaxPerSession(cfg, null)).toBe(12);
+    expect(resolveMaxPerSession(cfg, undefined)).toBe(12);
+  });
+
+  it('passes a plain numeric cap through unchanged', () => {
+    expect(resolveMaxPerSession({ 'max-per-session': 4, 'max-per-session-raw': 4 }, 'feature')).toBe(4);
+  });
+
+  it('reads the numeric key when no raw value is present (pre-override configs)', () => {
+    expect(resolveMaxPerSession({ 'max-per-session': 7 }, 'feature')).toBe(7);
+  });
+});
+
+describe('readSessionTypeFromStateMd', () => {
+  it('reads session-type out of the active STATE.md', () => {
+    writeStateMd('feature');
+    expect(readSessionTypeFromStateMd(repoRoot)).toBe('feature');
+  });
+
+  it('returns null when STATE.md is absent', () => {
+    expect(readSessionTypeFromStateMd(repoRoot)).toBeNull();
+  });
+
+  it('returns null when STATE.md carries no session-type', () => {
+    writeStateMd(null);
+    expect(readSessionTypeFromStateMd(repoRoot)).toBeNull();
+  });
+
+  it('returns null on unparseable frontmatter instead of throwing', () => {
+    mkdirSync(path.join(repoRoot, '.claude'), { recursive: true });
+    writeFileSync(path.join(repoRoot, '.claude', 'STATE.md'), 'no frontmatter here\n', 'utf8');
+    expect(readSessionTypeFromStateMd(repoRoot)).toBeNull();
+  });
+});
+
+describe('loadIssueBudgetConfig — per-session-type resolution', () => {
+  beforeEach(() => {
+    writeConfig('## Session Config\n\nissue-budget:\n  max-per-session: 12 (feature: 6)\n');
+  });
+
+  it('resolves the cap for the session type recorded in STATE.md', () => {
+    writeStateMd('feature');
+    const cfg = loadIssueBudgetConfig(repoRoot);
+    expect(cfg['max-per-session']).toBe(6);
+    expect(cfg['session-type-resolved']).toBe('feature');
+    expect(cfg['max-per-session-raw']).toEqual({ default: 12, feature: 6 });
+  });
+
+  it('resolves to the default for a session type with no override', () => {
+    writeStateMd('deep');
+    const cfg = loadIssueBudgetConfig(repoRoot);
+    expect(cfg['max-per-session']).toBe(12);
+    expect(cfg['session-type-resolved']).toBe('deep');
+  });
+
+  it('resolves to the default when there is no STATE.md at all', () => {
+    const cfg = loadIssueBudgetConfig(repoRoot);
+    expect(cfg['max-per-session']).toBe(12);
+    expect(cfg['session-type-resolved']).toBeNull();
+  });
+
+  it('caps a feature session at the resolved 6, not at the default 12', () => {
+    writeStateMd('feature');
+    const cfg = loadIssueBudgetConfig(repoRoot);
+    const verdict = chargeN(7, cfg, 'type-session');
+    expect(verdict.max).toBe(6);
+    expect(verdict.decision).toBe('block');
   });
 });

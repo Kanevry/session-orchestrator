@@ -8,6 +8,7 @@
  */
 
 import { probe, evaluate } from './resource-probe.mjs';
+import { resolveAgentCap } from './session-shape.mjs';
 
 /**
  * Wave roles that may run on a declared remote host, mapped to the
@@ -194,7 +195,10 @@ async function applyOffloadDecision(result, opts) {
   // ceiling, which is a property of the REPO and holds wherever the wave runs.
   // Restoring plannedAgents unconditionally here would let a heavy repo exceed
   // its own cap by way of a remote host.
-  const cap = config?.['heavy-repo'] === true ? resolveApwCap(config['agents-per-wave']) : null;
+  const cap =
+    config?.['heavy-repo'] === true
+      ? resolveAgentCap(config['agents-per-wave'], MODE_BLIND_SESSION_TYPE)
+      : null;
   const agents = cap === null ? plannedAgents : Math.min(plannedAgents, cap);
 
   return {
@@ -210,42 +214,34 @@ async function applyOffloadDecision(result, opts) {
 }
 
 /**
- * Resolve an `agents-per-wave` config value into a plain numeric cap, or
- * `null` when no cap should apply.
+ * The session type this module resolves `agents-per-wave` FOR: none.
  *
  * `_coerceInteger()` (scripts/lib/config/coercers.mjs) parses the documented
  * HR-003 parenthetical-override syntax — `agents-per-wave: 4 (deep: 18)` —
- * into an OBJECT `{ default: 4, deep: 18 }`, not a plain number. Feeding that
- * object straight into a `typeof cap !== 'number'` guard makes the heavy-repo
- * cap silently no-op for every repo using the override syntax, which defeats
- * HR-004 exactly where it matters most (a heavy repo that also runs deep
- * sessions).
+ * into an OBJECT `{ default: 4, deep: 18 }`, not a plain number, so the cap
+ * must be resolved rather than type-guarded (a bare `typeof cap !== 'number'`
+ * check no-ops HR-004 for every repo using the override syntax).
  *
- * `evaluateWaveResourceGate()` has no session-mode input in scope — `waveRole`
- * is a wave role (e.g. "Impl-Core"), not a session mode (e.g. "deep") — so the
- * object shape resolves to `cap.default` here. That is the conservative
- * choice: the documented HR-003 convention writes the override as
- * `<default> (mode: <higher-ceiling>)`, i.e. `default` is the MORE
- * restrictive of the pair. Falling back to it can only under-apply a looser
- * mode-specific ceiling; it never lets a heavy repo exceed its base cap.
+ * This gate has NO session mode in scope — `waveRole` is a wave role (e.g.
+ * "Impl-Core"), never a session mode (e.g. "deep") — so it deliberately asks
+ * `resolveAgentCap` for no type and takes the `.default` fallback. That is the
+ * conservative reading: the HR-003 convention writes the override as
+ * `<default> (mode: <higher-ceiling>)`, i.e. `default` is the MORE restrictive
+ * of the pair. Under-applying a looser mode-specific ceiling is safe; passing a
+ * guessed `'deep'` here would silently RAISE a heavy repo's ceiling to the deep
+ * override, which is the bug this named constant exists to make un-writable.
  *
- * @param {number|{default: number, [mode: string]: number}|*} cap
- * @returns {number|null}
+ * @type {undefined}
  */
-function resolveApwCap(cap) {
-  if (typeof cap === 'number') return Number.isFinite(cap) ? cap : null;
-  if (cap !== null && typeof cap === 'object' && !Array.isArray(cap)) {
-    const def = cap.default;
-    return typeof def === 'number' && Number.isFinite(def) ? def : null;
-  }
-  return null;
-}
+const MODE_BLIND_SESSION_TYPE = undefined;
 
 /**
  * HR-003/HR-004 heavy-repo preflight ceiling (baseline #60). A STATIC cap
  * independent of the live resource-probe verdict: when `config['heavy-repo']`
  * is `true`, `agents` is clamped to at most `config['agents-per-wave']`
- * (resolved via {@link resolveApwCap} to handle the object-override shape).
+ * (resolved via `resolveAgentCap` from `./session-shape.mjs` — the ONE exported
+ * copy of that resolver — to handle the object-override shape; see
+ * {@link MODE_BLIND_SESSION_TYPE} for why no session type is passed).
  * More-restrictive-wins — this only ever LOWERS `agents`, never raises it
  * above what the resource-driven rules already decided (e.g. a
  * coordinator-direct 0 stays 0).
@@ -257,7 +253,7 @@ function resolveApwCap(cap) {
 function applyHeavyRepoCap(result, opts) {
   const { config } = opts;
   if (!config || config['heavy-repo'] !== true) return result;
-  const cap = resolveApwCap(config['agents-per-wave']);
+  const cap = resolveAgentCap(config['agents-per-wave'], MODE_BLIND_SESSION_TYPE);
   if (cap === null) return result;
   if (result.agents <= cap) return result; // already within the ceiling — never raise
   return {

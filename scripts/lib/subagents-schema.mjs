@@ -32,14 +32,28 @@
  * Optional:
  *   agent_type        string | null — e.g. 'explore', 'writer', 'test-writer'
  *   parent_session_id string | null — session that spawned this subagent
- *   token_input       integer | null — prompt token count for this subagent
+ *   token_input       integer | null — BILLABLE PROMPT VOLUME for this subagent.
+ *                     schema_version 1: raw `usage.input_tokens` only.
+ *                     schema_version 2 (#1244, 2026-09-09): uncached + cache_read +
+ *                     cache_creation. This is a REDEFINITION — a v1 and a v2 value
+ *                     are not comparable and must never be summed together.
+ *   token_input_uncached  integer | null — raw `usage.input_tokens` (v2+)
+ *   token_cache_read      integer | null — `usage.cache_read_input_tokens` (v2+)
+ *   token_cache_creation  integer | null — `usage.cache_creation_input_tokens` (v2+)
  *   token_output      integer | null — completion token count for this subagent
+ *   model             string  | null — model id from the transcript (v2+); null when
+ *                                      the transcript exposes none. Required to price
+ *                                      the record — see scripts/lib/telemetry/pricing.mjs.
  *   total_cost_usd    number  | null — native total cost in USD (#624, fractional,
  *                                      best-effort: null when the harness does not
  *                                      expose it; no rate table is applied)
  *
  * OTel aliases (optional, stop-only, additive — #411, schema_version=1 backwards-compat):
- *   gen_ai.usage.input_tokens   integer | null — alias of token_input
+ *   gen_ai.usage.input_tokens   integer | null — RAW UNCACHED prompt tokens (OTel
+ *                                                semantic). Under schema_version 2
+ *                                                this is deliberately ≠ token_input.
+ *   gen_ai.usage.cache_read_input_tokens      integer | null (v2+)
+ *   gen_ai.usage.cache_creation_input_tokens  integer | null (v2+)
  *   gen_ai.usage.output_tokens  integer | null — alias of token_output
  *   gen_ai.system               'anthropic'    — AI provider identifier
  */
@@ -52,8 +66,25 @@ import path from 'node:path';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Current subagent-record schema version. */
-export const CURRENT_SCHEMA_VERSION = 1;
+/** Current subagent-record schema version (2 since #1244, 2026-09-09). */
+export const CURRENT_SCHEMA_VERSION = 2;
+
+/**
+ * Schema versions this module reads. v1 records stay valid forever — the ledger
+ * is append-only — but their `token_input` means something different (see the
+ * module header), which is why consumers gate on the version rather than trust
+ * the field name.
+ */
+export const SUPPORTED_SCHEMA_VERSIONS = Object.freeze([1, 2]);
+
+/**
+ * Version assumed for a record read from disk that carries none. It is 1, NOT
+ * `CURRENT_SCHEMA_VERSION`: a versionless record predates the field, so
+ * stamping it with the current version would relabel legacy token semantics as
+ * v2 and let the rollup sum a raw-input-only figure into a billable-volume
+ * total — exactly the silent mixing #1244 exists to prevent.
+ */
+export const LEGACY_SCHEMA_VERSION = 1;
 
 /** Allowed event values. */
 export const VALID_EVENTS = Object.freeze(['start', 'stop']);
@@ -102,10 +133,10 @@ export function validateSubagent(entry, options = {}) {
     throw new ValidationError('subagent record must be a non-null object');
   }
 
-  // schema_version
-  if (entry.schema_version !== CURRENT_SCHEMA_VERSION) {
+  // schema_version — v1 and v2 both validate (append-only ledger, #1244).
+  if (!SUPPORTED_SCHEMA_VERSIONS.includes(entry.schema_version)) {
     throw new ValidationError(
-      `schema_version must be ${CURRENT_SCHEMA_VERSION}, got: ${entry.schema_version}`,
+      `schema_version must be one of ${SUPPORTED_SCHEMA_VERSIONS.join('|')}, got: ${entry.schema_version}`,
       'schema_version',
     );
   }
@@ -185,6 +216,23 @@ export function validateSubagent(entry, options = {}) {
     }
   }
 
+  // Cache-bucket fields (optional, #1244 / schema_version 2). Same
+  // non-negative-integer-or-null contract as token_input above.
+  for (const field of ['token_input_uncached', 'token_cache_read', 'token_cache_creation']) {
+    const value = entry[field];
+    if (value !== undefined && value !== null) {
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+        throw new ValidationError(`${field} must be a non-negative integer or null`, field);
+      }
+    }
+  }
+
+  // model (optional, #1244) — the transcript's model id; null is an honest
+  // absence and makes the record unpriceable, never free.
+  if (entry.model !== undefined && entry.model !== null && typeof entry.model !== 'string') {
+    throw new ValidationError('model must be a string or null', 'model');
+  }
+
   // total_cost_usd (optional, #624) — fractional number (not integer), best-effort.
   if (entry.total_cost_usd !== undefined && entry.total_cost_usd !== null) {
     if (typeof entry.total_cost_usd !== 'number' || !Number.isFinite(entry.total_cost_usd) || entry.total_cost_usd < 0) {
@@ -205,6 +253,19 @@ export function validateSubagent(entry, options = {}) {
   if (otelOutputTokens !== undefined && otelOutputTokens !== null) {
     if (typeof otelOutputTokens !== 'number' || !Number.isInteger(otelOutputTokens) || otelOutputTokens < 0) {
       throw new ValidationError('gen_ai.usage.output_tokens must be a non-negative integer or null', 'gen_ai.usage.output_tokens');
+    }
+  }
+
+  // OTel cache aliases — #1244 additive (schema_version 2).
+  for (const field of [
+    'gen_ai.usage.cache_read_input_tokens',
+    'gen_ai.usage.cache_creation_input_tokens',
+  ]) {
+    const value = entry[field];
+    if (value !== undefined && value !== null) {
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+        throw new ValidationError(`${field} must be a non-negative integer or null`, field);
+      }
     }
   }
 
@@ -234,15 +295,22 @@ export function normalizeSubagent(entry) {
   if (!entry || typeof entry !== 'object') return entry;
   return {
     ...entry,
-    schema_version: entry.schema_version ?? CURRENT_SCHEMA_VERSION,
+    schema_version: entry.schema_version ?? LEGACY_SCHEMA_VERSION,
     agent_type: entry.agent_type ?? null,
     parent_session_id: entry.parent_session_id ?? null,
     token_input: entry.token_input ?? null,
     token_output: entry.token_output ?? null,
+    // #1244 additive (schema_version 2) — cache buckets + model id.
+    token_input_uncached: entry.token_input_uncached ?? null,
+    token_cache_read: entry.token_cache_read ?? null,
+    token_cache_creation: entry.token_cache_creation ?? null,
+    model: entry.model ?? null,
     // total_cost_usd — #624 additive, best-effort native cost (null when absent)
     total_cost_usd: entry.total_cost_usd ?? null,
     // OTel alias — #411 additive, schema_version=1 backwards-compat
     'gen_ai.usage.input_tokens': entry['gen_ai.usage.input_tokens'] ?? null,
+    'gen_ai.usage.cache_read_input_tokens': entry['gen_ai.usage.cache_read_input_tokens'] ?? null,
+    'gen_ai.usage.cache_creation_input_tokens': entry['gen_ai.usage.cache_creation_input_tokens'] ?? null,
     'gen_ai.usage.output_tokens': entry['gen_ai.usage.output_tokens'] ?? null,
     'gen_ai.system': entry['gen_ai.system'] ?? null,
   };
@@ -266,7 +334,7 @@ export function migrateLegacySubagent(entry) {
   if (!entry || typeof entry !== 'object') return entry;
   const out = { ...entry };
   if (out.schema_version === undefined || out.schema_version === null) {
-    out.schema_version = CURRENT_SCHEMA_VERSION;
+    out.schema_version = LEGACY_SCHEMA_VERSION;
   }
   return out;
 }

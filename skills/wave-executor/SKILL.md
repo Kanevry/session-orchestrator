@@ -87,6 +87,8 @@ Before starting the first wave (Discovery role):
    - `persistence` (default: true), `enforcement` (default: warn), `isolation` (default: auto)
    - `agents-per-wave` (default: 6), `max-turns` (default: auto), `pencil` (default: null)
    
+   **Neither `agents-per-wave` nor `max-turns` carries its own default here.** The per-wave `agentCap` and `maxTurns` come from the RESOLVED SHAPE (`node scripts/session-shape.mjs --repo-root "$PWD" --session-type <session-type> [--profile <session-profile>] [--known-scope true|false]`, module `scripts/lib/session-shape.mjs`) — that is the one place a session mode becomes an execution shape. Session Config's `agents-per-wave` (with its per-type override, e.g. `6 (deep: 18)`) CLAMPS the shape's `agentCap`; `max-turns: auto` is expanded per type inside the shape, not in this file.
+   
    **Execution Config shortcut:** If the session-plan output contains an `### Execution Config` section, its execution-level fields (waves, agents-per-wave, isolation, enforcement, max-turns) take precedence over `$CONFIG`. Session-level fields (persistence, pencil) always come from `$CONFIG`. If the Execution Config section is missing, use `$CONFIG` alone.
 6. **Initialize session metrics** (if `persistence` enabled): Prepare a metrics tracking object for this session:
    - `session_id`: `<branch>-<YYYY-MM-DD>-<HHmm>` (HHmm from `started_at` — ensures uniqueness across multiple sessions per day)
@@ -151,6 +153,19 @@ Wave 0 — Initializing
 ```
 
 Create the `<state-dir>` directory if needed (`mkdir -p <state-dir>`) before writing. This file is the persistent state record — other skills and resumed sessions read it.
+
+**Then VALIDATE `total-waves` against the resolved shape — do not skip this.** A plan whose wave count the shape does not produce must never be dispatched silently:
+
+```bash
+node scripts/session-shape.mjs --repo-root "$PWD" \
+  --session-type <session-type> [--profile <session-profile>] [--known-scope true|false] \
+  --no-event | jq .totalWaves
+```
+
+`--no-event` is used HERE because the plan-time run already recorded `orchestrator.session.shape_resolved` — this is a re-read, not a second resolution. Compare the printed number with the plan's wave count (the value just written to `total-waves`):
+
+- **Equal** → continue to Wave 1.
+- **Mismatch** → STOP. Surface it via `AskUserQuestion` per `.claude/rules/ask-via-tool.md`, with the shape's number and the plan's number both in the option descriptions: **re-plan to the shape (Recommended)** — rebuild the wave plan at the shape's wave count, the only outcome that keeps STATE.md, the ledger and the dispatch loop describing the same session — versus **proceed with a logged Deviation**, which requires appending the divergence to STATE.md `## Deviations` (`appendDeviationOnDisk()` from `scripts/lib/state-md.mjs`) before the first dispatch.
 
 #### Pre-Wave 1b Extension: Docs Tasks Persistence (A3 / #230)
 
@@ -302,29 +317,44 @@ Cross-reference: PRD F2.1 / issue #501 / `docs/memory-proposal-flow.md` (coordin
 
 ## Session Type Behavior
 
-### Housekeeping Sessions
+### Housekeeping Sessions — the Maintenance Loop
 
-Housekeeping sessions use a simplified single-wave execution model instead of the multi-wave role-based dispatch:
+A housekeeping session is **ONE coordinator-direct wave**, not a shrunken multi-wave run: `node scripts/session-shape.mjs --repo-root "$PWD" --session-type housekeeping --no-event` resolves to `totalWaves: 1` with that wave's `coordinatorDirect: true` and `writes: true`. "Coordinator-direct" means **no wave-executor dispatch loop** — it does not mean zero subagents (`/evolve dialectic` dispatches the read-only `dialectic-deriver`).
+
+**Ordered default scope — the maintenance loop.** Run it in this order, before the session's selected issues:
+
+| # | Run | Gate | Artefact that proves it ran |
+|---|---|---|---|
+| 1 | `claude-md-drift-check` | unconditional | checker JSON (`errors`/`warnings` counts) |
+| 2 | expired-learnings sweep | unconditional | `orchestrator.learnings.sweep_applied` |
+| 3 | `/evolve analyze` | AUQ-gated (the operator approves the proposed learnings) | `orchestrator.evolve.completed` |
+| 4 | `/reconcile` | AUQ-gated (rule proposals are never applied unasked) | `orchestrator.reconcile.completed` with `dry_run: false` |
+| 5 | `/evolve dialectic` | AUQ-gated (the derived thesis is presented, not committed) | `orchestrator.dialectic.completed` |
+| 6 | `/memory-cleanup` | AUQ-gated (deletions are operator-approved) | `orchestrator.memory.cleanup_completed` |
+
+The session-start probe `maintenance-due` (`scripts/lib/maintenance-due-banner.mjs`) says which of these are DUE for this repo; a run that is not due may be skipped, and the skip is reported. An AUQ-gated run the operator declines is reported as declined — never as done. **Absence of the artefact event is the only evidence that counts**: a run claimed in prose without its event is not a run (`.claude/rules/verification-before-completion.md`).
+
+Then the mechanics:
 
 1. Initialize STATE.md as normal (`session-type: housekeeping`, `total-waves: 1`)
-2. Do NOT create `wave-scope.json` — scope enforcement is not needed for low-risk housekeeping tasks
-3. Dispatch tasks serially with 1-2 agents per task
+2. Do NOT create `wave-scope.json` — there is no agent fan-out to constrain; the coordinator's own edits stay governed by its `coordinator.json` record
+3. Execute the maintenance loop above, then the session's selected issues, serially as coordinator actions
 4. Run Baseline quality checks after all tasks complete (not between tasks)
 5. Skip session-reviewer dispatch — housekeeping changes are low-risk
 6. Do NOT update STATE.md to `status: completed` — that write is reserved for session-end per state-ownership contract (`skills/_shared/state-ownership.md`). Leave `status: active`.
 7. Proceed directly to session-end (`/close`)
 
-Focus: git cleanup, SSOT refresh, CI fixes, branch merges, documentation.
+Beyond the loop: git cleanup, SSOT refresh, CI fixes, branch merges, documentation.
 End with a single commit summarizing all housekeeping work.
 
 ### Feature Sessions
-- Full wave execution (5 roles mapped to configured wave count)
-- 4-6 agents per wave (read from Session Config)
+- **3 waves** (Impl-Core → Impl-Polish+Quality → Finalization) with **no Discovery wave** — read them from the shape, not from this file: `node scripts/session-shape.mjs --repo-root "$PWD" --session-type feature --no-event`
+- Per-wave agent caps come from the shape's `agentCap` (the shape caps a feature wave at 4), clamped by Session Config `agents-per-wave`
 - Balance between implementation speed and quality
 
 ### Deep Sessions
-- Full wave execution (5 roles mapped to configured wave count)
-- Up to 10-18 agents per wave (read from Session Config)
+- **5 waves** from the shape (`--session-type deep`); the **Discovery wave is conditional** — pass `--known-scope true` when the scope is already established and the shape drops Discovery, leaving 4 waves
+- Per-wave agent caps come from the shape's `agentCap`, clamped by Session Config `agents-per-wave` with its per-type override (this repo: `agents-per-wave: 6 (deep: 18)`)
 - Extra emphasis on Discovery role and Quality role
 - May include security audits, performance profiling, architecture refactoring
 
@@ -332,9 +362,9 @@ End with a single commit summarizing all housekeeping work.
 
 Not a fourth session type — a PROFILE over `session-type: deep`, resolved from the `/session ultradeep` argument alias (`commands/session.md`). Everything below applies only when STATE.md frontmatter carries `session-profile: ultradeep`; every other behaviour in this skill is unchanged, because downstream still reads `deep`. Full spec — wave table, mandatory artefacts, cost model: `docs/prd/2026-09-06-ultradeep-session-profile.md`.
 
-- **7 waves**, per `skills/session-plan/SKILL.md` § Role-to-Wave Mapping: Research+Code-Discovery → Synthesis-Gate → Impl-Core → Impl-Polish → Review-Panel → Quality → Release/Finalization.
+- **The wave count and the wave roles come from the shape**, not from this file: `node scripts/session-shape.mjs --repo-root "$PWD" --session-type deep --profile ultradeep --no-event` returns `totalWaves: 7` (Research+Code-Discovery → Synthesis-Gate → Impl-Core → Impl-Polish → Review-Panel → Quality → Release/Finalization) and reports `wavesConfigHonored: false` with the ignored Session Config `waves` value — the profile OWNS its wave count. Role narrative: `skills/session-plan/SKILL.md` § Role-to-Wave Mapping.
 - **Wave 2 is coordinator-direct and dispatches ZERO agents.** Make NO `Agent()` call in this wave. The coordinator consolidates wave 1 into `docs/audits/<YYYY-MM-DD>-<slug>.md`, updates STATE.md, and asks ONE **blocking** `AskUserQuestion` (confirm scope / narrow / abort) per `.claude/rules/ask-via-tool.md`. Wave 3 does not start until that question is answered — this is the one gate the profile exists for, so a silent "no tasks, skip it" is a defect, not an optimisation (`skills/session-plan/SKILL.md` § Empty roles, coordinator-direct exception).
-- **`max-turns` per ROLE, not per session:** 40 for Research/Code-Discovery (wave 1), 25 for the implementing waves (3, 4, and the writing part of 6/7), 15 for Release/Finalization. Set it on the dispatch; the Session Config `max-turns` value is the fallback when a role has no entry here.
+- **`max-turns` is per ROLE, and the numbers live in the shape:** take each wave's value from `waves[].maxTurns` in the shape output above (the Research, implementing and Release/Finalization figures are produced there, not restated here). Set it on the dispatch; a wave whose `maxTurns` is `null` is coordinator-direct and dispatches nothing.
 - **Web tools are role-bound.** Research agents in wave 1 receive `WebSearch` and `WebFetch`. **No write-capable agent may receive them** — not in wave 1's Code-Discovery half, and not in any later wave. The grant follows the READ-ONLY property, so the pairing "has Write/Edit" + "has WebSearch/WebFetch" must never occur in a single dispatch. Research findings carry URL + retrieval date, the web analogue of the PSA-006 evidence rule (`.claude/rules/parallel-sessions.md`).
 - **Budgets are not implemented.** The PRD's `ultradeep.max-*` block (§ 7) is deferred until three runs have been measured (HR-105: no threshold without a firing rate). Nothing reads such a key today — do not invent one, and do not gate a wave on it.
 

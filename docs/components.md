@@ -56,7 +56,7 @@ Codex uses the curated six-event project subset `SessionStart`, `PreToolUse`, `P
 - **Cursor:** `.cursor-plugin/plugin.json` registers canonical skills and `.mcp.json` using Cursor's native manifest format. Additional native component discovery is explicitly disabled; `scripts/cursor-install.mjs` supplies the existing command and hook adapters. The former standard root manifest was moved to prevent [Codex manifest interception](codex-setup.md#manifest-compatibility).
 - **Pi:** `package.json` `pi` manifest, `pi/extensions/session-orchestrator.ts` bridge, `hooks/hooks-pi.json`, `scripts/pi-install.mjs`.
 - **Portable cross-harness surface (generated, never hand-edited):** root `AGENTS.md` (byte-identical copy of `CLAUDE.md`) and `.agents/skills/<name>/SKILL.md` — mirrors carrying only spec-legal frontmatter plus a pointer body. These two surfaces are written by `scripts/generate-agents-skills.mjs` and drift-checked via its `--check` form inside `scripts/validate-plugin.mjs`. Native plugin manifests are maintained separately, with versions updated by `scripts/release.mjs`.
-- **Scripts:** deterministic CLI tools (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot) plus shared lib under `scripts/lib/*.mjs`, all covered by the vitest suite.
+- **Scripts:** deterministic CLI tools (parse-config, run-quality-gate, validate-wave-scope, validate-plugin, token-audit, autopilot, session-shape) plus shared lib under `scripts/lib/*.mjs` — e.g. `session-shape.mjs` (the one wave-shape resolver for `/session` mode + `--profile`), `maintenance-due-banner.mjs` (the single session-start probe for the whole maintenance loop), `session-end/tail-runner.mjs` (the mechanical apply-half of Phase 3.6.4's Expired-Learnings Sweep), `issue-budget-reconcile.mjs` (close-time recorded-vs-charged cross-check), and `telemetry/pricing.mjs` (per-model USD-per-token rates for cost estimation) — all covered by the vitest suite.
 
 ## `/harness-audit` — Anthropic large-codebase rubric
 
@@ -88,7 +88,7 @@ Both [`maestro-orchestrate`](https://github.com/josstei/maestro-orchestrate) and
 
 | Axis | session-orchestrator | maestro-orchestrate |
 |---|---|---|
-| Execution model | 5 typed waves (Discovery → Impl-Core → Impl-Polish → Quality → Finalization) with inter-wave quality gates and confidence-scored session-reviewer | 4-phase sequential model with parallel subagents |
+| Execution model | typed waves resolved from the session mode by `scripts/session-shape.mjs` (housekeeping 1 · feature 3 · deep 5 · ultradeep 7) with inter-wave quality gates and confidence-scored session-reviewer | 4-phase sequential model with parallel subagents |
 | Runtime coverage | Claude Code + Codex CLI + Cursor IDE + Pi (4) | Gemini CLI + Claude Code + Codex + Qwen Code (4) |
 | VCS integration | GitLab + GitHub (auto-detected); hook events + commands wire to both | Runtime-agnostic; VCS work delegated to user |
 | Cross-session learning | Confidence-scored entries surfaced at session-start; opt-in `/evolve` review | Session archival without explicit learning extraction |

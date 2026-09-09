@@ -54,17 +54,21 @@ Store the JSON output as `$CONFIG` for use throughout this skill — extract fie
 
 ### Handling `agents-per-wave` Overrides
 
-`agents-per-wave` may be a plain integer (`6`) or a JSON object with session-type overrides (`{"default": 6, "deep": 18}`). To get the effective value for the current session type:
+`agents-per-wave` may be a plain integer (`6`) or a JSON object with session-type overrides (`{"default": 6, "deep": 18}`). Do NOT resolve it with a hand-written `jq` expression — use `resolveAgentCap(cap, sessionType)` from `scripts/lib/session-shape.mjs`, the one exported resolver:
+
+```js
+import { resolveAgentCap } from './scripts/lib/session-shape.mjs';
+const effective = resolveAgentCap(config['agents-per-wave'], sessionType); // number | null
+```
+
+From a shell, the same answer arrives inside the resolved shape (`waves[].agentCap`):
 
 ```bash
-# Plain integer → use directly. Object → check for session-type override, fall back to .default
-APW=$(echo "$CONFIG" | jq -r '."agents-per-wave"')
-if echo "$APW" | jq -e 'type == "object"' > /dev/null 2>&1; then
-  EFFECTIVE_APW=$(echo "$APW" | jq -r --arg st "$SESSION_TYPE" '.[$st] // .default')
-else
-  EFFECTIVE_APW="$APW"
-fi
+node scripts/session-shape.mjs --repo-root "$PWD" --session-type "$SESSION_TYPE" --no-event \
+  | jq '[.waves[] | {n, role, agentCap}]'
 ```
+
+The **session type picks the override** when the config carries one; `.default` is only the fallback, and it is the more restrictive of the two (an override such as `deep: 18` exists precisely to raise the ceiling above it). A resolver that returns `.default` unconditionally is therefore safe for a resource ceiling but wrong for wave shaping — see the note on the two mode-blind call sites (`wave-resource-gate.mjs`, `resource-probe/evaluate.mjs`) in `docs/session-config-reference.md` § `agents-per-wave`, both of which call the same `resolveAgentCap` but pass a local `MODE_BLIND_SESSION_TYPE` (`undefined`) instead of the real session type.
 
 ## Handling `agent-mapping` Config
 

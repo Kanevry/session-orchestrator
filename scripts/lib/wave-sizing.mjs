@@ -3,10 +3,17 @@
  * Learning: coordinator-over-worktree-on-shared-files caused back-to-back regressions.
  */
 
-// 'unknown' is accepted because scripts/lib/session-close-backfill.mjs writes it for records whose
+// SSOT for the session-type enum. It used to be RE-DECLARED here while this very comment named
+// constants.mjs as the source of truth — two literals that agreed only by luck (and already
+// differed in member order). The direction of the dependency is forced: constants.mjs declares
+// itself a leaf ("no imports from siblings or parent") and mentions wave-sizing.mjs only in prose,
+// so this module imports, never the reverse; no cycle exists in either direction.
+//
+// 'unknown' is a member because scripts/lib/session-close-backfill.mjs writes it for records whose
 // type it could not measure (4.0.0). It is NOT a mode anyone selects — isolation resolves as for
-// 'deep' (the conservative end). SSOT for the ledger enum: scripts/lib/session-schema/constants.mjs.
-const VALID_SESSION_TYPES = ['housekeeping', 'feature', 'deep', 'unknown'];
+// 'deep' (the conservative end).
+import { VALID_SESSION_TYPES } from './session-schema/constants.mjs';
+
 const VALID_COLLISION_RISKS = ['low', 'medium', 'high'];
 const VALID_CONFIG_ISOLATIONS = ['auto', 'worktree', 'none'];
 const VALID_ENFORCEMENTS = ['strict', 'warn', 'off'];

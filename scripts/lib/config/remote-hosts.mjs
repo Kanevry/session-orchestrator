@@ -40,8 +40,8 @@ export const REMOTE_HOST_DEFAULTS = Object.freeze({
  * scripts/lib/config.mjs — impl / db / security / compliance / docs stay local.
  *
  * NOT the wave-role enum ("Impl-Core", "Quality", …): those are two different
- * enums and conflating them is the documented trap (see resolveApwCap's docstring
- * in wave-resource-gate.mjs). The wave→agent-mapping-role translation is
+ * enums and conflating them is the documented trap (see the MODE_BLIND_SESSION_TYPE
+ * note in wave-resource-gate.mjs). The wave→agent-mapping-role translation is
  * `OFFLOADABLE_WAVE_ROLES` in that same module.
  *
  * @type {readonly string[]}

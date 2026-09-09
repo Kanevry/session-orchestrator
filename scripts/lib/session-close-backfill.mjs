@@ -64,6 +64,11 @@ import { serializeSessionLineChecked as defaultSerialize } from './session-schem
 import { resolveStateMdPath as defaultResolveStateMdPath } from './state-md/frontmatter-mutators.mjs';
 import { parseStateMd as defaultParseStateMd } from './state-md/yaml-parser.mjs';
 import { canonicalizeSessions } from './sessions-canonical.mjs';
+// Leaf constants module (no imports of its own) and ALREADY in the hook import
+// set via session-schema/validator.mjs — importing it here adds no new file to
+// the SessionStart/SessionEnd hook graph. The profile enum must not be
+// re-literalled: `VALID_SESSION_PROFILES` is its SSOT (GitLab #1252).
+import { VALID_SESSION_PROFILES } from './session-schema/constants.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -86,6 +91,16 @@ const UNMEASURED_SESSION_TYPE = 'unknown';
 
 const EVENT_STARTED = 'orchestrator.session.started';
 const EVENT_LOCK_ACQUIRED = 'orchestrator.session.lock.acquired';
+/**
+ * `orchestrator.session.shape_resolved` (`scripts/lib/session-shape.mjs`) — the
+ * ONLY event emitted AFTER the operator picked a mode, so it is the only
+ * measurement of what this session actually was. `lock.acquired.mode` fires at
+ * SessionStart, BEFORE `/session <type>` is typed, which is why nearly every
+ * abandoned stub carried `_session_type_inferred: true`; and no other event
+ * carries `session_profile` at all, so an abandoned ultradeep run was
+ * indistinguishable from an abandoned deep one.
+ */
+const EVENT_SHAPE_RESOLVED = 'orchestrator.session.shape_resolved';
 // Both names for one generation (GitLab #1234): `hooks/on-stop.mjs` now emits
 // `orchestrator.turn.stopped` as the canonical name and keeps the legacy
 // `orchestrator.session.stopped` (with `deprecated: true`) beside it until
@@ -193,13 +208,27 @@ function collectSessionEvents(events, { sessionId, semanticSessionId }) {
   // SessionEnd hook had already recorded under its semantic id. Measured
   // 2026-09-02 @ c3ab480: 8 such duplicate pairs in sessions.jsonl.
   let semanticFromEvents = null;
+  // Plan-time shape measurement (see EVENT_SHAPE_RESOLVED). Latest wins — a
+  // session may re-resolve its shape, and the last resolution is the one it ran.
+  // "Latest" is only decidable for a record that CARRIES a parseable timestamp:
+  // an undated one has no place in the order, so it may never displace a dated
+  // reading (the earlier `Number.isNaN(ts) => ordered` inverted exactly that and
+  // let an undated record win over a later, well-dated one).
+  let shapeSessionType = null;
+  let shapeSessionProfile = null;
+  let shapeTs = null;
+  // True while the readings above come from an UNDATED record — kept only for
+  // lack of a dated one, and surfaced so the caller can mark it low-confidence.
+  let shapeUndated = false;
 
   // First pass — bridge the UUID set + carry mode + semantic id. lock.acquired
-  // is the original bridge; session.ended is the #1167 addition.
+  // is the original bridge; session.ended is the #1167 addition;
+  // shape_resolved is the plan-time type/profile measurement.
   for (const ev of events) {
     const isLock = ev.event === EVENT_LOCK_ACQUIRED;
     const isEnded = ev.event === EVENT_ENDED && typeof ev.semantic_session_id === 'string';
-    if (!isLock && !isEnded) continue;
+    const isShape = ev.event === EVENT_SHAPE_RESOLVED;
+    if (!isLock && !isEnded && !isShape) continue;
     const matchesUuid = nativeId && ev.session_id === nativeId;
     // A label can be reused. Once a native UUID is known, a same-label event
     // from another UUID must not expand the session whose work we recover.
@@ -212,8 +241,38 @@ function collectSessionEvents(events, { sessionId, semanticSessionId }) {
     if (isLock) {
       if (typeof ev.mode === 'string') mode = ev.mode;
       if (typeof ev.semantic_session_id === 'string') semanticFromLock = ev.semantic_session_id;
-    } else {
+    } else if (isEnded) {
       semanticFromEvents = ev.semantic_session_id;
+    }
+    if (isShape) {
+      const ts = typeof ev.timestamp === 'string' ? Date.parse(ev.timestamp) : NaN;
+      if (!Number.isNaN(ts)) {
+        // Dated record: ordinary latest-wins.
+        if (shapeTs === null || ts >= shapeTs) {
+          if (shapeUndated) {
+            // A dated record outranks an undated one unconditionally. The
+            // undated readings were never orderable, so they are DISCARDED
+            // rather than merged — otherwise a profile read off an undated
+            // record would survive into a dated win it never belonged to.
+            shapeSessionType = null;
+            shapeSessionProfile = null;
+            shapeUndated = false;
+          }
+          shapeTs = shapeTs === null ? ts : Math.max(shapeTs, ts);
+          if (typeof ev.session_type === 'string') shapeSessionType = ev.session_type;
+          // Absent is not empty: the emitter OMITS the key when there is no
+          // profile, so only a present string may overwrite a previous reading.
+          if (typeof ev.session_profile === 'string') shapeSessionProfile = ev.session_profile;
+        }
+      } else if (shapeTs === null && !shapeUndated) {
+        // Undated record: usable only while NO dated record has been seen, and
+        // never as a tie-breaker between two of them.
+        const hasType = typeof ev.session_type === 'string';
+        const hasProfile = typeof ev.session_profile === 'string';
+        if (hasType) shapeSessionType = ev.session_type;
+        if (hasProfile) shapeSessionProfile = ev.session_profile;
+        if (hasType || hasProfile) shapeUndated = true;
+      }
     }
   }
 
@@ -253,6 +312,9 @@ function collectSessionEvents(events, { sessionId, semanticSessionId }) {
   return {
     uuids,
     mode,
+    shapeSessionType,
+    shapeSessionProfile,
+    shapeUndated,
     semanticFromLock,
     semanticFromEvents,
     startedAt,
@@ -342,12 +404,36 @@ function synthesizeRecord({ recordId, synthetic, gathered, nowMs, status = 'aban
   // Guard the same monotonic invariant as before: never earlier than started_at.
   const completedIso = new Date(Math.max(startedMs, completedMs)).toISOString();
 
+  // Precedence: the plan-time shape beats the lock's SessionStart `mode`.
+  // `lock.acquired` fires BEFORE the operator types `/session <type>`, so its
+  // mode is at best a carry-over from the previous session; `shape_resolved` is
+  // emitted the moment the confirmed mode became an execution plan, i.e. it is
+  // the only MEASUREMENT of what this session was. Any session that reached
+  // plan time is therefore no longer `_session_type_inferred`.
+  // An unknown value in either source is IGNORED, never written — the record
+  // then stays `unknown` + inferred rather than carrying an unvalidatable type.
   let sessionType = UNMEASURED_SESSION_TYPE;
   let inferred = true;
-  if (gathered.mode && MEASURED_SESSION_MODES.has(gathered.mode)) {
+  if (gathered.shapeSessionType && MEASURED_SESSION_MODES.has(gathered.shapeSessionType)) {
+    sessionType = gathered.shapeSessionType;
+    // A shape record with a missing/unparseable timestamp is taken only for
+    // lack of a dated one, and it cannot be proven to be the LAST resolution —
+    // so the type is used but stays flagged `_session_type_inferred: true`.
+    inferred = gathered.shapeUndated === true;
+  } else if (gathered.mode && MEASURED_SESSION_MODES.has(gathered.mode)) {
     sessionType = gathered.mode;
     inferred = false;
   }
+
+  // `session_profile` — WRITTEN ONLY WHEN MEASURED. Absent is not empty: a
+  // `null`/`''` on the record would read as "measured, no profile", which is
+  // exactly the honesty defect the enum-plus-omission contract exists to avoid
+  // (VALID_SESSION_PROFILES, session-schema/constants.mjs).
+  const sessionProfile =
+    typeof gathered.shapeSessionProfile === 'string'
+      && VALID_SESSION_PROFILES.includes(gathered.shapeSessionProfile)
+      ? gathered.shapeSessionProfile
+      : null;
 
   const startedFound = typeof gathered.startedAt === 'string';
   const branchFound = typeof gathered.branch === 'string' && gathered.branch.length > 0;
@@ -381,6 +467,7 @@ function synthesizeRecord({ recordId, synthetic, gathered, nowMs, status = 'aban
     _backfill_incomplete_fields: incomplete,
   };
   if (branchFound) record.branch = gathered.branch;
+  if (sessionProfile) record.session_profile = sessionProfile;
   if (inferred) {
     record._session_type_inferred = true;
     // GitLab #1234 — BACKFILLER HONESTY, half landed 2026-09-06.
