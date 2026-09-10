@@ -166,6 +166,11 @@ describe('runSessionStartProbes — fail-open', () => {
       await fakeProbe(dir, 'fine', CLEAN),
     ];
 
+    // Measure the hanging invocation's deadline after loading these fixtures.
+    // A cold module import can exceed 150ms under full-suite CPU contention;
+    // The cold-import timeout has its own coverage below.
+    await Promise.all(probes.map((probe) => import(probe.spec)));
+
     const t0 = Date.now();
     const out = await runSessionStartProbes(
       { repoRoot: dir, timeoutMs: 150 },
@@ -189,6 +194,31 @@ describe('runSessionStartProbes — fail-open', () => {
     // A timeout is never folded into the clean count.
     expect(calls[0].payload.ran).toBe(1);
     // ...and the operator is told, because a silent timeout is a silent probe.
+    expect(out.bannerLines.join('\n')).toContain('1 timed out');
+  });
+
+  // The deadline must cover module evaluation too: a top-level await that
+  // never resolves must not prevent the runner from reporting a timeout.
+  it('reports timeout when a cold probe import never finishes', async () => {
+    const dir = await mkTmp();
+    const { calls, emit } = captureEmit();
+    const probes = [await fakeProbe(
+      dir,
+      'cold-hang',
+      'await new Promise(() => {}); export function probe() { return null; }',
+    )];
+
+    const t0 = Date.now();
+    const out = await runSessionStartProbes(
+      { repoRoot: dir, timeoutMs: 150 },
+      { probes, emit },
+    );
+
+    expect(out.results).toEqual([
+      expect.objectContaining({ id: 'cold-hang', outcome: 'timeout', reason: 'budget-exceeded' }),
+    ]);
+    expect(Date.now() - t0).toBeLessThan(5000);
+    expect(calls[0].payload).toMatchObject({ timed_out: 1, ran: 0 });
     expect(out.bannerLines.join('\n')).toContain('1 timed out');
   });
 });
