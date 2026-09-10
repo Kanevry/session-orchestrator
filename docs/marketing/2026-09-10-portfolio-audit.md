@@ -2,6 +2,8 @@
 
 Stand: 10. September 2026. Gegenstand: Session Orchestrator, TetherCam und WalkAITalkie. Dieser Bericht beschreibt den geprüften lokalen Arbeitsstand und die separat beobachteten öffentlichen Angebote. Die Website-Redesigns sind lokal umgesetzt, gebaut beziehungsweise mit den passenden statischen Prüfungen validiert und visuell getestet. Ein gespeicherter Entwurf und ein veröffentlichtes Produkt bleiben getrennte Zustände. Der Integrationsstand unten nennt die jeweils bestätigten MRs, Pipelines und Deployments.
 
+Die SO-Integrationsangaben sind der Stand vor dem Merge; die abschließenden CI- und Live-Belege werden in SO #1304 fortgeschrieben.
+
 Die drei Seiten erklären ihren jeweiligen Nutzen jetzt früher und zeigen einen passenden nächsten Schritt. Bei Session Orchestrator steht ein nachvollziehbarer Arbeitsablauf im Mittelpunkt, bei TetherCam die Verbindung zwischen iPhone und Mac, bei WalkAITalkie der Weg vom gesprochenen Gedanken zum überprüfbaren Text. Daraus lässt sich noch keine bessere Conversion oder zusätzliche Nutzung ableiten. Ein Vergleich mit echten neuen Besuchern wurde nicht durchgeführt.
 
 ## 1. Was fertig ist, was öffentlich ist
@@ -197,7 +199,7 @@ Priorität hat derzeit SO als erster ausgearbeiteter PH-Kandidat, weil bereits e
 
 Der [SO-Product-Hunt-Draft](https://www.producthunt.com/products/session-orchestrator?launch=session-orchestrator), der TetherCam-Entwurf und der [zweite WalkAITalkie-Launch](https://www.producthunt.com/products/walkaitalkie?launch=walkaitalkie-2) sind teamprivat gespeichert, sichtbar geprüft und nicht terminiert. Die frische My-Products-Ansicht unter @kanevry zeigt drei Drafts, null Scheduled und null Posted; alle drei Bearbeitungslinks sind erreichbar. Der WAT-Entwurf enthält die Tagline „Local dictation and text cleanup for your Mac“, die Einordnung Paid with a free option, drei frische Pencil-Galeriebilder und das bestehende App-Icon.
 
-Das [Makerprofil @kanevry](https://www.producthunt.com/@kanevry) wurde gespeichert und öffentlich geprüft: Name Bernhard Götzendorfer, Headline „I build coding tools and Mac apps.“, eine persönliche Geschichte in drei Absätzen, ein echtes WSAM-Porträt, Website-, GitHub- und LinkedIn-Links sowie die Interessen Developer Tools, AI und Mac. Die frühere berni-Anzeige war veralteter UI-Zustand. SO und TetherCam zeigen „Manage product“. Die alte kanonische WAT-Produktseite zeigt weiterhin „Is this yours? Join“ und benötigt Eigentümerzugriff; deshalb bleiben dort die veralteten Cloud- und Store-Review-Aussagen noch öffentlich. Dieser offene Zugriff betrifft nur die bestehende Produktbeschreibung, nicht die drei Launchentwürfe.
+Das [Makerprofil @kanevry](https://www.producthunt.com/@kanevry) wurde gespeichert und öffentlich geprüft: Name Bernhard Götzendorfer, Headline „I build coding tools and Mac apps.“, eine persönliche Geschichte in drei Absätzen, das vom Nutzer ausgewählte Porträt, Website-, GitHub- und LinkedIn-Links sowie die Interessen Developer Tools, AI und Mac. Die frühere berni-Anzeige war veralteter UI-Zustand. SO und TetherCam zeigen „Manage product“. Die alte kanonische WAT-Produktseite zeigt weiterhin „Is this yours? Join“ und benötigt Eigentümerzugriff; deshalb bleiben dort die veralteten Cloud- und Store-Review-Aussagen noch öffentlich. Dieser offene Zugriff betrifft nur die bestehende Produktbeschreibung, nicht die drei Launchentwürfe.
 
 Der [Launch-Kit-Entwurf](2026-09-10-launch-kit.md) enthält verwendbare Texte und die Bedingungen dafür. Die Folgearbeit ist inzwischen konkret erfasst:
 

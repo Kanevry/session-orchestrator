@@ -2,6 +2,8 @@
 
 Stand: 10. September 2026. Die Texte dienen der gezielten Verwendung nach den Kriterien im [Portfolio-Audit](2026-09-10-portfolio-audit.md). SO, TetherCam und WalkAITalkie sind auf Product Hunt als teamprivate Entwürfe gespeichert und in der Oberfläche geprüft. Die frische Ansicht unter @kanevry zeigt drei Drafts, null geplante und null veröffentlichte Launches; alle drei Bearbeitungslinks sind erreichbar. Es wurde kein Community-Beitrag veröffentlicht und kein Launch terminiert.
 
+Die SO-Integrationsangaben sind der Stand vor dem Merge; die abschließenden CI- und Live-Belege werden in SO #1304 fortgeschrieben.
+
 Die drei Website-Redesigns sind umgesetzt und lokal gebaut beziehungsweise statisch validiert sowie visuell geprüft. SO bleibt öffentlich bei Version 4.2.0. Der finale Remotion-Film ist gerendert, trägt aber weiterhin eine Kennzeichnung als Vorschau für geplante 4.3. Die native Pencil-Arbeit ist abgeschlossen. TetherCam und WalkAITalkie sind inzwischen integriert und mit READY-Deployment live geprüft; die konkreten Belege stehen unten. Der SO-MR und dessen Website-Deployment stehen noch aus. Ein neuer App- oder Store-Release wurde nicht durchgeführt.
 
 ## 1. Session Orchestrator
@@ -240,7 +242,7 @@ Die folgenden Arbeitspakete sind bereits angelegt beziehungsweise ergänzt:
 - GotzendorferV2 #431: persönlicher Blogartikel mit dem DE/EN-Plan.
 - Ausgearbeitete Notizen an den bestehenden Paketen SO #824, TC #31, WAT #466 und WAT #485.
 
-Das [Makerprofil @kanevry](https://www.producthunt.com/@kanevry) ist gespeichert und öffentlich geprüft: Bernhard Götzendorfer, die Headline „I build coding tools and Mac apps.“, eine persönliche Geschichte in drei Absätzen, ein reales WSAM-Porträt, Website-, GitHub- und LinkedIn-Links sowie die Interessen Developer Tools, AI und Mac. My Products zeigt drei Drafts, null Scheduled und null Posted. SO und TetherCam bieten „Manage product“; nur die alte WAT-Produktbeschreibung verlangt weiterhin Eigentümerzugriff.
+Das [Makerprofil @kanevry](https://www.producthunt.com/@kanevry) ist gespeichert und öffentlich geprüft: Bernhard Götzendorfer, die Headline „I build coding tools and Mac apps.“, eine persönliche Geschichte in drei Absätzen, das vom Nutzer ausgewählte Porträt, Website-, GitHub- und LinkedIn-Links sowie die Interessen Developer Tools, AI und Mac. My Products zeigt drei Drafts, null Scheduled und null Posted. SO und TetherCam bieten „Manage product“; nur die alte WAT-Produktbeschreibung verlangt weiterhin Eigentümerzugriff.
 
 Offene Felder werden erst mit dem konkreten Beleg geschlossen. CI-Nachweise gelten jeweils für den genannten Commit. TetherCam ist inzwischen integriert und live; die übrigen Integrationsstände stehen in der Tabelle. Die drei gespeicherten Launchentwürfe haben weiterhin keinen Termin.
 
