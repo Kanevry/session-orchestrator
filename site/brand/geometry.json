@@ -1,0 +1,56 @@
+{
+  "a-leitstand": {
+    "viewBox": "0 0 64 64",
+    "geometry": "<g id=\"operator\" fill=\"ACCENT\"><circle cx=\"32\" cy=\"10\" r=\"5\"/><path d=\"M22 29v-2a10 10 0 0 1 20 0v2Z\"/></g><g id=\"shared-workbench\" fill=\"INK\"><path d=\"M7 34h50v6H7Z\"/><path d=\"M9 40h6v8H9Zm20 0h6v8h-6Zm20 0h6v8h-6Z\"/><rect x=\"5\" y=\"47\" width=\"14\" height=\"12\" rx=\"2\"/><rect x=\"25\" y=\"47\" width=\"14\" height=\"12\" rx=\"2\"/><rect x=\"45\" y=\"47\" width=\"14\" height=\"12\" rx=\"2\"/></g>",
+    "paletteTokens": {
+      "INK": "#F5F3EE on dark; #101113 on light",
+      "ACCENT": "#D5F478 on dark; #101113 on light"
+    }
+  },
+  "b-offenes-s": {
+    "viewBox": "0 0 64 64",
+    "geometry": "<g id=\"s-modules\" fill=\"none\" stroke=\"INK\" stroke-width=\"10\" stroke-linecap=\"butt\" stroke-linejoin=\"round\"><path d=\"M42 8H22a12 12 0 0 0 0 24h6\"/><path d=\"M36 32h6a12 12 0 0 1 0 24H14\"/></g><circle id=\"direction-point\" cx=\"54\" cy=\"8\" r=\"5\" fill=\"ACCENT\"/>",
+    "paletteTokens": {
+      "INK": "#F5F3EE on dark; #101113 on light",
+      "ACCENT": "#D5F478 on dark; #101113 on light"
+    }
+  },
+  "c-werkbank": {
+    "viewBox": "0 0 64 64",
+    "geometry": "<g id=\"so-ligature\" fill=\"none\" stroke=\"INK\" stroke-width=\"7\" stroke-linecap=\"square\" stroke-linejoin=\"round\"><path d=\"M24 10H14a7 7 0 0 0 0 14h3a7 7 0 0 1 0 14H7\"/><path d=\"M44 10h3a9 9 0 0 1 9 9v10a9 9 0 0 1-9 9h-3a9 9 0 0 1-9-9V19a9 9 0 0 1 9-9Z\"/></g><path id=\"workbench\" d=\"M5 46h54v7h-5v8h-7v-8H17v8h-7v-8H5Z\" fill=\"ACCENT\"/>",
+    "paletteTokens": {
+      "INK": "#F5F3EE on dark; #101113 on light",
+      "ACCENT": "#D5F478 on dark; #101113 on light"
+    }
+  },
+  "a2-agentenmodule": {
+    "viewBox": "0 0 64 64",
+    "geometry": "<g id=\"operator\" fill=\"ACCENT\"><circle cx=\"32\" cy=\"10\" r=\"5\"/><path d=\"M22 29v-2a10 10 0 0 1 20 0v2Z\"/></g><g id=\"shared-workbench\" fill=\"INK\"><path d=\"M7 34h50v6H7Z\"/><path d=\"M9 40h6v8H9Zm20 0h6v8h-6Zm20 0h6v8h-6Z\"/><path id=\"module-left\" fill-rule=\"evenodd\" d=\"M4 46H17L20 49V60H7L4 57Z M7 51H17V54H7Z\"/><path id=\"module-center\" fill-rule=\"evenodd\" d=\"M24 46H37L40 49V60H27L24 57Z M27 51H37V54H27Z\"/><path id=\"module-right\" fill-rule=\"evenodd\" d=\"M44 46H57L60 49V60H47L44 57Z M47 51H57V54H47Z\"/></g>",
+    "paletteTokens": {
+      "INK": "#F5F3EE on dark; #101113 on light",
+      "ACCENT": "#D5F478 on dark; #101113 on light"
+    },
+    "groups": [
+      "operator",
+      "shared-workbench",
+      "module-left",
+      "module-center",
+      "module-right"
+    ]
+  },
+  "a3-terminalmodule": {
+    "viewBox": "0 0 64 64",
+    "geometry": "<g id=\"operator\" fill=\"ACCENT\"><circle cx=\"32\" cy=\"10\" r=\"5\"/><path d=\"M22 29v-2a10 10 0 0 1 20 0v2Z\"/></g><g id=\"shared-workbench\" fill=\"INK\"><path d=\"M7 34h50v6H7Z\"/><path d=\"M9 40h6v8H9Zm20 0h6v8h-6Zm20 0h6v8h-6Z\"/><path id=\"module-left\" fill-rule=\"evenodd\" d=\"M4 46H17L20 49V60H7L4 57Z M7 50H9L12 53L9 56H7L10 53Z M14 55H17V57H14Z\"/><path id=\"module-center\" fill-rule=\"evenodd\" d=\"M24 46H37L40 49V60H27L24 57Z M27 50H29L32 53L29 56H27L30 53Z M34 55H37V57H34Z\"/><path id=\"module-right\" fill-rule=\"evenodd\" d=\"M44 46H57L60 49V60H47L44 57Z M47 50H49L52 53L49 56H47L50 53Z M54 55H57V57H54Z\"/></g>",
+    "paletteTokens": {
+      "INK": "#F5F3EE on dark; #101113 on light",
+      "ACCENT": "#D5F478 on dark; #101113 on light"
+    },
+    "groups": [
+      "operator",
+      "shared-workbench",
+      "module-left",
+      "module-center",
+      "module-right"
+    ]
+  }
+}

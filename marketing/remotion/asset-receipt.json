@@ -1,0 +1,22 @@
+[
+  {
+    "source": "site/img/agent-production-1536.webp",
+    "sha256": "6b18d2c2f25ab26fecc7261ea5098366167598d1e1a417288ebc08db0cead425"
+  },
+  {
+    "source": "site/fonts/space-grotesk-latin.woff2",
+    "sha256": "a0d054c4af557de20afd6ca59f47ab353bcaec49c63ff04b6c9d39d0f8910557"
+  },
+  {
+    "source": "site/fonts/inter-latin.woff2",
+    "sha256": "c940764593d0fe5d596be327ca7558855e018039fb78509aa21921fd3644c3e4"
+  },
+  {
+    "source": "site/brand/a3-terminalmodule/mark-on-dark.svg",
+    "sha256": "1dc2261d7d2258c28113a152e1a78290a45df48d2093c935ce99b18b5b57accf"
+  },
+  {
+    "source": "site/fonts/LICENSES.md",
+    "sha256": "642e185f138504758632c60c0c7fb58d4b6b906f4c515ee18b5c1383445e9875"
+  }
+]

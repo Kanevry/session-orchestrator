@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Session Orchestrator: liest zuerst, arbeitet in geprüften Schritten</title>
-<meta name="description" content="Kostenloser Zusatz für KI-Werkzeuge wie Claude Code. Liest dein Projekt, stimmt den Plan mit dir ab, arbeitet dann in geprüften Schritten. Open Source, MIT.">
+<title>Session Orchestrator | Ein klarer Ablauf für deine KI-Agenten</title>
+<meta name="description" content="Plane die Arbeit. Setze sie in geprüften Wellen um. Mach dort weiter, wo du aufgehört hast. Open-Source-Plugin für Claude Code, Codex, Cursor und Pi.">
 <link rel="canonical" href="https://session-orchestrator.com/de">
 <link rel="alternate" hreflang="en" href="https://session-orchestrator.com/">
 <link rel="alternate" hreflang="de" href="https://session-orchestrator.com/de">
@@ -14,18 +14,18 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Session Orchestrator">
 <meta property="og:url" content="https://session-orchestrator.com/de">
-<meta property="og:title" content="Session Orchestrator: liest zuerst, arbeitet in geprüften Schritten">
-<meta property="og:description" content="Kostenloser Zusatz für KI-Werkzeuge wie Claude Code. Liest dein Projekt, stimmt den Plan mit dir ab, arbeitet dann in geprüften Schritten. Open Source, MIT.">
+<meta property="og:title" content="Session Orchestrator | Ein klarer Ablauf für deine KI-Agenten">
+<meta property="og:description" content="Plane die Arbeit. Setze sie in geprüften Wellen um. Mach dort weiter, wo du aufgehört hast. Open-Source-Plugin für Claude Code, Codex, Cursor und Pi.">
 <meta property="og:image" content="https://session-orchestrator.com/de/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Fünf Stationen in einer Reihe mit Toren dazwischen, ein kleines Licht wandert hindurch.">
+<meta property="og:image:alt" content="Session Orchestrator: Plan, Go, Close mit einer illustrierten Agentenwerkstatt unter menschlicher Leitung.">
 <meta property="og:locale" content="de_AT">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Session Orchestrator: liest zuerst, arbeitet in geprüften Schritten">
-<meta name="twitter:description" content="Kostenloser Zusatz für KI-Werkzeuge wie Claude Code. Liest dein Projekt, stimmt den Plan mit dir ab, arbeitet dann in geprüften Schritten.">
+<meta name="twitter:title" content="Session Orchestrator | Ein klarer Ablauf für deine KI-Agenten">
+<meta name="twitter:description" content="Plane die Arbeit. Setze sie in geprüften Wellen um. Mach dort weiter, wo du aufgehört hast. Open-Source-Plugin für Claude Code, Codex, Cursor und Pi.">
 <meta name="twitter:image" content="https://session-orchestrator.com/de/og.png">
-<meta name="twitter:image:alt" content="Fünf Stationen in einer Reihe mit Toren dazwischen, ein kleines Licht wandert hindurch.">
+<meta name="twitter:image:alt" content="Session Orchestrator: Plan, Go, Close mit einer illustrierten Agentenwerkstatt unter menschlicher Leitung.">
 
 <!-- Entity consolidation (issue #1046): the site, the repository, the package
      and the person who maintains them are one entity with stable @id anchors.
@@ -42,8 +42,12 @@
       "url": "https://session-orchestrator.com/de",
       "name": "Session Orchestrator",
       "inLanguage": "de",
-      "publisher": { "@id": "https://www.gotzendorfer.at/#person" },
-      "about": { "@id": "https://session-orchestrator.com/#software" }
+      "publisher": {
+        "@id": "https://www.gotzendorfer.at/#person"
+      },
+      "about": {
+        "@id": "https://session-orchestrator.com/#software"
+      }
     },
     {
       "@type": "SoftwareApplication",
@@ -52,7 +56,7 @@
       "url": "https://session-orchestrator.com/",
       "applicationCategory": "DeveloperApplication",
       "operatingSystem": "macOS, Linux",
-      "description": "An open-source plugin for coding agents. Work is split into five typed passes; write access is declared per wave and a verification gate runs between each.",
+      "description": "Plane die Arbeit. Setze sie in geprüften Wellen um. Mach dort weiter, wo du aufgehört hast. Open-Source-Plugin für Claude Code, Codex, Cursor und Pi.",
       "license": "https://opensource.org/licenses/MIT",
       "codeRepository": "https://github.com/Kanevry/session-orchestrator",
       "downloadUrl": "https://www.npmjs.com/package/session-orchestrator",
@@ -60,10 +64,16 @@
         "https://github.com/Kanevry/session-orchestrator",
         "https://www.npmjs.com/package/session-orchestrator"
       ],
-      "author": { "@id": "https://www.gotzendorfer.at/#person" },
-      "publisher": { "@id": "https://www.gotzendorfer.at/#person" },
+      "author": {
+        "@id": "https://www.gotzendorfer.at/#person"
+      },
+      "publisher": {
+        "@id": "https://www.gotzendorfer.at/#person"
+      },
       "isAccessibleForFree": true,
-      "mainEntityOfPage": { "@id": "https://session-orchestrator.com/#website" }
+      "mainEntityOfPage": {
+        "@id": "https://session-orchestrator.com/#website"
+      }
     },
     {
       "@type": "Person",
@@ -88,7 +98,7 @@
           "name": "Ist das selbst ein Werkzeug, das Code schreibt?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Nein. Es ist ein Zusatz, der ein vorhandenes Code-Werkzeug ordnet. Den Code schreibt weiterhin das Werkzeug; hier wird festgelegt, was es zuerst liest, was es anfassen darf, und wann es stehenbleiben und sich prüfen lassen muss."
+            "text": "Nein. Es ergänzt einen Ablauf zum Planen, Arbeiten und Prüfen der Ergebnisse. Den Code schreibt dein Code-Werkzeug. Welche Grenzen technisch durchgesetzt werden, hängt vom Werkzeug und der Konfiguration der Guards ab."
           }
         },
         {
@@ -96,7 +106,7 @@
           "name": "Mit welchen Werkzeugen läuft es?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Claude Code unterstützt den vollständigen Hook-Ablauf. Codex CLI bietet die Abläufe als auswählbare Skills, kann aber die Schreibgrenze nicht durchsetzen. Cursor bindet Prüfungen vor Werkzeug- und Shell-Aufrufen sowie nach Änderungen über eine Brücke an. Pi nutzt eine Brücke für Werkzeugaufrufe. Parallele Agenten gibt es auf Claude Code und Codex; Cursor und Pi arbeiten Aufgaben nacheinander ab."
+            "text": "Claude Code führt die Guard-Hooks direkt aus. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex CLI bietet auswählbare Workflow-Skills, behandelt die Regeln für zerstörerische Befehle und Schreibbereiche aber nur als Anweisungen; das Plugin setzt beide Guards dort nicht technisch durch. Parallele Agenten gibt es auf Claude Code und Codex; Cursor und Pi arbeiten Aufgaben nacheinander ab."
           }
         },
         {
@@ -136,7 +146,7 @@
           "name": "Kann es mein Projekt kaputt machen?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Fehler sind weiterhin möglich. Die Richtlinie für zerstörerische Befehle hat 14 Regeln: 10 blockieren, 4 warnen. Der Schutz des Schreibbereichs hängt vom Code-Werkzeug und der Einstellung zur Durchsetzung ab. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen senken das Risiko, garantieren aber keinen korrekten Code."
+            "text": "Fehler sind weiterhin möglich. Auf Claude Code wendet ein aktiver Hook für zerstörerische Befehle 10 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex setzt weder diesen Guard noch den Guard für Schreibbereiche technisch durch. Bei unterstützten Änderungen mit aktivem Scope-Hook blockiert strict Verstöße, warn meldet sie und off deaktiviert die Prüfung. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen garantieren keinen korrekten Code."
           }
         },
         {
@@ -154,244 +164,80 @@
 </script>
 
 <link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
-<link rel="preload" as="font" type="font/woff2" href="/fonts/bricolage-grotesque-var.woff2" crossorigin>
-<link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/inter-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css">
+<link rel="stylesheet" href="/assets/site.css?v=20260910">
 </head>
 <body>
-<a class="skip" href="#main">Zum Inhalt springen</a>
-
+<a class="skip" href="#main">Zum Inhalt</a>
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/">session-orchestrator <span class="muted">v<span class="num" data-metric="version">4.2.0</span></span></a>
-    <nav class="nav" aria-label="Hauptnavigation">
-      <a href="#for-everyone">Für alle</a>
-      <a href="#loop">Für Entwickler</a>
-      <a href="#install">Installieren</a>
-      <a href="/guide" lang="en">Guide (EN)</a>
-      <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
-    </nav>
-    <details class="nav-menu"><summary aria-label="Menü"></summary><nav class="nav" aria-label="Hauptnavigation">
-      <a href="#for-everyone">Für alle</a>
-      <a href="#loop">Für Entwickler</a>
-      <a href="#install">Installieren</a>
-      <a href="/guide" lang="en">Guide (EN)</a>
-      <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
-    </nav></details>
-    <p class="lang"><a href="/" lang="en">EN</a> <a href="/de" aria-current="page"><b>DE</b></a></p>
+    <a class="brand" href="/de"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">4.2.0</span></span></a>
+    <nav class="nav" aria-label="Hauptnavigation"><a href="#loop">Ablauf</a><a href="#install">Installation</a><a href="/guide">Guide</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav>
+    <p class="lang"><a href="/"  lang="en">EN</a><a href="/de" aria-current="page" lang="de">DE</a></p>
+    <details class="nav-menu"><summary>Menü</summary><nav class="nav" aria-label="Mobile Navigation"><a href="#loop">Ablauf</a><a href="#install">Installation</a><a href="/guide">Guide</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav></details>
   </div>
 </header>
-
 <main id="main">
 
   <section class="sec hero-sec" id="top">
-    <div class="wrap">
-      <p class="eyebrow"><span class="num">01</span> / Was es ist</p>
-      <h1 class="h-display">Liest zuerst, fragt, und arbeitet dann in geprüften Schritten.</h1>
-      <p class="lede">Session Orchestrator ist ein kostenloser Zusatz für KI-Werkzeuge, die Code schreiben, zum Beispiel Claude Code. Für alle, die schon eine KI programmieren lassen und vorher den Plan sehen wollen. Open Source, mit Installationsschritten für jedes Werkzeug.</p>
-      <p class="cta">
-        <a class="btn btn-primary" href="#install">Installationsschritte ansehen</a>
-        <a class="btn btn-secondary" href="/guide">Guide lesen (EN)</a>
-      </p>
-<div id="hero" data-hero-state="init">
-  <canvas aria-hidden="true"></canvas>
-  <ol class="hero-alt"><li>Lesen</li><li>Bauen</li><li>Feilen</li><li>Prüfen</li><li>Abschließen</li></ol>
-  <noscript><img class="hero-fallback" src="/assets/hero-fallback.svg" alt="Fünf Blöcke in einer Reihe mit vier Toren dazwischen" width="960" height="400"></noscript>
-</div>
-    </div>
-  </section>
-
-  <section class="sec" id="for-everyone">
-    <div class="wrap">
-      <p class="eyebrow"><span class="num">02</span> / So funktioniert es</p>
-      <h2>Was es macht, in einfachen Worten</h2>
-      <p class="lede">Eine KI-Session kann das falsche Problem lösen oder zwei Helfer gleichzeitig in dieselbe Datei schicken. Dieser Ablauf beginnt mit gemeinsamem Kontext und einem festgelegten Umfang vor der Umsetzung.</p>
-
-      <div class="steps">
-        <div class="step">
-          <div>
-            <h3>Es liest zuerst.</h3>
-            <p>Bevor irgendetwas geändert wird, liest es deinen Projektordner: was zuletzt gemacht wurde, was offen ist, was kaputt ist. Danach sagt es dir, was es gefunden hat.</p>
-          </div>
-          <figure class="fig">
-            <img src="/img/reads-first-800.webp" srcset="/img/reads-first-400.webp 400w, /img/reads-first-800.webp 800w, /img/reads-first-1200.webp 1200w" sizes="(max-width: 600px) 100vw, 420px" width="800" height="800" loading="lazy" decoding="async" alt="Ein stiller Raum in Form eines aufgeschlagenen Buchs, der gelesen wird, bevor jemand etwas anfasst.">
-            <figcaption><span class="fig-ai">KI-generiert</span></figcaption>
-          </figure>
-        </div>
-
-        <div class="step">
-          <div>
-            <h3>Du stimmst den Plan ab.</h3>
-            <p>Es schlägt vor, was angefasst wird und was nicht. Du sagst passt, oder du änderst es. Vorher fängt nichts an.</p>
-          </div>
-          <figure class="fig">
-            <img src="/img/agree-scope-800.webp" srcset="/img/agree-scope-400.webp 400w, /img/agree-scope-800.webp 800w, /img/agree-scope-1200.webp 1200w" sizes="(max-width: 600px) 100vw, 420px" width="800" height="800" loading="lazy" decoding="async" alt="Eine Landkarte auf einem Tisch mit einem markierten Bereich und einem Stift daneben.">
-            <figcaption><span class="fig-ai">KI-generiert</span></figcaption>
-          </figure>
-        </div>
-
-        <div class="step">
-          <div>
-            <h3>Die Arbeit wird in fünf Teile zerlegt.</h3>
-            <p>Die Arbeit wird in fünf Schritte geteilt: lesen, bauen, feilen, prüfen, abschließen. Jeder Schritt hat seinen eigenen Helfer und eine kurze Liste der Dateien, die er anfassen darf.</p>
-          </div>
-          <figure class="fig">
-            <img src="/img/five-passes-800.webp" srcset="/img/five-passes-400.webp 400w, /img/five-passes-800.webp 800w, /img/five-passes-1200.webp 1200w" sizes="(max-width: 600px) 100vw, 420px" width="800" height="800" loading="lazy" decoding="async" alt="Fünf Podeste in einer Reihe, jedes eine Stufe höher, mit einem kleinen Licht auf dem letzten.">
-            <figcaption><span class="fig-ai">KI-generiert</span></figcaption>
-          </figure>
-        </div>
-
-        <div class="step">
-          <div>
-            <h3>Nach jedem Schritt eine Prüfung.</h3>
-            <p>Jeder Schritt endet mit einer passenden Prüfung. Bei einem Fehler hält der Ablauf an, damit das Ergebnis vor dem nächsten Schritt korrigiert werden kann.</p>
-          </div>
-          <figure class="fig">
-            <img src="/img/the-gate-800.webp" srcset="/img/the-gate-400.webp 400w, /img/the-gate-800.webp 800w, /img/the-gate-1200.webp 1200w" sizes="(max-width: 600px) 100vw, 420px" width="800" height="800" loading="lazy" decoding="async" alt="Ein geschlossenes Tor mit einem schmalen blauen Lichtstreifen am Rand.">
-            <figcaption><span class="fig-ai">KI-generiert</span></figcaption>
-          </figure>
-        </div>
-
-        <div class="step">
-          <div>
-            <h3>Was bleibt, wenn die Session vorbei ist.</h3>
-            <p>Eine schriftliche Notiz, was gemacht wurde und was nicht, dazu Hinweise für das nächste Mal. Still dazugelernt wird nichts.</p>
-          </div>
-          <figure class="fig">
-            <img src="/img/what-survives-800.webp" srcset="/img/what-survives-400.webp 400w, /img/what-survives-800.webp 800w, /img/what-survives-1200.webp 1200w" sizes="(max-width: 600px) 100vw, 420px" width="800" height="800" loading="lazy" decoding="async" alt="Ein geschlossenes Notizbuch mit einem kleinen Schloss obenauf.">
-            <figcaption><span class="fig-ai">KI-generiert</span></figcaption>
-          </figure>
-        </div>
+    <div class="wrap hero-grid">
+      <div class="hero-copy">
+        <p class="eyebrow">Open Source für deine Coding-Sessions</p>
+        <h1 class="h-display">Ein klarer Ablauf.<br>Für deine KI-Agenten.</h1>
+        <p class="hero-lede">Plane die Arbeit. Setze sie in geprüften Wellen um. Mach dort weiter, wo du aufgehört hast.</p>
+        <p class="hero-context">Session Orchestrator ergänzt Claude Code, Codex, Cursor und Pi um einen Ablauf, den du in deinen Projekten wiederverwenden kannst.</p>
+        <div class="cta"><a class="btn btn-primary" href="#install">Plugin installieren<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a><a class="btn btn-secondary" href="#loop">Eine Session ansehen<span aria-hidden="true">↓</span></a></div>
+        <p class="hero-note">Kostenlos · MIT-Lizenz · Kein eigenes Konto</p>
       </div>
+      <figure class="hero-art">
+        <img src="/img/agent-production-800.webp" srcset="/img/agent-production-480.webp 480w, /img/agent-production-800.webp 800w, /img/agent-production-1536.webp 1536w" sizes="(min-width: 1360px) 622px, (min-width: 1101px) calc(50vw - 58px), (min-width: 960px) calc(50vw - 54px), (min-width: 601px) calc(100vw - 56px), calc(100vw - 40px)" width="1536" height="1024" fetchpriority="high" decoding="async" alt="Ein Mensch am Leitstand überblickt Agenten bei Planung, paralleler Arbeit, Prüfung und Übergabe.">
+        <video hidden muted loop playsinline preload="none" aria-hidden="true"></video>
+        <button class="motion-toggle" type="button" aria-pressed="false" hidden>Werkstatt bewegen</button>
+        <figcaption>Agenten-Produktionsstätte · mit KI illustriert</figcaption>
+      </figure>
     </div>
+    <div class="wrap harness-strip"><span>Für dein vorhandenes Tool</span><ul><li>Claude Code</li><li>Codex CLI</li><li>Cursor IDE</li><li>Pi</li></ul><a href="#limits">Unterschiede ansehen<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div>
   </section>
 
-  <section class="sec signature" id="who">
+  <section class="sec workflow-sec" id="loop">
     <div class="wrap">
-      <p class="eyebrow"><span class="num">03</span> / Wer</p>
-      <h2>Gebaut von einer Person</h2>
-      <div class="grid-12">
-        <div class="col-7">
-          <p class="lede">Bernhard G&#246;tzendorfer, Wien. Keine Firma dahinter, kein Team. Das Werkzeug läuft jeden Tag in seinen eigenen Projekten; die Zahlen weiter unten kommen aus diesem Repository, gezählt von einem Skript, nicht von Hand.</p>
-          <p>Kostenlos. MIT-Lizenz. Quellcode auf <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a> und <a href="https://www.npmjs.com/package/session-orchestrator">npm</a>. GitHub und npm sind die zwei öffentlichen Orte, von denen Programmierer Code laden.</p>
-        </div>
-        <div class="col-4">
-          <ul class="stack">
-            <li><a class="btn btn-tertiary" href="https://www.gotzendorfer.at/de/?utm_source=session-orchestrator&amp;utm_medium=footer&amp;utm_campaign=cross-promo" rel="author">Mehr über Bernhard G&#246;tzendorfer</a></li>
-            <li><a href="https://www.gotzendorfer.at/de/blog/session-orchestrator-oss-tool-reift">Wie das Werkzeug in neun Tagen gereift ist</a></li>
-          </ul>
-        </div>
+      <span id="for-everyone" class="anchor-alias"></span>
+      <div class="section-heading"><div><p class="eyebrow">Plan / Go / Close</p><h2>Eine Session.<br>Ein nachvollziehbarer Ablauf.</h2></div><p>Ein gemeinsamer Plan, klar verteilte Aufgaben und ein Abschluss, an den du beim nächsten Mal anknüpfen kannst.</p></div>
+      <div class="session-board">
+        <div class="session-heading"><span class="example-label">Beispielsession</span><p>„Füge dem Dashboard einen CSV-Export hinzu.“</p><span class="example-note">Illustrativer Ablauf, kein Live-Bericht</span></div>
+        <ol class="session-phases">
+          <li class="session-phase"><div class="phase-heading"><span class="phase-number">01</span><h3>Plan</h3></div><div class="phase-body"><h4>Erst verstehen, dann aufteilen.</h4><p>Code, offene Issues und bestehende Tests prüfen. Das Ziel eingrenzen, bevor jemand Dateien ändert.</p><div class="discovery-tasks"><span>Export-Code lesen</span><span>Datenzugriff prüfen</span><span>Tests sichten</span></div><p class="phase-result"><b>Zusammenführen:</b> Ein gemeinsamer Plan für Export-Button, CSV-Format und Download. Die Schreibbereiche werden vorab zugeordnet.</p></div></li>
+          <li class="session-phase"><div class="phase-heading"><span class="phase-number">02</span><h3>Go</h3></div><div class="phase-body"><h4>Unabhängig arbeiten. Gemeinsam prüfen.</h4><div class="work-lanes"><div><span class="lane-label">Oberfläche</span><p>Button und leeren Zustand umsetzen.</p></div><div><span class="lane-label">Daten</span><p>CSV-Ausgabe und Sonderzeichen behandeln.</p></div></div><p class="phase-result"><b>Prüfen:</b> Änderungen zusammenführen. Download, Format und Fehlerfälle testen. Befunde korrigieren, dann erneut prüfen.</p><p class="small muted">Claude Code und Codex können unabhängige Aufgaben parallel ausführen. Cursor und Pi arbeiten sie nacheinander ab.</p></div></li>
+          <li class="session-phase"><div class="phase-heading"><span class="phase-number">03</span><h3>Close</h3></div><div class="phase-body"><h4>Festhalten, was erledigt ist. Und was offen bleibt.</h4><div class="handover"><p><span class="handover-label">Erledigt</span> CSV-Export umgesetzt und die vereinbarten Fälle geprüft.</p><p><span class="handover-label">Noch offen</span> Frei wählbare Spalten als Folgeaufgabe festhalten.</p></div><p>Änderungen, Prüfnachweise und nächste Schritte bleiben für die nächste Session nachvollziehbar.</p></div></li>
+        </ol>
       </div>
+      <div class="workflow-note"><h3>Die Aufgabe bestimmt den Umfang.</h3><p>Housekeeping kann mit einer Welle auskommen. Deep nutzt fünf, das Ultradeep-Profil sieben. Die Wellen strukturieren die Arbeit; sie sind kein Grund, aus jeder kleinen Änderung ein großes Projekt zu machen.</p><a href="/guide#first-session">Die erste Session im Guide <svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div>
     </div>
   </section>
 
-  <section class="sec" id="install">
-    <div class="wrap">
-      <p class="eyebrow"><span class="num">04</span> / Installieren</p>
-      <h2>Wähl dein Werkzeug</h2>
-      <p class="lede">Dasselbe Plugin, vier Wege zur Installation.</p>
-
-      <div class="cards">
-        <div class="card">
-          <h3>Claude Code</h3>
-          <p class="meta">Plugin-Marketplace</p>
+  <section class="sec story-sec" id="who"><div class="wrap story-grid"><div><p class="eyebrow">Von Bernhard Götzendorfer</p><h2>Es begann mit<br>einer Notion-Seite.</h2></div><div class="story-copy"><p>Ich hatte dort 20–30 Prompts für unterschiedliche Projekte gesammelt. Vor jeder Session habe ich die passende Zeile gesucht, kopiert und wieder erklärt, wie ich arbeiten möchte.</p><p>Daraus wurde nach und nach Plan, Go, Close. Heute nutze ich den Ablauf auf meinem Mac M4 und auf dem M5 im Büro. Session Orchestrator ist das Werkzeug dazu.</p><a href="https://www.gotzendorfer.at/?utm_source=session-orchestrator&amp;utm_medium=footer&amp;utm_campaign=cross-promo" rel="author">Mehr über Bernhard <svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div></div></section>
+  <section class="sec install-sec" id="install"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Installation</p><h2>Dein Tool.<br>Deine nächste Session.</h2></div><p>Wähle deinen Installationsweg. Du brauchst Node.js 24 oder neuer und ein Git-Repository. Das Plugin ist kostenlos; die Kosten deines Coding-Tools bleiben davon unabhängig.</p></div><div class="install-list"><details class="install-option" name="install-tool" open><summary><span class="install-name">Claude Code</span><span class="meta">Plugin-Marketplace</span></summary><div class="install-body">
           <p class="cmd"><code>/plugin marketplace add Kanevry/session-orchestrator</code><button class="copy" type="button" data-copy="/plugin marketplace add Kanevry/session-orchestrator">Kopieren</button></p>
           <p class="cmd"><code>/plugin install session-orchestrator@kanevry</code><button class="copy" type="button" data-copy="/plugin install session-orchestrator@kanevry">Kopieren</button></p>
           <p class="small">Danach einmal <code>npm install</code> im Plugin-Cache laufen lassen und Claude Code neu starten.</p>
           <p class="cmd"><code>claude plugin list --json</code><button class="copy" type="button" data-copy="claude plugin list --json">Kopieren</button></p>
           <p class="small">Suche den aktivierten Eintrag <code>session-orchestrator@kanevry</code>. Ersetze den Platzhalter unten durch dessen <code>installPath</code>. Fehlt der Eintrag oder ist er deaktiviert, kläre das zuerst über <code>/plugin</code>. Bei mehreren Treffern die aktive Installation prüfen.</p>
-          <p class="cmd"><code>cd "/absolute/installPath/from/the/list" &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd &quot;/absolute/installPath/from/the/list&quot; &amp;&amp; npm install">Kopieren</button></p>
-        </div>
-
-        <div class="card">
-          <h3>Codex CLI</h3>
-          <p class="meta">Klonen und Installer</p>
+          <p class="cmd"><code>cd "/absolute/installPath/from/the/list" &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd &quot;/absolute/installPath/from/the/list&quot; &amp;&amp; npm install">Kopieren</button></p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Codex CLI</span><span class="meta">Klonen und Installer</span></summary><div class="install-body">
           <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Kopieren</button></p>
           <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Kopieren</button></p>
           <p class="cmd"><code>node scripts/codex-install.mjs</code><button class="copy" type="button" data-copy="node scripts/codex-install.mjs">Kopieren</button></p>
           <p class="small">Braucht Codex CLI ab 0.144.4. Die Konfiguration steht in <code>AGENTS.md</code>. Öffne nach der Installation eine neue Aufgabe und prüfe die Plugin-Hooks über <code>/hooks</code>.</p>
           <p class="small">Wähle die Session-Orchestrator-Skills: <code>$session-orchestrator:bootstrap</code>, danach <code>$session-orchestrator:session feature</code>, <code>$session-orchestrator:go</code> und <code>$session-orchestrator:close</code>. Siehe den <a href="/guide#first-session">Guide zur ersten Session (EN)</a>.</p>
-          <p class="small"><b>Keine Durchsetzung der Schreibgrenze.</b> Der Hook für den File-Scope läuft auf dieser Umgebung nicht. Die fünf Schritte und die Prüfungen funktionieren; die Schreibgrenze ist hier eine Vereinbarung, kein Mechanismus.</p>
-        </div>
-
-        <div class="card">
-          <h3>Cursor IDE</h3>
-          <p class="meta">Klonen und Installer</p>
+          <p class="small"><b>Beide Guards sind auf Codex nur Anweisungen.</b> Das Plugin setzt weder die Regeln für zerstörerische Befehle noch die Schreibgrenze technisch durch. Die Workflows und Qualitätsprüfungen laufen weiterhin.</p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Cursor IDE</span><span class="meta">Klonen und Installer</span></summary><div class="install-body">
           <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Kopieren</button></p>
           <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Kopieren</button></p>
           <p class="cmd"><code>node scripts/cursor-install.mjs /absolute/path/to/your/project</code><button class="copy" type="button" data-copy="node scripts/cursor-install.mjs /absolute/path/to/your/project">Kopieren</button></p>
-          <p class="small"><b>Zielprojekt.</b> Gib den Projektpfad ausdrücklich an. Ohne Pfad verwendet der Installer das aktuelle Verzeichnis.</p>
-        </div>
-
-        <div class="card">
-          <h3>Pi</h3>
-          <p class="meta">Paketmanager</p>
+          <p class="small"><b>Zielprojekt.</b> Gib den Projektpfad ausdrücklich an. Ohne Pfad verwendet der Installer das aktuelle Verzeichnis.</p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Pi</span><span class="meta">Paketmanager</span></summary><div class="install-body">
           <p class="cmd"><code>npm install -g --ignore-scripts @earendil-works/pi-coding-agent</code><button class="copy" type="button" data-copy="npm install -g --ignore-scripts @earendil-works/pi-coding-agent">Kopieren</button></p>
           <p class="cmd"><code>pi install npm:session-orchestrator</code><button class="copy" type="button" data-copy="pi install npm:session-orchestrator">Kopieren</button></p>
-          <p class="small">Dieser Weg installiert seine Abhängigkeiten selbst; die anderen drei brauchen einmal <code>npm install</code>.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <section class="sec" id="loop">
-    <div class="wrap">
-      <p class="eyebrow"><span class="num">05</span> / Für Entwickler</p>
-      <h2>Fünf Schritte, eine Prüfung dazwischen</h2>
-      <p class="lede">Die Dateien werden pro Schritt (wave) vorab festgelegt. Vor dem Abschluss verlangt der Ablauf eine vollständige Qualitätsprüfung.</p>
-
-      <table class="table">
-        <caption class="sr">Fünf Schritte: wer sie ausführt, was sie schreiben dürfen, wie viele Dateien, und die Prüfung danach</caption>
-        <thead>
-          <tr><th scope="col">Schritt</th><th scope="col">Wer macht es</th><th scope="col">Darf schreiben</th><th scope="col">Dateien</th><th scope="col">Prüfung danach</th></tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td data-label="Schritt">W1 Discovery</td>
-            <td data-label="Wer macht es">nur lesende Explorer</td>
-            <td data-label="Darf schreiben">nichts</td>
-            <td class="num" data-label="Dateien">0</td>
-            <td data-label="Prüfung danach">Befunde belegt</td>
-          </tr>
-          <tr>
-            <td data-label="Schritt">W2 Impl-Core</td>
-            <td data-label="Wer macht es">Code-, DB-, UI-Implementierer</td>
-            <td data-label="Darf schreiben">Kern des Features</td>
-            <td class="num" data-label="Dateien">12</td>
-            <td data-label="Prüfung danach">inkrementelle Prüfung</td>
-          </tr>
-          <tr>
-            <td data-label="Schritt">W3 Impl-Polish</td>
-            <td data-label="Wer macht es">Fix- und Integrations-Agenten</td>
-            <td data-label="Darf schreiben">Fehlerbehebungen, Randfälle</td>
-            <td class="num" data-label="Dateien">5</td>
-            <td data-label="Prüfung danach">inkrementelle Prüfung</td>
-          </tr>
-          <tr>
-            <td data-label="Schritt">W4 Quality</td>
-            <td data-label="Wer macht es">Vereinfacher, Test-Autor, lesendes Panel</td>
-            <td data-label="Darf schreiben">Vereinfachung und Tests</td>
-            <td class="num" data-label="Dateien">8</td>
-            <td data-label="Prüfung danach">vollständige Qualitätsprüfung</td>
-          </tr>
-          <tr>
-            <td data-label="Schritt">W5 Finalization</td>
-            <td data-label="Wer macht es">1 bis 2 Agenten</td>
-            <td data-label="Darf schreiben">SSOT, Issue-Aufräumen</td>
-            <td class="num" data-label="Dateien">2</td>
-            <td data-label="Prüfung danach">Abschluss-Review</td>
-          </tr>
-        </tbody>
-      </table>
-      <p class="small muted">Die Dateizahlen sind die deklarierten Schreibbereiche (file scope) einer Session, keine feste Quote. Ein Schritt deklariert seinen Bereich, bevor er läuft; die Zahlen ändern sich pro Session, die Regel nicht.</p>
-    </div>
-  </section>
-
-  <section class="sec" id="enforced">
-    <div class="wrap">
-      <p class="eyebrow"><span class="num">06</span> / Durchgesetzt</p>
-      <h2>Prüfungen und die Regeln dahinter</h2>
+          <p class="small">Dieser Weg installiert seine Abhängigkeiten selbst; die anderen drei brauchen einmal <code>npm install</code>.</p></div></details></div><p class="install-guide">Noch nicht eingerichtet? <a href="/guide">Der Guide führt dich durch Installation und Bootstrap.</a></p></div></section>  <section class="sec technical-sec"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Unter der Haube</p><h2>Nachvollziehbar.<br>Bis in den Code.</h2></div><p>Welche Prüfungen laufen, was sie absichern und wo ihre Grenzen liegen. Mit Quellen im Repository.</p></div><details class="technical-detail" id="enforced"><summary>Prüfungen und ihre Quellen</summary><div class="detail-body">
       <div class="grid-12">
         <div class="col-4">
           <p class="lede">Ein Teil des Schutzes läuft als Code, ein Teil besteht aus Anweisungen an den Agenten. Die Wirkung hängt vom Werkzeug und der Konfiguration ab.</p>
@@ -404,15 +250,15 @@
         </thead>
         <tbody>
           <tr>
-            <td data-label="Behauptung">Der Schreibbereich eines Agenten steht fest, bevor er startet.</td>
+            <td data-label="Behauptung">Der Workflow legt den Schreibbereich jedes Agenten vor dem Start fest.</td>
             <td data-label="Quelle"><code>scripts/validate-wave-scope.mjs --assert-disjoint</code></td>
           </tr>
           <tr>
-            <td data-label="Behauptung">Auf unterstützten Werkzeugen blockiert strict Änderungen außerhalb des Bereichs; warn meldet sie.</td>
+            <td data-label="Behauptung">Mit aktivem Scope-Hook auf Claude Code, Cursor oder Pi blockiert strict unterstützte Änderungen außerhalb des Bereichs, warn meldet sie und off deaktiviert die Prüfung. Codex setzt die Schreibgrenze nicht durch.</td>
             <td data-label="Quelle"><code>hooks/enforce-scope.mjs</code></td>
           </tr>
           <tr>
-            <td data-label="Behauptung">Die Richtlinie für zerstörerische Befehle blockiert 10 Befehlsmuster und warnt bei 4.</td>
+            <td data-label="Behauptung">Mit aktivem Hook für zerstörerische Befehle wendet Claude Code 10 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken; auf Codex gelten diese Regeln nur als Anweisungen.</td>
             <td data-label="Quelle"><code>.orchestrator/policy/blocked-commands.json</code>, 14 Regeln</td>
           </tr>
           <tr>
@@ -427,13 +273,27 @@
       </table>
         </div>
       </div>
-    </div>
-  </section>
+    </div></details><details class="technical-detail" id="limits"><summary>Unterstützte Tools und Grenzen</summary><div class="detail-body">
 
-  <section class="sec" id="measured">
-    <div class="wrap">
-      <p class="eyebrow"><span class="num">07</span> / Gemessen</p>
-      <h2>Gemessen in diesem Repository</h2>
+      <ul class="stack">
+        <li>Unabhängig und von der Community gepflegt. <b>Nicht verbunden mit Anthropic, OpenAI oder Cursor und von keiner dieser Firmen unterstützt.</b></li>
+        <li>Ausgeliefert wie es ist, ohne zugesicherte Reaktionszeiten, Pflege nach bestem Bemühen.</li>
+        <li>Lokal per Default, ohne eigenes Konto. Optionale Nutzungsstatistik ist ausgeschaltet; die npm-Update-Abfrage lässt sich separat deaktivieren.</li>
+        <li>macOS und Linux werden in der CI geprüft. Native Windows-Nutzung ist ungetestet; Shell-Hooks und der optionale MCP-Server brauchen WSL oder Git Bash.</li>
+        <li>Eine Rangliste gibt es noch nicht, und auch keine Gesamtnote. Wo eine Zahl fehlt, steht das dort, statt zu raten. Eine Rangliste auf einer Messmethode, die noch nicht ehrlich ist, wäre schlechter als keine.</li>
+        <li>Die Durchsetzung auf Hook-Ebene ist nicht auf jeder Umgebung gleich. Die Liste unten ist der aktuelle Stand, keine Roadmap. Die konfigurierten Qualitätsprüfungen laufen auf allen vier Werkzeugen.</li>
+      </ul>
+
+      <table class="kv">
+        <caption class="sr">Durchsetzung auf Hook-Ebene je Umgebung</caption>
+        <tbody>
+          <tr><th scope="row">Claude Code</th><td>direkte Guard-Hooks; blockierende Scope-Prüfung braucht strict</td></tr>
+          <tr><th scope="row">Cursor IDE</th><td>Brücke für unterstützte Werkzeug- und Shell-Aufrufe; blockierende Scope-Prüfung braucht strict. Nachträgliche Prüfungen verhindern keine Änderung</td></tr>
+          <tr><th scope="row">Pi</th><td>Brücke für unterstützte Werkzeugaufrufe; blockierende Scope-Prüfung braucht strict</td></tr>
+          <tr><th scope="row">Codex CLI</th><td>Regeln für zerstörerische Befehle und Schreibbereiche sind nur Anweisungen; beide Guards blockieren keine Vorgänge</td></tr>
+        </tbody>
+      </table>
+    </div></details><details class="technical-detail" id="measured"><summary>Repository-Zahlen mit Zählbeleg</summary><div class="detail-body">
 
       <div class="cards">
         <div class="card"><p class="n">v<span class="num" data-metric="version">4.2.0</span></p><p class="l">aktuelle Version</p></div>
@@ -442,29 +302,26 @@
         <div class="card"><p class="n"><span class="num" data-metric="agents">14</span></p><p class="l">typisierte Sub-Agenten</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="hooks">27</span></p><p class="l">Hook-Dateien</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="tests">664</span></p><p class="l">Testdateien</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="sessions">297</span></p><p class="l">Sessions in diesem Repository</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="sessions">297</span></p><p class="l">Session-Aufzeichnungen im Repository</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="learnings">213</span></p><p class="l">Learnings in diesem Repository</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">1237</span></p><p class="l">npm-Downloads, letzte 30 Tage</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="github-stars">50</span></p><p class="l">GitHub-Sterne</p></div>
       </div>
 
-      <p class="small muted">Gezählt am <span class="num" data-metric="counted-at">2026-09-09</span> bei Commit <span class="num" data-metric="counted-sha">6e15686a</span>. Das sind die Aufzeichnungen dieses Repositorys, keine Summe über alle Projekte.</p>
-    </div>
-  </section>
-
-  <section class="sec" id="faq">
+      <p class="small muted">Gezählt am <span class="num" data-metric="counted-at">2026-09-09</span> bei Commit <span class="num" data-metric="counted-sha">6e15686a</span>. Repository-Aufzeichnungen beschreiben Entwicklungsaktivität, keine aktiven Nutzer. npm-Downloads enthalten auch automatische Abrufe. <a href="/_census.json">Zählbeleg ansehen</a>.</p>
+    </div></details></div></section>  <section class="sec" id="faq">
     <div class="wrap">
-      <p class="eyebrow"><span class="num">08</span> / Fragen</p>
+      <p class="eyebrow">Häufige Fragen</p>
       <h2>Fragen, die Leute stellen</h2>
 
       <div class="faq">
         <details class="faq-item">
           <summary>Ist das selbst ein Werkzeug, das Code schreibt?</summary>
-          <p>Nein. Es ist ein Zusatz, der ein vorhandenes Code-Werkzeug ordnet. Den Code schreibt weiterhin das Werkzeug; hier wird festgelegt, was es zuerst liest, was es anfassen darf, und wann es stehenbleiben und sich prüfen lassen muss.</p>
+          <p>Nein. Es ergänzt einen Ablauf zum Planen, Arbeiten und Prüfen der Ergebnisse. Den Code schreibt dein Code-Werkzeug. Welche Grenzen technisch durchgesetzt werden, hängt vom Werkzeug und der Konfiguration der Guards ab.</p>
         </details>
         <details class="faq-item">
           <summary>Mit welchen Werkzeugen läuft es?</summary>
-          <p>Claude Code unterstützt den vollständigen Hook-Ablauf. Codex CLI bietet die Abläufe als auswählbare Skills, kann aber die Schreibgrenze nicht durchsetzen. Cursor bindet Prüfungen vor Werkzeug- und Shell-Aufrufen sowie nach Änderungen über eine Brücke an. Pi nutzt eine Brücke für Werkzeugaufrufe. Parallele Agenten gibt es auf Claude Code und Codex; Cursor und Pi arbeiten Aufgaben nacheinander ab.</p>
+          <p>Claude Code führt die Guard-Hooks direkt aus. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex CLI bietet auswählbare Workflow-Skills, behandelt die Regeln für zerstörerische Befehle und Schreibbereiche aber nur als Anweisungen; das Plugin setzt beide Guards dort nicht technisch durch. Parallele Agenten gibt es auf Claude Code und Codex; Cursor und Pi arbeiten Aufgaben nacheinander ab.</p>
         </details>
         <details class="faq-item">
           <summary>Was ist der Unterschied zu Claude Code allein?</summary>
@@ -484,7 +341,7 @@
         </details>
         <details class="faq-item">
           <summary>Kann es mein Projekt kaputt machen?</summary>
-          <p>Fehler sind weiterhin möglich. Die Richtlinie für zerstörerische Befehle hat 14 Regeln: 10 blockieren, 4 warnen. Der Schutz des Schreibbereichs hängt vom Code-Werkzeug und der Einstellung zur Durchsetzung ab. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen senken das Risiko, garantieren aber keinen korrekten Code.</p>
+          <p>Fehler sind weiterhin möglich. Auf Claude Code wendet ein aktiver Hook für zerstörerische Befehle 10 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex setzt weder diesen Guard noch den Guard für Schreibbereiche technisch durch. Bei unterstützten Änderungen mit aktivem Scope-Hook blockiert strict Verstöße, warn meldet sie und off deaktiviert die Prüfung. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen garantieren keinen korrekten Code.</p>
         </details>
         <details class="faq-item">
           <summary>Wer pflegt das?</summary>
@@ -492,79 +349,10 @@
         </details>
       </div>
     </div>
-  </section>
-
-  <section class="sec" id="limits">
-    <div class="wrap">
-      <p class="eyebrow"><span class="num">09</span> / Grenzen</p>
-      <h2>Was das ist, und was nicht</h2>
-
-      <ul class="stack">
-        <li>Unabhängig und von der Community gepflegt. <b>Nicht verbunden mit Anthropic, OpenAI oder Cursor und von keiner dieser Firmen unterstützt.</b></li>
-        <li>Ausgeliefert wie es ist, ohne zugesicherte Reaktionszeiten, Pflege nach bestem Bemühen.</li>
-        <li>Lokal per Default, ohne eigenes Konto. Optionale Nutzungsstatistik ist ausgeschaltet; die npm-Update-Abfrage lässt sich separat deaktivieren.</li>
-        <li>macOS und Linux werden in der CI geprüft. Native Windows-Nutzung ist ungetestet; Shell-Hooks und der optionale MCP-Server brauchen WSL oder Git Bash.</li>
-        <li>Eine Rangliste gibt es noch nicht, und auch keine Gesamtnote. Wo eine Zahl fehlt, steht das dort, statt zu raten. Eine Rangliste auf einer Messmethode, die noch nicht ehrlich ist, wäre schlechter als keine.</li>
-        <li>Die Durchsetzung auf Hook-Ebene ist nicht auf jeder Umgebung gleich. Die Liste unten ist der aktuelle Stand, keine Roadmap. Die konfigurierten Qualitätsprüfungen laufen auf allen vier Werkzeugen.</li>
-      </ul>
-
-      <table class="kv">
-        <caption class="sr">Durchsetzung auf Hook-Ebene je Umgebung</caption>
-        <tbody>
-          <tr><th scope="row">Claude Code</th><td>vollständig</td></tr>
-          <tr><th scope="row">Cursor IDE</th><td>Brücke: Prüfungen vor Werkzeug- und Shell-Aufrufen sowie nach Änderungen</td></tr>
-          <tr><th scope="row">Pi</th><td>über eine Brücke</td></tr>
-          <tr><th scope="row">Codex CLI</th><td>Durchsetzung des Schreibbereichs derzeit nicht verfügbar</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="sec end" id="start">
-    <div class="wrap">
-      <p class="eyebrow"><span class="num">10</span> / Los</p>
-      <h2>Installieren, dann eine Session starten, die zuerst liest.</h2>
-      <p class="lede">MIT, kein Konto, und das Erste, was passiert: es sagt dir, was es gefunden hat, bevor es etwas anfasst.</p>
-      <p class="cta">
-        <a class="btn btn-primary" href="#install">Installationsschritte ansehen</a>
-        <a class="btn btn-secondary" href="/guide">Guide lesen (EN)</a>
-      </p>
-    </div>
-  </section>
-
+  </section>  <section class="sec end" id="start"><div class="wrap end-grid"><div><p class="eyebrow">Für dein nächstes Projekt</p><h2>Fang mit einer<br>klaren Session an.</h2><p>Installiere das Plugin und lass dein Repository lesen. Entscheide dann, was als Nächstes dran ist.</p></div><a class="btn btn-primary" href="#install">Installationsweg wählen<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div></section>
 </main>
-
-<footer class="foot">
-  <div class="wrap">
-    <div class="cols">
-      <div>
-        <h2 class="small">Projekt</h2>
-        <ul class="stack">
-          <li><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></li>
-          <li><a href="https://www.npmjs.com/package/session-orchestrator">npm</a></li>
-          <li><a href="/guide">Guide (EN)</a></li>
-          <li><a href="/llms.txt">llms.txt</a></li>
-        </ul>
-      </div>
-      <div>
-        <h2 class="small">Rechtliches</h2>
-        <ul class="stack">
-          <li><a href="/impressum">Impressum</a></li>
-          <li><a href="/datenschutz">Datenschutz</a></li>
-          <li>MIT-Lizenz</li>
-        </ul>
-      </div>
-      <div class="author">
-        <h2 class="small">Autor</h2>
-        <p><a href="https://www.gotzendorfer.at/de/?utm_source=session-orchestrator&amp;utm_medium=footer&amp;utm_campaign=cross-promo" rel="author">Mehr über Bernhard G&#246;tzendorfer</a></p>
-      </div>
-    </div>
-    <p class="fig-ai">Illustrationen auf dieser Seite: KI-generiert (gpt-image-2).</p>
-  </div>
-</footer>
-
+<footer class="foot"><div class="wrap"><div class="footer-main"><a class="brand" href="/de">session-orchestrator</a><p>Ein Open-Source-Projekt von <a href="https://www.gotzendorfer.at/?utm_source=session-orchestrator&amp;utm_medium=footer&amp;utm_campaign=cross-promo" rel="author">Bernhard Götzendorfer</a>.</p></div><div class="footer-links"><nav aria-label="Weitere Links"><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a><a href="https://www.npmjs.com/package/session-orchestrator">npm</a><a href="/guide">Guide</a><a href="/llms.txt">llms.txt</a><a href="/impressum">Impressum</a><a href="/datenschutz">Datenschutz</a></nav><a class="support-link" href="https://paypal.me/Kanevry">Hilft dir das? Ein Kaffee ist willkommen.</a></div></div></footer>
 <script src="/_vercel/insights/script.js" defer></script>
-<script src="/assets/ui.js" defer></script>
-<script type="module" src="/assets/hero.js"></script>
+<script src="/assets/ui.js?v=20260910" defer></script>
 </body>
 </html>
