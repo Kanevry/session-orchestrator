@@ -14,13 +14,13 @@
 <meta property="og:image" content="https://session-orchestrator.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Five stations in a row with gates between them and a small light moving through.">
+<meta property="og:image:alt" content="Session Orchestrator: Plan, Go, Close with a robotics illustration.">
 <meta property="og:locale" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Guide: install session-orchestrator and run your first session">
 <meta name="twitter:description" content="Install Session Orchestrator on Claude Code, Codex CLI, Cursor or Pi. Requirements, first-session commands, platform limits and troubleshooting.">
 <meta name="twitter:image" content="https://session-orchestrator.com/og.png">
-<meta name="twitter:image:alt" content="Five stations in a row with gates between them and a small light moving through.">
+<meta name="twitter:image:alt" content="Session Orchestrator: Plan, Go, Close with a robotics illustration.">
 <link rel="icon" href="/favicon.svg">
 <link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
 
@@ -34,7 +34,7 @@
   "@context": "https://schema.org",
   "@type": "TechArticle",
   "@id": "https://session-orchestrator.com/guide#article",
-  "headline": "Install it, run one session, and check that it did what it says.",
+  "headline": "Install. Run a session.<br>Check the result.",
   "inLanguage": "en",
   "mainEntityOfPage": "https://session-orchestrator.com/guide",
   "isPartOf": { "@id": "https://session-orchestrator.com/#website" },
@@ -43,28 +43,28 @@
 }
 </script>
 
-<link rel="preload" as="font" type="font/woff2" href="/fonts/bricolage-grotesque-var.woff2" crossorigin>
-<link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/inter-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css">
+<link rel="stylesheet" href="/assets/site.css?v=20260910">
 </head>
-<body>
+<body class="guide-page">
 <a class="skip" href="#main">Skip to content</a>
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/">session-orchestrator <span class="muted">v<span class="num" data-metric="version">4.2.0</span></span></a>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">4.2.0</span></span></a>
     <nav class="nav" aria-label="Guide sections">
       <a href="#install">Install</a>
       <a href="#first-session">First session</a>
-      <a href="#when-it-blocks">When it blocks</a>
+      <a href="#when-it-blocks">Guards</a>
       <a href="#when-wrong">When it is wrong</a>
       <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
     </nav>
-    <details class="nav-menu"><summary aria-label="Menu"></summary><nav class="nav" aria-label="Main">
+    <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Main">
       <a href="#install">Install</a>
       <a href="#first-session">First session</a>
-      <a href="#when-it-blocks">When it blocks</a>
+      <a href="#when-it-blocks">Guards</a>
       <a href="#when-wrong">When it is wrong</a>
       <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
     </nav></details>
@@ -77,8 +77,8 @@
   <section class="sec" id="top">
     <div class="wrap">
       <p class="eyebrow">Claude Code &middot; Codex CLI &middot; Cursor IDE &middot; Pi</p>
-      <h1 class="h-display">Install it, run one session, and check that it did what it says.</h1>
-      <p class="lede">Choose your coding tool, install the plugin and its dependencies, then bootstrap your project. This guide explains the first session and the checks available on each platform.</p>
+      <h1 class="h-display">Install. Run a session.<br>Check the result.</h1>
+      <p class="lede">Choose your coding tool, install the plugin and its dependencies, then bootstrap your project. This guide explains the first session and which guards your tool can enforce. On Codex, destructive-command and file-scope rules are instructions only.</p>
       <p class="meta">Node.js 24 or later &middot; MIT &middot; guidance reviewed against source on 2026-09-08</p>
       <p class="small muted">Historical installation E2E record: v3.20.0 on 2026-08-19. The source review date records a documentation check, not a new installation test.</p><!-- site-numbers:historical: the version in that sentence is a DATED RECORD of the release the commands were actually run against, not a claim about the current one. A release must never bump it; only an actual re-run of the commands may. Deliberately NOT a data-metric cell: --write would move the number while the date stayed put, fabricating a verification nobody ran. -->
 
@@ -89,7 +89,7 @@
           <li><a href="#install">Install</a></li>
           <li><a href="#first-session">Your first session</a></li>
           <li><a href="#config">The minimal config</a></li>
-          <li><a href="#when-it-blocks">When it blocks you</a></li>
+          <li><a href="#when-it-blocks">What the guards can enforce</a></li>
           <li><a href="#when-wrong">When something is wrong</a></li>
           <li><a href="#deeper">Where to go deeper</a></li>
         </ol>
@@ -179,7 +179,7 @@ cd ~/Projects/session-orchestrator &amp;&amp; npm install
 node scripts/codex-install.mjs</pre>
         <button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator&#10;cd ~/Projects/session-orchestrator &amp;&amp; npm install&#10;node scripts/codex-install.mjs">Copy</button>
       </div>
-      <p class="small muted">Requires Codex CLI <strong>0.144.4 or later</strong>. Your project config goes in <code>AGENTS.md</code>. Start a fresh task after installation and review the plugin hooks through <code>/hooks</code>. Hook-level file-scope enforcement is currently unavailable; the workflow and quality checks still run.</p>
+      <p class="small muted">Requires Codex CLI <strong>0.144.4 or later</strong>. Your project config goes in <code>AGENTS.md</code>. Start a fresh task after installation and review the plugin hooks through <code>/hooks</code>. The destructive-command and file-scope guards are instructions only on Codex; the plugin does not enforce them. The workflow and quality checks still run.</p>
 
       <p>For a Codex Git marketplace installation, refresh with <code>codex plugin marketplace upgrade kanevry</code>, then <code>codex plugin add session-orchestrator@kanevry</code>. For the local clone shown above, pull the clone, run <code>npm install</code> and rerun the installer. After either path, start a fresh task and reopen the skill picker. See <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/codex-setup.md#refresh-and-explicit-cache-invalidation">Codex refresh instructions</a>.</p>
 
@@ -230,8 +230,8 @@ $session-orchestrator:close</pre>
           <p>It reads the repository before it asks you anything: git state, open issues, CI status on the current commit, what the last session left behind. Then it reports what it found and proposes a plan: how many waves, how many agents, and how confident it is. You can correct the proposed scope before implementation. Session-start also records local session state.</p>
         </li>
         <li>
-          <h3><code>/go</code>: execute the plan in five typed passes</h3>
-          <p>Discovery reads. Impl-Core writes the feature. Impl-Polish fixes the edges. Quality simplifies, tests and reviews. Finalization tidies up. The workflow checks results between waves and requires the full configured test, typecheck and lint gate before completion. Claude Code and Codex can dispatch parallel agents; Cursor and Pi run the tasks sequentially.</p>
+          <h3><code>/go</code>: execute the plan in checked waves</h3>
+          <p>For a deep session, Discovery reads and Impl-Core writes the feature. Impl-Polish fixes the edges. Quality simplifies, tests and reviews. Finalization tidies up. The workflow checks results between waves and requires the full configured test, typecheck and lint gate before completion. Claude Code and Codex can dispatch parallel agents; Cursor and Pi run the tasks sequentially. Housekeeping uses one wave; deep uses five and the ultradeep profile uses seven.</p>
         </li>
         <li>
           <h3><code>/close</code>: verify, commit, and file what is left</h3>
@@ -278,7 +278,7 @@ enforcement: warn</pre>
       </div>
       <p class="small muted">Use <code>CLAUDE.md</code> on Claude Code or <code>AGENTS.md</code> on Codex CLI and Pi. For Cursor, follow the <a href="#before">instruction-file note above</a>. The heading matters: the parser looks for <code>## Session Config</code> literally.</p>
 
-      <p><code>enforcement</code> takes <code>strict</code>, <code>warn</code> or <code>off</code>. Start on <code>warn</code>: you see every scope violation without any of them stopping you, which is the fastest way to learn what your waves actually touch.</p>
+      <p><code>enforcement</code> takes <code>strict</code>, <code>warn</code> or <code>off</code>. With an active compatible scope hook, <code>strict</code> denies supported out-of-scope edits, <code>warn</code> reports them without denying the edit, and <code>off</code> disables scope checking. Codex has no compatible scope handler, so changing this setting does not add enforcement there.</p>
 
       <div class="card">
         <p><strong>The config block alone does not complete bootstrap</strong></p>
@@ -291,22 +291,22 @@ enforcement: warn</pre>
   <section class="sec" id="when-it-blocks">
     <div class="wrap">
       <p class="eyebrow"><span class="num">05</span> / Guards</p>
-      <h2>When it blocks you</h2>
-      <p class="lede">Two guards will refuse a command or an edit at some point. Both can be released on purpose. Neither is worth fighting, because in most cases the refusal is telling you the plan is wrong, not the tool.</p>
+      <h2>What the guards can enforce</h2>
+      <p class="lede">Guard behaviour depends on your coding tool. Claude Code runs the guard hooks directly; Cursor and Pi use bridges with documented limits. On Codex, destructive-command and file-scope rules are instructions only. Scope edits are denied only when a compatible hook is active and enforcement is strict.</p>
 
       <h3>The destructive-command guard</h3>
-      <p>The policy in <code>.orchestrator/policy/blocked-commands.json</code> has <strong>14 rules: 10 block and 4 warn</strong>. Blocking patterns include hard resets, checkout discards, forced cleaning, destructive removal, force-push, SQL <code>DROP TABLE</code>, and protected-file truncation. Mixed and soft resets, stash, and <code>git push --force-with-lease</code> produce warnings.</p>
+      <p>The policy in <code>.orchestrator/policy/blocked-commands.json</code> defines <strong>14 rules: 10 blocking and 4 warning</strong>. An active hook applies them on Claude Code and through compatible Cursor or Pi bridges. The plugin does not enforce this guard on Codex. The blocking rules cover hard resets, checkout discards, forced cleaning, destructive removal, force-push, SQL <code>DROP TABLE</code>, and protected-file truncation. The warning rules cover mixed and soft resets, stash, and <code>git push --force-with-lease</code>.</p>
       <p>The reason it is that broad: several sessions can share one working copy, and a stash or a reset takes work from a neighbour who has no way to find it again.</p>
 
       <div class="card">
         <p><strong>Releasing it deliberately</strong></p>
-        <p>Add <code>allow-destructive-ops: true</code> to your Session Config for the maintenance you actually intend, then take it out again. It is a per-session switch by design: leaving it in permanently removes the guard for every future session, including the ones you did not plan.</p>
+        <p>Where the destructive-command hook is active, <code>allow-destructive-ops: true</code> in Session Config disables it for intentional maintenance. Remove the setting afterwards. It is a per-session switch by design: leaving it in permanently removes the guard for every future session, including the ones you did not plan.</p>
       </div>
 
       <h3>Scope enforcement</h3>
-      <p>Agents receive declared paths, checked for overlaps before dispatch. On tools with a working scope adapter, <code>hooks/enforce-scope.mjs</code> blocks out-of-scope edits in <code>strict</code> mode and reports them in <code>warn</code> mode. Codex currently has no file-scope adapter; Cursor and Pi use bridges. A declared scope is not filesystem isolation.</p>
+      <p>Agents receive declared paths, checked for overlaps before dispatch. With an active compatible handler, <code>hooks/enforce-scope.mjs</code> blocks supported out-of-scope edits in <code>strict</code> mode and reports them without denial in <code>warn</code> mode. Claude Code runs the hook directly; Cursor and Pi use bridges with documented limits. On Codex the rule is an instruction only, because no compatible file-scope handler is wired. A declared scope is not filesystem isolation.</p>
       <p>When a legitimate edit is denied, review the plan and other agents' scopes before adding the missing path. Recheck overlaps before dispatching work against the wider scope.</p>
-      <p>If you do need the whole thing quiet while you find your feet, <code>enforcement: off</code> exists. It removes the mechanism, not just the message.</p>
+      <p><code>enforcement: off</code> disables scope checking. It does not disable the separate destructive-command guard on tools where that guard is active.</p>
     </div>
   </section>
 
@@ -435,6 +435,6 @@ enforcement: warn</pre>
      Deklariert in /datenschutz Punkt 04. Cookielos, kein localStorage. -->
 <script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>
 <script src="/_vercel/insights/script.js" defer></script>
-<script src="/assets/ui.js" defer></script>
+<script src="/assets/ui.js?v=20260910" defer></script>
 </body>
 </html>

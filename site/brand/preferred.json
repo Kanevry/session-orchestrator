@@ -1,0 +1,12 @@
+{
+  "status": "user-selected-final-a3",
+  "designId": "a3-terminalmodule",
+  "markOnDark": "a3-terminalmodule/mark-on-dark.svg",
+  "markOnLight": "a3-terminalmodule/mark-on-light.svg",
+  "wordmarkOnDark": "a3-terminalmodule/wordmark-on-dark.svg",
+  "wordmarkOnLight": "a3-terminalmodule/wordmark-on-light.svg",
+  "transparentPng": "a3-terminalmodule/mark-transparent-1024.png",
+  "graphitePng": "a3-terminalmodule/mark-graphite-1024.png",
+  "geometry": "geometry.json",
+  "alternative": "a2-agentenmodule"
+}

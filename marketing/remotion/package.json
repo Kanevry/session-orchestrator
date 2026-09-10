@@ -1,0 +1,29 @@
+{
+  "name": "session-orchestrator-campaign-film",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Reproducible local Remotion compositions for the Session Orchestrator campaign.",
+  "scripts": {
+    "assets": "node scripts/prepare-assets.mjs",
+    "typecheck": "tsc --noEmit",
+    "verify": "node scripts/verify.mjs",
+    "studio": "npm run assets && remotion studio src/index.ts",
+    "render": "node scripts/render.mjs",
+    "render:release": "node scripts/render.mjs release",
+    "render:loop": "node scripts/render.mjs loop",
+    "render:posters": "node scripts/render.mjs posters"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.523",
+    "@remotion/fonts": "4.0.523",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "remotion": "4.0.523",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "typescript": "5.9.3"
+  }
+}

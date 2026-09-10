@@ -1,0 +1,28 @@
+[
+  {
+    "file": "site/video/agent-production-loop.mp4",
+    "codec": "h264",
+    "width": 960,
+    "height": 640,
+    "fps": 30,
+    "seconds": 9,
+    "audioTracks": 0,
+    "bytes": 2848564,
+    "frames": 270,
+    "seamMeanLumaDifference": 0.4469,
+    "largestAdjacentMeanLumaDifference": 0.3234
+  },
+  {
+    "file": "site/video/agent-production-loop.webm",
+    "codec": "vp9",
+    "width": 960,
+    "height": 640,
+    "fps": 30,
+    "seconds": 9,
+    "audioTracks": 0,
+    "bytes": 1882490,
+    "frames": 270,
+    "seamMeanLumaDifference": 0.3618,
+    "largestAdjacentMeanLumaDifference": 0.3916
+  }
+]

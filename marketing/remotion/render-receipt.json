@@ -1,0 +1,45 @@
+{
+  "mode": "release-and-poster",
+  "props": {
+    "version": "4.3",
+    "currentRelease": "4.2.0",
+    "planned": true
+  },
+  "remotion": "4.0.523",
+  "entry": "src/index.ts",
+  "campaignDurationSeconds": 22,
+  "loopDurationSeconds": 9,
+  "frameRate": 30,
+  "silent": true,
+  "renderedAt": "2026-09-10T16:46:29+00:00",
+  "renderedOutputs": [
+    {
+      "file": "site/video/session-orchestrator-4.3-preview.mp4",
+      "sha256": "10a9fbe7bce48a679d6ba090a6302cccb90d020885d85679f21b1035d0b7c2ce"
+    },
+    {
+      "file": "site/img/release-poster.png",
+      "sha256": "92472c5cd4102ce14c770b0b0ea628185148947f92b50c5c11c3812a69d5f69b"
+    }
+  ],
+  "topRightCampaignLabel": false,
+  "plannedCampaignFooter": true,
+  "verification": {
+    "typecheck": "passed",
+    "media": "passed",
+    "posterDimensions": [
+      1920,
+      1080
+    ],
+    "posterDifferenceBounds": [
+      1561,
+      87,
+      1820,
+      104
+    ],
+    "posterInspected": true,
+    "filmFrameInspectedSeconds": 5,
+    "preservedAssetHashes": true,
+    "preservedMotionTimingAndDependencyHashes": true
+  }
+}
