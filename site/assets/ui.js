@@ -64,7 +64,10 @@
     document.querySelectorAll('.hero-art').forEach((art) => {
       const video = art.querySelector('video');
       const button = art.querySelector('.motion-toggle');
-      if (!video || !button) return;
+      // Filename lives in the markup (data-video-base), not here: one video element,
+      // one place its asset is named. Missing attribute -> no toggle, no guessing.
+      const base = video && video.dataset.videoBase;
+      if (!video || !button || !base) return;
       const playLabel = isGerman ? 'Werkstatt bewegen' : 'Animate workshop';
       const pauseLabel = isGerman ? 'Animation pausieren' : 'Pause animation';
       let attempt = 0;
@@ -98,7 +101,7 @@
           let failedSources = 0;
           for (const [format, type] of [['webm', 'video/webm'], ['mp4', 'video/mp4']]) {
             const source = document.createElement('source');
-            source.src = `/video/agent-production-loop.${format}`;
+            source.src = `/video/${base}.${format}`;
             source.type = type;
             source.addEventListener('error', () => {
               if (!video.contains(source)) return;

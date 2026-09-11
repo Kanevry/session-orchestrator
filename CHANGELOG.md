@@ -9,20 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Campaign film embedded on `site/index.html` and `site/de/index.html`, inside the `#loop` section (#1306): `<figure class="fig film">` with `poster`, `preload="none"`, visible controls (the film carries sound, unlike the silent hero loop), no autoplay, the webm source before the mp4 source, and an AI-disclosure `figcaption`. `site/assets/ui.js`'s hero-loop `<video>` now reads its filename from that element's `data-video-base` attribute instead of a hardcoded `agent-production-loop` literal — needed once a second `<video>` exists on the same page.
+- `claude-md-drift-check` Check 9 (`rule-scoping`) gained a sixth probe, `fleet-intent-glob`, and a third JSON output category, `notes[]`: a rule can declare a `globs:` pattern as intentionally zero-match here via its own `fleet-intent-globs:` frontmatter key, and the checker reports it in `notes[]` instead of warning on it. `.claude/rules/testing.md` now declares this for `**/*Tests*` (#445) — on 2026-09-09 the unqualified zero-match warning had led an agent to delete that pattern (reverted only because a pinning test caught it). Measured against the live rule corpus: 37 warnings → 36 warnings + 1 note (total findings unchanged).
 - `scripts/lib/scope-echo.mjs` + CLI + `orchestrator.wave_dispatch.scope_echo_checked` event (#1092) — soft receive-side signal that a dispatched agent echoed its declared file-scope back in its report; a named ceiling, never blocking. Additive `applicable: false` + `reason: 'scope-empty'` payload keys fire for an EMPTY declared scope, so consumers filter that never-instructed population out of the echo rate; the CLI gained `--help` and now exits 1 with a stderr WARN on an unreadable scope file instead of failing silently.
 - `native_source` + `resume_linkage` fields on `orchestrator.session.started` (#1091) — measurement only, answers whether Claude Code preserves the raw `session_id` across a native `resume` instead of guessing.
 - `references/` splits of the `bootstrap`/`discovery`/`evolve`/`session-plan`/`wave-executor` SKILL.md bodies (#1246) — byte-identical extraction; line counts 641→444, 571→404, 720→264, 620→478, 541→414.
 
 ### Changed
 
+- `scripts/lib/instruction-budget-guard.mjs`'s "generated rule surface" (`bySurface.generated`) now counts only rules carrying a reconciliation-provenance marker (`auto-generated: true`, `learning-key`, or `expires-at`) instead of every `globs:`-scoped rule — the old, broader definition mixed in 3 hand-written rules and is kept available as `bySurface.pathScoped` (#1297). Measured at `c73c094f`: 123,747 B / 11 files (old) → 76,114 B / 8 files (corrected); headroom against the unchanged 124,000 B ceiling: 253 B → 47,886 B. The ceiling itself was deliberately left as-is in this change — correcting a population and recalibrating a threshold are two separate decisions.
+- `scripts/lib/claude-md-budget-lint.mjs`'s banner hint now names an absolute, runnable path (`__filename`, plus `--repo-root <repoRoot>`) instead of a repo-root-relative `scripts/lib/claude-md-budget-lint.mjs` literal that resolves to nothing in a consumer repo's own checkout (#1302).
+- `skills/session-start/SKILL.md` § Phase 4 and `scripts/lib/session-start-probes.mjs`'s own probe census corrected 18 → 19 registered probes — `bootstrap-lock-freshness` had been described separately from the registered probe family instead of counted as one of its members.
+- `.gitignore` now ignores `*.pen` (native Pencil design source files) — they stay host-local because a scanner finding sits in metadata the Node API cannot edit (#1304); exports and assets remain tracked.
 - `hooks/hooks.json` `SessionStart` matcher now `startup|resume|clear|compact` (was missing `resume`); on a resume whose raw `session_id` matches the prior lock, the prior semantic id is reused and wave high-water marks (`last_wave`/`last_batch`) are preserved instead of reset (#1091).
 - `hooks/_lib/lock-bootstrap.mjs` force-refreshes a stale-looking lock only when the re-entry source AND the semantic label both match, AND `existingLock.session_id === predecessorSessionId` (the raw id our own previous hook run recorded in `current-session.json`) — a bare label match alone can collide across repos, and this third, predecessor-witness conjunct is the only one tied to something WE wrote about ourselves.
-- 10 `/reconcile`-generated rules absorbed into the thematic rule files (generated surface 140,482 → 123,747 B / 11 files, headroom 253 B against the 124,000 B ceiling; idempotency `alreadyMaterialized` 40 → 50).
+- 10 `/reconcile`-generated rules absorbed into the thematic rule files (surface 140,482 → 123,747 B / 11 files under the broader pre-#1297 definition — today's `bySurface.pathScoped`, not `bySurface.generated` (see the correction above); headroom 253 B against the 124,000 B ceiling; idempotency `alreadyMaterialized` 40 → 50).
+- A further 10 `/reconcile`-generated learnings absorbed into 7 already-consolidated thematic rule files this session, rather than materialized as 10 new standalone files — `bySurface.generated` 95,414 B / 18 files (right after `/reconcile` wrote them as standalones alongside the 8 pre-existing thematic files) → 87,336 B / 8 files (after absorbing them into 7 of those 8, per the merge contract); `alreadyMaterialized` 50 → 60; `measurement-discipline.md`'s `expires-at` lowered 2026-10-24 → 2026-10-20 (11 → 12 absorbed dates) once the newly-absorbed `ls`-verify-declared-test-paths learning became its earliest-due content.
 - `scripts/ci/assert-vitest-green.mjs` kill-artifact hint now reads `[ci] KILL ARTEFACT — … (NOT a test failure)` instead of a bare `[ci] hint: …` (#1294 b) — the false-green-vs-real-failure distinction is now visible at a glance in CI logs.
 - `.claude/rules/security.md` gained a VCS-anchor caveat — the GitHub mirror's `main` is pushed directly from the operator's machine, not via CI (#1079); `docs/github-mirror-protection.md` re-measured state (2026-09-09 @ `c2e19604`) and the required remediation order; `enforce_admins` deliberately left `false` until the push-path change lands.
 - Dead `globs:`/`paths:` frontmatter entries removed from 3 rules (`bash-harness-pitfalls.md`, `cli-design.md`, `testing.md`) — `rule-scoping` drift-check warnings 11 → 1; `**/*Tests*` in `testing.md` deliberately kept (fleet intent for consumer Swift repos, #445; pinned by `tests/skills/config-reading-glob-rules.test.mjs`).
 
 ### Fixed
+- `scripts/lib/session-record-repair.mjs` no longer discards a field's original value when defaulting it — the pre-repair value is preserved under a `_<field>_raw` sidecar, idempotent across repeated repair passes (6 fields across 8 call sites: `waves` and `agent_summary` each defaulted from two code paths, plus `total_waves`, `total_agents`, `total_files_changed`, `completed_at`). Motivated by 7 of 40 records in a consumer ledger that had lost narrative `agent_summary` strings and `total_files_changed` path lists to `{...0}`/`0` (#1303).
+- `scripts/lib/session-lock.mjs`'s `forceAcquire()` now rejects a missing or blank `sessionId` (`{ ok: false, reason: 'missing-session-id' }`) instead of writing a lock file with no `session_id` key at all — such a lock was classified as foreign by every reader and silently skipped enforcement (#1303).
 - **GitHub Actions `test (ubuntu-latest)`** — the unsharded Linux run was wrapped in `timeout --preserve-status 240s`; the suite now exceeds that (killed at exactly 240 s on `c2e19604` and `d4c51bd8`, vitest never wrote its result file → `FAIL-CLOSED`). Raised to 840 s, matching the GitLab shard cap from #1294 (a); the job's `timeout-minutes: 15` already covers it.
 
 - `check-unwired-features` root filter no longer masks two roots sharing a basename — a colliding basename now needs the qualified `dirname/base` form to downgrade out of the reportable class (#1293).
@@ -30,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Notes
 
+- `skills/discovery/probes-ui.md`'s `design-drift` probe gained a naming-collision flag: GitLab issue #1300 (`projects-baseline` design-first Pencil-token-contract epic) proposes a second, mechanical `design-drift` probe under the identical name; unresolved, left for whoever implements #1300 to settle.
 - 4.2.0 published to npm 2026-09-09 20:45 UTC.
 - GH#68 (Codex command entry points missing after an update) answered — fixed since 4.0.1; see `docs/codex-setup.md` § Refresh and Explicit Cache Invalidation.
 
@@ -1637,7 +1647,7 @@ without it. Its entries are carried below under *From the 2026-08-22 → 2026-08
 fact sits under all of them: **a surface that said it was live, and a measurement that never
 had a caller.** Cursor advertised as a first-class platform and loaded only `.cursor/rules` —
 no slash commands, no skills, no hook bridge; `/session` was chat text. The same class shows up
-in the rest of the line: 18 probes with zero mechanical callers, three vault writers that could
+in the rest of the line: 19 probes with zero mechanical callers, three vault writers that could
 not report their own failure, gates that wrote and never read, and `detectPlatform()` walking
 to `$HOME` until 63 of 84 telemetry records said `platform=pi`.
 

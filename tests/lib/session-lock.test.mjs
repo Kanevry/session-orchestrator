@@ -1995,3 +1995,96 @@ describe('#1072 — session lock host identity', () => {
     expect(checkStale({ repoRoot }).sameHost).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// forceAcquire — sessionId guard (#1303 Befund B)
+// ---------------------------------------------------------------------------
+
+describe('acquire — rejects a missing/blank sessionId instead of writing an ownerless lock', () => {
+  // Bug caught: the guard sat on forceAcquire() (the rare path — explicit
+  // stale-lock takeover) while acquire(), the PRIMARY path, wrote the ownerless
+  // lock unchecked. Measured 2026-09-11 against the pre-fix module in a tmp
+  // repoRoot:
+  //   acquire({sessionId: undefined}) -> {ok:true}; on disk:
+  //     {"started_at":…,"mode":"deep","pid":…}            ← no session_id key
+  //   acquire({sessionId: ''})        -> {ok:true}; on disk:
+  //     {"session_id":"", …}                              ← the shape the wave
+  //     scope manifest forbids outright
+  // Such a lock is FOREIGN to every reader, and foreign is the classification
+  // that skips enforcement. The suite asserted this for forceAcquire() only,
+  // so the primary path was uncovered.
+  for (const [name, args] of [
+    ['sessionId omitted', { mode: 'deep' }],
+    ['sessionId undefined', { sessionId: undefined, mode: 'deep' }],
+    ['sessionId empty string', { sessionId: '', mode: 'deep' }],
+    ['sessionId whitespace only', { sessionId: '   ', mode: 'deep' }],
+    ['sessionId not a string', { sessionId: 42, mode: 'deep' }],
+  ]) {
+    it(`returns { ok:false, reason:'missing-session-id' } and writes nothing — ${name}`, () => {
+      const result = acquire({ ...args, repoRoot, quiet: true });
+
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('missing-session-id');
+      expect(existsSync(join(repoRoot, LOCK_PATH))).toBe(false);
+    });
+  }
+
+  it('leaves an existing lock untouched when sessionId is blank', () => {
+    acquire({ sessionId: 'sess-incumbent', mode: 'feature', repoRoot });
+
+    const result = acquire({ sessionId: '  ', mode: 'deep', repoRoot, quiet: true });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('missing-session-id');
+    expect(readLock({ repoRoot }).session_id).toBe('sess-incumbent');
+  });
+
+  it('a successfully acquired lock always carries a non-empty session_id on disk', () => {
+    acquire({ sessionId: 'sess-owned', mode: 'deep', repoRoot });
+
+    const onDisk = JSON.parse(readFileSync(join(repoRoot, LOCK_PATH), 'utf8'));
+    expect(onDisk.session_id).toBe('sess-owned');
+  });
+});
+
+describe('forceAcquire — rejects a missing/blank sessionId instead of writing an ownerless lock', () => {
+  // Bug caught: buildLock assigned `session_id: undefined`, JSON.stringify
+  // dropped the key, and the lock file on disk carried NO session_id at all.
+  // Such a lock is present but owned by nobody — every reader compares it
+  // against its own id, finds no match, classifies it FOREIGN, and foreign is
+  // the classification that skips enforcement. Nothing in the suite asserted
+  // that the written lock always carries the field.
+  for (const [name, args] of [
+    ['sessionId omitted', { mode: 'deep' }],
+    ['sessionId undefined', { sessionId: undefined, mode: 'deep' }],
+    ['sessionId empty string', { sessionId: '', mode: 'deep' }],
+    ['sessionId whitespace only', { sessionId: '   ', mode: 'deep' }],
+    ['sessionId not a string', { sessionId: 42, mode: 'deep' }],
+  ]) {
+    it(`returns { ok:false, reason:'missing-session-id' } and writes nothing — ${name}`, () => {
+      const result = forceAcquire({ ...args, repoRoot });
+
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('missing-session-id');
+      expect(existsSync(join(repoRoot, LOCK_PATH))).toBe(false);
+    });
+  }
+
+  it('leaves an existing lock untouched when sessionId is missing', () => {
+    acquire({ sessionId: 'sess-incumbent', mode: 'feature', repoRoot });
+
+    const result = forceAcquire({ mode: 'deep', repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('missing-session-id');
+    expect(readLock({ repoRoot }).session_id).toBe('sess-incumbent');
+  });
+
+  it('a successfully written lock always carries session_id on disk', () => {
+    forceAcquire({ sessionId: 'sess-owned', mode: 'deep', repoRoot });
+
+    const onDisk = JSON.parse(readFileSync(join(repoRoot, LOCK_PATH), 'utf8'));
+    expect('session_id' in onDisk).toBe(true);
+    expect(onDisk.session_id).toBe('sess-owned');
+  });
+});

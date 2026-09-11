@@ -3,6 +3,9 @@
 The campaign film in `site/video/session-orchestrator-film.mp4` was not rendered with
 Remotion. Remotion moves a camera over one still image (`marketing/remotion/src/ProductionScene.tsx`
 says so in its own comment); vidlab generates the motion itself, through an image-to-video model.
+The finished film is embedded on the site itself, in the `#loop` section of `site/index.html`
+and `site/de/index.html` (https://session-orchestrator.com/#loop) — the README link points at
+the raw file, this one at how it plays in place.
 
 Everything here is shell plus ffmpeg plus one Python file. No new runtime dependency enters
 the plugin or the website.

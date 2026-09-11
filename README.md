@@ -13,7 +13,7 @@ Plan the work. Run it in checked waves. Pick up where you left off. Session Orch
 
 ![One work item passes an automatic check; the one that fails is sent back](site/video/gate-readme.webp)
 
-[34-second film](site/video/session-orchestrator-film.mp4) · [22-second camera preview](site/video/session-orchestrator-4.3-preview.mp4) · [How the film is made](marketing/vidlab/README.md)
+[34-second film](site/video/session-orchestrator-film.mp4) · [watch it embedded on the site](https://session-orchestrator.com/#loop) · [22-second camera preview](site/video/session-orchestrator-4.3-preview.mp4) · [How the film is made](marketing/vidlab/README.md)
 
 The film shows the workflow: read first, then build in parallel lanes, check every step, send back what fails, and step in where it matters. Illustrations are generated with AI. The 22-second preview covers the planned 4.3 campaign; the current published release is 4.2.0.
 

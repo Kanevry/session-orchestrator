@@ -79,6 +79,8 @@ Value: <dimension if applicable>
 
 ### Probe: design-drift
 
+> **Naming collision — unresolved (2026-09-11).** This probe, specified below, is agent-based: Pencil MCP tools, qualitative visual comparison, no fixed detection script. GitLab issue #1300 (`projects-baseline` design-first Pencil-token-contract epic, scope item B3-Wrapper) plans `skills/discovery/probes/design-drift.mjs` — a *second*, mechanical, git-only probe under the identical name `design-drift`, sourced from a staleness script in the sibling `projects-baseline` repo — and explicitly proposes replacing this section (lines 79–107 at the time of writing) with that new spec. Whether the two converge, take distinct names, or one supersedes the other is a naming/design decision for whoever implements #1300; it is not decided here. Resolve the name before writing any code against either contract.
+
 **Activation:** Pencil MCP configured in Session Config (`pencil` path provided, e.g. `pencil: designs/app.pen`).
 
 **Detection Method:**

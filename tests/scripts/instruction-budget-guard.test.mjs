@@ -24,6 +24,7 @@ import {
   computeInstructionBudget,
   checkInstructionBudget,
   DEFAULT_GENERATED_BYTE_CEILING,
+  DEFAULT_PATH_SCOPED_BYTE_CEILING,
   loadInstructionBudgetConfig,
   _parseInstructionBudget,
   countDirectives,
@@ -579,12 +580,13 @@ describe('computeInstructionBudget — bySurface context-independence, asymmetri
       coordinator: TIER_ALWAYS_BYTES + TIER_COORD_BIG_BYTES + TIER_UNTAGGED_BYTES, // 70
       wave: TIER_ALWAYS_BYTES + TIER_WAVE_BYTES + TIER_UNTAGGED_BYTES, // 14
       always: TIER_ALWAYS_BYTES, // 5
-      // The fixture's rules all carry `globs:`? No — makeAsymmetricTierFixture
-      // builds always-on files only, so the path-scoped surface is empty. It is
-      // pinned here (rather than omitted) because this assertion is a strict
-      // toEqual on the whole bySurface object: leaving it out would make the
-      // test fail for a reason unrelated to what it is measuring.
+      // makeAsymmetricTierFixture builds always-on files with no provenance
+      // markers, so BOTH corpus surfaces are empty here. They are pinned
+      // (rather than omitted) because this assertion is a strict toEqual on the
+      // whole bySurface object: leaving them out would make the test fail for a
+      // reason unrelated to what it is measuring.
       generated: { bytes: 0, files: 0 },
+      pathScoped: { bytes: 0, files: 0 },
     };
 
     expect(withWave.bySurface).toEqual(expectedBySurface);
@@ -972,12 +974,20 @@ describe('never throws on a missing rulesDir', () => {
       ceiling: 480,
       byteCeiling: 121000,
       generatedByteCeiling: DEFAULT_GENERATED_BYTE_CEILING,
+      pathScopedByteCeiling: DEFAULT_PATH_SCOPED_BYTE_CEILING,
       overDirectiveBudget: false,
       overByteBudget: false,
       overGeneratedBudget: false,
+      overPathScopedBudget: false,
       overBudget: false,
       severity: 'ok',
-      bySurface: { coordinator: 0, wave: 0, always: 0, generated: { bytes: 0, files: 0 } },
+      bySurface: {
+        coordinator: 0,
+        wave: 0,
+        always: 0,
+        generated: { bytes: 0, files: 0 },
+        pathScoped: { bytes: 0, files: 0 },
+      },
     });
   });
 
@@ -1228,16 +1238,39 @@ describe('computeInstructionBudget — path-scoped surface (generated-rule growt
    * Returns the fixture dir plus the exact byte figures, so the assertions
    * below never re-derive a number from the production heuristic.
    */
-  function makeMixedFixture(n, bodyBytes) {
+  function makeMixedFixture(n, bodyBytes, opts = {}) {
     const dir = mkdtempSync(join(tmpdir(), 'instr-budget-generated-'));
     tmpDirs.push(dir);
     // Always-on: no globs:/paths: frontmatter at all.
     writeFileSync(join(dir, 'always-on.md'), '# Always\n\n- one directive\n');
     const body = 'x'.repeat(bodyBytes);
     for (let i = 0; i < n; i += 1) {
+      // A rule as `reconcile/renderer.mjs` actually emits it: `globs:` PLUS the
+      // provenance keys. The markers are what makes it "generated" (#1297) —
+      // `globs:` alone is a property thousands of hand-written rules share.
       writeFileSync(
         join(dir, `generated-${i}.md`),
-        ['---', 'globs:', '  - "scripts/**"', '---', '', body, ''].join('\n'),
+        [
+          '---',
+          'auto-generated: true',
+          'globs:',
+          '  - "scripts/**"',
+          `learning-key: anti-pattern/fixture-${i}`,
+          'expires-at: 2099-01-01',
+          '---',
+          '',
+          body,
+          '',
+        ].join('\n'),
+      );
+    }
+    // Optional hand-written, `globs:`-scoped rules — no provenance markers.
+    // This is the shape that made `.claude/rules/testing.md` (36,252 B) count
+    // as "generated" in production before #1297.
+    for (let i = 0; i < (opts.handwritten ?? 0); i += 1) {
+      writeFileSync(
+        join(dir, `handwritten-${i}.md`),
+        ['---', 'globs:', '  - "tests/**"', '---', '', 'y'.repeat(opts.handwrittenBytes ?? bodyBytes), ''].join('\n'),
       );
     }
     return dir;
@@ -1287,7 +1320,7 @@ describe('computeInstructionBudget — path-scoped surface (generated-rule growt
     });
 
     expect(banner).not.toBeNull();
-    expect(banner.message).toContain('path-scoped');
+    expect(banner.message).toContain('generated rules');
     expect(banner.message).toContain('over 3 files');
     expect(banner.message).toContain('> 100 B');
   });
@@ -1308,5 +1341,161 @@ describe('computeInstructionBudget — path-scoped surface (generated-rule growt
 
     expect(result.bySurface.generated).toEqual({ bytes: 0, files: 0 });
     expect(result.overGeneratedBudget).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // #1297 — THE BUG THESE CATCH, which nothing above could:
+  // `bySurface.generated` was computed as "every file with globs:/paths:", so a
+  // HAND-WRITTEN path-scoped rule counted against a ceiling that exists for
+  // MACHINE output. In production that was .claude/rules/testing.md — 36,252 B,
+  // zero provenance markers, 29.3 % of the 124,000 B ceiling — which left 253 B
+  // of headroom and would have turned tests/rules/receiving-review.test.mjs red
+  // on the next /reconcile run. No diet of the generated corpus could have
+  // fixed it, because the dominant file was never generated.
+  //
+  // Every fixture in this file before #1297 gave its path-scoped files `globs:`
+  // and nothing else, so "generated" and "path-scoped" were indistinguishable
+  // by construction and the defect was structurally untestable.
+  // -------------------------------------------------------------------------
+  it('excludes a hand-written globs:-scoped rule from the generated corpus (#1297)', () => {
+    // 2 generated @ 500 B + 1 hand-written @ 4000 B — the production shape in
+    // miniature: the hand-written file DOMINATES the path-scoped byte total.
+    const rulesDir = makeMixedFixture(2, 500, { handwritten: 1, handwrittenBytes: 4000 });
+
+    const result = computeInstructionBudget({ rulesDir });
+
+    // The corrected population: only the two provenance-marked files.
+    expect(result.bySurface.generated.files).toBe(2);
+    expect(result.bySurface.generated.bytes).toBeLessThan(1500);
+
+    // The old measurement survives under its honest name — all three files.
+    expect(result.bySurface.pathScoped.files).toBe(3);
+    expect(result.bySurface.pathScoped.bytes).toBeGreaterThan(4500);
+
+    // …and the two are NOT the same number. Asserting this explicitly is what
+    // makes the test go red if the two populations are ever re-merged.
+    expect(result.bySurface.generated.bytes).not.toBe(result.bySurface.pathScoped.bytes);
+  });
+
+  it('does not breach the generated ceiling on hand-written bulk alone (#1297 regression)', () => {
+    // Ceiling 2000 B: the 2 generated files (~1000 B) are comfortably under it;
+    // the hand-written 4000 B file alone exceeds it. Under the pre-#1297
+    // population this call reported overGeneratedBudget === true.
+    const rulesDir = makeMixedFixture(2, 500, { handwritten: 1, handwrittenBytes: 4000 });
+
+    const result = computeInstructionBudget({ rulesDir, generatedByteCeiling: 2000 });
+
+    expect(result.bySurface.pathScoped.bytes).toBeGreaterThan(2000);
+    expect(result.overGeneratedBudget).toBe(false);
+    expect(result.overBudget).toBe(false);
+    expect(result.severity).toBe('ok');
+  });
+
+  it('counts a generated rule by its provenance markers, not by globs: (learning-key only)', () => {
+    // A rule carrying provenance but NO globs: — e.g. a host-class-activated
+    // one. It is generated (counts) and not path-scoped (does not).
+    const dir = mkdtempSync(join(tmpdir(), 'instr-budget-prov-only-'));
+    tmpDirs.push(dir);
+    writeFileSync(
+      join(dir, 'prov-only.md'),
+      ['---', 'learning-key: anti-pattern/no-globs', 'expires-at: 2099-01-01', '---', '', 'z'.repeat(300), ''].join('\n'),
+    );
+
+    const result = computeInstructionBudget({ rulesDir: dir });
+
+    expect(result.bySurface.generated.files).toBe(1);
+    expect(result.bySurface.generated.bytes).toBeGreaterThan(290);
+    expect(result.bySurface.pathScoped).toEqual({ bytes: 0, files: 0 });
+  });
+
+  // -------------------------------------------------------------------------
+  // #1297 follow-up — THE BUG THESE CATCH, which none of the cases above can:
+  // the population fix gave `pathScoped` a NAME and no THRESHOLD. Measured on
+  // the working tree 2026-09-11: generated 87,336 B / 8 files (under 124,000 →
+  // ok) while pathScoped stood at 134,969 B / 11 files — 10,969 B over the
+  // very number this population was judged against until that commit, with no
+  // comparison anywhere in the tree (`rg -n "pathScoped" scripts/ tests/
+  // CHANGELOG.md` → 23 hits, 0 ceiling comparisons). Replaying `git show
+  // c73c094f:scripts/lib/instruction-budget-guard.mjs` against TODAY's corpus
+  // returns severity 'warn'; the corrected module returned 'ok'. Coverage was
+  // lost silently, which is exactly what HR-105 forbids.
+  // -------------------------------------------------------------------------
+  it('flags a path-scoped corpus over its own ceiling (the axis that previously had none)', () => {
+    // Hand-written bulk dominates: pathScoped ~5,000 B, generated ~1,000 B.
+    const rulesDir = makeMixedFixture(2, 500, { handwritten: 1, handwrittenBytes: 4000 });
+
+    const result = computeInstructionBudget({ rulesDir, pathScopedByteCeiling: 2000 });
+
+    expect(result.bySurface.pathScoped.bytes).toBeGreaterThan(2000);
+    expect(result.overPathScopedBudget).toBe(true);
+    // The generated axis is healthy on the same corpus — proving the new flag
+    // is driven by its OWN population, not by a sibling axis leaking into it.
+    expect(result.overGeneratedBudget).toBe(false);
+  });
+
+  it('stays silent when the path-scoped corpus is under its ceiling (the falsifying direction)', () => {
+    const rulesDir = makeMixedFixture(2, 500, { handwritten: 1, handwrittenBytes: 4000 });
+
+    const result = computeInstructionBudget({ rulesDir, pathScopedByteCeiling: 50_000 });
+
+    expect(result.bySurface.pathScoped.bytes).toBeLessThan(50_000);
+    expect(result.overPathScopedBudget).toBe(false);
+    expect(result.severity).toBe('ok');
+  });
+
+  it('does NOT fold the path-scoped axis into overBudget (deliberate, see the constant docblock)', () => {
+    // The live corpus is over this ceiling TODAY. Folding the flag into the
+    // aggregate verdict would decide, by omission, whether the corpus or the
+    // ceiling has to move — and would turn the current tree's verdict red.
+    // This assertion is the tripwire for an accidental fold-in.
+    const rulesDir = makeMixedFixture(2, 500, { handwritten: 1, handwrittenBytes: 4000 });
+
+    const result = computeInstructionBudget({ rulesDir, pathScopedByteCeiling: 2000 });
+
+    expect(result.overPathScopedBudget).toBe(true);
+    expect(result.overDirectiveBudget).toBe(false);
+    expect(result.overByteBudget).toBe(false);
+    expect(result.overGeneratedBudget).toBe(false);
+    expect(result.overBudget).toBe(false);
+    expect(result.severity).toBe('ok');
+  });
+
+  it('raises no banner on a path-scoped breach alone, but names it when another axis already did', () => {
+    const emptyRoot = mkdtempSync(join(tmpdir(), 'instr-budget-pathscoped-banner-'));
+    tmpDirs.push(emptyRoot);
+    const rulesDir = makeMixedFixture(2, 500, { handwritten: 1, handwrittenBytes: 4000 });
+
+    // Path-scoped alone → silent. A line at every session start on a corpus
+    // that is permanently over is the broken instrument HR-101 describes.
+    expect(
+      checkInstructionBudget({ repoRoot: emptyRoot, rulesDir, pathScopedByteCeiling: 2000 }),
+    ).toBeNull();
+
+    // Generated axis breaches too → the banner renders and carries the
+    // path-scoped figure as an explicitly non-blocking clause.
+    const banner = checkInstructionBudget({
+      repoRoot: emptyRoot,
+      rulesDir,
+      pathScopedByteCeiling: 2000,
+      generatedByteCeiling: 100,
+    });
+
+    expect(banner).not.toBeNull();
+    expect(banner.message).toContain('generated rules');
+    expect(banner.message).toContain('path-scoped rules');
+    expect(banner.message).toContain('over 3 files');
+    expect(banner.message).toContain('(not blocking)');
+  });
+
+  it('defaults the path-scoped ceiling to the module constant when no opt is passed', () => {
+    // Guards the derivation: a default that silently became `undefined` would
+    // make `bytes > undefined` false forever — a fail-open no test would see.
+    const rulesDir = makeMixedFixture(2, 500, { handwritten: 1, handwrittenBytes: 4000 });
+
+    const result = computeInstructionBudget({ rulesDir });
+
+    expect(result.pathScopedByteCeiling).toBe(DEFAULT_PATH_SCOPED_BYTE_CEILING);
+    expect(DEFAULT_PATH_SCOPED_BYTE_CEILING).toBeGreaterThan(10_000);
+    expect(result.overPathScopedBudget).toBe(false);
   });
 });

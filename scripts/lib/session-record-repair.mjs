@@ -42,6 +42,14 @@
  * had defaulted, which is what lets a downstream consumer tell a measured zero
  * apart from a repaired-to-zero.
  *
+ * It also never DISCARDS what it replaces: any field whose present value is
+ * overwritten by a default is first copied to a `_<field>_raw` sidecar
+ * (`preserveRaw`, same convention and same non-clobber guard as
+ * `session-schema/normalizer.mjs`'s `_express_path_detail`). Without it the
+ * repair was itself a data-loss event — 7 of 40 records in the
+ * `projects-baseline` ledger (S119, 2026-09-10) lost narrative `agent_summary`
+ * strings and `total_files_changed` path lists to `{...0}` / `0`.
+ *
  * Plain Node ESM. Named exports. DI-friendly via `deps`.
  *
  * Cross-references:
@@ -112,6 +120,70 @@ function orderIncompleteFields(fields) {
   return [...fields].sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
 }
 
+/**
+ * Preserve the pre-repair value of `key` under a `_<key>_raw` sidecar BEFORE a
+ * default overwrites it.
+ *
+ * Convention lifted from `session-schema/normalizer.mjs`
+ * (`_express_path_detail`, `if (!('_express_path_detail' in next))`) — but its
+ * non-clobber guard is keyed on WHO WROTE the sidecar, not on its mere presence.
+ * That distinction is the fix for a measured data-loss bug (2026-09-11): the
+ * presence guard read `out`, and `out = { ...record }` carries the INPUT's key
+ * space, so a record arriving with its own `_agent_summary_raw` kept that
+ * unverifiable value and dropped the real `agent_summary` the repair was about
+ * to overwrite:
+ *
+ *   in:  agent_summary: 'ECHTE NARRATIVE ZUSAMMENFASSUNG',
+ *        _agent_summary_raw: 'ANGREIFER-WERT'
+ *   out: _agent_summary_raw = 'ANGREIFER-WERT'   ← the real value was gone
+ *
+ * That is the mirror image of the promise this module's docblock makes, in the
+ * one case where the promise matters. So: `rescued` — a per-`repairRecord()`-call
+ * Set of sidecar keys THIS pass has written — replaces `sidecar in out`. A value
+ * that is provably real RIGHT NOW always outranks a sidecar of unknown origin.
+ *
+ * The multi-pass concern the old comment named is not what kept the sidecar
+ * safe, and was measured unreachable: after run 1 the field holds a VALID
+ * default, so run 2 records no defect for it and never calls preserveRaw at all
+ * (measured: `repairRecord(repairRecord(x).record).changed === false`, defects
+ * `[]`, sidecar intact). Within ONE pass the Set still gives first-write-wins,
+ * which is what the two branches per field (waves, agent_summary) rely on.
+ *
+ * NAMED CEILING (BV-004): if a record is RE-CORRUPTED with a different real
+ * value for the same key BETWEEN two repair runs, run 2's original wins and run
+ * 1's rescue is dropped. Reaching it requires corruption after a repair; the
+ * alternative — trusting an input-supplied sidecar over a value that is
+ * demonstrably real — is the bug above. Revisit if a ledger is ever repaired
+ * in a loop that can re-break the same key.
+ *
+ * Motivation is measured, not hypothetical: 7 of 40 repaired records in the
+ * `projects-baseline` ledger (S119, 2026-09-10) carried narrative strings in
+ * `agent_summary` and path lists in `total_files_changed`; both were replaced
+ * by `{...0}` / `0` and had to be restored by hand. This module's own docblock
+ * promises "nothing is invented" — discarding an unreadable original is the
+ * mirror-image violation of that promise.
+ *
+ * `undefined` and `null` are NOT preserved: an absent field has nothing to
+ * lose (the defect classes are named `*_absent` / `*_missing` for exactly that
+ * reason), and `JSON.stringify` drops an `undefined` sidecar anyway.
+ *
+ * The sidecars are schema-safe: `validateSession` has no unknown-key rejection
+ * (see `validator.mjs` — every `_validate*` helper checks named fields only),
+ * and `serializeSessionLineChecked` round-trips extra keys untouched.
+ *
+ * @param {Record<string, any>} out — the mutable repaired copy
+ * @param {string} key — the field about to be defaulted
+ * @param {any} rawValue — its ORIGINAL value (read from the untouched input)
+ * @param {Set<string>} rescued — sidecar keys already written by THIS call
+ */
+function preserveRaw(out, key, rawValue, rescued) {
+  if (rawValue === undefined || rawValue === null) return;
+  const sidecar = `_${key}_raw`;
+  if (rescued.has(sidecar)) return;
+  out[sidecar] = rawValue;
+  rescued.add(sidecar);
+}
+
 /** Compact ISO stamp for backup filenames: `20260805T091500Z`. */
 export function backupStamp(date = new Date()) {
   return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
@@ -143,6 +215,9 @@ export function repairRecord(record) {
   const out = { ...record };
   const defects = [];
   const incomplete = new Set();
+  // Sidecar keys written by THIS pass — the provenance the non-clobber guard
+  // needs. `out`'s own key space cannot serve: it is the INPUT's. See preserveRaw.
+  const rescued = new Set();
 
   // -- waves ----------------------------------------------------------------
   // A NUMBER here is not garbage: it IS the wave count, written by an older
@@ -158,6 +233,7 @@ export function repairRecord(record) {
     } else {
       defects.push('waves_not_array');
     }
+    preserveRaw(out, 'waves', record.waves, rescued);
     out.waves = [];
     incomplete.add('waves');
   }
@@ -173,6 +249,11 @@ export function repairRecord(record) {
   if (out.waves.length > 0 && out.waves.every(isPlainObject)) {
     const needsRenumber = out.waves.some((w) => !isCount(w.wave) || w.wave < 1);
     if (needsRenumber) {
+      // The ORIGINAL ordinals are not recoverable from the renumbered output
+      // (the input may mix valid, absent and 0-based `wave` values), so the
+      // pre-renumber array is preserved whole — same sidecar as the
+      // not-an-array branch above, which cannot have fired on this path.
+      preserveRaw(out, 'waves', record.waves, rescued);
       out.waves = out.waves.map((w, i) => ({ ...w, wave: i + 1 }));
       defects.push('wave_index_invalid');
       incomplete.add('waves[].wave');
@@ -181,6 +262,7 @@ export function repairRecord(record) {
 
   // -- total_waves ----------------------------------------------------------
   if (!isCount(out.total_waves)) {
+    preserveRaw(out, 'total_waves', record.total_waves, rescued);
     out.total_waves = wavesNumber !== null ? wavesNumber : out.waves.length;
     defects.push('total_waves_missing');
     incomplete.add('total_waves');
@@ -188,12 +270,18 @@ export function repairRecord(record) {
 
   // -- agent_summary --------------------------------------------------------
   if (!isPlainObject(out.agent_summary)) {
+    preserveRaw(out, 'agent_summary', record.agent_summary, rescued);
     out.agent_summary = { complete: 0, partial: 0, failed: 0, spiral: 0 };
     defects.push('agent_summary_absent');
     incomplete.add('agent_summary');
   } else {
     const missing = AGENT_SUMMARY_FIELDS.filter((f) => !isCount(out.agent_summary[f]));
     if (missing.length > 0) {
+      // Preserve the WHOLE original summary object rather than one sidecar per
+      // defaulted counter: it carries every original field value at once and
+      // keeps the sidecar namespace flat (`_agent_summary.spiral_raw` would be
+      // a second, uglier convention for the same job).
+      preserveRaw(out, 'agent_summary', record.agent_summary, rescued);
       out.agent_summary = { ...out.agent_summary };
       for (const f of missing) {
         out.agent_summary[f] = 0;
@@ -209,6 +297,7 @@ export function repairRecord(record) {
 
   // -- total_agents ---------------------------------------------------------
   if (!isCount(out.total_agents)) {
+    preserveRaw(out, 'total_agents', record.total_agents, rescued);
     // Prefer the record's own evidence: an agent_summary PRESENT in the
     // original sums to the real agent count (live line 71 sums to 30 where
     // waves.length is 5 — W2/A4 review finding). Fall back to waves.length
@@ -226,6 +315,7 @@ export function repairRecord(record) {
 
   // -- total_files_changed --------------------------------------------------
   if (!isCount(out.total_files_changed)) {
+    preserveRaw(out, 'total_files_changed', record.total_files_changed, rescued);
     out.total_files_changed = 0;
     defects.push('total_files_changed_missing');
     incomplete.add('total_files_changed');
@@ -239,6 +329,7 @@ export function repairRecord(record) {
   // i.e. "unknown", and flagged as such. NEVER the next record's timestamp:
   // the ledger is not chronologically ordered (see the module docblock).
   if (typeof out.completed_at !== 'string' && typeof out.started_at === 'string') {
+    preserveRaw(out, 'completed_at', record.completed_at, rescued);
     const endedMs = typeof out.ended_at === 'string' ? Date.parse(out.ended_at) : NaN;
     const startedMs = Date.parse(out.started_at);
     out.completed_at =

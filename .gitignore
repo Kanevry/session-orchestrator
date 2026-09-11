@@ -119,6 +119,14 @@ coverage/
 # Lock-reaper archives (#724 C7) embed os.hostname() + session metadata, and
 # session-close-backfill (#724 C1) idempotency markers are runtime-only —
 # never committable on a public repo (security-review 2026-07-02, MED).
+# This is also the canonical scratch location for coordinator work files in
+# general (draft prompts, ad-hoc probes): unlike /tmp it survives a --resume,
+# and it is the only place a work file is guaranteed untracked everywhere a
+# copy of this tree exists — a file dropped outside it can stay untracked
+# locally while a host that mirrors the working copy tracks it, so a scanner
+# keyed on `git ls-files` (e.g. check-owner-leakage.mjs) sees it there but not
+# here (measured 2026-09-11; same tracked/untracked asymmetry documented in
+# .claude/rules/security.md § Owner-Privacy Pre-Commit Hook).
 .orchestrator/tmp/
 .orchestrator/metrics/.backfilled-*.marker
 
@@ -176,3 +184,8 @@ sig-audit.err
 
 # worktree-promotion marker written by enterWorktree (#1069/#1067) — per-worktree fact, not source
 .orchestrator/promoted-from.json
+
+# Native Pencil-Quelldateien (#1304) — bleiben bewusst host-lokal: ein Scanner-Fund
+# steckt in Metadaten, die die Node-API nicht editieren kann. Exporte und Assets
+# sind versioniert, die .pen selbst nie.
+*.pen

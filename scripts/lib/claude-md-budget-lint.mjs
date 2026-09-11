@@ -63,7 +63,8 @@
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { basename, resolve } from 'node:path';
+import { basename, resolve, sep } from 'node:path';
+import { homedir } from 'node:os';
 import { resolveInstructionFile } from './common.mjs';
 import { isSessionConfigHeading } from './config/section-extractor.mjs';
 
@@ -317,6 +318,36 @@ export function lintClaudeMd(opts = {}) {
  * @param {number} [opts.maxLineChars] forwarded to lintClaudeMd (default DEFAULT_MAX_LINE_CHARS).
  * @returns {{ severity: 'warn', message: string } | null}
  */
+/**
+ * Replace a leading home-directory prefix with the literal `$HOME`.
+ *
+ * Why `$HOME` and not `~`: the banner emits the path inside DOUBLE QUOTES, and
+ * no POSIX shell expands a tilde inside double quotes — `node "~/x.mjs"` fails,
+ * `node "$HOME/x.mjs"` works. Why not `path.relative(repoRoot, __filename)`
+ * (the first proposal): measured 2026-09-11, it only redacts when the repo and
+ * the plugin share a home ancestor —
+ *   repoRoot `~/Projects/bewerbungs-assistent`, plugin under `~/.claude/plugins`
+ *     → `../../.claude/plugins/…` (private, 98 chars)
+ *   repoRoot on a tmp/other volume, plugin under the home dir
+ *     → `../../../../Users/<name>/.claude/…` (LEAKS, and longer)
+ * and it is cwd-bound, which contradicts the `--repo-root` echo whose whole
+ * purpose is cwd-independence. `$HOME` collapse is unconditional, cwd-free, and
+ * leaks nothing in either case.
+ *
+ * A path OUTSIDE the home directory is returned unchanged — it carries no
+ * username to redact, and rewriting it would break the command.
+ *
+ * @param {string} p absolute path
+ * @returns {string} `p` with a leading `homedir()` replaced by `$HOME`
+ */
+function homeCollapsed(p) {
+  const home = homedir();
+  if (typeof p !== 'string' || home.length === 0) return p;
+  if (p === home) return '$HOME';
+  if (p.startsWith(home + sep)) return '$HOME' + p.slice(home.length);
+  return p;
+}
+
 export function checkClaudeMdBudgetLint(opts = {}) {
   const repoRoot = opts.repoRoot ?? process.cwd();
 
@@ -343,9 +374,28 @@ export function checkClaudeMdBudgetLint(opts = {}) {
   if (!result || result.violations.length === 0) return null;
 
   const ruleNames = [...new Set(result.violations.map((v) => v.rule))].join(', ');
+  // The hint MUST name a path the operator can actually run — `scripts/lib/…`
+  // repo-root-relative is only valid inside THIS repo's own checkout. A
+  // consumer repo has no such file: it either has no `scripts/lib/` at all,
+  // or a foreign one. `__filename` (module-scope, see the CLI section below)
+  // is the absolute path of the module that is EXECUTING RIGHT NOW — it is
+  // never wrong, because we could not be inside this function otherwise, and
+  // it needs no plugin-root lookup at all (no env var, no marketplace-cache
+  // scan, no "not resolvable" case to handle — see plugin-update-banner.mjs's
+  // module docstring for why guessing a plugin root from an env var is the
+  // WRONG move here: `$CLAUDE_PLUGIN_ROOT` can name a checkout that differs
+  // from the code that is actually loaded and running). `repoRoot` is echoed
+  // back too, so the copied command re-lints the exact file this banner
+  // reports on regardless of the operator's cwd when they paste it.
+  // PRIVACY (2026-09-11): the same message line already redacts `filePath` via
+  // `basename()`, while `__filename` and `repoRoot` went out verbatim — both
+  // CP1-shaped (`/Users/<name>/…`) on a personal host. The banner's route into
+  // public view is copy-paste into an issue or an agent report, the documented
+  // "agent reports carry private slugs" class. `homeCollapsed()` keeps the
+  // command EXECUTABLE (so #1302 stays closed) while dropping the username.
   const message =
     `⚠ CLAUDE.md budget lint: ${result.violations.length} violation(s) (${ruleNames}) in ${basename(filePath)} — ` +
-    `run \`node scripts/lib/claude-md-budget-lint.mjs --mode warn\` for details.`;
+    `run \`node "${homeCollapsed(__filename)}" --repo-root "${homeCollapsed(repoRoot)}" --mode warn\` for details.`;
 
   return { severity: 'warn', message };
 }

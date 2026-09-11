@@ -362,3 +362,113 @@ describe('rule-scoping — unreadable-file probe (warning)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Probe 6 — fleet-intent-glob (note, not warning)
+//
+// Bug this block catches (TV-001), one per test:
+//   1. A glob declared `fleet-intent-globs:` still produces a zero-match
+//      WARNING — the recurring false positive that on 2026-09-09 made an agent
+//      DELETE `**/*Tests*` from .claude/rules/testing.md (reverted after
+//      tests/skills/config-reading-glob-rules.test.mjs went red, #445).
+//   2. The exemption becomes a GENERAL AMNESTY: declaring one pattern silences
+//      a genuinely dead SIBLING glob in the same rule file.
+//   3. The removed built-in #445 seed comes BACK as a checker-side exemption
+//      list: a rule file named `testing.md` that declares nothing would then
+//      be amnestied silently, without the declaration living with the rule.
+//      (The live #445 case now declares `fleet-intent-globs:` in
+//      .claude/rules/testing.md itself; that file's glob stays pinned by
+//      tests/skills/config-reading-glob-rules.test.mjs.)
+//   4. The exemption is silent instead of informative — a suppressed finding
+//      carries no information, so `notes[]` must name the pattern.
+// ---------------------------------------------------------------------------
+
+describe('rule-scoping — fleet-intent-glob probe (note, not warning)', () => {
+  it('reports a declared zero-match glob in notes[] instead of warnings[]', () => {
+    const rulesDir = makeRulesDir();
+    writeFileSync(
+      join(rulesDir, 'scoped.md'),
+      '---\nglobs:\n  - "**/*Tests*"\nfleet-intent-globs:\n  - "**/*Tests*"\n---\n\n# Scoped Rule\n',
+    );
+
+    const r = runChecker(vault);
+
+    expect(r.code).toBe(0);
+    const j = parseJson(r.stdout);
+    expect(
+      j.warnings.filter((w) => w.check === 'rule-scoping' && w.extracted === '**/*Tests*'),
+    ).toHaveLength(0);
+    const notes = j.notes.filter((n) => n.probe === 'fleet-intent-glob');
+    expect(notes).toHaveLength(1);
+    expect(notes[0].extracted).toBe('**/*Tests*');
+    expect(notes[0].source).toBe('frontmatter');
+    expect(notes[0].file).toBe('.claude/rules/scoped.md');
+    // Information, not suppression: the note names the local match count.
+    expect(notes[0].message).toContain('0 tracked files');
+  });
+
+  it('does NOT amnesty a sibling dead glob in the same rule file', () => {
+    const rulesDir = makeRulesDir();
+    writeFileSync(
+      join(rulesDir, 'scoped.md'),
+      '---\nglobs:\n  - "**/*Tests*"\n  - src/nonexistent/**\n'
+        + 'fleet-intent-globs:\n  - "**/*Tests*"\n---\n\n# Scoped Rule\n',
+    );
+
+    const r = runChecker(vault);
+
+    expect(r.code).toBe(0);
+    const j = parseJson(r.stdout);
+    const warns = j.warnings.filter((w) => w.check === 'rule-scoping');
+    expect(warns).toHaveLength(1);
+    expect(warns[0].extracted).toBe('src/nonexistent/**');
+    expect(warns[0].message).toContain('0 tracked files');
+  });
+
+  it('accepts the flow-style declaration form', () => {
+    const rulesDir = makeRulesDir();
+    writeFileSync(
+      join(rulesDir, 'scoped.md'),
+      '---\nglobs:\n  - "**/*.cs"\nfleet-intent-globs: ["**/*.cs"]\n---\n\n# Scoped Rule\n',
+    );
+
+    const r = runChecker(vault);
+
+    const j = parseJson(r.stdout);
+    expect(j.warnings.filter((w) => w.check === 'rule-scoping')).toHaveLength(0);
+    expect(j.notes.filter((n) => n.probe === 'fleet-intent-glob')).toHaveLength(1);
+  });
+
+  it('has NO built-in exemption: an undeclared testing.md still warns', () => {
+    // Post-migration guard (the former `source=builtin` seed test). The
+    // frontmatter path is already covered by the first and third cases here,
+    // so re-asserting it would only duplicate them (TV-004); what needs a test
+    // is that the checker carries no file-name-keyed exemption any more.
+    const rulesDir = makeRulesDir();
+    writeFileSync(
+      join(rulesDir, 'testing.md'),
+      '---\nglobs:\n  - "**/*.test.*"\n  - "**/*Tests*"\n---\n\n# Testing Rule\n',
+    );
+
+    const r = runChecker(vault);
+
+    expect(r.code).toBe(0);
+    const j = parseJson(r.stdout);
+    expect(j.notes.filter((n) => n.probe === 'fleet-intent-glob')).toHaveLength(0);
+    const warns = j.warnings.filter((w) => w.check === 'rule-scoping');
+    expect(warns.map((w) => w.extracted).sort()).toEqual(['**/*.test.*', '**/*Tests*']);
+  });
+
+  it('does not exempt the seeded pattern in a DIFFERENT rule file', () => {
+    const rulesDir = makeRulesDir();
+    writeFileSync(join(rulesDir, 'other.md'), '---\nglobs:\n  - "**/*Tests*"\n---\n\n# Other Rule\n');
+
+    const r = runChecker(vault);
+
+    const j = parseJson(r.stdout);
+    expect(j.notes.filter((n) => n.probe === 'fleet-intent-glob')).toHaveLength(0);
+    const warns = j.warnings.filter((w) => w.check === 'rule-scoping');
+    expect(warns).toHaveLength(1);
+    expect(warns[0].extracted).toBe('**/*Tests*');
+  });
+});

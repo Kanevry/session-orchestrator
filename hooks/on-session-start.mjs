@@ -1034,7 +1034,7 @@ async function main() {
 
   // Phase 4 measurement probes — the mechanical caller (#1128).
   //
-  // `skills/session-start/SKILL.md` § Phase 4 names 18 probes with module paths
+  // `skills/session-start/SKILL.md` § Phase 4 names 19 probes with module paths
   // and entry functions. Measured 2026-08-23 at `4f6404e`, not one of them had
   // a caller anywhere in hooks/, npm scripts, .gitlab-ci.yml or .husky/ — the
   // only caller was the prose itself, and across 336 recorded session starts

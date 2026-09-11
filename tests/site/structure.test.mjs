@@ -50,7 +50,12 @@ const metrics = (s) =>
   Object.fromEntries(
     [...s.matchAll(/data-metric="([^"]+)"[^>]*>([^<]*)</g)].map((m) => [m[1], m[2]]),
   );
-const figureSrcs = (s) => all(/<figure\b[^>]*>[\s\S]*?<img\b[^>]*\ssrc="([^"]+)"/g, s);
+// Scoped to ONE figure: the lazy [\s\S]*? used to run past a figure that has no
+// <img> (the campaign-film figure is one) and adopt the next figure's image.
+const figureSrcs = (s) =>
+  [...s.matchAll(/<figure\b[^>]*>([\s\S]*?)<\/figure>/g)]
+    .map((m) => m[1].match(/<img\b[^>]*\ssrc="([^"]+)"/)?.[1])
+    .filter((src) => src !== undefined);
 const countOf = (needle, s) => s.split(needle).length - 1;
 const authorHrefs = (s) => all(/<a\b[^>]*\shref="([^"]+)"[^>]*\srel="author"/g, s);
 const alternates = (s) =>
@@ -61,7 +66,7 @@ const alternates = (s) =>
 /** Root-relative asset references that name a FILE (a dot in the last segment). */
 function assetRefs(html) {
   const refs = new Set();
-  for (const p of all(/(?:src|href)="(\/[^"]*)"/g, html)) refs.add(p);
+  for (const p of all(/(?:src|href|poster)="(\/[^"]*)"/g, html)) refs.add(p);
   for (const set of all(/srcset="([^"]+)"/g, html)) {
     for (const cand of set.split(',')) {
       const url = cand.trim().split(/\s+/)[0];
@@ -272,6 +277,60 @@ describe('site: AI-image disclosure', () => {
       return !/\b(?:AI|KI)\b/.test(caption.replace(/<[^>]*>/g, ' '));
     });
     expect(undisclosed, `${file}: generated figures without visible AI/KI provenance`).toEqual([]);
+  });
+});
+
+describe('site: hero motion-toggle wiring', () => {
+  // site/assets/ui.js:70 — `if (!video || !button || !base) return` bails out
+  // of the whole click-handler wiring with no error when data-video-base is
+  // missing or empty: the motion-toggle button simply never leaves `hidden`.
+  // Nothing else in this file would catch that regression — the EN/DE parity
+  // suite above only compares section ids, data-metric values, figure <img>
+  // srcs and FAQ counts, and this <video> has none of those.
+  const heroArtVideoBase = (html) =>
+    html.match(/<figure class="hero-art">[\s\S]*?<video\b[^>]*\sdata-video-base="([^"]*)"/)?.[1];
+
+  it.each([EN, DE])('%s names a non-empty data-video-base on the hero-art video', (file) => {
+    expect(heroArtVideoBase(read(file)), `${file} hero-art <video data-video-base>`).toBeTruthy();
+  });
+});
+
+describe('site: campaign film embed', () => {
+  // The 34-second film is 18 MB of mp4 next to 16 MB of webm. Two regressions the
+  // rest of this file cannot see, because the block adds no section id, no
+  // data-metric, no faq-item and no <img>:
+  //   1. the film reaches one page only (it lives in hand-copied markup),
+  //   2. it ships with preload="auto"/autoplay and every visitor downloads 18 MB.
+  const FILM = 'session-orchestrator-film';
+  const filmVideo = (html) =>
+    [...html.matchAll(/<video\b[^>]*>[\s\S]*?<\/video>/g)].find((m) => m[0].includes(FILM))?.[0];
+
+  it.each([EN, DE])('%s embeds the film exactly once', (file) => {
+    const html = read(file);
+    expect(countOf(`<source src="/video/${FILM}.webm"`, html), `${file} webm source`).toBe(1);
+    expect(countOf(`<source src="/video/${FILM}.mp4"`, html), `${file} mp4 source`).toBe(1);
+    expect(filmVideo(html)?.includes(`poster="/video/${FILM}-poster.webp"`), `${file} poster`).toBe(
+      true,
+    );
+  });
+
+  it.each([EN, DE])('%s serves the film lazily, with controls and without autoplay', (file) => {
+    const tag = filmVideo(read(file))?.match(/<video\b[^>]*>/)?.[0] ?? '';
+    expect(/\spreload="none"/.test(tag), `${file} film <video> preload`).toBe(true);
+    expect(/\scontrols(?=[\s>])/.test(tag), `${file} film <video> controls`).toBe(true);
+    expect(/\sautoplay(?=[\s>])/.test(tag), `${file} film <video> must not autoplay`).toBe(false);
+  });
+
+  it('names the webm source before the mp4 source on both pages', () => {
+    // Order is the format negotiation: the browser takes the first it can play,
+    // and the webm is ~2 MB smaller.
+    for (const file of [EN, DE]) {
+      const html = read(file);
+      expect(
+        html.indexOf(`/video/${FILM}.webm`) < html.indexOf(`/video/${FILM}.mp4`),
+        `${file} webm must precede mp4`,
+      ).toBe(true);
+    }
   });
 });
 

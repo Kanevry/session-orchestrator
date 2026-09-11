@@ -235,6 +235,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
 .step { padding: 24px 0; border-top: 1px solid var(--line); }
 .step h3 { margin-top: 0; }
 .fig { margin: 0; }.fig img { height: auto; border-radius: var(--radius); }.fig figcaption { color: var(--fg-2); font-size: .75rem; margin-top: 8px; }
+.film { margin-top: 30px; }.film video { display: block; width: 100%; height: auto; border-radius: var(--radius); background: var(--surface); }
 .marginalia { color: var(--fg-2); font-size: .8125rem; border-left: 1px solid var(--line); padding-left: 14px; }
 .sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); clip-path: inset(50%); white-space: nowrap; border: 0; }
 .skip { position: absolute; left: -9999px; top: 0; z-index: 100; background: var(--accent); color: var(--bg); padding: 12px 20px; }
@@ -304,5 +305,5 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
   html { scroll-behavior: auto; }*,*::before,*::after { transition: none !important; animation: none !important; }
 }
 @media print {
-  body { background: #fff; color: #000; }.top { position: static; }.copy,.nav-menu,.hero-art { display: none; }.sec { padding-block: 20px; }.story-sec,.technical-sec,.end,.session-board,.session-heading,.card,.code,.cmd { background: #fff; color: #000; }.phase-body p,.meta,.small,.muted,p,a { color: #000; }.hero-grid,.section-heading,.story-grid { display: block; }
+  body { background: #fff; color: #000; }.top { position: static; }.copy,.nav-menu,.hero-art,.film { display: none; }.sec { padding-block: 20px; }.story-sec,.technical-sec,.end,.session-board,.session-heading,.card,.code,.cmd { background: #fff; color: #000; }.phase-body p,.meta,.small,.muted,p,a { color: #000; }.hero-grid,.section-heading,.story-grid { display: block; }
 }

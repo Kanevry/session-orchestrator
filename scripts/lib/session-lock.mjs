@@ -492,6 +492,11 @@ export function readLockDetailed(opts = {}) {
  *         recorded pids dead, INCLUDING the currently heartbeating session's
  *         own lock), so `stale-pid-alive` was unreachable same-host and every
  *         stale lock rendered as "confirmed dead" in the recovery AUQ.
+ *   { ok: false, reason: 'missing-session-id' }
+ *       — no usable `sessionId` given; NOTHING was written. Same reason string
+ *         and same predicate as forceAcquire() (see its docblock for why an
+ *         ownerless lock is worse than no lock). No `exclusivityClass`: the
+ *         call never reached classification.
  *   { ok: false, reason: 'fs-error', error, exclusivityClass? }
  *       — filesystem failure
  *   { ok: false, reason: 'active-incompatible-exclusive', allActiveSessions, blockingSession, exclusivityClass }
@@ -509,6 +514,28 @@ export function readLockDetailed(opts = {}) {
  * obtaining user consent.
  */
 export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoot, activeSessions, semanticSessionId, quiet = false } = {}) {
+  // -------------------------------------------------------------------------
+  // Ownerless-lock guard. Measured 2026-09-11 in a tmp repoRoot:
+  //   acquire({sessionId: undefined}) -> {ok:true}, lockfile written with NO
+  //   `session_id` key at all; acquire({sessionId: ''}) -> {ok:true}, lockfile
+  //   written with `"session_id": ""`. Both are the exact "present but owned by
+  //   nobody" state forceAcquire()'s docblock below describes: every reader
+  //   compares such a lock against its own id, finds no match, classifies it
+  //   FOREIGN — and foreign is the classification that SKIPS enforcement.
+  //   The guard lived only on forceAcquire(), the rare path (explicit
+  //   stale-lock takeover); acquire() is the primary one. The production
+  //   caller hooks/_lib/lock-bootstrap.mjs gates empty ids upstream, but the
+  //   prose path skills/session-start/references/phase-1-2-session-lock.md
+  //   calls acquire() straight from the coordinator LLM with no gate at all.
+  // Placed FIRST, before classifyMode and before any fs work: nothing is
+  // written. `exclusivityClass` is deliberately absent from this shape — the
+  // caller's class is a property of a call that got far enough to be
+  // classified, and this one did not.
+  // -------------------------------------------------------------------------
+  if (!hasUsableSessionId(sessionId)) {
+    return { ok: false, reason: 'missing-session-id' };
+  }
+
   const lockFile = lockPathFor(repoRoot);
 
   // -------------------------------------------------------------------------
@@ -671,12 +698,45 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
  * Call only after the user has explicitly authorised stale-lock takeover.
  *
  * Returns:
- *   { ok: true, lock, replacedLock? }       — lock written (replacedLock present if one was overwritten)
- *   { ok: false, reason: 'fs-error', ... }  — filesystem failure
+ *   { ok: true, lock, replacedLock? }               — lock written (replacedLock present if one was overwritten)
+ *   { ok: false, reason: 'missing-session-id' }     — no usable `sessionId` given; NOTHING was written
+ *   { ok: false, reason: 'fs-error', ... }          — filesystem failure
+ *
+ * The `missing-session-id` guard is not cosmetic. `buildLock` assigns
+ * `session_id: sessionId` verbatim, and `JSON.stringify` DROPS an `undefined`
+ * value — so a `forceAcquire()` without a sessionId used to write a lock file
+ * carrying no `session_id` key at all. Such a lock is present but owned by
+ * nobody: every reader compares it against its own id, finds no match, and
+ * classifies it as FOREIGN — and foreign is precisely the classification that
+ * skips enforcement. The same failure class is why the wave scope manifest
+ * forbids `"session_id": ""` and requires the key be omitted instead.
+ *
+ * The result SHAPE (not a throw) is deliberate and matches the callers: the
+ * only production call site, `hooks/_lib/lock-bootstrap.mjs`, branches on
+ * `acquireResult.ok !== true` and bails non-blocking; a throw there would be
+ * swallowed by its `catch` and reported as the same `null`, i.e. it would add
+ * no information while breaking the direct `forceAcquire()` calls documented in
+ * `skills/session-start/references/phase-1-2-session-lock.md`.
  *
  * @param {{ sessionId: string, mode: string, ttlHours?: number, repoRoot?: string, semanticSessionId?: string }} args
  */
+/**
+ * A `sessionId` is usable only when it is a non-blank string. ONE predicate,
+ * shared by acquire() and forceAcquire(), so the two entry points cannot drift
+ * apart again — they did: the guard existed on forceAcquire() alone until
+ * 2026-09-11, leaving the primary path able to write an ownerless lock.
+ *
+ * @param {unknown} sessionId
+ * @returns {boolean}
+ */
+function hasUsableSessionId(sessionId) {
+  return typeof sessionId === 'string' && sessionId.trim().length > 0;
+}
+
 export function forceAcquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoot, semanticSessionId } = {}) {
+  if (!hasUsableSessionId(sessionId)) {
+    return { ok: false, reason: 'missing-session-id' };
+  }
   try {
     const replacedLock = readLock({ repoRoot });
     const lock = buildLock({ sessionId, mode, ttlHours, semanticSessionId });

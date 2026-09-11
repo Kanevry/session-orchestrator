@@ -554,3 +554,210 @@ describe('repairLedger — idempotency', () => {
     expect(readFileSync(file, 'utf8')).toBe(GOLDEN_RAW);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Raw-value preservation (#1303 Befund A)
+// ---------------------------------------------------------------------------
+
+describe('repairRecord — a defaulted field keeps its original value in a `_<field>_raw` sidecar', () => {
+  // Bug caught: repairRecord replaced an UNREADABLE-but-real value with a
+  // default and dropped the original on the floor. Measured in the consumer
+  // repo `projects-baseline` (S119, 2026-09-10): 7 of 40 repaired records lost
+  // narrative `agent_summary` strings and `total_files_changed` path lists to
+  // `{complete:0,...}` / `0` and had to be restored by hand. Nothing in the
+  // suite asserted the original survived the repair.
+  //
+  // Parametrised over EVERY `preserveRaw(out, …)` call site in the module
+  // (8 of them, `grep -n "preserveRaw(out" scripts/lib/session-record-repair.mjs`
+  // minus the definition line): each row drives exactly one site. Until 2026-09-11
+  // only `agent_summary` (absent branch) and `total_files_changed` had a positive
+  // case, so removing the rescue line from `waves` (both branches), `total_waves`,
+  // `total_agents`, `completed_at` and the agent_summary FIELD-missing branch left
+  // the suite green — measured 42/42 with five of them deleted.
+  //
+  // Every `defect` value below is deliberately NON-null: `preserveRaw` returns
+  // early on `undefined`/`null`, so a null defect value never reaches the
+  // non-clobber guard and the case would pass against a module with no rescue
+  // at all. The `expectedRaw` assertions are the proof that the guard was
+  // reached — a short-circuited case cannot produce a sidecar.
+  const RESCUE_CASES = [
+    {
+      name: 'waves — a wave list written as prose (not an array)',
+      defect: { waves: 'W1 Discovery, W2 Impl, W3 Review' },
+      sidecar: '_waves_raw',
+      expectedRaw: 'W1 Discovery, W2 Impl, W3 Review',
+      expectedDefect: 'waves_not_array',
+      expectedRepaired: { waves: [] },
+    },
+    {
+      name: 'waves — the pre-renumber array of a 0-based wave list',
+      // Mutually exclusive with the branch above by construction: the renumber
+      // branch only runs when `out.waves` IS an array (the not-an-array branch
+      // replaces it with `[]`, whose length is 0). Hence two input rows.
+      defect: {
+        waves: [
+          { wave: 0, role: 'Coordinator-direct' },
+          { wave: 1, role: 'Impl-Core' },
+        ],
+      },
+      sidecar: '_waves_raw',
+      expectedRaw: [
+        { wave: 0, role: 'Coordinator-direct' },
+        { wave: 1, role: 'Impl-Core' },
+      ],
+      expectedDefect: 'wave_index_invalid',
+      expectedRepaired: {
+        waves: [
+          { wave: 1, role: 'Coordinator-direct' },
+          { wave: 2, role: 'Impl-Core' },
+        ],
+      },
+    },
+    {
+      name: 'total_waves — a count written as a word',
+      defect: { total_waves: 'drei' },
+      sidecar: '_total_waves_raw',
+      expectedRaw: 'drei',
+      expectedDefect: 'total_waves_missing',
+      expectedRepaired: { total_waves: 2 },
+    },
+    {
+      name: 'agent_summary — a narrative string where the counters belong',
+      defect: { agent_summary: '5 agents, 3 complete — see the wave report' },
+      sidecar: '_agent_summary_raw',
+      expectedRaw: '5 agents, 3 complete — see the wave report',
+      expectedDefect: 'agent_summary_absent',
+      expectedRepaired: { agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 } },
+    },
+    {
+      name: 'agent_summary — an object whose counters are unreadable strings',
+      defect: { agent_summary: { complete: 'drei', partial: 0, failed: 0, spiral: 0 } },
+      sidecar: '_agent_summary_raw',
+      expectedRaw: { complete: 'drei', partial: 0, failed: 0, spiral: 0 },
+      expectedDefect: 'agent_summary_field_missing',
+      expectedRepaired: { agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 } },
+    },
+    {
+      name: 'total_agents — a count written as a word',
+      defect: { total_agents: 'viele' },
+      sidecar: '_total_agents_raw',
+      expectedRaw: 'viele',
+      expectedDefect: 'total_agents_missing',
+      expectedRepaired: { total_agents: 3 },
+    },
+    {
+      name: 'total_files_changed — a path list where the count belongs',
+      defect: { total_files_changed: ['scripts/a.mjs', 'scripts/b.mjs'] },
+      sidecar: '_total_files_changed_raw',
+      expectedRaw: ['scripts/a.mjs', 'scripts/b.mjs'],
+      expectedDefect: 'total_files_changed_missing',
+      expectedRepaired: { total_files_changed: 0 },
+    },
+    {
+      name: 'completed_at — an epoch number where the ISO string belongs',
+      defect: { completed_at: 1767258000000 },
+      sidecar: '_completed_at_raw',
+      expectedRaw: 1767258000000,
+      expectedDefect: 'completed_at_missing',
+      expectedRepaired: { completed_at: '2026-01-01T09:00:00.000Z' },
+    },
+  ];
+
+  it.each(RESCUE_CASES)(
+    'rescues the original value of $name',
+    ({ defect, sidecar, expectedRaw, expectedDefect, expectedRepaired }) => {
+      const { record, defects, changed } = repairRecord(baseRecord(defect));
+
+      // Behaviour first: the defect was recognised and the field defaulted …
+      expect(changed).toBe(true);
+      expect(defects).toContain(expectedDefect);
+      for (const [field, value] of Object.entries(expectedRepaired)) {
+        expect(record[field]).toEqual(value);
+      }
+      // … and the value that was replaced is still readable afterwards.
+      expect(record[sidecar]).toEqual(expectedRaw);
+      // The sidecars must not cost schema validity — the repaired record is what
+      // gets serialized back into the ledger.
+      expect(() => validateSession(record)).not.toThrow();
+    }
+  );
+
+  // Bug caught: a SECOND repair pass sees the DEFAULT the first pass wrote and,
+  // without a non-clobber guard, overwrites the rescued original with that
+  // default — destroying on run 2 exactly the evidence it rescued on run 1.
+  // This is the failure mode the `_express_path_detail` convention in
+  // session-schema/normalizer.mjs guards against with `if (!(key in next))`.
+  it('does not overwrite an already-rescued raw value on a second repair run', () => {
+    const input = baseRecord();
+    input.agent_summary = 'narrative, not counters';
+    delete input.total_files_changed;
+
+    const first = repairRecord(input).record;
+    expect(first._agent_summary_raw).toBe('narrative, not counters');
+
+    // Re-break the record the same way a partially-restored ledger line would
+    // be broken, then repair again: the sidecar from run 1 must survive.
+    const reBroken = { ...first, agent_summary: null, total_files_changed: 'nope' };
+    const second = repairRecord(reBroken).record;
+
+    expect(second._agent_summary_raw).toBe('narrative, not counters');
+    expect(second._total_files_changed_raw).toBe('nope');
+  });
+
+  // Bug caught: the non-clobber guard read `out`, and `out = { ...record }` is
+  // the INPUT's key space — so a record arriving with its OWN `_agent_summary_raw`
+  // kept that unverifiable value and the real `agent_summary` (the thing the
+  // repair was about to overwrite) was dropped. Measured against the pre-fix
+  // module, 2026-09-11:
+  //   in:  agent_summary:'ECHTE NARRATIVE ZUSAMMENFASSUNG',
+  //        _agent_summary_raw:'ANGREIFER-WERT'
+  //   out: _agent_summary_raw = 'ANGREIFER-WERT'    ← real value gone
+  // That is the only case in which the docblock's "never DISCARDS what it
+  // replaces" promise does any work, and it was exactly the case that broke it.
+  it('lets the real value outrank a sidecar that arrived WITH the input', () => {
+    const input = baseRecord();
+    input.agent_summary = 'ECHTE NARRATIVE ZUSAMMENFASSUNG';
+    input._agent_summary_raw = 'ANGREIFER-WERT';
+
+    const { record } = repairRecord(input);
+
+    // Behaviour first: the value being destroyed is the one that survives.
+    expect(record._agent_summary_raw).toBe('ECHTE NARRATIVE ZUSAMMENFASSUNG');
+    expect(record.agent_summary).toEqual({ complete: 0, partial: 0, failed: 0, spiral: 0 });
+    expect(() => validateSession(record)).not.toThrow();
+  });
+
+  // Bug caught: the guard that protects a rescued sidecar must not be keyed on
+  // mere presence (see above) — but it must still hold across repair runs. The
+  // load-bearing mechanism is NOT the old presence check: after run 1 the field
+  // holds a VALID default, so run 2 records no defect for it and preserveRaw is
+  // never reached. Measured 2026-09-11:
+  //   repairRecord(repairRecord(x).record) -> changed=false, defects=[]
+  // This pins that measured path, which the re-broken case above cannot: there,
+  // `agent_summary: null` short-circuits on the null rule instead.
+  it('a clean second repair run reports no defect and leaves the sidecar intact', () => {
+    const input = baseRecord();
+    input.agent_summary = 'narrative, not counters';
+
+    const first = repairRecord(input).record;
+    const second = repairRecord(first);
+
+    expect(second.changed).toBe(false);
+    expect(second.defects).toEqual([]);
+    expect(second.record._agent_summary_raw).toBe('narrative, not counters');
+  });
+
+  // Bug caught: an ABSENT field has nothing to preserve, but a naive
+  // implementation writes `_<field>_raw: undefined` / `: null`, which either
+  // vanishes in JSON.stringify (a phantom key in memory only) or adds a
+  // meaningless null to every repaired record.
+  it('writes no sidecar for an absent or null field', () => {
+    const input = without(baseRecord(), 'total_files_changed');
+    input.completed_at = null;
+
+    const { record } = repairRecord(input);
+
+    expect('_total_files_changed_raw' in record).toBe(false);
+    expect('_completed_at_raw' in record).toBe(false);
+  });
+});

@@ -3,9 +3,12 @@
  *
  * ## Why this module exists
  *
- * `skills/session-start/SKILL.md` § Phase 4 names 18 measurement probes, each
- * with a module path and an entry function. Measured 2026-08-23 at `4f6404e`,
- * NONE of them had a mechanical caller:
+ * `skills/session-start/SKILL.md` § Phase 4 names 19 measurement probes, each
+ * with a module path and an entry function (re-measured 2026-09-11 — see the
+ * registry Census below; the family stood at 18 when this module was written
+ * on 2026-08-23 and one probe was registered since without updating this
+ * count, the exact drift this header now warns readers not to repeat).
+ * Measured 2026-08-23 at `4f6404e`, NONE of them had a mechanical caller:
  *
  * ```
  * $ grep -c "session-start-probes\|checkSessionsStaleness\|checkProjectHygiene" \
@@ -119,12 +122,24 @@ const TIMED_OUT = Symbol('probe-timeout');
  * introduces them (banner order is registry order, never completion order, so
  * a run is reproducible).
  *
- * Census (2026-08-23, `skills/session-start/SKILL.md` lines 693-835):
- *   sed -n '693,835p' skills/session-start/SKILL.md \
- *     | grep -oE 'via `(await )?check[A-Za-z]+'   # -> 16
+ * Census (2026-09-11, `skills/session-start/references/phase-4-ssot-environment-check.md`
+ * — the #1157 SKILL.md-size split extracted Phase 4's procedure out of
+ * `SKILL.md` itself, so the original 2026-08-23 citation of SKILL.md lines
+ * 693-835 no longer resolves; re-run the census against the reference file):
+ *   grep -oE 'via `(await )?check[A-Za-z]+' \
+ *     skills/session-start/references/phase-4-ssot-environment-check.md   # -> 17
  * plus two probes the prose introduces with different phrasing —
  * `checkBootstrapLockFreshness` ("invoke the bootstrap-lock-freshness probe")
- * and `checkVaultStaleness` ("read the most recent line via …") — for 18.
+ * and `checkVaultStaleness` ("read the most recent line via …") — for 19.
+ * (Prior census, 2026-08-23 at `4f6404e`: 16 + 2 = 18 — one probe was
+ * registered since without a matching update here. This count is deliberately
+ * NOT pinned by an exact-equality test against `PROBES.length` — the registry
+ * is exactly the "dynamically-grown artifact set" `.claude/rules/testing.md`
+ * § Dynamic Artifact Counts bans exact-count assertions for, and a regex over
+ * this prose paragraph would break on every rewording rather than on drift
+ * that matters. Re-run the grep above by hand whenever a probe is added or
+ * removed, so this comment and `skills/session-start/SKILL.md` § Phase 4
+ * stay in sync with each other.)
  *
  * Each entry:
  *   - `id`         stable telemetry id (also the banner-ordering key)

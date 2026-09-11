@@ -551,6 +551,21 @@ function lookupIssueState(iid, repo, cache, vaultDir) {
 //      of being silently skipped, since a completeness audit that silently
 //      drops files defeats its purpose. WARN, not error — an unreadable file
 //      must not brick the gate under `mode: hard`.
+//   6. fleet-intent-glob → notes[]:    a glob DECLARED as fleet intent in the
+//      rule's own `fleet-intent-globs:` frontmatter key — reported with its
+//      local match count, never warned, and it settles probes 3+4 for that
+//      pattern. See FLEET_INTENT_FM_KEY below.
+//
+// This list is numeric, not a call sequence — the code below does NOT run
+// 1→2→3→4→5→6 in order. Per rule file: probe 5's read-failure guard runs
+// FIRST (it gates every other probe via `continue` on an unreadable file,
+// before probe 1 ever sees the content), then probe 1, then probes 3/4 with
+// probe 6 interleaved INSIDE the same per-pattern loop (it must intercept a
+// declared fleet-intent pattern before 3/4 evaluate it), then probe 2b: once
+// every rule file has been visited, probe 2a runs last over CLAUDE.md/
+// AGENTS.md. `grep -n "Probe [0-9]" checker.mjs` therefore surfaces markers
+// in code order (5, 1, 6, 2b, 2a), not numeric order — that is intentional,
+// not drift; do not "fix" it by moving probe 6's marker next to probe 5's.
 // ───────────────────────────────────────────────────────────────────────────
 
 let _picomatchRuleScoping = null;
@@ -641,6 +656,95 @@ function extractFrontmatterBlockBody(content) {
 /** PascalCase product-like token check (e.g. `WalkAITalkieTests`) — the
  * foreign-glob probe's discriminator, per Check 9 spec. */
 const FOREIGN_GLOB_TOKEN_RE = /[A-Z][a-z]+[A-Z]/;
+
+// ───────────────────────────────────────────────────────────────────────────
+// Fleet-intent globs (Probe 6) — an exemption for globs that are DELIBERATELY
+// zero-match in THIS repo because the rule ships to consumer repos with a
+// different language convention.
+//
+// Why this exists: `.claude/rules/testing.md` carries `**/*Tests*` — the
+// Java/C#/Swift test-naming convention. This repo is pure `.mjs`
+// (`*.test.mjs`), so the pattern matches 0 tracked files here and the
+// zero-match probe warned on it on every run. On 2026-09-09 an agent acted on
+// exactly that warning and DELETED the glob; `tests/skills/config-reading-glob-rules.test.mjs`
+// (which pins it as fleet intent, #445) went red and the deletion was reverted
+// coordinator-direct. A warning whose only available action is "click away"
+// trains clicking away — and here it had already caused the removal of the
+// thing it was meant to protect (`.claude/rules/host-resources.md` § HR-101).
+//
+// The fix is CATEGORY SEPARATION, not suppression (`development.md` § Guard &
+// Threshold Design): a declared fleet-intent glob is REPORTED in `notes[]`
+// ("0 local matches, declared fleet intent — in order") instead of being
+// warned about. Nothing is silenced; the finding simply stops asking for an
+// action that does not exist.
+//
+// Declaration lives WITH the rule, as a frontmatter list:
+//
+//   ---
+//   globs:
+//     - "**/*Tests*"
+//   fleet-intent-globs:
+//     - "**/*Tests*"   # Java/C#/Swift convention — matches in consumer repos
+//   ---
+//
+// rule-loader.mjs's parseGlobsFrontmatter ignores unknown top-level keys (and
+// skips their indented continuation lines), so the key is inert for rule
+// loading. The declaration is per-pattern on purpose: marking one glob must
+// never amnesty a genuinely dead sibling glob in the same rule.
+const FLEET_INTENT_FM_KEY = 'fleet-intent-globs';
+
+function stripYamlQuotes(s) {
+  return s.replace(/^["']|["']$/g, '');
+}
+
+/**
+ * Parses the `fleet-intent-globs:` frontmatter key out of a raw frontmatter
+ * block body. Accepts block style (`key:` + indented `  - value` lines),
+ * flow style (`key: ["a", "b"]`) and a single inline value.
+ *
+ * @param {string|null} fmBody - output of extractFrontmatterBlockBody()
+ * @returns {string[]} declared patterns (possibly empty)
+ */
+function parseFleetIntentGlobs(fmBody) {
+  if (!fmBody) return [];
+  const out = [];
+  let inBlock = false;
+  for (const raw of fmBody.split(/\r?\n/)) {
+    const line = raw.replace(/\s+$/, '');
+    if (line === '' || /^\s*#/.test(line)) continue;
+    if (inBlock) {
+      const seq = line.match(/^\s+-\s+(.*)$/);
+      if (seq) { out.push(stripYamlQuotes(seq[1].trim())); continue; }
+      inBlock = false;
+    }
+    if (/^\s/.test(line)) continue; // another block's continuation
+    const colonIdx = line.indexOf(':');
+    if (colonIdx === -1) continue;
+    if (line.slice(0, colonIdx).trim() !== FLEET_INTENT_FM_KEY) continue;
+    const value = line.slice(colonIdx + 1).trim();
+    if (value === '') { inBlock = true; continue; }
+    if (value.startsWith('[') && value.endsWith(']')) {
+      const inner = value.slice(1, -1).trim();
+      if (inner) out.push(...inner.split(',').map((s) => stripYamlQuotes(s.trim())));
+      continue;
+    }
+    out.push(stripYamlQuotes(value));
+  }
+  return out.filter(Boolean);
+}
+
+/**
+ * Resolves whether `pattern` is a declared fleet-intent glob. The rule file's
+ * own `fleet-intent-globs:` frontmatter is the ONLY source — knowledge about a
+ * rule stays with the rule. (The one-entry built-in migration seed for the
+ * #445 `testing.md` / `**\/*Tests*` case was removed once that file declared
+ * the key itself; no checker-side exemption list exists any more.)
+ *
+ * @returns {'frontmatter'|null} declaration source, or null
+ */
+function fleetIntentSource(pattern, declaredSet) {
+  return declaredSet.has(pattern) ? 'frontmatter' : null;
+}
 
 /**
  * Extracts bare `<name>.md` tokens from a "## See Also" footer's body lines,
@@ -819,6 +923,11 @@ function main() {
 
   const errors = [];
   const warnings = [];
+  // Informational findings — never block, never count as a warning. Currently
+  // fed only by rule-scoping's fleet-intent-glob probe (see FLEET_INTENT_FM_KEY
+  // above). Additive JSON key: consumers reading `errors`/`warnings` are
+  // unaffected.
+  const notes = [];
   const issueCache = new Map();
 
   // Check 6: session-config-parity (issue #30) — diff top-level keys under
@@ -1127,7 +1236,7 @@ function main() {
 
   // Check 9: rule-scoping — validates .claude/rules/*.md frontmatter against
   // the rule-loader.mjs contract (see the doc-comment above the helper
-  // functions for the five probes, incl. unreadable-file). Silently skipped (no id pushed, no
+  // functions for the six probes, incl. unreadable-file and fleet-intent-glob). Silently skipped (no id pushed, no
   // checksSkipped entry) when .claude/rules/ is absent — mirrors Check 8's
   // silent-skip semantics. `--skip-rule-scoping` disables the whole check.
   if (!args.skipRuleScoping) {
@@ -1149,6 +1258,11 @@ function main() {
         const absPath = join(rulesDir, fname);
         const relPath = relative(vaultDir, absPath);
         let content;
+        // --- Probe 5: unreadable-file → warnings[] ---
+        // Runs BEFORE probe 1 despite its higher number: it is the per-file
+        // guard that must decide whether any other probe gets to see this
+        // file's content at all. See the "Rule-scoping family" header
+        // comment above for why the numbering and the code order differ.
         try {
           content = readFileSync(absPath, 'utf8');
         } catch (err) {
@@ -1190,7 +1304,25 @@ function main() {
         const globs = parsed.globs;
         if (Array.isArray(globs) && globs.length > 0) {
           if (trackedFiles === null) trackedFiles = listTrackedFiles(vaultDir);
+          const declaredFleetIntent = new Set(parseFleetIntentGlobs(fmBody));
           for (const pattern of globs) {
+            // --- Probe 6: fleet-intent-glob → notes[] ---
+            // A DECLARED fleet-intent glob is reported, never warned: it is
+            // zero-match here on purpose and serves consumer repos. The
+            // declaration also settles the foreign-glob probe for the same
+            // pattern — a pattern the rule author declared is by definition
+            // not a copy-paste leftover.
+            const fleetSource = fleetIntentSource(pattern, declaredFleetIntent);
+            if (fleetSource !== null) {
+              const matchesLocally = globMatchesAny(pattern, trackedFiles);
+              notes.push({
+                check: 'rule-scoping', probe: 'fleet-intent-glob', file: relPath, line: 1,
+                message: `glob '${pattern}' matches ${matchesLocally ? '≥1' : '0'} tracked files here and is declared FLEET INTENT (${fleetSource}) — it serves consumer repos with a different language convention. Reported, not warned.`,
+                extracted: pattern,
+                source: fleetSource,
+              });
+              continue;
+            }
             if (!globMatchesAny(pattern, trackedFiles)) {
               warnings.push({
                 check: 'rule-scoping', file: relPath, line: 1,
@@ -1415,7 +1547,7 @@ function main() {
       status: 'skipped', mode: args.mode, vault_dir: vaultDir,
       resolved_path: resolvedPath, resolved_kind: resolvedKind,
       files_scanned: 0, checks_run: checksRun, checks_skipped: checksSkipped,
-      errors, warnings, reason: 'no scope files matched',
+      errors, warnings, notes, reason: 'no scope files matched',
     }) + '\n');
     process.exit(errors.length > 0 && args.mode === 'strict' ? 1 : 0);
   }
@@ -1572,7 +1704,7 @@ function main() {
     files_scanned: scopeFiles.length,
     checks_run: checksRun,
     checks_skipped: checksSkipped,
-    errors, warnings,
+    errors, warnings, notes,
   };
   if (actualCommandCount !== null) {
     result.command_count = { actual: actualCommandCount };

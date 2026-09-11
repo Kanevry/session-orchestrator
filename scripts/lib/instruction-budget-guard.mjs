@@ -207,8 +207,147 @@ export const DEFAULT_BYTE_CEILING = 121000;
  * hand-written scoped rules; this axis strips frontmatter and counts all 46.
  * Two different populations — see `.claude/rules/measurement-discipline.md`
  * § "the unnamed population".)
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * POPULATION CORRECTED 2026-09-11 (#1297). Everything above this line measured
+ * the PATH-SCOPED corpus and called it `generated`. It is not the same set, and
+ * the difference was not marginal: measured at `c73c094f`,
+ *
+ *   path-scoped:  11 files / 123,747 B   (what this axis used to judge)
+ *   generated:     8 files /  76,114 B   (what it always claimed to judge)
+ *
+ * — a 47,633 B gap carried by exactly three HAND-WRITTEN rules that happen to
+ * be `globs:`-scoped (`testing.md` 36,252 B, `bash-harness-pitfalls.md` 7,705 B,
+ * `cli-design.md` 3,676 B). `testing.md` alone was 29.3 % of a ceiling meant for
+ * machine output. Consequence at `c73c094f`: 253 B of headroom, so the next
+ * /reconcile run that materialized a single rule would have turned
+ * `tests/rules/receiving-review.test.mjs` red — and no diet of the generated
+ * corpus could have fixed it, because the dominant file is not generated.
+ * Textbook `.claude/rules/measurement-discipline.md` § "the unnamed population":
+ * the measurement was right, the set was wrong.
+ *
+ * Membership is now decided by the reconciliation PROVENANCE marker
+ * ({@link isMachineGeneratedRule}), mirroring `reconcile/writer.mjs` Tier 3.
+ * The old number survives as `bySurface.pathScoped` — a real quantity, just not
+ * this one — so nothing that wants it has to re-derive it.
+ *
+ * The ceiling itself is DELIBERATELY LEFT AT 124,000 in this change. Correcting
+ * a population and re-calibrating a threshold are two decisions, and only the
+ * first one is measured here. What the correction does expose, and what the
+ * operator should decide separately, is that 124,000 is now decorative on this
+ * axis (HR-105 — a rule you cannot falsify is not a rule):
+ *
+ *   commit `c73c094f`:                            76,114 B / 8 files  → x1.63
+ *   live corpus (2026-09-11, working tree):       87,336 B / 8 files  → x1.42
+ *   pre-consolidation peak (`e4674109`, replayed
+ *     with the corrected predicate):              89,763 B / 43 files → x1.38
+ *
+ * NUMBERS RE-MEASURED 2026-09-11 (same day, one wave later). The first line
+ * above previously read `live corpus (2026-09-11, c73c094f): … x1.63` — the
+ * date and the SHA contradicted each other, and the SHA lost: the SAME session
+ * that corrected the population then absorbed 10 learnings into
+ * `.claude/rules/`, adding +11,222 B to the generated corpus (87,336 − 76,114).
+ * x1.63 was already stale when it was written down. Commands, all run at
+ * 2026-09-11 against the working tree / the named SHAs:
+ *
+ *   `node -e "computeInstructionBudget({repoRoot}).bySurface.generated"`
+ *      → working tree: { bytes: 87336, files: 8 }
+ *      → rulesDir extracted from `c73c094f`: { bytes: 76114, files: 8 }
+ *      → rulesDir extracted from `e4674109`: { bytes: 89763, files: 43 }
+ *
+ * The CONCLUSION stands, on a wider base: firing rate is 0 of 3, not 0 of 2 —
+ * the guard would not have fired at any of the three states this repo has
+ * recorded. What does NOT stand is the headroom claim it rested on. The live
+ * corpus is **2,427 B** below the historical peak, not 13,649 B: a single
+ * /reconcile wave of the size this one just absorbed puts the generated corpus
+ * back at its worst recorded state, and the ceiling still would not notice.
+ * "Decorative" is therefore an understatement of the gap, not an overstatement
+ * — which strengthens the case for the operator decision this block defers,
+ * and changes none of its terms. Still tracked rather than silently patched:
+ * raising OR lowering a threshold inside a population fix is exactly the
+ * conflation this comment exists to end.
  */
 export const DEFAULT_GENERATED_BYTE_CEILING = 124000;
+
+/**
+ * Default byte ceiling for the PATH-SCOPED rule surface — the fourth axis,
+ * and a RESTORATION of coverage rather than a new threshold (#1297 follow-up).
+ *
+ * Why this exists. The #1297 population fix above moved
+ * {@link DEFAULT_GENERATED_BYTE_CEILING} from "every `globs:`-scoped rule" to
+ * "every provenance-marked rule" — the right correction, on the right
+ * evidence. What it did NOT notice is that the population it moved AWAY from
+ * kept its measurement (`bySurface.pathScoped`) and lost its ceiling. Measured
+ * 2026-09-11 on the working tree:
+ *
+ *   `node -e "computeInstructionBudget({repoRoot}).bySurface"`
+ *     generated:   87,336 B /  8 files   judged against 124,000 → ok
+ *     pathScoped: 134,969 B / 11 files   judged against NOTHING → no verdict
+ *
+ *   `rg -n "pathScoped" scripts/ tests/ CHANGELOG.md` → 23 hits at that
+ *   moment, not one of them a ceiling comparison.
+ *
+ * 134,969 B is **10,969 B OVER** the 124,000 this exact population was checked
+ * against until that commit. Replayed literally — `git show
+ * HEAD:scripts/lib/instruction-budget-guard.mjs` (`c73c094f`) run against
+ * TODAY's rule corpus, in a tmp dir:
+ *
+ *   OLD code, today's corpus → generated { bytes: 134969, files: 11 },
+ *                              overGeneratedBudget: true, severity: 'warn'
+ *   NEW code, today's corpus → overGeneratedBudget: false, severity: 'ok'
+ *
+ * The diff that swapped the ceiling's predicate is the same diff that would
+ * have breached the old ceiling — the learnings this session absorbed put
+ * **+11,222 B** on the path-scoped corpus (134,969 today − 123,747 B / 11
+ * files measured at `c73c094f`; the same +11,222 B the generated corpus
+ * gained, since all of it landed in provenance-marked files). A category
+ * split gives each split
+ * category its OWN counter AND its own threshold
+ * (`.claude/rules/development.md` § Guard & Threshold Design). Here one
+ * category got a name and no threshold, which is precisely the state
+ * `.claude/rules/host-resources.md` HR-105 forbids: a rule you cannot falsify
+ * is not a rule.
+ *
+ * VALUE: 124,000, unchanged — this is the number this population was always
+ * judged against, so restoring it restores coverage and invents nothing.
+ * Measured firing rate over the three states of `.claude/rules/` this repo has
+ * recorded (`bySurface.pathScoped`, each rulesDir extracted from the named
+ * tree, 2026-09-11):
+ *
+ *   `e4674109` (pre-consolidation):  137,410 B / 46 files → FIRES
+ *   `c73c094f` (population fix):     123,747 B / 11 files → silent (253 B left)
+ *   working tree (2026-09-11):       134,969 B / 11 files → FIRES
+ *
+ * Firing rate 2 of 3, falsifiable in both directions — the condition
+ * {@link DEFAULT_GENERATED_BYTE_CEILING} does NOT currently meet (0 of 3).
+ * This is also why it is not re-derived upward off the live number: a ceiling
+ * placed above 134,969 would be silent on all three states, i.e. the same
+ * unfalsifiable shape, obtained by the threshold-patch move
+ * `development.md` § Guard & Threshold Design forbids.
+ *
+ * ⚠ DELIBERATELY NOT FOLDED INTO `overBudget`. `overPathScopedBudget` is
+ * computed, returned, and named — but it does not flip the aggregate verdict
+ * and does not by itself raise the session-start banner. Two reasons, and both
+ * are conditions, not preferences:
+ *
+ *  1. The corpus is over this ceiling TODAY. Folding it in would turn the
+ *     aggregate verdict red on the current tree, which `tests/rules/` asserts
+ *     against — the exceedance would be reported as a code defect when it is
+ *     a corpus fact.
+ *  2. Whether the CORPUS must shrink or the CEILING must move is an operator
+ *     decision. Making the guard block on it would decide that question by
+ *     omission, which is the same conflation the #1297 block above ends.
+ *
+ * The fold-in becomes correct as soon as EITHER holds: the path-scoped corpus
+ * drops back under 124,000 (then the flag is a live, silent-today guard and
+ * folding it in costs nothing), OR the operator sets a deliberate ceiling for
+ * this population via `path-scoped-byte-ceiling` in Session Config. Until one
+ * of those, the honest state is measured-and-visible, not blocking.
+ *
+ * Re-derive (never merely raise) with
+ * `computeInstructionBudget({repoRoot}).bySurface.pathScoped`.
+ */
+export const DEFAULT_PATH_SCOPED_BYTE_CEILING = 124000;
 
 /**
  * Read the `instruction-budget:` nested block from the `## Session Config`
@@ -483,43 +622,81 @@ function sumBytes(entries) {
 }
 
 /**
- * Measure the PATH-SCOPED rule surface: every `.claude/rules/*.md` whose
- * frontmatter carries `globs:` (or its `paths:` alias — issue #795), i.e.
- * exactly the complement of the always-on set the three tier surfaces above
- * measure.
+ * Is this rule file MACHINE-GENERATED by the reconciliation engine?
  *
- * This cannot reuse `loadApplicableRules`: that loader takes a `scopePaths`
+ * The predicate mirrors `scripts/lib/reconcile/writer.mjs` § "Tier 3: binds on
+ * any machine-provenance-bearing document" VERBATIM — `auto-generated: true`,
+ * OR a `learning-key`, OR an `expires-at`. That is deliberately the writer's
+ * own definition and not a fourth copy of it: the writer is what STAMPS these
+ * keys (`reconcile/renderer.mjs` emits `learning-key` + `expires-at` on every
+ * rule it renders, and the consolidated files additionally carry
+ * `auto-generated: true`), so a rule the writer would hold to the invariant is
+ * exactly a rule this ceiling should judge.
+ *
+ * The `meta` object is whatever {@link parseGlobsFrontmatter} surfaced — all
+ * three keys are in rule-loader's known-meta set, so no second frontmatter
+ * parser is introduced here.
+ *
+ * @param {Record<string, unknown>} meta
+ * @returns {boolean}
+ */
+function isMachineGeneratedRule(meta) {
+  if (!meta || typeof meta !== 'object') return false;
+  return (
+    meta['auto-generated'] === true ||
+    Object.prototype.hasOwnProperty.call(meta, 'learning-key') ||
+    Object.prototype.hasOwnProperty.call(meta, 'expires-at')
+  );
+}
+
+/**
+ * Single-pass scan of `.claude/rules/*.md` producing the TWO corpus measures
+ * this guard's third axis needs, which #1297 proved are NOT the same set:
+ *
+ *   - `generated`  — rules carrying a reconciliation provenance marker
+ *     ({@link isMachineGeneratedRule}). This is the population
+ *     {@link DEFAULT_GENERATED_BYTE_CEILING} is a ceiling FOR: the thing that
+ *     grows on its own, without anyone deciding to add a rule.
+ *   - `pathScoped` — every rule with `globs:` (or its `paths:` alias, #795),
+ *     i.e. the complement of the always-on set the three tier surfaces measure.
+ *     A real quantity, and the one this axis USED to report under the name
+ *     `generated` — see the ceiling's docblock for what that cost.
+ *
+ * The two overlap but neither contains the other by construction: a
+ * hand-written rule can be path-scoped (3 of them are here), and a generated
+ * rule could in principle carry a `host-class` activation axis instead of
+ * `globs:`.
+ *
+ * Neither can reuse `loadApplicableRules`: that loader takes a `scopePaths`
  * list and returns the rules APPLICABLE to it, so with `scopePaths: []` it
- * yields always-on rules only, and with a non-empty list it yields a
- * scope-dependent subset. Neither answers "how big is the path-scoped corpus",
- * which is a property of the DIRECTORY, not of any one wave's file scope. The
- * frontmatter reading is still delegated (`parseGlobsFrontmatter`), so the
- * always-on/path-scoped split stays decided in exactly one place.
- *
- * Named `generated` at the call site because reconciliation output is what
- * grows here, but it deliberately measures every path-scoped file, including
- * the hand-written ones — a ceiling that skipped them would report a number
- * the operator cannot reproduce from `ls .claude/rules/` (HR-106: the banner
- * reports what the rule judges).
+ * yields always-on rules only. Neither question is about a wave's file scope —
+ * both are properties of the DIRECTORY. The frontmatter reading is still
+ * delegated (`parseGlobsFrontmatter`), so the always-on/path-scoped split and
+ * the provenance keys stay decided in exactly one place.
  *
  * Bytes are counted with {@link countContentBytes} — frontmatter stripped —
- * so this axis is directly comparable to `totalBytes` and to the tier
- * surfaces. Never throws: an unreadable dir or file yields `{bytes:0,files:0}`
- * / is skipped, matching this module's never-throw posture.
+ * so both are directly comparable to `totalBytes` and to the tier surfaces.
+ * Note what that implies for the generated corpus specifically: its frontmatter
+ * and `## Provenance` FRONTMATTER is excluded, its provenance BODY bullets are
+ * not (they are body text).
+ *
+ * Never throws: an unreadable dir or file yields zeros / is skipped, matching
+ * this module's never-throw posture.
  *
  * @param {string} rulesDir
- * @returns {{ bytes: number, files: number }}
+ * @returns {{ generated: { bytes: number, files: number }, pathScoped: { bytes: number, files: number } }}
  */
-function measurePathScopedSurface(rulesDir) {
+function measureRuleCorpora(rulesDir) {
+  const generated = { bytes: 0, files: 0 };
+  const pathScoped = { bytes: 0, files: 0 };
+
   let names;
   try {
     names = readdirSync(rulesDir);
   } catch {
-    return { bytes: 0, files: 0 };
+    return { generated, pathScoped };
   }
 
-  let bytes = 0;
-  let files = 0;
   for (const name of names) {
     if (!name.endsWith('.md')) continue;
     let content;
@@ -529,16 +706,25 @@ function measurePathScopedSurface(rulesDir) {
       continue; // unreadable file — skip, never throw
     }
     let globs;
+    let meta;
     try {
-      ({ globs } = parseGlobsFrontmatter(content));
+      ({ globs, meta } = parseGlobsFrontmatter(content));
     } catch {
       continue;
     }
-    if (globs === null) continue; // always-on — already counted by the tier surfaces
-    files += 1;
-    bytes += countContentBytes(content);
+    const bytes = countContentBytes(content);
+    if (isMachineGeneratedRule(meta)) {
+      generated.files += 1;
+      generated.bytes += bytes;
+    }
+    // `globs === null` → always-on, already counted by the tier surfaces.
+    if (globs !== null) {
+      pathScoped.files += 1;
+      pathScoped.bytes += bytes;
+    }
   }
-  return { bytes, files };
+
+  return { generated, pathScoped };
 }
 
 /**
@@ -583,14 +769,19 @@ function measurePathScopedSurface(rulesDir) {
  *   byteCeiling: number,
  *   overDirectiveBudget: boolean,
  *   overByteBudget: boolean,
+ *   overGeneratedBudget: boolean,
+ *   overPathScopedBudget: boolean,
  *   overBudget: boolean,
  *   severity: 'ok' | 'warn',
- *   bySurface: { coordinator: number, wave: number, always: number },
+ *   bySurface: { coordinator: number, wave: number, always: number,
+ *               generated: {bytes: number, files: number},
+ *               pathScoped: {bytes: number, files: number} },
  * }}
  *   perFile is sorted DESC by count. On missing/unreadable dir →
  *   { totalDirectives: 0, totalBytes: 0, perFile: [], ceiling, byteCeiling,
  *     overDirectiveBudget: false, overByteBudget: false, overBudget: false,
- *     severity: 'ok', bySurface: { coordinator: 0, wave: 0, always: 0 } }.
+ *     severity: 'ok', bySurface: { coordinator: 0, wave: 0, always: 0,
+ *     generated: {bytes:0,files:0}, pathScoped: {bytes:0,files:0} } }.
  *
  *   #931a verdict rule — `overBudget` is the OR of the two axes
  *   (`overDirectiveBudget || overByteBudget`), NOT a per-axis severity split:
@@ -627,6 +818,16 @@ function measurePathScopedSurface(rulesDir) {
  *       corpus regardless of tier", which does not match rule-loader's own
  *       tier gate and is corrected here.
  *     bySurface.always === bytes of always-on rules with `tier === 'always'` only.
+ *     bySurface.generated === {bytes, files} of every rule carrying a
+ *       reconciliation PROVENANCE marker (`auto-generated: true` /
+ *       `learning-key` / `expires-at`) — the corpus
+ *       {@link DEFAULT_GENERATED_BYTE_CEILING} judges (#1297).
+ *     bySurface.pathScoped === {bytes, files} of every rule with `globs:`
+ *       (or its `paths:` alias) — the complement of the always-on set, and
+ *       the number an operator reproduces from `ls .claude/rules/` (HR-106).
+ *       Judged against {@link DEFAULT_PATH_SCOPED_BYTE_CEILING} into
+ *       `overPathScopedBudget`, which is REPORTED but deliberately not an
+ *       `overBudget` term (see that constant's docblock).
  *
  *   `always` is a strict subset of BOTH `wave` and `coordinator` (neither
  *   tier gate excludes `tier: 'always'`), but `wave` and `coordinator` are
@@ -650,6 +851,10 @@ export function computeInstructionBudget(opts = {}) {
     typeof opts.generatedByteCeiling === 'number'
       ? opts.generatedByteCeiling
       : DEFAULT_GENERATED_BYTE_CEILING;
+  const pathScopedByteCeiling =
+    typeof opts.pathScopedByteCeiling === 'number'
+      ? opts.pathScopedByteCeiling
+      : DEFAULT_PATH_SCOPED_BYTE_CEILING;
   // #893 fix: 'coordinator' used to fall through to the `null` (untiered)
   // branch below — silently measuring the WRONG rule set for a coordinator
   // context (it never excluded `tier: wave-only`). Now explicitly recognised
@@ -665,12 +870,20 @@ export function computeInstructionBudget(opts = {}) {
     ceiling,
     byteCeiling,
     generatedByteCeiling,
+    pathScopedByteCeiling,
     overDirectiveBudget: false,
     overByteBudget: false,
     overGeneratedBudget: false,
+    overPathScopedBudget: false,
     overBudget: false,
     severity: 'ok',
-    bySurface: { coordinator: 0, wave: 0, always: 0, generated: { bytes: 0, files: 0 } },
+    bySurface: {
+      coordinator: 0,
+      wave: 0,
+      always: 0,
+      generated: { bytes: 0, files: 0 },
+      pathScoped: { bytes: 0, files: 0 },
+    },
   };
 
   let allEntries;
@@ -709,13 +922,19 @@ export function computeInstructionBudget(opts = {}) {
     coordinator: sumBytes(alwaysOnCoordinator),
     wave: sumBytes(alwaysOnWave),
     always: sumBytes(alwaysOnAll.filter((e) => e.tier === 'always')),
-    // The fourth surface is deliberately a different SHAPE from its three
-    // siblings ({bytes, files} vs. a bare byte number): a path-scoped corpus
-    // grows by FILE COUNT as much as by size — 43 files averaging 2.6 kB is
-    // the shape this axis exists to catch — and a bare number would hide that.
-    // It is also the only surface disjoint from `totalBytes`, which counts
-    // always-on rules exclusively.
-    generated: measurePathScopedSurface(rulesDir),
+    // The fourth and fifth surfaces are deliberately a different SHAPE from
+    // their three siblings ({bytes, files} vs. a bare byte number): these
+    // corpora grow by FILE COUNT as much as by size — 43 files averaging
+    // 2.1 kB is the shape this axis exists to catch — and a bare number would
+    // hide that.
+    //
+    // #1297: `generated` is the PROVENANCE-marked corpus (what /reconcile
+    // materializes), NOT "every path-scoped file" as it was through #1240.
+    // `pathScoped` keeps the old measurement under its honest name. Both are
+    // disjoint from `totalBytes`, which counts always-on rules exclusively —
+    // except that a generated rule activated by `host-class` rather than
+    // `globs:` would be always-on and therefore counted in both.
+    ...measureRuleCorpora(rulesDir),
   };
 
   // Surface-selected entry set for the PRIMARY totals. `context: null`
@@ -749,6 +968,12 @@ export function computeInstructionBudget(opts = {}) {
   const overByteBudget = totalBytes > byteCeiling;
   // Third axis, same strict `>` boundary semantics as the two above.
   const overGeneratedBudget = bySurface.generated.bytes > generatedByteCeiling;
+  // Fourth axis, same strict `>` boundary. NOT an `overBudget` term — see
+  // DEFAULT_PATH_SCOPED_BYTE_CEILING's docblock for the two conditions under
+  // which folding it in becomes correct. It is measured and reported so the
+  // exceedance is falsifiable (HR-105) without deciding, by omission, whether
+  // the corpus or the ceiling has to move.
+  const overPathScopedBudget = bySurface.pathScoped.bytes > pathScopedByteCeiling;
   const overBudget = overDirectiveBudget || overByteBudget || overGeneratedBudget;
 
   return {
@@ -758,9 +983,11 @@ export function computeInstructionBudget(opts = {}) {
     ceiling,
     byteCeiling,
     generatedByteCeiling,
+    pathScopedByteCeiling,
     overDirectiveBudget,
     overByteBudget,
     overGeneratedBudget,
+    overPathScopedBudget,
     overBudget,
     severity: overBudget ? 'warn' : 'ok',
     bySurface,
@@ -789,8 +1016,12 @@ export function computeInstructionBudget(opts = {}) {
  * @param {string} [opts.repoRoot] project root for the config read.
  * @param {number} [opts.ceiling]  explicit directive-ceiling override (wins over config).
  * @param {number} [opts.byteCeiling] explicit byte-ceiling override (wins over config).
+ * @param {number} [opts.pathScopedByteCeiling] explicit path-scoped-ceiling override.
  * @returns {{ severity: 'warn', message: string } | null}
- *   null when disabled / off / both axes at-or-under ceiling OR on any read failure.
+ *   null when disabled / off / every BLOCKING axis at-or-under ceiling OR on
+ *   any read failure. The path-scoped axis is not a blocking axis: it appends
+ *   a `(not blocking)` clause to a banner some other axis already raised, and
+ *   never raises one on its own (see DEFAULT_PATH_SCOPED_BYTE_CEILING).
  */
 export function checkInstructionBudget(opts = {}) {
   let cfg;
@@ -828,9 +1059,24 @@ export function checkInstructionBudget(opts = {}) {
         ? cfg['generated-byte-ceiling']
         : DEFAULT_GENERATED_BYTE_CEILING;
 
+  // Identical precedence chain to the generated axis above: explicit opt >
+  // Session Config `path-scoped-byte-ceiling` > module default.
+  const pathScopedByteCeiling =
+    typeof opts.pathScopedByteCeiling === 'number'
+      ? opts.pathScopedByteCeiling
+      : typeof cfg['path-scoped-byte-ceiling'] === 'number'
+        ? cfg['path-scoped-byte-ceiling']
+        : DEFAULT_PATH_SCOPED_BYTE_CEILING;
+
   let budget;
   try {
-    budget = computeInstructionBudget({ ...opts, ceiling, byteCeiling, generatedByteCeiling });
+    budget = computeInstructionBudget({
+      ...opts,
+      ceiling,
+      byteCeiling,
+      generatedByteCeiling,
+      pathScopedByteCeiling,
+    });
   } catch {
     return null; // never throw out of the banner wrapper
   }
@@ -851,8 +1097,20 @@ export function checkInstructionBudget(opts = {}) {
     // is consolidating files, not trimming prose inside them (HR-106: the
     // banner reports the number the rule judged).
     axes.push(
-      `path-scoped ${budget.bySurface.generated.bytes} B over ` +
+      `generated rules ${budget.bySurface.generated.bytes} B over ` +
         `${budget.bySurface.generated.files} files > ${budget.generatedByteCeiling} B`,
+    );
+  }
+  // Reported only ALONGSIDE a breach that already raised this banner — never
+  // as its trigger. `overPathScopedBudget` is true on the current corpus, so
+  // making it a trigger would put this line on every single session start,
+  // which `.claude/rules/host-resources.md` HR-101 calls a broken instrument
+  // rather than a warning. Named `(not blocking)` so the operator can tell it
+  // apart from the axes that did decide the verdict.
+  if (budget.overPathScopedBudget) {
+    axes.push(
+      `path-scoped rules ${budget.bySurface.pathScoped.bytes} B over ` +
+        `${budget.bySurface.pathScoped.files} files > ${budget.pathScopedByteCeiling} B (not blocking)`,
     );
   }
 

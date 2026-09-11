@@ -9,6 +9,13 @@ paths:
   - "**/*Tests*"
   - tests/**
   - vitest.config.*
+# fleet-intent-globs: patterns kept ON PURPOSE although they match 0 files in
+# this repo. `**/*Tests*` is the Java/C#/Swift naming convention (FooTests.cs);
+# this repo is pure .mjs (*.test.mjs), but consumer repos this rule ships to as
+# a plugin do match it (#445). The declaration turns the drift-check
+# `rule-scoping` zero-match probe from a warning into a note.
+fleet-intent-globs:
+  - "**/*Tests*"
 tier: wave-only
 review-date: 2026-10-23
 ---

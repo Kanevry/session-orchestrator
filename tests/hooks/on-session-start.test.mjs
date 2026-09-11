@@ -1324,7 +1324,7 @@ describe('close-through backfill at SessionStart (#926)', { timeout: 15000 }, ()
 // Phase 4 measurement probes (#1128)
 // ---------------------------------------------------------------------------
 //
-// `skills/session-start/SKILL.md` § Phase 4 names 18 probes with module paths
+// `skills/session-start/SKILL.md` § Phase 4 names 19 probes with module paths
 // and entry functions. Measured 2026-08-23 at `4f6404e`, none of them had a
 // mechanical caller anywhere in hooks/, npm scripts, .gitlab-ci.yml or .husky/
 // — the only caller was the prose itself — and across 336 recorded session
