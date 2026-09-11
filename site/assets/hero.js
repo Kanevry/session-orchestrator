@@ -1,5 +1,5 @@
 // Hero: five blocks, four gates, one token that walks the row and is checked at
-// every gate. Contract: docs/plans/2026-09-07-site-redesign-contract.md s.5.
+// every gate. The visible fallback list carries the five pass names.
 // Q3 MED-3: three.js is imported lazily inside init() — a reduced-motion visit
 // must never download the renderer.
 
