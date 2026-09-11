@@ -160,8 +160,15 @@ describe('checkClaudeMdBudgetLint — violations present', () => {
 
     const result = checkClaudeMdBudgetLint({ repoRoot: dir, maxLineChars: 10 });
 
+    // The PROPERTY is "no home path reaches the banner", not the literal token.
+    // `repoRoot` is ours to place, so its collapse is assertable directly. The
+    // script path is `__filename` — where the checkout lives is not ours to
+    // choose, and asserting `node "$HOME` pinned the ENVIRONMENT rather than the
+    // behaviour: green in a checkout under $HOME, red in the pre-push gate's
+    // $TMPDIR clone and on any CI runner (/builds/...). Measured 2026-09-11:
+    // the m5 gate passed and the local pre-push gate failed on the same commit,
+    // for exactly this reason.
     expect(result.message).not.toContain(homedir());
-    expect(result.message).toContain(`node "$HOME`);
     expect(result.message).toContain(`--repo-root "$HOME`);
   });
 
