@@ -310,7 +310,17 @@ export async function computeMaintenanceDue(opts = {}) {
 
     // --- reconcile (S3) ----------------------------------------------------
     if (nudge.nudge === true) {
-      markDue('reconcile', isoDay(nudge.lastRunAt) ?? 'never');
+      // HR-106: report what the rule JUDGED. `computeReconcileNudge` nudges on
+      // a BACKLOG (eligible-unmaterialized learnings), never on a date — so
+      // printing `lastRunAt` here put today's date next to the word "due" and
+      // read as "last run today and already due again". Measured 2026-09-09
+      // (learning 013a45ba): with 108 learnings capped under
+      // `max-proposals-per-run: 10`, the row stayed due after every run while
+      // showing that run's own date. `reasons` is the judgment itself.
+      const why = Array.isArray(nudge.reasons) && nudge.reasons.length > 0
+        ? nudge.reasons.join(', ')
+        : `last run ${isoDay(nudge.lastRunAt) ?? 'never'}`;
+      markDue('reconcile', why);
     }
   }
 

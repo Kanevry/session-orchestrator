@@ -682,26 +682,49 @@ describe('repairRecord — a defaulted field keeps its original value in a `_<fi
     }
   );
 
-  // Bug caught: a SECOND repair pass sees the DEFAULT the first pass wrote and,
-  // without a non-clobber guard, overwrites the rescued original with that
-  // default — destroying on run 2 exactly the evidence it rescued on run 1.
-  // This is the failure mode the `_express_path_detail` convention in
-  // session-schema/normalizer.mjs guards against with `if (!(key in next))`.
-  it('does not overwrite an already-rescued raw value on a second repair run', () => {
+  // Bug caught: the pre-2026-09-11 non-clobber guard read `sidecar in out`, and
+  // `out = { ...record }` carries the INPUT's key space — so on a record that is
+  // RE-CORRUPTED between two repair runs (the module's own NAMED CEILING, BV-004),
+  // run 1's sidecar suppressed the rescue of run 2's real `agent_summary` and
+  // that value was dropped. Reverting the guard to `sidecar in out` turns this
+  // test RED (measured 2026-09-11, see the mutation proof in the report).
+  //
+  // This case replaces one that re-broke the record with `agent_summary: null`:
+  // `preserveRaw` returns early on null, so that shape never reached the guard
+  // and the assertion held against a module with no guard at all. The non-null
+  // re-break is what makes the second pass reach the rescue path — verified:
+  // `repairRecord(reBroken)` reports `changed: true`, defect `agent_summary_absent`.
+  it('rescues the NEW real value when a repaired record is re-corrupted before run 2', () => {
     const input = baseRecord();
-    input.agent_summary = 'narrative, not counters';
+    input.agent_summary = 'RUN-1 NARRATIVE';
     delete input.total_files_changed;
 
     const first = repairRecord(input).record;
-    expect(first._agent_summary_raw).toBe('narrative, not counters');
+    expect(first._agent_summary_raw).toBe('RUN-1 NARRATIVE');
 
-    // Re-break the record the same way a partially-restored ledger line would
-    // be broken, then repair again: the sidecar from run 1 must survive.
-    const reBroken = { ...first, agent_summary: null, total_files_changed: 'nope' };
+    // A partially-restored ledger line: the field carries a DIFFERENT real
+    // value again, and that value is the one about to be overwritten.
+    const reBroken = { ...first, agent_summary: 'RUN-2 NARRATIVE', total_files_changed: 'nope' };
     const second = repairRecord(reBroken).record;
 
-    expect(second._agent_summary_raw).toBe('narrative, not counters');
+    expect(second._agent_summary_raw).toBe('RUN-2 NARRATIVE');
+    expect(second.agent_summary).toEqual({ complete: 0, partial: 0, failed: 0, spiral: 0 });
     expect(second._total_files_changed_raw).toBe('nope');
+  });
+
+  // Bug caught: the SAME second pass, but with nothing left to rescue — a
+  // `null` field. Dropping the `rawValue === null` early return would write
+  // `_agent_summary_raw: null` straight over the value run 1 rescued, turning
+  // the repair back into the data-loss event the sidecar exists to prevent.
+  // The case above cannot catch this (its re-break is non-null by design).
+  it('leaves the run-1 sidecar intact when the re-broken field is null', () => {
+    const input = baseRecord();
+    input.agent_summary = 'RUN-1 NARRATIVE';
+
+    const first = repairRecord(input).record;
+    const second = repairRecord({ ...first, agent_summary: null }).record;
+
+    expect(second._agent_summary_raw).toBe('RUN-1 NARRATIVE');
   });
 
   // Bug caught: the non-clobber guard read `out`, and `out = { ...record }` is

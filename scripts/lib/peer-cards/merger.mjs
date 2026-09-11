@@ -308,3 +308,146 @@ function wrapManagedContent(raw) {
 function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+// ── body-string → section-map adapter (#1310) ────────────────────────────────
+//
+// The seam this closes: `dialectic-deriver` (agents/dialectic-deriver.md § Output
+// format) emits ONE FULL PEER-CARD BODY STRING per target, while `mergePeerCard`
+// above consumes a SECTION MAP keyed by sentinel name. Nothing translated between
+// the two, so `/evolve dialectic --apply` could not complete (#1310, correcting
+// #1303 point 3 — the signatures line up, the seam did not).
+//
+// The mapping is DERIVED, not invented: every managed region in the live cards
+// wraps exactly one `## ` heading, so the heading IS the section unit. Existing
+// names are read back out of the card rather than re-slugified, because the live
+// names are NOT a pure function of their headings — measured 2026-09-11 in
+// `.orchestrator/peers/AGENT.md`: "Guard and protocol-migration discipline" →
+// `guard-and-protocol-migration` (drops "discipline") and "Review discipline — the
+// refutation mandate" → `review-discipline-refutation-mandate` (drops "the").
+// Re-slugifying either would APPEND a duplicate section instead of replacing it.
+
+const H2_RE = /^##[ \t]+(.+?)[ \t]*$/gm;
+
+/** Normalise a heading for matching: case- and whitespace-insensitive. */
+function headingKey(heading) {
+  return heading.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/**
+ * Slugify a heading into a section name matching the `[\w-]+` grammar.
+ * Only used for headings with NO existing managed section (the append path).
+ * @param {string} heading
+ * @returns {string}
+ */
+function slugifyHeading(heading) {
+  const slug = heading
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug.length > 0 ? slug : 'section';
+}
+
+/**
+ * Split a proposed full-body string into `{ <section-name>: <content> }`, reusing
+ * the existing card's section names wherever the heading already has a home.
+ *
+ * Behaviour for every input class (no case is silently dropped):
+ *  • Heading whose text matches an existing managed section's own `## ` heading →
+ *    mapped to that section's EXISTING name (`origin: 'existing'`) → REPLACE.
+ *  • Heading with no existing section → slugified name (`origin: 'new'`) →
+ *    APPEND. Collisions get a `-2`, `-3`, … suffix.
+ *  • Text BEFORE the first `## ` heading → returned as `preamble`. It is NOT
+ *    written into any section (it has no sentinel to own it); `mergeDerivedBody`
+ *    surfaces it as an `unmapped-preamble` conflict so a caller cannot miss it.
+ *  • Content under `###`+ headings stays inside its parent `##` section.
+ *  • A proposed body that already carries BEGIN/END sentinels keeps them inside
+ *    the section content — it is the deriver's job not to emit them (see
+ *    `agents/dialectic-deriver.md` § Anti-patterns).
+ *
+ * Pure function — no IO, deterministic.
+ *
+ * @param {string} proposedBody — the deriver's full replacement body for one target
+ * @param {string} [existingBody] — the on-disk body, for existing-name lookup
+ * @returns {{ managedUpdates: Record<string,string>,
+ *             mapping: Array<{heading: string, section: string, origin: 'existing'|'new'}>,
+ *             preamble: string }}
+ */
+export function deriveManagedUpdates(proposedBody, existingBody = '') {
+  if (typeof proposedBody !== 'string') {
+    throw new Error(`deriveManagedUpdates: proposedBody must be string (got ${typeof proposedBody}).`);
+  }
+  if (typeof existingBody !== 'string') {
+    throw new Error(`deriveManagedUpdates: existingBody must be string (got ${typeof existingBody}).`);
+  }
+
+  // heading-key → existing section name, read out of the live card
+  const existingByHeading = new Map();
+  const existingNames = new Set();
+  if (existingBody.length > 0) {
+    for (const s of parseSections(existingBody).sections) {
+      if (s.type !== 'managed') continue;
+      existingNames.add(s.name);
+      const h = s.content.match(/^##[ \t]+(.+?)[ \t]*$/m);
+      if (h && !existingByHeading.has(headingKey(h[1]))) {
+        existingByHeading.set(headingKey(h[1]), s.name);
+      }
+    }
+  }
+
+  H2_RE.lastIndex = 0;
+  const heads = [...proposedBody.matchAll(H2_RE)];
+  const preamble = (heads.length > 0 ? proposedBody.slice(0, heads[0].index) : proposedBody).trim();
+
+  /** @type {Record<string,string>} */
+  const managedUpdates = {};
+  const mapping = [];
+  const used = new Set();
+
+  for (let i = 0; i < heads.length; i++) {
+    const heading = heads[i][1];
+    const start = heads[i].index;
+    const end = i + 1 < heads.length ? heads[i + 1].index : proposedBody.length;
+    const content = proposedBody.slice(start, end).trim();
+
+    const existing = existingByHeading.get(headingKey(heading));
+    let section;
+    let origin;
+    if (existing !== undefined && !used.has(existing)) {
+      section = existing;
+      origin = 'existing';
+    } else {
+      const base = slugifyHeading(heading);
+      let candidate = base;
+      let n = 2;
+      while (used.has(candidate)) {
+        candidate = `${base}-${n++}`;
+      }
+      section = candidate;
+      origin = existingNames.has(candidate) ? 'existing' : 'new';
+    }
+
+    used.add(section);
+    managedUpdates[section] = content;
+    mapping.push({ heading, section, origin });
+  }
+
+  return { managedUpdates, mapping, preamble };
+}
+
+/**
+ * Merge a deriver-shaped FULL BODY STRING into an existing peer-card body.
+ * This is the function `/evolve dialectic --apply` calls; `mergePeerCard` stays
+ * the section-map primitive its existing callers already use.
+ *
+ * @param {string} existingBody
+ * @param {string} proposedBody
+ * @returns {MergeResult & { mapping: Array<{heading: string, section: string, origin: 'existing'|'new'}>, preamble: string }}
+ */
+export function mergeDerivedBody(existingBody, proposedBody) {
+  const { managedUpdates, mapping, preamble } = deriveManagedUpdates(proposedBody, existingBody);
+  const result = mergePeerCard(existingBody, managedUpdates);
+  if (preamble.length > 0) {
+    result.conflicts.push({ type: 'unmapped-preamble', content: preamble });
+  }
+  return { ...result, mapping, preamble };
+}

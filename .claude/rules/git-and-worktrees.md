@@ -41,7 +41,7 @@ Zwei Implementierer-Agenten griffen in derselben Session unabhaengig zu `git sta
 
 ## Provenance
 
-Markers below are the reconcile engine's dedupe anchors — removing a pair regenerates that learning as a standalone file (`docs/rule-authoring.md` § Consolidated rules). Consolidated by hand 2026-09-06 + 2026-09-09.
+Dedupe anchors — dropping a pair regenerates that learning as its own file (`docs/rule-authoring.md` § Consolidated rules). By hand 2026-09-06 + 2026-09-09 + 2026-09-11.
 - learning-key: `anti-pattern/in-a-linked-worktree-the-gitdir-that-rev-parse-returns-is-not-the-one-git-reads-excludes-from`
 - learning-id: `9c6cd166-8798-471a-a952-7694e9a7857b`
 - learning-key: `recurring-issue/git-stash-fuer-eine-baseline-ist-die-wiederkehrende-psa-007-form-zwei-vorfaelle-in-einer-session`

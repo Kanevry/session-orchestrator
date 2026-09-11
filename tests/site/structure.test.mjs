@@ -281,17 +281,34 @@ describe('site: AI-image disclosure', () => {
 });
 
 describe('site: hero motion-toggle wiring', () => {
-  // site/assets/ui.js:70 — `if (!video || !button || !base) return` bails out
-  // of the whole click-handler wiring with no error when data-video-base is
-  // missing or empty: the motion-toggle button simply never leaves `hidden`.
+  // site/assets/ui.js:69-70 — `const base = video.dataset.<prop>` followed by
+  // `if (!video || !button || !base) return` bails out of the whole click-handler
+  // wiring with no error when the markup does not carry the attribute the JS
+  // reads: the motion-toggle button simply never leaves `hidden`.
   // Nothing else in this file would catch that regression — the EN/DE parity
   // suite above only compares section ids, data-metric values, figure <img>
   // srcs and FAQ counts, and this <video> has none of those.
-  const heroArtVideoBase = (html) =>
-    html.match(/<figure class="hero-art">[\s\S]*?<video\b[^>]*\sdata-video-base="([^"]*)"/)?.[1];
+  //
+  // The attribute name is asserted as a RELATIONSHIP, never as a literal: it is
+  // READ OUT of ui.js and then looked for in the markup. A hardcoded
+  // "data-video-base" on either side would go red on a legitimate asset rename
+  // (catching no bug) while staying green on the real one — renaming
+  // `dataset.videoBase` in ui.js and updating nothing else. No test in this repo
+  // loads ui.js into a DOM, so the JS side is otherwise unexercised.
+  const datasetProps = () =>
+    all(/\bvideo\.dataset\.([A-Za-z0-9_$]+)/g, read('site/assets/ui.js'));
+  const kebab = (prop) => `data-${prop.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`;
 
-  it.each([EN, DE])('%s names a non-empty data-video-base on the hero-art video', (file) => {
-    expect(heroArtVideoBase(read(file)), `${file} hero-art <video data-video-base>`).toBeTruthy();
+  it('site/assets/ui.js reads exactly one dataset property off the hero video', () => {
+    expect(datasetProps(), 'video.dataset.* reads in site/assets/ui.js').toHaveLength(1);
+  });
+
+  it.each([EN, DE])('%s carries the hero-video attribute ui.js reads, non-empty', (file) => {
+    const attr = kebab(datasetProps()[0]);
+    const value = read(file).match(
+      new RegExp(`<figure class="hero-art">[\\s\\S]*?<video\\b[^>]*\\s${attr}="([^"]*)"`),
+    )?.[1];
+    expect(value, `${file} hero-art <video ${attr}> (name read from ui.js)`).toBeTruthy();
   });
 });
 

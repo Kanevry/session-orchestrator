@@ -8,7 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { mergePeerCard } from '@lib/peer-cards/merger.mjs';
+import { mergePeerCard, deriveManagedUpdates, mergeDerivedBody } from '@lib/peer-cards/merger.mjs';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -242,5 +242,102 @@ describe('mergePeerCard — stats counters', () => {
     });
     expect(result.stats.replaced).toBe(1);
     expect(result.stats.appended).toBe(1);
+  });
+});
+
+// ─── #1310 — deriver body-string → section-map adapter ───────────────────────
+//
+// Bug these catch: the dialectic-deriver emits a FULL BODY STRING, mergePeerCard
+// consumes a SECTION MAP. Before the adapter, `/evolve dialectic --apply` had no
+// translation at all. The subtler bug is the naive fix: re-slugifying each heading
+// produces `guard-and-protocol-migration-discipline` where the live card says
+// `guard-and-protocol-migration`, so the "update" APPENDS a second copy of the
+// section instead of replacing it — the card silently grows duplicate headings.
+
+const DERIVER_EXISTING = [
+  'Hand-owned intro.\n\n',
+  '<!-- BEGIN MANAGED: guard-and-protocol-migration -->\n',
+  '## Guard and protocol-migration discipline\n\n- old guard note\n',
+  '<!-- END MANAGED: guard-and-protocol-migration -->\n\n',
+  '<!-- BEGIN MANAGED: wave-execution -->\n',
+  '## Wave execution\n\n- old wave note\n',
+  '<!-- END MANAGED: wave-execution -->\n\nHand-owned footer.\n',
+].join('');
+
+const DERIVER_PROPOSED = [
+  '## Guard and protocol-migration discipline\n\n- new guard note\n\n',
+  '## Wave execution\n\n- new wave note\n\n',
+  '## Remote dispatch\n\n- one job, one log\n',
+].join('');
+
+describe('deriveManagedUpdates — heading → sentinel mapping (#1310)', () => {
+  it('reuses the EXISTING section name even when it is not the heading slug', () => {
+    const { mapping } = deriveManagedUpdates(DERIVER_PROPOSED, DERIVER_EXISTING);
+    const guard = mapping.find(m => m.heading.startsWith('Guard and'));
+    expect(guard.section).toBe('guard-and-protocol-migration');
+    expect(guard.origin).toBe('existing');
+  });
+
+  it('slugifies a heading that has no existing section, marking it new', () => {
+    const { mapping, managedUpdates } = deriveManagedUpdates(DERIVER_PROPOSED, DERIVER_EXISTING);
+    const fresh = mapping.find(m => m.heading === 'Remote dispatch');
+    expect(fresh).toEqual({ heading: 'Remote dispatch', section: 'remote-dispatch', origin: 'new' });
+    expect(managedUpdates['remote-dispatch']).toContain('one job, one log');
+  });
+
+  it('keeps each heading line inside its own section content', () => {
+    const { managedUpdates } = deriveManagedUpdates(DERIVER_PROPOSED, DERIVER_EXISTING);
+    expect(managedUpdates['wave-execution']).toBe('## Wave execution\n\n- new wave note');
+  });
+
+  it('returns text before the first heading as preamble instead of dropping it', () => {
+    const { preamble, managedUpdates } = deriveManagedUpdates(
+      'Here is my proposal:\n\n## Wave execution\n\n- x\n',
+      DERIVER_EXISTING,
+    );
+    expect(preamble).toBe('Here is my proposal:');
+    expect(Object.keys(managedUpdates)).toEqual(['wave-execution']);
+  });
+
+  it('every section name it emits satisfies the mergePeerCard grammar', () => {
+    const { managedUpdates } = deriveManagedUpdates(
+      '## CI / verification (2026!)\n\n- x\n',
+      '',
+    );
+    for (const name of Object.keys(managedUpdates)) expect(name).toMatch(/^[\w-]+$/);
+  });
+
+  it('rejects a non-string proposed body', () => {
+    expect(() => deriveManagedUpdates(null, '')).toThrow(/proposedBody must be string/);
+  });
+});
+
+describe('mergeDerivedBody — full-body apply seam (#1310)', () => {
+  it('replaces existing sections, appends new ones, preserves hand text', () => {
+    const result = mergeDerivedBody(DERIVER_EXISTING, DERIVER_PROPOSED);
+    expect(result.stats.replaced).toBe(2);
+    expect(result.stats.appended).toBe(1);
+    expect(result.body).toContain('Hand-owned intro.');
+    expect(result.body).toContain('Hand-owned footer.');
+    expect(result.body).toContain('- new guard note');
+    expect(result.body).not.toContain('- old guard note');
+  });
+
+  it('does not duplicate a heading whose section name is not its slug', () => {
+    const result = mergeDerivedBody(DERIVER_EXISTING, DERIVER_PROPOSED);
+    const occurrences = result.body.split('## Guard and protocol-migration discipline').length - 1;
+    expect(occurrences).toBe(1);
+    expect(result.body).not.toContain('guard-and-protocol-migration-discipline');
+  });
+
+  it('surfaces unmapped preamble as a conflict rather than dropping it silently', () => {
+    const result = mergeDerivedBody(DERIVER_EXISTING, 'Chatter.\n\n## Wave execution\n\n- x\n');
+    expect(result.conflicts).toContainEqual({ type: 'unmapped-preamble', content: 'Chatter.' });
+  });
+
+  it('is idempotent — applying the same proposal twice is byte-stable', () => {
+    const once = mergeDerivedBody(DERIVER_EXISTING, DERIVER_PROPOSED).body;
+    const twice = mergeDerivedBody(once, DERIVER_PROPOSED).body;
+    expect(twice).toBe(once);
   });
 });

@@ -1709,6 +1709,24 @@ function main() {
   if (actualCommandCount !== null) {
     result.command_count = { actual: actualCommandCount };
   }
+  // --- notes[] human renderer (#1312) ---
+  // `notes[]` is the REPORT-ONLY category the fleet-intent split created
+  // (.claude/rules/development.md § Guard & Threshold Design: separate the
+  // category, never raise the threshold). Built and returned in the JSON since
+  // that split, it had no renderer — so a note reached no human reader, and an
+  // unread category is the state the split replaced, not a weaker warning.
+  // stdout stays pure JSON (the consumer contract); notes leave on stderr as
+  // diagnostics, under their own heading, and never carry the word "warning"
+  // or "error" — that wording IS the category separation at the output edge.
+  if (notes.length > 0) {
+    process.stderr.write(
+      `NOTES (${notes.length}) \u2014 reported, not warned; no action implied:\n`
+        + notes
+          .map((n) => `  \u00b7 [${n.check}/${n.probe}] ${n.file}:${n.line} \u2014 ${n.message}\n`)
+          .join(''),
+    );
+  }
+
   process.stdout.write(JSON.stringify(result) + '\n');
 
   process.exit(errors.length > 0 && args.mode === 'strict' ? 1 : 0);

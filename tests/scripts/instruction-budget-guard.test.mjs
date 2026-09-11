@@ -1111,6 +1111,60 @@ describe('_parseInstructionBudget — block parser', () => {
       mode: 'warn',
     });
   });
+
+  // #1309 — the two SURFACE ceilings were read by `checkInstructionBudget`
+  // (`cfg['generated-byte-ceiling']` / `cfg['path-scoped-byte-ceiling']`) and
+  // emitted by NOTHING: the parser knew only `enabled`/`ceiling`/`byte-ceiling`/
+  // `mode`, so both Session Config overrides were dead from the day their axes
+  // were introduced. Concrete bug these pin: an operator who tightens either
+  // surface ceiling in CLAUDE.md gets the module default silently instead.
+  it('parses both surface byte-ceilings out of the block (#1309)', () => {
+    const block = [
+      'instruction-budget:',
+      '  enabled: true',
+      '  ceiling: 480',
+      '  generated-byte-ceiling: 90000',
+      '  path-scoped-byte-ceiling: 95000',
+      '  mode: warn',
+    ].join('\n');
+
+    const parsed = _parseInstructionBudget(block, FALLBACK);
+    expect(parsed['generated-byte-ceiling']).toBe(90000);
+    expect(parsed['path-scoped-byte-ceiling']).toBe(95000);
+  });
+
+  it('keeps the surface ceilings ABSENT (not undefined) when the block omits them', () => {
+    // Absence is the signal `checkInstructionBudget` falls back on. Emitting
+    // the key with `undefined` would look identical to `toEqual` but change
+    // nothing at the consumer; emitting a hard default here would duplicate a
+    // default that already lives there.
+    const parsed = _parseInstructionBudget('instruction-budget:\n  ceiling: 300\n', FALLBACK);
+    expect(parsed).toEqual({ ...FALLBACK, ceiling: 300 });
+    expect('generated-byte-ceiling' in parsed).toBe(false);
+    expect('path-scoped-byte-ceiling' in parsed).toBe(false);
+  });
+
+  it('keeps the resolved value for a malformed or non-positive surface ceiling', () => {
+    // Same validation shape as `byte-ceiling` above (#931a): integer, strictly
+    // positive; anything else leaves the axis at its fallback.
+    const bad = [
+      'instruction-budget:',
+      '  generated-byte-ceiling: 0',
+      '  path-scoped-byte-ceiling: not-a-number',
+    ].join('\n');
+
+    const parsed = _parseInstructionBudget(bad, FALLBACK);
+    expect('generated-byte-ceiling' in parsed).toBe(false);
+    expect('path-scoped-byte-ceiling' in parsed).toBe(false);
+
+    const carried = _parseInstructionBudget(bad, {
+      ...FALLBACK,
+      'generated-byte-ceiling': 70000,
+      'path-scoped-byte-ceiling': 71000,
+    });
+    expect(carried['generated-byte-ceiling']).toBe(70000);
+    expect(carried['path-scoped-byte-ceiling']).toBe(71000);
+  });
 });
 
 describe('loadInstructionBudgetConfig — disk read', () => {
@@ -1306,6 +1360,44 @@ describe('computeInstructionBudget — path-scoped surface (generated-rule growt
     expect(result.overGeneratedBudget).toBe(true);
     expect(result.overBudget).toBe(true);
     expect(result.severity).toBe('warn');
+  });
+
+  it('honours a Session Config generated-byte-ceiling end-to-end (#1309)', () => {
+    // The wiring test, in the production call shape: CLAUDE.md on disk, no
+    // explicit `generatedByteCeiling` opt. Before #1309 this banner was null —
+    // the parser dropped the key, so the module default (124,000) won and the
+    // operator's 100 B ceiling did nothing.
+    const { repoRoot } = makeConfigFixture(
+      ['instruction-budget:', '  enabled: true', '  generated-byte-ceiling: 100', '  mode: warn'].join(
+        '\n',
+      ),
+    );
+    const rulesDir = makeMixedFixture(3, 500);
+
+    const banner = checkInstructionBudget({ repoRoot, rulesDir });
+
+    expect(banner).not.toBeNull();
+    expect(banner.message).toContain('generated rules');
+    expect(banner.message).toContain('> 100 B');
+  });
+
+  it('honours a Session Config path-scoped-byte-ceiling end-to-end (#1309)', () => {
+    const { repoRoot } = makeConfigFixture(
+      [
+        'instruction-budget:',
+        '  enabled: true',
+        '  generated-byte-ceiling: 100',
+        '  path-scoped-byte-ceiling: 120',
+        '  mode: warn',
+      ].join('\n'),
+    );
+    const rulesDir = makeMixedFixture(3, 500);
+
+    const banner = checkInstructionBudget({ repoRoot, rulesDir });
+
+    expect(banner).not.toBeNull();
+    expect(banner.message).toContain('path-scoped rules');
+    expect(banner.message).toContain('> 120 B (not blocking)');
   });
 
   it('names the generated axis with its file count in the banner (HR-106: report the number judged)', () => {

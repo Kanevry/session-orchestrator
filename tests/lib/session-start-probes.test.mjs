@@ -221,6 +221,53 @@ describe('runSessionStartProbes — fail-open', () => {
     expect(calls[0].payload).toMatchObject({ timed_out: 1, ran: 0 });
     expect(out.bannerLines.join('\n')).toContain('1 timed out');
   });
+
+  // BUG (measured 2026-09-11 in this repo's own ledger, 7 of 39 recorded
+  // `orchestrator.probes.completed` runs): probes share the process, and the
+  // two that shell out with `execFileSync` monopolise the event loop for
+  // seconds. Under one shared WALL-CLOCK deadline, every probe that yields
+  // mid-work then loses its race to a long-expired timer and is recorded
+  // `timeout` / `budget-exceeded` with its result DISCARDED — while the
+  // synchronous blocker that caused the overrun settles in a microtask and is
+  // recorded `ran-clean`. The verdict graded asynchrony, not cost: the two
+  // probes blamed (`peer-cards-staleness` 7 ms, `maintenance-due` 40 ms in
+  // isolation) were among the cheapest in the registry. No existing test in
+  // this suite fails on that, because every fake probe here is either instant
+  // or hangs forever — none is cheap-but-preemptible next to a blocker.
+  it('does not charge a cheap async probe for a synchronous sibling that blocks the loop', async () => {
+    const dir = await mkTmp();
+    const { calls, emit } = captureEmit();
+    const probes = [
+      // Non-preemptible: burns wall-clock far past the budget without ever
+      // yielding — the `execFileSync` shape, without spawning anything.
+      await fakeProbe(
+        dir,
+        'blocker',
+        'export function probe() { const end = Date.now() + 400; while (Date.now() < end) {} return null; }',
+      ),
+      // Preemptible and cheap: one tick of real async work, then a real result.
+      await fakeProbe(
+        dir,
+        'cheap-async',
+        "export async function probe() { await new Promise((r) => setTimeout(r, 1));" +
+          " return { severity: 'warn', message: 'cheap-async measured something' }; }",
+      ),
+    ];
+
+    const out = await runSessionStartProbes({ repoRoot: dir, timeoutMs: 50 }, { probes, emit });
+
+    const cheap = out.results.find((r) => r.id === 'cheap-async');
+    // Assert on the OUTPUT, not on a duration: a probe that returns instantly
+    // because it silently did nothing is indistinguishable from a fast one.
+    expect(cheap).toMatchObject({ outcome: 'ran-warn', severity: 'warn' });
+    expect(out.bannerLines.join('\n')).toContain('cheap-async measured something');
+    expect(calls[0].payload.timed_out).toBe(0);
+    // The verdict's input reaches the ledger, and the cheap probe's own work is
+    // charged well under the budget even though wall-clock elapsed exceeds it.
+    const payload = calls[0].payload.probes.find((p) => p.id === 'cheap-async');
+    expect(payload.work_ms).toBeLessThan(50);
+    expect(cheap.durationMs).toBeGreaterThan(cheap.workMs);
+  });
 });
 
 describe('runSessionStartProbes — what did not run is recorded', () => {
@@ -254,8 +301,13 @@ describe('runSessionStartProbes — what did not run is recorded', () => {
     // header calls dropping it "the exact defect this module repairs".
     expect(calls[0].payload.probes).toEqual([
       { id: 'net', outcome: 'skipped', reason: 'network-probe-opt-in' },
-      { id: 'local', outcome: 'ran-clean' },
+      // `work_ms` — the quantity the `timeout` verdict is computed from — must
+      // reach the ledger too (HR-105), but its VALUE is wall-clock and must
+      // never be pinned (`0becdd9a` decoupled this suite from a wall budget for
+      // exactly that reason). A skipped probe never ran, so it carries none.
+      { id: 'local', outcome: 'ran-clean', work_ms: expect.any(Number) },
     ]);
+    expect(calls[0].payload.probes[0]).not.toHaveProperty('work_ms');
     // Excluded means not invoked — its banner must not appear.
     expect(out.bannerLines.join('\n')).not.toContain('should not be seen');
   });

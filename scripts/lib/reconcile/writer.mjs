@@ -490,6 +490,83 @@ function isOperatorRejection(item) {
   return typeof item.content === 'string' && item.content.length > 0;
 }
 
+
+// ---------------------------------------------------------------------------
+// Telemetry (#1307)
+// ---------------------------------------------------------------------------
+
+/**
+ * Ledger name of the rule-write event (issue #1307).
+ *
+ * WHY A SECOND EVENT AND NOT A FIELD ON `orchestrator.reconcile.completed`:
+ * that event is emitted by the `runReconcile` wrapper — BEFORE the operator
+ * approval AUQ and before this module runs at all. A `dry_run: false` record
+ * therefore proves only that the engine ran and merged the candidate store; an
+ * operator who declined every proposal emits a byte-identical record to one who
+ * approved five. The emitter has to sit where the thing it proves happens, and
+ * that is here: after the write pass, in the one module that writes rule files.
+ *
+ * Emitting is NOT writing — the #693 FA2/FA3 brandmauer is untouched. This
+ * module remains the only writer of `.claude/rules/`, and every write it makes
+ * is still an operator-approved item handed in via `approved`.
+ */
+export const RULES_WRITTEN_EVENT = 'orchestrator.reconcile.rules_written';
+
+/**
+ * Record ONE rule-write pass in the repo's event ledger — best-effort.
+ *
+ * ZERO-WRITE IS EMITTED, DELIBERATELY. The alternative (emit only on a
+ * successful write) makes the maintenance loop unable to separate three
+ * materially different outcomes that would all produce NO record: the operator
+ * declined every proposal, every write was REFUSED by a guard (path-safety,
+ * the #1015 content gate, a missing baseline root), and the writer was never
+ * reached at all. `.claude/rules/host-resources.md` § HR-105 is explicit that a
+ * rule whose firing you cannot falsify is not a rule, and the sibling event's
+ * own docs row states the same convention in one line: *"`dry_run` is the
+ * discriminator, not the event's absence"*. So the discriminator here is a
+ * FIELD — `rules_written` against `approved_proposals` — never the absence of a
+ * record. The one case that emits nothing is the caller's true no-op (neither
+ * an approved nor a rejected item), which returns before the lock is taken.
+ *
+ * NEVER THROWS, and never propagates: `emitEvent` throws `EventValidationError`
+ * on a malformed record, and `writeApprovedRules`'s never-throws contract is
+ * older and more load-bearing than this telemetry. A failed emit degrades to a
+ * stderr WARN and the write result is returned unchanged.
+ *
+ * @param {WriteApprovedRulesResult} result
+ * @param {{repoRoot?: string, targets: string[], approvedCount: number}} ctx
+ * @returns {Promise<void>}
+ */
+async function emitRulesWritten(result, ctx) {
+  const { repoRoot } = ctx;
+  // Same refusal as `emitReconcileCompleted` (#1119): with no repoRoot the
+  // ambient `SO_PROJECT_DIR` would receive synthetic records on every test run.
+  if (typeof repoRoot !== 'string' || repoRoot.trim() === '') return;
+
+  /** @type {Record<string, unknown>} */
+  const payload = {
+    rules_written: result.written,
+    approved_proposals: ctx.approvedCount,
+    rejected_archived: result.archived,
+    write_errors: result.errors.length,
+  };
+  // Allowlisted to the CLOSED {@link TARGET_DIRS} key set before entering the
+  // ledger — `targets` originates in operator-authored Session Config and is
+  // unbounded there, so an unknown value is untrusted text, never a
+  // measurement. Same treatment as `buildReconcilePayload`'s `targets`.
+  const known = Object.keys(TARGET_DIRS);
+  const targets = ctx.targets.filter((t) => known.includes(t));
+  if (targets.length > 0) payload.targets = targets;
+
+  try {
+    const { emitEvent } = await import('../events.mjs');
+    await emitEvent(RULES_WRITTEN_EVENT, payload, { repoRoot });
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    process.stderr.write(`reconcile-writer: ${RULES_WRITTEN_EVENT} emit failed (non-fatal): ${msg}\n`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -765,15 +842,21 @@ export async function writeApprovedRules({
     { timeoutMs: 10000 },
   );
 
-  // If lock acquisition failed, return a zeroed result with the lock error.
-  if (lockResult.ok === false) {
-    return {
-      written: 0,
-      archived: 0,
-      errors: [`lock-${lockResult.reason ?? 'unknown'}`],
-    };
-  }
+  // One emit for BOTH return points (#1307). A lock-acquisition failure is a
+  // zero-write pass like any other and is recorded as one — its `write_errors: 1`
+  // plus a non-zero `approved_proposals` is exactly the shape an operator needs
+  // to see, and an emit placed on the success path alone would drop it silently.
+  const result =
+    lockResult.ok === false
+      ? { written: 0, archived: 0, errors: [`lock-${lockResult.reason ?? 'unknown'}`] }
+      : // Unwrap the result returned from inside the lock body.
+        lockResult.value;
 
-  // Unwrap the result returned from inside the lock body.
-  return lockResult.value;
+  await emitRulesWritten(result, {
+    repoRoot,
+    targets: effectiveTargets,
+    approvedCount: approvedItems.length,
+  });
+
+  return result;
 }

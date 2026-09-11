@@ -109,6 +109,12 @@ A wave-scope manifest that declares test file paths without checking they exist 
 
 **Evidence** — STATE.md Deviations, session main-2026-09-04-session-20, timestamp 2026-09-05T06:46:53.496Z: W3-P1 declared three test paths that do not exist (tests/lib/qg-command-drift-banner.test.mjs, tests/lib/quality-gate.test.mjs, tests/lib/quality-gate-session-config.test.mjs); the real suites live under tests/unit/. Coordinator defect noted verbatim in STATE.md: test paths must be verified with ls before materializing.
 
+### Ein geteilter Wall-Clock-Deadline bestraft die preemptiblen Proben fuer die synchronen Geschwister
+
+Alle Proben starten parallel im selben Prozess. Wer `execFileSync` aufruft, blockiert die Event-Loop; wer danach noch awaitet, verliert sein Rennen gegen einen laengst abgelaufenen Macrotask-Timer und wird als `timeout`/`budget-exceeded` mit verworfenem Ergebnis verbucht, waehrend der blockierende Verursacher in einem Microtask `ran-clean` meldet. Das Urteil misst Asynchronitaet, nicht Kosten — die HR-103-Klasse (falsche Einheit), nur in der Zeitachse. Fix: Budget in EIGENER Arbeitszeit denominieren (Wall minus Loop-Blocked, gemessen ueber Timer-Verspaetung) und ein bereits geliefertes Ergebnis nie verwerfen.
+
+**Evidence** — 2026-09-11 session-orchestrator: `peer-cards-staleness` 2.3-3.3ms und `maintenance-due` 40-91ms isoliert gemessen, beide 7 bzw. 5 von 39 `orchestrator.probes.completed`-Laeufen als `timeout` verbucht; `project-hygiene` 3519ms und `tests-src-ratio` 314ms (die echten Kosten) meldeten `ran-clean`. Nach dem Fix 0 timeouts, `work_ms` 26 bzw. 17 bei `durationMs` ~1160.
+
 <!-- untrusted-content:end -->
 
 ## Provenance
@@ -116,7 +122,7 @@ A wave-scope manifest that declares test file paths without checking they exist 
 Consolidated generated rules into this file (2026-09-06 + 2026-09-09, 43→8 rule consolidation; 4 of them restored 2026-09-06 after the first pass dropped their prose and markers).
 
 `anti-pattern/agents-md-description-frontmatter-must-be-inline-string-not-yaml-block-scalar` is carried as MARKERS ONLY: its substance ("`check-agents.mjs` BANS `description: >` because the agent loader cannot read it", plus the sign flip against SKILL.md) already stands verbatim in *A line-regex frontmatter validator is blind to unparseable YAML and mis-measures block scalars* above, so restoring the prose a second time would duplicate a live section. The bullets below keep the reconcile dedupe honest. Its address moved once already: the check is no longer "validate-plugin Check 11" but `scripts/lib/agent-frontmatter.mjs:152` (second consumer: `scripts/lib/description-surface.mjs`).
-Markers below are the reconcile engine's dedupe anchors — removing a pair regenerates that learning as a standalone file (`docs/rule-authoring.md` § Consolidated rules). Consolidated by hand 2026-09-06 + 2026-09-09.
+Dedupe anchors — dropping a pair regenerates that learning as its own file (`docs/rule-authoring.md` § Consolidated rules). By hand 2026-09-06 + 2026-09-09 + 2026-09-11.
 - learning-key: `anti-pattern/a-git-grep-drift-sweep-cannot-see-untracked-files-so-a-pre-flight-sweep-run-before-the-commit-measures-a-different-tree-than-the-one-being-released`
 - learning-id: `802bed34-a71f-4c80-8e24-1b30e6321e76`
 - learning-key: `anti-pattern/a-line-regex-frontmatter-validator-is-blind-to-unparseable-yaml-and-mis-measures-block-scalars`
@@ -142,5 +148,8 @@ Markers below are the reconcile engine's dedupe anchors — removing a pair rege
 - learning-id: `5644d60f-c32a-4a4e-b830-5ab09d336c51`
 - learning-key: `recurring-issue/coordinator-declared-test-paths-in-a-wave-manifest-must-be-ls-verified-before-materializing`
 - learning-id: `eea105c1-674b-4efd-adea-e5b441ba04f0`
+
+- learning-key: `anti-pattern/ein-geteilter-wall-clock-deadline-bestraft-die-preemptiblen-proben-fuer-die-synchronen-geschwister`
+- learning-id: `7df84b5c-ff14-43e4-9c57-3fc58d9497ab`
 
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695), consolidated by hand 2026-09-06

@@ -35,7 +35,7 @@
  *   install produces an `outcome`, never an exception. `runSessionStartProbes`
  *   has no rejecting path; a caller needs no try/catch (the hook keeps one
  *   anyway as defence-in-depth).
- * - **Budget-bounded.** The whole run shares one deadline (`PROBE_BUDGET_MS`).
+ * - **Budget-bounded.** Each probe gets `PROBE_BUDGET_MS` of its OWN work time.
  *   See the ceiling note on that constant for what the bound can and cannot do.
  * - **Absent is not zero.** A probe that did not run is recorded with the
  *   reason it did not (`skipped` + `reason`), never silently omitted and never
@@ -88,19 +88,23 @@ const local = (rel) => pathToFileURL(path.join(import.meta.dirname, rel)).href;
  * the WORST repo in the fleet by design — see the revisit trigger below, which
  * this repo already sits just underneath rather than comfortably below.
  *
- * NAMED CEILING (BV-004): the deadline is enforced at `await` points. A probe
- * that blocks the event loop *synchronously* (several do — `project-hygiene`
- * and `tests-src-ratio` shell out with `execFileSync`) cannot be preempted by a
- * timer that cannot run; such a probe is reported with its TRUE `durationMs`
- * and can overrun this budget. The bound is therefore hard for async/network
- * probes and advisory for synchronous ones.
+ * NAMED CEILING (BV-004): the budget is denominated in a probe's OWN work time
+ * (wall-clock elapsed minus the time a synchronous sibling held the event loop
+ * — see {@link startLoopBlockedMeter}), and it is PER PROBE, not one shared
+ * wall deadline. A probe that blocks the loop *synchronously* (several do —
+ * `project-hygiene` and `tests-src-ratio` shell out with `execFileSync`) still
+ * cannot be preempted by a timer that cannot run, so it is reported with its
+ * true cost and can overrun this budget. The bound is therefore hard for
+ * async/network probes and advisory for synchronous ones — but it no longer
+ * charges the async ones for the synchronous ones' time.
  *
- * READING `durationMs`: probes are launched together, so a probe's individual
- * `durationMs` includes time spent waiting for a SIBLING synchronous probe to
- * release the event loop. Measured 2026-08-23 here, `loop-readiness` reports
- * ~513 ms under parallel launch and 0.5 ms in isolation. Only the run-level
- * `duration_ms` is an isolated cost; per-probe figures rank contention, not
- * work.
+ * READING `durationMs` vs `workMs`: probes are launched together, so a probe's
+ * individual `durationMs` includes time spent waiting for a SIBLING
+ * synchronous probe to release the event loop. Measured 2026-09-11 here, all
+ * 17 non-network probes reported `durationMs` ≈ 5.8 s while their isolated
+ * costs ranged 0.5–3519 ms. `durationMs` ranks contention; `workMs` — the
+ * field the `timeout` verdict is computed from, and the one persisted as
+ * `work_ms` — ranks work.
  *
  * REVISIT TRIGGER: if `duration_ms` in `orchestrator.probes.completed` exceeds
  * half this budget at the median across a repo's recorded starts, or if any
@@ -112,6 +116,71 @@ export const PROBE_BUDGET_MS = 2000;
 
 /** Sentinel resolved by the deadline race; never leaks to a caller. */
 const TIMED_OUT = Symbol('probe-timeout');
+
+/**
+ * Event-loop-lag sampling interval for {@link startLoopBlockedMeter}.
+ *
+ * NAMED CEILING (BV-004): 20 ms is ~50 wakeups/s, negligible next to the
+ * run's own hundreds of ms, and fine-grained enough that a block shorter than
+ * one sample is also shorter than anything the budget cares about. REVISIT
+ * TRIGGER: if a probe's own work ever needs to be bounded below ~100 ms, this
+ * sampling floor becomes the measurement error and needs `perf_hooks`
+ * `monitorEventLoopDelay` instead.
+ */
+const LOOP_BLOCKED_SAMPLE_MS = 20;
+
+/**
+ * Measure how long the event loop was monopolised by SYNCHRONOUS work.
+ *
+ * Why this exists (measured 2026-09-11 against this repo, `PROBES` run in
+ * parallel): `project-hygiene` (3519 ms) and `tests-src-ratio` (314 ms) shell
+ * out with `execFileSync` and cannot be preempted. Every probe's wall-clock
+ * `durationMs` therefore read ~5.8 s while its own work was 0.5–66 ms, and the
+ * only two probes reported as `timeout` were the two that YIELD to the event
+ * loop mid-work (`peer-cards-staleness`, 7 ms; `maintenance-due`, 40 ms) — a
+ * probe whose work is synchronous wins its own race in a microtask before the
+ * long-expired macrotask timer can run. The old instrument therefore graded
+ * ASYNCHRONY, not cost: the two cheapest preemptible probes took the blame for
+ * the two most expensive non-preemptible ones (`.claude/rules/host-resources.md`
+ * § HR-103 — check the unit before the threshold; § HR-106 — report what the
+ * rule judged).
+ *
+ * A timer scheduled every {@link LOOP_BLOCKED_SAMPLE_MS} that fires late by
+ * `d` proves the loop was unavailable for `d`. Summing that lateness gives the
+ * blocked time, which is subtracted from a probe's wall-clock elapsed to yield
+ * its OWN cost — the quantity `PROBE_BUDGET_MS` was always meant to bound.
+ *
+ * NAMED CEILING (BV-004): the meter knows THAT the loop was blocked, never BY
+ * WHOM — so the blocker's own blocking time is subtracted from its own
+ * `workMs` too. Measured 2026-09-11 here: `project-hygiene`, the ~1–3.5 s
+ * `execFileSync` blocker, reports `workMs` ≈ 9 ms. Read `workMs` as EXACT for a
+ * preemptible probe and as a LOWER BOUND for a synchronous one — which is
+ * coherent with what the budget can do (a non-preemptible probe was never
+ * boundable), but it means `workMs` must never be used to rank the synchronous
+ * probes against each other. REVISIT TRIGGER: if a synchronous probe ever has
+ * to be held to a budget, attribute the gap to the probe that caused it
+ * (`async_hooks`, or run the shell-outs in a worker) rather than re-tuning this
+ * subtraction. Isolated per-probe cost, for now, is measured by running one
+ * probe per process.
+ *
+ * @returns {{ read: () => number, stop: () => void }}
+ */
+function startLoopBlockedMeter() {
+  let blockedMs = 0;
+  let last = Date.now();
+  const timer = setInterval(() => {
+    const now = Date.now();
+    blockedMs += Math.max(0, now - last - LOOP_BLOCKED_SAMPLE_MS);
+    last = now;
+  }, LOOP_BLOCKED_SAMPLE_MS);
+  if (typeof timer?.unref === 'function') timer.unref();
+  return {
+    // The in-progress gap counts too: after a long block the interval callback
+    // may not have run yet when a probe callback asks.
+    read: () => blockedMs + Math.max(0, Date.now() - last - LOOP_BLOCKED_SAMPLE_MS),
+    stop: () => clearInterval(timer),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Probe registry
@@ -385,29 +454,67 @@ function pluginVersion() {
 }
 
 /**
- * Race `promise` against a deadline.
+ * Race `promise` against a budget denominated in the probe's OWN work time —
+ * wall-clock elapsed MINUS the time a synchronous sibling held the event loop
+ * (see {@link startLoopBlockedMeter} for why that subtraction is the whole
+ * point).
  *
  * The loser is neutralised (`.catch`) before the race so a late rejection can
  * never surface as an unhandled rejection and kill an exit-0 hook.
  *
+ * Two properties worth stating, because both were live defects:
+ *
+ *  - **A delivered result is never discarded.** When the budget really is
+ *    exhausted, the already-settled promise still wins: "measured, then thrown
+ *    away" is worse than not measuring (the module's own rule, stated at the
+ *    telemetry boundary below). Only a probe that has produced nothing is a
+ *    `timeout`.
+ *  - **Termination.** The re-arm loop only repeats while blocked time is
+ *    accruing, i.e. while some sibling monopolises the loop. Siblings are
+ *    finite and synchronous, so the loop cannot spin forever; once they
+ *    release, work time advances and the budget binds normally.
+ *
  * @template T
  * @param {Promise<T>} promise
- * @param {number} ms — remaining budget; `<= 0` times out immediately.
- * @returns {Promise<T|symbol>} — resolves to {@link TIMED_OUT} on expiry.
+ * @param {number} budgetMs — the probe's own-work budget; `<= 0` times out.
+ * @param {{ read: () => number }} meter — loop-blocked meter.
+ * @returns {Promise<{ raced: T|symbol, workMs: number }>}
  */
-async function withDeadline(promise, ms) {
-  const settled = promise.catch((err) => ({ __probeError: err }));
-  if (ms <= 0) return TIMED_OUT;
-  let timer;
-  const expiry = new Promise((resolve) => {
-    timer = setTimeout(() => resolve(TIMED_OUT), ms);
-    // Never hold the event loop open for the timer alone.
-    if (typeof timer?.unref === 'function') timer.unref();
+async function withWorkDeadline(promise, budgetMs, meter) {
+  let done = false;
+  /** @type {unknown} */
+  let value;
+  const settled = promise.catch((err) => ({ __probeError: err })).then((v) => {
+    done = true;
+    value = v;
+    return v;
   });
-  try {
-    return await Promise.race([settled, expiry]);
-  } finally {
-    clearTimeout(timer);
+
+  const t0 = Date.now();
+  const blocked0 = meter.read();
+  const workElapsed = () => Date.now() - t0 - (meter.read() - blocked0);
+
+  for (;;) {
+    const remaining = budgetMs - workElapsed();
+    if (remaining <= 0) {
+      // Budget exhausted — but a probe that already delivered is not a timeout.
+      return { raced: done ? value : TIMED_OUT, workMs: workElapsed() };
+    }
+    let timer;
+    const expiry = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(TIMED_OUT), remaining);
+      // Never hold the event loop open for the timer alone.
+      if (typeof timer?.unref === 'function') timer.unref();
+    });
+    let raced;
+    try {
+      raced = await Promise.race([settled, expiry]);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (raced !== TIMED_OUT) return { raced, workMs: workElapsed() };
+    // The timer fired, but it may have fired LATE because the loop was blocked.
+    // Recheck against work time; re-arm for whatever budget is genuinely left.
   }
 }
 
@@ -522,7 +629,12 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
   const includeNetwork = env?.SO_PROBES_INCLUDE_NETWORK === '1';
 
   const ctx = { repoRoot, config, env };
-  const deadline = started + Math.max(0, Number(timeoutMs) || 0);
+  // Per-probe, denominated in the probe's own work time — NOT a shared
+  // wall-clock deadline. A shared wall deadline charged every probe for its
+  // siblings' non-preemptible `execFileSync` calls; see
+  // {@link startLoopBlockedMeter}.
+  const budgetMs = Math.max(0, Number(timeoutMs) || 0);
+  const meter = startLoopBlockedMeter();
 
   /** @type {Map<string, object>} */
   const byId = new Map();
@@ -570,10 +682,10 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
         return { __probeResult: await fn(probe.args(ctx)) };
       })();
 
-      const raced = await withDeadline(invocation, deadline - Date.now());
+      const { raced, workMs } = await withWorkDeadline(invocation, budgetMs, meter);
 
       if (raced === TIMED_OUT) {
-        record('timeout', { reason: 'budget-exceeded' });
+        record('timeout', { reason: 'budget-exceeded', workMs });
         return;
       }
       if (raced && raced.__probeError) {
@@ -594,10 +706,13 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
         : defaultRender(result, severity);
       record(severity === 'ok' ? 'ran-clean' : severity === 'warn' ? 'ran-warn' : 'ran-alert', {
         severity,
+        workMs,
         ...(line ? { line } : {}),
       });
     }),
   );
+
+  meter.stop();
 
   // Registry order, never completion order — a run must be reproducible.
   const results = [];
@@ -646,6 +761,12 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
       id: r.id,
       outcome: r.outcome,
       ...(typeof r.reason === 'string' && r.reason.length > 0 ? { reason: r.reason } : {}),
+      // `work_ms` is the quantity the `timeout` verdict is computed FROM, so it
+      // has to reach the ledger (`.claude/rules/host-resources.md` § HR-105 — a
+      // rule you cannot falsify is not a rule). `duration_ms` at probe level is
+      // deliberately NOT persisted: under parallel launch it ranks contention,
+      // not work, and persisting a misleading field was the #1089 failure.
+      ...(Number.isFinite(r.workMs) ? { work_ms: Math.round(r.workMs) } : {}),
     })),
   };
 

@@ -68,7 +68,20 @@ const result = await runDialecticDeriver({
 
 ### Step 6.4: Diff Output & Apply Gate
 - If dry-run (default): present diff inline; write to `.orchestrator/dialectic-pending.md` (atomic tmp+rename); EXIT. Suggestion: "Re-run with `/evolve --dialectic --apply` to apply." <!-- path-check: example -->
-- If `--apply`: call `mergePeerCard(existingBody, managedUpdates)` from `scripts/lib/peer-cards/merger.mjs` for each card target, then `writePeerCard(repoRoot, 'user', mergedUserCard)` and `writePeerCard(repoRoot, 'agent', mergedAgentCard)` from `scripts/lib/peer-cards/writer.mjs`. Update the `updated:` frontmatter.
+- If `--apply`: call **`mergeDerivedBody(existingBody, result.diff[target])`** from `scripts/lib/peer-cards/merger.mjs` for each card target, then `writePeerCard(repoRoot, 'user', mergedUserCard)` and `writePeerCard(repoRoot, 'agent', mergedAgentCard)` from `scripts/lib/peer-cards/writer.mjs`. Update the `updated:` frontmatter.
+
+  **Why `mergeDerivedBody` and not `mergePeerCard` directly (#1310):** the deriver emits a FULL BODY STRING per target (`agents/dialectic-deriver.md` § Output format); `mergePeerCard` consumes a SECTION MAP keyed by sentinel name. `mergeDerivedBody` is the adapter between the two — it splits the proposed body at `## ` headings and maps each heading to a sentinel section. `mergePeerCard` stays available as the section-map primitive. Handling per heading class, all of it in `mergeDerivedBody`'s return value:
+
+  | Heading in the proposed body | Section name | Merge effect | Surfaced as |
+  |---|---|---|---|
+  | Matches an existing managed section's own `## ` heading | that section's EXISTING name (read from the card, NOT re-slugified) | REPLACE | `mapping[].origin === 'existing'` |
+  | No existing section | slugified heading (`[a-z0-9-]+`, collisions suffixed `-2`) | APPEND | `mapping[].origin === 'new'` |
+  | Existing managed section the proposal omits | — | KEPT (no auto-delete, per `mergePeerCard` semantics) | — |
+  | Text before the first `## ` heading | — | NOT applied | `preamble` + a `{ type: 'unmapped-preamble' }` entry in `conflicts[]` |
+
+  Existing names are read back out of the card rather than re-derived because the live names are not a pure function of their headings — measured 2026-09-11 in `.orchestrator/peers/AGENT.md`: `## Guard and protocol-migration discipline` → `guard-and-protocol-migration`. Re-slugifying would APPEND a duplicate section instead of replacing one.
+
+  **Present `conflicts[]` before writing.** A non-empty `conflicts[]` (`duplicate-section`, `orphan-begin`, `unmapped-preamble`) is operator-visible content that the merge did not place — report it beside the delta line rather than writing silently.
 - Report: `Dialectic-derived: M deltas to USER.md, N deltas to AGENT.md. Dry-run | Applied. Tokens: in=<X> out=<Y>.`
 
 **Telemetry (#1200, #1206) — emitted by `scripts/dialectic-deriver.mjs`, not skill prose.**

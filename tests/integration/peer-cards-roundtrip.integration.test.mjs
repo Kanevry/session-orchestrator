@@ -32,7 +32,8 @@ import { fileURLToPath } from 'node:url';
 
 import { readPeerCards } from '@lib/peer-cards/reader.mjs';
 import { writePeerCard } from '@lib/peer-cards/writer.mjs';
-import { mergePeerCard } from '@lib/peer-cards/merger.mjs';
+import { mergePeerCard, mergeDerivedBody } from '@lib/peer-cards/merger.mjs';
+import { parseResponse } from '../../scripts/dialectic-deriver.mjs';
 import { checkPeerCardsStaleness } from '@lib/peer-cards/staleness-banner.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -439,5 +440,106 @@ describe('peer-cards integration (MED-2 + Q5 AC3 + Q5 AC4)', () => {
       expect(errorsForBadCard.length).toBeGreaterThanOrEqual(1);
       expect(errorsForBadCard[0].path).toBe('type');
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #1310: deriver-output → disk apply roundtrip
+//
+// The bug this file did not previously cover: `parseResponse()` hands back a
+// FULL BODY STRING per target while `mergePeerCard()` consumes a SECTION MAP,
+// so `/evolve dialectic --apply` had no path from the deriver's artefact to the
+// card on disk. This exercises the real seam end-to-end: deriver response text
+// → parseResponse → mergeDerivedBody → writePeerCard → readPeerCards.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#1310 dialectic apply roundtrip (deriver body-string → card on disk)', () => {
+  let tmpRepo;
+
+  beforeEach(() => {
+    tmpRepo = mkdtempSync(join(tmpdir(), 'so-peer-cards-1310-'));
+  });
+
+  afterEach(() => {
+    rmSync(tmpRepo, { recursive: true, force: true });
+  });
+
+  const HAND_INTRO = 'Hand-written intro that must survive a dialectic apply.';
+  const INITIAL_BODY = [
+    HAND_INTRO,
+    '',
+    // section name deliberately NOT the slug of its heading — the live
+    // .orchestrator/peers/AGENT.md carries exactly this shape.
+    '<!-- BEGIN MANAGED: guard-and-protocol-migration -->',
+    '## Guard and protocol-migration discipline',
+    '',
+    '- old guard note',
+    '<!-- END MANAGED: guard-and-protocol-migration -->',
+    '',
+    'Hand-written footer.',
+  ].join('\n');
+
+  const DERIVER_RESPONSE = [
+    'Here is the derivation.',
+    '',
+    '```diff',
+    '# target: agent',
+    '## Guard and protocol-migration discipline',
+    '',
+    '- new guard note',
+    '',
+    '## Remote dispatch',
+    '',
+    '- one job, one log',
+    '```',
+  ].join('\n');
+
+  it('applies a deriver full-body response onto the card without duplicating sections', async () => {
+    await writePeerCard(tmpRepo, 'agent', {
+      frontmatter: {
+        id: 'agt-1310',
+        type: 'peer-card',
+        target: 'agent',
+        created: '2026-09-11T00:00:00Z',
+        updated: '2026-09-11T00:00:00Z',
+        source_sessions: [],
+      },
+      body: INITIAL_BODY,
+    });
+
+    const first = await readPeerCards(tmpRepo);
+    const { diff } = parseResponse(DERIVER_RESPONSE);
+    expect(typeof diff.agent).toBe('string');
+
+    const merged = mergeDerivedBody(first.agent.body, diff.agent);
+    expect(merged.stats.replaced).toBe(1);
+    expect(merged.stats.appended).toBe(1);
+    expect(merged.mapping.map(m => m.section)).toEqual([
+      'guard-and-protocol-migration',
+      'remote-dispatch',
+    ]);
+
+    await writePeerCard(tmpRepo, 'agent', {
+      frontmatter: { ...first.agent.frontmatter, updated: '2026-09-11T12:00:00Z' },
+      body: merged.body,
+    });
+
+    const reRead = await readPeerCards(tmpRepo);
+    expect(reRead.agent.validation.ok).toBe(true);
+    expect(reRead.agent.body).toContain(HAND_INTRO);
+    expect(reRead.agent.body).toContain('Hand-written footer.');
+    expect(reRead.agent.body).toContain('- new guard note');
+    expect(reRead.agent.body).not.toContain('- old guard note');
+    // the replaced section must not have been appended a second time
+    expect(
+      reRead.agent.body.split('## Guard and protocol-migration discipline').length - 1,
+    ).toBe(1);
+    expect(reRead.agent.body).toContain('<!-- BEGIN MANAGED: remote-dispatch -->');
+  });
+
+  it('re-applying the same derivation to the written card is a no-op', async () => {
+    const once = mergeDerivedBody(INITIAL_BODY, parseResponse(DERIVER_RESPONSE).diff.agent).body;
+    const twice = mergeDerivedBody(once, parseResponse(DERIVER_RESPONSE).diff.agent).body;
+    expect(twice).toBe(once);
   });
 });

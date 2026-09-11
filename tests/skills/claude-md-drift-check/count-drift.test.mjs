@@ -366,3 +366,55 @@ describe('mode + skip-flag wiring', () => {
     expect(errorsFor(j, 'test-count')).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// notes[] renderer (#1312)
+// ---------------------------------------------------------------------------
+//
+// The bug these guard: `notes[]` was built, pushed and returned in the JSON,
+// but nothing PRINTED it — a reader of the run saw `warnings 36` and never the
+// note. An unrendered category is not a quieter warning, it is the silence the
+// fleet-intent category split (.claude/rules/development.md § Guard & Threshold
+// Design) was introduced to replace. Two properties, both falsifiable by
+// deleting the renderer or by re-wording it as a warning:
+//   1. a note reaches a human-readable channel at all;
+//   2. it is rendered as its OWN category — never as a warning or an error.
+describe('notes[] renderer', () => {
+  function makeFleetIntentRule() {
+    const rulesDir = join(vault, '.claude', 'rules');
+    mkdirSync(rulesDir, { recursive: true });
+    writeFileSync(
+      join(rulesDir, 'fleet.md'),
+      '---\nglobs:\n  - "**/*Tests*"\nfleet-intent-globs:\n  - "**/*Tests*"\n---\n\n# Fleet Rule\n',
+    );
+    writeFileSync(join(vault, 'CLAUDE.md'), '# Minimal\n');
+  }
+
+  it('renders a note to a human-readable channel, under its own heading', () => {
+    makeFleetIntentRule();
+    const r = runChecker(vault);
+    const j = parseJson(r.stdout);
+
+    expect(j.notes.filter((n) => n.probe === 'fleet-intent-glob')).toHaveLength(1);
+    expect(r.stderr).toContain('NOTES (1)');
+    expect(r.stderr).toContain('fleet-intent-glob');
+    expect(r.stderr).toContain('**/*Tests*');
+  });
+
+  it('does not render the note as a warning or an error', () => {
+    makeFleetIntentRule();
+    const r = runChecker(vault);
+
+    const noteLines = r.stderr.split('\n').filter((l) => l.includes('fleet-intent-glob'));
+    expect(noteLines).toHaveLength(1);
+    expect(noteLines[0].toLowerCase()).not.toMatch(/\bwarn(ing)?\b|\berror\b/);
+  });
+
+  it('prints nothing when there are no notes', () => {
+    writeFileSync(join(vault, 'CLAUDE.md'), '# Minimal\n');
+    const r = runChecker(vault);
+
+    expect(parseJson(r.stdout).notes).toHaveLength(0);
+    expect(r.stderr).not.toContain('NOTES (');
+  });
+});

@@ -116,7 +116,15 @@ describe('checkMaintenanceDue', () => {
     expect(result?.severity).toBe('warn');
     expect(result.message).toContain('⚠ maintenance due: 3 of 6');
     expect(result.message).toContain(`evolve: never, ${MAINTENANCE_MIN_LEARNINGS + 5} active learnings`);
-    expect(result.message).toContain('reconcile: never');
+    // HR-106 regression (learning 013a45ba): the reconcile row used to print
+    // `lastRunAt`, so a repo whose backlog keeps the signal due showed THAT
+    // run's own date next to the word "due" — "last run today, due today".
+    // The row must carry the judgment (`computeReconcileNudge().reasons`), and
+    // must never be a bare date.
+    const reconcileDetail = computed.due.find((d) => d.id === 'reconcile')?.detail;
+    expect(reconcileDetail).toMatch(/learnings/);
+    expect(reconcileDetail).not.toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(result.message).toContain(`reconcile: ${reconcileDetail}`);
     expect(result.message).toContain('sweep: 3 expired');
     expect(result.message).toContain('run /session housekeeping.');
     // Signals that are NOT due must not appear at all.

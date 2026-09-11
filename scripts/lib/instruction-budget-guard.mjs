@@ -266,6 +266,32 @@ export const DEFAULT_BYTE_CEILING = 121000;
  * and changes none of its terms. Still tracked rather than silently patched:
  * raising OR lowering a threshold inside a population fix is exactly the
  * conflation this comment exists to end.
+ *
+ * FIRING-RATE AUDIT — widened from 3 states to 89 (#1308, 2026-09-11T17:26Z,
+ * clean tree @ `4a49adc6`). HR-105 forbids a rule nothing records; "0 of 3"
+ * was too small a base to tell "genuinely rare" from "silently broken", so the
+ * guard was replayed over EVERY commit that touched `.claude/rules/`:
+ * `git log --format=%h -- .claude/rules/` → 89 commits, each extracted with
+ * `git archive <sha> .claude/rules | tar -x -C <tmp>` and fed to
+ * `computeInstructionBudget({rulesDir})`:
+ *
+ *   directive axis  (480)      → fires  4/89 =  4.5 %   rare, healthy
+ *   byte axis       (121,000)  → fires  0/89 =  0.0 %   live: 586 B headroom
+ *   generated axis  (124,000)  → fires  0/89 =  0.0 %   peak ever 89,763 B
+ *   pathScoped axis (124,000)  → fires  4/89 =  4.5 %   falsifiable
+ *
+ * "Silently broken" is now RULED OUT: `pathScoped` runs the same code path off
+ * the same walk and fires on 4 of the same 89 states. What remains is the
+ * calibration gap — the all-time peak of this population is 89,763 B, i.e.
+ * 72.4 % of the ceiling, so no state this repo has ever recorded could have
+ * breached it, and none plausibly will before the corpus grows ~38 %.
+ * A falsifiable ceiling for this axis would sit just above the recorded peak
+ * (≈ 92,000 B, peak + 2.5 %); this module does NOT move it, because
+ * `.claude/rules/development.md` § Guard & Threshold Design makes re-aiming a
+ * threshold an operator decision, separate from measuring it. Revisit trigger:
+ * re-run the 89-state replay above whenever the generated corpus passes
+ * 92,000 B, or when this axis first fires (then it is calibrated, not
+ * decorative).
  */
 export const DEFAULT_GENERATED_BYTE_CEILING = 124000;
 
@@ -320,6 +346,10 @@ export const DEFAULT_GENERATED_BYTE_CEILING = 124000;
  *
  * Firing rate 2 of 3, falsifiable in both directions — the condition
  * {@link DEFAULT_GENERATED_BYTE_CEILING} does NOT currently meet (0 of 3).
+ * Confirmed on a wider base (#1308, 2026-09-11T17:26Z @ `4a49adc6`): replayed
+ * over all 89 commits that touched `.claude/rules/`, this axis fires 4/89
+ * (4.5 %) against the generated axis's 0/89 — inside HR-101's rare band, and
+ * falsifiable, which is exactly the property the sibling ceiling lacks.
  * This is also why it is not re-derived upward off the live number: a ceiling
  * placed above 134,969 would be silent on all three states, i.e. the same
  * unfalsifiable shape, obtained by the threshold-patch move
@@ -359,6 +389,8 @@ export const DEFAULT_PATH_SCOPED_BYTE_CEILING = 124000;
  *     enabled: true
  *     ceiling: 480
  *     byte-ceiling: 114000
+ *     generated-byte-ceiling: 124000     # optional (#1309)
+ *     path-scoped-byte-ceiling: 124000   # optional (#1309)
  *     mode: warn
  *
  * Behaviour:
@@ -415,9 +447,18 @@ export function loadInstructionBudgetConfig(repoRoot) {
  * the missing entry falls back to `DEFAULT_BYTE_CEILING` rather than yielding
  * `undefined`, so an older caller can never disable the byte axis by omission.
  *
+ * The two SURFACE ceilings (`generated-byte-ceiling`, `path-scoped-byte-ceiling`)
+ * are parsed with the same validation as `byte-ceiling` but emitted ONLY when
+ * present (in the block or in `defaults`) — see the inline note in the body.
+ * Until #1309 they were parsed by nothing at all, so the Session Config
+ * override for both surface axes was dead from the day the axes were added:
+ * `checkInstructionBudget` read `cfg['generated-byte-ceiling']` /
+ * `cfg['path-scoped-byte-ceiling']`, and the only producer of `cfg` never put
+ * either key on the object.
+ *
  * @param {string} content - full file contents
- * @param {{ enabled: boolean, ceiling: number, 'byte-ceiling'?: number, mode: 'warn' | 'off' }} [defaults]
- * @returns {{ enabled: boolean, ceiling: number, 'byte-ceiling': number, mode: 'warn' | 'off' }}
+ * @param {{ enabled: boolean, ceiling: number, 'byte-ceiling'?: number, 'generated-byte-ceiling'?: number, 'path-scoped-byte-ceiling'?: number, mode: 'warn' | 'off' }} [defaults]
+ * @returns {{ enabled: boolean, ceiling: number, 'byte-ceiling': number, 'generated-byte-ceiling'?: number, 'path-scoped-byte-ceiling'?: number, mode: 'warn' | 'off' }}
  */
 export function _parseInstructionBudget(content, defaults) {
   const base = defaults ?? {
@@ -466,6 +507,19 @@ export function _parseInstructionBudget(content, defaults) {
   let enabled = base.enabled;
   let ceiling = base.ceiling;
   let byteCeiling = baseByteCeiling;
+  // The two SURFACE ceilings are OPTIONAL on this shape, unlike the two above:
+  // `checkInstructionBudget` already falls back to the module default when the
+  // key is absent, and `loadInstructionBudgetConfig`'s own fallback object
+  // never carried them. So they are emitted only when a value actually
+  // resolves — emitting `undefined` would be indistinguishable from "set to
+  // nothing", and emitting the module default here would duplicate a default
+  // that already lives at the consumer (#1309).
+  let generatedByteCeiling =
+    typeof base['generated-byte-ceiling'] === 'number' ? base['generated-byte-ceiling'] : undefined;
+  let pathScopedByteCeiling =
+    typeof base['path-scoped-byte-ceiling'] === 'number'
+      ? base['path-scoped-byte-ceiling']
+      : undefined;
   let mode = base.mode;
 
   for (const rawLine of blockLines) {
@@ -501,6 +555,26 @@ export function _parseInstructionBudget(content, defaults) {
         }
         break;
       }
+      case 'generated-byte-ceiling': {
+        // Identical validation to `byte-ceiling` above — integer, strictly
+        // positive; malformed or non-positive silently keeps whatever was
+        // already resolved (#1309).
+        if (/^-?\d+$/.test(v)) {
+          const n = Number.parseInt(v, 10);
+          if (Number.isFinite(n) && n > 0) generatedByteCeiling = n;
+        }
+        break;
+      }
+      case 'path-scoped-byte-ceiling': {
+        // Same shape again — the sibling surface axis (#1297 follow-up); both
+        // config keys were read by `checkInstructionBudget` and emitted by
+        // nothing until #1309.
+        if (/^-?\d+$/.test(v)) {
+          const n = Number.parseInt(v, 10);
+          if (Number.isFinite(n) && n > 0) pathScopedByteCeiling = n;
+        }
+        break;
+      }
       case 'mode':
         // Only `off` silences; any other value (incl. `warn`) surfaces the banner.
         mode = v.toLowerCase() === 'off' ? 'off' : 'warn';
@@ -508,7 +582,14 @@ export function _parseInstructionBudget(content, defaults) {
     }
   }
 
-  return { enabled, ceiling, 'byte-ceiling': byteCeiling, mode };
+  const parsed = { enabled, ceiling, 'byte-ceiling': byteCeiling, mode };
+  if (typeof generatedByteCeiling === 'number') {
+    parsed['generated-byte-ceiling'] = generatedByteCeiling;
+  }
+  if (typeof pathScopedByteCeiling === 'number') {
+    parsed['path-scoped-byte-ceiling'] = pathScopedByteCeiling;
+  }
+  return parsed;
 }
 
 /**

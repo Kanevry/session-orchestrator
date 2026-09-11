@@ -90,7 +90,7 @@ package.json hat kein exports-Feld, also kann jeder Consumer scripts/lib/** dire
 
 ## Provenance
 
-Markers below are the reconcile engine's dedupe anchors — removing a pair regenerates that learning as a standalone file (`docs/rule-authoring.md` § Consolidated rules). Consolidated by hand 2026-09-06 + 2026-09-09.
+Dedupe anchors — dropping a pair regenerates that learning as its own file (`docs/rule-authoring.md` § Consolidated rules). By hand 2026-09-06 + 2026-09-09 + 2026-09-11.
 - learning-key: `anti-pattern/eine-dokumentierte-adapter-schnittstelle-die-nur-in-prosa-geprueft-wurde-passte-nicht-zur-echten-aufrufform`
 - learning-id: `f91ce630-765a-481f-8744-ef05ede66ea8`
 - learning-key: `anti-pattern/a-tool-result-on-an-agent-dispatch-is-a-launch-ack-under-async-dispatch-not-a-completion`

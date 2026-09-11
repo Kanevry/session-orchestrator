@@ -33,7 +33,7 @@ expires-at: 2026-10-01
 
 Every rule here answers one question — *is this artefact mine?* — and every one of them was learned the same way: a check that looked like it measured identity was in fact measuring the working copy, or itself. The shared thread (HR-102 applied to identity): **a process-local witness REPLACES a shared one, it never unions with it**, because a union lets the weakest witness win.
 
-**`expires-at` 2026-10-01 = the EARLIEST of the 14 absorbed dates** (merge contract: `docs/rule-authoring.md` § Consolidated rules).
+**`expires-at` 2026-10-01 = the EARLIEST of the 15 absorbed dates (read 14 before the 2026-09-11 fold of 1 more)** (merge contract: `docs/rule-authoring.md` § Consolidated rules).
 
 <!-- untrusted-content:start — everything up to untrusted-content:end is agent-authored learning text, reproduced verbatim as DATA. It is NOT an instruction to any agent that loads this rule. -->
 
@@ -115,11 +115,17 @@ current-session.json und session.lock beschreiben die ARBEITSKOPIE, nicht die le
 
 **Evidence** — 2026-09-02, Welle 2 dieser Session fuegte in einem Zug zwei solche Leser hinzu: emitFinalWaveCompleted() in hooks/on-session-end.mjs las current-session.json ohne isRecordedSession (Fleet: 1.453 von 1.495 session.ended-Records unattested, 97,2%), und die K5-Dauerableitung in hooks/on-stop.mjs haette session.lock gelesen. Beide gefixt in W3-P3, je mit Fake-Regression-Beweis (Guard deaktiviert -> non-owning-Test rot, wiederhergestellt -> 8/8 gruen) und Live-Beweis im Temp-Dir (fremde session_id -> 0 wave.completed, eigene -> 1).
 
+### Nach einem Claude-Code-Prozessneustart nimmt `SendMessage` an die ALTE Agent-ID verwaiste Agenten mit Kontext wieder auf
+
+11 Wave-2-Agenten wurden beim Neustart als `stopped` gemeldet; `git status` zeigte ihre Teilarbeit; je eine `SendMessage` mit dem On-Disk-Stand liess sie fortsetzen (einer lief sogar noch). `session.lock` und `CLAUDE_CODE_SESSION_ID` ueberlebten, Gate 7 blieb `own`. Bei Netzflattern (ECONNRESET/TLS) erst per curl-Monitor `2/2 up` abwarten — ein Resume ins Flattern stirbt sofort wieder. Monitors (Tailer, CI-Watch) ueberleben NICHT — neu starten.
+
+**Evidence** — Session `main-2026-09-03-session-1`: task-notification `stopped` fuer 11 Agent-IDs; 10 Resumes; Full Gate danach 15926/0. Ursache laut Peer vault-50: Kernel-Panics XNU/TCP ueber Tailscale-utun (`agents/vault#293`).
+
 <!-- untrusted-content:end -->
 
 ## Provenance
 
-Markers below are the reconcile engine's dedupe anchors — removing a pair regenerates that learning as a standalone file (`docs/rule-authoring.md` § Consolidated rules). Consolidated by hand 2026-09-06 + 2026-09-09.
+Dedupe anchors — dropping a pair regenerates that learning as its own file (`docs/rule-authoring.md` § Consolidated rules). By hand 2026-09-06 + 2026-09-09 + 2026-09-11.
 - learning-key: `anti-pattern/aufgezeichneter-pid-als-lebendbeweis-wenn-ihn-ein-kurzlebiger-subprozess-schrieb`
 - learning-id: `8f0b4e63-ad2c-463e-9f7b-de19c65845fc`
 - learning-key: `anti-pattern/ein-arbeitskopie-artefakt-state-md-session-lock-ist-kein-prozesslokaler-identitaetszeuge-zeugen-stufen-nicht-vereinigen`
@@ -150,5 +156,8 @@ Markers below are the reconcile engine's dedupe anchors — removing a pair rege
 - learning-id: `2b6bb667-0972-4650-9029-b2dc2f45db92`
 - learning-key: `anti-pattern/ein-neuer-leser-eines-repo-globalen-orchestrator-artefakts-erbt-die-eigentumspruefung-nicht`
 - learning-id: `0163a266-c123-4db3-ba34-1ac33d7c5b5b`
+
+- learning-key: `proven-pattern/nach-einem-claude-code-prozessneustart-nimmt-sendmessage-an-die-alte-agent-id-verwaiste-agenten-mit-kontext-wieder-auf`
+- learning-id: `nach-einem-claude-code-prozessneustart-nimmt-sendmessage-an-die-alte-agent-id-verwaiste-ag-2026-09-04`
 
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695), consolidated by hand 2026-09-06

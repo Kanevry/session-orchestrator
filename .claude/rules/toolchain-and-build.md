@@ -113,7 +113,7 @@ Ein Test-Sentinel, der ein Steuerzeichen literal statt als Escape-Sequenz im Que
 
 ## Provenance
 
-Markers below are the reconcile engine's dedupe anchors — removing a pair regenerates that learning as a standalone file (`docs/rule-authoring.md` § Consolidated rules). Consolidated by hand 2026-09-06 + 2026-09-09.
+Dedupe anchors — dropping a pair regenerates that learning as its own file (`docs/rule-authoring.md` § Consolidated rules). By hand 2026-09-06 + 2026-09-09 + 2026-09-11.
 - learning-key: `anti-pattern/a-nul-byte-in-a-tracked-production-file-makes-it-invisible-to-every-grep-based-audit`
 - learning-id: `b42c42b9-4422-43f7-94dc-77021268fa86`
 - learning-key: `proven-pattern/nul-byte-corruption-needs-a-byte-level-pre-commit-gate-posix-tr-cmp-is-the-only-portable-detector`

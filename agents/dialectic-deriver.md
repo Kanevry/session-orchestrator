@@ -95,6 +95,17 @@ Rules:
 
 - Emit **at most one block per target**. Omit a target entirely when no update is warranted.
 - The block body is the **FULL replacement body** — not a unified diff hunk.
+- **`## ` headings are the merge unit (#1310).** On `--apply` the orchestrator splits your body at each
+  level-2 (`## `) heading and maps each one onto a sentinel-delimited managed region via
+  `mergeDerivedBody()` (`scripts/lib/peer-cards/merger.mjs`). Consequences you control:
+  - **Reuse the existing card's heading text VERBATIM** for any section you mean to UPDATE. A
+    changed heading is a NEW section: the old one is kept (nothing auto-deletes) and yours is
+    appended beside it, so the card ends up carrying both.
+  - A heading not present in the card is appended as a new managed region — that is the
+    supported way to add a section.
+  - Put **nothing before the first `## ` heading**. Preamble prose has no section to live in; the
+    orchestrator surfaces it as an `unmapped-preamble` conflict and does not apply it.
+  - Do **not** emit `<!-- BEGIN/END MANAGED: … -->` sentinels yourself. The merger owns them.
 - Do **NOT** include `---` frontmatter lines in your block. The orchestrator preserves
   existing frontmatter and updates the `updated` field.
 - Optional footer comment after all blocks may report token usage to aid budget audits:

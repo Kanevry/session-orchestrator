@@ -1299,3 +1299,100 @@ describe('writeApprovedRules — a digest-bearing document passes the structural
     expect(readFileSync(join(tmpDir, '.claude', 'rules', 'digest.md'), 'utf8')).toContain('evidence-digest:');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Telemetry (#1307) — orchestrator.reconcile.rules_written
+// ---------------------------------------------------------------------------
+
+/**
+ * THE BUG THESE CATCH (TV-001), and it is not hypothetical: before #1307 the
+ * ONLY ledger record a reconcile run produced was
+ * `orchestrator.reconcile.completed`, emitted by the `runReconcile` wrapper —
+ * i.e. BEFORE the operator-approval AUQ and before `writeApprovedRules` is
+ * reached at all. An operator who approved five proposals and one who declined
+ * every single proposal therefore produced BYTE-IDENTICAL `dry_run: false`
+ * records, and the maintenance loop had no way to tell "wrote rules" from
+ * "declined everything". The first two cases below are exactly those two runs,
+ * and they must now differ in the ledger.
+ */
+describe('writeApprovedRules — rules_written telemetry (#1307)', () => {
+  const ledgerPath = () => join(tmpDir, '.orchestrator', 'metrics', 'events.jsonl');
+
+  /** Every `orchestrator.reconcile.rules_written` record in the tmp repo's ledger. */
+  function rulesWrittenRecords() {
+    if (!existsSync(ledgerPath())) return [];
+    return readFileSync(ledgerPath(), 'utf8')
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l))
+      .filter((r) => r.event === 'orchestrator.reconcile.rules_written');
+  }
+
+  it('records a real write pass with the file count and the targets', async () => {
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'telemetry-rule', path: '.claude/rules/telemetry-rule.md', content: '# body\n' }],
+      repoRoot: tmpDir,
+    });
+    expect(result.written).toBe(1);
+
+    const records = rulesWrittenRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].rules_written).toBe(1);
+    expect(records[0].approved_proposals).toBe(1);
+    expect(records[0].write_errors).toBe(0);
+    expect(records[0].targets).toEqual(['repo-local']);
+  });
+
+  it('separates "declined everything" from "wrote rules" — the pre-#1307 ambiguity', async () => {
+    await writeApprovedRules({
+      approved: [],
+      rejected: [{ learningKey: 'anti-pattern/x', content: '# declined\n', reason: 'user-declined' }],
+      repoRoot: tmpDir,
+    });
+
+    const records = rulesWrittenRecords();
+    expect(records).toHaveLength(1);
+    // The discriminator is a FIELD, never the event's absence.
+    expect(records[0].rules_written).toBe(0);
+    expect(records[0].approved_proposals).toBe(0);
+    expect(records[0].rejected_archived).toBe(1);
+  });
+
+  it('separates "all writes refused by a guard" from "declined everything"', async () => {
+    const result = await writeApprovedRules({
+      // Escapes .claude/rules/ → refused by the path guard, nothing written.
+      approved: [{ slug: 'escape', path: '../../etc/evil.md', content: '# nope\n' }],
+      repoRoot: tmpDir,
+    });
+    expect(result.written).toBe(0);
+    expect(result.errors.length).toBeGreaterThan(0);
+
+    const records = rulesWrittenRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].rules_written).toBe(0);
+    expect(records[0].approved_proposals).toBe(1);
+    expect(records[0].write_errors).toBeGreaterThan(0);
+  });
+
+  it('emits NOTHING for the caller-level no-op (neither approved nor rejected items)', async () => {
+    const result = await writeApprovedRules({ approved: [], rejected: [], repoRoot: tmpDir });
+    expect(result).toEqual({ written: 0, archived: 0, errors: [] });
+    expect(rulesWrittenRecords()).toEqual([]);
+  });
+
+  it('keeps the never-throws contract when the ledger destination is unwritable', async () => {
+    // A FILE where the metrics DIRECTORY must be: every ledger write fails.
+    // `emitEvent` surfacing that must not propagate out of writeApprovedRules.
+    mkdirSync(join(tmpDir, '.orchestrator'), { recursive: true });
+    writeFileSync(join(tmpDir, '.orchestrator', 'metrics'), 'not a directory\n', 'utf8');
+
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'still-writes', path: '.claude/rules/still-writes.md', content: '# body\n' }],
+      repoRoot: tmpDir,
+    });
+
+    // The rule file still landed; only the telemetry was lost.
+    expect(result.written).toBe(1);
+    expect(existsSync(join(tmpDir, '.claude', 'rules', 'still-writes.md'))).toBe(true);
+  });
+});
