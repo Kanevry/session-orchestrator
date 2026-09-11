@@ -186,8 +186,9 @@ export const CRITERIA = Object.freeze({
     appliesTo: 'block',
     hurdle: 'H1',
     measures:
-      'Zeichen der Kopfzeile. Über 12 schneidet das Tool selbst ab — das ist keine ' +
-      'Stilfrage, sondern eine harte Grenze.',
+      'Zeichen der Kopfzeile. 12 ist das von der Tool-Beschreibung genannte Budget ' +
+      '(`max 12 chars`) — in VORLAGEN eine harte Grenze, weil Kürzen dort nichts ' +
+      'kostet; zur Laufzeit nur beratend (siehe `evidence` an HURDLES.H1).',
   }),
   K6: Object.freeze({
     id: 'K6',
@@ -251,7 +252,13 @@ export const HURDLES = Object.freeze({
     criterion: 'K5',
     evidence:
       'Gemessen 2026-08-22: 26 von 42 Kopfzeilen-Literalen reißen diese Grenze (62 %), ' +
-      'Spitzenwert 54 Zeichen. Das Tool schneidet ab — der Operator sieht den Rest nie.',
+      'Spitzenwert 54 Zeichen. Die 12 ist die Stilangabe der Tool-Beschreibung ' +
+      '(`max 12 chars`), KEINE erzwungene Grenze: im Bundle 2.1.268 steht die Zahl nur ' +
+      'in ebendieser Beschreibung, es gibt kein `.max(12)` im Zod-Schema und keinen ' +
+      'Render-Pfad, der sie liest — 125 längere Kopfzeilen wurden vom Tool angenommen ' +
+      'und beantwortet (gemessen 2026-09-11). Deshalb gilt H1 nur für VORLAGEN, wo ein ' +
+      'Autor kostenlos kürzen kann; zur Laufzeit meldet der Hook sie und blockt nicht ' +
+      '(siehe BLOCKING_HURDLES in hooks/pre-auq-clarity.mjs).',
   }),
   H2: Object.freeze({
     id: 'H2',

@@ -118,6 +118,30 @@ function cleanQuestion(overrides = {}) {
   };
 }
 
+/**
+ * A question that breaks H2 — the only hurdle this hook still denies on.
+ *
+ * Every deny-path test below runs on this vehicle. They used to run on an
+ * over-long header, which stopped denying when H1 became advisory
+ * (`BLOCKING_HURDLES`); H2 is the right vehicle because its cap is the tool's
+ * own Zod `options.min(2).max(4)`, so it can never quietly become advisory the
+ * way a number living in a description string did.
+ *
+ * @param {object} overrides merged into the question
+ */
+function h2Question(overrides = {}) {
+  return cleanQuestion({
+    options: ['A (Recommended)', 'B', 'C', 'D', 'E'].map((label) => ({
+      label,
+      description: `Nimm ${label}, weil es 20 Minuten kostet und den Umfang einfriert.`,
+    })),
+    ...overrides,
+  });
+}
+
+/** The measured values H2 reports for `h2Question()` — 5 options against a cap of 4. */
+const H2_MEASURED = '[gemessen: 5, Grenze: 4]';
+
 // ---------------------------------------------------------------------------
 // Scope — the hook must not act outside its own tool
 // ---------------------------------------------------------------------------
@@ -127,9 +151,9 @@ describe('pre-auq-clarity — scope', () => {
     // Bug caught: relying on the hooks.json matcher as the only defence. A
     // matcher typo, a wildcard matcher, or a future harness that fans PreToolUse
     // out more widely would put a Bash/Edit payload through the AUQ scorer —
-    // and this payload breaks H1, so a hook without the tool_name check would
+    // and this payload breaks H2, so a hook without the tool_name check would
     // BLOCK an unrelated tool call.
-    const res = runHook(envelope([cleanQuestion({ header: 'Eine viel zu lange Kopfzeile' })], {
+    const res = runHook(envelope([h2Question()], {
       toolName: 'Bash',
     }));
     expectAllow(res);
@@ -245,26 +269,54 @@ describe('pre-auq-clarity — content criteria never block', () => {
 // ---------------------------------------------------------------------------
 
 describe('pre-auq-clarity — hard limits block', () => {
-  it('denies an over-long header (H1) and names the field, the value and the limit', () => {
+  it('ALLOWS a header one codepoint over the budget — the deny that destroyed 103 real questions', () => {
+    // Bug caught, and it shipped: H1 denied every header over 12 codepoints on
+    // the premise that "the tool truncates it". In bundle 2.1.268 the 12 exists
+    // only inside the schema's `describe()` prose — no `.max(12)`, no render
+    // path reads it — and across the real transcripts 125 over-12 headers were
+    // accepted by the tool and answered by the operator, against 0 tool errors.
+    // Fleet-wide this hook denied 13.0 % of all calls, 72 % of them on H1, and
+    // 77 % of those missed the budget by one or two codepoints because German
+    // compounds cannot hold an English chip's length ("Sitzungsdauer" = 13).
+    //
+    // A deny here does not delay the question; it DESTROYS it — the card is
+    // never rendered and the operator is never asked.
+    const header = 'Sitzungsdauer';
+    expect([...header].length).toBe(13);
+    const res = runHook(envelope([cleanQuestion({ header })]));
+    expectAllow(res);
+
+    // ...and it was genuinely MEASURED, not merely unnoticed. Without this half
+    // a scorer that stopped checking headers would pass identically.
+    expect(res.stderr).toContain('H1');
+    expect(res.stderr).toContain('NICHT blockiert');
+  });
+
+  it('denies a five-option question (H2) and names the count and the cap', () => {
+    expectDeny(runHook(envelope([h2Question()])), ['H2', 'questions[0]', H2_MEASURED]);
+  });
+
+  it('names the field, the value and the limit in the deny reason', () => {
     // Bug caught: a deny whose reason is too vague for the second attempt to
     // land — the model rewrites something else, gets denied again, and the
     // operator's question never appears. The reason must carry the addressable
     // JSON path, the measured value and the limit.
-    const res = runHook(envelope([cleanQuestion({ header: 'Welche Strategie waehlen wir?' })]));
-    const env = expectDeny(res, ['H1', 'questions[0].header', '[gemessen: 29, Grenze: 12]']);
+    const env = expectDeny(runHook(envelope([h2Question()])), ['questions[0]', H2_MEASURED]);
 
     // The operator-visible headline names WHICH limit broke, not a preamble
     // identical for every deny (`emitDeny` derives it from the first line).
-    expect(env.systemMessage).toContain('H1');
+    expect(env.systemMessage).toContain('H2');
   });
 
-  it('denies a five-option question (H2) and names the count and the cap', () => {
-    const q = cleanQuestion();
-    q.options = ['A (Recommended)', 'B', 'C', 'D', 'E'].map((label) => ({
-      label,
-      description: `Nimm ${label}, weil es 20 Minuten kostet und den Umfang einfriert.`,
-    }));
-    expectDeny(runHook(envelope([q])), ['H2', 'questions[0]', '[gemessen: 5, Grenze: 4]']);
+  it('does not claim the tool truncates long headers', () => {
+    // Bug caught: the refuted premise surviving as prose after H1 stopped
+    // blocking. The reason is what the model reads on a deny; a sentence about
+    // header truncation there teaches it a limit the tool does not have, and
+    // would quietly restore the behaviour this change removed.
+    const env = expectDeny(runHook(envelope([h2Question({ header: 'Sitzungsdauer' })])));
+    const reason = env.hookSpecificOutput.permissionDecisionReason;
+    expect(reason).not.toContain('Kopfzeile selbst ab');
+    expect(reason).not.toContain('H1 —');
   });
 
   it('denies a recommendation that does not sit first (H2) and names its position', () => {
@@ -278,16 +330,16 @@ describe('pre-auq-clarity — hard limits block', () => {
   });
 
   it('groups two questions breaking the SAME hurdle under one heading', () => {
-    // Bug caught: repeating the H1 heading once per question, which reads as two
+    // Bug caught: repeating the H2 heading once per question, which reads as two
     // unrelated rules and buries the fact that it is one problem with two
     // witnesses.
     const res = runHook(envelope([
-      cleanQuestion({ header: 'Viel zu lange Kopfzeile A' }),
-      cleanQuestion({ header: 'Viel zu lange Kopfzeile B' }),
+      h2Question({ question: 'Welchen Umfang nehmen wir fuer Wave 4?' }),
+      h2Question({ question: 'Und welchen fuer Wave 5?' }),
     ]));
-    const env = expectDeny(res, ['questions[0].header', 'questions[1].header']);
+    const env = expectDeny(res, ['questions[0]', 'questions[1]']);
     const reason = env.hookSpecificOutput.permissionDecisionReason;
-    expect(reason.split('H1 — Kopfzeile')).toHaveLength(2); // exactly ONE heading
+    expect(reason.split('H2 — ')).toHaveLength(2); // exactly ONE heading
   });
 
   it('allows a clean question — the guard is not a blanket block', () => {
@@ -310,7 +362,7 @@ describe('pre-auq-clarity — envelope shape', () => {
     // IS the question card, so that combination routes the question PAST the
     // human — silently, from both ends. This hook emits a decision, therefore it
     // must emit no `updatedInput` at all.
-    const res = runHook(envelope([cleanQuestion({ header: 'Welche Strategie waehlen wir?' })]));
+    const res = runHook(envelope([h2Question()]));
     // `expectDeny` already pins the top-level key set to exactly
     // ['hookSpecificOutput','systemMessage']; this adds the nested half, which a
     // key-set check on the OUTER object cannot see.
@@ -354,15 +406,31 @@ describe('pre-auq-clarity — telemetry (the guard must be falsifiable)', () => 
 
   it('records the hurdle that actually broke, not merely that something did', () => {
     // The bug: the payload degrades to a bare {denied: true}. The deny rate
-    // stays measurable but becomes un-actionable — H1 (header truncated by the
-    // tool) and H2 (too many options to weigh) have different causes and
+    // stays measurable but becomes un-actionable — H1 (header over the stated
+    // budget) and H2 (too many options to weigh) have different causes and
     // different fixes, and a tally that cannot separate them cannot tell you
     // which one to re-aim.
-    const run = runHook(envelope([cleanQuestion({ header: 'Welche Strategie waehlen wir?' })]));
+    const run = runHook(envelope([h2Question()]));
     expectDeny(run);
 
     const denied = readEvents(run.eventsHome).find((e) => e.event === 'orchestrator.auq_clarity.denied');
-    expect(denied.hurdles).toEqual(['H1']);
+    expect(denied.hurdles).toEqual(['H2']);
+    expect(denied.blocking).toEqual(['H2']);
+  });
+
+  it('records an advisory hurdle on the ALLOW path — H1 must stay falsifiable after it stopped blocking', () => {
+    // The bug: H1 becomes advisory and is dropped from the payload as noise.
+    // Its would-have-fired rate is then unmeasurable, which is the exact state
+    // HR-105 forbids — and it is how the refuted "the tool truncates" premise
+    // survived unchallenged for a month in the first place. `hurdles` keeps its
+    // historical meaning (every hurdle that broke) so a tally across the whole
+    // store stays comparable; `blocking` is the subset that decided.
+    const run = runHook(envelope([cleanQuestion({ header: 'Sitzungsdauer' })]));
+    expectAllow(run);
+
+    const allowed = readEvents(run.eventsHome).find((e) => e.event === 'orchestrator.auq_clarity.allowed');
+    expect(allowed.hurdles).toEqual(['H1']);
+    expect(allowed.blocking).toEqual([]);
   });
 
   it('carries no question text — events.jsonl is read by audits never scoped to hold it', () => {
@@ -370,7 +438,7 @@ describe('pre-auq-clarity — telemetry (the guard must be falsifiable)', () => 
     // triage easier". The operator's question text is the one thing a clarity
     // guard necessarily sees in full, and this store is swept fleet-wide.
     const secret = 'Zroniankaertigungsschluessel';
-    const run = runHook(envelope([cleanQuestion({ header: secret })]));
+    const run = runHook(envelope([h2Question({ header: secret })]));
     expectDeny(run);
 
     const raw = JSON.stringify(readEvents(run.eventsHome));
@@ -382,13 +450,13 @@ describe('pre-auq-clarity — telemetry (the guard must be falsifiable)', () => 
     // A single unwritable metrics path then turns every deny into an allow, and
     // the guard fails open at exactly the moment its logging is broken — the
     // worst possible correlation.
-    const run = runHook(envelope([cleanQuestion({ header: 'Welche Strategie waehlen wir?' })]));
+    const run = runHook(envelope([h2Question()]));
     // Re-run against a project dir whose events.jsonl is a DIRECTORY, so the
     // append throws EISDIR inside the hook.
     const home = mkdtempSync(path.join(os.tmpdir(), 'auq-broken-'));
     mkdirSync(path.join(home, '.orchestrator', 'metrics', 'events.jsonl'), { recursive: true });
     const broken = spawnSync(process.execPath, [HOOK], {
-      input: envelope([cleanQuestion({ header: 'Welche Strategie waehlen wir?' })]),
+      input: envelope([h2Question()]),
       encoding: 'utf8',
       cwd: REPO_ROOT,
       timeout: 20_000,
@@ -424,7 +492,7 @@ describe('pre-auq-clarity — fake regression (proves the guard bites)', () => {
       .replace("  if (input?.tool_name !== AUQ_TOOL) return allow();\n", '')
       .replace("  if (input.tool_name !== AUQ_TOOL) return emitAllow();\n", ''));
 
-    const stdin = envelope([cleanQuestion({ header: 'Eine viel zu lange Kopfzeile' })], {
+    const stdin = envelope([h2Question()], {
       toolName: 'Bash',
     });
     const leaked = runHook(stdin, { hook: broken });
@@ -454,8 +522,12 @@ describe('pre-auq-clarity — fake regression (proves the guard bites)', () => {
     const broken = stageHookCopy((src) => src.replace(
       "      if (criteria[f.criterion]?.hurdle) continue;\n"
       + "      softByCriterion.set(f.criterion, (softByCriterion.get(f.criterion) ?? 0) + 1);",
-      "      if (!broken.has(f.criterion)) broken.set(f.criterion, { title: 'inhaltlich', perQuestion: [] });\n"
-      + "      broken.get(f.criterion).perQuestion.push({ questionNo, lines: [renderFinding(f, questionNo)] });",
+      // Keyed on H2, not on the criterion id: since BLOCKING_HURDLES exists, a
+      // group under an unknown key is filtered out and the mutation would model
+      // nothing. The defect modelled is unchanged — a CONTENT finding producing
+      // a deny.
+      "      if (!broken.has('H2')) broken.set('H2', { title: 'inhaltlich', perQuestion: [] });\n"
+      + "      broken.get('H2').perQuestion.push({ questionNo, lines: [renderFinding(f, questionNo)] });",
     ));
 
     const stdin = envelope([{
@@ -484,14 +556,14 @@ describe('pre-auq-clarity — fake regression (proves the guard bites)', () => {
       '  return `  • ${body}`;',
     ));
 
-    const stdin = envelope([cleanQuestion({ header: 'Welche Strategie waehlen wir?' })]);
+    const stdin = envelope([h2Question()]);
     const vague = runHook(stdin, { hook: broken });
     // Still a deny — the defect is in the REASON, which is exactly why an
     // assertion that only checked "it denied" would stay green here.
     expect(vague.stdout).toContain('"permissionDecision":"deny"');
-    expect(() => expectDeny(vague, ['questions[0].header', '[gemessen: 29, Grenze: 12]'])).toThrow();
+    expect(() => expectDeny(vague, ['questions[0]', H2_MEASURED])).toThrow();
 
-    expectDeny(runHook(stdin), ['questions[0].header', '[gemessen: 29, Grenze: 12]']);
+    expectDeny(runHook(stdin), ['questions[0]', H2_MEASURED]);
   });
 
   it('DEFECT: allow-side telemetry dropped as redundant — the falsifiability test goes red', () => {
@@ -516,6 +588,25 @@ describe('pre-auq-clarity — fake regression (proves the guard bites)', () => {
     expect(readEvents(good.eventsHome).map((e) => e.event)).toEqual(['orchestrator.auq_clarity.allowed']);
   });
 
+  it('DEFECT: H1 put back into BLOCKING_HURDLES — the 13-codepoint allow test goes red', () => {
+    // The single most plausible future edit against this change, because it
+    // reads as tightening: "the tool says 12, so enforce 12". It is the edit
+    // that destroyed 103 real questions across 20 repos. Proving the allow test
+    // goes RED with H1 re-armed is what makes that test a guard rather than a
+    // description of current behaviour.
+    const broken = stageHookCopy((src) => src.replace(
+      "export const BLOCKING_HURDLES = Object.freeze(['H2']);",
+      "export const BLOCKING_HURDLES = Object.freeze(['H1', 'H2']);",
+    ));
+
+    const stdin = envelope([cleanQuestion({ header: 'Sitzungsdauer' })]);
+    const rearmed = runHook(stdin, { hook: broken });
+    expect(rearmed.stdout).toContain('"permissionDecision":"deny"'); // the defect's signature
+    expect(() => expectAllow(rearmed)).toThrow();
+
+    expectAllow(runHook(stdin)); // ...and the real hook lets it through
+  });
+
   it('DEFECT: permissionDecision emitted beside updatedInput — the envelope test goes red', () => {
     const broken = stageHookCopy((src) => src.replace(
       "  if (verdict.action === 'deny') return emitDeny(verdict.reason, verdict.suggestion);",
@@ -527,7 +618,7 @@ describe('pre-auq-clarity — fake regression (proves the guard bites)', () => {
       + '  }',
     ));
 
-    const stdin = envelope([cleanQuestion({ header: 'Welche Strategie waehlen wir?' })]);
+    const stdin = envelope([h2Question()]);
     const trap = runHook(stdin, { hook: broken });
     expect(trap.stdout).toContain('updatedInput'); // the defect's signature
     expect(() => expectDeny(trap)).toThrow();

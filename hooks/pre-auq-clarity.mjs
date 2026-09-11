@@ -2,10 +2,11 @@
 /**
  * pre-auq-clarity.mjs — PreToolUse hook on `AskUserQuestion`.
  *
- * Checks the questions this system is about to put in front of the operator,
- * at the moment they are asked, and blocks the two that the tool itself
- * mangles: a header longer than the tool renders (H1) and an option count /
- * recommendation placement the operator cannot weigh (H2).
+ * Checks the questions this system is about to put in front of the operator, at
+ * the moment they are asked. It BLOCKS exactly one thing — an option count or
+ * recommendation placement the operator cannot weigh (H2, `BLOCKING_HURDLES`);
+ * everything else it finds, including an over-budget header (H1), it reports on
+ * stderr and in telemetry and lets through.
  *
  * ## Why this exists beside the template gate
  *
@@ -36,7 +37,7 @@
  *
  *   | class                                  | decision | why |
  *   |----------------------------------------|----------|-----|
- *   | H1 — header over 12 codepoints         | **DENY** | the tool truncates it, INVISIBLY: the operator sees a mangled headline and cannot tell it was cut. Auto-shortening loses meaning the same invisible way — a model can write a good short header, a regex cannot. |
+ *   | H1 — header over 12 codepoints         | ALLOW    | reported, never blocked. The "the tool truncates it" premise is refuted: `rdr=12` occurs only in the schema's prose, and 125 over-12 headers were accepted and answered. See `BLOCKING_HURDLES`. |
  *   | H2 — options per question / recommendation not first | **DENY** | dropping or reordering options is a meaning decision, never a normalisation |
  *   | K1, K3, K4, K7, K8 (content criteria)  | ALLOW    | measured false-positive rates 14–25 %. A hook that blocks one correct question in four is switched off within a month — and takes the hard limits with it. Reported on stderr, never denied. |
  *   | K2, and every `warn` finding           | ALLOW    | advisory by construction (`CRITERIA.K2.weight === 0`) |
@@ -65,10 +66,6 @@
  * because every repair the two hurdles admit costs meaning that the operator
  * cannot see going missing:
  *
- *   - shortening a 23-character header — which 11 characters are the ones to
- *     lose? The operator would read a truncated headline and have no way to know
- *     it was truncated. That is the exact failure H1 exists to prevent, moved
- *     one layer earlier.
  *   - moving the recommended option to position 1 — the ORDER is content. A
  *     description written for position 3 can refer to the options above it;
  *     lifting it changes what the operator reads first, silently.
@@ -191,12 +188,51 @@ export const MAX_LINE_CHARS = 300;
 export const MAX_FINDING_LINES = 16;
 
 /**
+ * The hurdles this hook is allowed to DENY on. Everything else the scorer flags
+ * as a hurdle is reported and let through.
+ *
+ * H2 is here because its cap is REAL: the shipped Zod schema declares
+ * `options: T(e).min(2).max(4)`, so a five-option question is rejected by the
+ * tool itself — denying early only replaces one error with a better-worded one.
+ *
+ * H1 is deliberately NOT here, and the reason is a measurement that refutes the
+ * premise it was built on. `schema.mjs` justified the deny with "the tool
+ * truncates — the operator never sees the rest". In the shipped bundle
+ * (2.1.268) the 12 exists as `rdr=12` and is referenced in exactly ONE place:
+ * the schema's `describe()` PROSE. There is no `.max(12)`, and no render or
+ * truncate path reads it. Measured against the real transcripts
+ * (`~/.claude/projects/**\/*.jsonl`, since 2026-06-01), questions whose header
+ * exceeded 12 codepoints:
+ *
+ *   accepted by the tool and answered by the operator : 125
+ *   tool errors not originating from this hook        :   0
+ *   denied by this hook                               : 103
+ *
+ * So the only thing that ever destroyed one of those questions was this hook.
+ * Fleet-wide it denied 13.0 % of all calls (146 of 1121, 2026-08 → 2026-09),
+ * 72 % of them on H1 — above the ~10 % line at which
+ * `.claude/rules/host-resources.md` HR-101 calls a class a broken instrument.
+ * And the 12 is unit-mismatched (HR-103): it comes from English chip examples
+ * (`Auth method` = 11), while 77 % of the breaks in a German corpus miss it by
+ * one or two codepoints (`Sitzungsdauer` = 13).
+ *
+ * H1 stays a hurdle in `scripts/lib/auq/schema.mjs` on purpose: the TEMPLATE
+ * gate (`scripts/auq-audit.mjs`) acts on text in a file, where an author can
+ * pick a shorter header at no cost and nothing is destroyed by the refusal.
+ *
+ * REVISIT TRIGGER: a measurement showing the tool actually truncating a header
+ * the operator then answered wrongly. That would move H1 back — as a hurdle
+ * with evidence, which it has never had.
+ */
+export const BLOCKING_HURDLES = Object.freeze(['H2']);
+
+/**
  * The consequence block spliced VERBATIM into the GUARD INACTIVE banner (#993).
  */
 const GUARD_CONSEQUENCE = {
   inactive: [
     '    Consequence: runtime AskUserQuestion clarity checking is OFF — a question',
-    '    with a truncated header or an unweighable option set CAN now reach the',
+    '    with an unweighable option set CAN now reach the',
     '    operator unchecked. Template-level checking is unaffected. This is a',
     '    BROKEN GUARD, not a policy decision — do not route around it, repair it.',
   ],
@@ -405,9 +441,9 @@ function renderFinding(f, questionNo) {
 /**
  * Decide whether this `AskUserQuestion` call may proceed.
  *
- * Denies if and only if at least one HARD HURDLE (H1/H2) is broken on at least
- * one question. Content criteria are collected into `notes` and never affect the
- * action.
+ * Denies if and only if at least one BLOCKING hurdle (`BLOCKING_HURDLES` = H2)
+ * is broken on at least one question. Content criteria, and every hurdle outside
+ * that set, are collected into `notes` and never affect the action.
  *
  * ## Known limitation, with its revisit trigger (BV-004)
  *
@@ -550,14 +586,30 @@ export function decide(input, lib) {
   // has ever measured it on live runtime questions. `soft` is what makes that
   // measurable: a criterion that fires on almost every real question is a broken
   // instrument by HR-101 and must be re-aimed, not promoted to a hurdle.
+  // Split BEFORE the telemetry is built, so both halves are recorded from the
+  // same maps the verdict is derived from (see BLOCKING_HURDLES).
+  const blocking = [...broken.entries()].filter(([id]) => BLOCKING_HURDLES.includes(id));
+  const advisory = [...broken.entries()].filter(([id]) => !BLOCKING_HURDLES.includes(id));
+
+  if (advisory.length > 0) {
+    notes.push(
+      `Beratende Grenze(n) ${advisory.map(([id]) => id).join(', ')} gerissen — NICHT blockiert. `
+      + 'Die Vorlagenprüfung (scripts/auq-audit.mjs) hält sie weiterhin hart.',
+    );
+  }
+
   const telemetry = {
     questions: toolInput.questions.length,
     skipped,
+    // EVERY broken hurdle, blocking or not — the field keeps its historical
+    // meaning, so a fleet tally over the whole store stays comparable across the
+    // change that made H1 advisory. `blocking` is the subset that decided.
     hurdles: [...broken.keys()],
+    blocking: blocking.map(([id]) => id),
     soft: Object.fromEntries([...softByCriterion.entries()].sort((a, b) => a[0].localeCompare(b[0]))),
   };
 
-  if (broken.size === 0) return allow(telemetry);
+  if (blocking.length === 0) return allow(telemetry);
 
   const sections = [];
   let used = 0;
@@ -577,7 +629,7 @@ export function decide(input, lib) {
   // Ablehnung, und der Operator sieht keine der beiden Fragen.
   //
   // Gefunden vom QA-Review dieser Session (W4-Q6), koordinator-verifiziert.
-  const groups = [...broken.entries()];
+  const groups = blocking;
   // Reihum über FRAGEN, nicht der Reihe nach über Zeilen: erst bekommt jede
   // Frage jeder Gruppe ihre erste Zeile, dann die zweite, und so fort bis das
   // Budget alle ist. Damit ist garantiert, dass jede Frage mit gerissener Hürde
@@ -612,10 +664,10 @@ export function decide(input, lib) {
   // sentence that is identical for every deny in front of the human, and the
   // one thing they need — WHICH limit broke — past the 200-char clip.
   const reason =
-    `AskUserQuestion blockiert: harte Grenze ${[...broken.keys()].join(' + ')} gerissen — ` +
+    `AskUserQuestion blockiert: harte Grenze ${groups.map(([id]) => id).join(' + ')} gerissen — ` +
     'so erreicht die Frage den Operator nicht.\n\n' +
-    'Das ist keine Stilfrage: das Tool schneidet eine zu lange Kopfzeile selbst ab, und ' +
-    'mehr als vier Optionen kann niemand gegeneinander abwägen.\n\n' +
+    'Das ist keine Stilfrage: das Tool selbst nimmt nur zwei bis vier Optionen je Frage an, ' +
+    'und mehr als vier kann niemand gegeneinander abwägen.\n\n' +
     `${sections.join('\n\n')}${tail}`;
 
   const suggestion =
