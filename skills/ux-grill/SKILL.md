@@ -52,8 +52,20 @@ AskUserQuestion({
         { label: "Ohne Login", description: "No credentials at all — personas stay empty and only the unauthenticated navigation is crawled. Cost: journeys behind the login are invisible." },
         { label: "Other / describe below", description: "Name a different file." } ],
       multiSelect: false },
-    { question: "Which env variable holds the login e-mail?", header: "Mail-Env", options: [ /* candidate NAMES, option 1 (Recommended) */ ], multiSelect: false },
-    { question: "Which env variable holds the password?", header: "Pass-Env", options: [ /* candidate NAMES, option 1 (Recommended) */ ], multiSelect: false }
+    { question: "Which env variable holds the login e-mail?",
+      header: "Mail-Env",
+      options: [
+        { label: "TEST_USER_EMAIL (Recommended)", description: "The most common name in the env file you picked. Cost: none — the NAME is stored, the value never is." },
+        { label: "LOGIN_EMAIL", description: "Use when the target repo names it that way." },
+        { label: "Other / describe below", description: "Name the variable yourself; read it from the env file first." } ],
+      multiSelect: false },
+    { question: "Which env variable holds the password?",
+      header: "Pass-Env",
+      options: [
+        { label: "TEST_USER_PASSWORD (Recommended)", description: "Pairs with the e-mail name above. Same storage contract: only the NAME reaches the manifest." },
+        { label: "LOGIN_PASSWORD", description: "Use when the target repo names it that way." },
+        { label: "Other / describe below", description: "Name the variable yourself." } ],
+      multiSelect: false }
   ]
 })
 ```
