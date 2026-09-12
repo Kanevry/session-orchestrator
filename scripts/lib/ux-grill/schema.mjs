@@ -1,8 +1,9 @@
 /**
  * ux-grill/schema.mjs — Frozen contract for Stufe-1 (mechanical) ux-grill records.
  *
- * Leaf module: imports only `../test-runner/fingerprint.mjs` (no I/O, no side
- * effects, no node builtins). Every producer of a ux-grill finding or run-record
+ * Leaf module: imports only `../test-runner/fingerprint.mjs` and the pure
+ * `../crypto-digest-utils.mjs` (no I/O, no side effects; `node:crypto` reaches
+ * it only through that helper). Every producer of a ux-grill finding or run-record
  * (`collect.mjs`, `measures.mjs`, `compare.mjs`) goes through this module so the
  * fingerprint inputs and the severity table have exactly one definition.
  *
@@ -14,6 +15,7 @@
  *   severityForAxeImpact(), makeFinding(), countBySeverity(), makeRunRecord()
  */
 
+import { digestSha256Short } from '../crypto-digest-utils.mjs';
 import { fingerprintFinding } from '../test-runner/fingerprint.mjs';
 
 /**
@@ -104,8 +106,16 @@ export const SKIP_REASONS = Object.freeze({
 export const RUN_RECORD_SCHEMA_VERSION = 1;
 
 /**
- * Locators longer than this are truncated BEFORE fingerprinting
+ * Locators longer than this are truncated in the finding RECORD
  * (`skills/test-runner/rubric-v1.md` § Truncation rule for long locators).
+ *
+ * Deliberate deviation from rubric-v1 for the FINGERPRINT input (#1334): an
+ * over-long locator is fingerprinted as `truncated + ':' + sha256(full).slice(0, 8)`,
+ * not as the bare truncation. The audited page controls its selectors, so with
+ * bare truncation a decoy under a >256-char class chain sharing the real
+ * element's prefix would take its fingerprint and shadow it in `compare.mjs`.
+ * Locators of ≤ 256 chars keep their fingerprint unchanged; the suffixed input
+ * is 265 chars long, so it can never equal an untruncated one.
  * @type {number}
  */
 export const LOCATOR_MAX_LENGTH = 256;
@@ -193,6 +203,10 @@ export function makeFinding({ checkId, locator, severity, build, message, eviden
   }
 
   const truncated = locator.slice(0, LOCATOR_MAX_LENGTH);
+  // See LOCATOR_MAX_LENGTH: only an over-long locator gets the full-text digest
+  // suffix, so ≤256-char fingerprints stay byte-for-byte stable.
+  const fingerprintLocator =
+    locator.length > LOCATOR_MAX_LENGTH ? `${truncated}:${digestSha256Short(locator)}` : truncated;
   return {
     scope: SCOPE,
     checkId,
@@ -201,7 +215,7 @@ export function makeFinding({ checkId, locator, severity, build, message, eviden
     // Dev builds are not a geometry measurement basis (PRD § 2 S3), so
     // target-size findings from a dev build are flagged rather than dropped.
     provisional: build === 'dev' && checkId.startsWith('target-size-'),
-    fingerprint: fingerprintFinding({ scope: SCOPE, checkId, locator: truncated }),
+    fingerprint: fingerprintFinding({ scope: SCOPE, checkId, locator: fingerprintLocator }),
     message: message ?? '',
     evidence: evidence ?? {},
   };

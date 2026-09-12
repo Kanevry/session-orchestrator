@@ -11,6 +11,9 @@
  * Responsibilities:
  *  - Acquire a per-write file lock (`.orchestrator/rules.lock`) to serialise
  *    concurrent writers — mirrors PSA-005 (withStateMdLock) pattern.
+ *  - Before any write: project the instruction budget after the batch and
+ *    refuse the WHOLE batch (nothing written, nothing stamped) when it would
+ *    breach a ceiling — see `budgetPreflight`.
  *  - For each approved proposal: path-safety guard → STRUCTURAL content gate
  *    (#1015, see {@link frontmatterRefusalReason}) → mkdirSync → atomic
  *    tmp+rename write → stamp the idempotency sidecar terminal via
@@ -54,8 +57,20 @@
  * @module reconcile/writer
  */
 
-import { mkdirSync, writeFileSync, renameSync, appendFileSync, realpathSync, statSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  appendFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { randomBytes } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { withFileLock } from '../file-lock.mjs';
@@ -490,6 +505,151 @@ function isOperatorRejection(item) {
   return typeof item.content === 'string' && item.content.length > 0;
 }
 
+// ---------------------------------------------------------------------------
+// Instruction-budget pre-flight (#1316 follow-up)
+// ---------------------------------------------------------------------------
+
+/** Refusal reason returned when the projected corpus would breach a ceiling. */
+export const BUDGET_REFUSAL_REASON = 'instruction-budget-exceeded';
+
+const BUDGET_HINT =
+  'absorb the approved rule(s) into an existing thematic file under .claude/rules/ ' +
+  '(N provenance pairs in ONE file, globs:/paths: mirrored — docs/rule-authoring.md § Consolidated rules) ' +
+  'and re-run; never raise the ceiling';
+
+/**
+ * @typedef {Object} BudgetRefusal
+ * @property {string} reason    - always {@link BUDGET_REFUSAL_REASON}.
+ * @property {'path-scoped-bytes'|'generated-bytes'|'always-on-bytes'|'directives'} axis
+ * @property {number} current   - the axis value before the write.
+ * @property {number} projected - the axis value after the write.
+ * @property {number} ceiling   - the ceiling the projection breaches.
+ * @property {string} hint
+ */
+
+/**
+ * Project the instruction budget AFTER the pending repo-local writes and refuse
+ * the whole batch if the projection would breach a ceiling.
+ *
+ * WHY A PROJECTION AND NOT WRITE-THEN-ROLLBACK: a rollback has to undo rule
+ * files AND sidecar stamps, and a half-failed rollback is worse than the breach.
+ * Refusing before the first byte lands keeps the failure clean.
+ *
+ * HOW: the guard's own `computeInstructionBudget` runs twice — on the live rules
+ * directory, and on a throwaway overlay (a copy of that directory with the
+ * pending contents written over it). Re-running the guard's code rather than
+ * re-deriving its byte count means the projection cannot disagree with the
+ * verdict: same frontmatter stripping, same `globs:`/provenance predicates,
+ * all four axes, and an update of an existing file lands as its delta by
+ * construction. Ceilings follow `checkInstructionBudget`'s precedence
+ * (Session Config `instruction-budget.*` > module default), and
+ * `enabled: false` / `mode: off` skips the pre-flight — the operator opted out
+ * of the guard.
+ *
+ * REFUSE ONLY WHAT THIS WRITE WORSENS: an axis blocks the batch only when it is
+ * over in the projection AND the write grows it. A corpus that is already over
+ * therefore still accepts a shrinking consolidation — the remedy must never be
+ * blocked by the breach it repairs — and an unrelated pre-existing breach (say,
+ * the hand-authored always-on directive count) does not freeze reconcile.
+ *
+ * CEILING (BV-004): this is a projection of THIS batch against the corpus as it
+ * stands inside the rules lock. It does not cover rule edits made by hand or by
+ * any writer that does not take `.orchestrator/rules.lock`, and it projects
+ * with the Session Config ceilings while `tests/rules/receiving-review.test.mjs`
+ * asserts against the module defaults — so a repo that RAISES its ceiling in
+ * config can pass here and still go red there; that live test stays the second
+ * safety net. It also fails OPEN (one `errors[]` warning, then the write
+ * proceeds) when the guard cannot load or the overlay cannot be built,
+ * because blocking every reconcile write on a broken measurement is the larger
+ * harm. Revisit if a second writer of `.claude/rules/` appears, or if a repo
+ * ever carries a config ceiling above the module default.
+ *
+ * @param {Object} ctx
+ * @param {WriterApprovedItem[]} ctx.approvedItems
+ * @param {PreparedTarget|undefined} ctx.prep - the prepared `repo-local` target.
+ * @param {{repoRoot?: string, baselineRoot?: string}} ctx.roots
+ * @param {string} ctx.repoRoot
+ * @param {string[]} ctx.errors - receives fail-open warnings.
+ * @returns {Promise<BudgetRefusal|null>} null ⇒ proceed with the writes.
+ */
+async function budgetPreflight({ approvedItems, prep, roots, repoRoot, errors }) {
+  if (!prep || !prep.ok) return null;
+
+  // Only what the write loop below would actually put on disk counts: the same
+  // content-type check, structural gate and destination resolution. Errors from
+  // this dry resolution go to a throwaway sink — the write loop reports them.
+  /** @type {Array<{rel: string, content: string}>} */
+  const pending = [];
+  for (const item of approvedItems) {
+    if (!item || typeof item.content !== 'string') continue;
+    if (frontmatterRefusalReason(item.content) !== null) continue;
+    const dest = resolveDest(item, 'repo-local', prep, roots, []);
+    if (dest === null) continue;
+    pending.push({ rel: path.relative(prep.dir, dest), content: item.content });
+  }
+  if (pending.length === 0) return null;
+
+  let overlay = null;
+  try {
+    // Dynamic import keeps the guard out of this module's static graph.
+    const guard = await import('../instruction-budget-guard.mjs');
+    const cfg = guard.loadInstructionBudgetConfig(repoRoot);
+    if (!cfg.enabled || cfg.mode === 'off') return null;
+    // computeInstructionBudget falls back to its module default for any
+    // non-number, so an absent optional key needs no special case here.
+    const ceilings = {
+      ceiling: cfg.ceiling,
+      byteCeiling: cfg['byte-ceiling'],
+      generatedByteCeiling: cfg['generated-byte-ceiling'],
+      pathScopedByteCeiling: cfg['path-scoped-byte-ceiling'],
+    };
+
+    const current = guard.computeInstructionBudget({ repoRoot, rulesDir: prep.dir, ...ceilings });
+
+    overlay = mkdtempSync(path.join(tmpdir(), 'reconcile-budget-'));
+    // The guard reads the rules directory flat (`readdirSync`, `.md` only).
+    for (const name of readdirSync(prep.dir)) {
+      if (!name.endsWith('.md')) continue;
+      try {
+        writeFileSync(path.join(overlay, name), readFileSync(path.join(prep.dir, name), 'utf8'), 'utf8');
+      } catch {
+        /* unreadable or a directory — the guard skips it too */
+      }
+    }
+    for (const { rel, content } of pending) {
+      const dest = path.join(overlay, rel);
+      mkdirSync(path.dirname(dest), { recursive: true });
+      writeFileSync(dest, content, 'utf8');
+    }
+
+    const projected = guard.computeInstructionBudget({ repoRoot, rulesDir: overlay, ...ceilings });
+
+    const axes = [
+      ['path-scoped-bytes', current.bySurface.pathScoped.bytes, projected.bySurface.pathScoped.bytes, projected.pathScopedByteCeiling, projected.overPathScopedBudget],
+      ['generated-bytes', current.bySurface.generated.bytes, projected.bySurface.generated.bytes, projected.generatedByteCeiling, projected.overGeneratedBudget],
+      ['always-on-bytes', current.totalBytes, projected.totalBytes, projected.byteCeiling, projected.overByteBudget],
+      ['directives', current.totalDirectives, projected.totalDirectives, projected.ceiling, projected.overDirectiveBudget],
+    ];
+    for (const [axis, cur, proj, ceiling, over] of axes) {
+      if (over && proj > cur) {
+        return { reason: BUDGET_REFUSAL_REASON, axis, current: cur, projected: proj, ceiling, hint: BUDGET_HINT };
+      }
+    }
+    return null;
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    errors.push(`instruction-budget pre-flight could not run (${msg}) — writes proceed unchecked (fail-open)`);
+    return null;
+  } finally {
+    if (overlay !== null) {
+      try {
+        rmSync(overlay, { recursive: true, force: true });
+      } catch {
+        /* a leftover tmp dir is harmless */
+      }
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Telemetry (#1307)
@@ -609,6 +769,12 @@ async function emitRulesWritten(result, ctx) {
  * @property {number}   written   - number of rule files successfully written.
  * @property {number}   archived  - number of rejected records appended to the log.
  * @property {string[]} errors    - per-item error strings (never fatal).
+ *
+ * On an instruction-budget refusal (see `budgetPreflight`) the same object also
+ * carries `ok: false` plus every {@link BudgetRefusal} field, `written` and
+ * `archived` are 0, and `errors[]` holds one line naming the axis and the hint —
+ * so a caller that only surfaces `errors[]` still shows the refusal. The success
+ * shape carries no `ok` key.
  */
 
 /**
@@ -693,6 +859,24 @@ export async function writeApprovedRules({
         for (const target of effectiveTargets) {
           prepared.set(target, prepareTarget(target, roots, errors));
         }
+      }
+
+      // Instruction-budget pre-flight — before the first write, inside the
+      // lock so no concurrent reconcile writer moves the corpus between the
+      // projection and the write. A refusal writes NOTHING: no rule file, no
+      // rejected-log line, no sidecar stamp (approved or rejected).
+      const budgetRefusal = await budgetPreflight({
+        approvedItems,
+        prep: prepared.get('repo-local'),
+        roots,
+        repoRoot,
+        errors,
+      });
+      if (budgetRefusal !== null) {
+        errors.push(
+          `${budgetRefusal.reason}: ${budgetRefusal.axis} would go ${budgetRefusal.current} → ${budgetRefusal.projected} (ceiling ${budgetRefusal.ceiling}) — nothing written, no candidate marked processed; ${budgetRefusal.hint}`,
+        );
+        return { written: 0, archived: 0, errors, ok: false, ...budgetRefusal };
       }
 
       // ── Step 1: write approved rule files ──────────────────────────────────

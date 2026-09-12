@@ -47,7 +47,40 @@ import {
   scenarioHousekeepingNoPlan,
   scenarioSpiral,
   scenarioPlanFidelityBoundary,
+  writeFixture,
+  isoOffset,
 } from '../fixtures/eval/metrics-tree/build.mjs';
+
+/**
+ * One-session tree in the CURRENT writer shape (skills/session-end/metrics-collection.md):
+ * `waves` is one entry per wave, `total_waves` counts them, and no full-gate event exists.
+ */
+function scenarioOneWaveNoGate({ sessionType, wave, waves }, base = Date.now()) {
+  const start = isoOffset(base, 3);
+  const waveList = waves ?? [{ wave: 1, agent_count: 0, files_changed: 2, quality: 'skipped', ...wave }];
+  return writeFixture({
+    sessionId: 'sess-one-wave',
+    sessions: [
+      {
+        schema_version: 2,
+        session_id: 'sess-one-wave',
+        ...(sessionType ? { session_type: sessionType } : {}),
+        started_at: start,
+        completed_at: isoOffset(base, 2.9),
+        status: 'completed',
+        total_waves: waveList.length,
+        total_agents: waveList.reduce((n, w) => n + (w.agent_count ?? 0), 0),
+        total_files_changed: 2,
+        waves: waveList,
+        agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+        effectiveness: { carryover: null },
+      },
+    ],
+    events: [
+      { timestamp: start, event: 'orchestrator.session.started', session_id: 'uuid-one-wave', host_class: 'macos-arm64-m4pro' },
+    ],
+  });
+}
 
 const FIXED_TS = '2026-07-16T12:00:00.000Z';
 const dirsToClean = [];
@@ -194,6 +227,41 @@ describe('gate-health dimension', () => {
   it('NOT-APPLICABLE for a housekeeping session with no waves', () => {
     const { record } = evalFixture(scenarioHousekeepingNoPlan());
     expect(byId(record, 'gate-health').status).toBe('not-applicable');
+  });
+
+  // The writer now records a coordinator-direct housekeeping session as ONE
+  // Housekeeping wave with total_waves 1 — the empty-waves check alone scored it
+  // cannot-determine.
+  it('NOT-APPLICABLE for the one-wave coordinator-direct Housekeeping record shape', () => {
+    const fx = scenarioOneWaveNoGate({
+      sessionType: 'housekeeping',
+      wave: { role: 'Housekeeping', coordinator_direct: true },
+    });
+    const { record } = evalFixture(fx);
+    expect(byId(record, 'gate-health').status).toBe('not-applicable');
+  });
+
+  it('stays CANNOT-DETERMINE for a multi-wave housekeeping session with no full-gate event', () => {
+    // rubric-v1 keys on the wave SHAPE, never on session_type: a housekeeping
+    // session that ran real waves (incl. Quality) has an unknown gate health.
+    const fx = scenarioOneWaveNoGate({
+      sessionType: 'housekeeping',
+      waves: ['Impl-Core', 'Impl-Polish', 'Quality', 'Finalization'].map((role, i) => ({
+        wave: i + 1, role, agent_count: 2, files_changed: 1, quality: 'pass',
+      })),
+    });
+    const { record } = evalFixture(fx);
+    expect(byId(record, 'gate-health').status).toBe('cannot-determine');
+  });
+
+  it('stays CANNOT-DETERMINE for a coordinator-direct wave that is not Housekeeping', () => {
+    // coordinator_direct alone is no housekeeping marker — whole feature sessions carry it.
+    const fx = scenarioOneWaveNoGate({
+      sessionType: 'feature',
+      wave: { role: 'Impl-Core', coordinator_direct: true },
+    });
+    const { record } = evalFixture(fx);
+    expect(byId(record, 'gate-health').status).toBe('cannot-determine');
   });
 
   it('CANNOT-DETERMINE when waves ran but no full-gate event exists', () => {

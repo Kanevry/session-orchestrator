@@ -18,6 +18,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -86,6 +87,28 @@ async function fakeProbe(dir, id, body, extra = {}) {
     args: () => ({}),
     ...extra,
   };
+}
+
+/**
+ * Turn `dir` into a real git repo whose `@{upstream}` is branch `base`.
+ * `ahead: true` adds one local-only commit so HEAD differs from the pushed
+ * commit; `ahead: false` leaves HEAD === `@{upstream}`.
+ *
+ * @returns {string} full SHA of the pushed commit
+ */
+function initRepoWithUpstream(dir, { ahead }) {
+  const git = (...args) =>
+    execFileSync(
+      'git',
+      ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...args],
+      { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim();
+  git('init', '-q', '-b', 'main');
+  git('commit', '-q', '--allow-empty', '-m', 'pushed');
+  git('branch', 'base');
+  git('branch', '-q', '--set-upstream-to=base');
+  if (ahead) git('commit', '-q', '--allow-empty', '-m', 'local only');
+  return git('rev-parse', 'base');
 }
 
 const CLEAN = 'export function probe() { return null; }';
@@ -561,6 +584,211 @@ describe('the built-in registry', () => {
 
     expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-clean' });
     expect(out.bannerLines).toEqual([]);
+  });
+
+  // BUG this catches (TV-001, #1333): `severityOf` judged `allowFailureJobs` by
+  // TRUTHINESS while `render` required a non-empty array, so an empty list
+  // scored `warn` with no banner line — a finding counted in telemetry that
+  // the operator was never shown.
+  it('scores green with an EMPTY allowFailureJobs list as clean, matching its silent render (#1333)', async () => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    const dir = await mkTmp();
+    const { emit } = captureEmit();
+    const fake = await fakeProbe(
+      dir,
+      'ci-status',
+      `export function probe() { return { status: 'green', ok: true, allowFailureJobs: [], details: { cliUsed: 'glab' } }; }`,
+      { render: registryProbe.render, severityOf: registryProbe.severityOf },
+    );
+
+    const out = await runSessionStartProbes({ repoRoot: dir }, { probes: [fake], emit });
+
+    expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-clean', severity: 'ok' });
+    expect(out.bannerLines).toEqual([]);
+  });
+
+  // BUG this catches (TV-001, #1332): on `no-pipeline-for-head-sha` the banner
+  // named the pushed SHA and a command to run, but never that SHA's VERDICT —
+  // so a red pipeline on the last pushed commit still did not reach the
+  // operator. Runs the REAL entry's args/followUp/render/severityOf against a
+  // real git repo whose upstream differs from HEAD; the fake answers RED only
+  // for the exact pushed SHA + repoRoot, so a follow-up that queries the wrong
+  // commit (or none) cannot produce the expected line.
+  it('names the PUSHED commit\'s CI verdict on the no-pipeline branch when network probes are opted in (#1332)', async () => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    const dir = await mkTmp();
+    const pushedSha = initRepoWithUpstream(dir, { ahead: true });
+
+    const { emit } = captureEmit();
+    const fake = await fakeProbe(
+      dir,
+      'ci-status',
+      `export function probe(opts) {
+        if (opts.sha === ${JSON.stringify(pushedSha)} && opts.repoRoot === ${JSON.stringify(dir)}) {
+          return { status: 'red', ok: false, redCount: 1, details: { currentPipelineId: 9301, cliUsed: 'glab' } };
+        }
+        if (opts.sha !== undefined) return { status: 'green', ok: true, details: { currentPipelineId: 1, cliUsed: 'glab' } };
+        return { status: 'unknown', ok: false, details: { reason: 'no-pipeline-for-head-sha', currentPipelineId: null, cliUsed: 'glab' } };
+      }`,
+      {
+        network: true,
+        args: registryProbe.args,
+        followUp: registryProbe.followUp,
+        render: registryProbe.render,
+        severityOf: registryProbe.severityOf,
+      },
+    );
+
+    const out = await runSessionStartProbes(
+      { repoRoot: dir, env: { SO_PROBES_INCLUDE_NETWORK: '1' } },
+      { probes: [fake], emit },
+    );
+
+    expect(out.bannerLines).toEqual([
+      `⚠ ci-status: CI status for HEAD could not be determined (no-pipeline-for-head-sha) — last pushed: ${pushedSha.slice(0, 8)} — CI red (#9301)`,
+    ]);
+    expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-warn', severity: 'warn' });
+  });
+
+  // BUG this catches (#1332 review, measured 2026-09-12): the follow-up ran
+  // inside the budget race unprotected, so a slow pushed-SHA query turned a
+  // probe that had ALREADY delivered its HEAD reading into `timeout` — the
+  // reason and the hint vanished behind "1 timed out". Real registry
+  // follow-up; only the pushed-SHA requery is slow.
+  it('keeps the delivered HEAD reading when the pushed-SHA follow-up overruns the budget (#1332)', async () => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    const dir = await mkTmp();
+    const pushedSha = initRepoWithUpstream(dir, { ahead: true });
+    const { calls, emit } = captureEmit();
+    const fake = await fakeProbe(
+      dir,
+      'ci-status',
+      `export async function probe(opts) {
+        if (opts.sha !== undefined) {
+          await new Promise((r) => setTimeout(r, 900));
+          return { status: 'red', ok: false, details: { currentPipelineId: 1, cliUsed: 'glab' } };
+        }
+        return { status: 'unknown', ok: false, details: { reason: 'no-pipeline-for-head-sha', currentPipelineId: null, cliUsed: 'glab' } };
+      }`,
+      { network: true, args: registryProbe.args, followUp: registryProbe.followUp, render: registryProbe.render, severityOf: registryProbe.severityOf },
+    );
+    await import(fake.spec);
+
+    const out = await runSessionStartProbes(
+      { repoRoot: dir, env: { SO_PROBES_INCLUDE_NETWORK: '1' }, timeoutMs: 300 },
+      { probes: [fake], emit },
+    );
+
+    const short = pushedSha.slice(0, 8);
+    expect(out.bannerLines).toEqual([
+      `⚠ ci-status: CI status for HEAD could not be determined (no-pipeline-for-head-sha) — last pushed: ${short} (pipeline not checked; run \`glab ci status --ref ${short}\`)`,
+    ]);
+    expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-warn', severity: 'warn', followUp: 'budget-exceeded' });
+    expect(calls[0].payload.timed_out).toBe(0);
+    // The ledger field the runner's BV-004 revisit trigger reads — the outcome
+    // alone (`ran-warn`) cannot tell a fallen-back follow-up from a clean one.
+    expect(calls[0].payload.probes[0]).toMatchObject({ id: 'ci-status', follow_up: 'budget-exceeded' });
+  });
+
+  // BUG this catches (#1332 review): a follow-up that THROWS turned the
+  // delivered HEAD reading into `error` — same loss, other failure mode.
+  it('keeps the delivered HEAD reading when the follow-up throws (#1332)', async () => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    const dir = await mkTmp();
+    const { calls, emit } = captureEmit();
+    const fake = await fakeProbe(
+      dir,
+      'ci-status',
+      `export function probe() { return { status: 'unknown', ok: false, details: { reason: 'no-pipeline-for-head-sha', currentPipelineId: null, cliUsed: 'glab' } }; }`,
+      {
+        network: true,
+        followUp: async () => { throw new Error('follow-up exploded'); },
+        render: registryProbe.render,
+        severityOf: registryProbe.severityOf,
+      },
+    );
+
+    const out = await runSessionStartProbes(
+      { repoRoot: dir, env: { SO_PROBES_INCLUDE_NETWORK: '1' } },
+      { probes: [fake], emit },
+    );
+
+    expect(out.bannerLines).toEqual([
+      '⚠ ci-status: CI status for HEAD could not be determined (no-pipeline-for-head-sha) — run `glab ci status` on demand',
+    ]);
+    expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-warn', severity: 'warn', followUp: 'threw' });
+    expect(calls[0].payload.errored).toBe(0);
+    expect(calls[0].payload.probes[0]).toMatchObject({ id: 'ci-status', follow_up: 'threw' });
+  });
+
+  // BUG this catches (#1332 review, LOW): when HEAD IS the pushed commit the
+  // follow-up asked checkCiStatus the identical question a second time —
+  // double the CLI cost on the path most likely to time out.
+  it('never re-queries CI when the pushed commit is HEAD (#1332)', async () => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    const dir = await mkTmp();
+    const pushedSha = initRepoWithUpstream(dir, { ahead: false });
+    const { emit } = captureEmit();
+    const fake = await fakeProbe(
+      dir,
+      'ci-status',
+      `export function probe(opts) {
+        globalThis.__p5aCiCalls.push(opts);
+        return { status: 'unknown', ok: false, details: { reason: 'no-pipeline-for-head-sha', currentPipelineId: null, cliUsed: 'glab' } };
+      }`,
+      { network: true, args: registryProbe.args, followUp: registryProbe.followUp, render: registryProbe.render, severityOf: registryProbe.severityOf },
+    );
+    globalThis.__p5aCiCalls = [];
+
+    try {
+      const out = await runSessionStartProbes(
+        { repoRoot: dir, env: { SO_PROBES_INCLUDE_NETWORK: '1' } },
+        { probes: [fake], emit },
+      );
+
+      expect(globalThis.__p5aCiCalls).toEqual([{ repoRoot: dir }]);
+      expect(out.bannerLines).toEqual([
+        `⚠ ci-status: CI status for HEAD could not be determined (no-pipeline-for-head-sha) — last pushed: ${pushedSha.slice(0, 8)} = HEAD — run \`glab ci status\` on demand`,
+      ]);
+    } finally {
+      delete globalThis.__p5aCiCalls;
+    }
+  });
+
+  // BUG this catches (#1332 review, confidence 70): a GitHub remote reports
+  // its no-data state as `no-check-runs-for-head`, so the follow-up keyed on
+  // the GitLab reason alone never ran there and a red pushed commit stayed
+  // invisible on every GitHub-hosted repo.
+  // `ahead: false` (HEAD === @{upstream}, the normal state right after a push)
+  // catches the same-SHA skip leaking onto GitHub: there `checkCiStatus` asks
+  // for the literal ref `HEAD`, which GitHub resolves to the REMOTE default
+  // branch, so the pushed SHA must be re-queried even when it equals local HEAD.
+  it.each([{ ahead: true }, { ahead: false }])('runs the pushed-SHA follow-up for the GitHub no-check-runs reason too, ahead=$ahead (#1332)', async ({ ahead }) => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    const dir = await mkTmp();
+    const pushedSha = initRepoWithUpstream(dir, { ahead });
+    const { emit } = captureEmit();
+    const fake = await fakeProbe(
+      dir,
+      'ci-status',
+      `export function probe(opts) {
+        if (opts.sha === ${JSON.stringify(pushedSha)}) {
+          return { status: 'red', ok: false, failingJobName: 'test', details: { cliUsed: 'gh', reason: 'lastGreen-not-implemented-for-github' } };
+        }
+        return { status: 'unknown', ok: false, details: { cliUsed: 'gh', reason: 'no-check-runs-for-head' } };
+      }`,
+      { network: true, args: registryProbe.args, followUp: registryProbe.followUp, render: registryProbe.render, severityOf: registryProbe.severityOf },
+    );
+
+    const out = await runSessionStartProbes(
+      { repoRoot: dir, env: { SO_PROBES_INCLUDE_NETWORK: '1' } },
+      { probes: [fake], emit },
+    );
+
+    expect(out.bannerLines).toEqual([
+      `⚠ ci-status: CI status for HEAD could not be determined (no-check-runs-for-head) — last pushed: ${pushedSha.slice(0, 8)} — CI red`,
+    ]);
+    expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-warn', severity: 'warn' });
   });
 
   // BUG this catches (TV-001, #1255): the `telemetry-flush-health` entry was

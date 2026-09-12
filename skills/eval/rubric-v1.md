@@ -126,6 +126,19 @@ full-gate quality_gate events + `record.total_waves` / `record.waves`.
 | `≥1` full-gate event in window; the **last by timestamp** has `exit_code === 0` | `pass` |
 | `≥1` full-gate event in window; the **last by timestamp** has `exit_code !== 0` | `fail` |
 
+Clarification, not a formula change: a record whose waves are **all**
+coordinator-direct `Housekeeping` waves (the session-end writer rule since
+#1321; predicate `isCoordinatorDirectHousekeeping` in
+`scripts/lib/session-schema/filters.mjs`) counts as "no waves ran". The
+decision keys on that wave shape only, never on `session_type`: a housekeeping
+session that ran real waves stays `cannot-determine`. No record written before
+#1321 has that shape. Measured 2026-09-12 on the working copy (the ledger is
+gitignored, so no commit pins it): `jq -s
+'[.[]|select((.waves|type)=="array" and (.waves|length)>0 and
+all(.waves[]; .role=="Housekeeping" and .coordinator_direct==true))]|length'
+.orchestrator/metrics/sessions.jsonl` → `0` of 427 records. So no historical
+verdict changes, and `RUBRIC_VERSION` stays `rubric-v1`.
+
 Scorer: `scoreGateHealth`. No `score` field.
 
 ### 4. `process-safety`

@@ -30,6 +30,18 @@
  *   - Overrides always go through writeJsonAtomicSync (tmp + renameSync).
  *   - #1284 serializes acquisition and takeover: a stale observation must not
  *     replace a different process's newly acquired lock.
+ *   - #1285 serializes owner-guarded release with takeover: release runs its
+ *     read → owner-match → unlink under the same `${lock}.acquire` guard, so an
+ *     old holder's delayed release can never delete the lock a successor took
+ *     over after the old lease expired.
+ *
+ * Lease semantics (`staleCheck: 'mtime' | 'heartbeat'`): lease expiry prevents
+ * a STUCK lock; it does NOT protect the critical section. After `staleMs` the
+ * next acquirer takes over whether or not the old holder is still running, and
+ * neither mode renews the lease (`heartbeat` ages from `acquiredAt`, `mtime`
+ * from the file's last write). A `not-owner` release under a lease mode means
+ * YOUR lease expired during your critical section and a successor may have run
+ * concurrently — keep critical sections well below `staleMs`.
  *
  * No external dependencies — Node 20+ stdlib + io.mjs only.
  */
@@ -249,6 +261,25 @@ function serializeBody(body, indent) {
   return JSON.stringify(body, null, indent) + '\n';
 }
 
+/**
+ * Create the exclusive `${lockPath}.acquire` sibling guard that serializes every
+ * acquisition, takeover and owner-guarded release pass on `lockPath` (#1284,
+ * #1285). The caller owns the guard only when `ok` is true and must unlink it
+ * in a `finally`; an existing guard is NEVER replaced (see tryAcquireFileLock).
+ *
+ * @param {string} lockPath
+ * @param {string} tmpPrefix — tmp-file prefix; `.acquire` is appended.
+ * @returns {{ ok: true } | { ok: false, reason: 'exists' } | { ok: false, reason: 'fs-error', error: string }}
+ */
+function createAcquireGuard(lockPath, tmpPrefix) {
+  return createExclusive(`${lockPath}.acquire`, {
+    pid: process.pid,
+    host: os.hostname(),
+    acquiredAt: new Date().toISOString(),
+    kind: 'acquisition-guard',
+  }, { indent: 2, tmpPrefix: `${tmpPrefix}.acquire` });
+}
+
 // ---------------------------------------------------------------------------
 // Exported primitive
 // ---------------------------------------------------------------------------
@@ -264,13 +295,18 @@ function serializeBody(body, indent) {
  * Every acquisition pass owns the exclusive sibling `${lockPath}.acquire`
  * from before create/read through any takeover. This prevents a waiter from
  * reading an old holder, observing its exit, then replacing a newer holder.
+ * Owner-guarded releases (releaseFileLock) take the SAME guard for their
+ * read → owner-match → unlink pass (#1285), so a release can never unlink a
+ * lock that a takeover replaced after the releaser read its own body.
  * All contenders must use this guarded implementation; legacy writers that
  * ignore the sibling guard cannot participate safely in the same protocol.
  *
- * Crash-liveness tradeoff: the guard is held only for this synchronous pass,
- * not for the caller's critical section. If its owner dies during the pass or
- * cleanup fails, the guard remains and attempts return `held` immediately;
- * withFileLock's normal deadline bounds polling. Even a dead-PID or malformed
+ * Crash-liveness tradeoff: the guard is held only for one synchronous pass
+ * (acquire or release), not for the caller's critical section. If its owner
+ * dies during a pass or cleanup fails, the guard remains: acquire attempts
+ * return `held` immediately (withFileLock's normal deadline bounds polling) and
+ * owner-guarded releases return `busy` after their bounded retry, leaving the
+ * primary lock to its stale policy. Even a dead-PID or malformed
  * guard is NEVER stolen, because stale-guard replacement would repeat the same
  * race. Recovery requires quiescing every process that can acquire this lock,
  * verifying the guard is abandoned, then explicitly removing only that sibling.
@@ -303,12 +339,7 @@ function serializeBody(body, indent) {
  */
 export function tryAcquireFileLock(lockPath, opts = {}) {
   const guardPath = `${lockPath}.acquire`;
-  const guard = createExclusive(guardPath, {
-    pid: process.pid,
-    host: os.hostname(),
-    acquiredAt: new Date().toISOString(),
-    kind: 'acquisition-guard',
-  }, { indent: 2, tmpPrefix: `${opts.tmpPrefix ?? '.file.lock'}.acquire` });
+  const guard = createAcquireGuard(lockPath, opts.tmpPrefix ?? '.file.lock');
   if (!guard.ok) {
     return guard.reason === 'exists'
       ? { acquired: false, reason: 'held', existing: null }
@@ -418,21 +449,35 @@ function tryAcquireGuardedFileLock(lockPath, opts) {
  * match. This reproduces the agent-status / state-lock / staging-fence owner
  * guard (PSA-003: never delete a lock another holder owns).
  *
+ * Guaranteed (#1285): the owner-guarded read → owner-match → unlink runs under
+ * the same `${lockPath}.acquire` guard as acquisition and takeover, so an old
+ * holder's release can never delete a replacement's lock. Without the guard, a
+ * holder that read its own body, then paused while its lease expired and a
+ * successor took over, unlinked the successor's lock and let a third process
+ * acquire beside a live holder. Under `staleCheck: 'mtime' | 'heartbeat'`, a
+ * `not-owner` answer means your lease expired during your critical section —
+ * see the module header § Lease semantics. The guard is never stolen: when it
+ * stays taken past the budget the release returns `busy` and leaves the lock
+ * untouched for its stale policy to reclaim.
+ *
  * With `ownerGuard: false` the file is unlinked unconditionally, ENOENT
  * ignored — reproducing memory-proposals/store.mjs's `releaseProposalsLock`.
+ * That path takes no guard (its callers never run a takeover).
  *
  * @param {string} lockPath
  * @param {object} [opts]
  * @param {string} [opts.holder]            — expected holder for the owner guard.
  * @param {boolean} [opts.ownerGuard=true]
+ * @param {number} [opts.guardTimeoutMs=1000] — owner-guarded path only: how long
+ *        to retry for the `.acquire` guard before answering `busy`.
  * @param {(errToken: string) => void} [opts.warn] — sink for unexpected fs
  *        errors on the ownerGuard:false path. Receives the raw
  *        `err.code ?? err.message` token; the call-site formats the message.
  * @returns {{ ok: true }
- *   | { ok: false, reason: 'not-found'|'not-owner'|'fs-error', error?: string }}
+ *   | { ok: false, reason: 'not-found'|'not-owner'|'busy'|'fs-error', error?: string }}
  */
 export function releaseFileLock(lockPath, opts = {}) {
-  const { holder, ownerGuard = true, warn } = opts;
+  const { holder, ownerGuard = true, warn, guardTimeoutMs } = opts;
 
   if (ownerGuard === false) {
     // Unconditional unlink; ENOENT ignored. Other fs errors surfaced via warn.
@@ -448,6 +493,53 @@ export function releaseFileLock(lockPath, opts = {}) {
     }
   }
 
+  // Nothing to release → answer without the guard. Taking it would create the
+  // lock's directory (createExclusive mkdirs) and contend with live acquirers
+  // for a pass that can never unlink anything. Only ENOENT short-cuts; every
+  // other stat error falls through to the guarded read, which reports it.
+  try {
+    fs.statSync(lockPath);
+  } catch (err) {
+    if (err.code === 'ENOENT') return { ok: false, reason: 'not-found' };
+  }
+
+  const budget = typeof guardTimeoutMs === 'number' && guardTimeoutMs >= 0
+    ? guardTimeoutMs
+    : DEFAULT_RELEASE_GUARD_MS;
+  const deadline = Date.now() + budget;
+  for (;;) {
+    const guard = createAcquireGuard(lockPath, '.file.lock');
+    if (guard.ok) break;
+    if (guard.reason === 'fs-error') return { ok: false, reason: 'fs-error', error: guard.error };
+    // Never steal the guard (same rule as acquisition): wait, then give up.
+    if (Date.now() >= deadline) return { ok: false, reason: 'busy' };
+    sleepSync(RELEASE_GUARD_POLL_MS);
+  }
+
+  try {
+    return releaseGuardedFileLock(lockPath, holder);
+  } finally {
+    // Only this pass owns the guard; an unlink failure fails closed exactly
+    // like the acquisition path (see tryAcquireFileLock § recovery).
+    try { fs.unlinkSync(`${lockPath}.acquire`); } catch { /* fail closed */ }
+  }
+}
+
+/**
+ * Budget for an owner-guarded release to obtain the `.acquire` guard.
+ *
+ * CEILING (BV-004): a live contender holds the guard for one synchronous pass
+ * (a handful of fs syscalls), so the wait is normally sub-millisecond; the full
+ * 1000 ms is only spent on an ABANDONED guard (owner crashed mid-pass), where
+ * waiting longer cannot help. REVISIT if a `busy` release is ever observed on a
+ * host without a crash.
+ */
+const DEFAULT_RELEASE_GUARD_MS = 1000;
+/** Poll cadence while a release waits for the `.acquire` guard. */
+const RELEASE_GUARD_POLL_MS = 5;
+
+/** Caller must hold the acquisition guard throughout this synchronous pass. */
+function releaseGuardedFileLock(lockPath, holder) {
   let raw;
   try {
     raw = fs.readFileSync(lockPath, 'utf8');

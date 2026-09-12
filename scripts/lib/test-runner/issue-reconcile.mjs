@@ -148,6 +148,21 @@ function sanitizeRecommendation(text) {
   return text.replace(/\*\*Fingerprint:\*\*/gi, '__Fingerprint__');
 }
 
+/**
+ * Render untrusted text as the content of ONE inline Markdown code span:
+ * sentinel literals neutralised (sanitizeRecommendation), line breaks and NUL
+ * folded to a space, backticks turned into `'` — so a page-controlled locator
+ * can neither close its code span nor start a new body line.
+ *
+ * @param {unknown} text
+ * @returns {string}
+ */
+function codeSpanContent(text) {
+  return sanitizeRecommendation(String(text ?? ''))
+    .replace(/[\r\n\0]+/g, ' ')
+    .replace(/`/g, "'");
+}
+
 // ---------------------------------------------------------------------------
 // Body-length validation (#389 SEC-IR-LOW-1)
 // ---------------------------------------------------------------------------
@@ -182,25 +197,31 @@ function checkBodyLength(body) {
  * Newlines within the body are intentional and safe — execFile passes
  * --description as a single argv element, not through a shell.
  *
- * Applies sanitizeRecommendation() to the recommendation field (#388) before
- * embedding it, so the authoritative `**Fingerprint:** \`<fp>\`` sentinel
- * line cannot be spoofed by attacker-controlled recommendation text.
+ * Every free-text field is sanitised before embedding, so the authoritative
+ * `**Fingerprint:** \`<fp>\`` sentinel cannot be spoofed: `recommendation`
+ * (#388) and `description` go through sanitizeRecommendation() — description
+ * is line 1, BEFORE the real sentinel, and carries verbatim page HTML (axe
+ * results), while the extractor takes the FIRST match. `locator` goes through
+ * codeSpanContent() so it also cannot break out of its code span.
+ *
+ * Exported (#1331) so direct `createFinding` callers can build a body that
+ * passes its sentinel check instead of hand-writing the sentinel line.
  *
  * @param {object} finding
  * @param {string} fp - 16-char hex fingerprint
  * @returns {string}
  */
-function buildIssueBody(finding, fp) {
+export function buildIssueBody(finding, fp) {
   const safeRecommendation = sanitizeRecommendation(finding.recommendation);
   const lines = [
-    finding.description,
+    sanitizeRecommendation(finding.description),
     '',
     safeRecommendation ? `**Recommendation:** ${safeRecommendation}` : null,
     '',
     `**Fingerprint:** \`${fp}\``,
     `**Severity:** ${finding.severity}`,
     `**Check:** ${finding.checkId}`,
-    `**Locator:** \`${finding.locator}\``,
+    `**Locator:** \`${codeSpanContent(finding.locator)}\``,
   ];
   return lines.filter((line) => line !== null).join('\n');
 }
@@ -528,9 +549,12 @@ export async function listExistingFindings({
  *
  * @param {object} opts
  * @param {string} [opts.project] - GitLab project path (--repo; #872: otherwise auto-detected)
- * @param {string} opts.fingerprint - 16-hex fingerprint (appended as sentinel)
+ * @param {string} opts.fingerprint - 16-hex fingerprint; NOT appended here — `body` must already carry it
  * @param {string} opts.title - issue title (no [Test] prefix added here — caller decides)
- * @param {string} opts.body - issue description body; must not exceed 65536 bytes (#389)
+ * @param {string} opts.body - issue description body; must not exceed 65536 bytes (#389) and must
+ *   carry the `**Fingerprint:** \`<fingerprint>\`` sentinel for this same fingerprint (#1331) —
+ *   build it with {@link buildIssueBody}
+
  * @param {string} [opts.labels='from:test-runner'] - comma-separated label string
  * @param {boolean} [opts.dryRun=false] - if true, return command without spawning
  * @param {number} [opts.maxBuffer=4194304] - maxBuffer for execFile (4 MB, #389)
@@ -589,6 +613,19 @@ export async function createFinding({
   // #389: body-length cap
   const bodyLengthError = checkBodyLength(body);
   if (bodyLengthError) return bodyLengthError;
+
+  // #1331: dedup reads the fingerprint back out of the body on the next run, and
+  // nothing here appends it. A body without the matching sentinel would file an
+  // issue no later run can recognise — every run would then open a duplicate.
+  if (extractFingerprintFromBody(body) !== fingerprint) {
+    return {
+      ok: false,
+      error: {
+        code: 'VALIDATION',
+        message: 'body must carry a **Fingerprint:** sentinel matching fingerprint (use buildIssueBody)',
+      },
+    };
+  }
 
   const args = ['issue', 'create', '--title', title, '--label', labels, '--description', body];
 

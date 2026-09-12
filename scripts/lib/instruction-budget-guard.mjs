@@ -292,6 +292,14 @@ export const DEFAULT_BYTE_CEILING = 121000;
  * re-run the 89-state replay above whenever the generated corpus passes
  * 92,000 B, or when this axis first fires (then it is calibrated, not
  * decorative).
+ *
+ * That trigger FIRED: the generated corpus stood at 99,774 B at `c16fb518`
+ * (2026-09-12), past 92,000. It was answered by consolidation rather than by
+ * a replay of this axis — the 8 generated files were merged down (prose only,
+ * provenance unchanged) to 75,130 B / 8 files on the 2026-09-12 working tree
+ * (#1316), back under the 92,000 mark. This ceiling is unchanged and the
+ * 89-state replay of THIS axis was not re-run; the trigger stays armed for the
+ * next pass of 92,000 B.
  */
 export const DEFAULT_GENERATED_BYTE_CEILING = 124000;
 
@@ -355,24 +363,44 @@ export const DEFAULT_GENERATED_BYTE_CEILING = 124000;
  * unfalsifiable shape, obtained by the threshold-patch move
  * `development.md` § Guard & Threshold Design forbids.
  *
- * ⚠ DELIBERATELY NOT FOLDED INTO `overBudget`. `overPathScopedBudget` is
- * computed, returned, and named — but it does not flip the aggregate verdict
- * and does not by itself raise the session-start banner. Two reasons, and both
- * are conditions, not preferences:
+ * FOLDED INTO `overBudget` (#1316, 2026-09-12). Until then the flag was
+ * computed and reported but did not flip the aggregate verdict, on two stated
+ * conditions: the corpus stood over this ceiling (folding it in would have
+ * turned the live verdict red and reported a corpus fact as a code defect),
+ * and whether the corpus or the ceiling had to move was an operator decision.
+ * The operator decided "consolidate, then gate", and fold-in condition 1 — the
+ * corpus back under 124,000 — is now met: the 8 generated rule files were
+ * consolidated (prose only; every provenance pair, heading and evidence line
+ * unchanged), taking the path-scoped corpus from 147,407 B at `c16fb518` to
+ * 122,763 B / 11 files on the 2026-09-12 working tree (generated 99,774 →
+ * 75,130 B). A breach on this axis alone now sets `overBudget` and raises the
+ * session-start banner.
  *
- *  1. The corpus is over this ceiling TODAY. Folding it in would turn the
- *     aggregate verdict red on the current tree, which `tests/rules/` asserts
- *     against — the exceedance would be reported as a code defect when it is
- *     a corpus fact.
- *  2. Whether the CORPUS must shrink or the CEILING must move is an operator
- *     decision. Making the guard block on it would decide that question by
- *     omission, which is the same conflation the #1297 block above ends.
+ * Calibration (Discovery replay, 2026-09-12): `bySurface.pathScoped` over
+ * every commit touching `.claude/rules/` (`git log --format=%h --
+ * ./.claude/rules/` → 90 states): median 84,752 B, peak 147,407 B; 124,000
+ * fires on 5/90 = 5.6 %, inside HR-101's rare band. The peak + 2.5 % method
+ * the generated axis uses does NOT carry over: this population's peak is HEAD
+ * itself, so peak + 2.5 % (151,092 B) fires on 0/90 — an unfalsifiable raise,
+ * the threshold-patch move `development.md` § Guard & Threshold Design
+ * forbids.
  *
- * The fold-in becomes correct as soon as EITHER holds: the path-scoped corpus
- * drops back under 124,000 (then the flag is a live, silent-today guard and
- * folding it in costs nothing), OR the operator sets a deliberate ceiling for
- * this population via `path-scoped-byte-ceiling` in Session Config. Until one
- * of those, the honest state is measured-and-visible, not blocking.
+ * Headroom is 1,237 B. The next `/reconcile` rule (~2.5 KB written
+ * standalone) trips this axis unless it is absorbed into a thematic file in
+ * the SAME write step — an obligation written in the /reconcile-overshoot
+ * learning of `.claude/rules/measurement-discipline.md` and checked by the
+ * reconcile writer's budget pre-flight (`scripts/lib/reconcile/writer.mjs`).
+ * A breach sets `overBudget` AND turns `tests/rules/receiving-review.test.mjs`
+ * (which asserts the live repo is not over budget) red at an otherwise green
+ * gate. That is the intended, rare signal — a cue to consolidate, never to
+ * raise the ceiling.
+ *
+ * Revisit trigger (BV-004): re-run the 90-state replay when (a) the
+ * hand-written scoped share (`pathScoped − generated`, 47,633 B on the
+ * 2026-09-12 tree) moves — consolidating generated rules cannot shrink it, so
+ * growth there eats the headroom that lever creates — or (b) the replay's
+ * firing rate exceeds 10 % (HR-101: then the instrument is re-aimed, neither
+ * obeyed nor silenced).
  *
  * Re-derive (never merely raise) with
  * `computeInstructionBudget({repoRoot}).bySurface.pathScoped`.
@@ -881,7 +909,9 @@ function measureRuleCorpora(rulesDir) {
  *       produces a line at every session start no matter how it is labelled.
  *   The two sub-flags are exported so a consumer can discriminate WHICH axis
  *   broke without re-deriving the comparison (the banner below does exactly
- *   this to choose its Top-files sort key).
+ *   this to choose its Top-files sort key). The same OR later took two more
+ *   terms — `overGeneratedBudget` (#1297) and `overPathScopedBudget` (#1316) —
+ *   so today `overBudget` is true when ANY of the four axes breaches.
  *
  *   bySurface definition (#877; corrected #893 — NOT the additive
  *   `coordinator + wave === totalBytes` identity, which double-counts the
@@ -907,8 +937,8 @@ function measureRuleCorpora(rulesDir) {
  *       (or its `paths:` alias) — the complement of the always-on set, and
  *       the number an operator reproduces from `ls .claude/rules/` (HR-106).
  *       Judged against {@link DEFAULT_PATH_SCOPED_BYTE_CEILING} into
- *       `overPathScopedBudget`, which is REPORTED but deliberately not an
- *       `overBudget` term (see that constant's docblock).
+ *       `overPathScopedBudget`, an `overBudget` term since #1316 (see that
+ *       constant's docblock for why it was held out until then).
  *
  *   `always` is a strict subset of BOTH `wave` and `coordinator` (neither
  *   tier gate excludes `tier: 'always'`), but `wave` and `coordinator` are
@@ -1049,13 +1079,12 @@ export function computeInstructionBudget(opts = {}) {
   const overByteBudget = totalBytes > byteCeiling;
   // Third axis, same strict `>` boundary semantics as the two above.
   const overGeneratedBudget = bySurface.generated.bytes > generatedByteCeiling;
-  // Fourth axis, same strict `>` boundary. NOT an `overBudget` term — see
-  // DEFAULT_PATH_SCOPED_BYTE_CEILING's docblock for the two conditions under
-  // which folding it in becomes correct. It is measured and reported so the
-  // exceedance is falsifiable (HR-105) without deciding, by omission, whether
-  // the corpus or the ceiling has to move.
+  // Fourth axis, same strict `>` boundary. Folded into `overBudget` since
+  // #1316, once consolidation brought the corpus back under its ceiling — see
+  // DEFAULT_PATH_SCOPED_BYTE_CEILING's docblock for the calibration and the
+  // revisit trigger.
   const overPathScopedBudget = bySurface.pathScoped.bytes > pathScopedByteCeiling;
-  const overBudget = overDirectiveBudget || overByteBudget || overGeneratedBudget;
+  const overBudget = overDirectiveBudget || overByteBudget || overGeneratedBudget || overPathScopedBudget;
 
   return {
     totalDirectives,
@@ -1099,10 +1128,10 @@ export function computeInstructionBudget(opts = {}) {
  * @param {number} [opts.byteCeiling] explicit byte-ceiling override (wins over config).
  * @param {number} [opts.pathScopedByteCeiling] explicit path-scoped-ceiling override.
  * @returns {{ severity: 'warn', message: string } | null}
- *   null when disabled / off / every BLOCKING axis at-or-under ceiling OR on
- *   any read failure. The path-scoped axis is not a blocking axis: it appends
- *   a `(not blocking)` clause to a banner some other axis already raised, and
- *   never raises one on its own (see DEFAULT_PATH_SCOPED_BYTE_CEILING).
+ *   null when disabled / off / every axis at-or-under its ceiling OR on any
+ *   read failure. Since #1316 each of the four axes — directives, bytes,
+ *   generated, path-scoped — raises the banner on its own (see
+ *   DEFAULT_PATH_SCOPED_BYTE_CEILING).
  */
 export function checkInstructionBudget(opts = {}) {
   let cfg;
@@ -1182,16 +1211,16 @@ export function checkInstructionBudget(opts = {}) {
         `${budget.bySurface.generated.files} files > ${budget.generatedByteCeiling} B`,
     );
   }
-  // Reported only ALONGSIDE a breach that already raised this banner — never
-  // as its trigger. `overPathScopedBudget` is true on the current corpus, so
-  // making it a trigger would put this line on every single session start,
-  // which `.claude/rules/host-resources.md` HR-101 calls a broken instrument
-  // rather than a warning. Named `(not blocking)` so the operator can tell it
-  // apart from the axes that did decide the verdict.
+  // A trigger in its own right since #1316 — the corpus sits under this
+  // ceiling now, so the line is rare (HR-101), not a fixture of every session
+  // start. It carries its remedy inline because the lever is not obvious from
+  // the number: consolidate generated rules; raising the ceiling is the
+  // unfalsifiable move DEFAULT_PATH_SCOPED_BYTE_CEILING's docblock rules out.
   if (budget.overPathScopedBudget) {
     axes.push(
       `path-scoped rules ${budget.bySurface.pathScoped.bytes} B over ` +
-        `${budget.bySurface.pathScoped.files} files > ${budget.pathScopedByteCeiling} B (not blocking)`,
+        `${budget.bySurface.pathScoped.files} files > ${budget.pathScopedByteCeiling} B ` +
+        '(consolidate generated rules per docs/rule-authoring.md § Consolidated rules; never raise the ceiling)',
     );
   }
 

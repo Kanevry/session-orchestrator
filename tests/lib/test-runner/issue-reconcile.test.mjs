@@ -41,6 +41,7 @@ import {
   createFinding as createFindingReal,
   listExistingFindings as listExistingFindingsReal,
   updateFinding as updateFindingReal,
+  buildIssueBody,
 } from '@lib/test-runner/issue-reconcile.mjs';
 import { fingerprintFinding } from '@lib/test-runner/fingerprint.mjs';
 import { assertErrorShape } from '../../_helpers/assert-error-shape.mjs';
@@ -73,6 +74,12 @@ function listExistingFindings(opts = {}) {
 }
 function updateFinding(opts) {
   return updateFindingReal({ resolveRepoSpecFn: () => undefined, ...opts });
+}
+
+// #1331: createFinding refuses a body whose `**Fingerprint:**` sentinel does not
+// match `fingerprint`, so every ad-hoc body handed to it must carry one.
+function sentinelBody(fp, text) {
+  return `${text}\n\n**Fingerprint:** \`${fp}\``;
 }
 
 // ---------------------------------------------------------------------------
@@ -703,6 +710,31 @@ describe('sanitizeRecommendation (#388) — via reconcileFinding body', () => {
   });
 });
 
+// Bug: buildIssueBody sanitised only `recommendation`. `description` is line 1 —
+// BEFORE the real sentinel — and carries verbatim page HTML (axe-core result),
+// so a page could plant `**Fingerprint:** \`<fp>\`` there: the extractor takes
+// the FIRST match, createFinding rejected the real finding as VALIDATION, and a
+// later run would dedup against the planted fingerprint.
+describe('buildIssueBody — page-controlled fields cannot spoof the sentinel', () => {
+  const REAL_FP = 'aaaaaaaaaaaaaaaa';
+  const FORGED = '**Fingerprint:** `bbbbbbbbbbbbbbbb`';
+
+  it('a foreign sentinel in description leaves the real fingerprint authoritative', async () => {
+    const body = buildIssueBody(validFinding({ description: `Button "${FORGED}" too small` }), REAL_FP);
+    const real = await createFinding({ fingerprint: REAL_FP, title: 't', body, dryRun: true });
+    const forged = await createFinding({ fingerprint: 'bbbbbbbbbbbbbbbb', title: 't', body, dryRun: true });
+    expect(real.ok).toBe(true);
+    expect(forged).toMatchObject({ ok: false, error: { code: 'VALIDATION' } });
+  });
+
+  it('a locator with a backtick, newline and sentinel stays inside one code span', async () => {
+    const body = buildIssueBody(validFinding({ locator: `a\`\n${FORGED}` }), REAL_FP);
+    const real = await createFinding({ fingerprint: REAL_FP, title: 't', body, dryRun: true });
+    expect(real.ok).toBe(true);
+    expect(body.split('\n').at(-1)).toBe("**Locator:** `a' __Fingerprint__ 'bbbbbbbbbbbbbbbb'`");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // createFinding — dryRun mode
 // ---------------------------------------------------------------------------
@@ -712,7 +744,7 @@ describe('createFinding — dryRun mode', () => {
     const result = await createFinding({
       fingerprint: 'abcd1234ef567890',
       title: 'Test finding title',
-      body: 'Test body content',
+      body: sentinelBody('abcd1234ef567890', 'Test body content'),
       dryRun: true,
     });
     expect(result.ok).toBe(true);
@@ -726,7 +758,7 @@ describe('createFinding — dryRun mode', () => {
     const result = await createFinding({
       fingerprint: 'abcd1234ef567890',
       title: 'Specific issue title',
-      body: 'body text',
+      body: sentinelBody('abcd1234ef567890', 'body text'),
       dryRun: true,
     });
     const titleIdx = result.command.indexOf('--title');
@@ -773,11 +805,71 @@ describe('createFinding — newline in title rejected', () => {
     const result = await createFinding({
       fingerprint: 'abcd1234ef567890',
       title: 'Injected\nnewline',
-      body: 'body text',
+      body: sentinelBody('abcd1234ef567890', 'body text'),
       dryRun: true,
     });
     expect(result.ok).toBe(false);
     expect(result.error.code).toBe('VALIDATION');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createFinding — the body's fingerprint sentinel must match `fingerprint` (#1331)
+// ---------------------------------------------------------------------------
+
+describe('createFinding — fingerprint sentinel must match (#1331)', () => {
+  function spyExecFile() {
+    const calls = [];
+    const fn = async (bin, args) => {
+      calls.push({ bin, args });
+      return { stdout: 'https://gitlab.example.com/-/issues/7' };
+    };
+    fn.calls = calls;
+    return fn;
+  }
+
+  it('rejects a body with no sentinel as VALIDATION, never spawns glab, and does not echo the body', async () => {
+    const execFile = spyExecFile();
+    const result = await createFinding({
+      execFile,
+      fingerprint: 'abcd1234ef567890',
+      title: 'Sentinel-less finding',
+      body: 'a hand-built body with no sentinel line',
+      dryRun: false,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe('VALIDATION');
+    expect(result.error.message).not.toContain('a hand-built body with no sentinel line');
+    expect(execFile.calls).toHaveLength(0);
+  });
+
+  it('rejects a sentinel carrying a DIFFERENT fingerprint as VALIDATION and never spawns glab', async () => {
+    const execFile = spyExecFile();
+    const result = await createFinding({
+      execFile,
+      fingerprint: 'abcd1234ef567890',
+      title: 'Mismatched finding',
+      body: sentinelBody('1234abcd5678efab', 'body for another finding'),
+      dryRun: false,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe('VALIDATION');
+    expect(execFile.calls).toHaveLength(0);
+  });
+
+  it('accepts a body built by buildIssueBody for the same fingerprint and spawns glab once', async () => {
+    const execFile = spyExecFile();
+    const body = buildIssueBody(validFinding(), 'abcd1234ef567890');
+    const result = await createFinding({
+      execFile,
+      fingerprint: 'abcd1234ef567890',
+      title: 'Builder-made finding',
+      body,
+      dryRun: false,
+    });
+    expect(result).toMatchObject({ ok: true, action: 'create', iid: 7 });
+    expect(execFile.calls).toHaveLength(1);
+    expect(execFile.calls[0].args).toContain(body);
   });
 });
 
@@ -791,7 +883,7 @@ describe('createFinding — BINARY_NOT_FOUND via execFile DI seam', () => {
       execFile: makeEnoentExecFile(),
       fingerprint: 'abcd1234ef567890',
       title: 'Test finding',
-      body: 'test body',
+      body: sentinelBody('abcd1234ef567890', 'test body'),
       dryRun: false,
     });
     expect(result.ok).toBe(false);
@@ -875,7 +967,7 @@ describe('Security HIGH — glabPath no longer accepted; execFile DI seam is the
       execFile: spyExecFile,
       fingerprint: 'abcd1234ef567890',
       title: 'Test issue',
-      body: 'test body',
+      body: sentinelBody('abcd1234ef567890', 'test body'),
       dryRun: false,
     });
     expect(capturedBins).toHaveLength(1);
@@ -1051,7 +1143,7 @@ describe('createFinding — #872 --repo host-pinning', () => {
     const result = await createFindingReal({
       fingerprint: 'aaaa0000bbbb1111',
       title: 'a title',
-      body: 'a body',
+      body: sentinelBody('aaaa0000bbbb1111', 'a body'),
       dryRun: true,
       resolveRepoSpecFn,
     });
@@ -1065,7 +1157,7 @@ describe('createFinding — #872 --repo host-pinning', () => {
       project: 'group/explicit-proj',
       fingerprint: 'aaaa0000bbbb1111',
       title: 'a title',
-      body: 'a body',
+      body: sentinelBody('aaaa0000bbbb1111', 'a body'),
       dryRun: true,
       resolveRepoSpecFn,
     });
@@ -1077,7 +1169,7 @@ describe('createFinding — #872 --repo host-pinning', () => {
     const result = await createFindingReal({
       fingerprint: 'aaaa0000bbbb1111',
       title: 'a title',
-      body: 'a body',
+      body: sentinelBody('aaaa0000bbbb1111', 'a body'),
       dryRun: true,
       resolveRepoSpecFn: () => undefined,
     });

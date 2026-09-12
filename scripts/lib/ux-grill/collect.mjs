@@ -1135,12 +1135,21 @@ async function runJourney({ run, journey, viewportName, startUrl, baseUrl, build
   };
 }
 
-/** Substitute the two credential placeholders in ONE argv token. Never logged. */
+/**
+ * Substitute the two credential placeholders in ONE argv token. Never logged.
+ *
+ * Literal, global and single-pass (#1335): a STRING replacement argument
+ * expands `$&`, `` $` ``, `$'` and `$$`, which would mangle a password holding
+ * them, and `replace(string, …)` hits only the first occurrence. A replacer
+ * function's return value is inserted verbatim, and one pass means a value
+ * that itself contains a placeholder (an email holding `${LOGIN_PASSWORD}`) is
+ * never substituted a second time.
+ */
 function substituteCredentials(token, credentials) {
   if (!credentials) return token;
-  return token
-    .replace('${LOGIN_EMAIL}', credentials.email ?? '')
-    .replace('${LOGIN_PASSWORD}', credentials.password ?? '');
+  return token.replace(/\$\{LOGIN_(EMAIL|PASSWORD)\}/g, (_, key) =>
+    key === 'EMAIL' ? (credentials.email ?? '') : (credentials.password ?? ''),
+  );
 }
 
 /** Test the journey `success` pattern against the current URL and the body text. */

@@ -363,6 +363,9 @@ describe('releaseFileLock — owner guard vs unconditional', () => {
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('not-owner');
     expect(existsSync(lockPath)).toBe(true);
+    // #1285: the release pass takes the acquisition guard — a refusal must
+    // still hand it back, or every later acquire reads `held` forever.
+    expect(existsSync(`${lockPath}.acquire`)).toBe(false);
   });
 
   it('falls back to pid+host match when no holder is supplied', () => {
@@ -379,6 +382,8 @@ describe('releaseFileLock — owner guard vs unconditional', () => {
     const result = releaseFileLock(lockPath, { holder: 'me', ownerGuard: true });
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('not-found');
+    // Releasing nothing must not create the lock's directory as a side effect.
+    expect(existsSync(join(dir, 'sub'))).toBe(false);
   });
 
   it('unlinks unconditionally with ownerGuard:false even for a foreign holder', () => {
@@ -398,6 +403,75 @@ describe('releaseFileLock — owner guard vs unconditional', () => {
   it('ignores ENOENT on the unconditional release path', () => {
     const result = releaseFileLock(lockPath, { ownerGuard: false });
     expect(result.ok).toBe(true);
+  });
+});
+
+describe('releaseFileLock — #1285 release is serialized with takeover', () => {
+  // Bug: release read → matched → unlinked WITHOUT the `.acquire` guard that
+  // takeover holds. An old holder paused between its read and its unlink let a
+  // successor take over the expired lease; the old holder then deleted the
+  // successor's lock and a third process acquired beside a live holder.
+  const lease = (holder) => ({ staleCheck: 'mtime', staleMs: 10_000, holder, warn: () => {} });
+
+  it('an old holder releasing mid-takeover never deletes the successor lock', () => {
+    expect(tryAcquireFileLock(lockPath, lease('A')).acquired).toBe(true);
+    const old = Date.now() / 1000 - 60;
+    utimesSync(lockPath, old, old); // A's lease has expired
+    const original = nodeFs.default.readFileSync;
+    let successor;
+    vi.spyOn(nodeFs.default, 'readFileSync').mockImplementation((...args) => {
+      const raw = original(...args);
+      // A has just read its own body; B tries to take over the expired lease.
+      if (args[0] === lockPath && successor === undefined) {
+        successor = tryAcquireFileLock(lockPath, lease('B'));
+      }
+      return raw;
+    });
+
+    const released = releaseFileLock(lockPath, { holder: 'A' });
+    vi.restoreAllMocks();
+
+    // Invariant: B acquired ⇒ the lock exists with holder B. Pre-fix B took
+    // over, A then unlinked B's lock: { successorAcquired: true, lockExists: false }.
+    expect({ successorAcquired: successor.acquired, lockExists: existsSync(lockPath) })
+      .toEqual({ successorAcquired: false, lockExists: false });
+    expect(successor.reason).toBe('held');
+    expect(released).toEqual({ ok: true });
+    expect(tryAcquireFileLock(lockPath, lease('B')).acquired).toBe(true);
+    expect(readLockBody().holder).toBe('B');
+  });
+
+  it('returns busy within its budget on an abandoned guard and touches neither file', () => {
+    mkdirSync(join(dir, 'sub'), { recursive: true });
+    const guardPath = `${lockPath}.acquire`;
+    const body = JSON.stringify({ pid: process.pid, host: hostname(), holder: 'A' });
+    const guardBody = JSON.stringify({ pid: DEAD_PID, host: hostname(), kind: 'acquisition-guard' });
+    writeFileSync(lockPath, body);
+    writeFileSync(guardPath, guardBody);
+
+    const started = Date.now();
+    const result = releaseFileLock(lockPath, { holder: 'A', guardTimeoutMs: 30 });
+
+    expect(result).toEqual({ ok: false, reason: 'busy' });
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(readFileSync(lockPath, 'utf8')).toBe(body);
+    expect(readFileSync(guardPath, 'utf8')).toBe(guardBody);
+  });
+
+  it('removes its guard even when unlinking the primary lock fails', () => {
+    tryAcquireFileLock(lockPath, { holder: 'A' });
+    const original = nodeFs.default.unlinkSync;
+    vi.spyOn(nodeFs.default, 'unlinkSync').mockImplementation((...args) => {
+      if (args[0] === lockPath) throw Object.assign(new Error('fixture I/O error'), { code: 'EIO' });
+      return original(...args);
+    });
+
+    const result = releaseFileLock(lockPath, { holder: 'A' });
+    vi.restoreAllMocks();
+
+    expect(result).toMatchObject({ ok: false, reason: 'fs-error' });
+    expect(existsSync(`${lockPath}.acquire`)).toBe(false);
+    expect(readLockBody().holder).toBe('A');
   });
 });
 

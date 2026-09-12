@@ -194,8 +194,20 @@ tool_session_metrics() {
   local entries
   entries=$(jq -R -c 'fromjson? | select(.status != "abandoned")' "$metrics_file" 2>/dev/null | tail -n 5) || true
 
+  # Report the stubs the filter above dropped (#1296) — counted over the WHOLE
+  # file, not the tail, with the same torn-line tolerance (`fromjson?`, plus
+  # `.status?` so a non-object line cannot abort the count either). Computed
+  # BEFORE the empty check: a stubs-only ledger is not an empty file.
+  local stub_count
+  stub_count=$(jq -R -n '[inputs | fromjson? | select(.status? == "abandoned")] | length' "$metrics_file" 2>/dev/null) || stub_count=0
+  [[ -z "$stub_count" ]] && stub_count=0
+
   if [[ -z "$entries" ]]; then
-    respond "$id" "$(text_content "No metrics found (file is empty)")"
+    if [[ "$stub_count" -gt 0 ]]; then
+      respond "$id" "$(text_content "No real sessions (abandoned stubs excluded: ${stub_count})")"
+    else
+      respond "$id" "$(text_content "No metrics found (file is empty)")"
+    fi
     return
   fi
 
@@ -229,6 +241,9 @@ tool_session_metrics() {
     ' 2>/dev/null) || token_summary=""
 
   local output
+  entries="${entries}
+
+abandoned stubs excluded: ${stub_count}"
   if [[ -n "$token_summary" ]]; then
     output="${entries}
 

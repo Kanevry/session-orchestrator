@@ -1397,7 +1397,7 @@ describe('computeInstructionBudget — path-scoped surface (generated-rule growt
 
     expect(banner).not.toBeNull();
     expect(banner.message).toContain('path-scoped rules');
-    expect(banner.message).toContain('> 120 B (not blocking)');
+    expect(banner.message).toContain('> 120 B');
   });
 
   it('names the generated axis with its file count in the banner (HR-106: report the number judged)', () => {
@@ -1535,11 +1535,10 @@ describe('computeInstructionBudget — path-scoped surface (generated-rule growt
     expect(result.severity).toBe('ok');
   });
 
-  it('does NOT fold the path-scoped axis into overBudget (deliberate, see the constant docblock)', () => {
-    // The live corpus is over this ceiling TODAY. Folding the flag into the
-    // aggregate verdict would decide, by omission, whether the corpus or the
-    // ceiling has to move — and would turn the current tree's verdict red.
-    // This assertion is the tripwire for an accidental fold-in.
+  it('folds the path-scoped axis into overBudget on its own (#1316)', () => {
+    // #1316: the corpus was consolidated back under 124,000, so the flag is
+    // now a live gate. Bug caught: a breach on this axis alone leaving the
+    // aggregate verdict 'ok' — measured-and-visible but never acted on.
     const rulesDir = makeMixedFixture(2, 500, { handwritten: 1, handwrittenBytes: 4000 });
 
     const result = computeInstructionBudget({ rulesDir, pathScopedByteCeiling: 2000 });
@@ -1548,35 +1547,27 @@ describe('computeInstructionBudget — path-scoped surface (generated-rule growt
     expect(result.overDirectiveBudget).toBe(false);
     expect(result.overByteBudget).toBe(false);
     expect(result.overGeneratedBudget).toBe(false);
-    expect(result.overBudget).toBe(false);
-    expect(result.severity).toBe('ok');
+    expect(result.overBudget).toBe(true);
+    expect(result.severity).toBe('warn');
   });
 
-  it('raises no banner on a path-scoped breach alone, but names it when another axis already did', () => {
+  it('raises the banner on a path-scoped breach alone, naming value and ceiling', () => {
     const emptyRoot = mkdtempSync(join(tmpdir(), 'instr-budget-pathscoped-banner-'));
     tmpDirs.push(emptyRoot);
     const rulesDir = makeMixedFixture(2, 500, { handwritten: 1, handwrittenBytes: 4000 });
 
-    // Path-scoped alone → silent. A line at every session start on a corpus
-    // that is permanently over is the broken instrument HR-101 describes.
-    expect(
-      checkInstructionBudget({ repoRoot: emptyRoot, rulesDir, pathScopedByteCeiling: 2000 }),
-    ).toBeNull();
-
-    // Generated axis breaches too → the banner renders and carries the
-    // path-scoped figure as an explicitly non-blocking clause.
-    const banner = checkInstructionBudget({
-      repoRoot: emptyRoot,
-      rulesDir,
-      pathScopedByteCeiling: 2000,
-      generatedByteCeiling: 100,
-    });
+    const banner = checkInstructionBudget({ repoRoot: emptyRoot, rulesDir, pathScopedByteCeiling: 2000 });
 
     expect(banner).not.toBeNull();
-    expect(banner.message).toContain('generated rules');
+    expect(banner.severity).toBe('warn');
     expect(banner.message).toContain('path-scoped rules');
-    expect(banner.message).toContain('over 3 files');
-    expect(banner.message).toContain('(not blocking)');
+    expect(banner.message).toContain('over 3 files > 2000 B');
+    // The only breached axis — no sibling axis is named, and the old
+    // advisory-only marker is gone.
+    // `generated rules <n>` is the generated-axis clause shape; the remedy
+    // text also says "generated rules", so a bare substring cannot tell them apart.
+    expect(banner.message).not.toMatch(/generated rules \d/);
+    expect(banner.message).not.toContain('(not blocking)');
   });
 
   it('defaults the path-scoped ceiling to the module constant when no opt is passed', () => {

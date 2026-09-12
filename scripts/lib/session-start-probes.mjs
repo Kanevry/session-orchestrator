@@ -70,49 +70,163 @@ const local = (rel) => pathToFileURL(path.join(import.meta.dirname, rel)).href;
 const CI_UNKNOWN_HINT_DEFAULT = 'run `glab ci status` on demand';
 
 /**
- * Short SHA of the last PUSHED commit, or `null` when there is no upstream.
+ * `ci-status` "no data for HEAD" reasons after which the last PUSHED commit is
+ * worth asking about: GitLab's `no-pipeline-for-head-sha` and GitHub's
+ * `no-check-runs-for-head` (both emitted by `checkCiStatus`).
+ */
+const PUSHED_FOLLOW_UP_REASONS = new Set(['no-pipeline-for-head-sha', 'no-check-runs-for-head']);
+
+/**
+ * Full SHAs for `refs`, in order, from ONE `git rev-parse` — or `null` when
+ * any ref does not resolve (no upstream, detached HEAD, not a git repo, git
+ * missing). Full, not short: `checkCiStatus({ sha })` matches against GitLab's
+ * full pipeline SHAs and refuses anything shorter.
  *
  * NAMED CEILING (BV-004): one `git rev-parse` with a 2s timeout, run only on
- * the `no-pipeline-for-head-sha` branch — i.e. only when the `ci-status` probe
- * already ran (network opt-in) and already failed to find a pipeline. It is
- * deliberately NOT a per-SHA CI query: `checkCiStatus` exposes no `sha`/`ref`
- * entry point, and adding one is a change to another module. Revisit if that
- * entry point appears — then this hint can carry the pushed SHA's verdict
- * instead of telling the operator which command to run.
+ * the {@link PUSHED_FOLLOW_UP_REASONS} branch — i.e. only when the `ci-status`
+ * probe already ran (network opt-in) and already found no data for HEAD.
  *
  * @param {string|undefined} repoRoot
- * @returns {string|null}
+ * @param {string[]} refs
+ * @returns {string[]|null}
  */
-function lastPushedShortSha(repoRoot) {
+function revParseShas(repoRoot, refs) {
   if (!repoRoot || typeof repoRoot !== 'string') return null;
   try {
-    const out = execFileSync('git', ['rev-parse', '@{upstream}'], {
+    const out = execFileSync('git', ['rev-parse', ...refs], {
       cwd: repoRoot,
       encoding: 'utf8',
       timeout: 2000,
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    const sha = String(out).trim();
-    return /^[0-9a-f]{7,40}$/.test(sha) ? sha.slice(0, 7) : null;
+    const shas = String(out).trim().split('\n').map((s) => s.trim());
+    const valid = shas.length === refs.length
+      && shas.every((s) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(s));
+    return valid ? shas : null;
   } catch {
-    // No upstream, detached HEAD, not a git repo, git missing — all mean "no
-    // cheap pushed-SHA hint", never an error worth surfacing here.
+    // Every failure means "no cheap pushed-SHA hint", never an error worth
+    // surfacing here.
     return null;
   }
 }
 
 /**
+ * Full SHA of the last PUSHED commit (`@{upstream}`), or `null`.
+ *
+ * @param {string|undefined} repoRoot
+ * @returns {string|null}
+ */
+function lastPushedSha(repoRoot) {
+  return revParseShas(repoRoot, ['@{upstream}'])?.[0] ?? null;
+}
+
+/**
+ * `ci-status` follow-up (#1332): when HEAD has no CI data, ask for the verdict
+ * of the last PUSHED commit — the commit whose pipeline can actually be red
+ * while HEAD reads "unknown".
+ *
+ * NAMED CEILING (BV-004): at most one `git rev-parse` plus ONE extra CLI round
+ * trip (`checkCiStatus({ sha })`), only on a {@link PUSHED_FOLLOW_UP_REASONS}
+ * reading, and only behind the existing network opt-in
+ * (`SO_PROBES_INCLUDE_NETWORK=1` — without it the whole `ci-status` probe is
+ * `skipped: network-probe-opt-in` and this never runs). It runs INSIDE the
+ * probe's budget race and gets only what is left of that budget; if it
+ * overruns or throws, the runner keeps the HEAD reading it was given (see
+ * `runSessionStartProbes`). REVISIT TRIGGER: if `follow_up: 'budget-exceeded'`
+ * shows up regularly in `orchestrator.probes.completed`, cache the verdict per
+ * pushed SHA instead of re-asking.
+ *
+ * The CLI round trip is skipped when the pushed commit IS HEAD on GitLab: its
+ * HEAD reading was taken for the local HEAD SHA, so the re-query would ask the
+ * identical question. Not on GitHub: `checkCiStatus` asks the API for the
+ * literal ref `HEAD`, which GitHub resolves to the REMOTE default branch, not
+ * the local HEAD — there the pushed SHA is a different question even when it
+ * equals local HEAD.
+ *
+ * @param {*} result   The HEAD reading from `checkCiStatus`
+ * @param {{repoRoot?: string}} ctx
+ * @param {(extra: object) => Promise<*>} requery  Re-invokes the probe with extra options
+ * @returns {Promise<*>}
+ */
+async function ciPushedFollowUp(result, ctx, requery) {
+  const reason = result?.details?.reason;
+  if (result?.status !== 'unknown' || !PUSHED_FOLLOW_UP_REASONS.has(reason)) {
+    return result;
+  }
+  // One spawn for both: an unresolvable `@{upstream}` fails the whole call,
+  // which is exactly the "no upstream" answer.
+  const shas = revParseShas(ctx?.repoRoot, ['HEAD', '@{upstream}']);
+  // `pushed.sha: null` records "no upstream" so the renderer does not ask git again.
+  if (!shas) return { ...result, pushed: { sha: null } };
+  const [head, sha] = shas;
+  if (reason === 'no-pipeline-for-head-sha' && sha === head) {
+    return { ...result, pushed: { sha, sameAsHead: true } };
+  }
+  let verdict;
+  try {
+    verdict = await requery({ sha });
+  } catch {
+    // checkCiStatus never throws; a failure here only loses the verdict detail.
+    verdict = null;
+  }
+  return { ...result, pushed: { sha, verdict } };
+}
+
+/**
+ * `CI <status> (#<pipeline>)` for a pushed-SHA verdict, or `null` when there
+ * is no readable verdict (the caller then falls back to the command hint).
+ *
+ * @param {*} v  A `checkCiStatus` result
+ * @returns {string|null}
+ */
+function pushedVerdictText(v) {
+  if (!v || typeof v !== 'object') return null;
+  if (v.degraded) return `CI state unknown (${v.degraded})`;
+  if (typeof v.status !== 'string') return null;
+  const pid = v.details?.currentPipelineId;
+  const parts = [];
+  if (pid !== null && pid !== undefined) parts.push(`#${pid}`);
+  if (v.status === 'unknown' && v.details?.reason) parts.push(v.details.reason);
+  return `CI ${v.status}${parts.length > 0 ? ` (${parts.join(', ')})` : ''}`;
+}
+
+/**
  * Hint text for a `status: 'unknown'` ci-status reading.
  *
- * @param {object} result   The probe result
+ * @param {object} result   The probe result (possibly carrying `pushed` from
+ *   {@link ciPushedFollowUp})
  * @param {{repoRoot?: string}} [ctx]
  * @returns {string}
  */
 function ciUnknownHint(result, ctx) {
-  if (result?.details?.reason !== 'no-pipeline-for-head-sha') return CI_UNKNOWN_HINT_DEFAULT;
-  const sha = lastPushedShortSha(ctx?.repoRoot);
-  if (!sha) return CI_UNKNOWN_HINT_DEFAULT;
-  return `last pushed: ${sha} (pipeline not checked; run \`glab ci status --ref ${sha}\`)`;
+  if (!PUSHED_FOLLOW_UP_REASONS.has(result?.details?.reason)) return CI_UNKNOWN_HINT_DEFAULT;
+  // The GitHub reason names the gh CLI; a glab command there would be wrong.
+  const gh = result.details.cliUsed === 'gh';
+  const onDemand = gh ? 'run `gh run list` on demand' : CI_UNKNOWN_HINT_DEFAULT;
+  const pushed = result.pushed && typeof result.pushed === 'object' ? result.pushed : null;
+  // The follow-up already resolved the SHA (or its absence) — never re-ask git.
+  // Without `pushed` (follow-up overran or threw) this is the only git call.
+  const sha = pushed ? pushed.sha : lastPushedSha(ctx?.repoRoot);
+  if (!sha) return onDemand;
+  const short = sha.slice(0, 8);
+  if (pushed?.sameAsHead) return `last pushed: ${short} = HEAD — ${onDemand}`;
+  const verdict = pushedVerdictText(pushed?.verdict);
+  if (verdict) return `last pushed: ${short} — ${verdict}`;
+  const check = gh ? `gh run list --commit ${sha}` : `glab ci status --ref ${short}`;
+  return `last pushed: ${short} (pipeline not checked; run \`${check}\`)`;
+}
+
+/**
+ * "Green, but allow_failure jobs failed" — the ONE predicate both the
+ * `ci-status` renderer and its `severityOf` use (#1333). Two predicates once
+ * disagreed: `severityOf` read truthiness, so `allowFailureJobs: []` scored
+ * `warn` while the renderer printed nothing.
+ *
+ * @param {*} r
+ * @returns {boolean}
+ */
+function hasFailedAllowFailureJobs(r) {
+  return Array.isArray(r?.allowFailureJobs) && r.allowFailureJobs.length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -269,6 +383,11 @@ function startLoopBlockedMeter() {
  *   - `precondition` optional; returns a skip-reason string to skip the probe
  *   - `render`     optional; maps a result to a banner line. Default:
  *                  `result.message` when severity is warn/alert.
+ *   - `followUp`   optional; `async (result, ctx, requery) => result'` run
+ *                  INSIDE the budget race after the entry function, where
+ *                  `requery(extra)` re-invokes it with `{...args, ...extra}`.
+ *                  If it throws or overruns the budget, the entry function's
+ *                  result stands (recorded `followUp: 'threw'|'budget-exceeded'`).
  */
 export const PROBES = [
   {
@@ -320,6 +439,10 @@ export const PROBES = [
     fn: 'checkCiStatus',
     network: true,
     args: ({ repoRoot }) => ({ repoRoot }),
+    // #1332: on `no-pipeline-for-head-sha` / `no-check-runs-for-head`, query
+    // the last PUSHED commit's verdict via `checkCiStatus({ sha })` — see the
+    // ceiling on the function.
+    followUp: ciPushedFollowUp,
     // Bespoke shape: `{status, ok, details, …}` with no `message` field. The
     // banner text is prescribed by SKILL.md § Phase 4.
     //
@@ -350,7 +473,7 @@ export const PROBES = [
         const job = r.failingJobName ? ` Failing job: ${r.failingJobName}` : '';
         return `🚨 CI RED on HEAD (pipeline #${pid})${green}.${job}`;
       }
-      if (r.status === 'green' && Array.isArray(r.allowFailureJobs) && r.allowFailureJobs.length > 0) {
+      if (r.status === 'green' && hasFailedAllowFailureJobs(r)) {
         const names = r.allowFailureJobs.map((j) => j?.name ?? String(j)).join(', ');
         return `⚠ CI green on HEAD, but ${r.allowFailureJobs.length} allow_failure job(s) FAILED: ${names}. A pipeline reports success regardless of these.`;
       }
@@ -367,7 +490,7 @@ export const PROBES = [
       if (!r || typeof r !== 'object') return 'ok';
       if (r.degraded) return 'warn';
       if (r.status === 'red') return 'alert';
-      if (r.status === 'green') return r.allowFailureJobs ? 'warn' : 'ok';
+      if (r.status === 'green') return hasFailedAllowFailureJobs(r) ? 'warn' : 'ok';
       return 'warn';
     },
   },
@@ -731,6 +854,15 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
         return;
       }
 
+      // The entry function's result once it has returned, for probes with a
+      // `followUp`. The follow-up is optional enrichment: when it throws or
+      // overruns, the probe still DELIVERED, and "a probe that already
+      // delivered is not a timeout" (withWorkDeadline) applies to it too.
+      /** @type {{__probeResult: *}|null} */
+      let delivered = null;
+      /** @type {'threw'|'budget-exceeded'|undefined} */
+      let followUpFailure;
+
       // The whole invocation — import included — is inside the race, because a
       // pre-#369-style absent module and a hung probe are both "did not
       // deliver" and both must resolve to an outcome rather than to a throw.
@@ -740,10 +872,33 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
         if (typeof fn !== 'function') {
           return { __probeError: new Error(`export ${probe.fn} missing`), __absent: true };
         }
-        return { __probeResult: await fn(probe.args(ctx)) };
+        const first = await fn(probe.args(ctx));
+        if (typeof probe.followUp !== 'function') return { __probeResult: first };
+        delivered = { __probeResult: first };
+        // Optional second step (#1332, `ci-status` only today), inside this
+        // race so it spends the SAME per-probe budget — NAMED CEILING (BV-004):
+        // it gets exactly what the entry function left of `budgetMs`, with no
+        // second timer and no margin, because the fallback is decided AFTER
+        // the race below: a timeout with `delivered` set is `delivered`.
+        try {
+          return {
+            __probeResult: await probe.followUp(first, ctx, (extra) => fn({ ...probe.args(ctx), ...extra })),
+          };
+        } catch {
+          followUpFailure = 'threw';
+          return delivered;
+        }
       })();
 
-      const { raced, workMs } = await withWorkDeadline(invocation, budgetMs, meter);
+      const deadline = await withWorkDeadline(invocation, budgetMs, meter);
+      const { workMs } = deadline;
+      let { raced } = deadline;
+      if (raced === TIMED_OUT && delivered) {
+        // The follow-up is what ran out of budget, not the probe. Its pending
+        // promise is abandoned exactly as a hung probe's would be.
+        raced = delivered;
+        followUpFailure = 'budget-exceeded';
+      }
 
       if (raced === TIMED_OUT) {
         record('timeout', { reason: 'budget-exceeded', workMs });
@@ -772,6 +927,7 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
       record(severity === 'ok' ? 'ran-clean' : severity === 'warn' ? 'ran-warn' : 'ran-alert', {
         severity,
         workMs,
+        ...(followUpFailure ? { followUp: followUpFailure } : {}),
         ...(line ? { line } : {}),
       });
     }),
@@ -832,6 +988,9 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
       // deliberately NOT persisted: under parallel launch it ranks contention,
       // not work, and persisting a misleading field was the #1089 failure.
       ...(Number.isFinite(r.workMs) ? { work_ms: Math.round(r.workMs) } : {}),
+      // A follow-up that fell back to the delivered result is otherwise
+      // invisible (the outcome is `ran-*`); this is its revisit trigger's input.
+      ...(typeof r.followUp === 'string' ? { follow_up: r.followUp } : {}),
     })),
   };
 

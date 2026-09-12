@@ -1396,3 +1396,125 @@ describe('writeApprovedRules — rules_written telemetry (#1307)', () => {
     expect(existsSync(join(tmpDir, '.claude', 'rules', 'still-writes.md'))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Instruction-budget pre-flight (#1316 follow-up)
+// ---------------------------------------------------------------------------
+
+/**
+ * THE BUG THESE CATCH (TV-001): the writer had no budget awareness at all, so
+ * the next /reconcile that wrote one standalone 2.2-2.8 KB rule pushed the live
+ * path-scoped corpus (1,237 B headroom on 2026-09-12) over its ceiling and
+ * turned `tests/rules/receiving-review.test.mjs` red — AFTER the file had
+ * landed and the candidate had been stamped terminal.
+ *
+ * The fixtures lower the ceiling through the guard's own Session Config key
+ * (`instruction-budget.path-scoped-byte-ceiling`) so each rule body is a few
+ * dozen bytes. Body bytes are counted the way the guard counts them: everything
+ * after the frontmatter, so `scopedRule(59)` carries a 60 B body (59 + the
+ * trailing newline).
+ */
+describe('writeApprovedRules — instruction-budget pre-flight', () => {
+  const rulesDir = () => join(tmpDir, '.claude', 'rules');
+
+  /** A path-scoped rule whose body is `n` bytes plus one newline. */
+  function scopedRule(n) {
+    return `---\nglobs:\n  - "src/**"\n---\n${'a'.repeat(n)}\n`;
+  }
+
+  function setPathScopedCeiling(bytes) {
+    writeFileSync(
+      join(tmpDir, 'CLAUDE.md'),
+      `# Fixture\n\n## Session Config\n\ninstruction-budget:\n  enabled: true\n  path-scoped-byte-ceiling: ${bytes}\n  mode: warn\n`,
+      'utf8',
+    );
+  }
+
+  it('refuses a write that would push the path-scoped corpus over its ceiling — nothing written, nothing stamped', async () => {
+    setPathScopedCeiling(100);
+    writeFileSync(join(rulesDir(), 'existing.md'), scopedRule(59), 'utf8'); // 60 B
+
+    const result = await writeApprovedRules({
+      approved: [
+        {
+          slug: 'new-rule',
+          path: '.claude/rules/new-rule.md',
+          content: scopedRule(59), // +60 B → 120 B > 100 B
+          learningKey: 'anti-pattern/new-rule',
+        },
+      ],
+      rejected: [{ learningKey: 'anti-pattern/declined', operatorRejected: true, reason: 'user-declined' }],
+      repoRoot: tmpDir,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('instruction-budget-exceeded');
+    expect(result.axis).toBe('path-scoped-bytes');
+    expect(result.current).toBe(60);
+    expect(result.projected).toBe(120);
+    expect(result.ceiling).toBe(100);
+    expect(result.written).toBe(0);
+    expect(result.archived).toBe(0);
+    expect(result.hint).toContain('docs/rule-authoring.md § Consolidated rules');
+    // The refusal reaches every caller that only surfaces errors[].
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain('instruction-budget-exceeded');
+
+    expect(existsSync(join(rulesDir(), 'new-rule.md'))).toBe(false);
+    expect(readdirSync(rulesDir()).sort()).toEqual(['existing.md']);
+    // No candidate marked processed — neither the approved nor the rejected one.
+    expect(existsSync(join(tmpDir, '.orchestrator', 'runtime', 'reconcile-candidates.jsonl'))).toBe(false);
+    expect(existsSync(join(tmpDir, '.orchestrator', 'reconcile.rejected.log'))).toBe(false);
+  });
+
+  it('writes as before when the projection stays under the ceiling (success shape unchanged)', async () => {
+    setPathScopedCeiling(200);
+    writeFileSync(join(rulesDir(), 'existing.md'), scopedRule(59), 'utf8');
+
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'new-rule', path: '.claude/rules/new-rule.md', content: scopedRule(59) }],
+      repoRoot: tmpDir,
+    });
+
+    expect(result).toEqual({ written: 1, archived: 0, errors: [] });
+    expect(readFileSync(join(rulesDir(), 'new-rule.md'), 'utf8')).toBe(scopedRule(59));
+  });
+
+  it('projects an update of an existing consolidated file by its delta, not its full size', async () => {
+    setPathScopedCeiling(100);
+    writeFileSync(join(rulesDir(), 'consolidated.md'), scopedRule(79), 'utf8'); // 80 B
+
+    // 80 → 90 B. Projected by full size this would be 80 + 90 = 170 > 100.
+    const result = await writeApprovedRules({
+      approved: [{ slug: 'consolidated', path: '.claude/rules/consolidated.md', content: scopedRule(89) }],
+      repoRoot: tmpDir,
+    });
+
+    expect(result).toEqual({ written: 1, archived: 0, errors: [] });
+    expect(readFileSync(join(rulesDir(), 'consolidated.md'), 'utf8')).toBe(scopedRule(89));
+  });
+
+  it('on an already-over corpus lets a shrinking consolidation land but refuses a growing one', async () => {
+    setPathScopedCeiling(100);
+    writeFileSync(join(rulesDir(), 'consolidated.md'), scopedRule(79), 'utf8'); // 80 B
+    writeFileSync(join(rulesDir(), 'other.md'), scopedRule(39), 'utf8'); // 40 B → 120 B, already over
+
+    // Growth 80 → 85 B: 120 → 125 B, worsens a breached axis → refused.
+    const grow = await writeApprovedRules({
+      approved: [{ slug: 'consolidated', path: '.claude/rules/consolidated.md', content: scopedRule(84) }],
+      repoRoot: tmpDir,
+    });
+    expect(grow.reason).toBe('instruction-budget-exceeded');
+    expect(grow.current).toBe(120);
+    expect(grow.projected).toBe(125);
+    expect(readFileSync(join(rulesDir(), 'consolidated.md'), 'utf8')).toBe(scopedRule(79));
+
+    // Shrink 80 → 50 B: 120 → 90 B — the remedy must never be blocked.
+    const shrink = await writeApprovedRules({
+      approved: [{ slug: 'consolidated', path: '.claude/rules/consolidated.md', content: scopedRule(49) }],
+      repoRoot: tmpDir,
+    });
+    expect(shrink).toEqual({ written: 1, archived: 0, errors: [] });
+    expect(readFileSync(join(rulesDir(), 'consolidated.md'), 'utf8')).toBe(scopedRule(49));
+  });
+});

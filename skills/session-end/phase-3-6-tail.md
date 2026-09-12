@@ -363,17 +363,19 @@ After the Skill-Applied Judge (Phase 3.6.6 — Phase 3.6.7 is retired), and when
      sessionId,
    });
    // writeResult = { written: number, archived: number, errors: string[] }
+   //   on a budget refusal (#1316) additionally: { ok: false, reason: 'instruction-budget-exceeded', axis, current, projected, ceiling, hint }
    ```
 
    `writeApprovedRules` is lock-serialised (via `withFileLock` on `.orchestrator/rules.lock`) and writes each approved proposal to the directory its target names — `.claude/rules/<slug>.md` for `repo-local`, `<baselineRoot>/proposals/<slug>.md` for `baseline`. Each target's write root is confined separately; the leaf comes from the renderer-minted `slug`, never from a caller-supplied path. Rejected proposals (engine-rejected + operator-rejected) are archived to `.orchestrator/reconcile.rejected.log` with reason `user-declined` for operator-rejected and the engine's own audit reason for engine-rejected.
 
-8. Log outcome for Phase 6 Final Report: `reconcile: ${surfaced.length} surfaced → ${approved.length} approved (written: ${writeResult.written}), ${operatorRejected.length} operator-declined${writeResult.errors.length > 0 ? `, ${writeResult.errors.length} write-errors (see sweep.log)` : ''}`.
+8. Log outcome for Phase 6 Final Report: `reconcile: ${surfaced.length} surfaced → ${approved.length} approved (written: ${writeResult.written}), ${operatorRejected.length} operator-declined${writeResult.errors.length > 0 ? `, ${writeResult.errors.length} write-errors (see sweep.log)` : ''}`. On a budget refusal (`writeResult.reason === 'instruction-budget-exceeded'`) log instead `reconcile: budget pre-flight refused the batch (${writeResult.axis} ${writeResult.projected}/${writeResult.ceiling}) — nothing written; consolidate, then re-run /reconcile` — that branch writes nothing to sweep.log.
 
 #### Failure modes
 
 - If `runReconcile` returns an `error` field (top-level exception caught internally): log `⚠ reconcile: engine error (${error}) — skipping`; do not block session close. No AUQ, no sidecar write.
 - If the sidecar write (step 4) fails: log warning `⚠ reconcile: reconcile-pending.md write failed (${err})`; continue to the AUQ regardless.
-- If `writeApprovedRules` reports per-rule errors in `writeResult.errors`: log each to `.orchestrator/metrics/sweep.log` and continue. Per-rule fault isolation — one failed write does not prevent the others.
+- If `writeApprovedRules` returns `ok: false` with `reason: 'instruction-budget-exceeded'` (`BUDGET_REFUSAL_REASON`, #1316): the budget pre-flight refused the WHOLE batch — nothing was written, archived or stamped (operator rejections included, so they resurface on the next run). Log `⚠ reconcile: budget pre-flight refused (${writeResult.axis} ${writeResult.projected}/${writeResult.ceiling}) — consolidate into a thematic rule file (docs/rule-authoring.md § Consolidated rules), then re-run /reconcile` and continue.
+- Otherwise, if `writeApprovedRules` reports per-rule errors in `writeResult.errors`: log each to `.orchestrator/metrics/sweep.log` and continue. Per-rule fault isolation — one failed write does not prevent the others; the budget refusal above is the one batch-wide exception.
 - All failures are non-fatal. Session close is never blocked by reconcile errors — same posture as Phase 3.6.7.
 
 #### Cross-references

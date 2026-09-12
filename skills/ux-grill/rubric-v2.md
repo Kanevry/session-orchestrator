@@ -14,10 +14,10 @@ Every finding `collect.mjs` writes to `findings.jsonl` has exactly these fields,
 
 - `scope` — always `"ux-grill"` (`SCOPE`) — a fingerprint input, never changed casually.
 - `checkId` — one of `CHECK_IDS`, or `axe-<ruleId>` for an axe finding (never the literal `axe-violations`).
-- `locator` — pipe-delimited, truncated to `LOCATOR_MAX_LENGTH` (256) before fingerprinting; see § Fingerprint contract.
+- `locator` — pipe-delimited, truncated to `LOCATOR_MAX_LENGTH` (256) in the record; see § Fingerprint contract for what an over-long locator fingerprints as.
 - `severity` — one of `high | medium | low` (`SEVERITIES`); Stufe 1 never emits `critical` — no measured ux-grill violation is defined as release-blocking by itself.
 - `provisional` — boolean; `true` only for `target-size-*` findings on a `build: dev` manifest, see § provisional.
-- `fingerprint` — 16 hex chars, `fingerprintFinding({scope, checkId, locator})`.
+- `fingerprint` — 16 hex chars, `fingerprintFinding({scope, checkId, locator})` over the fingerprint locator (§ Long-locator rule).
 - `message` — one-line human summary; defaults to `""`.
 - `evidence` — free-form object (screenshot path, axe node, measured px); defaults to `{}`.
 
@@ -27,7 +27,9 @@ Every finding `collect.mjs` writes to `findings.jsonl` has exactly these fields,
 
 `checkId` is one of the 8 `CHECK_IDS` values, **except** `'axe-violations'` itself, which is the catalogue entry only — `makeFinding()` throws when handed that literal. An emitted axe finding always carries `checkId = 'axe-<ruleId>'` (e.g. `axe-color-contrast`), which is exactly why two axe rules violated on the same selector remain two distinct findings: the rule id, not just `axe`, is part of the fingerprint input.
 
-Two locator shapes: `route|viewport|selector` for every route-scoped check (`axe-*`, `target-size-*`, `horizontal-overflow`, `title-mismatch`, `console-errors` — `selector` is `document`, `title`, `console`, or a generated CSS path depending on the check), and `journey|viewport|<name>` for both journey checks (`<name>` is the manifest journey name, never a per-element selector). Locators are truncated to 256 chars BEFORE fingerprinting (`makeFinding()`), and every segment is sanitised of `\n`/`\r`/`\0` by `collect.mjs` `safeLocatorPart()` before assembly, so a hostile selector text cannot crash a run mid-way.
+Two locator shapes: `route|viewport|selector` for every route-scoped check (`axe-*`, `target-size-*`, `horizontal-overflow`, `title-mismatch`, `console-errors` — `selector` is `document`, `title`, `console`, or a generated CSS path depending on the check), and `journey|viewport|<name>` for both journey checks (`<name>` is the manifest journey name, never a per-element selector). Locators are truncated to 256 chars in the record (`makeFinding()`; the fingerprint input for an over-long locator follows the Long-locator rule below), and every segment is sanitised of `\n`/`\r`/`\0` by `collect.mjs` `safeLocatorPart()` before assembly, so a hostile selector text cannot crash a run mid-way.
+
+**Long-locator rule (deliberate deviation from rubric-v1, #1334).** A locator of ≤ 256 chars is fingerprinted as-is, exactly as rubric-v1 prescribes. A locator LONGER than 256 chars is fingerprinted as `truncated + ':' + sha256(fullLocator).slice(0, 8)` — the record still carries only the readable 256-char truncation. Why ux-grill deviates: the audited page controls its own selectors, so under bare truncation a decoy element under a > 256-char class chain sharing the real element's prefix would take the real violation's fingerprint, and `compare.mjs` (first fingerprint wins) would let the decoy shadow it. The suffixed input is 265 chars long, so it can never equal an untruncated locator and every ≤ 256-char fingerprint stays byte-for-byte stable. rubric-v1 and `scripts/lib/test-runner/fingerprint.mjs` stay unchanged on purpose: changing them would invalidate every existing `/test` fingerprint.
 
 ## Check catalogue
 

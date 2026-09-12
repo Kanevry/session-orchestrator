@@ -331,6 +331,16 @@ fresh-clone / CI case) skips that target with an `errors[]` entry — it is NEVE
 created, because a typo'd path that silently mints a directory tree looks
 exactly like a successful write.
 
+**Budget refusal (#1316).** Before writing, `writeApprovedRules` projects the
+instruction budget (`computeInstructionBudget`) on a temporary copy of
+`.claude/rules/` plus the pending writes. If an axis would end over its ceiling
+AND the batch grows it, it writes NOTHING, stamps no candidate (approved or
+rejected) and returns `{ written: 0, archived: 0, errors: [<one line>], ok: false,
+reason: 'instruction-budget-exceeded', axis, current, projected, ceiling, hint }`.
+Read `ok`/`reason` alongside `written, archived, errors`; on a refusal, tell the
+operator, absorb the approved learnings into an existing thematic rule file per
+`docs/rule-authoring.md` § Consolidated rules, then re-run `/reconcile`.
+
 ### 6.2 Handle Errors
 
 If `errors.length > 0`, surface each error to the operator:

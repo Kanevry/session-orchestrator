@@ -33,7 +33,8 @@
  * schema migrations and dedup checks all legitimately need the phantoms. Use
  * these helpers only where the window is meant to represent REAL WORK.
  *
- * Exports: isRealSession, filterRealSessions, tailRealSessions
+ * Exports: isRealSession, filterRealSessions, tailRealSessions,
+ *          isCoordinatorDirectHousekeeping
  */
 
 // ---------------------------------------------------------------------------
@@ -85,4 +86,28 @@ export function tailRealSessions(records, n) {
   const real = filterRealSessions(records);
   if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return [];
   return real.slice(-Math.floor(n));
+}
+
+/**
+ * True when a record's waves are ALL coordinator-direct `Housekeeping` waves —
+ * the shape the session-end writer rule (#1321) records for a session that ran
+ * no dispatched waves. The single definition of that shape: consumers treat such
+ * a record as "no waves ran" (eval gate-health) and exclude its 0-agent waves
+ * from agents-per-wave ratios.
+ *
+ * Keys on the wave SHAPE only, never on `session_type`: a housekeeping session
+ * that ran real waves is not this shape. Nor on `coordinator_direct` alone —
+ * whole multi-wave feature sessions carry it too.
+ *
+ * @param {unknown} record — a parsed sessions.jsonl entry
+ * @returns {boolean} — false for empty/absent `waves`
+ */
+export function isCoordinatorDirectHousekeeping(record) {
+  if (record === null || typeof record !== 'object' || Array.isArray(record)) return false;
+  const { waves } = record;
+  return (
+    Array.isArray(waves) &&
+    waves.length > 0 &&
+    waves.every((w) => w?.role === 'Housekeeping' && w?.coordinator_direct === true)
+  );
 }

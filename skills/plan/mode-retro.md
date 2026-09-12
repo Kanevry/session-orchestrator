@@ -20,7 +20,7 @@ Gather ALL data before asking questions. No user input. Present a dashboard when
 
 ### 1.1 Session Metrics
 
-Read `.orchestrator/metrics/sessions.jsonl`. Extract per entry:
+Read `.orchestrator/metrics/sessions.jsonl` and keep only REAL sessions: drop every `status: "abandoned"` record (the #834 close-backfill stubs; predicate `isRealSession` in `scripts/lib/session-schema/filters.mjs:54` — do NOT key on `_backfill_source`, real records carry it too). Count the dropped stubs separately (#1296). Extract per real entry:
 
 - `session_type`, `started_at`, `completed_at`, `duration_seconds`
 - `effectiveness.completion_rate`, `effectiveness.planned_issues`, `effectiveness.completed`, `effectiveness.carryover`
@@ -28,10 +28,11 @@ Read `.orchestrator/metrics/sessions.jsonl`. Extract per entry:
 - `waves[].role`, `waves[].agent_count`, `waves[].files_changed`, `waves[].quality`
 
 Compute aggregates:
-- Total sessions, average duration, session type distribution (deep/feature/housekeeping)
+- Total sessions (real only), average duration, session type distribution (deep/feature/housekeeping)
+- `N abandoned stubs excluded` — its own dashboard line, never folded into Total sessions
 - Average completion rate, total carryover rate (carryover / planned across all sessions)
 - Agent success rate (complete / total dispatched), spiral rate (spiral / total)
-- Most common wave roles, average files changed per wave
+- Most common wave roles, average files changed per wave — `waves[].files_changed` is not one shape across the ledger: a number (use it), an array (use its length), or null/absent (MISSING — exclude the wave from the average, never count it as 0). Report the n behind the average: `avg files/wave X (n=<waves with a value> of <all waves>)`
 
 If the file does not exist or is empty, note "No session metrics available" and continue.
 

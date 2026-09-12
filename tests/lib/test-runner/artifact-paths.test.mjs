@@ -23,7 +23,13 @@ import {
   axSnapshotsDir,
   consoleLogPath,
   jsonlRollupPath,
+  RUN_ID_PATTERN,
 } from '@lib/test-runner/artifact-paths.mjs';
+import {
+  RUN_ID_PATTERN as UX_GRILL_RUN_ID_PATTERN,
+  makeRunId as uxGrillMakeRunId,
+  runDirPath as uxGrillRunDirPath,
+} from '../../../scripts/lib/ux-grill/paths.mjs';
 
 // ---------------------------------------------------------------------------
 // makeRunId
@@ -97,6 +103,54 @@ describe('runDirPath — argument validation', () => {
 
   it('throws TypeError for numeric runId', () => {
     expect(() => runDirPath(12345)).toThrow(TypeError);
+  });
+
+  // #1330: runId reaches path.join unescaped — these would leave test-runs/.
+  it.each(['../x', 'a/b', '..', '.', '../../etc'])(
+    'throws TypeError for path-traversal runId %j',
+    (runId) => {
+      expect(() => runDirPath(runId)).toThrow(TypeError);
+    },
+  );
+
+  it('accepts a run id produced by makeRunId()', () => {
+    const runId = makeRunId();
+    expect(runDirPath(runId)).toBe(`.orchestrator/metrics/test-runs/${runId}`);
+  });
+});
+
+// Bug: ux-grill/paths.mjs carried its own copy of the run-id guard, and the
+// `.`/`..` hole was open in both until each was patched separately (#1330).
+// Two copies drift; ux-grill must validate with THIS module's pattern.
+describe('run-id invariant — shared with ux-grill/paths.mjs', () => {
+  it('ux-grill re-exports the same RUN_ID_PATTERN object, not a copy', () => {
+    expect(UX_GRILL_RUN_ID_PATTERN).toBe(RUN_ID_PATTERN);
+  });
+
+  it.each(['../x', 'a/b', '.', '..'])('both validators reject %j', (runId) => {
+    expect(() => runDirPath(runId)).toThrow(TypeError);
+    expect(() => uxGrillRunDirPath('/tmp/repo', runId)).toThrow(TypeError);
+  });
+
+  it('both validators accept either module\'s generated run id', () => {
+    const ids = [makeRunId(), uxGrillMakeRunId()];
+    for (const runId of ids) {
+      expect(runDirPath(runId)).toBe(`.orchestrator/metrics/test-runs/${runId}`);
+      expect(uxGrillRunDirPath('/tmp/repo', runId)).toBe(`/tmp/repo/.orchestrator/metrics/ux-grill/${runId}`);
+    }
+  });
+});
+
+// Every artifact builder must route through runDirPath's validation.
+describe('artifact builders — path-traversal runId', () => {
+  it.each([
+    ['findingsPath', findingsPath],
+    ['reportPath', reportPath],
+    ['screenshotsDir', screenshotsDir],
+    ['axSnapshotsDir', axSnapshotsDir],
+    ['consoleLogPath', consoleLogPath],
+  ])('%s throws TypeError for "../x"', (_name, builder) => {
+    expect(() => builder('../x')).toThrow(TypeError);
   });
 });
 

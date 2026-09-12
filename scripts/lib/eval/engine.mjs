@@ -37,6 +37,7 @@ import path from 'node:path';
 import { resolvePluginRoot } from '../common.mjs';
 import { readJsonlFile } from '../io.mjs';
 import { readCanonicalSessions } from '../sessions-canonical.mjs';
+import { isCoordinatorDirectHousekeeping } from '../session-schema/filters.mjs';
 import { buildRunId, CURRENT_STANDARD_VERSION, VALID_MODEL_SOURCES } from './schema.mjs';
 import { resolveSession, computeWindow, findPeerOverlap } from './session-resolve.mjs';
 
@@ -250,7 +251,12 @@ function scoreGateHealth(ctx) {
     const totalWaves = typeof ctx.record.total_waves === 'number' ? ctx.record.total_waves : null;
     const wavesEmpty =
       totalWaves === 0 || !Array.isArray(ctx.record.waves) || ctx.record.waves.length === 0;
-    if (wavesEmpty) {
+    // Since the metrics-collection writer rule (#1321), a session with no
+    // dispatched waves is recorded as ONE coordinator-direct Housekeeping wave
+    // with total_waves 1 — still "no waves ran" per rubric-v1's clarification.
+    // Only that wave SHAPE counts, never session_type: a housekeeping session
+    // that ran real waves stays cannot-determine (the pre-registered formula).
+    if (wavesEmpty || isCoordinatorDirectHousekeeping(ctx.record)) {
       return {
         id,
         method,

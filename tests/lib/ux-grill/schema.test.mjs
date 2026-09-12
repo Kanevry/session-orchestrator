@@ -53,12 +53,37 @@ describe('ux-grill schema/paths contract', () => {
     expect(prod.fingerprint).toBe(dev.fingerprint);
   });
 
+  // Bug (#1334): the locator was truncated to 256 chars BEFORE fingerprinting,
+  // so a page-controlled decoy sharing a >256-char prefix with the real
+  // violation got the identical fingerprint and shadowed it in compare.mjs.
+  // The 256-char pin guards the other half: the fix must not move any
+  // fingerprint of a locator at or under the cap (literal computed at HEAD).
+  it('keeps over-long locators with a shared 256-char prefix apart, without moving <=256-char fingerprints', () => {
+    const prefix = `/r|mobile|${'div.x > '.repeat(40)}`;
+    const make = (locator) =>
+      makeFinding({ checkId: CHECK_IDS.TARGET_SIZE_FLOOR, locator, severity: 'high', build: 'prod' });
+    const real = make(`${prefix}button.real`);
+    const decoy = make(`${prefix}button.decoy`);
+
+    expect(real.locator).toBe(prefix.slice(0, 256));
+    expect(decoy.locator).toBe(real.locator);
+    expect(decoy.fingerprint).not.toBe(real.fingerprint);
+
+    expect(make(`/r|mobile|${'x'.repeat(246)}`).fingerprint).toBe('798c78fd7c10ece5');
+  });
+
   it('rejects a traversing run id in runDirPath', () => {
     expect(() => runDirPath('/tmp/repo', '../x')).toThrow(TypeError);
     expect(() => runDirPath('/tmp/repo', 'a/b')).toThrow(TypeError);
     expect(runDirPath('/tmp/repo', '1757635200123-9f3a01')).toBe(
       '/tmp/repo/.orchestrator/metrics/ux-grill/1757635200123-9f3a01',
     );
+  });
+
+  // `.` and `..` match RUN_ID_PATTERN, so only the explicit guard stops them
+  // resolving to the ux-grill base dir or its parent (#1330).
+  it.each(['.', '..'])('rejects the run id %j, which resolves to the base dir or its parent', (runId) => {
+    expect(() => runDirPath('/tmp/repo', runId)).toThrow(TypeError);
   });
 
   it('rejects the catalogue id axe-violations as an emitted checkId', () => {

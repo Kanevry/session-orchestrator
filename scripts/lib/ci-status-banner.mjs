@@ -531,7 +531,9 @@ async function checkGitlab(repoRoot, now, deps = {}) {
     return null;
   }
 
-  const currentSha = await getHeadSha(repoRoot, deps);
+  // #1332: an explicit `deps.sha` (validated full hex SHA, see checkCiStatus)
+  // replaces the local HEAD lookup — the caller asks about a NAMED commit.
+  const currentSha = deps.sha ?? (await getHeadSha(repoRoot, deps));
   const apiDeps = { ...deps, repoHost: project.host };
   const projectPath = `projects/${project.encodedProjectPath}`;
   // `'array'` is load-bearing, not decoration: before it, a `glab api` that
@@ -700,8 +702,11 @@ async function checkGitlab(repoRoot, now, deps = {}) {
  * (cross-family guard, unsafe-argv guard), and `normalizeGithubSpec` falls
  * back to the raw URL on an unrecognised remote shape.
  *
+ * `deps.sha` (#1332): when set, the check-runs query names THAT commit
+ * instead of the literal `HEAD` ref.
+ *
  * @param {string} repoRoot
- * @param {{ execFile?: Function, timeoutMs?: number, repoSpec?: string, repoHost?: string }} deps
+ * @param {{ execFile?: Function, timeoutMs?: number, repoSpec?: string, repoHost?: string, sha?: string }} deps
  * @returns {Promise<object|null>}
  */
 async function checkGithub(repoRoot, deps = {}) {
@@ -726,7 +731,7 @@ async function checkGithub(repoRoot, deps = {}) {
   );
 
   const data = await ghApi(
-    `repos/${nameWithOwner}/commits/HEAD/check-runs`,
+    `repos/${nameWithOwner}/commits/${deps.sha ?? 'HEAD'}/check-runs`,
     repoRoot,
     deps,
     'object',
@@ -807,7 +812,12 @@ async function checkGithub(repoRoot, deps = {}) {
  *   vcs?: 'gitlab'|'github',
  *   timeoutMs?: number,
  *   now?: number,
- * }} opts
+ *   sha?: string,
+ * }} opts  `sha` (#1332): query the verdict for THIS commit instead of the
+ *   local HEAD. Must be a full hex object id (40 or 64 chars) — it is matched
+ *   against GitLab's full pipeline SHAs and interpolated into a `gh api` path,
+ *   so anything else is refused as `query-failed` before any spawn. Absent →
+ *   behaviour identical to before the option existed.
  * @param {{
  *   execFile?: Function,
  *   resolveRepoSpec?: (opts: { repoRoot: string, vcs: 'gitlab'|'github' }) => string|undefined,
@@ -842,7 +852,20 @@ export async function checkCiStatus(opts = {}, deps = {}) {
     vcs: forcedVcs,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     now = Date.now(),
+    sha: rawSha,
   } = opts;
+
+  // Validate at the boundary (#1332): the value reaches an API path and an
+  // equality match against full SHAs. A short or non-hex SHA would silently
+  // match nothing (GitLab) or re-route the request path (GitHub).
+  let sha;
+  if (rawSha !== undefined) {
+    const candidate = typeof rawSha === 'string' ? rawSha.trim().toLowerCase() : '';
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(candidate)) {
+      return degradedResult('query-failed', 'sha must be a full hex commit id');
+    }
+    sha = candidate;
+  }
 
   const execFileDep = deps.execFile
     ? promisify(deps.execFile)
@@ -914,13 +937,13 @@ export async function checkCiStatus(opts = {}, deps = {}) {
           'a GitLab remote was detected but its host/project path could not be derived',
         );
       }
-      return await checkGitlab(repoRoot, now, { ...depsWithExec, gitlabProject });
+      return await checkGitlab(repoRoot, now, { ...depsWithExec, gitlabProject, sha });
     }
 
     if (vcs === 'github') {
       const repoSpec = resolveRepoSpecDep({ repoRoot, vcs });
       const repoHost = resolveRepoHostDep({ repoRoot, vcs });
-      return await checkGithub(repoRoot, { ...depsWithExec, repoSpec, repoHost });
+      return await checkGithub(repoRoot, { ...depsWithExec, repoSpec, repoHost, sha });
     }
 
     // Unknown VCS value — silent no-op.

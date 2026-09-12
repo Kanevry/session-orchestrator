@@ -2,15 +2,17 @@
  * ux-grill/paths.mjs — Pure path builders for ux-grill run artifacts.
  *
  * Near-leaf module: node builtins (`node:path`, `node:crypto`) plus the repo's
- * own `../crypto-digest-utils.mjs` (itself a `node:crypto` leaf), no I/O. All
+ * own `../crypto-digest-utils.mjs` (itself a `node:crypto` leaf) and
+ * `../test-runner/artifact-paths.mjs` (a `node:path` leaf), no I/O. All
  * functions are side-effect free — callers do the mkdir. Every builder returns
  * an ABSOLUTE path resolved against `repoRoot`.
  *
- * Deliberately NOT reusing `scripts/lib/test-runner/artifact-paths.mjs`: that
- * module returns REPO-RELATIVE paths under `.orchestrator/metrics/test-runs/`
- * and has no `repoRoot` parameter or runId validation, so its builders are not
- * substitutable here (PRD § 2 S2: "eigener Pfad-Helfer …; artifact-paths.mjs
- * bleibt unverändert"). Its `makeRunId()` (`<pid>-<ms>`) is likewise not reused:
+ * The run-id invariant ({@link RUN_ID_PATTERN}, `assertRunId`) is imported from
+ * `scripts/lib/test-runner/artifact-paths.mjs`, so the two artifact trees can
+ * never drift apart on what a safe run id is. Its path BUILDERS are not reused:
+ * they return REPO-RELATIVE paths under `.orchestrator/metrics/test-runs/` and
+ * take no `repoRoot`, so they are not substitutable here (PRD § 2 S2: "eigener
+ * Pfad-Helfer"). Its `makeRunId()` (`<pid>-<ms>`) is likewise not reused:
  * a pid is not unique across hosts and ux-grill artefacts are meant to be
  * committed/compared across machines — see {@link makeRunId}.
  *
@@ -24,6 +26,11 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 import { digestSha256Short } from '../crypto-digest-utils.mjs';
+import { RUN_ID_PATTERN, assertRunId } from '../test-runner/artifact-paths.mjs';
+
+// Re-exported so existing `ux-grill/paths.mjs` importers keep working; the
+// definition lives in test-runner/artifact-paths.mjs (one run-id invariant).
+export { RUN_ID_PATTERN };
 
 /**
  * Repo-relative directory holding one sub-directory per ux-grill run.
@@ -36,14 +43,6 @@ export const UX_GRILL_METRICS_DIR = '.orchestrator/metrics/ux-grill';
  * @type {string}
  */
 export const UX_GRILL_LEDGER = '.orchestrator/metrics/ux-grill.jsonl';
-
-/**
- * Accepted shape of a run id. Anything else is rejected by every path builder —
- * a run id reaches `path.join` unescaped, so `..` or `/` would escape the run
- * directory (path traversal).
- * @type {RegExp}
- */
-export const RUN_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 
 const SCREENSHOT_NAME_MAX = 120;
 
@@ -84,19 +83,6 @@ const STEM_SLUG_MAX = 96;
  */
 export function makeRunId() {
   return `${Date.now()}-${randomBytes(3).toString('hex')}`;
-}
-
-/**
- * Validate a run id against {@link RUN_ID_PATTERN}.
- * @param {string} runId
- * @returns {string} the same runId
- * @throws {TypeError} if the run id is absent or contains path separators / `..`
- */
-function assertRunId(runId) {
-  if (typeof runId !== 'string' || !RUN_ID_PATTERN.test(runId)) {
-    throw new TypeError(`ux-grill paths: runId must match ${RUN_ID_PATTERN}, got ${JSON.stringify(runId)}`);
-  }
-  return runId;
 }
 
 /**

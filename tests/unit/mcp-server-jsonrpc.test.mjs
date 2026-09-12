@@ -126,17 +126,20 @@ describe('mcp-server.sh session_metrics — torn-write tolerance', () => {
     removeTree(tmpRepo);
   });
 
-  it('returns both real sessions when a malformed line sits between them, excluding the abandoned stub', () => {
+  it('returns both real sessions when a malformed line sits between them, excluding and counting the abandoned stubs', () => {
     const metricsDir = join(tmpRepo, '.orchestrator', 'metrics');
     mkdirSync(metricsDir, { recursive: true });
 
-    // Fixture order: [real, abandoned, NOT-JSON, real] — a torn write in the
-    // middle of the ledger, exactly the append-only-multi-writer case that
-    // matters. Neutral invented session ids only (no real names).
+    // Fixture order: [real, abandoned, NOT-JSON, abandoned, real] — a torn
+    // write in the middle of the ledger, exactly the append-only-multi-writer
+    // case that matters. The second stub sits AFTER the torn line so a stub
+    // count that aborts at the first parse error reports 1, not 2 (#1296).
+    // Neutral invented session ids only (no real names).
     const lines = [
       JSON.stringify({ session_id: 'session-alpha-001', status: 'ok' }),
       JSON.stringify({ session_id: 'session-ghost-999', status: 'abandoned' }),
       'NOT JSON',
+      JSON.stringify({ session_id: 'session-ghost-998', status: 'abandoned' }),
       JSON.stringify({ session_id: 'session-beta-002', status: 'ok' }),
     ];
     writeFileSync(join(metricsDir, 'sessions.jsonl'), lines.join('\n') + '\n', 'utf8');
@@ -159,7 +162,35 @@ describe('mcp-server.sh session_metrics — torn-write tolerance', () => {
     expect(text).toContain('session-alpha-001');
     expect(text).toContain('session-beta-002');
     expect(text).not.toContain('session-ghost-999');
+    expect(text).not.toContain('session-ghost-998');
     expect(text).not.toBe('No metrics found (file is empty)');
+    // The exclusion is reported, not silent — and counted across the torn line.
+    expect(text).toContain('abandoned stubs excluded: 2');
+  });
+
+  it('reports the stub count instead of "file is empty" when every record is an abandoned stub', () => {
+    const metricsDir = join(tmpRepo, '.orchestrator', 'metrics');
+    mkdirSync(metricsDir, { recursive: true });
+    // A non-empty ledger holding ONLY stubs: the early empty-result return used
+    // to run before the stub count and claimed the file was empty (#1296).
+    const lines = [
+      JSON.stringify({ session_id: 'session-ghost-997', status: 'abandoned' }),
+      JSON.stringify({ session_id: 'session-ghost-996', status: 'abandoned' }),
+    ];
+    writeFileSync(join(metricsDir, 'sessions.jsonl'), lines.join('\n') + '\n', 'utf8');
+
+    const { firstLine } = runServer(
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'session_metrics', arguments: {} },
+      },
+      tmpRepo,
+    );
+
+    const text = JSON.parse(firstLine).result.content[0].text;
+    expect(text).toBe('No real sessions (abandoned stubs excluded: 2)');
   });
 });
 

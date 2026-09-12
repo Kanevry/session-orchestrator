@@ -470,6 +470,38 @@ describe('collect() — persona credentials', () => {
     expect(ledger).not.toContain(PASSWORD);
     expect(ledger).not.toContain(EMAIL);
   });
+
+  // Bug (#1335): String#replace substituted only the FIRST placeholder per
+  // token, and its string replacement expanded `$&` / `$'` — so a password
+  // holding those patterns reached the browser mangled and the login failed.
+  it('substitutes every placeholder in a token, inserting `$` patterns literally', async () => {
+    const repoRoot = makeRepo();
+    const PASSWORD = "p$&w$'d$$-9f3a01";
+    const manifest = makeManifest({
+      personas: [{ name: 'shopper', 'login-env-email': 'LOGIN_EMAIL', 'login-env-password': 'LOGIN_PASSWORD' }],
+      journeys: [
+        {
+          name: 'login',
+          start: '/login',
+          'max-steps': 2,
+          success: 'dashboard',
+          persona: 'shopper',
+          steps: ['fill #pw ${LOGIN_PASSWORD}|${LOGIN_PASSWORD}'],
+        },
+      ],
+    });
+    const exec = makeExec({ journeyUrl: () => `${BASE_URL}/login` });
+
+    await run(repoRoot, manifest, exec, {
+      envMap: new Map([
+        ['LOGIN_EMAIL', 'persona-user@example.invalid'],
+        ['LOGIN_PASSWORD', PASSWORD],
+      ]),
+    });
+
+    const fill = exec.calls.find((args) => args[0] === 'fill' && args[1] === '#pw');
+    expect(fill?.[2]).toBe(`${PASSWORD}|${PASSWORD}`);
+  });
 });
 
 // ---------------------------------------------------------------------------

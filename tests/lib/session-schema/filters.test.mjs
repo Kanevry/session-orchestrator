@@ -11,6 +11,7 @@ import {
   isRealSession,
   filterRealSessions,
   tailRealSessions,
+  isCoordinatorDirectHousekeeping,
 } from '@lib/session-schema/filters.mjs';
 import * as barrel from '@lib/session-schema.mjs';
 
@@ -99,6 +100,31 @@ describe('tailRealSessions', () => {
 
   it('returns an empty array for non-array input', () => {
     expect(tailRealSessions(null, 5)).toEqual([]);
+  });
+});
+
+describe('isCoordinatorDirectHousekeeping', () => {
+  const hk = { wave: 1, role: 'Housekeeping', agent_count: 0, coordinator_direct: true };
+  const withWaves = (waves) => ({ session_id: 's-1', session_type: 'housekeeping', waves });
+
+  it('returns true for the one-wave coordinator-direct Housekeeping writer shape', () => {
+    expect(isCoordinatorDirectHousekeeping(withWaves([hk]))).toBe(true);
+  });
+
+  it('returns false when a real wave sits beside the Housekeeping wave', () => {
+    const real = { wave: 2, role: 'Quality', agent_count: 3 };
+    expect(isCoordinatorDirectHousekeeping(withWaves([hk, real]))).toBe(false);
+  });
+
+  it('returns false for a coordinator-direct wave that is not Housekeeping', () => {
+    const implCore = { wave: 1, role: 'Impl-Core', coordinator_direct: true };
+    expect(isCoordinatorDirectHousekeeping(withWaves([implCore]))).toBe(false);
+  });
+
+  it('returns false for empty or absent waves, and for non-records', () => {
+    expect(isCoordinatorDirectHousekeeping(withWaves([]))).toBe(false);
+    expect(isCoordinatorDirectHousekeeping({ session_type: 'housekeeping' })).toBe(false);
+    expect(isCoordinatorDirectHousekeeping(null)).toBe(false);
   });
 });
 

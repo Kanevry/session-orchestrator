@@ -172,7 +172,7 @@ Read `${RUN_DIR}/findings.jsonl`. Use the helpers in `scripts/lib/test-runner/is
 | Function | Purpose |
 |---|---|
 | `listExistingFindings({glabPath, project, label, maxBuffer})` | Query the tracker for all open `from:test-runner` issues; returns `{ok, issues[], fingerprints: Set}` |
-| `createFinding({glabPath, project, fingerprint, title, body, labels, dryRun, maxBuffer})` | Create a new issue; returns `{ok, action: 'create', iid?, command?}` |
+| `createFinding({glabPath, project, fingerprint, title, body, labels, dryRun, maxBuffer})` | Create a new issue; returns `{ok, action: 'create', iid?, command?}`. `body` must carry the `**Fingerprint:** \`<fp>\`` sentinel for this same `fingerprint`, which is what dedup reads on the next run. Build it with `buildIssueBody(finding, fingerprint)`. A missing or mismatched sentinel returns `{ok: false, error: {code: 'VALIDATION'}}` before glab is spawned (#1331) |
 | `updateFinding({glabPath, project, iid, comment, dryRun, maxBuffer})` | Add a comment to an existing issue; returns `{ok, action: 'comment', command?}` |
 | `triageDecision(finding, candidates)` | Pure decision: fingerprint-exact → `ignore`; Levenshtein ≤ 2 on title → `update`; else → `create` |
 | `reconcileFinding({finding, existingFingerprints, glabPath, dryRun})` | Track-A legacy helper — single-finding create-or-noop using a pre-built fingerprint Set |

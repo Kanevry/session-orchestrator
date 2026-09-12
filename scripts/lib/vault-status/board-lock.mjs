@@ -60,6 +60,15 @@ const DEFAULT_POLL_MS = 50;
  * REVISIT when a board sweep is measured above 30 s (half the TTL — the point
  * at which a slow host crosses it), or when an `onLockOutcome` carrying
  * `staleOverride` is observed in the events ledger on a host that had no crash.
+ *
+ * What expiry does NOT do: protect the section it bounds — past 60 s the next
+ * writer takes over while this one may still run (see file-lock.mjs § Lease
+ * semantics). What IS guaranteed since #1285: the late writer's release can no
+ * longer delete the successor's lock, because release runs under the same
+ * `.acquire` guard as takeover. A `not-owner` release here therefore means THIS
+ * writer's lease expired mid-section — the lost-update case above, never a
+ * benign miss. `withFileLock` discards the release result today, so that
+ * signal is not yet observable from this module.
  */
 const DEFAULT_STALE_MS = 60_000;
 

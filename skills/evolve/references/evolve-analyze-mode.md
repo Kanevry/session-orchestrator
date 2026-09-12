@@ -1,7 +1,7 @@
 # Evolve — Phase 3: Analyze Mode
 
-> Reference of the evolve skill, split out of `SKILL.md` (#1246). Body moved **byte-identical**; only this header is new.
-> **Sibling-file paths inside this body are relative to the parent directory, not to `references/`** — none needed rewriting: the moved body carries no relative markdown links, only backticked file mentions, which were deliberately left untouched so the bytes stay verifiable against the pre-split file.
+> Reference of the evolve skill, split out of `SKILL.md` (#1246). At the split the body was moved byte-identical; it has been edited since (#1321 — real-session filter, population rule, git-derived fragile-file method), so it is no longer verifiable against the pre-split file.
+> **Sibling-file paths inside this body are relative to the parent directory, not to `references/`** — the body carries no relative markdown links, only backticked file mentions.
 > **Read when `/evolve analyze` (the default mode) runs** — `../SKILL.md` Phase 2's Mode Dispatch routes here. Covers pattern extraction (9 built-in analyzer types plus `evolve.extra-sources`), deduplication, relation judgment (#1016), the AskUserQuestion confirmation gate, the archive-safe write pipeline (Step 3.5), and the C2 auto-repair feeder (Step 3.6).
 
 ## Phase 3: Analyze Mode (default)
@@ -12,10 +12,11 @@ Extract learnings from session history.
 
 ### Step 3.1: Read Session Data
 
-- Read all entries from `.orchestrator/metrics/sessions.jsonl` (or `<state-dir>/metrics/sessions.jsonl` if the v2 path does not exist — see Phase 1.4 fallback)
-- Parse each JSONL line as JSON
+- Read the entries of `.orchestrator/metrics/sessions.jsonl` (or `<state-dir>/metrics/sessions.jsonl` if the v2 path does not exist — see Phase 1.4 fallback)
+- Parse each JSONL line as JSON (skip unparseable lines)
+- Keep only REAL sessions: drop every `status: "abandoned"` record (the #834 close-backfill stubs). The predicate is `isRealSession` / `filterRealSessions` in `scripts/lib/session-schema/filters.mjs:54` / `:65`. Do NOT key on `_backfill_source` — real, repaired records carry it too (#1296).
 - Sort by `completed_at` descending (most recent first)
-- If no sessions found, abort: "No session data available. Complete at least one session before running evolve." **Telemetry on abort (#1200, #1206):** before stopping, emit — same minimal `emit-event.mjs` call as Phase 1.2's abort, and for the same reason: this gate fires before the Step 3.5(5) `sweep-expired-learnings.mjs --prune` call exists to fold the emit into:
+- If no real sessions remain, abort: "No session data available. Complete at least one session before running evolve." **Telemetry on abort (#1200, #1206):** before stopping, emit — same minimal `emit-event.mjs` call as Phase 1.2's abort, and for the same reason: this gate fires before the Step 3.5(5) `sweep-expired-learnings.mjs --prune` call exists to fold the emit into:
 
   ```bash
   node scripts/emit-event.mjs --type orchestrator.evolve.completed --payload \
@@ -42,18 +43,24 @@ For each configured `extra-sources` entry `{path, kind, learning-type}`:
 
 ### Step 3.2: Pattern Extraction
 
-For each of the 9 built-in analyzer learning types, apply these heuristics:
+For each of the 9 built-in analyzer learning types, apply these heuristics.
+
+**Population rule (every analyzer, #1321):** work only on the real sessions from Step 3.1. Every learning candidate's `evidence` states the population it was drawn from as `n=<records or waves used>`. Below `n=5`, emit `evolve: WARN <type> n=<k> below min 5` instead of a learning candidate.
 
 #### 1. fragile-file (type: `fragile-file`)
 
-- Look at wave data: if the same file appears in 3+ waves' `files_changed` within a session, it is fragile
-- Cross-session: if a file appears in 3+ different sessions' `files_changed`, flag it
+- `waves[].files_changed` is a COUNT (a number), never a list of paths — do not iterate it (#1321). File identity comes from git, the method of `skills/session-end/learning-patterns.md:13`, run per session over its commit range:
+  `git log --name-only --format="" <session_start_ref>..<end_ref> | sort | uniq -c | sort -rn`
+  with `<end_ref>` = the record's `end_ref` / `session_end_ref`; when neither exists use `HEAD` plus `--until=<completed_at>`. Records without `session_start_ref` fall back to `git log --name-only --format="" --since=<started_at> --until=<completed_at>`.
+- **Prefer the ref range; label the fallback.** Only 26 of 201 real records carry `session_start_ref` (measured 2026-09-12), so most analyses land on the time-window fallback. That window also picks up commits a PARALLEL session made on the same branch in the same hours — it attributes foreign commits to this session. Use the ref range wherever the record has one, and mark every candidate whose evidence came from the fallback as `window: time (unattributed)` in its `evidence`.
+- Within a session: a file changed in 3+ commits of that session's range is fragile. Here the population rule's `n` counts the **commits in that session's range**, not records — one session is always one record, so counting records would WARN on every within-session check
+- Cross-session: if a file appears in 3+ different sessions' ranges, flag it
 - Subject = file path (relative to project root)
 
 #### 2. effective-sizing (type: `effective-sizing`)
 
 - Compare `total_agents` and `total_waves` across session types
-- Calculate average agents per wave for each session type
+- Calculate average agents per wave for each session type. Read a wave's agent count defensively — older records use other keys: `agent_count`, else `agents` when it is a number, else the length of `agents` when it is an array (of descriptions), else `agents_dispatched`. A record with `total_waves: 0` contributes no per-wave ratio — skip it rather than divide by zero. Exclude coordinator-direct waves (`coordinator_direct: true`, which dispatched no agents) from the ratio. In particular, a record whose waves are all coordinator-direct `Housekeeping` waves (predicate `isCoordinatorDirectHousekeeping` in `scripts/lib/session-schema/filters.mjs`, the session-end writer shape since #1321) contributes no per-wave ratio, same as `total_waves: 0`. Counting it would log a false 0.0 agents-per-wave observation.
 - Subject = canonical identifier like `deep-session-sizing` or `feature-session-sizing`
 - Insight = "Deep sessions average X agents across Y waves" or "Feature sessions work well with X agents/wave"
 - **Over-delivery ratio aggregation (#730/H4, #794.7):** compute the MEDIAN of `waves[].over_delivery_ratio` across the last ~5 `sessions.jsonl` records of the same `session_type`, filtered to waves whose `role` is not `Discovery`/`Finalization` and which carry the field (skip records lacking the field — pre-#730; also skip Discovery/Finalization waves, whose planned set is empty by design). This exclusion clause is intentionally identical to `skills/session-plan/SKILL.md` Step 0.5 "Over-delivery sizing" — keep the two wordings in sync on edit. Fold the median into this candidate's `insight`/`evidence` fields — e.g. `evidence`: `"median_over_delivery_ratio: 1.4 (n=12 waves, session_type=deep)"` — so `session-plan` Step 0.5 can read the ratio from the `effective-sizing` learning first, falling back to its own direct `sessions.jsonl` scan only when no such learning exists.

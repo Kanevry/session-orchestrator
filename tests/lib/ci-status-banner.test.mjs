@@ -521,6 +521,96 @@ describe('checkCiStatus — no pipeline for HEAD SHA', () => {
   });
 });
 
+// ── #1332: verdict for a NAMED sha ───────────────────────────────────────────
+//
+// BUG these catch (TV-001): `checkCiStatus` could only ever answer for the
+// local HEAD, so session-start could not report the verdict of the last
+// PUSHED commit when HEAD had no pipeline. Each test stubs `git rev-parse HEAD`
+// to a DIFFERENT commit whose pipeline disagrees, so an implementation that
+// ignores `sha` produces a wrong verdict, not merely an unstubbed-call error.
+
+describe('checkCiStatus — #1332 explicit sha', () => {
+  const PUSHED_SHA = 'feedfacefeedfacefeedfacefeedfacefeedface';
+
+  it('GitLab: matches the pipeline of the NAMED sha and never asks git for HEAD', async () => {
+    const pipelines = [
+      { id: 300, sha: HEAD_SHA, status: 'failed', created_at: '2026-05-10T11:00:00Z' },
+      { id: 299, sha: PUSHED_SHA, status: 'success', created_at: '2026-05-10T10:00:00Z' },
+    ];
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
+      glabPipelinesResponse(pipelines),
+      glabJobsResponse(299, []),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW, sha: PUSHED_SHA },
+      { execFile: mockExecFile },
+    );
+
+    expect(result).toEqual({
+      status: 'green',
+      ok: true,
+      details: { currentPipelineId: 299, cliUsed: 'glab' },
+    });
+    expect(mockExecFile.mock.calls.map(([cmd, args]) => [cmd, args])).toEqual([
+      ['git', ['remote', '-v']],
+      [
+        'glab',
+        [
+          'api',
+          'projects/org%2Fsession-orchestrator/pipelines?order_by=updated_at&sort=desc&per_page=15',
+          '--hostname',
+          'gitlab.example.com',
+        ],
+      ],
+      [
+        'glab',
+        ['api', 'projects/org%2Fsession-orchestrator/pipelines/299/jobs', '--hostname', 'gitlab.example.com'],
+      ],
+    ]);
+  });
+
+  it('GitHub: queries check-runs for the NAMED sha instead of the HEAD ref', async () => {
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITHUB_ORIGIN),
+      ghRepoViewResponse,
+      ghCheckRunsResponse([{ name: 'test', conclusion: 'success' }]),
+      {
+        cmd: 'gh',
+        args: ['api', `repos/Kanevry/session-orchestrator/commits/${PUSHED_SHA}/check-runs`],
+        stdout: JSON.stringify({ check_runs: [{ name: 'test (macos-latest)', conclusion: 'failure' }] }),
+      },
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW, sha: PUSHED_SHA },
+      { execFile: mockExecFile },
+    );
+
+    expect(result).toMatchObject({ status: 'red', ok: false, failingJobName: 'test (macos-latest)' });
+    const [, checkRunsArgs] = mockExecFile.mock.calls.find(
+      ([cmd, args]) => cmd === 'gh' && args[0] === 'api',
+    );
+    expect(checkRunsArgs).toEqual(['api', `repos/Kanevry/session-orchestrator/commits/${PUSHED_SHA}/check-runs`]);
+  });
+
+  // The sha is interpolated into a `gh api` PATH: `../..` would re-route the
+  // request to another endpoint, and a short sha never equals GitLab's full one.
+  it('refuses a sha that is not a full hex commit id before spawning anything', async () => {
+    const mockExecFile = makeExecFileMock([]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW, sha: '../../user' },
+      { execFile: mockExecFile },
+    );
+
+    expectDegraded(result, 'query-failed');
+    expect(mockExecFile).not.toHaveBeenCalled();
+  });
+});
+
 // ── Test 10: VCS forced override ─────────────────────────────────────────────
 
 describe('checkCiStatus — forced vcs', () => {
