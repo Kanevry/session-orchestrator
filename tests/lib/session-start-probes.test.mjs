@@ -645,9 +645,10 @@ describe('the built-in registry', () => {
     );
 
     expect(out.bannerLines).toEqual([
-      `⚠ ci-status: CI status for HEAD could not be determined (no-pipeline-for-head-sha) — last pushed: ${pushedSha.slice(0, 8)} — CI red (#9301)`,
+      `🚨 ci-status: CI status for HEAD could not be determined (no-pipeline-for-head-sha) — last pushed: ${pushedSha.slice(0, 8)} — CI red (#9301)`,
     ]);
-    expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-warn', severity: 'warn' });
+    // #1337: a red pushed commit is an alert, not a warning.
+    expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-alert', severity: 'alert' });
   });
 
   // BUG this catches (#1332 review, measured 2026-09-12): the follow-up ran
@@ -786,9 +787,10 @@ describe('the built-in registry', () => {
     );
 
     expect(out.bannerLines).toEqual([
-      `⚠ ci-status: CI status for HEAD could not be determined (no-check-runs-for-head) — last pushed: ${pushedSha.slice(0, 8)} — CI red`,
+      `🚨 ci-status: CI status for HEAD could not be determined (no-check-runs-for-head) — last pushed: ${pushedSha.slice(0, 8)} — CI red`,
     ]);
-    expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-warn', severity: 'warn' });
+    // #1337: a red pushed commit is an alert, not a warning.
+    expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-alert', severity: 'alert' });
   });
 
   // BUG this catches (TV-001, #1255): the `telemetry-flush-health` entry was

@@ -463,7 +463,10 @@ export const PROBES = [
       // nothing. Silence there reads as green; it is not.
       if (r.status === 'unknown') {
         const reason = r.details?.reason ?? 'reason unrecorded';
-        return `⚠ ci-status: CI status for HEAD could not be determined (${reason}) — ${ciUnknownHint(r, ctx)}`;
+        // #1337: a RED pushed commit is an alert, and the banner says what the
+        // rule judges (HR-106) — same 🚨 as a red HEAD.
+        const mark = r.pushed?.verdict?.status === 'red' ? '🚨' : '⚠';
+        return `${mark} ci-status: CI status for HEAD could not be determined (${reason}) — ${ciUnknownHint(r, ctx)}`;
       }
       if (r.status === 'red') {
         const pid = r.details?.currentPipelineId ?? '?';
@@ -491,6 +494,9 @@ export const PROBES = [
       if (r.degraded) return 'warn';
       if (r.status === 'red') return 'alert';
       if (r.status === 'green') return hasFailedAllowFailureJobs(r) ? 'warn' : 'ok';
+      // #1337: HEAD undetermined but the pushed commit's pipeline is red —
+      // the code on origin is broken, so this is an alert, not a warning.
+      if (r.pushed?.verdict?.status === 'red') return 'alert';
       return 'warn';
     },
   },
