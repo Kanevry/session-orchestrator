@@ -454,6 +454,16 @@ rules:
             - pattern: '`...${$X}...`'
   - pattern-not: eval("...")
   - pattern-not: new Function("...")
+  # A function-typed callback is never string evaluation. Without these
+  # exclusions the `$A + $B` / template sub-patterns above match INSIDE the
+  # callback body (any `x += 1` or `a + b` in a timer callback), which turned
+  # pipeline 9301 red on session-start-probes.mjs:171 (2026-09-11).
+  - pattern-not: setTimeout((...) => ..., ...)
+  - pattern-not: setTimeout(function(...) { ... }, ...)
+  - pattern-not: setTimeout(async (...) => ..., ...)
+  - pattern-not: setInterval((...) => ..., ...)
+  - pattern-not: setInterval(function(...) { ... }, ...)
+  - pattern-not: setInterval(async (...) => ..., ...)
   message: 'SEC-P3: Unsafe code evaluation — eval(), new Function(), or string-based setTimeout/setInterval
     detected. These enable arbitrary code execution. Use safer alternatives: JSON.parse() for data, direct
     function references for callbacks. CWE-95.'
