@@ -164,6 +164,7 @@ server/ingest/data/
 
 # instruction-ablation eval run output (throwaway, per-run)
 evals/instruction-ablation/results/
+evals/results/
 
 # CI fan-in gate markers — written by the pipeline, never committed.
 # A TRACKED marker would make pipeline-gate report VERIFIED on every run while

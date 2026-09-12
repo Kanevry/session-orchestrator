@@ -13,6 +13,7 @@
   "license": "MIT",
   "keywords": ["session", "orchestration", "waves", "gitlab", "github", "quality-gates", "verification-gates", "multi-agent", "codex", "cursor", "pi"],
   "experimental": {
-    "monitors": "./monitors/monitors.json"
+    "monitors": "./monitors/monitors.json",
+    "evals": "./evals"
   }
 }
