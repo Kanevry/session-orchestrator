@@ -5,6 +5,9 @@ Herkunft: <consumer-repo>-Session (Erstlauf, manuell orchestriert). Ergebnis dor
 Widerspruch, EUR-Texte im USD-Kontext), 18 Issues, Fix-Welle. Aufwand: 7 Agenten, ~1,2 M
 Subagent-Tokens, ~3 h Wall-Clock (2 Rollen auf M5 offloaded). Dossier im Ziel-Repo dokumentiert.
 
+> **Status (2026-09-12):** R4 geht in `/ux-grill` auf (Epic #1322, PRD
+> `docs/prd/2026-09-12-ux-grill.md`); R1–R3 und R5–R7 zurückgezogen (4.0.0).
+
 ## Problem
 
 Compliance-Tests und Code-Reviews prüfen Code gegen Code. Niemand prüft systematisch das

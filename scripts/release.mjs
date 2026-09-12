@@ -378,8 +378,10 @@ const INTENTIONAL_TEST_ASSET_PATHS = new Set([
 // (same 2026-09-07 sweep): site/llms-full.txt ("The v4.0.0 release REMOVES public surfaces" — its
 // version SURFACE is checked separately by the SURFACES row, so the sweep on it is redundant),
 // skills/architecture/references/domain-model.md ("Merged here in v4.0.0"), skills/autopilot/SKILL.md
-// ("4.0.0 — see docs/migration-v4.md") and templates/_shared/journey-manifest.md ("Retired … in 4.0.0").
-export const HISTORY_ALLOWLIST = /^(CHANGELOG\.md|README\.md|CLAUDE\.md|AGENTS\.md|CONTRIBUTING\.md|NOTICE|\.husky\/pre-push|docs\/|tests\/|skills\/npm-publish\/|skills\/architecture\/references\/domain-model\.md|skills\/autopilot\/SKILL\.md|templates\/_shared\/journey-manifest\.md|scripts\/release\.mjs|\.orchestrator\/|site\/leaderboard\.json|site\/guide\/index\.html|site\/llms-full\.txt|commands\/release\.md)/;
+// ("4.0.0 — see docs/migration-v4.md"). A fifth, templates/_shared/journey-manifest.md ("Retired …
+// in 4.0.0"), was DELETED on 2026-09-12 (replaced by ux-manifest.template.md, Epic #1322) and its
+// allowlist entry went with it — re-add only if a file of that name returns.
+export const HISTORY_ALLOWLIST = /^(CHANGELOG\.md|README\.md|CLAUDE\.md|AGENTS\.md|CONTRIBUTING\.md|NOTICE|\.husky\/pre-push|docs\/|tests\/|skills\/npm-publish\/|skills\/architecture\/references\/domain-model\.md|skills\/autopilot\/SKILL\.md|scripts\/release\.mjs|\.orchestrator\/|site\/leaderboard\.json|site\/guide\/index\.html|site\/llms-full\.txt|commands\/release\.md)/;
 
 /** Pure check over packed-entry lines. Returns violations: {name, line}[]. */
 export function checkLeakage(lines) {

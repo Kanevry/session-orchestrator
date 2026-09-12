@@ -86,9 +86,11 @@ Value: <dimension if applicable>
 **Detection Method:**
 
 Use Pencil MCP tools to compare design specifications against implementation:
-1. `get_editor_state` -- check current design file
-2. `batch_get` -- retrieve design node properties (colors, spacing, typography)
-3. `get_screenshot` -- capture design frames for visual comparison
+1. `mcp__pencil__get_app_state` -- check current design file
+2. `mcp__pencil__execute` with a Get visitor (depth 1 for top-level frames, depth 2 for their children) -- retrieve design node properties (colors, spacing, typography). Read the execute tool's input schema for the exact visitor shape; `.pen` files are encrypted, so never `Read`/`Grep` them.
+3. `mcp__pencil__browser` -- view/capture design frames for visual comparison (no direct screenshot tool exists on the current surface)
+
+Tool names have one definition in code: `PENCIL_TOOL_NAMES` in `scripts/lib/ux-grill/pencil-coverage.mjs`. The pre-2026 tool surface it replaced no longer exists (dead names enumerated in that module's JSDoc).
 
 Compare against:
 - CSS custom properties / design tokens in codebase

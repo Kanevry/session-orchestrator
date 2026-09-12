@@ -44,6 +44,7 @@
  * @module scripts/lib/session-start-probes
  */
 
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -64,6 +65,55 @@ import { emitEvent } from './events.mjs';
  * @returns {string}
  */
 const local = (rel) => pathToFileURL(path.join(import.meta.dirname, rel)).href;
+
+/** Fallback hint when nothing cheaper than an on-demand CLI call is available. */
+const CI_UNKNOWN_HINT_DEFAULT = 'run `glab ci status` on demand';
+
+/**
+ * Short SHA of the last PUSHED commit, or `null` when there is no upstream.
+ *
+ * NAMED CEILING (BV-004): one `git rev-parse` with a 2s timeout, run only on
+ * the `no-pipeline-for-head-sha` branch — i.e. only when the `ci-status` probe
+ * already ran (network opt-in) and already failed to find a pipeline. It is
+ * deliberately NOT a per-SHA CI query: `checkCiStatus` exposes no `sha`/`ref`
+ * entry point, and adding one is a change to another module. Revisit if that
+ * entry point appears — then this hint can carry the pushed SHA's verdict
+ * instead of telling the operator which command to run.
+ *
+ * @param {string|undefined} repoRoot
+ * @returns {string|null}
+ */
+function lastPushedShortSha(repoRoot) {
+  if (!repoRoot || typeof repoRoot !== 'string') return null;
+  try {
+    const out = execFileSync('git', ['rev-parse', '@{upstream}'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const sha = String(out).trim();
+    return /^[0-9a-f]{7,40}$/.test(sha) ? sha.slice(0, 7) : null;
+  } catch {
+    // No upstream, detached HEAD, not a git repo, git missing — all mean "no
+    // cheap pushed-SHA hint", never an error worth surfacing here.
+    return null;
+  }
+}
+
+/**
+ * Hint text for a `status: 'unknown'` ci-status reading.
+ *
+ * @param {object} result   The probe result
+ * @param {{repoRoot?: string}} [ctx]
+ * @returns {string}
+ */
+function ciUnknownHint(result, ctx) {
+  if (result?.details?.reason !== 'no-pipeline-for-head-sha') return CI_UNKNOWN_HINT_DEFAULT;
+  const sha = lastPushedShortSha(ctx?.repoRoot);
+  if (!sha) return CI_UNKNOWN_HINT_DEFAULT;
+  return `last pushed: ${sha} (pipeline not checked; run \`glab ci status --ref ${sha}\`)`;
+}
 
 // ---------------------------------------------------------------------------
 // Budget
@@ -279,9 +329,19 @@ export const PROBES = [
     // probe. Without these two lines a degraded ci-status result scored `'ok'`
     // and rendered nothing — "could not read" displayed exactly like "green",
     // which is the confusion the probe's own migration removed one layer down.
-    render: (r) => {
+    render: (r, ctx) => {
       if (!r || typeof r !== 'object') return null;
       if (r.degraded) return typeof r.message === 'string' && r.message ? r.message : null;
+      // `status: 'unknown'` is the SAME collapse one level over: HEAD carries
+      // no pipeline (the normal state of a working session with local commits),
+      // so the probe cannot say anything about CI — while the last PUSHED
+      // commit may be red. Measured 2026-09-12: HEAD had 2 unpushed commits,
+      // origin/main's pipeline #9301 was red, and session-start printed
+      // nothing. Silence there reads as green; it is not.
+      if (r.status === 'unknown') {
+        const reason = r.details?.reason ?? 'reason unrecorded';
+        return `⚠ ci-status: CI status for HEAD could not be determined (${reason}) — ${ciUnknownHint(r, ctx)}`;
+      }
       if (r.status === 'red') {
         const pid = r.details?.currentPipelineId ?? '?';
         const green = r.lastGreen
@@ -299,14 +359,17 @@ export const PROBES = [
     // `status: 'red'` is an alert even though the probe publishes no severity.
     // A degraded result is a finding, never clean — same rule as the generic
     // path in `severityOf()` below.
-    severityOf: (r) =>
-      r?.degraded
-        ? 'warn'
-        : r?.status === 'red'
-          ? 'alert'
-          : r?.status === 'green' && r?.allowFailureJobs
-            ? 'warn'
-            : 'ok',
+    severityOf: (r) => {
+      // `null` is a COMPLETE answer — "this repo has no CI" — and stays clean.
+      // Every other non-green status is "state not determined", never `ok`
+      // (HR-105: a probe that scores an undeterminable state as clean is an
+      // instrument that cannot report the thing it exists to report).
+      if (!r || typeof r !== 'object') return 'ok';
+      if (r.degraded) return 'warn';
+      if (r.status === 'red') return 'alert';
+      if (r.status === 'green') return r.allowFailureJobs ? 'warn' : 'ok';
+      return 'warn';
+    },
   },
   {
     id: 'qg-command-drift',
@@ -537,9 +600,7 @@ function severityOf(result, probe) {
   }
   if (result === null || result === undefined) return 'ok';
   const s = result.severity;
-  if (s === 'alert') return 'alert';
-  if (s === 'warn') return 'warn';
-  return 'ok';
+  return s === 'alert' || s === 'warn' ? s : 'ok';
 }
 
 /**
@@ -701,8 +762,12 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
 
       const result = raced?.__probeResult;
       const severity = severityOf(result, probe);
+      // `ctx` (repoRoot/config/env) is passed as a SECOND argument so a
+      // renderer can name a repo-local fact the probe result does not carry
+      // (the `ci-status` unknown branch names the last pushed SHA). Every
+      // existing renderer takes one parameter and ignores it.
       const line = typeof probe.render === 'function'
-        ? probe.render(result)
+        ? probe.render(result, ctx)
         : defaultRender(result, severity);
       record(severity === 'ok' ? 'ran-clean' : severity === 'warn' ? 'ran-warn' : 'ran-alert', {
         severity,

@@ -110,6 +110,12 @@ coverage/
 # Auto-Fix diagnostics bundles may contain secrets — never commit
 .orchestrator/metrics/verification-failures/
 
+# /ux-grill run artefacts — a journey step screenshot is taken after EVERY step,
+# including the one right after `fill #pw ${LOGIN_PASSWORD}`, so these can carry
+# a rendered credential. The `.orchestrator/metrics/*.jsonl` rule above already
+# covers the ux-grill.jsonl ledger; this covers the per-run directories.
+.orchestrator/metrics/ux-grill/
+
 # Pattern 3 (templates-first) + Pattern 2 (slopcheck) runtime caches — machine-local, never committable
 .orchestrator/runtime/
 

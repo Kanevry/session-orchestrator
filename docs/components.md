@@ -7,8 +7,8 @@ Detailed component inventory and architecture reference for Session Orchestrator
 ```mermaid
 flowchart LR
     USER([Operator]) -->|invokes /session| COORD[Coordinator]
-    COORD -->|reads| SK[Skills<br/>43 user-facing]
-    COORD -->|invokes| CMD[Commands<br/>25 slash-cmds]
+    COORD -->|reads| SK[Skills<br/>44 user-facing]
+    COORD -->|invokes| CMD[Commands<br/>26 slash-cmds]
     COORD -->|dispatches| AG[Agents<br/>14 typed sub-agents]
     AG -.->|parallel waves| W1[code-implementer]
     AG -.-> W2[test-writer]
@@ -18,7 +18,7 @@ flowchart LR
     COORD -->|writes| METRIC[.orchestrator/metrics/<br/>sessions · learnings · events]
 ```
 
-## Skills (43 user-facing)
+## Skills (44 user-facing)
 
 - **Lifecycle:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `quality-gates`, `using-orchestrator`
 - **Authoring:** `mcp-builder`, `hook-development`, `frontmatter-guard`
@@ -27,14 +27,14 @@ flowchart LR
 - **Cross-session:** `evolve`, `convergence-monitoring`, `memory-cleanup`, `reconcile`, `sunset-review`, `eval`
 - **Vault & docs:** `vault-sync`, `vault-mirror`, `docs-orchestrator`
 - **Ecosystem:** `bootstrap`, `gitlab-ops`, `gitlab-portfolio`, `ecosystem-health`, `mode-selector`, `autopilot`, `dispatcher`, `remote-offload`, `spinout`, `npm-publish`
-- **Testing:** `test-runner`, `playwright-driver`, `peekaboo-driver`
+- **Testing:** `test-runner`, `playwright-driver`, `peekaboo-driver`, `ux-grill`
 - **Content review:** `persona-panel`
 - **Operator ergonomics:** `eli5` (plain-language restatement of the last answer)
 - **Visualization:** `tmux-layout` (opt-in operator side-channel — [ADR-0007](adr/0007-tmux-visualization-substrate.md))
 
-## Commands (25)
+## Commands (26)
 
-`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/dispatcher`, `/reconcile`, `/spinout`, `/eval`, `/release`, `/eli5`.
+`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/dispatcher`, `/reconcile`, `/spinout`, `/eval`, `/release`, `/eli5`, `/ux-grill`.
 
 ## Agents (14 typed sub-agents)
 
@@ -72,7 +72,7 @@ Surface counts measured 2026-09-06 by this repo's 360° ecosystem probe (`docs/a
 
 | Axis | session-orchestrator | `open-gsd/gsd-core` |
 |---|---|---|
-| Commands / skills / agents | 25 / 43 / 14 | 70 / 71 / 35 |
+| Commands / skills / agents | 26 / 44 / 14 | 70 / 71 / 35 |
 | Hook guards | 27 hook files, 10 event types | 28 hooks, incl. write / read / prompt / workflow / secret-read / agent-isolation / worktree-path guards |
 | Cross-session learning | `/evolve` + confidence-scored `learnings.jsonl`; reconcile turns eligible learnings into PROPOSED rules an operator approves one by one | `gsd-extract-learnings`, `gsd-mempalace-*` |
 | Harness coverage | Claude Code, Codex CLI, Cursor IDE, Pi (4) | 44 `capabilities/` directories (pi, hermes, kimi, windsurf, opencode, ollama, …) |

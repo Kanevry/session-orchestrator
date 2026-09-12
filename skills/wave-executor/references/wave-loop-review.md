@@ -330,9 +330,9 @@ If the commit itself fails (e.g., nothing to commit, pre-commit hook rejects), d
    - **Discovery** and **Finalization** waves: skip session-reviewer dispatch — Discovery is read-only and Finalization is a final git status check only.
    - This is complementary to the incremental verification in step 4 — the session-reviewer provides deeper analysis (security, silent failures, test depth, type design) that automated checks do not cover.
 6. **Pencil design review** (after Impl-Core and Impl-Polish roles only, if `pencil` configured in Session Config):
-   a. Check Pencil editor state: `get_editor_state({ include_schema: false })`. If no editor active, open the configured `.pen` file via `open_document({ filePathOrTemplate: "<pencil-path>" })`. If that also fails → skip with note "Pencil review skipped — .pen file unavailable."
-   b. Get design structure: `batch_get({ filePath: "<pencil-path>", patterns: [{ type: "frame" }], readDepth: 2, searchDepth: 2 })` — find frames relevant to this wave's UI work.
-   c. Screenshot relevant frames: `get_screenshot({ filePath: "<pencil-path>", nodeId: "<frame-id>" })` for each frame matching the wave's UI tasks.
+   a. Check Pencil app state: `mcp__pencil__get_app_state`. If the configured `.pen` file is not open, open it through the `mcp__pencil__execute` surface (an Open/activate call on `filePath` — `.pen` files are encrypted, so never `Read`/`Grep` them; follow the tool's own input schema, which the Pencil MCP server instructions describe as "be aware of the .pen schema and the instructions for the execute tool"). If that also fails → skip with note "Pencil review skipped — .pen file unavailable."
+   b. Get design structure: `mcp__pencil__execute` with a **Get visitor** scoped to `filePath: "<pencil-path>"` at depth 1 (top-level frames) or depth 2 (frame children) — find frames relevant to this wave's UI work. Read the execute tool's input schema for the exact visitor shape before calling; do not guess it.
+   c. Render relevant frames: there is no direct screenshot tool on the current surface — use `mcp__pencil__browser` to view/capture each frame matching the wave's UI tasks (`filePath` plus the frame's node id).
    d. Read the actual UI files changed in this wave (from agent outputs).
    e. **Compare**: layout structure, component hierarchy, visual elements (headings, buttons, inputs, cards), responsive behavior.
    f. **Report** in wave progress:
@@ -347,7 +347,7 @@ If the commit itself fails (e.g., nothing to commit, pre-commit hook rejects), d
         3. If "Revise" → re-run session-plan for remaining waves only
         4. If "Abort" → mark remaining waves as DEFERRED, proceed to session-end
    
-   Always use the `filePath` parameter on Pencil MCP calls. Only review frames relevant to the current wave, not the entire file.
+   Always use the `filePath` parameter on Pencil MCP calls. Only review frames relevant to the current wave, not the entire file. The live tool names (`mcp__pencil__get_app_state`, `mcp__pencil__execute`, `mcp__pencil__browser`) have one definition in code — `PENCIL_TOOL_NAMES` in `scripts/lib/ux-grill/pencil-coverage.mjs`; the pre-2026 tool surface it replaced no longer exists (dead names enumerated in that module's JSDoc).
 
 7. **Capture wave metrics**: If `persistence` is enabled in Session Config, record for this wave after all agents complete and quality checks run. If `persistence` is `false`, skip metrics capture entirely — do not accumulate in-memory metrics. Record:
    - `wave_number`, `role`, `started_at` (when agents were dispatched), `completed_at` (when all finished)

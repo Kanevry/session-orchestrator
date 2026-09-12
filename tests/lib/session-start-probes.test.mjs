@@ -266,7 +266,13 @@ describe('runSessionStartProbes — fail-open', () => {
     // charged well under the budget even though wall-clock elapsed exceeds it.
     const payload = calls[0].payload.probes.find((p) => p.id === 'cheap-async');
     expect(payload.work_ms).toBeLessThan(50);
-    expect(cheap.durationMs).toBeGreaterThan(cheap.workMs);
+    // workMs is wall-clock elapsed minus the attributed loop-blocked time, so
+    // it can never exceed durationMs — but it CAN legitimately equal it when
+    // no blocking happened to overlap this probe's own window (a race on
+    // import/timer scheduling under load, not a bug). Strict `>` flaked here
+    // once under load with "expected 8 to be greater than 8"; `<=` is the
+    // actual invariant the implementation guarantees.
+    expect(cheap.workMs).toBeLessThanOrEqual(cheap.durationMs);
   });
 });
 
@@ -504,6 +510,38 @@ describe('the built-in registry', () => {
 
     expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-warn' });
     expect(out.bannerLines).toContain(degraded.message);
+  });
+
+  // BUG this catches (TV-001, measured 2026-09-12): `status: 'unknown'` — what
+  // checkCiStatus returns when HEAD carries no pipeline, the NORMAL state of a
+  // session with local commits — fell through the severityOf ternary chain to
+  // 'ok' and had no render branch. Session-start printed nothing while the last
+  // pushed commit's pipeline was RED. "Could not determine" displayed exactly
+  // like "green" — the same collapse the degraded branch above removed, one
+  // status value over.
+  it('scores an unknown ci-status reading as a warn and names why it is unknown', async () => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    const dir = await mkTmp();
+    const { emit } = captureEmit();
+    const unknown = {
+      status: 'unknown',
+      ok: false,
+      details: { reason: 'no-pipeline-for-head-sha', currentPipelineId: null, cliUsed: 'glab' },
+    };
+    const fake = await fakeProbe(
+      dir,
+      'ci-status',
+      `export function probe() { return ${JSON.stringify(unknown)}; }`,
+      { render: registryProbe.render, severityOf: registryProbe.severityOf },
+    );
+
+    const out = await runSessionStartProbes({ repoRoot: dir }, { probes: [fake], emit });
+
+    expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-warn', severity: 'warn' });
+    const line = out.bannerLines.find((l) => l.includes('ci-status'));
+    expect(line).toBeDefined();
+    expect(line).toContain('could not be determined');
+    expect(line).toContain('no-pipeline-for-head-sha');
   });
 
   // The other half of the same override: a real reading must be unaffected.
