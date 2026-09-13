@@ -17,7 +17,7 @@
  * pins in `beforeEach`.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -260,43 +260,46 @@ describe('runSessionStartProbes — fail-open', () => {
   it('does not charge a cheap async probe for a synchronous sibling that blocks the loop', async () => {
     const dir = await mkTmp();
     const { calls, emit } = captureEmit();
+    let now = 1000;
+    let started;
+    let release;
+    const cheapStarted = new Promise((resolve) => { started = resolve; });
+    const blocked = new Promise((resolve) => { release = resolve; });
+    // Control elapsed time, not real timer execution. Both invocation windows
+    // must cover the block; module import order must not decide that for us.
     const probes = [
-      // Non-preemptible: burns wall-clock far past the budget without ever
-      // yielding — the `execFileSync` shape, without spawning anything.
-      await fakeProbe(
-        dir,
-        'blocker',
-        'export function probe() { const end = Date.now() + 400; while (Date.now() < end) {} return null; }',
-      ),
-      // Preemptible and cheap: one tick of real async work, then a real result.
-      await fakeProbe(
-        dir,
-        'cheap-async',
-        "export async function probe() { await new Promise((r) => setTimeout(r, 1));" +
-          " return { severity: 'warn', message: 'cheap-async measured something' }; }",
-      ),
+      await fakeProbe(dir, 'blocker', 'export async function probe({ block }) { await block(); return null; }', {
+        args: () => ({ block: async () => {
+          await cheapStarted;
+          now += 400; // synchronous elapsed gap, with no timer callback in between
+          release();
+        } }),
+      }),
+      await fakeProbe(dir, 'cheap-async',
+        "export async function probe({ ready }) { await ready(); await new Promise((r) => setTimeout(r, 1));" +
+        " return { severity: 'warn', message: 'cheap-async measured something' }; }", {
+          args: () => ({ ready: () => { started(); return blocked; } }),
+        }),
     ];
 
-    // BUDGET (measured, not guessed): the meter samples every
-    // LOOP_BLOCKED_SAMPLE_MS = 20 ms and credits only lateness BEYOND one
-    // sample interval, so a single contiguous block is under-attributed by
-    // ~20 ms — which lands on every probe as its own work. Measured here
-    // 2026-09-13 on an idle host, 3 runs standalone and 1 under `--coverage`:
-    // `cheap-async` reports workMs 18-21 with a 400 ms blocker, i.e. the floor
-    // is ~20 ms whatever the budget. A 50 ms budget left ~30 ms of headroom
-    // over that floor and went red on GitLab pipeline #9459 (job `coverage`,
-    // 3 shards, commit 23ed96ae) with `outcome: 'timeout'` while passing
-    // locally — a load-dependent cliff, not a runner defect (the runner's own
-    // docblock names ~100 ms as the point below which this sampling floor
-    // becomes the measurement error).
-    //
-    // 200 ms is 10x the measured floor and still only HALF the blocker's
-    // 400 ms, so the invariant this test exists for is untouched: if the
-    // sibling's blocked time were charged to `cheap-async` (the pre-meter
-    // behaviour), wall-clock ~400 ms would exceed 200 ms and the probe would
-    // be recorded `timeout` — verified by neutering the meter (fake
-    // regression), which turns this test RED.
-    const out = await runSessionStartProbes({ repoRoot: dir, timeoutMs: 200 }, { probes, emit });
+    // WHY this test controls the clock instead of widening the budget
+    // (measured 2026-09-13, GitLab pipeline #9459 job `coverage`, commit
+    // 23ed96ae): the meter samples every LOOP_BLOCKED_SAMPLE_MS = 20 ms and
+    // credits only lateness BEYOND one interval, so a contiguous block is
+    // under-attributed by ~20 ms and that remainder lands on every probe as
+    // its own work — `cheap-async` reported workMs 18-21 against a 400 ms
+    // blocker regardless of load. Against a 50 ms budget that is a 40 %
+    // tax before the probe does anything, which is why the test went red
+    // under shard load and green locally. Widening the budget only moves the
+    // cliff; a deterministic clock removes it, so the 50 ms budget and the
+    // exact assertions below can stay.
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let out;
+    try {
+      out = await runSessionStartProbes({ repoRoot: dir, timeoutMs: 50 }, { probes, emit });
+    } finally {
+      clock.mockRestore();
+    }
 
     const cheap = out.results.find((r) => r.id === 'cheap-async');
     // Assert on the OUTPUT, not on a duration: a probe that returns instantly
@@ -307,20 +310,10 @@ describe('runSessionStartProbes — fail-open', () => {
     // The verdict's input reaches the ledger, and the cheap probe's own work is
     // charged well under the budget even though wall-clock elapsed exceeds it.
     const payload = calls[0].payload.probes.find((p) => p.id === 'cheap-async');
-    // The load-bearing pair, both literals hardcoded: wall-clock DID run past
-    // the budget (the sibling blocked for 400 ms), and the probe's own work
-    // did NOT. Asserting `work_ms` alone against a tight number re-introduces
-    // the cliff; asserting it against the budget alone is implied by not
-    // timing out. Together they say the subtraction actually happened.
-    expect(cheap.durationMs).toBeGreaterThanOrEqual(300);
-    expect(payload.work_ms).toBeLessThan(200);
-    // workMs is wall-clock elapsed minus the attributed loop-blocked time, so
-    // it can never exceed durationMs — but it CAN legitimately equal it when
-    // no blocking happened to overlap this probe's own window (a race on
-    // import/timer scheduling under load, not a bug). Strict `>` flaked here
-    // once under load with "expected 8 to be greater than 8"; `<=` is the
-    // actual invariant the implementation guarantees.
-    expect(cheap.workMs).toBeLessThanOrEqual(cheap.durationMs);
+    expect(payload.work_ms).toBeLessThan(50);
+    expect(cheap.durationMs).toBe(400);
+    expect(cheap.workMs).toBeLessThan(cheap.durationMs);
+    expect(payload.work_ms).toBe(Math.round(cheap.workMs));
   });
 });
 
