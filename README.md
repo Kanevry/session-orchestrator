@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.0.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-5.1.0-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
 
 **Give your agents a working rhythm.**
@@ -119,13 +119,14 @@ How this compares to other orchestrators, with measured results kept separate fr
 
 All four platforms share the same skills, commands and scripts; only the hooks differ, because each harness fires different events. Codex leaves its `PreToolUse` handlers empty because these guards do not yet match its tool names and edit payloads ([why](docs/codex-setup.md#why-our-pretooluse-guards-stay-unwired--the-reason-corrected)). Cursor and Pi have known event-coverage limits — see [`docs/cursor-setup.md`](docs/cursor-setup.md) and [`docs/pi-setup.md`](docs/pi-setup.md).
 
-## Recent highlights (v5.0.0)
+## Recent highlights (v5.1.0)
 
-Highlights of the v5.0.0 line:
+Highlights of the v5.1.0 line:
 
-- **Agent status carries provenance.** `readCurrentStatus()` returns entries with their source, timestamp and degradation details. Integrations that need the former bare map can use `readCurrentStatusEntries()`. Read the [v5 migration guide](docs/migration-v5.md) before upgrading a deep-import consumer.
-- **Bounded operations use an explicit run contract.** Session-start can coordinate launch preparation, research and community work with a deadline, scoped accounts, one publisher and verified outcomes. It uses the active harness and does not install a background scheduler.
-- **Discovery runs at close by default.** Repos without `discovery-on-close` now receive the close-time scan; set it to `false` to keep the previous behaviour. Failed issue creation refunds only a proven budget charge, and agent-status recovery reports stale data instead of silently trusting it.
+- **This landing page got shorter.** 314 lines down to 151, 22 sections down to 10, measured against ten comparable repositories. Requirements, upgrade and uninstall moved to [docs/install.md](docs/install.md); the guards and the import probe to [docs/components.md](docs/components.md); what stays on your machine to [docs/telemetry.md](docs/telemetry.md). Nothing was deleted.
+- **The shell-redirect lane into the harness memory directory is closed.** The policy rule `redirect-harness-memory` plus home-anchored denylist matching in `scripts/lib/command-blocker.mjs` cover `> ~/.claude/.../memory/…` and its relative spellings — that directory is injected as trusted context into every later session but sits outside `git diff`, CI review and the leakage scanner.
+- **The scope carve-out is the coordinator's alone.** `hooks/enforce-scope.mjs` no longer lets a dispatched wave agent write `.claude/STATE.md` or overwrite the live `wave-scope.json`. A census over 1069 subagent transcripts and 4385 real write calls found zero legitimate uses, so the narrowing takes nothing away.
+
 
 Full changes and verification: [CHANGELOG.md](CHANGELOG.md).
 
