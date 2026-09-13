@@ -533,6 +533,49 @@ describe('evaluateDriftSweep', () => {
     expect(r.detail).toContain('skills/vault-sync/package.json');
   });
 
+  // THE BUG (measured on the 5.1.0 cut, 2026-09-13): `.github/workflows/test.yml` pins
+  // `actions/setup-node` by SHA and annotates it `# v5.0.0`. Our previous release was 5.0.0,
+  // so the sweep read setup-node's version as our stale surface and blocked `--publish` on a
+  // file no release ever writes. The collision is pure coincidence and recurs for any action
+  // whose pinned version equals our next one.
+  it('does not read a SHA-pinned action version comment at the previous version as drift', () => {
+    const grep = {
+      status: 0,
+      stdout:
+        '.github/workflows/test.yml:32:        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0\n',
+      stderr: '',
+    };
+    expect(evaluateDriftSweep(grep, '5.0.0', HISTORY_ALLOWLIST)).toMatchObject({ ok: true });
+  });
+
+  it('still sweeps a YAML line whose version sits OUTSIDE the trailing comment', () => {
+    // The carve-out must not excuse the whole file-type: a literal in the pin itself, or in a
+    // plain value, is exactly the stale surface the sweep exists to catch.
+    const grep = {
+      status: 0,
+      stdout: [
+        '.github/workflows/test.yml:32:        uses: acme/action@v5.0.0  # pinned',
+        '.gitlab-ci.yml:7:  SO_VERSION: "5.0.0"',
+      ].join('\n'),
+      stderr: '',
+    };
+    const r = evaluateDriftSweep(grep, '5.0.0', HISTORY_ALLOWLIST);
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain('.github/workflows/test.yml');
+    expect(r.detail).toContain('.gitlab-ci.yml');
+  });
+
+  it('does not excuse a YAML comment that is not annotating a uses: pin', () => {
+    // Condition 1 of the predicate: without `uses:` before the marker the line is ordinary
+    // prose, and ordinary YAML prose is not a sanctioned version-history surface.
+    const grep = {
+      status: 0,
+      stdout: '.gitlab-ci.yml:12:  # bumped for 5.0.0\n',
+      stderr: '',
+    };
+    expect(evaluateDriftSweep(grep, '5.0.0', HISTORY_ALLOWLIST).ok).toBe(false);
+  });
+
   it('names each drifted file once, however many lines matched', () => {
     const grep = {
       status: 0,

@@ -511,6 +511,49 @@ const LOCKFILE_BASENAMES = new Set(['package-lock.json', 'npm-shrinkwrap.json'])
 /** Code files in which a `//`, `*`, `/*` or `#` line is comment prose, never a version surface. */
 const CODE_COMMENT_EXTENSIONS = new Set(['.mjs', '.js', '.cjs', '.ts', '.sh']);
 
+/** Workflow/CI files in which a SHA-pinned `uses:` carries a third-party version as a trailing comment. */
+const YAML_EXTENSIONS = new Set(['.yml', '.yaml']);
+
+/**
+ * Is this YAML row a SHA-pinned THIRD-PARTY action whose version lives only in the
+ * trailing comment?
+ *
+ * Measured on the 5.1.0 cut (2026-09-13): `.github/workflows/test.yml` carries
+ * `uses: actions/setup-node@a0853c2…  # v5.0.0` twice. That `5.0.0` is setup-node's
+ * version, not ours — the sweep matched it only because our previous release happened
+ * to land on the same number, so the false positive is triggered by COINCIDENCE and
+ * would reappear for any action whose pin equals our next version.
+ *
+ * Expressed as a PREDICATE, like the three classes above, for the reason
+ * `.claude/rules/measurement-discipline.md` records: a per-path allowlist row fixes
+ * this file and leaves the class open for the next workflow.
+ *
+ * Two conditions, both required, so the predicate cannot mask a stale surface of ours:
+ *   1. the line pins a reference with `uses:` BEFORE the comment marker, and
+ *   2. EVERY occurrence of the literal sits AFTER that marker.
+ * A version in the pin itself (`uses: foo@v5.0.0`) fails condition 2 and is still swept.
+ *
+ * NAMED CEILING (BV-004): no SURFACES pattern targets a `.yml`/`.yaml` file today, so a
+ * YAML hit is never our own surface anyway. Revisit trigger: the first version surface
+ * added to a YAML file — then this predicate must also exclude that file's pattern.
+ *
+ * @param {string} content — the matching line's text
+ * @param {string} literal — the previous release literal being swept for
+ * @returns {boolean} true = third-party pin comment, skip the row
+ */
+export function isPinnedActionComment(content, literal) {
+  const hash = content.indexOf('#');
+  if (hash === -1) return false;
+  if (!/\buses:\s*\S/.test(content.slice(0, hash))) return false;
+  const re = versionTokenRegex(literal);
+  let seen = 0;
+  for (let m = re.exec(content); m; m = re.exec(content)) {
+    seen += 1;
+    if (m.index < hash) return false;
+  }
+  return seen > 0;
+}
+
 /**
  * Is this `path:line:content` row version HISTORY rather than a stale surface?
  *
@@ -546,6 +589,7 @@ function isHistoryRow(file, line, content, prevTag) {
   }
   const dot = base.lastIndexOf('.');
   const ext = dot === -1 ? '' : base.slice(dot);
+  if (YAML_EXTENSIONS.has(ext) && isPinnedActionComment(content, prevTag)) return true;
   if (CODE_COMMENT_EXTENSIONS.has(ext)) {
     const trimmed = content.trim();
     if (trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*')) return true;
