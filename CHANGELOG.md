@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0] - 2026-09-13
+
+Migration from 4.x: [v5 migration guide](docs/migration-v5.md). The major version reflects the changed `readCurrentStatus()` return contract and the now-enabled default close-time discovery scan.
+
 ### Added
+
+- Time-bounded operations route in `session-start`: explicit deadline, scoped accounts and products, rolling queue, a single publisher, and provider read-back evidence. Uses the current harness; installs no scheduler or new receipt engine.
 
 - `withFileLock(lockPath, fn, { onRelease })` in `scripts/lib/file-lock.mjs` (#1336): an optional, throw-safe callback receives the `releaseFileLock` result; the return shape of `withFileLock` is unchanged. `scripts/lib/vault-status/board-lock.mjs` forwards it as `onReleaseOutcome`, and `orchestrator.vault.board_written` now carries `lock.release: 'not-owner' | 'busy'` when the lease expired mid-write or the release gave up.
 - `checkCiStatus({ sha })` in `scripts/lib/ci-status-banner.mjs` (#1332): an optional full 40/64-hex commit id (validated before any CLI spawns) replaces the internal `getHeadSha` for GitLab and GitHub; without it behaviour is unchanged. The `ci-status` session-start probe uses it through a new optional registry `followUp` step: on `no-pipeline-for-head-sha` / `no-check-runs-for-head`, and only behind `SO_PROBES_INCLUDE_NETWORK`, it renders the pushed commit's verdict (`last pushed: <sha8> — CI <status> (#<pipeline>)`). The follow-up runs inside the probe's own budget race; if it throws or overruns, the HEAD reading already delivered stands (`follow_up: 'threw' | 'budget-exceeded'` in `orchestrator.probes.completed`). The GitLab re-query is skipped when the pushed SHA equals HEAD.

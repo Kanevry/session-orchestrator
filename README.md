@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.2.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-5.0.0-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
 [![Tests](https://img.shields.io/badge/tests-vitest-brightgreen.svg)](docs/telemetry/telemetry-claims.md)
 
@@ -15,7 +15,7 @@ Plan the work. Run it in checked waves. Pick up where you left off. Session Orch
 
 [34-second film](site/video/session-orchestrator-film.mp4) · [watch it embedded on the site](https://session-orchestrator.com/#loop) · [22-second camera preview](site/video/session-orchestrator-4.3-preview.mp4) · [How the film is made](marketing/vidlab/README.md)
 
-The film shows the workflow: read first, then build in parallel lanes, check every step, send back what fails, and step in where it matters. Illustrations are generated with AI. The 22-second preview covers the planned 4.3 campaign; the current published release is 4.2.0.
+The film shows the workflow: read first, then build in parallel lanes, check every step, send back what fails, and step in where it matters. Illustrations are generated with AI. The 22-second preview illustrates the workflow; it is not a recording of a product session.
 
 [Website](https://session-orchestrator.com) · [User guide](docs/USER-GUIDE.md) · [Platform support](#platform-support) · [Changelog](CHANGELOG.md)
 
@@ -207,15 +207,13 @@ Full component inventory: [`docs/components.md`](docs/components.md). Version hi
 
 A comparison with other orchestrators, distinguishing measured results from unmeasured claims: [`docs/components.md` § Comparisons](docs/components.md#comparisons).
 
-## Recent highlights (v4.2.0)
+## Recent highlights (v5.0.0)
 
-Highlights of the v4.2.0 line:
+- **Agent status carries provenance.** `readCurrentStatus()` returns entries with their source, timestamp and degradation details. Integrations that need the former bare map can use `readCurrentStatusEntries()`. Read the [v5 migration guide](docs/migration-v5.md) before upgrading a deep-import consumer.
+- **Bounded operations use an explicit run contract.** Session-start can coordinate launch preparation, research and community work with a deadline, scoped accounts, one publisher and verified outcomes. It uses the active harness and does not install a background scheduler.
+- **Discovery runs at close by default.** Repos without `discovery-on-close` now receive the close-time scan; set it to `false` to retain the previous behavior. Failed issue creation refunds only a proven budget charge, and agent-status recovery reports stale data instead of silently trusting it.
 
-- **One place resolves a session into its shape.** `node scripts/session-shape.mjs` turns a mode (housekeeping/feature/deep, optional ultradeep profile) into waves, per-wave agent caps, isolation and enforcement, and records the result as an event. Housekeeping is now the maintenance loop (drift-check, sweep, evolve, reconcile, dialectic, memory-cleanup), driven by the session-start `maintenance-due` probe instead of close-time nudges.
-- **Honest cost numbers.** Subagent telemetry schema v2 counts cache-read and cache-creation tokens (previously under-reported ~65,000×); a per-model price table rolls up USD per session. The issue-budget ledger is reconciled against the session record at close.
-- **Leaner tree.** A dead-code sweep removed 13 unreachable library modules and their tests; `js-yaml` patched for GHSA-2883-xcg3-v3hh; ten reconciled learnings absorbed into the thematic rule files so the generated-rule surface stays under budget.
-
-If upgrading from before 4.0, read [the v4 migration guide](docs/migration-v4.md). Full changes and verification: [CHANGELOG.md](CHANGELOG.md).
+If upgrading from before 4.0, also read [the v4 migration guide](docs/migration-v4.md). Full changes and verification: [CHANGELOG.md](CHANGELOG.md).
 
 ## Platform support
 
