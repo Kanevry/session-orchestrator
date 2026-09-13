@@ -75,6 +75,17 @@ describe('listUntracked', () => {
     expect(untracked).toContain('skills/new-skill/helper.mjs');
   });
 
+  it('#1354 — returns the REAL name of a path carrying a TAB and a non-ASCII byte', () => {
+    // Regression for GitLab #1354. Without `-z`, git C-quotes such paths
+    // (`"scripts/a\tb-\303\244.mjs"`) and the old hand-unquoting here reversed
+    // only `\"` and `\\` — so the returned string was a path that exists
+    // nowhere on disk, matched no scope pattern, and silently dropped the
+    // overlap. The literal below is the REAL on-disk name.
+    const realName = 'scripts/a\tb-ä.mjs';
+    writeFile(realName);
+    expect(listUntracked(repoDir)).toEqual([realName]);
+  });
+
   it('returns [] when not in a git repo', () => {
     const nonRepo = makeTmpDir('non-git-');
     try {

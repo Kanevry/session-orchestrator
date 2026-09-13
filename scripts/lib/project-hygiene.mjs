@@ -46,6 +46,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'js-yaml';
 import { tokenizeCommand, splitChainSegments, resolveSegmentVerb } from './command-blocker.mjs';
+import { parsePorcelainEntries } from './git-porcelain.mjs';
 
 /** Commits past the newest tag before release hygiene is worth mentioning. */
 export const DEFAULT_RELEASE_DRIFT_COMMITS = 50;
@@ -195,20 +196,11 @@ export function checkIgnoredBallast(repoRoot, ballastMb = DEFAULT_BALLAST_MB) {
 
   const ignoredPaths = [];
   let untrackedUnignored = 0;
-  // Porcelain v1 `-z`: each entry is `XY <path>` terminated by NUL, and a
-  // rename/copy (`R`/`C` in either status column) is followed by a SECOND
-  // NUL-terminated field carrying the source path. That bare field has no
-  // status prefix, so it cannot be mistaken for an `!! `/`?? ` entry unless a
-  // file is literally named `!! …` — skipping it explicitly removes even that.
-  const entries = ignored.split('\0').filter(Boolean);
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
-    const status = entry.slice(0, 2);
-    if (status[0] === 'R' || status[0] === 'C' || status[1] === 'R' || status[1] === 'C') {
-      i++; // consume the rename/copy source path
-      continue;
-    }
-    const path = entry.slice(3);
+  // Porcelain v1 `-z` parsing (including the bare rename/copy source field that
+  // follows an `R`/`C` entry) lives in the shared parser — see
+  // `scripts/lib/git-porcelain.mjs`. Only `!!`/`??` are of interest here, so a
+  // rename/copy entry falls through both branches exactly as before.
+  for (const { status, path } of parsePorcelainEntries(ignored)) {
     if (status === '!!') ignoredPaths.push(path);
     else if (status === '??' && !isOwnRuntimeArtifact(path)) untrackedUnignored++;
   }

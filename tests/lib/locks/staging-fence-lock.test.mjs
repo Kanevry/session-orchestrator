@@ -17,7 +17,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -67,6 +67,43 @@ describe('locks/staging-fence-lock — acquire / release roundtrip', () => {
     const released = releaseStagingFenceLock({ repoRoot, holder: 'nobody' });
     expect(released).toEqual({ ok: false, reason: 'not-found' });
   });
+
+  // #1349: same shared-guard delegation as the STATE.md lock.
+  it('a NON-owner release leaves the lock in place and reports not-owner', async () => {
+    const lockFile = join(repoRoot, STAGING_FENCE_LOCK_PATH);
+    await acquireStagingFenceLock({ repoRoot, holder: 'owner-A' });
+
+    const released = releaseStagingFenceLock({ repoRoot, holder: 'intruder-B' });
+    expect(released).toEqual({ ok: false, reason: 'not-owner' });
+    expect(existsSync(lockFile)).toBe(true);
+
+    expect(releaseStagingFenceLock({ repoRoot, holder: 'owner-A' })).toEqual({ ok: true });
+    expect(existsSync(lockFile)).toBe(false);
+  });
+
+  // #1349 DISCRIMINATOR — the behaviour the shared `.acquire` guard adds, and
+  // the only one the replaced inline sequence did NOT have: while a contender
+  // holds the sibling guard, the release must leave the lock file alone and
+  // answer `busy`. The old hand-rolled read → owner-match → unlinkSync ignored
+  // the sibling and deleted the lock regardless.
+  it('reports busy and keeps the lock when the `.acquire` guard is held', async () => {
+    const lockFile = join(repoRoot, STAGING_FENCE_LOCK_PATH);
+    await acquireStagingFenceLock({ repoRoot, holder: 'owner-A' });
+
+    // Simulate a contender mid-pass: the guard exists and is never released.
+    writeFileSync(`${lockFile}.acquire`, '{}');
+
+    const released = releaseStagingFenceLock({ repoRoot, holder: 'owner-A' });
+    expect(released).toEqual({ ok: false, reason: 'busy' });
+    expect(existsSync(lockFile)).toBe(true);
+  }, 15000);
+
+  it('release leaves no `.acquire` sibling behind', async () => {
+    const lockFile = join(repoRoot, STAGING_FENCE_LOCK_PATH);
+    await acquireStagingFenceLock({ repoRoot, holder: 'owner-A' });
+    expect(releaseStagingFenceLock({ repoRoot, holder: 'owner-A' })).toEqual({ ok: true });
+    expect(existsSync(`${lockFile}.acquire`)).toBe(false);
+  });
 });
 
 describe('locks/staging-fence-lock — withStagingFenceLock wrapper', () => {
@@ -85,4 +122,28 @@ describe('locks/staging-fence-lock — withStagingFenceLock wrapper', () => {
   it('rejects a non-function fn synchronously with a TypeError', async () => {
     await expect(withStagingFenceLock(repoRoot, /* not a fn */ 42)).rejects.toThrow(TypeError);
   });
+
+  // #1349 fix-pass — same bug class as the STATE.md wrapper, and worse here: a
+  // leaked `.commit.lock` blocks the cross-agent fence check for every sibling
+  // wave-agent until the stale policy expires. The wrapper returns fn()'s value
+  // either way, so the WARN is the ONLY evidence the lock was left behind —
+  // and deleting the `busy` branch left `npx vitest run tests/lib/locks/` at
+  // 16 passed.
+  it('WARNs, still returns fn value, and leaves the lock behind when release is busy', async () => {
+    const lockFile = join(repoRoot, STAGING_FENCE_LOCK_PATH);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await withStagingFenceLock(repoRoot, () => {
+      // Contender takes the shared `.acquire` guard mid-pass and never gives it
+      // back, so the wrapper's release cannot take it and answers `busy`.
+      writeFileSync(`${lockFile}.acquire`, '{}');
+      return 'fn-return-value';
+    });
+
+    expect(result).toBe('fn-return-value');
+    expect(existsSync(lockFile)).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      'withStagingFenceLock: release failed (busy: acquire guard held) — .commit.lock left for its stale policy',
+    );
+  }, 20000);
 });

@@ -104,6 +104,8 @@
    ```
    `scripts/emit-session.mjs` calls `validateSession` from `scripts/lib/session-schema.mjs` before appending, stamps `schema_version: 1` if absent, and uses `appendJsonl` (atomic for lines < PIPE_BUF). Exit 1 on validation error, exit 2 on I/O error — block session close in both cases so malformed metrics can never reach disk.
 
+   **`session_profile` (#1247):** when `$METRICS_ENTRY` omits the `session_profile` key, `emit-session.mjs` fills it itself from this repo's own `<state-dir>/STATE.md` `session-profile` frontmatter (e.g. `ultradeep`) — no coordinator-side plumbing needed; an explicit value on the entry always wins and is never overwritten.
+
    **`autopilot_run_id` (additive, optional, #300):** when this session was launched by `/autopilot`, the wave-executor `sessionRunner` callback passes `args.autopilotRunId` from `runLoop`. session-end MUST persist that value as a top-level field on the JSONL record:
 
    ```json

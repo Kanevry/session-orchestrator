@@ -248,21 +248,46 @@ export function writeStdoutLineSync(line) {
 // Exports
 // ---------------------------------------------------------------------------
 
+/** Default stdin read timeout. Every production caller uses it. */
+const READ_STDIN_TIMEOUT_MS = 5_000; // 5 s guard
+
 /**
  * Read process.stdin to EOF and parse as JSON.
+ *
+ * ## Why the timeout is a PARAMETER and not an env var
+ *
+ * The guard exists so a hook whose stdin never closes (the harness died, the
+ * pipe was inherited by a long-lived grandchild) fails instead of hanging the
+ * tool call forever. A 5-second stall is also what made the behaviour
+ * effectively untestable: the suite cannot afford to wait for it, which is why
+ * the timeout case sat as an empty `it.skip` for two years.
+ *
+ * Injecting the bound as an OPTION keeps the escape hatch out of the ambient
+ * environment: an env var would let any process that happens to export it
+ * shorten (or lengthen) the guard for every hook on the host, silently. A
+ * parameter can only be shortened by the caller that asks for it — today, only
+ * the test that proves the guard fires.
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.timeoutMs=5000]  Milliseconds before the read is
+ *        abandoned. Non-finite or non-positive values fall back to the 5 s
+ *        default rather than disabling the guard.
  * @returns {Promise<object|null>} Parsed JSON object, or null on empty stream.
  * @throws {SyntaxError} If stdin contains non-empty, non-JSON data.
- * @throws {Error} If the 1 MB size limit or 5 s timeout is exceeded.
+ * @throws {Error} If the 1 MB size limit or the timeout is exceeded.
  */
-export async function readStdin() {
+export async function readStdin(opts = {}) {
   const MAX_BYTES = 1_048_576; // 1 MB guard
-  const TIMEOUT_MS = 5_000;   // 5 s guard
+  const requested = Number(opts?.timeoutMs);
+  const TIMEOUT_MS = Number.isFinite(requested) && requested > 0
+    ? requested
+    : READ_STDIN_TIMEOUT_MS;
 
   return new Promise((resolve, reject) => {
     const controller = new AbortController();
     const timer = setTimeout(() => {
       controller.abort();
-      reject(new Error('io.mjs: readStdin timed out after 5 s'));
+      reject(new Error(`io.mjs: readStdin timed out after ${TIMEOUT_MS / 1000} s`));
     }, TIMEOUT_MS);
 
     const chunks = [];

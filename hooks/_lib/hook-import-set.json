@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-09-13T06:09:30.039Z",
-  "head": "5e9506b11547e9353c52479d53b5a1335c3c9c00",
+  "generated_at": "2026-09-13T09:10:50.839Z",
+  "head": "ff1ed19177795b743186eebfc387319de0e90c31",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -830,6 +830,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -850,6 +851,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -1234,6 +1236,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",

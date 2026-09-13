@@ -934,24 +934,49 @@ function main() {
   // `## Session Config` between the canonical template and the local
   // instruction file.
   //
-  // Severity split (issue #785 follow-up — coordinator triage of the initial
-  // #785 fix): a missing MANDATORY key (present in the template's "Full
-  // minimal baseline" — the 7 schema-enforced keys) is an ERROR. A missing
-  // OPT-IN key (present only in the "Full opt-in baseline" — i.e. NOT in the
-  // minimal block) is a WARNING, not an error: a consumer repo that
-  // legitimately does not adopt an opt-in feature (e.g. no `handover-gate`)
-  // must not go red — this repo's own CLAUDE.md deliberately omits 37
-  // opt-in-baseline keys. `mode: hard` only exits non-zero on `errors[]`, so
-  // pure opt-in gaps never block `autonomous-gated` skill-evolution's
-  // `runConfigValidationGate()`.
+  // Three-category split (issue #30 → #785 → #1356):
+  //   · missing MANDATORY key (present in the template's "Full minimal
+  //     baseline" — the schema-enforced keys) → errors[]   (unchanged)
+  //   · missing OPT-IN key (present only in the "Full opt-in baseline")
+  //     → notes[]                                          (#1356)
+  //   · local key UNKNOWN to the template union → warnings[]  (#1356)
   //
-  // This is a deliberate, coordinator-directed DEVIATION from #785's literal
-  // fix-direction ("plants an opt-in key... asserts a session-config-parity
-  // ERROR") — the mechanism (union template keys via `{ occurrence: 'last' }`)
-  // is unchanged, but the missing-opt-in-key case now lands in `warnings[]`
-  // instead of `errors[]`. Local keys unknown to the template union were
-  // (and remain) never flagged in either direction — no existing code path
-  // inspected that direction before this change either.
+  // #785's follow-up put the opt-in gap in `warnings[]`. Measured 2026-09-13
+  // @ ff1ed191 that produced 36 of this repo's 36 config-parity warnings — a
+  // whole warning class firing on every single run, each entry saying "not
+  // required" and offering no action. `.claude/rules/host-resources.md`
+  // § HR-101 calls that a broken instrument; the repair is CATEGORY
+  // SEPARATION, never suppression and never a threshold (`development.md`
+  // § Guard & Threshold Design), exactly as the fleet-intent-glob probe did
+  // for rule-scoping (#1312). So a deliberately-unadopted opt-in feature is
+  // now REPORTED in `notes[]` — still emitted, still rendered (session-end's
+  // drift-operations.md renders `notes[]` under its own heading), but no
+  // longer asking for an action that does not exist.
+  //
+  // What replaces it in `warnings[]` is the direction nothing inspected
+  // before: a top-level key in the LOCAL Session Config that the template's
+  // `## Session Config` blocks do not carry. That one IS actionable — it is
+  // either a typo/rename, or the template's baseline blocks have not caught
+  // up, and both are fixed by an edit.
+  //
+  // NAME THE POPULATION (fix-pass 2026-09-13). This check reads exactly ONE
+  // population: the template's `## Session Config` blocks. It therefore
+  // CANNOT know whether the key is documented elsewhere in the template, nor
+  // whether anything reads it at runtime — and #1356's first wording asserted
+  // both. Measured 2026-09-13 @ ff1ed191 in this repo, it fired on three keys
+  // and was wrong about two of them:
+  //   awk '/^## /{sec=$0} /^auto-skill-dispatch:|^issue-budget:/{print NR,sec}' \
+  //     docs/session-config-template.md
+  //   → auto-skill-dispatch line 87 (## Auto-Skill Dispatch)
+  //   → issue-budget        line 123 (## Issue Budget)
+  //   rg -c "'auto-skill-dispatch'" scripts/  → 4 files, non-zero
+  //   rg -c "'issue-budget'" scripts/         → non-zero
+  // Both are documented in the template FILE and both are read at runtime;
+  // only their absence from the two `## Session Config` blocks (lines 658/676)
+  // was ever true. The message below now asserts only that.
+  //
+  // `mode: hard`/`strict` still keys off `errors[]` only, so neither notes
+  // nor the new warnings can block `runConfigValidationGate()`.
   let configParityRan = false;
   if (!args.skipSessionConfigParity) {
     const templatePath = args.configTemplate
@@ -996,9 +1021,26 @@ function main() {
               extracted: key,
             });
           } else {
+            notes.push({
+              check: 'session-config-parity', probe: 'opt-in-gap', file: rel, line,
+              message: `Session Config omits opt-in top-level key '${key}' (documented in docs/session-config-template.md's opt-in baseline; not required). Reported, not warned.`,
+              extracted: key,
+            });
+          }
+        }
+        // Actionable direction (#1356): a local top-level key the template
+        // union never documents. Only reachable when the template HAS an
+        // opt-in block distinct from the minimal one — a single-block
+        // template (test fixture, or a repo that never split the baselines)
+        // is not a key catalog, so diffing against it would warn on every
+        // legitimately-adopted key.
+        if (tplMinimalBlock && tplBlock.headingLine !== tplMinimalBlock.headingLine) {
+          const tplKeySet = new Set(tplKeys);
+          for (const key of localKeys) {
+            if (tplKeySet.has(key)) continue;
             warnings.push({
               check: 'session-config-parity', file: rel, line,
-              message: `Session Config omits opt-in top-level key '${key}' (documented in docs/session-config-template.md's opt-in baseline; not required)`,
+              message: `Session Config declares top-level key '${key}' which is absent from both '## Session Config' blocks of docs/session-config-template.md (the only population this check reads) — a typo/rename, or template baseline blocks that have not caught up. This check does not inspect the rest of the template file or any runtime reader, so the key may well be documented elsewhere and in use`,
               extracted: key,
             });
           }

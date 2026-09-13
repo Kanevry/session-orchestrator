@@ -686,3 +686,161 @@ describe('infra errors', () => {
     expect(r.stderr).toContain('unknown arg');
   });
 });
+
+// ── check 6: session-config-parity — three-category routing (#1356) ─────────
+//
+// The bug this pins: a repo that deliberately does not adopt an opt-in feature
+// got ONE WARNING PER UNADOPTED KEY. Measured 2026-09-13 @ ff1ed191 that was
+// 36 of this repo's 36 session-config-parity warnings — a class firing on
+// every run, every entry saying "not required", none actionable, and the
+// noise buried the warnings that ARE actionable. Routing (not thresholds, not
+// suppression) is the fix, so the routing is what these assert:
+//   opt-in gap → notes[] · mandatory gap → errors[] · unknown local key →
+//   warnings[].
+// Complements the severity tests in alias-resolution.test.mjs, which pin that
+// an opt-in gap never reaches errors[]; these pin WHICH bucket it does reach.
+describe('check 6: session-config-parity routing (#1356)', () => {
+  const twoBlockTemplate = [
+    '# Session Config Template',
+    '',
+    '## Full minimal baseline (copy-paste)',
+    '',
+    '```yaml',
+    '## Session Config',
+    '',
+    'test-command: npm test',
+    'persistence: true',
+    '```',
+    '',
+    '## Full opt-in baseline (copy-paste)',
+    '',
+    '```yaml',
+    '## Session Config',
+    '',
+    'test-command: npm test',
+    'persistence: true',
+    'handover-gate:',
+    '  enabled: true',
+    '```',
+    '',
+  ].join('\n');
+
+  function writeTemplate() {
+    mkdirSync(join(vault, 'docs'), { recursive: true });
+    writeFileSync(join(vault, 'docs', 'session-config-template.md'), twoBlockTemplate);
+  }
+
+  it('routes an unadopted opt-in key to notes[] — not warnings[], not errors[]', () => {
+    writeTemplate();
+    writeFileSync(join(vault, 'CLAUDE.md'),
+      '# CLAUDE\n\n## Session Config\n\ntest-command: npm test\npersistence: true\n');
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    expect(r.code).toBe(0);
+    const j = parseJson(r.stdout);
+    const pick = (arr) => arr.filter((e) => e.check === 'session-config-parity')
+      .map((e) => e.extracted);
+    expect(pick(j.notes)).toContain('handover-gate');
+    expect(pick(j.warnings)).not.toContain('handover-gate');
+    expect(pick(j.errors)).not.toContain('handover-gate');
+  });
+
+  it('gives the opt-in note the probe/file/line shape the notes renderer needs', () => {
+    writeTemplate();
+    writeFileSync(join(vault, 'CLAUDE.md'),
+      '# CLAUDE\n\n## Session Config\n\ntest-command: npm test\npersistence: true\n');
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    const j = parseJson(r.stdout);
+    const note = j.notes.find((n) => n.extracted === 'handover-gate');
+    // session-end's drift-operations.md renders `[<check>/<probe>] <file>:<line>`
+    // — a note without `probe` renders "[session-config-parity/undefined]".
+    expect(note).toMatchObject({ check: 'session-config-parity', probe: 'opt-in-gap' });
+    expect(forwardSlashes(note.file)).toBe('CLAUDE.md');
+    expect(typeof note.line).toBe('number');
+    // The checker also mirrors notes to stderr under their own heading.
+    expect(r.stderr).toContain('[session-config-parity/opt-in-gap]');
+  });
+
+  it('keeps a MISSING MANDATORY key in errors[] (routing change must not soften it)', () => {
+    writeTemplate();
+    writeFileSync(join(vault, 'CLAUDE.md'),
+      '# CLAUDE\n\n## Session Config\n\npersistence: true\nhandover-gate:\n  enabled: true\n');
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    const j = parseJson(r.stdout);
+    const errs = j.errors.filter((e) => e.check === 'session-config-parity');
+    expect(errs.map((e) => e.extracted)).toContain('test-command');
+    expect(j.notes.map((n) => n.extracted)).not.toContain('test-command');
+    expect(j.status).toBe('invalid');
+  });
+
+  it('warns on a local key the template documents nowhere (the actionable direction)', () => {
+    writeTemplate();
+    writeFileSync(join(vault, 'CLAUDE.md'),
+      '# CLAUDE\n\n## Session Config\n\ntest-command: npm test\npersistence: true\n'
+        + 'handover-gate:\n  enabled: true\nhandovergate: true\n');
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    expect(r.code).toBe(0);
+    const j = parseJson(r.stdout);
+    const warns = j.warnings.filter((w) => w.check === 'session-config-parity');
+    expect(warns.map((w) => w.extracted)).toEqual(['handovergate']);
+    // The message must name the population it measured over and MUST NOT
+    // claim the template documents the key nowhere (see the fix-pass test
+    // below) nor that nothing reads it.
+    expect(warns[0].message).toContain("'## Session Config' blocks");
+    expect(warns[0].message).not.toContain('documents nowhere');
+    expect(warns[0].message).not.toContain('nothing reads it');
+    // A documented key must never be dragged in by the same loop.
+    expect(warns.map((w) => w.extracted)).not.toContain('persistence');
+  });
+
+  // The bug these two pin (fix-pass 2026-09-13): the #1356 warning asserted
+  // "documents nowhere — a typo/rename (nothing reads it)". The checker reads
+  // ONE population: the template's '## Session Config' blocks. Measured in
+  // this repo it fired on auto-skill-dispatch / issue-budget / wave-reviewers;
+  // the first two are documented in the template FILE (## Auto-Skill Dispatch
+  // line 87, ## Issue Budget line 123) and both are read at runtime, so two of
+  // three warnings stated something false. A false warning is the same defect
+  // as an always-firing one (HR-101), in a smaller font.
+  it('does not claim a key is undocumented when the template documents it outside a Session Config block', () => {
+    mkdirSync(join(vault, 'docs'), { recursive: true });
+    writeFileSync(join(vault, 'docs', 'session-config-template.md'),
+      twoBlockTemplate + '\n## Sidecar Feature\n\nsidecar-feature:\n  enabled: true\n');
+    writeFileSync(join(vault, 'CLAUDE.md'),
+      '# CLAUDE\n\n## Session Config\n\ntest-command: npm test\npersistence: true\n'
+        + 'handover-gate:\n  enabled: true\nsidecar-feature:\n  enabled: true\n');
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    const j = parseJson(r.stdout);
+    const warn = j.warnings.filter((w) => w.check === 'session-config-parity')
+      .find((w) => w.extracted === 'sidecar-feature');
+    // It may still be reported (the baseline blocks genuinely lack it), but
+    // only as what was measured — never as "documented nowhere".
+    if (warn) {
+      expect(warn.message).not.toContain('documents nowhere');
+      expect(warn.message).not.toContain('nothing reads it');
+      expect(warn.message).toContain("'## Session Config' blocks");
+    }
+  });
+
+  it('still warns on the true positive: a key absent from the template file entirely', () => {
+    writeTemplate();
+    writeFileSync(join(vault, 'CLAUDE.md'),
+      '# CLAUDE\n\n## Session Config\n\ntest-command: npm test\npersistence: true\n'
+        + 'handover-gate:\n  enabled: true\nwave-reviewers:\n  enabled: false\n');
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    const j = parseJson(r.stdout);
+    const warns = j.warnings.filter((w) => w.check === 'session-config-parity');
+    expect(warns.map((w) => w.extracted)).toEqual(['wave-reviewers']);
+  });
+
+  it('does not warn on unknown local keys when the template has a single block', () => {
+    // A one-block template is not a key catalog — diffing local-against-it
+    // would warn on every legitimately adopted key.
+    mkdirSync(join(vault, 'docs'), { recursive: true });
+    writeFileSync(join(vault, 'docs', 'session-config-template.md'),
+      '# T\n\n## Session Config\n\npersistence: true\n');
+    writeFileSync(join(vault, 'CLAUDE.md'),
+      '# CLAUDE\n\n## Session Config\n\npersistence: true\nlocal-only-key: 1\n');
+    const r = runChecker(vault, ['--skip-issue-refs']);
+    const j = parseJson(r.stdout);
+    expect(j.warnings.filter((w) => w.check === 'session-config-parity')).toEqual([]);
+  });
+});

@@ -24,7 +24,7 @@
  *   {"action":"appended","path":"<file>","session_id":"<id>","schema_version":2}
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { appendJsonl } from './lib/common.mjs';
@@ -33,6 +33,7 @@ import {
   deriveMemoryCleanupSignal,
   stampMemoryCleanup,
 } from './lib/memory-cleanup-stamp.mjs';
+import { parseStateMd, readSessionProfile, resolveStateMdPath } from './lib/state-md.mjs';
 import { serializeSessionLineChecked } from './lib/session-schema/serializer.mjs';
 import {
   validateSession,
@@ -148,6 +149,76 @@ async function main() {
         process.stderr.write(
           `emit-session: derived memory_cleanup_at=${repaired.memory_cleanup_at} from ` +
             `${signal.matches} ${MEMORY_CLEANUP_EVENT} event(s) (latest ${signal.at})\n`
+        );
+      }
+    }
+  }
+
+  // `session_profile` derivation (#1247 — GitLab issue "key the effective-sizing
+  // row on waves x profile"). The mandatory write path is the coordinator
+  // composing `$METRICS_ENTRY` in prose (session-metrics-write.md), which never
+  // reliably set this field — so it is read here instead, from this repo's own
+  // STATE.md frontmatter via `readSessionProfile()` (scripts/lib/state-md.mjs).
+  //
+  // Precedence: an EXPLICIT `session_profile` KEY on the incoming record (even
+  // `null`) wins and is never overwritten — same "explicit assertion beats
+  // derivation" convention as `memory_cleanup_at` above. Absence of a profile in
+  // STATE.md (readSessionProfile returns null) leaves the field OMITTED —
+  // never coerced to `''`/`'none'`/a literal `"null"` string.
+  //
+  // OWNERSHIP: STATE.md belongs to the session named in its OWN frontmatter
+  // (`session:`), which in a shared working copy need not be the session this
+  // record describes — two parallel sessions, or a `/close` run after a
+  // foreign `/plan` session left its STATE.md behind (see
+  // `.claude/rules/parallel-sessions.md`). Filing session B's waves under
+  // session A's profile is exactly the cross-contamination #1247 removes, only
+  // inverted. So the profile is adopted ONLY when the frontmatter `session`
+  // equals this record's `session_id`; on any mismatch (or an unprovable
+  // ownership, i.e. no `session` key) the field is OMITTED — never guessed.
+  //
+  // FAIL-SAFE: the read is enrichment; the session record is the load-bearing
+  // artefact. Any failure reading or parsing STATE.md (EISDIR when the path is
+  // a directory, EACCES/EPERM, a truncated file) omits the field and lets the
+  // record through — it must never be the reason `sessions.jsonl` gains no
+  // line at all.
+  if (!Object.prototype.hasOwnProperty.call(repaired, 'session_profile')) {
+    let stateMdContents = '';
+    try {
+      const stateMdPath = resolveStateMdPath(process.cwd());
+      if (existsSync(stateMdPath)) stateMdContents = readFileSync(stateMdPath, 'utf8');
+    } catch (err) {
+      process.stderr.write(
+        `emit-session: WARN could not read STATE.md for session_profile derivation ` +
+          `(${err?.message ?? err}); omitting session_profile\n`
+      );
+      stateMdContents = '';
+    }
+    // No initialiser: both the try and the catch below assign `profile`.
+    let profile;
+    let owner = null;
+    try {
+      profile = readSessionProfile(stateMdContents);
+      const parsed = parseStateMd(stateMdContents);
+      const rawOwner = parsed?.frontmatter?.session;
+      owner = typeof rawOwner === 'string' && rawOwner.trim().length > 0 ? rawOwner.trim() : null;
+    } catch (err) {
+      process.stderr.write(
+        `emit-session: WARN could not parse STATE.md for session_profile derivation ` +
+          `(${err?.message ?? err}); omitting session_profile\n`
+      );
+      profile = null;
+    }
+    if (profile !== null) {
+      if (owner !== null && owner === repaired.session_id) {
+        repaired = { ...repaired, session_profile: profile };
+      } else {
+        // A visible omission: silence here is indistinguishable from "STATE.md
+        // carries no profile", and a foreign STATE.md in this working copy is
+        // precisely what the operator wants to know about.
+        process.stderr.write(
+          `emit-session: WARN STATE.md session_profile=${profile} belongs to ` +
+            `session=${owner ?? '<absent>'}, not session_id=${repaired.session_id ?? '<unknown>'}; ` +
+            `omitting session_profile\n`
         );
       }
     }

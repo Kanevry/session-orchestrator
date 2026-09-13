@@ -13,6 +13,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { parsePorcelainEntries } from './git-porcelain.mjs';
 import { pathMatchesPattern } from './hardening.mjs';
 
 /**
@@ -66,8 +67,17 @@ export function checkUntrackedOverlap({ scope, cwd = process.cwd(), mode = 'warn
 }
 
 /**
- * Run `git status --porcelain` and extract untracked files (prefix "??").
+ * Run `git status --porcelain -z` and extract untracked files (status `??`).
  * Returns paths relative to `cwd`. Returns [] on any git failure.
+ *
+ * `-z` is load-bearing (#1354): without it git C-quotes any path carrying a
+ * space, a `"`, a TAB or — under the default `core.quotePath=true` — a
+ * non-ASCII byte. The previous hand-unquoting here reversed only `\"` and
+ * `\\`, so `a\tb.txt` and `\303\244.txt` were returned VERBATIM — paths that
+ * exist nowhere on disk, which then matched no scope pattern and silently
+ * dropped the overlap this function exists to detect. `-z` emits every path
+ * raw, so there is no unquoting step at all. Parsing lives in the shared
+ * `scripts/lib/git-porcelain.mjs`.
  *
  * @param {string} cwd
  * @returns {string[]}
@@ -75,19 +85,14 @@ export function checkUntrackedOverlap({ scope, cwd = process.cwd(), mode = 'warn
 export function listUntracked(cwd) {
   let stdout;
   try {
-    stdout = execFileSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf8' });
+    stdout = execFileSync('git', ['status', '--porcelain', '-z'], { cwd, encoding: 'utf8' });
   } catch {
     return [];
   }
 
   const files = [];
-  for (const rawLine of stdout.split('\n')) {
-    if (!rawLine.startsWith('?? ')) continue;
-    // Porcelain v1 wraps paths in quotes when they contain special chars. Strip them.
-    let rel = rawLine.slice(3);
-    if (rel.startsWith('"') && rel.endsWith('"')) {
-      rel = rel.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-    }
+  for (const { status, path: rel } of parsePorcelainEntries(stdout)) {
+    if (status !== '??' || !rel) continue;
     // Directory entries end with `/` in porcelain output — expand to file list for fidelity.
     if (rel.endsWith('/')) {
       files.push(...expandDirectory(cwd, rel));
@@ -112,13 +117,14 @@ function expandDirectory(cwd, relDir) {
   try {
     const stdout = execFileSync(
       'git',
-      ['ls-files', '--others', '--exclude-standard', '--', relDir],
+      ['ls-files', '-z', '--others', '--exclude-standard', '--', relDir],
       { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
     );
-    const lines = stdout
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
+    // `-z` for the same reason as the caller: git quotes special-char paths
+    // otherwise, and a quoted path does not exist on disk. NUL-separated
+    // output is emitted verbatim, so no trimming (which would eat a legal
+    // trailing space in a filename).
+    const lines = stdout.split('\0').filter((line) => line.length > 0);
     return lines.length > 0 ? lines : [relDir];
   } catch {
     return [relDir];

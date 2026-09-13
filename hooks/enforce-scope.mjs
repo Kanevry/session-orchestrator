@@ -471,8 +471,13 @@ async function main() {
     // → 0 matches, 2026-09-13) and `wave-transcript-tail.mjs` resolves the same
     // substrate from `homedir()`. Revisit together with that resolver if the
     // harness config dir ever becomes relocatable here.
+    // CALLER DISCRIMINATION (#1352): the carve-out is the COORDINATOR's, never a
+    // dispatched wave agent's. See {@link classifyCaller} for the measurement.
+    // A subagent falls through to the gates below — under a manifest that does
+    // not grant the path (Discovery's `allowedPaths: []`) that is a DENY.
     const memoryDirs = await ownMemoryDirs(projectRootRaw, projectRoot);
-    if (memoryDirs.some((dir) => isInsideDir(resolvedPath, dir))) {
+    const caller = classifyCaller(input);
+    if (caller !== 'subagent' && memoryDirs.some((dir) => isInsideDir(resolvedPath, dir))) {
       // One event per decision point, awaited before emitAllow() —
       // emitAllow() calls process.exit(), which would discard a pending append.
       try {
@@ -484,6 +489,14 @@ async function main() {
             manifest: scopePath,
             wave: scope.wave,
             file_path: resolvedPath,
+            // HR-105: the fail-OPEN case must be COUNTABLE, or the ambiguity is
+            // unfalsifiable — and it takes TWO values to be countable.
+            // `'absent'` = no `agent_id` key at all (the harness's own contract
+            // for a main-thread call); `'malformed'` = an `agent_id` key that is
+            // PRESENT but unusable (number/object/array/blank string), which
+            // would otherwise be indistinguishable from the legitimate case.
+            // `'coordinator'` = `agent_type` without `agent_id`.
+            discriminator: caller,
           },
           { repoRoot: projectRoot },
         );
@@ -622,6 +635,70 @@ function isInsideDir(candidate, dir) {
   const base = path.resolve(dir);
   const target = path.resolve(candidate);
   return target === base || target.startsWith(base + path.sep);
+}
+
+/**
+ * Classify a PreToolUse payload as coming from a dispatched SUBAGENT or from the
+ * main (coordinator) thread — the discriminator Gate 5c's memory carve-out needs
+ * (#1352).
+ *
+ * MEASURED, not assumed (2026-09-13, Claude Code 2.1.270, `strings` over
+ * `~/.local/share/claude/versions/2.1.270`):
+ *  - The base hook-input builder shared by EVERY event is
+ *    `{session_id: e.id, transcript_path: yf(e.id), cwd, …, agent_id: s?.agentId,
+ *    agent_type: d}` — PreToolUse spreads it verbatim
+ *    (`{...Na(s.session,Z(),d,s), hook_event_name:"PreToolUse", tool_name, …}`).
+ *  - The harness's own schema documents the field: *"Subagent identifier. Present
+ *    only when the hook fires from within a subagent (e.g., a tool called by an
+ *    AgentTool worker). Absent for the main thread, even in --agent sessions. Use
+ *    this field (not agent_type) to distinguish subagent calls from main-thread
+ *    calls."*
+ *  - Two candidates are REFUTED by the same source: `transcript_path` is
+ *    `yf(session.id)` — session-derived, hence IDENTICAL for coordinator and
+ *    subagent; and `CLAUDE_CODE_CHILD_SESSION=1` appears in a main-thread `env`
+ *    dump (`isSidechain:false`), so it marks the CLI process, not the caller.
+ *
+ * `agent_type` is deliberately a WEAKER witness, used only in the negative
+ * direction: per the same schema it is present on the main thread of an `--agent`
+ * session WITHOUT `agent_id`, so `agent_type`-without-`agent_id` positively names
+ * a coordinator, while `agent_type` alone can never name a subagent.
+ *
+ * FAIL-OPEN on ambiguity, deliberately (BV-004 ceiling): a payload this function
+ * cannot read as a subagent keeps the pre-#1352 ALLOW, because fail-closed here
+ * would deny the coordinator's own memory writes and break `/close`. The value is
+ * emitted on the event so the ambiguity is countable (HR-105) — but countability
+ * needs TWO fail-open values, not one:
+ *
+ *  - `'absent'`    — NO `agent_id` key in the payload at all. The harness's own
+ *                    documented shape for a main-thread call; the legitimate case.
+ *  - `'malformed'` — an `agent_id` key IS present and carries something this
+ *                    function cannot use as an identity (number, object, array,
+ *                    empty/whitespace string). Folding this into `'absent'` made a
+ *                    PRESENT-but-unusable marker byte-identical to a genuine
+ *                    main-thread call, so a future harness or bridge sending a
+ *                    numeric or object agent id would hand EVERY subagent the
+ *                    carve-out with nothing in the ledger to show it. Empty and
+ *                    whitespace-only strings belong here, not in `'absent'`: the
+ *                    key is present, so the sender believed it was identifying a
+ *                    subagent, and that is exactly the case this value separates.
+ *
+ * Only `agent_id` can produce `'malformed'`. `agent_type` is used solely in the
+ * positive coordinator direction and can never hide a subagent, so an unusable
+ * `agent_type` without an `agent_id` stays `'absent'`.
+ *
+ * Revisit if `discriminator: 'malformed'` appears at all, or if `'absent'`
+ * dominates the records on a harness that DOES dispatch subagents.
+ *
+ * @param {Record<string, unknown>} input Parsed PreToolUse stdin payload.
+ * @returns {'subagent'|'coordinator'|'malformed'|'absent'}
+ */
+function classifyCaller(input) {
+  const agentId = input?.agent_id;
+  if (typeof agentId === 'string' && agentId.trim() !== '') return 'subagent';
+  if (agentId !== undefined && agentId !== null) return 'malformed';
+  const agentType = input?.agent_type;
+  if (typeof agentType === 'string' && agentType.trim() !== '') return 'coordinator';
+  return 'absent';
 }
 
 const COORDINATOR_CARVEOUT_PATHS = Object.freeze([

@@ -22,14 +22,13 @@
  * NEVER → session-lock.mjs, so there is no import cycle.
  */
 
-import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-import { tryAcquireFileLock } from '../file-lock.mjs';
-import { hostnamesMatch, lockHostCandidate, stableHostname } from '../host-identity.mjs';
-import { nowIso, delay, parseLockBody } from './lock-body.mjs';
+import { releaseFileLock, tryAcquireFileLock } from '../file-lock.mjs';
+import { stableHostname } from '../host-identity.mjs';
+import { nowIso, delay } from './lock-body.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -156,47 +155,23 @@ export async function acquireStagingFenceLock({
 /**
  * Release the staging-fence commit-lock IFF the holder matches.
  *
+ * `busy` (#1349) means the shared `${lockFile}.acquire` guard stayed taken past
+ * its budget; the lock file is left untouched for its stale policy.
+ *
  * @param {object} [opts]
  * @param {string} [opts.repoRoot]
  * @param {string} [opts.holder]
- * @returns {{ ok: true } | { ok: false, reason: 'not-found'|'not-owner'|'fs-error', error?: string }}
+ * @returns {{ ok: true } | { ok: false, reason: 'not-found'|'not-owner'|'busy'|'fs-error', error?: string }}
  */
 export function releaseStagingFenceLock({ repoRoot, holder } = {}) {
   const lockFile = stagingFenceLockPathFor(repoRoot);
 
-  let raw;
-  try {
-    raw = fs.readFileSync(lockFile, 'utf8');
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      return { ok: false, reason: 'not-found' };
-    }
-    return { ok: false, reason: 'fs-error', error: err.message };
-  }
-
-  const lock = parseLockBody(raw);
-  if (lock === null) {
-    return { ok: false, reason: 'not-owner' };
-  }
-
-  const ownerMatch = typeof holder === 'string' && holder.length > 0
-    ? lock.holder === holder
-    // #1072: alias-aware host identity, not a raw os.hostname() comparison.
-    : lock.pid === process.pid && hostnamesMatch(lockHostCandidate(lock), os.hostname());
-
-  if (!ownerMatch) {
-    return { ok: false, reason: 'not-owner' };
-  }
-
-  try {
-    fs.unlinkSync(lockFile);
-    return { ok: true };
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      return { ok: false, reason: 'not-found' };
-    }
-    return { ok: false, reason: 'fs-error', error: err.message };
-  }
+  // Consolidated onto releaseFileLock (#1349); the `pid` staleCheck makes the
+  // takeover race unreachable today — if this lock ever moves to a lease mode,
+  // the shared guard is what keeps release safe.
+  // An empty holder falls through to releaseFileLock's PID + host owner check,
+  // exactly as the inline sequence did.
+  return releaseFileLock(lockFile, { holder });
 }
 
 /**
@@ -258,10 +233,16 @@ export async function withStagingFenceLock(repoRoot, fn, opts = {}) {
   } catch (err) {
     caughtError = err;
   } finally {
+    // WARN only where OUR lock is left behind: 'fs-error' and 'busy' (the
+    // shared guard stayed taken — #1349). 'not-found'/'not-owner' stay silent.
     const releaseResult = releaseStagingFenceLock({ repoRoot, holder });
     if (!releaseResult.ok && releaseResult.reason === 'fs-error') {
       console.warn(
         `withStagingFenceLock: release failed (fs-error: ${releaseResult.error ?? 'unknown'})`,
+      );
+    } else if (!releaseResult.ok && releaseResult.reason === 'busy') {
+      console.warn(
+        'withStagingFenceLock: release failed (busy: acquire guard held) — .commit.lock left for its stale policy',
       );
     }
   }

@@ -277,7 +277,26 @@ describe('runSessionStartProbes — fail-open', () => {
       ),
     ];
 
-    const out = await runSessionStartProbes({ repoRoot: dir, timeoutMs: 50 }, { probes, emit });
+    // BUDGET (measured, not guessed): the meter samples every
+    // LOOP_BLOCKED_SAMPLE_MS = 20 ms and credits only lateness BEYOND one
+    // sample interval, so a single contiguous block is under-attributed by
+    // ~20 ms — which lands on every probe as its own work. Measured here
+    // 2026-09-13 on an idle host, 3 runs standalone and 1 under `--coverage`:
+    // `cheap-async` reports workMs 18-21 with a 400 ms blocker, i.e. the floor
+    // is ~20 ms whatever the budget. A 50 ms budget left ~30 ms of headroom
+    // over that floor and went red on GitLab pipeline #9459 (job `coverage`,
+    // 3 shards, commit 23ed96ae) with `outcome: 'timeout'` while passing
+    // locally — a load-dependent cliff, not a runner defect (the runner's own
+    // docblock names ~100 ms as the point below which this sampling floor
+    // becomes the measurement error).
+    //
+    // 200 ms is 10x the measured floor and still only HALF the blocker's
+    // 400 ms, so the invariant this test exists for is untouched: if the
+    // sibling's blocked time were charged to `cheap-async` (the pre-meter
+    // behaviour), wall-clock ~400 ms would exceed 200 ms and the probe would
+    // be recorded `timeout` — verified by neutering the meter (fake
+    // regression), which turns this test RED.
+    const out = await runSessionStartProbes({ repoRoot: dir, timeoutMs: 200 }, { probes, emit });
 
     const cheap = out.results.find((r) => r.id === 'cheap-async');
     // Assert on the OUTPUT, not on a duration: a probe that returns instantly
@@ -288,7 +307,13 @@ describe('runSessionStartProbes — fail-open', () => {
     // The verdict's input reaches the ledger, and the cheap probe's own work is
     // charged well under the budget even though wall-clock elapsed exceeds it.
     const payload = calls[0].payload.probes.find((p) => p.id === 'cheap-async');
-    expect(payload.work_ms).toBeLessThan(50);
+    // The load-bearing pair, both literals hardcoded: wall-clock DID run past
+    // the budget (the sibling blocked for 400 ms), and the probe's own work
+    // did NOT. Asserting `work_ms` alone against a tight number re-introduces
+    // the cliff; asserting it against the budget alone is implied by not
+    // timing out. Together they say the subtraction actually happened.
+    expect(cheap.durationMs).toBeGreaterThanOrEqual(300);
+    expect(payload.work_ms).toBeLessThan(200);
     // workMs is wall-clock elapsed minus the attributed loop-blocked time, so
     // it can never exceed durationMs — but it CAN legitimately equal it when
     // no blocking happened to overlap this probe's own window (a race on
