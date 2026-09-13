@@ -195,10 +195,10 @@ export function checkIgnoredBallast(repoRoot, ballastMb = DEFAULT_BALLAST_MB) {
   // more than the finding is worth on a large tree.
   let totalBytes = 0;
   const heaviest = [];
+  const sizes = duBytesBatch(repoRoot, ignoredPaths);
   for (const p of ignoredPaths) {
-    const abs = join(repoRoot, p);
-    const bytes = duBytes(abs);
-    if (bytes === null) continue;
+    const bytes = sizes.get(stripTrailingSlash(p));
+    if (bytes === undefined) continue;
     totalBytes += bytes;
     heaviest.push({ path: p, bytes });
   }
@@ -228,26 +228,63 @@ export function checkIgnoredBallast(repoRoot, ballastMb = DEFAULT_BALLAST_MB) {
   return findings;
 }
 
+// Ceiling on operands per `du` call. Every path is one argv entry and macOS
+// caps argv+environment at ARG_MAX = 1 048 576 bytes; 500 paths stay far below
+// that even at ~1 KB each. Today: 298 ignored top-level entries in this repo
+// (2026-09-12) — one call. Revisit trigger: repos with more than ~5000 ignored
+// entries, where `git status --ignored` itself turns expensive — then move the
+// probe into a detached child with a cache (see the revisit note in
+// scripts/lib/session-start-probes.mjs).
+const DU_CHUNK_SIZE = 500;
+
+/** @param {string} p */
+function stripTrailingSlash(p) {
+  return p.replace(/\/+$/, '');
+}
+
 /**
- * Directory/file size in bytes via `du -sk`, or null when unavailable.
- * `du` is POSIX and present on macOS and Linux; Windows yields null, which
- * degrades the ballast check to a silent skip rather than a crash.
- * @param {string} absPath
- * @returns {number|null}
+ * Sizes of repo-relative paths in bytes via batched `du -sk`, one process per
+ * {@link DU_CHUNK_SIZE} paths instead of one per path (spawn overhead was the
+ * whole cost: 298 single calls 0.685 s vs. one batched call 0.051 s).
+ *
+ * Keys are the paths without trailing slash; a path absent from the map could
+ * not be sized. `du` exits non-zero when ANY operand vanished or is unreadable
+ * but still sizes the rest on stdout, so that stdout is parsed rather than
+ * discarded — otherwise one bad path would silence the whole ballast check.
+ * No `du` at all (Windows) yields an empty map: a silent skip, not a crash.
+ * `-l` keeps parity with the old per-path measurement: without it a batched
+ * `du` counts an inode shared by hard links only under the FIRST operand
+ * (pnpm `node_modules/` pointing into one store → the later ones read ~0).
+ * BSD and GNU `du` both define `-l` as "count sizes many times if hard linked".
+ * @param {string} repoRoot
+ * @param {string[]} relPaths porcelain paths relative to repoRoot
+ * @returns {Map<string, number>}
  */
-function duBytes(absPath) {
-  try {
-    if (!existsSync(absPath)) return null;
-    const out = execFileSync('du', ['-sk', absPath], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 10_000,
-    });
-    const kb = Number(out.trim().split(/\s+/)[0]);
-    return Number.isFinite(kb) ? kb * 1024 : null;
-  } catch {
-    return null;
+function duBytesBatch(repoRoot, relPaths) {
+  const sizes = new Map();
+  const existing = relPaths.filter((p) => existsSync(join(repoRoot, p)));
+  for (let i = 0; i < existing.length; i += DU_CHUNK_SIZE) {
+    const chunk = existing.slice(i, i + DU_CHUNK_SIZE);
+    let out;
+    try {
+      out = execFileSync('du', ['-skl', '--', ...chunk], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 30_000,
+      });
+    } catch (err) {
+      out = typeof err?.stdout === 'string' ? err.stdout : '';
+    }
+    for (const line of out.split('\n')) {
+      const tab = line.indexOf('\t');
+      if (tab <= 0) continue;
+      const kb = Number(line.slice(0, tab));
+      if (!Number.isFinite(kb)) continue;
+      sizes.set(stripTrailingSlash(line.slice(tab + 1)), kb * 1024);
+    }
   }
+  return sizes;
 }
 
 /**

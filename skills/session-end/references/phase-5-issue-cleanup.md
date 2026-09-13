@@ -74,7 +74,12 @@
     - **`issue-budget.overflow: collect-issue` (default)** — create exactly ONE issue:
       - Title: `[Backlog-Sammel] <accountingSessionId>, <N> zurückgestellte Punkte`
       - Labels: `type::backlog`, `priority::low`
-      - Body: a Markdown checklist with one `- [ ]` line per `overflow[]` entry (`title` when present, otherwise the truncated `command`, plus its `at` timestamp).
+      - Body: a Markdown checklist with one `- [ ]` line per `overflow[]` entry (`title` when present, otherwise the truncated `command`, plus its `at` timestamp). Since #1314 an entry may also carry `description`, `repo` and `truncated`; older entries have only `title`/`command`/`at` and render exactly as before.
+        - `description` present → put it under the line as a collapsed `<details><summary>Beschreibung</summary>` block, verbatim. If `truncated: true`, append `(gekürzt)` to the summary.
+        - `truncated: true` and NO `description` (the body file was over 1 MiB and was not read) → add an indented line `Beschreibung zu groß, nicht übernommen`.
+        - `descriptionUnresolved: 'cwd-changed'` → add an indented line `Beschreibung nicht aufgelöst (cd in der Kette)`; the raw `command` still names the file.
+        - `repo` present and NOT this repo → render ONLY the title line, `Ziel: <repo>`, and `Beschreibung zurückgehalten (Ziel-Repo abweichend) — liegt im Budget-Zustand`. Never put that entry's `description` into this repo's collector: it would silently change the content's visibility. The counter file keeps it until the overflow reset.
+        - `repo` present → add an indented line `Ziel: <repo>` under the entry. All entries stay in the ONE collector in this repo (no second collector per foreign repo): the cap is per session, and a second create would itself need an exemption; the `Ziel:` line is what the operator re-files against.
       - This collector issue is itself EXEMPT from the cap (`[Backlog-Sammel]` is in the exemption list in `scripts/lib/issue-budget.mjs`), so it always lands even at count == max.
     - **`issue-budget.overflow: vault-note`** — create NO issue. Write one Markdown file `vault/00-inbox/<accountingSessionId>-backlog-sammel.md` (path relative to `vault-integration.vault-dir`) with valid vault frontmatter and the same checklist body.
     - After the artefact exists, reset `overflow` to `[]` in the counter file and record the collector issue ID / note path in the Phase 6 Final Report under `### Zurückgestellt (issue-budget)`.

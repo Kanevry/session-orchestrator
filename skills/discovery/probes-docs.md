@@ -10,13 +10,15 @@
 
 ```bash
 # Step 1: Verify the probe exists; skip if missing
-test -f skills/discovery/probes/docs-staleness.mjs || { echo "SKIPPED: docs-staleness -- skills/discovery/probes/docs-staleness.mjs not found"; exit 0; }
+# Probes live in the PLUGIN, not the project: ${PLUGIN_ROOT} is resolved per
+# skills/_shared/config-reading.md. The probe still scans process.cwd() (project root).
+test -f "${PLUGIN_ROOT}/skills/discovery/probes/docs-staleness.mjs" || { echo "SKIPPED: docs-staleness -- ${PLUGIN_ROOT}/skills/discovery/probes/docs-staleness.mjs not found (PLUGIN_ROOT='${PLUGIN_ROOT}'; empty = unresolved, see skills/_shared/config-reading.md)"; exit 0; }
 
 # Step 2: Run the probe. It reads docs-staleness.thresholds.living from $CONFIG
 # (passed from the discovery skill) and scans docs/*.md (root level) +
 # docs/examples/*.md for filesystem-mtime staleness.
 node --input-type=module -e "
-import {runProbe} from './skills/discovery/probes/docs-staleness.mjs';
+import {runProbe} from '${PLUGIN_ROOT}/skills/discovery/probes/docs-staleness.mjs';
 const cfg = JSON.parse(process.env.SO_CONFIG || '{}');
 const r = await runProbe(process.cwd(), cfg);
 for (const f of r.findings) {
@@ -49,14 +51,16 @@ if (r.skipped_reason) console.log('SKIPPED:', r.skipped_reason);
 
 ```bash
 # Step 1: Verify the probe exists; skip if missing
-test -f skills/discovery/probes/ssot-code-diff.mjs || { echo "SKIPPED: ssot-code-diff -- skills/discovery/probes/ssot-code-diff.mjs not found"; exit 0; }
+# Probes live in the PLUGIN, not the project: ${PLUGIN_ROOT} is resolved per
+# skills/_shared/config-reading.md. The probe still scans process.cwd() (project root).
+test -f "${PLUGIN_ROOT}/skills/discovery/probes/ssot-code-diff.mjs" || { echo "SKIPPED: ssot-code-diff -- ${PLUGIN_ROOT}/skills/discovery/probes/ssot-code-diff.mjs not found (PLUGIN_ROOT='${PLUGIN_ROOT}'; empty = unresolved, see skills/_shared/config-reading.md)"; exit 0; }
 
 # Step 2: Run the probe. It reads no config keys — it diffs a hand-curated
 # registry of doc "count" claims (blocked-commands.json rules, .claude/rules/
 # file count, skills/ user-facing directory count, commands/ file count)
 # against the live code/filesystem value each claim describes.
 node --input-type=module -e "
-import {runProbe} from './skills/discovery/probes/ssot-code-diff.mjs';
+import {runProbe} from '${PLUGIN_ROOT}/skills/discovery/probes/ssot-code-diff.mjs';
 const cfg = JSON.parse(process.env.SO_CONFIG || '{}');
 const r = await runProbe(process.cwd(), cfg);
 for (const f of r.findings) {

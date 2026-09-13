@@ -63,6 +63,7 @@ import {
   readBudgetState,
   writeBudgetState,
   budgetStatePath,
+  buildOverflowRecord,
 } from '../scripts/lib/issue-budget.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
@@ -213,7 +214,10 @@ function formatLoopDenyReason(config) {
  *
  * @param {{ projectDir: string, sessionId: string|null,
  *           state: { count: number, exempt: number, overflow: object[], sessionId: string|null },
- *           chargeable: Array<{ text: string, title: string|null }>,
+ *           chargeable: Array<{ text: string, title: string|null, description: string|null,
+ *                               descriptionFile: string|null, repo: string|null,
+ *                               cwdChanged: boolean }>,
+ *           cwd?: string|null,
  *           config: { "max-per-session": number, mode: string, overflow: string },
  *           now?: string }} opts
  * @returns {{ count: number, max: number, overflowPath: string,
@@ -225,11 +229,22 @@ function parkOverflow({
   state,
   chargeable,
   config,
+  cwd = null,
   now = new Date().toISOString(),
 }) {
   state.sessionId = sessionId;
   for (const s of chargeable) {
-    state.overflow.push({ title: s.title ?? null, command: String(s.text).slice(0, 500), at: now });
+    state.overflow.push(buildOverflowRecord({
+      repoRoot: projectDir,
+      title: s.title,
+      description: s.description,
+      descriptionFile: s.descriptionFile,
+      repo: s.repo,
+      cwd,
+      cwdChanged: s.cwdChanged,
+      command: s.text,
+      at: now,
+    }));
   }
   if (sessionId !== null) writeBudgetState(projectDir, state);
   return {
@@ -295,7 +310,7 @@ async function main() {
     const state = readBudgetState(projectDir, sessionId);
     if (state.count + chargeable.length > config['max-per-session']) {
       return emitDeny(formatBlockReason(parkOverflow({
-        projectDir, sessionId, state, chargeable, config,
+        projectDir, sessionId, state, chargeable, config, cwd: input.cwd,
       })));
     }
   }
@@ -312,6 +327,11 @@ async function main() {
       sessionId,
       command: s.text,
       title: s.title,
+      description: s.description,
+      descriptionFile: s.descriptionFile,
+      repo: s.repo,
+      cwd: input.cwd,
+      cwdChanged: s.cwdChanged,
       config,
     }),
   );

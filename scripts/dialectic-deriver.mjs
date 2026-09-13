@@ -182,13 +182,21 @@ function countContentLines(body) {
  * dry-run mode, where there is no `mergePeerCard()` stats object to read).
  * Pure function — no I/O.
  *
- * Counts `<!-- BEGIN MANAGED: <name> -->` sentinels (the same grammar
- * `scripts/lib/peer-cards/merger.mjs` parses). A proposed body that carries
- * none — the LLM emits a bare full-body replacement per the current prompt
- * contract in {@link buildPrompt}, not per-section sentinels — still counts
- * as ONE delta: a non-empty full-body replacement is a real change to the
- * target, and an empty proposed body counts as zero (nothing to report for a
- * target the response never touched).
+ * Resolution order:
+ *   1. non-string or empty body → 0 (the response never touched the target);
+ *   2. `<!-- BEGIN MANAGED: <name> -->` sentinels present (the grammar
+ *      `scripts/lib/peer-cards/merger.mjs` parses) → their count;
+ *   3. otherwise the count of level-2 `## ` headings — the deriver's actual
+ *      output contract per {@link buildPrompt} is a bare full-body
+ *      replacement structured by `## ` headings, not sentinels (#1319: the
+ *      old sentinel-or-1 rule reported 1 for a 12-section body). Headings
+ *      inside ``` / ~~~ code fences are NOT counted;
+ *   4. a non-empty body with neither → 1 (a full-body replacement is still a
+ *      real change to the target).
+ *
+ * Dry-run only. Apply mode counts `mergePeerCard()` stats instead
+ * (`replaced + appended`, i.e. merged sentinel sections) — the two modes
+ * measure different quantities on the same event field.
  *
  * @param {string | undefined} diffText — `diff.user` or `diff.agent` from
  *   {@link parseResponse}; `undefined` when the target was not emitted.
@@ -197,7 +205,23 @@ function countContentLines(body) {
 export function countManagedSections(diffText) {
   if (typeof diffText !== 'string' || diffText.length === 0) return 0;
   const matches = diffText.match(/<!--\s*BEGIN\s+MANAGED:\s*[\w-]+\s*-->/g);
-  return matches && matches.length > 0 ? matches.length : 1;
+  if (matches && matches.length > 0) return matches.length;
+  let headings = 0;
+  let fence = null; // { char, len } while inside a code fence
+  for (const line of diffText.split(/\r?\n/)) {
+    const f = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      // CommonMark close: same char, at least as long, no info string.
+      if (f && f[1][0] === fence.char && f[1].length >= fence.len && f[2].trim() === '') fence = null;
+      continue;
+    }
+    if (f) {
+      fence = { char: f[1][0], len: f[1].length };
+      continue;
+    }
+    if (/^## /.test(line)) headings += 1;
+  }
+  return headings > 0 ? headings : 1;
 }
 
 /**

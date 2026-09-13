@@ -435,6 +435,126 @@ function titleFromTokens(tokens) {
 }
 
 /**
+ * Per-host CLI flag names for the non-title fields of an issue-create
+ * statement (#1314). Verified against the CLIs' own `--help` (2026-09-12):
+ *   glab issue create: `-t --title`, `-d --description`, `--description-file`, `-R --repo`
+ *   gh issue create:   `-t, --title`, `-b, --body`, `-F, --body-file`, `-R, --repo`
+ * Read only on the subcommand route — on the api route `-F` is a field flag.
+ */
+const CLI_FLAGS = {
+  gitlab: { description: ['-d', '--description'], descriptionFile: ['--description-file'], repo: ['-R', '--repo'] },
+  github: { description: ['-b', '--body'], descriptionFile: ['-F', '--body-file'], repo: ['-R', '--repo'] },
+};
+
+/** `$(cat <path>)` as ONE value — the only command substitution resolved. */
+const CAT_SUBST_RE = /^\$\(cat\s+(\S+)\)$/;
+
+/**
+ * Read the value of a flag in `names` (`--x v`, `--x=v`, `-x v`). When the flag
+ * repeats, the LAST value wins — the pflag semantics `gh`/`glab` apply.
+ * An UNQUOTED `$(cat p)` is split by the lexer into `$(cat` + `p)`; that pair is
+ * rejoined so the substitution survives, in both the `--x $(cat p)` and the
+ * `--x=$(cat p)` spelling.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} tokens
+ * @param {string[]} names
+ * @returns {string|null}
+ */
+function flagValue(tokens, names) {
+  let found = null;
+  for (let i = 0; i < tokens.length; i++) {
+    const text = tokens[i].text;
+    for (const name of names) {
+      let value;
+      if (text === name) {
+        value = tokens[i + 1]?.text;
+        if (typeof value !== 'string') return found;
+        i += 1;
+      } else if (name.startsWith('--') && text.startsWith(`${name}=`)) {
+        value = text.slice(name.length + 1);
+      } else {
+        continue;
+      }
+      if (value === '$(cat' && typeof tokens[i + 1]?.text === 'string') {
+        value = `$(cat ${tokens[i + 1].text}`;
+        i += 1;
+      }
+      found = value;
+      break;
+    }
+  }
+  return found;
+}
+
+/**
+ * The paths of every `$(cat <path>)` that sits inside SINGLE quotes in the RAW
+ * command. The lexer marks single- and double-quoted tokens alike, but only
+ * the double-quoted (or bare) form is expanded by the shell — inside single
+ * quotes `gh`/`glab` receive the literal text, so reading that file would park
+ * content the CLI never saw (`-d '$(cat .env)'`).
+ *
+ * @param {string} command — the raw command, quotes intact
+ * @returns {Set<string>}
+ */
+function singleQuotedCatPaths(command) {
+  const out = new Set();
+  let quote = null;
+  let span = '';
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (quote === "'") {
+      if (c === "'") {
+        for (const m of span.matchAll(/\$\(cat\s+(\S+)\)/g)) out.add(m[1]);
+        quote = null;
+        span = '';
+      } else {
+        span += c;
+      }
+    } else if (c === '\\') {
+      i += 1; // an escaped char opens no quote
+    } else if (quote === '"') {
+      if (c === '"') quote = null;
+    } else if (c === "'" || c === '"') {
+      quote = c;
+    }
+  }
+  return out;
+}
+
+/**
+ * Title, description, description file and target repo of ONE create
+ * statement (#1314) — what a parked overflow record needs to be re-filed.
+ * Additive to {@link titleFromTokens}: its `--title` / `-f title=` reading is
+ * kept verbatim; `-t` is added on the subcommand route only.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} tokens
+ * @param {{ host: string, via: string }} shape
+ * @param {Set<string>} literalCatPaths — from {@link singleQuotedCatPaths}
+ * @returns {{ title: string|null, description: string|null,
+ *             descriptionFile: string|null, repo: string|null }}
+ */
+function fieldsFromTokens(tokens, shape, literalCatPaths) {
+  let title = titleFromTokens(tokens);
+  const flags = shape.via === 'cli' ? CLI_FLAGS[shape.host] : undefined;
+  if (!flags) return { title, description: null, descriptionFile: null, repo: null };
+  if (title === null) title = flagValue(tokens, ['-t'])?.trim() || null;
+  let description = flagValue(tokens, flags.description);
+  let descriptionFile = flagValue(tokens, flags.descriptionFile);
+  // `-` means stdin (or an editor for glab -d) — nothing a later read can reach.
+  if (descriptionFile === '-') descriptionFile = null;
+  if (description === '-') description = null;
+  // A single-quoted `$(cat p)` stays the literal text the CLI files.
+  const subst = typeof description === 'string' ? CAT_SUBST_RE.exec(description) : null;
+  if (subst && !literalCatPaths.has(subst[1])) {
+    description = null;
+    descriptionFile ??= subst[1];
+  }
+  const fileSubst = typeof descriptionFile === 'string' ? CAT_SUBST_RE.exec(descriptionFile) : null;
+  if (fileSubst) descriptionFile = literalCatPaths.has(fileSubst[1]) ? null : fileSubst[1];
+  return { title, description, descriptionFile, repo: flagValue(tokens, flags.repo) };
+}
+
+/**
  * EVERY issue-create statement in the command chain, in source order (#1163
  * BUG-1).
  *
@@ -458,26 +578,50 @@ function titleFromTokens(tokens) {
  * the lexer, arguments joined by single spaces). It is a CLASSIFICATION INPUT
  * for `classifyExemption`, never something to re-execute.
  *
+ * `cwdChanged` is true when an EARLIER statement of the same chain is a
+ * `cd`/`pushd`/`popd`: a relative description-file path is then relative to a
+ * directory this hook cannot know, so `buildOverflowRecord` must not resolve it.
+ *
  * @param {string} command
  * @returns {Array<{ shape: { host: string, kind: string, verb: string, via: string },
  *                   tokens: Array<{ text: string, quoted: boolean }>,
  *                   text: string,
- *                   title: string|null }>}
+ *                   title: string|null,
+ *                   description: string|null,
+ *                   descriptionFile: string|null,
+ *                   repo: string|null,
+ *                   cwdChanged: boolean }>}
  */
 export function findIssueCreateStatements(command) {
   const out = [];
+  let literalCatPaths = null;
+  let cwdChanged = false;
   for (const tokens of statementsOf(command)) {
     const shape = matchStatement(tokens);
-    if (!shape || shape.kind !== 'issue') continue;
+    if (!shape || shape.kind !== 'issue') {
+      if (!cwdChanged && tokens.length > 0) {
+        try {
+          cwdChanged = CWD_VERBS.has(resolveSegmentVerb(tokens).verb);
+        } catch {
+          cwdChanged = true; // unknown → do not trust a relative path
+        }
+      }
+      continue;
+    }
+    literalCatPaths ??= singleQuotedCatPaths(command);
     out.push({
       shape,
       tokens,
       text: tokens.map((t) => t.text).join(' '),
-      title: titleFromTokens(tokens),
+      ...fieldsFromTokens(tokens, shape, literalCatPaths),
+      cwdChanged,
     });
   }
   return out;
 }
+
+/** Builtins that move the shell's working directory for later statements. */
+const CWD_VERBS = new Set(['cd', 'pushd', 'popd']);
 
 /**
  * Determine which host the command targets. `gh` → "github", `glab` → "gitlab".

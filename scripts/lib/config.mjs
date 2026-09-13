@@ -208,7 +208,18 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     _getVal(kv, 'ecosystem-health', undefined) !== undefined
       ? _coerceBoolean(kv, 'ecosystem-health', false)
       : (_parseEcosystemHealthBlockEnabled(mdContent) ?? false);
-  const discoveryOnClose = _coerceBoolean(kv, 'discovery-on-close', false);
+  // discovery-on-close alone accepts `auto` (= true) and defaults to true when
+  // absent: the template recommends `auto` and the 2026-07-29 doc decision made
+  // close-time discovery the default. Other booleans stay strict (#1340).
+  // Ceiling (BV-004): a one-key tri-state kept inline; revisit (move into
+  // coercers.mjs as a shared auto-boolean coercer) when a second key accepts `auto`.
+  const discoveryOnCloseRaw = (_getVal(kv, 'discovery-on-close', 'auto')).toLowerCase();
+  if (!['true', 'false', 'auto'].includes(discoveryOnCloseRaw)) {
+    throw new Error(
+      `config.mjs: invalid boolean for 'discovery-on-close': '${_getVal(kv, 'discovery-on-close', '')}' (expected true, false or auto)`,
+    );
+  }
+  const discoveryOnClose = discoveryOnCloseRaw !== 'false';
   const reasoningOutput = _coerceBoolean(kv, 'reasoning-output', false);
   const groundingCheck = _coerceBoolean(kv, 'grounding-check', true);
   const allowDestructiveOps = _coerceBoolean(kv, 'allow-destructive-ops', false);

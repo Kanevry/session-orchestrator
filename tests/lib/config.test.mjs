@@ -221,6 +221,24 @@ describe('parseSessionConfig', () => {
     });
   });
 
+  // #1340: template recommends `discovery-on-close: auto`, docs say default true —
+  // the parser used to default false and threw on `auto` for the whole config.
+  describe('discovery-on-close accepts auto and defaults to true', () => {
+    it.each([
+      { why: 'missing key', line: '', expected: true },
+      { why: 'auto', line: 'discovery-on-close: auto\n', expected: true },
+      { why: 'explicit false', line: 'discovery-on-close: false\n', expected: false },
+      { why: 'yes (invalid)', line: 'discovery-on-close: yes\n', expected: /true, false or auto/ },
+    ])('$why', ({ line, expected }) => {
+      const content = `## Session Config\n\npersistence: true\n${line}`;
+      if (expected instanceof RegExp) {
+        expect(() => parseSessionConfig(content)).toThrow(expected);
+      } else {
+        expect(parseSessionConfig(content)['discovery-on-close']).toBe(expected);
+      }
+    });
+  });
+
   describe('integer override syntax', () => {
     it.each([
       {

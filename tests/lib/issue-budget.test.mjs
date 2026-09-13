@@ -23,6 +23,8 @@ import {
   budgetStatePath,
   budgetStateRel,
   BUDGET_STATE_REL,
+  OVERFLOW_DESCRIPTION_MAX,
+  buildOverflowRecord,
 } from '@lib/issue-budget.mjs';
 
 let repoRoot;
@@ -341,6 +343,30 @@ describe('chargeIssueBudget — strict mode', () => {
     expect(typeof state.overflow[0].at).toBe('string');
   });
 
+  // #1314 — the park kept only the raw command; a body passed via a temp file
+  // was lost the moment the file went away. The record now carries it, read at
+  // block time, with a named 16 KiB ceiling.
+  it('parks the expanded description from the file, and marks an oversize body truncated', () => {
+    chargeN(3, config);
+    writeFileSync(path.join(repoRoot, 'body.md'), 'real body\n', 'utf8');
+    writeFileSync(path.join(repoRoot, 'big.md'), 'x'.repeat(20 * 1024), 'utf8');
+    for (const f of ['body.md', 'big.md']) {
+      chargeIssueBudget({
+        repoRoot,
+        sessionId: 's1',
+        command: `glab issue create --title "t" --description-file ${f}`,
+        title: 't',
+        descriptionFile: f,
+        repo: 'grp/other',
+        config,
+      });
+    }
+    const [small, big] = readBudgetState(repoRoot, 's1').overflow;
+    expect(small).toMatchObject({ description: 'real body\n', repo: 'grp/other', truncated: false });
+    expect(big.description).toHaveLength(OVERFLOW_DESCRIPTION_MAX);
+    expect(big.truncated).toBe(true);
+  });
+
   it('lets an EXEMPT creation through even when the budget is fully spent', () => {
     chargeN(3, config);
     const v = chargeIssueBudget({
@@ -611,5 +637,46 @@ describe('loadIssueBudgetConfig — per-session-type resolution', () => {
     const verdict = chargeN(7, cfg, 'type-session');
     expect(verdict.max).toBe(6);
     expect(verdict.decision).toBe('block');
+  });
+});
+
+// Fix pass f-1 (#1314 review): where a relative description file is resolved.
+describe('buildOverflowRecord — description-file resolution', () => {
+  const base = { command: 'glab issue create', at: '2026-09-12T00:00:00Z' };
+  let savedHome;
+  beforeEach(() => { savedHome = process.env.HOME; });
+  afterEach(() => { process.env.HOME = savedHome; });
+
+  it.each([
+    ['~/ expands to the home directory', { descriptionFile: '~/home-body.md' }, 'home body'],
+    ['relative path resolves against the hook cwd, not repoRoot', { descriptionFile: 'cwd-body.md', cwd: 'CWD' }, 'cwd body'],
+  ])('%s', (_label, extra, expected) => {
+    const home = mkdtempSync(path.join(tmpdir(), 'ib-home-'));
+    const cwd = mkdtempSync(path.join(tmpdir(), 'ib-cwd-'));
+    try {
+      process.env.HOME = home;
+      writeFileSync(path.join(home, 'home-body.md'), 'home body', 'utf8');
+      writeFileSync(path.join(cwd, 'cwd-body.md'), 'cwd body', 'utf8');
+      writeFileSync(path.join(repoRoot, 'cwd-body.md'), 'WRONG root file', 'utf8');
+      const rec = buildOverflowRecord({ ...base, repoRoot, ...extra, cwd: extra.cwd ? cwd : undefined });
+      expect(rec.description).toBe(expected);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('a `cd` earlier in the chain leaves a relative path unresolved and says so', () => {
+    writeFileSync(path.join(repoRoot, 'body.md'), 'WRONG root file', 'utf8');
+    const rec = buildOverflowRecord({ ...base, repoRoot, descriptionFile: 'body.md', cwdChanged: true });
+    expect(rec.description).toBeNull();
+    expect(rec.descriptionUnresolved).toBe('cwd-changed');
+  });
+
+  it('truncation never ends on a lone high surrogate', () => {
+    const rec = buildOverflowRecord({ ...base, repoRoot, description: 'x'.repeat(OVERFLOW_DESCRIPTION_MAX - 1) + '\u{1F600}' });
+    expect(rec.truncated).toBe(true);
+    expect(rec.description).toHaveLength(OVERFLOW_DESCRIPTION_MAX - 1);
+    expect(/[\uD800-\uDBFF]$/.test(rec.description)).toBe(false);
   });
 });

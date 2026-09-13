@@ -1095,6 +1095,14 @@ async function mirrorBoardInner({ repoRoot, repos, explicitStatus, now = new Dat
         waited_ms: Date.now() - acquireStartedAt,
       };
     },
+    // #1336: the release runs in withFileLock's finally, i.e. before
+    // withBoardLock returns — so this lands on the SAME board_written event,
+    // which mirrorBoard emits only after this function returns.
+    onReleaseOutcome: (r) => {
+      if (lockOutcome && r && r.ok === false && typeof r.reason === 'string') {
+        lockOutcome.release = r.reason;
+      }
+    },
   });
 
   return lockOutcome === undefined ? inner : { ...inner, lock: lockOutcome };

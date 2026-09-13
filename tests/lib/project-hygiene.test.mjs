@@ -11,7 +11,7 @@
  * are tested at least as carefully as the true positives.
  */
 
-import { mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, linkSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -117,6 +117,49 @@ describe('checkIgnoredBallast', () => {
     const findings = checkIgnoredBallast(root, 999_999);
     expect(findings.find((f) => f.check === 'untracked-unignored')).toBeUndefined();
   });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'still reports ballast when one ignored path cannot be read',
+    () => {
+      // Bug this catches: sizing is ONE batched `du` call; `du` exits non-zero
+      // when any operand is unreadable. Treating that exit as failure drops
+      // every size, and the ballast finding vanishes silently — where the old
+      // per-path loop lost only the one unreadable path.
+      writeFileSync(join(root, '.gitignore'), 'big/\nlocked/\n');
+      commitN(1);
+      mkdirSync(join(root, 'big'), { recursive: true });
+      writeFileSync(join(root, 'big', 'blob.bin'), 'b'.repeat(2 * 1024 * 1024));
+      mkdirSync(join(root, 'locked', 'inner'), { recursive: true });
+      writeFileSync(join(root, 'locked', 'inner', 'x.txt'), 'x');
+      chmodSync(join(root, 'locked'), 0o000);
+      try {
+        const findings = checkIgnoredBallast(root, 1);
+        const ballast = findings.find((f) => f.check === 'ignored-ballast');
+        expect(ballast).toBeDefined();
+        expect(ballast.message).toContain('big/');
+      } finally {
+        chmodSync(join(root, 'locked'), 0o755);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'counts a hard-linked file under every ignored path that holds it',
+    () => {
+      // Bug this catches: a batched `du` counts a shared inode only under its
+      // first operand, so two pnpm `node_modules/` linking one store under-count
+      // and the ballast finding drops below threshold. 400 KB twice rounds to
+      // 1 MB (finding); counted once it rounds to 0 MB (no finding).
+      writeFileSync(join(root, '.gitignore'), 'a/\nb/\n');
+      commitN(1);
+      mkdirSync(join(root, 'a'));
+      mkdirSync(join(root, 'b'));
+      writeFileSync(join(root, 'a', 'blob.bin'), 'b'.repeat(400 * 1024));
+      linkSync(join(root, 'a', 'blob.bin'), join(root, 'b', 'blob.bin'));
+      const findings = checkIgnoredBallast(root, 1);
+      expect(findings.find((f) => f.check === 'ignored-ballast')).toBeDefined();
+    },
+  );
 });
 
 // ── Stale orchestrator artifacts ─────────────────────────────────────────────

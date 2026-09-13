@@ -67,8 +67,8 @@ const DEFAULT_POLL_MS = 50;
  * longer delete the successor's lock, because release runs under the same
  * `.acquire` guard as takeover. A `not-owner` release here therefore means THIS
  * writer's lease expired mid-section — the lost-update case above, never a
- * benign miss. `withFileLock` discards the release result today, so that
- * signal is not yet observable from this module.
+ * benign miss. Since #1336 that release result reaches callers through
+ * `onReleaseOutcome` (see withBoardLock).
  */
 const DEFAULT_STALE_MS = 60_000;
 
@@ -114,6 +114,11 @@ export function boardLockPathFor(vaultDir) {
  *   is present only when this acquire OVERRODE an aged lock, and carries
  *   `file-lock.mjs`'s own reason token — the observable behind the
  *   DEFAULT_STALE_MS revisit trigger.
+ * @param {(release: { ok: boolean, reason?: string }) => void} [opts.onReleaseOutcome]
+ *   — diagnostic sink for the release result, called at most once, AFTER `fn`
+ *   (only on the locked path). `{ ok: false, reason: 'not-owner' }` means this
+ *   writer's lease expired mid-section; `'busy'` means the release gave up on
+ *   the `.acquire` guard and left the lock in place.
  * @param {(lockPath: string, fn: Function, opts: object) => Promise<object>} [opts.lockImpl]
  *   — test seam; defaults to {@link withFileLock}. Must honour the same
  *   `{ ok: true, value } | { ok: false, reason }` contract.
@@ -132,6 +137,7 @@ export async function withBoardLock(vaultDir, fn, opts = {}) {
     staleMs = DEFAULT_STALE_MS,
     holder: holderOpt,
     onLockOutcome,
+    onReleaseOutcome,
     lockImpl = withFileLock,
     warn = (msg) => process.stderr.write(msg),
   } = opts;
@@ -176,6 +182,9 @@ export async function withBoardLock(vaultDir, fn, opts = {}) {
       indent: 2,
       tmpPrefix: '.board.lock',
       warn: warnAndWatch,
+      // Separate sink, not a second onLockOutcome call — that one stays
+      // "exactly once, before fn".
+      ...(typeof onReleaseOutcome === 'function' ? { onRelease: onReleaseOutcome } : {}),
     },
   );
 

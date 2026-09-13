@@ -47,6 +47,7 @@ if [[ "$DC_ENABLED" == "true" ]]; then
   DC_STATUS=$(echo "$DC_JSON" | jq -r '.status // "infra-error"')
   DC_ERR_COUNT=$(echo "$DC_JSON" | jq -r '.errors // [] | length')
   DC_WARN_COUNT=$(echo "$DC_JSON" | jq -r '.warnings // [] | length')
+  DC_NOTES_COUNT=$(echo "$DC_JSON" | jq -r '.notes // [] | length')
 fi
 ```
 
@@ -57,9 +58,10 @@ fi
 - **`mode: off`** — checker reports `status: skipped-mode-off`; include a single line "CLAUDE.md drift: skipped (mode=off)" in the quality gate report. Never blocks.
 - **`mode: warn`** — checker always exits 0. If `.errors | length > 0`, surface the list in the report under "CLAUDE.md drift warnings (mode=warn)" with check + file:line + message for each entry. Also list any `.warnings` (e.g. `#NN` the checker could not resolve via glab). Never blocks close; note that `mode: strict` would have routed the same errors through the carryover path below.
 - **`mode: strict`** (legacy alias `hard`, normalized to `strict` at parse time — #217) — checker exits 1 on errors. On exit 1: do NOT block the close. Surface the full error list, then default to **warn + carryover + continue** (Recommended): file a carryover issue (labels `carryover`, `priority::high`) titled `[Carryover] CLAUDE.md drift (strict) — <E> errors` capturing the drift items for a follow-up session, log a Deviation entry in STATE.md `## Deviations`, then continue the close. Offer "Override and close" (continue without a carryover issue; log the Deviation) as an alternative via AskUserQuestion. The user can also (a) fix the drift directly in `CLAUDE.md` (or `AGENTS.md` on Codex CLI) / `_meta/`, or (b) temporarily set `mode: warn` while backfilling, or (c) disable a specific check via its `check-*` flag if it reports false positives on this codebase.
+- **Notes (`.notes[]`, every mode that runs: `warn` and `strict`)**: whenever `DC_NOTES_COUNT > 0`, also when `status: ok`, render the entries under their own heading **"CLAUDE.md drift notes (reported, not warned)"**, one line per entry: `[<check>/<probe>] <file>:<line> — <message>`. Notes are a third category, separate from errors and warnings (#1312, `.claude/rules/development.md` § Guard & Threshold Design: split the category instead of raising the threshold; source: the `notes[] human renderer (#1312)` block in `skills/claude-md-drift-check/checker.mjs`). Keeping them separate is part of the contract. Never call a note a "warning" or an "error", never let one block or change the exit-code dispatch below, and never file a carryover issue for it. It is reported, and no action follows from it. If notes are hidden, nobody reads them, and that unread state is what the split was built to end.
 - **Exit 2** (infra error — missing `node`, unreadable `VAULT_DIR`, malformed args) — treat as a skipped gate with a loud warning ("CLAUDE.md drift: infrastructure error — <reason>"). Do NOT block the session close on infra failures.
 
-**Exit-code dispatch:** The checker writes infra-error JSON to stderr (suppressed by `2>/dev/null` above), so `DC_JSON` is empty when `DC_EXIT == 2`. Always branch on `DC_EXIT` first, then `DC_STATUS`:
+**Exit-code dispatch:** The checker writes infra-error JSON to stderr (suppressed by `2>/dev/null` above), so `DC_JSON` is empty when `DC_EXIT == 2`. Notes still arrive even though stderr is dropped: the checker also prints a human-readable notes block on stderr, but the same `notes[]` sits in the stdout JSON read into `DC_NOTES_COUNT` above. Do NOT remove `2>/dev/null` to show the notes. Render them from `DC_JSON`. Always branch on `DC_EXIT` first, then `DC_STATUS`:
 
 ```bash
 if [[ "$DC_EXIT" == "2" ]]; then
@@ -78,6 +80,9 @@ fi
 ```
 CLAUDE.md drift: ok (N files scanned, mode=<mode>)
   - Skipped: issue-reference-freshness (glab not found in PATH)
+
+CLAUDE.md drift notes (reported, not warned)
+  [<check>/<probe>] <file>:<line> — <message>
 ```
 
 **Success line format** (when `errors: [] && warnings: []`):

@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, utimesSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, utimesSync, existsSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -1505,6 +1505,44 @@ describe('mirrorBoard — board_written telemetry', () => {
     // The lock PATH must never travel: it is `<home>/…`, the CP1 shape
     // `telemetrySafePath` exists to keep out of this payload.
     expect(JSON.stringify(events[0])).not.toContain(homedir());
+  });
+
+  it('board_written carries lock.release when the lease expired mid-write (#1336)', async () => {
+    // Bug this catches: withFileLock discarded the release result, so a writer
+    // whose lease expired inside the merge (release → not-owner: a successor may
+    // have written beside it) left no trace in the ledger.
+    const vaultDir = makeVaultDir();
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+    const repoRoot = makeThisRepoConfig('expired-lease-repo', vaultDir);
+    const lockPath = boardLockPathFor(vaultDir);
+
+    let successor;
+    const fs = {
+      existsSync: (p) => {
+        // First fs touch INSIDE the critical section (the lock file exists only
+        // there): expire our lease and let a second writer take over.
+        if (successor === undefined && existsSync(lockPath)) {
+          const old = new Date(Date.now() - 600_000);
+          utimesSync(lockPath, old, old);
+          successor = tryAcquireFileLock(lockPath, {
+            staleCheck: 'mtime', staleMs: 60_000, holder: 'successor',
+            indent: 2, tmpPrefix: '.board.lock', warn: () => {},
+          });
+        }
+        return existsSync(p);
+      },
+    };
+
+    const result = await mirrorBoard({ repoRoot, now: FIXED_NOW, hostPaths: HERMETIC_HOST_PATHS, fs });
+    expect(result.action).toBe('written');
+    expect(successor?.acquired).toBe(true);
+
+    const events = readBoardEvents(repoRoot);
+    expect(events).toHaveLength(1);
+    expect(events[0].lock.locked).toBe(true);
+    expect(events[0].lock.release).toBe('not-owner');
+    // The successor's lock survives our release.
+    expect(JSON.parse(readFileSync(lockPath, 'utf8')).holder).toBe('successor');
   });
 
   it('board_written omits `lock` on a path that never took the lock', async () => {

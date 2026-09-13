@@ -545,6 +545,37 @@ describe('withFileLock — acquire → fn → release', () => {
   });
 });
 
+describe('withFileLock — #1336 release result reaches onRelease', () => {
+  // Bug: withFileLock discarded releaseFileLock's result in its finally, so a
+  // lease that expired mid-fn (release → not-owner) was unobservable.
+  const lease = (holder) => ({ staleCheck: 'mtime', staleMs: 10_000, holder, warn: () => {} });
+
+  it('reports not-owner when a successor took over mid-fn, and leaves its lock alone', async () => {
+    const releases = [];
+    const result = await withFileLock(lockPath, () => {
+      const old = Date.now() / 1000 - 60;
+      utimesSync(lockPath, old, old); // our lease has expired
+      expect(tryAcquireFileLock(lockPath, lease('B')).acquired).toBe(true);
+      return 'v';
+    }, { ...lease('A'), timeoutMs: 0, onRelease: (r) => releases.push(r) });
+
+    expect(result).toEqual({ ok: true, value: 'v' });
+    expect(releases).toEqual([{ ok: false, reason: 'not-owner' }]);
+    expect(readLockBody().holder).toBe('B');
+  });
+
+  it('a throwing onRelease changes neither the result nor the release', async () => {
+    const result = await withFileLock(lockPath, () => 'v', {
+      ...lease('A'),
+      timeoutMs: 0,
+      onRelease: () => { throw new Error('sink boom'); },
+    });
+
+    expect(result).toEqual({ ok: true, value: 'v' });
+    expect(existsSync(lockPath)).toBe(false);
+  });
+});
+
 describe('isPidAliveOnHost', () => {
   it('returns true for the current process PID', () => {
     expect(isPidAliveOnHost(process.pid)).toBe(true);

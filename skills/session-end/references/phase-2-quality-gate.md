@@ -57,11 +57,11 @@ If `mode === 'off'`, skip Phase 2.3 entirely.
 
 #### Step 2 — Invoke staleness probes
 
-Both probes already ship in `skills/discovery/probes/`. Invoke each via Node import (no shell-out):
+Both probes already ship in the plugin's `skills/discovery/probes/`. Invoke each via Node import (no shell-out). Import from the **plugin** root `${PLUGIN_ROOT}` (resolution chain: `skills/_shared/config-reading.md`), never from the project root — in a consumer repo the project has no `skills/` directory. `projectRoot` stays the project root the probes scan:
 
 ```js
-import { runProbe as runStaleness } from '$REPO_ROOT/skills/discovery/probes/vault-staleness.mjs';
-import { runProbe as runNarrative }  from '$REPO_ROOT/skills/discovery/probes/vault-narrative-staleness.mjs';
+import { runProbe as runStaleness } from '${PLUGIN_ROOT}/skills/discovery/probes/vault-staleness.mjs';
+import { runProbe as runNarrative }  from '${PLUGIN_ROOT}/skills/discovery/probes/vault-narrative-staleness.mjs';
 
 const projectStaleness = await runStaleness(projectRoot, config);
 const narrativeStaleness = await runNarrative(projectRoot, config);

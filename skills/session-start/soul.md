@@ -141,7 +141,7 @@ sink, before:
 ```
 issue-budget: session cap reached — 12/12 issues already created.
 This request was NOT created. It is parked as overflow entry #3 in:
-  .orchestrator/runtime/issue-budget-overflow.jsonl
+  .orchestrator/runtime/issue-budget/<sha256-16-of-session-id>.json
 session-end Phase 5 will fold all overflow entries into ONE collector issue `[Backlog-Sammel] <session-id>, N zurückgestellte Punkte`. Nothing is lost.
 Exempt from the cap: priority::critical, the carryover class (SPIRAL/FAILED, [Carryover]),
 and broken-window closure issues — those are never deferred.
@@ -155,7 +155,7 @@ After:
 Nothing is lost — the issue is parked, and nothing needs doing right now.
 issue-budget: session cap reached — 12/12 issues already created, so this one was NOT created.
 It is parked as overflow entry #3 in:
-  .orchestrator/runtime/issue-budget-overflow.jsonl
+  .orchestrator/runtime/issue-budget/<sha256-16-of-session-id>.json
 session-end Phase 5 folds all overflow entries into ONE collector issue `[Backlog-Sammel] <session-id>, N zurückgestellte Punkte`.
 Exempt from the cap: priority::critical, the carryover class (SPIRAL/FAILED, [Carryover]),
 and broken-window closure issues — those are never deferred.

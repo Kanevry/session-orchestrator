@@ -29,6 +29,7 @@
 
 import { digestSha256Short } from './crypto-digest-utils.mjs';
 import { existsSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 
 import { writeJsonAtomicSync } from './io.mjs';
@@ -359,6 +360,100 @@ export function writeBudgetState(repoRoot, state) {
 }
 
 /**
+ * Named ceilings for a parked overflow record (#1314, BV-004). GitLab accepts
+ * descriptions up to ~1 MB; 16 KiB covers every real issue body this repo files,
+ * and the record lives in a per-session JSON file that session-end folds into
+ * ONE collector issue. Revisit if `truncated: true` shows up in a fold.
+ * Measured in UTF-16 code units (≈ bytes for ASCII bodies).
+ */
+export const OVERFLOW_DESCRIPTION_MAX = 16 * 1024;
+export const OVERFLOW_COMMAND_MAX = 2 * 1024;
+/** A description file above GitLab's own ~1 MB limit is not read at all. */
+const OVERFLOW_DESCRIPTION_FILE_MAX_BYTES = 1024 * 1024;
+
+/**
+ * Build the structured overflow record BOTH park sites write (#1314) — the
+ * hook's chain pre-flight and `chargeIssueBudget`'s strict branch. Before this
+ * both parked only the raw command, so a body passed as `$(cat /tmp/x.md)` was
+ * lost once the temp file was gone. The description file is read NOW, at block
+ * time; any read failure yields `description: null`, silently — the park itself
+ * must never fail. Old records (`title/command/at` only) stay readable: every
+ * added key is optional.
+ *
+ * Path resolution: a leading `~` / `~/` expands to the home directory; an
+ * absolute path is used as is; a relative path resolves against `cwd` (the
+ * PreToolUse input's working directory) when that is absolute, else against
+ * `repoRoot`. When `cwdChanged` (a `cd` earlier in the same chain) a relative
+ * path is NOT resolved — the record says `descriptionUnresolved: 'cwd-changed'`
+ * instead of parking whichever file happens to sit at the guessed location.
+ * NAMED CEILING (BV-004): `~user/` is not expanded. Revisit if it shows up.
+ *
+ * @param {{ repoRoot: string, title?: string|null, description?: string|null,
+ *           descriptionFile?: string|null, repo?: string|null,
+ *           cwd?: string|null, cwdChanged?: boolean,
+ *           command: string, at: string }} opts
+ * @returns {{ title: string|null, description: string|null, repo: string|null,
+ *             command: string, at: string, truncated: boolean,
+ *             descriptionUnresolved?: 'cwd-changed' }}
+ */
+export function buildOverflowRecord({
+  repoRoot,
+  title = null,
+  description = null,
+  descriptionFile = null,
+  repo = null,
+  cwd = null,
+  cwdChanged = false,
+  command,
+  at,
+}) {
+  let body = typeof description === 'string' ? description : null;
+  let truncated = false;
+  let unresolved = null;
+  if (body === null && typeof descriptionFile === 'string' && descriptionFile.length > 0) {
+    try {
+      let file = descriptionFile;
+      if (file === '~' || file.startsWith('~/')) file = path.join(homedir(), file.slice(1));
+      if (!path.isAbsolute(file)) {
+        if (cwdChanged) {
+          unresolved = 'cwd-changed';
+          throw new Error('cwd-changed');
+        }
+        const base = typeof cwd === 'string' && path.isAbsolute(cwd) ? cwd : repoRoot;
+        file = path.resolve(base, file);
+      }
+      const st = statSync(file);
+      if (st.isFile() && st.size <= OVERFLOW_DESCRIPTION_FILE_MAX_BYTES) {
+        body = readFileSync(file, 'utf8');
+      } else if (st.isFile()) {
+        truncated = true;
+      }
+    } catch {
+      body = null;
+    }
+  }
+  if (body !== null && body.length > OVERFLOW_DESCRIPTION_MAX) {
+    body = body.slice(0, OVERFLOW_DESCRIPTION_MAX);
+    // Never end on half a surrogate pair — a lone high surrogate is not text.
+    const last = body.charCodeAt(body.length - 1);
+    if (last >= 0xd800 && last <= 0xdbff) body = body.slice(0, -1);
+    truncated = true;
+  }
+  const raw = String(command);
+  if (raw.length > OVERFLOW_COMMAND_MAX) truncated = true;
+  const record = {
+    title: title ?? null,
+    description: body,
+    repo: typeof repo === 'string' && repo.length > 0 ? repo : null,
+    command: raw.slice(0, OVERFLOW_COMMAND_MAX),
+    at,
+    truncated,
+  };
+  if (unresolved !== null) record.descriptionUnresolved = unresolved;
+  return record;
+}
+
+/**
  * Charge one issue creation against the session budget and return the verdict.
  *
  * Decision table:
@@ -377,6 +472,11 @@ export function writeBudgetState(repoRoot, state) {
  *   sessionId?: string|null,
  *   command: string,
  *   title?: string|null,
+ *   description?: string|null,
+ *   descriptionFile?: string|null,
+ *   repo?: string|null,
+ *   cwd?: string|null,
+ *   cwdChanged?: boolean,
  *   config?: { "max-per-session": number, mode: string, overflow: string },
  *   now?: string,
  * }} opts
@@ -396,6 +496,11 @@ export function chargeIssueBudget({
   sessionId = null,
   command,
   title = null,
+  description = null,
+  descriptionFile = null,
+  repo = null,
+  cwd = null,
+  cwdChanged = false,
   config,
   now = new Date().toISOString(),
 }) {
@@ -453,11 +558,11 @@ export function chargeIssueBudget({
   }
 
   // strict — park the request, do not count it.
-  state.overflow.push({
-    title: title ?? null,
-    command: String(command).slice(0, 500),
-    at: now,
-  });
+  state.overflow.push(
+    buildOverflowRecord({
+      repoRoot, title, description, descriptionFile, repo, cwd, cwdChanged, command, at: now,
+    }),
+  );
   persist(state);
   return {
     ...base,

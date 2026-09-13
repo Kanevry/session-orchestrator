@@ -615,6 +615,11 @@ function delay(ms) {
  * @param {boolean} [opts.sync=false]  — true → synchronous busy-wait poll +
  *        synchronous fn (agent-status variant). false → async poll.
  * @param {boolean} [opts.ownerGuard=true]  — passed to releaseFileLock.
+ * @param {(release: ReturnType<typeof releaseFileLock>) => void} [opts.onRelease]
+ *        — receives the releaseFileLock result from the finally (#1336). The
+ *        only reader of `busy` / `not-owner` (a lease that expired mid-`fn`);
+ *        the return value of withFileLock is unchanged. A throwing callback is
+ *        swallowed so it can mask neither `value` nor an error thrown by `fn`.
  * @param {...*} [opts.acquireOpts]  — remaining keys forwarded to tryAcquireFileLock.
  * @returns {Promise<{ ok: true, value: T }
  *   | { ok: false, reason: 'timeout'|'fs-error', error?: string, existing?: object|null }>}
@@ -626,6 +631,7 @@ export async function withFileLock(lockPath, fn, opts = {}) {
     pollMs = 100,
     sync = false,
     ownerGuard = true,
+    onRelease,
     ...acquireOpts
   } = opts;
 
@@ -659,6 +665,9 @@ export async function withFileLock(lockPath, fn, opts = {}) {
     const value = await fn(acquired.body);
     return { ok: true, value };
   } finally {
-    releaseFileLock(lockPath, { holder: releaseHolder, ownerGuard });
+    const released = releaseFileLock(lockPath, { holder: releaseHolder, ownerGuard });
+    if (typeof onRelease === 'function') {
+      try { onRelease(released); } catch { /* diagnostic sink — never masks fn */ }
+    }
   }
 }

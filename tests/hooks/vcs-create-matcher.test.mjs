@@ -303,3 +303,34 @@ describe('vcs-create-matcher — per-statement enumeration (#1163 BUG-1)', () =>
     expect(findIssueCreateStatements('echo "glab issue create"')).toEqual([]);
   });
 });
+
+describe('vcs-create-matcher — re-fileable fields for the overflow park (#1314)', () => {
+  // THE BUG (TV-001): the park stored only the raw command, so `$(cat /tmp/x.md)`
+  // stayed a literal, `-R grp/other` was never read, and `gh … -t T` had title null.
+  it.each([
+    ['glab $(cat) unquoted', 'glab issue create --title A -d $(cat /tmp/x.md)', { title: 'A', description: null, descriptionFile: '/tmp/x.md', repo: null }],
+    ['gh $(cat) quoted', 'gh issue create -t T --body "$(cat /tmp/y.md)"', { title: 'T', description: null, descriptionFile: '/tmp/y.md', repo: null }],
+    ['glab file flag', 'glab issue create --title A --description-file d.md', { title: 'A', description: null, descriptionFile: 'd.md', repo: null }],
+    ['gh file flag -F', 'gh issue create --title A -F d.md', { title: 'A', description: null, descriptionFile: 'd.md', repo: null }],
+    ['glab -R + -d value', 'glab issue create --title A -d "body text" -R grp/other', { title: 'A', description: 'body text', descriptionFile: null, repo: 'grp/other' }],
+    ['gh -t title (was null)', 'gh issue create -t T --repo o/r', { title: 'T', description: null, descriptionFile: null, repo: 'o/r' }],
+    // Fix pass f-1: single quotes suppress the substitution — glab files the literal, so nothing may be read.
+    ["'$(cat X)' single-quoted is a literal", "glab issue create --title A -d '$(cat .env)'", { title: 'A', description: '$(cat .env)', descriptionFile: null, repo: null }],
+    ['--description=$(cat p) unquoted', 'glab issue create --title T --description=$(cat /tmp/x.md)', { title: 'T', description: null, descriptionFile: '/tmp/x.md', repo: null }],
+    ['repeated -b: last value wins (pflag)', 'gh issue create -t T -b "a" -b "b"', { title: 'T', description: 'b', descriptionFile: null, repo: null }],
+  ])('%s', (_label, cmd, expected) => {
+    const [stmt] = findIssueCreateStatements(cmd);
+    expect({
+      title: stmt.title,
+      description: stmt.description,
+      descriptionFile: stmt.descriptionFile,
+      repo: stmt.repo,
+    }).toEqual(expected);
+  });
+
+  it('keeps -F a field flag on the api route, never a body file', () => {
+    const [stmt] = findIssueCreateStatements('gh api repos/o/r/issues -F title=X');
+    expect(stmt.title).toBe('X');
+    expect(stmt.descriptionFile).toBeNull();
+  });
+});

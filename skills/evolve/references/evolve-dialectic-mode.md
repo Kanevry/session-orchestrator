@@ -88,7 +88,11 @@ const result = await runDialecticDeriver({
 The dry-run branch needs no action here: `runDialecticDeriver()` already emitted the success
 form (`mode: 'dry-run'`) internally at Step 6.2, using `countManagedSections(diff)` on the SAME
 diff this step presents — in dry-run the diff IS the final artefact, so the event and the
-artefact are computed from the same value. The **apply** branch is the one case that pipeline
+artefact are computed from the same value. Dry-run counting rule (#1319): `<!-- BEGIN MANAGED -->`
+sentinels if present, otherwise the `## ` headings outside code fences, otherwise 1 for any
+non-empty body (0 for an empty one). The two modes therefore count different things on the
+same `user_deltas` / `agent_deltas` fields: dry-run counts sections of the PROPOSED body,
+apply counts sections the merge actually `replaced + appended`. The **apply** branch is the one case that pipeline
 cannot record on its own: the merge above happens here, one layer up, so call
 `recordDialecticRun()` (the sibling export beside `emitEvolveCompleted` in
 `scripts/lib/learnings/evolve-telemetry.mjs`) immediately after the `writePeerCard()` calls,

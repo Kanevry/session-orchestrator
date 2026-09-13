@@ -42,6 +42,7 @@ import {
   buildPrompt,
   parseResponse,
   runDialecticDeriver,
+  countManagedSections,
 } from '../../scripts/dialectic-deriver.mjs';
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -395,6 +396,23 @@ describe('parseResponse', () => {
     ['```diff target :agent\nbody\n```'],         // space before colon
   ])('parseResponse handles target-fence-info whitespace variant: %s', (text) => {
     expect(parseResponse(text)).toEqual({ diff: { agent: 'body' } });
+  });
+});
+
+// #1319 — dry-run delta count: the deriver emits `## `-headed bodies, not
+// sentinels; the old sentinel-or-1 rule reported 1 for a 12-section body.
+describe('countManagedSections', () => {
+  const twelve = Array.from({ length: 12 }, (_, i) => `## Section ${i + 1}\n- item`).join('\n\n');
+  it.each([
+    ['12 headings → 12 (#1319, was 1)', twelve, 12],
+    ['heading inside a code fence is not counted', '## A\n```md\n## not a heading\n```\n## B', 2],
+    ['~~~ fence also masks headings', '## A\n~~~\n## no\n~~~\n', 1],
+    ['sentinels take precedence', '<!-- BEGIN MANAGED: a -->\nx\n<!-- END MANAGED: a -->\n## H1\n## H2\n## H3', 1],
+    ['non-empty body without headings → 1', 'just prose\n### deeper heading', 1],
+    ['empty → 0', '', 0],
+    ['undefined → 0', undefined, 0],
+  ])('%s', (_label, body, expected) => {
+    expect(countManagedSections(body)).toBe(expected);
   });
 });
 

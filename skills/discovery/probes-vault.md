@@ -10,12 +10,14 @@
 
 ```bash
 # Step 1: Verify the probe exists; skip if missing
-test -f skills/discovery/probes/vault-staleness.mjs || { echo "SKIPPED: vault-staleness -- skills/discovery/probes/vault-staleness.mjs not found"; exit 0; }
+# Probes live in the PLUGIN, not the project: ${PLUGIN_ROOT} is resolved per
+# skills/_shared/config-reading.md. The probe still scans process.cwd() (project root).
+test -f "${PLUGIN_ROOT}/skills/discovery/probes/vault-staleness.mjs" || { echo "SKIPPED: vault-staleness -- ${PLUGIN_ROOT}/skills/discovery/probes/vault-staleness.mjs not found (PLUGIN_ROOT='${PLUGIN_ROOT}'; empty = unresolved, see skills/_shared/config-reading.md)"; exit 0; }
 
 # Step 2: Run the probe. It reads vault-integration.vault-dir from $CONFIG
 # (passed from the discovery skill) and scans the vault.
 node --input-type=module -e "
-import {runProbe} from './skills/discovery/probes/vault-staleness.mjs';
+import {runProbe} from '${PLUGIN_ROOT}/skills/discovery/probes/vault-staleness.mjs';
 const cfg = JSON.parse(process.env.SO_CONFIG || '{}');
 const r = await runProbe(process.cwd(), cfg);
 for (const f of r.findings) {
@@ -39,10 +41,12 @@ if (r.skipped_reason) console.log('SKIPPED:', r.skipped_reason);
 **Detection Method:**
 
 ```bash
-test -f skills/discovery/probes/vault-narrative-staleness.mjs || { echo "SKIPPED: vault-narrative-staleness -- probe file not found"; exit 0; }
+# Probes live in the PLUGIN, not the project: ${PLUGIN_ROOT} is resolved per
+# skills/_shared/config-reading.md. The probe still scans process.cwd() (project root).
+test -f "${PLUGIN_ROOT}/skills/discovery/probes/vault-narrative-staleness.mjs" || { echo "SKIPPED: vault-narrative-staleness -- ${PLUGIN_ROOT}/skills/discovery/probes/vault-narrative-staleness.mjs not found (PLUGIN_ROOT='${PLUGIN_ROOT}'; empty = unresolved, see skills/_shared/config-reading.md)"; exit 0; }
 
 node --input-type=module -e "
-import {runProbe} from './skills/discovery/probes/vault-narrative-staleness.mjs';
+import {runProbe} from '${PLUGIN_ROOT}/skills/discovery/probes/vault-narrative-staleness.mjs';
 const cfg = JSON.parse(process.env.SO_CONFIG || '{}');
 const r = await runProbe(process.cwd(), cfg);
 for (const f of r.findings) {

@@ -473,6 +473,39 @@ describe('cap enforcement', { timeout: 30000 }, () => {
     expect(state.overflow).toHaveLength(1);
     expect(state.overflow[0].title).toBe('lost?');
   });
+
+  // #1314 wiring (TV-005): the chain pre-flight (`parkOverflow`) must write the
+  // same structured record as the core — before, it parked the raw command only.
+  it('parks a structured record (description from $(cat), repo, title via -t) on the chain path', async () => {
+    const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 0\n  mode: strict' });
+    await fs.writeFile(path.join(dir, 'body.md'), 'parked body', 'utf8');
+    await runHook({
+      projectDir: dir,
+      stdin: bashPayload('gh issue create -t "one" -b "$(cat body.md)" -R o/r && glab issue create --title two -d inline'),
+    });
+    const state = JSON.parse(
+      await fs.readFile(budgetStatePath(dir, 'budget-session-001'), 'utf8'),
+    );
+    expect(state.overflow).toHaveLength(2);
+    expect(state.overflow[0]).toMatchObject({ title: 'one', description: 'parked body', repo: 'o/r', truncated: false });
+    expect(state.overflow[1]).toMatchObject({ title: 'two', description: 'inline', repo: null });
+  });
+
+  // Fix pass f-1: after `cd sub`, `body.md` is sub/body.md for glab — reading
+  // <root>/body.md would park a different file's content.
+  it('does not resolve a relative body file after a `cd` in the same chain', async () => {
+    const dir = await mkProject({ budgetBlock: 'issue-budget:\n  max-per-session: 0\n  mode: strict' });
+    await fs.mkdir(path.join(dir, 'sub'));
+    await fs.writeFile(path.join(dir, 'body.md'), 'WRONG root file', 'utf8');
+    await runHook({
+      projectDir: dir,
+      stdin: bashPayload('cd sub && glab issue create --title t --description-file body.md'),
+    });
+    const state = JSON.parse(
+      await fs.readFile(budgetStatePath(dir, 'budget-session-001'), 'utf8'),
+    );
+    expect(state.overflow[0]).toMatchObject({ title: 't', description: null, descriptionUnresolved: 'cwd-changed' });
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -21,10 +21,12 @@ if (!sources.includes('discovery')) { console.log('SKIPPED: supply-chain-slopche
 "
 
 # Step 2: Run the probe
-test -f skills/discovery/probes/supply-chain-slopcheck.mjs || { echo "SKIPPED: supply-chain-slopcheck -- probe file not found"; exit 0; }
+# Probes live in the PLUGIN, not the project: ${PLUGIN_ROOT} is resolved per
+# skills/_shared/config-reading.md. The probe still scans process.cwd() (project root).
+test -f "${PLUGIN_ROOT}/skills/discovery/probes/supply-chain-slopcheck.mjs" || { echo "SKIPPED: supply-chain-slopcheck -- ${PLUGIN_ROOT}/skills/discovery/probes/supply-chain-slopcheck.mjs not found (PLUGIN_ROOT='${PLUGIN_ROOT}'; empty = unresolved, see skills/_shared/config-reading.md)"; exit 0; }
 
 node --input-type=module -e "
-import probe from './skills/discovery/probes/supply-chain-slopcheck.mjs';
+import probe from '${PLUGIN_ROOT}/skills/discovery/probes/supply-chain-slopcheck.mjs';
 const r = await probe({ repoRoot: process.cwd() });
 for (const f of r.findings) {
   console.log('FINDING:', JSON.stringify(f));
