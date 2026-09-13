@@ -40,9 +40,9 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 import { _parseStateMdLock } from '../config/state-md-lock.mjs';
-import { tryAcquireFileLock } from '../file-lock.mjs';
-import { hostnamesMatch, lockHostCandidate, stableHostname } from '../host-identity.mjs';
-import { nowIso, delay, parseLockBody } from './lock-body.mjs';
+import { releaseFileLock, tryAcquireFileLock } from '../file-lock.mjs';
+import { stableHostname } from '../host-identity.mjs';
+import { nowIso, delay } from './lock-body.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -198,6 +198,9 @@ export async function acquireStateLock({
  *   { ok: true }                                 — lock unlinked
  *   { ok: false, reason: 'not-found' }           — no lock file exists
  *   { ok: false, reason: 'not-owner' }           — lock held by different holder/PID
+ *   { ok: false, reason: 'busy' }                — the shared `.acquire` guard
+ *                                                  stayed taken past its budget;
+ *                                                  the lock is left untouched
  *   { ok: false, reason: 'fs-error', error }     — filesystem failure
  *
  * Never throws.
@@ -210,42 +213,13 @@ export async function acquireStateLock({
 export function releaseStateLock({ repoRoot, sessionId, holder } = {}) {
   const lockFile = stateLockPathFor(repoRoot);
 
-  let raw;
-  try {
-    raw = fs.readFileSync(lockFile, 'utf8');
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      return { ok: false, reason: 'not-found' };
-    }
-    return { ok: false, reason: 'fs-error', error: err.message };
-  }
-
-  const lock = parseLockBody(raw);
-  if (lock === null) {
-    // Unparseable — refuse to delete; some other process may be writing now.
-    return { ok: false, reason: 'not-owner' };
-  }
-
-  const expectedHolder = holder ?? sessionId ?? null;
-  const ownerMatch = expectedHolder !== null
-    ? lock.holder === expectedHolder
-    // #1072: alias-aware host identity — a raw comparison strands the lock as
-    // 'not-owner' once os.hostname() flips spelling mid-session.
-    : lock.pid === process.pid && hostnamesMatch(lockHostCandidate(lock), os.hostname());
-
-  if (!ownerMatch) {
-    return { ok: false, reason: 'not-owner' };
-  }
-
-  try {
-    fs.unlinkSync(lockFile);
-    return { ok: true };
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      return { ok: false, reason: 'not-found' };
-    }
-    return { ok: false, reason: 'fs-error', error: err.message };
-  }
+  // Consolidated onto releaseFileLock (#1349); the `pid` staleCheck makes the
+  // takeover race unreachable today — if this lock ever moves to a lease mode,
+  // the shared guard is what keeps release safe.
+  // `sessionId` is the legacy alias for `holder` (see the docblock); an empty
+  // expected holder falls through to releaseFileLock's PID + host owner check,
+  // exactly as the inline sequence did.
+  return releaseFileLock(lockFile, { holder: holder ?? sessionId ?? undefined });
 }
 
 /**
@@ -345,11 +319,15 @@ export async function withStateMdLock(repoRoot, fn, opts = {}) {
     caughtError = err;
   } finally {
     // Always release — even on fn() throw — so the lock does not leak.
-    // Only WARN on fs-error: 'not-found' and 'not-owner' are recoverable race
-    // conditions (someone else cleaned up our lock — already safe to proceed).
+    // WARN only where OUR lock is left behind: 'fs-error' and 'busy' (the
+    // shared guard stayed taken — #1349). 'not-found' and 'not-owner' are
+    // recoverable race conditions (someone else cleaned up our lock — already
+    // safe to proceed) and stay silent, as before.
     const releaseResult = releaseStateLock({ repoRoot, holder });
     if (!releaseResult.ok && releaseResult.reason === 'fs-error') {
       console.warn(`withStateMdLock: release failed (fs-error: ${releaseResult.error ?? 'unknown'})`);
+    } else if (!releaseResult.ok && releaseResult.reason === 'busy') {
+      console.warn('withStateMdLock: release failed (busy: acquire guard held) — state.lock left for its stale policy');
     }
   }
 

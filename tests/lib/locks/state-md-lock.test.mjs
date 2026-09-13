@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -66,6 +66,47 @@ describe('locks/state-md-lock — acquire / release roundtrip', () => {
     const released = releaseStateLock({ repoRoot, holder: 'nobody' });
     expect(released).toEqual({ ok: false, reason: 'not-found' });
   });
+
+  // #1349: the release path delegates to the shared releaseFileLock owner guard.
+  // Bug this catches: a non-owner release deleting a live holder's lock — the
+  // hand-rolled sequence this replaced had the same owner check but took no
+  // `.acquire` sibling guard, so restoring it is what the sweep must not undo.
+  it('a NON-owner release leaves the lock in place and reports not-owner', async () => {
+    const lockFile = join(repoRoot, STATE_LOCK_PATH);
+    await acquireStateLock({ repoRoot, holder: 'owner-A' });
+
+    const released = releaseStateLock({ repoRoot, holder: 'intruder-B' });
+    expect(released).toEqual({ ok: false, reason: 'not-owner' });
+    expect(existsSync(lockFile)).toBe(true);
+
+    // The real owner can still release afterwards.
+    expect(releaseStateLock({ repoRoot, holder: 'owner-A' })).toEqual({ ok: true });
+    expect(existsSync(lockFile)).toBe(false);
+  });
+
+  // #1349 DISCRIMINATOR — the behaviour the shared `.acquire` guard adds, and
+  // the only one the replaced inline sequence did NOT have: while a contender
+  // holds the sibling guard, the release must leave the lock file alone and
+  // answer `busy`. The old hand-rolled read → owner-match → unlinkSync ignored
+  // the sibling and deleted the lock regardless.
+  it('reports busy and keeps the lock when the `.acquire` guard is held', async () => {
+    const lockFile = join(repoRoot, STATE_LOCK_PATH);
+    await acquireStateLock({ repoRoot, holder: 'owner-A' });
+
+    // Simulate a contender mid-pass: the guard exists and is never released.
+    writeFileSync(`${lockFile}.acquire`, '{}');
+
+    const released = releaseStateLock({ repoRoot, holder: 'owner-A' });
+    expect(released).toEqual({ ok: false, reason: 'busy' });
+    expect(existsSync(lockFile)).toBe(true);
+  }, 15000);
+
+  it('release leaves no `.acquire` sibling behind', async () => {
+    const lockFile = join(repoRoot, STATE_LOCK_PATH);
+    await acquireStateLock({ repoRoot, holder: 'owner-A' });
+    expect(releaseStateLock({ repoRoot, holder: 'owner-A' })).toEqual({ ok: true });
+    expect(existsSync(`${lockFile}.acquire`)).toBe(false);
+  });
 });
 
 describe('locks/state-md-lock — withStateMdLock wrapper', () => {
@@ -86,4 +127,30 @@ describe('locks/state-md-lock — withStateMdLock wrapper', () => {
   it('rejects a non-function fn synchronously with a TypeError', async () => {
     await expect(withStateMdLock(repoRoot, /* not a fn */ 42)).rejects.toThrow(TypeError);
   });
+
+  // #1349 fix-pass. Bug caught: a LEAKED state.lock that no process holds.
+  // When the shared `.acquire` guard is taken while the wrapper's finally-block
+  // runs, releaseFileLock answers `busy` and the lock file survives the call —
+  // yet the wrapper still returns fn()'s value, so a clean run and a leaked lock
+  // are indistinguishable to every caller. The WARN on stderr is the ONLY
+  // evidence, and nothing pinned it: deleting the `busy` branch left
+  // `npx vitest run tests/lib/locks/` at 16 passed. The next session then waits
+  // out the full stale policy on a lock nobody holds.
+  it('WARNs, still returns fn value, and leaves the lock behind when release is busy', async () => {
+    const lockFile = join(repoRoot, STATE_LOCK_PATH);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await withStateMdLock(repoRoot, () => {
+      // A contender takes the shared `.acquire` guard mid-pass and never gives
+      // it back, so the wrapper's release cannot take it and answers `busy`.
+      writeFileSync(`${lockFile}.acquire`, '{}');
+      return 'fn-return-value';
+    });
+
+    expect(result).toBe('fn-return-value');
+    expect(existsSync(lockFile)).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      'withStateMdLock: release failed (busy: acquire guard held) — state.lock left for its stale policy',
+    );
+  }, 20000);
 });

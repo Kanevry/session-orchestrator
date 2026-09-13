@@ -25,8 +25,12 @@
  *      (`statementsCoverWholeCommand`). Measured 2026-09-13: `glab issue create
  *      --title X && false` files the issue, exits 1, and the first cut of this
  *      hook refunded a slot for it. Anything else → no-op,
- *      `chain-not-attributable`.
- *   G4 config — `mode: off` → nothing (there was no charge to give back).
+ *      `chain-not-attributable`. EVALUATED AFTER G4 in the code: G4 is the
+ *      cheaper and more absolute gate, and a repo with the budget off must not
+ *      report a chain verdict it has no stake in.
+ *  G4 config — `mode: off` → nothing (there was no charge to give back), and
+ *      that includes the telemetry: EVERY branch that can emit reads the config
+ *      first and returns on `off` (see {@link loadBudgetContext}).
  *   G5 refund — `refundBooking` per statement, honoured ONLY against a statement
  *      present in the session's `charged[]` ledger. A pre-execution failure
  *      (parked at the cap and denied, `exit_code: null`) therefore refunds
@@ -37,6 +41,17 @@
  * Fail-safe posture: every path exits 0 and emits NOTHING on stdout. This hook
  * runs after the tool has already run; it has no decision to make and must not
  * alter the tool result. Internal errors are swallowed in main().catch.
+ *
+ * TELEMETRY (#1353). Every decision branch that concerns an issue-create command
+ * also emits ONE `orchestrator.issue_budget.refunded` record — see
+ * {@link emitRefundDecision}. Before that, a refund left only a stderr line,
+ * which under exit 0 reaches the debug log alone: refunds were uncountable, so
+ * "how often does this fire, and for which reason" was unfalsifiable
+ * (`.claude/rules/host-resources.md` HR-105). The no-op reasons are emitted too —
+ * without them the census has a numerator and no denominator. A repo with
+ * `issue-budget.mode: off` contributes NO record on any branch: it never charged,
+ * so its decisions are not part of the population the census describes, and
+ * counting them would invert exactly the numerator/denominator argument above.
  */
 
 import { readStdin } from '../scripts/lib/io.mjs';
@@ -159,6 +174,86 @@ function resolveToolCallId(input) {
   return null;
 }
 
+/**
+ * Resolve the repo root AND its issue-budget config together — the pair every
+ * emitting branch needs, and the reason G4 can be honoured before the FIRST emit
+ * rather than only before the refund (#1353 fix-pass).
+ *
+ * Deliberately NOT hoisted to the top of main(): the config read is a file read,
+ * and G1/G2 plus "failed command creates no issue" must stay allocation-free.
+ * Every caller sits behind a matcher hit, so an ordinary failing Bash call still
+ * pays nothing.
+ *
+ * @returns {{ projectDir: string, config: ReturnType<typeof loadIssueBudgetConfig> }}
+ */
+function loadBudgetContext() {
+  const projectDir = resolveProjectDir() || process.cwd();
+  return { projectDir, config: loadIssueBudgetConfig(projectDir) };
+}
+
+/**
+ * Event name for the refund decision (#1353). One record per decision, so a
+ * census over N sessions can group by `reason` and see the whole population.
+ */
+const ISSUE_BUDGET_REFUNDED_EVENT = 'orchestrator.issue_budget.refunded';
+
+/**
+ * Emit ONE `orchestrator.issue_budget.refunded` record for this invocation.
+ *
+ * `reason` is a CLOSED enum, mapped onto the hook's branches:
+ *   `no-signal`              — G2b: the payload carries no failure FIELD, so
+ *                              there is no evidence the create ran and failed.
+ *   `chain-not-attributable` — G3b: the failed command mixes the create with
+ *                              other statements, so the exit code judges neither.
+ *   `refunded`               — G5: at least one charge record was honoured.
+ *   `not-charged`            — G5: no charge record matched (parked at the cap,
+ *                              re-delivered failure, or an identity-less call
+ *                              that was never persisted → `no-session`).
+ * The fifth documented reason, `counter-at-zero`, has NO branch here: a matched
+ * record whose counter is already 0 is absorbed inside `refundBooking`'s
+ * never-below-zero guard and returns `refunded` like any other match, and an
+ * UNmatched record returns `noop`/`not-charged`. Surfacing it would need a new
+ * field on the shared core's verdict (`scripts/lib/issue-budget.mjs`), so it is
+ * reported rather than faked from a value this hook cannot observe.
+ *
+ * PRIVACY: the payload carries NO command text, issue title or path. This record
+ * travels verbatim over the optional Clank webhook with no redaction (same rule
+ * as `orchestrator.issue_budget.reconciled`), where a `glab issue create --title
+ * …` string or an absolute ledger path is owner data the receiver has no use for.
+ *
+ * Awaited AND caught: telemetry added to a hook silently disarms it unless both
+ * hold — an unawaited promise loses the write when the process exits, and a
+ * throwing emit (an unwritable ledger, a schema rejection) would otherwise reach
+ * `main().catch` and turn a completed refund into a reported internal error.
+ * `events.mjs` is imported LAZILY so the pass-through paths (G1/G2, the
+ * overwhelming majority of Bash calls) never pay its module-load cost.
+ *
+ * @param {string} repoRoot
+ * @param {'no-signal'|'chain-not-attributable'|'refunded'|'not-charged'} reason
+ * @param {number} statementCount — issue-create statements the matcher found.
+ * @param {'count'|'exempt'|null} unit — which counter was given back, read off
+ *   the honoured charge records (`exempt` only when EVERY refund was an exempt
+ *   one); `null` whenever nothing was refunded.
+ * @returns {Promise<void>}
+ */
+async function emitRefundDecision(repoRoot, reason, statementCount, unit) {
+  try {
+    const { emitEvent, sessionAttribution } = await import('../scripts/lib/events.mjs');
+    await emitEvent(
+      ISSUE_BUDGET_REFUNDED_EVENT,
+      {
+        reason,
+        unit,
+        statement_count: statementCount,
+        ...sessionAttribution(repoRoot),
+      },
+      { repoRoot },
+    );
+  } catch {
+    // Best-effort telemetry — never the reason a refund reports failure.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -184,6 +279,19 @@ async function main() {
           '(exit_code / error / is_error) — nothing refunded. On the Cursor bridge only ' +
           'top-level `is_error` is forwarded; without it no refund is possible.\n',
       );
+      // The matcher runs here ONLY to scope the record: a `no-signal` line for
+      // every failing Bash call would drown the census in commands the budget
+      // never charged. The hook is registered on PostToolUseFailure alone
+      // (hooks/hooks.json), so this is not a hot path for ordinary tool calls.
+      const claimed = findIssueCreateStatements(command);
+      if (claimed.length > 0) {
+        // G4 ahead of the emit: a repo with the budget OFF was never charged, so
+        // it is not part of the refund census (docs/events-schema.md).
+        const { projectDir, config } = loadBudgetContext();
+        if (config.mode !== 'off') {
+          await emitRefundDecision(projectDir, 'no-signal', claimed.length, null);
+        }
+      }
     }
     return;
   }
@@ -192,6 +300,11 @@ async function main() {
   const statements = findIssueCreateStatements(command);
   if (statements.length === 0) return;
 
+  // G4 — config, read BEFORE the first emit below. `off` means nothing was ever
+  // charged, so there is neither a slot to give back nor a decision to count.
+  const { projectDir, config } = loadBudgetContext();
+  if (config.mode === 'off') return;
+
   // G3b — one exit code judges the WHOLE call, so it is evidence about the
   // create only when the creates ARE the whole call.
   if (!statementsCoverWholeCommand(command)) {
@@ -199,14 +312,9 @@ async function main() {
       'ℹ post-bash-issue-budget-refund: failed command mixes an issue-create with other ' +
         'statements — chain-not-attributable, no slot refunded.\n',
     );
+    await emitRefundDecision(projectDir, 'chain-not-attributable', statements.length, null);
     return;
   }
-
-  const projectDir = resolveProjectDir() || process.cwd();
-
-  // G4 — config. `off` means nothing was ever charged.
-  const config = loadIssueBudgetConfig(projectDir);
-  if (config.mode === 'off') return;
 
   const sessionId = await resolveSessionId(input, projectDir);
   const toolCallId = resolveToolCallId(input);
@@ -239,6 +347,23 @@ async function main() {
         `refunded (${last.count}/${last.max})\n`,
     );
   }
+
+  // The unit is read off the honoured records, never re-classified from the
+  // command text: `exempt` only when EVERY refund landed on the exempt counter,
+  // so a mixed chain (one capped + one exempt create) reports the capped unit —
+  // that is the counter the operator's cap is spent from.
+  const unit =
+    refunded.length === 0
+      ? null
+      : refunded.every((v) => v.decision === 'refunded-exempt')
+        ? 'exempt'
+        : 'count';
+  await emitRefundDecision(
+    projectDir,
+    refunded.length > 0 ? 'refunded' : 'not-charged',
+    statements.length,
+    unit,
+  );
 }
 
 // Top-level error handler — fail open, same posture as the sibling hooks.

@@ -184,7 +184,7 @@ describe('session-config-parity — opt-in baseline severity split (#785)', () =
     '',
   ].join('\n');
 
-  it('fires a WARNING (not an error) when a local CLAUDE.md omits an opt-in-baseline-only key', () => {
+  it('routes an opt-in-baseline-only gap to notes[] (never errors[]) — #1356 category split', () => {
     mkdirSync(join(vault, 'docs'));
     writeFileSync(join(vault, 'docs', 'session-config-template.md'), twoBlockTemplate);
     writeFileSync(
@@ -195,7 +195,7 @@ describe('session-config-parity — opt-in baseline severity split (#785)', () =
     expect(r.code).toBe(0); // mode defaults to warn
     const j = parseJson(r.stdout);
     expect(j.checks_run).toContain('session-config-parity');
-    const parityWarnings = j.warnings.filter((w) => w.check === 'session-config-parity');
+    const parityWarnings = j.notes.filter((w) => w.check === 'session-config-parity');
     expect(parityWarnings.map((w) => w.extracted)).toContain('handover-gate');
     // The opt-in gap must NOT appear in errors[] — only mandatory gaps do.
     const parityErrors = j.errors.filter((e) => e.check === 'session-config-parity');
@@ -213,7 +213,7 @@ describe('session-config-parity — opt-in baseline severity split (#785)', () =
     expect(r.code).toBe(0);
     const j = parseJson(r.stdout);
     const parityErrors = j.errors.filter((e) => e.check === 'session-config-parity');
-    const parityWarnings = j.warnings.filter((w) => w.check === 'session-config-parity');
+    const parityWarnings = j.notes.filter((w) => w.check === 'session-config-parity');
     expect(parityErrors.map((e) => e.extracted)).not.toContain('handover-gate');
     expect(parityWarnings.map((w) => w.extracted)).not.toContain('handover-gate');
   });
@@ -230,7 +230,7 @@ describe('session-config-parity — opt-in baseline severity split (#785)', () =
     const j = parseJson(r.stdout);
     expect(j.status).toBe('ok'); // status is errors-driven; warnings don't flip it to 'invalid'
     expect(j.errors.filter((e) => e.check === 'session-config-parity')).toHaveLength(0);
-    expect(j.warnings.filter((w) => w.check === 'session-config-parity').map((w) => w.extracted)).toContain(
+    expect(j.notes.filter((w) => w.check === 'session-config-parity').map((w) => w.extracted)).toContain(
       'handover-gate',
     );
   });

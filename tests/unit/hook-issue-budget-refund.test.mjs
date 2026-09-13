@@ -291,3 +291,158 @@ describe('post-bash-issue-budget-refund.mjs (#1347)', () => {
     expect((await readCount(dir)).count).toBe(1);
   });
 });
+
+/**
+ * #1353 — the refund decision must be COUNTABLE.
+ *
+ * THE BUG these two tests catch: a refund left only a stderr line, and under
+ * exit 0 stderr reaches the debug log alone. So "how often did this fire, and
+ * for which reason" had no answer in `events.jsonl` — the refund path was as
+ * unfalsifiable as the resource verdict of HR-105. Nothing above turns red if
+ * the emit is deleted: every existing assertion reads the counter file or
+ * stderr, and the emit touches neither.
+ *
+ * Both a refund AND a no-op reason are asserted, because a census with a
+ * numerator and no denominator cannot say whether refunds are rare or constant.
+ */
+describe('orchestrator.issue_budget.refunded telemetry (#1353)', () => {
+  async function readEvents(projectDir) {
+    const file = path.join(projectDir, '.orchestrator', 'metrics', 'events.jsonl');
+    let raw;
+    try {
+      raw = await fs.readFile(file, 'utf8');
+    } catch {
+      return [];
+    }
+    return raw
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .filter((r) => r.event === 'orchestrator.issue_budget.refunded');
+  }
+
+  it('records reason "refunded" with the unit and statement count', async () => {
+    const dir = await mkProject();
+    await charge(dir);
+    await failure(dir);
+
+    const records = await readEvents(dir);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      event: 'orchestrator.issue_budget.refunded',
+      reason: 'refunded',
+      unit: 'count',
+      statement_count: 1,
+    });
+    // Privacy: this payload travels verbatim over the optional Clank webhook.
+    const serialized = JSON.stringify(records[0]);
+    expect(serialized).not.toContain('glab issue create');
+    expect(serialized).not.toContain(dir);
+  });
+
+  // THE BUG: `reason: 'no-signal'` was emitted, reached by the suite, and pinned
+  // by nothing — mutating the literal to 'chain-not-attributable' left 16/16
+  // green. A wrong enum here mis-attributes the census: a Cursor-bridge failure
+  // that forwards no `is_error` would be counted as an un-attributable command
+  // CHAIN, i.e. blamed on the operator's command shape rather than on the
+  // harness gap that actually caused it.
+  it('records reason "no-signal" for a failure event carrying no failure field', async () => {
+    const dir = await mkProject();
+    await charge(dir);
+    await deliver(dir, {
+      hook_event_name: 'PostToolUseFailure',
+      cursor_event_name: 'postToolUseFailure',
+    });
+
+    const records = await readEvents(dir);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      reason: 'no-signal',
+      unit: null,
+      statement_count: 1,
+    });
+  });
+
+  // THE BUG: `not-charged` shares its ternary with `refunded` and only the
+  // latter was asserted — the false arm was a surviving mutant. It is the arm a
+  // create PARKED at the cap takes, so a wrong value there makes a retry-storm
+  // against the cap indistinguishable from a stream of honoured refunds.
+  it('records reason "not-charged" when the failed create was never charged', async () => {
+    const dir = await mkProject();
+    await failure(dir);
+
+    const records = await readEvents(dir);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      reason: 'not-charged',
+      unit: null,
+      statement_count: 1,
+    });
+  });
+
+  // THE BUG: `unit: 'exempt'` was emitted, reached, and pinned by nothing —
+  // mutating `? 'exempt'` to `? 'count'` left 16/16 green. A refund of an
+  // EXEMPT-counter charge would then report `count`, inflating any census of how
+  // much of the CAPPED budget came back — the quantity `max-per-session` steers.
+  it('records unit "exempt" when every refunded charge was an exempt one', async () => {
+    const dir = await mkProject();
+    const exemptCmd = 'glab issue create --title "[Carryover] agent FAILED follow-up"';
+    await charge(dir, exemptCmd);
+    await failure(dir, { command: exemptCmd, toolUseId: 'toolu_exempt_event' });
+
+    const records = await readEvents(dir);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      reason: 'refunded',
+      unit: 'exempt',
+      statement_count: 1,
+    });
+  });
+
+  // THE BUG (architecture MED): two of the four emits fired BEFORE the G4
+  // `mode: off` check, so a repo with the feature OFF — which was never charged
+  // and has no slot to give back — contributed records to a census that groups
+  // by `reason`. That inverts the numerator/denominator argument the event
+  // exists for. docs/events-schema.md already promised `mode: off` emits
+  // NOTHING; the code did not, on 2 of 4 branches.
+  it.each([
+    [
+      'a plainly failed create (main path)',
+      (dir) => failure(dir, { toolUseId: 'toolu_off_main' }),
+    ],
+    [
+      'a non-attributable chain (G3b)',
+      (dir) => failure(dir, { command: `${CREATE} && false`, toolUseId: 'toolu_off_chain' }),
+    ],
+    [
+      'a failure event with no failure field (G2b)',
+      (dir) =>
+        deliver(dir, {
+          hook_event_name: 'PostToolUseFailure',
+          cursor_event_name: 'postToolUseFailure',
+        }),
+    ],
+  ])('emits NOTHING under mode: off — %s', async (_label, act) => {
+    const dir = await mkProject({ mode: 'off' });
+    await charge(dir);
+    const res = await act(dir);
+
+    expect(res.code).toBe(0);
+    expect(await readEvents(dir)).toEqual([]);
+  });
+
+  it('records the no-op reason "chain-not-attributable" too, so the census has a denominator', async () => {
+    const dir = await mkProject();
+    const chain = `${CREATE} && false`;
+    await charge(dir, chain);
+    await failure(dir, { command: chain, toolUseId: 'toolu_chain_event' });
+
+    const records = await readEvents(dir);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      reason: 'chain-not-attributable',
+      unit: null,
+      statement_count: 1,
+    });
+  });
+});

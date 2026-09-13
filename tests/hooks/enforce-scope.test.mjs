@@ -141,10 +141,11 @@ async function mkProjectRawScopeTracked(rawContent) {
 // Helper: build a preToolUse JSON payload for Edit/Write/MultiEdit
 // ---------------------------------------------------------------------------
 
-function editPayload(filePath, tool = 'Edit') {
+function editPayload(filePath, tool = 'Edit', extra = {}) {
   return JSON.stringify({
     tool_name: tool,
     tool_input: { file_path: filePath },
+    ...extra,
   });
 }
 
@@ -1461,5 +1462,189 @@ describe('memory-dir carveout (#1295)', { timeout: 15000 }, () => {
       env: homeEnv(home),
     });
     expectDeny(result, ['outside project root']);
+  });
+
+  // -------------------------------------------------------------------------
+  // Caller discrimination (#1352) — the carve-out above is the COORDINATOR's,
+  // never a dispatched wave agent's. `classifyCaller()` reads `agent_id` /
+  // `agent_type` off the PreToolUse payload; these three cases pin the three
+  // classifications it can return.
+  // -------------------------------------------------------------------------
+
+  it('DENIES a subagent write into the memory dir under a deny-all manifest (#1352)', async () => {
+    // Bug caught: a dispatched wave agent writing into the auto-injected memory
+    // directory, outside git review — the pre-#1352 carve-out could not tell a
+    // subagent from the coordinator and allowed BOTH.
+    const dir = await mkProjectTracked({
+      wave: 3,
+      role: 'Discovery',
+      enforcement: 'strict',
+      allowedPaths: [],
+    });
+    const home = await mkFakeHome();
+    const target = path.join(await memoryDirFor(home, dir), 'MEMORY.md');
+
+    // CONTROL — identical target and manifest, no `agent_id`: allowed. This is
+    // the discrimination proof required alongside the fix: the SAME payload
+    // without `agent_id` is allowed while with it (below) it is denied, in the
+    // same test run — the contrast IS the regression proof, since the hook
+    // itself is out of this agent's file scope and cannot be edited to show it.
+    const control = await runHook({ projectDir: dir, stdin: editPayload(target), env: homeEnv(home) });
+    expectAllow(control);
+
+    // EXPERIMENT — same target, same manifest, only `agent_id` added: denied.
+    const experiment = await runHook({
+      projectDir: dir,
+      stdin: editPayload(target, 'Edit', { agent_id: 'a123' }),
+      env: homeEnv(home),
+    });
+    expectDeny(experiment, ['outside project root']);
+  });
+
+  it("ALLOWS a coordinator write and tags the event discriminator: 'coordinator' (#1352)", async () => {
+    // Bug caught: a discriminator too strict (e.g. keying on ANY marker rather
+    // than specifically `agent_id`) would break the coordinator's own `/close`
+    // memory writes — this pins that an `agent_type`-without-`agent_id` payload
+    // (the harness's own shape for a main-thread call in an `--agent` session)
+    // still gets the carve-out, and that the event records WHICH branch fired.
+    const dir = await mkProjectTracked({
+      wave: 5,
+      role: 'Coordinator',
+      enforcement: 'strict',
+      allowedPaths: [],
+    });
+    const home = await mkFakeHome();
+    const target = path.join(await memoryDirFor(home, dir), 'MEMORY.md');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(target, 'Edit', { agent_type: 'agent' }),
+      env: homeEnv(home),
+    });
+    expectAllow(result);
+    const record = (await readEvents(dir)).find(
+      (e) => e.event === 'orchestrator.scope.memory_dir_allowed',
+    );
+    expect(record).toMatchObject({ discriminator: 'coordinator' });
+  });
+
+  it("ALLOWS + tags discriminator: 'absent' when neither marker is present (HR-105, #1352)", async () => {
+    // Bug caught: a silent fail-open that no census could find — HR-105 requires
+    // the ambiguous "no caller marker at all" case to be COUNTABLE on the event,
+    // not merely allowed. This pins the exact discriminator value, not just the
+    // allow verdict the earlier tests in this block already cover.
+    const dir = await mkProjectTracked({
+      wave: 6,
+      role: 'Impl',
+      enforcement: 'strict',
+      allowedPaths: [],
+    });
+    const home = await mkFakeHome();
+    const target = path.join(await memoryDirFor(home, dir), 'MEMORY.md');
+    const result = await runHook({ projectDir: dir, stdin: editPayload(target), env: homeEnv(home) });
+    expectAllow(result);
+    const record = (await readEvents(dir)).find(
+      (e) => e.event === 'orchestrator.scope.memory_dir_allowed',
+    );
+    expect(record).toMatchObject({ discriminator: 'absent' });
+  });
+
+  // -------------------------------------------------------------------------
+  // Malformed `agent_id` (#1352 fix-pass) — a PRESENT-but-unusable marker.
+  //
+  // Bug caught: the first cut folded every unusable `agent_id` into 'absent',
+  // so an `agent_id` of 123 / {} / [] / '' produced a ledger record byte-
+  // identical to a genuine main-thread call. If a future harness or bridge ever
+  // sends a non-string agent id, EVERY dispatched subagent silently inherits the
+  // coordinator's memory carve-out and the census says 'absent' — the fail-open
+  // HR-105 promises to make countable would be unfalsifiable. The verdict stays
+  // ALLOW on purpose (fail-closed would break the coordinator's own /close
+  // memory writes); only the discriminator distinguishes the two cases.
+  //
+  // Parametrized over the four shapes rather than four sibling tests (TV-004).
+  // `''` is a shape here, not under 'absent': the key IS present, so the sender
+  // believed it was naming a subagent.
+  // -------------------------------------------------------------------------
+  for (const [label, agentId] of [
+    ['a number', 123],
+    ['an object', {}],
+    ['an array', []],
+    ['an empty string', ''],
+    ['a whitespace-only string', '   '],
+  ]) {
+    it(`ALLOWS + tags discriminator: 'malformed' when agent_id is ${label} (#1352)`, async () => {
+      const dir = await mkProjectTracked({
+        wave: 7,
+        role: 'Impl',
+        enforcement: 'strict',
+        allowedPaths: [],
+      });
+      const home = await mkFakeHome();
+      const target = path.join(await memoryDirFor(home, dir), 'MEMORY.md');
+      const result = await runHook({
+        projectDir: dir,
+        stdin: editPayload(target, 'Edit', { agent_id: agentId }),
+        env: homeEnv(home),
+      });
+      // Fail-OPEN posture preserved — the malformed case is still ALLOWED.
+      expectAllow(result);
+      const record = (await readEvents(dir)).find(
+        (e) => e.event === 'orchestrator.scope.memory_dir_allowed',
+      );
+      expect(record).toMatchObject({ discriminator: 'malformed' });
+    });
+  }
+
+  it("a malformed agent_id is DISTINGUISHABLE from a genuine main-thread call (#1352)", async () => {
+    // The discrimination proof: the SAME target under the SAME manifest, once
+    // with no `agent_id` key and once with an unusable one, must produce two
+    // DIFFERENT discriminator values in the same run. Before the fix both
+    // recorded 'absent' — this is the assertion the old code cannot satisfy.
+    const dir = await mkProjectTracked({
+      wave: 8,
+      role: 'Impl',
+      enforcement: 'strict',
+      allowedPaths: [],
+    });
+    const home = await mkFakeHome();
+    const target = path.join(await memoryDirFor(home, dir), 'MEMORY.md');
+
+    expectAllow(await runHook({ projectDir: dir, stdin: editPayload(target), env: homeEnv(home) }));
+    expectAllow(
+      await runHook({
+        projectDir: dir,
+        stdin: editPayload(target, 'Edit', { agent_id: 42 }),
+        env: homeEnv(home),
+      }),
+    );
+
+    const discriminators = (await readEvents(dir))
+      .filter((e) => e.event === 'orchestrator.scope.memory_dir_allowed')
+      .map((e) => e.discriminator);
+    expect(discriminators).toEqual(['absent', 'malformed']);
+  });
+
+  it("an unusable agent_type WITHOUT agent_id stays 'absent' (#1352)", async () => {
+    // Bug caught: widening 'malformed' to any unusable marker would make the
+    // coordinator's own ordinary main-thread payload (no agent_id, no usable
+    // agent_type) register as malformed and drown the value that is supposed to
+    // be rare. Only `agent_id` can hide a subagent, so only it can be malformed.
+    const dir = await mkProjectTracked({
+      wave: 9,
+      role: 'Impl',
+      enforcement: 'strict',
+      allowedPaths: [],
+    });
+    const home = await mkFakeHome();
+    const target = path.join(await memoryDirFor(home, dir), 'MEMORY.md');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(target, 'Edit', { agent_type: 7 }),
+      env: homeEnv(home),
+    });
+    expectAllow(result);
+    const record = (await readEvents(dir)).find(
+      (e) => e.event === 'orchestrator.scope.memory_dir_allowed',
+    );
+    expect(record).toMatchObject({ discriminator: 'absent' });
   });
 });

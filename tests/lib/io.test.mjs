@@ -18,7 +18,7 @@
  */
 
 import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   mkdtempSync,
@@ -127,9 +127,100 @@ describe('readStdin', () => {
     expect(stderr).toMatch(/1 MB|1048576|exceeds/i);
   });
 
-  // Timeout test is intentionally skipped — a 5-second stall would block the
-  // suite and the behaviour is tested by the error-message contract above.
-  it.skip('throws after 5 s timeout when stdin never closes (TODO: slow test)', () => {});
+});
+
+// ---------------------------------------------------------------------------
+// readStdin — the timeout guard (#1358)
+// ---------------------------------------------------------------------------
+//
+// This replaces an `it.skip` with an EMPTY body that stood here for the whole
+// life of the file. Its comment claimed the behaviour was "tested by the
+// error-message contract above" — it was not: every test above feeds stdin and
+// lets it CLOSE, so the timer is always cleared and the reject path never runs.
+// A skipped empty test asserts nothing while reading like coverage.
+//
+// What made it look untestable was the hard-coded 5 000 ms. `readStdin` now
+// takes `{ timeoutMs }` (default unchanged, see its JSDoc for why it is a
+// parameter rather than an env var), so the guard can be exercised in ~50 ms.
+//
+// The child needs a stdin that NEVER closes, which spawnSync cannot give: it
+// writes `input` and closes the pipe, so the shared `runDriver` helper would
+// reach the `end` event every time. Hence `spawn` with a stdin we simply never
+// end — the same reason the emitRewrite block below writes its own child.
+describe('readStdin — timeout guard', () => {
+  let childDir;
+  let CHILD;
+
+  beforeAll(() => {
+    childDir = mkdtempSync(join(tmpdir(), 'io-timeout-'));
+    CHILD = join(childDir, 'timeout-child.mjs');
+    const ioUrl = new URL('../../scripts/lib/io.mjs', import.meta.url).href;
+    writeFileSync(CHILD, `
+import { readStdin } from ${JSON.stringify(ioUrl)};
+
+try {
+  const result = await readStdin({ timeoutMs: Number(process.argv[2]) });
+  // Reaching here means stdin closed (or the guard never fired) — a distinct
+  // failure from the rejection this child exists to observe.
+  process.stdout.write('RESOLVED:' + JSON.stringify(result) + String.fromCharCode(10));
+  process.exit(0);
+} catch (err) {
+  process.stderr.write(err.constructor.name + ': ' + err.message + String.fromCharCode(10));
+  process.exit(1);
+}
+`, 'utf8');
+  });
+
+  afterAll(() => {
+    if (childDir) rmSync(childDir, { recursive: true, force: true });
+  });
+
+  /** Spawn the child with a stdin pipe that is deliberately left open forever. */
+  function runWithOpenStdin(timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [CHILD, String(timeoutMs)], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (c) => { stdout += c; });
+      child.stderr.on('data', (c) => { stderr += c; });
+      child.on('error', reject);
+      child.on('close', (status) => {
+        child.stdin.destroy();
+        resolve({ stdout, stderr, status });
+      });
+      // NOTE: no child.stdin.end() — that omission IS the test fixture.
+    });
+  }
+
+  it('rejects when stdin never closes, naming the elapsed bound', { timeout: 5_000 }, async () => {
+    const { stdout, stderr, status } = await runWithOpenStdin(50);
+
+    expect(status).toBe(1);
+    expect(stderr.trim()).toBe('Error: io.mjs: readStdin timed out after 0.05 s');
+    // Not a SyntaxError (empty stdin parsed) and not a resolve-to-null: with the
+    // guard removed the child never exits at all and this test times out.
+    expect(stdout).toBe('');
+  });
+
+  it('ignores a non-positive timeoutMs instead of disabling the guard', { timeout: 5_000 }, async () => {
+    // A caller passing 0 must not turn the guard OFF — that would hang the hook
+    // forever, the exact failure the guard exists to prevent. The fallback is
+    // the 5 s default, so this child is killed by the assertion below rather
+    // than by its own timer.
+    const child = spawn(process.execPath, [CHILD, '0'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const exited = new Promise((r) => child.on('close', r));
+    const stillRunning = await Promise.race([
+      exited.then(() => false),
+      new Promise((r) => setTimeout(() => r(true), 300)),
+    ]);
+    child.kill('SIGKILL');
+    child.stdin.destroy();
+    await exited;
+
+    expect(stillRunning).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
