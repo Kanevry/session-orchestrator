@@ -18,10 +18,10 @@ Session Orchestrator is a free, MIT-licensed workflow plugin for **Claude Code, 
 
 ```mermaid
 flowchart LR
-    S["/session<br>read repo + issues<br>agree the scope"] --> G["/go<br>waves of parallel agents"]
-    G --> Q{"quality gate<br>test · typecheck · lint"}
+    S["/session"] --> G["/go"]
+    G --> Q{"quality gate"}
     Q -- "fails" --> G
-    Q -- "passes" --> C["/close<br>verify + commit<br>carryover issues"]
+    Q -- "passes" --> C["/close"]
 ```
 
 Longer explanation, with examples and screenshots: **[session-orchestrator.com](https://session-orchestrator.com)** ([auf Deutsch](https://session-orchestrator.com/de)).
