@@ -292,6 +292,14 @@ function runGate(cmd, cwd) {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: GATE_TIMEOUT_MS,
       maxBuffer: 16 * 1024 * 1024, // 16 MiB cap
+      // #1360: gate runs are where worker over-subscription was measured to
+      // cause timeout failures (integration fixtures spawn their own Node/npm/
+      // git children on top of Vitest's workers). `vitest.config.mjs` reads this
+      // flag and bounds `maxWorkers`; a bare `npm test` never sets it and keeps
+      // Vitest's default fanout, which measured 59% faster on an idle host.
+      // Inherited by every gate subprocess, not only the test one — typecheck
+      // and lint ignore it, so setting it unconditionally costs nothing.
+      env: { ...process.env, SO_BOUNDED_WORKERS: '1' },
     });
     const combined = (result.stdout ?? '') + (result.stderr ?? '');
     const tail = combined.split('\n').slice(-OUTPUT_TAIL_LINES).join('\n').trim();

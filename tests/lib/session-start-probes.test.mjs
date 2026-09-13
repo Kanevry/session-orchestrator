@@ -282,6 +282,17 @@ describe('runSessionStartProbes — fail-open', () => {
         }),
     ];
 
+    // WHY this test controls the clock instead of widening the budget
+    // (measured 2026-09-13, GitLab pipeline #9459 job `coverage`, commit
+    // 23ed96ae): the meter samples every LOOP_BLOCKED_SAMPLE_MS = 20 ms and
+    // credits only lateness BEYOND one interval, so a contiguous block is
+    // under-attributed by ~20 ms and that remainder lands on every probe as
+    // its own work — `cheap-async` reported workMs 18-21 against a 400 ms
+    // blocker regardless of load. Against a 50 ms budget that is a 40 %
+    // tax before the probe does anything, which is why the test went red
+    // under shard load and green locally. Widening the budget only moves the
+    // cliff; a deterministic clock removes it, so the 50 ms budget and the
+    // exact assertions below can stay.
     const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
     let out;
     try {
