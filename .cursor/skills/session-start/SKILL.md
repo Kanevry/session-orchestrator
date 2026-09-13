@@ -1,6 +1,6 @@
 ---
 name: session-start
-description: "Use this skill when initializing a session for any project repo. Autonomously analyzes git state, VCS issues, SSOT files, branches, environment, and cross-repo status. Then presents structured findings with recommendations for user alignment before creating a wave plan. Triggered by /session [housekeeping|feature|deep] command."
+description: "Use this skill when initializing a session for any project repo. Autonomously analyzes git state, VCS issues, SSOT files, branches, environment, and cross-repo status. Then presents structured findings with recommendations before development wave planning, or an operations contract for explicitly requested time-bounded operational work. Triggered by /session [housekeeping|feature|deep] or a direct session-start request."
 disable-model-invocation: true
 ---
 
