@@ -187,10 +187,17 @@ describe('production policy file structure', () => {
         expect(rule['path-allowlist']).toBeUndefined();
       }
     }
+    // NON-VACUITY, not an inventory. The loop above is the assertion; this line
+    // only proves it ran against something. It used to pin the exact id list
+    // (`['redirect-truncate-protected']`), which made every legitimately added
+    // redirect rule a red test in a file no wave scope contains — `#1362`'s
+    // `redirect-harness-memory` broke it, and only the Full Gate could see it.
+    // An inventory pin duplicates the property check above and catches no bug
+    // the loop misses (`.claude/rules/test-value.md` § TV-002).
     const withDenylist = policy.rules
       .filter((r) => r['target-denylist'] !== undefined)
       .map((r) => r.id);
-    expect(withDenylist).toEqual(['redirect-truncate-protected']);
+    expect(withDenylist.length).toBeGreaterThan(0);
   });
 });
 
