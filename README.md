@@ -22,7 +22,6 @@ flowchart LR
     G --> Q{"quality gate<br>test · typecheck · lint"}
     Q -- "fails" --> G
     Q -- "passes" --> C["/close<br>verify + commit<br>carryover issues"]
-    C --> N["next session<br>resumes from STATE.md"]
 ```
 
 Longer explanation, with examples and screenshots: **[session-orchestrator.com](https://session-orchestrator.com)** ([auf Deutsch](https://session-orchestrator.com/de)).
