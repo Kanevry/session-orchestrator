@@ -9,8 +9,9 @@ model-preference-cursor: claude-opus-4-6
 description: >
   Use this skill when initializing a session for any project repo. Autonomously analyzes git state,
   VCS issues, SSOT files, branches, environment, and cross-repo status. Then presents
-  structured findings with recommendations for user alignment before creating a wave plan.
-  Triggered by /session [housekeeping|feature|deep] command.
+  structured findings with recommendations before development wave planning, or an operations
+  contract for explicitly requested time-bounded operational work. Triggered by /session
+  [housekeeping|feature|deep] or a direct session-start request.
 ---
 
 # Session Start Skill
@@ -25,11 +26,27 @@ Before anything else, read and internalize `soul.md` in this skill directory. It
 
 ## Phase 0: Bootstrap Gate
 
-Read `skills/_shared/bootstrap-gate.md` and execute the gate check. If the gate is CLOSED, invoke `skills/bootstrap/SKILL.md` and wait for completion before proceeding. If the gate is OPEN, continue to Phase 1.
+Read `skills/_shared/bootstrap-gate.md` and execute the gate check. If the gate is CLOSED, invoke `skills/bootstrap/SKILL.md` and wait for completion before proceeding. If the gate is OPEN, evaluate the Operations route below. When that route does not apply, continue to Phase 0.5 and then Phase 1.
 
 <HARD-GATE>
 Do NOT proceed past Phase 0 if GATE_CLOSED. There is no bypass. Refer to `skills/_shared/bootstrap-gate.md` for the full HARD-GATE constraints.
 </HARD-GATE>
+
+## Operations route — before Phase 0.5
+
+After the bootstrap gate, select this route ONLY when the user's current request explicitly
+asks for time-bounded operational work (for example launch preparation, research, distribution,
+or community work) and supplies a duration or deadline. A document mentioning such work is
+not a request. An explicit development session type retains the development path; mixed
+requests use operations as coordinator only when the user asks for ongoing operational work,
+with individual code changes handled through the development workflow.
+
+Read [the operations contract](references/operations-contract.md) in full and follow it
+instead of Phases 0.5–9 below. It retains read-only config, peer, repository, issue and
+profile preflight, then uses the current harness's native execution and completion tools.
+Do not fabricate a development session type, wave plan, STATE.md entry, or autopilot run.
+This is a prose-invoked route, not a new `/session operations` argument or background runner.
+When its conditions are absent, continue to Phase 0.5 unchanged.
 
 ## Phase 0.5: Parallel-Aware Preamble
 
@@ -371,7 +388,7 @@ After user alignment:
 ## Critical Rules
 
 - **NEVER make assumptions** about code state based on memory or docs — always verify in actual files
-- **NEVER skip the Q&A phase** — the user MUST confirm direction before wave planning
+- **On the development route, NEVER skip the Q&A phase** — the user MUST confirm direction before wave planning. The operations route uses its own authorization contract and does not create a wave plan.
 - **ALWAYS verify parallel subagent work against the started set**, never against the launch ack — `run_in_background: true` is allowed and recommended for wave dispatch (`skills/wave-executor/wave-loop.md § Started-Set Verification`); skills that need every result before their next phase (persona-panel, discovery, test-runner, session-end) keep `false` and say why
 - **ALWAYS check `.env` or `.env.local`** for VCS host, API keys, and service URLs
 - **ALWAYS present options with pros/cons and a clear recommendation** — never just list facts
@@ -384,6 +401,7 @@ After user alignment:
 | File | Purpose |
 |------|---------|
 | `soul.md` | Identity and communication principles |
+| `references/operations-contract.md` | Explicit time-bounded operations route: preflight, authorization, native execution, evidence and close-out |
 | (inline) Phase 1.05 | Skill-Invocation Self-Report (#1199) — mirrors session-end Phase 0.6 |
 | `references/phase-1-1-dispatcher-autonomy-capture.md` | Phase 1.1 full procedural body — one-time-per-repo dispatcher-autonomy capture; committed-block presence guard (`isDispatcherAutonomyBlockPresent`), the AUQ definition from `scripts/lib/config/dispatcher-autonomy-capture.mjs`, and the `writeDispatcherAutonomyBlock` write |
 | `references/phase-1-2-session-lock.md` | Phases 1.2 + 1.2.1 full procedural bodies — Session Lock Acquire: `acquire()` call, active/stale/cross-host AUQ flows, `forceAcquire()` on user consent, deviation note wiring; plus Phase 1.2.1 Peer-Guard (`findPeers` STATE.md surface, Worktree-Promotion AUQ, SOFT-GATE + fail-open) |
