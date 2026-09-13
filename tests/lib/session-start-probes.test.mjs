@@ -17,7 +17,7 @@
  * pins in `beforeEach`.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -260,24 +260,35 @@ describe('runSessionStartProbes — fail-open', () => {
   it('does not charge a cheap async probe for a synchronous sibling that blocks the loop', async () => {
     const dir = await mkTmp();
     const { calls, emit } = captureEmit();
+    let now = 1000;
+    let started;
+    let release;
+    const cheapStarted = new Promise((resolve) => { started = resolve; });
+    const blocked = new Promise((resolve) => { release = resolve; });
+    // Control elapsed time, not real timer execution. Both invocation windows
+    // must cover the block; module import order must not decide that for us.
     const probes = [
-      // Non-preemptible: burns wall-clock far past the budget without ever
-      // yielding — the `execFileSync` shape, without spawning anything.
-      await fakeProbe(
-        dir,
-        'blocker',
-        'export function probe() { const end = Date.now() + 400; while (Date.now() < end) {} return null; }',
-      ),
-      // Preemptible and cheap: one tick of real async work, then a real result.
-      await fakeProbe(
-        dir,
-        'cheap-async',
-        "export async function probe() { await new Promise((r) => setTimeout(r, 1));" +
-          " return { severity: 'warn', message: 'cheap-async measured something' }; }",
-      ),
+      await fakeProbe(dir, 'blocker', 'export async function probe({ block }) { await block(); return null; }', {
+        args: () => ({ block: async () => {
+          await cheapStarted;
+          now += 400; // synchronous elapsed gap, with no timer callback in between
+          release();
+        } }),
+      }),
+      await fakeProbe(dir, 'cheap-async',
+        "export async function probe({ ready }) { await ready(); await new Promise((r) => setTimeout(r, 1));" +
+        " return { severity: 'warn', message: 'cheap-async measured something' }; }", {
+          args: () => ({ ready: () => { started(); return blocked; } }),
+        }),
     ];
 
-    const out = await runSessionStartProbes({ repoRoot: dir, timeoutMs: 50 }, { probes, emit });
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let out;
+    try {
+      out = await runSessionStartProbes({ repoRoot: dir, timeoutMs: 50 }, { probes, emit });
+    } finally {
+      clock.mockRestore();
+    }
 
     const cheap = out.results.find((r) => r.id === 'cheap-async');
     // Assert on the OUTPUT, not on a duration: a probe that returns instantly
@@ -289,13 +300,9 @@ describe('runSessionStartProbes — fail-open', () => {
     // charged well under the budget even though wall-clock elapsed exceeds it.
     const payload = calls[0].payload.probes.find((p) => p.id === 'cheap-async');
     expect(payload.work_ms).toBeLessThan(50);
-    // workMs is wall-clock elapsed minus the attributed loop-blocked time, so
-    // it can never exceed durationMs — but it CAN legitimately equal it when
-    // no blocking happened to overlap this probe's own window (a race on
-    // import/timer scheduling under load, not a bug). Strict `>` flaked here
-    // once under load with "expected 8 to be greater than 8"; `<=` is the
-    // actual invariant the implementation guarantees.
-    expect(cheap.workMs).toBeLessThanOrEqual(cheap.durationMs);
+    expect(cheap.durationMs).toBe(400);
+    expect(cheap.workMs).toBeLessThan(cheap.durationMs);
+    expect(payload.work_ms).toBe(Math.round(cheap.workMs));
   });
 });
 
