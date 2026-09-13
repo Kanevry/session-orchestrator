@@ -20,7 +20,7 @@ const entries = readCurrentStatusEntries({ repoRoot });
 const agent = entries[agentId];
 ```
 
-Both readers use the same recovery rules. `agent-status.jsonl` is the source of truth; `agent-status-current.json` is a rebuildable cache. Results combine cache and ledger per agent, preferring the newest timestamp. The bounded ledger read defaults to 256 KiB (`maxBytes` can be specified).
+Both readers use the same recovery rules. `agent-status.jsonl` is the source of truth; `agent-status-current.json` is a rebuildable cache. Results combine cache and ledger per agent, preferring the newest timestamp. At equal timestamps, conflicting payloads use the last ledger append; matching payloads retain the cache. The bounded ledger read defaults to 256 KiB (`maxBytes` can be specified).
 
 | `source` | Meaning |
 | --- | --- |

@@ -387,21 +387,31 @@ describe('agent-status — provenance of the current view (#1342)', () => {
   // returned {ok:false,reason:'timeout'} while every reader of the map showed the
   // OLD `running` state as if current — no staleness marker anywhere.
   it('reports the LEDGER state (completed), never an unmarked stale `running`', async () => {
-    expect(await setStatus('worker-1', 'running', { repoRoot, timeoutMs: 0 })).toEqual({ ok: true });
+    // Both real writes can happen within one millisecond on a fast host.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-13T10:00:00.000Z'));
+    try {
+      expect(await setStatus('worker-1', 'running', { repoRoot, timeoutMs: 0 })).toEqual({
+        ok: true,
+      });
 
-    seedForeignHostLock();
+      seedForeignHostLock();
 
-    const second = await setStatus('worker-1', 'completed', { repoRoot, timeoutMs: 0 });
-    expect(second).toEqual({ ok: false, reason: 'timeout' });
+      const second = await setStatus('worker-1', 'completed', { repoRoot, timeoutMs: 0 });
+      expect(second).toEqual({ ok: false, reason: 'timeout' });
 
-    // The ledger tail carries the truth ...
-    const lines = readJsonl();
-    expect(lines[lines.length - 1]).toMatchObject({ agentId: 'worker-1', text: 'completed' });
-    // ... and so does the reader, explicitly marked as rebuilt from the ledger.
-    const view = readCurrentStatus({ repoRoot });
-    expect(view.source).toBe('rebuilt-log');
-    expect(view.entries['worker-1'].text).toBe('completed');
-    expect(typeof view.at).toBe('string');
+      // The ledger tail carries the truth ...
+      const lines = readJsonl();
+      expect(lines[lines.length - 1]).toMatchObject({ agentId: 'worker-1', text: 'completed' });
+      // ... and so does the reader, explicitly marked as rebuilt from the ledger.
+      const view = readCurrentStatus({ repoRoot });
+      expect(view.source).toBe('rebuilt-log');
+      expect(view.entries['worker-1'].text).toBe('completed');
+      expect(typeof view.at).toBe('string');
+      expect(lines[0].ts).toBe(lines[lines.length - 1].ts);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // BUG: a process that died between the ledger append and the map write left the
@@ -602,6 +612,17 @@ describe('agent-status — per-agent fold and four sources (#1342 fix-pass)', ()
     expect(view.entries.C.viaCache).toBe(true);
     expect(view.entries.C.binding).toBeUndefined(); // cache entry, not a folded one
     expect(view.degraded).toBeUndefined();
+  });
+
+  it('recovers removal of a progress label at the same timestamp', () => {
+    const rec = { agentId: 'P', kind: 'progress', step: 1, total: 2, ts: '2026-09-13T10:00:00.000Z' };
+    writeCache({ P: { ...rec, label: 'old label' } });
+    appendLedgerLine(rec);
+
+    const view = readCurrentStatus({ repoRoot });
+    expect(view.source).toBe('rebuilt-log');
+    expect(view.entries.P.label).toBeUndefined();
+    expect(view.entries.P.step).toBe(1);
   });
 
   // BUG (M1): with NO ledger and NO cache the reader answered `live-map` — a

@@ -53,6 +53,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import { appendJsonl } from './common.mjs';
 import { writeJsonAtomicSync } from './io.mjs';
@@ -606,7 +607,7 @@ export function rebuildCurrentFromLedger(opts = {}) {
  * newest equal the ledger's newest, and `A` was then served from the cache as
  * `running` with `source: live-map` — byte-identical to the pre-#1342 defect.
  * So for every id in `cache ∪ ledger` the record with the newer `ts` wins (an
- * equal-ms tie goes to the cache, which is the writer's own last word):
+ * equal-ms ties retain the cache only when its ledger payload agrees):
  *   - every entry taken from the cache → `live-map`; the cache is VERIFIED
  *     against a ledger (the normal path).
  *   - ANY entry taken from the ledger, or the cache unreadable/missing while the
@@ -691,9 +692,17 @@ export function readCurrentStatus(opts = {}) {
       }
       const cachedTs = recordTsMs(cached);
       const loggedTs = recordTsMs(logged);
-      // The ledger wins only when it is STRICTLY newer (an equal-ms tie, and an
-      // undated ledger record, go to the cache).
-      if (loggedTs !== null && (cachedTs === null || loggedTs > cachedTs)) {
+      // Two real pushes can share a millisecond. The ledger fold keeps the
+      // last append at that timestamp; a failed map write must not hide it.
+      // Ignore only the fold's derived binding marker. Cache-only metadata
+      // remains intact when the actual ledger payload agrees.
+      const conflictingTie =
+        loggedTs !== null &&
+        loggedTs === cachedTs &&
+        [...new Set([...Object.keys(logged), 'text', 'step', 'total', 'label', ...BINDING_KEYS])].some(
+          (key) => key !== 'binding' && !isDeepStrictEqual(logged[key], cached[key]),
+        );
+      if (loggedTs !== null && (cachedTs === null || loggedTs > cachedTs || conflictingTie)) {
         entries[id] = logged;
         tookFromLedger = true;
       } else {
