@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config';
 import path from 'node:path';
+import { availableParallelism } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -64,6 +65,12 @@ export default defineConfig({
     // default thread pool, and the timeout kills a stuck worker in 15s
     // instead of letting the CI job hit its 15m timeout.
     pool: 'forks',
+    // Integration workers spawn Node/npm/git children of their own. Letting
+    // Vitest use every available core can overcommit shared hosts (#1360): the
+    // unchanged full suite took 220s with timing failures at 11 workers, versus
+    // 150s with all tests passing at 4. Keep the same assertions and deadlines
+    // while bounding fanout; retain the lower default on small CI runners.
+    maxWorkers: Math.min(4, Math.max(availableParallelism() - 1, 1)),
     teardownTimeout: 15000,
     hookTimeout: 30000,
     coverage: {
