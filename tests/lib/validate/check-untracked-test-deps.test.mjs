@@ -22,7 +22,7 @@
  */
 
 import { describe, it, expect, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -382,6 +382,34 @@ describe('P10 — linked worktree, `.git` is a FILE not a directory', () => {
     const { untracked, error } = resolveUntrackedOracle(wtRoot, ['.git', 'a.txt']);
     expect(error).toBe(null);
     expect(untracked.has('.git')).toBe(false);
+  });
+});
+
+describe('symlink rejection recovery', () => {
+  it('keeps ignored siblings when git rejects several symlink descendants', () => {
+    const root = makeRepo({ '.gitignore': 'ignored-*.json\n', 'tracked.txt': 'tracked' });
+    mkdirSync(join(root, 'external'));
+    symlinkSync(join(root, 'external'), join(root, 'linked'));
+    const candidates = Array.from({ length: 64 }, (_, i) => `ignored-${i}.json`);
+    candidates.splice(12, 0, 'linked/first.mjs', 'linked/second.mjs');
+    const measured = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import cp from 'node:child_process';
+      import { syncBuiltinESMExports } from 'node:module';
+      const realSpawn = cp.spawnSync;
+      let calls = 0;
+      cp.spawnSync = (...args) => { calls++; return realSpawn(...args); };
+      syncBuiltinESMExports();
+      const { resolveUntrackedOracle } = await import(${JSON.stringify(CHECK)});
+      const result = resolveUntrackedOracle(${JSON.stringify(root)}, ${JSON.stringify(candidates)});
+      console.log(JSON.stringify({ calls, error: result.error, untracked: [...result.untracked] }));
+    `], { encoding: 'utf8' });
+    expect(measured.status, measured.stderr).toBe(0);
+    const result = JSON.parse(measured.stdout);
+    expect(result.error).toBe(null);
+    expect(result.untracked.sort()).toEqual(candidates.filter((p) => p.startsWith('ignored-')).sort());
+    // One tracked-file listing, one attempt per refused path and one success.
+    // More healthy sibling paths must not amplify the subprocess fanout.
+    expect(result.calls).toBeLessThanOrEqual(4);
   });
 });
 

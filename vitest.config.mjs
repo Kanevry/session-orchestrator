@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config';
 import path from 'node:path';
+import { availableParallelism } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -64,6 +65,29 @@ export default defineConfig({
     // default thread pool, and the timeout kills a stuck worker in 15s
     // instead of letting the CI job hit its 15m timeout.
     pool: 'forks',
+    // Integration workers spawn Node/npm/git children of their own, so using
+    // every core can overcommit a busy host (#1360): the unchanged full suite
+    // took 220s with timing failures at 11 workers, versus 150s all-passing at
+    // 4. The bound is OPT-IN rather than global, because it is not free — on an
+    // idle 12-core host the same suite measured 87s unbounded (677% CPU) versus
+    // 138s at 4 workers (317% CPU), both 678 files / 17347 passed / 0 failed
+    // (2026-09-13, A/B back-to-back on one machine). Paying +59% on every local
+    // `npm test` to insure against a contention failure that only appears under
+    // load is the wrong trade; scoping it to the gate keeps both properties.
+    //
+    // `runGate()` in scripts/lib/quality-gate.mjs sets SO_BOUNDED_WORKERS=1 for
+    // every gate subprocess, so the pre-push and release gates — the runs where
+    // #1360's timeouts were actually observed — get the bound, and a bare
+    // `npm test` keeps Vitest's own default. Same conditional idiom as
+    // `testTimeout` two lines up.
+    //
+    // NAMED CEILING (BV-004): 4 is the value #1360 measured, not a derived
+    // optimum. Revisit when a gate run times out WITH the bound applied, or
+    // when the host class changes (the measurements above are one 12-core
+    // machine).
+    ...(process.env.SO_BOUNDED_WORKERS
+      ? { maxWorkers: Math.min(4, Math.max(availableParallelism() - 1, 1)) }
+      : {}),
     teardownTimeout: 15000,
     hookTimeout: 30000,
     coverage: {

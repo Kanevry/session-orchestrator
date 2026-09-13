@@ -434,6 +434,21 @@ describe('verifyLiveSite', () => {
 const ALLOWLIST = /^(CHANGELOG\.md|docs\/)/;
 
 describe('evaluateDriftSweep', () => {
+  it('preserves the four frozen September 10 campaign assets without exempting neighboring marketing', () => {
+    const historical = [
+      'marketing/remotion/README.md',
+      'marketing/remotion/campaign.json',
+      'marketing/remotion/render-receipt.json',
+      'marketing/remotion/src/ReleaseFilm.tsx',
+    ];
+    for (const file of historical) {
+      expect(evaluateDriftSweep({ status: 0, stdout: `${file}:1:4.2.0` }, '4.2.0', HISTORY_ALLOWLIST).ok).toBe(true);
+    }
+    for (const file of ['marketing/remotion/new-campaign.json', 'marketing/remotion/src/CurrentRelease.tsx', 'marketing/remotion/campaign.json.bak']) {
+      expect(evaluateDriftSweep({ status: 0, stdout: `${file}:1:4.2.0` }, '4.2.0', HISTORY_ALLOWLIST).ok).toBe(false);
+    }
+  });
+
   it.each([2, 128])('treats failed git grep exit %i as inconclusive, not as a clean sweep', (status) => {
     // THE BUG: the old code read `.stdout` and never `.status`. `git grep`
     // exits 1 on "no match" (fine) and non-0/1 on a real error — measured 128

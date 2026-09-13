@@ -87,6 +87,20 @@ const FAIL_LINT_COMMANDS = { lint: FAIL, typecheck: PASS, test: PASS };
 // ---------------------------------------------------------------------------
 
 describe('runQualityGateWithRetry — happy path', () => {
+  it.each([0, 1])('interprets trusted shell chains and short-circuits after exit %i', async (exitCode) => {
+    const marker = join(repoRoot, 'shell-chain.txt');
+    const command = `node -e "process.exit(${exitCode})" && node -e "require('fs').writeFileSync(${sq(marker)}, 'chain reached')"`;
+    const result = await runQualityGateWithRetry({
+      repoRoot,
+      maxRetries: 0,
+      commands: { ...PASS_COMMANDS, lint: command },
+    });
+    expect(result.ok).toBe(exitCode === 0);
+    expect(existsSync(marker)).toBe(exitCode === 0);
+    if (exitCode === 0) expect(readFileSync(marker, 'utf8')).toBe('chain reached');
+    else expect(result.finalFailure).toMatchObject({ gate: 'lint', exitCode: 1 });
+  });
+
   // Consolidated from 3 `it`s that ran the IDENTICAL all-pass gate and each
   // asserted one field of the same result object (TV-003). All three original
   // assertions are preserved; only the 2 duplicate gate runs are gone.

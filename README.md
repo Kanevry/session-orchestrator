@@ -118,7 +118,7 @@ Restart the harness afterwards, and re-run `npm install` in the plugin directory
 
 Session-start tells you when the running copy is behind: `scripts/lib/plugin-update-banner.mjs` compares the version of the code **that is actually loaded** against the published npm version and warns in the session-start banner (minor or major; patch-only updates stay silent). It fails silent: offline, a non-2xx response, or a malformed answer produces *no statement*, never a false "up to date".
 
-Upgrading across a major version: **[docs/migration-v4.md](docs/migration-v4.md)** is the current one. v4.0.0 removes five skills, three commands and eight top-level scripts, each on a measured 90-day two-signal rule rather than a judgement call, and it names what replaces every removed invocation. [docs/migration-v3.md](docs/migration-v3.md) documents the older v2 → v3 path and the shape both guides follow (what changes · prerequisites · per-platform steps · what stays · known issues · rollback).
+Upgrading across a major version: **[docs/migration-v5.md](docs/migration-v5.md)** covers the current release: the agent-status reader API changes and close-time discovery is enabled by default. If upgrading from before v4, also follow **[docs/migration-v4.md](docs/migration-v4.md)** for the removed skills, commands and scripts and their replacements. [docs/migration-v3.md](docs/migration-v3.md) documents the older v2 → v3 path and the shape both guides follow (what changes · prerequisites · per-platform steps · what stays · known issues · rollback).
 
 ## Uninstall
 
@@ -208,6 +208,8 @@ Full component inventory: [`docs/components.md`](docs/components.md). Version hi
 A comparison with other orchestrators, distinguishing measured results from unmeasured claims: [`docs/components.md` § Comparisons](docs/components.md#comparisons).
 
 ## Recent highlights (v5.0.0)
+
+Highlights of the v5.0.0 line:
 
 - **Agent status carries provenance.** `readCurrentStatus()` returns entries with their source, timestamp and degradation details. Integrations that need the former bare map can use `readCurrentStatusEntries()`. Read the [v5 migration guide](docs/migration-v5.md) before upgrading a deep-import consumer.
 - **Bounded operations use an explicit run contract.** Session-start can coordinate launch preparation, research and community work with a deadline, scoped accounts, one publisher and verified outcomes. It uses the active harness and does not install a background scheduler.

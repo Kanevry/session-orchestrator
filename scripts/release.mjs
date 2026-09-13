@@ -381,7 +381,10 @@ const INTENTIONAL_TEST_ASSET_PATHS = new Set([
 // ("4.0.0 — see docs/migration-v4.md"). A fifth, templates/_shared/journey-manifest.md ("Retired …
 // in 4.0.0"), was DELETED on 2026-09-12 (replaced by ux-manifest.template.md, Epic #1322) and its
 // allowlist entry went with it — re-add only if a file of that name returns.
-export const HISTORY_ALLOWLIST = /^(CHANGELOG\.md|README\.md|CLAUDE\.md|AGENTS\.md|CONTRIBUTING\.md|NOTICE|\.husky\/pre-push|docs\/|tests\/|skills\/npm-publish\/|skills\/architecture\/references\/domain-model\.md|skills\/autopilot\/SKILL\.md|scripts\/release\.mjs|\.orchestrator\/|site\/leaderboard\.json|site\/guide\/index\.html|site\/llms-full\.txt|commands\/release\.md)/;
+// September 10 campaign snapshot: inputs and receipt reproduce the dated 4.3-planned
+// render made while 4.2.0 was current. Exact files only; neighboring marketing
+// remains checked. Do not bump receipt props without a newly reviewed render.
+export const HISTORY_ALLOWLIST = /^(CHANGELOG\.md|README\.md|CLAUDE\.md|AGENTS\.md|CONTRIBUTING\.md|NOTICE|\.husky\/pre-push|docs\/|tests\/|skills\/npm-publish\/|skills\/architecture\/references\/domain-model\.md|skills\/autopilot\/SKILL\.md|scripts\/release\.mjs|\.orchestrator\/|site\/leaderboard\.json|site\/guide\/index\.html|site\/llms-full\.txt|commands\/release\.md|marketing\/remotion\/(?:README\.md|campaign\.json|render-receipt\.json|src\/ReleaseFilm\.tsx)$)/;
 
 /** Pure check over packed-entry lines. Returns violations: {name, line}[]. */
 export function checkLeakage(lines) {
