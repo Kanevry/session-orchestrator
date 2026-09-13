@@ -285,6 +285,11 @@ function resolveCommands(override, repoRoot) {
  */
 function runGate(cmd, cwd) {
   try {
+    // Gate commands are executable configuration from the caller or local
+    // Session Config, not data interpolated into a command template. Shell
+    // syntax is intentional; callers must trust both command sources (including
+    // uncommitted config). See security.md: Session Config Command Trust.
+    // nosemgrep: unsafe-shell-spawn
     const result = spawnSync(cmd, {
       cwd,
       shell: true,
