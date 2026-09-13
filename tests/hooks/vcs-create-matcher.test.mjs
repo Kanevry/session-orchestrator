@@ -34,6 +34,7 @@ import {
   extractTitle,
   findIssueCreateStatements,
   matchesBypass,
+  statementsCoverWholeCommand,
 } from '../../hooks/_lib/vcs-create-matcher.mjs';
 import { tokenizeCommand, splitChainSegments } from '@lib/command-blocker.mjs';
 
@@ -332,5 +333,30 @@ describe('vcs-create-matcher — re-fileable fields for the overflow park (#1314
     const [stmt] = findIssueCreateStatements('gh api repos/o/r/issues -F title=X');
     expect(stmt.title).toBe('X');
     expect(stmt.descriptionFile).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// statementsCoverWholeCommand (#1347)
+// ---------------------------------------------------------------------------
+//
+// TV-001 bug this catches: the refund hook gives a budget slot back on ONE exit
+// code for the WHOLE Bash call. Measured 2026-09-13 against its first cut,
+// `glab issue create --title X && false` files the issue, exits 1, and one slot
+// was refunded — a cap drain reachable from any agent. This predicate is the
+// attribution gate; a `true` for a mixed chain re-opens that hole.
+
+describe('vcs-create-matcher — refund attribution (#1347)', () => {
+  it.each([
+    ['a single create is the whole command', 'glab issue create --title A', true],
+    ['two chained creates are the whole command', 'glab issue create --title A && gh issue create --title B', true],
+    ['a create with an appended failing statement is NOT', 'glab issue create --title A && false', false],
+    ['a create with a leading cd is NOT (named ceiling)', 'cd /repo && glab issue create --title A', false],
+    ['a create followed by an echo is NOT', 'glab issue create --title A; echo done', false],
+    ['a pr create is not an issue create', 'glab mr create --title A', false],
+    ['no create at all', 'echo "glab issue create"', false],
+    ['the api route counts as a create', 'gh api -X POST repos/o/r/issues -f title=X', true],
+  ])('%s', (_label, command, expected) => {
+    expect(statementsCoverWholeCommand(command)).toBe(expected);
   });
 });

@@ -148,16 +148,17 @@ export function checkReleaseHygiene(repoRoot, driftCommits = DEFAULT_RELEASE_DRI
  *   - Everything outside `.orchestrator/` is untouched, which is where a real
  *     "nothing currently decides" stray lives.
  *
- * Prefix match on the porcelain path. `git status --porcelain` quotes a path only
- * when it carries special characters, so the optional leading quote is stripped
- * before comparing.
+ * Prefix match on the porcelain path. The caller reads `git status -z`, whose
+ * paths are NUL-terminated and therefore never quoted or escaped — the value
+ * arriving here is the literal path, so it is compared verbatim. Do not
+ * reintroduce a leading-quote strip: under `-z` a path that really begins with
+ * `"` is a path, not a quoting artefact.
  *
- * @param {string} porcelainPath path field of a `?? ` porcelain line
+ * @param {string} porcelainPath path field of a `?? ` porcelain entry
  * @returns {boolean}
  */
 function isOwnRuntimeArtifact(porcelainPath) {
-  const p = porcelainPath.replace(/^"/, '');
-  return p === '.orchestrator' || p.startsWith('.orchestrator/');
+  return porcelainPath === '.orchestrator' || porcelainPath.startsWith('.orchestrator/');
 }
 
 /**
@@ -171,6 +172,14 @@ function isOwnRuntimeArtifact(porcelainPath) {
  * `.gitignore` intends to version something that was never committed. In one
  * repo this hid 23 rule files the `.gitignore` explicitly un-ignored.
  *
+ * Reads `git status -z`: without it git QUOTES any path carrying a space, tab or
+ * non-ASCII byte (`"ign dir/"`, `"ign\tt.bin"`, `"ign\303\244.bin"`), and the
+ * quoted string does not exist on disk — so `duBytesBatch` dropped it and its
+ * bytes never reached the sum. Measured (#1348): a tree with `ign dir/` 3 MB,
+ * `ign<TAB>t.bin` 5 MB, `ignä.bin` 5 MB and `big.bin` 5 MB reported "5 MB
+ * (largest: big.bin 5MB)" against an actual 18 MB, low enough to fall under the
+ * report threshold entirely. `-z` is NUL-separated and never quotes.
+ *
  * @param {string} repoRoot
  * @param {number} ballastMb
  * @returns {object[]}
@@ -179,16 +188,29 @@ export function checkIgnoredBallast(repoRoot, ballastMb = DEFAULT_BALLAST_MB) {
   const findings = [];
 
   const ignored = git(
-    ['status', '--ignored=matching', '--porcelain', '--untracked-files=all'],
+    ['status', '--ignored=matching', '--porcelain', '--untracked-files=all', '-z'],
     repoRoot,
   );
   if (ignored === null) return findings;
 
   const ignoredPaths = [];
   let untrackedUnignored = 0;
-  for (const line of ignored.split('\n').filter(Boolean)) {
-    if (line.startsWith('!! ')) ignoredPaths.push(line.slice(3));
-    else if (line.startsWith('?? ') && !isOwnRuntimeArtifact(line.slice(3))) untrackedUnignored++;
+  // Porcelain v1 `-z`: each entry is `XY <path>` terminated by NUL, and a
+  // rename/copy (`R`/`C` in either status column) is followed by a SECOND
+  // NUL-terminated field carrying the source path. That bare field has no
+  // status prefix, so it cannot be mistaken for an `!! `/`?? ` entry unless a
+  // file is literally named `!! …` — skipping it explicitly removes even that.
+  const entries = ignored.split('\0').filter(Boolean);
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const status = entry.slice(0, 2);
+    if (status[0] === 'R' || status[0] === 'C' || status[1] === 'R' || status[1] === 'C') {
+      i++; // consume the rename/copy source path
+      continue;
+    }
+    const path = entry.slice(3);
+    if (status === '!!') ignoredPaths.push(path);
+    else if (status === '??' && !isOwnRuntimeArtifact(path)) untrackedUnignored++;
   }
 
   // Size only the top-level ignored entries — recursing every path would cost

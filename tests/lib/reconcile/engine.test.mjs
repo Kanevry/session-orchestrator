@@ -1106,7 +1106,11 @@ describe('runReconcile — telemetry (orchestrator.reconcile.completed)', () => 
       expect(rec.proposals).toBe(result.summary.proposed);
       expect(rec.rejected).toBe(result.summary.rejected);
       expect(rec.already_materialized).toBe(result.summary.alreadyMaterialized);
-      expect(rec.written).toBe(true);
+      // The sidecar-merge flag, renamed from the misleading `written` (#1315).
+      // The legacy alias rides along from the same expression until 2027-03-13,
+      // so asserting both pins that they can never disagree.
+      expect(rec.candidate_store_merged).toBe(true);
+      expect(rec.written).toBe(rec.candidate_store_merged);
       expect(rec.store_records_dropped).toBe(0);
       expect(typeof rec.duration_ms).toBe('number');
       expect('aborted' in rec).toBe(false);
@@ -1122,7 +1126,8 @@ describe('runReconcile — telemetry (orchestrator.reconcile.completed)', () => 
       const rec = ledger(repoRoot).filter((r) => r.event === EVENT).at(-1);
       expect(rec.dry_run).toBe(true);
       expect(rec.trigger).toBe('phase-skip');
-      expect(rec.written).toBe(false);
+      expect(rec.candidate_store_merged).toBe(false);
+      expect(rec.written).toBe(rec.candidate_store_merged);
       // Absence is load-bearing: the store was never inspected under dryRun, and
       // a `0` here would be a false all-clear.
       expect('store_records_dropped' in rec).toBe(false);

@@ -32,6 +32,10 @@ if (r.skipped_reason) console.log('SKIPPED:', r.skipped_reason);
 
 **Default severity:** low (<7d delta), medium (≥7d delta). Missing frontmatter fields → low.
 
+**Denominator:** staleness is `lastCommit - lastSync` — both read from the same `_overview.md` frontmatter — never `now - lastSync`. An overview without `lastCommit` falls back to the probe runtime (`basis: 'probe-runtime'` in the evidence, lower confidence).
+
+**Passive skip (#1238):** a `01-projects/<slug>/` carrying a `_passive.md` marker is skipped BEFORE any staleness comparison — it is excluded from `scanned_projects` and counted instead in `metrics.passive_skipped` — the SAME key in the in-memory metrics and in the JSONL record — so the skip is visible rather than indistinguishable from a healthy project. The marker is checked before the `_overview.md` existence test, so a passive folder without an overview is counted too rather than falling into the silent non-project branch.
+
 ---
 
 ### Probe: vault-narrative-staleness

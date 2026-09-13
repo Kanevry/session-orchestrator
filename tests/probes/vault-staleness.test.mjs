@@ -388,6 +388,72 @@ describe('vault-staleness probe', () => {
     });
   });
 
+  describe('passive projects (#1238 point 2)', () => {
+    // NAMED BUG: a `01-projects/<slug>/` marked `_passive.md` — one nobody syncs
+    // on purpose — produced a stale finding on EVERY run, unactionable noise the
+    // operator can only silence by removing the marker the convention requires.
+    // Pre-fix the probe had no `_passive` reference at all (grep: 0 hits), so the
+    // marked project below reported stale exactly like its unmarked sibling.
+    it('skips a stale project carrying _passive.md, counts the skip, and still flags its unmarked sibling', async () => {
+      const root = tmp();
+      const { vaultDir, projectsDir } = makeVault(root);
+
+      makeProject(projectsDir, 'passive-project', {
+        slug: 'passive-project',
+        tier: 'archived',
+        lastSync: daysAgo(30),
+        lastCommit: daysAgo(2),        // repo advanced 28d past the sync …
+      }, { '_passive.md': '# deliberately not synced\n' });
+
+      makeProject(projectsDir, 'active-project', {
+        slug: 'active-project',
+        tier: 'active',
+        lastSync: daysAgo(30),
+        lastCommit: daysAgo(2),        // … identical shape, no marker
+      });
+
+      const result = await runProbe(root, {
+        'vault-integration': { 'vault-dir': vaultDir },
+      });
+
+      expect(result.metrics.passive_skipped).toBe(1);
+      expect(result.metrics.scanned_projects).toBe(1);   // passive one not scanned
+      expect(result.metrics.stale_count).toBe(1);
+      expect(result.findings).toHaveLength(1);
+      expect(result.findings[0].evidence.slug).toBe('active-project');
+
+      // The skip is visible in the telemetry record, not only in the return value.
+      const record = JSON.parse(
+        readFileSync(join(root, '.orchestrator/metrics/vault-staleness.jsonl'), 'utf8')
+          .trim().split('\n').at(-1),
+      );
+      expect(record.passive_skipped).toBe(1);
+    });
+
+    // NAMED BUG (QA-L6): while the `_passive.md` check sat AFTER the
+    // `_overview.md` existence early-continue, a passive folder that carries no
+    // overview fell into the silent non-project branch — the deliberate skip went
+    // uncounted and `passive_skipped` under-reported it. The finding population is
+    // unchanged (neither branch can emit a finding), so only the metric proves it.
+    it('counts a passive folder that has NO _overview.md', async () => {
+      const root = tmp();
+      const { vaultDir, projectsDir } = makeVault(root);
+
+      // No _overview.md on purpose — makeProject() always writes one.
+      const bare = join(projectsDir, 'passive-no-overview');
+      mkdirSync(bare, { recursive: true });
+      writeFileSync(join(bare, '_passive.md'), '# deliberately not synced\n', 'utf8');
+
+      const result = await runProbe(root, {
+        'vault-integration': { 'vault-dir': vaultDir },
+      });
+
+      expect(result.metrics.passive_skipped).toBe(1);
+      expect(result.metrics.scanned_projects).toBe(0);
+      expect(result.findings).toHaveLength(0);
+    });
+  });
+
   describe('duration_ms', () => {
     it('returns a non-negative duration_ms in every result', async () => {
       const result = await runProbe('/tmp', {});

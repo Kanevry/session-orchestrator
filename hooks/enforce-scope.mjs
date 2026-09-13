@@ -22,6 +22,11 @@
  *       Runs before G6 so a deliberate out-of-repo grant (e.g. a vault path)
  *       is reachable at all — G6 would otherwise deny every out-of-repo path
  *       without ever consulting allowedPaths. See matchesAbsoluteAllowlist.
+ *   G5c (#1295) out-of-root carveout for THIS repo's Claude Code auto-memory
+ *       directory (`~/.claude/projects/<encoded-repo-path>/memory/`). Harness-
+ *       owned, lives outside the working copy, cannot collide with any wave
+ *       scope. Evaluated inside G6's out-of-root branch only; a SIBLING repo's
+ *       memory dir and every other out-of-repo path stay denied.
  *   G6  resolved path inside project root
  *   G7  relative path matches an allowedPaths pattern
  *   G8  (all passed) → allow
@@ -432,6 +437,60 @@ async function main() {
 
   // Gate 6: path must be inside the project root
   if (!isPathInside(resolvedPath, projectRoot)) {
+    // Gate 5c (#1295) — THIS repo's harness auto-memory directory.
+    //
+    // Claude Code writes its own auto-memory (`MEMORY.md` + per-fact files)
+    // OUTSIDE the working copy, at
+    // `~/.claude/projects/<encoded-repo-path>/memory/`. Every wave manifest
+    // therefore blocked the coordinator's memory writes until the manifest was
+    // torn down — six sessions in a consumer repo re-documented the same
+    // workaround (bewerbungs-assistent#307, retro 2026-09-09). That directory
+    // is harness-owned and cannot collide with ANY wave file scope, so it is
+    // always-allowed territory; it is the single out-of-repo carveout here.
+    //
+    // NARROWNESS (security boundary — no wider allow than this one directory):
+    //   - Only the memory dir of THIS repo, as the harness names it. That name
+    //     is NOT unique: `encodeProjectDir()` maps both `/` and `.` to `-`, so
+    //     `/x/a.b` and `/x/a-b` share one memory dir — a harness-level collision
+    //     this gate inherits and cannot narrow. Every OTHER sibling repo's
+    //     memory dir stays denied.
+    //   - Containment is exact-prefix on the REALPATH-resolved candidate, so
+    //     `..` segments and symlink tricks cannot widen it.
+    //   - Evaluated only on the out-of-root branch: the in-repo gates (Gate 7,
+    //     Discovery's `allowedPaths: []` deny-all) are untouched.
+    //
+    // Encoder REUSED, never re-written (BV-001 rung 2): `encodeProjectDir()`
+    // from `scripts/lib/wave-transcript-tail.mjs` is the repo's one encoder for
+    // `<encoded-repo-path>`. Bound LAZILY here rather than in `bootstrap()` —
+    // same pattern as the G3b event import above — so the happy path pays no
+    // module load, and an import failure falls through to the deny below
+    // (fail-closed, byte-identical to the pre-#1295 behaviour).
+    //
+    // CEILING (BV-004): `CLAUDE_CONFIG_DIR` is NOT honoured, because nothing in
+    // this codebase honours it today (`rg -n "CLAUDE_CONFIG_DIR" scripts hooks`
+    // → 0 matches, 2026-09-13) and `wave-transcript-tail.mjs` resolves the same
+    // substrate from `homedir()`. Revisit together with that resolver if the
+    // harness config dir ever becomes relocatable here.
+    const memoryDirs = await ownMemoryDirs(projectRootRaw, projectRoot);
+    if (memoryDirs.some((dir) => isInsideDir(resolvedPath, dir))) {
+      // One event per decision point, awaited before emitAllow() —
+      // emitAllow() calls process.exit(), which would discard a pending append.
+      try {
+        const { emitEvent } = await import('../scripts/lib/events.mjs');
+        await emitEvent(
+          'orchestrator.scope.memory_dir_allowed',
+          {
+            hook: HOOK_NAME,
+            manifest: scopePath,
+            wave: scope.wave,
+            file_path: resolvedPath,
+          },
+          { repoRoot: projectRoot },
+        );
+      } catch { /* observability is best-effort — never blocks the decision */ }
+      return emitAllow();
+    }
+
     const reason = `Scope violation: path outside project root`;
     const suggestion = suggest(filePath);
     return enforcement === 'strict'
@@ -498,6 +557,71 @@ async function mtimeMsOf(file) {
   } catch {
     return null;
   }
+}
+
+/**
+ * #1295 — the Claude Code auto-memory directories that belong to THIS repo.
+ *
+ * Returns at most two paths, both naming the SAME repo: the encoding of the
+ * project root as the harness saw it (`CLAUDE_PROJECT_DIR` / cwd) and — when it
+ * differs — the encoding of its realpath. Both are needed because Claude Code
+ * encodes the path it was LAUNCHED with, while this hook compares against the
+ * canonical root (on macOS `/tmp` → `/private/tmp`). Two encodings of one repo
+ * is not a wider grant: a sibling repo's root encodes to neither.
+ *
+ * Returns `[]` when the encoder cannot be loaded, so the caller falls through to
+ * its deny (fail-closed).
+ *
+ * @param {string} projectRootRaw — project root as resolved from env/cwd
+ * @param {string} projectRoot — its realpath
+ * @returns {Promise<string[]>}
+ */
+async function ownMemoryDirs(projectRootRaw, projectRoot) {
+  try {
+    const [{ encodeProjectDir }, { homedir }] = await Promise.all([
+      import('../scripts/lib/wave-transcript-tail.mjs'),
+      import('node:os'),
+    ]);
+    const home = homedir();
+    if (!home) return [];
+    // The candidate arrives REALPATH-resolved (SECURITY-REQ-03), so the home
+    // side must be too — otherwise the macOS `/tmp` → `/private/tmp` symlink
+    // alone makes every comparison miss.
+    let homeReal = home;
+    try {
+      homeReal = await fs.realpath(home);
+    } catch { /* non-existent home — the raw form is all there is */ }
+    const homes = new Set([home, homeReal]);
+    const roots = new Set(
+      [projectRootRaw, projectRoot].filter((p) => typeof p === 'string' && p.length > 0),
+    );
+    const dirs = [];
+    for (const h of homes) {
+      for (const root of roots) {
+        dirs.push(path.join(h, '.claude', 'projects', encodeProjectDir(root), 'memory'));
+      }
+    }
+    return dirs;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Exact-prefix containment: is `candidate` `dir` itself or a descendant of it?
+ *
+ * Both sides are `path.resolve`d first, so `..` segments collapse before the
+ * comparison and cannot escape `dir`. The `path.sep` suffix is load-bearing —
+ * without it `<dir>-evil/x` would match the prefix of `<dir>`.
+ *
+ * @param {string} candidate
+ * @param {string} dir
+ * @returns {boolean}
+ */
+function isInsideDir(candidate, dir) {
+  const base = path.resolve(dir);
+  const target = path.resolve(candidate);
+  return target === base || target.startsWith(base + path.sep);
 }
 
 const COORDINATOR_CARVEOUT_PATHS = Object.freeze([

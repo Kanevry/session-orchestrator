@@ -1340,3 +1340,126 @@ describe('foreign-session manifest (#1123)', { timeout: 15000 }, () => {
     expect(await readEvents(dir)).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Gate 5c (#1295) — THIS repo's Claude Code auto-memory directory
+//
+// The bug: `~/.claude/projects/<encoded-repo-path>/memory/` is where the harness
+// itself writes MEMORY.md and the per-fact files, and it lives OUTSIDE the
+// working copy — so Gate 6 denied every coordinator memory write for as long as
+// a wave manifest existed (six sessions in a consumer repo re-documented the
+// same tear-down-the-manifest workaround; bewerbungs-assistent#307).
+//
+// These five cases pin the BOUNDARY, not just the allow: the grant must cover
+// exactly one directory, for exactly THIS repo.
+// ---------------------------------------------------------------------------
+
+describe('memory-dir carveout (#1295)', { timeout: 15000 }, () => {
+  /** Encoder REUSED from the production resolver — never re-derived here. */
+  async function encodeRepoPath(repoPath) {
+    const { encodeProjectDir } = await import('../../scripts/lib/wave-transcript-tail.mjs');
+    return encodeProjectDir(repoPath);
+  }
+
+  /** A throwaway $HOME so the test never reads or writes the operator's real home. */
+  async function mkFakeHome() {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-scope-home-'));
+    tmpDirs.push(home);
+    return home;
+  }
+
+  /** Env overlay: fake home + no ambient session id (the operator's leaks in via spawn). */
+  function homeEnv(home) {
+    return { HOME: home, USERPROFILE: home, CLAUDE_CODE_SESSION_ID: null };
+  }
+
+  async function memoryDirFor(home, dir) {
+    return path.join(home, '.claude', 'projects', await encodeRepoPath(dir), 'memory');
+  }
+
+  it("ALLOWS a write into this repo's memory dir under a Discovery deny-all manifest", async () => {
+    const dir = await mkProjectTracked({
+      wave: 1,
+      role: 'Discovery',
+      enforcement: 'strict',
+      allowedPaths: [],
+    });
+    const home = await mkFakeHome();
+    const target = path.join(await memoryDirFor(home, dir), 'MEMORY.md');
+    const result = await runHook({ projectDir: dir, stdin: editPayload(target), env: homeEnv(home) });
+    expectAllow(result);
+    const events = await readEvents(dir);
+    expect(events.map((e) => e.event)).toContain('orchestrator.scope.memory_dir_allowed');
+    // QA-L7: the event name alone would stay green if the payload keys drifted —
+    // assert the exact keys documented in docs/events-schema.md for this row.
+    const record = events.find((e) => e.event === 'orchestrator.scope.memory_dir_allowed');
+    expect(record).toMatchObject({
+      hook: 'enforce-scope',
+      manifest: expect.stringContaining('wave-scope.json'),
+      wave: 1,
+      // REALPATH-resolved, so compare the basename rather than the tmp prefix.
+      file_path: expect.stringContaining('MEMORY.md'),
+    });
+  });
+
+  it("ALLOWS a write into this repo's memory dir under a strict Impl manifest", async () => {
+    const dir = await mkProjectTracked({
+      wave: 2,
+      role: 'Impl',
+      enforcement: 'strict',
+      allowedPaths: ['src/**'],
+    });
+    const home = await mkFakeHome();
+    const target = path.join(await memoryDirFor(home, dir), 'project_facts.md');
+    const result = await runHook({ projectDir: dir, stdin: editPayload(target), env: homeEnv(home) });
+    expectAllow(result);
+  });
+
+  it('still DENIES an unrelated out-of-repo path in the same home', async () => {
+    const dir = await mkProjectTracked({ enforcement: 'strict', allowedPaths: ['src/**'] });
+    const home = await mkFakeHome();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(home, 'x.md')),
+      env: homeEnv(home),
+    });
+    expectDeny(result, ['outside project root']);
+  });
+
+  it("still DENIES a SIBLING repo's memory dir", async () => {
+    // The narrowness that matters: a wave agent must not be able to write
+    // ANOTHER repo's harness memory.
+    const dir = await mkProjectTracked({ enforcement: 'strict', allowedPaths: ['src/**'] });
+    const home = await mkFakeHome();
+    const sibling = path.join(home, '.claude', 'projects', '-Users-x-other', 'memory', 'foo.md');
+    const result = await runHook({ projectDir: dir, stdin: editPayload(sibling), env: homeEnv(home) });
+    expectDeny(result, ['outside project root']);
+  });
+
+  it("still DENIES the adjacent-prefix sibling `<memory>-evil/` of this repo's memory dir", async () => {
+    // The `+ path.sep` in isInsideDir() is what separates `<dir>` from
+    // `<dir>-evil`; without it this sibling directory would pass the
+    // startsWith() prefix check and win an out-of-repo ALLOW.
+    const dir = await mkProjectTracked({ enforcement: 'strict', allowedPaths: ['src/**'] });
+    const home = await mkFakeHome();
+    const evil = `${await memoryDirFor(home, dir)}-evil`;
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(evil, 'x.md')),
+      env: homeEnv(home),
+    });
+    expectDeny(result, ['outside project root']);
+  });
+
+  it('still DENIES a `..` traversal out of the memory dir', async () => {
+    const dir = await mkProjectTracked({ enforcement: 'strict', allowedPaths: ['src/**'] });
+    const home = await mkFakeHome();
+    const memoryDir = await memoryDirFor(home, dir);
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(`${memoryDir}/../other/foo.md`),
+      env: homeEnv(home),
+    });
+    expectDeny(result, ['outside project root']);
+  });
+});

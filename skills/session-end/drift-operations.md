@@ -56,8 +56,9 @@ fi
 **Reporting rules:**
 
 - **`mode: off`** — checker reports `status: skipped-mode-off`; include a single line "CLAUDE.md drift: skipped (mode=off)" in the quality gate report. Never blocks.
-- **`mode: warn`** — checker always exits 0. If `.errors | length > 0`, surface the list in the report under "CLAUDE.md drift warnings (mode=warn)" with check + file:line + message for each entry. Also list any `.warnings` (e.g. `#NN` the checker could not resolve via glab). Never blocks close; note that `mode: strict` would have routed the same errors through the carryover path below.
+- **`mode: warn`** — checker always exits 0. If `.errors | length > 0`, surface the list in the report under "CLAUDE.md drift errors (mode=warn, non-blocking)" with check + file:line + message for each entry. Never blocks close; note that `mode: strict` would have routed the same errors through the carryover path below. `.warnings[]` are rendered by their own rule below, independently of whether any error exists.
 - **`mode: strict`** (legacy alias `hard`, normalized to `strict` at parse time — #217) — checker exits 1 on errors. On exit 1: do NOT block the close. Surface the full error list, then default to **warn + carryover + continue** (Recommended): file a carryover issue (labels `carryover`, `priority::high`) titled `[Carryover] CLAUDE.md drift (strict) — <E> errors` capturing the drift items for a follow-up session, log a Deviation entry in STATE.md `## Deviations`, then continue the close. Offer "Override and close" (continue without a carryover issue; log the Deviation) as an alternative via AskUserQuestion. The user can also (a) fix the drift directly in `CLAUDE.md` (or `AGENTS.md` on Codex CLI) / `_meta/`, or (b) temporarily set `mode: warn` while backfilling, or (c) disable a specific check via its `check-*` flag if it reports false positives on this codebase.
+- **Warnings (`.warnings[]`, every mode that runs: `warn` and `strict`)**: whenever `DC_WARN_COUNT > 0`, also when `status: ok` and also when `DC_ERR_COUNT == 0`, render the entries under their own heading **"CLAUDE.md drift warnings (mode=<mode>, non-blocking)"**, one line per entry: `[<check>] <file>:<line> — <message>`. Warnings are the second category, separate from errors and from notes: they are NOT nested under the error branch above, so a run with `status: ok`, `errors: []` and a non-empty `warnings[]` still renders every warning (#1350 — before this rule a 36-warning run rendered nothing at all, because both the error branch and the success line excluded it). Never let a warning block the close, never let it change the exit-code dispatch below, and never file a carryover issue for a warning on its own — a warning is an operator-visible signal, not a gate. Render them from `DC_JSON` with e.g. `echo "$DC_JSON" | jq -r '.warnings[] | "  [\(.check)] \(.file):\(.line) — \(.message)"'`.
 - **Notes (`.notes[]`, every mode that runs: `warn` and `strict`)**: whenever `DC_NOTES_COUNT > 0`, also when `status: ok`, render the entries under their own heading **"CLAUDE.md drift notes (reported, not warned)"**, one line per entry: `[<check>/<probe>] <file>:<line> — <message>`. Notes are a third category, separate from errors and warnings (#1312, `.claude/rules/development.md` § Guard & Threshold Design: split the category instead of raising the threshold; source: the `notes[] human renderer (#1312)` block in `skills/claude-md-drift-check/checker.mjs`). Keeping them separate is part of the contract. Never call a note a "warning" or an "error", never let one block or change the exit-code dispatch below, and never file a carryover issue for it. It is reported, and no action follows from it. If notes are hidden, nobody reads them, and that unread state is what the split was built to end.
 - **Exit 2** (infra error — missing `node`, unreadable `VAULT_DIR`, malformed args) — treat as a skipped gate with a loud warning ("CLAUDE.md drift: infrastructure error — <reason>"). Do NOT block the session close on infra failures.
 
@@ -78,17 +79,26 @@ fi
 **Partial-skip awareness:** The checker may report `checks_skipped` in its JSON output even on successful runs. Common causes: `glab` not on PATH (Check 3 degrades gracefully), no `01-projects/` directory (Check 2 inapplicable). Surface these in the report as informational lines, not errors:
 
 ```
-CLAUDE.md drift: ok (N files scanned, mode=<mode>)
+CLAUDE.md drift: OK (N files scanned, mode=<mode>) — E errors, W warnings, T notes
   - Skipped: issue-reference-freshness (glab not found in PATH)
+
+CLAUDE.md drift warnings (mode=<mode>, non-blocking)
+  [<check>] <file>:<line> — <message>
 
 CLAUDE.md drift notes (reported, not warned)
   [<check>/<probe>] <file>:<line> — <message>
 ```
 
-**Success line format** (when `errors: [] && warnings: []`):
+**Success line format** (when `errors: []` — a non-empty `warnings[]` or `notes[]` does NOT make the run unsuccessful; it is stated in the line and rendered under its own heading above):
 
 ```
-CLAUDE.md drift: ok (N files scanned, mode=<mode>)
+CLAUDE.md drift: OK (N files scanned, mode=<mode>) — E errors, W warnings, T notes
+```
+
+There is exactly ONE success-line format, and it ALWAYS carries all three counts (`E` = `DC_ERR_COUNT`, `W` = `DC_WARN_COUNT`, `T` = `DC_NOTES_COUNT`) next to the files-scanned figure — so the operator can tell from the line alone whether the warning/note sections above are empty. Do not drop the counts when they are zero, and do not vary the case (`OK` here, `INVALID` below):
+
+```
+CLAUDE.md drift: OK (412 files scanned, mode=warn) — 0 errors, 36 warnings, 2 notes
 ```
 
 **Error line format** (hard mode, carryover):

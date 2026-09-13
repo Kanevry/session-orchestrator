@@ -95,6 +95,22 @@ describe('checkReleaseHygiene', () => {
 
 // ── Ignored ballast / untracked-unignored ────────────────────────────────────
 
+/**
+ * Directory names whose porcelain form git quotes. The space row runs everywhere;
+ * a tab or a non-ASCII byte in a filename is not portable to Windows filesystems,
+ * so those two rows are dropped there rather than created and swallowed inside the
+ * test body (branch-free tests, per testing.md).
+ */
+const BALLAST_SPECIAL_NAMES = [
+  { label: 'a space', name: 'ign dir' },
+  ...(process.platform === 'win32'
+    ? []
+    : [
+        { label: 'a tab', name: 'ign\tdir' },
+        { label: 'a non-ASCII character', name: 'ignä-dir' },
+      ]),
+];
+
 describe('checkIgnoredBallast', () => {
   it('reports files that are neither tracked nor ignored', () => {
     // Bug this catches: a .gitignore that deliberately un-ignores a directory
@@ -158,6 +174,25 @@ describe('checkIgnoredBallast', () => {
       linkSync(join(root, 'a', 'blob.bin'), join(root, 'b', 'blob.bin'));
       const findings = checkIgnoredBallast(root, 1);
       expect(findings.find((f) => f.check === 'ignored-ballast')).toBeDefined();
+    },
+  );
+
+  // Bug this catches (#1348): without `git status -z` git QUOTES any path with a
+  // space, tab or non-ASCII byte ("ign dir/"). The quoted string does not exist
+  // on disk, so the existsSync filter in duBytesBatch dropped it and its bytes
+  // never reached the ballast sum — a 2 MB ignored directory named with a space
+  // measured as 0 MB, which can push the whole total under the report threshold.
+  it.each(BALLAST_SPECIAL_NAMES)(
+    'measures an ignored directory whose name contains $label',
+    ({ name }) => {
+      writeFileSync(join(root, '.gitignore'), 'ign*\n');
+      commitN(1);
+      mkdirSync(join(root, name), { recursive: true });
+      writeFileSync(join(root, name, 'blob.bin'), 'b'.repeat(2 * 1024 * 1024));
+      const findings = checkIgnoredBallast(root, 1);
+      const ballast = findings.find((f) => f.check === 'ignored-ballast');
+      expect(ballast).toBeDefined();
+      expect(ballast.message).toContain(name);
     },
   );
 });

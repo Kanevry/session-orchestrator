@@ -255,6 +255,27 @@ export function budgetStatePath(repoRoot, sessionId = null) {
 }
 
 /**
+ * Is this a well-formed charge record (#1347)?
+ *
+ * A record that fails this test is DROPPED rather than repaired: it can no
+ * longer prove which unit it was charged to, and a refund against an
+ * unclassifiable record is exactly the drain this ledger exists to prevent.
+ *
+ * @param {unknown} r
+ * @returns {boolean}
+ */
+function _isChargeRecord(r) {
+  return (
+    !!r &&
+    typeof r === 'object' &&
+    !Array.isArray(r) &&
+    typeof r.key === 'string' &&
+    r.key.length > 0 &&
+    (r.unit === 'count' || r.unit === 'exempt')
+  );
+}
+
+/**
  * Coerce a parsed counter file into a state object, or `null` when it does not
  * belong to `accountingSessionId`.
  *
@@ -274,6 +295,10 @@ function _coerceState(data, accountingSessionId) {
     count: Number.isInteger(data.count) && data.count >= 0 ? data.count : 0,
     exempt: Number.isInteger(data.exempt) && data.exempt >= 0 ? data.exempt : 0,
     overflow: Array.isArray(data.overflow) ? data.overflow : [],
+    // #1347 CHARGE ledger — PROOF OF CHARGE, the thing a refund must present.
+    // Coerced here and NOT elsewhere: this function is the only reader, so a key
+    // it drops is a key that does not survive a round trip.
+    charged: Array.isArray(data.charged) ? data.charged.filter(_isChargeRecord) : [],
   };
 }
 
@@ -324,7 +349,7 @@ function _readStateFile(file, accountingSessionId) {
 export function readBudgetState(repoRoot, sessionId) {
   const accountingSessionId =
     typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null;
-  const fresh = { sessionId: accountingSessionId, count: 0, exempt: 0, overflow: [] };
+  const fresh = { sessionId: accountingSessionId, count: 0, exempt: 0, overflow: [], charged: [] };
   if (accountingSessionId === null) return fresh;
 
   const ownFile = budgetStatePath(repoRoot, accountingSessionId);
@@ -501,6 +526,8 @@ export function chargeIssueBudget({
   repo = null,
   cwd = null,
   cwdChanged = false,
+  toolCallId = null,
+  statementIndex = 0,
   config,
   now = new Date().toISOString(),
 }) {
@@ -532,9 +559,26 @@ export function chargeIssueBudget({
   const persist = (next) =>
     accountingSessionId === null ? false : writeBudgetState(repoRoot, next);
 
+  // The charge RECORD is the only thing a later refund may act on (#1347). It is
+  // written on every branch that actually increments a counter, and on NO branch
+  // that does not — which is what makes a parked (blocked) creation unrefundable
+  // by construction rather than by a heuristic in the refund hook.
+  const record = (unit) => {
+    state.charged = [
+      ...state.charged,
+      {
+        id: bookingId({ toolCallId, statementIndex }),
+        key: bookingKey({ sessionId: accountingSessionId, command: String(command ?? ''), statementIndex }),
+        unit,
+        at: now,
+      },
+    ].slice(-CHARGED_LEDGER_MAX);
+  };
+
   const { exempt, reason } = classifyExemption(command);
   if (exempt) {
     state.exempt += 1;
+    record('exempt');
     persist(state);
     return {
       ...base,
@@ -547,12 +591,14 @@ export function chargeIssueBudget({
 
   if (state.count < max) {
     state.count += 1;
+    record('count');
     persist(state);
     return { ...base, decision: 'allow', count: state.count, overflowCount: state.overflow.length, reason: null };
   }
 
   if (mode === 'warn') {
     state.count += 1;
+    record('count');
     persist(state);
     return { ...base, decision: 'warn', count: state.count, overflowCount: state.overflow.length, reason: null };
   }
@@ -571,6 +617,185 @@ export function chargeIssueBudget({
     overflowCount: state.overflow.length,
     reason: null,
   };
+}
+
+/**
+ * How many CHARGE records one session's counter file remembers (#1347, BV-004).
+ *
+ * A record is REMOVED only when its refund is honoured; the record of a create
+ * that SUCCEEDED stays for the rest of the session (nothing else prunes it), so
+ * the ledger holds every charge of the session, not only the outstanding ones.
+ * 64 covers a cap of 12 plus the uncapped exempt creates of a long deep
+ * session (measured this repo: ≤ 12 per session so far) and keeps the file in
+ * the low-kilobyte class. Eviction is fail-CLOSED: an evicted record
+ * makes its refund `not-charged`, i.e. the slot stays spent (the cap ends up
+ * slightly tighter), never refundable twice. Revisit if a session legitimately
+ * exceeds 64 outstanding charges — then the bound, not the direction, is wrong.
+ */
+export const CHARGED_LEDGER_MAX = 64;
+
+/**
+ * The EXACT id of one charged statement, when the harness publishes a tool-call
+ * id for the invocation.
+ *
+ * `<tool_use_id>#<statementIndex>` — instance-unique per statement, so a chain
+ * of two creates yields two ids and a re-delivered failure of the same call
+ * yields the same one.
+ *
+ * @param {{ toolCallId?: string|null, statementIndex?: number }} opts
+ * @returns {string|null} `null` when the harness published no id
+ */
+export function bookingId({ toolCallId = null, statementIndex = 0 } = {}) {
+  if (typeof toolCallId !== 'string' || toolCallId.length === 0) return null;
+  return `${toolCallId}#${Number.isInteger(statementIndex) ? statementIndex : 0}`;
+}
+
+/**
+ * The deterministic fallback key of one charged statement.
+ *
+ * Deliberately session + command text + statement index and NOTHING ELSE — in
+ * particular NOT the counter value at charge time (`countBefore`, the #1347
+ * first-cut key). That value made every retry of the same create mint a FRESH
+ * key: measured against a cap of 3, three retries of a create that was PARKED
+ * (never charged) refunded three slots and drove `count` to 0 while the parked
+ * record still sat in `overflow[]` — i.e. `max-per-session` was unbounded by
+ * retrying a denied create. The key is now stable across retries, and proof of
+ * charge comes from the record's PRESENCE rather than from the key's shape.
+ *
+ * @param {{ sessionId: string|null, command: string, statementIndex?: number }} opts
+ * @returns {string}
+ */
+export function bookingKey({ sessionId, command, statementIndex = 0 }) {
+  const idx = Number.isInteger(statementIndex) ? statementIndex : 0;
+  return digestSha256Short(`cmd:${sessionId ?? ''}|${command}|${idx}`, { length: 16 });
+}
+
+/**
+ * Give one booking back to the session budget (#1347) — ONLY against a recorded
+ * CHARGE.
+ *
+ * WHY THIS EXISTS: `chargeIssueBudget` books the slot in PreToolUse — BEFORE the
+ * command runs. When `glab issue create` then fails (network, rejected label,
+ * expired auth) and the coordinator retries, the SAME issue consumed two slots,
+ * and under `max-per-session: 12` + `mode: strict` that pushes a legitimate
+ * issue into overflow parking. This is the compensating half of the charge.
+ *
+ * WHY IT IS LEDGER-BASED AND NOT INFERRED: the first cut decremented whenever a
+ * failure signal arrived for an issue-create command. It could not tell a CHARGE
+ * from a NON-charge, and at `count === max` the pre-hook PARKS the create and
+ * denies WITHOUT charging while the failure event still fires — so retrying a
+ * DENIED create refunded a slot that was never spent. Presenting the charge
+ * record is the only form of proof that closes that class; every "was this
+ * really charged?" heuristic is a guess about state this module already knows.
+ *
+ * Matching: the exact `<tool_use_id>#<index>` id when both sides have one,
+ * otherwise the deterministic `bookingKey`. Both routes are consulted because
+ * the charging and refunding payloads are separate harness events and only one
+ * of them may carry a tool-call id.
+ *
+ * Decision table:
+ *   mode `off`                  → `{ decision: 'off' }`, nothing written
+ *   no accounting session id    → `{ decision: 'no-session' }`, nothing written
+ *   no matching charge record   → `{ decision: 'noop', reason: 'not-charged' }`
+ *   record with `unit: exempt`  → `{ decision: 'refunded-exempt' }`, `exempt`--
+ *   record with `unit: count`   → `{ decision: 'refunded' }`, `count`--
+ *
+ * Three invariants:
+ *   - The matched record is REMOVED, so a re-delivered failure of the same call
+ *     finds nothing and is `not-charged`. Dedupe is the removal, not a second
+ *     ledger.
+ *   - The refund lands on the SAME counter the charge did (`count` vs `exempt`),
+ *     read off the record — never re-classified from the command text, which a
+ *     retry can have edited.
+ *   - `overflow[]` is NEVER touched. A parked record means the creation was
+ *     BLOCKED, so it was never charged and there is nothing to give back;
+ *     removing it would drop the item session-end promises to file.
+ *
+ * Fail-open like every other function here: an unwritable ledger means the
+ * refund is lost (the cap stays a little tighter), never an exception.
+ *
+ * @param {{
+ *   repoRoot: string,
+ *   sessionId?: string|null,
+ *   command: string,
+ *   toolCallId?: string|null,
+ *   statementIndex?: number,
+ *   config?: { "max-per-session": number, mode: string, overflow: string },
+ * }} opts
+ * @returns {{
+ *   decision: 'off'|'no-session'|'noop'|'refunded'|'refunded-exempt',
+ *   count: number,
+ *   exempt: number,
+ *   max: number,
+ *   mode: string,
+ *   overflowCount: number,
+ *   bookingId: string|null,
+ *   reason: string|null,
+ * }}
+ */
+export function refundBooking({
+  repoRoot,
+  sessionId = null,
+  command,
+  toolCallId = null,
+  statementIndex = 0,
+  config,
+}) {
+  const cfg = config ?? loadIssueBudgetConfig(repoRoot);
+  const base = { max: cfg['max-per-session'], mode: cfg.mode };
+  const accountingSessionId =
+    typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null;
+
+  if (cfg.mode === 'off') {
+    return { ...base, decision: 'off', count: 0, exempt: 0, overflowCount: 0, bookingId: null, reason: null };
+  }
+  // Identity-less: `chargeIssueBudget` never PERSISTED such a charge, so there
+  // is provably nothing to refund — and writing here would hit the shared legacy
+  // slot and reset a live session's count (the #1141 hazard).
+  if (accountingSessionId === null) {
+    return { ...base, decision: 'no-session', count: 0, exempt: 0, overflowCount: 0, bookingId: null, reason: null };
+  }
+
+  const state = readBudgetState(repoRoot, accountingSessionId);
+  state.sessionId = accountingSessionId;
+  const exactId = bookingId({ toolCallId, statementIndex });
+  const key = bookingKey({
+    sessionId: accountingSessionId,
+    command: String(command ?? ''),
+    statementIndex,
+  });
+  const verdict = (decision, reason = null, matchedId = null) => ({
+    ...base,
+    decision,
+    count: state.count,
+    exempt: state.exempt,
+    overflowCount: state.overflow.length,
+    bookingId: matchedId ?? exactId ?? key,
+    reason,
+  });
+
+  // Match order (review MED-1, measured): the deterministic key is shared by
+  // EVERY charge of the same command text in this session, so a refund that
+  // carries a tool_use_id must match by id first and may fall back to the key
+  // only among records charged WITHOUT an id (the id-less harness / a
+  // one-sided id). Falling back onto an id-bearing record would hand the
+  // refund to an OLDER charge that may have SUCCEEDED — two charges, one
+  // delivery each, and the second delivery drained the successful create's slot.
+  let at = exactId !== null ? state.charged.findIndex((r) => r.id === exactId) : -1;
+  if (at === -1) {
+    at = state.charged.findIndex((r) => r.key === key && (exactId === null || r.id === null || r.id === undefined));
+  }
+  if (at === -1) return verdict('noop', 'not-charged');
+
+  const rec = state.charged[at];
+  state.charged = [...state.charged.slice(0, at), ...state.charged.slice(at + 1)];
+  if (rec.unit === 'exempt') {
+    if (state.exempt > 0) state.exempt -= 1;
+  } else if (state.count > 0) {
+    state.count -= 1;
+  }
+  writeBudgetState(repoRoot, state);
+  return verdict(rec.unit === 'exempt' ? 'refunded-exempt' : 'refunded', null, rec.id ?? rec.key);
 }
 
 /**

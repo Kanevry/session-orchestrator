@@ -371,6 +371,9 @@ describe('cap enforcement', { timeout: 30000 }, () => {
       count: 1,
       exempt: 0,
       overflow: [],
+      // #1347 CHARGE ledger — proof of charge, the only thing a refund may act
+      // on. One record per charged statement; emptied as refunds are honoured.
+      charged: [{ id: null, key: expect.any(String), unit: 'count', at: expect.any(String) }],
     });
   });
 

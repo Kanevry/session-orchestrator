@@ -10,8 +10,8 @@
 
 | Path | Purpose |
 |------|---------|
-| `skills/` | 43 user-facing skills (+ `_shared/` internal) |
-| `commands/` | 25 slash-commands (e.g. `/session`, `/close`, `/go`, `/plan`, `/test`, `/portfolio`, `/dispatcher`, `/eval`) |
+| `skills/` | 44 user-facing skills (+ `_shared/` internal) |
+| `commands/` | 26 slash-commands (e.g. `/session`, `/close`, `/go`, `/plan`, `/test`, `/portfolio`, `/dispatcher`, `/eval`) |
 | `agents/` | 14 sub-agent definitions (YAML frontmatter + Markdown body, + `schemas/` subdirectory). The authoring spec is NOT here — it lives in `docs/agent-authoring.md`, because Claude Code registers every `agents/*.md` as a dispatchable agent by directory convention |
 | `hooks/` | Hook event matchers + handlers (18 matcher entries / 26 plugin-wired handler files [27 on-disk; the extra one is Husky-wired — see Inventory below], 10 distinct events) |
 | `.orchestrator/policy/` | Runtime policy: `blocked-commands.json` (14 rules — 10 `severity: block`, 4 `severity: warn`) |
@@ -30,15 +30,15 @@
 | `.codex-plugin/` | Codex CLI plugin manifest |
 | `.cursor-plugin/plugin.json` | Portable plugin manifest; kept outside root so Codex resolves its native manifest |
 | `AGENTS.md` (root) | Byte-identical GENERATED copy of `CLAUDE.md` for the 7 of 8 harnesses that read `AGENTS.md` |
-| `.agents/skills/` | Portable GENERATED mirror of all 43 skills — spec-legal frontmatter + pointer body, never duplicated instructions |
+| `.agents/skills/` | Portable GENERATED mirror of all 44 skills — spec-legal frontmatter + pointer body, never duplicated instructions |
 | `skills/*/references/` | Progressive-disclosure detail split out of oversized SKILL.md bodies: `skills/session-start/references`, `skills/wave-executor/references`, `skills/session-end/references`, `skills/architecture/references` |
 | `site/` | The public website (`index.html`, `llms.txt`, `llms-full.txt`, `_census.json`) |
 | `assets/` | Repo assets (`icon.svg`, `og-card.svg`, `wave-lifecycle.svg` — the README's rendered wave diagram) |
 
 ## Inventory (canonical)
 
-- **Skills:** 43 user-facing — measured 2026-09-06 (`ls -d skills/*/ | grep -v _shared | wc -l`). `_shared/` is internal docs, not a skill.
-- **Commands:** 25 — measured 2026-09-06 (`ls commands/*.md | wc -l`): `/autopilot`, `/bootstrap`, `/brainstorm`, `/close`, `/debug`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/persona-panel`, `/plan`, `/portfolio`, `/reconcile`, `/release`, `/repo-audit`, `/session`, `/spinout`, `/sunset-review`, `/templates-ack`, `/test`
+- **Skills:** 44 user-facing — measured 2026-09-13 (`ls -d skills/*/ | grep -v _shared | wc -l`). `_shared/` is internal docs, not a skill.
+- **Commands:** 26 — measured 2026-09-13 (`ls commands/*.md | wc -l`): `/autopilot`, `/bootstrap`, `/brainstorm`, `/close`, `/debug`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/persona-panel`, `/plan`, `/portfolio`, `/reconcile`, `/release`, `/repo-audit`, `/session`, `/spinout`, `/sunset-review`, `/templates-ack`, `/test`, `/ux-grill`
 - **Agents:** 14 — measured 2026-09-06 (`ls agents/*.md | wc -l`): `analyst`, `architect-reviewer`, `code-implementer`, `db-specialist`, `dialectic-deriver`, `docs-writer`, `eval-judge`, `qa-strategist`, `security-reviewer`, `session-reviewer`, `skill-applied-judge`, `test-writer`, `ui-developer`, `ux-evaluator`
 - **Hook event matchers / handlers:** 18 matcher entries / 26 plugin-wired handler files (27 on-disk) — measured 2026-09-06 (`hooks/hooks.json` walked for distinct `.mjs` command citations; `ls hooks/*.mjs | wc -l`). `hooks/wave-scope-commit-guard.mjs` is on-disk but intentionally NOT a plugin hook — it is the repository's Git pre-commit guard via Husky (`.husky/pre-commit`), because it guards git index/commit state rather than a plugin lifecycle event. Counting basis: "plugin-wired" = distinct `.mjs` filenames referenced inside `hooks/hooks.json`; "Husky-wired" = referenced inside `.husky/pre-commit`; "on-disk" = `ls hooks/*.mjs`.
 - **Rules:** 26 always-on files — measured 2026-09-06 (`ls .claude/rules/*.md | wc -l`). This number moves whenever the reconcile engine materialises or consolidates generated rules — re-measure, never quote from memory.

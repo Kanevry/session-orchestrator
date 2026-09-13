@@ -8,6 +8,30 @@
  *   - `agent-status.jsonl`         — append-only event log (one record per push).
  *   - `agent-status-current.json`  — last-write-wins (LWW) map keyed by agentId.
  *
+ * ## Source-of-truth contract (#1342)
+ *
+ * **`agent-status.jsonl` is the SOURCE OF TRUTH of this status channel. The
+ * current-map is a REBUILDABLE CACHE of it.** `pushRecord()` appends to the
+ * ledger FIRST and only then takes `agent-status.lock` to update the map, so
+ * every failure of the second half (lock timeout because a foreign-host lock is
+ * held, process death between the two writes, map corruption) leaves a ledger
+ * that is AHEAD of the cache. Before #1342 the map was read as if current in
+ * exactly those cases and the operator saw `running` for an agent that had
+ * already reported `completed`.
+ *
+ * Therefore:
+ *   - `rebuildCurrentFromLedger()` folds a bounded TAIL of the ledger into the
+ *     same map shape and is the authority whenever it is newer than the cache.
+ *   - `readCurrentStatus()` returns PROVENANCE (`source`, `at`, `degraded`) so a
+ *     consumer can never mistake a stale cache for live state. It NEVER invents
+ *     a state: an agent visible only in a discarded partial line is `unknown`,
+ *     not `running`.
+ *   - Neither reader writes anything — a rebuild is idempotent on disk and must
+ *     stay that way (it is a read path in hooks and a tmux poll loop).
+ *
+ * This contract is local to the agent-status channel. It changes nothing about
+ * STATE.md ownership or quality-gate semantics.
+ *
  * Best-effort telemetry contract: a status push must NEVER crash or block a
  * wave. Every exported function is no-throw and returns a structured result:
  *
@@ -51,6 +75,31 @@ const POLL_MS = 100;
 // envelope (keys, ts, numbers).
 const MAX_TEXT_LEN = 256;
 
+// Bounded rebuild window (#1342). A wave's live status traffic is a handful of
+// records per agent, so the newest state always sits in the last few KiB —
+// 256 KiB is ~1500 typical 170-byte records, three orders of magnitude of
+// headroom, and it keeps the rebuild a single bounded read instead of a scan of
+// an unbounded append-only file.
+// CEILING: an agent whose newest record sits FURTHER back than `maxBytes` is
+// invisible to the rebuild (it stays whatever the cache says, or absent).
+// REVISIT-TRIGGER: if a session ever pushes more than ~1500 status records, or
+// if a rebuilt view is observed missing a live agent, raise this constant or
+// switch to a reverse-chunked scan that stops once every known agentId is seen.
+const DEFAULT_REBUILD_MAX_BYTES = 256 * 1024;
+
+// Identity fields a record may carry to bind it to a run/session/wave. Records
+// carrying none of them are `legacy` — they are NEVER auto-assigned to the
+// newest wave (#1342 item 4).
+const BINDING_KEYS = ['sessionId', 'session_id', 'runId', 'run_id', 'waveKey', 'wave_key', 'wave'];
+
+// agentIds that must never become a map key. `entries['__proto__'] = rec` on a
+// normal object REPLACES the prototype instead of storing the record (the record
+// vanishes AND every later lookup walks a foreign prototype), and
+// `constructor`/`prototype` are the same class of confusion. Every map this
+// module builds is null-prototype, so the assignment itself is safe — these keys
+// are rejected outright so a poisoned ledger line cannot reappear as an agent.
+const UNSAFE_MAP_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 // ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
@@ -74,6 +123,22 @@ function lockPathFor(repoRoot) {
 // ---------------------------------------------------------------------------
 // Internal utilities
 // ---------------------------------------------------------------------------
+
+/**
+ * Copy a plain object into a NULL-PROTOTYPE map, dropping `UNSAFE_MAP_KEYS`.
+ * `JSON.parse` happily produces an OWN `__proto__` property, so a poisoned cache
+ * file would otherwise travel into a consumer's `entries` map.
+ * @param {Record<string, object>|null|undefined} obj
+ * @returns {Record<string, object>}
+ */
+function nullProtoMap(obj) {
+  const out = Object.create(null);
+  for (const k of Object.keys(obj ?? {})) {
+    if (UNSAFE_MAP_KEYS.has(k)) continue;
+    out[k] = obj[k];
+  }
+  return out;
+}
 
 /**
  * Truncate a free-text field to MAX_TEXT_LEN so a single JSONL line stays under
@@ -175,11 +240,21 @@ function releaseLock(lockFile, _myBody) {
  * @returns {Record<string, object>}
  */
 function readCurrentMap(currentFile) {
+  return readCurrentMapDetailed(currentFile).entries;
+}
+
+/**
+ * Same read as `readCurrentMap`, but it reports WHY the map is empty (#1342) —
+ * "absent" and "unreadable" are different facts, and only the second one makes
+ * the ledger the authority for provenance purposes.
+ *
+ * @param {string} currentFile
+ * @returns {{ ok: boolean, entries: Record<string, object>, reason: 'ok'|'cache-missing'|'cache-unreadable' }}
+ */
+function readCurrentMapDetailed(currentFile) {
+  let raw;
   try {
-    const raw = fs.readFileSync(currentFile, 'utf8');
-    const obj = JSON.parse(raw);
-    if (obj && typeof obj === 'object' && !Array.isArray(obj)) return obj;
-    return {};
+    raw = fs.readFileSync(currentFile, 'utf8');
   } catch (err) {
     if (!err || err.code !== 'ENOENT') {
       process.stderr.write(
@@ -187,8 +262,73 @@ function readCurrentMap(currentFile) {
           `(${err?.code ?? '?'}: ${err?.message ?? String(err)}) — ` +
           'treating as EMPTY, counts below are floors\n',
       );
+      return { ok: false, entries: Object.create(null), reason: 'cache-unreadable' };
     }
-    return {};
+    return { ok: false, entries: Object.create(null), reason: 'cache-missing' };
+  }
+  try {
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+      return { ok: true, entries: nullProtoMap(obj), reason: 'ok' };
+    }
+  } catch {
+    /* fall through to the unreadable verdict below */
+  }
+  return { ok: false, entries: Object.create(null), reason: 'cache-unreadable' };
+}
+
+/**
+ * Parse a record's `ts` into epoch millis. Returns null when absent/unparseable
+ * — such a record is never allowed to win a fold on timestamp grounds.
+ * @param {*} rec
+ * @returns {number|null}
+ */
+function recordTsMs(rec) {
+  const ms = Date.parse(rec?.ts ?? '');
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Newest parsable record timestamp across a map's values, or null.
+ * @param {Record<string, object>} entries
+ * @returns {number|null}
+ */
+function newestTsMs(entries) {
+  let newest = null;
+  for (const rec of Object.values(entries ?? {})) {
+    const ms = recordTsMs(rec);
+    if (ms !== null && (newest === null || ms > newest)) newest = ms;
+  }
+  return newest;
+}
+
+/**
+ * Read the last `maxBytes` of a file. Returns the raw text plus whether the
+ * window cut into the file (i.e. the first line in `text` may be partial).
+ * @param {string} file
+ * @param {number} maxBytes
+ * @returns {{ text: string, size: number, cut: boolean }}
+ */
+function readTail(file, maxBytes) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const want = Math.min(size, maxBytes);
+    const start = size - want;
+    const buf = Buffer.allocUnsafe(want);
+    let read = 0;
+    while (read < want) {
+      const n = fs.readSync(fd, buf, read, want - read, start + read);
+      if (n <= 0) break;
+      read += n;
+    }
+    return { text: buf.subarray(0, read).toString('utf8'), size, cut: start > 0 };
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      /* best-effort */
+    }
   }
 }
 
@@ -304,11 +444,294 @@ export async function setProgress(agentId, progress = {}, opts = {}) {
 }
 
 /**
- * Read the current LWW status map. No-throw — returns {} on miss or parse error.
+ * Rebuild the current-status map from a bounded TAIL of the append-only ledger
+ * (#1342). The ledger is the source of truth; this is how a consumer reads it
+ * without trusting the cache. READ-ONLY and idempotent — it never writes the
+ * ledger, the cache, or anything else. No-throw.
  *
- * @param {{ repoRoot?: string }} [opts]
- * @returns {Record<string, { agentId: string, kind: string, ts: string, text?: string, step?: number, total?: number, label?: string }>}
+ * Fold rule (identity binding): one entry per `agentId`, won by the greatest
+ * parsable `ts`; ties go to the later line. A record whose `ts` is absent or
+ * unparseable can only win when NO timestamped record exists for that agentId,
+ * and is then marked `binding: 'unknown'`. A record carrying none of the
+ * run/session/wave fields is marked `binding: 'legacy'` — never promoted into
+ * the newest wave. An older-session record therefore cannot overwrite a newer
+ * session's record for the same agentId when the timestamps say otherwise.
+ *
+ * @param {{ repoRoot?: string, maxBytes?: number }} [opts]
+ * @returns {{
+ *   entries: Record<string, object>,
+ *   at: string|null,
+ *   scannedBytes: number,
+ *   fileSize: number,
+ *   degraded: { reason: string, reasons: string[], partialLines: number, parseErrors: number, unboundRecords: number, tailTruncated: boolean }|null
+ * }}
+ */
+export function rebuildCurrentFromLedger(opts = {}) {
+  const jsonlFile = jsonlPathFor(opts?.repoRoot);
+  const maxBytes =
+    typeof opts?.maxBytes === 'number' && opts.maxBytes > 0
+      ? opts.maxBytes
+      : DEFAULT_REBUILD_MAX_BYTES;
+
+  const reasons = [];
+  let partialLines = 0;
+  let parseErrors = 0;
+  let unboundRecords = 0;
+
+  let tail;
+  try {
+    tail = readTail(jsonlFile, maxBytes);
+  } catch (err) {
+    const reason = err?.code === 'ENOENT' ? 'ledger-missing' : 'ledger-unreadable';
+    return {
+      entries: Object.create(null),
+      at: null,
+      scannedBytes: 0,
+      fileSize: 0,
+      degraded: {
+        reason,
+        reasons: [reason],
+        partialLines: 0,
+        parseErrors: 0,
+        unboundRecords: 0,
+        tailTruncated: false,
+      },
+    };
+  }
+
+  if (tail.size === 0) reasons.push('ledger-empty');
+
+  const lines = tail.text.split('\n');
+  if (tail.cut) {
+    // The window started mid-file: the FIRST line is (or may be) a fragment.
+    // Discard it and count it — never guess the state it would have carried.
+    lines.shift();
+    partialLines += 1;
+    reasons.push('tail-truncated');
+  }
+  // A trailing newline yields one empty final element; a MISSING trailing
+  // newline means the last line is an in-flight partial write.
+  if (lines.length > 0 && lines[lines.length - 1] === '') {
+    lines.pop();
+  } else if (lines.length > 0 && tail.size > 0) {
+    const incomplete = lines.pop();
+    if (incomplete.trim().length > 0) {
+      partialLines += 1;
+      reasons.push('incomplete-last-line');
+    }
+  }
+
+  /** @type {Record<string, object>} */
+  const entries = Object.create(null);
+  /** @type {Record<string, number|null>} */
+  const bestTs = Object.create(null);
+
+  for (const line of lines) {
+    if (line.trim().length === 0) continue;
+    let rec;
+    try {
+      rec = JSON.parse(line);
+    } catch {
+      parseErrors += 1;
+      continue;
+    }
+    if (!rec || typeof rec !== 'object' || Array.isArray(rec)) {
+      parseErrors += 1;
+      continue;
+    }
+    if (typeof rec.agentId !== 'string' || rec.agentId.trim().length === 0) {
+      // No usable key — it can never be attributed to an agent. Counted, dropped.
+      unboundRecords += 1;
+      continue;
+    }
+    if (UNSAFE_MAP_KEYS.has(rec.agentId)) {
+      // A prototype-shaped key is not a usable map key either (see
+      // UNSAFE_MAP_KEYS) — same class as a missing agentId: counted, dropped.
+      unboundRecords += 1;
+      continue;
+    }
+
+    const ts = recordTsMs(rec);
+    const bound = BINDING_KEYS.some((k) => rec[k] !== undefined && rec[k] !== null);
+    const prevTs = Object.prototype.hasOwnProperty.call(bestTs, rec.agentId)
+      ? bestTs[rec.agentId]
+      : undefined;
+
+    if (prevTs !== undefined) {
+      if (ts === null) continue; // untimestamped never displaces a known record
+      if (prevTs !== null && ts < prevTs) continue; // older session must not win
+    }
+
+    bestTs[rec.agentId] = ts;
+    entries[rec.agentId] = { ...rec, binding: ts === null ? 'unknown' : bound ? 'bound' : 'legacy' };
+  }
+
+  if (parseErrors > 0) reasons.push('parse-errors');
+  if (unboundRecords > 0) reasons.push('records-without-agent-id');
+
+  const newest = newestTsMs(entries);
+  return {
+    entries,
+    at: newest === null ? null : new Date(newest).toISOString(),
+    scannedBytes: Buffer.byteLength(tail.text, 'utf8'),
+    fileSize: tail.size,
+    degraded:
+      reasons.length === 0
+        ? null
+        : {
+            reason: reasons[0],
+            reasons,
+            partialLines,
+            parseErrors,
+            unboundRecords,
+            tailTruncated: tail.cut,
+          },
+  };
+}
+
+/**
+ * Read the current status of every agent WITH PROVENANCE (#1342).
+ *
+ * Return contract:
+ *   {
+ *     entries: Record<agentId, record>,   // the map shape the cache holds
+ *     source: 'live-map' | 'rebuilt-log' | 'stale-cache' | 'absent',
+ *     at: string|null,                    // ISO ts of the newest record in `entries`
+ *     degraded?: { reason, reasons[], partialLines, parseErrors, unboundRecords, tailTruncated }
+ *   }
+ *
+ * Decision rule — the fold is PER agentId, never by the two views' GLOBAL newest
+ * timestamp. A global comparison is masked by any sibling: ledger `A completed`
+ * (map write lost) followed by ledger `B running` (map write ok) makes the cache's
+ * newest equal the ledger's newest, and `A` was then served from the cache as
+ * `running` with `source: live-map` — byte-identical to the pre-#1342 defect.
+ * So for every id in `cache ∪ ledger` the record with the newer `ts` wins (an
+ * equal-ms tie goes to the cache, which is the writer's own last word):
+ *   - every entry taken from the cache → `live-map`; the cache is VERIFIED
+ *     against a ledger (the normal path).
+ *   - ANY entry taken from the ledger, or the cache unreadable/missing while the
+ *     ledger has entries → `rebuilt-log` (the #1342 defect: a failed map write
+ *     used to show the OLD state unmarked).
+ *   - ledger missing/unreadable/empty but the cache has entries → `stale-cache`;
+ *     the cache is all we have and is explicitly marked as unverified.
+ *   - neither a usable ledger NOR a cache entry → `absent`: nothing is on disk to
+ *     verify against, so this is NOT `live-map`. `entries: {}`, `at: null`, and no
+ *     `degraded` — a fresh repo is the normal state, not a degradation (HR-101).
+ *
+ * BREAKING (documented, #1342): this used to return the bare map. Read
+ * `.entries` for the old value — or call `readCurrentStatusEntries()`.
+ *
+ * Entry shape note: an entry taken from the LEDGER carries the extra
+ * `binding: 'bound'|'legacy'|'unknown'` field the fold assigns; an entry taken
+ * from the cache is the record as written and has none. Since the fold is
+ * per-agentId, a `rebuilt-log` view can hold BOTH kinds. A consumer must treat
+ * `binding` as optional — its ABSENCE means "from the cache", never "bound".
+ *
+ * @param {{ repoRoot?: string, maxBytes?: number }} [opts]
+ * @returns {{ entries: Record<string, object>, source: 'live-map'|'rebuilt-log'|'stale-cache'|'absent', at: string|null, degraded?: object }}
  */
 export function readCurrentStatus(opts = {}) {
-  return readCurrentMap(currentPathFor(opts?.repoRoot));
+  const cache = readCurrentMapDetailed(currentPathFor(opts?.repoRoot));
+  const rebuilt = rebuildCurrentFromLedger(opts);
+
+  const cacheNewest = newestTsMs(cache.entries);
+  const ledgerNewest = rebuilt.at === null ? null : Date.parse(rebuilt.at);
+  const ledgerUnusable =
+    rebuilt.degraded !== null &&
+    ['ledger-missing', 'ledger-unreadable', 'ledger-empty'].includes(rebuilt.degraded.reason) &&
+    Object.keys(rebuilt.entries).length === 0;
+
+  const reasons = rebuilt.degraded ? [...rebuilt.degraded.reasons] : [];
+  const counts = {
+    partialLines: rebuilt.degraded?.partialLines ?? 0,
+    parseErrors: rebuilt.degraded?.parseErrors ?? 0,
+    unboundRecords: rebuilt.degraded?.unboundRecords ?? 0,
+    tailTruncated: rebuilt.degraded?.tailTruncated ?? false,
+  };
+
+  let source;
+  let entries;
+  let at;
+
+  const cacheIds = Object.keys(cache.entries);
+  const ledgerIds = Object.keys(rebuilt.entries);
+
+  if (ledgerUnusable && cacheIds.length === 0) {
+    // Nothing on disk at all — no ledger to verify against AND no cached entry
+    // to verify. `live-map` would claim a verification that never happened.
+    return { entries: Object.create(null), source: 'absent', at: null };
+  }
+
+  if (ledgerUnusable) {
+    // No ledger to check the cache against, but the cache holds entries.
+    source = 'stale-cache';
+    entries = cache.entries;
+    at = cacheNewest;
+    if (!cache.ok && cache.reason === 'cache-unreadable') reasons.unshift(cache.reason);
+  } else {
+    // Per-agentId fold over `cache ∪ ledger` — see the decision rule above.
+    entries = Object.create(null);
+    let tookFromLedger = false;
+    for (const id of new Set([...cacheIds, ...ledgerIds])) {
+      const cached = Object.prototype.hasOwnProperty.call(cache.entries, id)
+        ? cache.entries[id]
+        : undefined;
+      const logged = Object.prototype.hasOwnProperty.call(rebuilt.entries, id)
+        ? rebuilt.entries[id]
+        : undefined;
+
+      if (cached === undefined) {
+        entries[id] = logged;
+        tookFromLedger = true;
+        continue;
+      }
+      if (logged === undefined) {
+        entries[id] = cached;
+        continue;
+      }
+      const cachedTs = recordTsMs(cached);
+      const loggedTs = recordTsMs(logged);
+      // The ledger wins only when it is STRICTLY newer (an equal-ms tie, and an
+      // undated ledger record, go to the cache).
+      if (loggedTs !== null && (cachedTs === null || loggedTs > cachedTs)) {
+        entries[id] = logged;
+        tookFromLedger = true;
+      } else {
+        entries[id] = cached;
+      }
+    }
+
+    at = newestTsMs(entries);
+    if (tookFromLedger || (!cache.ok && ledgerIds.length > 0)) {
+      source = 'rebuilt-log';
+      if (cache.reason !== 'ok') reasons.unshift(cache.reason);
+      else reasons.unshift('cache-behind-ledger');
+    } else {
+      source = 'live-map';
+      // The ledger is BEHIND the cache — it was rotated or truncated under us.
+      if (cacheNewest !== null && ledgerNewest !== null && ledgerNewest < cacheNewest) {
+        reasons.unshift('ledger-behind-cache');
+      }
+    }
+  }
+
+  const out = {
+    entries,
+    source,
+    at: at === null ? null : new Date(at).toISOString(),
+  };
+  if (reasons.length > 0) out.degraded = { reason: reasons[0], reasons, ...counts };
+  return out;
+}
+
+/**
+ * Backwards-compatible accessor: the bare `Record<agentId, record>` map that
+ * `readCurrentStatus()` returned before #1342, resolved through the same
+ * provenance rule (so it, too, prefers the ledger over a stale cache).
+ *
+ * @param {{ repoRoot?: string, maxBytes?: number }} [opts]
+ * @returns {Record<string, object>}
+ */
+export function readCurrentStatusEntries(opts = {}) {
+  return readCurrentStatus(opts).entries;
 }

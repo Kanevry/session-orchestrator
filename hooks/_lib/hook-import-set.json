@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-09-09T06:39:55.000Z",
-  "head": "9ce6b296e95ce0bc274b887544f0fe885f814427",
+  "generated_at": "2026-09-13T06:09:30.039Z",
+  "head": "5e9506b11547e9353c52479d53b5a1335c3c9c00",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -46,6 +46,7 @@
         "on-session-start.mjs",
         "on-stop.mjs",
         "operator-steer.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -68,6 +69,7 @@
     {
       "file": "hooks/_lib/subagent-paths.mjs",
       "reachable_from": [
+        "enforce-scope.mjs",
         "on-stop.mjs",
         "post-subagent-discovery-validator.mjs",
         "subagent-telemetry.mjs"
@@ -88,6 +90,7 @@
     {
       "file": "hooks/_lib/vcs-create-matcher.mjs",
       "reachable_from": [
+        "post-bash-issue-budget-refund.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-templates-first.mjs"
       ]
@@ -144,6 +147,12 @@
       "file": "hooks/operator-steer.mjs",
       "reachable_from": [
         "operator-steer.mjs"
+      ]
+    },
+    {
+      "file": "hooks/post-bash-issue-budget-refund.mjs",
+      "reachable_from": [
+        "post-bash-issue-budget-refund.mjs"
       ]
     },
     {
@@ -291,6 +300,7 @@
     {
       "file": "scripts/lib/command-blocker.mjs",
       "reachable_from": [
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-validate.mjs",
         "post-tool-batch-wave-signal.mjs",
@@ -305,6 +315,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "pre-bash-issue-budget.mjs",
@@ -337,6 +348,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -359,6 +371,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -384,6 +397,7 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-edit-validate.mjs",
         "pre-bash-issue-budget.mjs"
       ]
@@ -550,6 +564,7 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-edit-validate.mjs",
         "pre-bash-issue-budget.mjs"
       ]
@@ -594,6 +609,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -634,6 +650,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -672,6 +689,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -766,6 +784,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -851,6 +870,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -881,6 +901,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -924,6 +945,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -948,6 +970,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -968,6 +991,7 @@
     {
       "file": "scripts/lib/issue-budget.mjs",
       "reachable_from": [
+        "post-bash-issue-budget-refund.mjs",
         "pre-bash-issue-budget.mjs"
       ]
     },
@@ -988,6 +1012,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -1010,6 +1035,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -1032,6 +1058,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -1089,6 +1116,7 @@
         "on-session-start.mjs",
         "on-stop.mjs",
         "operator-steer.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -1118,6 +1146,7 @@
         "on-session-start.mjs",
         "on-stop.mjs",
         "operator-steer.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -1225,6 +1254,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -1247,6 +1277,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -1387,6 +1418,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -1417,6 +1449,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
@@ -1501,6 +1534,12 @@
       "file": "scripts/lib/wave-sizing.mjs",
       "reachable_from": [
         "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/wave-transcript-tail.mjs",
+      "reachable_from": [
+        "enforce-scope.mjs"
       ]
     },
     {

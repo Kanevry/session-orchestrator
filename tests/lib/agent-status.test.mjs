@@ -14,13 +14,28 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
+import {
+  mkdtempSync,
+  rmSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  existsSync,
+  realpathSync,
+  readdirSync,
+} from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { join, dirname } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { setStatus, setProgress, readCurrentStatus } from '@lib/agent-status.mjs';
+import {
+  setStatus,
+  setProgress,
+  readCurrentStatus,
+  readCurrentStatusEntries,
+  rebuildCurrentFromLedger,
+} from '@lib/agent-status.mjs';
 
 // Absolute path to the REAL production module — the cross-process race test
 // spawns separate `node` processes that import THIS file (not the @lib alias,
@@ -64,7 +79,7 @@ describe('agent-status — setStatus', () => {
     const res = await setStatus('agent-1', 'building wave 2', { repoRoot });
     expect(res).toEqual({ ok: true });
 
-    const map = readCurrentStatus({ repoRoot });
+    const map = readCurrentStatusEntries({ repoRoot });
     expect(map['agent-1']).toMatchObject({
       agentId: 'agent-1',
       kind: 'status',
@@ -82,7 +97,7 @@ describe('agent-status — setStatus', () => {
     const res = await setStatus('agent-long', long, { repoRoot });
     expect(res).toEqual({ ok: true });
 
-    const map = readCurrentStatus({ repoRoot });
+    const map = readCurrentStatusEntries({ repoRoot });
     expect(map['agent-long'].text.length).toBe(256);
 
     const lines = readJsonl();
@@ -95,7 +110,7 @@ describe('agent-status — setProgress', () => {
     const res = await setProgress('agent-2', { step: 3, total: 7, label: 'typecheck' }, { repoRoot });
     expect(res).toEqual({ ok: true });
 
-    const map = readCurrentStatus({ repoRoot });
+    const map = readCurrentStatusEntries({ repoRoot });
     expect(map['agent-2']).toMatchObject({
       agentId: 'agent-2',
       kind: 'progress',
@@ -113,7 +128,7 @@ describe('agent-status — setProgress', () => {
     const res = await setProgress('agent-3', { step: 1, total: 2 }, { repoRoot });
     expect(res).toEqual({ ok: true });
 
-    const map = readCurrentStatus({ repoRoot });
+    const map = readCurrentStatusEntries({ repoRoot });
     expect(map['agent-3'].label).toBeUndefined();
     expect(map['agent-3']).toMatchObject({ kind: 'progress', step: 1, total: 2 });
   });
@@ -124,7 +139,7 @@ describe('agent-status — LWW semantics', () => {
     await setStatus('agent-lww', 'first', { repoRoot });
     await setStatus('agent-lww', 'second', { repoRoot });
 
-    const map = readCurrentStatus({ repoRoot });
+    const map = readCurrentStatusEntries({ repoRoot });
     expect(map['agent-lww'].text).toBe('second');
 
     // Both pushes still produced JSONL lines (append-only log keeps history).
@@ -153,7 +168,7 @@ describe('agent-status — in-process interleaved writers (LWW-map completeness)
     for (const r of results) expect(r).toEqual({ ok: true });
 
     // The LWW map carries ALL keys — no interleaved write lost an update.
-    const map = readCurrentStatus({ repoRoot });
+    const map = readCurrentStatusEntries({ repoRoot });
     expect(Object.keys(map).sort()).toEqual([...ids].sort());
     for (const id of ids) {
       expect(map[id]).toMatchObject({ agentId: id, kind: 'status', text: `status ${id}` });
@@ -213,7 +228,7 @@ describe('agent-status — cross-PROCESS concurrent-writer race (AC)', () => {
     }
 
     // The LWW map carries ALL 8 keys — no cross-process RMW lost an update.
-    const map = readCurrentStatus({ repoRoot });
+    const map = readCurrentStatusEntries({ repoRoot });
     expect(Object.keys(map).sort()).toEqual([...ids].sort());
     for (const id of ids) {
       expect(map[id]).toMatchObject({ agentId: id, kind: 'status', text: 'cross-proc' });
@@ -238,7 +253,7 @@ describe('agent-status — stale-lock recovery (AC)', () => {
     const res = await setStatus('agent-stale', 'after stale', { repoRoot, timeoutMs: 2000 });
     expect(res).toEqual({ ok: true });
 
-    const map = readCurrentStatus({ repoRoot });
+    const map = readCurrentStatusEntries({ repoRoot });
     expect(map['agent-stale'].text).toBe('after stale');
 
     // After release, the lock file is gone (we owned it post-override).
@@ -253,7 +268,7 @@ describe('agent-status — stale-lock recovery (AC)', () => {
     const res = await setStatus('agent-corrupt-lock', 'recovered', { repoRoot, timeoutMs: 2000 });
     expect(res).toEqual({ ok: true });
 
-    const map = readCurrentStatus({ repoRoot });
+    const map = readCurrentStatusEntries({ repoRoot });
     expect(map['agent-corrupt-lock'].text).toBe('recovered');
   });
 });
@@ -264,7 +279,7 @@ describe('agent-status — invalid input (no throw)', () => {
     expect(res).toEqual({ ok: false, reason: 'invalid-input', error: expect.any(String) });
     // Nothing was written.
     expect(existsSync(join(repoRoot, JSONL))).toBe(false);
-    expect(readCurrentStatus({ repoRoot })).toEqual({});
+    expect(readCurrentStatusEntries({ repoRoot })).toEqual({});
   });
 
   it('returns invalid-input for whitespace-only text on setStatus', async () => {
@@ -289,17 +304,17 @@ describe('agent-status — corrupt current-json (no throw)', () => {
     mkdirSync(join(repoRoot, RUNTIME), { recursive: true });
     writeFileSync(currentFile, '{ this is : not json', 'utf8');
 
-    expect(readCurrentStatus({ repoRoot })).toEqual({});
+    expect(readCurrentStatusEntries({ repoRoot })).toEqual({});
   });
 
   it('returns {} when the current map file is missing', () => {
-    expect(readCurrentStatus({ repoRoot })).toEqual({});
+    expect(readCurrentStatusEntries({ repoRoot })).toEqual({});
   });
 
   it('B1 (#1210): does NOT warn when the current-map file is simply absent (ENOENT)', () => {
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
-      expect(readCurrentStatus({ repoRoot })).toEqual({});
+      expect(readCurrentStatusEntries({ repoRoot })).toEqual({});
       expect(stderrSpy).not.toHaveBeenCalled();
     } finally {
       stderrSpy.mockRestore();
@@ -315,7 +330,7 @@ describe('agent-status — corrupt current-json (no throw)', () => {
 
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
-      expect(readCurrentStatus({ repoRoot })).toEqual({});
+      expect(readCurrentStatusEntries({ repoRoot })).toEqual({});
       const warned = stderrSpy.mock.calls.some(
         (call) =>
           typeof call[0] === 'string' && call[0].includes(currentFile) && call[0].includes('EISDIR'),
@@ -333,6 +348,313 @@ describe('agent-status — corrupt current-json (no throw)', () => {
 
     const res = await setStatus('agent-recover', 'ok now', { repoRoot });
     expect(res).toEqual({ ok: true });
-    expect(readCurrentStatus({ repoRoot })['agent-recover'].text).toBe('ok now');
+    expect(readCurrentStatusEntries({ repoRoot })['agent-recover'].text).toBe('ok now');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1342 — the ledger is the source of truth, the current-map is a cache.
+// ---------------------------------------------------------------------------
+
+describe('agent-status — provenance of the current view (#1342)', () => {
+  /**
+   * A lock body whose owner must NOT be taken over: `host` is a FOREIGN host, and
+   * `isExistingStale` in file-lock.mjs never declares a cross-host lock stale
+   * (PSA-003), so acquireLock can only report `timeout`.
+   */
+  function seedForeignHostLock() {
+    mkdirSync(join(repoRoot, RUNTIME), { recursive: true });
+    writeFileSync(
+      join(repoRoot, LOCK),
+      JSON.stringify({
+        pid: 4242,
+        host: 'foreign-host-1342.invalid',
+        acquiredAt: new Date().toISOString(),
+      }) + '\n',
+      'utf8',
+    );
+  }
+
+  /** Append a raw ledger line (an append whose map write never followed). */
+  function appendLedgerLine(obj) {
+    mkdirSync(join(repoRoot, RUNTIME), { recursive: true });
+    const p = join(repoRoot, JSONL);
+    const prev = existsSync(p) ? readFileSync(p, 'utf8') : '';
+    writeFileSync(p, prev + JSON.stringify(obj) + '\n', 'utf8');
+  }
+
+  // BUG: with the map write blocked by a foreign-host lock, setStatus correctly
+  // returned {ok:false,reason:'timeout'} while every reader of the map showed the
+  // OLD `running` state as if current — no staleness marker anywhere.
+  it('reports the LEDGER state (completed), never an unmarked stale `running`', async () => {
+    expect(await setStatus('worker-1', 'running', { repoRoot, timeoutMs: 0 })).toEqual({ ok: true });
+
+    seedForeignHostLock();
+
+    const second = await setStatus('worker-1', 'completed', { repoRoot, timeoutMs: 0 });
+    expect(second).toEqual({ ok: false, reason: 'timeout' });
+
+    // The ledger tail carries the truth ...
+    const lines = readJsonl();
+    expect(lines[lines.length - 1]).toMatchObject({ agentId: 'worker-1', text: 'completed' });
+    // ... and so does the reader, explicitly marked as rebuilt from the ledger.
+    const view = readCurrentStatus({ repoRoot });
+    expect(view.source).toBe('rebuilt-log');
+    expect(view.entries['worker-1'].text).toBe('completed');
+    expect(typeof view.at).toBe('string');
+  });
+
+  // BUG: a process that died between the ledger append and the map write left the
+  // map one record behind, presented as live.
+  it('death between append and map write surfaces as source `rebuilt-log`', async () => {
+    await setStatus('worker-2', 'step 1', { repoRoot });
+    appendLedgerLine({
+      agentId: 'worker-2',
+      kind: 'status',
+      text: 'step 2',
+      ts: new Date(Date.now() + 1000).toISOString(),
+    });
+
+    const view = readCurrentStatus({ repoRoot });
+    expect(view.source).toBe('rebuilt-log');
+    expect(view.entries['worker-2'].text).toBe('step 2');
+    expect(view.degraded.reasons).toContain('cache-behind-ledger');
+  });
+
+  // BUG: a corrupt current-map read as `{}` — every agent silently disappeared
+  // although the ledger still held their last state. No fabrication: ledger only.
+  it('a corrupt current-map falls back to the ledger and flags the cache', async () => {
+    await setStatus('worker-3', 'alive', { repoRoot });
+    writeFileSync(join(repoRoot, CURRENT), '{ not json', 'utf8');
+
+    const view = readCurrentStatus({ repoRoot });
+    expect(view.source).toBe('rebuilt-log');
+    expect(view.entries['worker-3'].text).toBe('alive');
+    expect(view.degraded.reason).toBe('cache-unreadable');
+  });
+
+  // BUG: an in-flight (newline-less) last line could be half-parsed into a state.
+  // It must be COUNTED as degraded and its agent left unknown, never invented.
+  it('an incomplete last JSONL line is reported as degraded and fabricates nothing', async () => {
+    await setStatus('worker-4', 'known', { repoRoot });
+    const p = join(repoRoot, JSONL);
+    writeFileSync(
+      p,
+      readFileSync(p, 'utf8') + '{"agentId":"ghost","kind":"status","text":"half-writ',
+      'utf8',
+    );
+
+    const rebuilt = rebuildCurrentFromLedger({ repoRoot });
+    expect(rebuilt.degraded.reasons).toContain('incomplete-last-line');
+    expect(rebuilt.degraded.partialLines).toBe(1);
+    expect(rebuilt.entries['worker-4'].text).toBe('known');
+    expect(rebuilt.entries.ghost).toBeUndefined();
+  });
+
+  // BUG: a rebuild that wrote anything (map, ledger, lock) would make a READ path
+  // mutate shared state — it runs in hooks and a 2s tmux poll loop.
+  it('the rebuild is idempotent on disk — it writes nothing, twice', async () => {
+    await setStatus('worker-5', 'x', { repoRoot });
+    const before = readdirSync(join(repoRoot, RUNTIME)).sort();
+    const ledgerBefore = readFileSync(join(repoRoot, JSONL), 'utf8');
+    const mapBefore = readFileSync(join(repoRoot, CURRENT), 'utf8');
+
+    const first = rebuildCurrentFromLedger({ repoRoot });
+    const second = rebuildCurrentFromLedger({ repoRoot });
+
+    expect(second).toEqual(first);
+    expect(readdirSync(join(repoRoot, RUNTIME)).sort()).toEqual(before);
+    expect(readFileSync(join(repoRoot, JSONL), 'utf8')).toBe(ledgerBefore);
+    expect(readFileSync(join(repoRoot, CURRENT), 'utf8')).toBe(mapBefore);
+  });
+
+  // BUG: a same-agentId record from an OLDER session must not be folded over a
+  // newer session's record just because it appears later in the file.
+  it('an older-session record never overwrites a newer one for the same agentId', () => {
+    appendLedgerLine({
+      agentId: 'worker-6',
+      kind: 'status',
+      text: 'new session',
+      sessionId: 's-2',
+      ts: '2026-09-13T10:00:00.000Z',
+    });
+    appendLedgerLine({
+      agentId: 'worker-6',
+      kind: 'status',
+      text: 'old session',
+      sessionId: 's-1',
+      ts: '2026-09-12T10:00:00.000Z',
+    });
+
+    const rebuilt = rebuildCurrentFromLedger({ repoRoot });
+    expect(rebuilt.entries['worker-6'].text).toBe('new session');
+    expect(rebuilt.entries['worker-6'].binding).toBe('bound');
+  });
+
+  // BUG: a record with no timestamp could win the fold and be presented as the
+  // agent's current state. It may only fill a gap, and is marked `unknown`.
+  it('an untimestamped record is marked `unknown` and never displaces a dated one', () => {
+    appendLedgerLine({ agentId: 'worker-7', kind: 'status', text: 'dated', ts: '2026-09-13T10:00:00.000Z' });
+    appendLedgerLine({ agentId: 'worker-7', kind: 'status', text: 'undated' });
+    appendLedgerLine({ agentId: 'worker-8', kind: 'status', text: 'undated only' });
+
+    const rebuilt = rebuildCurrentFromLedger({ repoRoot });
+    expect(rebuilt.entries['worker-7'].text).toBe('dated');
+    expect(rebuilt.entries['worker-7'].binding).toBe('legacy');
+    expect(rebuilt.entries['worker-8'].binding).toBe('unknown');
+  });
+
+  // BUG: a missing ledger with a populated cache used to read as live state.
+  it('a missing ledger with a populated cache is marked `stale-cache`', async () => {
+    await setStatus('worker-9', 'cached', { repoRoot });
+    rmSync(join(repoRoot, JSONL));
+
+    const view = readCurrentStatus({ repoRoot });
+    expect(view.source).toBe('stale-cache');
+    expect(view.entries['worker-9'].text).toBe('cached');
+    expect(view.degraded.reason).toBe('ledger-missing');
+  });
+
+  // BUG: a tail window that cuts a line must DISCARD the fragment and say so —
+  // an agent visible only in that fragment is unknown, not `running`.
+  it('a truncated tail window discards the cut line and reports it', async () => {
+    await setStatus('worker-a', 'first', { repoRoot });
+    await setStatus('worker-b', 'second', { repoRoot });
+
+    // Size the window so it starts 3 bytes INTO the first record: line 1 is cut
+    // (and must be discarded), line 2 arrives whole.
+    const raw = readFileSync(join(repoRoot, JSONL), 'utf8');
+    const firstLineBytes = Buffer.byteLength(raw.split('\n')[0], 'utf8') + 1;
+    const rebuilt = rebuildCurrentFromLedger({
+      repoRoot,
+      maxBytes: Buffer.byteLength(raw, 'utf8') - firstLineBytes + 3,
+    });
+
+    expect(rebuilt.degraded.tailTruncated).toBe(true);
+    expect(rebuilt.degraded.reasons).toContain('tail-truncated');
+    expect(rebuilt.entries['worker-a']).toBeUndefined();
+    expect(rebuilt.entries['worker-b'].text).toBe('second');
+  });
+
+  it('the normal path (both writes succeeded) reports source `live-map`', async () => {
+    await setStatus('worker-c', 'fine', { repoRoot });
+    const view = readCurrentStatus({ repoRoot });
+    expect(view.source).toBe('live-map');
+    expect(view.degraded).toBeUndefined();
+    expect(view.entries['worker-c'].text).toBe('fine');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1342 fix-pass — the fold is PER agentId, the sources are four, and a
+// prototype-shaped agentId is not a map key.
+// ---------------------------------------------------------------------------
+
+describe('agent-status — per-agent fold and four sources (#1342 fix-pass)', () => {
+  /** Append a raw ledger line (a record whose map write may never have followed). */
+  function appendLedgerLine(obj) {
+    mkdirSync(join(repoRoot, RUNTIME), { recursive: true });
+    const p = join(repoRoot, JSONL);
+    const prev = existsSync(p) ? readFileSync(p, 'utf8') : '';
+    writeFileSync(p, prev + JSON.stringify(obj) + '\n', 'utf8');
+  }
+
+  function writeCache(map) {
+    mkdirSync(join(repoRoot, RUNTIME), { recursive: true });
+    writeFileSync(join(repoRoot, CURRENT), JSON.stringify(map), 'utf8');
+  }
+
+  // BUG (H1): the source verdict was decided by the GLOBAL newest timestamp of
+  // each view. Agent A's map write was LOST (ledger `completed`, cache still
+  // `running`), then sibling B pushed successfully a few seconds later — so the
+  // cache's newest equalled the ledger's newest, the reader answered
+  // `source: live-map`, and A was served from the cache as `running`:
+  // byte-identical to the pre-#1342 defect. Every earlier staleness test used a
+  // single agent, so none of them could see it.
+  it('a lost map write for A is NOT masked by a later successful push from B', () => {
+    const aRunning = { agentId: 'A', kind: 'status', text: 'running', ts: '2026-09-13T10:00:01.000Z' };
+    const bRunning = { agentId: 'B', kind: 'status', text: 'running', ts: '2026-09-13T10:00:09.000Z' };
+
+    // Ledger: A running → A completed (map write lost) → B running (map write ok).
+    appendLedgerLine(aRunning);
+    appendLedgerLine({ agentId: 'A', kind: 'status', text: 'completed', ts: '2026-09-13T10:00:05.000Z' });
+    appendLedgerLine(bRunning);
+    // Cache: A is a record behind; B is current.
+    writeCache({ A: aRunning, B: bRunning });
+
+    const view = readCurrentStatus({ repoRoot });
+    expect(view.entries.A.text).toBe('completed');
+    expect(view.entries.B.text).toBe('running');
+    expect(view.source).toBe('rebuilt-log');
+    expect(view.degraded.reasons).toContain('cache-behind-ledger');
+  });
+
+  // BUG: an equal-millisecond record in both views must not flip the verdict to
+  // `rebuilt-log` — the cache is the writer's own last word for that agent, and a
+  // tie is the NORMAL path (the map write succeeded).
+  it('an equal-ms tie goes to the cache and stays source `live-map`', () => {
+    const rec = { agentId: 'C', kind: 'status', text: 'fine', ts: '2026-09-13T10:00:00.000Z' };
+    appendLedgerLine(rec);
+    writeCache({ C: { ...rec, viaCache: true } });
+
+    const view = readCurrentStatus({ repoRoot });
+    expect(view.source).toBe('live-map');
+    expect(view.entries.C.viaCache).toBe(true);
+    expect(view.entries.C.binding).toBeUndefined(); // cache entry, not a folded one
+    expect(view.degraded).toBeUndefined();
+  });
+
+  // BUG (M1): with NO ledger and NO cache the reader answered `live-map` — a
+  // claim that the cache was verified against a ledger, when neither exists.
+  it('an empty channel reports source `absent`, not `live-map`', () => {
+    const view = readCurrentStatus({ repoRoot });
+    expect(view.source).toBe('absent');
+    expect(view.entries).toEqual({});
+    expect(view.at).toBeNull();
+    expect(view.degraded).toBeUndefined();
+  });
+
+  // BUG (Sec-L1): `entries[rec.agentId] = rec` with agentId `__proto__` on a
+  // plain object REPLACED the prototype and DROPPED the record — the poisoned
+  // key then leaked into every consumer's lookups.
+  it('a `__proto__` agentId is dropped and never touches the prototype', () => {
+    appendLedgerLine({ agentId: 'D', kind: 'status', text: 'real', ts: '2026-09-13T10:00:00.000Z' });
+    appendLedgerLine({ agentId: '__proto__', kind: 'status', text: 'poison', ts: '2026-09-13T10:00:01.000Z' });
+
+    const rebuilt = rebuildCurrentFromLedger({ repoRoot });
+    expect(Object.keys(rebuilt.entries)).toEqual(['D']);
+    expect(Object.getPrototypeOf(rebuilt.entries)).toBeNull();
+    expect(rebuilt.degraded.unboundRecords).toBe(1);
+
+    // Same guard on the CACHE read path (a poisoned current-map file).
+    writeCache({ D: { agentId: 'D', kind: 'status', text: 'real', ts: '2026-09-13T10:00:00.000Z' } });
+    writeFileSync(
+      join(repoRoot, CURRENT),
+      '{"D":{"agentId":"D","kind":"status","text":"real","ts":"2026-09-13T10:00:00.000Z"},' +
+        '"__proto__":{"agentId":"__proto__","text":"poison"}}',
+      'utf8',
+    );
+    const view = readCurrentStatus({ repoRoot });
+    expect(Object.keys(view.entries)).toEqual(['D']);
+    expect(Object.getPrototypeOf(view.entries)).toBeNull();
+  });
+
+  // BUG (QA-M4): the `parse-errors` and `records-without-agent-id` degradation
+  // reasons were surviving mutants — reachable, but asserted by no test, so
+  // deleting either branch kept the suite green.
+  it('counts a corrupt mid-file line and a record without agentId separately', () => {
+    appendLedgerLine({ agentId: 'E', kind: 'status', text: 'first', ts: '2026-09-13T10:00:00.000Z' });
+    // A corrupt line in the MIDDLE of the file (not the in-flight last line).
+    const p = join(repoRoot, JSONL);
+    writeFileSync(p, readFileSync(p, 'utf8') + '{ not json\n', 'utf8');
+    appendLedgerLine({ kind: 'status', text: 'no agent', ts: '2026-09-13T10:00:02.000Z' });
+    appendLedgerLine({ agentId: 'E', kind: 'status', text: 'last', ts: '2026-09-13T10:00:03.000Z' });
+
+    const rebuilt = rebuildCurrentFromLedger({ repoRoot });
+    expect(rebuilt.degraded.reasons).toEqual(['parse-errors', 'records-without-agent-id']);
+    expect(rebuilt.degraded.parseErrors).toBe(1);
+    expect(rebuilt.degraded.unboundRecords).toBe(1);
+    expect(rebuilt.degraded.partialLines).toBe(0);
+    expect(rebuilt.entries.E.text).toBe('last');
   });
 });

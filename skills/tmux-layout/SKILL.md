@@ -54,7 +54,9 @@ The skill prints a one-line tmux command. Paste it into a SECOND terminal (do no
 | 2 | STATE.md tail | `tail -F <state-dir>/STATE.md` |
 | 3 | CI watch (poll-loop wrapper) | `while true; do clear; glab ci status -R <spec> --output json \| jq -r '.jobs[] \| ...'; sleep 15; done` |
 | 4 | events.jsonl wave/gate filter | `tail -F .orchestrator/metrics/events.jsonl \| jq --unbuffered 'select(.event \| test("wave\|gate\|spiral"))'` |
-| 5 | agent-status telemetry (#565, only with `--with-status-pane`) | `while true; do clear; jq . .orchestrator/runtime/agent-status-current.json 2>/dev/null \|\| echo ...; sleep 2; done` |
+| 5 | agent-status telemetry (#565, only with `--with-status-pane`) | `while true; do clear; node --input-type=module -e '...readCurrentStatus({repoRoot:process.cwd()})...'; sleep 2; done` |
+
+Pane 5 renders through `readCurrentStatus()` (`scripts/lib/agent-status.mjs`), never the cache file directly (#1342): its header line `agent-status · source=<live-map|rebuilt-log|stale-cache|absent> · at=<ISO|n/a>` says WHAT is on screen, in four states — `live-map` = every shown record came from the current-map cache and the cache was VERIFIED against the ledger, `rebuilt-log` = at least one record was taken from the append-only `agent-status.jsonl` because the cache was behind (or unreadable) for that agent, `stale-cache` = no ledger to check the cache against, `absent` = nothing on disk yet (no ledger, no cache), which stays unmarked because a fresh repo is not a degradation — plus a leading `⚠` and the words STALE / `DEGRADED: <reasons>` in TEXT whenever the view is not verified live. The render command is exported as `buildStatusPaneRenderCommand()` so it can be executed once (outside the poll loop) in tests.
 
 `<state-dir>` is resolved via `resolveStateDir()` from `scripts/lib/platform.mjs` (`.claude/`, `.codex/`, or `.cursor/`).
 Pane 3 command is vcs-aware (`glab` for gitlab, `gh pr checks` for github, informational `echo` fallback when no CLI).

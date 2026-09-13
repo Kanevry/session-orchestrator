@@ -21,6 +21,15 @@
  * reported "stale", 26 of them >7d, with a demonstrably healthy sync chain —
  * because the clock, not the repo, was the denominator.
  *
+ * Passive projects (GitLab #1238 point 2): a `01-projects/<slug>/` carrying a
+ * `_passive.md` marker is one nobody syncs on purpose (vault convention
+ * `_meta/conventions.md`; the same marker is already honoured by
+ * `scripts/lib/context-coverage-banner.mjs` via its `COVERAGE_FILES` check).
+ * Such a folder is skipped BEFORE any staleness comparison and counted in
+ * `metrics.passive_skipped`, so the skip is visible rather than silent — a probe
+ * that quietly ignored folders would be indistinguishable from one that found
+ * them healthy.
+ *
  * Fallback: an overview WITHOUT `lastCommit` carries no repo-activity signal at
  * all, so the wall-clock comparison is the only thing left. It is retained for
  * that case only, marked `basis: 'probe-runtime'` in the evidence and carried at
@@ -67,6 +76,12 @@ function parseFrontmatter(text) {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Marker file that declares a `01-projects/<slug>/` deliberately un-synced.
+ * Same filename `scripts/lib/context-coverage-banner.mjs` accepts as coverage.
+ */
+const PASSIVE_MARKER = '_passive.md';
+
 const HOURS_24 = 24 * 60 * 60 * 1000;
 const HOURS_168 = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -89,7 +104,7 @@ export async function runProbe(projectRoot, config) {
 
   const makeSkip = (skipped_reason) => ({
     findings: [],
-    metrics: { scanned_projects: 0, stale_count: 0, errors: 0 },
+    metrics: { scanned_projects: 0, stale_count: 0, errors: 0, passive_skipped: 0 },
     duration_ms: Math.round(Date.now() - start),
     skipped_reason,
   });
@@ -114,7 +129,7 @@ export async function runProbe(projectRoot, config) {
     // --- Scan loop ---
 
     const findings = [];
-    const metrics = { scanned_projects: 0, stale_count: 0, errors: 0 };
+    const metrics = { scanned_projects: 0, stale_count: 0, errors: 0, passive_skipped: 0 };
     const now = Date.now();
 
     let entries;
@@ -129,7 +144,7 @@ export async function runProbe(projectRoot, config) {
           description: err.message,
           evidence: {},
         }],
-        metrics: { scanned_projects: 0, stale_count: 0, errors: 1 },
+        metrics: { scanned_projects: 0, stale_count: 0, errors: 1, passive_skipped: 0 },
         duration_ms: Math.round(Date.now() - start),
         error: err.message,
       };
@@ -138,7 +153,21 @@ export async function runProbe(projectRoot, config) {
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
 
-      const overviewPath = join(projectsDir, entry.name, '_overview.md');
+      const projectDir = join(projectsDir, entry.name);
+
+      // #1238 point 2 — a `_passive.md` marker means "nobody syncs this on
+      // purpose". Skipped before any comparison, but COUNTED so the skip shows
+      // up in the metrics instead of looking like a healthy project. Checked
+      // BEFORE the `_overview.md` existence test: a passive folder that carries
+      // no overview is still a deliberate skip, and the earlier ordering dropped
+      // it into the silent non-project branch, under-reporting the metric. The
+      // finding population is unchanged either way — neither branch can emit one.
+      if (existsSync(join(projectDir, PASSIVE_MARKER))) {
+        metrics.passive_skipped++;
+        continue;
+      }
+
+      const overviewPath = join(projectDir, '_overview.md');
       if (!existsSync(overviewPath)) continue; // non-project dir, skip silently
 
       metrics.scanned_projects++;
@@ -254,6 +283,7 @@ export async function runProbe(projectRoot, config) {
       scanned_projects: metrics.scanned_projects,
       stale_count: metrics.stale_count,
       errors: metrics.errors,
+      passive_skipped: metrics.passive_skipped,
       duration_ms,
       findings: findings.map(f => ({
         slug: f.evidence.slug,
@@ -286,7 +316,7 @@ export async function runProbe(projectRoot, config) {
         description: err.message,
         evidence: {},
       }],
-      metrics: { scanned_projects: 0, stale_count: 0, errors: 1 },
+      metrics: { scanned_projects: 0, stale_count: 0, errors: 1, passive_skipped: 0 },
       duration_ms: Math.round(Date.now() - start),
       error: err.message,
     };

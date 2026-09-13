@@ -6,12 +6,14 @@
  * injected into PATH so no real tmux process is launched.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { buildStatusPaneRenderCommand } from '../../scripts/lib/tmux-layout/layouts.mjs';
 
 // ---------------------------------------------------------------------------
 // Repo paths
@@ -299,8 +301,12 @@ describe('tmux-layout --with-status-pane flag (#565 agent-status integration)', 
     expect(result.status).toBe(0);
     const json = JSON.parse(result.stdout.trim());
     expect(json.panes).toBe(5);
-    // The 5th pane sends a command tailing the agent-status LWW map.
-    expect(json.oneliner).toContain('agent-status-current.json');
+    // BUG this pins (#1342): the pane used to `jq` the current-map CACHE, so a
+    // failed map write showed `running` for an agent the ledger already reported
+    // `completed`. The pane must go through the provenance-reporting reader.
+    expect(json.oneliner).toContain('readCurrentStatus');
+    expect(json.oneliner).toContain('agent-status.mjs');
+    expect(json.oneliner).not.toContain('jq . .orchestrator/runtime/agent-status-current.json');
     // It is wired as tmux pane index 0.4 (the 5th pane).
     expect(json.oneliner).toContain(`send-keys -t ${json.sessionName}:0.4`);
   });
@@ -309,5 +315,120 @@ describe('tmux-layout --with-status-pane flag (#565 agent-status integration)', 
     const result = runSkill(['--help']);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('--with-status-pane');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1342 — consumer-visibility of the status pane. A warning in an unread return
+// value is not a marker: these tests EXECUTE the pane's own render command and
+// assert what the operator SEES.
+// ---------------------------------------------------------------------------
+
+describe('tmux-layout status pane renders provenance (#1342)', () => {
+  let repoRoot;
+
+  beforeEach(() => {
+    repoRoot = mkdtempSync(join(tmpdir(), 'tmux-status-pane-'));
+    mkdirSync(join(repoRoot, '.orchestrator/runtime'), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  /** Run the pane's ONE-SHOT render command (not the `while` poll loop) in repoRoot. */
+  function render() {
+    return spawnSync('/bin/sh', ['-c', buildStatusPaneRenderCommand()], {
+      cwd: repoRoot,
+      encoding: 'utf-8',
+      timeout: 30_000,
+    });
+  }
+
+  function writeRuntime(name, body) {
+    writeFileSync(join(repoRoot, '.orchestrator/runtime', name), body, 'utf8');
+  }
+
+  // BUG: the cache says `running`, the ledger (source of truth) says `completed`
+  // — the old `jq` pane printed the cache verbatim, with no marker at all.
+  it('shows the LEDGER state and source=rebuilt-log when the cache is behind', () => {
+    writeRuntime(
+      'agent-status-current.json',
+      JSON.stringify({
+        'worker-1': { agentId: 'worker-1', kind: 'status', text: 'running', ts: '2026-09-13T10:00:00.000Z' },
+      }),
+    );
+    writeRuntime(
+      'agent-status.jsonl',
+      JSON.stringify({ agentId: 'worker-1', kind: 'status', text: 'running', ts: '2026-09-13T10:00:00.000Z' }) +
+        '\n' +
+        JSON.stringify({ agentId: 'worker-1', kind: 'status', text: 'completed', ts: '2026-09-13T10:05:00.000Z' }) +
+        '\n',
+    );
+
+    const result = render();
+    expect(result.status).toBe(0);
+    const out = result.stdout;
+    expect(out).toContain('source=rebuilt-log');
+    expect(out).toContain('at=2026-09-13T10:05:00.000Z');
+    expect(out).toContain('completed');
+    // The superseded cache value must not be presented as the agent's state.
+    expect(out).not.toContain('running');
+  });
+
+  // BUG: a cache with no ledger to check it against used to look exactly like
+  // live state. It must carry a TEXT marker (⚠ + STALE), not colour alone.
+  it('marks a cache with no ledger as ⚠ STALE / stale-cache', () => {
+    writeRuntime(
+      'agent-status-current.json',
+      JSON.stringify({
+        'worker-9': { agentId: 'worker-9', kind: 'status', text: 'running', ts: '2026-09-13T10:00:00.000Z' },
+      }),
+    );
+
+    const result = render();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('source=stale-cache');
+    expect(result.stdout).toContain('STALE');
+    expect(result.stdout).toContain('\u26a0');
+  });
+
+  // BUG (QA-M3): the pane's `DEGRADED:` mark was a surviving mutant — the three
+  // render tests pinned only `\u26a0`, STALE and `source=`, so deleting the
+  // DEGRADED branch kept them all green while the operator lost every
+  // degradation reason. Fixture: a truncated (newline-less) last ledger line,
+  // whose source is `rebuilt-log`, NOT `stale-cache`.
+  it('renders DEGRADED plus the reason name for a truncated last ledger line', () => {
+    writeRuntime(
+      'agent-status.jsonl',
+      JSON.stringify({
+        agentId: 'worker-7',
+        kind: 'status',
+        text: 'known',
+        ts: '2026-09-13T10:00:00.000Z',
+      }) +
+        '\n' +
+        '{"agentId":"ghost","kind":"status","text":"half-writ',
+    );
+
+    const result = render();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('source=rebuilt-log');
+    expect(result.stdout).toContain('DEGRADED: ');
+    expect(result.stdout).toContain('incomplete-last-line');
+    expect(result.stdout).toContain('\u26a0');
+    // The discarded fragment must not appear as an agent.
+    expect(result.stdout).not.toContain('ghost');
+  });
+
+  // BUG guard (HR-101): a fresh repo has no ledger and no cache. That is the
+  // normal state, so it must NOT render the ⚠/DEGRADED marker — a warning that
+  // fires every session is one the operator learns to ignore.
+  it('prints the empty-channel fallback with no warning marker', () => {
+    const result = render();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('no agent-status yet');
+    expect(result.stdout).not.toContain('\u26a0');
+    expect(result.stdout).not.toContain('DEGRADED');
   });
 });

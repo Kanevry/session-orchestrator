@@ -122,6 +122,25 @@ async function resolveSessionId(input, projectDir) {
 }
 
 /**
+ * The harness's id for THIS tool call, when it publishes one — the first half of
+ * a charge record's identity (see `chargeIssueBudget`). Several spellings are
+ * accepted because the payload key is the harness's to choose, and a missed id
+ * silently degrades to the deterministic command key rather than failing.
+ *
+ * Kept byte-identical in shape to the refund hook's copy: the two must resolve
+ * the same id from the same payload or the refund cannot find the charge.
+ *
+ * @param {object} input
+ * @returns {string|null}
+ */
+function resolveToolCallId(input) {
+  for (const value of [input?.tool_use_id, input?.toolUseId, input?.tool_call_id, input?.tool_id]) {
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return null;
+}
+
+/**
  * THE CHOICE (#1145) — stated once, so the loop behaviour is explicit rather
  * than emergent.
  *
@@ -321,7 +340,13 @@ async function main() {
   // in #1163 is only HOW MANY times it is asked. Each statement is judged on
   // its OWN text: `glab issue create --title REAL && glab issue create
   // --label carryover --title X` is 1 charge + 1 exemption, never 2 exemptions.
-  const verdicts = statements.map((s) =>
+  // `toolCallId` + the statement index are the CHARGE RECORD's identity (#1347):
+  // the refund hook may only give back a slot it can find in `charged[]`, so the
+  // charge has to be recorded under the same pair the PostToolUseFailure payload
+  // for this very call will present. Absent an id, the deterministic
+  // session+command+index key carries it.
+  const toolCallId = resolveToolCallId(input);
+  const verdicts = statements.map((s, i) =>
     chargeIssueBudget({
       repoRoot: projectDir,
       sessionId,
@@ -332,6 +357,8 @@ async function main() {
       repo: s.repo,
       cwd: input.cwd,
       cwdChanged: s.cwdChanged,
+      toolCallId,
+      statementIndex: i,
       config,
     }),
   );

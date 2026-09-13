@@ -206,6 +206,11 @@
             "type": "command",
             "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-tool-failure-corrective-context.mjs\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-bash-issue-budget-refund.mjs\"",
+            "timeout": 5
           }
         ]
       }

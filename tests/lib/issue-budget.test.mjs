@@ -19,6 +19,8 @@ import {
   readSessionTypeFromStateMd,
   resolveIssueBudgetSessionId,
   chargeIssueBudget,
+  refundBooking,
+  CHARGED_LEDGER_MAX,
   readBudgetState,
   budgetStatePath,
   budgetStateRel,
@@ -206,6 +208,9 @@ describe('semantic issue-budget accounting continuity', () => {
       count: 1,
       exempt: 0,
       overflow: [],
+      // #1347 CHARGE ledger — proof of charge, the only thing a refund may act
+      // on. One record per charged statement; emptied as refunds are honoured.
+      charged: [{ id: null, key: expect.any(String), unit: 'count', at: expect.any(String) }],
     });
   });
 
@@ -512,7 +517,7 @@ describe('budget state file', () => {
       'utf8',
     );
     expect(readBudgetState(repoRoot, 's1')).toEqual({
-      sessionId: 's1', count: 0, exempt: 0, overflow: [],
+      sessionId: 's1', count: 0, exempt: 0, overflow: [], charged: [],
     });
   });
 
@@ -536,7 +541,7 @@ describe('budget state file', () => {
     // create dir + garbage
     chargeN(1, { 'max-per-session': 5, mode: 'strict', overflow: 'collect-issue' });
     writeFileSync(p, '{not json', 'utf8');
-    expect(readBudgetState(repoRoot, 's1')).toEqual({ sessionId: 's1', count: 0, exempt: 0, overflow: [] });
+    expect(readBudgetState(repoRoot, 's1')).toEqual({ sessionId: 's1', count: 0, exempt: 0, overflow: [], charged: [] });
   });
 });
 
@@ -678,5 +683,166 @@ describe('buildOverflowRecord — description-file resolution', () => {
     expect(rec.truncated).toBe(true);
     expect(rec.description).toHaveLength(OVERFLOW_DESCRIPTION_MAX - 1);
     expect(/[\uD800-\uDBFF]$/.test(rec.description)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// refundBooking (#1347)
+// ---------------------------------------------------------------------------
+
+describe('refundBooking — a refund needs PROOF OF CHARGE (#1347)', () => {
+  const STRICT = { 'max-per-session': 3, mode: 'strict', overflow: 'collect-issue' };
+  const CMD = 'glab issue create --title "net failure" --label "type::bug,priority::medium"';
+  const chargeCmd = (command = CMD, extra = {}) =>
+    chargeIssueBudget({ repoRoot, sessionId: 's1', command, config: STRICT, ...extra });
+  const refundCmd = (command = CMD, extra = {}) =>
+    refundBooking({ repoRoot, sessionId: 's1', command, config: STRICT, ...extra });
+
+  it('gives the slot back, so a retry of a failed create costs one slot net', () => {
+    // The bug: the charge happens in PreToolUse, so a create that FAILED and was
+    // retried consumed two of three slots and the third issue landed in overflow.
+    expect(chargeCmd().count).toBe(1);
+    const refund = refundCmd();
+    expect({ decision: refund.decision, count: refund.count }).toEqual({ decision: 'refunded', count: 0 });
+    // The retry plus two further creates now all fit under the cap of 3.
+    expect(chargeN(3, STRICT).decision).toBe('allow');
+    expect(readBudgetState(repoRoot, 's1').count).toBe(3);
+  });
+
+  // THE DRAIN (H2 / Sec-M2): at `count === max` the pre-hook PARKS the create and
+  // denies WITHOUT charging, yet the failure event still fires. The first cut
+  // decremented anyway, and because its booking key contained `countBefore`,
+  // every retry minted a fresh key — measured: cap 3, three parked retries,
+  // `count` down to 0 with the parked record still in `overflow[]`.
+  it('refunds NOTHING for a create that was parked instead of charged, however often it is retried', () => {
+    chargeN(3, STRICT);
+    const parked = chargeCmd();
+    expect({ decision: parked.decision, overflowCount: parked.overflowCount }).toEqual({
+      decision: 'block',
+      overflowCount: 1,
+    });
+
+    for (let i = 0; i < 3; i++) {
+      const v = refundCmd();
+      expect({ decision: v.decision, reason: v.reason }).toEqual({
+        decision: 'noop',
+        reason: 'not-charged',
+      });
+    }
+    const state = readBudgetState(repoRoot, 's1');
+    expect({ count: state.count, overflow: state.overflow.length }).toEqual({ count: 3, overflow: 1 });
+  });
+
+  it('is a no-op the second time the same booking is refunded', () => {
+    chargeCmd(CMD, { toolCallId: 'toolu_1' });
+    chargeN(1, STRICT);
+    const first = refundCmd(CMD, { toolCallId: 'toolu_1' });
+    const second = refundCmd(CMD, { toolCallId: 'toolu_1' });
+    expect(first.decision).toBe('refunded');
+    expect({ decision: second.decision, reason: second.reason, count: second.count }).toEqual({
+      decision: 'noop',
+      reason: 'not-charged',
+      count: 1,
+    });
+  });
+
+  it('matches by the deterministic key when only ONE side carries a tool-call id', () => {
+    // The charge (PreToolUse) and the refund (PostToolUseFailure) are separate
+    // harness events; either may publish an id the other does not. A key match
+    // is allowed only onto an id-LESS charge record when the refund carries an
+    // id (see the MED-1 test below for why).
+    chargeCmd();
+    expect(refundCmd(CMD, { toolCallId: 'toolu_post_only' }).decision).toBe('refunded');
+    chargeCmd(CMD, { toolCallId: 'toolu_pre_only' });
+    expect(refundCmd().decision).toBe('refunded');
+  });
+
+  // Review MED-1 (session main-2026-09-13-session-4, measured): charge A (same
+  // command text, SUCCEEDED) and charge B (failed); the failure for B delivered
+  // twice. With a key fallback the second delivery matched A's record and gave
+  // back a slot for a create that did run — the same cap-drain class as the
+  // `&& false` exploit. Records must be matched by id when an id is present.
+  it('never refunds an OLDER charge of the same command text when the refund carries a tool-call id', () => {
+    chargeCmd(CMD, { toolCallId: 'toolu_A_succeeded' });
+    chargeCmd(CMD, { toolCallId: 'toolu_B_failed' });
+    expect(readBudgetState(repoRoot, 's1').count).toBe(2);
+    const first = refundCmd(CMD, { toolCallId: 'toolu_B_failed' });
+    const second = refundCmd(CMD, { toolCallId: 'toolu_B_failed' });
+    expect(first.decision).toBe('refunded');
+    expect({ decision: second.decision, reason: second.reason }).toEqual({ decision: 'noop', reason: 'not-charged' });
+    const state = readBudgetState(repoRoot, 's1');
+    expect({ count: state.count, charged: state.charged.map((r) => r.id) }).toEqual({ count: 1, charged: ['toolu_A_succeeded#0'] });
+  });
+
+  it('never drives the counter below zero on an unbooked refund', () => {
+    const verdict = refundCmd();
+    expect({ decision: verdict.decision, reason: verdict.reason, count: verdict.count }).toEqual({
+      decision: 'noop',
+      reason: 'not-charged',
+      count: 0,
+    });
+    expect(readBudgetState(repoRoot, 's1').count).toBe(0);
+  });
+
+  it('refunds the unit the charge was booked to — exempt, not count', () => {
+    // The unit is read off the RECORD, never re-classified from the command text:
+    // a retry can have edited the labels, and crediting `count` for an `exempt`
+    // charge would hand out a capped slot for an uncapped creation.
+    const exemptCmd = 'glab issue create --title "[Carryover] x"';
+    chargeN(1, STRICT);
+    chargeCmd(exemptCmd);
+    const verdict = refundCmd(exemptCmd);
+    expect({ decision: verdict.decision, exempt: verdict.exempt, count: verdict.count }).toEqual({
+      decision: 'refunded-exempt',
+      exempt: 0,
+      count: 1,
+    });
+  });
+
+  it('never removes a parked overflow record — a blocked creation was never charged', () => {
+    chargeCmd();
+    chargeN(2, STRICT);
+    const blocked = chargeIssueBudget({
+      repoRoot, sessionId: 's1', command: 'glab issue create --title "parked"', config: STRICT,
+    });
+    expect(blocked.decision).toBe('block');
+    const verdict = refundCmd();
+    expect({ decision: verdict.decision, overflowCount: verdict.overflowCount, count: verdict.count }).toEqual({
+      decision: 'refunded',
+      overflowCount: 1,
+      count: 2,
+    });
+    expect(readBudgetState(repoRoot, 's1').overflow).toHaveLength(1);
+  });
+
+  it('bounds the charge ledger, and an evicted charge is not refundable (fail-closed)', () => {
+    const loose = { 'max-per-session': 500, mode: 'strict', overflow: 'collect-issue' };
+    const first = 'glab issue create --title "evict-me"';
+    chargeIssueBudget({ repoRoot, sessionId: 's1', command: first, config: loose });
+    for (let i = 0; i < CHARGED_LEDGER_MAX; i++) {
+      chargeIssueBudget({
+        repoRoot, sessionId: 's1', command: `glab issue create --title "filler ${i}"`, config: loose,
+      });
+    }
+    const state = readBudgetState(repoRoot, 's1');
+    expect(state.charged).toHaveLength(CHARGED_LEDGER_MAX);
+    const evicted = refundBooking({ repoRoot, sessionId: 's1', command: first, config: loose });
+    expect({ decision: evicted.decision, reason: evicted.reason }).toEqual({
+      decision: 'noop',
+      reason: 'not-charged',
+    });
+  });
+
+  it('writes nothing without an accounting session id, and nothing when mode is off', () => {
+    chargeN(2, STRICT);
+    const noSession = refundBooking({ repoRoot, sessionId: null, command: CMD, config: STRICT });
+    const off = refundBooking({
+      repoRoot,
+      sessionId: 's1',
+      command: CMD,
+      config: { 'max-per-session': 3, mode: 'off', overflow: 'collect-issue' },
+    });
+    expect([noSession.decision, off.decision]).toEqual(['no-session', 'off']);
+    expect(readBudgetState(repoRoot, 's1').count).toBe(2);
   });
 });

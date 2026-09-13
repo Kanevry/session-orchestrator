@@ -620,6 +620,49 @@ export function findIssueCreateStatements(command) {
   return out;
 }
 
+/**
+ * Do the issue-create statements account for the WHOLE command? (#1347)
+ *
+ * ## Why a refund needs this and a charge does not
+ *
+ * The charge is per statement and runs BEFORE the command, so it never has to
+ * ask what else is in the chain. The refund runs AFTER, and the harness reports
+ * ONE exit code for the whole Bash call — so a failure signal on
+ * `glab issue create --title X && false` says nothing about the create. Measured
+ * 2026-09-13 against the first cut of `hooks/post-bash-issue-budget-refund.mjs`:
+ * that exact command CREATES the issue, exits 1, and one slot was handed back.
+ * Refunding a create whose failure is not attributable to it is a cap drain, so
+ * the refund hook asks this question first and no-ops when the answer is false.
+ *
+ * True only when the command has at least one issue-create statement and EVERY
+ * statement of the chain is one. A chain that mixes a create with anything else
+ * — including a benign-looking `cd`, `echo`, or `true` — is not attributable
+ * here, which is the fail-CLOSED direction: the slot stays spent.
+ *
+ * NAMED CEILING (BV-004): the most common agent shape `cd <repo> && glab issue
+ * create …` is therefore NOT refundable, even though a failing `cd` provably
+ * means the create never ran. Admitting a prefix class would also admit a
+ * TRAILING one under the same argument, and a trailing statement's failure is
+ * exactly the drain above. Revisit if the refund rate measured over
+ * `.orchestrator/runtime/issue-budget/<hash>.json` charges shows the `cd` shape
+ * dominating; the safe widening is a LEADING-only allowance for `CWD_VERBS`,
+ * never a general one.
+ *
+ * @param {string} command
+ * @returns {boolean}
+ */
+export function statementsCoverWholeCommand(command) {
+  const all = statementsOf(command);
+  if (all.length === 0) return false;
+  let creates = 0;
+  for (const tokens of all) {
+    const shape = matchStatement(tokens);
+    if (!shape || shape.kind !== 'issue') return false;
+    creates += 1;
+  }
+  return creates > 0;
+}
+
 /** Builtins that move the shell's working directory for later statements. */
 const CWD_VERBS = new Set(['cd', 'pushd', 'popd']);
 

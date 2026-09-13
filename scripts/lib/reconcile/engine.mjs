@@ -896,12 +896,23 @@ const KNOWN_TARGETS = ['repo-local', 'baseline'];
  * target list). `aborted`/`reason` appear only when the never-throws guard
  * fired; their absence means "ran to the end", never "unknown".
  *
+ * `candidate_store_merged` says the `reconcile-candidates.jsonl` idempotency
+ * sidecar was merged — the engine's ONLY disk write. It is NOT a rule-write
+ * signal: this event is emitted before the operator-approval AUQ and the engine
+ * never touches `.claude/rules/`. For "a rule reached `.claude/rules/`" read
+ * `orchestrator.reconcile.rules_written`. The legacy alias `written` carries the
+ * same boolean until 2027-03-13 (#1315).
+ *
  * @param {ReconcileResult} result
  * @param {{ trigger?: string, targets?: string[], dryRun?: boolean, durationMs: number }} ctx
  * @returns {Record<string, unknown>}
  */
 function buildReconcilePayload(result, ctx) {
   const summary = (result && result.summary) || {};
+  // `summary.written` is the `reconcile-candidates.jsonl` SIDECAR merge flag —
+  // the engine's only disk write. Named `candidate_store_merged` in the payload
+  // since #1315; the local const keeps both emitted keys on one source.
+  const candidateStoreMerged = summary.written === true;
   /** @type {Record<string, unknown>} */
   const payload = {
     trigger: typeof ctx.trigger === 'string' && ctx.trigger.trim() !== '' ? ctx.trigger : 'unknown',
@@ -912,7 +923,14 @@ function buildReconcilePayload(result, ctx) {
     rejected: summary.rejected ?? 0,
     capped: summary.capped ?? 0,
     already_materialized: summary.alreadyMaterialized ?? 0,
-    written: summary.written === true,
+    candidate_store_merged: candidateStoreMerged,
+    // @deprecated `written` — renamed to `candidate_store_merged` (#1315) because
+    // the old name read as "rule files were written", which this engine never does.
+    // Kept for one generation so existing readers keep working, per the
+    // `orchestrator.session.stopped` → `orchestrator.turn.stopped` precedent
+    // (#1234). REMOVAL: 2027-03-13. Written from the SAME expression as the new
+    // key, so the two can never disagree.
+    written: candidateStoreMerged,
     duration_ms: ctx.durationMs,
   };
   // `targets` originates in operator-authored Session Config (`reconcile.targets`)

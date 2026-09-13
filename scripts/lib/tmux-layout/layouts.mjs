@@ -11,7 +11,8 @@
  *   Pane 3 (bottom-right) — vcs-aware CI watch (poll-loop from detectVcsCommand)
  *   Pane 4 (bottom-left)  — tail -F .orchestrator/metrics/events.jsonl | jq select(wave|gate|spiral)
  *   Pane 5 (optional)     — agent-status telemetry (#565), only when withStatusPane is true:
- *                           poll-loop over .orchestrator/runtime/agent-status-current.json
+ *                           poll-loop over readCurrentStatus() from scripts/lib/agent-status.mjs,
+ *                           which reports provenance (live-map / rebuilt-log / stale-cache) — #1342.
  *
  * Debug layout pane map (user-facing numbering):
  *   Pane 1 (top-left)     — scratch shell (NO command — default tmux shell, AUQ-001 compliance)
@@ -58,6 +59,61 @@ function shellQuote(s) {
   return "'" + String(s).replace(/'/g, "'\\''") + "'";
 }
 
+/** Poll interval (seconds) of the agent-status pane loop. */
+const STATUS_PANE_POLL_SECONDS = 2;
+
+/**
+ * Build the ONE-SHOT render command of the agent-status pane (#1342).
+ *
+ * The pane used to `jq` `.orchestrator/runtime/agent-status-current.json` directly.
+ * That file is a REBUILDABLE CACHE, not the source of truth: after a lock timeout
+ * (or a death between the ledger append and the map write) it shows `running` for
+ * an agent whose ledger already says `completed`. So the pane now goes through
+ * `readCurrentStatus()` — the only reader that folds the ledger tail and reports
+ * PROVENANCE — and prints that provenance in its header line:
+ *
+ *   agent-status · source=<live-map|rebuilt-log|stale-cache|absent> · at=<ISO|n/a>[ · STALE][ · DEGRADED: <reasons>]
+ *
+ * A `stale-cache` source or any `degraded` reason is marked in TEXT (leading `⚠`
+ * plus the words STALE / DEGRADED), never by colour alone. `absent` (nothing on
+ * disk yet) stays UNMARKED — a fresh repo is not a degradation (HR-101).
+ *
+ * Exported so a consumer test can run the render ONCE instead of the poll loop.
+ *
+ * Shell-shape notes (both load-bearing):
+ *   - the `-e` script is wrapped in SINGLE quotes, so the JS below uses only
+ *     double-quoted strings: inside single quotes no `$`, backtick or interactive
+ *     `!` history expansion can touch it.
+ *   - the module path is resolved from THIS file's own URL (never a hardcoded home
+ *     path), exactly as the sibling pane commands stay relative-to-cwd.
+ *
+ * @returns {string} a single shell command; prints the pane body once and exits.
+ */
+export function buildStatusPaneRenderCommand() {
+  // `%27` guard: a single quote in the repo path would otherwise end the shell
+  // single-quoted `-e` argument.
+  const moduleHref = new URL('../agent-status.mjs', import.meta.url).href.replace(/'/g, '%27');
+  const js = [
+    `import {readCurrentStatus} from ${JSON.stringify(moduleHref)};`,
+    'const v=readCurrentStatus({repoRoot:process.cwd()});',
+    'const ids=Object.keys(v.entries).sort();',
+    // An EMPTY channel (no ledger yet, no cache yet) is the normal fresh-repo
+    // state, not a degradation — marking it would fire the warning on every
+    // session and teach the operator to ignore it (host-resources.md HR-101).
+    // `readCurrentStatus()` names that state `absent` and emits no `degraded`,
+    // so the unmarked case keys on the SOURCE, not on a reason allowlist.
+    'const bare=v.source==="absent";',
+    'const marks=[];',
+    'if(!bare&&v.source==="stale-cache")marks.push("STALE");',
+    'if(!bare&&v.degraded)marks.push("DEGRADED: "+v.degraded.reasons.join(","));',
+    'const head=(marks.length>0?"\u26a0 ":"")+"agent-status \u00b7 source="+v.source+" \u00b7 at="+(v.at||"n/a")+(marks.length>0?" \u00b7 "+marks.join(" \u00b7 "):"");',
+    'console.log(head);',
+    'if(ids.length===0)console.log("no agent-status yet \u2014 set persistence:true + run a wave (see skills/wave-executor/wave-loop.md \u00a7 3a-bis)");',
+    'for(const id of ids){const r=v.entries[id]||{};const what=typeof r.text==="string"?r.text:(r.step!==undefined?r.step+"/"+r.total+(r.label?" "+r.label:""):"unknown");console.log(id+"  "+what+"  "+(r.ts||"no-ts"));}',
+  ].join('');
+  return `node --input-type=module -e '${js}'`;
+}
+
 // ---------------------------------------------------------------------------
 // renderDefaultLayout
 // ---------------------------------------------------------------------------
@@ -91,9 +147,11 @@ async function _renderDefaultLayoutInner({ sessionName, force, projectRoot, vcsC
   const pane2Cmd = `tail -F ${stateMdPath}`;
   const pane3Cmd = vcs.command;
   const pane4Cmd = `tail -F .orchestrator/metrics/events.jsonl | jq --unbuffered 'select(.event | test("wave|gate|spiral"))'`;
-  // Pane 5 (optional, #565): poll the LWW agent-status map. The `|| echo` fallback
-  // (mirrors Pane 3 style) keeps a missing file / absent jq from erroring the pane.
-  const pane5Cmd = `while true; do clear; jq . .orchestrator/runtime/agent-status-current.json 2>/dev/null || echo 'no agent-status yet — set persistence:true + run a wave (see skills/wave-executor/wave-loop.md § 3a-bis)'; sleep 2; done`;
+  // Pane 5 (optional, #565 / #1342): poll `readCurrentStatus()` — NOT the cache
+  // file — so the pane can never present a stale `running` as live. The renderer
+  // prints its own "no agent-status yet" line when the channel is empty, and is
+  // exported (buildStatusPaneRenderCommand) so a test can run it once.
+  const pane5Cmd = `while true; do clear; ${buildStatusPaneRenderCommand()}; sleep ${STATUS_PANE_POLL_SECONDS}; done`;
 
   // 4. Session-collision check
   const collision = isSessionCollision(sessionName);

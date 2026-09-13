@@ -475,7 +475,7 @@ After each wave completes and before the progress update, update `<state-dir>/ST
 
 **Gate:** `persistence: true` in Session Config. When `persistence: false`, skip every push below — there is no runtime side-channel to feed.
 
-The helper is `scripts/lib/agent-status.mjs`. Its exports (`setStatus`, `setProgress`, `readCurrentStatus`) are all no-throw and return `{ ok: true } | { ok: false, reason }`; the coordinator ignores the return value (best-effort). Push at **three anchors** in the wave loop:
+The helper is `scripts/lib/agent-status.mjs`. The writers (`setStatus`, `setProgress`) are no-throw and return `{ ok: true } | { ok: false, reason }`; the coordinator ignores the return value (best-effort). The reader `readCurrentStatus()` returns `{ entries, source: 'live-map'|'rebuilt-log'|'stale-cache', at, degraded? }` — the ledger `agent-status.jsonl` is the source of truth and the current-map is a rebuildable cache (#1342), so a consumer must SHOW `source`/`at`; `readCurrentStatusEntries()` is the bare-map accessor. Push at **three anchors** in the wave loop:
 
 1. **dispatch** — in `### 1. Dispatch Agents`, as each agent is dispatched, push its status. Use `setProgress` when the wave's per-agent ordinal is meaningful, else `setStatus`:
 
