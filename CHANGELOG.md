@@ -70,6 +70,8 @@ Migration from 4.x: [v5 migration guide](docs/migration-v5.md). The major versio
 
 ### Fixed
 
+- The untracked test-dependency scanner retries only the explicitly rejected symlink descendant when Git identifies it, retaining the fallback for other failures. This avoids recursively splitting healthy paths in tracked-tree gates (#1360).
+
 - Agent-status recovery preserves a later ledger append when two real updates share a millisecond and the second cache write fails. Equal-time matching payloads still retain cache metadata; conflicting payloads recover the ledger and report `rebuilt-log`. The actual write/lock-failure regression now uses a deterministic clock.
 - Discovery probe guards and imports in `skills/discovery/probes-{docs,supply-chain,vault}.md` and `skills/session-end/references/phase-2-quality-gate.md` resolve from `${PLUGIN_ROOT}` instead of a repo-relative/undefined `$REPO_ROOT` path (#1313) — in consumer repos the probes silently ended in `SKIPPED`; a skip now names the checked path.
 - Issue-budget overflow parks a structured `{ title, description, repo, command, at, truncated }` record through one shared `buildOverflowRecord` instead of the raw command cut at 500 chars (#1314): `--description-file`/`-F`/`$(cat <path>)` bodies are read at block time (size-capped), `-t` and `-R/--repo` are recognised, and the `[Backlog-Sammel]` fold renders the body.

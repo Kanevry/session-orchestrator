@@ -629,28 +629,42 @@ function importClosure(repoRoot, entry, readSource) {
  */
 function checkIgnoreBatch(repoRoot, specs, out) {
   if (specs.length === 0) return;
-  const ci = spawnSync('git', ['check-ignore', '--stdin'], {
-    cwd: repoRoot, input: specs.join('\n'), encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  // 0 = at least one ignored (listed on stdout); 1 = none ignored; else fatal.
-  if (ci.status === 0) {
-    for (const line of (ci.stdout || '').split('\n')) {
-      const p = line.trim();
-      if (p) out.add(p);
+  let pending = specs;
+  for (;;) {
+    const ci = spawnSync('git', ['check-ignore', '--stdin'], {
+      cwd: repoRoot, input: pending.join('\n'), encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    // 0 = at least one ignored (listed on stdout); 1 = none ignored; else fatal.
+    if (ci.status === 0) {
+      for (const line of (ci.stdout || '').split('\n')) {
+        const p = line.trim();
+        if (p) out.add(p);
+      }
+      return;
     }
+    if (ci.status === 1) return;
+    // Git identifies this refused candidate precisely. Retrying only the rest
+    // preserves the old dropped-candidate semantics without bisecting healthy
+    // paths (78 subprocesses for five symlink descendants in the tracked tree).
+    const rejected = /^fatal: pathspec '([^'\n]+)' is beyond a symbolic link\r?\n?$/.exec(ci.stderr || '')?.[1];
+    if (rejected && pending.includes(rejected)) {
+      process.stderr.write(`  WARN: git check-ignore rejected "${rejected}" — candidate dropped (${(ci.stderr || '').trim()})\n`);
+      pending = pending.filter((spec) => spec !== rejected);
+      if (pending.length === 0) return;
+      continue;
+    }
+    if (pending.length === 1) {
+      process.stderr.write(
+        `  WARN: git check-ignore rejected "${pending[0]}" — candidate dropped (${(ci.stderr || '').trim().split('\n')[0]})\n`,
+      );
+      return;
+    }
+    const mid = pending.length >> 1;
+    checkIgnoreBatch(repoRoot, pending.slice(0, mid), out);
+    checkIgnoreBatch(repoRoot, pending.slice(mid), out);
     return;
   }
-  if (ci.status === 1) return;
-  if (specs.length === 1) {
-    process.stderr.write(
-      `  WARN: git check-ignore rejected "${specs[0]}" — candidate dropped (${(ci.stderr || '').trim().split('\n')[0]})\n`,
-    );
-    return;
-  }
-  const mid = specs.length >> 1;
-  checkIgnoreBatch(repoRoot, specs.slice(0, mid), out);
-  checkIgnoreBatch(repoRoot, specs.slice(mid), out);
 }
 
 /**
