@@ -21,6 +21,21 @@ it is the locked v1 schema and consent precedence this plugin implements.
   [Relationship to `telemetry-claims.md`](#relationship-to-telemetry-claimsmd)
   below.
 
+## Your data stays in your repo
+
+Session Orchestrator runs locally, requires no account, and writes its records
+as append-only JSONL under `.orchestrator/metrics/` in *your* repository:
+sessions, learnings, events, subagent records. Those files are yours: readable,
+greppable, deletable. The optional anonymous usage telemetry described on the
+rest of this page is **off until you explicitly consent** and is a separate
+channel from those local records — turning telemetry on or off changes nothing
+about what is written locally, and deleting the local records sends nothing
+anywhere.
+
+Reported metrics describe *this* repository under its own conditions and will
+not transfer unchanged to yours
+([telemetry-claims.md](telemetry/telemetry-claims.md)).
+
 ## What we collect
 
 When telemetry is enabled and a batch is flushed, the payload is built from

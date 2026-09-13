@@ -86,6 +86,17 @@ The user workflow is:
 
 There is no build or compilation step — edit the files, reload the harness, and test. Dependency installation (`npm install`) is required once after cloning and again whenever `package-lock.json` changes.
 
+### Git Hooks: one manual step after cloning
+
+`.npmrc` ships with `ignore-scripts=true` (supply-chain defence), so Husky git hooks do **not** auto-wire on install. Run `npx husky` once after cloning. `git commit` then runs gitleaks → owner-privacy scan → lint-staged → commitlint. CI re-runs everything, plus more.
+
+### Two directories named *rules*
+
+They play opposite roles, and confusing them sends a change to the wrong audience:
+
+- [`rules/`](rules/README.md) is the **deliverable rule library** shipped *out* to consumer repos via `/bootstrap --sync-rules`.
+- [`.claude/rules/`](https://github.com/Kanevry/session-orchestrator/tree/main/.claude/rules/) is **this repo's own** rule set, with always-on and path-scoped entries.
+
 ### Git Blame Hygiene
 
 Run once after cloning: `git config blame.ignoreRevsFile .git-blame-ignore-revs`

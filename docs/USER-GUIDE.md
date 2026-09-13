@@ -1406,6 +1406,30 @@ For Claude Code, run these commands inside a Claude Code session, not in your sh
 /plugin install session-orchestrator@kanevry
 ```
 
+### Node is missing from the hook PATH
+
+The harness executes hook commands via `/bin/sh -c` with its own PATH. That
+shell does not source `~/.zshrc`/`~/.bashrc`, so Node installed via Homebrew,
+nvm, volta, or asdf can be invisible to hooks even though `node` works in your
+terminal.
+
+All hook commands route through
+[`hooks/run-node.sh`](https://github.com/Kanevry/session-orchestrator/blob/main/hooks/run-node.sh),
+which resolves Node via `$SO_NODE_BIN` → PATH → well-known install dirs → nvm
+and degrades gracefully: hooks are skipped with **one** warning per 6 hours
+instead of a shell error on every tool call.
+
+Fixes, in order of preference:
+
+1. Launch the harness from a shell where `node` resolves.
+2. Export `SO_NODE_BIN=/abs/path/to/node`.
+3. Install Node 24+ to a standard location.
+
+### `/session` refuses to start
+
+It needs `.orchestrator/bootstrap.lock`. Run `/bootstrap` first, or
+`/bootstrap --retroactive` if the repo already has a `## Session Config` block.
+
 ### "tsgo: command not found"
 
 The default typecheck command is `npm run typecheck`. If your project's `typecheck` script invokes `tsgo`, install it or change `typecheck-command` to the runner your project actually uses:
