@@ -2,7 +2,7 @@
 
 A silent, 22-second campaign film and a 9-second website loop, built locally with Remotion. The production facility is an AI-generated illustration of the workflow. It is not a recording of the plugin or evidence of a new capability.
 
-The checked-in campaign defaults are **version 4.3, planned**, with **4.2.0 as the current release**. The footer retains that distinction throughout the film and poster. The persistent top-right campaign label is removed; the output filenames remain unchanged.
+The checked-in campaign is a **frozen snapshot from 10 September 2026**: **version 4.3, planned**, with **4.2.0 as the release current on that date**. These inputs and the dated render receipt reproduce that historical preview; they do not describe the latest plugin release. A new campaign requires reviewed inputs and a new render receipt. The footer retains that distinction throughout the film and poster. The persistent top-right campaign label is removed; the output filenames remain unchanged.
 
 ## Reproduce
 
