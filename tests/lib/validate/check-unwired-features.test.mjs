@@ -22,6 +22,7 @@ import {
   inspectUnwiredFeatures,
   collectOrphanedProseModules,
   collectUnreachableLibraryModules,
+  collectHandKeyedLearningSubjects,
 } from '@lib/validate/check-unwired-features.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -183,7 +184,12 @@ describe('check-unwired-features — declared-but-unread census', () => {
   it('surfaces the real repo census without a tool error', { timeout: 30_000 }, () => {
     // Grounding pin: the collector must actually resolve this repo's surfaces.
     // Floor/ceiling per `testing.md` § Dynamic Artifact Counts — the key set grows.
-    const result = inspectUnwiredFeatures(REPO_ROOT);
+    // check-untracked-test-deps:ignore — since #1363 the import closure names the
+    // gitignored `.orchestrator/metrics/*.jsonl` ledger (S5). The read is real but
+    // never fatal: an absent ledger is a documented no-op, pinned by the
+    // "silent no-op when the gitignored ledgers are absent" case below, so this
+    // assertion's status is identical with and without the store.
+    const result = inspectUnwiredFeatures(REPO_ROOT); // check-untracked-test-deps:ignore
     expect(result.toolError).toBe(false);
     expect(result.summary.declaredKeys).toBeGreaterThan(100);
     expect(result.summary.consumerFiles).toBeGreaterThan(100);
@@ -707,4 +713,229 @@ describe('check-unwired-features — S4 unreachable-library-module census', () =
       rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+/**
+ * Build a fixture repo carrying only the two host-local JSONL ledgers S5 reads.
+ *
+ * @param {{learnings?: object[], sessions?: object[]}} parts
+ * @returns {string} absolute fixture root (caller removes it)
+ */
+function makeLedgerFixture(parts) {
+  const root = mkdtempSync(join(tmpdir(), 'sizing-subject-'));
+  const metrics = join(root, '.orchestrator', 'metrics');
+  mkdirSync(metrics, { recursive: true });
+  if (parts.learnings) {
+    writeFileSync(
+      join(metrics, 'learnings.jsonl'),
+      `${parts.learnings.map((record) => JSON.stringify(record)).join('\n')}\n`,
+    );
+  }
+  if (parts.sessions) {
+    writeFileSync(
+      join(metrics, 'sessions.jsonl'),
+      `${parts.sessions.map((record) => JSON.stringify(record)).join('\n')}\n`,
+    );
+  }
+  return root;
+}
+
+const ULTRADEEP_SESSION = {
+  session_id: 'main-2026-09-13-session-4',
+  session_type: 'deep',
+  session_profile: 'ultradeep',
+};
+
+describe('check-unwired-features — S5 effective-sizing subject parity (#1247/#1363)', () => {
+  it('reports a hand-concatenated subject that re-merges ultradeep onto the deep row, and stops once it is derived', () => {
+    // The bug: the analyzer is PROSE ("always derive via sizingSubject()"), so a
+    // run that writes `${session_type}-session-sizing` by hand puts a 7-wave
+    // ultradeep session on the same row as a 5-wave deep one — byte-identical to
+    // the pre-#1247 literal, and previously invisible to every gate.
+    const handKeyed = makeLedgerFixture({
+      sessions: [ULTRADEEP_SESSION],
+      learnings: [
+        {
+          id: 'lrn-1',
+          type: 'effective-sizing',
+          subject: 'deep-session-sizing',
+          source_session: ULTRADEEP_SESSION.session_id,
+        },
+      ],
+    });
+    const derived = makeLedgerFixture({
+      sessions: [ULTRADEEP_SESSION],
+      learnings: [
+        {
+          id: 'lrn-1',
+          type: 'effective-sizing',
+          subject: 'deep-ultradeep-session-sizing',
+          source_session: ULTRADEEP_SESSION.session_id,
+        },
+      ],
+    });
+    try {
+      const red = collectHandKeyedLearningSubjects(handKeyed);
+      expect(red.findings.map((f) => `${f.kind}:${f.key}`)).toEqual(['hand-keyed-learning-subject:lrn-1']);
+      expect(red.findings[0].message).toContain('deep-ultradeep-session-sizing');
+      expect(red.scanned.judged).toBe(1);
+
+      const green = collectHandKeyedLearningSubjects(derived);
+      expect(green.findings).toEqual([]);
+      expect(green.scanned.judged).toBe(1);
+    } finally {
+      rmSync(handKeyed, { recursive: true, force: true });
+      rmSync(derived, { recursive: true, force: true });
+    }
+  });
+
+  it('carries the S5 finding through inspectUnwiredFeatures into summary + findings (wiring pin)', () => {
+    // Fängt: die drei Verdrahtungszeilen in inspectUnwiredFeatures, die
+    // `summary.handKeyedSubjects` / `summary.judgedSubjects` setzen und die
+    // Findings pushen. Alle übrigen S5-Fälle rufen den Kollektor DIREKT — ohne
+    // diesen Test verschwindet S5 lautlos aus dem Zensus (gebaut, aber nicht
+    // eingeschaltet), obwohl der Kollektor weiter korrekt arbeitet.
+    const root = makeFixture({});
+    const metrics = join(root, '.orchestrator', 'metrics');
+    mkdirSync(metrics, { recursive: true });
+    writeFileSync(join(metrics, 'sessions.jsonl'), `${JSON.stringify(ULTRADEEP_SESSION)}\n`);
+    writeFileSync(
+      join(metrics, 'learnings.jsonl'),
+      `${JSON.stringify({
+        id: 'lrn-wired',
+        type: 'effective-sizing',
+        subject: 'deep-session-sizing',
+        source_session: ULTRADEEP_SESSION.session_id,
+      })}\n`,
+    );
+    try {
+      const result = inspectUnwiredFeatures(root);
+      expect(result.summary.handKeyedSubjects).toBe(1);
+      expect(result.summary.judgedSubjects).toBe(1);
+      expect(result.findings.map((f) => `${f.kind}:${f.key}`)).toContain(
+        'hand-keyed-learning-subject:lrn-wired',
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('judges only canonically-shaped subjects, so a free-form one is not a finding', () => {
+    // Scope guard: measured 2026-09-13, 5 of this repo's 6 live effective-sizing
+    // learnings carry free-form sentence subjects. Judging those would put the
+    // class at 83% on day one (HR-101) — and a sentence cannot collide two
+    // profiles onto one row, which is the only defect S5 exists for.
+    const root = makeLedgerFixture({
+      sessions: [ULTRADEEP_SESSION],
+      learnings: [
+        {
+          id: 'lrn-free',
+          type: 'effective-sizing',
+          subject: 'deep known-scope: 4 Wellen / 16 Agenten',
+          source_session: ULTRADEEP_SESSION.session_id,
+        },
+      ],
+    });
+    try {
+      const result = collectHandKeyedLearningSubjects(root);
+      expect(result.findings).toEqual([]);
+      expect(result.scanned.judged).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves a learning that names the semantic session id, not the raw uuid', () => {
+    // Fängt: eine Indizierung nur über `session_id`. Ein Learning trägt in
+    // `source_session` die Form, die der Schreiber hatte — auf Claude Code ist
+    // das die semantische Id, während der Session-Record zusätzlich eine UUID
+    // führt. Ohne den zweiten Index landet so ein Learning in `unattributed`
+    // und wird nie beurteilt: S5 schweigt still statt zu melden.
+    const root = makeLedgerFixture({
+      sessions: [
+        {
+          session_id: '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0',
+          semantic_session_id: 'main-2026-09-13-session-42',
+          session_type: 'deep',
+          session_profile: 'ultradeep',
+        },
+      ],
+      learnings: [
+        {
+          id: 'lrn-semantic',
+          type: 'effective-sizing',
+          subject: 'deep-session-sizing',
+          source_session: 'main-2026-09-13-session-42',
+        },
+      ],
+    });
+    try {
+      const result = collectHandKeyedLearningSubjects(root);
+      expect(result.scanned).toEqual({ judged: 1, unattributed: 0 });
+      expect(result.findings.map((f) => `${f.kind}:${f.key}`)).toEqual([
+        'hand-keyed-learning-subject:lrn-semantic',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('counts an unresolvable source_session instead of reporting it', () => {
+    // The ledger is append-only and host-local, so a learning routinely outlives
+    // the session record it names. Reporting that would be a finding about
+    // retention, and a false positive is what gets a WARN-only check ignored.
+    const root = makeLedgerFixture({
+      sessions: [{ session_id: 'someone-else', session_type: 'feature' }],
+      learnings: [
+        {
+          id: 'lrn-orphan',
+          type: 'effective-sizing',
+          subject: 'deep-session-sizing',
+          source_session: 'main-2026-01-01-session-1',
+        },
+      ],
+    });
+    try {
+      const result = collectHandKeyedLearningSubjects(root);
+      expect(result.findings).toEqual([]);
+      expect(result.scanned).toEqual({ judged: 0, unattributed: 1 });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('is a silent no-op when the gitignored ledgers are absent, and survives a truncated line', () => {
+    // Both files are gitignored (`.gitignore:55`), so CI and every fresh clone
+    // run without them: an absent ledger must not become a tool error, and one
+    // interrupted append must not blind the rest of the census.
+    const empty = mkdtempSync(join(tmpdir(), 'sizing-subject-none-'));
+    const truncated = makeLedgerFixture({ sessions: [ULTRADEEP_SESSION] });
+    writeFileSync(
+      join(truncated, '.orchestrator', 'metrics', 'learnings.jsonl'),
+      `{"id":"lrn-1","type":"effective-sizing","subject":"deep-session-sizing","source_sess\n`,
+    );
+    try {
+      expect(collectHandKeyedLearningSubjects(empty)).toEqual({
+        findings: [],
+        scanned: { judged: 0, unattributed: 0 },
+      });
+      expect(collectHandKeyedLearningSubjects(truncated).findings).toEqual([]);
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+      rmSync(truncated, { recursive: true, force: true });
+    }
+  });
+
+  it('reaches the helper mechanically — sizing-subject.mjs is no longer prose-wired only', () => {
+    // #1363: before this check imported it, `scripts/lib/learnings/sizing-subject.mjs`
+    // had ZERO import sites and sat in the S4 advisory census on the strength of
+    // one SKILL sentence. The import below is the wiring; this asserts it is
+    // visible to the very graph that reported the module.
+    // check-untracked-test-deps:ignore — same accommodation as above; this
+    // collector reads no ledger at all, only the module graph.
+    const census = collectUnreachableLibraryModules(REPO_ROOT); // check-untracked-test-deps:ignore
+    expect(census.findings.map((f) => f.key)).not.toContain(
+      join('scripts', 'lib', 'learnings', 'sizing-subject.mjs'),
+    );
+  }, 30_000);
 });

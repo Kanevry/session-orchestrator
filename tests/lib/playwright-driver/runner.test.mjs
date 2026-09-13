@@ -70,14 +70,21 @@ function makeProc({ exitCode = 0, signal = null, errorMsg = null } = {}) {
 // Fake fs factory
 // ---------------------------------------------------------------------------
 
-function makeFakeFs({ pkgJsonContent = null, existsResults = {} } = {}) {
+// `playwrightInstalled` defaults to TRUE so every pre-existing test keeps
+// exercising the "target repo HAS @playwright/test" path — the #1359 preflight
+// probes `<dir>/node_modules/@playwright/test/package.json` walking upward.
+function makeFakeFs({ pkgJsonContent = null, existsResults = {}, playwrightInstalled = true } = {}) {
   const mkdirCalls = [];
   const writtenFiles = {};
+  const isPlaywrightManifest = (p) =>
+    p.includes(`node_modules${path.sep}@playwright${path.sep}test${path.sep}`) ||
+    p.includes(`node_modules${path.sep}playwright${path.sep}`);
   return {
     mkdirSync: (dir, opts) => { mkdirCalls.push({ dir, opts }); },
     createWriteStream: () => makeFakeWritable(),
     existsSync: (p) => {
       if (p in existsResults) return existsResults[p];
+      if (isPlaywrightManifest(p)) return playwrightInstalled;
       if (pkgJsonContent !== null && p.endsWith('package.json')) return true;
       return false;
     },
@@ -551,5 +558,99 @@ describe('runner pre-creates ax-snapshots/ and screenshots/ directories', () => 
       (c) => c.dir.endsWith('screenshots') && c.opts && c.opts.recursive === true,
     );
     expect(screenshotCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: #1359 Playwright local-install preflight
+//
+// Bug caught: `npx playwright test` resolves against the TARGET repo. When the
+// target has no local @playwright/test, npx falls back to downloading the
+// package from the registry mid-run (measured: `npx --no-install playwright
+// --version` in an empty dir → "npx canceled due to missing packages").
+// Without the preflight the runner starts that download silently; with it, the
+// run aborts up front with exit 2 and an actionable message.
+// ---------------------------------------------------------------------------
+
+describe('runner #1359 Playwright local-install preflight', () => {
+  it('exits 2 before spawn when the target repo cannot resolve Playwright locally', async () => {
+    setScenario({ target: '/tmp/fake-target' });
+
+    const spy = throwingExitSpy();
+    const spawnFn = vi.fn();
+    const fakeFs = makeFakeFs({ playwrightInstalled: false });
+    await expect(run({ fs: fakeFs, spawn: spawnFn })).rejects.toThrow('exit:2');
+    expect(spy).toHaveBeenCalledWith(2);
+    // The whole point: no subprocess, hence no registry download.
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('names @playwright/test and the target path on stderr when the preflight aborts', async () => {
+    setScenario({ target: '/tmp/fake-target' });
+
+    throwingExitSpy();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const fakeFs = makeFakeFs({ playwrightInstalled: false });
+    await expect(run({ fs: fakeFs, spawn: vi.fn() })).rejects.toThrow('exit:2');
+    const errOutput = errSpy.mock.calls.flat().join(' ');
+    expect(errOutput).toContain('@playwright/test');
+    expect(errOutput).toContain('/tmp/fake-target');
+  });
+
+  it('spawns normally when the target repo resolves Playwright locally', async () => {
+    setScenario({ target: '/tmp/fake-target' });
+    const exitCodePromise = resolvingExitSpy();
+    const spawnFn = vi.fn(() => makeProc({ exitCode: 0 }));
+    const fakeFs = makeFakeFs({ playwrightInstalled: true });
+    await run({ fs: fakeFs, spawn: spawnFn });
+    expect(await exitCodePromise).toBe(0);
+    expect(spawnFn).toHaveBeenCalledOnce();
+  });
+
+  it('accepts a target that has only the bare `playwright` package, not @playwright/test', async () => {
+    // Fängt: einen Wegfall des zweiten Paketkandidaten in PLAYWRIGHT_PACKAGES.
+    // `playwright` allein liefert den `playwright test`-Runner ebenfalls; ein
+    // Zielrepo mit nur diesem Paket würde dann fälschlich mit exit 2 abgebrochen,
+    // obwohl der Lauf lokal auflösbar ist (kein Registry-Download, den der
+    // Preflight verhindern soll).
+    setScenario({ target: '/tmp/fake-target' });
+    const exitCodePromise = resolvingExitSpy();
+    const spawnFn = vi.fn(() => makeProc({ exitCode: 0 }));
+    const fakeFs = makeFakeFs({
+      playwrightInstalled: false,
+      existsResults: {
+        [path.join('/tmp/fake-target', 'node_modules', 'playwright', 'package.json')]: true,
+      },
+    });
+    await run({ fs: fakeFs, spawn: spawnFn });
+    expect(await exitCodePromise).toBe(0);
+    expect(spawnFn).toHaveBeenCalledOnce();
+  });
+
+  it('accepts a hoisted install in a parent directory (monorepo node_modules)', async () => {
+    setScenario({ target: '/tmp/fake-monorepo/packages/app' });
+    const exitCodePromise = resolvingExitSpy();
+    const spawnFn = vi.fn(() => makeProc({ exitCode: 0 }));
+    // Only the ROOT node_modules carries the manifest; the package dir does not.
+    const fakeFs = makeFakeFs({
+      playwrightInstalled: false,
+      existsResults: {
+        [path.join('/tmp/fake-monorepo', 'node_modules', '@playwright', 'test', 'package.json')]: true,
+      },
+    });
+    await run({ fs: fakeFs, spawn: spawnFn });
+    expect(await exitCodePromise).toBe(0);
+    expect(spawnFn).toHaveBeenCalledOnce();
+  });
+
+  it('does not block --dry-run when the target repo has no local Playwright', async () => {
+    setScenario({ target: '/tmp/fake-target', dryRun: true });
+
+    const spy = throwingExitSpy();
+    const spawnFn = vi.fn();
+    const fakeFs = makeFakeFs({ playwrightInstalled: false });
+    await expect(run({ fs: fakeFs, spawn: spawnFn })).rejects.toThrow('exit:0');
+    expect(spy).toHaveBeenCalledWith(0);
+    expect(spawnFn).not.toHaveBeenCalled();
   });
 });

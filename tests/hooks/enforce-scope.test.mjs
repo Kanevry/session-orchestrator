@@ -494,6 +494,91 @@ describe('coordinator carveout — #245', { timeout: 15000 }, () => {
     expectDeny(result, { reasonContains: '.claude/notes.md' });
   });
 
+  // -------------------------------------------------------------------------
+  // Caller discrimination (#1361) — the carveout is the COORDINATOR's, never a
+  // dispatched wave agent's. Same `classifyCaller()` discriminator Gate 5c uses
+  // since #1352, applied to the two in-repo harness control surfaces.
+  // -------------------------------------------------------------------------
+
+  it('DENIES a subagent write to .claude/STATE.md (#1361)', async () => {
+    // Bug caught: a dispatched wave agent writing the coordinator-owned STATE.md
+    // (`skills/_shared/state-ownership.md`) under a manifest that never granted
+    // it — the pre-#1361 carveout could not tell a subagent from the coordinator
+    // and allowed BOTH. The CONTROL in the same run is the discrimination proof:
+    // the identical payload without `agent_id` is allowed.
+    const dir = await mkProjectTracked({
+      wave: 3,
+      role: 'Impl',
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const statePath = path.join(dir, '.claude', 'STATE.md');
+    await fs.writeFile(statePath, '---\nstatus: active\n---\n');
+
+    const control = await runHook({ projectDir: dir, stdin: editPayload(statePath) });
+    expectAllow(control);
+
+    const experiment = await runHook({
+      projectDir: dir,
+      stdin: editPayload(statePath, 'Edit', { agent_id: 'a123' }),
+    });
+    expectDeny(experiment, { reasonContains: '.claude/STATE.md' });
+  });
+
+  it('DENIES a subagent write to the live wave-scope.json (#1361)', async () => {
+    // Bug caught — the sharper half: the manifest IS what every later gate of
+    // this wave reads, so a subagent allowed to write it can grant itself any
+    // path and disarm the guard for the rest of the wave. Self-referential by
+    // construction, which is why it needs its own case rather than riding on the
+    // STATE.md one.
+    const dir = await mkProjectTracked({
+      wave: 3,
+      role: 'Impl',
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const scopePath = path.join(dir, '.claude', 'wave-scope.json');
+
+    const control = await runHook({ projectDir: dir, stdin: editPayload(scopePath, 'Write') });
+    expectAllow(control);
+
+    const experiment = await runHook({
+      projectDir: dir,
+      stdin: editPayload(scopePath, 'Write', { agent_id: 'a123' }),
+    });
+    expectDeny(experiment, { reasonContains: '.claude/wave-scope.json' });
+  });
+
+  it("ALLOWS a coordinator write and tags the event discriminator (#1361)", async () => {
+    // Bug caught: a discriminator too strict (keying on ANY caller marker rather
+    // than specifically `agent_id`) would deny the coordinator's own /close
+    // STATE.md write — the exact fail-closed regression this fix must not cause.
+    // Also pins HR-105 countability: before #1361 the branch was a bare
+    // `emitAllow()` (`process.exit(0)`) with no event, so a census could never
+    // tell whether it had ever fired.
+    const dir = await mkProjectTracked({
+      wave: 5,
+      role: 'Coordinator',
+      enforcement: 'strict',
+      allowedPaths: ['src/'],
+    });
+    const statePath = path.join(dir, '.claude', 'STATE.md');
+    await fs.writeFile(statePath, '---\nstatus: active\n---\n');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(statePath, 'Edit', { agent_type: 'agent' }),
+    });
+    expectAllow(result);
+    const record = (await readEvents(dir)).find(
+      (e) => e.event === 'orchestrator.scope.coordinator_carveout_allowed',
+    );
+    expect(record).toMatchObject({
+      discriminator: 'coordinator',
+      file_path: '.claude/STATE.md',
+      wave: 5,
+    });
+  });
+
   it('does NOT carve out a file that merely contains STATE.md in its name', async () => {
     const dir = await mkProjectTracked({
       enforcement: 'strict',

@@ -71,6 +71,11 @@ function makeFakeFs({ pkgJsonContent = null, existsResults = {} } = {}) {
     createWriteStream: () => makeFakeWritable(),
     existsSync: (p) => {
       if (p in existsResults) return existsResults[p];
+      // #1359: the preflight probes `<dir>/node_modules/@playwright/test/package.json`
+      // upward before spawning. Answered TRUE so each test still reaches the
+      // boundary it names; without it the spawn test at the bottom of this file
+      // is masked green (exit-spy does not halt, so the spawn ran anyway).
+      if (p.includes(`node_modules${path.sep}@playwright${path.sep}test${path.sep}`)) return true;
       if (pkgJsonContent !== null && p.endsWith('package.json')) return true;
       return false;
     },

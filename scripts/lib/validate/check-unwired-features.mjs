@@ -166,6 +166,43 @@
  * both classes stay in `findings`, and either half collapsing to zero is itself
  * pinned by a test.
  *
+ * ## S5 `hand-keyed-learning-subject` — the prose-only DERIVATION
+ *
+ * S1-S4 all ask about a module or a key. S5 asks about a VALUE that prose tells
+ * an LLM to derive: `skills/evolve/references/evolve-analyze-mode.md` says the
+ * `effective-sizing` subject must come from `sizingSubject()` and that nobody may
+ * hand-concatenate it. Nothing enforced that. An analyzer run that writes
+ * `${session_type}-session-sizing` by hand — which is what it did before #1247,
+ * and which the helper's own profile-less branch still returns byte-identically —
+ * silently re-merges a 7-wave `ultradeep` session onto the 5-wave `deep` row, and
+ * no test, gate or checker notices.
+ *
+ * S5 therefore imports the helper (which is also what gives it a MECHANICAL
+ * consumer at all) and re-derives the subject of every written `effective-sizing`
+ * learning from the session record it names, reporting any mismatch. The
+ * comparison is the point: the check cannot drift from the helper, because it IS
+ * the helper.
+ *
+ * ### What it judges, and the measured reason it judges no more than that
+ *
+ * Only a subject already in the canonical `<...>-session-sizing` SHAPE is judged.
+ * Measured 2026-09-13 on this repo's live ledger (6 `effective-sizing` learnings):
+ * exactly ONE is canonically keyed (`deep-session-sizing`, and it is correct); the
+ * other five are free-form sentences (`deep session of 10 small follow-up
+ * issues`, `full-gate-workers-under-host-contention`, …). Judging those would put
+ * this class at 83% on day one — the broken instrument
+ * `.claude/rules/host-resources.md` § HR-101 forbids — and it would be judging
+ * prose STYLE, not a keying defect. A free-form subject cannot COLLIDE two
+ * profiles onto one row, which is the whole bug #1247 fixed.
+ *
+ * A learning whose `source_session` resolves to no session record is skipped and
+ * counted, never reported: the ledger is host-local and append-only, so an old
+ * learning routinely outlives the record it names, and reporting that would be a
+ * finding about ledger retention rather than about keying.
+ *
+ * Both ledger files are gitignored host-local telemetry. Absent → S5 is a silent
+ * no-op (CI sees no ledger), never a tool error.
+ *
  * ## Consumer scope, and why "prose-only" is a finding rather than an error
  *
  * Read sites are counted in `scripts/**` and `hooks/**` (`.mjs`/`.js`/`.cjs`),
@@ -229,6 +266,8 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+import { sizingSubject } from '../learnings/sizing-subject.mjs';
 
 /** Documented config surface — every `yaml` fence in this file is a declaration. */
 const TEMPLATE_REL = 'docs/session-config-template.md';
@@ -332,6 +371,17 @@ const WIRING_DIRS = Object.freeze([
 ]);
 
 /**
+ * Host-local telemetry the S5 subject-parity check reads. Both are gitignored
+ * (`.gitignore:55` `.orchestrator/metrics/*.jsonl`), so both are routinely
+ * ABSENT — that is a no-op, not an error. See the header, § S5.
+ */
+const LEARNINGS_REL = path.join('.orchestrator', 'metrics', 'learnings.jsonl');
+const SESSIONS_REL = path.join('.orchestrator', 'metrics', 'sessions.jsonl');
+
+/** The canonical `effective-sizing` subject shape `sizingSubject()` produces. */
+const SIZING_SUBJECT_RE = /-session-sizing$/;
+
+/**
  * The config-parser layer: the files a Session Config key must pass through to
  * become a runtime value. Signal S2 (see header) checks top-level keys against
  * this subset. Directories are walked; plain files are taken as-is.
@@ -372,7 +422,7 @@ const ALLOWLIST = Object.freeze({
  * @typedef {{
  *   kind: 'unwired-config-key' | 'parser-orphan-config-key' | 'allowlist-missing-reason'
  *       | 'allowlist-stale' | 'orphaned-prose-module' | 'unreachable-library-module'
- *       | 'coordinator-invoked-module'
+ *       | 'coordinator-invoked-module' | 'hand-keyed-learning-subject'
  *       | 'tool-error',
  *   key: string,
  *   message: string,
@@ -848,7 +898,18 @@ export function collectUnreachableLibraryModules(pluginRoot) {
       // `allowlist-stale` — the check silently blinding itself to exactly the
       // module an operator flagged. Measured 2026-08-28 on the first S4
       // allowlist entry: 52 → 51 unreachable modules plus one bogus stale line.
-      mentions: relative === SELF_REL ? new Set() : mentionedModuleTokens(lines),
+      mentions:
+        relative === SELF_REL
+          ? // This file blinds itself to its own ALLOWLIST literals (above) — but
+            // NOT to its own real imports. Dropping every edge here made a module
+            // this file genuinely `import`s (`learnings/sizing-subject.mjs`, the
+            // S5 check) still read as unreachable, which is the identical
+            // self-blinding the exclusion exists to prevent, in the other
+            // direction. Static import/export lines carry real edges; an
+            // ALLOWLIST key is never one, so scoping the scan to them keeps both
+            // properties.
+            mentionedModuleTokens(lines.filter((line) => /^\s*(?:import|export)\b/.test(line)))
+          : mentionedModuleTokens(lines),
       // Raw text, kept for the QUALIFIED (`dirname/base`) re-check in the
       // root filter below: `mentionedModuleTokens` strips the directory, so
       // a colliding basename can only be disambiguated against the body.
@@ -993,6 +1054,100 @@ export function collectUnreachableLibraryModules(pluginRoot) {
 }
 
 /**
+ * Read a JSONL ledger, skipping blank and unparseable lines.
+ *
+ * A single truncated line (an interrupted append) must not blind the whole
+ * check — the same fail-soft posture the rest of this file takes toward a
+ * missing surface.
+ *
+ * @param {string} file absolute path
+ * @returns {Record<string, unknown>[]}
+ */
+function readJsonl(file) {
+  if (!existsSync(file)) return [];
+  /** @type {Record<string, unknown>[]} */
+  const records = [];
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed === '') continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object') records.push(parsed);
+    } catch {
+      // truncated / partial append — skip the line, keep the census
+    }
+  }
+  return records;
+}
+
+/**
+ * Signal S5 — an `effective-sizing` learning whose subject was hand-written
+ * instead of derived from `sizingSubject()`.
+ *
+ * See the header § S5 for the defect, the deliberate narrowness of what is
+ * judged, and the measured reason a free-form subject is not a finding.
+ *
+ * @param {string} pluginRoot absolute plugin root
+ * @returns {{findings: Finding[], scanned: {judged: number, unattributed: number}}}
+ */
+export function collectHandKeyedLearningSubjects(pluginRoot) {
+  /** @type {Finding[]} */
+  const findings = [];
+  let judged = 0;
+  let unattributed = 0;
+
+  const learnings = readJsonl(path.join(pluginRoot, LEARNINGS_REL));
+  if (learnings.length === 0) return { findings, scanned: { judged, unattributed } };
+
+  // A session record can be addressed by either identity form (see
+  // `.claude/rules/identity-and-locks.md`: raw UUID + semantic id), and a
+  // learning's `source_session` carries whichever the writer had. Index both, so
+  // a resolvable record is never mis-counted as unattributed.
+  /** @type {Map<string, Record<string, unknown>>} */
+  const sessionsById = new Map();
+  for (const record of readJsonl(path.join(pluginRoot, SESSIONS_REL))) {
+    for (const field of ['session_id', 'semantic_session_id']) {
+      const id = record[field];
+      if (typeof id === 'string' && id !== '' && !sessionsById.has(id)) sessionsById.set(id, record);
+    }
+  }
+
+  for (const learning of learnings) {
+    if (learning.type !== 'effective-sizing') continue;
+    const subject = learning.subject;
+    if (typeof subject !== 'string' || !SIZING_SUBJECT_RE.test(subject)) continue;
+
+    const sourceSession = typeof learning.source_session === 'string' ? learning.source_session : '';
+    const record = sessionsById.get(sourceSession);
+    if (!record) {
+      unattributed += 1;
+      continue;
+    }
+
+    judged += 1;
+    const expected = sizingSubject({
+      session_type: record.session_type,
+      session_profile: record.session_profile,
+    });
+    if (subject === expected) continue;
+
+    findings.push({
+      kind: 'hand-keyed-learning-subject',
+      key: typeof learning.id === 'string' ? learning.id : subject,
+      message:
+        `effective-sizing learning keyed '${subject}', but sizingSubject() derives '${expected}' from ` +
+        `${sourceSession} (session_type=${String(record.session_type)}, session_profile=` +
+        `${record.session_profile === undefined ? 'absent' : String(record.session_profile)}) — the ` +
+        'subject was hand-concatenated instead of derived via ' +
+        'scripts/lib/learnings/sizing-subject.mjs, so two session shapes can silently share one row ' +
+        '(GitLab #1247); re-key the learning and derive via the helper',
+    });
+  }
+
+  return { findings, scanned: { judged, unattributed } };
+}
+
+/**
  * Run the full census.
  *
  * @param {string} pluginRoot absolute plugin root
@@ -1000,7 +1155,8 @@ export function collectUnreachableLibraryModules(pluginRoot) {
  *   ok: boolean,
  *   summary: {declaredKeys: number, consumerFiles: number, unwired: number, allowlisted: number,
  *             orphanedModules: number, unreachableModules: number,
- *             coordinatorInvokedModules: number},
+ *             coordinatorInvokedModules: number, handKeyedSubjects: number,
+ *             judgedSubjects: number},
  *   sourcesScanned: string[],
  *   findings: Finding[],
  *   toolError: boolean,
@@ -1019,6 +1175,8 @@ export function inspectUnwiredFeatures(pluginRoot) {
       orphanedModules: 0,
       unreachableModules: 0,
       coordinatorInvokedModules: 0,
+      handKeyedSubjects: 0,
+      judgedSubjects: 0,
     },
     /** @type {string[]} */
     sourcesScanned: [],
@@ -1036,6 +1194,8 @@ export function inspectUnwiredFeatures(pluginRoot) {
   let orphans;
   /** @type {ReturnType<typeof collectUnreachableLibraryModules>} */
   let unreachable;
+  /** @type {ReturnType<typeof collectHandKeyedLearningSubjects>} */
+  let handKeyed;
   try {
     declared = collectDeclaredKeys(pluginRoot);
     corpus = CONSUMER_DIRS.flatMap((dir) => walkCode(path.join(pluginRoot, dir)))
@@ -1054,6 +1214,7 @@ export function inspectUnwiredFeatures(pluginRoot) {
       .join('\n');
     orphans = collectOrphanedProseModules(pluginRoot);
     unreachable = collectUnreachableLibraryModules(pluginRoot);
+    handKeyed = collectHandKeyedLearningSubjects(pluginRoot);
   } catch (error) {
     result.toolError = true;
     findings.push({
@@ -1134,6 +1295,13 @@ export function inspectUnwiredFeatures(pluginRoot) {
     findings.push(finding);
   }
 
+  // S5 — a written learning subject that prose said must come from the helper,
+  // and did not. Not allowlistable: the fix is to re-key the record, and an
+  // exemption would preserve exactly the collision #1247 removed.
+  result.summary.handKeyedSubjects = handKeyed.findings.length;
+  result.summary.judgedSubjects = handKeyed.scanned.judged;
+  findings.push(...handKeyed.findings);
+
   for (const key of Object.keys(ALLOWLIST).sort()) {
     if (flagged.has(key)) continue;
     findings.push({
@@ -1177,6 +1345,8 @@ export function runCheckUnwiredFeatures(pluginRoot, { list = false } = {}) {
     orphanedModules,
     unreachableModules,
     coordinatorInvokedModules,
+    handKeyedSubjects,
+    judgedSubjects,
   } = inspection.summary;
 
   // S4 is a BACKLOG, not a per-run alarm: 50 findings on the live tree against
@@ -1215,7 +1385,8 @@ export function runCheckUnwiredFeatures(pluginRoot, { list = false } = {}) {
     `  PASS: censused ${declaredKeys} declared key(s) from ${inspection.sourcesScanned.join(' + ') || '(no source)'} ` +
       `against ${consumerFiles} consumer file(s) — ${unwired} unwired, ${allowlisted} allowlisted, ` +
       `${orphanedModules} prose-orphaned module(s), ${unreachableModules} unreachable module(s), ` +
-      `${coordinatorInvokedModules} coordinator-invoked module(s)`,
+      `${coordinatorInvokedModules} coordinator-invoked module(s), ${handKeyedSubjects} hand-keyed ` +
+      `learning subject(s) of ${judgedSubjects} judged`,
   );
   console.log('');
   console.log('Results: 1 passed, 0 failed');

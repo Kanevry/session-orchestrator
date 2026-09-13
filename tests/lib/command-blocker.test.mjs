@@ -488,6 +488,157 @@ describe('redirectRuleMatches (#983 — denylist polarity)', () => {
   });
 });
 
+describe('redirectRuleMatches — home-anchored denylist entries (#1362)', () => {
+  // WHY this class exists: the artefacts worth denying are not all inside the
+  // repo. The harness auto-memory directory is auto-injected as trusted project
+  // context into every later session yet lives outside `git diff`, CI review and
+  // the secret scanners — and `relativizeAgainstRoot` discards every out-of-repo
+  // target by design, so no repo-relative glob spelling could ever reach it
+  // (measured 2026-09-13: three spellings, zero matches).
+  const HOME = '/home/op';
+  const ROOT = '/repo';
+  const MEM = `${HOME}/.claude/projects/-repo/memory/MEMORY.md`;
+  const rule = (deny, modes = ['truncate', 'append']) => ({
+    id: 'probe',
+    type: 'redirect-truncate',
+    severity: 'block',
+    modes,
+    'target-denylist': deny,
+  });
+  const HOME_GLOB = '~/.claude/projects/*/memory/**';
+
+  it.each([
+    // The bug: an agent appends trusted context outside every review surface.
+    ['append to an absolute memory path', `printf x >> ${MEM}`, [HOME_GLOB], true],
+    ['append via the ~ spelling', 'printf x >> ~/.claude/projects/-repo/memory/MEMORY.md', [HOME_GLOB], true],
+    ['truncate the same path', `printf x > ${MEM}`, [HOME_GLOB], true],
+    // Adjacent-prefix sibling must NOT be swept in — `memory-evil/` is a
+    // different directory, and `*/memory/**` must not degrade to a prefix test.
+    ['adjacent-prefix sibling directory', `printf x >> ${HOME}/.claude/projects/-repo/memory-evil/X.md`, [HOME_GLOB], false],
+    // An unrelated file under the same home is not the protected artefact.
+    ['unrelated file under home', `printf x >> ${HOME}/notes.txt`, [HOME_GLOB], false],
+    // NO WIDENING: a repo-relative entry still cannot reach an absolute
+    // out-of-repo path — the property the split exists to preserve.
+    ['repo-relative entry vs out-of-repo target', `printf x > ${HOME}/CLAUDE.md`, ['CLAUDE.md'], false],
+    ['repo-relative entry vs in-repo target', 'printf x > CLAUDE.md', ['CLAUDE.md'], true],
+  ])('%s', (_label, command, deny, expected) => {
+    expect(redirectRuleMatches(rule(deny), command, { repoRoot: ROOT, home: HOME })).toBe(expected);
+  });
+
+  it('honours modes: a truncate-only rule does not block an append', () => {
+    // Without this, adding the append mode to one rule would silently arm every
+    // other home-anchored rule for appends too.
+    expect(
+      redirectRuleMatches(rule([HOME_GLOB], ['truncate']), `printf x >> ${MEM}`, {
+        repoRoot: ROOT,
+        home: HOME,
+      }),
+    ).toBe(false);
+  });
+
+  it.each([
+    ['empty home', ''],
+    ['non-absolute home', 'notabs'],
+  ])('fails closed on %s — an unexpandable ~ names no file', (_label, home) => {
+    // The alternative (treating `~` literally) would compare against a path that
+    // exists nowhere and read as "checked", which is worse than not matching.
+    expect(
+      redirectRuleMatches(rule([HOME_GLOB]), `printf x >> ${MEM}`, { repoRoot: ROOT, home }),
+    ).toBe(false);
+  });
+
+  describe('relative targets resolve against repoRoot (#1362 HIGH-1)', () => {
+    // THE BUG THIS CATCHES: the home-anchored class tested `path.isAbsolute()`
+    // on the raw target and skipped every RELATIVE one — so from the repo root
+    // `> ../.claude/projects/<enc>/memory/MEMORY.md` named the exact same file
+    // the `~` spelling blocked, and only the spelling was denied. Measured
+    // before the fix: relative `>` ALLOW / relative `>>` ALLOW vs tilde BLOCK /
+    // absolute BLOCK on one and the same resolved path. No `~`, no `$HOME`, no
+    // `cd` needed — the rule closed the spelling, not the shell lane.
+    // The repo sits one level under the home, so `..` from the root IS the home
+    // directory — the exploit needs neither `~` nor `$HOME` nor a `cd`.
+    const NESTED_ROOT = `${HOME}/repo`;
+    const REL = '../.claude/projects/-repo/memory/MEMORY.md';
+
+    it.each([
+      ['truncate via a climbing relative target', `echo pwned > ${REL}`],
+      ['append via a climbing relative target', `echo pwned >> ${REL}`],
+    ])('%s is blocked', (_label, command) => {
+      expect(redirectRuleMatches(rule([HOME_GLOB]), command, { repoRoot: NESTED_ROOT, home: HOME })).toBe(
+        true,
+      );
+    });
+
+    it('does NOT widen a repo-relative entry to an out-of-repo target', () => {
+      // The property that makes touching this module acceptable: resolving
+      // relative TARGETS must not let a repo-relative ENTRY reach outside the
+      // root. `CLAUDE.md` still matches only inside the repo.
+      const opts = { repoRoot: NESTED_ROOT, home: HOME };
+      expect(redirectRuleMatches(rule(['CLAUDE.md']), `echo x > ${HOME}/CLAUDE.md`, opts)).toBe(
+        false,
+      );
+      expect(redirectRuleMatches(rule(['CLAUDE.md']), 'echo x > ../CLAUDE.md', opts)).toBe(false);
+      expect(redirectRuleMatches(rule(['CLAUDE.md']), 'echo x > CLAUDE.md', opts)).toBe(true);
+    });
+
+    // A NON-climbing relative target: both fail-closed tests below MATCH if the
+    // missing input is silently substituted, which is what makes them bite. A
+    // `../`-climbing target would land somewhere harmless under either
+    // substitution and pass vacuously.
+    const IN_REPO_REL = '.claude/projects/-repo/memory/MEMORY.md';
+
+    it('stays fail-closed on a relative target without a usable repoRoot', () => {
+      // Catches the substitution `path.resolve(repoRoot || process.cwd(), ...)`:
+      // the hook's cwd is not the root it was told about, so resolving against
+      // it would make the verdict depend on where the shell happened to stand.
+      // Here `home` IS the cwd, so that substitution would match.
+      expect(
+        redirectRuleMatches(rule([HOME_GLOB]), `echo pwned > ${IN_REPO_REL}`, {
+          repoRoot: null,
+          home: process.cwd(),
+        }),
+      ).toBe(false);
+    });
+
+    it('stays fail-closed on a relative target without a usable home', () => {
+      // Catches the tempting follow-up `expandLeadingHome(entry, home || repoRoot)`
+      // — now that repoRoot is in scope for this class, substituting it for a
+      // missing home would anchor `~/.claude/...` INSIDE the repo and block a
+      // perfectly ordinary in-repo path.
+      for (const home of ['', 'notabs', undefined]) {
+        expect(
+          redirectRuleMatches(rule([HOME_GLOB]), `echo pwned > ${IN_REPO_REL}`, {
+            repoRoot: NESTED_ROOT,
+            home,
+          }),
+        ).toBe(false);
+      }
+    });
+
+    it('does not sweep in a relative target that resolves elsewhere', () => {
+      // A climbing target that lands outside the denied directory must stay
+      // allowed — otherwise the resolution would degrade to a prefix test.
+      expect(
+        redirectRuleMatches(rule([HOME_GLOB]), 'echo x > ../.claude/projects/-repo/notes.md', {
+          repoRoot: NESTED_ROOT,
+          home: HOME,
+        }),
+      ).toBe(false);
+    });
+  });
+
+  it('leaves non-redirect write routes untouched — the named ceiling (BV-004)', () => {
+    // NOT a gap in this rule: `redirect-truncate` is redirect-shaped by
+    // construction, so `tee -a` and an in-process write are out of its reach.
+    // Pinned so the ceiling is a measured property rather than an assumption —
+    // revisit if the policy ever grows a non-redirect target class.
+    const viaTee = `printf x | tee -a ${MEM}`;
+    const viaNode = `node -e "require('fs').appendFileSync('${MEM}','x')"`;
+    expect(redirectRuleMatches(rule([HOME_GLOB]), viaTee, { repoRoot: ROOT, home: HOME })).toBe(false);
+    expect(redirectRuleMatches(rule([HOME_GLOB]), viaNode, { repoRoot: ROOT, home: HOME })).toBe(false);
+  });
+});
+
 describe('commandMatchesBlocked — here-doc re-opened the #965 bypass (#970 HIGH-1)', () => {
   // Every row below was MEASURED as deny at 730ee9d and allow after #965: a
   // `<<` that is not a redirect (arithmetic shift, `let`) or a here-doc whose

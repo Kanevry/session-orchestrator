@@ -33,4 +33,16 @@ describe('sizingSubject (#1247)', () => {
   it('treats an absent session_profile key the same as null (feature sessions unaffected)', () => {
     expect(sizingSubject({ session_type: 'feature' })).toBe('feature-session-sizing');
   });
+
+  it('keys a record with no usable session_type on `unknown`, never on a bare suffix', () => {
+    // The collision this pins is the #1247 bug in its second form: if the
+    // missing-type fallback were '' (or dropped), every type-less record would
+    // key on '-session-sizing' and merge onto ONE row — the same silent
+    // averaging, arriving from the other side. `.orchestrator/metrics/sessions.jsonl`
+    // really does carry `session_type: "unknown"` records, and since #1363
+    // `check-unwired-features.mjs` re-derives written subjects from exactly this
+    // function, so a bare-suffix subject would also read as correct there.
+    expect(sizingSubject({ session_type: '   ' })).toBe('unknown-session-sizing');
+    expect(sizingSubject({})).toBe('unknown-session-sizing');
+  });
 });

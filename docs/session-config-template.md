@@ -690,13 +690,18 @@ special: "follow .claude/rules/parallel-sessions.md"
 
 # VCS & infrastructure
 vcs: gitlab
+gitlab-host: gitlab.example.com        # only if remote URL doesn't expose it
 mirror: github
 cross-repos: []
+pencil: path/to/design.pen             # design-code alignment input
 ecosystem-health: true
 health-endpoints: []
 issue-limit: 50
 stale-branch-days: 7
 stale-issue-days: 30
+
+# Auto-skill dispatch
+auto-skill-dispatch: false             # opt-in; phrase-match meta-skill — see skills/using-orchestrator/SKILL.md
 
 # Quality
 ssot-files: [STATE.md]
@@ -710,6 +715,12 @@ discovery-exclude-paths: ["vendor/**", "dist/**", "node_modules/**"]
 discovery-severity-threshold: low
 discovery-confidence-threshold: 60
 discovery-parallelism: 5
+
+# Issue budget — QUANTITY cap on issue creation (not a quality filter)
+issue-budget:
+  max-per-session: 12                  # non-exempt issues one session may create (0 = block all)
+  mode: strict                         # strict | warn | off
+  overflow: collect-issue              # collect-issue | vault-note
 
 # Persistence & safety
 memory-cleanup-threshold: 5
@@ -730,6 +741,10 @@ grounding-injection-max-files: 3
 isolation: auto
 max-turns: auto
 auto-commit-per-wave: false            # opt-in: commit after each wave's Quality-Lite PASS (V3.6 plumbing)
+
+# Heavy-repo preflight & worktree hygiene (HR-003)
+heavy-repo: false                      # true clamps the dispatched agent count to agents-per-wave
+worktree-cleanup: default              # default | aggressive
 
 # Env-aware
 resource-awareness: true
@@ -814,6 +829,29 @@ slopcheck:
 templates-first:
   enabled: true
   hosts: [github, gitlab]
+
+# Wave reviewers — opt-in inter-wave architecture/QA/PRD audit dispatch (#461 / #478)
+wave-reviewers:
+  enabled: false                       # opt-in; absent, false, or an empty reviewers array = no-op
+  reviewers: []                        # ["architect-reviewer", "qa-strategist", "analyst"]
+  mode: warn                           # warn | strict | off
+
+# Persona gate — opt-in persona-panel fan-out after a wave (#458)
+persona-gate-wave:
+  enabled: false                       # opt-in
+  after: quality                       # quality | impl-polish
+  threshold: all                       # all | any | <m>-of-<n>
+  personas: []                         # persona slugs the panel dispatches
+  dispatch-model: claude-opus-4-7
+  mode: off                            # off | warn | strict — enabled: true with mode: off never fires
+
+# Agentic test orchestrator (/test) — run profiles and artifact retention
+test:
+  enabled: false                       # opt-in
+  default-profile: smoke               # profile name looked up in profiles-path
+  profiles-path: .orchestrator/policy/test-profiles.json
+  mode: warn                           # warn | strict | off
+  retention-days: 30                   # days test-run artifacts are kept (0 = no cleanup)
 
 # Verification auto-fix loop (PRD gsd Pattern 4 / #521)
 verification-auto-fix:

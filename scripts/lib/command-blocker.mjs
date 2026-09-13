@@ -1663,16 +1663,88 @@ export function redirectRuleMatches(rule, command, opts = {}) {
   const denylist = Array.isArray(rule['target-denylist']) ? rule['target-denylist'] : [];
   if (denylist.length === 0) return false;
   const modes = new Set(Array.isArray(rule.modes) && rule.modes.length > 0 ? rule.modes : ['truncate']);
-  const regexes = denylist.map(redirectGlobToRegExp);
+
+  // #1362 — TWO denylist classes, deliberately kept apart:
+  //
+  //   REPO-RELATIVE (every pre-#1362 entry): judged against
+  //   `repoRelativeRedirectTarget`, which returns `null` for anything outside
+  //   the root. Behaviour is byte-identical to before, and that null is what
+  //   keeps a relative entry from ever reaching an out-of-repo path.
+  //
+  //   HOME-ANCHORED (`~/…`, new): judged against the EXPANDED ABSOLUTE target,
+  //   never relativized. Needed because the artefacts worth denying are not all
+  //   inside the repo — the harness auto-memory directory
+  //   (`~/.claude/projects/<encodeProjectDir(root)>/memory/`) is auto-injected
+  //   as trusted project context into every later session yet lives outside
+  //   `git diff`, CI review and the secret scanners. Measured 2026-09-13: with
+  //   only the repo-relative class, NO glob spelling could match it, because
+  //   `relativizeAgainstRoot` discards out-of-repo targets by design.
+  //
+  // The split is one-directional on purpose: a home-anchored entry cannot widen
+  // an existing repo-relative rule, and a repo-relative entry still cannot
+  // escape the root. An unexpandable `~` (no usable `home`) matches NOTHING —
+  // fail-closed for the new class, since an unexpanded `~` names no file.
+  const relRegexes = [];
+  const absRegexes = [];
+  for (const pattern of denylist) {
+    const text = String(pattern);
+    if (text === '~' || text.startsWith('~/')) {
+      const expanded = expandLeadingHome(text, home);
+      if (expanded === text) continue; // no usable home → no match, never a guess
+      absRegexes.push(redirectGlobToRegExp(foldAbsoluteTarget(expanded)));
+    } else {
+      relRegexes.push(redirectGlobToRegExp(text));
+    }
+  }
+  if (relRegexes.length === 0 && absRegexes.length === 0) return false;
 
   for (const entry of extractRedirectTargets(command)) {
     if (entry.unresolved) continue;
     if (!modes.has(entry.mode)) continue;
-    const target = repoRelativeRedirectTarget(entry.target, repoRoot, home);
-    if (target === null) continue;
-    if (regexes.some((re) => re.test(target))) return true;
+
+    if (absRegexes.length > 0) {
+      // A RELATIVE target is repo-root-relative here, exactly as the repo-relative
+      // class already treats it (#994 R1) — otherwise `> ../../.claude/projects/
+      // <enc>/memory/MEMORY.md` from the repo root names the very file the `~`
+      // spelling blocks, and only the spelling would be denied (measured
+      // 2026-09-13: relative `>`/`>>` ALLOW vs tilde/absolute BLOCK on one and
+      // the same resolved path). This resolves TARGETS, never ENTRIES: a
+      // repo-relative denylist entry keeps going through
+      // `repoRelativeRedirectTarget` below and still cannot reach out of the root.
+      const expandedTarget = expandLeadingHome(entry.target, home);
+      const absTarget = path.isAbsolute(expandedTarget)
+        ? expandedTarget
+        : repoRoot && path.isAbsolute(repoRoot)
+          ? path.resolve(repoRoot, expandedTarget)
+          : null;
+      if (absTarget !== null) {
+        const folded = foldAbsoluteTarget(absTarget);
+        if (absRegexes.some((re) => re.test(folded))) return true;
+      }
+    }
+
+    if (relRegexes.length > 0) {
+      const target = repoRelativeRedirectTarget(entry.target, repoRoot, home);
+      if (target !== null && relRegexes.some((re) => re.test(target))) return true;
+    }
   }
   return false;
+}
+
+/**
+ * Normalize an ABSOLUTE path for home-anchored denylist comparison (#1362):
+ * same alias-collapse and case-fold `relativizeAgainstRoot` applies before its
+ * containment test, so the two classes agree on what `/private/tmp` and a
+ * case-insensitive volume mean. Applied to BOTH sides (pattern and target), so
+ * the folding can never make a pattern match more than its literal spelling.
+ *
+ * @param {string} abs
+ * @returns {string}
+ */
+function foldAbsoluteTarget(abs) {
+  return stripPathAliases(path.posix.normalize(String(abs).replace(/\\/g, '/'))).toLocaleLowerCase(
+    'en-US',
+  );
 }
 
 /**

@@ -69,7 +69,15 @@ function makeFakeFs({ existsResults = {} } = {}) {
   return {
     mkdirSync: (dir, opts) => { mkdirCalls.push({ dir, opts }); },
     createWriteStream: () => makeFakeWritable(),
-    existsSync: (p) => existsResults[p] ?? false,
+    // #1359: the preflight probes `<dir>/node_modules/@playwright/test/package.json`
+    // upward before spawning. This fake fs answers false for everything, so
+    // without this line every test here would exit 2 at the preflight and never
+    // reach the behaviour it names — 1 test red and 4 masked green (their
+    // exit-spy does not halt execution, so the spawn still ran).
+    existsSync: (p) =>
+      p.includes(`node_modules${path.sep}@playwright${path.sep}test${path.sep}`)
+        ? true
+        : (existsResults[p] ?? false),
     readFileSync: (p) => {
       throw Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' });
     },

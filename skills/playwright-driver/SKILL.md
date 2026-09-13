@@ -39,21 +39,18 @@ This driver wraps `playwright` (Apache-2.0, Microsoft). It does NOT use `@playwr
 | `@playwright/cli` | 0.1.13 | Unrelated, unstable — DO NOT USE |
 | `@playwright/mcp` | 0.0.75 | MCP adapter — R5 hard-gate blocks this |
 
-Verified via `npm view playwright version` → `1.60.0` (2026-05-14 probe). The binary the orchestrator dispatches is named `playwright` (not `playwright-cli`). Use `playwright@^1.60.0` for compatible-minor updates or pin to `playwright@1.60.0` for reproducibility.
+Verified via `npm view playwright version` → `1.60.0` (2026-05-14 probe). The binary the orchestrator dispatches is named `playwright` (not `playwright-cli`), and it is deliberately the TARGET repo's own `@playwright/test` dependency — the driver never relies on a globally installed binary, so `scripts/lib/playwright-driver/runner.mjs` aborts with exit 2 when the target cannot resolve Playwright locally rather than letting `npx` download it mid-run. Use `playwright@^1.60.0` for compatible-minor updates or pin to `playwright@1.60.0` for reproducibility.
 
 ## Install
 
-```bash
-npm i -g playwright@1.60.0
-playwright install chromium    # download browser binaries
-```
-
-For project-local install (preferred in CI):
+Install into the TARGET repo — that is the only install this driver uses, in CI and locally alike:
 
 ```bash
-npm install --save-dev playwright@1.60.0
-npx playwright install chromium
+npm install --save-dev @playwright/test@1.60.0
+npx playwright install chromium    # download browser binaries
 ```
+
+Both commands run in the target repo, so `npx` resolves the local binary. A global install is neither used nor sufficient: the driver's preflight requires `@playwright/test` (or `playwright`) under the target's own `node_modules`.
 
 ## Canonical Usage
 
@@ -183,7 +180,7 @@ bash -c "PLAYWRIGHT_HTML_OUTPUT_DIR=${RUN_DIR}/report \
 |---|---|---|
 | 0 | All tests passed | Record pass, continue |
 | 1 | At least one test failed | Failures become findings (non-fatal) |
-| 2 | Framework error (network, browser-install) | Surface as driver error, halt run |
+| 2 | Framework error (network, browser-install), or no local Playwright in the target repo (preflight) | Surface as driver error, halt run |
 
 ### Outputs the Orchestrator MUST Parse
 

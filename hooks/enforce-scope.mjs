@@ -529,7 +529,48 @@ async function main() {
   // Coordinator carveout (#245): exact-path allowlist for harness-owned files.
   // STATE.md and wave-scope.json are written by the coordinator between waves;
   // per-wave allowedPaths lists should not need to enumerate harness infrastructure.
-  if (isCoordinatorCarveout(normalizedRel, projectRoot, scopePath)) {
+  //
+  // CALLER DISCRIMINATION (#1361) — the carve-out is the COORDINATOR's, exactly
+  // as Gate 5c's is (#1352), and for a sharper reason: the two files it covers
+  // are the harness's own control surfaces. STATE.md is coordinator-owned by
+  // contract (`skills/_shared/state-ownership.md`), and `wave-scope.json` IS the
+  // manifest every later gate of this wave reads — a subagent permitted to write
+  // it can rewrite its own file scope and disarm the guard for the rest of the
+  // wave. A `'subagent'` therefore falls through to Gate 7, where a manifest that
+  // does not grant the path is a DENY.
+  //
+  // ALLOW-CENSUS (RCR-007, the precondition for forbidding what is allowed
+  // today): 1069 transcripts across 46 sessions of this repo carried 4385
+  // subagent writes; 0 targeted a carve-out path (2026-09-13 @ `5501f700`). The
+  // fix takes nothing away from any observed legitimate writer.
+  //
+  // FAIL-OPEN on ambiguity, same as Gate 5c and for the same reason: the other
+  // three classifications keep the ALLOW, because fail-closed would deny the
+  // coordinator's own `/close` STATE.md writes. The classification is emitted so
+  // that fail-open stays COUNTABLE (HR-105) — before #1361 this branch called
+  // `emitAllow()` (`process.exit(0)`, no log, no event), so whether it ever fired
+  // was unfalsifiable after the fact.
+  const carveoutCaller = classifyCaller(input);
+  if (carveoutCaller !== 'subagent' && isCoordinatorCarveout(normalizedRel, projectRoot, scopePath)) {
+    // One event per decision point, awaited before emitAllow() — emitAllow()
+    // calls process.exit(), which would discard a pending append.
+    try {
+      const { emitEvent } = await import('../scripts/lib/events.mjs');
+      await emitEvent(
+        'orchestrator.scope.coordinator_carveout_allowed',
+        {
+          hook: HOOK_NAME,
+          manifest: scopePath,
+          wave: scope.wave,
+          // Repo-RELATIVE by choice: the carve-out set is in-repo by
+          // construction, so the relative form carries the whole decision
+          // without putting a host-local absolute path into the ledger.
+          file_path: normalizedRel,
+          discriminator: carveoutCaller,
+        },
+        { repoRoot: projectRoot },
+      );
+    } catch { /* observability is best-effort — never blocks the decision */ }
     return emitAllow();
   }
 
