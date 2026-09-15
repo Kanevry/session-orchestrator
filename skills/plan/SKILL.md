@@ -92,6 +92,13 @@ This is the distinctive mechanic shared by all three modes. Every question wave 
 
 ### 3.1 Pre-Question Research
 
+Read [Research Evidence Contract](../_shared/research-evidence.md) before the
+first research wave. Apply it to findings that materially affect an option or
+recommendation; keep trivial local lookups concise. Carry the source revision or
+date, evidence basis, local equivalent, disposition, and any falsifiable next
+check into each research brief and the synthesis so documented claims and
+inferences remain distinct.
+
 Before each Q&A wave, dispatch 2-3 `Agent()` tool calls in a single message (parallel execution) with `subagent_type: "Explore"`:
 
 1. **Market/online context agent** — searches for relevant market data, best practices, competitor analysis, or technical patterns depending on the questions to be asked. Tools: WebSearch, WebFetch.
