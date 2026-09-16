@@ -14,8 +14,8 @@ Read `session-start-ref` from STATE.md frontmatter. If the field is missing (old
 ```bash
 SESSION_START_REF=$(node --input-type=module -e "
 import {readFileSync} from 'node:fs';
-import {parseFrontmatter} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
-const fm = parseFrontmatter(readFileSync('<state-dir>/STATE.md', 'utf8'));
+import {parseStateMd} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+const fm = parseStateMd(readFileSync('<state-dir>/STATE.md', 'utf8')).frontmatter;
 process.stdout.write(fm['session-start-ref'] ?? '');
 " 2>/dev/null)
 # Fallback when field absent

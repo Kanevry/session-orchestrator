@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `skills/session-end/plan-verification.md` § SESSION_START_REF accessor imported a `parseFrontmatter` that `scripts/lib/state-md.mjs` never exported (measured 2026-09-16 at `3fe9d50e`: `typeof m.parseFrontmatter` → `undefined`), so the documented snippet threw and every close silently fell back to `origin/main`. It now uses `parseStateMd(...).frontmatter`, the export that exists.
 - The issue-budget exemption bypass in `hooks/pre-bash-issue-budget.mjs` (security panel, MED): an exempt FIRST statement lifted the `xargs` and loop bulk deny for the whole command.
 - `findRecordedSession()` in `scripts/lib/session-close-backfill.mjs` compared `started_at` to the MILLISECOND (#1368), so `/close` re-ran session-end for a session already in the ledger. With no template writing `session-id:` (0 matches measured), the native-UUID path of the precheck could never fire — the millisecond compare was not an edge case, it was the only path.
 - `hooks/on-session-end.mjs` skipped the backfill whenever a live lock was present, including the session's own (#1376) — exactly one wrong caller, measured; unclosed sessions were left without a ledger record.
