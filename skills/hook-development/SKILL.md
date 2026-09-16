@@ -6,21 +6,23 @@ model: sonnet
 
 # Hook Development for Claude Code Plugins
 
-Adapted from [claude-plugins-official/plugin-dev/skills/hook-development](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/plugin-dev/skills/hook-development). Trimmed to what we actually author (our plugin already has 6 event matchers covering 7 hook handlers — see `hooks/hooks.json`).
+Use the [official Claude Code hooks reference](https://code.claude.com/docs/en/hooks) as the source of truth for current events and schemas. This skill keeps only the conventions needed to author this plugin's hooks.
 
-## Hook types
+## Hook types used in this plugin
+
+Claude Code also documents `http`, `mcp_tool`, and experimental `agent` handlers. Use those only after checking their current fields and event support in the official reference.
 
 ### Prompt-based (LLM-driven, for complex reasoning)
 
 ```json
 {
   "type": "prompt",
-  "prompt": "Evaluate if this tool use is appropriate: $TOOL_INPUT",
+  "prompt": "Evaluate whether this event should proceed: $ARGUMENTS",
   "timeout": 30
 }
 ```
 
-Supported events: `Stop`, `SubagentStop`, `UserPromptSubmit`, `PreToolUse`.
+Prompt hooks are supported only on events documented for that handler type. `$ARGUMENTS` contains the hook input JSON.
 
 Use for: context-aware decisions, flexible evaluation, natural-language reasoning.
 
@@ -36,11 +38,11 @@ Use for: context-aware decisions, flexible evaluation, natural-language reasonin
 
 Use for: fast deterministic validations, file-system ops, external tools, performance-critical paths.
 
-**Our convention:** all our command hooks are `.mjs` (Node.js) — see `hooks/pre-bash-destructive-guard.mjs`, `hooks/enforce-scope.mjs`. The v3.0 migration moved us off bash for native Windows support.
+**Our convention:** hook logic lives in `.mjs` files — see `hooks/pre-bash-destructive-guard.mjs` and `hooks/enforce-scope.mjs`. The manifest invokes them through the repository's runtime wrapper.
 
 ## Configuration formats
 
-This is where people trip up. Two formats exist; they are NOT interchangeable.
+Keep the file location and its outer document shape explicit when copying an example.
 
 ### Plugin `hooks/hooks.json` — wrapper format
 
@@ -63,25 +65,27 @@ This is where people trip up. Two formats exist; they are NOT interchangeable.
 - `hooks` wrapper is required
 - `description` is optional
 
-### User `.claude/settings.json` — direct format
+### User or project `.claude/settings.json` — settings format
 
 ```json
 {
-  "PreToolUse": [
-    {
-      "matcher": "Write|Edit",
-      "hooks": [
-        { "type": "command", "command": "~/my-hook.sh" }
-      ]
-    }
-  ]
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "~/my-hook.sh" }
+        ]
+      }
+    ]
+  }
 }
 ```
 
-- No wrapper
-- No description
+- The top-level `hooks` key is required in settings.
+- Plugin `hooks/hooks.json` may additionally carry a top-level `description`.
 
-Mixing these up is the #1 reason new hooks don't fire.
+The distinction is registration and scope: settings hooks belong to a user, project, or managed policy; plugin hooks run while the plugin is enabled. The nested event → matcher group → handler shape is the same.
 
 ## Hook events
 
@@ -92,7 +96,7 @@ Mixing these up is the #1 reason new hooks don't fire.
 | `UserPromptSubmit` | User submits prompt | Add context, validate |
 | `Stop` | Main agent stopping | Completeness check |
 | `SubagentStop` | Subagent stopping | Task validation |
-| `SessionStart` | Session begins | Context load |
+| `SessionStart` | Session begins or resumes | Context load |
 | `SessionEnd` | Session ends | Cleanup, logging |
 | `PreCompact` | Before compaction | Preserve critical state |
 | `Notification` | User notified | Logging, reactions |
@@ -102,7 +106,9 @@ Mixing these up is the #1 reason new hooks don't fire.
 ```json
 {
   "hookSpecificOutput": {
-    "permissionDecision": "allow|deny|ask",
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "Why this decision was made",
     "updatedInput": { "field": "modified_value" }
   },
   "systemMessage": "Explanation shown to Claude"
@@ -113,11 +119,13 @@ Mixing these up is the #1 reason new hooks don't fire.
 
 ```json
 {
-  "decision": "approve|block",
-  "reason": "Why blocked / approved",
+  "decision": "block",
+  "reason": "Why Claude should continue",
   "systemMessage": "Additional context"
 }
 ```
+
+Omit `decision` to allow stopping. `approve` is not a valid Stop decision. For non-error feedback that keeps the conversation running, use `hookSpecificOutput.additionalContext` with `hookEventName` set to `Stop` or `SubagentStop`.
 
 ### SessionStart: persist env vars
 
@@ -136,17 +144,18 @@ All hooks receive JSON on stdin:
   "session_id": "abc123",
   "transcript_path": "/path/to/transcript.jsonl",
   "cwd": "/current/working/dir",
-  "permission_mode": "ask|allow",
+  "permission_mode": "default",
   "hook_event_name": "PreToolUse"
 }
 ```
 
 Event-specific extras:
-- `PreToolUse`/`PostToolUse`: `tool_name`, `tool_input`, `tool_result`
-- `UserPromptSubmit`: `user_prompt`
-- `Stop`/`SubagentStop`: `reason`
+- `PreToolUse`: `tool_name`, `tool_input`, `tool_use_id`
+- `PostToolUse`: `tool_name`, `tool_input`, `tool_response`, `tool_use_id`
+- `UserPromptSubmit`: `prompt`
+- `Stop`: `stop_hook_active`, `last_assistant_message`; `SubagentStop` also carries agent identity and transcript fields
 
-Access in prompt hooks via `$TOOL_INPUT`, `$TOOL_RESULT`, `$USER_PROMPT`.
+Event fields vary and evolve. Parse only fields needed by the hook and consult the official event section before depending on one. Prompt and agent hooks receive the complete input through `$ARGUMENTS`.
 
 ## Environment variables
 
@@ -222,7 +231,7 @@ echo $file_path          # ❌ unquoted injection risk
 
 ### Timeouts
 
-Defaults: command hooks 60s, prompt hooks 30s. Set explicitly when the work is known-slow:
+Current defaults are 600 seconds for command/HTTP/MCP-tool hooks, 30 seconds for prompt hooks, and 60 seconds for agent hooks, with shorter defaults for some events. `SessionEnd` also has a shared time budget. Set a short explicit timeout appropriate to the hook; a timed-out `PreToolUse` command hook does not block the tool call.
 
 ```json
 { "type": "command", "command": "...", "timeout": 10 }
@@ -232,17 +241,13 @@ Defaults: command hooks 60s, prompt hooks 30s. Set explicitly when the work is k
 
 All matching hooks run **in parallel** — they don't see each other's output, ordering is non-deterministic. Design for independence.
 
-## Lifecycle limitation — NO hot-swap
+## Registration and reload behavior
 
-Hooks load at session start. Changes to `hooks.json` or hook scripts do **not** affect the running session.
+Installed capability and active registration are different. A plugin can ship hook files without those hooks running when the plugin is disabled. Settings hooks merge with plugin and managed hooks; `/hooks` shows the active sources.
 
-To test hook changes:
-1. Edit hook
-2. Exit Claude Code
-3. Restart (`claude` or `cc`)
-4. Verify with `/hooks` command or `claude --debug`
+Direct edits to hooks in settings files are normally picked up by Claude Code's file watcher. Plugin registration changes may require disabling/re-enabling the plugin or starting a fresh session. A command hook's script is launched when the event fires, so editing the script itself can affect the next invocation without re-registering the manifest.
 
-This is the #2 reason "my hook isn't working" — the change hasn't loaded yet.
+To test a registration change, inspect `/hooks`, trigger the matching event, and use `claude --debug` when the source, matcher, output, or timeout remains unclear.
 
 ## Debugging
 
@@ -269,7 +274,7 @@ output=$(./your-hook.mjs < test-input.json)
 echo "$output" | jq .
 ```
 
-Invalid JSON breaks silently — always verify.
+Invalid structured output is normally reported as a non-blocking hook error and the action proceeds, so always verify the output and the resulting decision.
 
 ## Conditional activation
 
@@ -292,8 +297,8 @@ enabled=$(jq -r '.strictMode // false' "$CONFIG_FILE" 2>/dev/null)
 
 ## Our in-house examples (read these, not the upstream `examples/`)
 
-- `hooks/pre-bash-destructive-guard.mjs` — policy-driven command blocker, 14 rules in `.orchestrator/policy/blocked-commands.json`
-- `hooks/enforce-scope.mjs` — wave-scope boundary enforcement using `.orchestrator/wave-scope.json`
+- `hooks/pre-bash-destructive-guard.mjs` — policy-driven command blocker backed by `.orchestrator/policy/blocked-commands.json`
+- `hooks/enforce-scope.mjs` — scope enforcement using `wave-scope.json` in the platform's state directory
 - `hooks/on-session-start.mjs` — banner + session init
 - `hooks/post-edit-validate.mjs` — validates edits after the fact
 - `hooks/on-stop.mjs` — session-event capture + metrics
@@ -306,7 +311,7 @@ enabled=$(jq -r '.strictMode // false' "$CONFIG_FILE" 2>/dev/null)
 - Validate every input field before trusting it
 - Quote all shell variables
 - Set explicit timeouts for known-slow work
-- Return structured JSON on stdout
+- Return only schema-valid structured JSON when the event needs a decision or context; emit nothing on a silent allow
 
 **Don't:**
 - Hardcoded paths
@@ -409,5 +414,5 @@ env-precedence, PluginRootResolutionError class shape.
 
 ## References
 
-- [Official hooks docs](https://docs.claude.com/en/docs/claude-code/hooks)
+- [Official hooks reference](https://code.claude.com/docs/en/hooks)
 - Upstream: [patterns.md](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/plugin-dev/skills/hook-development/references/patterns.md), [advanced.md](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/plugin-dev/skills/hook-development/references/advanced.md) — read these for edge cases we haven't hit yet

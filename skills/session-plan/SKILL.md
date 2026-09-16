@@ -224,7 +224,7 @@ It prints one JSON line carrying:
 
 **Ultradeep agent counts per wave:** take each wave's cap from that wave's `agentCap` in the shape — there is no second table here to disagree with it. The caps are ceilings, not targets, and the Quality wave's cap is still EARNED per the Step 3 rule (the shape marks it `qualityEarned: true`); Research and Code-Discovery share wave 1's cap across their two separately-scoped groups; the Synthesis-Gate wave carries `agentCap: 0` with `coordinatorDirect: true` and writes only the coordinator's own artifacts (audit report, STATE.md, plan).
 
-Wave 1 splits into two disjointly-scoped groups: **Research** agents (web-enabled, see `skills/wave-executor/SKILL.md` § Ultradeep Profile) and **Code-Discovery** agents (repo-only). Both are read-only. Wave 2 dispatches NO agents — the coordinator consolidates wave 1, writes `docs/audits/<YYYY-MM-DD>-<slug>.md`, and asks ONE blocking `AskUserQuestion` before wave 3.
+Wave 1 splits into two disjointly-scoped groups: **Research** agents (web-enabled, see `skills/wave-executor/SKILL.md` § Ultradeep Profile) and **Code-Discovery** agents (repo-only). Both are read-only. Research briefs and synthesis follow [Research Evidence Contract](../_shared/research-evidence.md): material findings retain source revision/date, evidence basis, local equivalent, disposition, and a falsifiable next check when uncertain. This adds no mandatory external search; repository evidence is sufficient when proportionate to the task. Wave 2 dispatches NO agents — the coordinator consolidates wave 1, writes `docs/audits/<YYYY-MM-DD>-<slug>.md`, and asks ONE blocking `AskUserQuestion` before wave 3.
 
 When roles are combined into a single wave, agents from both roles execute in that wave.
 
