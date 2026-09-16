@@ -11,7 +11,7 @@
 | Path | Purpose |
 |------|---------|
 | `skills/` | 50 user-facing skills (+ `_shared/` internal) |
-| `commands/` | 26 slash-commands (e.g. `/session`, `/close`, `/go`, `/plan`, `/test`, `/portfolio`, `/dispatcher`, `/eval`) |
+| `commands/` | 2 command files (`/session`, `/templates-ack`). The other 26 slash commands are skills with explicit `user-invocable: true` — one definition per name (a command + same-named skill lists twice in the `/` picker) |
 | `agents/` | 14 sub-agent definitions (YAML frontmatter + Markdown body, + `schemas/` subdirectory). The authoring spec is NOT here — it lives in `docs/agent-authoring.md`, because Claude Code registers every `agents/*.md` as a dispatchable agent by directory convention |
 | `hooks/` | Hook event matchers + handlers (18 matcher entries / 27 plugin-wired handler files [28 on-disk; the extra one is Husky-wired — see Inventory below], 10 distinct events) |
 | `.orchestrator/policy/` | Runtime policy: `blocked-commands.json` (15 rules — 11 `severity: block`, 4 `severity: warn`) |
@@ -38,7 +38,7 @@
 ## Inventory (canonical)
 
 - **Skills:** 50 user-facing — measured 2026-09-16 (`ls -d skills/*/ | grep -v _shared | wc -l`). `_shared/` is internal docs, not a skill.
-- **Commands:** 26 — measured 2026-09-13 (`ls commands/*.md | wc -l`): `/autopilot`, `/bootstrap`, `/brainstorm`, `/close`, `/debug`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/persona-panel`, `/plan`, `/portfolio`, `/reconcile`, `/release`, `/repo-audit`, `/session`, `/spinout`, `/sunset-review`, `/templates-ack`, `/test`, `/ux-grill`
+- **Slash commands:** 28 — measured 2026-09-16 (`{ ls commands/*.md; grep -l '^user-invocable: true' skills/*/SKILL.md; } | wc -l`): 2 command files (`/session`, `/templates-ack`) + 26 user-invocable skills (`/autopilot`, `/bootstrap`, `/brainstorm`, `/close`, `/convergence-monitoring`, `/debug`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/npm-publish`, `/persona-panel`, `/plan`, `/portfolio`, `/reconcile`, `/release`, `/repo-audit`, `/spinout`, `/sunset-review`, `/test`, `/ux-grill`)
 - **Agents:** 14 — measured 2026-09-06 (`ls agents/*.md | wc -l`): `analyst`, `architect-reviewer`, `code-implementer`, `db-specialist`, `dialectic-deriver`, `docs-writer`, `eval-judge`, `qa-strategist`, `security-reviewer`, `session-reviewer`, `skill-applied-judge`, `test-writer`, `ui-developer`, `ux-evaluator`
 - **Hook event matchers / handlers:** 18 matcher entries / 27 plugin-wired handler files (28 on-disk) — measured 2026-09-16 (`grep -c '"matcher"' hooks/hooks.json`; `grep -o '[a-z0-9-]*\.mjs' hooks/hooks.json | sort -u | wc -l`; `ls hooks/*.mjs | wc -l`). `hooks/wave-scope-commit-guard.mjs` is on-disk but intentionally NOT a plugin hook — it is the repository's Git pre-commit guard via Husky (`.husky/pre-commit`), because it guards git index/commit state rather than a plugin lifecycle event. Counting basis: "plugin-wired" = distinct `.mjs` filenames referenced inside `hooks/hooks.json`; "Husky-wired" = referenced inside `.husky/pre-commit`; "on-disk" = `ls hooks/*.mjs`.
 - **Rules:** 25 always-on files — measured 2026-09-16 (`ls .claude/rules/*.md | wc -l`). This number moves whenever the reconcile engine materialises or consolidates generated rules — re-measure, never quote from memory.

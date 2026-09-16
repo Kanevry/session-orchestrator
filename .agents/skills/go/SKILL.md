@@ -3,6 +3,8 @@ name: go
 description: Approve session plan and begin wave execution
 metadata:
   user-invocable: "true"
+  disable-model-invocation: "true"
+  argument-hint: "[optional instructions]"
   model: inherit
 ---
 

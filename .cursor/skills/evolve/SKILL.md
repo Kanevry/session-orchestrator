@@ -1,7 +1,6 @@
 ---
 name: evolve
 description: "Use this skill when extracting session patterns into reusable learnings. Three modes: analyze (extract from session history), review (edit/manage existing learnings), list (display active learnings). Manages .orchestrator/metrics/learnings.jsonl."
-disable-model-invocation: true
 ---
 
 # evolve

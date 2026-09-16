@@ -1772,7 +1772,7 @@ Leave disabled (default) when:
 - The wave's deliverable is server-side / backend-only and persona evaluation would be noise.
 
 **Related skills and files:**
-- `commands/persona-panel.md` — standalone `/persona-panel` command for ad-hoc panel runs (not gated on `persona-gate-wave.enabled`).
+- `skills/persona-panel/SKILL.md` — standalone `/persona-panel` command for ad-hoc panel runs (not gated on `persona-gate-wave.enabled`).
 - `skills/persona-panel/SKILL.md` — full skill spec (catalog format, consolidation modes, sidecar shape).
 - `skills/wave-executor/wave-loop.md` § 3b — the wave-executor hook contract.
 - `agents/schemas/persona-panel-sidecar.schema.json` — sidecar JSON Schema enforced before write.

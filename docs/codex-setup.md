@@ -197,7 +197,7 @@ $session-orchestrator:discovery         # run quality probes; optionally add a s
 $session-orchestrator:evolve analyze    # manage learnings (analyze, review or list)
 ```
 
-These are skill invocations in the Codex prompt, not shell commands. Invoking `go` reads the full canonical `commands/go.md`, including its Express Path and prechecks; invoking `close` reads `commands/close.md`, including its state and ledger checks before the session-end workflow. Codex's native `/goal` is a separate feature. Typing `/go` or `/close` alone is not a portable invocation contract; select the skill or use its explicit namespaced form.
+These are skill invocations in the Codex prompt, not shell commands. Invoking `go` reads the full canonical `skills/go/SKILL.md`, including its Express Path and prechecks; invoking `close` reads `skills/close/SKILL.md`, including its state and ledger checks before the session-end workflow. Codex's native `/goal` is a separate feature. Typing `/go` or `/close` alone is not a portable invocation contract; select the skill or use its explicit namespaced form.
 
 ### Manifest Compatibility
 

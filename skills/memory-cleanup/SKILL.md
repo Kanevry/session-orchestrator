@@ -1,6 +1,7 @@
 ---
 name: memory-cleanup
 user-invocable: true
+argument-hint: "[--dry-run | --apply-pending]"
 tags: [memory, maintenance, meta, dream]
 model: sonnet
 model-preference: sonnet
@@ -19,6 +20,12 @@ description: >
 ---
 
 # Memory Cleanup — Manual Dream Process
+
+## Invocation
+
+The user invoked `/memory-cleanup` with arguments: **$ARGUMENTS**. Parse them before anything else — two optional, mutually-exclusive flags are recognised (`--dry-run`, `--apply-pending`, see PRD #502); passing both is an error, and the absence of both selects the legacy interactive 4-phase mode. The per-flag behaviour, the exact status lines and the exit codes are in § Argument Handling (Phase 0) below; the interactive default runs Phases 1-4 (Orient → Gather Signal → Consolidate → Prune & Index) against `~/.claude/projects/<encoded-cwd>/memory/` and reports per § Output.
+
+Sidecar producer/consumer contract: session-end Phase 3.6.5 (`scripts/lib/auto-dream.mjs`) is nudge-only (#614) — it never dispatches a subagent to write the sidecar. The only real producer of `.orchestrator/pending-dream.md` is a manual `/memory-cleanup --dry-run` run; `--apply-pending` is the operator-confirmed consumer in a later session. The sidecar file is single-writer — concurrent sessions cannot collide because the writer holds the session-lock. <!-- path-check: example -->
 
 Implements the 4-phase memory consolidation process modelled after Claude Code's Auto Dream feature. Run after major refactors, framework migrations, or every 5+ sessions in a repo.
 

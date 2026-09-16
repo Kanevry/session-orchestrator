@@ -3,6 +3,7 @@ name: portfolio
 description: Aggregate cross-repo issue/MR/CI health across vault-registered projects into a single Markdown dashboard
 metadata:
   user-invocable: "true"
+  argument-hint: "[--dry-run] [--repo <name>]"
   model: inherit
 ---
 

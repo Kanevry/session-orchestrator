@@ -5,6 +5,25 @@ import { preprocessBlockLines } from './block-preprocess.mjs';
  * drift-check.mjs — Parser for the top-level `drift-check:` YAML block.
  *
  * Ported from config-yaml-parser.sh (v2).
+ *
+ * SCOPE NOTE — this file parses FLAGS ONLY; it implements no check. The
+ * `check-command-count` flag below toggles the `command-count` surface in
+ * `skills/claude-md-drift-check/checker.mjs`, which is where the counting lives.
+ *
+ * `command-count` STAYS on `ls commands/*.md | wc -l` on purpose. The checker is
+ * GENERIC over any consumer repo, where a slash command still IS a
+ * `commands/*.md` file. The 2026-09-16 command→skill fold (#1370) is a fact
+ * about THIS plugin — 24 command files folded into their same-named
+ * `skills/<name>/SKILL.md` behind an explicit `user-invocable: true` — so
+ * teaching the shared checker that union would mis-measure every repo that never
+ * folded. `scripts/site-numbers.mjs` `countCommands()` carries the union for this
+ * plugin's own tile, and names the divergence in its docblock.
+ *
+ * CONSEQUENCE for THIS repo, left deliberately visible rather than papered over:
+ * a prose claim of the shape "N commands" / "N slash commands" in a
+ * drift-check-scanned doc is compared against the `commands/` listing (2 after
+ * the fold), so such a claim must either be dropped or reworded off the
+ * `\b(\d+)\s+(?:\/)?commands?\b` pattern the checker matches.
  */
 
 /**

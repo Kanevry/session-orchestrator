@@ -2,6 +2,8 @@
 name: eli5
 description: Explain a topic like I'm a 5 year old — restate my last output, or a named topic, in plain words without dropping a single fact. Use when the user types /eli5 [topic], or says an answer was too technical, too long, or unclear about what he now has to do.
 metadata:
+  user-invocable: "true"
+  argument-hint: "[topic]"
   model: inherit
 allowed-tools:
   - Read

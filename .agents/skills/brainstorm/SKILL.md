@@ -4,6 +4,9 @@ description: Use when you have a feature idea but the scope or UX is still ambig
 metadata:
   model: inherit
   color: cyan
+  user-invocable: "true"
+  disable-model-invocation: "true"
+  argument-hint: "[topic-or-feature-slug]"
 allowed-tools:
   - Read
   - Grep

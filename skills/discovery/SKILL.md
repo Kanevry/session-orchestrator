@@ -1,6 +1,7 @@
 ---
 name: discovery
-user-invocable: false
+user-invocable: true
+argument-hint: "[all|code|infra|ui|arch|session|audit|vault|feature] [--since <git-ref>] [--full]"
 tags: [quality, discovery, probes, issues]
 model: sonnet
 model-preference: sonnet
@@ -14,6 +15,28 @@ description: >
 ---
 
 # Discovery Skill
+
+## Invocation
+
+The user invokes `/discovery` with scope: **$ARGUMENTS** (if empty, default to `all`).
+
+Parse `$ARGUMENTS` before doing anything else. Extract the following flags and tokens in any order:
+
+- `--since <git-ref>` — restrict discovery to files changed since the given git ref (e.g. `HEAD~5`, `main`, a commit hash). Sets `since_ref = <git-ref>`, which is passed into Phase 3 plumbing.
+- `--full` — explicit full-repo scan. Sets `full_scan = true`.
+- Any remaining tokens are treated as scope specifiers (see the scope enum in § Invocation Modes).
+
+**Conflict check:** If BOTH `--since` and `--full` are present, stop immediately and report:
+
+```
+Error: Cannot use --since with --full. Provide one, not both.
+```
+
+Do NOT proceed with discovery when this conflict is present.
+
+**Argument validation:** Valid scopes: `all`, `code`, `infra`, `ui`, `arch`, `session`, `audit`, `vault`, `feature` (comma-separated for multiple). If any scope is invalid, inform the user: "Invalid scope '[token]'. Valid scopes: all, code, infra, ui, arch, session, audit, vault, feature." and default that token to `all`.
+
+Scan the codebase for quality issues, technical debt, and improvement opportunities within the requested scope. Do NOT skip the interactive triage phase — every finding must be confirmed by the user before issue creation. Evidence before assertions.
 
 ## Invocation Modes
 

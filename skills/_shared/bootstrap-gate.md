@@ -102,7 +102,7 @@ source: projects-baseline | plugin-template | claude-init
 
 A repo that has already been bootstrapped passes the gate on every subsequent invocation with zero overhead. The gate check reads three files and performs two grep operations — negligible cost.
 
-`/bootstrap --retroactive` exists for repos that predate the gate (have `CLAUDE.md` + Session Config but no `bootstrap.lock`). It writes the lock without re-scaffolding. Documented in `commands/bootstrap.md`.
+`/bootstrap --retroactive` exists for repos that predate the gate (have `CLAUDE.md` + Session Config but no `bootstrap.lock`). It writes the lock without re-scaffolding. Documented in `skills/bootstrap/SKILL.md`.
 
 ## Auto-Skill Dispatch (opt-in, default: off)
 

@@ -2,13 +2,18 @@
 name: test
 description: Agentic end-to-end test orchestrator — drive web/macOS flows, evaluate UX rubric, reconcile issues
 user-invocable: true
+argument-hint: "[scope|profile-name] [--since <git-ref>] [--full]"
 model: inherit
 ---
 # Test
 
 Run agentic end-to-end tests against the current project or a named target. The user invoked `/test` with arguments: **$ARGUMENTS**
 
-This command resolves a test target and profile, dispatches the appropriate driver (Playwright for web, Peekaboo for macOS), invokes the `ux-evaluator` agent against the captured artifacts, and reconciles findings with the open issue tracker. All logic lives in `skills/test-runner/SKILL.md` — this file is the user-facing entry point only.
+This skill resolves a test target and profile, dispatches the appropriate driver (Playwright for web, Peekaboo for macOS), invokes the `ux-evaluator` agent against the captured artifacts, and reconciles findings with the open issue tracker. All logic lives in `skills/test-runner/SKILL.md` — this file is the user-facing entry point only.
+
+## Invocation
+
+`$ARGUMENTS` carries the recognised flags (`--target`, `--profile`, `--dry-run`, `--since`, `--full`) and an optional bare scope token. Parse it per § Argument Validation, resolve per § Argument Precedence Resolution, and only then hand the six-argument § Handoff Contract to `skills/test-runner/SKILL.md`, which owns all further resolution, driver dispatch, evaluation, and issue reconciliation.
 
 ## Argument Validation
 
@@ -84,7 +89,7 @@ Pass the following handoff contract to the skill entry point.
 
 ## Handoff Contract
 
-The five named arguments below are the canonical contract between this command and `skills/test-runner/SKILL.md`. The skill reads them from context; do NOT reconstruct them inside the skill.
+The six named arguments below are the canonical contract between this skill and `skills/test-runner/SKILL.md`. The skill reads them from context; do NOT reconstruct them inside the skill.
 
 | Argument | Type | Value |
 |---|---|---|
@@ -95,4 +100,4 @@ The five named arguments below are the canonical contract between this command a
 | `explicit_profile` | `boolean` | `true` if `--profile` was present in `$ARGUMENTS`; `false` otherwise |
 | `since_ref` | `string \| undefined` | Git ref from `--since <git-ref>`, or `undefined` if not provided |
 
-The skill is the single source of truth for all further resolution, driver dispatch, evaluation, and issue reconciliation. Do NOT re-implement profile logic, driver selection, or issue triage in this command file.
+The skill is the single source of truth for all further resolution, driver dispatch, evaluation, and issue reconciliation. Do NOT re-implement profile logic, driver selection, or issue triage here.

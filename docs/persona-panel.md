@@ -422,7 +422,7 @@ or commit them if you want an auditable history.
 
 ## See Also
 
-- `commands/persona-panel.md` — command reference: argument syntax, flag validation, examples
+- `skills/persona-panel/SKILL.md` — command reference: argument syntax, flag validation, examples
 - `skills/persona-panel/SKILL.md` — full skill spec: 6 phases, catalog format, dispatch
   mechanics, consolidation logic, sidecar schema
 - `skills/persona-panel/persona-format.md` — persona file format specification: frontmatter

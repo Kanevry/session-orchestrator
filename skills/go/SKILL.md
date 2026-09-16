@@ -2,11 +2,19 @@
 name: go
 description: Approve session plan and begin wave execution
 user-invocable: true
+disable-model-invocation: true
+argument-hint: "[optional instructions]"
 model: inherit
 ---
 # Execute Session Plan
 
 The user has approved the session plan. Begin execution immediately.
+
+## Invocation
+
+Invoked as `/go [optional instructions]` with arguments: **$ARGUMENTS**. The user has approved the session plan; begin execution immediately.
+
+`$ARGUMENTS` is optional priority guidance, forwarded verbatim to `skills/wave-executor/SKILL.md` for agent prompts (see "Standard Execution" below). It never re-opens the plan: do NOT re-plan, do NOT re-analyze — execute the agreed plan NOW with maximum efficiency.
 
 ## Express Path Detection
 

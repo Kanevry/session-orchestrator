@@ -23,7 +23,7 @@ coverage check.
 
 ## Pattern 1 — GitLab pipeline + GitHub mirror sync (post-push)
 
-**When.** After `git push origin main` from `commands/close.md` Phase 6.
+**When.** After `git push origin main` from `skills/close/SKILL.md` Phase 6.
 Watches the GitLab pipeline through to a terminal status, then prints
 the GitHub mirror's main-branch SHA so the operator can confirm parity.
 

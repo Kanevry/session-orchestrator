@@ -93,7 +93,7 @@ When you type `/session feature`:
 .claude/STATE.md                    # wave progress and deviations (harness-specific directory)
 ```
 
-The plugin is **50 skills, 26 slash commands, 14 typed subagents and 27 hook files across 10 event types**. Skills, commands and agents are Markdown with YAML frontmatter; the code that dispatches, validates and records runs in `scripts/lib/*.mjs` and `hooks/*.mjs`. There is no build step and no compiled artifact — when a session does something you did not expect, you can open the file that decided it. Full inventory: [`docs/components.md`](docs/components.md).
+The plugin is **50 skills, 28 slash commands, 14 typed subagents and 27 hook files across 10 event types**. A slash command is a skill whose frontmatter says `user-invocable: true` (26 of them) or one of the two remaining `commands/*.md` files (`/session`, `/templates-ack`) — one definition per name, so nothing is listed twice in the `/` picker. Skills, commands and agents are Markdown with YAML frontmatter; the code that dispatches, validates and records runs in `scripts/lib/*.mjs` and `hooks/*.mjs`. There is no build step and no compiled artifact — when a session does something you did not expect, you can open the file that decided it. Full inventory: [`docs/components.md`](docs/components.md).
 
 ## Why it is built this way
 
@@ -111,7 +111,7 @@ How this compares to other orchestrators, with measured results kept separate fr
 
 | Feature | Claude Code | Codex CLI | Cursor IDE | Pi |
 |---|---|---|---|---|
-| All 26 commands | Native slash commands | Generated skills (`$session-orchestrator:<name>`) | Native `.cursor/commands` slash commands | Prompt templates |
+| All 28 commands | Native slash commands | Generated skills (`$session-orchestrator:<name>`) | Native `.cursor/commands` slash commands | Prompt templates |
 | Parallel agents | Agent tool | Multi-agent roles | Sequential only | Sequential (parallel planned) |
 | Session persistence | `.claude/STATE.md` | `.codex/STATE.md` | `.cursor/STATE.md` | `.pi/STATE.md` |
 | Scope enforcement | Active PreToolUse hook; blocking in `strict`, reporting in `warn` | Instructions only; no compatible `apply_patch` handler | `preToolUse` + `beforeShellExecution` bridge; scope blocking requires `strict`; `afterFileEdit` is post-hoc | `tool_call` bridge; scope blocking requires `strict` |

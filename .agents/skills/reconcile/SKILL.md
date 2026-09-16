@@ -3,6 +3,7 @@ name: reconcile
 description: Use this skill when the user wants to reconcile learnings into rules, run /reconcile, propose rules from learnings, turn learnings into .claude/rules/ entries, or review what rules would be generated from current session learnings. On-demand version of session-end Phase 3.6.8.
 metadata:
   user-invocable: "true"
+  argument-hint: "[--dry-run]"
   tags: learning, rules, intelligence, meta
   model: sonnet
   model-preference: sonnet

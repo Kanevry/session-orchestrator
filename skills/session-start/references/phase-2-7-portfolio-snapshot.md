@@ -71,5 +71,5 @@ Proceed to Phase 3 without blocking.
 
 ### Cross-reference
 
-See `commands/portfolio.md` for the `/portfolio` command (full write path, `--dry-run`, `--repo` single-repo testing).
+See `skills/portfolio/SKILL.md` for the `/portfolio` command (full write path, `--dry-run`, `--repo` single-repo testing).
 

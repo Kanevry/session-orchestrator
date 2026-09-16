@@ -32,9 +32,14 @@ flowchart LR
 - **Operator ergonomics:** `eli5` (plain-language restatement of the last answer)
 - **Visualization:** `tmux-layout` (opt-in operator side-channel — [ADR-0007](adr/0007-tmux-visualization-substrate.md))
 
-## Commands (26)
+## Commands (28)
 
-`/session`, `/go`, `/close`, `/discovery`, `/plan`, `/evolve`, `/bootstrap`, `/harness-audit`, `/autopilot`, `/repo-audit`, `/test`, `/memory-cleanup`, `/portfolio`, `/brainstorm`, `/debug`, `/persona-panel`, `/grill`, `/sunset-review`, `/templates-ack`, `/dispatcher`, `/reconcile`, `/spinout`, `/eval`, `/release`, `/eli5`, `/ux-grill`.
+A slash command has exactly ONE definition. 26 are skills with explicit `user-invocable: true` in `skills/<name>/SKILL.md` (the same file the model dispatches; `argument-hint` and `disable-model-invocation` live there too), and 2 are plain `commands/*.md` files without a same-named skill. Claude Code registers both shapes as `/session-orchestrator:<name>`, so a name that exists as both a command file and a user-invocable skill is listed twice in the `/` picker — `tests/commands/headless-bare-command-availability.test.mjs` forbids that twin.
+
+- **Skills (26):** `/autopilot`, `/bootstrap`, `/brainstorm`, `/close`, `/convergence-monitoring`, `/debug`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/npm-publish`, `/persona-panel`, `/plan`, `/portfolio`, `/reconcile`, `/release`, `/repo-audit`, `/spinout`, `/sunset-review`, `/test`, `/ux-grill`.
+- **Command files (2):** `/session` (its skill is `session-start`) and `/templates-ack` (an in-session hook bypass with no skill body).
+
+Under `claude -p`, `/session` and `/plan` are reserved terminal built-ins; use `/session-orchestrator:session` and `/session-orchestrator:plan` there.
 
 ## Agents (14 typed sub-agents)
 

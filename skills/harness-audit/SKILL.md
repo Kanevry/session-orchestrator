@@ -6,6 +6,10 @@ model: inherit
 ---
 # Harness Audit
 
+## Invocation
+
+`/harness-audit` takes no arguments — `$ARGUMENTS` is always ignored; anything passed is discarded without a warning. Run the audit exactly as described below and report the rubric score.
+
 The user wants to audit this repository against the session-orchestrator harness rubric. There are no arguments.
 
 Run the audit script and surface the results:

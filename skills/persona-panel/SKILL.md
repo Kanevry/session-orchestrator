@@ -1,6 +1,7 @@
 ---
 name: persona-panel
 user-invocable: true
+argument-hint: "<target> [--personas <names,...>] [--mode <voting|hard-gate|summary>] [--threshold <M-of-N|all|any>] [--grounding <off|re-derive>] [--dry-run]"
 tags: [review, personas, content, quality, multi-agent]
 model: inherit
 description: >
@@ -12,6 +13,60 @@ description: >
 ---
 
 # Persona Panel Skill
+
+## Invocation
+
+The user invoked `/persona-panel` with arguments: **$ARGUMENTS**. Parse them before doing anything else — including before the Phase 0 bootstrap gate's side effects.
+
+**Positional argument (required):**
+
+- `<target>` — file path, directory, or range to review. Must be resolvable via `validatePathInsideProject` against the current project root (Phase 2). Relative paths are resolved from the project root. Globs are accepted (e.g. `src/app/api/*.ts`).
+
+**Recognized flags:**
+
+- `--personas <names,...>` — comma-separated subset of catalog names to include (e.g. `physicist,ai-expert`). Default: all personas discovered in `.claude/personas/`. Names are matched case-insensitively against `<name>.md` catalog files.
+- `--mode <voting|hard-gate|summary>` — consolidation mode; the short forms are aliases of the Phase 4 mode names `voting-quorum`, `hard-gate-threshold` and `coordinator-summary` respectively. Default: `voting-quorum`. `summary` emits an explicit WARN that this mode adds one additional LLM call.
+- `--threshold <spec>` — quorum spec. Accepted forms: `M-of-N` where M and N are integers 1..20, `all`, or `any`. Parsed by `scripts/lib/persona-panel/threshold.mjs::parseThreshold()`. Default: `all` for `hard-gate-threshold`. In `voting-quorum` the majority default of Phase 4 applies unless `--quorum <M>` overrides it.
+- `--quorum <M>` — integer M-of-N override for `voting-quorum` (see Phase 4).
+- `--grounding <off|re-derive>` — Grounding-Review mode (#730 Epic H). `off` (default): personas evaluate the target as-is. `re-derive`: each persona independently re-derives supporting sources via Read/Grep/Glob instead of trusting a "Sources" section the target may already assert, and reports them as `derived_sources`. Advisory-only in v1 — never influences `final_verdict`. See `skills/persona-panel/persona-format.md` § "Grounding Mode (optional)".
+- `--lines <start>-<end>` — restrict the review to a line range of the target (validated in Phase 2: start ≤ end, both positive integers).
+- `--dry-run` — resolve catalog and target, print the dispatch plan (persona names, models, target), do NOT call `Agent()`, do NOT write a sidecar. Exit 0 on success.
+
+**Validation errors (all exit 1):**
+
+- Missing `<target>`: `missing required arg <target>` — print the usage line and exit 1 without running any phase.
+- Unknown flag (starts with `--` but not in the list above): `unknown flag: --<name>. Valid: --personas, --mode, --threshold, --quorum, --grounding, --lines, --dry-run`.
+- `--mode` value not in enum: `invalid --mode value: '<value>'. Valid: voting, hard-gate, summary`.
+- `--threshold` value fails `parseThreshold()`: echo the parser error verbatim, e.g. `invalid threshold 'foo': expected M-of-N (M,N integers 1..20), 'all', or 'any'`.
+- `--grounding` value not in enum: `invalid --grounding value: '<value>'. Valid: off, re-derive`.
+- `<target>` outside project root: `target path outside project: <path>`.
+
+### Examples
+
+```
+/persona-panel src/app/api/invoices.ts
+```
+All `.claude/personas/*.md` are dispatched, voting consolidation, sidecar written.
+
+```
+/persona-panel src/app/api/invoices.ts --personas physicist,ai-expert
+```
+Only the `physicist` and `ai-expert` catalog entries are dispatched.
+
+```
+/persona-panel notes/draft.md --mode hard-gate --threshold all
+```
+All resolved personas must return PASS; a single FAIL produces a final FAIL verdict.
+
+```
+/persona-panel src/ --dry-run
+```
+Prints the planned dispatch list and exits 0 without calling `Agent()` or writing a sidecar.
+
+```
+/persona-panel docs/design-doc.md --grounding re-derive
+```
+Each persona re-derives its own supporting sources rather than trusting a "Sources" section already present in the input document (for example, `docs/design-doc.md`), reporting them as `derived_sources`. Advisory-only — `final_verdict` is unaffected. <!-- path-check: example -->
 
 ## Overview
 
@@ -355,7 +410,7 @@ result. If `final_verdict == "warn"`: exit 0 with a warning line on stderr. If
 
 ## See Also
 
-- `commands/persona-panel.md` — argument parsing and CLI contract
+- `scripts/lib/persona-panel/threshold.mjs` — parseThreshold() for `--threshold` specs
 - `agents/schemas/persona-panel-sidecar.schema.json` — sidecar JSON Schema (Draft 2020-12)
 - `scripts/lib/persona-panel/catalog-loader.mjs` — loadCatalog() implementation
 - `scripts/lib/persona-panel/persona-runner.mjs` — buildPersonaPrompt() implementation

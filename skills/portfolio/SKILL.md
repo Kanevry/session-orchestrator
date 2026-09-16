@@ -2,11 +2,16 @@
 name: portfolio
 description: Aggregate cross-repo issue/MR/CI health across vault-registered projects into a single Markdown dashboard
 user-invocable: true
+argument-hint: "[--dry-run] [--repo <name>]"
 model: inherit
 ---
 # Portfolio
 
-Aggregates open issues, MRs, and staleness signals across all vault-registered repositories and writes a structured dashboard to `<vault-dir>/01-projects/_PORTFOLIO.md`. Invoke the `gitlab-portfolio` skill with arguments: **$ARGUMENTS**
+## Invocation
+
+The user invoked `/portfolio` with arguments: **$ARGUMENTS**. This skill carries the argument validation (`--dry-run`, `--repo <name>`), the config/mode/vault gates, the dispatch into `scripts/lib/gitlab-portfolio/cli.mjs`, and the exit-code table — all below; `skills/gitlab-portfolio/SKILL.md` owns the dashboard schema.
+
+Aggregates open issues, MRs, and staleness signals across all vault-registered repositories and writes a structured dashboard to `<vault-dir>/01-projects/_PORTFOLIO.md`.
 
 ## Argument Validation
 

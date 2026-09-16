@@ -129,7 +129,14 @@ describe('probes-<category>.md existence & anatomy', () => {
 
 const TRACKED_SURFACES = [
   'skills/discovery/SKILL.md',
-  'commands/discovery.md',
+  // Former `commands/discovery.md` row. That file was folded into the skill on
+  // 2026-09-16 (#1370) — but its two enum-bearing lines (`argument-hint:` in
+  // frontmatter, the operator-facing "Valid scopes:" sentence) came WITH it and
+  // are still a mirror that can drift from the canonical scope-arg line. Keeping
+  // them as their own surface is what preserves the guard: folding them into the
+  // canonical row above would mask a dropped token, because the canonical line
+  // already carries every token the matcher looks for.
+  'skills/discovery/SKILL.md#argument-hint',
   'pi/prompts/discovery.md',
   '.cursor/rules/040-discovery.mdc',
   'docs/session-config-template.md',
@@ -220,10 +227,10 @@ function extractLinesContaining(content, marker, surfaceLabel) {
 const SURFACE_LINE_EXTRACTORS = {
   'skills/discovery/SKILL.md': (content) =>
     extractLinesContaining(content, 'The `scope` argument accepts', 'skills/discovery/SKILL.md'),
-  'commands/discovery.md': (content) =>
+  'skills/discovery/SKILL.md#argument-hint': (content) =>
     [
-      extractLinesContaining(content, 'argument-hint:', 'commands/discovery.md'),
-      extractLinesContaining(content, 'Valid scopes:', 'commands/discovery.md'),
+      extractLinesContaining(content, 'argument-hint:', 'skills/discovery/SKILL.md#argument-hint'),
+      extractLinesContaining(content, 'Valid scopes:', 'skills/discovery/SKILL.md#argument-hint'),
     ].join('\n'),
   'pi/prompts/discovery.md': (content) =>
     extractLinesContaining(content, 'argument-hint:', 'pi/prompts/discovery.md'),
@@ -240,12 +247,19 @@ const SURFACE_LINE_EXTRACTORS = {
     extractLinesContaining(content, '**Category:**', '.cursor/rules/070-gitlab-ops.mdc'),
 };
 
-function loadSurfaceContents(repoRoot, relativePaths) {
+// A surface LABEL is not always a bare path: since the #1370 fold two surfaces
+// live in the same file and are told apart by a `#fragment` suffix. Strip it to
+// get the file to read; the label stays the reporting identity.
+function surfaceFile(label) {
+  return label.split('#')[0];
+}
+
+function loadSurfaceContents(repoRoot, surfaceLabels) {
   const map = new Map();
-  for (const rel of relativePaths) {
-    const fullContent = readFileSync(join(repoRoot, rel), 'utf8');
-    const extractor = SURFACE_LINE_EXTRACTORS[rel];
-    map.set(rel, extractor(fullContent));
+  for (const label of surfaceLabels) {
+    const fullContent = readFileSync(join(repoRoot, surfaceFile(label)), 'utf8');
+    const extractor = SURFACE_LINE_EXTRACTORS[label];
+    map.set(label, extractor(fullContent));
   }
   return map;
 }

@@ -14,11 +14,20 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { slashCommandNames } from '../../scripts/lib/user-invocable-skills.mjs';
+
 const PLUGIN_ROOT = path.resolve(import.meta.dirname, '../..');
-const COMMANDS_DIR = path.join(PLUGIN_ROOT, 'commands');
+
+// Since the 2026-09-16 command→skill fold a slash command is EITHER a
+// `commands/<name>.md` file OR a `skills/<name>/SKILL.md` with explicit
+// `user-invocable: true`; the flag lives in whichever file defines the name.
+function commandDefinition(name) {
+  const command = path.join(PLUGIN_ROOT, 'commands', `${name}.md`);
+  return existsSync(command) ? command : path.join(PLUGIN_ROOT, 'skills', name, 'SKILL.md');
+}
 
 function getFrontmatter(filePath) {
   const content = readFileSync(filePath, 'utf8');
@@ -27,7 +36,7 @@ function getFrontmatter(filePath) {
 }
 
 describe('disable-model-invocation (#430)', () => {
-  const commandFiles = readdirSync(COMMANDS_DIR).filter((f) => f.endsWith('.md'));
+  const commandFiles = slashCommandNames(PLUGIN_ROOT);
 
   it('total command count is in expected range (floor/ceiling)', () => {
     expect(commandFiles.length).toBeGreaterThanOrEqual(10);
@@ -48,7 +57,7 @@ describe('disable-model-invocation (#430)', () => {
 
   userOnlyCommands.forEach((cmd) => {
     it(`USER-ONLY command "${cmd}" has disable-model-invocation: true`, () => {
-      const fm = getFrontmatter(path.join(COMMANDS_DIR, `${cmd}.md`));
+      const fm = getFrontmatter(commandDefinition(cmd));
       expect(fm).toMatch(/^disable-model-invocation:\s*true$/m);
     });
   });
@@ -63,17 +72,15 @@ describe('disable-model-invocation (#430)', () => {
   // (currently more than the 12 that were named), so a newly added command that
   // wrongly ships the flag fails here by name instead of only shifting the
   // aggregate count below, and a deleted command needs no test edit.
-  const modelInvocableCommands = commandFiles
-    .map((f) => f.replace(/\.md$/, ''))
-    .filter((cmd) => !userOnlyCommands.includes(cmd));
+  const modelInvocableCommands = commandFiles.filter((cmd) => !userOnlyCommands.includes(cmd));
 
   it('every command outside the USER-ONLY list is enumerated (no empty sweep)', () => {
     expect(modelInvocableCommands.length).toBeGreaterThanOrEqual(10);
   });
 
   it('total commands with disable-model-invocation: true matches USER-ONLY count', () => {
-    const count = commandFiles.reduce((acc, f) => {
-      const fm = getFrontmatter(path.join(COMMANDS_DIR, f));
+    const count = commandFiles.reduce((acc, cmd) => {
+      const fm = getFrontmatter(commandDefinition(cmd));
       return acc + (/^disable-model-invocation:\s*true$/m.test(fm) ? 1 : 0);
     }, 0);
     expect(count).toBe(userOnlyCommands.length);

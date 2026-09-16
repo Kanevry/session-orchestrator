@@ -38,6 +38,7 @@ import { _parseDriftCheck } from '../../scripts/lib/config/drift-check.mjs';
 import { isSessionConfigHeading } from '../../scripts/lib/config/section-extractor.mjs';
 import { parseGlobsFrontmatter } from '../../scripts/lib/rule-loader.mjs';
 import { resolveRepoSpec } from '../../scripts/lib/vcs-repo-spec.mjs';
+import { userInvocableSkills } from '../../scripts/lib/user-invocable-skills.mjs';
 
 const FORWARD_HEADING_RE =
   /(?:^|\b)(what'?s?\s+next|backlog|open\s+issues?|offene\s+(?:issues?|themen)|todo|next\s+steps?|roadmap)(?:$|\b)/i;
@@ -427,10 +428,20 @@ function buildSurfaceDescriptors(vaultDir, commandsDir) {
     {
       id: 'command-count',
       noun: 'commands',
+      // A slash command is a `commands/*.md` file OR a skill whose frontmatter
+      // says `user-invocable: true` — the same union `scripts/site-numbers.mjs`
+      // and `tests/commands/headless-bare-command-availability.test.mjs` use,
+      // deduplicated by name. In a consumer repo without `skills/` the union
+      // collapses to the directory count, so nothing changes there.
       actual: (() => {
         const dir = commandsDir || join(vaultDir, 'commands');
-        if (!existsSync(dir) || !statSync(dir).isDirectory()) return null;
-        return readdirSync(dir).filter((f) => f.endsWith('.md') && !f.startsWith('.')).length;
+        const dirExists = existsSync(dir) && statSync(dir).isDirectory();
+        const fromDir = dirExists
+          ? readdirSync(dir).filter((f) => f.endsWith('.md') && !f.startsWith('.')).map((f) => f.replace(/\.md$/, ''))
+          : [];
+        const fromSkills = userInvocableSkills(vaultDir);
+        if (!dirExists && fromSkills.length === 0) return null;
+        return new Set([...fromDir, ...fromSkills]).size;
       })(),
       // "8 commands", "8 /commands", "8 slash commands"
       claimRe: /\b(\d+)\s+(?:\/)?commands?\b/gi,

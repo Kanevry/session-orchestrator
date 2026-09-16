@@ -3,6 +3,8 @@ name: release
 description: Cut a release — the order the steps must run in, and the criteria that abort a release
 metadata:
   user-invocable: "true"
+  disable-model-invocation: "true"
+  argument-hint: "[X.Y.Z]"
   model: inherit
 ---
 

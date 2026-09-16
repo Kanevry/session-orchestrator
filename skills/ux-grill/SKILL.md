@@ -1,5 +1,7 @@
 ---
 name: ux-grill
+user-invocable: true
+argument-hint: "[url | manifest-path]"
 description: Use when a running web app's UX has to be audited reproducibly rather than by feel — a deterministic mechanical pass over routes and viewports (axe, target size, horizontal overflow, page title, scripted journeys) followed by a screenshot-grounded interrogation of the operator, journey by journey, with two persona lenses from the target repo's manifest. Triggered by "grill the UX", "roast the dashboard", "UX-Audit", "/ux-grill". Bootstraps its own manifest from a loopback URL on the first run, so it never requires a hand-written file to start.
 model: inherit
 color: magenta
@@ -9,6 +11,22 @@ tools: Read, Grep, Glob, Bash, Write
 # UX-Grill Skill
 
 > Two stages, hard boundary. **Stufe 1** measures — a Node pass over routes × viewports that calls `agent-browser` and writes JSON, with no model in the loop. **Stufe 2** grills — the `/grill` loop applied to journeys, where every claim carries a screenshot path. Severity is never a judgment here; it comes out of `schema.mjs`.
+
+## Invocation
+
+The user invoked `/ux-grill` with arguments: **$ARGUMENTS**. Parse them before anything else — exactly one positional argument is recognised:
+
+- **An absolute `http(s)` URL** (e.g. `http://127.0.0.1:3100`) → bootstrap path (§ 0.2). The target repo has no manifest yet; ask for the env names, crawl the navigation and write one. The URL must be loopback — anything else is refused before a browser starts.
+- **A file path** (ends in `.md`, or resolves to an existing file) → treat it as the manifest path, repo-relative to the target repo.
+- **Empty** → the manifest at `DEFAULT_MANIFEST_PATH` (`.orchestrator/ux-manifest.md` <!-- path-check: example -->). If that file does not exist, say so and name the bootstrap form `/ux-grill <url>` — do not invent a manifest from nothing.
+- **Anything else** → stop with: `ux-grill: argument must be a loopback URL or a manifest path (default .orchestrator/ux-manifest.md)`.
+
+Examples:
+- `/ux-grill` — runs against the target repo's existing manifest
+- `/ux-grill http://127.0.0.1:3100` — first run: AUQ for env names, crawl, write the manifest, stop with a fill-in hint
+- `/ux-grill .orchestrator/ux-manifest.md` — explicit manifest path
+
+**No CI, no HARD-GATE.** Stufe 1 is built CI-shaped (deterministic, exit-coded, LLM-free) but is deliberately not wired into any pipeline — the PRD's dose argument. `/ux-grill` gates nothing: it writes measurement artefacts, an optional dossier and — only through `reconcile.mjs` <!-- path-check: planned #1327 --> — issues. It never commits, never pushes, never edits product code.
 
 ## Soul Reference
 
@@ -33,7 +51,7 @@ Read `soul.md` in this skill directory before anything else. It defines WHO you 
 
 ### 0.1 Resolve the argument
 
-Per `commands/ux-grill.md` § Argument Validation: a loopback URL selects the bootstrap path, a file path or empty selects `DEFAULT_MANIFEST_PATH` from `scripts/lib/ux-grill/manifest.mjs`.
+Per § Invocation above: a loopback URL selects the bootstrap path, a file path or empty selects `DEFAULT_MANIFEST_PATH` from `scripts/lib/ux-grill/manifest.mjs`.
 
 ### 0.2 Bootstrap (URL, no manifest yet)
 

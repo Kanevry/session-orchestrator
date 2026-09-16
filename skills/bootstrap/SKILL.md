@@ -1,6 +1,8 @@
 ---
 name: bootstrap
 user-invocable: true
+disable-model-invocation: true
+argument-hint: "[--upgrade <tier>]"
 tags: [bootstrap, setup, scaffold, init]
 model: sonnet
 model-preference: sonnet
@@ -15,6 +17,54 @@ description: >
 
 # Bootstrap Skill
 
+## Invocation
+
+The user invokes `/bootstrap` with arguments: **$ARGUMENTS**. Direct invocation runs with
+`INVOCATION_MODE = direct` (see § Invocation Context) and is standalone: after bootstrap
+completes, report the files created and the git commit hash, and do NOT automatically
+continue into any other skill.
+
+**TL;DR — for first-time users:** Run `/bootstrap` with no flags. The skill auto-detects the right tier (fast/standard/deep) from your repo, recommends one with a one-line reason, then walks a **fixed questionnaire** — tier/stack (1–2 prompts), owner persona (5), dispatcher autonomy (1); **7–9 prompts** on a first-run full bootstrap. Bestätigen → fertig. Keine weiteren Schritte.
+
+The flags below cover special cases (re-adopting an existing repo, upgrading a tier, syncing rules). If you don't recognize the case in the description, you don't need the flag.
+
+> **Instruction file alias:** Bootstrap creates and reads `CLAUDE.md` (or `AGENTS.md` on Codex CLI). The two are transparent aliases — pick one, never both. Resolution rule: see `skills/_shared/instruction-file-resolution.md`.
+
+### Standard usage (no flags)
+
+This is the path 95 % of users want.
+
+| Invocation | Behavior |
+|------------|----------|
+| `/bootstrap` | Auto-detect tier (fast / standard / deep) from repo context. Present recommendation via `AskUserQuestion` with options to confirm or override. Tier/stack: 1–2 questions; first-run full bootstrap adds owner interview (5, `owner-interview.mjs`) + dispatcher-autonomy capture (1). Then scaffold files + commit. |
+
+What the user sees:
+
+```
+Skill: "Repo leer. Empfehle 'standard' weil <reason>. Passt das?"
+User: [Enter on "standard (Empfohlen)"]
+Skill: <writes files, commits, prints summary>
+```
+
+### Flag reference (special cases)
+
+Only use a flag if you have one of the situations described. Parsed flags decide the mode
+dispatch in § Invocation Context — `--fast` / `--standard` / `--deep` skip the tier
+confirmation question, while `--retroactive`, `--refresh-lock`, `--sync-rules` and
+`--ecosystem-health` are standalone short-circuit flows that run to completion in this
+skill without dispatching to a tier template.
+
+| Flag | When to use it |
+|------|----------------|
+| `--upgrade <tier>` | You bootstrapped `fast` earlier and now need `standard` or `deep`. Idempotent — writes only the delta. Refuses downgrade. Valid: `fast → standard`, `fast → deep`, `standard → deep`. |
+| `--retroactive` | The repo already has `CLAUDE.md` (or `AGENTS.md` on Codex CLI) + `## Session Config` but no `bootstrap.lock` (manually bootstrapped before the gate existed). Writes the lock based on file inventory; **makes no scaffolding changes**. Commit: `chore: bootstrap lock (retroactive)`. |
+| `--refresh-lock` | Your `bootstrap.lock` already has valid `version`/`tier` fields but the freshness probe flags it as stale or plugin-version-drifted — `--retroactive` is a no-op here. Acknowledges the current plugin version and resets the freshness clock (`refreshed-at` + `refreshed-plugin-version`) without touching the lock's original bootstrap provenance. No scaffolding, no auto-commit. |
+| `--sync-rules` | Pull canonical rules from the plugin's `rules/` library into `.claude/rules/`. Preserves local rules (files without the plugin source header). Standalone — does not touch `bootstrap.lock`. |
+| `--ecosystem-health` | Run the ecosystem-health wizard: detects CI provider + package manager, prompts for health endpoints, pipelines, and critical issue labels. Writes the config block + `.orchestrator/policy/ecosystem.json`. No scaffolding, no auto-commit. |
+| `--fast` / `--standard` / `--deep` | Skip the tier confirmation question (e.g., for scripted runs). Equivalent to running `/bootstrap` and selecting that option. |
+
+All flag-driven flows are idempotent — running twice with no upstream change is a no-op.
+
 ## Overview
 
 This skill runs when the Bootstrap Gate is closed (missing CLAUDE.md, Session Config, or `.orchestrator/bootstrap.lock`) or when the user invokes `/bootstrap` directly. It scaffolds the minimum structure required by all session-orchestrator skills, commits it, and writes the lock file that opens the gate for all future invocations.
@@ -26,7 +76,7 @@ This skill runs when the Bootstrap Gate is closed (missing CLAUDE.md, Session Co
 Before starting, determine how this skill was invoked:
 
 - **Transitive (gate-closed):** Invoked from another skill's Phase 0. The user's original intent (their first prompt) is available in context. After bootstrap completes, execution must return to the original skill's Phase 1.
-- **Direct (`/bootstrap`):** User invoked manually. Parse `$ARGUMENTS` for flags: `--fast`, `--standard`, `--deep`, `--upgrade <tier>`, `--retroactive`. See `commands/bootstrap.md` for flag semantics.
+- **Direct (`/bootstrap`):** User invoked manually. Parse `$ARGUMENTS` for flags: `--fast`, `--standard`, `--deep`, `--upgrade <tier>`, `--retroactive`. See § Invocation above for flag semantics.
 
 Store `INVOCATION_MODE = transitive | direct`.
 

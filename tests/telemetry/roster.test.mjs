@@ -39,7 +39,10 @@ describe('loadRoster — real repo surface', () => {
 
   it('loads commands as bare names within a floor/ceiling range', () => {
     const roster = loadRoster({ pluginRoot: REPO_ROOT });
-    expect(roster.commands.size).toBeGreaterThanOrEqual(10);
+    // Floor 1, not 10: since the 2026-09-16 command→skill fold `commands/`
+    // holds only the names that cannot be a skill (`session`, `templates-ack`);
+    // every other slash command is a user-invocable skill and lands in `skills`.
+    expect(roster.commands.size).toBeGreaterThanOrEqual(1);
     expect(roster.commands.size).toBeLessThanOrEqual(200);
     expect(roster.commands.has('session')).toBe(true);
   });

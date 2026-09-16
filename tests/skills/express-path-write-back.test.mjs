@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import {
@@ -7,6 +7,7 @@ import {
   markExpressPathComplete,
   parseStateMd,
 } from '@lib/state-md.mjs';
+import { isUserInvocableValue, parseSkillFrontmatter } from '@lib/user-invocable-skills.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), '..', '..');
@@ -54,12 +55,14 @@ describe('Express Path persistence contract (#320)', () => {
     });
   });
 
-  // The `/go` body lives in `skills/go/SKILL.md` since #1370 — a bare command
-  // only resolves under `claude -p` when a same-named skill exists, so
-  // `commands/go.md` was reduced to a thin delegation naming that skill. The
-  // four branch pins therefore measure the SKILL (where the contract is), and
-  // the fifth measures the delegation itself: a future re-inlining that strands
-  // `skills/go/SKILL.md` goes red here instead of silently at dispatch time.
+  // The `/go` body lives in `skills/go/SKILL.md` since #1370, and since the
+  // 2026-09-16 fold that skill is ALSO the whole of `/go`: `commands/go.md` is
+  // gone, because a command + same-named skill runs the skill body anyway and
+  // lists the entry twice in the `/` picker (measured, claude 2.1.273). What
+  // makes `/go` resolve now is the explicit `user-invocable: true` marker in the
+  // skill's frontmatter — so the fifth pin below measures THAT, where it used to
+  // measure the delegation. Drop the flag and `/go` silently stops resolving;
+  // this goes red instead.
   describe('Spec — the /go body (skills/go/SKILL.md) has the Express Path Detection branch', () => {
     const skillPath = path.join(repoRoot, 'skills/go/SKILL.md');
     const body = readFileSync(skillPath, 'utf8');
@@ -80,9 +83,10 @@ describe('Express Path persistence contract (#320)', () => {
       expect(body).toContain('## Standard Execution');
     });
 
-    it('is the file commands/go.md delegates to (#1370)', () => {
-      const command = readFileSync(path.join(repoRoot, 'commands/go.md'), 'utf8');
-      expect(command).toContain('skills/go/SKILL.md');
+    it('is the only surface for /go — no commands/go.md twin, explicit user-invocable: true (#1370)', () => {
+      expect(existsSync(path.join(repoRoot, 'commands/go.md'))).toBe(false);
+      const frontmatter = parseSkillFrontmatter(body);
+      expect(isUserInvocableValue(frontmatter?.['user-invocable'])).toBe(true);
     });
   });
 

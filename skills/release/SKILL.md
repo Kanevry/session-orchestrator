@@ -2,13 +2,27 @@
 name: release
 description: Cut a release — the order the steps must run in, and the criteria that abort a release
 user-invocable: true
+disable-model-invocation: true
+argument-hint: "[X.Y.Z]"
 model: inherit
 ---
 # Release
 
 The user wants to cut a release of this package. Optional argument — the target version: **$ARGUMENTS**.
 
-**The mechanism is `scripts/release.mjs`.** It exists, it is executable, and its pure half is unit-tested (`tests/scripts/release.test.mjs`). This command carries only the two things the script cannot carry: the **order**, and the **criteria that stop a release**. Do not restate the script's internals here — `node scripts/release.mjs --help` and the file header are the reference.
+**The mechanism is `scripts/release.mjs`.** It exists, it is executable, and its pure half is unit-tested (`tests/scripts/release.test.mjs`). This skill carries only the two things the script cannot carry: the **order**, and the **criteria that stop a release**. Do not restate the script's internals here — `node scripts/release.mjs --help` and the file header are the reference.
+
+## Invocation
+
+`$ARGUMENTS` is optional and holds the target version `X.Y.Z`. When it is empty, resolve the target from `package.json` and the CHANGELOG before step 2.
+
+The flags this repo's release path uses — the operator-facing entry points, in the order they run:
+
+- `node scripts/release.mjs --set-version X.Y.Z` — rewrite every version surface and sync `package-lock.json`.
+- `node scripts/release.mjs --check --json` — the preflight gate; every row must be green.
+- `node scripts/release.mjs --publish` — the irreversible step; give it ≥600 s of wall clock.
+
+`--skip-ci` marks the CI row green without checking anything and is **refused by the script** when combined with `--publish`; it is an inspection aid for `--check`, never a release path.
 
 ## Why the order is written down
 

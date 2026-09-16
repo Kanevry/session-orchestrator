@@ -60,7 +60,7 @@ npm run quality-gate                    # typecheck, tests and lint
 
 Commit the version and editorial changes, then push to both `origin` and `github`. Wait for CI to pass on that exact commit on both platforms. Finally run `node scripts/release.mjs --check --json` and require every row to pass before publishing. The preflight requires a clean working tree and both remote branches at HEAD, so it cannot be fully green immediately after an uncommitted version bump.
 
-CI green on the exact commit being published is a separate, non-negotiable gate — see `commands/release.md` § Abort criteria. Local green is not evidence of CI green.
+CI green on the exact commit being published is a separate, non-negotiable gate — see `skills/release/SKILL.md` § Abort criteria. Local green is not evidence of CI green.
 
 ## 5. Publish
 
@@ -93,7 +93,7 @@ The registry check and the live-site poll are mechanized inside `--publish`. It 
 
 ## See Also
 
-- `commands/release.md` — the release order and the abort criteria
+- `skills/release/SKILL.md` — the release order and the abort criteria
 - `scripts/release.mjs` — the mechanism (`SURFACES`, `LEAKAGE_PATTERNS`, preflight evaluators)
 - `skills/npm-publish/SKILL.md` — token mechanics, auth failure-mode diagnosis, and the judgement calls
 - `docs/pi-setup.md` — consumer-facing install guide (all options)

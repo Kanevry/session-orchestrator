@@ -1,7 +1,14 @@
 /**
  * tests/commands/release-command.test.mjs
  *
- * Contract between `commands/release.md` and `scripts/release.mjs`.
+ * Contract between the `/release` runbook and `scripts/release.mjs`.
+ *
+ * The runbook moved: `commands/release.md` was folded into
+ * `skills/release/SKILL.md` on 2026-09-16 (#1370), where an explicit
+ * `user-invocable: true` is what makes `/release` resolve. Only the PATH below
+ * changed — the oracle, the extraction rules and every assertion are untouched,
+ * because the defect they catch (a documented flag the parser rejects) is a
+ * property of the prose, not of which file holds it.
  *
  * THE BUG THIS CATCHES (TV-001): the release doc names a flag that the script
  * does not (or no longer) parse. `parseArgs` in release.mjs runs in strict mode,
@@ -37,7 +44,7 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
-const RELEASE_DOC = path.join(REPO_ROOT, 'commands', 'release.md');
+const RELEASE_DOC = path.join(REPO_ROOT, 'skills', 'release', 'SKILL.md');
 const RELEASE_SCRIPT = path.join(REPO_ROOT, 'scripts', 'release.mjs');
 
 /** Binaries other than release.mjs whose own flags must not be attributed to it. */
@@ -79,7 +86,7 @@ function probeFlag(flag) {
   return `${res.stdout ?? ''}\n${res.stderr ?? ''}`;
 }
 
-describe('commands/release.md ↔ scripts/release.mjs flag contract', () => {
+describe('skills/release/SKILL.md ↔ scripts/release.mjs flag contract', () => {
   const markdown = readFileSync(RELEASE_DOC, 'utf8');
   const documented = extractDocumentedFlags(markdown);
 

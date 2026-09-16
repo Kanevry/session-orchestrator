@@ -70,7 +70,7 @@ Express path activated — <N> tasks, coordinator-direct, no inter-wave checks.
 
 > **RESOLVED (#1146, operator decision) — session-plan RUNS, in shortened form.** Five documents
 > described the post-activation routing and two of them said session-plan was skipped entirely.
-> That reading cannot work: `commands/go.md` gates on a 1-wave Express Path plan, which under a
+> That reading cannot work: `skills/go/SKILL.md` gates on a 1-wave Express Path plan, which under a
 > skipped session-plan would never have been produced — `/go` would look for a plan that does not
 > exist. The routing is now one sentence everywhere:
 >
@@ -78,13 +78,13 @@ Express path activated — <N> tasks, coordinator-direct, no inter-wave checks.
 > to Phase 9 → session-plan.** session-plan detects the banner and its
 > `## Express Path Short-Circuit (#214)` section emits a minimal 1-wave `coordinator-direct` plan
 > (0 agents dispatched, no role decomposition, no wave splitting). `/go` detects that plan per
-> `commands/go.md` § Express Path Detection and routes to coord-direct execution plus
+> `skills/go/SKILL.md` § Express Path Detection and routes to coord-direct execution plus
 > session-end auto-invocation — never to wave-executor.
 >
 > What activation skips is the WAVE MACHINERY (subagent dispatch, role decomposition, inter-wave
 > checkpoints), not the planning handoff. The two sites that said otherwise —
 > this file and `skills/session-start/SKILL.md` — were corrected in the same pass;
-> `docs/session-config-reference.md`, `skills/session-plan/SKILL.md` and `commands/go.md`
+> `docs/session-config-reference.md`, `skills/session-plan/SKILL.md` and `skills/go/SKILL.md`
 > already carried the surviving reading.
 
 Hand off to Phase 9 as usual. The coordinator then executes the 1-wave plan session-plan emits directly, without dispatching subagents:
@@ -104,7 +104,7 @@ Step 1 is the Phase 9 handoff and ends the session-start turn — the operator t
 - Step 4b (invoke session-end) flips `status` to `completed`, writes the metrics record to `.orchestrator/metrics/sessions.jsonl`, and runs the standard close flow. Session-end has no Express Path-specific logic — it treats this run identically to any other completed session.
 - Step 5 (verification) is the coordinator's final action before returning control. The verification check uses `parseStateMd()` from `scripts/lib/state-md.mjs` to read the file and check `frontmatter.status === 'completed'` and that the body contains the literal string `Express path:`.
 
-When `/go` is invoked and session-plan emitted a 1-wave Express Path plan (per `skills/session-plan/SKILL.md` § "Express Path Short-Circuit"), the `/go` command MUST detect this and route to coord-direct execution + session-end auto-invocation, NOT to wave-executor. See `commands/go.md` for the detection branch — that plan is the artifact `/go` keys on, which is why Phase 8.5 hands off to session-plan rather than skipping it.
+When `/go` is invoked and session-plan emitted a 1-wave Express Path plan (per `skills/session-plan/SKILL.md` § "Express Path Short-Circuit"), the `/go` command MUST detect this and route to coord-direct execution + session-end auto-invocation, NOT to wave-executor. See `skills/go/SKILL.md` for the detection branch — that plan is the artifact `/go` keys on, which is why Phase 8.5 hands off to session-plan rather than skipping it.
 
 **When Express Path does NOT activate** (conditions not met):
 
@@ -124,6 +124,6 @@ Proceed normally to Phase 9 (session-plan handoff). The express-path evaluation 
 
 - `scripts/express-path.mjs` — the CLI this phase runs; `scripts/lib/express-path.mjs` holds the decision + its `orchestrator.express_path.evaluated` record
 - `skills/session-plan/SKILL.md` § "Express Path Short-Circuit (#214)" — the 1-wave plan Phase 9 emits when the banner is present
-- `commands/go.md` — Express Path detection and auto-invocation of session-end after coord-direct tasks
+- `skills/go/SKILL.md` — Express Path detection and auto-invocation of session-end after coord-direct tasks
 - `skills/session-end/SKILL.md` — Phase 1 pre-check (Rule 2) blocks `/close` when STATE.md `status: completed`; auto-invocation from express-path bypasses this
-- `commands/close.md` — Rule 2 wording the user sees if express-path persistence breaks
+- `skills/close/SKILL.md` — Rule 2 wording the user sees if express-path persistence breaks

@@ -11,6 +11,8 @@ description: >
   / Active. No item is deleted automatically; I'll surface Retire/Demote candidates for your decision."
   <commentary>The user wants a usage-driven prune candidate list; this skill runs the read-only walker,
   presents grouped verdicts, and writes a sidecar — it never deletes.</commentary></example>
+user-invocable: true
+argument-hint: "[--kind skill|agent|command] [--window-days N]"
 model: inherit
 color: amber
 ---
@@ -18,6 +20,17 @@ color: amber
 # Sunset Review Skill
 
 Identify which skills, agents, and commands in the plugin surface are still earning their keep, and which are candidates to **Demote** (downgrade docs/tier) or **Retire** (remove). The skill is advisory: it produces a ranked candidate list and a sidecar artifact. **It never deletes anything.**
+
+## Invocation
+
+Parse `$ARGUMENTS` before Phase 1. Two optional flags narrow the scope; anything else is ignored.
+
+| Flag | Behavior |
+|---|---|
+| `--kind skill\|agent\|command` | Limits the walk to one surface kind — passed straight through to the walker. |
+| `--window-days N` | Overrides the default 90-day dispatch window resolved in Phase 1. |
+
+`/harness-audit` answers a third question — "is session-orchestrator installed correctly?" (plugin health) — and is not this skill.
 
 ## Why this is a distinct skill (not /repo-audit)
 

@@ -105,6 +105,7 @@ import { execFileSync } from 'node:child_process';
 import { writeStdoutLineSync, writeJsonAtomicSync } from './lib/io.mjs';
 import { readCanonicalSessions } from './lib/sessions-canonical.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { slashCommandNames } from './lib/user-invocable-skills.mjs';
 
 /** Machine-readable schema tag for the --json envelope. */
 export const SCHEMA = 'site-numbers/1';
@@ -169,11 +170,35 @@ export function countSkills(root) {
   return n;
 }
 
-/** `ls commands/*.md | wc -l` — same basis as checker.mjs `command-count`. */
+/**
+ * The product's "slash commands" number: `commands/*.md` ∪ skills carrying an
+ * EXPLICIT `user-invocable: true`, deduplicated by name.
+ *
+ * NOT `ls commands/*.md | wc -l` any more, and the change is not cosmetic. After
+ * the 2026-09-16 fold (#1370) `commands/` holds two files — `session` and
+ * `templates-ack`, the only two names a skill cannot carry — while 26 operator-
+ * facing slash commands exist. A command file only ever resolved because a
+ * same-named skill existed, and the twin additionally listed the entry twice in
+ * the `/` picker; the skill frontmatter flag is what makes a slash command a
+ * slash command now. Counting the directory would have reported 2.
+ *
+ * Dedup by name is load-bearing: a name present on BOTH sides is the picker-
+ * duplicate defect (`tests/commands/headless-bare-command-availability.test.mjs`
+ * fails on it), so it must count once here rather than inflate the tile.
+ *
+ * null (→ the tile renders as unmeasured) only when NEITHER `commands/` nor
+ * `skills/` exists — i.e. this is not a plugin tree at all. A tree with one of
+ * the two counts what it has; a missing `commands/` is now the NORMAL state, not
+ * a missing measurement.
+ *
+ * Divergence from `skills/claude-md-drift-check/checker.mjs` `command-count`,
+ * named on purpose: that checker is GENERIC over consumer repos, where
+ * `commands/*.md` is still the whole story, so it stays on the directory count.
+ * This tile describes THIS plugin.
+ */
 export function countCommands(root) {
-  const dir = join(root, 'commands');
-  if (!isDir(dir)) return null;
-  return readdirSync(dir).filter((f) => f.endsWith('.md') && !f.startsWith('.')).length;
+  if (!isDir(join(root, 'commands')) && !isDir(join(root, 'skills'))) return null;
+  return slashCommandNames(root).length;
 }
 
 /**
@@ -400,7 +425,8 @@ export const METRIC_DEFS = Object.freeze([
   {
     id: 'commands',
     provenance: false,
-    source: 'ls commands/*.md | wc -l',
+    source:
+      'ls commands/*.md | wc -l  +  grep -l "^user-invocable: true" skills/*/SKILL.md | wc -l   (union by name — see countCommands)',
     compute: (root) => fmtCount(countCommands(root)),
   },
   {

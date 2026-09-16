@@ -76,7 +76,7 @@ The package manifest in `package.json` exposes:
 
 - `pi.extensions`: `./pi/extensions/session-orchestrator.ts`
 - `pi.skills`: `./skills`
-- `pi.prompts`: `./pi/prompts/*.md` generated from `commands/*.md`
+- `pi.prompts`: `./pi/prompts/*.md` generated from `commands/*.md` plus every skill with explicit `user-invocable: true`
 
 The extension uses `hooks/hooks-pi.json` and `scripts/lib/pi-hook-bridge.mjs` to translate Pi events into the existing hook stdin contract.
 

@@ -6,12 +6,22 @@ description: >
   INVESTIGATION FIRST. Produces a `.orchestrator/debug/` artifact the fixer agent must reference.
 model: inherit
 color: red
+user-invocable: true
+argument-hint: "[bug-description-or-issue-ref]"
 tools: Read, Grep, Glob, Bash, Write
 ---
 
 # Debug Skill
 
 > 4-phase root-cause investigation. Iron Law: no fix without root cause.
+
+## Invocation
+
+The user invokes `/debug` with arguments: **$ARGUMENTS**.
+
+The optional argument is a short bug description or issue reference (e.g. `"test timeout in CI"` or `#408`). If absent, inspect recent errors and `git log` to surface the most likely candidate, then confirm it with the user before starting Phase 1.
+
+The four phases (Root Cause → Pattern → Impact → Solution) run in order, and the Phase-1 artifact at `.orchestrator/debug/<session-id>-<sequence>.md` is written before any fix code exists — it is a prerequisite for Phase 4, not optional documentation.
 
 ## When to use
 

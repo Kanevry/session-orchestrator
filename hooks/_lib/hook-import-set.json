@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-09-16T11:23:32.237Z",
-  "head": "ca214376526873729b0f8707c25e93636cada222",
+  "generated_at": "2026-09-16T17:00:47.173Z",
+  "head": "1ef26415ce80164bd7e27705a4e7d97c37c72126",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -268,7 +268,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -1552,6 +1553,14 @@
     },
     {
       "file": "scripts/lib/telemetry/sync.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/user-invocable-skills.mjs",
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",

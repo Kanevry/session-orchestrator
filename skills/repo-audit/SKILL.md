@@ -10,6 +10,7 @@ description: >
   (optional), and MCP Configuration. Will produce a Markdown checklist report and JSON sidecar."
   <commentary>The user wants a compliance check; this skill is appropriate because it runs all 9
   categories with pass/fail/warn/skipped statuses and writes structured output.</commentary></example>
+user-invocable: true
 model: inherit
 color: cyan
 ---
@@ -17,6 +18,12 @@ color: cyan
 # Repo Audit Skill
 
 Perform a comprehensive audit of the host repository against the ecosystem baseline. Emits a structured Markdown checklist report and a JSON sidecar for trend tracking.
+
+## Invocation
+
+There are no arguments — ignore `$ARGUMENTS`; anything passed is discarded.
+
+Do NOT skip any category (except Clank when not detected). Do NOT auto-fix findings — report only.
 
 ## Purpose
 

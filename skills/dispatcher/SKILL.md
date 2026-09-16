@@ -10,12 +10,33 @@ description: >
   portfolio. user: "/dispatcher" assistant: "Ranked 18 free repos — top recommendation: Pencil-Designs
   (score 4.50, 90d stale). Confirm via the picker, I'll claim its lease atomically, then route you to
   /session deep."</example>
+user-invocable: true
+argument-hint: "[--dry-run] [--repo <name>]"
 model: sonnet
 ---
 
 # Dispatcher Skill
 
 > Cross-repo autopilot front-door — enumerate → rank → owner-AUQ → atomic claim → route. Read-only until the operator confirms; the only mutating step is the atomic `session.lock` claim, and it happens BEFORE any launch.
+
+## Invocation
+
+Invoked as `/dispatcher [--dry-run] [--repo <name>]` with arguments: **$ARGUMENTS**.
+
+Parse `$ARGUMENTS` before doing anything else. The recognized flags are exactly those of the CLI table below and are passed straight through to `scripts/lib/dispatcher/cli.mjs`:
+
+- `--dry-run` — run the non-mutating rank only; print the recommendation and the free-candidate table; do NOT claim any lease (skip Phase 3).
+- `--repo <name>` — limit the human-readable output to a single `repoName` (informational; does not change ranking).
+- `--start-dir <path>` — override the scan root (defaults to the confinement root).
+- `--json` — emit the full `{ candidates, free, ranked, warnings, recommended }` object to stdout.
+
+If `$ARGUMENTS` contains an unrecognized flag (starts with `--` but is not one of the above), inform the user:
+
+```
+Unknown flag '<flag>'. Recognized flags: --dry-run, --repo <name>, --start-dir <path>, --json.
+```
+
+Then continue with the remaining valid arguments.
 
 ## Soul
 

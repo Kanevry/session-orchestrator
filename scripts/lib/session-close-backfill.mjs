@@ -14,7 +14,7 @@
  * `scripts/backfill-abandoned-sessions.mjs`.
  *
  * A second, sibling export — `backfillCompletedFromStateMd` — closes a
- * different gap (#429): `commands/close.md`'s Pre-Check treats STATE.md
+ * different gap (#429): `skills/close/SKILL.md`'s Pre-Check treats STATE.md
  * `status: completed` as proof the session-end writer already ran and refuses
  * to invoke it again. When that status was set by hand (or by any path that
  * never reached Phase 3.7), no sessions.jsonl record is EVER written — the
@@ -986,7 +986,7 @@ export async function backfillAbandonedSession({
  * matching record (#429).
  *
  * ── THE GAP THIS CLOSES ──────────────────────────────────────────────────
- *   `commands/close.md`'s Pre-Check treats `STATE.md status: completed` as
+ *   `skills/close/SKILL.md`'s Pre-Check treats `STATE.md status: completed` as
  *   PROOF that the session-end skill's Phase 3.7 writer already ran, and
  *   stops before invoking it — including when `status: completed` was set by
  *   hand (or by any path that never reached Phase 3.7). The session then has

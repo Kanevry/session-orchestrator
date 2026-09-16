@@ -639,7 +639,7 @@ async function main() {
   //      above and to THIS session's own id: it reads STATE.md directly and
   //      repairs a PAST session whose `status: completed` was set (by hand or
   //      otherwise) without session-end's Phase 3.7 ever writing the matching
-  //      sessions.jsonl record — the exact state `commands/close.md`'s
+  //      sessions.jsonl record — the exact state `skills/close/SKILL.md`'s
   //      Pre-Check then reads as "already finalized" forever after. Cheap
   //      no-op on the overwhelmingly common path (STATE.md status is
   //      'active'/'paused'/'idle', or the record already exists).

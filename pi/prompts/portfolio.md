@@ -5,8 +5,8 @@ argument-hint: "[--dry-run] [--repo <name>]"
 
 # /portfolio
 
-Use the Session Orchestrator command definition at `commands/portfolio.md`.
+Use the Session Orchestrator skill definition at `skills/portfolio/SKILL.md`.
 
 Arguments: $@
 
-Read that command file and follow it exactly. When it references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.
+Read that skill file and follow it exactly. When it references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.

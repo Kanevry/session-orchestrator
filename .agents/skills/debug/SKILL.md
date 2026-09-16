@@ -4,6 +4,8 @@ description: "Use when encountering any bug, test failure, build break, or unexp
 metadata:
   model: inherit
   color: red
+  user-invocable: "true"
+  argument-hint: "[bug-description-or-issue-ref]"
 allowed-tools:
   - Read
   - Grep

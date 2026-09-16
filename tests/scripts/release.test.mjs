@@ -489,7 +489,7 @@ describe('evaluateDriftSweep', () => {
   // regex; a sibling in the same directory must stay swept.
   it.each([
     ['site/guide/index.html', true],
-    ['commands/release.md', true],
+    ['skills/release/SKILL.md', true],
     ['site/guide/other.html', false],
     ['commands/close.md', false],
     ['site/index.html', false],

@@ -1,6 +1,7 @@
 ---
 name: spinout
 user-invocable: true
+argument-hint: "[--type venture|snapshot] [--dry-run]"
 model: sonnet
 description: >
   Use when extracting a project into its own repo — a venture spinout (e.g. a product leaving its
@@ -10,6 +11,17 @@ description: >
 ---
 
 # spinout — Guided Project-Extraction Runbook
+
+The user wants to extract this project (or a sub-path of it) into a new standalone repo — a venture spinout or a sanitized content-snapshot fork. Arguments: **$ARGUMENTS**
+
+## Invocation
+
+Parse `$ARGUMENTS` before Phase 0. Two optional flags are recognised; anything else is ignored.
+
+| Flag | Behavior |
+|---|---|
+| `--type venture\|snapshot` | Skips the extraction-type question in Phase 1 (`AskUserQuestion`) — still asks for destination path and sphere. |
+| `--dry-run` | Runs all 5 phases as a plan-print (target, sanitize checklist, copy plan, freeze-marker draft, remote plan) with no writes. |
 
 ## Status: Deliberately Not Scripted
 
@@ -74,7 +86,6 @@ Confirm each write via `AskUserQuestion` before executing:
 
 ## See Also
 
-- `commands/spinout.md` — slash-command entry point.
 - `skills/_shared/bootstrap-gate.md` — Phase 0 gate contract.
 - `.claude/rules/ask-via-tool.md` — AUQ-001 (every user decision goes through the tool, not prose).
 - `.claude/rules/parallel-sessions.md` § PSA-003 — destructive-action safeguards apply to any write in Phase 3/4/5.

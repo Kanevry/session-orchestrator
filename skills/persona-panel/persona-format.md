@@ -170,7 +170,7 @@ diff is reported alongside the panel result and has **zero influence on `final_v
 is signal for the operator to review, not a consolidation input. `consolidate()` and `tally()`
 in `consolidator.mjs` are deliberately unaware of grounding data.
 
-**Enabling it:** pass `--grounding re-derive` to `/persona-panel` (see `commands/persona-panel.md`).
+**Enabling it:** pass `--grounding re-derive` to `/persona-panel` (see `skills/persona-panel/SKILL.md`).
 Default remains `--grounding off`.
 
 ---

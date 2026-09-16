@@ -7,6 +7,14 @@
  * `skills/`; these wrappers keep one maintained body while giving Cursor a
  * native entry per command/skill (same pattern as `generate-pi-prompts.mjs`).
  *
+ * `.cursor/commands/` is generated from the UNION of two sources: every
+ * `commands/*.md`, plus every skill whose frontmatter carries an explicit
+ * `user-invocable: true`. The second source exists because the operator-facing
+ * slash-command marker moved INTO the skill frontmatter when the command bodies
+ * were folded into their same-named `skills/<name>/SKILL.md`. A name present in
+ * both sources is a generator ERROR, not a precedence question — two documents
+ * claiming one public `/name` is a merge that did not finish.
+ *
  * Usage:
  *   node scripts/generate-cursor-adapter.mjs
  *   node scripts/generate-cursor-adapter.mjs --check
@@ -31,12 +39,14 @@ function isDir(p) {
 }
 
 function commandFiles() {
+  if (!existsSync(COMMANDS_DIR)) return [];
   return readdirSync(COMMANDS_DIR)
     .filter((name) => name.endsWith('.md'))
     .sort();
 }
 
 function skillDirs() {
+  if (!existsSync(SKILLS_DIR)) return [];
   return readdirSync(SKILLS_DIR)
     .filter((name) => isDir(path.join(SKILLS_DIR, name)) && existsSync(path.join(SKILLS_DIR, name, 'SKILL.md')))
     .sort();
@@ -158,8 +168,68 @@ Cursor has no Skill tool. When the command says to invoke a skill, Read \`skills
 `;
 }
 
+/**
+ * The repo-wide marker for "operator-facing slash command".
+ *
+ * EXPLICIT means the literal `true` and nothing else: a missing key, `false`,
+ * or any other value is a library skill. Surrounding whitespace is tolerated
+ * (`user-invocable: true ` is the same declaration), because trailing spaces
+ * are invisible in an editor and would otherwise silently demote a skill out of
+ * `.cursor/commands/` with no diagnostic anywhere.
+ *
+ * @param {unknown} value the raw frontmatter value
+ * @returns {boolean}
+ */
 function isUserInvocable(value) {
-  return value === 'true' || value === true;
+  if (value === true) return true;
+  return typeof value === 'string' && value.trim() === 'true';
+}
+
+/**
+ * Skills that declare themselves operator-facing slash commands.
+ * @returns {string[]} skill names, sorted
+ */
+function userInvocableSkills() {
+  return skillDirs().filter((name) => {
+    const fields = parseFrontmatter(readFileSync(path.join(SKILLS_DIR, name, 'SKILL.md'), 'utf8'));
+    return isUserInvocable(fields['user-invocable']);
+  });
+}
+
+/**
+ * A `.cursor/commands/<name>.md` wrapper for a skill that IS the slash command
+ * (`user-invocable: true`). Same contract as {@link renderCommand}, pointing at
+ * the skill body instead of a command file.
+ *
+ * @param {string} skillName
+ * @returns {string}
+ */
+function renderSkillCommand(skillName) {
+  const skillPath = path.join(SKILLS_DIR, skillName, 'SKILL.md');
+  const fields = parseFrontmatter(readFileSync(skillPath, 'utf8'));
+  const description = clampDescription(fields.description || `Session Orchestrator skill: ${skillName}`);
+  // Same GH#54 rule as renderCommand: `argument-hint` ALWAYS goes through
+  // yamlQuote(), because its canonical authored form (`[mode] [--flag]`) is a
+  // YAML flow sequence when emitted bare.
+  const frontmatter = [
+    '---',
+    frontmatterLine('description', yamlQuote(description)),
+    frontmatterLine('argument-hint', yamlQuote(fields['argument-hint'])),
+    '---',
+  ].filter(Boolean).join('\n');
+
+  return `${frontmatter}
+
+# /${skillName}
+
+Use the Session Orchestrator skill definition at \`skills/${skillName}/SKILL.md\`.
+
+Arguments: $ARGUMENTS
+
+Read that skill file and follow it exactly. When it references \`$ARGUMENTS\`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.
+
+Cursor has no Skill tool. When the skill says to invoke another skill, Read \`skills/<skill-name>/SKILL.md\` and follow it. Supporting files (\`soul.md\`, phase docs) live in that same \`skills/<skill-name>/\` directory.
+`;
 }
 
 function renderSkill(skillName) {
@@ -191,12 +261,37 @@ Cursor has no Skill tool. Treat "invoke the ${skillName} skill" as: Read \`skill
 `;
 }
 
+/**
+ * The expected `.cursor/commands/` set: every `commands/*.md` PLUS every skill
+ * marked `user-invocable: true`.
+ *
+ * @returns {Map<string, string>} file name → content, sorted by file name
+ * @throws {Error} when one public name is claimed by both sources
+ */
 function expectedCommands() {
   const commands = new Map();
   for (const commandFile of commandFiles()) {
     commands.set(commandFile, renderCommand(commandFile));
   }
-  return commands;
+
+  const collisions = [];
+  for (const skillName of userInvocableSkills()) {
+    const fileName = `${skillName}.md`;
+    if (commands.has(fileName)) {
+      collisions.push(skillName);
+      continue;
+    }
+    commands.set(fileName, renderSkillCommand(skillName));
+  }
+  if (collisions.length > 0) {
+    throw new Error(
+      `${collisions.length} public name(s) claimed by BOTH commands/ and a user-invocable skill: ${collisions.join(', ')}. `
+      + 'Exactly one document may own a slash command — delete the commands/<name>.md whose body was folded into skills/<name>/SKILL.md, '
+      + 'or drop `user-invocable: true` from the skill.',
+    );
+  }
+
+  return new Map([...commands].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 }
 
 function expectedSkills() {
@@ -284,7 +379,16 @@ function writeAll(expectedCmds, expectedSkillsMap) {
   process.stdout.write(`cursor adapter: wrote ${expectedCmds.size} command(s), ${expectedSkillsMap.size} skill(s)\n`);
 }
 
-const expectedCmds = expectedCommands();
-const expectedSkillsMap = expectedSkills();
+let expectedCmds;
+let expectedSkillsMap;
+try {
+  expectedCmds = expectedCommands();
+  expectedSkillsMap = expectedSkills();
+} catch (error) {
+  // Loud and diagnosable: a source conflict must never degrade into a partial
+  // write or a stack trace read as "some node thing went wrong".
+  process.stderr.write(`FAIL: ${error.message}\n`);
+  process.exit(1);
+}
 if (CHECK_ONLY) checkAll(expectedCmds, expectedSkillsMap);
 else writeAll(expectedCmds, expectedSkillsMap);

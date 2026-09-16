@@ -42,6 +42,7 @@ import path from 'node:path';
 import { normalizeSkillInvocation } from '../skill-invocations-schema.mjs';
 import { normalizeSkillJudgment } from '../skill-judgments-schema.mjs';
 import { isMainModule } from '../is-main-module.mjs';
+import { userInvocableSkills } from '../user-invocable-skills.mjs';
 
 // ---------------------------------------------------------------------------
 // Named threshold constants
@@ -602,6 +603,16 @@ export function staticReferenceScan(repoRoot, { kind, name }) {
  * Parse commands/*.md for the skill each command invokes. Recognises the
  * conventional `skills/<name>/SKILL.md` reference inside a command file.
  *
+ * NOTE since the 2026-09-16 command→skill fold (#1370): this linkage now covers
+ * almost nothing. `commands/` holds two files (`session`, `templates-ack`), so
+ * `skillToCommands` is near-empty by construction — the operator entry point for
+ * every other slash command is an explicit `user-invocable: true` in the skill's
+ * own frontmatter, not a command file pointing at it. `runSunsetWalk` therefore
+ * threads that flag alongside this linkage, and `classifyItem` treats the two as
+ * equivalent evidence of "an operator can invoke this directly". Without that, 26
+ * live slash commands would have been demoted the day their command file was
+ * deleted, for a reason that is a rename, not a disuse signal.
+ *
  * @param {string} repoRoot
  * @returns {{commandToSkill: Map<string,string|null>, skillToCommands: Map<string,string[]>}}
  */
@@ -772,6 +783,11 @@ export function classifyItem({
   const strictRefs = staticRefs.strictRefs;
   const nonBoilerplateRefs = staticRefs.nonBoilerplateRefs;
   const invokedByCommands = linkage?.invokedByCommands ?? [];
+  // #1370 fold: an explicit `user-invocable: true` in SKILL.md frontmatter is the
+  // post-fold form of "an operator invokes this directly" — the same evidence a
+  // command file used to carry. Default false so older callers/tests that do not
+  // thread it behave exactly as before.
+  const userInvocable = linkage?.userInvocable === true;
   const invokesSkill = linkage?.invokesSkill ?? null;
   // When a command invokes a skill, the caller passes whether that skill is
   // present on disk. Default-true so callers that don't thread the surface set
@@ -786,6 +802,7 @@ export function classifyItem({
     proseRefs,
     nonBoilerplateRefs,
     invokedByCommands,
+    userInvocable,
     invokesSkill,
     invokedSkillExists,
     lowConfidence,
@@ -842,6 +859,10 @@ export function classifyItem({
     active = true;
     reasons.push(`skill invoked by command(s): ${invokedByCommands.join(', ')}`);
   }
+  if (kind === 'skill' && userInvocable) {
+    active = true;
+    reasons.push('skill is an operator-facing slash command (user-invocable: true)');
+  }
   if (kind === 'command' && invokesSkill && invokedSkillExists) {
     active = true;
     reasons.push(`command invokes live skill: ${invokesSkill}`);
@@ -878,7 +899,10 @@ export function classifyItem({
 
   // --- Demote (near-zero) — skills & commands (agents handled above) ---------
   const lonelySkill =
-    kind === 'skill' && nonBoilerplateRefs <= 1 && invokedByCommands.length === 0;
+    kind === 'skill' &&
+    nonBoilerplateRefs <= 1 &&
+    invokedByCommands.length === 0 &&
+    !userInvocable;
   const lonelyCommand =
     kind === 'command' && !invokesSkill && nonBoilerplateRefs <= 1;
   if (lonelySkill || lonelyCommand) {
@@ -942,6 +966,9 @@ export function runSunsetWalk(repoRoot, opts = {}) {
   // classification below behaves byte-for-byte identically to the L1-only path.
   const skillJudgments = readSkillJudgmentCounts(judgmentsPath, { windowDays, now: nowMs });
   const linkage = commandSkillLinkage(repoRoot);
+  // Post-#1370 replacement for the command→skill linkage as an operator-entry
+  // signal (see commandSkillLinkage's note). Read once per walk, not per skill.
+  const userInvocableSet = new Set(userInvocableSkills(repoRoot));
   const coverageDays = dispatch.coverageDays;
   const lowConfidence = coverageDays < windowDays;
 
@@ -967,7 +994,7 @@ export function runSunsetWalk(repoRoot, opts = {}) {
           name,
           dispatch: skillDispatch,
           static: staticRefs,
-          linkage: { invokedByCommands },
+          linkage: { invokedByCommands, userInvocable: userInvocableSet.has(name) },
           windowDays,
           coverageDays,
           judge,

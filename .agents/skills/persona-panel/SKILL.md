@@ -3,6 +3,7 @@ name: persona-panel
 description: Use this skill when you need multi-persona parallel content review — domain experts, buyer personas, compliance reviewers, or custom catalog entries reviewing a target file or output. Dispatches N persona agents in parallel, consolidates verdicts via a configurable mode (voting-quorum, hard-gate-threshold, or coordinator-summary), and writes a timestamped sidecar to .orchestrator/persona-panel/. Invoked via /persona-panel <target-path>.
 metadata:
   user-invocable: "true"
+  argument-hint: <target> [--personas <names,...>] [--mode <voting|hard-gate|summary>] [--threshold <M-of-N|all|any>] [--grounding <off|re-derive>] [--dry-run]
   tags: review, personas, content, quality, multi-agent
   model: inherit
 ---

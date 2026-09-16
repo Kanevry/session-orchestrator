@@ -1,5 +1,5 @@
 ---
-description: Start a development session (housekeeping, feature, deep; ultradeep = deep + profile)
+description: "Start a development session (housekeeping, feature, deep; ultradeep = deep + profile)"
 argument-hint: "[housekeeping|feature|deep|ultradeep]"
 ---
 

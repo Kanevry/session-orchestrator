@@ -3,6 +3,7 @@ name: close
 description: End session with verification, commits, and documentation
 metadata:
   user-invocable: "true"
+  disable-model-invocation: "true"
   model: inherit
 ---
 

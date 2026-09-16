@@ -1,6 +1,7 @@
 ---
 name: evolve
-user-invocable: false
+user-invocable: true
+argument-hint: "[analyze|review|list|dialectic [--apply]]"
 tags: [learning, intelligence, meta]
 model: sonnet
 model-preference: sonnet
@@ -23,6 +24,12 @@ description: >
 > **Platform Note:** State files use the platform's native directory: `.claude/` (Claude Code), `.codex/` (Codex CLI), or `.cursor/` (Cursor IDE). Shared metrics live in `.orchestrator/metrics/` (v2) with fallback to `<state-dir>/metrics/` for pre-v2.0 legacy data. See `skills/_shared/platform-tools.md`.
 
 # Evolve Skill
+
+## Invocation
+
+Invoked as `/evolve [analyze|review|list|dialectic [--apply]]` with mode: **$ARGUMENTS** (if empty, default to `analyze` — parsed in Step 1.3).
+
+Analyze session history for patterns, review existing learnings, list active intelligence, or derive USER.md/AGENT.md peer-card updates via the dialectic mode. Every learning must be confirmed by the user before persisting. Evidence before assertions.
 
 ## Phase 0: Bootstrap Gate
 

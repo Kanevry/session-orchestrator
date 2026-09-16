@@ -3,6 +3,7 @@ name: test
 description: Agentic end-to-end test orchestrator — drive web/macOS flows, evaluate UX rubric, reconcile issues
 metadata:
   user-invocable: "true"
+  argument-hint: "[scope|profile-name] [--since <git-ref>] [--full]"
   model: inherit
 ---
 

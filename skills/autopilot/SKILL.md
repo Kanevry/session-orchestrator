@@ -9,11 +9,46 @@ description: >
   record per loop run. Phase C scaffold (issue #277); implementation lives in
   scripts/lib/autopilot.mjs (Phase C-1 follow-up).
 user-invocable: true
+argument-hint: "[--headless] [--verbose] [--max-sessions=N] [--max-hours=H] [--confidence-threshold=0.X] [--dry-run]"
 tags: [phase-c, autopilot, autonomous, loop]
 model: sonnet
 ---
 
 # Autopilot Skill
+
+## Invocation
+
+The user invokes `/autopilot` with arguments: **$ARGUMENTS**. This is autonomous
+session-orchestration mode — a top-level invocation only, never from inside a running
+session.
+
+Parse `$ARGUMENTS` before anything else. Unrecognized flags are ignored; out-of-range
+values silently clamp to bounds. Use `parseFlags` from `scripts/lib/autopilot.mjs` for
+canonical parsing — never re-implement clamping inline. The loop flags
+(`--max-sessions`, `--max-hours`, `--confidence-threshold`, `--dry-run`) and their
+defaults/bounds are tabled once in § Command Surface below. Two further flags belong to
+the invocation surface only:
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--headless` | `false` | Run via the standalone driver `scripts/autopilot.mjs`, which spawns `claude -p '/session <mode>'` as a child process per iteration. Required for unattended walk-away mode. Without it, `/autopilot` runs the in-process driver inside the current chat session (see § Production Wiring). |
+| `--verbose` | `false` | Verbose driver output. |
+
+### Headless (`claude -p`)
+
+Headless requirements:
+
+- Anthropic API key configured for `claude -p` (Claude Code CLI auth).
+- `scripts/autopilot.mjs` reads `sessions.jsonl` tail after each child exit to construct
+  the `sessionRunner` return shape — the spawned session must complete cleanly and append
+  its record (session-end Phase 3.7 handles this).
+- `AUTOPILOT_RUN_ID` env var is propagated to the child so session-end stamps it onto the
+  per-iteration `sessions.jsonl` record.
+
+Do NOT re-implement loop logic inline — this skill and `scripts/lib/autopilot.mjs` are
+authoritative. Kill-switches are enforced by `scripts/lib/autopilot.mjs`, not inline by
+Claude. The runtime writes ONE record to `.orchestrator/metrics/autopilot.jsonl` per
+invocation via atomic tmp+rename; no other code path appends to that file.
 
 ## Phase 0.5: Parallel-Aware Preamble
 
@@ -177,7 +212,8 @@ Phase C-1 ships `runLoop` as a pure controller. Phase C-1.c ships `buildLiveSign
 the canonical signals-assembly helper. This section documents the **in-process driver
 protocol** (Option B from #301): how Claude — running as the coordinator in a chat
 session — drives `runLoop` between manual `/session` invocations. The headless wrapper
-(Option A, `scripts/autopilot.mjs` CLI spawning `claude -p`) is reserved for Phase C-5.
+(Option A, `scripts/autopilot.mjs` CLI spawning `claude -p`) is selected with `--headless`
+— see § Invocation.
 
 ### Dependency-Injection Contract
 
@@ -387,7 +423,6 @@ Single-story `/autopilot` takes no Session Config block. Multi-story
 - PRD: "Autopilot Loop" (#277; archived in the private Meta-Vault)
 - Implementation (Phase C-1 + C-1.b): `scripts/lib/autopilot.mjs` — exports `runLoop`, `parseFlags`, `writeAutopilotJsonl`, `KILL_SWITCHES`, `FLAG_BOUNDS`, `SCHEMA_VERSION`, `DEFAULT_PEER_ABORT_THRESHOLD`, `DEFAULT_JSONL_PATH`, `DEFAULT_CARRYOVER_THRESHOLD`
 - Tests (Phase C-1 + C-1.b): `tests/lib/autopilot.test.mjs`
-- Command file: `commands/autopilot.md`
 - Mode-Selector contract: `skills/mode-selector/SKILL.md`
 - Resource probe: `scripts/lib/resource-probe.mjs`
 - Session registry: `scripts/lib/session-registry.mjs`

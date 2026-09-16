@@ -3,12 +3,28 @@ name: brainstorm
 description: Use when you have a feature idea but the scope or UX is still ambiguous — runs a lightweight Socratic design dialogue (3-5 AUQ rounds) and writes a spec markdown file. Use BEFORE /plan feature when product intent needs validation; skip to /plan feature when scope is already clear. HARD-GATE prevents any code work until the design is user-approved.
 model: inherit
 color: cyan
+user-invocable: true
+disable-model-invocation: true
+argument-hint: "[topic-or-feature-slug]"
 tools: Read, Grep, Glob, Bash, Write
 ---
 
 # Brainstorm Skill
 
 > Lightweight Socratic design dialogue for per-feature exploration. Sibling to `/plan feature`, not a replacement. Produces `docs/specs/YYYY-MM-DD-<slug>-design.md` after the user approves an approach.
+
+## Invocation
+
+The user invokes `/brainstorm` with arguments: **$ARGUMENTS**.
+
+The optional argument is a topic or feature slug used in the spec filename (lowercase, hyphens, no special characters). If absent, the skill derives a slug from the user's Phase 1 answer.
+
+Examples:
+- `/brainstorm` — no slug; skill prompts for the problem in Phase 1
+- `/brainstorm export-to-csv` — slug pre-set to `export-to-csv`
+- `/brainstorm "user notification system"` — normalize to `user-notification-system`
+
+The HARD-GATE in Phase 0 below prevents any Edit, Write (code), or Bash (implementation) call until the user approves the design in Phase 6 — the only Write permitted before approval is the spec file itself in Phase 4.
 
 ## Soul Reference
 

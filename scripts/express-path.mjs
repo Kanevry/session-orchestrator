@@ -281,7 +281,7 @@ async function main() {
 
   // The banner the coordinator echoes into the transcript — `/go` and
   // session-plan's Express Path Short-Circuit both key off this EXACT line
-  // (`commands/go.md` § Express Path Detection), so it is written verbatim,
+  // (`skills/go/SKILL.md` § Express Path Detection), so it is written verbatim,
   // without the `express-path:` diagnostic prefix. Still stderr: stdout belongs
   // to the verdict.
   if (verdict.activated) {

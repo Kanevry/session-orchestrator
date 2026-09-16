@@ -1,6 +1,7 @@
 ---
 name: eval
 user-invocable: true
+argument-hint: "[--session <id>] [--no-write] [--verify <run-id>]"
 tags: [eval, measurement, quality, meta, standard]
 model: sonnet
 model-preference: sonnet
@@ -30,6 +31,19 @@ renders an HTML report. An opt-in LLM judge overlays two advisory dimensions.
 
 The standard this skill implements is [`docs/eval/aiat-llm-eval-v1.md`](../../docs/eval/aiat-llm-eval-v1.md);
 the frozen, content-hashed check set is [`skills/eval/rubric-v1.md`](./rubric-v1.md).
+
+## Invocation
+
+Invoked as `/eval [--session <id>] [--no-write] [--verify <run-id>]` with arguments: **$ARGUMENTS** (parsed in Phase 1.2).
+
+- `/eval` — evaluate the last completed session (resolution cascade), append the record, render the report.
+- `/eval --session <id>` — evaluate a specific `session_id`.
+- `/eval --no-write` — evaluate + report without appending to the journal (dry-run).
+- `/eval --verify <run-id>` — re-score a stored run and diff for drift (the reproducibility proof; exit 1 on drift).
+
+**On-demand `/eval` runs regardless of `eval.enabled`** — that flag gates only the automatic session-end eval phase (see Phase 1.1).
+
+**Seams used:** `scripts/eval-session.mjs` (deterministic CLI) · `runEvalJudge` / `mergeJudgeDimensions` (`scripts/lib/eval/judge.mjs`, opt-in) · `writeEvalReport` (`scripts/lib/eval/report.mjs`) · `appendEvalRecord` (`scripts/lib/eval/sink.mjs`) · the `eval` config block · [`skills/eval/rubric-v1.md`](./rubric-v1.md) (frozen check set).
 
 ## Posture Contract (load-bearing — read before executing)
 

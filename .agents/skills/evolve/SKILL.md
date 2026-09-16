@@ -2,7 +2,8 @@
 name: evolve
 description: "Use this skill when extracting session patterns into reusable learnings. Three modes: analyze (extract from session history), review (edit/manage existing learnings), list (display active learnings). Manages .orchestrator/metrics/learnings.jsonl."
 metadata:
-  user-invocable: "false"
+  user-invocable: "true"
+  argument-hint: "[analyze|review|list|dialectic [--apply]]"
   tags: learning, intelligence, meta
   model: sonnet
   model-preference: sonnet

@@ -1,6 +1,8 @@
 ---
 name: plan
-user-invocable: false
+user-invocable: true
+disable-model-invocation: true
+argument-hint: "[new|feature|retro]"
 tags: [planning, prd, requirements, research]
 model: inherit
 model-preference: opus
@@ -18,6 +20,24 @@ description: >
 # Plan Skill
 
 > Project-instruction file resolution: CLAUDE.md and AGENTS.md (Codex CLI) are transparent aliases — see [skills/_shared/instruction-file-resolution.md](../_shared/instruction-file-resolution.md). All references below to `CLAUDE.md` resolve via that precedence rule.
+
+## Invocation
+
+You are beginning a structured planning session. The user invoked `/plan` with mode: **$ARGUMENTS** (if empty, Phase 2's Mode Router asks which mode they want: `new`, `feature`, or `retro`).
+
+**Modes:** `new` = project kickoff, `feature` = feature PRD, `retro` = retrospective.
+
+**Your job: guide the user through structured requirement gathering and produce a complete plan document for the chosen mode.** Follow the phases below precisely. Do NOT skip any phase. Do NOT make assumptions — gather requirements interactively.
+
+### Headless (`claude -p`)
+
+`session` and `plan` are **reserved terminal-only built-in names** in non-interactive sessions — under `claude -p` the bare form answers `"/plan isn't available in this environment."`, and no frontmatter or manifest field overrides that (reproduced with an empty `CLAUDE_CONFIG_DIR` and no plugin loaded, claude 2.1.273, measured 2026-09-16). Use the namespaced form, which does resolve:
+
+```bash
+claude -p "/session-orchestrator:plan feature" --plugin-dir "$PWD"
+```
+
+Interactive sessions are unaffected — `/plan` works there as it always has.
 
 ## File Structure
 

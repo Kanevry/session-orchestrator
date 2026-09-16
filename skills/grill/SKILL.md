@@ -1,6 +1,8 @@
 ---
 name: grill
 description: Use when the user wants a plan, design, or PRD stress-tested before any build — relentlessly interrogates one decision at a time, grounds every question in the codebase, hunts contradictions against the domain language and the code, and challenges the load-bearing assumptions. Triggered by "grill me", "stress-test this plan", "poke holes in my design". Composable — run standalone or as an adversarial pass before /plan feature.
+user-invocable: true
+argument-hint: "[file-path-or-topic]"
 model: inherit
 color: red
 tools: Read, Grep, Glob, Bash, Write
@@ -9,6 +11,23 @@ tools: Read, Grep, Glob, Bash, Write
 # Grill Skill
 
 > Adversarial pressure-test for a plan, design, or PRD the user already believes in. The complement to `/brainstorm`: brainstorm *narrows* an ambiguous design space cooperatively; grill *attacks* a settled-feeling plan to find what's wrong before it's built. Optionally writes `docs/specs/YYYY-MM-DD-<slug>-grill.md`. No HARD-GATE — composable by design.
+
+## Invocation
+
+Invoked as `/grill [file-path-or-topic]` with arguments: **$ARGUMENTS** (resolved in Phase 0).
+
+The argument is optional and is either a file path to grill (a PRD, spec, `STATE.md`) or a topic/slug. If absent, grill the plan already present in the current conversation; if there is none, ask the user — via AUQ — to state it first.
+
+- `/grill` — grills the plan in the current conversation context.
+- `/grill docs/prd/2026-06-09-export.md` — grills a specific PRD file. <!-- path-check: example -->
+- `/grill "partial order cancellation"` — grills the named idea, slug pre-set.
+
+| Situation | Use |
+|-----------|-----|
+| A settled-feeling plan needs stress-testing before build | `/grill` |
+| The design is still ambiguous and needs narrowing | `/brainstorm` |
+| Scope is clear, need a formal PRD + issues | `/plan feature` |
+| Adversarial pass before formalizing | `/grill` → `/plan feature` |
 
 ## Soul Reference
 

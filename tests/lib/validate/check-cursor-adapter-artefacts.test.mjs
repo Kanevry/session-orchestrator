@@ -90,7 +90,10 @@ describe('validateCursorArtefacts — generated-artefact frontmatter spec', () =
       const { files, violations } = validateCursorArtefacts(root);
 
       expect(violations).toEqual([]);
-      expect(files).toBe(2);
+      // 3, not 2: `session-start` is `user-invocable: true`, so it yields BOTH
+      // a `.cursor/skills/` wrapper and a `.cursor/commands/` slash-command
+      // wrapper — the union `.cursor/commands/` is generated from.
+      expect(files).toBe(3);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

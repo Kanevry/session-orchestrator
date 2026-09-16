@@ -2,7 +2,8 @@
 name: discovery
 description: Use this skill when running systematic quality discovery and issue detection. Runs modular probes adapted to the project's tech stack, presents findings interactively for user triage, and creates VCS issues for confirmed problems. Invoked standalone via /discovery or embedded in session-end.
 metadata:
-  user-invocable: "false"
+  user-invocable: "true"
+  argument-hint: "[all|code|infra|ui|arch|session|audit|vault|feature] [--since <git-ref>] [--full]"
   tags: quality, discovery, probes, issues
   model: sonnet
   model-preference: sonnet

@@ -1,6 +1,7 @@
 ---
 name: reconcile
 user-invocable: true
+argument-hint: "[--dry-run]"
 tags: [learning, rules, intelligence, meta]
 model: sonnet
 model-preference: sonnet
@@ -18,6 +19,15 @@ description: >
 > **Platform Note:** State files use the platform's native directory: `.claude/` (Claude Code), `.codex/` (Codex CLI), or `.cursor/` (Cursor IDE). Shared metrics live in `.orchestrator/metrics/`. See `skills/_shared/platform-tools.md`.
 
 # Reconcile Skill
+
+## Invocation
+
+The user invoked `/reconcile` with arguments: **$ARGUMENTS** — parsed in Phase 1.3 below.
+
+- `/reconcile` — full approval flow: engine → AUQ → write approved rules.
+- `/reconcile --dry-run` — print proposals and rejections without writing anything or rendering the AUQ prompt.
+
+**Engine seams used:** `runReconcile` (engine.mjs) · `writeApprovedRules` (writer.mjs) · `reconcile` config block · `.claude/rules/` write target.
 
 On-demand version of the session-end Phase 3.6.8 reconciliation flow. Turns eligible learnings
 from `.orchestrator/metrics/learnings.jsonl` into proposed `.claude/rules/<slug>.md` entries,

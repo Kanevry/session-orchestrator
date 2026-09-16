@@ -359,20 +359,23 @@ describe('buildUsagePing — command classification end to end (GitLab #1189)', 
 
     // The roster decides, and since #1370 it decides DIFFERENTLY: a bare
     // command only resolves under `claude -p` when a same-named skill exists,
-    // so most of `commands/` gained a `skills/<name>/SKILL.md` twin. The
-    // classifier checks `rosterSkills.has(name)` FIRST (schema.mjs:369), so a
-    // prefixed arrival for a twinned name is a SKILL, never a command — and
-    // that includes the `{ command: 'go' }` forward-compat producer above,
-    // which buildUsagePing normalizes to `session-orchestrator:go` before
-    // classifying (measured, not assumed).
+    // so most of `commands/` first gained a `skills/<name>/SKILL.md` twin — and
+    // then, 2026-09-16, the twin's command file was DELETED, because a command +
+    // same-named skill runs the skill body and lists the entry twice in the `/`
+    // picker (measured, claude 2.1.273). 24 command files were folded into their
+    // skill that way. The classifier checks `rosterSkills.has(name)` FIRST
+    // (schema.mjs:369), so a prefixed arrival for a folded name is a SKILL,
+    // never a command — including the `{ command: 'go' }` forward-compat
+    // producer above, which buildUsagePing normalizes to
+    // `session-orchestrator:go` before classifying (measured, not assumed).
     //
-    // Commands WITHOUT a skill twin, measured 2026-09-16 @ dd05e0f8 (after the #1370
-    // skill mirrors landed; at the session-start ref ca214376 the list was 8 long):
-    //   for f in commands/*.md; do n=$(basename "$f" .md); \
-    //     [ -f "skills/$n/SKILL.md" ] || echo "$n"; done
+    // Names that can still reach commands[] = what remains in commands/,
+    // measured 2026-09-16 (before the fold this same recipe — filtered on the
+    // absence of a skill twin — already returned exactly these two; at the
+    // session-start ref ca214376 the list was 8 long):
+    //   for f in commands/*.md; do basename "$f" .md; done
     //   → session templates-ack
-    // Those two are the only names that can still reach commands[]. When that
-    // list changes, this expectation changes with it — deliberately.
+    // When that list changes, this expectation changes with it — deliberately.
     expect(ping.commands).toEqual(['session', 'templates-ack']);
     expect(ping.skills).toEqual([
       'other',

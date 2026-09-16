@@ -1,6 +1,8 @@
 ---
 name: eli5
 description: Explain a topic like I'm a 5 year old — restate my last output, or a named topic, in plain words without dropping a single fact. Use when the user types /eli5 [topic], or says an answer was too technical, too long, or unclear about what he now has to do.
+user-invocable: true
+argument-hint: "[topic]"
 model: inherit
 tools: Read, Grep, Glob, Bash
 ---
@@ -8,6 +10,15 @@ tools: Read, Grep, Glob, Bash
 # eli5
 
 Say it again in plain words. Same facts, in the order he needs them.
+
+## Invocation
+
+Invoked as `/eli5 [topic]` with arguments: **$ARGUMENTS**.
+
+The argument is optional and is a topic, in prose. If `$ARGUMENTS` is empty, the target is my own last substantial output in this conversation; if there is none yet, say so rather than picking a topic for him.
+
+- `/eli5` — restate what I just said.
+- `/eli5 warum ist der Regel-Korpus voll?` — explain that, grounded in what this session measured.
 
 ## The frame
 

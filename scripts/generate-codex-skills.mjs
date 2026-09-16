@@ -42,6 +42,23 @@ function validateFrontmatter(fm, name, path) {
   }
 }
 
+/**
+ * The repo-wide marker for "operator-facing slash command".
+ *
+ * Frontmatter here is parsed by js-yaml under CORE_SCHEMA and `validateFrontmatter`
+ * already rejects a non-boolean `user-invocable`, so EXPLICIT means the boolean
+ * `true`: a missing key or `false` is a library skill. The string branch keeps
+ * this predicate honest for any caller that hands over a hand-parsed record.
+ *
+ * @param {Record<string, unknown>} fm
+ * @returns {boolean}
+ */
+function isUserInvocable(fm) {
+  const value = fm?.['user-invocable'];
+  if (value === true) return true;
+  return typeof value === 'string' && value.trim() === 'true';
+}
+
 /** Existing native policy is meaningful; Claude's user-invocable flag is not a substitute. */
 function readNativePolicy(root, name) {
   const path = `skills/${name}/agents/openai.yaml`;
@@ -80,7 +97,14 @@ function readSources(root) {
       try { fm = yaml.load(match[1], { schema: yaml.CORE_SCHEMA }); }
       catch (error) { throw new Error(`${path}: invalid YAML: ${error.message}`, { cause: error }); }
       validateFrontmatter(fm, name, path);
-      sources.push({ name, path, command, fm, policy: command ? fm['disable-model-invocation'] !== true : readNativePolicy(root, name) });
+      // Policy precedence for a skill: a native `agents/openai.yaml` wins; else
+      // an explicitly user-invocable skill (a slash command that used to be a
+      // `commands/*.md` file) derives it from `disable-model-invocation` exactly
+      // as command sources do; a library skill emits no policy.
+      const policy = command
+        ? fm['disable-model-invocation'] !== true
+        : (readNativePolicy(root, name) ?? (isUserInvocable(fm) ? fm['disable-model-invocation'] !== true : undefined));
+      sources.push({ name, path, command, fm, policy });
     }
   }
   return sources;
@@ -128,9 +152,21 @@ function renderSkill(source, warnings) {
     '',
     'Resolve this link relative to this SKILL.md, not the project working directory. The plugin root is three directories above this file. Resolve package paths such as `skills/` and `scripts/` from that root; resolve relative links inside the canonical document from its own directory. Keep the user’s project as the target of project operations.',
   ];
-  if (source.command) lines.push(
+  // `$ARGUMENTS` semantics belong to every OPERATOR-FACING document — a
+  // `commands/*.md`, and equally a skill that declares `user-invocable: true`
+  // and references `$ARGUMENTS` in its own body. Gating them on `source.command`
+  // alone silently dropped the argument-handling contract from every command
+  // body that was folded into its same-named skill.
+  if (source.command || isUserInvocable(source.fm)) lines.push(
     '',
     '`$ARGUMENTS` means the trailing user input after the selected command skill, or an empty string when absent. Preserve flags, quoted text, and Unicode as data. Do not perform global substitution in the command document, shell expansion on the argument string, or execution of that string as shell code. When the workflow needs a command, pass its arguments through structured tool parameters or safely quoted individual arguments.',
+  );
+  // The redispatch warning is only TRUE for a command source: it exists because
+  // a same-named command and internal skill are two distinct documents. A
+  // user-invocable SKILL is already the canonical document, so telling it not to
+  // redispatch "the public command adapter" would describe a file that does not
+  // exist.
+  if (source.command) lines.push(
     '',
     'Read the full command before invoking an internal skill. An instruction to invoke a skill (including `session-orchestrator:<name>` or the `Skill` tool) means read and follow the canonical `skills/<name>/SKILL.md` beneath the plugin root. Do not redispatch the public command adapter: a same-named command and internal skill are distinct documents, and redispatch would recurse.',
   );
