@@ -366,7 +366,8 @@ describe('buildUsagePing — command classification end to end (GitLab #1189)', 
     // which buildUsagePing normalizes to `session-orchestrator:go` before
     // classifying (measured, not assumed).
     //
-    // Commands WITHOUT a skill twin, measured 2026-09-16 @ ca214376:
+    // Commands WITHOUT a skill twin, measured 2026-09-16 @ dd05e0f8 (after the #1370
+    // skill mirrors landed; at the session-start ref ca214376 the list was 8 long):
     //   for f in commands/*.md; do n=$(basename "$f" .md); \
     //     [ -f "skills/$n/SKILL.md" ] || echo "$n"; done
     //   → session templates-ack

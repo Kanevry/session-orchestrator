@@ -146,7 +146,7 @@
           "name": "Kann es mein Projekt kaputt machen?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Fehler sind weiterhin möglich. Auf Claude Code wendet ein aktiver Hook für zerstörerische Befehle 10 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex setzt weder diesen Guard noch den Guard für Schreibbereiche technisch durch. Bei unterstützten Änderungen mit aktivem Scope-Hook blockiert strict Verstöße, warn meldet sie und off deaktiviert die Prüfung. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen garantieren keinen korrekten Code."
+            "text": "Fehler sind weiterhin möglich. Auf Claude Code wendet ein aktiver Hook für zerstörerische Befehle 11 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex setzt weder diesen Guard noch den Guard für Schreibbereiche technisch durch. Bei unterstützten Änderungen mit aktivem Scope-Hook blockiert strict Verstöße, warn meldet sie und off deaktiviert die Prüfung. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen garantieren keinen korrekten Code."
           }
         },
         {
@@ -266,8 +266,8 @@
             <td data-label="Quelle"><code>hooks/enforce-scope.mjs</code></td>
           </tr>
           <tr>
-            <td data-label="Behauptung">Mit aktivem Hook für zerstörerische Befehle wendet Claude Code 10 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken; auf Codex gelten diese Regeln nur als Anweisungen.</td>
-            <td data-label="Quelle"><code>.orchestrator/policy/blocked-commands.json</code>, 14 Regeln</td>
+            <td data-label="Behauptung">Mit aktivem Hook für zerstörerische Befehle wendet Claude Code 11 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken; auf Codex gelten diese Regeln nur als Anweisungen.</td>
+            <td data-label="Quelle"><code>.orchestrator/policy/blocked-commands.json</code>, 15 Regeln</td>
           </tr>
           <tr>
             <td data-label="Behauptung">Sub-Agenten sind angewiesen, Staging und Commits dem Koordinator zu überlassen. Das ist eine Ablaufregel.</td>
@@ -310,13 +310,13 @@
         <div class="card"><p class="n"><span class="num" data-metric="agents">14</span></p><p class="l">typisierte Sub-Agenten</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="hooks">28</span></p><p class="l">Hook-Dateien</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="tests">685</span></p><p class="l">Testdateien</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="sessions">421</span></p><p class="l">Session-Aufzeichnungen im Repository</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="learnings">245</span></p><p class="l">Learnings in diesem Repository</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="sessions">422</span></p><p class="l">Session-Aufzeichnungen im Repository</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="learnings">251</span></p><p class="l">Learnings in diesem Repository</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">1423</span></p><p class="l">npm-Downloads, letzte 30 Tage</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="github-stars">51</span></p><p class="l">GitHub-Sterne</p></div>
       </div>
 
-      <p class="small muted">Gezählt am <span class="num" data-metric="counted-at">2026-09-16</span> bei Commit <span class="num" data-metric="counted-sha">1c02346a</span>. Repository-Aufzeichnungen beschreiben Entwicklungsaktivität, keine aktiven Nutzer. npm-Downloads enthalten auch automatische Abrufe. <a href="/_census.json">Zählbeleg ansehen</a>.</p>
+      <p class="small muted">Gezählt am <span class="num" data-metric="counted-at">2026-09-16</span> bei Commit <span class="num" data-metric="counted-sha">06836586</span>. Repository-Aufzeichnungen beschreiben Entwicklungsaktivität, keine aktiven Nutzer. npm-Downloads enthalten auch automatische Abrufe. <a href="/_census.json">Zählbeleg ansehen</a>.</p>
     </div></details></div></section>  <section class="sec" id="faq">
     <div class="wrap">
       <p class="eyebrow">Häufige Fragen</p>
@@ -349,7 +349,7 @@
         </details>
         <details class="faq-item">
           <summary>Kann es mein Projekt kaputt machen?</summary>
-          <p>Fehler sind weiterhin möglich. Auf Claude Code wendet ein aktiver Hook für zerstörerische Befehle 10 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex setzt weder diesen Guard noch den Guard für Schreibbereiche technisch durch. Bei unterstützten Änderungen mit aktivem Scope-Hook blockiert strict Verstöße, warn meldet sie und off deaktiviert die Prüfung. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen garantieren keinen korrekten Code.</p>
+          <p>Fehler sind weiterhin möglich. Auf Claude Code wendet ein aktiver Hook für zerstörerische Befehle 11 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex setzt weder diesen Guard noch den Guard für Schreibbereiche technisch durch. Bei unterstützten Änderungen mit aktivem Scope-Hook blockiert strict Verstöße, warn meldet sie und off deaktiviert die Prüfung. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen garantieren keinen korrekten Code.</p>
         </details>
         <details class="faq-item">
           <summary>Wer pflegt das?</summary>

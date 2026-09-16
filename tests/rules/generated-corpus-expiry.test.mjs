@@ -18,7 +18,7 @@
  * The original version asserted the live corpus against TODAY's date. That is a
  * calendar time-bomb inside a BLOCKING gate: with 2 files carrying
  * `expires-at: 2026-10-01` and 4 carrying `2026-10-04` (measured 2026-09-16 @
- * `ca214376`), `npm test` — the pre-push hook and CI — would have turned red on
+ * `dd05e0f8`, after the #1367 consolidation), `npm test` — the pre-push hook and CI — would have turned red on
  * 2026-10-02 with zero commits, blocking every unrelated hotfix, and no test run
  * could perform the repair (consolidating a file and moving its provenance pairs
  * is a human decision). The alarm now lives where housekeeping is decided: the

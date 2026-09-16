@@ -21,7 +21,7 @@
 | `scripts/` | Node.js automation scripts (`.mjs` only) — includes `generate-agents-skills.mjs` (writes the portable cross-harness surface), `site-numbers.mjs` (the website census), `validate-plugin.mjs` |
 | `scripts/lib/` | Shared library modules (no `.sh` — bash-free since 2026-04-30) — includes `plugin-update-banner.mjs` (installed-vs-published check), `sessions-canonical.mjs`, `session-lock.mjs`, `config/*.mjs` parsers |
 | `scripts/lib/validate/` | 39 `check-*.mjs` validator modules wired into `scripts/validate-plugin.mjs` |
-| `tests/` | vitest test suite mirroring `scripts/lib/` + `tests/skills/` (661 `*.test.mjs` files) |
+| `tests/` | vitest test suite mirroring `scripts/lib/` + `tests/skills/` (685 `*.test.mjs` files) |
 | `templates/` | Vendorable scaffolding (`_shared/rules/`, `_shared/loop.md`) copied into consumer repos |
 | `rules/` | The DELIVERABLE rule library shipped out via `/bootstrap --sync-rules` — opposite role to `.claude/rules/` |
 | `docs/` | PRDs, ADRs, retros, audits, marketplace, CI setup, `agent-authoring.md` |

@@ -146,7 +146,7 @@
           "name": "Can it break my project?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "It can still make mistakes. On Claude Code, an active destructive-command hook applies 10 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce this guard or the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code."
+            "text": "It can still make mistakes. On Claude Code, an active destructive-command hook applies 11 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce this guard or the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code."
           }
         },
         {
@@ -266,8 +266,8 @@
             <td data-label="Source"><code>hooks/enforce-scope.mjs</code></td>
           </tr>
           <tr>
-            <td data-label="Claim">With the destructive-command hook active, Claude Code applies 10 blocking rules and 4 warning rules. Cursor and Pi use bridges; Codex treats these rules as instructions.</td>
-            <td data-label="Source"><code>.orchestrator/policy/blocked-commands.json</code>, 14 rules</td>
+            <td data-label="Claim">With the destructive-command hook active, Claude Code applies 11 blocking rules and 4 warning rules. Cursor and Pi use bridges; Codex treats these rules as instructions.</td>
+            <td data-label="Source"><code>.orchestrator/policy/blocked-commands.json</code>, 15 rules</td>
           </tr>
           <tr>
             <td data-label="Claim">Subagents are instructed to leave staging and commits to the coordinator. This is a workflow rule.</td>
@@ -309,13 +309,13 @@
         <div class="card"><p class="n"><span class="num" data-metric="agents">14</span></p><p class="l">typed sub-agents</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="hooks">28</span></p><p class="l">hook files</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="tests">685</span></p><p class="l">test files</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="sessions">421</span></p><p class="l">session records in this repo</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="learnings">245</span></p><p class="l">learnings in this repo</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="sessions">422</span></p><p class="l">session records in this repo</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="learnings">251</span></p><p class="l">learnings in this repo</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">1423</span></p><p class="l">npm downloads, last 30 days</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="github-stars">51</span></p><p class="l">GitHub stars</p></div>
       </div>
 
-      <p class="small muted">Counted on <span class="num" data-metric="counted-at">2026-09-16</span> at commit <span class="num" data-metric="counted-sha">1c02346a</span>. Repository records describe development activity, not active users. npm downloads include automated requests. <a href="/_census.json">See the count receipt</a>.</p>
+      <p class="small muted">Counted on <span class="num" data-metric="counted-at">2026-09-16</span> at commit <span class="num" data-metric="counted-sha">06836586</span>. Repository records describe development activity, not active users. npm downloads include automated requests. <a href="/_census.json">See the count receipt</a>.</p>
     </div></details></div></section>  <section class="sec" id="faq">
     <div class="wrap">
       <p class="eyebrow">A few practical questions</p>
@@ -348,7 +348,7 @@
         </details>
         <details class="faq-item">
           <summary>Can it break my project?</summary>
-          <p>It can still make mistakes. On Claude Code, an active destructive-command hook applies 10 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce this guard or the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code.</p>
+          <p>It can still make mistakes. On Claude Code, an active destructive-command hook applies 11 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce this guard or the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code.</p>
         </details>
         <details class="faq-item">
           <summary>Who maintains it?</summary>

@@ -295,7 +295,7 @@ enforcement: warn</pre>
       <p class="lede">Guard behaviour depends on your coding tool. Claude Code runs the guard hooks directly; Cursor and Pi use bridges with documented limits. On Codex, destructive-command and file-scope rules are instructions only. Scope edits are denied only when a compatible hook is active and enforcement is strict.</p>
 
       <h3>The destructive-command guard</h3>
-      <p>The policy in <code>.orchestrator/policy/blocked-commands.json</code> defines <strong>14 rules: 10 blocking and 4 warning</strong>. An active hook applies them on Claude Code and through compatible Cursor or Pi bridges. The plugin does not enforce this guard on Codex. The blocking rules cover hard resets, checkout discards, forced cleaning, destructive removal, force-push, SQL <code>DROP TABLE</code>, and protected-file truncation. The warning rules cover mixed and soft resets, stash, and <code>git push --force-with-lease</code>.</p>
+      <p>The policy in <code>.orchestrator/policy/blocked-commands.json</code> defines <strong>15 rules: 11 blocking and 4 warning</strong>. An active hook applies them on Claude Code and through compatible Cursor or Pi bridges. The plugin does not enforce this guard on Codex. The blocking rules cover hard resets, checkout discards, forced cleaning, destructive removal, force-push, SQL <code>DROP TABLE</code>, and protected-file truncation. The warning rules cover mixed and soft resets, stash, and <code>git push --force-with-lease</code>.</p>
       <p>The reason it is that broad: several sessions can share one working copy, and a stash or a reset takes work from a neighbour who has no way to find it again.</p>
 
       <div class="card">
