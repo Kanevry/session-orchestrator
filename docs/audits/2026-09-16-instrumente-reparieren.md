@@ -91,7 +91,7 @@ Koordinator nach W3: `node scripts/generate-hook-import-set.mjs` einmal (I2/I3/I
 
 ## 8. Ergebnis (W3–W7)
 
-Gemessen 2026-09-16 nach W6. Zahlenquelle: Wave History in `.claude/STATE.md`, Gate-Läufe des Koordinators.
+Gemessen 2026-09-16 nach W6. Zahlenquelle: Wave History in `.claude/STATE.md`, Gate-Läufe des Koordinators. <!-- path-check: example -->
 
 **Cluster 1 — Regel-Korpus (#1367 #1372 #1308 #1038).** `pathScoped` 122.763 → 109.932 B, `generated` 75.130 → 69.941 B über 7 konsolidierte Dateien; 92/92 Provenance-Paare erhalten, 9 Reconcile-Vorschläge absorbiert, 1 als bereits materialisiert abgelehnt. `testing.md` −7.717 B, `receiving-review.md` −562 B mit neu hergeleitetem Pin 8.009. `git-and-worktrees.md` gelöscht (4 Globs nach `toolchain-and-build.md`, 21/21 ls-verifiziert). <!-- path-check: historical --> Deckel `DEFAULT_GENERATED_BYTE_CEILING` 124.000 → 95.000 mit 91-State-Replay (echter Peak 99.774 B @ `2ae08fe0`, feuert 1/91). Widerlegt: der Konsolidierungsplan sagte −21.618 B auf der `generated`-Achse voraus; ausgeführt wurden −13.093 B — jede aufgezählte Kürzung landete, die Vorhersage überschätzte die Eintragsgrößen. Instrument-Hälfte: Signal 7 `generated-rules-expiring` im maintenance-due-Banner (Horizont 7 Tage) statt einer Kalender-Zeitbombe im blockierenden Gate.
 
