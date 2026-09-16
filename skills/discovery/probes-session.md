@@ -506,11 +506,11 @@ Violations:
   - tools (no-json-array): tools must be a comma-separated string, not a JSON array
   - description (no-block-scalar): description must be inline, not a block scalar
   - color (enum): color must be one of "blue"|"cyan"|"green"|"yellow"|"magenta"|"red"
-Recommendation: Run /bootstrap --retroactive to auto-surface violations, or manually fix per CLAUDE.md Agent Authoring Rules.
+Recommendation: Run node scripts/validate-plugin.mjs to surface every violation, or manually fix per CLAUDE.md Agent Authoring Rules.
 ```
 
 **Default Severity:** High — broken agents fail at runtime silently.
 
-**Remediation:** Run `/bootstrap --retroactive` (validator auto-surfaces violations) or manually fix per CLAUDE.md Agent Authoring Rules.
+**Remediation:** Run `node scripts/validate-plugin.mjs` (the agent-frontmatter validator lists every violation; `/bootstrap --retroactive` only writes a missing lock, it does not validate) or manually fix per CLAUDE.md Agent Authoring Rules.
 
 **Dependencies:** Requires `${PLUGIN_ROOT}/scripts/lib/agent-frontmatter.mjs` (issue #189). Degrades gracefully when the helper is absent — skip with a note, do not fabricate findings.
