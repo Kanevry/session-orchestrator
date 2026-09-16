@@ -93,7 +93,7 @@ When you type `/session feature`:
 .claude/STATE.md                    # wave progress and deviations (harness-specific directory)
 ```
 
-The plugin is **44 skills, 26 slash commands, 14 typed subagents and 27 hook files across 10 event types**. Skills, commands and agents are Markdown with YAML frontmatter; the code that dispatches, validates and records runs in `scripts/lib/*.mjs` and `hooks/*.mjs`. There is no build step and no compiled artifact — when a session does something you did not expect, you can open the file that decided it. Full inventory: [`docs/components.md`](docs/components.md).
+The plugin is **50 skills, 26 slash commands, 14 typed subagents and 27 hook files across 10 event types**. Skills, commands and agents are Markdown with YAML frontmatter; the code that dispatches, validates and records runs in `scripts/lib/*.mjs` and `hooks/*.mjs`. There is no build step and no compiled artifact — when a session does something you did not expect, you can open the file that decided it. Full inventory: [`docs/components.md`](docs/components.md).
 
 ## Why it is built this way
 

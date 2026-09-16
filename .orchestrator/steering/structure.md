@@ -14,7 +14,7 @@
 | `commands/` | 26 slash-commands (e.g. `/session`, `/close`, `/go`, `/plan`, `/test`, `/portfolio`, `/dispatcher`, `/eval`) |
 | `agents/` | 14 sub-agent definitions (YAML frontmatter + Markdown body, + `schemas/` subdirectory). The authoring spec is NOT here — it lives in `docs/agent-authoring.md`, because Claude Code registers every `agents/*.md` as a dispatchable agent by directory convention |
 | `hooks/` | Hook event matchers + handlers (18 matcher entries / 27 plugin-wired handler files [28 on-disk; the extra one is Husky-wired — see Inventory below], 10 distinct events) |
-| `.orchestrator/policy/` | Runtime policy: `blocked-commands.json` (14 rules — 10 `severity: block`, 4 `severity: warn`) |
+| `.orchestrator/policy/` | Runtime policy: `blocked-commands.json` (15 rules — 11 `severity: block`, 4 `severity: warn`) |
 | `.orchestrator/steering/` | This directory — persistent stable context docs |
 | `.orchestrator/metrics/` | Runtime JSONL telemetry: sessions, learnings, autopilot, events, subagents |
 | `.claude/rules/` | 25 always-on rule files loaded by Claude Code |
@@ -45,7 +45,7 @@
 - **Validators:** 39 `scripts/lib/validate/check-*.mjs` modules — measured 2026-09-16 (`ls scripts/lib/validate/check-*.mjs | wc -l`).
 - **ADRs:** 18 — measured 2026-09-06 (`ls docs/adr/*.md | wc -l`).
 - **Tests:** 685 test files — measured 2026-09-16 (`find tests -name '*.test.mjs' | wc -l`). The runtime test-case total is only knowable from a `npm test` run; the static floor is 14,598 `it()`/`test()` definitions (`rg -c --no-filename -e '^\s*(it|test)(\.\w+)?\(' tests --glob '*.test.mjs'`, summed) and the real number is higher because of parameterised blocks.
-- **Destructive-command policy:** 14 rules, 10 blocking and 4 warning — measured 2026-09-06 (`node -e "…require('./.orchestrator/policy/blocked-commands.json')…"`). "14 rules" alone is ambiguous: only 10 of them block.
+- **Destructive-command policy:** 15 rules, 11 blocking and 4 warning — measured 2026-09-16 (`node -e "…require('./.orchestrator/policy/blocked-commands.json')…"`). "15 rules" alone is ambiguous: only 11 of them block.
 
 ## Key Skills (frequently referenced)
 
