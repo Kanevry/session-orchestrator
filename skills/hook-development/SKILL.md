@@ -155,7 +155,7 @@ Event-specific extras:
 - `UserPromptSubmit`: `prompt`
 - `Stop`: `stop_hook_active`, `last_assistant_message`; `SubagentStop` also carries agent identity and transcript fields
 
-Event fields vary and evolve. Parse only fields needed by the hook and consult the official event section before depending on one. Prompt and agent hooks receive the complete input through `$ARGUMENTS`.
+Event fields vary and evolve. Parse only fields needed by the hook and consult the official event section before depending on one. The `UserPromptSubmit` field name above was last checked against the official reference on 2026-09-15 (branch `codex/ecc-systematic-review`); this plugin registers no `UserPromptSubmit` handler, so no code here exercises either spelling — verify before depending on it. Prompt and agent hooks receive the complete input through `$ARGUMENTS`.
 
 ## Environment variables
 

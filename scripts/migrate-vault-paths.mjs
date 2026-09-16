@@ -50,7 +50,6 @@
 
 import { promises as fs, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 import {
@@ -58,6 +57,7 @@ import {
   VAULT_MIGRATION_RULES_PATH,
 } from './lib/vault-migration-rules.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -773,8 +773,7 @@ function emit(opts, rec) {
 // importing the module is never a hard error regardless of how the importer runs.
 // ---------------------------------------------------------------------------
 
-const invokedDirectly =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+const invokedDirectly =isMainModule(import.meta.url);
 
 if (invokedDirectly) {
   main().catch((err) => {

@@ -19,6 +19,7 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
+  isCliEntrypoint,
   inspectUnwiredFeatures,
   collectOrphanedProseModules,
   collectUnreachableLibraryModules,
@@ -184,7 +185,6 @@ describe('check-unwired-features — declared-but-unread census', () => {
   it('surfaces the real repo census without a tool error', { timeout: 30_000 }, () => {
     // Grounding pin: the collector must actually resolve this repo's surfaces.
     // Floor/ceiling per `testing.md` § Dynamic Artifact Counts — the key set grows.
-    // check-untracked-test-deps:ignore — since #1363 the import closure names the
     // gitignored `.orchestrator/metrics/*.jsonl` ledger (S5). The read is real but
     // never fatal: an absent ledger is a documented no-op, pinned by the
     // "silent no-op when the gitignored ledgers are absent" case below, so this
@@ -216,10 +216,22 @@ describe('check-unwired-features — declared-but-unread census', () => {
       .filter((f) => f.kind === 'coordinator-invoked-module')
       .map((f) => f.key);
     expect(s4.length + s4Advisory.length).toBeGreaterThan(10);
-    // …and neither half may collapse: a split that empties the reportable half
-    // is indistinguishable from one that classified everything as architecture.
-    expect(s4.length).toBeGreaterThan(0);
     expect(s4Advisory.length).toBeGreaterThan(0);
+    // The ADVISORY half keeps its live-repo floor above; the REPORTABLE half no
+    // longer has one, deliberately. `expect(s4.length).toBeGreaterThan(0)` stood
+    // here until 2026-09-16, when the live reportable backlog reached zero —
+    // `scripts/lib/locks/index.mjs` deleted (0 importers) and
+    // `scripts/lib/worktree/index.mjs` reclassified by the export-* cluster-root
+    // fix. A guard whose green state REQUIRES an unfixed defect in the tree is
+    // the broken instrument `.claude/rules/host-resources.md` HR-101 describes:
+    // it would have to be deleted by whoever fixed the last finding anyway, and
+    // until then it taxes every real fix.
+    // What it was protecting — "a module that qualifies still LANDS in the
+    // reportable class, the split did not quietly route everything to advisory"
+    // — is carried by the S4 fixture cases below, which assert the reportable
+    // half by exact key on a synthetic tree and cannot be satisfied by an empty
+    // census. The union floor above still proves S4 censuses the live repo at
+    // all, which is the other half of HR-105.
   });
 });
 
@@ -635,6 +647,78 @@ describe('check-unwired-features — S4 unreachable-library-module census', () =
     }
   });
 
+  // THE BUG (#1293 remainder): a PURE `export *` barrel has zero NAMED exports,
+  // so the S4 population predicate (`exports.length > 0`) dropped it entirely.
+  // That did not merely hide the barrel — it removed the barrel as the CLUSTER
+  // ROOT of the module it re-exports, so the interior module was reported in its
+  // place. Live instance measured 2026-09-16: `scripts/lib/worktree.mjs` is
+  // `export * from './worktree/index.mjs';`, its only importers (`workspace.mjs`,
+  // `worktree-freshness.mjs`) are themselves unreachable, and S4 reported
+  // `scripts/lib/worktree/index.mjs`.
+  //
+  // Not a BFS defect: star re-export lines are not comments, so `mentions`
+  // already carries the target and a REACHABLE barrel already propagates
+  // reachability (measured the same day: `worktree.mjs` carries `index.mjs`).
+  // The population is the whole of it.
+  it.each([
+    { name: 'export *', line: "export * from './sub/index.mjs';\n" },
+    { name: 'export * as ns', line: "export * as sub from './sub/index.mjs';\n" },
+  ])('collapses a pure $name barrel and its target into ONE cluster root', ({ line }) => {
+    const root = makeGraphFixture({
+      modules: {
+        'barrel.mjs': line,
+        'sub/index.mjs': 'export function fromSub() {\n  return 1;\n}\n',
+        'owner.mjs': "import { fromSub } from './barrel.mjs';\nexport function top() {\n  return fromSub();\n}\n",
+      },
+    });
+    try {
+      // One dead cluster, one line — at the importer that heads it. Before the
+      // fix the interior `sub/index.mjs` was reported alongside it.
+      expect(unreachableKeys(root)).toEqual([join('scripts', 'lib', 'owner.mjs')]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports the barrel itself when nothing imports it and its target is dead too', () => {
+    // The over-correction guard for the case above: admitting barrels to the
+    // population must not blanket-whitelist them. A barrel nothing imports, over
+    // a target nothing else reaches, is a dead cluster and stays reportable —
+    // otherwise the fix would trade one misplaced finding for zero findings.
+    const root = makeGraphFixture({
+      modules: {
+        'barrel.mjs': "export * from './sub/index.mjs';\n",
+        'sub/index.mjs': 'export function fromSub() {\n  return 1;\n}\n',
+      },
+    });
+    try {
+      expect(unreachableKeys(root)).toEqual([join('scripts', 'lib', 'barrel.mjs')]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not report a backward-compat shim re-exporting a module that IS reached', () => {
+    // FP class the population change would otherwise introduce, measured
+    // 2026-09-16: `scripts/lib/autopilot-telemetry.mjs` is
+    // `export * from './autopilot/telemetry.mjs'` over a live target, its sole
+    // importer a test — it became a new permanent WARN with no exit, because the
+    // coordinator-invoked downgrade iterates `exports` and a star re-export has
+    // none. S3 exempts this exact shim by name; S4 must not re-indict it.
+    const root = makeGraphFixture({
+      entry: "import { live } from '../scripts/lib/live.mjs';\nexport const r = live();\n",
+      modules: {
+        'shim.mjs': "export * from './live.mjs';\n",
+        'live.mjs': 'export function live() {\n  return 1;\n}\n',
+      },
+    });
+    try {
+      expect(unreachableKeys(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('does not report a CLI entrypoint, whose markdown-only invocation is the design', () => {
     // The deliberate boundary. Treating entrypoints as non-roots was measured at
     // 268/467 modules (57.5%) versus 73 (15.6%) — straight into HR-101's
@@ -931,11 +1015,33 @@ describe('check-unwired-features — S5 effective-sizing subject parity (#1247/#
     // had ZERO import sites and sat in the S4 advisory census on the strength of
     // one SKILL sentence. The import below is the wiring; this asserts it is
     // visible to the very graph that reported the module.
-    // check-untracked-test-deps:ignore — same accommodation as above; this
     // collector reads no ledger at all, only the module graph.
     const census = collectUnreachableLibraryModules(REPO_ROOT); // check-untracked-test-deps:ignore
     expect(census.findings.map((f) => f.key)).not.toContain(
       join('scripts', 'lib', 'learnings', 'sizing-subject.mjs'),
     );
   }, 30_000);
+});
+
+describe('isCliEntrypoint — guard grammar', () => {
+  // #1371 swept ~50 CLIs from `process.argv[1] === import.meta.url` to the
+  // shared isMainModule() predicate. A swept file matches none of the other
+  // alternatives, so without this one it reclassifies as a library candidate and
+  // S4 reports it as an `unreachable-library-module` ROOT — dragging its
+  // transitive members in with it. The sweep and this grammar must land
+  // together; measured on this repo the un-extended regex took the unreachable
+  // census from 2 to 4.
+  it('recognises the isMainModule() guard as a CLI entrypoint', () => {
+    const swept =
+      "import { isMainModule } from '../is-main-module.mjs';\n" +
+      'if (isMainModule(import.meta.url)) main();\n';
+    expect(isCliEntrypoint(swept)).toBe(true); // check-untracked-test-deps:ignore — arg is a fixture source string quoting `import.meta.url`
+
+    // still true for every pre-sweep form, and still false for a plain library
+    expect(isCliEntrypoint('#!/usr/bin/env node\nmain();\n')).toBe(true); // check-untracked-test-deps:ignore — arg is a fixture source string quoting `import.meta.url`
+    expect(
+      isCliEntrypoint("if (import.meta.url === pathToFileURL(process.argv[1]).href) main();\n"), // check-untracked-test-deps:ignore — arg is a fixture source string quoting `import.meta.url`
+    ).toBe(true);
+    expect(isCliEntrypoint('export function helper() {\n  return 1;\n}\n')).toBe(false); // check-untracked-test-deps:ignore — arg is a fixture source string quoting `import.meta.url`
+  });
 });

@@ -130,6 +130,22 @@ Log every non-`pass` result as an event to `.orchestrator/metrics/events.jsonl` 
 
    `checkScopeEcho` prints the verdict as JSON and `--emit` appends one `orchestrator.wave_dispatch.scope_echo_checked` record (payload: `docs/events-schema.md`; counts, digests and closed enums only — no path, no prompt text). `match: false` or `echoed: false` is logged in the wave progress update as `scope-echo: <agent> missing|mismatch` and changes NOTHING else — no re-dispatch, no deviation write, no gate.
 
+   Then, ONCE for the wave — not once per agent — join the two halves:
+
+   ```bash
+   node scripts/lib/scope-echo.mjs --verify --wave <N> --state-dir "<state-dir>" --json --emit
+   ```
+
+   It joins the send-side `scope_checked` records, the `<state-dir>/filescopes/wave-<N>/*.json` artefacts and the echoes **on the digest** — never on `agent_id`, because the two halves spell the same agent differently (measured 2026-09-16: 609 send-side vs 51 receive-side records, agent-id overlap ZERO; one session had 23 echoes against 18 injections and nothing could be paired). Log one line in the wave progress update:
+
+   ```
+   scope-injection: <injected>/<dispatches> injected, <echoed> echoed
+   ```
+
+   Two verdicts are a **STATE.md deviation write** (`### Deviations`), never a block and never a re-dispatch: `injection-missing` — a scope file materialized for this wave that NO dispatch claimed, i.e. the #1020 failure where the coordinator dispatched without injecting — and `duplicate-claim` — one digest claimed by two distinct agent ids, i.e. agent A's scope reported for agent B. `injected-not-echoed` is the normal state for any agent whose report has not landed yet and is logged, not written.
+
+   **On `transport: unobservable`** (the report's own field, from the wave's `scope_materialized` record — Codex, Cursor and Pi have no `PreToolUse` `Agent` matcher, so the send-side record cannot exist at all) every verdict degrades to `echo-only`, and a MISSING send-side record is **not** evidence of a missing injection. Do not write a deviation from an absence on those platforms.
+
    **What it proves:** the agent's final report carried the digest the coordinator handed it, i.e. the injected line survived the round trip into the agent's context and back. **What it does not prove:** that the model read the `FILE-SCOPE` block, understood it, or obeyed it — the digest is in the prompt, so it can be copied without ever looking at the paths (BV-004 ceiling, `docs/scope-collision-guard.md` § 4.2). Obedience is still measured at write time (`enforce-scope.mjs`) and by the W5 verification pass.
 
 3e. **Collect Open Questions** (Close Handover-Alignment-Gate, PRD 2026-07-07): scan every completed agent's report from this wave for an optional `OPEN-QUESTIONS:` line (see the report-line convention in `wave-loop-dispatch.md` `#### Agent-Type Resolution` — an agent MAY emit `OPEN-QUESTIONS: <question> | context: <...> | candidates: <opt A / opt B>`; most agents emit none). For each such line found:

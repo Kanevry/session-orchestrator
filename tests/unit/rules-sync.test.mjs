@@ -1020,15 +1020,29 @@ describe('syncRules — the always-on library vendors clean (issue #1098 AC)', (
 // ---------------------------------------------------------------------------
 
 /**
- * Copies the three modules the rules-sync CLI loads into `<dir>/scripts/lib/`,
- * so a spawned CLI resolves its pluginRoot to `dir` (it derives it from the
- * script's own location) and the sanitizer scans a FIXTURE corpus rather than
- * the live one. Only these three: they import nothing outside `scripts/lib/`.
+ * Copies the rules-sync CLI's CLOSED repo-local import chain into
+ * `<dir>/scripts/lib/`, so a spawned CLI resolves its pluginRoot to `dir` (it
+ * derives it from the script's own location) and the sanitizer scans a FIXTURE
+ * corpus rather than the live one.
+ *
+ * The list is the contract (`test-hygiene.md` § "Ein Test, der eine Importkette
+ * in ein tmp-Repo kopiert, macht die Importliste zum Vertrag"): a new
+ * repo-local import in any of these modules breaks the spawn with
+ * ERR_MODULE_NOT_FOUND until it is added here deliberately. Measured chain @
+ * 2026-09-16: rules-sync → {validate-vendored-rules, is-main-module};
+ * validate-vendored-rules → {rule-loader, is-main-module}; rule-loader and
+ * is-main-module import nothing outside `node:*`. `is-main-module.mjs` joined
+ * the list with the #1371 entry-guard sweep.
  */
 function makeSpawnablePluginRoot(dir) {
   const libDir = join(dir, 'scripts', 'lib');
   mkdirSync(libDir, { recursive: true });
-  for (const name of ['rules-sync.mjs', 'validate-vendored-rules.mjs', 'rule-loader.mjs']) {
+  for (const name of [
+    'rules-sync.mjs',
+    'validate-vendored-rules.mjs',
+    'rule-loader.mjs',
+    'is-main-module.mjs',
+  ]) {
     copyFileSync(fileURLToPath(new URL(`../../scripts/lib/${name}`, import.meta.url)), join(libDir, name));
   }
   // realpathSync: on macOS `mkdtemp` hands back /var/... while the child's

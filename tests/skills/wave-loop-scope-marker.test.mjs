@@ -31,6 +31,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
+import { SCOPE_MARKER } from '../../hooks/pre-task-scope-disjoint.mjs';
 
 const REPO_ROOT = process.cwd();
 const HOOK = path.join(REPO_ROOT, 'hooks', 'pre-task-scope-disjoint.mjs');
@@ -159,5 +160,28 @@ describe('wave-loop-dispatch.md ↔ pre-task-scope-disjoint.mjs — SCOPE_MARKER
     const rendered = renderPrompt(documentedInjectionBlock(), ['a/b.mjs', 'c/d.mjs']);
     const fenceBody = /```[^\n]*\n([\s\S]*?)```/.exec(rendered)?.[1] ?? '';
     expect(fenceBody.split('\n').filter((l) => l.trim() !== '')).toEqual(['a/b.mjs', 'c/d.mjs']);
+  });
+});
+
+describe('wave-loop-dispatch.md ↔ SCOPE_MARKER — the marker is CASE-SENSITIVE since 2026-09-16', () => {
+  // TV-001 bug this catches: dropping the `i` flag from SCOPE_MARKER (#1092)
+  // was documented as moving "a CLASSIFICATION and never a decision". That is
+  // wrong for a declaration that WOULD have extracted paths: a mixed-case
+  // `File-Scope:` block now matches nothing, `findScopeCollisions` never runs,
+  // and the dispatch is allowed unconditionally — a LOST DENY for that
+  // spelling. The whole guard is safe only because every live injector writes
+  // the upper-case form, which is a property of the TEMPLATE, not of the regex.
+  // Without this pin, rewording the documented marker to `File-Scope:` (a
+  // plausible style edit) silently disarms #1020 with a green suite — the three
+  // tests above would still pass, because they render the marker line straight
+  // out of the same file they are checking.
+  it('the documented marker line is UPPER-CASE and matches SCOPE_MARKER', () => {
+    const markerLine = documentedInjectionBlock().split('\n')[0];
+
+    expect(markerLine).toContain('FILE-SCOPE');
+    // The falsification: the same line lower-cased no longer matches, so the
+    // assertion above is load-bearing rather than trivially true.
+    expect(SCOPE_MARKER.test(markerLine)).toBe(true);
+    expect(SCOPE_MARKER.test(markerLine.toLowerCase())).toBe(false);
   });
 });

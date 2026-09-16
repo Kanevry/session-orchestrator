@@ -31,6 +31,7 @@ import {
   matchVcsCreate,
   isIssueCreate,
   isLoopedIssueCreate,
+  findLoopedIssueCreate,
   extractTitle,
   findIssueCreateStatements,
   matchesBypass,
@@ -241,22 +242,30 @@ describe('vcs-create-matcher — the REST-API route (#1163 BUG-2)', () => {
   // NAMED CEILINGS (BV-004). Pinned so the widening above stays DELIBERATE: if
   // one of these ever starts matching, it happened by accident and this test
   // says so rather than the behaviour changing silently.
-  it('keeps bash -c / $( ) / xargs as documented misses', () => {
+  it('keeps bash -c / $( ) as documented misses — but no longer xargs (#1289)', () => {
     expect(isIssueCreate("bash -c 'glab api --method POST projects/1/issues -f title=X'")).toBe(
       false,
     );
     expect(isIssueCreate('x=$(gh api repos/o/r/issues -f title=X)')).toBe(false);
     expect(isIssueCreate("bash -c 'glab issue create --title X'")).toBe(false);
+    // Inverted with #1289: the xargs lane is matched now, so the two remaining
+    // ceilings stay individually pinned instead of riding on a shared label.
+    expect(isIssueCreate('xargs glab issue create --title X')).toBe(true);
   });
 
-  // `xargs` was listed in this file's header as a TRANSPARENT WRAPPER it
-  // unwraps — measured 2026-09-09, it is not: `command-blocker.mjs` classes it
-  // as an interpreter (`SHELL_EXEC_INTERPRETERS`), so every xargs-driven create
-  // is a total miss — 0 statements, hence no charge AND no loop-deny either.
-  // The header now says so; this test keeps the documented ceiling honest, so a
-  // future widening (which would have to change what `resolveSegmentVerb`
-  // reports for `xargs` for four other consumers too) is deliberate.
-  it('xargs-driven create is a documented miss (named ceiling) — 0 statements, no loop-deny', () => {
+  // INVERTED at #1289 (this test previously pinned all four shapes at 0
+  // statements). THE BUG it now guards: an xargs-driven create was an UNCOUNTED
+  // BYPASS of the whole issue-budget gate — 0 statements meant
+  // `hooks/pre-bash-issue-budget.mjs` short-circuited at `statements.length ===
+  // 0` BEFORE the loop-deny, so neither the cap nor the deny ever saw it, and
+  // `echo X | xargs -I% glab issue create --title %` filed an unbounded number
+  // of issues against a count of 0.
+  //
+  // The fix is LOCAL (xargsDrivenRemainder): `resolveSegmentVerb` still reports
+  // `verb: 'xargs'` for the five positional consumers of the shared lexer —
+  // pinned in tests/lib/command-blocker.test.mjs, because unwrapping `xargs`
+  // there would loosen the destructive-command guard.
+  it('matches an xargs-driven create and flags it bulk (#1289)', () => {
     const shapes = [
       'xargs glab issue create --title X',
       'echo X | xargs -I% glab issue create --title %',
@@ -264,10 +273,25 @@ describe('vcs-create-matcher — the REST-API route (#1163 BUG-2)', () => {
       'xargs -n1 glab issue create',
     ];
     for (const cmd of shapes) {
-      expect(findIssueCreateStatements(cmd)).toEqual([]);
-      expect(isIssueCreate(cmd)).toBe(false);
+      const statements = findIssueCreateStatements(cmd);
+      expect(statements).toHaveLength(1);
+      expect(statements[0].bulk).toBe(true);
+      expect(isIssueCreate(cmd)).toBe(true);
+      // Still not a LOOP — the two bulk sources stay distinguishable in the
+      // record; the hook unions them, the matcher does not conflate them.
       expect(isLoopedIssueCreate(cmd)).toBe(false);
     }
+  });
+
+  // Direction guard: the widening must not invent a create out of any xargs
+  // call. A non-create utility yields no statement at all, and an ordinary
+  // (non-xargs) create keeps the `bulk` key ABSENT — the key is present only
+  // when true, so every existing consumer of this shape is unaffected.
+  it('leaves a non-create xargs call and an ordinary create untouched', () => {
+    expect(findIssueCreateStatements('echo a | xargs echo')).toEqual([]);
+    const plain = findIssueCreateStatements('glab issue create --title REAL');
+    expect(plain).toHaveLength(1);
+    expect(Object.hasOwn(plain[0], 'bulk')).toBe(false);
   });
 });
 
@@ -358,5 +382,56 @@ describe('vcs-create-matcher — refund attribution (#1347)', () => {
     ['the api route counts as a create', 'gh api -X POST repos/o/r/issues -f title=X', true],
   ])('%s', (_label, command, expected) => {
     expect(statementsCoverWholeCommand(command)).toBe(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findLoopedIssueCreate — the STATEMENT, not just the fact (2026-09-16)
+// ---------------------------------------------------------------------------
+//
+// TV-001 bug this catches: `hooks/pre-bash-issue-budget.mjs` G3b must classify
+// the cap exemption on the statement that CAUSED the bulk classification. While
+// only the boolean existed, the hook classified on `statements[0]`, so an
+// exempt NEIGHBOUR lifted the deny for an uncountable create (guard-design.md
+// § "Widening a matcher without narrowing its bypass", #1106 class). Pinning
+// the statement-returning API here keeps that binding possible; pinning the
+// second row keeps the SCAN honest — the pre-2026-09-16 first-create-only scan
+// returned `null`/`false` for every command whose first create sits outside the
+// loop, so the hook could not have denied it under ANY exemption binding.
+
+describe('vcs-create-matcher — findLoopedIssueCreate returns the looped statement', () => {
+  it('returns the tokens of the looped create, and the boolean wrapper agrees', () => {
+    const cmd = 'for t in a b c; do glab issue create --title "$t"; done';
+    const tokens = findLoopedIssueCreate(cmd);
+    expect(Array.isArray(tokens)).toBe(true);
+    expect(tokens.map((t) => t.text).slice(0, 3)).toEqual(['glab', 'issue', 'create']);
+    expect(isLoopedIssueCreate(cmd)).toBe(true);
+  });
+
+  it.each([
+    [
+      'a looped create AFTER an unrelated create is found (was a miss)',
+      'glab issue create --title "[Carryover] real"; for i in 1 2; do glab issue create --title j; done',
+      'j',
+    ],
+    [
+      'a looped create AFTER an mr create is found (was a miss)',
+      'glab mr create --title m; for i in 1 2; do glab issue create --title j; done',
+      'j',
+    ],
+  ])('%s', (_label, command, expectedTitle) => {
+    const tokens = findLoopedIssueCreate(command);
+    expect(tokens).not.toBeNull();
+    const at = tokens.findIndex((t) => t.text === '--title');
+    expect(tokens[at + 1].text).toBe(expectedTitle);
+  });
+
+  it.each([
+    ['a create AFTER a loop is not implicated', 'while true; do echo a; done; glab issue create --title z'],
+    ['a plain create is not looped', 'glab issue create --title a'],
+    ['a loop that creates nothing is not looped', 'for t in a b; do echo "$t"; done'],
+  ])('%s → null', (_label, command) => {
+    expect(findLoopedIssueCreate(command)).toBeNull();
+    expect(isLoopedIssueCreate(command)).toBe(false);
   });
 });

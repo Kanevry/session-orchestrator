@@ -32,6 +32,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { getProfile, loadProfiles, validateProfile } from '../profiles/registry.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
+import { isMainModule } from '../is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // Path resolution helper
@@ -349,7 +350,7 @@ export default async function run(opts = {}) {
 // CLI entry-point
 // ---------------------------------------------------------------------------
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   run().catch((err) => {
     console.error(`runner: unhandled error — ${err.message}`);
     process.exit(2);

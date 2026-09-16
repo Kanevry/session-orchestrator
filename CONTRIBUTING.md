@@ -366,6 +366,23 @@ Capture the exit code. If non-zero, parse the output for error count and file lo
 
 5. **Test** by running `/<my-command>` in Claude Code.
 
+6. **Give it a same-named skill, or put it on the exception list.** In print
+   mode (`claude -p`) a plugin's bare `/name` alias comes from the **skill
+   registry only** — a `commands/<name>.md` with no `skills/<name>/SKILL.md`
+   answers `Unknown command: /<name>` headlessly (claude 2.1.273, measured
+   2026-09-16, #1370). `tests/commands/headless-bare-command-availability.test.mjs`
+   enforces the pairing; the documented exceptions are `session`, `plan`
+   (reserved terminal-only built-in names) and `templates-ack`.
+
+7. **Headless smoke** (manual — costs model turns, not run in CI):
+
+   ```bash
+   env -u ANTHROPIC_API_KEY claude -p "/close" --plugin-dir "$PWD" --permission-mode bypassPermissions --model sonnet --max-turns 1
+   ```
+
+   Substitute your command for `/close`. The output must not contain
+   `Unknown command`.
+
 ## Adding a New Agent
 
 1. **Create the agent file:**

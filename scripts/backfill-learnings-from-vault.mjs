@@ -64,7 +64,6 @@
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, resolve, dirname, basename, relative } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { findProjectRoot, resolveInstructionFile, expandTilde } from './lib/common.mjs';
 import { parseSessionConfig } from './lib/config.mjs';
@@ -72,6 +71,7 @@ import { subjectToSlug, parseFrontmatter } from './lib/vault-mirror/utils.mjs';
 import { kebab } from './lib/learnings/kebab.mjs';
 import { validateLearning } from './lib/learnings/schema.mjs';
 import { appendLearning, isBackupOf } from './lib/learnings/io.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 const DEFAULT_RULES_DIR = '.claude/rules';
 const DEFAULT_STORE = '.orchestrator/metrics/learnings.jsonl';
@@ -962,7 +962,7 @@ export async function main(argv = [], deps = {}) {
 }
 
 /* c8 ignore start — CLI entrypoint */
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2))
     .then(({ code }) => process.exit(code))
     .catch((err) => {

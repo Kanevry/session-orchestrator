@@ -10,13 +10,15 @@
  * @see scripts/lib/state-md/mission-status.mjs      parseMissionStatus, parseMissionStatusStrict, MISSION_STATUS_VALUES, writeMissionStatus, setMissionStatus, setMissionStatusDetailed, readMissionStatus, recoverFrontmatterMissionStatusDetailed, writeMissionStatusOnDisk, setMissionStatusOnDisk
  * @see scripts/lib/state-md/recommendations.mjs     parseRecommendations
  *
- * Plus ONE small non-re-export surface: the `session-profile` frontmatter
- * accessors at the bottom of this file (see their docblock for why they are
- * composed here rather than added as a fourth mutator module).
+ * Plus TWO small non-re-export surfaces at the bottom of this file (each with
+ * its own docblock explaining why it is composed here rather than added as a
+ * fourth mutator module): the `session-profile` frontmatter accessors, and the
+ * `started_at` / `session-id` frontmatter SOURCES (#1368).
  */
 
 import { parseStateMd as _parseStateMd } from './state-md/yaml-parser.mjs';
 import { updateFrontmatterFields as _updateFrontmatterFields } from './state-md/frontmatter-mutators.mjs';
+import { readLock as _readLock } from './session-lock.mjs';
 
 export { parseStateMd, serializeStateMd } from './state-md/yaml-parser.mjs';
 
@@ -139,4 +141,83 @@ export function setSessionProfile(contents, profile) {
   return _updateFrontmatterFields(contents, {
     [SESSION_PROFILE_FIELD]: profile === null ? null : profile.trim(),
   });
+}
+
+// ---------------------------------------------------------------------------
+// STATE.md frontmatter SOURCES (#1368) — `started_at` / `session-id`.
+//
+// These two helpers exist because the frontmatter they feed is written by the
+// coordinator LLM from prose, and prose with no named source gets written from
+// `new Date()` at WRITE time. `started_at` then names the moment STATE.md was
+// created, not the moment the session began — measured 2026-09-13: 48 minutes
+// apart. Every other producer of that timestamp (the lock's own `started_at`,
+// `orchestrator.session.lock.acquired`, `orchestrator.session.started`) agrees
+// within 1 ms, because all three descend from `buildLock()`. So the lock is
+// the source, and these functions are how the template cites it.
+//
+// They live in this barrel rather than in `state-md/`: the barrel is the
+// documented entry point for STATE.md work, and the edge barrel → session-lock
+// already exists (state-md/frontmatter-mutators.mjs imports `withStateMdLock`
+// from it), so no cycle is created — session-lock.mjs imports nothing from
+// this module or its submodules.
+// ---------------------------------------------------------------------------
+
+/**
+ * The canonical `started_at` for a STATE.md written during THIS session.
+ *
+ * Returns the live lock's `started_at`, normalised to ISO-8601 UTC ("Z"), so
+ * STATE.md, the lock, both lock events and the ledger all name the SAME
+ * instant. Falls back to `new Date().toISOString()` ONLY when no usable lock
+ * exists — a missing lock means `persistence: false`, a lock that could not be
+ * acquired, or a corrupt lock file, and in all three the writer has no better
+ * source than the present moment. The fallback is deliberately silent: it is a
+ * degradation of PRECISION, not a failure.
+ *
+ * Never throws.
+ *
+ * @param {{ repoRoot?: string }} [opts]
+ * @returns {string} ISO-8601 UTC timestamp.
+ */
+export function resolveSessionStartedAt({ repoRoot } = {}) {
+  try {
+    const lock = _readLock({ repoRoot });
+    const raw = lock?.started_at;
+    if (typeof raw === 'string' && raw.length > 0) {
+      const ms = Date.parse(raw);
+      if (Number.isFinite(ms)) return new Date(ms).toISOString();
+    }
+  } catch {
+    /* readLock is no-throw by contract; the contract is not ours to trust */
+  }
+  return new Date().toISOString();
+}
+
+/**
+ * The session ids a STATE.md writer may stamp into frontmatter: `session-id`
+ * (the RAW/native harness id) and `session` (the semantic attribution label),
+ * both read from the live lock.
+ *
+ * Both fields are `null` when no usable lock exists — ABSENCE IS NEVER
+ * COERCED, and a writer must then OMIT the key rather than write a
+ * placeholder. Neither id grants ownership of anything (see
+ * `skills/_shared/state-ownership.md`); `session-id` exists so `/close`'s #429
+ * pre-check can join STATE.md to sessions.jsonl on a native identity instead
+ * of falling through to the label + timestamp path.
+ *
+ * Never throws.
+ *
+ * @param {{ repoRoot?: string }} [opts]
+ * @returns {{ session_id: string|null, semantic_session_id: string|null }}
+ */
+export function resolveSessionIds({ repoRoot } = {}) {
+  const pick = (value) => (typeof value === 'string' && value.trim().length > 0 ? value.trim() : null);
+  try {
+    const lock = _readLock({ repoRoot });
+    return {
+      session_id: pick(lock?.session_id),
+      semantic_session_id: pick(lock?.semantic_session_id),
+    };
+  } catch {
+    return { session_id: null, semantic_session_id: null };
+  }
 }

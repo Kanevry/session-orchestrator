@@ -24,6 +24,7 @@ import { promisify } from 'node:util';
 
 import { detectVcsForRepo, discoverVaultRepos } from '../gitlab-portfolio/vcs-detect.mjs';
 import { resolveRepoSpec } from '../vcs-repo-spec.mjs';
+import { isMainModule } from '../is-main-module.mjs';
 
 const realExecFile = promisify(execFileCb);
 
@@ -455,7 +456,7 @@ export async function main(argv, deps = {}) {
 
 // ── CLI guard — prevent process.exit during test-time imports ─────────────────
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2))
     .then((result) => {
       process.exit(result.exitCode);

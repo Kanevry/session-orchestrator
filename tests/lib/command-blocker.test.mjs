@@ -1012,3 +1012,85 @@ describe('splitChainSegments — destructive-guard direction (#1145)', () => {
     expect(commandMatchesBlocked('echo "rm -rf /etc"; echo done', 'rm -rf')).toBe(false);
   });
 });
+
+describe('extractRedirectTargets — payload lanes that named no redirect (#1366)', () => {
+  // THE BUG (TV-001), measured 2026-09-16 at the REAL hook against the real
+  // policy: all three commands came back ALLOW on BOTH redirect rules
+  // (`redirect-harness-memory`, `redirect-truncate-protected`) while the plain
+  // `> CLAUDE.md` and the `bash -c '… > CLAUDE.md'` spellings were DENY. Each
+  // reaches the file through a different hole:
+  //   - `eval` was in SHELL_EXEC_INTERPRETERS (quoted-token MATCH only) but
+  //     contributed NO payload, so the traversal never re-tokenized its argv;
+  //   - `dd` names its write target as a bare `of=` operand — no redirect
+  //     operator, no wrapper flag, nothing for the collector to see;
+  //   - `env -S` collected only the split-string OPERAND, dropping the
+  //     trailing `-c '…'` that real env(1) appends and executes.
+  // Falsification: revert the matching edit and the expectation becomes [].
+  it.each([
+    ['eval joins its argv and executes it', "eval 'echo x > CLAUDE.md'"],
+    ['dd names its target as a bare of= operand', 'dd of=CLAUDE.md'],
+    ['env -S appends the remaining argv to the split string', "env -S bash -c 'echo x > CLAUDE.md'"],
+  ])('%s', (_label, command) => {
+    expect(extractRedirectTargets(command)).toEqual([
+      { target: 'CLAUDE.md', mode: 'truncate', fd: null },
+    ]);
+  });
+
+  // COMPOSITION pin. Each lane above is pinned ALONE, and alone each is a
+  // straight line through the collector. Composed they are the shape an
+  // attacker actually reaches for: `eval` contributes a payload the traversal
+  // must re-tokenize, and `dd` names its write target as a bare operand with no
+  // redirect operator anywhere. A collector that handles the `of=` operand only
+  // at the TOP level — or one that re-tokenizes an eval payload but scans it
+  // for redirect operators only — reports [] here while both single-lane tests
+  // stay green, and `CLAUDE.md` is truncated through a rule that is live.
+  it('finds the dd of= target inside an eval payload (the two #1366 lanes composed)', () => {
+    expect(extractRedirectTargets("eval 'dd of=CLAUDE.md'")).toEqual([
+      { target: 'CLAUDE.md', mode: 'truncate', fd: null },
+    ]);
+  });
+
+  // Direction guard: `dd` is reported, not BLOCKED — an ordinary `dd` to an
+  // unprotected path must still produce exactly one ordinary truncate entry, so
+  // the denylist (not this collector) stays the thing that decides.
+  it('reports a benign dd target like any other truncate', () => {
+    expect(extractRedirectTargets('dd if=x of=/tmp/out')).toEqual([
+      { target: '/tmp/out', mode: 'truncate', fd: null },
+    ]);
+  });
+
+  // `conv=notrunc` / `oflag=append` make dd an APPEND. Reporting `truncate`
+  // unconditionally would deny it under a truncate-only rule that deliberately
+  // permits `>>`.
+  it('reads conv=notrunc as an append, not a truncate', () => {
+    expect(extractRedirectTargets('dd if=/dev/zero of=/tmp/o conv=notrunc')).toEqual([
+      { target: '/tmp/o', mode: 'append', fd: null },
+    ]);
+  });
+
+  // NAMED CEILING pin: a dd operand carrying a variable or a substitution is
+  // fail-VISIBLE unresolved, never guessed (the #641 rule, applied here too).
+  it('never guesses a dd operand behind a variable', () => {
+    expect(extractRedirectTargets('dd of=$X')).toEqual([
+      { target: null, mode: 'truncate', fd: null, unresolved: true },
+    ]);
+  });
+
+  // CROSS-CONSUMER pin (belt and braces). The five positional readers of
+  // `resolveSegmentVerb` must be untouched by the #1289 xargs widening in
+  // hooks/_lib/vcs-create-matcher.mjs: `xargs` stays an INTERPRETER here, it is
+  // NOT unwrapped, and the destructive guard still sees through its payload.
+  it('keeps xargs an interpreter for the shared lexer', () => {
+    expect(resolveSegmentVerb(tokenizeCommand('xargs rm -rf /')).verb).toBe('xargs');
+    expect(commandMatchesBlocked('xargs rm -rf /', 'rm -rf')).toBe(true);
+  });
+
+  // `env -S foo` (no trailing argv) must resolve exactly as before the widening
+  // — the payload is the bare operand and the segment still exhausts in the
+  // wrapper, so every positional consumer sees the unchanged shape.
+  it('leaves a bare env -S resolution unchanged', () => {
+    expect(resolveSegmentVerb(tokenizeCommand('env -S foo'))).toEqual({
+      verb: null, index: -1, payloads: ['foo'], wrapperArgs: [],
+    });
+  });
+});

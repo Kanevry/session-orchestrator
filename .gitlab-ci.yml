@@ -526,6 +526,32 @@ test:
   rules: *gate-rules
 
 # ---------------------------------------------------------------------------
+# pack-lifecycle (#1375) — runs the ACTUAL published artefact, not the checkout.
+#
+# `npm pack` → `npm install <tgz>` into a throwaway consumer → execute the
+# INSTALLED destructive guard. Every other job in this file (including the
+# `test:` shards above) measures this git checkout, where every tracked file is
+# present by construction, so a `package.json` `files[]` omission is invisible to
+# all of them; `tests/scripts/pack-policy-floor.test.mjs` reads the packLIST,
+# which is a manifest claim and runs nothing out of the artefact.
+#
+# Separate from `test:` on purpose: it is the one job that reaches the npm
+# registry (the consumer install resolves this package's own runtime deps, ~67
+# packages), so its failure mode is different in kind from a test failure and
+# deserves its own job name in the pipeline. Whole job ~20-30s.
+# ---------------------------------------------------------------------------
+
+pack-lifecycle:
+  <<: *node-setup
+  stage: test
+  interruptible: true
+  timeout: 10m   # generous headroom over the ~20-30s lifecycle; the tail risk is registry latency
+  allow_failure: false
+  script:
+    - npm run test:pack
+  rules: *gate-rules
+
+# ---------------------------------------------------------------------------
 # Stage: coverage (#263)
 #
 # Gated at 70% lines/functions/statements, 60% branches via vitest.config.mjs
@@ -758,6 +784,7 @@ pipeline-gate:
     - hook-import-set-check
     - package-manager-guard
     - test
+    - pack-lifecycle
     # Optional + artifacts — conditionally absent, judged by marker (mechanism 2).
     - job: coverage
       optional: true

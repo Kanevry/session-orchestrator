@@ -16,7 +16,9 @@ schema-version: 1
 session-type: feature|deep|housekeeping
 branch: <current branch>
 issues: [<issue numbers from plan>]
-started_at: <ISO 8601 timestamp with timezone>
+session: <semantic session label, e.g. main-2026-01-01-deep-1>
+session-id: <raw session_id from .orchestrator/session.lock — OMIT the key when no lock exists>
+started_at: <resolveSessionStartedAt({ repoRoot }) — the lock's own started_at, NEVER new Date() at write time (#1368)>
 status: active
 current-wave: 0
 total-waves: <from session plan>
@@ -36,6 +38,16 @@ Wave 0 — Initializing
 
 (none yet)
 ```
+
+**`started_at` and `session-id` are SOURCED, not typed (#1368).** Read both from the live session-lock before writing — never from the clock, and never from memory:
+
+```bash
+node -e "import('./scripts/lib/state-md.mjs').then(m => console.log(JSON.stringify({ started_at: m.resolveSessionStartedAt({ repoRoot: process.cwd() }), ...m.resolveSessionIds({ repoRoot: process.cwd() }) })))"
+```
+
+`resolveSessionStartedAt()` returns `.orchestrator/session.lock`'s own `started_at`, which the `orchestrator.session.lock.acquired` and `orchestrator.session.started` events agree with to the millisecond; it falls back to the current time only when no lock exists (`persistence: false`, or the acquire failed). Writing `new Date()` here instead put STATE.md 48 minutes ahead of the lock (measured 2026-09-13) and made `/close`'s #429 pre-check unable to join STATE.md to its own ledger record.
+
+`session-id` is the raw/native harness id (`resolveSessionIds().session_id`), `session` the semantic label (`.semantic_session_id`). Both are OPTIONAL (`schema-version` stays `1`): when the lock yields `null`, OMIT the key entirely — never write a placeholder. Neither field grants lock or registry ownership; see `skills/_shared/state-ownership.md`.
 
 Create the `<state-dir>` directory if needed (`mkdir -p <state-dir>`) before writing. This file is the persistent state record — other skills and resumed sessions read it.
 

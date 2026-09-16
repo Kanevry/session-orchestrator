@@ -24,6 +24,7 @@ import {
   MAINTENANCE_MIN_LEARNINGS,
   HOUSEKEEPING_COOLDOWN_DAYS,
   TAIL_CHUNK_BYTES,
+  GENERATED_RULE_EXPIRY_HORIZON_DAYS,
 } from '@lib/maintenance-due-banner.mjs';
 
 let tmpRepo;
@@ -86,6 +87,13 @@ function writeLearnings(active, expired = 0) {
   writeMetrics('learnings.jsonl', lines);
 }
 
+/** One rule file under `.claude/rules/`. `frontmatter` goes verbatim between the fences. */
+function writeRule(name, frontmatter, body = 'body') {
+  const dir = path.join(tmpRepo, '.claude', 'rules');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, name), `---\n${frontmatter}\n---\n\n# ${name}\n\n${body}\n`, 'utf8');
+}
+
 // ---------------------------------------------------------------------------
 
 describe('checkMaintenanceDue', () => {
@@ -102,7 +110,7 @@ describe('checkMaintenanceDue', () => {
     expect(computed.lastHousekeeping).toBeNull();
   });
 
-  // BUG (HR-106): a bare "4 of 6" tells the operator nothing about WHICH signal
+  // BUG (HR-106): a bare "4 of 7" tells the operator nothing about WHICH signal
   // fired or what number drove it — the banner must carry the numbers the
   // verdict was computed from, and must list only signals that are actually due.
   it('lists exactly the due signals with their driving numbers', async () => {
@@ -114,7 +122,7 @@ describe('checkMaintenanceDue', () => {
 
     const result = await checkMaintenanceDue({ repoRoot: tmpRepo, config: {} });
     expect(result?.severity).toBe('warn');
-    expect(result.message).toContain('⚠ maintenance due: 3 of 6');
+    expect(result.message).toContain('⚠ maintenance due: 3 of 7');
     expect(result.message).toContain(`evolve: never, ${MAINTENANCE_MIN_LEARNINGS + 5} active learnings`);
     // HR-106 regression (learning 013a45ba): the reconcile row used to print
     // `lastRunAt`, so a repo whose backlog keeps the signal due showed THAT
@@ -253,20 +261,20 @@ describe('checkMaintenanceDue', () => {
 
   // BUG (HR-106): a constant `total: 6` reports a denominator the rule never
   // judged — with `dialectic.cadence: 0` the dialectic signal is never
-  // evaluated, so "3 of 6" on such a host quotes a number nothing measured.
+  // evaluated, so "3 of 7" on such a host quotes a number nothing measured.
   it('the denominator counts the signals actually evaluated, not the constant 6', async () => {
     writeLearnings(MAINTENANCE_MIN_LEARNINGS + 5, 3);
     const config = { dialectic: { cadence: 0 } };
 
     const computed = await computeMaintenanceDue({ repoRoot: tmpRepo, config });
     expect(computed.skipped).toEqual(['dialectic']);
-    expect(computed.total).toBe(5);
+    expect(computed.total).toBe(6);
     // A skipped signal is neither due nor undeterminable — it was not judged.
     expect(computed.undeterminable).toEqual([]);
     expect(computed.due.map((d) => d.id)).toEqual(['evolve', 'reconcile', 'sweep']);
 
     const result = await checkMaintenanceDue({ repoRoot: tmpRepo, config });
-    expect(result.message).toContain('⚠ maintenance due: 3 of 5');
+    expect(result.message).toContain('⚠ maintenance due: 3 of 6');
   });
 
   // BUG (HR-106, second kill-switch): the memory-cleanup signal is skipped on a
@@ -281,7 +289,7 @@ describe('checkMaintenanceDue', () => {
       platform: 'codex',
     });
     expect(computed.skipped).toEqual(['memory-cleanup']);
-    expect(computed.total).toBe(5);
+    expect(computed.total).toBe(6);
   });
 
   // BUG: a dialectic signal read that advances `.orchestrator/dialectic-last-run`
@@ -294,5 +302,76 @@ describe('checkMaintenanceDue', () => {
     await checkMaintenanceDue({ repoRoot: tmpRepo, config: {} });
     const after = fs.readdirSync(path.join(tmpRepo, '.orchestrator'), { recursive: true }).sort();
     expect(after).toEqual(before);
+  });
+
+  // --- generated-rules-expiring (S7, #1372) --------------------------------
+
+  // BUG (the one this signal was built to replace): the expiry invariant used to
+  // live in `tests/rules/generated-corpus-expiry.test.mjs` as an assertion
+  // against TODAY, so `npm test` — pre-push hook AND CI — went red on a calendar
+  // date with nothing committed, blocking unrelated work, while the repair is a
+  // human consolidation no test run can perform. Here the same fact is a
+  // session-start row at the moment the operator can act on it.
+  it('flags a generated rule expiring inside the horizon, naming the file and the date', async () => {
+    const days = GENERATED_RULE_EXPIRY_HORIZON_DAYS - 4;
+    const expiresAt = new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+    writeRule('nearly-expired.md', `auto-generated: true\nexpires-at: ${expiresAt}`);
+
+    const computed = await computeMaintenanceDue({ repoRoot: tmpRepo, config: {} });
+    const row = computed.due.find((d) => d.id === 'generated-rules-expiring');
+    // HR-106: the row carries the file and the date the verdict was computed
+    // from — a bare "1 rule expiring" would leave the operator grepping.
+    expect(row?.detail).toBe(`nearly-expired.md ${expiresAt}`);
+    expect(computed.total).toBe(MAINTENANCE_TOTAL_SIGNALS);
+    expect(computed.undeterminable).toEqual([]);
+
+    const result = await checkMaintenanceDue({ repoRoot: tmpRepo, config: {} });
+    expect(result.message).toContain(`generated-rules-expiring: nearly-expired.md ${expiresAt}`);
+  });
+
+  // BUG (HR-101/HR-104): the reconcile engine stamps a ~30-day TTL on every rule
+  // it writes, so a horizon that reaches that far is due on essentially every
+  // session start — a standing condition, not a signal. The row must be silent
+  // until the expiry is actually close.
+  it('stays silent on a generated rule expiring beyond the horizon', async () => {
+    const expiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
+    writeRule('fresh.md', `auto-generated: true\nexpires-at: ${expiresAt}`);
+
+    const computed = await computeMaintenanceDue({ repoRoot: tmpRepo, config: {} });
+    expect(computed.due.map((d) => d.id)).not.toContain('generated-rules-expiring');
+    expect(computed.undeterminable).toEqual([]);
+    expect(computed.total).toBe(MAINTENANCE_TOTAL_SIGNALS);
+  });
+
+  // BUG: a predicate that classifies every `.md` in `.claude/rules/` as
+  // machine-generated would nag about hand-written rules the reconcile engine
+  // never wrote and nobody may delete. The signal is still JUDGED here, so it
+  // stays in the denominator (HR-106) — it is clean, not skipped.
+  it('ignores hand-written rules and still counts itself in the denominator', async () => {
+    const expiresAt = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    // No provenance marker anywhere — `expires-at` sits in the BODY, not the
+    // frontmatter, exactly as a prose mention would.
+    writeRule('hand-written.md', 'globs:\n  - "tests/**"', `see expires-at: ${expiresAt}`);
+
+    const computed = await computeMaintenanceDue({ repoRoot: tmpRepo, config: {} });
+    expect(computed.due.map((d) => d.id)).not.toContain('generated-rules-expiring');
+    expect(computed.skipped).toEqual([]);
+    expect(computed.total).toBe(MAINTENANCE_TOTAL_SIGNALS);
+  });
+
+  // BUG (three-state): an unreadable `.claude/rules/` read as "no generated
+  // rules" reports a clean row for a directory the probe never saw — the
+  // fail-open this module's `never` vs `undeterminable` discipline forbids.
+  it('records an unreadable rules directory as undeterminable, never as clean', async () => {
+    // A FILE where the directory is expected → readdirSync throws ENOTDIR.
+    fs.mkdirSync(path.join(tmpRepo, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(tmpRepo, '.claude', 'rules'), 'not a directory\n', 'utf8');
+
+    const computed = await computeMaintenanceDue({ repoRoot: tmpRepo, config: {} });
+    expect(computed.undeterminable).toContain('generated-rules-expiring');
+    expect(computed.due.map((d) => d.id)).not.toContain('generated-rules-expiring');
+
+    const result = await checkMaintenanceDue({ repoRoot: tmpRepo, config: {} });
+    expect(result.message).toContain('undeterminable: generated-rules-expiring');
   });
 });

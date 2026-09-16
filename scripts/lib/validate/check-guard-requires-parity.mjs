@@ -14,8 +14,8 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { parse } from '@babel/parser';
+import { isMainModule } from '../is-main-module.mjs';
 
 const HOOKS_RELATIVE_DIR = 'hooks';
 const MODULE_RELATIVE_PREFIX = 'scripts/lib';
@@ -1137,7 +1137,7 @@ export function runCheckGuardRequiresParity(pluginRoot) {
   return inspection.toolError ? 2 : 1;
 }
 
-const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href;
+const isMain =isMainModule(import.meta.url);
 if (isMain) {
   const pluginRoot = process.argv[2];
   if (!pluginRoot) {

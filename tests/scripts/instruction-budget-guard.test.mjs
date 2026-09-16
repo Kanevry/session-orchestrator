@@ -1424,8 +1424,26 @@ describe('computeInstructionBudget — path-scoped surface (generated-rule growt
 
     // Guard the derivation itself: the default must sit well above this fixture,
     // otherwise the "silent now" half of the ratchet is untested.
-    expect(DEFAULT_GENERATED_BYTE_CEILING).toBeGreaterThan(10_000);
+    expect(DEFAULT_GENERATED_BYTE_CEILING).toBe(95_000);
     expect(checkInstructionBudget({ repoRoot: emptyRoot, rulesDir })).toBeNull();
+  });
+
+  it('DEFAULT_GENERATED_BYTE_CEILING fires on at least one recorded corpus state', () => {
+    // #1308. The 91-state replay of `.claude/rules/` (see the constant's
+    // docblock) measured a true peak of 99,774 B at `2ae08fe0`. A ceiling AT or
+    // ABOVE that peak cannot fire on anything this repo has ever recorded — it
+    // is decorative, and HR-105 ("a rule you cannot falsify is not a rule") is
+    // exactly the failure the 124,000 value spent four months in. This is the
+    // guard the old `toBeGreaterThan(10_000)` could not be: that one passes for
+    // every unfalsifiable value above the peak.
+    expect(DEFAULT_GENERATED_BYTE_CEILING).toBeLessThan(99_774);
+  });
+
+  it('generated and pathScoped ceilings are independently set, not a copied literal', () => {
+    // #1297 was one number serving two populations. Equal literals are the
+    // shape that regression takes: it looks deliberate and measures nothing,
+    // because whichever axis is re-aimed silently re-aims the other.
+    expect(DEFAULT_GENERATED_BYTE_CEILING).not.toBe(DEFAULT_PATH_SCOPED_BYTE_CEILING);
   });
 
   it('never throws on a missing rules dir — generated surface reports zeroes', () => {

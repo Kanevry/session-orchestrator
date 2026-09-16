@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-09-13T09:10:50.839Z",
-  "head": "ff1ed19177795b743186eebfc387319de0e90c31",
+  "generated_at": "2026-09-16T11:23:32.237Z",
+  "head": "ca214376526873729b0f8707c25e93636cada222",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -358,6 +358,7 @@
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -381,6 +382,7 @@
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -660,6 +662,7 @@
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -699,6 +702,7 @@
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -838,7 +842,8 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs"
       ]
     },
     {
@@ -859,7 +864,8 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs"
       ]
     },
     {
@@ -882,6 +888,7 @@
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -991,6 +998,16 @@
       ]
     },
     {
+      "file": "scripts/lib/is-main-module.mjs",
+      "reachable_from": [
+        "enforce-scope.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
       "file": "scripts/lib/issue-budget.mjs",
       "reachable_from": [
         "post-bash-issue-budget-refund.mjs",
@@ -1024,6 +1041,7 @@
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -1047,6 +1065,7 @@
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -1070,6 +1089,7 @@
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -1197,6 +1217,12 @@
       ]
     },
     {
+      "file": "scripts/lib/scope-echo.mjs",
+      "reachable_from": [
+        "pre-task-scope-disjoint.mjs"
+      ]
+    },
+    {
       "file": "scripts/lib/scope-gate.mjs",
       "reachable_from": [
         "post-bash-write-verify.mjs",
@@ -1244,7 +1270,8 @@
         "post-tool-batch-wave-signal.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs"
       ]
     },
     {
@@ -1267,6 +1294,7 @@
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -1290,6 +1318,7 @@
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -1431,6 +1460,7 @@
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -1462,6 +1492,7 @@
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },

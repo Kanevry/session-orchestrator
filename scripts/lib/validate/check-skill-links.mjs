@@ -42,6 +42,7 @@
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, resolve, relative, sep } from 'node:path';
+import { isMainModule } from '../is-main-module.mjs';
 
 /**
  * Surfaces whose markdown is instruction, i.e. read and acted on.
@@ -190,4 +191,4 @@ function main() {
   process.stdout.write(`  PASS: ${checked} relative link(s) in ${files} markdown file(s) resolve\n`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+if (isMainModule(import.meta.url)) main();

@@ -72,8 +72,8 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { enumerateRepoFiles } from './enumerate-repo-files.mjs';
+import { isMainModule } from '../is-main-module.mjs';
 
 /** Marker line inside a checker's own header — declares deliberate CLI-only status. */
 export const STANDALONE_MARKER = /^\s*\/\/\s*registration:\s*standalone\b(?:\s+(.*))?$/m;
@@ -243,7 +243,7 @@ export function runCheckValidatorRegistration(repoRoot) {
   return fail > 0 ? 1 : 0;
 }
 
-const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href;
+const isMain =isMainModule(import.meta.url);
 if (isMain) {
   const root = process.argv[2];
   if (!root) {

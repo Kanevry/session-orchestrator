@@ -96,28 +96,25 @@
  *     triage of a per-session counter file
  *     (`.orchestrator/runtime/issue-budget/<hash>.json`, #1141) or in a
  *     transcript census of real create calls.
- *   - An `xargs`-driven create is NOT matched, and `xargs` is deliberately not
- *     a transparent wrapper: `command-blocker.mjs` classes it as an INTERPRETER
- *     (`SHELL_EXEC_INTERPRETERS`), because unwrapping it there would LOOSEN the
- *     destructive-command guard that shares this lexer. Measured 2026-09-09
- *     against this file — all four shapes yield 0 statements, so neither the
- *     cap nor the loop-deny sees them:
+ *   - An `xargs`-driven create IS matched since #1289 — but LOCALLY, in
+ *     {@link xargsDrivenRemainder}, never by changing what `resolveSegmentVerb`
+ *     reports for `xargs`. That resolver still answers `verb: 'xargs'`, because
+ *     `command-blocker.mjs` classes `xargs` as an INTERPRETER
+ *     (`SHELL_EXEC_INTERPRETERS`) and unwrapping it there would LOOSEN the
+ *     destructive-command guard the five positional consumers of that resolver
+ *     share. Measured 2026-09-16 against this file — the four shapes that
+ *     yielded 0 statements before now yield 1 each, flagged `bulk: true`:
  *
- *         xargs glab issue create --title X                          → 0
- *         echo X | xargs -I% glab issue create --title %             → 0
- *         seq 1 50 | xargs -I% gh api -X POST …/issues -f title=%    → 0
- *         xargs -n1 glab issue create                                → 0
+ *         xargs glab issue create --title X                          → 1
+ *         echo X | xargs -I% glab issue create --title %             → 1
+ *         seq 1 50 | xargs -I% gh api -X POST …/issues -f title=%    → 1
+ *         xargs -n1 glab issue create                                → 1
  *
- *     Widening this one shape means changing what `resolveSegmentVerb` reports
- *     for `xargs` — read by the four OTHER consumers of that resolver
- *     (`grep -rln resolveSegmentVerb scripts/ hooks/`, 2026-09-09:
- *     `scripts/lib/project-hygiene.mjs`, `scripts/lib/scope-gate.mjs`,
- *     `hooks/pre-bash-sessions-ledger-guard.mjs`,
- *     `hooks/pre-bash-destructive-guard.mjs`) — so it is a deliberate
- *     cross-consumer change, never a local patch here.
- *     Pinned by `tests/hooks/vcs-create-matcher.test.mjs`. Revisit when an
- *     `xargs`-driven create shows up in a transcript census or in the overflow
- *     triage of a per-session counter file.
+ *     A `bulk` statement is never CHARGED: the multiplicity comes from the
+ *     stdin word list and is unknowable before the shell runs, so
+ *     `hooks/pre-bash-issue-budget.mjs` treats it exactly like a loop body —
+ *     deny in `strict`, report the undercount in `warn`. The remaining ceiling
+ *     is the option grammar, named at {@link xargsDrivenRemainder}.
  *   - A paren glued to the verb (`(glab issue create …)`) is not reached: it
  *     lexes as the single word `(glab`. This is `command-blocker.mjs`'s own
  *     named ceiling on `COMMAND_POSITION_KEYWORDS` (#1145), inherited here
@@ -164,13 +161,78 @@ export const CREATE_REGEX = /^\s*(gh|glab)\s+(pr|mr|issue)\s+(create|new)\b/;
 function statementsOf(command) {
   if (typeof command !== 'string' || command.length === 0) return [];
   try {
-    return splitChainSegments(tokenizeCommand(command));
+    const segments = splitChainSegments(tokenizeCommand(command));
+    const out = [];
+    for (const segment of segments) {
+      out.push(segment);
+      const rest = xargsDrivenRemainder(segment);
+      if (rest !== null) out.push(rest);
+    }
+    return out;
   } catch {
     // Fail OPEN, matching every other error path in the two consuming hooks:
     // a lexer that throws must not wedge every Bash call. Worst case is a
     // missed enforcement.
     return [];
   }
+}
+
+/**
+ * xargs' own options, split by whether they consume a SEPARATE next token.
+ * Both the separated (`-n 1`) and the attached (`-n1`, `-I%`) spellings are
+ * handled — the attached form is what agents actually write.
+ */
+const XARGS_VALUE_FLAGS = new Set(['-I', '-i', '-n', '-P', '-L', '-s', '-E', '-d', '-a']);
+
+/**
+ * The UTILITY xargs drives, as an additional statement — or `null` when the
+ * segment is not an `xargs` call, or nothing follows its options (#1289).
+ *
+ * ## Why here and not in the shared lexer
+ *
+ * `command-blocker.mjs` classes `xargs` as an INTERPRETER, deliberately NOT a
+ * transparent wrapper: unwrapping it there would resolve past it for the FIVE
+ * positional consumers of `resolveSegmentVerb` and LOOSEN the destructive-command
+ * guard. So the widening stays local to this matcher, where the only question is
+ * "does this command file issues?" — the shared verb resolution is untouched,
+ * and `resolveSegmentVerb` still reports `verb: 'xargs'`.
+ *
+ * The returned array carries a non-index `xargsDriven` marker so
+ * {@link findIssueCreateStatements} can flag the statement `bulk: true`: the
+ * multiplicity is set by the STDIN word list, which does not exist at hook time,
+ * so such a create can never be charged — only denied or reported.
+ *
+ * NAMED CEILING (BV-004): only the option spellings in `XARGS_VALUE_FLAGS` plus
+ * bare boolean/unknown short flags are skipped. A SEPARATED long form
+ * (`--max-args 5`) leaves its operand in verb position, so the remainder does not
+ * match a create shape and the call is missed — the pre-#1289 behaviour, i.e. an
+ * under-report, never a false deny. REVISIT TRIGGER: a separated-long-form xargs
+ * create in a transcript census.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} segment
+ * @returns {Array<{ text: string, quoted: boolean }>|null}
+ */
+function xargsDrivenRemainder(segment) {
+  if (segment.length === 0) return null;
+  const head = segment[0];
+  if (head.quoted || head.text.replace(/^.*\//, '') !== 'xargs') return null;
+
+  let i = 1;
+  while (i < segment.length) {
+    const tok = segment[i];
+    if (tok.quoted) break; // a quoted word is the utility, never an option
+    const text = tok.text;
+    if (text === '--') { i++; break; }
+    if (!text.startsWith('-') || text === '-') break;
+    if (XARGS_VALUE_FLAGS.has(text)) { i += 2; continue; } // separated: `-n 1`
+    if (XARGS_VALUE_FLAGS.has(text.slice(0, 2))) { i += 1; continue; } // attached: `-I%`
+    i += 1; // boolean (`-0`, `-r`, `-t`) or an unknown flag
+  }
+
+  const rest = segment.slice(i);
+  if (rest.length === 0) return null;
+  rest.xargsDriven = true;
+  return rest;
 }
 
 /**
@@ -609,13 +671,19 @@ export function findIssueCreateStatements(command) {
       continue;
     }
     literalCatPaths ??= singleQuotedCatPaths(command);
-    out.push({
+    const statement = {
       shape,
       tokens,
       text: tokens.map((t) => t.text).join(' '),
       ...fieldsFromTokens(tokens, shape, literalCatPaths),
       cwdChanged,
-    });
+    };
+    // `bulk` — the create files an UNKNOWN number of issues (#1289). Today the
+    // only source is an `xargs`-driven statement, whose multiplicity is the
+    // stdin word list; the key is present ONLY when true, so every existing
+    // consumer of this shape is unaffected.
+    if (tokens.xargsDriven === true) statement.bulk = true;
+    out.push(statement);
   }
   return out;
 }
@@ -690,6 +758,89 @@ export function isIssueCreate(command) {
 }
 
 /**
+ * The issue-create STATEMENT that sits inside a LOOP BODY, or `null` (#1145).
+ *
+ * Returning the statement rather than a boolean is what lets the consuming hook
+ * bind the CAP EXEMPTION to the statement that CAUSED the bulk classification.
+ * Measured 2026-09-16 against `hooks/pre-bash-issue-budget.mjs` before this
+ * change, which classified the exemption on `statements[0]`:
+ *
+ *     for i in 1 2 3; do glab issue create --title junk$i; done
+ *       → DENY
+ *     glab issue create --title "[Carryover] real"; for i in 1 2 3; do \
+ *       glab issue create --title junk$i; done
+ *       → ALLOW
+ *
+ * The second command files an unknowable number of UNTEMPLATED issues, lifted
+ * by an unrelated neighbour's exemption. That is `.claude/rules/guard-design.md`
+ * § "Widening a matcher without narrowing its bypass" (#1106 class) in the
+ * exemption lane instead of the bypass lane — same shape, same fix: judge the
+ * exemption on the statement the gate fired on, never on a sibling.
+ *
+ * The tokens are the segment the loop-depth scan implicated, so the caller can
+ * rebuild its classification text exactly as {@link findIssueCreateStatements}
+ * does (`tokens.map((t) => t.text).join(' ')`).
+ *
+ * @param {string} command
+ * @returns {Array<{ text: string, quoted: boolean }>|null}
+ */
+export function findLoopedIssueCreate(command) {
+  if (typeof command !== 'string' || command.length === 0) return null;
+
+  let tokens;
+  let segments;
+  try {
+    tokens = tokenizeCommand(command);
+    segments = splitChainSegments(tokens);
+  } catch {
+    return null; // fail OPEN, same posture as statementsOf
+  }
+
+  // EVERY issue-create statement is a candidate, keyed by its HEAD token's
+  // object identity — the position in the raw stream at which the loop depth
+  // must be read.
+  //
+  // Until 2026-09-16 this considered only the FIRST create statement of ANY
+  // kind and then checked its `kind`, mirroring the pre-#1163 hook whose G3 was
+  // a single `isIssueCreate(command)` boolean. That mirror is obsolete and was
+  // a MISS: since #1163 the hook judges EVERY statement via
+  // {@link findIssueCreateStatements}, and the old first-only scan reported
+  // `false` for any command whose first create sits outside the loop. Measured
+  // 2026-09-16 against HEAD:
+  //
+  //     glab issue create --title "[Carryover] real"; for i in 1 2 3; do \
+  //       glab issue create --title junk$i; done          → false (should be true)
+  //     glab mr create --title m; for i in 1 2; do \
+  //       glab issue create --title j; done               → false (should be true)
+  //     for i in 1 2 3; do glab issue create --title j; done → true
+  //
+  // The first shape files an unknowable number of issues and was ALLOWED by the
+  // budget gate. Scanning all candidates is the fail-CLOSED direction and no
+  // longer disagrees with the hook about which statements exist.
+  const createHeads = new Map();
+  for (const seg of segments) {
+    const shape = matchStatement(seg);
+    if (shape && shape.kind === 'issue') createHeads.set(seg[0], seg);
+  }
+  if (createHeads.size === 0) return null;
+
+  const kept = new Set(segments.flat());
+  let depth = 0;
+  for (const tok of tokens) {
+    // A create head at depth 0 is a create AFTER (or BEFORE) a loop, not inside
+    // one: `while x; do echo a; done; glab issue create` stays unimplicated.
+    if (createHeads.has(tok)) {
+      if (depth > 0) return createHeads.get(tok);
+      continue;
+    }
+    if (tok.quoted || kept.has(tok)) continue; // an argument, or a separator
+    if (tok.text === 'do') depth += 1;
+    else if (tok.text === 'done' && depth > 0) depth -= 1;
+  }
+  return null;
+}
+
+/**
  * True when the matched issue-create statement sits inside a LOOP BODY, i.e.
  * the command creates an unknown number of issues (#1145).
  *
@@ -730,47 +881,16 @@ export function isIssueCreate(command) {
  * to charging 1 for N. The unit test `tests/hooks/vcs-create-matcher.test.mjs`
  * pins the coupling directly. Revisit if that set is ever narrowed.
  *
+ * Boolean wrapper over {@link findLoopedIssueCreate} — kept as the named
+ * question for callers that only need the FACT (and for the sibling suites that
+ * pin it). A caller that must classify the cap exemption asks for the STATEMENT
+ * instead; see that function's docblock for why the distinction is load-bearing.
+ *
  * @param {string} command
  * @returns {boolean} false when the command has no issue-create statement at all
  */
 export function isLoopedIssueCreate(command) {
-  if (typeof command !== 'string' || command.length === 0) return false;
-
-  let tokens;
-  let segments;
-  try {
-    tokens = tokenizeCommand(command);
-    segments = splitChainSegments(tokens);
-  } catch {
-    return false; // fail OPEN, same posture as statementsOf
-  }
-
-  // The create statement's HEAD token, by object identity — the position in the
-  // raw stream at which the loop depth must be read.
-  //
-  // Deliberately the FIRST create statement of any kind, then a kind check —
-  // exactly what isIssueCreate() does via matchVcsCreate(). Searching for the
-  // first ISSUE create instead would diverge on `glab mr create … ; glab issue
-  // create …`: the hook's G3 would look at the mr, this at the issue, and the
-  // two would disagree about which statement they are judging.
-  let headTok = null;
-  for (const seg of segments) {
-    const shape = matchStatement(seg);
-    if (!shape) continue;
-    if (shape.kind === 'issue') headTok = seg[0];
-    break;
-  }
-  if (!headTok) return false;
-
-  const kept = new Set(segments.flat());
-  let depth = 0;
-  for (const tok of tokens) {
-    if (tok === headTok) return depth > 0;
-    if (tok.quoted || kept.has(tok)) continue; // an argument, or a separator
-    if (tok.text === 'do') depth += 1;
-    else if (tok.text === 'done' && depth > 0) depth -= 1;
-  }
-  return false;
+  return findLoopedIssueCreate(command) !== null;
 }
 
 /**

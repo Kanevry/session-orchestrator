@@ -536,6 +536,66 @@ describe('on-session-end.mjs — close-through backfill (#724)', { timeout: 1500
   });
 });
 
+describe('on-session-end.mjs — own-live-lock backfill is gated on the recorded-session attestation (#1376)', { timeout: 15000 }, () => {
+  const UUID = U('own-ending-live');
+  const FOREIGN_UUID = U('foreign-terminating-window');
+  const SEMANTIC = 'main-2026-07-02-session-4';
+  const STARTED_AT = '2026-07-02T09:00:00.000Z';
+
+  async function seedLiveOwnSession(dir) {
+    await seedEvents(dir, [
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main', project: 'demo' },
+      {
+        timestamp: '2026-07-02T09:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: SEMANTIC,
+        mode: 'deep',
+      },
+    ]);
+    await seedCurrentSession(dir, {
+      sessionId: UUID,
+      timestamp: new Date().toISOString(),
+      semanticSessionId: SEMANTIC,
+    });
+    // LIVE own lock — the real SessionEnd shape (heartbeat refreshed minutes
+    // ago, TTL 4h). Before #1376 this made every unclosed session skip its own
+    // stub, so the ledger got NOTHING.
+    await seedLock(dir, {
+      sessionId: UUID,
+      semanticSessionId: SEMANTIC,
+      lastHeartbeat: new Date().toISOString(),
+    });
+  }
+
+  it('passes ownSessionIsEnding only when the hook payload session id matches the lock', async () => {
+    // (a) The ending session IS the recorded one → attestation true → the
+    //     abandoned stub is finally written despite the live own lock.
+    const own = await mkProject();
+    await seedLiveOwnSession(own);
+    await runHook({
+      projectDir: own,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: UUID, reason: 'other' }),
+    });
+    const recorded = await readSessions(own);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].session_id).toBe(SEMANTIC);
+    expect(recorded[0].status).toBe('abandoned');
+
+    // (b) #863 defect (b) must not come back: a FOREIGN terminating window
+    //     that inherits this repo's shared current-session.json identity fails
+    //     the same attestation that gates duration_ms / semantic_session_id,
+    //     so it never sets the flag and the live session is left alone.
+    const foreign = await mkProject();
+    await seedLiveOwnSession(foreign);
+    await runHook({
+      projectDir: foreign,
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: FOREIGN_UUID, reason: 'other' }),
+    });
+    expect(await readSessions(foreign)).toHaveLength(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // #731 — dead-by-age relaxation must NEVER leak into the hook path
 // ---------------------------------------------------------------------------

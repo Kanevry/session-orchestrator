@@ -1434,6 +1434,65 @@ describe('SubagentStop payload enrichment (#1190)', { timeout: 15000 }, () => {
     expect(record.agent_type_meta).toBe('Explore');
   });
 
+  // #1289 Befund 2 — the issue diagnosed a PRODUCER defect in `agent_type_meta`.
+  // Measured 2026-09-16, that is wrong: 1000/1000 `agent-*.meta.json` sidecars on
+  // this host carry `agentType`, and over `.orchestrator/metrics/events.jsonl`
+  // (15.291 `orchestrator.agent.stopped` records) `agent_type_meta` and
+  // `tool_use_id` co-occur PERFECTLY — 542/542, only-meta 0, only-tool 0 — because
+  // both come from the same `readFileSync(metaPath)` block. So the low presence
+  // rate is a sidecar-LOOKUP rate, not a field rate.
+  //
+  // These two tests make the distinction measurable. The first is the shape the
+  // issue believed it was seeing and that the corpus contains ZERO of (only-tool =
+  // 0) — which is exactly why the mis-attribution was invisible.
+  it('separates a found-but-fieldless sidecar from a missing one — field absent, no sidecar_missing', async () => {
+    const dir = await track(await mkGitDir());
+    const parent = await mkSidecar(dir, 'noType', {
+      meta: { description: META.description, toolUseId: META.toolUseId },
+    });
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_type: 'Explore',
+        agent_id: 'noType',
+        transcript_path: parent,
+      }),
+    });
+
+    const record = await readLastEvent(dir);
+    expect(record.tool_use_id).toBe(META.toolUseId);
+    expect(Object.hasOwn(record, 'agent_type_meta')).toBe(false);
+    // The sidecar WAS found — the marker must not fire, or the two failure
+    // classes collapse back into one number again.
+    expect(Object.hasOwn(record, 'sidecar_missing')).toBe(false);
+  });
+
+  it('marks a sidecar that was resolved but does not exist (sidecar_missing)', async () => {
+    const dir = await track(await mkGitDir());
+    const parent = await mkSidecar(dir, 'noMeta', { meta: null });
+
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({
+        hook_event_name: 'SubagentStop',
+        agent_type: 'Explore',
+        agent_id: 'noMeta',
+        transcript_path: parent,
+      }),
+    });
+
+    const record = await readLastEvent(dir);
+    expect(record.sidecar_missing).toBe(true);
+    // No fallback merge (deliberate): `agent` keeps the harness's own value and
+    // is never filled from the meta witness, so the empty-`agent_type` rate
+    // stays measurable.
+    expect(record.agent).toBe('Explore');
+    expect(Object.hasOwn(record, 'agent_type_meta')).toBe(false);
+    expect(Object.hasOwn(record, 'tool_use_id')).toBe(false);
+  });
+
   it('omits a structured agent_type_meta but KEEPS the plugin-qualified form (F-E)', async () => {
     // Catches BOTH directions. A newline/quote payload must not reach the
     // unredacted webhook — and the clamp must not be so tight that it drops the

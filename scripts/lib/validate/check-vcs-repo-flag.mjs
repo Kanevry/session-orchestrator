@@ -193,8 +193,8 @@
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { SHELL_LANGS, forEachLine } from './markdown-fences.mjs';
+import { isMainModule } from '../is-main-module.mjs';
 
 /** Directories whose content is scanned. Root-level `*.md` is added separately. */
 const SCAN_DIRS = Object.freeze([
@@ -906,7 +906,7 @@ export function runCheckVcsRepoFlag(pluginRoot) {
   return 0;
 }
 
-const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href;
+const isMain =isMainModule(import.meta.url);
 if (isMain) {
   const argv = process.argv.slice(2);
   const flags = new Set(argv.filter((a) => a.startsWith('--')));

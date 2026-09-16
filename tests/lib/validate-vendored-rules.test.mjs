@@ -6,6 +6,10 @@
  * placeholder, zero-match-globs, foreign-glob), validateRulesDir(), the CLI's
  * exit-code contract, and the mandatory PLUGIN_HEADER_PREFIX identity guard
  * against scripts/lib/rules-sync.mjs's textually-duplicated copy.
+ *
+ * Also pins the paths-frontmatter probe's POPULATION (2026-09-16): the `rules/`
+ * fleet library, never a repo's own consolidated `.claude/rules/` tree, whose
+ * files are `paths:`-canonical by design (#1108).
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -101,6 +105,47 @@ describe('validateRuleContent — paths-frontmatter probe', () => {
 
     expect(result.ok).toBe(true);
     expect(result.violations.filter((v) => v.rule === 'paths-frontmatter')).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Probe 1 — scope: the `rules/` fleet library, never `.claude/rules/` (F5)
+// ---------------------------------------------------------------------------
+
+describe('paths-frontmatter — scope is the rules/ fleet library', () => {
+  const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
+
+  it('finds no paths-frontmatter error in the live rules/ library — its only production population', () => {
+    // Bug caught: a fleet-library source lands with `paths:` instead of `globs:`.
+    // syncRules() runs this exact probe as a pre-write gate and records an error
+    // for that file, so the rule is SKIPPED in every consumer repo's
+    // .claude/rules/ — a silent fleet-sync hole that surfaces only on the next
+    // /bootstrap --sync-rules run in some other repo.
+    const result = validateRulesDir({ dir: join(REPO_ROOT, 'rules') });
+
+    const offenders = result.files
+      .filter((f) => f.violations.some((v) => v.rule === 'paths-frontmatter'))
+      .map((f) => f.file);
+
+    expect(result.files.length).toBeGreaterThan(0);
+    expect(offenders).toEqual([]);
+  });
+
+  it('scopes its remedy to vendored rules and exempts a repo-local .claude/rules/ file', () => {
+    // Bug caught: an unscoped remedy ("migrate to globs:") read by a
+    // consolidation pass over .claude/rules/ — obeying it strips `paths:`, and
+    // Claude Code's native loader then loads the rule ALWAYS-ON (#1108), the
+    // instruction-budget failure consolidation exists to prevent. The probe's
+    // population is the rules/ library (module doc § Scope); the message must
+    // say so rather than address every reader of every rule file.
+    const content = '---\npaths:\n  - scripts/**\n---\n\n# Consolidated rule\n';
+
+    const { violations } = validateRuleContent({ content, relPath: 'testing.md' });
+    const v = violations.find((x) => x.rule === 'paths-frontmatter');
+
+    expect(v).toBeDefined();
+    expect(v.message).toContain('rules/ library');
+    expect(v.message).toContain('.claude/rules/');
   });
 });
 

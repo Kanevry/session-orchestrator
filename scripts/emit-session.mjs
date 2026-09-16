@@ -26,7 +26,6 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { appendJsonl } from './lib/common.mjs';
 import {
   MEMORY_CLEANUP_EVENT,
@@ -42,6 +41,7 @@ import {
   clampTimestampsMonotonic,
   aliasLegacyEndedAt,
 } from './lib/session-schema.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 export { serializeSessionLineChecked };
 
@@ -277,8 +277,7 @@ async function main() {
 // not when imported as a module (e.g. by tests that exercise the exported
 // serializeSessionLineChecked seam — #662). Without this guard, importing the
 // module would block on stdin / exit the test process.
-const _isDirectRun =
-  process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+const _isDirectRun =isMainModule(import.meta.url);
 
 if (_isDirectRun) {
   main().catch((err) => {

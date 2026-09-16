@@ -778,6 +778,9 @@ async function main() {
 // under a symlinked plugin install) while `import.meta.url` is realpath-resolved
 // by node's default loader, so BOTH sides are realpath'd.
 // ---------------------------------------------------------------------------
+// BV-004 ceiling: kept inline — hooks avoid importing scripts/lib on the hot
+// path; the canonical predicate is scripts/lib/is-main-module.mjs. Revisit if the
+// hook-import-set (hooks/_lib/hook-import-set.json) ever admits scripts/lib here.
 function invokedAsScript() {
   const entry = process.argv[1];
   if (!entry) return false;

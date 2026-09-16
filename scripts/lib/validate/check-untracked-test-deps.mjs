@@ -104,10 +104,10 @@
 // Import-safety: importing this module MUST NOT execute anything — the isMain
 // guard at the bottom is the only side-effecting path.
 
-import { pathToFileURL } from 'node:url';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { isMainModule } from '../is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -938,7 +938,7 @@ export function runCheckUntrackedTestDeps(repoRoot) {
   return findings.length > 0 ? 1 : 0;
 }
 
-const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href;
+const isMain =isMainModule(import.meta.url);
 if (isMain) {
   const root = process.argv[2];
   if (!root) {

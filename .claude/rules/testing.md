@@ -1,9 +1,4 @@
 ---
-globs:
-  - "**/*.test.*"
-  - "**/*Tests*"
-  - tests/**
-  - vitest.config.*
 paths:
   - "**/*.test.*"
   - "**/*Tests*"
@@ -63,40 +58,6 @@ Fixtures for producer/consumer formats (`sessions.jsonl`, `learnings.jsonl`, on-
 - Mock external services (Stripe, Sentry, AI APIs) — never call real APIs in integration tests.
 - Use `@your-org/testing-utils` `createMockSupabase` for Supabase client mocking.
 
-## Server Action Testing
-
-### Mocking `requireAuth()`
-- Mock the auth boundary at module level: `vi.mock('@/lib/auth', () => ({ requireAuth: vi.fn() }))`.
-- Default mock return: `{ user: { id: 'test-user-id', email: 'test@example.com' }, businessId: 'test-biz-id', supabase: createMockSupabase() }`.
-- Test unauthenticated: `vi.mocked(requireAuth).mockRejectedValue(new Error('Unauthorized'))`.
-- Reset mocks in `beforeEach` to prevent state leakage — but re-establish module-level `vi.mock()` defaults AFTER the reset (see "Vitest Mocking Gotchas"), or the next test hits "Cannot read properties of undefined".
-
-### Testing Response Envelopes
-- Server actions return `{ success: true, data }` or `{ success: false, error }`.
-- Test both paths explicitly: verify `success` boolean, `data` shape on success, `error` message on failure.
-- Use Zod schema validation on response: `expect(() => ResponseSchema.parse(result)).not.toThrow()`.
-
-### Testing Zod Validation
-- Test with valid inputs (happy path).
-- Test with missing required fields: expect `{ success: false, error: 'Validation failed' }`.
-- Test with wrong types (string where number expected, too-short strings).
-- Test boundary values (min/max length, empty strings, special characters).
-- **Property-based testing:** Use `@fast-check/vitest` + `fast-check` for schema invariant testing. Key patterns:
-  - `fcTest.prop([fc.anything()])('schema.safeParse never throws', (input) => expect(() => schema.safeParse(input)).not.toThrow())`
-  - Generate valid inputs from schema constraints and verify roundtrip parsing.
-  - See `packages/zod-schemas/src/property.test.ts` for reference implementation.
-
-### Error Boundary Integration
-- Test that server action errors don't crash the page: wrap in `try/catch` at the component level.
-- Verify error responses are user-friendly (no internal details leaked).
-- Test concurrent action calls don't interfere with each other.
-
-### IDOR Testing Patterns
-- Test that users cannot access resources belonging to other users/businesses by manipulating IDs in requests.
-- Verify every data-fetching server action scopes queries to `businessId` from `requireAuth()`, not from client params.
-- Test horizontal privilege escalation: call actions with valid auth but with IDs belonging to a different tenant.
-- Test vertical privilege escalation: call admin-only actions with non-admin auth tokens. Expect 403.
-
 ## What Must Be Tested
 - All server actions (auth + validation + happy path + error path).
 - All Zod schemas (valid + invalid inputs).
@@ -117,34 +78,23 @@ Fixtures for producer/consumer formats (`sessions.jsonl`, `learnings.jsonl`, on-
 - Simple pass-through functions with no logic.
 
 ## CI Integration
-- Tests run in CI on every push.
-- Parallel sharding for large test suites (Vitest `--shard`).
-- Test results reported as JUnit XML for GitLab integration (`--reporter=junit --outputFile=junit.xml`).
-- Coverage reported as Cobertura XML for GitLab MR diff annotations (`vitest.config.base.ts` configures `reporter: ['text', 'cobertura']`).
-- Coverage regex: `/All files[^|]*\|[^|]*\s+([\d\.]+)/` extracts percentage for MR badges.
+Reporter, sharding and coverage wiring live in `.gitlab-ci.yml` + `vitest.config.base.ts` — read them there, not here. The two non-obvious traps:
+
 - **With `projects: [...]` in `vitest.config`, a bare `vitest run` (no `--project`) runs ALL projects**, ignoring per-project include/exclude tuning. Always pin `test:*` scripts to `--project <name>` and verify via the actual script, not just `vitest list`.
 - **A config with `bail: N` reports only the first ~N failures** — CI may show "Failed 4" when the true count is 10+. Cross-verify a suspiciously-low CI failure count against a full local `vitest run`.
 - Failed tests block merge. No exceptions.
 
 ### Shard-Time Contention & Root-as-uid-0 Hazards (Hetzner Linux Docker autoscaler)
 
-Since the 2026-05-20 cutover, CI runs on the Hetzner Linux Docker autoscaler — an ephemeral, autoscaled `node:24` container that runs as **root (uid 0)**, tagged `[linux, hetzner-auto]`. There is no co-resident Claude Code session to count: each pipeline gets a fresh container. Symptom of contention: a shard's wall-time approaches or exceeds its inner `timeout` cap, vitest is killed before it writes the `onFinished` result JSON, and the fail-closed verifier (`scripts/ci/assert-vitest-green.mjs`) reports `ENOENT` on the missing result file. **This is an operator/concurrency/capacity issue, not a test or code regression.** Do not treat it as a flaky-test problem and do not widen the GLOBAL `testTimeout` default to paper over it.
+CI runs on the Hetzner Linux Docker autoscaler (since 2026-05-20) — an ephemeral `node:24` container running as **root (uid 0)**, tagged `[linux, hetzner-auto]`; there is no co-resident process count to read. Contention symptom: a shard's wall-time crowds its inner `timeout` cap, vitest is killed before writing the `onFinished` result JSON, and the fail-closed verifier `scripts/ci/assert-vitest-green.mjs` reports `ENOENT`. **That is a capacity issue, not a test regression** — never widen the GLOBAL `testTimeout` to paper over it.
 
-- **Diagnostic signal:** if local `npm test` is green and a CI shard fails closed with a missing-result-file (`ENOENT`) or a killed-mid-flight error (not assertion failures), the shard ran out of wall-time under its inner `timeout` cap. Diagnose from the job log, not from a process count:
-  - The `test:` job dumps a `tail -40` of the captured reporter log on failure — read it to see which files were still running at the kill.
-  - The `--log=<path>` in-flight hint (`assert-vitest-green.mjs`'s `[ci] KILL ARTEFACT — … (NOT a test failure)` line) is BEST-EFFORT: in non-TTY CI the `❯` glyph marks failed-in-summary files, not in-progress, so it can be empty on a true mid-flight hang. Populated = a lead; empty = "inconclusive — read the `tail -40` dump".
-  - Compare the failing shard's runtime against the other shards: a single shard far over the others points at a slow/hung file, not whole-runner starvation.
+- **Diagnostic signal:** local `npm test` green + a CI shard failing closed on `ENOENT` or a mid-flight kill (not assertion failures) = out of wall-time. Diagnose from the job log: the `test:` job's `tail -40` reporter dump names the files still running at the kill; the `--log=<path>` in-flight hint is BEST-EFFORT (in non-TTY CI `❯` marks failed-in-summary, not in-progress — populated = a lead, empty = inconclusive); a single shard far over its siblings points at one slow file, not runner starvation.
 
 **Mitigations, in order of effort:**
 
 1. **Re-shard or raise the per-shard INNER cap with headroom (primary).** Rebalance `--shard` so no shard's worst-case runtime crowds its inner `timeout` cap, or raise that per-shard cap to sit comfortably above the observed worst-shard runtime. This is a targeted, per-shard adjustment — **NOT** a blind global timeout widen.
-2. **Raise the per-test vitest timeout only when contention is genuinely expected:**
-   ```ts
-   // vitest.config.ts — runner-neutral ceiling for a contended runner
-   export default defineConfig({ test: { testTimeout: 30_000 } });
-   ```
-   Trade-off: real hangs take longer to surface. Do not push past `30_000` as a default — this caveat is durable and runner-neutral (it held on the Mac executor and holds on the Hetzner autoscaler).
-3. **Escalate autoscaler capacity** (more/larger instances, higher concurrency) when the pattern recurs across pipelines — a single over-cap shard is a re-shard problem; a recurring fleet-wide pattern is a capacity problem.
+2. **Raise the per-test vitest timeout** (`testTimeout: 30_000` in `vitest.config.ts`) only when contention is genuinely expected — never past `30_000` as a default, since real hangs then take longer to surface. Runner-neutral: it held on the Mac executor and holds on the autoscaler.
+3. **Escalate autoscaler capacity** when the pattern recurs across pipelines — one over-cap shard is a re-shard problem, a fleet-wide pattern is a capacity problem.
 
 **Root-as-uid-0 test hazards (incident #685).** The autoscaler runs as root, which changes how filesystem-failure tests behave versus a developer's non-root box:
 
@@ -153,31 +103,7 @@ Since the 2026-05-20 cutover, CI runs on the Hetzner Linux Docker autoscaler —
 
 What this is **NOT**: a test-quality bug. Do not retry, mark `.skip`, or widen the global timeout to "stabilise" — that masks real perf regressions where they should be loudest. (The `.skipIf(isRoot)` guard above is the opposite case — a documented, root-specific carve-out, not a stabilise-the-flake hack.)
 
-Historical note: the original cautionary tale was pipeline #3940, 2026-05-14 — 7 `testTimeout` fails under 14 co-resident Claude processes on the old **shared** GitLab Mac runner. That diagnosis is **superseded** by the Hetzner Linux autoscaler: its `pgrep claude` co-resident-process signal has no meaning on an ephemeral single-tenant container, so do not reach for it. The guidance that survives the migration is the mitigation ladder above, not the process count. (This paragraph carried a `learning id` cross-reference to `learnings.jsonl` until 2026-08-14; the record was no longer in the store — `grep -c` returned 0 — so the pointer was removed rather than left to read as live provenance. `check-learning-provenance.mjs` audits structured `## Provenance` blocks only and never saw it.)
-
-## E2E Best Practices
-- Use data-testid attributes for stable selectors.
-- Avoid `page.waitForTimeout()` — use `page.waitForSelector()` or `expect().toBeVisible()`.
-- Test on multiple viewports: desktop (1280x720), mobile (375x667), tablet (768x1024).
-- Screenshot on failure. Video on retry.
-
-### E2E Timeout Management
-- Set global timeout in `playwright.config.ts`: `timeout: 30_000` (30s per test).
-- Navigation timeout: `navigationTimeout: 15_000`.
-- Action timeout: `actionTimeout: 10_000` (clicks, fills).
-- Expect timeout: `expect: { timeout: 5_000 }`.
-- Override per-test for known slow operations: `test.slow()` doubles all timeouts.
-- Never increase global timeouts to fix flaky tests — fix the root cause.
-
-### Playwright Selector & Config Gotchas
-- **`isVisible()` is synchronous and SILENTLY IGNORES its `{ timeout }` option** — it checks immediately, never waits. When you need to wait, use `locator.waitFor({ state: 'visible', timeout }).then(() => true).catch(() => false)`.
-- **`page.locator('text=A, text=B')` is ONE literal text search, not an OR.** Use `page.getByText(/A|B/i)` or `.or()` chaining for alternation.
-- **A new spec without `testIgnore` on the default browser projects runs once PER browser (N×).** For self-authenticating journey specs, use a dedicated project + a `testMatch` regex (e.g. `/user-journeys\/journey-\d+-.*\.spec\.ts$/`) paired with a matching `testIgnore` on every default browser project.
-- **A transient dual-render of a shared `data-testid` during hydration trips Playwright strict-mode.** `.first()` is the correct fix when the component ultimately renders once. DISCRIMINATOR: transient hydration dual-render → `.first()` OK; a PERSISTENT duplicate element → fix the source, don't mask it.
-
-### Next.js Dev-Server Hydration Races (E2E)
-- **Next dev/RSC can RESET controlled form values shortly after Playwright fills them during cold-start.** Use form-scoped `data-testid` selectors and verify/re-fill controlled values before submit — never a single `fill()` on a generic `input[name=…]`.
-- **When a Server Action persists but its RSC client redirect aborts under next-dev (ECONNRESET), make a DB poll the HARD success signal:** `expect.poll` on row-count > a pre-submit marker, then assert a persisted invariant. Keep `page.waitForURL` SOFT in `try/catch` with a `testInfo.annotations` note on timeout.
+Historical note: the original cautionary tale (pipeline #3940, 2026-05-14 — 7 `testTimeout` fails under 14 co-resident Claude processes on the old **shared** Mac runner) is **superseded**: `pgrep claude` has no meaning on an ephemeral single-tenant container. What survives the migration is the mitigation ladder above, not the process count.
 
 ## Async & Timeout Patterns
 - **WARNING:** Fake timers leak between tests if not restored. A leaked fake timer can cause unrelated tests to hang or timeout. Always restore in `afterEach`.
@@ -202,22 +128,6 @@ Historical note: the original cautionary tale was pipeline #3940, 2026-05-14 —
 - **Corridor, not ratchet:** the 70% floor is the regression guard and always binds; an advisory tests:src LOC ceiling of 1.60 bounds the other end. A coverage drop caused by REMOVING worthless tests (per `test-value.md` TV-002) is legitimate — record which tests were removed and why in the session report. "Never reduce" applies to bugs caught, not to test lines. See `test-value.md` § TV-003 for the corridor rule and for why a bidirectional ratchet was considered and rejected.
 - **Measure the ratio, never re-derive it:** `node scripts/lib/tests-src-ratio.mjs --json` is the single authority for the tests:src number (`--check` exits 1 when the ceiling is exceeded). Hand-rolled `wc -l` recipes disagree — six numbers for this one metric were in circulation on 2026-07-30 before the script existed. Cite the script's output, not your own count.
 - Use `--coverage` flag in CI. Fail pipeline if thresholds not met.
-
-## Accessibility Testing
-- Use `@axe-core/playwright` for automated accessibility audits in E2E tests.
-- Run `checkA11y()` on every page and major component state (open dialogs, error states, loaded data).
-- CI: include accessibility checks in the E2E pipeline. Fail on critical/serious violations.
-- Manual checklist: keyboard navigation, screen reader (VoiceOver), high contrast mode, zoom to 200%.
-- Test focus management: after route changes, modals, and dynamic content updates.
-- Validate color contrast programmatically with axe-core. Override only with documented WCAG exceptions.
-- Integrate with Playwright: `import AxeBuilder from '@axe-core/playwright'; const results = await new AxeBuilder({ page }).analyze();`
-- Report violations as JUnit artifacts alongside test results.
-
-### Reusable A11y Fixture
-- Use the Playwright fixture from `templates/nextjs-saas/tests/a11y.fixture.ts.template` for shared `makeAxeBuilder()` setup.
-- Scope to WCAG 2.1 AA with `.withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])`.
-- Smoke test pattern: iterate key routes (`/`, `/login`, `/dashboard`), fail on critical/serious violations.
-- Attach full results as JSON artifacts for debugging: `testInfo.attach('a11y-results', { body: JSON.stringify(results), contentType: 'application/json' })`.
 
 ## Performance Tests
 - k6 for load testing on API endpoints.

@@ -67,8 +67,10 @@ const result = await runDialecticDeriver({
 ```
 
 ### Step 6.4: Diff Output & Apply Gate
-- If dry-run (default): present diff inline; write to `.orchestrator/dialectic-pending.md` (atomic tmp+rename); EXIT. Suggestion: "Re-run with `/evolve --dialectic --apply` to apply." <!-- path-check: example -->
+- If dry-run (default): present diff inline; write to `.orchestrator/dialectic-pending.md` via `writeDialecticPending({ repoRoot, diff })` from `scripts/lib/auto-dialectic.mjs` (path constant `DIALECTIC_PENDING_PATH`; atomic tmp+rename). `runDialecticDeriver()` does NOT write this file itself — the dry-run branch returns the diff and the caller persists it. The body parameter is named `diff`, not `body`: a non-string or empty value throws `TypeError`, as does a missing `repoRoot`. EXIT. Suggestion: "Re-run with `/evolve --dialectic --apply` to apply." <!-- path-check: example -->
 - If `--apply`: call **`mergeDerivedBody(existingBody, result.diff[target])`** from `scripts/lib/peer-cards/merger.mjs` for each card target, then `writePeerCard(repoRoot, 'user', mergedUserCard)` and `writePeerCard(repoRoot, 'agent', mergedAgentCard)` from `scripts/lib/peer-cards/writer.mjs`. Update the `updated:` frontmatter.
+
+  **`writePeerCard` shape (#1303).** `writePeerCard(repoRoot, target, card)` takes `card = { frontmatter, body }`. `frontmatter.id` (kebab-case slug, 2..128 chars) is **required and never auto-filled**; `type: 'peer-card'`, `target`, `updated` (defaults to `new Date().toISOString()`) and `created` (defaults to `updated`) are filled by the writer. ISO timestamps may carry optional milliseconds (`scripts/lib/peer-cards/schema.mjs` `ISO_DATETIME_REGEX`). A missing `id` returns `{ ok: false, errors: [...] }` and leaves the target file untouched — it does **not** throw; branch on `result.ok`.
 
   **Why `mergeDerivedBody` and not `mergePeerCard` directly (#1310):** the deriver emits a FULL BODY STRING per target (`agents/dialectic-deriver.md` § Output format); `mergePeerCard` consumes a SECTION MAP keyed by sentinel name. `mergeDerivedBody` is the adapter between the two — it splits the proposed body at `## ` headings and maps each heading to a sentinel section. `mergePeerCard` stays available as the section-map primitive. Handling per heading class, all of it in `mergeDerivedBody`'s return value:
 
@@ -77,6 +79,7 @@ const result = await runDialecticDeriver({
   | Matches an existing managed section's own `## ` heading | that section's EXISTING name (read from the card, NOT re-slugified) | REPLACE | `mapping[].origin === 'existing'` |
   | No existing section | slugified heading (`[a-z0-9-]+`, collisions suffixed `-2`) | APPEND | `mapping[].origin === 'new'` |
   | Existing managed section the proposal omits | — | KEPT (no auto-delete, per `mergePeerCard` semantics) | — |
+  | Section name outside `[A-Za-z0-9_-]+` | — | `mergePeerCard` **throws** `invalid section name` | fix the name before merging |
   | Text before the first `## ` heading | — | NOT applied | `preamble` + a `{ type: 'unmapped-preamble' }` entry in `conflicts[]` |
 
   Existing names are read back out of the card rather than re-derived because the live names are not a pure function of their headings — measured 2026-09-11 in `.orchestrator/peers/AGENT.md`: `## Guard and protocol-migration discipline` → `guard-and-protocol-migration`. Re-slugifying would APPEND a duplicate section instead of replacing one.
@@ -113,7 +116,8 @@ await recordDialecticRun({
 
 ### Step 6.5: Error Handling
 - `status: 'unknown-model'` → fail with clear error (already thrown by validateModel)
-- `status: 'budget-exceeded'` → emit `{status:'budget-exceeded', used:N, budget:M}`, do NOT truncate
+- `status: 'budget-exceeded'` → emit `{status:'budget-exceeded', used:N, budget:M}`, do NOT truncate.
+  Measured in a consumer repo (S119, 2026-09-10): 12 learnings + 127 sessions estimated at 11 158 input tokens against the 8000 default. Raise with `--budget-tokens 16000` or `dialectic.budget-tokens` in Session Config rather than trimming inputs.
 - `status: 'would-empty-card'` → warn + require `--allow-emptying` flag
 - `status: 'empty-input'` → exit clean with message "dialectic: skipped (no input)"
 - subagent crash → log ⚠, exit cleanly (do NOT write to `.orchestrator/dialectic-pending.md`) <!-- path-check: example -->

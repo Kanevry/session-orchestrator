@@ -583,3 +583,33 @@ describe('#972 — floor/overlay merge (production floor + consumer overlay)', {
     expectDeny(result);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Section — payload lanes that named no redirect (#1366)
+// ---------------------------------------------------------------------------
+
+describe('redirect denylist — eval / dd / env -S lanes (#1366)', () => {
+  // THE BUG (TV-001): measured 2026-09-16 through THIS hook with THIS policy —
+  // every command below came back ALLOW, against a target the very same policy
+  // denies when it is written as `> <target>`. The unit tests in
+  // tests/lib/command-blocker.test.mjs prove the traversal now finds the
+  // target; these prove the finding actually reaches a deny decision, which is
+  // the wiring the traversal fix exists for.
+  const MEMORY = '~/.claude/projects/foo/memory/y.md';
+
+  it.each([
+    ['eval with a literal redirect payload', `eval 'echo x > ${MEMORY}'`],
+    ['dd naming the target as a bare of= operand', `dd of=${MEMORY}`],
+    ['env -S whose trailing argv carries the redirect', `env -S bash -c 'echo x > ${MEMORY}'`],
+  ])('denies %s against the harness-memory target', async (_label, command) => {
+    const projectDir = await mkTempProject();
+    expectDeny(await runGuard({ projectDir, command }));
+  });
+
+  // Direction guard — the widening must not turn ordinary `dd` into a deny.
+  // `dd if=x of=/tmp/out` names a target on no denylist, so it stays ALLOW.
+  it('keeps a benign dd to an unprotected path allowed', async () => {
+    const projectDir = await mkTempProject();
+    expectAllow(await runGuard({ projectDir, command: 'dd if=x of=/tmp/out' }));
+  });
+});

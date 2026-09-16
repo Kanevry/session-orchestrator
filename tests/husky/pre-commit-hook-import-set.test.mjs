@@ -33,6 +33,11 @@ import { fixtureGit, fixtureGitSpawn, makeTmpDir } from '../_helpers/tmp-fixture
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const HOOK_PATH = join(REPO_ROOT, '.husky', 'pre-commit');
 const GENERATOR_PATH = join(REPO_ROOT, 'scripts', 'generate-hook-import-set.mjs');
+/**
+ * Repo-local modules `scripts/generate-hook-import-set.mjs` imports, relative to
+ * `scripts/lib/`. Kept in sync by hand ON PURPOSE — see the E2E fixture comment.
+ */
+const GENERATOR_DEPS = ['is-main-module.mjs'];
 
 /**
  * Extract the marker-delimited stage from the real hook so the E2E executes the
@@ -95,9 +100,21 @@ describe('.husky/pre-commit — hook-import-set drift stage (#1224)', () => {
 
       // Minimal plugin root the generator can crawl: one manifest naming one
       // entry file, which imports one helper under scripts/lib/.
+      //
+      // GENERATOR_DEPS is the generator's own repo-local import chain, copied
+      // in beside it. That makes the import list a CONTRACT (`test-hygiene.md`
+      // § "Ein Test, der eine Importkette in ein tmp-Repo kopiert, macht die
+      // Importliste zum Vertrag"): the day `generate-hook-import-set.mjs`
+      // imports a second repo-local module, these three E2E cases go red with
+      // ERR_MODULE_NOT_FOUND and the next helper gets added here deliberately
+      // rather than silently. Every entry must be a LEAF (node: builtins only)
+      // — `is-main-module.mjs` imports `node:fs` + `node:url` and nothing else.
       mkdirSync(join(tmpDir, 'scripts', 'lib'), { recursive: true });
       mkdirSync(join(tmpDir, 'hooks', '_lib'), { recursive: true });
       cpSync(GENERATOR_PATH, join(tmpDir, 'scripts', 'generate-hook-import-set.mjs'));
+      for (const dep of GENERATOR_DEPS) {
+        cpSync(join(REPO_ROOT, 'scripts', 'lib', dep), join(tmpDir, 'scripts', 'lib', dep));
+      }
       writeFileSync(
         join(tmpDir, 'hooks', 'hooks.json'),
         JSON.stringify({ hooks: { Stop: [{ hooks: [{ command: 'node "$CLAUDE_PLUGIN_ROOT/hooks/on-stop.mjs"' }] }] } }),

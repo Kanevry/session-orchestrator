@@ -45,7 +45,7 @@
 
 import { existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isMainModule } from './is-main-module.mjs';
 
 const DEFAULT_INTERVAL_S = 2;
 const EVENTS_FILE_REL = '.orchestrator/metrics/events.jsonl';
@@ -502,7 +502,7 @@ function main() {
 
 // Run the tail loop only when executed as a script. Importing the module (for
 // unit tests over `classify`) must not parse vitest's argv and exit 1.
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   main();
 }
 

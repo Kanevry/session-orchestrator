@@ -24,10 +24,10 @@
  * write is NEVER performed on a usage error.
  */
 
-import { readFileSync, writeFileSync, existsSync, statSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 /** The four hook manifests whose entry files seed the crawl. */
 export const HOOK_MANIFESTS = [
@@ -263,30 +263,15 @@ export function main(argv) {
   return 0;
 }
 
-/**
- * True when this module was launched as the process entry script.
- *
- * A string compare of `import.meta.url` against `file://${process.argv[1]}` is
- * fragile in exactly the invocations CI and husky use: any symlinked or
- * realpath-differing path (measured: `/tmp` → `/private/tmp` on macOS) makes
- * the compare false, so the whole CLI body becomes a silent no-op that still
- * exits 0 — a fail-OPEN drift gate. A space or `#` in the path breaks the
- * hand-built URL the same way. Same shape as `hooks/post-bash-write-verify.mjs`.
- *
- * @returns {boolean}
- */
-function invokedAsScript() {
-  const entry = process.argv[1];
-  if (!entry) return false;
-  const self = fileURLToPath(import.meta.url);
-  try {
-    return realpathSync(entry) === realpathSync(self);
-  } catch {
-    // argv[1] unresolvable (deleted/renamed mid-run) — best-effort raw compare.
-    return entry === self;
-  }
-}
-
-if (invokedAsScript()) {
+// Entry guard via the canonical predicate (`scripts/lib/is-main-module.mjs`).
+// A string compare of `import.meta.url` against `file://${process.argv[1]}` is
+// fragile in exactly the invocations CI and husky use: any symlinked or
+// realpath-differing path (measured: `/tmp` → `/private/tmp` on macOS) makes the
+// compare false, so the whole CLI body becomes a silent no-op that still exits 0
+// — a fail-OPEN drift gate. This script is a plain CLI, not a hook, so it may
+// import from `scripts/lib/` (the hooks that still inline the same predicate do
+// so to keep `scripts/lib` off their hot path — see the ceiling comment in
+// `hooks/post-bash-write-verify.mjs`).
+if (isMainModule(import.meta.url)) {
   process.exit(main(process.argv));
 }

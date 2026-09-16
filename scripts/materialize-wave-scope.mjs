@@ -23,10 +23,11 @@
  */
 
 import { existsSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import { writeJsonAtomicSync } from './lib/io.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 import { isPeerRecordId } from './lib/scope-gate.mjs';
+import { SCOPE_MATERIALIZED_EVENT, scopeDigest } from './lib/scope-echo.mjs';
 import {
   MANIFEST_SESSION_KEYS,
   manifestSessionBinding,
@@ -480,6 +481,83 @@ export function materializeWaveScope(records, {
 }
 
 /**
+ * Is the SEND-side half of the #1092 chain installed on this platform at all?
+ *
+ * The send-side record only exists because a `PreToolUse` hook with matcher
+ * `Agent` observes the dispatch. `hooks-codex.json` / `hooks-cursor.json` /
+ * `hooks-pi.json` deliberately carry no such entry (those platforms have no
+ * `Agent` dispatch tool — `DOCUMENTED_ASYMMETRIES`), so on them a MISSING
+ * dispatch record is not evidence of a missing injection. Recording the answer
+ * beside the wave is what lets `--verify` tell those two apart later instead of
+ * re-deriving a platform fact from an absence.
+ *
+ * Fail-CLOSED on any read error: an unreadable hooks file means the guard cannot
+ * be shown to be installed, and claiming observability we cannot prove is the
+ * direction that produces false `injection-missing` accusations.
+ *
+ * @param {string} [pluginRoot]
+ * @param {typeof readFileSync} [readFile]
+ * @returns {boolean}
+ */
+export function transportObservable(pluginRoot = resolve(import.meta.dirname, '..'), readFile = readFileSync) {
+  try {
+    const parsed = JSON.parse(readFile(resolve(pluginRoot, 'hooks', 'hooks.json'), 'utf8'));
+    const entries = parsed?.hooks?.PreToolUse;
+    if (!Array.isArray(entries)) return false;
+    return entries.some((entry) => typeof entry?.matcher === 'string'
+      && entry.matcher.split('|').map((m) => m.trim()).includes('Agent'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One `orchestrator.wave_dispatch.scope_materialized` record per wave (#1092) —
+ * the DEGRADATION half of the chain.
+ *
+ * It runs here, and not in the hook, precisely because this command runs on
+ * EVERY platform while the hook runs on one. Without it a wave with zero
+ * `scope_checked` records is ambiguous between "the coordinator skipped the
+ * manifest step" (the #1020 failure this whole chain exists for) and "this
+ * platform has no dispatch hook".
+ *
+ * `repoRoot` is the state directory's PARENT, never `process.cwd()`: the state
+ * dir is the artefact this command owns, and a caller invoking it from a
+ * subdirectory (or a test from the repo root against a `$TMPDIR` state dir)
+ * must not write its record into a different repo's ledger.
+ *
+ * Best-effort in both directions and SILENT on failure: the corpus pins
+ * byte-empty stderr on this command's success path
+ * (`tests/integration/wave-scope-producer.test.mjs`), and a telemetry write must
+ * never be the thing that fails a materialization.
+ *
+ * @param {{stateDir: string, wave: number, records: Array<{id: string, files: string[]}>}} params
+ * @returns {Promise<void>}
+ */
+async function emitScopeMaterialized({ stateDir, wave, records }) {
+  try {
+    const repoRoot = dirname(resolve(stateDir));
+    const agentRecords = records.filter((r) => !isPeerRecordId(r.id));
+    const digests = new Set();
+    for (const record of agentRecords) {
+      if (Array.isArray(record.files) && record.files.length > 0) digests.add(scopeDigest(record.files));
+    }
+    const { emitEvent, sessionAttribution } = await import('./lib/events.mjs');
+    await emitEvent(
+      SCOPE_MATERIALIZED_EVENT,
+      {
+        wave,
+        agent_count: agentRecords.length,
+        digest_count: digests.size,
+        transport_observable: transportObservable(),
+        ...sessionAttribution(repoRoot),
+      },
+      { repoRoot },
+    );
+  } catch { /* observability is best-effort — it never fails a materialization */ }
+}
+
+/**
  * @param {string} message
  * @param {number} code
  */
@@ -536,6 +614,12 @@ export function main() {
         ? `${JSON.stringify({ ok: true, aggregatePath, perAgentPaths, removedOrphans, retainedOrphans })}\n`
         : `${aggregatePath}\n`,
     );
+
+    // Fire-and-forget AFTER stdout, so the telemetry append can never reorder or
+    // delay this command's own contract. Node drains the pending append before
+    // exiting because nothing here calls `process.exit()`; the `.catch` keeps an
+    // unhandled rejection from turning observability into an exit code.
+    emitScopeMaterialized({ stateDir: args.stateDir, wave: args.wave, records }).catch(() => {});
   } catch (error) {
     if (error instanceof InputError) {
       fail(error.message, 1);
@@ -549,7 +633,6 @@ export function main() {
   }
 }
 
-const invokedPath = process.argv[1] ? resolve(process.argv[1]) : null;
-if (invokedPath === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   main();
 }

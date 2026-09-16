@@ -39,11 +39,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { fileURLToPath } from 'node:url';
 
 import { backfillAbandonedSession, isUuid } from './lib/session-close-backfill.mjs';
 import { emitEvent } from './lib/events.mjs';
 import { getProjectDir } from './lib/platform.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
+import { isLockLive, readLock } from './lib/session-lock.mjs';
+import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
 
 const LOCK_ACQUIRED = 'orchestrator.session.lock.acquired';
 const SESSION_STARTED = 'orchestrator.session.started';
@@ -101,6 +103,24 @@ function readJsonl(filePath) {
  * session.started UUID, each bridged to its semantic id via lock.acquired
  * where one exists. Preserves first-seen order.
  *
+ * THIS VERY PROCESS is excluded (#1376). The shared core's own
+ * `skipped-own-live-lock` branch used to carry that job alone, but it is now
+ * defeasible: `ownSessionIsEnding` lets the SessionEnd hook record its own
+ * session, so the CLI must not depend on a branch whose meaning the caller
+ * chooses. The exclusion needs THREE conjuncts, and dropping any one of them
+ * breaks it in a different direction:
+ *   1. the candidate names the lock (by either id, including the #863 (d)
+ *      lock shape that stores the semantic id in `session_id`),
+ *   2. the lock is LIVE — a stale lock names a session nobody is running, and
+ *      reconstructing it is exactly this CLI's job, and
+ *   3. a PROCESS-LOCAL id (hook payload / harness env, never the repo-global
+ *      lock — see `readProcessLocalSessionIds`) matches the lock, which is
+ *      what distinguishes THIS process from a PEER's running session in the
+ *      same working copy. Without it the repo-global lock would vouch for
+ *      itself and a peer's live session would read as "me".
+ * A peer's live session is NOT excluded here and does not need to be: the core
+ * still rejects it through the untouched own/foreign live-lock guards.
+ *
  * @param {{ repoRoot: string }} args
  * @returns {Array<{ sessionId: string, semanticSessionId: string|null }>}
  */
@@ -124,15 +144,49 @@ export function planSessions({ repoRoot }) {
   }
   const semanticByUuid = new Map([...semanticFromEnded, ...semanticFromLock]);
 
+  const runningIds = readRunningSessionIds(repoRoot);
+
   const seen = new Set();
   const plan = [];
   for (const ev of events) {
     if (ev.event !== SESSION_STARTED || typeof ev.session_id !== 'string') continue;
     if (seen.has(ev.session_id)) continue;
     seen.add(ev.session_id);
-    plan.push({ sessionId: ev.session_id, semanticSessionId: semanticByUuid.get(ev.session_id) ?? null });
+    const semanticSessionId = semanticByUuid.get(ev.session_id) ?? null;
+    if (runningIds.has(ev.session_id)
+      || (semanticSessionId !== null && runningIds.has(semanticSessionId))) continue;
+    plan.push({ sessionId: ev.session_id, semanticSessionId });
   }
   return plan;
+}
+
+/**
+ * The id(s) naming the session THIS process is, when that session holds the
+ * live lock — else the empty set (#1376). Never throws: an unreadable lock,
+ * an absent one, or an env without any process-local id all degrade to "no
+ * exclusion", which is the pre-#1376 behaviour.
+ *
+ * @param {string} repoRoot
+ * @returns {Set<string>}
+ */
+function readRunningSessionIds(repoRoot) {
+  const ids = new Set();
+  try {
+    const lock = readLock({ repoRoot });
+    if (!lock || !isLockLive(lock)) return ids;
+    const lockIds = [lock.session_id, lock.semantic_session_id]
+      .filter((id) => typeof id === 'string' && id.length > 0);
+    const processLocal = new Set(readProcessLocalSessionIds());
+    // Conjunct 3 — only a PROCESS-LOCAL witness may promote the repo-global
+    // lock to "this is me". Membership is tested against the lock's ids, not
+    // the other way round, so an env var that happens to name some other
+    // session never widens the exclusion.
+    if (!lockIds.some((id) => processLocal.has(id))) return ids;
+    for (const id of lockIds) ids.add(id);
+  } catch {
+    /* readLock is no-throw by contract; the contract is not ours to trust */
+  }
+  return ids;
 }
 
 /**
@@ -527,7 +581,7 @@ async function main() {
   process.exit(0);
 }
 
-const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+const isDirectRun = isMainModule(import.meta.url);
 if (isDirectRun) {
   main().catch((err) => {
     process.stderr.write(`backfill-abandoned-sessions: unexpected error: ${err?.stack ?? err}\n`);

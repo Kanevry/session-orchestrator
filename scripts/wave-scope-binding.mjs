@@ -37,10 +37,9 @@
  */
 
 import { parseArgs } from 'node:util';
-import { resolve as resolvePath } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { attributionForRecord, emitEvent } from './lib/events.mjs';
 import { MANIFEST_SESSION_KEYS } from './lib/session-identity/own-session.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 const HELP = `Usage: node scripts/wave-scope-binding.mjs [--merge] [--wave N] [--role R] [--repo-root DIR]
 
@@ -210,6 +209,6 @@ function readStdin() {
 
 // `import.meta.main` is not available on every supported Node — compare argv[1]
 // instead, so importing this module from a test never runs the CLI.
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolvePath(process.argv[1])) {
+if (isMainModule(import.meta.url)) {
   await main(process.argv.slice(2));
 }

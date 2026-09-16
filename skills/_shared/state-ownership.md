@@ -18,6 +18,7 @@ total-waves: <N>
 # Optional fields (schema-version 1, additive for backward-compat):
 updated: <ISO 8601 UTC>      # last write timestamp, touched by any writer
 session: <session-label>     # attribution/history label; normally semantic since #573, legacy UUID-v4 remains readable; never a lock/registry ownership key
+session-id: <raw id>         # the RAW/native harness session id from session.lock (#1368); omit when absent; never a lock/registry ownership key
 session-start-ref: <sha>     # git ref at session start
 ---
 ```
@@ -25,6 +26,8 @@ session-start-ref: <sha>     # git ref at session start
 ### Required vs. optional fields
 
 - `schema-version`, `session-type`, `branch`, `issues`, `started_at`, `status`, `current-wave`, `total-waves` — **required** in every session-owned STATE.md.
+- `session-id` — **optional**, additive under `schema-version: 1` (#1368). The RAW/native harness session id, taken from `.orchestrator/session.lock` via `resolveSessionIds()` (`scripts/lib/state-md.mjs`). Writers OMIT the key when the lock yields none; readers MUST tolerate its absence. It exists so `/close`'s #429 pre-check can join STATE.md to sessions.jsonl on a NATIVE identity (`findRecordedSession`'s UUID fast path) instead of falling through to the semantic label. Like `session`, it grants no lock or registry ownership.
+- `started_at` is SOURCED from the same lock (`resolveSessionStartedAt()`), never from the writer's clock — see `skills/wave-executor/references/wave-executor-state-init.md` § Pre-Wave 1b for the template and the 48-minute drift that motivated it (#1368). On the READ side `started_at` is a CORROBORATING signal, never an identity key: `findRecordedSession()` (`scripts/lib/session-close-backfill.mjs`) joins STATE.md to `sessions.jsonl` on the native `session-id` FIRST and never consults `started_at` on that path — only the legacy-LABEL path compares the two timestamps, and it tolerates up to `STARTED_AT_DRIFT_TOLERANCE_MS` = **6 h** of drift (`session-close-backfill.mjs:559`, the single definition) before vetoing a label match: wider than any plausible write-lag (the 48 minutes above), narrower than the day the label's own date component already distinguishes.
 - `updated`, `session`, `session-start-ref` — **optional**. Added by #184. STATE.md files without these fields remain valid and should be treated as `updated: null` / `session: null`. Writers SHOULD populate these fields but readers MUST tolerate their absence. `session` is an attribution/history label, normally `<branch>-<YYYY-MM-DD>-<mode>-<n>` since #573 (Epic #568 Parallel-Aware Sessions P2.2); pre-#573 files may contain a UUID-v4 — both formats are read via `parseSessionId()` from `scripts/lib/session-id.mjs` per PRD §3 P2 row 3 (backward-compat). Neither form grants lock or registry ownership.
 
 The `session-type: none` + `status: idle` combination is used only for bootstrap-scaffolded placeholder files (no active session).

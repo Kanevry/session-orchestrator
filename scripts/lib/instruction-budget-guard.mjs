@@ -255,17 +255,17 @@ export const DEFAULT_BYTE_CEILING = 121000;
  *      → rulesDir extracted from `c73c094f`: { bytes: 76114, files: 8 }
  *      → rulesDir extracted from `e4674109`: { bytes: 89763, files: 43 }
  *
- * The CONCLUSION stands, on a wider base: firing rate is 0 of 3, not 0 of 2 —
- * the guard would not have fired at any of the three states this repo has
- * recorded. What does NOT stand is the headroom claim it rested on. The live
- * corpus is **2,427 B** below the historical peak, not 13,649 B: a single
- * /reconcile wave of the size this one just absorbed puts the generated corpus
- * back at its worst recorded state, and the ceiling still would not notice.
- * "Decorative" is therefore an understatement of the gap, not an overstatement
- * — which strengthens the case for the operator decision this block defers,
- * and changes none of its terms. Still tracked rather than silently patched:
- * raising OR lowering a threshold inside a population fix is exactly the
- * conflation this comment exists to end.
+ * HISTORY as of 2026-09-16 — every number in this paragraph described the
+ * 124,000 ceiling, which no longer exists on this axis. It read, correctly for
+ * 2026-09-11: firing rate 0 of 3, not 0 of 2; the generated corpus then sat
+ * **2,427 B** below the peak known at that time (87,336 of 89,763 B), not
+ * 13,649 B, so one /reconcile wave of the size that session absorbed would have
+ * restored its worst recorded state with the ceiling still silent. Superseded
+ * on BOTH terms by the RE-CALIBRATED block below (ceiling 95,000, true peak
+ * 99,774 B, live distance to the peak 29,833 B measured 2026-09-16). Kept
+ * because it records the rule that produced the eventual fix: raising OR
+ * lowering a threshold inside a population fix is exactly the conflation this
+ * comment exists to end.
  *
  * FIRING-RATE AUDIT — widened from 3 states to 89 (#1308, 2026-09-11T17:26Z,
  * clean tree @ `4a49adc6`). HR-105 forbids a rule nothing records; "0 of 3"
@@ -273,35 +273,63 @@ export const DEFAULT_BYTE_CEILING = 121000;
  * guard was replayed over EVERY commit that touched `.claude/rules/`:
  * `git log --format=%h -- .claude/rules/` → 89 commits, each extracted with
  * `git archive <sha> .claude/rules | tar -x -C <tmp>` and fed to
- * `computeInstructionBudget({rulesDir})`:
+ * `computeInstructionBudget({rulesDir})`. Firing rates only — the headroom
+ * annotations this table used to carry are deliberately gone, because an
+ * absolute headroom rots between two edits of the corpus; read the live one
+ * from the axis itself (command in the RE-MEASURED block below):
  *
  *   directive axis  (480)      → fires  4/89 =  4.5 %   rare, healthy
- *   byte axis       (121,000)  → fires  0/89 =  0.0 %   live: 586 B headroom
- *   generated axis  (124,000)  → fires  0/89 =  0.0 %   peak ever 89,763 B
- *   pathScoped axis (124,000)  → fires  4/89 =  4.5 %   falsifiable
+ *   byte axis       (121,000)  → fires  0/89 =  0.0 %
+ *   generated axis  (124,000)  → fires  0/91 =  0.0 %   → superseded, see below
+ *   pathScoped axis (124,000)  → fires  5/91 =  5.5 %   → calibrated
  *
- * "Silently broken" is now RULED OUT: `pathScoped` runs the same code path off
- * the same walk and fires on 4 of the same 89 states. What remains is the
- * calibration gap — the all-time peak of this population is 89,763 B, i.e.
- * 72.4 % of the ceiling, so no state this repo has ever recorded could have
- * breached it, and none plausibly will before the corpus grows ~38 %.
- * A falsifiable ceiling for this axis would sit just above the recorded peak
- * (≈ 92,000 B, peak + 2.5 %); this module does NOT move it, because
- * `.claude/rules/development.md` § Guard & Threshold Design makes re-aiming a
- * threshold an operator decision, separate from measuring it. Revisit trigger:
- * re-run the 89-state replay above whenever the generated corpus passes
- * 92,000 B, or when this axis first fires (then it is calibrated, not
- * decorative).
+ * RE-CALIBRATED 2026-09-16 (#1308). The replay was re-run over the FULL
+ * recorded history of this directory, not the 89-state subset:
  *
- * That trigger FIRED: the generated corpus stood at 99,774 B at `c16fb518`
- * (2026-09-12), past 92,000. It was answered by consolidation rather than by
- * a replay of this axis — the 8 generated files were merged down (prose only,
- * provenance unchanged) to 75,130 B / 8 files on the 2026-09-12 working tree
- * (#1316), back under the 92,000 mark. This ceiling is unchanged and the
- * 89-state replay of THIS axis was not re-run; the trigger stays armed for the
- * next pass of 92,000 B.
+ *   `git log --format=%h -- ./.claude/rules/` → 91 states; each materialized
+ *   with `git archive <sha> .claude/rules | tar -x -C <tmp>` and fed to
+ *   `computeInstructionBudget({ rulesDir })`.
+ *
+ * True peak of the generated axis: **99,774 B @ `2ae08fe0`** — which CORRECTS
+ * the "peak ever 89,763 B" this docblock carried until now (that number came
+ * from a single replayed commit, not from the population). Median state:
+ * 4,802 B. Firing table over the same 91 states:
+ *
+ *   124,000            → 0/91 = 0.0 %   (the standing, unfalsifiable value)
+ *   102,268 (peak+2.5%)→ 0/91 = 0.0 %   (a ceiling above the peak never fires)
+ *    95,000            → 1/91 = 1.1 %   ← chosen
+ *    88,000            → 3/91 = 3.3 %
+ *    80,000            → 5/91 = 5.5 %
+ *
+ * Why 95,000: it FIRES on recorded history (HR-105 — a rule you cannot falsify
+ * is not a rule), at 1.1 % it sits in HR-101's rare band (a class above ~10 %
+ * is a broken instrument), and it stays silent on the corpus it lands on, so it
+ * does not go red before the #1367 consolidation has been committed. "Peak +
+ * 2.5 %" is REJECTED here for the reason the old text recommended it: above the
+ * peak, the axis is decorative by construction.
+ *
+ * RE-MEASURED 2026-09-16 @ `ca214376`, after the #1367 consolidation landed in
+ * the working tree (the state this ceiling was calibrated for is the state it
+ * now judges):
+ *
+ *   node --input-type=module -e "const m = await import('./scripts/lib/instruction-budget-guard.mjs'); \
+ *     console.log(JSON.stringify(m.computeInstructionBudget({ repoRoot: process.cwd() }).bySurface))"
+ *   → generated  { bytes: 69941, files: 7 }   ×1.36 under 95,000
+ *     pathScoped { bytes: 109932, files: 10 }
+ *
+ * Read the headroom off that command, never off a sentence in this block: the
+ * two numbers a verdict needs are the AXIS and its CEILING, and the distance
+ * between them changes with every rule edit. For the record at that SHA the
+ * generated axis sat 25,059 B under its ceiling and 29,833 B under the 99,774 B
+ * peak — i.e. one /reconcile wave the size of the largest recorded one would
+ * still not reach the peak, but a repeat of the growth that produced it would
+ * cross 95,000 first. That is the intended, rare signal: a cue to consolidate.
+ *
+ * BV-004 revisit trigger: re-run the 91-state replay when the generated corpus
+ * passes 90,000 B, or on this ceiling's FIRST fire — at which point it is
+ * calibrated by a real event rather than by a replay.
  */
-export const DEFAULT_GENERATED_BYTE_CEILING = 124000;
+export const DEFAULT_GENERATED_BYTE_CEILING = 95000;
 
 /**
  * Default byte ceiling for the PATH-SCOPED rule surface — the fourth axis,
@@ -353,11 +381,14 @@ export const DEFAULT_GENERATED_BYTE_CEILING = 124000;
  *   working tree (2026-09-11):       134,969 B / 11 files → FIRES
  *
  * Firing rate 2 of 3, falsifiable in both directions — the condition
- * {@link DEFAULT_GENERATED_BYTE_CEILING} does NOT currently meet (0 of 3).
- * Confirmed on a wider base (#1308, 2026-09-11T17:26Z @ `4a49adc6`): replayed
- * over all 89 commits that touched `.claude/rules/`, this axis fires 4/89
- * (4.5 %) against the generated axis's 0/89 — inside HR-101's rare band, and
- * falsifiable, which is exactly the property the sibling ceiling lacks.
+ * {@link DEFAULT_GENERATED_BYTE_CEILING} did not meet while it stood at
+ * 124,000 (0 of 3). Confirmed on a wider base (#1308, 2026-09-11T17:26Z @
+ * `4a49adc6`): replayed over all 89 commits that touched `.claude/rules/`, this
+ * axis fires 4/89 (4.5 %) — inside HR-101's rare band, and falsifiable.
+ * SUPERSEDED as a CONTRAST 2026-09-16: the sibling ceiling was re-calibrated to
+ * 95,000 in the same #1308 replay and now fires 1/91 (1.1 %) on recorded
+ * history, so "the property the sibling ceiling lacks" is no longer true of it —
+ * both axes are falsifiable, and this one is simply the looser of the two.
  * This is also why it is not re-derived upward off the live number: a ceiling
  * placed above 134,969 would be silent on all three states, i.e. the same
  * unfalsifiable shape, obtained by the threshold-patch move
@@ -385,9 +416,14 @@ export const DEFAULT_GENERATED_BYTE_CEILING = 124000;
  * the threshold-patch move `development.md` § Guard & Threshold Design
  * forbids.
  *
- * Headroom is 1,237 B. The next `/reconcile` rule (~2.5 KB written
- * standalone) trips this axis unless it is absorbed into a thematic file in
- * the SAME write step — an obligation written in the /reconcile-overshoot
+ * Headroom moves with every rule edit, so it is measured, never quoted from
+ * here: `computeInstructionBudget({ repoRoot }).bySurface.pathScoped` against
+ * this constant. At 2026-09-16 @ `ca214376` that was 109,932 B / 10 files —
+ * 14,068 B under the ceiling, after the #1367 consolidation; on 2026-09-12 it
+ * was 1,237 B, which is how narrow this axis can get. The next `/reconcile`
+ * rule (~2.5 KB written standalone) trips it from a margin like that one
+ * unless it is absorbed into a thematic file in the SAME write step — an
+ * obligation written in the /reconcile-overshoot
  * learning of `.claude/rules/measurement-discipline.md` and checked by the
  * reconcile writer's budget pre-flight (`scripts/lib/reconcile/writer.mjs`).
  * A breach sets `overBudget` AND turns `tests/rules/receiving-review.test.mjs`
@@ -749,13 +785,117 @@ function sumBytes(entries) {
  * @param {Record<string, unknown>} meta
  * @returns {boolean}
  */
-function isMachineGeneratedRule(meta) {
+export function isMachineGeneratedRule(meta) {
   if (!meta || typeof meta !== 'object') return false;
   return (
     meta['auto-generated'] === true ||
     Object.prototype.hasOwnProperty.call(meta, 'learning-key') ||
     Object.prototype.hasOwnProperty.call(meta, 'expires-at')
   );
+}
+
+/** One day in milliseconds — local to this module, as in every other lib here. */
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * Whole days from `now` until this rule's `expires-at`, or `null` when the rule
+ * declares no expiry or an unparseable one.
+ *
+ * Negative ⇒ already expired. The comparison basis is deliberately the SAME one
+ * `rule-loader.mjs` `applyGates` uses — `Date.parse(expires-at) < now`, i.e. a
+ * bare `YYYY-MM-DD` is UTC midnight — so "expired" here means exactly "the
+ * loader already filters it out of every wave's rule set", never a second
+ * definition of the same word. `Math.floor` therefore returns `-1` for a rule
+ * that expired at midnight today: past, but by less than a day.
+ *
+ * An unparseable date returns `null` (fail-OPEN, matching the loader, which
+ * warns and ignores the expiry rather than excluding the file) — the malformed
+ * value is a separate finding, not an expiry verdict.
+ *
+ * @param {{ meta?: Record<string, unknown>, now?: Date|number|string }} [opts]
+ * @returns {number|null}
+ */
+export function daysUntilGeneratedRuleExpiry(opts = {}) {
+  const meta = opts.meta;
+  if (!meta || typeof meta !== 'object') return null;
+  if (!Object.prototype.hasOwnProperty.call(meta, 'expires-at')) return null;
+  const expiresAt = Date.parse(String(meta['expires-at']));
+  if (!Number.isFinite(expiresAt)) return null;
+
+  const raw = opts.now;
+  let now;
+  if (raw instanceof Date) now = raw.getTime();
+  else if (typeof raw === 'number' && Number.isFinite(raw)) now = raw;
+  else if (typeof raw === 'string' && Number.isFinite(Date.parse(raw))) now = Date.parse(raw);
+  else now = Date.now();
+
+  return Math.floor((expiresAt - now) / MS_PER_DAY);
+}
+
+/**
+ * Is this generated rule's `expires-at` already in the past?
+ *
+ * The defect it names (#1372): `rule-loader.mjs` filters an expired rule out at
+ * READ time, but nothing DELETES it — so the file keeps being counted by every
+ * byte ceiling above and keeps being loaded verbatim by Claude Code, which has
+ * no notion of `expires-at`.
+ *
+ * @param {{ meta?: Record<string, unknown>, now?: Date|number|string }} [opts]
+ * @returns {boolean}
+ */
+export function isExpiredGeneratedRule(opts = {}) {
+  const days = daysUntilGeneratedRuleExpiry(opts);
+  return days !== null && days < 0;
+}
+
+/**
+ * Enumerate the machine-generated rule files in `rulesDir`.
+ *
+ * Same population, same filter and same frontmatter parser as
+ * {@link measureRuleCorpora}'s `generated` surface — that is the point of
+ * exporting it: a consumer that needs the FILES rather than the BYTES (the
+ * expiry test, the session-start maintenance probe) must not mirror the
+ * predicate, because a mirror agrees only until one side is edited.
+ *
+ * Three-state, like every reader in the banner family: `ok: false` means the
+ * directory exists but could not be enumerated, which a caller must record as
+ * "undeterminable" and never as "no generated rules". A MISSING directory is
+ * `ok: true` with an empty list — a repo without `.claude/rules/` genuinely has
+ * none.
+ *
+ * @param {{ rulesDir?: string, repoRoot?: string }} [opts]
+ * @returns {{ ok: boolean, rules: Array<{ file: string, meta: Record<string, unknown>, expiresAt: string|null }> }}
+ */
+export function listMachineGeneratedRules(opts = {}) {
+  const dir =
+    typeof opts.rulesDir === 'string' && opts.rulesDir.length > 0
+      ? opts.rulesDir
+      : join(opts.repoRoot ?? process.cwd(), '.claude', 'rules');
+
+  /** @type {Array<{ file: string, meta: Record<string, unknown>, expiresAt: string|null }>} */
+  const rules = [];
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch (err) {
+    // ENOENT is an answer ("no generated rules"); anything else is not knowing.
+    return { ok: err?.code === 'ENOENT', rules };
+  }
+
+  for (const file of names) {
+    if (!file.endsWith('.md')) continue;
+    let meta;
+    try {
+      ({ meta } = parseGlobsFrontmatter(readFileSync(join(dir, file), 'utf8')));
+    } catch {
+      continue; // unreadable or unparseable — skip, never throw
+    }
+    if (!isMachineGeneratedRule(meta)) continue;
+    const raw = meta?.['expires-at'];
+    rules.push({ file, meta, expiresAt: typeof raw === 'string' ? raw : null });
+  }
+
+  return { ok: true, rules };
 }
 
 /**

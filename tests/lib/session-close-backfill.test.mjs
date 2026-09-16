@@ -693,6 +693,143 @@ describe('backfillAbandonedSession — own-live-lock guard (#863)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #1368 — started_at is a CORROBORATING signal on the legacy-label path, not
+// an identity key. The two timestamps come from different producers at
+// different moments; an exact-ms compare vetoed correct label matches.
+// ---------------------------------------------------------------------------
+
+describe('findRecordedSession — started_at drift tolerance (#1368)', () => {
+  const LABEL = 'main-2026-05-27-session-1';
+  /** A legacy-label record: no native UUID anywhere, so only the label path can match it. */
+  const legacyRecord = {
+    session_id: LABEL,
+    session_type: 'deep',
+    started_at: STARTED_AT,
+    completed_at: '2026-05-27T18:00:00.000Z',
+    total_waves: 1,
+    waves: [{ wave: 1, role: 'coordinator' }],
+    agent_summary: { complete: 1, partial: 0, failed: 0, spiral: 0 },
+    total_agents: 1,
+    total_files_changed: 2,
+  };
+
+  it('matches a legacy-label record when STATE.md started_at is 48 minutes later than the ledger started_at', () => {
+    // The measured production shape (2026-09-13): STATE.md's hand-written
+    // started_at trails the lock-sourced one by 48 minutes. Before #1368 the
+    // ms-exact guard rejected this and /close reported "no matching record"
+    // for a session that WAS recorded.
+    const stateMdStartedAt = new Date(Date.parse(STARTED_AT) + 48 * 60 * 1000).toISOString();
+
+    const found = findRecordedSession([legacyRecord], {
+      sessionId: null,
+      semanticSessionId: LABEL,
+      startedAt: stateMdStartedAt,
+    });
+
+    expect(found).toBe(legacyRecord);
+  });
+
+  it('still rejects a label match whose started_at is 9 hours apart', () => {
+    // A window, not an off-switch: beyond the tolerance the timestamps still
+    // veto, so two genuinely different sessions sharing a label do not merge.
+    const farApart = new Date(Date.parse(STARTED_AT) + 9 * 3600 * 1000).toISOString();
+
+    const found = findRecordedSession([legacyRecord], {
+      sessionId: null,
+      semanticSessionId: LABEL,
+      startedAt: farApart,
+    });
+
+    expect(found).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1376 — the SessionEnd hook skips its OWN live lock, so an unclosed session
+// never got a ledger record at all. `ownSessionIsEnding` qualifies the #863
+// own-live-lock guard for exactly that one caller.
+// ---------------------------------------------------------------------------
+
+describe('backfillAbandonedSession — own SessionEnd may record its own session (#1376)', () => {
+  function seedOwnLiveSession() {
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      {
+        timestamp: '2026-05-27T14:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: 'main-2026-05-27-session-1',
+        mode: 'feature',
+      },
+    ]);
+    // Own lock, heartbeat = now → LIVE. This is the shape at SessionEnd: the
+    // ending session's heartbeat was refreshed minutes ago (TTL 4h).
+    seedLock({
+      sessionId: UUID,
+      semanticSessionId: 'main-2026-05-27-session-1',
+      lastHeartbeat: new Date(NOW_MS).toISOString(),
+    });
+  }
+
+  it('backfills when the own lock is LIVE and ownSessionIsEnding is true', async () => {
+    seedOwnLiveSession();
+
+    const res = await backfillAbandonedSession({
+      repoRoot,
+      sessionId: UUID,
+      now: NOW_MS,
+      ownSessionIsEnding: true,
+    });
+
+    expect(res.action).toBe('backfilled');
+    const recorded = readSessions();
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].session_id).toBe('main-2026-05-27-session-1');
+    expect(recorded[0].status).toBe('abandoned');
+  });
+
+  it('skips when the own lock is LIVE and ownSessionIsEnding is false (migration CLI)', async () => {
+    // Regression pin for #863 defect 1: for every caller that is NOT the
+    // ending session itself, own + live still means RUNNING.
+    seedOwnLiveSession();
+
+    const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS });
+
+    expect(res.action).toBe('skipped-own-live-lock');
+    expect(readSessions()).toHaveLength(0);
+  });
+
+  it('does NOT relax the FOREIGN live-lock guard, even with ownSessionIsEnding true', async () => {
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      {
+        timestamp: '2026-05-27T14:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: 'main-2026-05-27-session-1',
+        mode: 'feature',
+      },
+    ]);
+    // A DIFFERENT session holds the live lock — the flag must not reach it.
+    seedLock({
+      sessionId: OTHER_UUID,
+      semanticSessionId: 'main-2026-05-27-session-9',
+      lastHeartbeat: new Date(NOW_MS).toISOString(),
+    });
+
+    const res = await backfillAbandonedSession({
+      repoRoot,
+      sessionId: UUID,
+      now: NOW_MS,
+      ownSessionIsEnding: true,
+    });
+
+    expect(res.action).toBe('skipped-foreign-live-lock');
+    expect(readSessions()).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // TOCTOU marker skip
 // ---------------------------------------------------------------------------
 

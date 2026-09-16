@@ -14,6 +14,7 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
+import { isMainModule } from '../is-main-module.mjs';
 
 const EVENTS_PATH = '.orchestrator/metrics/events.jsonl';
 
@@ -93,7 +94,7 @@ export function computeStats(events) {
 }
 
 // CLI entry-point — emit stats as JSON to stdout when run directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   const events = readTmuxEvents();
   const stats = computeStats(events);
   console.log(JSON.stringify(stats, null, 2));

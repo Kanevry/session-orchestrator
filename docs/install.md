@@ -29,6 +29,22 @@ uninstall.
 | **Cursor IDE** | `git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/cursor-install.mjs /path/to/your/project` |
 | **Pi** | `pi install npm:session-orchestrator` ; dev fallback: `git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/pi-install.mjs /path/to/your/project --settings-only` |
 
+### Headless Claude Code (`claude -p`): two commands need the namespaced form
+
+`session` and `plan` are reserved terminal-only built-in names in non-interactive
+sessions. Under `claude -p` the bare form answers `"/session isn't available in
+this environment."` — that is the harness, not the plugin, and no frontmatter or
+manifest field overrides it (claude 2.1.273, measured 2026-09-16). Use the
+namespaced form:
+
+```bash
+claude -p "/session-orchestrator:session deep"
+claude -p "/session-orchestrator:plan feature"
+```
+
+Every other command keeps its bare form (`/go`, `/close`, `/test`, …), and
+interactive sessions are unaffected.
+
 ### Claude Code: install the Node dependencies once
 
 For Claude Code, also install the package's Node dependencies **once** and

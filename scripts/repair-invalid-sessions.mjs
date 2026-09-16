@@ -37,10 +37,10 @@
 import fs from 'node:fs';
 import { parseArgs } from 'node:util';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { repairLedger, CANONICAL_LEDGER_REL } from './lib/session-record-repair.mjs';
 import { getProjectDir } from './lib/platform.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 const USAGE =
   'Usage: node scripts/repair-invalid-sessions.mjs [--dry-run|--apply] [--json]\n' +
@@ -200,7 +200,7 @@ async function main() {
   process.exit(summary.ok === false ? 3 : 0);
 }
 
-const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+const isDirectRun =isMainModule(import.meta.url);
 if (isDirectRun) {
   main().catch((err) => {
     process.stderr.write(`repair-invalid-sessions: unexpected error: ${err?.stack ?? err}\n`);

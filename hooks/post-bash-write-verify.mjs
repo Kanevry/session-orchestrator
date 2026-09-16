@@ -1120,6 +1120,9 @@ async function main() {
 // string compare then reads false and silently no-ops the whole scope-detector
 // under a symlinked `$CLAUDE_PLUGIN_ROOT`. realpath'ing both sides also survives
 // `--preserve-symlinks` (where import.meta.url stays symlinked instead).
+// BV-004 ceiling: kept inline — hooks avoid importing scripts/lib on the hot
+// path; the canonical predicate is scripts/lib/is-main-module.mjs. Revisit if the
+// hook-import-set (hooks/_lib/hook-import-set.json) ever admits scripts/lib here.
 function invokedAsScript() {
   const entry = process.argv[1];
   if (!entry) return false;

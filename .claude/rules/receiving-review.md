@@ -5,15 +5,15 @@ review-date: 2026-10-23
 
 # Receiving Code Review (Always-on)
 
-How the coordinator (and any agent receiving review output) handles feedback — and, since RCR-009, what a reviewer owes in return. Our default failure mode is performative agreement: accepting before verifying, then half-implementing a wrong suggestion. Sources: the RCR-003 table's rows.
+How the coordinator (and any agent receiving review output) handles feedback — and, since RCR-009, what a reviewer owes in return. Our default failure mode is performative agreement: accepting before verifying, then half-implementing a wrong suggestion.
 
 ## RCR-001: The 6-Step Pattern
 
-When you receive review output containing feedback items, process them in this order. Do NOT skip steps.
+Process every feedback item in this order. Do NOT skip steps.
 
 1. **READ** — every item, in full, never just the summary. Reviewers nest the actionable detail below the headline.
 2. **UNDERSTAND** — restate each item in your own words. Cannot restate it precisely? Re-read the code the reviewer cited.
-3. **VERIFY** — check the claim against the codebase: is the cited file still shaped that way, the function still on that line? Reviewers can be wrong, especially after recent edits.
+3. **VERIFY** — check the claim against the codebase: is the cited file still shaped that way, the function still on that line?
 4. **EVALUATE** — improvement, stylistic preference, or misunderstanding? Project conventions (`.claude/rules/`, CLAUDE.md, AGENTS.md) are the tiebreaker.
 5. **RESPOND** — per item: accept, modify, or push back, each with its rationale. Never accept silently — the rationale is the audit trail.
 6. **IMPLEMENT** — one item at a time, running the verification command after each (`verification-before-completion.md`).
@@ -40,7 +40,7 @@ Replace these with: a restatement (UNDERSTAND), a verification reference (VERIFY
 | **Inter-wave Quality-Lite** | Mechanical — typecheck/lint failures are facts, fix them | Automated tool output is rarely wrong, often surprising |
 | **External code review (PR comments)** | Skeptical, push back if wrong | External reviewers lack project context |
 
-The default posture is **skeptical** unless explicitly overridden — falsely accepting a wrong suggestion costs as much as implementing a bad feature.
+The default posture is **skeptical** unless explicitly overridden.
 
 ## RCR-004: YAGNI Check (Especially for "Implement Properly")
 
@@ -55,7 +55,7 @@ When a reviewer suggests "implement X properly" / "add validation for this case"
 
 Multi-item review responses follow this order:
 
-1. **Clarify first** — items that reference each other ("fix X AND consider Y"): ASK before partial-implementing. Partial implementations of related items create incoherent intermediate states.
+1. **Clarify first** — items that reference each other ("fix X AND consider Y"): ASK before partial-implementing.
 2. **Blocking items** — anything stopping the wave (a TypeScript error your edit introduced) goes first.
 3. **Simple items** — no dependencies; batch them.
 4. **Complex items** — needs its own design discussion; surface via AUQ first.
@@ -67,8 +67,6 @@ Verify after each step before moving on (RCR-001.6).
 You are allowed — and expected — to push back on review feedback that is wrong.
 
 Cite one of three: the codebase ("the function at file:line already handles this — the check would duplicate"), the convention ("per `.claude/rules/<X>.md` the pattern is Y, not Z"), or the trade-off ("surface area without a prevented failure mode").
-
-Push-back is a feature, not a bug: an implementer who never pushes back implements every wrong suggestion.
 
 ## RCR-007: Four-Class Finding Triage
 
@@ -94,8 +92,6 @@ Before invoking `stop-and-escalate`: name which of the five applies, show that n
 After two fix cycles without a **strict decrease** in blocking findings: pause, reclassify every remaining finding. A third cycle starts only if every finding is still `in-scope-blocker`; otherwise move the smallest safely-landable subset forward and the rest to `follow-up`.
 
 **Landing-lane hygiene**: no stacked, no pushed fix commits while a classification or a focused proof is open. Edits stay local until the cycle is proven in-scope.
-
-Contrast with `verification-auto-fix.max-retries: 2` (`quality-gates-autofix.md`): the retry cap **stops** on budget; RCR-008 forces **reclassification**.
 
 ## RCR-009: Depth, and the Reviewer's Authority
 

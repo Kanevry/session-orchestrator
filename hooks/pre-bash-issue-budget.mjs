@@ -53,7 +53,7 @@
 import { readStdin, emitAllow, emitDeny, emitWarn } from '../scripts/lib/io.mjs';
 import { resolveProjectDir } from '../scripts/lib/platform.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
-import { findIssueCreateStatements, isLoopedIssueCreate } from './_lib/vcs-create-matcher.mjs';
+import { findIssueCreateStatements, findLoopedIssueCreate } from './_lib/vcs-create-matcher.mjs';
 import {
   loadIssueBudgetConfig,
   resolveIssueBudgetSessionId,
@@ -302,14 +302,38 @@ async function main() {
   const config = loadIssueBudgetConfig(projectDir);
   if (config.mode === 'off') return emitAllow();
 
-  // G3b — bulk creation whose multiplicity is not computable (#1145). The
-  // exemption is asked FIRST, through the same classifier chargeIssueBudget
-  // uses, so a looped carryover sweep keeps its unconditional pass. It is asked
-  // on the FIRST issue-create statement's text, which is the very statement
-  // `isLoopedIssueCreate` judges — classifying it on the whole command would
-  // let an exempt NEIGHBOUR statement lift the loop deny.
-  const uncountableBulk =
-    isLoopedIssueCreate(command) && !classifyExemption(statements[0].text).exempt;
+  // G3b — bulk creation whose multiplicity is not computable (#1145). Two
+  // sources, one policy: a LOOP BODY (#1145) and an `xargs`-driven create
+  // (#1289), where the word list arrives on stdin. Both file N issues for one
+  // statement, so both are denied rather than charged 1 — the fix had to land
+  // here and not only in `isLoopedIssueCreate`, because G3 above short-circuits
+  // on `statements.length === 0` and an xargs create used to produce zero
+  // statements, so no loop-side fix could ever run.
+  //
+  // THE INVARIANT (rewritten 2026-09-16): the exemption is classified on the
+  // statement that CAUSED the bulk classification — never on `statements[0]`,
+  // and never on the whole command. A `[Carryover]` create standing NEXT TO an
+  // uncountable one is an unrelated neighbour and must not lift the deny; a
+  // `[Carryover]` create that IS the bulk statement keeps its documented
+  // unconditional pass (session-end's "those are never deferred" promise, which
+  // holds inside a loop too). Measured 2026-09-16 against the previous
+  // `statements[0]` binding, both lanes ALLOW where they must DENY:
+  //   glab issue create --title "[Carryover] real"; echo X | xargs -I% glab issue create --title %
+  //   glab issue create --title "[Carryover] real"; for i in 1 2 3; do glab issue create --title junk$i; done
+  // Same class as the bypass-scoping regression on `matchesBypass` — a matcher
+  // widened per statement while its exemption stayed whole-command
+  // (`.claude/rules/guard-design.md` § "Widening a matcher without narrowing
+  // its bypass", #1106).
+  //
+  // Fail-CLOSED when a command carries SEVERAL bulk statements and only some are
+  // exempt: `some()` over the non-exempt ones denies, because the command as a
+  // whole still files an uncountable number of untemplated issues.
+  const loopedTokens = findLoopedIssueCreate(command);
+  const bulkTexts = [
+    ...(loopedTokens ? [loopedTokens.map((t) => t.text).join(' ')] : []),
+    ...statements.filter((s) => s.bulk).map((s) => s.text),
+  ];
+  const uncountableBulk = bulkTexts.some((text) => !classifyExemption(text).exempt);
   if (uncountableBulk && config.mode === 'strict') {
     // Nothing is charged and nothing is parked — the command is handed back
     // whole, which is what makes unrolling it the correct next action.

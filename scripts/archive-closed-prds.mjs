@@ -41,7 +41,6 @@
 
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 
 import { findProjectRoot, resolveInstructionFile, warn } from './lib/common.mjs';
@@ -52,6 +51,7 @@ import { defaultGlabRepo } from './lib/vcs-repo-spec.mjs';
 import { readLock } from './lib/session-lock.mjs';
 import { resolveStateMdPath } from './lib/state-md/frontmatter-mutators.mjs';
 import { parseStateMd } from './lib/state-md/yaml-parser.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 const DEFAULT_PRD_DIR = 'docs/prd';
 const DEFAULT_VAULT_SUBDIR = '01-projects/session-orchestrator/prd';
@@ -635,7 +635,7 @@ export function main({
 // CLI guard — prevents process.exit during test-time imports
 // ---------------------------------------------------------------------------
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   try {
     const { code } = main();
     process.exit(code ?? 0);

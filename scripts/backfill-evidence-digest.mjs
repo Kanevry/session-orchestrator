@@ -50,6 +50,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 
 import { computeEvidenceDigest } from './lib/reconcile/renderer.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 /** ISO-8601 instant — mirrors the renderer's `EVIDENCE_RECORDED_AT_RE`. */
 const EVIDENCE_RECORDED_AT_RE = /^\d{4}-\d{2}-\d{2}T[0-9:.]+(?:Z|[+-]\d{2}:\d{2})$/;
@@ -373,4 +374,4 @@ function main(argv) {
   process.exit(unsealable === 0 ? 0 : 1);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main(process.argv.slice(2));
+if (isMainModule(import.meta.url)) main(process.argv.slice(2));

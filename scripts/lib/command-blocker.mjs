@@ -744,6 +744,31 @@ export { splitSegments as splitChainSegments };
 const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /**
+ * Verbs that name a WRITE TARGET as a bare operand — no redirect operator, no
+ * wrapper flag (#1366). A sibling of WRAPPER_UNWRAP's `fileArgFlags`: that table
+ * answers "does this WRAPPER flag's operand name a file the wrapper writes?",
+ * this one "does this VERB's operand name a file the verb writes?".
+ *
+ * Spec fields:
+ *   - prefix:   the operand's literal prefix (`of=`), matched on a token AFTER
+ *               the resolved verb.
+ *   - mode:     the default redirect mode the write is equivalent to.
+ *   - appendRe: operands that turn the write into an APPEND. `dd` truncates by
+ *               default (`conv=notrunc` / `oflag=append` do not), so reporting
+ *               `truncate` unconditionally would over-report a rule class that
+ *               deliberately permits `>>`.
+ *
+ * Deliberately narrow — one entry, measured. `tee`/`sponge` and in-process
+ * writers (`node -e fs.writeFileSync`) are NOT here: they are not redirect-shaped
+ * and belong to a different rule class (see the `redirect-harness-memory`
+ * rationale in .orchestrator/policy/blocked-commands.json). REVISIT TRIGGER: a
+ * second `<verb> <prefix>file` writer showing up in a transcript census.
+ */
+const VERB_FILE_OPERANDS = new Map([
+  ['dd', { prefix: 'of=', mode: 'truncate', appendRe: /^(?:conv=.*\bnotrunc\b|oflag=.*\bappend\b)/ }],
+]);
+
+/**
  * Transparent process-wrapper table for verb resolution (#982), keyed by
  * basename. Each spec describes how to skip a wrapper's own options so the
  * REAL verb it delegates to resolves (`sudo -u root bash -c '…'` → `bash`).
@@ -946,15 +971,37 @@ function resolveCore(segment, unknownFlagsTakeValue) {
       if (spec.splitString
           && (text === '-S' || text === '--split-string'
             || text.startsWith('--split-string=') || text.startsWith('-S'))) {
+        // env(1) APPENDS the remaining argv to the split string: `env -S bash
+        // -c '…'` runs `bash -c '…'`, not `bash` (#1366). Collecting only the
+        // operand made the trailing `-c '…'` execute unseen — the segment then
+        // resolved to `verb: 'echo x > CLAUDE.md'` (the quoted payload read as
+        // the verb) and neither the match surface nor the redirect surface ever
+        // saw it. So the payload is the operand PLUS every remaining token, and
+        // the wrapper CONSUMES the segment: nothing is left to resolve as a
+        // verb, which is why this now yields `verb: null, index: -1`.
+        let operand = null;
         if (text.startsWith('--split-string=')) {
-          payloads.push(text.slice('--split-string='.length));
-        } else if (text !== '-S' && text !== '--split-string') {
-          payloads.push(text.slice(2)); // attached form: -S'string'
-        } else if (i + 1 < segment.length) {
-          payloads.push(segment[i + 1].text);
+          operand = text.slice('--split-string='.length);
           i++;
+        } else if (text !== '-S' && text !== '--split-string') {
+          operand = text.slice(2); // attached form: -S'string'
+          i++;
+        } else if (i + 1 < segment.length) {
+          operand = segment[i + 1].text;
+          i += 2;
+        } else {
+          i++; // `env -S` with no operand at all — nothing to collect
         }
-        i++;
+        if (operand !== null) {
+          // Raw token texts, joined by one space. Quoting is NOT re-applied:
+          // the tokenizer already stripped it, and re-inventing it would be a
+          // second quoting grammar. The direction of that loss is safe — an
+          // over-wide payload can only make MORE text visible to the matcher
+          // (fail-closed), never hide a redirect operator.
+          const rest = segment.slice(i).map((t) => t.text);
+          payloads.push(rest.length > 0 ? [operand, ...rest].join(' ') : operand);
+          i = segment.length;
+        }
         continue;
       }
       if (spec.shellFlags && spec.shellFlags.has(text)) { sawShellFlag = true; i++; continue; }
@@ -1189,13 +1236,63 @@ function dedupedSegmentPayloads(segment, resolved) {
   if (resolved.verb && DASH_C_SHELLS.has(resolved.verb)) {
     for (const p of dashCPayloads(segment, resolved.index)) payloadSet.add(p);
   }
+  addArgJoinedPayload(segment, resolved.verb, resolved.index, payloadSet);
   if (resolved.alt) {
     for (const p of resolved.alt.payloads) payloadSet.add(p);
     if (resolved.alt.verb && DASH_C_SHELLS.has(resolved.alt.verb)) {
       for (const p of dashCPayloads(segment, resolved.alt.index)) payloadSet.add(p);
     }
+    addArgJoinedPayload(segment, resolved.alt.verb, resolved.alt.index, payloadSet);
   }
   return [...payloadSet];
+}
+
+/**
+ * Interpreters that JOIN their remaining arguments with a space and execute the
+ * result — no `-c` flag, no wrapper option to key on (#1366).
+ *
+ * `eval` is the whole set today. It was already in SHELL_EXEC_INTERPRETERS, but
+ * that set only powers the QUOTED-TOKEN match in matchSegments — it never fed
+ * the payload traversal, so `eval 'echo x > CLAUDE.md'` carried a redirect no
+ * redirect rule ever saw (`resolveSegmentVerb` reports `payloads: []` for it).
+ *
+ * NAMED CEILING (BV-004): only a LITERAL payload is reachable. `eval "$CMD"` and
+ * `eval $(…)` do not exist as command text at hook time and stay in the existing
+ * `unresolved` class (#641). REVISIT TRIGGER: a second arg-joining interpreter
+ * showing up in a transcript census — extend the set, never special-case `eval`.
+ */
+const ARG_JOINING_INTERPRETERS = new Set(['eval']);
+
+/**
+ * Add the joined post-verb argument text as a recursion payload when `verb` is
+ * an arg-joining interpreter. No-op otherwise — every other caller shape keeps
+ * the pre-#1366 payload set byte-identical.
+ *
+ * Quoting is not re-applied for the same reason as the `env -S` tail (see
+ * resolveCore): the tokenizer stripped it, and a wider payload can only make
+ * more text visible to the matcher, never hide an operator.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} segment
+ * @param {string|null} verb
+ * @param {number} index — the verb's token index (`-1` when unresolved)
+ * @param {Set<string>} payloadSet — mutated in place
+ */
+function addArgJoinedPayload(segment, verb, index, payloadSet) {
+  if (!verb || index < 0 || !ARG_JOINING_INTERPRETERS.has(verb)) return;
+  const words = [];
+  for (let i = index + 1; i < segment.length; i++) {
+    if (segment[i].redirect) {
+      // A redirect belongs to the SEGMENT (`eval 'x' > f` redirects eval's own
+      // stdout), never to the joined argv — the segment scan already reported
+      // it, and re-reporting it through the payload would duplicate the entry.
+      const end = redirectSpanEnd(segment, i);
+      if (end > i) i = end;
+      continue;
+    }
+    words.push(segment[i].text);
+  }
+  const joined = words.join(' ').trim();
+  if (joined.length > 0) payloadSet.add(joined);
 }
 
 /**
@@ -1345,6 +1442,37 @@ function collectRedirectTargets(segments, out, depth, budget) {
         continue;
       }
       out.push({ target: wa.value, mode: 'truncate', fd: null });
+    }
+
+    // A VERB can name its write target as a bare operand, with no redirect
+    // operator and no wrapper flag: `dd of=CLAUDE.md` truncates CLAUDE.md while
+    // `> CLAUDE.md` is denied (measured ALLOW pre-#1366 against the real
+    // policy). Keyed on the RESOLVED verb, so `sudo dd of=X` is reached through
+    // the existing wrapper unwrap; both readings contribute, as above.
+    const seenVerbOperands = new Set();
+    for (const reading of resolved.alt ? [resolved, resolved.alt] : [resolved]) {
+      const spec = reading.verb ? VERB_FILE_OPERANDS.get(reading.verb) : null;
+      if (!spec || reading.index < 0) continue;
+      let operand = null;
+      let append = false;
+      for (let k = reading.index + 1; k < segment.length; k++) {
+        const text = segment[k].text;
+        if (segment[k].redirect) continue;
+        if (text.startsWith(spec.prefix)) operand = text.slice(spec.prefix.length);
+        else if (spec.appendRe?.test(text)) append = true;
+      }
+      if (operand === null || operand.length === 0) continue;
+      const mode = append ? 'append' : spec.mode;
+      const key = `${operand}:${mode}`;
+      if (seenVerbOperands.has(key)) continue;
+      seenVerbOperands.add(key);
+      if (/[$`]/.test(operand)) {
+        // Same fail-visible rule as a redirect operand (#983) — never guess at a
+        // variable or a command substitution, never silently drop it either.
+        out.push({ target: null, mode, fd: null, unresolved: true });
+        continue;
+      }
+      out.push({ target: operand, mode, fd: null });
     }
 
     // Both readings of an ambiguous unknown flag contribute payloads (#1000),

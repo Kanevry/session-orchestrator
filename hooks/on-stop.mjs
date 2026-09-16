@@ -551,6 +551,39 @@ async function handleSubagentStop(input) {
     } catch { /* probe failed — omit rather than assert `false` */ }
 
     try {
+      // `sidecar_missing` — the DENOMINATOR for every meta-derived field below
+      // (#1289 Befund 2). `agent_type_meta` and `tool_use_id` come from the same
+      // read, so they co-occur perfectly (measured 2026-09-16 over
+      // `.orchestrator/metrics/events.jsonl`: 15.291 `orchestrator.agent.stopped`
+      // records, 542 with `agent_type_meta`, 542 with `tool_use_id`,
+      // both/only-meta/only-tool = 542/0/0). That made the low presence rate look
+      // like a producer defect in the KEY, when 1000/1000 sidecars on this host
+      // carry `agentType`. This flag makes "no sidecar found" visible in the
+      // record instead of indistinguishable from "sidecar found, field absent".
+      //
+      // WHAT THIS KEY IS NOT: a sidecar-LOOKUP failure rate. Re-measured
+      // 2026-09-16 over 15.457 `orchestrator.agent.stopped` records (5086
+      // `transcript_found:false` vs 553 `true`), the false mass is the #939/#949
+      // PHANTOM-STOP class — no subagent ever existed, so there is nothing for
+      // the lookup to find:
+      //   - 0 of 5077 distinct false `agent_id`s have a sidecar ANYWHERE on this
+      //     host (`find ~/.claude/projects -path '*/subagents/agent-*.jsonl'` →
+      //     8626 ids), and 0 have a `SubagentStart` record (2176 starts in
+      //     `.orchestrator/metrics/subagents.jsonl`);
+      //   - 0 records carrying a valid `agent_id` got a null resolver result;
+      //   - the two classes are perfectly bimodal on the type field:
+      //     `false` + no `agent` 5086, `true` + typed 553, off-diagonal 0.
+      // `agent` (the harness `agent_type`) is therefore the ready-made
+      // discriminator — no further key is needed. Do NOT "repair" the derivation
+      // in hooks/_lib/subagent-paths.mjs to chase this rate: it already resolves
+      // 553/553 of the real stops, and a widened one would only start resolving
+      // onto a FOREIGN agent's sidecar. This misreading has now cost three
+      // investigations (#939, the 2026-08-11 ledger re-run, #1289 Befund 2).
+      //
+      // Present ONLY when true, like every other optional key in this payload;
+      // its own probe is inside this try, so a failed `existsSync` omits it and
+      // nothing else (a telemetry fault must never change a decision).
+      if (!existsSync(metaPath)) payload.sidecar_missing = true;
       // One small read, one parse, two fields. `description` is operator prose
       // and is deliberately NOT carried: this payload also travels over the
       // optional Clank webhook unredacted.
@@ -565,7 +598,16 @@ async function handleSubagentStop(input) {
         payload.tool_use_id = meta.toolUseId.trim();
       }
       // A SECOND witness for the type — never merged into `agent`, so the
-      // empty-`agent_type` rate stays measurable.
+      // empty-`agent_type` rate stays measurable. NO FALLBACK MERGE, deliberately:
+      // `payload.agent` already carries the harness's `input.agent_type`, and
+      // filling one from the other would erase exactly the signal this pair
+      // exists to produce.
+      //
+      // REPORTING RULE: the presence rate of this key is only meaningful against
+      // the events whose SIDECAR WAS FOUND — "present on N of M events without
+      // `sidecar_missing`", never N of all `orchestrator.agent.stopped` records.
+      // Measured against all events the rate reads as a producer defect in this
+      // block; against its real denominator it is a lookup-failure rate.
       if (typeof meta?.agentType === 'string' && AGENT_TYPE_META_RE.test(meta.agentType.trim())) {
         payload.agent_type_meta = meta.agentType.trim();
       }

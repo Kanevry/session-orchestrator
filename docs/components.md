@@ -7,7 +7,7 @@ Detailed component inventory and architecture reference for Session Orchestrator
 ```mermaid
 flowchart LR
     USER([Operator]) -->|invokes /session| COORD[Coordinator]
-    COORD -->|reads| SK[Skills<br/>44 user-facing]
+    COORD -->|reads| SK[Skills<br/>50 user-facing]
     COORD -->|invokes| CMD[Commands<br/>26 slash-cmds]
     COORD -->|dispatches| AG[Agents<br/>14 typed sub-agents]
     AG -.->|parallel waves| W1[code-implementer]
@@ -18,7 +18,7 @@ flowchart LR
     COORD -->|writes| METRIC[.orchestrator/metrics/<br/>sessions · learnings · events]
 ```
 
-## Skills (44 user-facing)
+## Skills (50 user-facing)
 
 - **Lifecycle:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `quality-gates`, `using-orchestrator`
 - **Authoring:** `mcp-builder`, `hook-development`, `frontmatter-guard`
@@ -74,7 +74,7 @@ Surface counts measured 2026-09-06 by this repo's 360° ecosystem probe (`docs/a
 
 | Axis | session-orchestrator | `open-gsd/gsd-core` |
 |---|---|---|
-| Commands / skills / agents | 26 / 44 / 14 | 70 / 71 / 35 |
+| Commands / skills / agents | 26 / 50 / 14 | 70 / 71 / 35 |
 | Hook guards | 27 hook files, 10 event types | 28 hooks, incl. write / read / prompt / workflow / secret-read / agent-isolation / worktree-path guards |
 | Cross-session learning | `/evolve` + confidence-scored `learnings.jsonl`; reconcile turns eligible learnings into PROPOSED rules an operator approves one by one | `gsd-extract-learnings`, `gsd-mempalace-*` |
 | Harness coverage | Claude Code, Codex CLI, Cursor IDE, Pi (4) | 44 `capabilities/` directories (pi, hermes, kimi, windsurf, opencode, ollama, …) |

@@ -424,6 +424,15 @@ if (runCheck('check-unicode-safety.mjs') !== 0) checkFailed = 1;
 process.stdout.write('\n');
 if (runCheck('check-dead-bridge.mjs') !== 0) checkFailed = 1;
 
+// BLOCKING (#1371): a hand-written `process.argv[1] === import.meta.url` entry
+// guard is false under any symlinked invocation, so main() never runs and the
+// process still exits 0 — the caller reads silence as success. This can block
+// honestly because the backlog was drained to zero in the same change: the check
+// is not red on arrival for work nobody intends to do (contrast the WARN-only
+// censuses below, each of which had a standing backlog when it landed).
+process.stdout.write('\n');
+if (runCheck('check-entry-guard.mjs') !== 0) checkFailed = 1;
+
 // FAIL-capable, unlike the WARN-only censuses below: R2+R4 were measured at
 // 1 hit / 1 TP / 0 FP each against the full test corpus, so this check cannot be
 // red on arrival for anything but a real instance of the class. The alternatives

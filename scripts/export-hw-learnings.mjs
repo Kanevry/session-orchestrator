@@ -63,6 +63,7 @@ import { parseSessionConfig } from './lib/config.mjs';
 import { createSecretValueMasker } from './lib/secret-masker.mjs';
 import { stableHostname, readHostAliases } from './lib/host-identity.mjs';
 import { emitEvent, sessionAttribution } from './lib/events.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 // Vault-relative default write target (Epic #774 — docs Public-Split removed
 // the prior in-repo generated telemetry doc in favor of the private Meta-Vault).
@@ -724,7 +725,7 @@ export async function exportHwLearnings(opts) {
 }
 
 // Run as CLI when invoked directly
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+const isMain =isMainModule(import.meta.url);
 if (isMain) {
   const opts = parseArgs(process.argv.slice(2));
 

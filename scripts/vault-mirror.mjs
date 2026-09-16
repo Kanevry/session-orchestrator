@@ -53,7 +53,6 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { createReadStream } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 
 import { processLearning, processSession, getMaskerStats } from './lib/vault-mirror/process.mjs';
 import { emitMirrorEvent, emitMirrorRunEvent } from './lib/vault-mirror/telemetry.mjs';
@@ -64,6 +63,7 @@ import { resolveRepoNamespace } from './lib/vault-mirror/namespace.mjs';
 import { resolveCanonicalSuffixes } from './lib/named-vault-resolver.mjs';
 import { loadOwnerConfig } from './lib/owner-yaml.mjs';
 import { canonicalizeSessions } from './lib/sessions-canonical.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 // ── Canonical-vault helpers (#600 D2 / #607 D2) ────────────────────────────────
 // These are module-level (above the CLI bootstrap) so the module is import-safe
@@ -166,8 +166,7 @@ export function _normalizeRemote(url) {
 // (`node vault-mirror.mjs ...`). When imported from a unit test, argv belongs to
 // the test runner — parsing it would spuriously process.exit. The exported
 // helpers above are unaffected by this guard.
-const _isDirectInvocation =
-  Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
+const _isDirectInvocation =isMainModule(import.meta.url);
 
 if (_isDirectInvocation) {
   let parsedFlags;

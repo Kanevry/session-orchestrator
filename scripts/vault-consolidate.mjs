@@ -84,7 +84,6 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { die, utcTimestamp, expandTilde } from './lib/common.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
@@ -96,6 +95,7 @@ import {
   stageBackup,
   compressAndCleanupBackup,
 } from './lib/vault-consolidate-fs.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 const DEFAULT_SOURCE = '~/Projects/vault';
 const DEFAULT_CANONICAL = '~/Projects/Bernhard/vault';
@@ -580,7 +580,7 @@ async function main() {
 // `process.argv[1]` is undefined when the module is loaded via `node -e
 // "import(...)"` (no script path in argv), so guard against it before calling
 // pathToFileURL — otherwise the import itself throws ERR_INVALID_ARG_TYPE.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(e);
     process.exit(1);

@@ -265,9 +265,9 @@
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { sizingSubject } from '../learnings/sizing-subject.mjs';
+import { isMainModule } from '../is-main-module.mjs';
 
 /** Documented config surface — every `yaml` fence in this file is a declaration. */
 const TEMPLATE_REL = 'docs/session-config-template.md';
@@ -653,10 +653,48 @@ export function collectExportedSymbols(body) {
 }
 
 /**
+ * Re-export targets of a barrel: the specifiers of its `export * from '…'`
+ * (and `export * as ns from '…'`) lines.
+ *
+ * `collectExportedSymbols` cannot see these — a star re-export names no symbol —
+ * so a PURE barrel reads as `exports: []`. That does not merely hide the barrel:
+ * the S4 population predicate below requires at least one export, so the barrel
+ * never enters `unreachable` at all, and is therefore unavailable as the CLUSTER
+ * ROOT of the module it re-exports. The target is then reported as its own root.
+ *
+ * Measured 2026-09-16 on the live tree: `scripts/lib/worktree.mjs` is exactly
+ * `export * from './worktree/index.mjs';`, its only importers (`workspace.mjs`,
+ * `worktree-freshness.mjs`) are themselves unreachable — yet S4 reported
+ * `scripts/lib/worktree/index.mjs`, an interior file, instead of the cluster.
+ *
+ * Only the POPULATION is affected. Edge propagation already works: the BFS walks
+ * `mentions`, and a star re-export line is not a comment, so a barrel that IS
+ * reachable already marks its target reachable (measured the same day:
+ * `worktree.mjs` carries `index.mjs` in `mentions`).
+ *
+ * Anchored at column 0 like the export-symbol grammar above, so a docblock line
+ * (`* export * from …`) and an indented string never count.
+ *
+ * @param {string} body module source
+ * @returns {string[]} re-exported module specifiers, as written
+ */
+export function collectReExportTargets(body) {
+  return [
+    ...body.matchAll(/^export\s+\*(?:\s+as\s+[A-Za-z0-9_$]+)?\s+from\s+['"]([^'"]+)['"]/gm),
+  ].map((match) => match[1]);
+}
+
+/**
  * Whether a module is a CLI entrypoint rather than a library.
  *
  * An entrypoint is invoked by path (npm script, hook wiring, CI job), so having
  * no importer is its normal state and says nothing about being wired.
+ *
+ * `isMainModule(` is part of the grammar because the #1371 sweep replaced ~50
+ * hand-written `process.argv[1] === import.meta.url` guards with the shared
+ * `scripts/lib/is-main-module.mjs` predicate. Without this alternative a swept
+ * CLI matches none of the other branches and silently reclassifies as a library
+ * candidate, so S4 reports it as an `unreachable-library-module` root.
  *
  * @param {string} body module source
  * @returns {boolean}
@@ -664,7 +702,7 @@ export function collectExportedSymbols(body) {
 export function isCliEntrypoint(body) {
   return (
     body.startsWith('#!') ||
-    /import\.meta\.url\s*===|require\.main\s*===\s*module|process\.argv\[1\]/.test(body)
+    /import\.meta\.url\s*===|require\.main\s*===\s*module|process\.argv\[1\]|isMainModule\(/.test(body)
   );
 }
 
@@ -890,6 +928,10 @@ export function collectUnreachableLibraryModules(pluginRoot) {
       edgeOnly,
       entrypoint: isCliEntrypoint(body),
       exports: collectExportedSymbols(body),
+      // Star re-exports name no symbol, so `exports` is empty for a pure
+      // barrel — see collectReExportTargets for why that silently promoted an
+      // interior module to a root.
+      reExports: collectReExportTargets(body),
       // This file contributes NO edges — the S4 counterpart of the SELF_REL
       // exclusion the S1/S2 corpus already applies, and for the identical
       // reason. Every S4 `ALLOWLIST` key is a module path written here as a
@@ -947,8 +989,15 @@ export function collectUnreachableLibraryModules(pluginRoot) {
     }
   }
 
+  // A module with NO public surface at all is not a finding — nothing can be
+  // wired to it. A pure `export * from` barrel HAS a surface (everything its
+  // target exports), so it belongs in the population: otherwise it cannot be
+  // the cluster root of the module it re-exports (collectReExportTargets).
   const unreachable = modules.filter(
-    (module) => !reachable.has(module.relative) && !module.entrypoint && module.exports.length > 0,
+    (module) =>
+      !reachable.has(module.relative) &&
+      !module.entrypoint &&
+      (module.exports.length > 0 || module.reExports.length > 0),
   );
   const unreachableSet = new Set(unreachable.map((module) => module.relative));
   // Basename census, shared by the root filter below and the downgrade half
@@ -984,6 +1033,35 @@ export function collectUnreachableLibraryModules(pluginRoot) {
     );
   });
 
+  // A pure `export *` barrel enters the population above so it can HEAD its own
+  // cluster, but reporting it needs one more condition. S3 already exempts this
+  // exact shape by name (`autopilot-telemetry.mjs`, condition 4): a star
+  // re-export has zero NAMED symbols, so every "does prose name one of its
+  // exports?" test is vacuously FALSE — including S4's own coordinator-invoked
+  // downgrade below, which iterates `module.exports`. A reported pure barrel
+  // could therefore never be downgraded, only allowlisted: a finding with no
+  // legitimate exit. The category split is the barrel's TARGET. A barrel over a
+  // module that is itself unreachable heads a genuinely dead cluster and is
+  // reported; a barrel over LIVE code is a backward-compat shim, which is a
+  // different (and much weaker) finding than "nothing can reach this feature".
+  // Measured 2026-09-16: without this split `scripts/lib/autopilot-telemetry.mjs`
+  // — `export * from './autopilot/telemetry.mjs'`, target reachable, sole
+  // importer a test — became a new permanent WARN.
+  // Ceiling: a dead shim over live code is now invisible to S4 as well as to S3.
+  // Revisit if a stale back-compat shim is ever confirmed to have outlived its
+  // last importer unnoticed — that wants its own check, not a looser S4.
+  const reportableRoots = roots.filter((module) => {
+    if (module.exports.length > 0) return true;
+    return module.reExports.some((spec) => {
+      if (!spec.startsWith('.')) {
+        // Aliased/bare specifier: fall back to the basename granularity this
+        // file already documents as its named residual.
+        return [...unreachableSet].some((rel) => path.basename(rel) === path.basename(spec));
+      }
+      return unreachableSet.has(path.normalize(path.join(path.dirname(module.relative), spec)));
+    });
+  });
+
   // Category split (see § Category split in the doc block above): an INSTRUCTION
   // document that names both the module AND one of its exported symbols is an
   // order addressed to a reader who will execute it — the same grammar
@@ -997,7 +1075,7 @@ export function collectUnreachableLibraryModules(pluginRoot) {
     .map((file) => ({ relative: path.relative(pluginRoot, file), body: readFileSync(file, 'utf8') }));
 
   let coordinatorInvoked = 0;
-  const findings = roots.map((module) => {
+  const findings = reportableRoots.map((module) => {
     // Docs write POSIX separators regardless of host; `path.relative` does not.
     const relativePosix = module.relative.split(path.sep).join('/');
     const qualified = relativePosix.split('/').slice(-2).join('/');
@@ -1032,11 +1110,17 @@ export function collectUnreachableLibraryModules(pluginRoot) {
       (token) => token !== module.base && [...unreachableSet].some((rel) => path.basename(rel) === token),
     );
     const tail = dragged.length > 0 ? `, and drags ${dragged.length} further unreachable module(s)` : '';
+    // A pure barrel reports its re-export surface; naming "0 symbol(s)" there
+    // would read as a checker bug rather than as the barrel it is.
+    const surface =
+      module.exports.length > 0
+        ? `exports ${module.exports.length} symbol(s) (${module.exports.slice(0, 3).join(', ')})`
+        : `re-exports ${module.reExports.length} module(s) (${module.reExports.slice(0, 3).join(', ')})`;
     return /** @type {Finding} */ ({
       kind: 'unreachable-library-module',
       key: module.relative,
       message:
-        `exports ${module.exports.length} symbol(s) (${module.exports.slice(0, 3).join(', ')}) but no hook, ` +
+        `${surface} but no hook, ` +
         `npm script, CI job or husky stage reaches it — transitively${tail}. No instruction surface names ` +
         'one of its exports either: wire it, delete it, or allowlist it with a reason',
     });
@@ -1046,7 +1130,7 @@ export function collectUnreachableLibraryModules(pluginRoot) {
     findings,
     scanned: {
       modules: modules.length,
-      roots: roots.length,
+      roots: reportableRoots.length,
       unreachable: unreachable.length,
       coordinatorInvoked,
     },
@@ -1393,7 +1477,7 @@ export function runCheckUnwiredFeatures(pluginRoot, { list = false } = {}) {
   return 0;
 }
 
-const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href;
+const isMain = isMainModule(import.meta.url);
 if (isMain) {
   const args = process.argv.slice(2);
   const pluginRoot = args.find((arg) => !arg.startsWith('-'));

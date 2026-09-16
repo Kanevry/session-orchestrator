@@ -100,9 +100,9 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { enumerateRepoFiles } from './enumerate-repo-files.mjs';
 import { forEachLine } from './markdown-fences.mjs';
+import { isMainModule } from '../is-main-module.mjs';
 
 /** Documentation roots whose prose is treated as a claim about the repo. */
 export const SCAN_DIRS = Object.freeze(['skills', 'commands', 'agents', 'docs']);
@@ -461,7 +461,7 @@ export function runCheckSkillScriptPaths(pluginRoot, { strictSh = false } = {}) 
   return inspection.ok ? 0 : 1;
 }
 
-const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href;
+const isMain =isMainModule(import.meta.url);
 if (isMain) {
   const strictSh = process.argv.includes('--strict-sh');
   const args = process.argv.slice(2).filter((arg) => arg !== '--json' && arg !== '--strict-sh');

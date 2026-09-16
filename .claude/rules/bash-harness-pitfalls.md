@@ -1,9 +1,4 @@
 ---
-globs:
-  - "**/*.sh"
-  - scripts/**
-  - tests/**
-  - .husky/**
 paths:
   - "**/*.sh"
   - scripts/**

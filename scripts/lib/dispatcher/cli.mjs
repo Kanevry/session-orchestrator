@@ -32,6 +32,7 @@ import { warn } from '../common.mjs';
 import { acquire } from '../session-lock.mjs';
 import { enumerateCandidates, freeCandidates } from './enumerate.mjs';
 import { rankCandidates } from './rank.mjs';
+import { isMainModule } from '../is-main-module.mjs';
 
 const VERSION = '1.0.0';
 
@@ -247,7 +248,7 @@ export async function main(argv) {
 }
 
 // Run main only when executed directly, never on import.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2))
     .then((code) => process.exit(code))
     .catch((err) => {

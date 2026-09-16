@@ -58,6 +58,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join, relative, resolve } from 'node:path';
+import { isMainModule } from './is-main-module.mjs';
 
 /** Block-scalar indicator on the `description:` line: '>' (folded) or '|' (literal), optional chomping '+'/'-'. */
 const BLOCK_SCALAR_RE = /^([>|])([+-]?)\s*$/;
@@ -526,10 +527,6 @@ function main() {
 }
 
 const __filename = fileURLToPath(import.meta.url);
-const isMain =
-  typeof process !== 'undefined' &&
-  process.argv[1] !== null &&
-  process.argv[1] !== undefined &&
-  resolve(process.argv[1]) === resolve(__filename);
+const isMain =isMainModule(import.meta.url);
 
 if (isMain) main();

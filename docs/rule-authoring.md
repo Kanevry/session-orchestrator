@@ -112,7 +112,7 @@ Before `syncRules()` writes a source file into a consumer repo's `.claude/rules/
 
 | Probe | Severity | Rejects / flags |
 |-------|----------|------------------|
-| `paths-frontmatter` | error | A top-level `paths:` frontmatter key — `rule-loader.mjs` only recognises `globs:`; a `paths:` key is silently ignored and the rule loads always-on instead of the intended glob-scoped subset. |
+| `paths-frontmatter` | error | A top-level `paths:` frontmatter key **in a `rules/` library source**. Since #795 `rule-loader.mjs` accepts `paths:` as an alias for `globs:`, so such a rule IS glob-scoped — this is a vendoring-CONVENTION gate (`globs:` is the canonical form for vendored rules, #742), not a loader-compatibility gate. Its population is what `syncRules()` reads, i.e. `<pluginRoot>/rules/**` as listed by `rules/_index.md`; the consolidated files under `.claude/rules/` are `paths:`-canonical (see § Consolidated rules point 3) and are never its input. |
 | `provenance-header` | error (opt-in via `requireProvenance`, default `true` in `syncRules()`) | Missing provenance header on a library source — without it, `rules-sync.mjs` mis-detects the file as a local override on the next re-sync and can never update it again. |
 | `placeholder` | error | Unfilled placeholder tokens: `{{PROJECT_NAME}}`-style handlebars, a `## TODO: Customize` heading, or a `<!-- TODO:` comment — skeleton content, not a finished rule. |
 | `zero-match-globs` | warn | A `globs:` pattern matching 0 files in the target repo's tracked file list (`git ls-files`, falling back to a directory walk). Legitimately possible in a freshly-scaffolded repo. |
@@ -285,19 +285,25 @@ them silently loses a learning or regenerates it:
    TTL past what its type registry granted it.) State the rule in the file
    itself, so the next editor does not "fix" it upward.
 
-3. **Keep BOTH `globs:` and `paths:`, as byte-identical mirrors, each the
-   UNION of the parts.** The merged file loads for any path any of its parts
-   covered, so both lists are the union of theirs — never `globs:` alone.
-   `rule-loader.mjs` resolves `globs:` for wave-time injection, while Claude
-   Code's OWN native rule loader reads ONLY `paths:` and treats a rule
-   lacking it as unconditional, always-on (`check-rules.mjs` check #1108,
-   measured this session) — a `globs:`-only merged file is scoped everywhere
-   it is inspected and loads everywhere it is used, exactly the
-   instruction-budget failure consolidation exists to prevent. `rule-loader.mjs`
-   still resolves `globs:` and `paths:` with `globs:` winning SILENTLY when
-   both are present (issue #795, `parseGlobsFrontmatter`), but keeping the two
-   lists identical makes that precedence moot — there is no divergent value
-   left for it to pick between.
+3. **`paths:` is the canonical scope key, and it carries the UNION of the
+   parts.** The merged file loads for any path any of its parts covered, so its
+   list is the union of theirs. `paths:` is the key Claude Code's OWN native
+   rule loader reads, and it treats a rule lacking it as unconditional,
+   always-on (`check-rules.mjs` check #1108) — exactly the instruction-budget
+   failure consolidation exists to prevent. `globs:` is an accepted ALIAS, not a
+   second required mirror: `rule-loader.mjs` resolves either key
+   (`parseGlobsFrontmatter`, issue #795) and `instruction-budget-guard.mjs`
+   (`:960`) goes through that same parser, so a `paths:`-only file is
+   glob-scoped for every reader in this repo and still counts under
+   `bySurface.pathScoped`. Measured 2026-09-16 over the live tree
+   (`for f in .claude/rules/*.md; do awk '/^---$/{n++;next} n==1 && /^(paths|globs):/{print FILENAME": "$1}' "$f"; done`):
+   10 path-scoped rule files — 9 `paths:`-only, 1 (`cli-design.md`) carrying
+   both. `globs:` is canonical only for rules VENDORED OUT through the `rules/`
+   fleet library, where `validate-vendored-rules.mjs`'s `paths-frontmatter`
+   probe enforces it (issue #742); that probe judges `rules/` sources only and
+   never sees a consolidated file under `.claude/rules/`. Carrying both keys is
+   allowed, but NEVER with different values: `globs:` wins SILENTLY when both
+   are present (#795), and `check-rules.mjs` fails a divergent pair outright.
 
 4. **Substance in, boilerplate out.** Each absorbed learning becomes an `###`
    heading carrying its original rule sentence, plus its evidence line. What is

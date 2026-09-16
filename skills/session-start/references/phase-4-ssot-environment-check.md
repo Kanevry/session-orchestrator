@@ -71,9 +71,9 @@
 
    The instruction-budget probe (`scripts/lib/instruction-budget-guard.mjs`, `checkInstructionBudget`) runs in the Phase 4 banner family as `id: 'instruction-budget'` in `scripts/lib/session-start-probes.mjs` `PROBES`. The helper returns `null` (silent no-op) when the always-on directive count is at or under the configured ceiling, or on any read failure. When a non-null result is returned (`{ severity: 'warn', message }`), render `result.message` alongside the other banners. Non-blocking. Cross-reference: "Instruction Budget Audit" (#687; archived in the private Meta-Vault).
 
-   The maintenance-due probe (`scripts/lib/maintenance-due-banner.mjs`, `checkMaintenanceDue`) runs in the Phase 4 banner family as `id: 'maintenance-due'` in `scripts/lib/session-start-probes.mjs` `PROBES`, called with `{ repoRoot, config }`. This probe REPLACED the former `reconcile-nudge` entry in `scripts/lib/session-start-probes.mjs` (it reuses `computeReconcileNudge` wholesale as one of its six signals) AND the two retired session-end nudges — Phase 3.6.5 auto-dream and Phase 3.6.7 auto-dialectic — which asked the operator at close for work only a housekeeping session can do. Return contract: `null` (silent no-op) or `{ severity: 'warn', message }`; never throws. `computeMaintenanceDue` exposes the same computation without the banner suppression.
+   The maintenance-due probe (`scripts/lib/maintenance-due-banner.mjs`, `checkMaintenanceDue`) runs in the Phase 4 banner family as `id: 'maintenance-due'` in `scripts/lib/session-start-probes.mjs` `PROBES`, called with `{ repoRoot, config }`. This probe REPLACED the former `reconcile-nudge` entry in `scripts/lib/session-start-probes.mjs` (it reuses `computeReconcileNudge` wholesale as one of its seven signals) AND the two retired session-end nudges — Phase 3.6.5 auto-dream and Phase 3.6.7 auto-dialectic — which asked the operator at close for work only a housekeeping session can do. Return contract: `null` (silent no-op) or `{ severity: 'warn', message }`; never throws. `computeMaintenanceDue` exposes the same computation without the banner suppression.
 
-   The six signals (`MAINTENANCE_TOTAL_SIGNALS = 6`), each side-effect-free:
+   The seven signals (`MAINTENANCE_TOTAL_SIGNALS = 7`), each side-effect-free:
 
    | id | due when | source |
    |---|---|---|
@@ -83,12 +83,13 @@
    | `dialectic` | `shouldDispatchAutoDialectic().trigger === true` | `scripts/lib/auto-dialectic.mjs` — the side-effect-free decision function; a variant that advanced the last-run stamp would consume the signal it reports (the former recording wrapper was removed in #1288) |
    | `memory-cleanup` | `shouldDispatchAutoDream().trigger === true` | `scripts/lib/auto-dream.mjs` |
    | `pending-sidecar` | an unapplied pending dream/dialectic proposal younger than `SIDECAR_MAX_AGE_DAYS` (14) | `.orchestrator/*-pending*.md` |
+   | `generated-rules-expiring` | a machine-generated rule in `.claude/rules/` is already expired or expires within `GENERATED_RULE_EXPIRY_HORIZON_DAYS` (7) days; the population comes from `listMachineGeneratedRules({ repoRoot })` — one definition of "machine-generated", shared with the byte ceiling that judges the same set. The detail names each file and its `expires-at` date (HR-106), soonest first, because those are exactly the files the operator has to open to repair it. An unreadable rules directory goes to `undeterminable`, never to "clean" | `scripts/lib/instruction-budget-guard.mjs` (via #1372) |
 
    Introduces NO new Session Config key — every threshold is an existing key or an existing module constant.
 
    - **Nothing due and everything readable**: silent (no banner).
    - **A housekeeping session completed within `HOUSEKEEPING_COOLDOWN_DAYS` (7) days**: silent, even when signals are due — the operator already did the thing the banner would ask for. This cooldown is what keeps the instrument rare (HR-101, `.claude/rules/host-resources.md`); the housekeeping session's own record IS the last-maintenance stamp.
-   - **Otherwise**: render `result.message`, shaped as `⚠ maintenance due: <N> of 6 (<id>: <detail> · <id>: <detail>) — run /session housekeeping.` Every due signal carries the number or date that made it due (HR-106) — no aggregate stands alone.
+   - **Otherwise**: render `result.message`, shaped as `⚠ maintenance due: <N> of 7 (<id>: <detail> · <id>: <detail>) — run /session housekeeping.` Every due signal carries the number or date that made it due (HR-106) — no aggregate stands alone.
    - **Unreadable inputs** append an ` · undeterminable: <id>, <id>` suffix before the `— run /session housekeeping.` tail. A signal whose inputs cannot be read is three-state: never folded into "clean" (the `never` vs `undeterminable` discipline inherited from `reconcile-nudge-banner.mjs`).
 
    Non-blocking. Cross-reference: `scripts/lib/reconcile-nudge-banner.mjs` (`computeReconcileNudge`), `scripts/lib/reconcile/engine.mjs` (`runReconcile`), `skills/reconcile/SKILL.md`, `skills/session-start/SKILL.md` Phase 7 (the housekeeping maintenance loop the banner routes to), and issues #723 / #1200.

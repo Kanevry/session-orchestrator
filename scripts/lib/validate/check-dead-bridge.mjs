@@ -22,12 +22,12 @@
 // or process.exit — the isMain guard at the bottom is the only side-effecting
 // path. The Quality wave imports runCheckDeadBridge directly for unit tests.
 
-import { pathToFileURL } from 'node:url';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { DETECTORS } from './dead-bridge-detectors.mjs';
 import * as corpus from './dead-bridge-corpus.mjs';
 import { listRepoFiles } from './repo-files.mjs';
+import { isMainModule } from '../is-main-module.mjs';
 
 const DEFAULT_EXTS = ['.mjs', '.md'];
 
@@ -191,7 +191,7 @@ export function runCheckDeadBridge(pluginRoot) {
 
 // CLI entry — only when executed directly, never on import (keeps the exports
 // safe to import from tests without triggering process.exit).
-const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href;
+const isMain =isMainModule(import.meta.url);
 if (isMain) {
   const pluginRoot = process.argv[2];
   if (!pluginRoot) {

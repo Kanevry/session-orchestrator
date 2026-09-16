@@ -366,6 +366,59 @@ Documenting it here for completeness:
   job's hardcoded `oauth2:` clone login, so a Project Access Token (or PAT)
   is the variant that delivers on that original reasoning.
 
+## `pack-lifecycle` job (#1375)
+
+Every other job in `.gitlab-ci.yml` measures the git checkout, where every
+tracked file is present by construction. `pack-lifecycle` is the only one that
+measures what an **npm consumer** actually receives: it runs
+`npm run test:pack`, which packs a tarball, installs it into a throwaway
+consumer package, and then executes the hook out of
+`node_modules/session-orchestrator/` rather than out of this repo.
+
+What it proves, in the four assertions of
+`tests/scripts/pack-install-lifecycle.test.mjs`:
+
+1. The sha512 of the tarball the test packed is byte-for-byte the `integrity`
+   the fresh consumer's own `package-lock.json` recorded — so a tarball mutated
+   between pack and install, or a pipeline installing something other than what
+   it packed, is caught. (It is not a re-hash of the extracted tree: unpacking
+   does not preserve mtimes, so that would differ for non-defect reasons.)
+2. The **installed** `hooks/pre-bash-destructive-guard.mjs` denies `rm -rf /`
+   with a single PreToolUse deny envelope on stdout. This is the class the
+   repo-checkout suite is blind to: with `.orchestrator/policy/` missing from the
+   published artefact the guard warns on stderr, prints nothing, and **exits 0**
+   — fail-open, and indistinguishable from a healthy allow by exit code alone
+   (measured 2026-09-16: plugin root without the policy file → `exit=0`,
+   `stdout=""`; with it → `exit=0`, 634 bytes, `permissionDecision: deny`).
+3. The installed guard still allows a benign command with empty stdout — so a
+   packed guard that denies everything is caught too.
+4. Every `$CLAUDE_PLUGIN_ROOT/…` path the installed `hooks/hooks.json` wires (28
+   at the time of writing, incl. `hooks/run-node.sh`) exists inside the installed
+   tree.
+
+`tests/scripts/pack-policy-floor.test.mjs` does **not** subsume this: it reads
+the pack**list** (`npm pack --dry-run --json`), which is a manifest claim about
+names. It never writes a tarball, never installs, and never runs a line out of
+the artefact.
+
+**Cost and why it is opt-in locally.** ~20–30 s for the whole job (measured
+2026-09-16: `npm pack` ~15 s, `npm install <tgz>` ~3 s / 67 packages, suite wall
+time 26.8 s). It is the one job that **reaches the npm registry** — the consumer
+install resolves this package's own runtime dependencies — so it is excluded
+from the default `npm test`. `vitest.config.mjs` includes `tests/**` and is
+config-protected, so the gate is an env flag rather than an exclude:
+
+```bash
+npm run test:pack          # SO_PACK_TEST=1 vitest --run tests/scripts/pack-install-lifecycle.test.mjs
+npx vitest run tests/scripts/pack-install-lifecycle.test.mjs   # without the flag → 4 skipped, exit 0
+```
+
+The job is hard-`needs`-ed by `pipeline-gate`, like `test`: deleting it from
+this file is a pipeline-*creation* error rather than a silently narrower gate.
+The trade-off that buys is registry availability — a registry outage fails this
+job, and therefore the pipeline, without any code being wrong. Retry the job;
+do not make it `allow_failure`, which would restore the silent hole.
+
 ## `pipeline-gate` — the fan-in job
 
 The last stage holds one job that depends on every blocking gate. It exists

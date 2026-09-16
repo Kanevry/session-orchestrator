@@ -204,3 +204,88 @@ describe('pre-bash-issue-budget — the cap itself', () => {
     expect(ledger()).toBeNull();
   });
 });
+
+describe('pre-bash-issue-budget — xargs-driven bulk create (#1289 Befund 1)', () => {
+  // THE BUG (TV-001), measured 2026-09-16: these three shapes reached the hook
+  // with ZERO issue-create statements, so G3 short-circuited at
+  // `statements.length === 0` BEFORE the loop-deny at G3b — the cap never
+  // charged, the deny never fired, and an unbounded `xargs` word list filed
+  // issues against a count of 0. A fix inside `isLoopedIssueCreate` alone could
+  // never run, which is why the matcher AND this wiring both changed.
+  // Fake regression: drop the `statements.some((s) => s.bulk)` disjunct and
+  // every row below comes back ALLOW with no ledger.
+  it.each([
+    ['bare xargs', 'xargs glab issue create --title X'],
+    ['-I% replacement', 'echo X | xargs -I% glab issue create --title %'],
+    ['REST lane through xargs', 'seq 1 50 | xargs -I% gh api -X POST repos/o/r/issues -f title=%'],
+  ])('denies %s in strict mode and charges nothing', (_label, command) => {
+    const res = runHook(command);
+    expectDeny(res, 'UNKNOWN number of issues');
+    expect(ledger()).toBeNull();
+  });
+
+  // Direction guard: an xargs call that creates nothing must stay invisible to
+  // this gate — the widening reports a bulk CREATE, never "xargs is suspicious".
+  it('allows a non-create xargs call', () => {
+    expectAllow(runHook('echo a | xargs echo'));
+    expect(ledger()).toBeNull();
+  });
+
+  // Mode-respecting, exactly like the loop lane: `warn` reports the undercount
+  // on the decision channel and charges ONCE, it does not deny.
+  it('mode: warn reports the undercount instead of denying', () => {
+    repo = makeRepo({ mode: 'warn', max: 12 });
+    expectWarn(runHook('echo X | xargs -I% glab issue create --title %'), ['UNDERCOUNT']);
+    expect(ledger().count).toBe(1);
+  });
+});
+
+describe('pre-bash-issue-budget — an exempt NEIGHBOUR must not lift a bulk deny (#1106 class)', () => {
+  // THE BUG (TV-001), measured live 2026-09-16 through this very hook binary in
+  // a throwaway strict-mode repo: G3b classified the exemption on
+  // `statements[0].text` while the bulk source was ANY statement, so ONE exempt
+  // create written FIRST lifted the deny for an unrelated uncountable create in
+  // the same chain. Both lanes were affected — the `xargs` lane since #1289 and
+  // the LOOP lane since #1145 (there the first-create-only scan in
+  // `isLoopedIssueCreate` reported `false` outright). Each of the two tests
+  // below files an unknowable number of UNTEMPLATED issues on the old code.
+  //
+  // Fake-regression proof: rebind G3b to `classifyExemption(statements[0].text)`
+  // → the xargs row goes ALLOW; additionally restore the first-create-only scan
+  // in `findLoopedIssueCreate` → the loop row goes ALLOW too.
+  it('an exempt first statement does not lift the xargs bulk deny', () => {
+    const res = runHook(
+      'glab issue create --title "[Carryover] real"; echo X | xargs -I% glab issue create --title %',
+    );
+    expectDeny(res, 'UNKNOWN number of issues');
+    expect(ledger()).toBeNull();
+  });
+
+  it('an exempt first statement does not lift the loop deny (#1106 class, pre-existing)', () => {
+    const res = runHook(
+      'glab issue create --title "[Carryover] real"; for i in 1 2 3; do glab issue create --title junk$i; done',
+    );
+    expectDeny(res, 'UNKNOWN number of issues');
+    expect(ledger()).toBeNull();
+  });
+
+  // The documented behaviour that is DELIBERATELY kept: an exempt statement that
+  // is ITSELF the bulk one still passes. session-end promises the carryover /
+  // priority::critical classes are never deferred, and that promise holds inside
+  // a loop or an xargs word list too.
+  it('a bulk statement that is ITSELF exempt keeps its unconditional pass', () => {
+    expectAllow(runHook('echo X | xargs -I% glab issue create --label carryover --title %'));
+    expect(ledger().count).toBe(0);
+    expect(ledger().exempt).toBe(1);
+  });
+
+  // Counter-test (direction guard): nothing bulk in the chain at all — the
+  // exempt create still exempts only itself and the plain one still charges,
+  // exactly as before this change.
+  it('an exempt create beside a single NON-bulk create still charges and allows', () => {
+    expectAllow(runHook('glab issue create --title "[Carryover] real"; glab issue create --title plain'));
+    const state = ledger();
+    expect(state.count).toBe(1);
+    expect(state.exempt).toBe(1);
+  });
+});

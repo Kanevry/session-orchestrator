@@ -5,9 +5,21 @@
  * session JSONL entries (Issue #249 follow-up). Exercises the CLI via
  * child_process so exit codes and stdout/stderr contracts are verified
  * end-to-end, not just the library surface.
+ *
+ * TRAP — the CLI reads the STATE.md under its OWN `process.cwd()`
+ * (`emit-session.mjs` → `resolveStateMdPath(process.cwd())`, #1247). Spawning
+ * it with the inherited cwd therefore pointed it at THIS repo's live
+ * `.claude/STATE.md`: the suite was green only while that file happened to
+ * carry no `session-profile:`, and went red the moment a real session wrote
+ * one (`emit-session: WARN STATE.md session_profile=… belongs to session=…`
+ * against `expect(r.stderr).toBe('')`). That is the live-repo pin
+ * `.claude/rules/test-hygiene.md` § "A test that measures against the LIVE
+ * repo pins its defect state" forbids. Every spawn therefore runs in
+ * `HERMETIC_CWD` — an empty mkdtemp dir with no state directory at all —
+ * unless a test passes its own `cwd`/`SO_STATE_DIR`.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -34,11 +46,21 @@ function validEntry(overrides = {}) {
   };
 }
 
+// An empty directory that contains none of `.claude` / `.codex` / `.cursor` /
+// `.pi` (STATE_DIR_CANDIDATES), so the CLI's STATE.md probe finds nothing and
+// derives no `session_profile` — see the TRAP note in the file docblock.
+const HERMETIC_CWD = mkdtempSync(join(tmpdir(), 'emit-session-cwd-'));
+
+afterAll(() => {
+  rmSync(HERMETIC_CWD, { recursive: true, force: true });
+});
+
 function runCli(args, stdin = null, options = {}) {
   const input = stdin ?? undefined;
   const result = spawnSync(process.execPath, [SCRIPT, ...args], {
     input,
     encoding: 'utf8',
+    cwd: options.cwd ?? HERMETIC_CWD,
     env: options.env ? { ...process.env, ...options.env } : process.env,
   });
   return {

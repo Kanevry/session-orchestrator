@@ -618,8 +618,20 @@ async function main() {
   //     Dead-by-age relaxation (relaxDeadByAge/assumeDeadBeforeMs, #731 — used by the
   //     historical migration CLI) is NEVER passed here: a foreign lock that is live
   //     at hook-time is, by definition, a real active session, not stale history.
+  //     `ownSessionIsEnding` (#1376) rides the SAME `isRecordedSession`
+  //     attestation as `duration_ms` / `semantic_session_id` above, for the
+  //     same reason: it is a claim made ON BEHALF of the recorded session, and
+  //     a foreign terminating window that inherited this repo's
+  //     `current-session.json` identity (#863 defect (b)) must never make it.
+  //     With the attestation false the core keeps its blanket own-live-lock
+  //     skip, so the #863 behaviour is preserved exactly where #863 applied.
   try {
-    const res = await backfillAbandonedSession({ repoRoot: projectRoot, sessionId, semanticSessionId });
+    const res = await backfillAbandonedSession({
+      repoRoot: projectRoot,
+      sessionId,
+      semanticSessionId,
+      ownSessionIsEnding: isRecordedSession,
+    });
     await emitBackfillOutcome('abandoned', res, { sessionId, semanticSessionId });
   } catch { /* best-effort — never block teardown */ }
 

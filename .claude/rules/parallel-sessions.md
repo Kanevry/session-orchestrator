@@ -251,7 +251,7 @@ The git index and stash are **shared resources of the working copy**, not a priv
 
 **Subagents dispatched via the Agent tool / wave-executor MUST NEVER run:**
 - `git add` / `git commit` — index writes race a sibling's concurrent index write, even when each agent stages only its own files.
-- `git stash` (any form) — captures (and can drop) a sibling's uncommitted work, which the sibling cannot find or recover.
+- `git stash` (any form) — captures (and can drop) a sibling's uncommitted work, which the sibling cannot find or recover. For a baseline read `git show HEAD:<file>`.
 - `git mv` / `git rm` — index-mutating, same race class as `git add`.
 - `git push` — no subagent has authority to publish; also destructive at the remote-history layer.
 - `git reset` / `git checkout -- <file>` — destructive to sibling work (already covered by the destructive-ops guard) AND an index-write race; PSA-007 bans them from subagents unconditionally, not only "when parallel work is suspected."

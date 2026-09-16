@@ -22,6 +22,7 @@
  */
 
 import { reapStaleLocks } from './lib/lock-reaper.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // Human-readable output
@@ -175,7 +176,7 @@ EXIT CODES
 // CLI guard — prevents execution during test-time imports.
 // ---------------------------------------------------------------------------
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   main()
     .then((code) => process.exit(code))
     .catch((err) => {

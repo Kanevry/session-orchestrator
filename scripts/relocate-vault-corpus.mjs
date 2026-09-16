@@ -40,7 +40,6 @@
 
 import { promises as fs, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import {
   loadVaultRelocationRules,
@@ -55,6 +54,7 @@ import {
 } from './lib/vault-relocation-rules.mjs';
 import { buildBackfillIndex, parseSessionId } from './lib/vault-repo-backfill.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1158,8 +1158,7 @@ async function main() {
 // Entry guard (run only when invoked directly)
 // ---------------------------------------------------------------------------
 
-const invokedDirectly =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+const invokedDirectly =isMainModule(import.meta.url);
 
 if (invokedDirectly) {
   main().catch((err) => {

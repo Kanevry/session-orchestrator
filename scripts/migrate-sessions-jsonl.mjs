@@ -41,6 +41,7 @@
 import { readFileSync, writeFileSync, renameSync, copyFileSync, existsSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { validateSession, normalizeSession, ValidationError } from './lib/session-schema.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 const DEFAULT_FILE = '.orchestrator/metrics/sessions.jsonl';
 
@@ -440,7 +441,7 @@ async function main() {
 
 // Run main() only when this file is invoked directly as a CLI, not when imported.
 // Prevents process.exit during test-time imports (#368).
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     process.stderr.write(`migrate-sessions-jsonl: unexpected error: ${err?.stack ?? err}\n`);
     process.exit(2);

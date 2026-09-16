@@ -39,9 +39,9 @@
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { normalizeSkillInvocation } from '../skill-invocations-schema.mjs';
 import { normalizeSkillJudgment } from '../skill-judgments-schema.mjs';
+import { isMainModule } from '../is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // Named threshold constants
@@ -1192,7 +1192,7 @@ function main(argv) {
 }
 
 // Import-safe main-guard.
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+if (isMainModule(import.meta.url)) {
   const code = main(process.argv.slice(2));
   process.exit(code);
 }

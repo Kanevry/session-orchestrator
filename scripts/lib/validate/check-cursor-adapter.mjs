@@ -6,11 +6,11 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import yaml from 'js-yaml';
 
 import { CURSOR_TO_CANONICAL_EVENT } from '../cursor-hook-bridge.mjs';
+import { isMainModule } from '../is-main-module.mjs';
 
 /** agentskills.io caps a skill/command description at 1024 characters. */
 const DESCRIPTION_MAX = 1024;
@@ -259,6 +259,6 @@ function runCli(pluginRoot) {
 }
 
 // Direct invocation only — importing this module must not run the CLI.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   runCli(process.argv[2]);
 }

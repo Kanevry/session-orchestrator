@@ -546,12 +546,37 @@ function isBackfillStub(record) {
 }
 
 /**
+ * How far a caller-supplied `started_at` may drift from a legacy-label record's
+ * own `started_at` before the two are judged to name DIFFERENT sessions (#1368).
+ *
+ * Six hours is deliberately wider than any plausible write-lag and narrower
+ * than a day, because the legacy label the drift gate corroborates
+ * (`<branch>-<YYYY-MM-DD>-<mode>-<n>`) ALREADY carries the date: two records
+ * that share a label and sit inside the same six-hour window are the same
+ * session, and two that share a label across a day boundary cannot exist,
+ * because the label's date component would differ.
+ */
+export const STARTED_AT_DRIFT_TOLERANCE_MS = 6 * 3600 * 1000;
+
+/**
  * Find the newest ledger record for one physical session. Shared by the close
  * precheck and backfill dedupe; no file I/O or mutation.
  *
  * Native identity wins over the attribution label. A conflicting native UUID
- * vetoes a label match. Legacy records without a native join remain readable;
- * when both start times are known they must name the same instant.
+ * vetoes a label match. Legacy records without a native join remain readable.
+ *
+ * `started_at` is a CORROBORATING SIGNAL on the legacy-label path, never an
+ * identity key (#1368). The two timestamps being compared are written by
+ * different producers at different moments — STATE.md's is written by hand
+ * when the coordinator initialises the file (measured 2026-09-13: 48 minutes
+ * after the lock's own `started_at`), while the ledger's comes from the
+ * `session.started` event or from STATE.md itself. Demanding an
+ * EXACT-millisecond match therefore vetoed a correct label match on the only
+ * path that can reach it, which is what made `/close`'s #429 pre-check report
+ * "no matching record" for a session that WAS recorded. Only a drift larger
+ * than {@link STARTED_AT_DRIFT_TOLERANCE_MS} now vetoes — a window, not an
+ * off-switch, so two genuinely different same-label sessions still fail to
+ * match.
  *
  * @param {object[]} records parsed JSONL records, in append order
  * @param {{sessionId?: string|null, semanticSessionId?: string|null, startedAt?: string|null}} ids
@@ -581,7 +606,8 @@ export function findRecordedSession(records, { sessionId = null, semanticSession
     const incompleteStart = Array.isArray(record._backfill_incomplete_fields)
       && record._backfill_incomplete_fields.includes('started_at');
     const recordStart = !incompleteStart && typeof record.started_at === 'string' ? Date.parse(record.started_at) : NaN;
-    if (Number.isFinite(startMs) && Number.isFinite(recordStart) && startMs !== recordStart) continue;
+    if (Number.isFinite(startMs) && Number.isFinite(recordStart)
+      && Math.abs(startMs - recordStart) > STARTED_AT_DRIFT_TOLERANCE_MS) continue;
     legacyMatch ??= record;
   }
   return legacyMatch;
@@ -670,6 +696,21 @@ function checkAlreadyRecorded(readFileSync, sessionsPath, { recordId, sessionId 
  *   historical migration CLI only — `hooks/on-session-end.mjs` must NEVER
  *   pass this (a hook-time foreign lock is by definition a real, active
  *   session, not stale history).
+ * @param {boolean} [args.ownSessionIsEnding=false]
+ *   #1376 — the caller IS the session this candidate names, and it is tearing
+ *   itself down right now. An OWN lock that is still live means "this session
+ *   is RUNNING" only when the asker is somebody else: at `SessionEnd` the
+ *   ending session's own heartbeat is by construction fresh (it was refreshed
+ *   minutes ago, TTL 4h), so the `skipped-own-live-lock` branch below rejected
+ *   every unclosed session's own stub and the ledger never got one. Pass
+ *   `true` ONLY from `hooks/on-session-end.mjs`, and ONLY inside the
+ *   `isRecordedSession` guard that already gates `duration_ms` /
+ *   `semantic_session_id` — a FOREIGN terminating window that inherited this
+ *   session's semantic id from the shared `current-session.json` (#863 defect
+ *   (b)) must never set it. The migration CLI and the SessionStart recovery
+ *   path (`scripts/backfill-abandoned-sessions.mjs`) NEVER pass it: there the
+ *   candidate's live own lock genuinely means a running session.
+ *   The FOREIGN-live-lock guard is untouched by this flag.
  * @param {number|null} [args.assumeDeadBeforeMs=null]
  *   #731 — operator-supplied cutoff (ms-since-epoch). A candidate whose
  *   `lastEventMs` strictly predates this value bypasses a foreign live lock
@@ -685,6 +726,7 @@ export async function backfillAbandonedSession({
   now = Date.now(),
   dryRun = false,
   relaxDeadByAge = false,
+  ownSessionIsEnding = false,
   assumeDeadBeforeMs = null,
   deps = {},
 } = {}) {
@@ -827,7 +869,17 @@ export async function backfillAbandonedSession({
         // only ever fires when `foreign` is true). A STALE own lock
         // (isLockLive === false) falls through unchanged — this is a
         // liveness gate, not a blanket own-session off-switch.
-        if (own && isLockLive(lock, nowMs)) {
+        //
+        // #1376 — "own + live" is a RUNNING session only when the caller is
+        // NOT that session's own teardown. At SessionEnd the ending session's
+        // heartbeat is still fresh by construction, so without
+        // `ownSessionIsEnding` this branch swallowed the stub of every session
+        // that never reached /close — the exact gap the close-through backfill
+        // exists to close. The caller carries the attestation (see the param
+        // docblock); this module never re-derives it, because the only signal
+        // available here — the lock's own liveness — is what is being
+        // qualified.
+        if (own && isLockLive(lock, nowMs) && !ownSessionIsEnding) {
           return { action: 'skipped-own-live-lock', sessionId: recordId };
         }
 

@@ -50,6 +50,7 @@
 //   the existing bare message and the exit-code contract is unchanged.
 
 import { readFileSync } from 'node:fs';
+import { isMainModule } from '../lib/is-main-module.mjs';
 
 const DEFAULT_MIN_TESTS = 5000;
 
@@ -232,7 +233,7 @@ function parseArgs(argv) {
 }
 
 // CLI entry — only when run directly, not when imported by tests.
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+const isMain =isMainModule(import.meta.url);
 if (isMain) {
   const { path, minTests, logPath } = parseArgs(process.argv.slice(2));
   if (!path) {

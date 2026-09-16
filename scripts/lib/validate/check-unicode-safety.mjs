@@ -35,7 +35,7 @@
 import { readFileSync, readdirSync, statSync, existsSync, writeFileSync } from 'node:fs';
 import { join, extname, relative, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { isMainModule } from '../is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // File enumeration — git ls-files primary, recursive fs walk fallback.
@@ -535,7 +535,7 @@ export function runCheckUnicodeSafety(pluginRoot, opts = {}) {
 
 // CLI entry — only when executed directly, never on import (keeps the exports
 // safe to import from tests without triggering process.exit).
-const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href;
+const isMain =isMainModule(import.meta.url);
 if (isMain) {
   const args = process.argv.slice(2);
   const flags = new Set(args.filter((a) => a.startsWith('--')));

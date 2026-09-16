@@ -55,12 +55,12 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { emitEvent, sessionAttribution } from './events.mjs';
 import { tryAcquireFileLock, releaseFileLock } from './file-lock.mjs';
 import { readLock, isLockLive } from './session-lock.mjs';
 import { resolveSubagentSidecar } from '../../hooks/_lib/subagent-paths.mjs';
+import { isMainModule } from './is-main-module.mjs';
 
 const DEFAULT_INTERVAL_S = 2;
 const EVENTS_FILE_REL = '.orchestrator/metrics/events.jsonl';
@@ -998,6 +998,6 @@ function main() {
 
 // Run only when executed as a script — importing for unit tests must not parse
 // vitest's argv and exit 1.
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   main();
 }

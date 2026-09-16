@@ -21,6 +21,21 @@
  * override completely unvalidated. That containment check is a NEW rule this
  * consolidation introduces, not a preserved behaviour.
  *
+ * MEASURED NON-DEFECT (2026-09-16, #1289 Befund 2). The ~90 %
+ * `transcript_found:false` rate on `orchestrator.agent.stopped` is NOT a defect
+ * of this derivation. Over 15.457 records: 0 of 5077 distinct false `agent_id`s
+ * have a sidecar anywhere on the host (8626 sidecar ids found via
+ * `find ~/.claude/projects -path '*subagents/agent-*.jsonl'`), 0 have a
+ * `SubagentStart` record, and 0 records carrying a valid id got a null result
+ * from this function — the false mass is the #939/#949 phantom-stop class (the
+ * harness fires SubagentStop for an ephemeral class that never existed; the
+ * evidence is in the header of hooks/subagent-telemetry.mjs). Driving this
+ * resolver with the 30 newest real false-case payloads resolves 0/30 because the
+ * file does not exist, while the 30 newest true-case payloads resolve 26/30 (the
+ * other 4 are aged-out transcripts of 2026-09-13 sessions). Widening the
+ * derivation — a directory scan, a nested `subagents/` fallback, an unbounded id
+ * — would resolve onto a FOREIGN agent's sidecar without recovering one record.
+ *
  * @module hooks/_lib/subagent-paths
  */
 

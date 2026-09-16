@@ -42,10 +42,10 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { fileURLToPath } from 'node:url';
 import { resolveInstructionFile } from './lib/common.mjs';
 import { parseSessionConfig } from './lib/config.mjs';
 import { resolveAndRecordSessionShape } from './lib/session-shape.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 const USAGE = [
   'Usage: node scripts/session-shape.mjs --repo-root <path> --session-type <housekeeping|feature|deep>',
@@ -258,7 +258,7 @@ async function main() {
 }
 
 // Entrypoint guard — importing this file must not run it (check-unwired-features S3).
-if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     process.stderr.write(`session-shape: unexpected error: ${err?.stack ?? err}\n`);
     process.exit(EXIT_CONFIG_IO);

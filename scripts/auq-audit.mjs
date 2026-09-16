@@ -76,6 +76,7 @@ import {
 } from './lib/auq/schema.mjs';
 import { corpusKindOf, parseRepo } from './lib/auq/parse.mjs';
 import { writeStdoutLineSync } from './lib/io.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT_DEFAULT = path.resolve(HERE, '..');
@@ -818,8 +819,6 @@ function pkgVersion() {
   }
 }
 
-const invokedDirectly =
-  process.argv[1] !== undefined &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+const invokedDirectly =isMainModule(import.meta.url);
 
 if (invokedDirectly) main();

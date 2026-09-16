@@ -36,6 +36,7 @@ import { expandTilde } from '../common.mjs';
 import { discoverVaultRepos } from './vcs-detect.mjs';
 import { fetchIssuesMultiRepo, summarizeRepo } from './aggregator.mjs';
 import { renderPortfolio, writePortfolio } from './markdown-writer.mjs';
+import { isMainModule } from '../is-main-module.mjs';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -406,7 +407,7 @@ EXIT CODES
 
 // ── CLI guard — prevent process.exit during test-time imports ─────────────────
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2)).then((result) => {
     process.exit(result.exitCode);
   }).catch((err) => {

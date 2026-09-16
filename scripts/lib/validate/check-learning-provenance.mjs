@@ -126,7 +126,6 @@
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { readLearnings } from '../learnings/io.mjs';
 // THE shared key derivation. This check resolves a rule's STAMPED
 // `learning-key` against keys it derives from the store, so it is the one place
@@ -134,6 +133,7 @@ import { readLearnings } from '../learnings/io.mjs';
 // finding — it must derive the key with the emitter's function, not a copy of
 // the emitter's formula.
 import { learningKeyOf } from '../learnings/kebab.mjs';
+import { isMainModule } from '../is-main-module.mjs';
 
 /** Directory holding the rule corpus, relative to the plugin root. */
 const RULES_REL = path.join('.claude', 'rules');
@@ -475,7 +475,7 @@ export async function runCheckLearningProvenance(pluginRoot) {
   return 0;
 }
 
-const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href;
+const isMain =isMainModule(import.meta.url);
 if (isMain) {
   const argv = process.argv.slice(2);
   const flags = new Set(argv.filter((a) => a.startsWith('--')));

@@ -101,10 +101,10 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, resolve, relative } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 
 import { writeStdoutLineSync, writeJsonAtomicSync } from './lib/io.mjs';
 import { readCanonicalSessions } from './lib/sessions-canonical.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 /** Machine-readable schema tag for the --json envelope. */
 export const SCHEMA = 'site-numbers/1';
@@ -1398,11 +1398,7 @@ export function main(argv = process.argv.slice(2), env = {}) {
   return exitCode;
 }
 
-const isMain =
-  typeof process !== 'undefined' &&
-  process.argv[1] !== null &&
-  process.argv[1] !== undefined &&
-  resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+const isMain =isMainModule(import.meta.url);
 
 if (isMain) {
   const argv = process.argv.slice(2);

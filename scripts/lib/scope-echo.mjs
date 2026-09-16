@@ -37,17 +37,26 @@
  *   node scripts/lib/scope-echo.mjs --help
  */
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
 import { digestSha256Short } from './crypto-digest-utils.mjs';
+import { isMainModule } from './is-main-module.mjs';
 
 /** Marker the agent must emit. Case-sensitive by design — a lowercase lookalike is not an echo. */
 export const SCOPE_ECHO_MARKER = 'SCOPE-DIGEST:';
 
 /** Event name for the post-wave verdict. */
 export const SCOPE_ECHO_EVENT = 'orchestrator.wave_dispatch.scope_echo_checked';
+
+/** The SEND-side record `hooks/pre-task-scope-disjoint.mjs` writes per dispatch. */
+export const SCOPE_CHECKED_EVENT = 'orchestrator.wave_dispatch.scope_checked';
+
+/** The DEGRADATION record `scripts/materialize-wave-scope.mjs` writes per wave. */
+export const SCOPE_MATERIALIZED_EVENT = 'orchestrator.wave_dispatch.scope_materialized';
+
+/** The per-WAVE join verdict `--verify` emits. */
+export const SCOPE_VERIFIED_EVENT = 'orchestrator.wave_dispatch.scope_verified';
 
 /** Max characters retained for `agent_id` in the payload (same clamp as the send-side hook). */
 const AGENT_ID_MAX = 120;
@@ -213,6 +222,308 @@ export function scopeEchoPayload(verdict, meta = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// --verify — join the two halves of one wave ON THE DIGEST (#1092)
+// ---------------------------------------------------------------------------
+
+/**
+ * Closed verdict enum. Order is PRECEDENCE, not preference — the first matching
+ * row wins, and every (file, dispatch, echo) triple lands on exactly one row:
+ *
+ *   duplicate-claim      ≥2 DISTINCT agent ids claimed one digest at dispatch.
+ *                        That is agent A's scope reported for agent B, and it is
+ *                        a defect whatever the other two bits say — so it is
+ *                        checked first.
+ *   echoed-not-injected  an echo names a digest NO dispatch claimed.
+ *   digest-unknown       no scope FILE on disk carries this digest: the record
+ *                        exists but the artefact that would ground it does not
+ *                        (a scope file rewritten or reconciled away after the
+ *                        dispatch).
+ *   matched              file ∧ dispatch ∧ echo.
+ *   injected-not-echoed  file ∧ dispatch, no echo — the normal state DURING a
+ *                        wave, before the reports land.
+ *   injection-missing    file ∧ neither — a scope file no dispatch claimed and
+ *                        no agent echoed. This is AC-2: the omitted injection.
+ *
+ * Every member is kebab-case. `echo-only` is NOT one of the six: it is the
+ * DEGRADED value every verdict collapses to when the wave's transport is
+ * unobservable (see {@link verifyWaveScope}), so it is never produced by the
+ * precedence chain above and never belongs in this array.
+ *
+ * `injection-missing` was spelled `injection_missing` until 2026-09-16 — the
+ * one snake_case member of an otherwise kebab-case enum. Ledger records written
+ * before that date may still carry the old spelling in `by_verdict`; there is no
+ * dual-emit, so a consumer reading historical rows must accept both keys.
+ */
+export const SCOPE_VERDICTS = Object.freeze([
+  'duplicate-claim',
+  'echoed-not-injected',
+  'digest-unknown',
+  'matched',
+  'injected-not-echoed',
+  'injection-missing',
+]);
+
+/** A well-formed digest. Anything else is ignored rather than joined on. */
+const DIGEST_RE = /^[0-9a-f]{8}$/;
+
+/**
+ * Parse a JSONL ledger leniently: a malformed line is skipped, never thrown on
+ * — and COUNTED, which is the load-bearing half.
+ *
+ * A crashed writer leaves a truncated final line (`{"event":"…","wave":4` with
+ * no closing brace) — a measured shape in this repo's own ledger. Skipping it
+ * silently truncates the join, and a truncated join reports
+ * `dispatches N / injected N / echoed N` with every digest `matched`: a CLEAN
+ * wave, from the instrument built to detect silent failure. The count is what
+ * separates "nothing was wrong" from "I could not read part of the evidence".
+ *
+ * A malformed line is any NON-BLANK line that does not yield a plain object:
+ * one that does not start with `{`, one `JSON.parse` rejects, and one that
+ * parses to an array or a scalar. Blank lines are not malformed — a trailing
+ * newline is the normal end of a JSONL file.
+ *
+ * @param {string} raw
+ * @returns {{records: Array<Record<string, unknown>>, malformed: number}}
+ */
+function parseJsonl(raw) {
+  /** @type {Array<Record<string, unknown>>} */
+  const records = [];
+  let malformed = 0;
+  if (typeof raw !== 'string') return { records, malformed };
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    if (trimmed[0] !== '{') {
+      malformed += 1;
+      continue;
+    }
+    try {
+      const rec = JSON.parse(trimmed);
+      if (rec !== null && typeof rec === 'object' && !Array.isArray(rec)) records.push(rec);
+      else malformed += 1;
+    } catch {
+      malformed += 1; // a half-written line is not a verdict — but it is not nothing either
+    }
+  }
+  return { records, malformed };
+}
+
+/**
+ * Digest every per-agent scope file of one wave — shape (a) of the two scope
+ * shapes (CLAUDE.md / AGENTS.md § allowedPaths).
+ *
+ * @param {string} stateDir
+ * @param {number} wave
+ * @param {{readDir?: typeof readdirSync, readFile?: typeof readFileSync}} [io]
+ * @returns {Map<string, string[]>} digest → agent ids (file basenames)
+ */
+export function digestScopeFiles(stateDir, wave, { readDir = readdirSync, readFile = readFileSync } = {}) {
+  const out = new Map();
+  const dir = resolve(String(stateDir), 'filescopes', `wave-${wave}`);
+  let names;
+  try {
+    names = readDir(dir);
+  } catch {
+    return out; // no directory yet is not a failure — it is "nothing materialized"
+  }
+  for (const name of names) {
+    const file = typeof name === 'string' ? name : name?.name;
+    if (typeof file !== 'string' || !file.endsWith('.json')) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(readFile(join(dir, file), 'utf8'));
+    } catch { continue; }
+    if (!Array.isArray(parsed) || normalizeScopePaths(parsed).length === 0) continue;
+    const digest = scopeDigest(parsed);
+    const ids = out.get(digest) ?? [];
+    ids.push(file.slice(0, -'.json'.length));
+    out.set(digest, ids);
+  }
+  return out;
+}
+
+/**
+ * Verify ONE wave's FILE-SCOPE injection end to end.
+ *
+ * ## Why the join key is the DIGEST and never `agent_id`
+ *
+ * Measured 2026-09-16 over this host's `.orchestrator/metrics/events.jsonl`
+ * corpus: 609 `scope_checked` records against 51 `scope_echo_checked`, and the
+ * two agent-id sets OVERLAP IN ZERO ELEMENTS — the send side records the
+ * dispatch tool's `description` plus `subagent_type`
+ * (`"i-3 #1353 refund event (session-orchestrator:code-implementer)"`), the
+ * receive side the coordinator's short handle (`"i-3"`). One session showed 23
+ * echoes against 18 injections and the halves could not be joined at all. The
+ * digest is the one value both halves derive from the SAME artefact, so it joins
+ * them by construction.
+ *
+ * ## Observability, not enforcement
+ *
+ * Every verdict exits 0. This tool reports; the wave-executor turns
+ * `injection-missing` / `duplicate-claim` into a STATE.md deviation
+ * (`wave-loop-review.md` step 3d-bis), never into a block.
+ *
+ * ## A partial read is never a clean wave
+ *
+ * `malformed_lines` counts the ledger lines that could not be parsed (a crashed
+ * writer's truncated append is the measured shape). It is ALWAYS present,
+ * including as `0`: the ledger read either happened or the file was absent, and
+ * both are measurements. A non-zero count means the join ran on INCOMPLETE
+ * evidence — the counts and verdicts below are a floor, not a census — and the
+ * human table says so beside them.
+ *
+ * ## Transport degradation
+ *
+ * On a platform with no `PreToolUse` `Agent` matcher (Codex, Cursor, Pi) the
+ * send-side record cannot exist at all, so a missing dispatch is NOT evidence of
+ * a missing injection. When the wave's `scope_materialized` record says
+ * `transport_observable: false`, `transport` reads `unobservable` and every
+ * verdict degrades to `echo-only` — the receive half is all the platform can
+ * carry, and reporting `injection-missing` there would be an accusation derived
+ * from an instrument that is not installed.
+ *
+ * @param {object} params
+ * @param {number} params.wave
+ * @param {string} params.stateDir
+ * @param {string} [params.session]    semantic (or raw) session id to filter on
+ * @param {string} [params.eventsPath] defaults to `.orchestrator/metrics/events.jsonl`
+ * @param {typeof readFileSync} [params.readFile]
+ * @param {typeof readdirSync} [params.readDir]
+ * @returns {{wave: number, transport: 'observable'|'unobservable', dispatches: number,
+ *            injected: number, echoed: number, malformed_lines: number,
+ *            by_verdict: Record<string, number>,
+ *            agents: Array<{agent_id: string, verdict: string, digest: string}>}}
+ */
+export function verifyWaveScope({
+  wave,
+  stateDir,
+  session,
+  eventsPath,
+  readFile = readFileSync,
+  readDir = readdirSync,
+}) {
+  const ledgerPath = eventsPath || join('.orchestrator', 'metrics', 'events.jsonl');
+  let records = [];
+  let malformedLines = 0;
+  try {
+    ({ records, malformed: malformedLines } = parseJsonl(readFile(ledgerPath, 'utf8')));
+  } catch { /* no ledger yet — every count is legitimately 0 */ }
+
+  const mine = (rec) => {
+    if (rec.wave !== wave) return false;
+    if (!session) return true;
+    return rec.semantic_session_id === session || rec.session_id === session;
+  };
+
+  /** @type {Map<string, Set<string>>} digest → distinct dispatching agent ids */
+  const dispatchIds = new Map();
+  /** @type {Map<string, string>} digest → first echoing agent id */
+  const echoIds = new Map();
+  let dispatches = 0;
+  let injected = 0;
+  let echoed = 0;
+  // A wave may be materialized more than once (#1103); the LAST record wins,
+  // because that is the state the dispatches below actually ran against.
+  let transportObservable = null;
+
+  for (const rec of records) {
+    if (rec.event === SCOPE_MATERIALIZED_EVENT && mine(rec)) {
+      if (typeof rec.transport_observable === 'boolean') transportObservable = rec.transport_observable;
+      continue;
+    }
+    if (rec.event === SCOPE_CHECKED_EVENT && mine(rec)) {
+      dispatches += 1;
+      if (rec.injected === true) injected += 1;
+      const digest = rec.scope_digest;
+      if (typeof digest === 'string' && DIGEST_RE.test(digest)) {
+        const ids = dispatchIds.get(digest) ?? new Set();
+        ids.add(typeof rec.agent_id === 'string' ? rec.agent_id : 'unnamed-agent');
+        dispatchIds.set(digest, ids);
+      }
+      continue;
+    }
+    if (rec.event === SCOPE_ECHO_EVENT && mine(rec)) {
+      if (rec.echoed === true) echoed += 1;
+      // The agent's OWN claim first (`actual_digest`); the coordinator-side
+      // expectation only as a fallback, so a mismatched echo still joins to the
+      // scope file it was checked against rather than vanishing from the report.
+      const digest = [rec.actual_digest, rec.expected_digest]
+        .find((d) => typeof d === 'string' && DIGEST_RE.test(d));
+      if (digest !== undefined && !echoIds.has(digest)) {
+        echoIds.set(digest, typeof rec.agent_id === 'string' ? rec.agent_id : 'unnamed-agent');
+      }
+    }
+  }
+
+  const fileIds = digestScopeFiles(stateDir, wave, { readDir, readFile });
+  const digests = [...new Set([...fileIds.keys(), ...dispatchIds.keys(), ...echoIds.keys()])].sort();
+
+  const unobservable = transportObservable === false;
+  /** @type {Record<string, number>} */
+  const byVerdict = {};
+  const agents = digests.map((digest) => {
+    const claimants = dispatchIds.get(digest);
+    const hasDispatch = claimants !== undefined && claimants.size > 0;
+    const hasEcho = echoIds.has(digest);
+    const hasFile = fileIds.has(digest);
+
+    let verdict;
+    if (hasDispatch && claimants.size > 1) verdict = 'duplicate-claim';
+    else if (hasEcho && !hasDispatch) verdict = 'echoed-not-injected';
+    else if (!hasFile) verdict = 'digest-unknown';
+    else if (hasDispatch && hasEcho) verdict = 'matched';
+    else if (hasDispatch) verdict = 'injected-not-echoed';
+    else verdict = 'injection-missing';
+    if (unobservable) verdict = 'echo-only';
+
+    byVerdict[verdict] = (byVerdict[verdict] ?? 0) + 1;
+    const agentId = (hasDispatch ? [...claimants].sort().join(' + ') : null)
+      ?? echoIds.get(digest)
+      ?? (fileIds.get(digest) ?? []).join(' + ')
+      ?? 'unknown';
+    return { agent_id: agentId, verdict, digest };
+  });
+
+  return {
+    wave,
+    transport: unobservable ? 'unobservable' : 'observable',
+    dispatches,
+    injected,
+    echoed,
+    malformed_lines: malformedLines,
+    by_verdict: byVerdict,
+    agents,
+  };
+}
+
+/**
+ * Telemetry payload for a `--verify` run. Counts, closed enums and 8-hex digests
+ * ONLY — no agent id, no path, no prompt text: this record travels over the same
+ * unredacted Clank Event-Bus webhook as its two halves, and an `agent_id` is a
+ * free-form coordinator string that has carried private project slugs before.
+ *
+ * `malformed_lines` travels with the counts and, like them, is ALWAYS present
+ * including as `0` — it is the denominator's honesty check: without it a join
+ * that silently dropped half the ledger is indistinguishable in the record from
+ * a wave where nothing went wrong (`.claude/rules/host-resources.md` § HR-105).
+ *
+ * @param {ReturnType<typeof verifyWaveScope>} report
+ * @returns {Record<string, unknown>}
+ */
+export function scopeVerifiedPayload(report) {
+  return {
+    wave: report.wave,
+    transport_observable: report.transport === 'observable',
+    dispatches: report.dispatches,
+    injected: report.injected,
+    echoed: report.echoed,
+    malformed_lines: report.malformed_lines ?? 0,
+    by_verdict: report.by_verdict,
+    digests: report.agents.map((a) => a.digest),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
@@ -229,9 +540,19 @@ const USAGE = `Usage:
       an ${SCOPE_ECHO_EVENT} row to .orchestrator/metrics/events.jsonl
       (best-effort: a failed emit never changes the verdict or the exit code).
 
+  scope-echo --verify --wave <N> --state-dir <dir> [--session <id>]
+             [--events <path>] [--json] [--emit]
+      Join ONE wave's send side (${SCOPE_CHECKED_EVENT}),
+      its scope files and its echoes ON THE DIGEST, and print the per-agent
+      verdict table. --emit additionally appends one ${SCOPE_VERIFIED_EVENT}
+      row per wave (counts and 8-hex digests only).
+      Verdicts: ${SCOPE_VERDICTS.join(' · ')} — plus echo-only when the wave's
+      transport is unobservable.
+
   scope-echo --help
 
-Exit codes: 0 for every verdict, 1 for a missing --scope-file.
+Exit codes: 0 for every verdict, 1 for a missing --scope-file (or, under
+--verify, a missing --wave / --state-dir).
 `;
 
 /**
@@ -260,6 +581,68 @@ function parseArgv(argv) {
 }
 
 /**
+ * `--verify` mode — the per-wave join (see {@link verifyWaveScope}).
+ *
+ * Exit 0 for EVERY verdict, including `injection-missing`: this is an
+ * observability tool, and the wave-executor decides what a verdict costs
+ * (`wave-loop-review.md` step 3d-bis writes a STATE.md deviation, never a
+ * block). Exit 1 is reserved for the caller's own mistake — a missing required
+ * flag — per `.claude/rules/cli-design.md`.
+ *
+ * @param {Record<string, string|boolean>} args
+ * @returns {Promise<number>}
+ */
+async function mainVerify(args) {
+  const wave = Number(args.wave);
+  const stateDir = typeof args['state-dir'] === 'string' ? args['state-dir'] : '';
+  if (!Number.isSafeInteger(wave) || wave <= 0 || stateDir === '') {
+    process.stderr.write('scope-echo: --verify requires --wave <positive-int> and --state-dir <dir>\n');
+    process.stderr.write(USAGE);
+    return 1;
+  }
+
+  const report = verifyWaveScope({
+    wave,
+    stateDir,
+    session: typeof args.session === 'string' ? args.session : undefined,
+    eventsPath: typeof args.events === 'string' ? args.events : undefined,
+  });
+
+  if (args.emit) {
+    try {
+      const repoRoot = resolve(stateDir, '..');
+      const { emitEvent, sessionAttribution } = await import('./events.mjs');
+      await emitEvent(
+        SCOPE_VERIFIED_EVENT,
+        { ...scopeVerifiedPayload(report), ...sessionAttribution(repoRoot) },
+        { repoRoot },
+      );
+    } catch (err) {
+      process.stderr.write(`scope-echo: emit failed — ${err?.message ?? err}\n`);
+    }
+  }
+
+  if (args.json) {
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+    return 0;
+  }
+  const lines = [
+    `wave ${report.wave} — transport: ${report.transport} — `
+      + `${report.injected}/${report.dispatches} injected, ${report.echoed} echoed`,
+    // A partial read must never read as a clean wave: the counts above are a
+    // FLOOR when lines were dropped, and this is the only place the human table
+    // can say so.
+    ...(report.malformed_lines > 0
+      ? [`  WARNING: ${report.malformed_lines} malformed ledger line(s) skipped — `
+        + 'counts and verdicts below are a floor, not a census']
+      : []),
+    ...report.agents.map((a) => `  ${a.digest}  ${a.verdict.padEnd(20)}  ${a.agent_id}`),
+  ];
+  process.stdout.write(`${lines.join('\n')}\n`);
+  return 0;
+}
+
+/**
  * @param {string[]} [argv]
  * @returns {Promise<number>} process exit code: 0 for every verdict (this is an
  *   observability tool — a broken echo check never fails a wave), or 1 for a
@@ -272,6 +655,10 @@ export async function main(argv = process.argv.slice(2)) {
     process.stdout.write(USAGE);
     return 0;
   }
+  // --verify is its own mode and takes no --scope-file: it reads EVERY scope
+  // file of the wave, so the check below must not reject it first.
+  if (args.verify) return mainVerify(args);
+
   const scopeFilePath = typeof args['scope-file'] === 'string' ? args['scope-file'] : '';
   if (!scopeFilePath) {
     process.stderr.write('scope-echo: --scope-file <path> is required\n');
@@ -337,9 +724,7 @@ export async function main(argv = process.argv.slice(2)) {
   return 0;
 }
 
-const invokedAsCli =
-  process.argv[1] !== undefined &&
-  resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+const invokedAsCli = isMainModule(import.meta.url);
 
 if (invokedAsCli) {
   process.exitCode = await main();

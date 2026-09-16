@@ -79,9 +79,9 @@
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { parse } from '@babel/parser';
 import { listRepoFiles } from './repo-files.mjs';
+import { isMainModule } from '../is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // Baseline — Map<key, reason>, keyed on
@@ -359,7 +359,7 @@ export function runCheckHooksEmitEventGuard(repoRoot, options) {
   return failCount > 0 ? 1 : 0;
 }
 
-const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href;
+const isMain =isMainModule(import.meta.url);
 if (isMain) {
   const root = process.argv[2];
   if (!root) {

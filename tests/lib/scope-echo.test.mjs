@@ -12,14 +12,19 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  SCOPE_CHECKED_EVENT,
+  SCOPE_ECHO_EVENT,
+  SCOPE_MATERIALIZED_EVENT,
   checkScopeEcho,
   extractScopeEcho,
   renderScopeEchoInstruction,
   scopeDigest,
+  main,
   scopeEchoPayload,
+  verifyWaveScope,
 } from '../../scripts/lib/scope-echo.mjs';
 import { makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 import { telemetryIsolationEnv } from '../_helpers/telemetry-isolation.mjs';
@@ -209,17 +214,29 @@ describe('scopeEchoPayload', () => {
   });
 });
 
+/**
+ * Run the CLI, throwing on a non-zero exit.
+ * @param {string[]} args
+ * @param {string} cwd
+ */
+const run = (args, cwd) =>
+  execFileSync(process.execPath, [CLI, ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, ...telemetryIsolationEnv() },
+  });
+
+/** Run the CLI tolerating a non-zero exit; returns { status, stdout, stderr }. */
+const runRaw = (args, cwd) => {
+  const res = spawnSync(process.execPath, [CLI, ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, ...telemetryIsolationEnv() },
+  });
+  return { status: res.status, stdout: res.stdout, stderr: res.stderr };
+};
+
 describe('CLI', () => {
-  /**
-   * @param {string[]} args
-   * @param {string} cwd
-   */
-  const run = (args, cwd) =>
-    execFileSync(process.execPath, [CLI, ...args], {
-      cwd,
-      encoding: 'utf8',
-      env: { ...process.env, ...telemetryIsolationEnv() },
-    });
 
   it('prints only the instruction line in --instruction mode, and nothing for an empty scope', () => {
     const scoped = writeScopeFile(['a.mjs']);
@@ -262,16 +279,6 @@ describe('CLI', () => {
     expect(lines[0]).not.toContain('scripts/lib/scope-echo.mjs');
   });
 
-  /** Run the CLI tolerating a non-zero exit; returns { status, stdout, stderr }. */
-  const runRaw = (args, cwd) => {
-    const res = spawnSync(process.execPath, [CLI, ...args], {
-      cwd,
-      encoding: 'utf8',
-      env: { ...process.env, ...telemetryIsolationEnv() },
-    });
-    return { status: res.status, stdout: res.stdout, stderr: res.stderr };
-  };
-
   it('exits 1 (user error, not 2) and prints usage when --scope-file is missing', () => {
     // Catches: exit 2 claims a SYSTEM error for what is a bad invocation
     // (.claude/rules/cli-design.md — 1 = user/input error).
@@ -286,7 +293,13 @@ describe('CLI', () => {
     const res = runRaw(['--help'], tmp);
     expect(res.status).toBe(0);
     expect(res.stdout).toContain('Usage:');
-    expect(res.stdout).toContain('Exit codes: 0 for every verdict, 1 for a missing --scope-file.');
+    // Adjusted with #1092's `--verify` mode, which adds a second required-flag
+    // case to the same sentence ("…or, under --verify, a missing --wave /
+    // --state-dir"). What is pinned is the CONTRACT `cli-design.md` names — 0
+    // for every verdict, 1 for the caller's own missing flag — not the
+    // punctuation that followed it.
+    expect(res.stdout).toContain('Exit codes: 0 for every verdict, 1 for a missing --scope-file');
+    expect(res.stdout).toContain('--verify --wave <N> --state-dir <dir>');
     expect(res.stderr).toBe('');
   });
 
@@ -334,5 +347,211 @@ describe('CLI', () => {
     writeFileSync(reportFile, 'STATUS: done\n', 'utf8');
     const stdout = run(['--scope-file', scopeFile, '--report-file', reportFile], tmp);
     expect(JSON.parse(stdout.trim())).toMatchObject({ echoed: false, match: false, reason: 'echo-absent' });
+  });
+});
+
+describe('--verify (the per-wave join)', () => {
+  /**
+   * A state dir carrying per-agent scope files plus a ledger built from RAW
+   * lines — raw, because the shapes under test include ones `JSON.stringify`
+   * cannot produce (a writer killed mid-append).
+   *
+   * @param {{wave?: number, scopes?: Record<string, string[]>, lines?: Array<string|object>}} spec
+   * @returns {{stateDir: string, events: string}}
+   */
+  function fixture({ wave = 2, scopes = {}, lines = [] } = {}) {
+    const stateDir = join(tmp, '.claude');
+    const waveDir = join(stateDir, 'filescopes', `wave-${wave}`);
+    mkdirSync(waveDir, { recursive: true });
+    for (const [agentId, paths] of Object.entries(scopes)) {
+      writeFileSync(join(waveDir, `${agentId}.json`), JSON.stringify(paths), 'utf8');
+    }
+    const events = join(tmp, 'ledger.jsonl');
+    const body = lines.map((l) => (typeof l === 'string' ? l : JSON.stringify(l))).join('\n');
+    writeFileSync(events, lines.length ? `${body}\n` : '', 'utf8');
+    return { stateDir, events };
+  }
+
+  it('exits 1 with usage when --verify is given without --wave / --state-dir', () => {
+    // Catches: --verify takes no --scope-file, so the required-flag check for
+    // the OTHER mode must not reject it first (and must not claim exit 2, a
+    // SYSTEM error, for the caller's own bad invocation — cli-design.md).
+    const res = runRaw(['--verify'], tmp);
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain('--verify requires --wave <positive-int> and --state-dir <dir>');
+    expect(res.stdout).toBe('');
+  });
+
+  it('reports a zero wave rather than failing when neither scope files nor ledger exist', () => {
+    // Catches: step 3d-bis runs after EVERY wave, including one whose state dir
+    // was never materialized. A throw there would turn the observability step
+    // into the thing that breaks the checkpoint it was added to observe.
+    const res = runRaw(
+      ['--verify', '--wave', '2', '--state-dir', join(tmp, 'never-materialized'), '--json'],
+      tmp,
+    );
+    expect(res.status).toBe(0);
+    expect(JSON.parse(res.stdout.trim())).toEqual({
+      wave: 2,
+      transport: 'observable',
+      dispatches: 0,
+      injected: 0,
+      echoed: 0,
+      malformed_lines: 0,
+      by_verdict: {},
+      agents: [],
+    });
+  });
+
+  it('surfaces dropped ledger lines in the human table instead of printing a clean wave', () => {
+    // Catches: a crashed writer's truncated append was skipped SILENTLY, so the
+    // table read `1/1 injected, 1 echoed` with every digest `matched` — a clean
+    // wave, from the instrument built to detect silent failure. The operator
+    // reading that table has to be told the counts are a floor.
+    const paths = ['scripts/lib/alpha.mjs'];
+    const digest = scopeDigest(paths);
+    const { stateDir, events } = fixture({
+      scopes: { 'w2-a1': paths },
+      lines: [
+        { event: SCOPE_CHECKED_EVENT, wave: 2, agent_id: 'w2-a1', injected: true, scope_digest: digest },
+        '{"event":"orchestrator.wave_dispatch.scope_ech',
+        { event: SCOPE_ECHO_EVENT, wave: 2, agent_id: 'w2-a1', echoed: true, actual_digest: digest },
+      ],
+    });
+
+    const res = runRaw(
+      ['--verify', '--wave', '2', '--state-dir', stateDir, '--events', events],
+      tmp,
+    );
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('WARNING: 1 malformed ledger line(s) skipped');
+    expect(res.stdout).toContain('counts and verdicts below are a floor, not a census');
+    // ...and the join still resumed past the broken line.
+    expect(res.stdout).toContain(`${digest}  matched`);
+  });
+
+  it('--emit writes one scope_verified row carrying malformed_lines and no agent_id', () => {
+    // Catches two at once: (a) a partial read that is visible on the terminal
+    // but not in the ledger is unfalsifiable after the fact (HR-105); (b) this
+    // record travels over the unredacted Clank webhook, and an agent_id is a
+    // free-form coordinator string that has carried private project slugs.
+    const paths = ['01-projects/private-slug/notes.md'];
+    const { stateDir, events } = fixture({
+      scopes: { 'w2-a1': paths },
+      lines: ['{"event":"half-written', '{"event":"also-half'],
+    });
+    mkdirSync(join(tmp, '.orchestrator', 'metrics'), { recursive: true });
+
+    const res = runRaw(
+      ['--verify', '--wave', '2', '--state-dir', stateDir, '--events', events, '--emit', '--json'],
+      tmp,
+    );
+    expect(res.status).toBe(0);
+    expect(JSON.parse(res.stdout.trim()).malformed_lines).toBe(2);
+
+    const rows = readFileSync(join(tmp, '.orchestrator', 'metrics', 'events.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean);
+    expect(rows).toHaveLength(1);
+    const record = JSON.parse(rows[0]);
+    expect(record).toMatchObject({
+      event: 'orchestrator.wave_dispatch.scope_verified',
+      wave: 2,
+      malformed_lines: 2,
+      by_verdict: { 'injection-missing': 1 },
+    });
+    expect(record).not.toHaveProperty('agent_id');
+    expect(rows[0]).not.toContain('private-slug');
+  });
+
+  it('--session excludes a peer session running the same wave number in the same working copy', () => {
+    // Catches: two sessions share one working copy and one ledger (PSA-001), so
+    // wave 2 of a peer session is indistinguishable from mine without the
+    // filter — its dispatch would join MY scope file's digest and report
+    // `matched` for an injection my session never made.
+    const paths = ['scripts/lib/alpha.mjs'];
+    const digest = scopeDigest(paths);
+    const { stateDir, events } = fixture({
+      scopes: { 'w2-a1': paths },
+      lines: [
+        { event: SCOPE_MATERIALIZED_EVENT, wave: 2, transport_observable: true, semantic_session_id: 'mine' },
+        {
+          event: SCOPE_CHECKED_EVENT, wave: 2, agent_id: 'peer-a1', injected: true,
+          scope_digest: digest, semantic_session_id: 'theirs',
+        },
+      ],
+    });
+
+    const unfiltered = verifyWaveScope({ wave: 2, stateDir, eventsPath: events });
+    expect(unfiltered.dispatches).toBe(1);
+    expect(unfiltered.agents).toEqual([{ agent_id: 'peer-a1', verdict: 'injected-not-echoed', digest }]);
+
+    const mine = verifyWaveScope({ wave: 2, stateDir, session: 'mine', eventsPath: events });
+    expect(mine.dispatches).toBe(0);
+    expect(mine.agents).toEqual([{ agent_id: 'w2-a1', verdict: 'injection-missing', digest }]);
+  });
+});
+
+describe('main() — the exported CLI seam', () => {
+  /**
+   * Call `main()` in-process with stdout/stderr captured. The spawn-based tests
+   * above prove the BINARY behaves; these prove the exported function's RETURN
+   * contract, which `process.exitCode = await main()` at module load depends on
+   * and which a child's exit status cannot distinguish from a throw.
+   *
+   * @param {string[]} argv
+   * @returns {Promise<{code: number, stdout: string, stderr: string}>}
+   */
+  async function callMain(argv) {
+    let stdout = '';
+    let stderr = '';
+    const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      stdout += chunk;
+      return true;
+    });
+    const errSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderr += chunk;
+      return true;
+    });
+    try {
+      const code = await main(argv);
+      return { code, stdout, stderr };
+    } finally {
+      outSpy.mockRestore();
+      errSpy.mockRestore();
+    }
+  }
+
+  it('returns a NUMBER for every mode — a thrown error would exit non-zero with a stack trace', async () => {
+    // Catches: the module's own promise (docblock — "nothing here throws on
+    // malformed input; a broken echo check must never change a wave's
+    // outcome"). A throw from any of these reaches the module-level
+    // `process.exitCode = await main()` as an unhandled rejection, so the
+    // observability step becomes the thing that fails the checkpoint.
+    await expect(callMain(['--help'])).resolves.toMatchObject({ code: 0 });
+    // every required flag missing, in both modes
+    await expect(callMain([])).resolves.toMatchObject({ code: 1 });
+    await expect(callMain(['--verify'])).resolves.toMatchObject({ code: 1 });
+    await expect(callMain(['--verify', '--wave', 'not-a-number', '--state-dir', tmp]))
+      .resolves.toMatchObject({ code: 1 });
+    // an unreadable scope file, an absent report file, an absent ledger
+    await expect(callMain(['--scope-file', join(tmp, 'gone.json'), '--instruction']))
+      .resolves.toMatchObject({ code: 0 });
+    await expect(callMain(['--scope-file', join(tmp, 'gone.json'), '--report-file', join(tmp, 'gone.md')]))
+      .resolves.toMatchObject({ code: 0 });
+  });
+
+  it('reports a wave over an absent ledger as all-zero rather than as a failure', async () => {
+    // Catches: "no ledger yet" is the state of every wave 1 before its first
+    // dispatch. Reading that as an error (or as a throw) would make step 3d-bis
+    // red on a healthy session.
+    const res = await callMain([
+      '--verify', '--wave', '7', '--state-dir', join(tmp, 'empty-state'),
+      '--events', join(tmp, 'no-such-ledger.jsonl'), '--json',
+    ]);
+    expect(res.code).toBe(0);
+    expect(JSON.parse(res.stdout.trim())).toMatchObject({
+      wave: 7, dispatches: 0, injected: 0, echoed: 0, malformed_lines: 0, agents: [],
+    });
   });
 });

@@ -20,7 +20,7 @@
  * ## Design constraints it is written against
  *
  * - **HR-101 (a signal may only warn if it is rare).** Nothing is due ⇒ the
- *   probe is SILENT. Six independent signals are ANDed with a cooldown, not
+ *   probe is SILENT. Seven independent signals are ANDed with a cooldown, not
  *   ORed into a permanent warning: a repo that ran `/session housekeeping`
  *   within the last {@link HOUSEKEEPING_COOLDOWN_DAYS} days says nothing at
  *   all, because the operator already did the thing the banner would ask for.
@@ -33,7 +33,7 @@
  *   an existing module constant. Same posture as `reconcile-nudge-banner.mjs`
  *   and `loop-readiness-banner.mjs`: an advisory banner needs no switch.
  *
- * ## The six signals
+ * ## The seven signals
  *
  * | id                | due when                                                              | source |
  * |-------------------|-----------------------------------------------------------------------|--------|
@@ -43,6 +43,20 @@
  * | `dialectic`       | `shouldDispatchAutoDialectic().trigger === true`                      | `auto-dialectic.mjs` |
  * | `memory-cleanup`  | `shouldDispatchAutoDream().trigger === true`                          | `auto-dream.mjs` |
  * | `pending-sidecar` | a pending dream/dialectic proposal younger than 14 days is unapplied   | `.orchestrator/*-pending*.md` |
+ * | `generated-rules-expiring` | a machine-generated rule is expired or expires within {@link GENERATED_RULE_EXPIRY_HORIZON_DAYS} days | `instruction-budget-guard.mjs` |
+ *
+ * ### Why the expiry alarm is HERE and not in the test suite (#1372 follow-up)
+ *
+ * The invariant "no generated rule file sits expired in `.claude/rules/`" was
+ * first written as a vitest case comparing `expires-at` against TODAY. That is
+ * a calendar time-bomb in a BLOCKING gate: with nothing committed and nothing
+ * broken, `npm test` — pre-push hook and CI alike — turns red on the morning
+ * after the earliest date and blocks every unrelated hotfix, while the repair
+ * (consolidate the file, move its provenance pairs, delete it) is a human
+ * decision no test run can take. HR-101/HR-105: a signal must fire when
+ * something CHANGED, at a moment the operator can act, and be repairable by the
+ * thing that fires it. Session start, recommending `/session housekeeping`, is
+ * that moment; the predicate itself is still tested, against an INJECTED clock.
  *
  * Only SIDE-EFFECT-FREE signal functions are called — never a variant that
  * advances `.orchestrator/dialectic-last-run`, because a probe that writes the
@@ -66,13 +80,32 @@ import { shouldDispatchAutoDream } from './auto-dream.mjs';
 import { resolveMemoryDir } from './memory-paths.mjs';
 import { readCanonicalSessions } from './sessions-canonical.mjs';
 import { filterRealSessions } from './session-schema.mjs';
+import {
+  daysUntilGeneratedRuleExpiry,
+  listMachineGeneratedRules,
+} from './instruction-budget-guard.mjs';
 
 /**
  * How many signals this probe knows about. The banner denominator is this
  * number MINUS the signals a kill-switch skipped on this host — see the
  * `skipped` array in {@link computeMaintenanceDue}'s result.
  */
-export const MAINTENANCE_TOTAL_SIGNALS = 6;
+export const MAINTENANCE_TOTAL_SIGNALS = 7;
+
+/**
+ * How far ahead the `generated-rules-expiring` signal looks.
+ *
+ * NAMED CEILING (BV-004): 7 days is one week of sessions — long enough that the
+ * operator meets the warning before the loader silently starts dropping the
+ * rule, short enough that it is not standing noise (HR-104: a signal that is
+ * essentially always present is no signal). On this repo's corpus at
+ * 2026-09-16 the earliest `expires-at` was 14 days out, so the row is silent.
+ *
+ * REVISIT TRIGGER: if the row is due on more than ~1 session start in 10, the
+ * horizon is measuring the reconcile engine's 30-day default TTL rather than an
+ * overdue consolidation — re-aim it (HR-101), never widen it.
+ */
+export const GENERATED_RULE_EXPIRY_HORIZON_DAYS = 7;
 
 /**
  * Active-learning floor for the `evolve` signal. Deliberately the SAME number
@@ -389,6 +422,34 @@ export async function computeMaintenanceDue(opts = {}) {
     if (pending.length > 0) markDue('pending-sidecar', pending.join(', '));
   } catch {
     undeterminable.push('pending-sidecar');
+  }
+
+  // --- generated-rules-expiring (S7) ---------------------------------------
+  // The predicate and the population both come from `instruction-budget-guard`,
+  // which is where the generated corpus is DEFINED (its byte ceiling judges the
+  // same set). A local re-implementation would be a second definition of
+  // "machine-generated" that agrees only until one of the two is edited.
+  try {
+    const listed = listMachineGeneratedRules({ repoRoot });
+    if (!listed.ok) {
+      // The directory is there but unreadable — not knowing is not clean.
+      undeterminable.push('generated-rules-expiring');
+    } else {
+      const expiring = listed.rules
+        .map((r) => ({ ...r, days: daysUntilGeneratedRuleExpiry({ meta: r.meta, now }) }))
+        .filter((r) => r.days !== null && r.days <= GENERATED_RULE_EXPIRY_HORIZON_DAYS)
+        .sort((a, b) => a.days - b.days);
+      if (expiring.length > 0) {
+        // HR-106: name the files and the dates the verdict was computed from —
+        // the operator has to open exactly those files to repair this.
+        markDue(
+          'generated-rules-expiring',
+          expiring.map((r) => `${r.file} ${r.expiresAt}`).join(', '),
+        );
+      }
+    }
+  } catch {
+    undeterminable.push('generated-rules-expiring');
   }
 
   return {

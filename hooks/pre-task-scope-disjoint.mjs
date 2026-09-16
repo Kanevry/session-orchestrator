@@ -230,6 +230,7 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 /** @type {typeof import('../scripts/lib/io.mjs').emitWarn} */ let emitWarn;
 /** @type {typeof import('../scripts/lib/io.mjs').writeJsonAtomicSync} */ let writeJsonAtomicSync;
 /** @type {typeof import('../scripts/lib/file-lock.mjs').withFileLock} */ let withFileLock;
+/** @type {typeof import('../scripts/lib/scope-echo.mjs').scopeDigest} */ let scopeDigest;
 let findScopeCollisions;
 
 const PLUGIN_ROOT = path.resolve(import.meta.dirname, '..');
@@ -286,6 +287,25 @@ const SHAPE_NONE = 'none';
 
 /** The per-dispatch observability record (#1092) — see § Observability. */
 const SCOPE_EVENT = 'orchestrator.wave_dispatch.scope_checked';
+
+/**
+ * The receive-side instruction line `renderScopeEchoInstruction()` renders and
+ * the coordinator appends immediately after the fenced block
+ * (`wave-loop-dispatch.md` § Pre-Dispatch: File-Scope Injection).
+ *
+ * Matching it HERE, in the same prompt, is what makes the agent-A-block-with-
+ * agent-B-line mix-up catchable without a single filesystem read: the block and
+ * the line must come from the same `$AGENT_FILESCOPE_JSON`, so their digests
+ * must agree (`digest_consistent`). The marker half stays case-sensitive for the
+ * same reason `scope-echo.mjs` keeps it so — a lowercase lookalike is not the
+ * line; the HEX half is read case-insensitively and normalised to lowercase.
+ * Non-global on purpose: a `g` regex carries `lastIndex` between calls.
+ */
+const ECHO_INSTRUCTION_RE =
+  /End your final report with the line:[ \t]*`{0,3}SCOPE-DIGEST:[ \t]*`{0,3}([0-9a-fA-F]{8})(?![0-9a-fA-F])/;
+
+/** Shape of a well-formed digest, used to reject anything a broken digest fn returns. */
+const DIGEST_RE = /^[0-9a-f]{8}$/;
 
 /**
  * Clamp for the one free-form string the event carries (`agent_id`, built from
@@ -358,6 +378,14 @@ async function bootstrap() {
       io: { specifier: lib('io.mjs') },
       scopeGate: { specifier: lib('scope-gate.mjs') },
       fileLock: { specifier: lib('file-lock.mjs') },
+      // ONE normalization for the digest, shared with the receive side (#1092):
+      // `scope-echo.mjs` is pure (stdlib + `crypto-digest-utils.mjs`) and its
+      // `scopeDigest` is what `--verify` joins the two halves on. A second
+      // implementation here would let the halves disagree while both looked
+      // right — the class `guard-design.md` § "zero-import predicate module"
+      // names. Late-bound like every other repo module so a load failure
+      // banners instead of disarming the guard silently (#993).
+      scopeEcho: { specifier: lib('scope-echo.mjs') },
     },
     {
       hookName: HOOK_NAME,
@@ -370,6 +398,7 @@ async function bootstrap() {
   ({ readStdin, emitAllow, emitDeny, emitWarn, writeJsonAtomicSync } = modules.io);
   ({ findScopeCollisions } = modules.scopeGate);
   ({ withFileLock } = modules.fileLock);
+  ({ scopeDigest } = modules.scopeEcho);
 }
 
 // ---------------------------------------------------------------------------
@@ -407,8 +436,51 @@ const SCOPE_TERMS = 'DATEI[- ]SCOPE|FILE[- ]SCOPE|FILE SCOPE|DEIN SCOPE|SCOPE \\
  * hit in a region as one is the recorded failure of `parseEpicRef` (#1112).
  *
  * The real miss class is a different SHAPE, handled by {@link INLINE_SCOPE_DECL}.
+ *
+ * ## The marker vocabulary is CASE-SENSITIVE, and that is a measurement (#1092)
+ *
+ * Until 2026-09-16 both shapes carried the `i` flag, so the term `FILE SCOPE`
+ * also matched ordinary lowercase prose. The Learnings-Index header this repo
+ * injects into every agent prompt —
+ * `## Learnings Index (selected for your file scope) — …` — therefore matched
+ * the marker at column ~38 of a line-leading window, and the FIRST fenced block
+ * anywhere after it (a verification command, a report template) decided the
+ * class: no path survived, so the dispatch was recorded `unparseable`, i.e.
+ * matrix row 6 — "a declaration is present but the parser gave up".
+ *
+ * MEASURED in this session's own wave 1 (`.orchestrator/wave-dispatch-scopes.json`,
+ * waveKey `5de6560c-…|w1|Discovery`): `unparseable: 5, extracted: 0` for FIVE
+ * Discovery dispatches that carried no `FILE-SCOPE` block at all. Host-wide the
+ * same confusion accounts for the 52 historical `unparseable` records.
+ *
+ * Every DOCUMENTED marker is upper-case (`wave-loop-dispatch.md` § Pre-Dispatch:
+ * File-Scope Injection writes `FILE-SCOPE — exactly these:`), while every
+ * measured false positive is prose in sentence case — so dropping `i` separates
+ * them without narrowing the search window, which the § above showed recovers
+ * nothing.
+ *
+ * ## What dropping `i` costs, stated honestly (corrected 2026-09-16)
+ *
+ * The first cut of this note claimed the change "moves a CLASSIFICATION and
+ * never a decision", on the grounds that `marker-absent` and `unparseable` both
+ * resolve to ALLOW. That is only true for a declaration the parser would have
+ * given up on anyway. A MIXED-CASE declaration that WOULD have yielded paths
+ * (`File-Scope:` followed by a fenced path list) now matches nothing, so
+ * `extractScopeFromPrompt` returns `[]`, `findScopeCollisions` never runs, and
+ * the dispatch is ALLOWED unconditionally — a lost DENY capability for that
+ * spelling, i.e. a decision change, not a reclassification.
+ *
+ * It is safe today because every LIVE injector writes the upper-case canonical
+ * marker: `skills/wave-executor/references/wave-loop-dispatch.md`
+ * § Pre-Dispatch: File-Scope Injection documents `FILE-SCOPE — exactly these:`,
+ * and the repo-wide census (2026-09-16) finds the mixed-case spellings only in
+ * prose, never in an injected block. That is a property of the injectors, not of
+ * this regex, so it is PINNED rather than assumed:
+ * `tests/skills/wave-loop-scope-marker.test.mjs` asserts the documented marker
+ * line is upper-case and matches {@link SCOPE_MARKER}, so a future template edit
+ * to `File-Scope:` goes red instead of silently disarming the guard.
  */
-const SCOPE_MARKER = new RegExp(`^.{0,80}(${SCOPE_TERMS})`, 'im');
+export const SCOPE_MARKER = new RegExp(`^.{0,80}(${SCOPE_TERMS})`, 'm');
 
 /**
  * SHAPE 2 (lower precedence) — the measured miss class: a declaration written
@@ -436,7 +508,7 @@ const SCOPE_MARKER = new RegExp(`^.{0,80}(${SCOPE_TERMS})`, 'im');
  * one false extraction (`[".filter"]`) is a prose fragment, which is why the
  * fenced shape keeps precedence and this one runs only when that found nothing.
  */
-const INLINE_SCOPE_DECL = new RegExp(`(${SCOPE_TERMS})`, 'ig');
+const INLINE_SCOPE_DECL = new RegExp(`(${SCOPE_TERMS})`, 'g');
 const INLINE_DECL_OPERATOR = /^[^\n(:—–]{0,2}(\([^)\n]{0,80}\))?\s*(?:[—–][^\n:]{0,30})?\s*(:|—|–)/;
 
 /** Separators a coordinator uses between paths in an inline declaration. */
@@ -981,6 +1053,69 @@ export function bumpSignalCounter(ledger, waveKey, status) {
 }
 
 /**
+ * The digest half of the per-dispatch record (#1092) — the field set that makes
+ * the SEND side joinable to the RECEIVE side.
+ *
+ * Four facts, all derived from the PROMPT alone, none of them a path:
+ *
+ *   `scope_digest`            — `scopeDigest()` over the paths extracted FROM THE
+ *                               PROMPT. This is the join key `scope-echo --verify`
+ *                               uses; `agent_id` cannot be one, because the two
+ *                               halves spell it differently (measured 2026-09-16:
+ *                               609 send-side vs 51 receive-side records, agent-id
+ *                               overlap ZERO — send writes
+ *                               `"i-3 #1353 … (session-orchestrator:code-implementer)"`,
+ *                               receive writes `"i-3"`).
+ *   `echo_instruction_present`— the coordinator appended the echo line at all.
+ *   `instructed_digest`       — the digest THAT LINE names.
+ *   `digest_consistent`       — the two agree. `false` is agent A's fenced block
+ *                               beside agent B's echo line, caught at dispatch
+ *                               time with no filesystem read.
+ *
+ * ABSENT IS NOT ZERO, in both directions (`docs/events-schema.md`):
+ * `scope_digest` is OMITTED for an empty scope — never the digest of the empty
+ * string, which is a real 8-hex value and would join marker-absent Discovery
+ * dispatches to each other. `instructed_digest` is omitted when no line was
+ * found, and `digest_consistent` unless BOTH are present.
+ *
+ * TOTAL by construction: every branch is wrapped, because this runs on the
+ * decision path of a deny-capable hook. A throwing digest function must cost the
+ * FIELD, never the verdict — same discipline as the awaited-and-caught emit.
+ *
+ * @param {string[]} files      paths extracted from the prompt
+ * @param {unknown} prompt      the dispatch prompt
+ * @param {((paths: string[]) => string)} [digestFn] injectable for tests; defaults
+ *   to the late-bound `scopeDigest` (undefined when `bootstrap()` has not run,
+ *   which this function treats exactly like a throwing one — the field is omitted)
+ * @returns {{scope_digest?: string, echo_instruction_present: boolean,
+ *            instructed_digest?: string, digest_consistent?: boolean}}
+ */
+export function scopeDigestFields(files, prompt, digestFn) {
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  try {
+    const fn = typeof digestFn === 'function' ? digestFn : scopeDigest;
+    if (typeof fn === 'function' && Array.isArray(files) && files.length > 0) {
+      const digest = fn(files);
+      if (typeof digest === 'string' && DIGEST_RE.test(digest)) out.scope_digest = digest;
+    }
+  } catch { /* a broken digest costs the field, never the decision */ }
+
+  let instructed = null;
+  try {
+    const match = typeof prompt === 'string' ? ECHO_INSTRUCTION_RE.exec(prompt) : null;
+    if (match !== null) instructed = match[1].toLowerCase();
+  } catch { instructed = null; }
+
+  out.echo_instruction_present = instructed !== null;
+  if (instructed !== null) out.instructed_digest = instructed;
+  if (typeof out.scope_digest === 'string' && instructed !== null) {
+    out.digest_consistent = out.scope_digest === instructed;
+  }
+  return /** @type {any} */ (out);
+}
+
+/**
  * @typedef {{action: 'allow'|'deny'|'warn', reason?: string, suggestion?: string,
  *            ledger?: object|null, note?: string, telemetry?: object}} Verdict
  */
@@ -997,9 +1132,11 @@ export function bumpSignalCounter(ledger, waveKey, status) {
  * @param {Function} params.collide           `findScopeCollisions` (injected for testability)
  * @param {(entry: object) => boolean} [params.isFinished] liveness probe (§ Liveness)
  * @param {string} [params.nowIso]            dispatch timestamp recorded on the entry
+ * @param {(paths: string[]) => string} [params.digestFn] scope-digest function
+ *   (injected for testability; defaults to the late-bound `scopeDigest`)
  * @returns {Verdict}
  */
-export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, collide, isFinished, nowIso }) {
+export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, collide, isFinished, nowIso, digestFn }) {
   const toolName = input?.tool_name;
   // Row 4: not our tool.
   if (toolName !== DISPATCH_TOOL) return { action: 'allow' };
@@ -1023,13 +1160,19 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
   // agent id, never a path, never a byte of the prompt (issue #1092 acceptance
   // criterion 3). `wave` is omitted rather than zeroed when unknown.
   const wave = waveNumberOf(waveKey);
+  const digestFields = scopeDigestFields(files, toolInput.prompt, digestFn);
   const telemetryFor = (ledgerResult, collisionCount = 0) => ({
     ...(wave === null ? {} : { wave }),
     agent_id: id.slice(0, MAX_AGENT_ID_CHARS),
     declared_path_count: files.length,
     injected: files.length > 0,
+    // `marker_found` is NOT a second spelling of `injected`: a fenced block whose
+    // lines are prose is `marker_found: true, injected: false` (matrix row 6),
+    // which is the row-5-vs-row-6 split expressed as a boolean a query can group by.
+    marker_found: signal.status !== SIGNAL_MARKER_ABSENT,
     shape: signal.shape,
     signal: signal.status,
+    ...digestFields,
     ledger_result: ledgerResult,
     collision_count: collisionCount,
   });
@@ -1309,6 +1452,12 @@ async function main() {
 // symlinked plugin install) while `import.meta.url` is realpath-resolved by
 // node's default loader, so BOTH sides are realpath'd — the same comparison
 // `hooks/post-bash-write-verify.mjs` documents (#938 MED-2).
+//
+// NAMED CEILING (BV-004): kept inline rather than imported — hooks avoid
+// importing `scripts/lib` on the hot path, where every added module is paid on
+// every dispatch. The canonical predicate is `scripts/lib/is-main-module.mjs`;
+// revisit if this hook ever imports that tree for another reason, at which
+// point the copy costs more than the import saves.
 // ---------------------------------------------------------------------------
 function invokedAsScript() {
   const entry = process.argv[1];

@@ -357,8 +357,28 @@ describe('buildUsagePing — command classification end to end (GitLab #1189)', 
       roster: loadRoster({ pluginRoot: REPO_ROOT }),
     });
 
-    expect(ping.commands).toEqual(['go', 'session', 'templates-ack', 'test']);
-    expect(ping.skills).toEqual(['other', 'session-orchestrator:session-end']);
+    // The roster decides, and since #1370 it decides DIFFERENTLY: a bare
+    // command only resolves under `claude -p` when a same-named skill exists,
+    // so most of `commands/` gained a `skills/<name>/SKILL.md` twin. The
+    // classifier checks `rosterSkills.has(name)` FIRST (schema.mjs:369), so a
+    // prefixed arrival for a twinned name is a SKILL, never a command — and
+    // that includes the `{ command: 'go' }` forward-compat producer above,
+    // which buildUsagePing normalizes to `session-orchestrator:go` before
+    // classifying (measured, not assumed).
+    //
+    // Commands WITHOUT a skill twin, measured 2026-09-16 @ ca214376:
+    //   for f in commands/*.md; do n=$(basename "$f" .md); \
+    //     [ -f "skills/$n/SKILL.md" ] || echo "$n"; done
+    //   → session templates-ack
+    // Those two are the only names that can still reach commands[]. When that
+    // list changes, this expectation changes with it — deliberately.
+    expect(ping.commands).toEqual(['session', 'templates-ack']);
+    expect(ping.skills).toEqual([
+      'other',
+      'session-orchestrator:go',
+      'session-orchestrator:session-end',
+      'session-orchestrator:test',
+    ]);
     // The foreign name is anonymized, and never duplicated into commands[].
     expect(ping.commands).not.toContain('other');
     expect(ping.commands.some((n) => n.includes('superpowers'))).toBe(false);

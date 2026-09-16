@@ -67,6 +67,7 @@ import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -388,8 +389,7 @@ function parseArgs(argv) {
 }
 
 // CLI entry — only when run directly, not when imported (e.g. by tests).
-const isMain =
-  process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain =isMainModule(import.meta.url);
 
 if (isMain) {
   const { opts, unknown } = parseArgs(process.argv.slice(2));

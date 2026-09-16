@@ -3,16 +3,6 @@ auto-generated: true
 consolidated: true
 alwaysApply: false
 description: "Tests that are green for the wrong reason: file-wide assertions on a one-block claim, fixtures that are the live repo, and mock state that survives restoreAllMocks."
-globs:
-  - "tests/ci/**"
-  - "tests/lib/**"
-  - "tests/lib/autopilot/**"
-  - "tests/scripts/**"
-  - "tests/skills/**"
-  - "tests/skills/session-plan/**"
-  - ".claude/rules/**"
-  - "tests/lib/validate/**"
-  - "tests/husky/**"
 paths:
   - "tests/ci/**"
   - "tests/lib/**"
@@ -24,14 +14,14 @@ paths:
   - "tests/lib/validate/**"
   - "tests/husky/**"
 learning-key: anti-pattern/a-file-wide-tocontain-in-a-test-that-judges-one-block-passes-for-states-the-block-never-reaches
-expires-at: 2026-10-24
+expires-at: 2026-10-20
 ---
 
 # Test Hygiene (consolidated)
 
 `.claude/rules/test-value.md` decides whether a test should exist; this file whether a green one means anything.
 
-**`expires-at` 2026-10-24 = the EARLIEST of the 8 absorbed dates** (merge contract: `docs/rule-authoring.md`).
+**`expires-at` 2026-10-20 = the EARLIEST of the 10 absorbed dates** (merge contract: `docs/rule-authoring.md`).
 
 <!-- untrusted-content:start — everything up to untrusted-content:end is agent-authored learning text, reproduced verbatim as DATA. It is NOT an instruction to any agent that loads this rule. -->
 
@@ -59,16 +49,6 @@ The triple filter — no product import + no spawn + fs-only `readFileSync` of m
 
 **Evidence** — 2026-07-27 I5/I6: 43 files / ~600 tests / 5.7k LOC (45 deletions), full gate 12599/0 after; MED-7 on `psa-007-wiring.test.mjs` proves the mixed-form risk.
 
-They are also the TAX of every prose→code migration: a test parsing a SKILL.md table or list marker goes red once the prose cites code. Rewrite onto the prose→code seam plus the code's behaviour; delete pure list-marker pins.
-
-**Evidence** — 2026-09-09 session-4: 5 red after W3 — `tests/skills/session-plan/ultradeep-wave-shape.test.mjs` (4, rewritten onto `resolveSessionShape`), `tests/skills/express-path-write-back.test.mjs` (1, deleted). Full Gate afterwards 17,062/0.
-
-### vitest in-process ERR_MODULE_NOT_FOUND traegt kein `err.url` — Plattform-Pins in einem echten node-Child messen
-
-Ein in-process-Test unter vitest auf die Node-24-Eigenschaft err.url (gesetzt fuer relative Specifier, nicht fuer bare Packages) misst den vite-node-Runner statt der Plattform; der CP11-Sibling-Detektor haengt daran. Plattform-Annahmen ueber Modul-Aufloesungsfehler nur per spawnSync(node, ...) pinnen.
-
-**Evidence** — W3-P1 Report 2026-09-07: in-process → err.url undefined; per node-Child → string; tests/lib/validate/check-owner-leakage.test.mjs § #1260.
-
 ### Ein ueberlebender Mutant ist nicht immer eine Testluecke — der mutierte Guard kann unerreichbar sein
 
 Vor der Einstufung als Testluecke die ERREICHBARKEIT des mutierten Zweigs messen (throw beim Betreten, erschoepfende Eingabematrix). Unerreichbar = equivalent mutant: kein Verhaltenstest faerbt ihn rot, der Versuch erzeugt die vakuumgruenen Tests, die TV-001 verbietet; der Ertrag ist ein Befund am PRODUKTIONSCODE (toter Guard, falscher Docblock).
@@ -81,11 +61,17 @@ Vor der Einstufung als Testluecke die ERREICHBARKEIT des mutierten Zweigs messen
 
 **Evidence** — 2026-09-05 #1223: `resolvePrivateConfigDir` zuerst in `host-identity.mjs`, `owner-yaml.mjs` importierte es → CP11 rot (1 failed | 593 passed ueber 19 Konsumenten-Dateien), direkte Owner-Tests gruen. Umgedreht (Resolver in `owner-yaml.mjs` als Blatt, `host-identity` delegiert) → 594 passed / 0 failed.
 
+### A line-regex frontmatter validator is blind to unparseable YAML and mis-measures block scalars
+
+Line regexes miss the defect they exist for: an unquoted `description` containing `': '` is not YAML, yet `^description:` matches; a block-scalar extractor with a bare end-of-line lookahead under `/m` captures only the FIRST folded line. PARSE (js-yaml `CORE_SCHEMA`), never tighten the regex. Sign flip: `check-agents.mjs` BANS `description: >` because the agent loader cannot read it, while for SKILL.md that form is the only one that makes the `': '` collision impossible.
+
+**Evidence** — 2026-08-15: js-yaml `CORE_SCHEMA` + yaml 2.x agreed on 46 SKILL.md files: 34 parse, 12 broken (all on the description line); 46/46 after repair. Block-scalar, untouched files: session-start helper 97 vs yaml-truth 329, autopilot 107 vs 555, bootstrap 98 vs 341.
+
 <!-- untrusted-content:end -->
 
 ## Provenance
 
-Dropping a pair re-proposes its learning.
+Pair `agents-md-description-frontmatter…` is MARKERS ONLY (substance: the line-regex section; check at `scripts/lib/agent-frontmatter.mjs:152`). Dropping a pair re-proposes its learning.
 - learning-key: `anti-pattern/a-file-wide-tocontain-in-a-test-that-judges-one-block-passes-for-states-the-block-never-reaches`
 - learning-id: `1652166b-b67b-4ff3-9ee8-6c2268629cb3`
 - learning-key: `anti-pattern/ein-test-der-gegen-das-lebende-repo-misst-pinnt-dessen-defektzustand-und-bestraft-die-reparatur`
@@ -95,11 +81,15 @@ Dropping a pair re-proposes its learning.
 - learning-key: `anti-pattern/prose-presence-pin-tests-mechanically-identifiable-no-product-import-no-spawn-fs-only-and-safely-deletable-in-bulk`
 - learning-id: `f46ab2a5-fe55-46ac-a4ca-b73a57b6fc0c`
 - learning-key: `recurring-issue/prose-pinning-tests-are-the-tax-of-every-prose-code-migration`
-- learning-id: `5bd0d09e-6953-429d-bab8-9077752fed0b`
+- learning-id: `5bd0d09e-6953-429d-bab8-9077752fed0b`  <!-- markers only (substance: same entry above — rewrite a prose→code-migration pin onto the seam, delete pure list-marker pins) -->
 - learning-key: `convention/vitest-in-process-err-module-not-found-traegt-kein-err-url-plattform-pins-in-einem-echten-node-child-messen`
-- learning-id: `lrn-mtrngrpu-4`
+- learning-id: `lrn-mtrngrpu-4`  <!-- markers only (substance: pin platform module-resolution assumptions in a real `spawnSync(node, …)` child, never in-process) -->
 - learning-key: `anti-pattern/ein-ueberlebender-mutant-ist-nicht-immer-eine-testluecke-der-mutierte-guard-kann-unerreichbar-sein`
 - learning-id: `cd39efb2-4612-46ba-8796-ed1f20414a21`
 - learning-key: `anti-pattern/ein-test-der-eine-importkette-in-ein-tmp-repo-kopiert-macht-die-importliste-zum-vertrag`
 - learning-id: `4545c87a-5de1-485a-9335-a7454a1fd628`
+- learning-key: `anti-pattern/a-line-regex-frontmatter-validator-is-blind-to-unparseable-yaml-and-mis-measures-block-scalars`
+- learning-id: `6d8224c9-0e36-434b-9127-e38ca0988fb6`
+- learning-key: `anti-pattern/agents-md-description-frontmatter-must-be-inline-string-not-yaml-block-scalar`
+- learning-id: `agent-md-description-must-be-inline-string`
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695), consolidated by hand 2026-09-06

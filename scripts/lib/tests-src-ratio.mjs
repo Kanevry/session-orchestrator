@@ -76,9 +76,9 @@
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join, isAbsolute, relative, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 
 import { writeStdoutLineSync } from './io.mjs';
+import { isMainModule } from './is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // The definition — the part that must never be re-derived by hand
@@ -475,10 +475,6 @@ function main() {
   process.exit(args.check && !result.withinCorridor ? 1 : 0);
 }
 
-const isMain =
-  typeof process !== 'undefined' &&
-  process.argv[1] !== null &&
-  process.argv[1] !== undefined &&
-  resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+const isMain =isMainModule(import.meta.url);
 
 if (isMain) main();

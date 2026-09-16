@@ -484,6 +484,55 @@ const ENDED_BRIDGE_EVENTS = [
   },
 ];
 
+describe('backfill-abandoned-sessions — planSessions excludes THIS process (#1376)', () => {
+  it('planSessions excludes the candidate that is this very process (live lock + process-local id match)', async () => {
+    // #1376 made `skipped-own-live-lock` defeasible (the SessionEnd hook may
+    // now record its own session), so the CLI can no longer lean on it. The
+    // exclusion moves here — and needs the process-local witness: the
+    // repo-global lock alone would vouch for a PEER's running session too.
+    seedEvents(TWO_ABANDONED_EVENTS);
+    mkdirSync(join(tmp, '.orchestrator'), { recursive: true });
+    writeFileSync(
+      join(tmp, '.orchestrator', 'session.lock'),
+      JSON.stringify({
+        session_id: UUID_1,
+        started_at: new Date().toISOString(),
+        last_heartbeat: new Date().toISOString(),
+        mode: 'deep',
+        pid: 999999,
+        host: 'this-host',
+        ttl_hours: 4,
+        semantic_session_id: SEM_1,
+      }, null, 2) + '\n',
+    );
+
+    const { planSessions } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+    const saved = { plat: process.env.SO_PLATFORM, id: process.env.CLAUDE_CODE_SESSION_ID };
+    try {
+      process.env.SO_PLATFORM = 'claude';
+      process.env.CLAUDE_CODE_SESSION_ID = UUID_1;
+      // UUID_1 is this process; UUID_2 is a genuinely abandoned peer.
+      expect(planSessions({ repoRoot: tmp })).toEqual([
+        { sessionId: UUID_2, semanticSessionId: SEM_2 },
+      ]);
+
+      // Negative twin — the same live lock WITHOUT a process-local match is a
+      // peer's running session, not ours, and must not silently disappear
+      // from the plan (the core's own guards judge it).
+      process.env.CLAUDE_CODE_SESSION_ID = UUID_2;
+      expect(planSessions({ repoRoot: tmp })).toEqual([
+        { sessionId: UUID_1, semanticSessionId: SEM_1 },
+        { sessionId: UUID_2, semanticSessionId: SEM_2 },
+      ]);
+    } finally {
+      if (saved.plat === undefined) delete process.env.SO_PLATFORM;
+      else process.env.SO_PLATFORM = saved.plat;
+      if (saved.id === undefined) delete process.env.CLAUDE_CODE_SESSION_ID;
+      else process.env.CLAUDE_CODE_SESSION_ID = saved.id;
+    }
+  });
+});
+
 describe('backfill-abandoned-sessions — #1167 duplicate-stub root cause', () => {
   it('planSessions resolves the semantic id from session.ended when no lock.acquired exists', async () => {
     seedEvents(ENDED_BRIDGE_EVENTS);

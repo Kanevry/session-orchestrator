@@ -4,23 +4,23 @@
 > Maintained by: coordinator or `/plan new` scaffolding.
 > Do NOT commit secrets. Do NOT include session-specific state here.
 >
-> **All counts below were measured on 2026-09-06** in the working tree at `e4674109` (v4.0.0 preparation — the release removes public surfaces, so counts are lower than in the 3.24.0 line). Each line carries the command that produced it; re-run the command rather than trusting the number.
+> **Counts below carry their own measurement date**; where a line names none, it was measured on 2026-09-06 in the working tree at `e4674109` (v4.0.0 preparation — the release removes public surfaces, so counts are lower than in the 3.24.0 line). Each line carries the command that produced it; re-run the command rather than trusting the number.
 
 ## Top-Level Directory Map
 
 | Path | Purpose |
 |------|---------|
-| `skills/` | 44 user-facing skills (+ `_shared/` internal) |
+| `skills/` | 50 user-facing skills (+ `_shared/` internal) |
 | `commands/` | 26 slash-commands (e.g. `/session`, `/close`, `/go`, `/plan`, `/test`, `/portfolio`, `/dispatcher`, `/eval`) |
 | `agents/` | 14 sub-agent definitions (YAML frontmatter + Markdown body, + `schemas/` subdirectory). The authoring spec is NOT here — it lives in `docs/agent-authoring.md`, because Claude Code registers every `agents/*.md` as a dispatchable agent by directory convention |
-| `hooks/` | Hook event matchers + handlers (18 matcher entries / 26 plugin-wired handler files [27 on-disk; the extra one is Husky-wired — see Inventory below], 10 distinct events) |
+| `hooks/` | Hook event matchers + handlers (18 matcher entries / 27 plugin-wired handler files [28 on-disk; the extra one is Husky-wired — see Inventory below], 10 distinct events) |
 | `.orchestrator/policy/` | Runtime policy: `blocked-commands.json` (14 rules — 10 `severity: block`, 4 `severity: warn`) |
 | `.orchestrator/steering/` | This directory — persistent stable context docs |
 | `.orchestrator/metrics/` | Runtime JSONL telemetry: sessions, learnings, autopilot, events, subagents |
-| `.claude/rules/` | 26 always-on rule files loaded by Claude Code |
+| `.claude/rules/` | 25 always-on rule files loaded by Claude Code |
 | `scripts/` | Node.js automation scripts (`.mjs` only) — includes `generate-agents-skills.mjs` (writes the portable cross-harness surface), `site-numbers.mjs` (the website census), `validate-plugin.mjs` |
 | `scripts/lib/` | Shared library modules (no `.sh` — bash-free since 2026-04-30) — includes `plugin-update-banner.mjs` (installed-vs-published check), `sessions-canonical.mjs`, `session-lock.mjs`, `config/*.mjs` parsers |
-| `scripts/lib/validate/` | 36 `check-*.mjs` validator modules wired into `scripts/validate-plugin.mjs` |
+| `scripts/lib/validate/` | 39 `check-*.mjs` validator modules wired into `scripts/validate-plugin.mjs` |
 | `tests/` | vitest test suite mirroring `scripts/lib/` + `tests/skills/` (661 `*.test.mjs` files) |
 | `templates/` | Vendorable scaffolding (`_shared/rules/`, `_shared/loop.md`) copied into consumer repos |
 | `rules/` | The DELIVERABLE rule library shipped out via `/bootstrap --sync-rules` — opposite role to `.claude/rules/` |
@@ -30,21 +30,21 @@
 | `.codex-plugin/` | Codex CLI plugin manifest |
 | `.cursor-plugin/plugin.json` | Portable plugin manifest; kept outside root so Codex resolves its native manifest |
 | `AGENTS.md` (root) | Byte-identical GENERATED copy of `CLAUDE.md` for the 7 of 8 harnesses that read `AGENTS.md` |
-| `.agents/skills/` | Portable GENERATED mirror of all 44 skills — spec-legal frontmatter + pointer body, never duplicated instructions |
+| `.agents/skills/` | Portable GENERATED mirror of all 50 skills — spec-legal frontmatter + pointer body, never duplicated instructions |
 | `skills/*/references/` | Progressive-disclosure detail split out of oversized SKILL.md bodies: `skills/session-start/references`, `skills/wave-executor/references`, `skills/session-end/references`, `skills/architecture/references` |
 | `site/` | The public website (`index.html`, `llms.txt`, `llms-full.txt`, `_census.json`) |
 | `assets/` | Repo assets (`icon.svg`, `og-card.svg`, `wave-lifecycle.svg` — the README's rendered wave diagram) |
 
 ## Inventory (canonical)
 
-- **Skills:** 44 user-facing — measured 2026-09-13 (`ls -d skills/*/ | grep -v _shared | wc -l`). `_shared/` is internal docs, not a skill.
+- **Skills:** 50 user-facing — measured 2026-09-16 (`ls -d skills/*/ | grep -v _shared | wc -l`). `_shared/` is internal docs, not a skill.
 - **Commands:** 26 — measured 2026-09-13 (`ls commands/*.md | wc -l`): `/autopilot`, `/bootstrap`, `/brainstorm`, `/close`, `/debug`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/persona-panel`, `/plan`, `/portfolio`, `/reconcile`, `/release`, `/repo-audit`, `/session`, `/spinout`, `/sunset-review`, `/templates-ack`, `/test`, `/ux-grill`
 - **Agents:** 14 — measured 2026-09-06 (`ls agents/*.md | wc -l`): `analyst`, `architect-reviewer`, `code-implementer`, `db-specialist`, `dialectic-deriver`, `docs-writer`, `eval-judge`, `qa-strategist`, `security-reviewer`, `session-reviewer`, `skill-applied-judge`, `test-writer`, `ui-developer`, `ux-evaluator`
-- **Hook event matchers / handlers:** 18 matcher entries / 26 plugin-wired handler files (27 on-disk) — measured 2026-09-06 (`hooks/hooks.json` walked for distinct `.mjs` command citations; `ls hooks/*.mjs | wc -l`). `hooks/wave-scope-commit-guard.mjs` is on-disk but intentionally NOT a plugin hook — it is the repository's Git pre-commit guard via Husky (`.husky/pre-commit`), because it guards git index/commit state rather than a plugin lifecycle event. Counting basis: "plugin-wired" = distinct `.mjs` filenames referenced inside `hooks/hooks.json`; "Husky-wired" = referenced inside `.husky/pre-commit`; "on-disk" = `ls hooks/*.mjs`.
-- **Rules:** 26 always-on files — measured 2026-09-06 (`ls .claude/rules/*.md | wc -l`). This number moves whenever the reconcile engine materialises or consolidates generated rules — re-measure, never quote from memory.
-- **Validators:** 36 `scripts/lib/validate/check-*.mjs` modules — measured 2026-09-06 (`ls scripts/lib/validate/check-*.mjs | wc -l`).
+- **Hook event matchers / handlers:** 18 matcher entries / 27 plugin-wired handler files (28 on-disk) — measured 2026-09-16 (`grep -c '"matcher"' hooks/hooks.json`; `grep -o '[a-z0-9-]*\.mjs' hooks/hooks.json | sort -u | wc -l`; `ls hooks/*.mjs | wc -l`). `hooks/wave-scope-commit-guard.mjs` is on-disk but intentionally NOT a plugin hook — it is the repository's Git pre-commit guard via Husky (`.husky/pre-commit`), because it guards git index/commit state rather than a plugin lifecycle event. Counting basis: "plugin-wired" = distinct `.mjs` filenames referenced inside `hooks/hooks.json`; "Husky-wired" = referenced inside `.husky/pre-commit`; "on-disk" = `ls hooks/*.mjs`.
+- **Rules:** 25 always-on files — measured 2026-09-16 (`ls .claude/rules/*.md | wc -l`). This number moves whenever the reconcile engine materialises or consolidates generated rules — re-measure, never quote from memory.
+- **Validators:** 39 `scripts/lib/validate/check-*.mjs` modules — measured 2026-09-16 (`ls scripts/lib/validate/check-*.mjs | wc -l`).
 - **ADRs:** 18 — measured 2026-09-06 (`ls docs/adr/*.md | wc -l`).
-- **Tests:** 661 test files — measured 2026-09-06 (`find tests -name '*.test.mjs' | wc -l`). The runtime test-case total is only knowable from a `npm test` run; the static floor is 13,962 `it()`/`test()` definitions (`rg -c --no-filename -e '^\s*(it|test)(\.\w+)?\(' tests --glob '*.test.mjs'`, summed) and the real number is higher because of parameterised blocks.
+- **Tests:** 685 test files — measured 2026-09-16 (`find tests -name '*.test.mjs' | wc -l`). The runtime test-case total is only knowable from a `npm test` run; the static floor is 14,598 `it()`/`test()` definitions (`rg -c --no-filename -e '^\s*(it|test)(\.\w+)?\(' tests --glob '*.test.mjs'`, summed) and the real number is higher because of parameterised blocks.
 - **Destructive-command policy:** 14 rules, 10 blocking and 4 warning — measured 2026-09-06 (`node -e "…require('./.orchestrator/policy/blocked-commands.json')…"`). "14 rules" alone is ambiguous: only 10 of them block.
 
 ## Key Skills (frequently referenced)

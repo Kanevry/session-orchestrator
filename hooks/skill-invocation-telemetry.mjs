@@ -37,6 +37,7 @@ import { getProjectDir } from '../scripts/lib/platform.mjs';
 import { shouldDailyFlush } from '../scripts/lib/telemetry/sync.mjs';
 import { resolveConsent, readTelemetryState } from '../scripts/lib/telemetry/consent.mjs';
 import { loadOwnerConfig } from '../scripts/lib/owner-yaml.mjs';
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -209,7 +210,7 @@ async function main() {
 // Self-execution guard — run only when invoked directly (not when imported).
 // ---------------------------------------------------------------------------
 
-const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+const isMain =isMainModule(import.meta.url);
 if (isMain) {
   // Exit 0 immediately when disabled via SO_HOOK_PROFILE / SO_DISABLED_HOOKS.
   if (!shouldRunHook('skill-invocation-telemetry')) process.exit(0);

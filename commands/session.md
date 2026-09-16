@@ -48,3 +48,13 @@ This read is informational — session-start uses it to populate the resume bann
 **Cold-start banner (PRD #500):** If `bootstrap.lock` exists with timestamp older than `cold-start.nudge-after-hours` (default 1h) and `sessions.jsonl` is empty, the SessionStart hook emits a one-time first-session nudge. Auto-silenced once `sessions.jsonl` has ≥ `cold-start.silence-after-sessions` entries (default 1).
 
 **Invoke `session-orchestrator:session-start` via the `Skill` tool.** Follow its instructions precisely. Do NOT skip any phase. Do NOT make assumptions — verify everything in code and on the VCS platform.
+
+## Headless (`claude -p`)
+
+`session` and `plan` are **reserved terminal-only built-in names** in non-interactive sessions — under `claude -p` the bare form answers `"/session isn't available in this environment."`, and no frontmatter or manifest field overrides that (reproduced with an empty `CLAUDE_CONFIG_DIR` and no plugin loaded, claude 2.1.273, measured 2026-09-16). Use the namespaced form, which does resolve:
+
+```bash
+claude -p "/session-orchestrator:session deep" --plugin-dir "$PWD"
+```
+
+Interactive sessions are unaffected — `/session` works there as it always has.

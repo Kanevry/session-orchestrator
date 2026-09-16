@@ -559,7 +559,9 @@ Marker line plus fenced block, in that order: `hooks/pre-task-scope-disjoint.mjs
 node scripts/lib/scope-echo.mjs --scope-file "$AGENT_FILESCOPE_JSON" --instruction
 ```
 
-It prints exactly one line (`renderScopeEchoInstruction` in `scripts/lib/scope-echo.mjs`), naming the `scopeDigest` of that agent's own scope file: `End your final report with the line: SCOPE-DIGEST: <8-hex>`. Append it verbatim. It prints NOTHING when the scope file is empty, missing or unreadable — Discovery waves therefore inject nothing here, exactly as they inject no `FILE-SCOPE` block. The post-wave comparison is `wave-loop-review.md` step 3d-bis; what the echo does and does not prove is stated there.
+It prints exactly one line (`renderScopeEchoInstruction` in `scripts/lib/scope-echo.mjs`), naming the `scopeDigest` of that agent's own scope file: `End your final report with the line: SCOPE-DIGEST: <8-hex>`. Append it verbatim.
+
+**The echo line and the fenced block MUST come from the SAME `$AGENT_FILESCOPE_JSON`.** Since #1092 the dispatch hook digests the paths it extracted from the prompt and compares them against the digest that line names, recording `digest_consistent: false` when they disagree — so pasting agent A's block beside agent B's echo line is now caught at dispatch time, in the ledger, with no filesystem read. Nothing blocks on it (the hook stays ALLOW), but it is a wave deviation, and it is exactly the collapse the box at the top of this section warns about: one agent's block reused for the batch. It prints NOTHING when the scope file is empty, missing or unreadable — Discovery waves therefore inject nothing here, exactly as they inject no `FILE-SCOPE` block. The post-wave comparison is `wave-loop-review.md` step 3d-bis; what the echo does and does not prove is stated there.
 
 #### Structured Reasoning (STATE:/PLAN:) — opt-in via `reasoning-output: true` (#79)
 

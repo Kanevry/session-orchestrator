@@ -65,9 +65,9 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
 import { listRepoFiles } from './repo-files.mjs';
 import { SHELL_LANGS, forEachLine } from './markdown-fences.mjs';
+import { isMainModule } from '../is-main-module.mjs';
 
 /** Directories walked for documentation. Mirrors check-vcs-repo-flag.mjs. */
 const SCAN_DIRS = Object.freeze([
@@ -461,7 +461,7 @@ export function runCheckDocCliCommands(pluginRoot) {
   return 0;
 }
 
-const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href;
+const isMain =isMainModule(import.meta.url);
 if (isMain) {
   const args = process.argv.slice(2).filter((arg) => arg !== '--json');
   const root = path.resolve(args[0] || process.cwd());

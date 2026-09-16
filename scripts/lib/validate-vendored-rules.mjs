@@ -6,9 +6,12 @@
  * Catches vendoring bugs that are invisible at the source-of-truth layer but
  * become live footguns once synced into a target repo:
  *
- *   - `paths:` frontmatter — `rule-loader.mjs` only understands `globs:`; a
- *     `paths:` key is silently ignored, so the rule loads as always-on
- *     instead of the intended glob-scoped subset.
+ *   - `paths:` frontmatter in a `rules/` LIBRARY SOURCE — a vendoring-
+ *     CONVENTION gate, not a loader-compatibility one. Since #795
+ *     `rule-loader.mjs` accepts `paths:` as an alias for `globs:`, so such a
+ *     rule IS glob-scoped; `globs:` stays the canonical form for a rule
+ *     vendored out through the library (#742). See § Scope below — this probe
+ *     never judges a repo's own consolidated `.claude/rules/` files.
  *   - Missing provenance header — `rules-sync.mjs` detects "plugin-owned vs.
  *     local override" purely by checking whether the first line starts with
  *     `PLUGIN_HEADER_PREFIX`. A source file missing that header gets
@@ -31,6 +34,25 @@
  * module imports the already-exported `parseGlobsFrontmatter` from
  * `rule-loader.mjs` directly.
  *
+ * ## Scope: the `rules/` fleet library, never a repo's own `.claude/rules/`
+ *
+ * Every production caller feeds this module SOURCE files from the plugin's
+ * fleet library: `syncRules()` (`rules-sync.mjs`) validates
+ * `<pluginRoot>/rules/<relPath>` for each entry listed in `rules/_index.md`
+ * BEFORE writing the vendored copy into a consumer's `.claude/rules/` — the
+ * written target is never read back through the gate. The CLI's `--dir` is
+ * operator-supplied and means that same library.
+ *
+ * This is load-bearing for `paths-frontmatter`: a repo's own CONSOLIDATED rules
+ * under `.claude/rules/` are `paths:`-canonical by design, because Claude
+ * Code's native loader reads ONLY `paths:` and treats a rule without it as
+ * always-on (`validate/check-rules.mjs` #1108; `docs/rule-authoring.md`
+ * § Consolidated rules point 3). Measured 2026-09-16 in this repo: 10
+ * path-scoped rule files there, 9 of them `paths:`-only. Pointing `--dir` at
+ * such a tree would emit findings that, if obeyed, UNDO that consolidation —
+ * which is also why `check-rules.mjs` deliberately does not duplicate this
+ * probe for `.claude/rules/`.
+ *
  * @module validate-vendored-rules
  */
 
@@ -40,6 +62,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { parseGlobsFrontmatter } from './rule-loader.mjs';
+import { isMainModule } from './is-main-module.mjs';
 
 // Mirrors rules-sync.mjs's exported PLUGIN_HEADER_PREFIX (rules-sync.mjs
 // line ~13). NOT imported from there on purpose: rules-sync.mjs imports
@@ -478,10 +501,17 @@ export function validateRuleContent({ content, relPath, targetRoot = null, requi
         // `paths:`-only rule IS glob-scoped. The probe itself stays: it enforces the canonical
         // vendoring form, which is a convention gate, not a loader-compatibility gate. That
         // intent survives #795 and is the subject of the #742 fleet canonicalisation sweep.
+        // SCOPE (2026-09-16): this fires only over `rules/` library sources — the module doc's
+        // § Scope section names every caller. Do NOT re-point it at a repo's own
+        // `.claude/rules/`: those consolidated files are `paths:`-canonical and obeying this
+        // remedy there would undo the consolidation (docs/rule-authoring.md point 3).
         message:
           `${relPath}: frontmatter declares a top-level 'paths:' key. It is a recognized alias ` +
           `for 'globs:' (issue #795), so the rule does load glob-scoped — but 'globs:' is the ` +
-          `canonical form for vendored rules. Migrate to 'globs:' (see issue #742).`,
+          `canonical form for a rule VENDORED OUT through the plugin's rules/ library, which is ` +
+          `this probe's only population. Migrate to 'globs:' (see issue #742). This does NOT ` +
+          `apply to a repo's own consolidated .claude/rules/ files — those are paths:-canonical ` +
+          `(Claude Code's native loader reads only 'paths:') and this gate never scans them.`,
         line: lineWithinFrontmatter(fm.startLine, fm.body, pathsMatch.index),
       });
     }
@@ -652,11 +682,7 @@ export function validateRulesDir({ dir, targetRoot = null, requireProvenance = f
 
 const __filename = fileURLToPath(import.meta.url);
 
-const isMain =
-  typeof process !== 'undefined' &&
-  process.argv[1] !== null &&
-  process.argv[1] !== undefined &&
-  resolve(process.argv[1]) === resolve(__filename);
+const isMain =isMainModule(import.meta.url);
 
 /**
  * @param {{ ok: boolean, files: Array<{ file: string, violations: RuleViolation[] }>, errorCount: number, warnCount: number }} result

@@ -32,12 +32,24 @@ const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), '..', '..');
 
 describe('receiving-review.md — instruction budget (#899)', () => {
-  it('byte size stays within the +2000B growth ceiling (8225 B) over the pre-change 6225 B baseline', async () => {
+  /**
+   * RE-DERIVED 2026-09-16 (#1038), replacing the hand-carried 8225 B. Method
+   * mirrors `scripts/lib/instruction-budget-guard.mjs:111-116`: measure, then
+   * set the pin at measured + 5 % rounded DOWN, so the number is a MEASUREMENT
+   * with headroom rather than a raised literal.
+   *
+   *   node --input-type=module -e "const m=await import('./scripts/lib/instruction-budget-guard.mjs'); \
+   *     console.log(m.computeInstructionBudget({repoRoot:process.cwd()}).perFile.find(f=>f.file==='receiving-review.md').bytes)"
+   *   → 7628 B  (2026-09-16, body only — the guard strips frontmatter)
+   *
+   * 7628 x 1.05 = 8009.4 → 8009.
+   */
+  it('byte size stays within the re-derived measured+5% ceiling (8009 B)', async () => {
     const { computeInstructionBudget } = await import('../../scripts/lib/instruction-budget-guard.mjs');
     const budget = computeInstructionBudget({ repoRoot });
     const entry = budget.perFile.find((f) => f.file === 'receiving-review.md');
     expect(entry).toBeDefined();
-    expect(entry.bytes).toBeLessThanOrEqual(8225);
+    expect(entry.bytes).toBeLessThanOrEqual(8009);
   });
 
   it('repo-wide always-on directive total stays at or under the configured ceiling', async () => {

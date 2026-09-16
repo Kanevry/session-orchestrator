@@ -68,6 +68,7 @@ import { readLock, isLockLive, LOCK_PATH } from './session-lock.mjs';
 import { checkPeerStateMd } from './state-md-peer-guard.mjs';
 import { listWorktreesChecked } from './worktree/listing.mjs';
 import { parseSessionId } from './session-id.mjs';
+import { isMainModule } from './is-main-module.mjs';
 
 /** Closed enum of provenance sources. */
 const SOURCE_DISCOVERED = 'discovered'; // lock + registry unified (irreversibly merged upstream)
@@ -901,11 +902,7 @@ async function _cliMain(argv) {
 }
 
 const __filename = fileURLToPath(import.meta.url);
-const _isCliMain =
-  typeof process !== 'undefined'
-  && process.argv[1] !== null
-  && process.argv[1] !== undefined
-  && path.resolve(process.argv[1]) === path.resolve(__filename);
+const _isCliMain =isMainModule(import.meta.url);
 
 // Called WITHOUT `await` on purpose: a top-level await would make this module
 // async for every importer, and `_cliMain` cannot reject (all paths are caught

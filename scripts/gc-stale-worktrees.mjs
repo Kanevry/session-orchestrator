@@ -26,6 +26,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { validateWorkspacePath } from './lib/worktree/lifecycle.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -658,7 +659,7 @@ EXIT CODES
 // CLI guard — prevents process.exit during test-time imports (#368)
 // ---------------------------------------------------------------------------
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     process.stderr.write(`gc-stale-worktrees: unexpected error: ${err?.stack ?? err}\n`);
     process.exit(2);

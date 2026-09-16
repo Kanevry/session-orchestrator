@@ -54,9 +54,15 @@ describe('Express Path persistence contract (#320)', () => {
     });
   });
 
-  describe('Spec — commands/go.md has Express Path Detection branch', () => {
-    const goPath = path.join(repoRoot, 'commands/go.md');
-    const body = readFileSync(goPath, 'utf8');
+  // The `/go` body lives in `skills/go/SKILL.md` since #1370 — a bare command
+  // only resolves under `claude -p` when a same-named skill exists, so
+  // `commands/go.md` was reduced to a thin delegation naming that skill. The
+  // four branch pins therefore measure the SKILL (where the contract is), and
+  // the fifth measures the delegation itself: a future re-inlining that strands
+  // `skills/go/SKILL.md` goes red here instead of silently at dispatch time.
+  describe('Spec — the /go body (skills/go/SKILL.md) has the Express Path Detection branch', () => {
+    const skillPath = path.join(repoRoot, 'skills/go/SKILL.md');
+    const body = readFileSync(skillPath, 'utf8');
 
     it('contains the "## Express Path Detection" heading', () => {
       expect(body).toContain('## Express Path Detection');
@@ -72,6 +78,11 @@ describe('Express Path persistence contract (#320)', () => {
 
     it('separates the express branch from the "## Standard Execution" path', () => {
       expect(body).toContain('## Standard Execution');
+    });
+
+    it('is the file commands/go.md delegates to (#1370)', () => {
+      const command = readFileSync(path.join(repoRoot, 'commands/go.md'), 'utf8');
+      expect(command).toContain('skills/go/SKILL.md');
     });
   });
 

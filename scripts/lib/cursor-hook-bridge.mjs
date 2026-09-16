@@ -18,10 +18,10 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { matcherMatches, readHookDecision } from './pi-hook-bridge.mjs';
 import { resolvePluginRoot } from './plugin-root.mjs';
+import { isMainModule } from './is-main-module.mjs';
 
 export const CURSOR_TO_CANONICAL_EVENT = Object.freeze({
   sessionStart: 'SessionStart',
@@ -434,7 +434,7 @@ async function main() {
   process.stdout.write(`${JSON.stringify(toCursorHookOutput(eventName, result))}\n`);
 }
 
-const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isMain =isMainModule(import.meta.url);
 if (isMain) {
   main().catch((err) => {
     process.stderr.write(`cursor-hook-bridge: ${err instanceof Error ? err.message : err}\n`);

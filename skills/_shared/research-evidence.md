@@ -15,7 +15,10 @@ For each finding that changes the recommendation, retain:
 - **Basis:** label the finding `observed` for a measurement or source-code
   inspection (name which), `documented` for a source's claim, or `inference`
   when it follows from other evidence. A test found in source is not an
-  executed test. Never present one class as another.
+  executed test. Never present one class as another. Counts, percentages and
+  distributions additionally require PSA-006's executed-command transcript
+  (`.claude/rules/parallel-sessions.md` § PSA-006) — command, file scope,
+  result, measurement time.
 - **Local equivalent:** name the existing repository feature, dependency, rule,
   or workflow that already covers the need; use `none found` only after a search
   proportionate to the task.

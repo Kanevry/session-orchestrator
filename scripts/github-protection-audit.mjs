@@ -34,8 +34,8 @@
 
 import { execFile as _execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { pathToFileURL } from 'node:url';
 import { resolveRepoSpec as _resolveRepoSpec, resolveRepoHost as _resolveRepoHost } from './lib/vcs-repo-spec.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 const execFileAsync = promisify(_execFile);
 
@@ -347,8 +347,7 @@ export async function auditGithubBranchProtection(opts = {}, deps = {}) {
 }
 
 // CLI entry — only when run directly, not when imported (e.g. by tests).
-const isMain =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isMain =isMainModule(import.meta.url);
 
 if (isMain) {
   auditGithubBranchProtection({ repoRoot: process.cwd() }).then((result) => {

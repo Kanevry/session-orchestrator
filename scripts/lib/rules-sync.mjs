@@ -10,6 +10,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateRuleContent, scanVendoringLeaks } from './validate-vendored-rules.mjs';
+import { isMainModule } from './is-main-module.mjs';
 
 // The vendoring sanitizer (issue #1098) lives in validate-vendored-rules.mjs —
 // it has that module's shape ("judge one rule file → findings") and its
@@ -451,11 +452,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Detect direct execution: node scripts/lib/rules-sync.mjs
-const isMain =
-  typeof process !== 'undefined' &&
-  process.argv[1] !== null &&
-  process.argv[1] !== undefined &&
-  resolve(process.argv[1]) === resolve(__filename);
+const isMain =isMainModule(import.meta.url);
 
 if (isMain) {
   const args = process.argv.slice(2);

@@ -110,7 +110,7 @@
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isMainModule } from '../is-main-module.mjs';
 
 /** Only this directory is scanned — a mutation in `scripts/` is production intent. */
 const SCAN_DIR = 'tests';
@@ -810,7 +810,7 @@ export function runCheckTestGitConfigTarget(pluginRoot) {
   return 0;
 }
 
-const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href;
+const isMain =isMainModule(import.meta.url);
 if (isMain) {
   const argv = process.argv.slice(2);
   const flags = new Set(argv.filter((a) => a.startsWith('--')));

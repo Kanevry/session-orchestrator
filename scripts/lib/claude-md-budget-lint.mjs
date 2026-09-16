@@ -67,6 +67,7 @@ import { basename, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { resolveInstructionFile } from './common.mjs';
 import { isSessionConfigHeading } from './config/section-extractor.mjs';
+import { isMainModule } from './is-main-module.mjs';
 
 /** Thrown by `lintClaudeMd()` on any infra-level failure (missing/unreadable file). */
 export class ClaudeMdLintInfraError extends Error {
@@ -536,10 +537,6 @@ function main() {
 }
 
 const __filename = fileURLToPath(import.meta.url);
-const isMain =
-  typeof process !== 'undefined' &&
-  process.argv[1] !== null &&
-  process.argv[1] !== undefined &&
-  resolve(process.argv[1]) === resolve(__filename);
+const isMain =isMainModule(import.meta.url);
 
 if (isMain) main();
