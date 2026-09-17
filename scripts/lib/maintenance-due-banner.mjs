@@ -442,9 +442,14 @@ export async function computeMaintenanceDue(opts = {}) {
       if (expiring.length > 0) {
         // HR-106: name the files and the dates the verdict was computed from —
         // the operator has to open exactly those files to repair this.
+        // HR-106 again, one step further: name the REPAIR, not only the
+        // finding. The sweep (#1377) is the mechanical half — prose out, the
+        // provenance pair kept as `markers only` — and an operator who is told
+        // only which files expired has to rediscover that the command exists.
         markDue(
           'generated-rules-expiring',
-          expiring.map((r) => `${r.file} ${r.expiresAt}`).join(', '),
+          `${expiring.map((r) => `${r.file} ${r.expiresAt}`).join(', ')} → ` +
+            'node scripts/sweep-expired-rules.mjs (dry-run first)',
         );
       }
     }

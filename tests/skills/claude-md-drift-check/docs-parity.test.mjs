@@ -209,12 +209,16 @@ describe('sub-check (a): count-claims', () => {
     expect(errs[0].message).toBe('docs/components.md claims 9 distinct hook events but actual on-disk count is 10');
   });
 
-  it('skips a surface silently when its source artifact is absent (no commands/ dir)', () => {
+  it('measures the commands surface as 0 when skills/ exists but no commands/ dir does', () => {
     makeSkills(42);
-    writeComponentsMd({ skills: 42, commands: 999 }); // claim present, but no commands/ dir on disk
+    writeComponentsMd({ skills: 42, commands: 999 }); // claim present; skills/ exists, commands/ absent
     const j = parseJson(runChecker(vault).stdout);
     expect(j.checks_run).toContain('docs-parity');
-    expect(errorsFor(j, 'docs-parity')).toHaveLength(0); // no crash, no false claim
+    // The slash-command population is commands/*.md ∪ user-invocable skills; with
+    // skills/ on disk the surface is measured (0), so a 999 claim is real drift.
+    const errs = errorsFor(j, 'docs-parity');
+    expect(errs).toHaveLength(1);
+    expect(errs[0].message).toBe('docs/components.md claims 999 commands but actual on-disk count is 0');
   });
 
   it('multiple surfaces drift simultaneously → one docs-parity error per surface', () => {

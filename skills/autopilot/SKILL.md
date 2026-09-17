@@ -223,8 +223,8 @@ session — drives `runLoop` between manual `/session` invocations. The headless
 |---|---|---|
 | `modeSelector` | `() => Promise<{mode, confidence, rationale?}>` | wraps `selectMode(await buildLiveSignals())` |
 | `sessionRunner` | `({mode, autopilotRunId}) => Promise<{session_id, agent_summary?, effectiveness?}>` | wraps a `/session <mode>` invocation; reads `sessions.jsonl` tail to construct return value |
-| `resourceEvaluator` | `() => {verdict}` | wraps `evaluate(await probe(), thresholds)` from `resource-probe.mjs` |
-| `peerCounter` | `() => number` | reads `claude_processes_count` from a fresh `probe()` snapshot |
+| `resourceEvaluator` | `() => {verdict}` | calls `evaluate(cachedProbeSnapshot, thresholds)` from `resource-probe.mjs` over a snapshot `peerCounter` refreshed on the prior iteration — never calls `probe()` itself, which is what keeps it synchronous |
+| `peerCounter` | `() => Promise<number>` | returns `peers.length` from `detectPeers({ sessionId, freshnessMin: 15 })` (a SESSION count, not a process count — see `host-resources.md` HR-103) while refreshing the cached `probe()` snapshot `resourceEvaluator` reads |
 
 `abortSignal` is optional (Ctrl+C / Esc → `user-abort` kill-switch).
 
@@ -291,6 +291,25 @@ The in-process driver has Claude (the coordinator) call `/session <mode>` betwee
   inter-session memory through STATE.md / sessions.jsonl / learnings.
 - **Con:** not truly autonomous — Claude must stay in the chat. Doesn't deliver
   walk-away UX. That's Phase C-5's job.
+
+### Headless Driver Wiring (Option A — `scripts/autopilot.mjs`)
+
+The standalone headless driver invoked via `--headless` (see § Invocation) wires all
+four required `runLoop` dependencies (`modeSelector`, `sessionRunner`,
+`resourceEvaluator`, `peerCounter`) plus the optional `abortSignal` to production
+sources — distinct from, and more concrete than, the in-process skeleton above:
+
+- `sessionRunner` — spawns `claude -p '/session <mode>'` as a child process; after it
+  exits cleanly, reads the `sessions.jsonl` tail to construct the return shape
+  `{session_id, agent_summary?, effectiveness?}` (`scripts/autopilot.mjs` `sessionRunner`).
+- `resourceEvaluator` — calls `evaluate(cachedProbeSnapshot, thresholds)` from
+  `scripts/lib/resource-probe.mjs`, reading a snapshot refreshed by `peerCounter` on the
+  prior iteration so the function itself stays synchronous, per the `runLoop` contract
+  (`scripts/autopilot.mjs` `resourceEvaluator`).
+- `peerCounter` — calls `detectPeers({ sessionId: autopilotRunId, freshnessMin: 15 })` from
+  `scripts/lib/session-registry.mjs` AND refreshes the cached `probe()` snapshot in the
+  same call, returning `peers.length` (`scripts/autopilot.mjs` `makePeerCounter`).
+- `abortSignal` — an `AbortController` aborted on the process's `SIGINT` handler.
 
 ### `autopilot_run_id` Propagation
 

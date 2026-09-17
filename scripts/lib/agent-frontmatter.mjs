@@ -58,7 +58,12 @@ export function parseAgentFrontmatter(contents) {
     };
   }
 
-  const match = FRONTMATTER_RE.exec(contents);
+  // A UTF-8 BOM before `---` makes FRONTMATTER_RE miss the block entirely, so a
+  // BOM-prefixed SKILL.md would parse as "no frontmatter" and every flag in it
+  // (`user-invocable` included) silently disappear.
+  const text = contents.charCodeAt(0) === 0xfeff ? contents.slice(1) : contents;
+
+  const match = FRONTMATTER_RE.exec(text);
   if (!match) {
     return {
       ok: false,
@@ -76,9 +81,21 @@ export function parseAgentFrontmatter(contents) {
   const frontmatter = /** @type {Record<string,string>} */ ({});
   const lines = fmText.split(/\r?\n/);
 
+  // Indented lines belong to whatever the preceding top-level key opened (a
+  // nested mapping, or a block scalar) — they are NOT top-level keys. Without
+  // this, `metadata:\n  user-invocable: true` was HOISTED to top level and read
+  // as the slash-command marker, so the counters saw a skill no generator did.
+  let inNestedBlock = false;
+
   for (const rawLine of lines) {
     const line = rawLine.replace(/\s+$/, '');
     if (line === '' || /^\s*#/.test(line)) continue;
+
+    if (/^\s/.test(rawLine)) {
+      if (inNestedBlock) continue;
+    } else {
+      inNestedBlock = false;
+    }
 
     // Detect block-scalar indicators on a key line, e.g. `description: >` or `description: |`
     // These are valid YAML but break Claude Code's parser.
@@ -86,8 +103,13 @@ export function parseAgentFrontmatter(contents) {
     if (blockScalarMatch) {
       // Store a sentinel so the validator can emit the correct rule.
       frontmatter[blockScalarMatch[1]] = '__BLOCK_SCALAR__';
+      inNestedBlock = true;
       continue;
     }
+
+    // A bare `key:` at top level opens a nested mapping (or an empty value);
+    // everything indented under it is that mapping's business, not ours.
+    if (/^\w[\w-]*:$/.test(line)) inNestedBlock = true;
 
     const idx = line.indexOf(':');
     if (idx === -1) continue;

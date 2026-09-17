@@ -191,10 +191,12 @@ export function countSkills(root) {
  * the two counts what it has; a missing `commands/` is now the NORMAL state, not
  * a missing measurement.
  *
- * Divergence from `skills/claude-md-drift-check/checker.mjs` `command-count`,
- * named on purpose: that checker is GENERIC over consumer repos, where
- * `commands/*.md` is still the whole story, so it stays on the directory count.
- * This tile describes THIS plugin.
+ * NO divergence from `skills/claude-md-drift-check/checker.mjs` `command-count`:
+ * that checker unions the same user-invocable skills (`checker.mjs:435-446`,
+ * measured 2026-09-17), and both routes reach the same verdict through the same
+ * SSOT — `isUserInvocableValue` in `scripts/lib/user-invocable-skills.mjs`. The
+ * checker stays GENERIC over consumer repos only in the sense that a repo
+ * without `skills/` sees the union collapse to the directory count on its own.
  */
 export function countCommands(root) {
   if (!isDir(join(root, 'commands')) && !isDir(join(root, 'skills'))) return null;

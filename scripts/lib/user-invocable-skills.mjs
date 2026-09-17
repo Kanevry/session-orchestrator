@@ -31,19 +31,94 @@ import path from 'node:path';
 import { parseAgentFrontmatter } from './agent-frontmatter.mjs';
 
 /**
+ * YAML 1.1 boolean lookalikes that YAML 1.2 / js-yaml's CORE_SCHEMA (what
+ * `generate-codex-skills` parses with) reads as PLAIN STRINGS, not as `true`.
+ * They are therefore NOT user-invocable here either — but silently demoting a
+ * skill on one of them is the #1370 defect class, so each one gets a WARN.
+ */
+const TRUTHY_LOOKALIKE = /^(?:yes|y|on|t|1)$/i;
+
+/**
+ * Strip a trailing `#` comment, honouring quotes: `true # note` is the same
+ * declaration as `true`, but `"a # b"` carries the hash as content.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function stripTrailingComment(text) {
+  let quote = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    // A `#` opens a YAML comment only at the start or after whitespace.
+    if (ch === '#' && (i === 0 || /\s/.test(text[i - 1]))) return text.slice(0, i);
+  }
+  return text;
+}
+
+/**
+ * Normalise a raw frontmatter scalar to the token a YAML parser would see:
+ * trim, drop a trailing comment, drop one layer of matching surrounding quotes.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function normaliseScalar(text) {
+  let out = stripTrailingComment(text).trim();
+  if (out.length >= 2 && (out[0] === '"' || out[0] === "'") && out[out.length - 1] === out[0]) {
+    out = out.slice(1, -1).trim();
+  }
+  return out;
+}
+
+/**
+ * THE one normaliser for `user-invocable` — the marker "this skill is an
+ * operator-facing slash command". Every generator (Cursor, Pi, Codex) and every
+ * counter (site-numbers tile, drift-check `command-count`, the guard tests) must
+ * route through this function; four private re-implementations disagreeing on a
+ * quoted value is the defect this replaces.
+ *
  * Explicit-true only. `undefined` (flag absent) is NOT user-invocable: the whole
  * point of the marker is that it is written down, so a skill that forgot it is a
  * defect to surface, not a default to guess.
  *
- * Accepts the boolean and the string form because a frontmatter value may arrive
- * quoted (`user-invocable: "true"`), which `generate-codex-skills` already has to
- * tolerate on the same key.
+ * Accepted: the boolean `true`, and a string that normalises to `true`
+ * case-insensitively — so `"true"`, `'true'`, `True`, `true # note` and
+ * `true ` (trailing space, invisible in an editor) all read as the same
+ * declaration. Trailing-whitespace tolerance is load-bearing rather than
+ * cosmetic: without it a stray space silently demotes a skill out of the
+ * generated adapters with no diagnostic anywhere.
  *
- * @param {unknown} value
+ * REJECTED: `yes` / `y` / `on` / `t` / `1`. Those are YAML 1.1 booleans; under
+ * YAML 1.2 — which is what js-yaml's CORE_SCHEMA in `generate-codex-skills`
+ * applies — they are plain strings, and this predicate follows the parser rather
+ * than inventing a fifth dialect. Because the demotion is the surprising half,
+ * each one emits exactly one stderr WARN naming the file.
+ *
+ * @param {unknown} value the raw frontmatter value
+ * @param {string} [file] path named in the WARN when a truthy-looking value is demoted
  * @returns {boolean}
  */
-export function isUserInvocableValue(value) {
-  return value === true || value === 'true';
+export function isUserInvocableValue(value, file) {
+  if (value === true) return true;
+  if (typeof value !== 'string') return false;
+  const token = normaliseScalar(value);
+  if (token.toLowerCase() === 'true') return true;
+  if (TRUTHY_LOOKALIKE.test(token)) {
+    const where = file ? `${file}: ` : '';
+    process.stderr.write(
+      `WARN ${where}user-invocable: ${JSON.stringify(value)} is NOT a slash-command marker — `
+        + 'only `true` is (YAML 1.2 reads yes/on/1 as strings). Write `user-invocable: true`.\n',
+    );
+  }
+  return false;
 }
 
 /**
@@ -79,7 +154,7 @@ export function userInvocableSkills(repoRoot) {
     } catch {
       continue;
     }
-    if (fm && isUserInvocableValue(fm['user-invocable'])) names.push(entry.name);
+    if (fm && isUserInvocableValue(fm['user-invocable'], file)) names.push(entry.name);
   }
   return names.sort();
 }

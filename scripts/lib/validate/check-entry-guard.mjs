@@ -27,19 +27,37 @@
  *
  *   1. strip comments (line comments, trailing `//`, and block comments),
  *   2. split the remainder into statement fragments on `;{}`,
- *   3. inside each fragment, take every `===` / `!==` comparison and its two
- *      operands (bounded to the adjacent `&&` / `||` segment),
- *   4. FAIL when one operand mentions `process.argv[1]` and the other mentions
- *      `import.meta.url` or `__filename`, UNLESS either operand is wrapped in a
- *      `realpath*` call — that is the safe idiom and must not be flagged.
+ *   3. inside each fragment mentioning `process.argv[1]`, apply two oracles:
+ *      a. **comparison form** — take every `===` / `!==` comparison and its two
+ *         operands (bounded to the adjacent `&&` / `||` segment) and FAIL when
+ *         one operand mentions `process.argv[1]` and the other mentions
+ *         `import.meta.url` or `__filename`;
+ *      b. **bare-basename form** — FAIL on `process.argv[1].endsWith('x.mjs')`
+ *         (plus the `?.`, `String(...)` and `(argv[1] || '')` receiver
+ *         variants) against a `.mjs`/`.js`/`.cjs` string literal. This form has
+ *         no comparison operator at all, so oracle (a) never saw it.
+ *   4. In both cases, a fragment wrapping either side in a `realpath*` call is
+ *      the safe idiom and must not be flagged.
  *
- * Requiring a comparison operator is what keeps prose out of the census:
- * `scripts/validate-plugin.mjs`, `scripts/lib/vault-consolidate-fs.mjs` and
- * `hooks/post-edit-import-probe.mjs` all MENTION the broken idiom inside a
- * comment and are excluded by step 1 + step 3 without needing an allowlist
- * entry. `scripts/lib/ecosystem-wizard.mjs` (`argv[1].endsWith(...)`) and
- * `scripts/lib/baseline-archetypes.mjs` (`await import(process.argv[1])`)
- * contain no such comparison at all.
+ * Both oracles are anchored on a SYNTAX shape, which is what keeps prose out of
+ * the census: `scripts/validate-plugin.mjs`,
+ * `scripts/lib/vault-consolidate-fs.mjs`, `hooks/post-edit-import-probe.mjs`
+ * and this file's own header all MENTION a broken idiom inside a comment and
+ * are excluded by step 1 without needing an allowlist entry.
+ * `scripts/lib/baseline-archetypes.mjs` (`await import(process.argv[1])`) is a
+ * deliberate cross-process trick that is neither a comparison nor a basename
+ * test — out of scope for this check.
+ *
+ * `scripts/lib/ecosystem-wizard.mjs` (bare `argv[1].endsWith(...)`) and
+ * `scripts/lib/fetch-baseline.mjs` (a hybrid `===`-plus-`endsWith` guard, which
+ * needed the ALLOWLIST below) were the two hand-written guards this check was
+ * built to catch (#1371); both were fixed to `isMainModule()` in #1378. Oracle
+ * (b) was added afterwards because reverting the FIRST of them was caught by
+ * nothing: the bare form was outside oracle (a) by construction, and neither
+ * file's symlink smoke test reproduced its own regression (a same-named file
+ * behind a symlinked DIRECTORY still ends with the basename). The allowlist is
+ * empty — kept as a frozen mechanism (see its docblock) rather than deleted,
+ * since the next hand-written exception is exactly what would re-populate it.
  *
  * `scripts/lib/is-main-module.mjs` itself is excluded: it is the fix, and its
  * docblock quotes every variant it replaces.
@@ -65,14 +83,18 @@ import { isMainModule } from '../is-main-module.mjs';
  * (one the oracle no longer flags) is itself reported, so this list cannot rot
  * into a silent suppression.
  *
+ * Empty since #1378: the one entry this list ever carried
+ * (`scripts/lib/fetch-baseline.mjs`, whose hybrid guard's `endsWith(basename)`
+ * fallback made it non-fragile) was removed when that file was fixed to
+ * `isMainModule()` instead of being kept as a hand-verified exception. The
+ * mechanism is retained rather than deleted: the stale-entry check below only
+ * fires for an entry that is PRESENT and no longer flagged, so an empty object
+ * never trips it, and a future hand-written exception can still be recorded
+ * here.
+ *
  * @type {Record<string, string>}
  */
-const ALLOWLIST = {
-  'scripts/lib/fetch-baseline.mjs':
-    'hybrid guard: the argv[1]-vs-URL comparison is only the FIRST of three ' +
-    'alternatives, and the final `endsWith(basename)` branch still matches under ' +
-    'a symlinked invocation — so the guard does not silently fail',
-};
+const ALLOWLIST = {};
 
 /** The one module allowed to contain every broken variant: it documents them. */
 const SELF_EXEMPT = 'scripts/lib/is-main-module.mjs';
@@ -127,10 +149,39 @@ export function stripComments(src) {
 }
 
 /**
+ * A `.endsWith('<something>.mjs')` call with a module-basename-shaped literal.
+ * Scanned rather than matched in one shot so the RECEIVER can be judged from the
+ * text preceding each hit — a `.endsWith()` on anything other than
+ * `process.argv[1]` is not this defect class.
+ *
+ * The quote characters are spelled `\x27` / `\x22` / `\x60` rather than
+ * literally, and that is load-bearing for THIS file specifically: `stripComments`
+ * below has no notion of a regex literal, so a bare `'` inside one reads as the
+ * start of a string and desynchronises the scanner for the rest of the module —
+ * measured 2026-09-17, a literal-quote version of this regex made the census
+ * report a line-comment 40 lines further down as a finding. Same rule applies to
+ * every regex added to this module.
+ */
+const ENDS_WITH_LITERAL = /endsWith\(\s*([\x27\x22\x60])([^\x27\x22\x60]*)\1\s*\)/g;
+
+/**
+ * The receiver chain, whitespace-stripped, that makes an `.endsWith()` call a
+ * test on the invocation path. Deliberately unanchored at the START so an outer
+ * wrapper (`String(...)`, `path.basename(...)`) still matches; anchored at the
+ * END so only the call immediately downstream of `process.argv[1]` counts.
+ */
+const ARGV_RECEIVER_TAIL = /process\.argv\[1\](?:\|\|\x27\x27|\|\|\x22\x22)?\)*\??\.$/;
+
+/**
  * Findings for one module body.
  *
+ * `kind` distinguishes the two oracles: `comparison` is the
+ * `argv[1] === import.meta.url` family, `basename` the bare
+ * `argv[1].endsWith('x.mjs')` family. Both are symlink-fragile; only the remedy
+ * wording differs.
+ *
  * @param {string} src module source
- * @returns {Array<{line: number, text: string}>} one per fragile comparison
+ * @returns {Array<{line: number, text: string, kind: 'comparison'|'basename'}>} one per fragile guard
  */
 export function findFragileGuards(src) {
   // Template substitutions are rewritten `${x}` → `$(x)` BEFORE the fragment
@@ -145,7 +196,31 @@ export function findFragileGuards(src) {
     const fragStart = cursor;
     cursor += fragment.length + 1;
     if (!fragment.includes('process.argv[1]')) continue;
-    if (!/import\.meta\.url|__filename/.test(fragment)) continue;
+
+    /** @type {(offset: number) => number} 1-based line of an offset in `fragment` */
+    const lineAt = (offset) =>
+      stripped.slice(0, Math.min(fragStart + offset, stripped.length)).split('\n').length;
+
+    if (!/import\.meta\.url|__filename/.test(fragment)) {
+      // Oracle (b): no self-path mention at all, so the comparison oracle below
+      // cannot see this fragment. The bare basename test lives exactly here.
+      if (!/realpath/i.test(fragment)) {
+        ENDS_WITH_LITERAL.lastIndex = 0;
+        let m;
+        while ((m = ENDS_WITH_LITERAL.exec(fragment)) !== null) {
+          if (!/\.(?:mjs|js|cjs)$/.test(m[2])) continue;
+          const receiver = fragment.slice(0, m.index).replace(/\s+/g, '');
+          if (!ARGV_RECEIVER_TAIL.test(receiver)) continue;
+          findings.push({
+            line: lineAt(m.index),
+            text: `process.argv[1]…${m[0]}`,
+            kind: 'basename',
+          });
+          break; // one finding per statement is enough to act on
+        }
+      }
+      continue;
+    }
 
     const parts = fragment.split(/===|!==/);
     for (let k = 0; k < parts.length - 1; k++) {
@@ -156,9 +231,12 @@ export function findFragileGuards(src) {
         /import\.meta\.url|__filename/.test(left) || /import\.meta\.url|__filename/.test(right);
       if (!mentionsArgv || !mentionsSelf) continue;
       if (/realpath/i.test(left) || /realpath/i.test(right)) continue; // the safe idiom
-      const offset = fragStart + (parts.slice(0, k + 1).join('===').length || 0);
-      const line = stripped.slice(0, Math.min(offset, stripped.length)).split('\n').length;
-      findings.push({ line, text: `${left.trim()} === ${right.trim()}`.replace(/\s+/g, ' ') });
+      const line = lineAt(parts.slice(0, k + 1).join('===').length || 0);
+      findings.push({
+        line,
+        text: `${left.trim()} === ${right.trim()}`.replace(/\s+/g, ' '),
+        kind: 'comparison',
+      });
       break; // one finding per statement is enough to act on
     }
   }
@@ -177,6 +255,12 @@ function trackedModules(repoRoot) {
   // silently drops every top-level `scripts/*.mjs` AND all of `hooks/*.mjs` —
   // measured 2026-09-16: 61 files matched vs 176 actually tracked. The extension
   // filter therefore lives here, where it cannot be wrong about that.
+  //
+  // Re-measured 2026-09-17 (the 61/176 pair no longer reproduces at any scope I
+  // could reconstruct, so it is kept as-dated rather than edited):
+  // `git ls-files -- 'scripts/**/*.mjs' 'hooks/**/*.mjs' | wc -l` → 422 against
+  // `git ls-files -- scripts hooks | grep -c '\.mjs$'` → 508. Direction of the
+  // trap is unchanged; only the magnitude moved.
   const out = execFileSync('git', ['ls-files', '--', 'scripts', 'hooks'], {
     cwd: repoRoot,
     encoding: 'utf8',
@@ -220,12 +304,18 @@ export async function runCheckEntryGuard(repoRoot) {
     flagged.add(rel);
     if (rel in ALLOWLIST) continue;
     for (const f of findings) {
+      const why =
+        f.kind === 'basename'
+          ? 'a basename test answers "was a file with this name run?", never "was THIS ' +
+            'module run" — it is true for any same-named file (a sibling copy, a ' +
+            'vendored duplicate, a fixture) and resolves no path at all, so main() ' +
+            'fires or stays silent for reasons unrelated to identity'
+          : '`import.meta.url` is the realpath, `process.argv[1]` is the path as typed, ' +
+            'so the guard is false under any symlinked invocation and main() silently ' +
+            'never runs (exit 0, no output)';
       console.log(
-        `  FAIL: ${rel}:${f.line} — symlink-fragile entry guard \`${f.text}\`: ` +
-          '`import.meta.url` is the realpath, `process.argv[1]` is the path as typed, ' +
-          'so the guard is false under any symlinked invocation and main() silently ' +
-          "never runs (exit 0, no output). Use `isMainModule(import.meta.url)` from " +
-          'scripts/lib/is-main-module.mjs',
+        `  FAIL: ${rel}:${f.line} — symlink-fragile entry guard \`${f.text}\`: ${why}. ` +
+          'Use `isMainModule(import.meta.url)` from scripts/lib/is-main-module.mjs',
       );
       failed++;
     }

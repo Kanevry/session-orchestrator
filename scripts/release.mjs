@@ -908,6 +908,11 @@ export function evaluateCiRow(ci) {
  * "we could not read the mirror" is not "the mirror is green" (the fail-closed
  * house rule at the top of this file).
  *
+ * This function only judges the `ci` reading it is handed — it is
+ * `evaluateCiPreflightRows` (the caller, see its own docblock) that fetches
+ * `ci` for the commit actually being released, rather than whichever HEAD the
+ * GitHub mirror itself reports.
+ *
  * @param {string|undefined} repoSpec — `resolveRepoSpec({vcs:'github'})`, undefined when no github remote resolves
  * @param {null | {status?: string, failingJobName?: string, degraded?: string}} ci
  * @returns {{ok: boolean, detail: string}}
@@ -967,6 +972,62 @@ function mustRun(cmd, args, opts = {}) {
 
 function readPackageVersion(repoRoot) {
   return JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version;
+}
+
+/**
+ * Both CI preflight rows (`ci-green-on-head` + `ci-green-on-head-github`) for
+ * ONE commit — the commit actually about to be released — never whichever
+ * HEAD the queried platform happens to report.
+ *
+ * Before this function existed, neither `checkCiStatus` call below passed
+ * `sha`, so the GitHub branch fell back to `commits/HEAD` — the MIRROR's own
+ * default-branch head, which is the release commit only once `head-pushed-github`
+ * has ALREADY proven `github/main == local HEAD`. A release cut before that
+ * push landed asked GitHub about a commit that was never pushed and could read
+ * green for work GitHub has not seen at all (measured 2026-09-16 for
+ * `3ebf0e9d`). The GitLab branch was already correct by default (`deps.sha ??
+ * getHeadSha(repoRoot)`), so only the two call sites below needed the fix —
+ * see `checkCiStatus`'s own docblock in `ci-status-banner.mjs` for the `sha`
+ * contract (#1332).
+ *
+ * Factored out of `preflight()` as its own async, DI-testable unit:
+ * `checkCiStatus` reaches the network by default, and `preflight()`'s
+ * surrounding checks (git, npm) are not test-doubled, so this is the seam
+ * through which the `sha` wiring can be unit-tested without spinning up a
+ * full fixture release.
+ *
+ * @param {string} repoRoot
+ * @param {string} head - full hex commit id of the commit being released (the
+ *   local HEAD `preflight()` already computed for the remote-parity rows).
+ * @param {{
+ *   skipCi?: boolean,
+ *   checkCiStatus?: Function,
+ *   resolveRepoSpec?: (opts: { repoRoot: string, vcs: 'github' }) => string|undefined,
+ * }} [deps]
+ * @returns {Promise<{ gitlab: {ok: boolean, detail: string}, github: {ok: boolean, detail: string} }>}
+ */
+export async function evaluateCiPreflightRows(repoRoot, head, {
+  skipCi = false,
+  checkCiStatus: checkCiStatusDep,
+  resolveRepoSpec: resolveRepoSpecDep = resolveRepoSpec,
+} = {}) {
+  if (skipCi) {
+    const skipped = { ok: true, detail: 'SKIPPED via --skip-ci' };
+    return { gitlab: skipped, github: skipped };
+  }
+  const checkCiStatusImpl = checkCiStatusDep ?? (await import('./lib/ci-status-banner.mjs')).checkCiStatus;
+
+  const ci = await checkCiStatusImpl({ repoRoot, timeoutMs: 15000, sha: head });
+  const gitlab = evaluateCiRow(ci);
+
+  const githubSpec = resolveRepoSpecDep({ repoRoot, vcs: 'github' });
+  let githubCi = null;
+  if (githubSpec) {
+    githubCi = await checkCiStatusImpl({ repoRoot, vcs: 'github', timeoutMs: 15000, sha: head });
+  }
+  const github = evaluateGithubCiRow(githubSpec, githubCi);
+
+  return { gitlab, github };
 }
 
 async function preflight(repoRoot, target, { skipCi = false } = {}) {
@@ -1098,39 +1159,23 @@ async function preflight(repoRoot, target, { skipCi = false } = {}) {
     add('npm-token-live', false, err.message);
   }
 
-  // 6. CI green on HEAD (the repo's iron session-start rule applies to
-  // releases doubly: local green is not evidence — see .claude/rules).
-  // --skip-ci is refused under --publish upstream in validateFlags(); it can
-  // only reach this branch from --check.
-  if (skipCi) {
-    add('ci-green-on-head', true, 'SKIPPED via --skip-ci');
-  } else {
-    const { checkCiStatus } = await import('./lib/ci-status-banner.mjs');
-    const ci = await checkCiStatus({ repoRoot, timeoutMs: 15000 });
-    const row = evaluateCiRow(ci);
-    add('ci-green-on-head', row.ok, row.detail);
-  }
-
-  // 6b. CI green on the GitHub mirror too. The row above asks the platform
-  // `detectVcsFamily` picks for `origin` (GitLab), whose pipeline is Linux-only;
-  // the macOS matrix leg lives exclusively in `.github/workflows/test.yml`.
-  // `vcs: 'github'` forces the probe onto the mirror without touching the
-  // detection order. The GitHub check-runs path reads `commits/HEAD`, i.e. the
-  // mirror's default-branch head — which is HEAD only because `head-pushed-github`
-  // above proves github/main == local HEAD; that row is this one's precondition,
-  // not a duplicate of it.
-  if (skipCi) {
-    add('ci-green-on-head-github', true, 'SKIPPED via --skip-ci');
-  } else {
-    const githubSpec = resolveRepoSpec({ repoRoot, vcs: 'github' });
-    let githubCi = null;
-    if (githubSpec) {
-      const { checkCiStatus } = await import('./lib/ci-status-banner.mjs');
-      githubCi = await checkCiStatus({ repoRoot, vcs: 'github', timeoutMs: 15000 });
-    }
-    const row = evaluateGithubCiRow(githubSpec, githubCi);
-    add('ci-green-on-head-github', row.ok, row.detail);
-  }
+  // 6/6b. CI green on HEAD, both platforms — judged for the commit actually
+  // being released, never whichever HEAD the queried platform reports (see
+  // evaluateCiPreflightRows's docblock for the `sha`-wiring history, #1332).
+  //
+  // GitLab: the repo's iron session-start rule applies to releases doubly —
+  // local green is not evidence — see .claude/rules. GitHub: this second row
+  // exists because `detectVcsFamily` picks `origin` (GitLab) for the row
+  // above, whose pipeline is Linux-only; the macOS matrix leg lives
+  // exclusively in `.github/workflows/test.yml`. `vcs: 'github'` forces the
+  // probe onto the mirror without touching the detection order.
+  // SELF-DISABLING: a checkout with no `github` remote has no mirror to be
+  // red, so `evaluateGithubCiRow` reports `skipped` rather than red — see its
+  // own docblock. --skip-ci is refused under --publish upstream in
+  // validateFlags(); it can only reach this branch from --check.
+  const ciRows = await evaluateCiPreflightRows(repoRoot, head, { skipCi });
+  add('ci-green-on-head', ciRows.gitlab.ok, ciRows.gitlab.detail);
+  add('ci-green-on-head-github', ciRows.github.ok, ciRows.github.detail);
 
   // 7. Leakage gate over the actual pack file list.
   // `npm_config_loglevel` is INHERITED, and `npm pack --dry-run` writes its whole

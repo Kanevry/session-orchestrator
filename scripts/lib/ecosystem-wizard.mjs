@@ -7,6 +7,7 @@
  */
 
 import { runEcosystemWizard } from './ecosystem-wizard/wizard-prompt.mjs';
+import { isMainModule } from './is-main-module.mjs';
 
 export { detectCiProvider } from './ecosystem-wizard/ci-detector.mjs';
 export {
@@ -31,7 +32,7 @@ export { runEcosystemWizard } from './ecosystem-wizard/wizard-prompt.mjs';
 // CLI entry
 // ---------------------------------------------------------------------------
 
-if (process.argv[1] && process.argv[1].endsWith('ecosystem-wizard.mjs')) {
+if (isMainModule(import.meta.url)) {
   const args = process.argv.slice(2);
   const repoRootIdx = args.indexOf('--repo-root');
   const dryRun = args.includes('--dry-run');

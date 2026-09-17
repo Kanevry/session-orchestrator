@@ -15,6 +15,10 @@
  * both sources is a generator ERROR, not a precedence question — two documents
  * claiming one public `/name` is a merge that did not finish.
  *
+ * `disable-model-invocation` is propagated from the SOURCE frontmatter and is
+ * NOT derived from `user-invocable` — see {@link disablesModelInvocation} for
+ * the two grounds and the measurement behind them.
+ *
  * Usage:
  *   node scripts/generate-cursor-adapter.mjs
  *   node scripts/generate-cursor-adapter.mjs --check
@@ -23,6 +27,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isUserInvocableValue } from './lib/user-invocable-skills.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(__filename);
@@ -54,15 +59,30 @@ function skillDirs() {
 
 /**
  * Parse YAML-ish frontmatter including `>` / `|` folded scalars.
+ *
+ * A UTF-8 BOM before the opening `---`, or CRLF line endings, used to make the
+ * two probes below miss the block entirely: the file parsed as "no
+ * frontmatter", so every flag in it (`user-invocable`,
+ * `disable-model-invocation`) silently disappeared and the skill was demoted
+ * out of `.cursor/commands/` with no diagnostic anywhere. Both are normalised
+ * away first — the same treatment `parseAgentFrontmatter`
+ * (`scripts/lib/agent-frontmatter.mjs`) gives them.
+ *
+ * NOT replaced by the shared `parseSkillFrontmatter`: that one returns the
+ * `__BLOCK_SCALAR__` sentinel for a `description: >`, which is the form every
+ * merged skill actually uses — routing through it would emit the sentinel as
+ * the wrapper description.
+ *
  * @param {string} content
  * @returns {Record<string, string>}
  */
 function parseFrontmatter(content) {
-  if (!content.startsWith('---\n')) return {};
-  const end = content.indexOf('\n---\n', 4);
+  const text = (content.charCodeAt(0) === 0xfeff ? content.slice(1) : content).replace(/\r\n?/g, '\n');
+  if (!text.startsWith('---\n')) return {};
+  const end = text.indexOf('\n---\n', 4);
   if (end === -1) return {};
 
-  const lines = content.slice(4, end).split('\n');
+  const lines = text.slice(4, end).split('\n');
   const fields = {};
   let i = 0;
   while (i < lines.length) {
@@ -169,30 +189,22 @@ Cursor has no Skill tool. When the command says to invoke a skill, Read \`skills
 }
 
 /**
- * The repo-wide marker for "operator-facing slash command".
- *
- * EXPLICIT means the literal `true` and nothing else: a missing key, `false`,
- * or any other value is a library skill. Surrounding whitespace is tolerated
- * (`user-invocable: true ` is the same declaration), because trailing spaces
- * are invisible in an editor and would otherwise silently demote a skill out of
- * `.cursor/commands/` with no diagnostic anywhere.
- *
- * @param {unknown} value the raw frontmatter value
- * @returns {boolean}
- */
-function isUserInvocable(value) {
-  if (value === true) return true;
-  return typeof value === 'string' && value.trim() === 'true';
-}
-
-/**
  * Skills that declare themselves operator-facing slash commands.
+ *
+ * The predicate is `isUserInvocableValue` from `scripts/lib/user-invocable-skills.mjs`
+ * — the ONE normaliser for this marker, shared with the Pi and Codex generators
+ * and with every counter. The private copy this replaced read only a
+ * whitespace-trimmed bare `true`, so `True` and `true # note` were demoted HERE
+ * while the shared counter listed them as commands; the SKILL.md path is passed
+ * so a demotion WARN names the file.
+ *
  * @returns {string[]} skill names, sorted
  */
 function userInvocableSkills() {
   return skillDirs().filter((name) => {
-    const fields = parseFrontmatter(readFileSync(path.join(SKILLS_DIR, name, 'SKILL.md'), 'utf8'));
-    return isUserInvocable(fields['user-invocable']);
+    const file = path.join(SKILLS_DIR, name, 'SKILL.md');
+    const fields = parseFrontmatter(readFileSync(file, 'utf8'));
+    return isUserInvocableValue(fields['user-invocable'], file);
   });
 }
 
@@ -211,10 +223,17 @@ function renderSkillCommand(skillName) {
   // Same GH#54 rule as renderCommand: `argument-hint` ALWAYS goes through
   // yamlQuote(), because its canonical authored form (`[mode] [--flag]`) is a
   // YAML flow sequence when emitted bare.
+  // The command wrapper carries the SOURCE value only — never the library-skill
+  // ground of {@link disablesModelInvocation}, which cannot apply here: this
+  // surface exists BECAUSE the skill is `user-invocable: true`. Propagated so an
+  // operator-only command stays operator-only on whichever of the two surfaces
+  // Cursor reads the policy from (same mapping the Codex adapter makes onto
+  // `policy.allow_implicit_invocation`, `scripts/generate-codex-skills.mjs`).
   const frontmatter = [
     '---',
     frontmatterLine('description', yamlQuote(description)),
     frontmatterLine('argument-hint', yamlQuote(fields['argument-hint'])),
+    isUserInvocableValue(fields['disable-model-invocation'], skillPath) ? 'disable-model-invocation: true' : null,
     '---',
   ].filter(Boolean).join('\n');
 
@@ -232,6 +251,47 @@ Cursor has no Skill tool. When the skill says to invoke another skill, Read \`sk
 `;
 }
 
+/**
+ * Emit `disable-model-invocation: true` into a Cursor wrapper?
+ *
+ * TWO independent grounds, OR-ed — the flag is a restriction, so the rule is
+ * fail-closed:
+ *   1. the SOURCE skill declares it (the single truth for operator-only skills).
+ *      That flag is an INDEPENDENT axis from `user-invocable`, not its inverse:
+ *      six skills carry BOTH (measured 2026-09-17: bootstrap, brainstorm, close,
+ *      go, plan, release), and deriving the wrapper's flag from `user-invocable`
+ *      alone emitted NO flag for exactly those six — letting a Cursor model
+ *      auto-invoke `/close`, `/go` and `/release`;
+ *   2. the skill is not `user-invocable`, i.e. a library skill whose Cursor
+ *      wrapper is reached by an explicit Read from a command body, never by a
+ *      model's own dispatch. This ground predates the #1 fix and is kept
+ *      deliberately: dropping it would REMOVE the flag from 24 of 50 wrappers
+ *      (measured 2026-09-17) on no Cursor-side evidence, which is the one
+ *      direction a guard fix must never move.
+ *
+ * Truth table — both readings normalised by `isUserInvocableValue`, so every
+ * form a YAML parser reads as `true` (`True`, `"true"`, `true # note`) counts
+ * as `true` on BOTH axes. Ground 2 made that load-bearing rather than cosmetic:
+ * while this file kept a private bare-`true` predicate, a `True`-marked
+ * user-invocable skill read as NOT user-invocable HERE and got the restriction
+ * STAMPED, while the shared counter listed it as a command:
+ *
+ *   | source flag | user-invocable | emitted |
+ *   |-------------|----------------|---------|
+ *   | true        | true           | yes (1) |
+ *   | true        | false/absent   | yes (1+2) |
+ *   | false/absent| true           | no      |
+ *   | false/absent| false/absent   | yes (2) |
+ *
+ * @param {Record<string, string>} fields source skill frontmatter
+ * @param {string} [file] SKILL.md path, named in a demotion WARN
+ * @returns {boolean}
+ */
+function disablesModelInvocation(fields, file) {
+  return isUserInvocableValue(fields['disable-model-invocation'], file)
+    || !isUserInvocableValue(fields['user-invocable'], file);
+}
+
 function renderSkill(skillName) {
   const skillPath = path.join(SKILLS_DIR, skillName, 'SKILL.md');
   const fields = parseFrontmatter(readFileSync(skillPath, 'utf8'));
@@ -244,7 +304,7 @@ function renderSkill(skillName) {
     `name: ${yamlQuote(skillName)}`,
     `description: ${yamlQuote(description)}`,
   ];
-  if (!isUserInvocable(fields['user-invocable'])) {
+  if (disablesModelInvocation(fields, skillPath)) {
     lines.push('disable-model-invocation: true');
   }
   lines.push('---');

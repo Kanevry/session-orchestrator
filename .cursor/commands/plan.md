@@ -1,6 +1,7 @@
 ---
 description: "Use this skill when performing structured project planning and PRD generation with three modes: new (project kickoff with repo scaffolding), feature (compact feature PRD), retro (data-driven retrospective). All modes share a researched Q&A engine that dispatches parallel Explore agents before each question wave, presents options via AskUserQuestion with recommendations, and produces documents with prioritized issue creation."
 argument-hint: "[new|feature|retro]"
+disable-model-invocation: true
 ---
 
 # /plan

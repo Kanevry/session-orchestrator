@@ -57,6 +57,45 @@ describe('findFragileGuards', () => {
     expect(findFragileGuards('if (isMainModule(import.meta.url)) main();\n')).toEqual([]); // check-untracked-test-deps:ignore — arg is a fixture source string quoting `import.meta.url`
   });
 
+  // The bare basename form carries NO comparison operator, so the original
+  // oracle could not see it by construction — and neither symlink smoke test
+  // reproduced it (a same-named file behind a symlinked DIRECTORY still ends
+  // with the basename). Reverting `scripts/lib/ecosystem-wizard.mjs` to this
+  // shape was therefore caught by nothing: measured 2026-09-17, the revert left
+  // validate-plugin at 230 passed / 0 failed. This is the test that kills it.
+  it('flags a bare `argv[1].endsWith("x.mjs")` guard as fragile', () => {
+    const hits = findFragileGuards(
+      'if (process.argv[1] && process.argv[1].endsWith(\'ecosystem-wizard.mjs\')) main();\n',
+    );
+    expect(hits).toHaveLength(1);
+    expect(hits[0].line).toBe(1);
+    expect(hits[0].kind).toBe('basename');
+  });
+
+  // The receiver, not the call, is what makes an `endsWith` this defect class.
+  it('flags the optional-chain and String() receiver variants', () => {
+    expect(findFragileGuards("if (process.argv[1]?.endsWith('cli.mjs')) main();\n")).toHaveLength(1);
+    expect(
+      findFragileGuards("if (String(process.argv[1]).endsWith('cli.mjs')) main();\n"),
+    ).toHaveLength(1);
+    expect(
+      findFragileGuards("if ((process.argv[1] || '').endsWith('cli.mjs')) main();\n"),
+    ).toHaveLength(1);
+  });
+
+  // An `endsWith` on a DIFFERENT value in a statement that merely also mentions
+  // argv[1] is not an entry guard — flagging it would make the gate red on
+  // ordinary argument handling.
+  it('does not flag an endsWith on a receiver other than argv[1]', () => {
+    expect(
+      findFragileGuards(
+        "const target = process.argv[1]; if (someOtherPath.endsWith('x.mjs')) load(target);\n",
+      ),
+    ).toEqual([]);
+    // ...nor a basename test whose literal is not a module file at all.
+    expect(findFragileGuards("if (process.argv[1].endsWith('/bin')) main();\n")).toEqual([]);
+  });
+
   // Three files in this repo DESCRIBE the broken idiom in a comment — including
   // the check's own header. A validator that flags its own documentation is
   // unshippable.
@@ -112,6 +151,28 @@ describe('runCheckEntryGuard', () => {
     expect(hits[0].text).toContain('process.argv[1]');
     // ...and the gate BLOCKS on it, rather than counting the file as clean.
     expect(await runCheckEntryGuard(fixtureRepo({ 'scripts/crlf-cli.mjs': crlf }))).toBe(1);
+  });
+
+  // The gate must BLOCK on the bare form, not merely report it from
+  // findFragileGuards — that is the difference between the HIGH-1 mutation being
+  // caught and being noticed by a reader.
+  it('blocks a repo whose guard is a bare basename test, and passes the swept form', async () => {
+    const reverted = fixtureRepo({
+      'scripts/lib/ecosystem-wizard.mjs':
+        'async function main() {}\n' +
+        "if (process.argv[1] && process.argv[1].endsWith('ecosystem-wizard.mjs')) await main();\n",
+    });
+    expect(await runCheckEntryGuard(reverted)).toBe(1);
+
+    const swept = fixtureRepo({
+      'scripts/lib/ecosystem-wizard.mjs':
+        "import { isMainModule } from './is-main-module.mjs';\n" +
+        'if (isMainModule(import.meta.url)) await main();\n',
+      // The same idiom inside a comment must stay invisible — this check's own
+      // header now quotes the bare form too.
+      'hooks/documented.mjs': "// the pre-fix guard was process.argv[1].endsWith('x.mjs')\n",
+    });
+    expect(await runCheckEntryGuard(swept)).toBe(0); // check-untracked-test-deps:ignore — arg is a fixture source string quoting `import.meta.url`
   });
 
   // git's wildmatch makes `**` consume at least one path component, so a

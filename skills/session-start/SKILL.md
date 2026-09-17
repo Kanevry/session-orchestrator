@@ -303,10 +303,11 @@ Propose the **ordered default scope** below in the Phase 8 Q&A. Every step is AU
 
 1. **Drift-check as a work-list** — `checker.mjs --mode warn` (procedure below); its `errors[]`/`warnings[]` become candidate scope.
 2. **Expired-learnings sweep** — the same sweep session-end 3.6.4 applies mechanically (`runTailPhases` / `runExpiredSweep`), run here when the `sweep` signal is due.
-3. **`/evolve analyze`** — extract this period's session patterns into learnings.
-4. **`/reconcile`** — turn high-confidence learnings into operator-approved `.claude/rules/` proposals.
-5. **`/evolve dialectic`** — dry-run first, review `.orchestrator/dialectic-pending.md`, then apply. This step dispatches the read-only `dialectic-deriver` agent, so **"coordinator-direct" means no wave-executor, not zero subagents**. <!-- path-check: example -->
-6. **`/memory-cleanup`** — `--dry-run` writes the MEMORY.md proposal to `.orchestrator/pending-dream.md`; `--apply-pending` applies it. <!-- path-check: example -->
+3. **Expired-generated-rules sweep** — `node scripts/sweep-expired-rules.mjs` (`--dry-run` first, then `--apply`). AUQ-gated: it rewrites and can DELETE tracked `.claude/rules/*.md` files. Runs directly after step 2 because its evidence comes from step 2's corpus — an entry's date is recoverable only via its `learning-id` → `learnings.jsonl` `expires_at`. <!-- path-check: example -->
+4. **`/evolve analyze`** — extract this period's session patterns into learnings.
+5. **`/reconcile`** — turn high-confidence learnings into operator-approved `.claude/rules/` proposals.
+6. **`/evolve dialectic`** — dry-run first, review `.orchestrator/dialectic-pending.md`, then apply. This step dispatches the read-only `dialectic-deriver` agent, so **"coordinator-direct" means no wave-executor, not zero subagents**. <!-- path-check: example -->
+7. **`/memory-cleanup`** — `--dry-run` writes the MEMORY.md proposal to `.orchestrator/pending-dream.md`; `--apply-pending` applies it. <!-- path-check: example -->
 
 Operator-selected issues (from Phase 6) are appended AFTER this loop, not interleaved with it — the loop's outputs (new learnings, new rules) are inputs the issue work should already see.
 

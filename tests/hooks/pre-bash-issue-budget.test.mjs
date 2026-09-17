@@ -199,6 +199,30 @@ describe('pre-bash-issue-budget — the cap itself', () => {
     expect(ledger().count).toBe(1);
   });
 
+  // THE BUG (TV-001), reproduced 2026-09-17 @ `9e8146b4` through this very hook
+  // binary in a throwaway `mode: warn` repo: the UNDERCOUNT notice was gated on
+  // the LAST statement's verdict being `allow`, so ONE exempt statement written
+  // AFTER an uncountable loop silenced the notice entirely — ledger count=1,
+  // exempt=1, stdout EMPTY, while the loop files an unknowable number of issues.
+  // Dropping the trailing exempt statement made the very same loop report the
+  // UNDERCOUNT, which is what pins this on the gate and not on the loop lane.
+  // A silent 1-for-N is exactly what the deny exists to prevent and what the
+  // comment above this branch says `warn` must not reintroduce quietly.
+  //
+  // Fake-regression proof: re-gate the notice on `verdict.decision === 'allow'`
+  // (the last verdict) and this test goes red with an EMPTY stdout.
+  it('mode: warn still reports the undercount when a TRAILING statement is exempt', () => {
+    repo = makeRepo({ mode: 'warn', max: 12 });
+    const res = runHook(
+      'for i in 1 2; do glab issue create --title j$i; done; '
+        + 'glab issue create --title "[Carryover] z"',
+    );
+    expectWarn(res, ['UNDERCOUNT', 'charged as 1']);
+    const state = ledger();
+    expect(state.count).toBe(1);
+    expect(state.exempt).toBe(1);
+  });
+
   it('a non-create Bash command is a silent allow', () => {
     expectAllow(runHook('ls -la'));
     expect(ledger()).toBeNull();
@@ -224,6 +248,17 @@ describe('pre-bash-issue-budget — xargs-driven bulk create (#1289 Befund 1)', 
     expect(ledger()).toBeNull();
   });
 
+  // THE BUG (TV-001): `formatLoopDenyReason` hardcoded "sits inside a shell loop
+  // body (`do … done`)" for BOTH lanes, so an xargs deny — where no loop exists
+  // anywhere in the command — told the operator to look for a loop it does not
+  // have. The deny must describe the lane it actually fired on.
+  it('the xargs-lane deny text does not claim a shell loop body', () => {
+    const res = runHook('echo b | xargs -I% glab issue create --title junk%');
+    expectDeny(res, 'UNKNOWN number of issues');
+    expect(res.stdout).not.toContain('do … done');
+    expect(res.stdout).toContain('xargs');
+  });
+
   // Direction guard: an xargs call that creates nothing must stay invisible to
   // this gate — the widening reports a bulk CREATE, never "xargs is suspicious".
   it('allows a non-create xargs call', () => {
@@ -237,6 +272,24 @@ describe('pre-bash-issue-budget — xargs-driven bulk create (#1289 Befund 1)', 
     repo = makeRepo({ mode: 'warn', max: 12 });
     expectWarn(runHook('echo X | xargs -I% glab issue create --title %'), ['UNDERCOUNT']);
     expect(ledger().count).toBe(1);
+  });
+
+  // THE BUG (TV-001), reproduced 2026-09-17 @ `9e8146b4` through this very hook
+  // binary in a throwaway `mode: warn` repo: the UNDERCOUNT notice names "bulk
+  // create inside a loop body" on BOTH lanes, so the xargs notice — where no
+  // loop exists anywhere in the command — sends the operator looking for a loop
+  // the command does not have. Same defect class the xargs DENY text already
+  // fixed (`formatLoopDenyReason` lanes, #1379); only the warn sentence was left
+  // behind. Measured stdout on the old code:
+  //   "bulk create inside a loop body charged as 1 (1/12) …"
+  //
+  // Fake-regression proof: hardcode the loop phrase in the warn text again and
+  // the `not.toContain('loop body')` assertion below goes red.
+  it('the xargs-lane UNDERCOUNT notice does not claim a loop body', () => {
+    repo = makeRepo({ mode: 'warn', max: 12 });
+    const res = runHook('echo b | xargs -I% glab issue create --title junk%');
+    expectWarn(res, ['UNDERCOUNT', 'charged as 1', 'xargs']);
+    expect(res.stdout).not.toContain('loop body');
   });
 });
 
@@ -275,6 +328,48 @@ describe('pre-bash-issue-budget — an exempt NEIGHBOUR must not lift a bulk den
   // a loop or an xargs word list too.
   it('a bulk statement that is ITSELF exempt keeps its unconditional pass', () => {
     expectAllow(runHook('echo X | xargs -I% glab issue create --label carryover --title %'));
+    expect(ledger().count).toBe(0);
+    expect(ledger().exempt).toBe(1);
+  });
+
+  // THE BUG (TV-001), reproduced 2026-09-17 @ 9e8146b4 through this very hook
+  // binary: the LOOP lane enumerated only ONE loop. `findLoopedIssueCreate`
+  // `return`ed on the FIRST create head found at depth > 0, so G3b built
+  // `bulkTexts` from at most one loop — an EXEMPT first loop was then the only
+  // loop classified, and every later loop went unjudged. Ledger on the old
+  // code: count=1 exempt=1, verdict ALLOW, while the second loop files an
+  // unknowable number of UNTEMPLATED issues.
+  //
+  // Fake-regression proof: restore the early `return` in
+  // `findLoopedIssueCreates` (or drop the spread in G3b) and all three rows
+  // below come back ALLOW.
+  it.each([
+    [
+      'a carryover loop does not lift the deny for a SECOND plain loop',
+      'for i in 1 2 3; do glab issue create --label carryover --title x$i; done; '
+        + 'for j in 1 2 3; do glab issue create --title junk$j; done',
+    ],
+    [
+      'a priority::critical loop does not lift the deny for a SECOND plain loop',
+      'for i in 1 2; do glab issue create --label priority::critical --title c$i; done; '
+        + 'for j in 1 2; do glab issue create --title junk$j; done',
+    ],
+    [
+      'an exempt while-read loop does not lift the deny for a SECOND while-read loop',
+      'while read t; do glab issue create --label carryover --title "$t"; done < a; '
+        + 'while read u; do glab issue create --title "$u"; done < b',
+    ],
+  ])('%s', (_label, command) => {
+    const res = runHook(command);
+    expectDeny(res, 'UNKNOWN number of issues');
+    expect(ledger()).toBeNull();
+  });
+
+  // The kept promise, LOOP lane: a LONE exempt loop still passes unconditionally
+  // (session-end's "carryover is never deferred"). This is the direction guard
+  // for the fix above — spreading every loop must not start denying this one.
+  it('a LONE exempt loop keeps its unconditional pass', () => {
+    expectAllow(runHook('for i in 1 2 3; do glab issue create --label carryover --title x$i; done'));
     expect(ledger().count).toBe(0);
     expect(ledger().exempt).toBe(1);
   });

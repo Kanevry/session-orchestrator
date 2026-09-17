@@ -62,6 +62,10 @@ describe('bootstrap scaffold templates', () => {
 // parseAgentFrontmatter
 // ---------------------------------------------------------------------------
 
+// U+FEFF written as an escape, never a literal: a literal BOM in a tracked
+// file is a `dangerous-invisible` validate-plugin failure (check-unicode-safety).
+const BOM = String.fromCharCode(0xfeff);
+
 describe('parseAgentFrontmatter', () => {
   it('returns ok=false for non-string input', () => {
     expect(parseAgentFrontmatter(null).ok).toBe(false);
@@ -102,6 +106,54 @@ describe('parseAgentFrontmatter', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.frontmatter['description']).toBe('__BLOCK_SCALAR__');
+    }
+  });
+
+  // MED-3 (2026-09-17): the parser tracked no indentation, so a key nested
+  // under a mapping was hoisted to top level — `metadata:\n  user-invocable: true`
+  // made `userInvocableSkills()` count a skill no generator counted.
+  it('does NOT hoist a key nested under an open mapping to top level', () => {
+    const contents = '---\nname: my-agent\nmetadata:\n  user-invocable: true\n  version: 2\nmodel: inherit\n---\n\n# Body';
+    const result = parseAgentFrontmatter(contents);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.frontmatter['user-invocable']).toBeUndefined();
+      expect(result.frontmatter['version']).toBeUndefined();
+      // The mapping key itself, and every sibling AFTER the block, still parse.
+      expect(result.frontmatter['metadata']).toBe('');
+      expect(result.frontmatter['model']).toBe('inherit');
+    }
+  });
+
+  it('does NOT hoist a colon-bearing continuation of a block scalar', () => {
+    const contents = '---\nname: my-agent\ndescription: >\n  user-invocable: true\nmodel: inherit\n---\n\n# Body';
+    const result = parseAgentFrontmatter(contents);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.frontmatter['description']).toBe('__BLOCK_SCALAR__');
+      expect(result.frontmatter['user-invocable']).toBeUndefined();
+      expect(result.frontmatter['model']).toBe('inherit');
+    }
+  });
+
+  it('keeps an indented key when no mapping is open (flat behaviour unchanged)', () => {
+    const contents = '---\n  name: my-agent\nmodel: inherit\n---\n\n# Body';
+    const result = parseAgentFrontmatter(contents);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.frontmatter['name']).toBe('my-agent');
+    }
+  });
+
+  // MED-4 (2026-09-17): a UTF-8 BOM before `---` made FRONTMATTER_RE miss the
+  // block, so every flag in the file silently disappeared (parsed as "no
+  // frontmatter") — including the `user-invocable` slash-command marker.
+  it('skips a leading UTF-8 BOM', () => {
+    const result = parseAgentFrontmatter(BOM + validContents());
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.frontmatter['name']).toBe('my-agent');
+      expect(result.frontmatter['model']).toBe('inherit');
     }
   });
 });

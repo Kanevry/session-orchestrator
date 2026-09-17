@@ -414,6 +414,45 @@ function countTestFiles(vaultDir) {
 }
 
 /**
+ * The product's slash-command count: `commands/*.md` ∪ skills carrying an
+ * explicit `user-invocable: true`, deduplicated by name — the same union
+ * `scripts/site-numbers.mjs` and
+ * `tests/commands/headless-bare-command-availability.test.mjs` use. In a
+ * consumer repo without `skills/` (or without `commands/`) the union
+ * collapses to whichever side is present, so nothing changes there.
+ *
+ * ONE implementation shared by the `command-count` surface (Check 5) and the
+ * `docs-parity` sub-check (a) `commands` actual (Check 10) — the two counters
+ * drifted independently before this extraction (#1370 fold left the
+ * docs-parity side on a raw `commands/` `readdirSync`, undercounting after 24
+ * `commands/*.md` files were folded into skills).
+ *
+ * Returns `null` when NEITHER `commands/` NOR `skills/` exists — the caller's
+ * "artifact absent" skip path. A `skills/` directory that exists but contains
+ * zero `user-invocable: true` skills is a measured `0`, not a skip — matching
+ * `scripts/site-numbers.mjs` `countCommands`, whose gate is
+ * `isDir(commands) || isDir(skills)` (#1370 follow-up: the old gate skipped on
+ * `fromSkills.length === 0`, which conflated "no skills/ dir" with "skills/
+ * dir present, nothing user-invocable yet").
+ *
+ * @param {string} vaultDir
+ * @param {string|null} [commandsDir] `--commands-dir` override
+ * @returns {number|null}
+ */
+function countSlashCommands(vaultDir, commandsDir) {
+  const dir = commandsDir || join(vaultDir, 'commands');
+  const dirExists = existsSync(dir) && statSync(dir).isDirectory();
+  const fromDir = dirExists
+    ? readdirSync(dir).filter((f) => f.endsWith('.md') && !f.startsWith('.')).map((f) => f.replace(/\.md$/, ''))
+    : [];
+  const fromSkills = userInvocableSkills(vaultDir);
+  const skillsDir = join(vaultDir, 'skills');
+  const skillsDirExists = existsSync(skillsDir) && statSync(skillsDir).isDirectory();
+  if (!dirExists && !skillsDirExists) return null;
+  return new Set([...fromDir, ...fromSkills]).size;
+}
+
+/**
  * Build the surface-count descriptor table for the given vault. `hookCounts`
  * is computed once and shared by the two hook surfaces. Each descriptor's
  * `actual` is resolved eagerly so a single drift pass can skip null surfaces.
@@ -429,23 +468,12 @@ function buildSurfaceDescriptors(vaultDir, commandsDir) {
       id: 'command-count',
       noun: 'commands',
       // A slash command is a `commands/*.md` file OR a skill whose frontmatter
-      // says `user-invocable: true` — the same union `scripts/site-numbers.mjs`
-      // and `tests/commands/headless-bare-command-availability.test.mjs` use,
-      // deduplicated by name. In a consumer repo without `skills/` the union
-      // collapses to the directory count, so nothing changes there.
-      actual: (() => {
-        const dir = commandsDir || join(vaultDir, 'commands');
-        const dirExists = existsSync(dir) && statSync(dir).isDirectory();
-        const fromDir = dirExists
-          ? readdirSync(dir).filter((f) => f.endsWith('.md') && !f.startsWith('.')).map((f) => f.replace(/\.md$/, ''))
-          : [];
-        const fromSkills = userInvocableSkills(vaultDir);
-        if (!dirExists && fromSkills.length === 0) return null;
-        return new Set([...fromDir, ...fromSkills]).size;
-      })(),
+      // says `user-invocable: true` — see countSlashCommands() for the shared
+      // union derivation (also used by docs-parity sub-check (a) below).
+      actual: countSlashCommands(vaultDir, commandsDir),
       // "8 commands", "8 /commands", "8 slash commands"
       claimRe: /\b(\d+)\s+(?:\/)?commands?\b/gi,
-      skipMsg: 'command-count: no commands/ directory found (use --commands-dir to override)',
+      skipMsg: 'command-count: no commands/ or skills/ directory found (use --commands-dir to override)',
     },
     {
       id: 'skill-count',
@@ -1496,11 +1524,10 @@ function main() {
         },
         {
           noun: 'commands',
-          actual: (() => {
-            const dir = commandsDir || join(vaultDir, 'commands');
-            if (!existsSync(dir) || !statSync(dir).isDirectory()) return null;
-            return readdirSync(dir).filter((f) => f.endsWith('.md') && !f.startsWith('.')).length;
-          })(),
+          // Shared with the command-count surface (Check 5) — see
+          // countSlashCommands() doc-comment for why this must be ONE
+          // implementation, not a second `commands/` readdirSync.
+          actual: countSlashCommands(vaultDir, commandsDir),
           re: /^##\s+Commands\s+\((\d+)\)/i,
         },
         {

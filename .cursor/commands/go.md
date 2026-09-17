@@ -1,6 +1,7 @@
 ---
 description: Approve session plan and begin wave execution
 argument-hint: "[optional instructions]"
+disable-model-invocation: true
 ---
 
 # /go

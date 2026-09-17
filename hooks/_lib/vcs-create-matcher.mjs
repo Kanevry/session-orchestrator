@@ -758,9 +758,10 @@ export function isIssueCreate(command) {
 }
 
 /**
- * The issue-create STATEMENT that sits inside a LOOP BODY, or `null` (#1145).
+ * EVERY issue-create STATEMENT that sits inside a LOOP BODY — one token array
+ * per implicated loop, `[]` when none (#1145, #1379).
  *
- * Returning the statement rather than a boolean is what lets the consuming hook
+ * Returning the statements rather than a boolean is what lets the consuming hook
  * bind the CAP EXEMPTION to the statement that CAUSED the bulk classification.
  * Measured 2026-09-16 against `hooks/pre-bash-issue-budget.mjs` before this
  * change, which classified the exemption on `statements[0]`:
@@ -777,15 +778,32 @@ export function isIssueCreate(command) {
  * exemption lane instead of the bypass lane — same shape, same fix: judge the
  * exemption on the statement the gate fired on, never on a sibling.
  *
- * The tokens are the segment the loop-depth scan implicated, so the caller can
+ * Each element is the segment the loop-depth scan implicated, so the caller can
  * rebuild its classification text exactly as {@link findIssueCreateStatements}
  * does (`tokens.map((t) => t.text).join(' ')`).
  *
+ * ## Why ALL of them, not the first (#1379)
+ *
+ * The 2026-09-16 scan below collected every candidate head but `return`ed on
+ * the first one found at `depth > 0`. Since the consuming hook classifies the
+ * cap exemption PER bulk statement, reporting one loop for a two-loop command
+ * means an EXEMPT first loop is the only loop judged and every later loop goes
+ * unexamined. Reproduced 2026-09-17 @ `9e8146b4` against the live hook in a
+ * strict-mode throwaway repo:
+ *
+ *     for i in 1 2 3; do glab issue create --label carryover --title x$i; done;
+ *     for j in 1 2 3; do glab issue create --title junk$j; done
+ *       → ALLOW, ledger count=1 exempt=1   (must DENY)
+ *
+ * Same class as the exemption-binding fix this docblock already describes, one
+ * level up: judging the exemption on ONE of several bulk statements is the same
+ * defect as judging it on a sibling.
+ *
  * @param {string} command
- * @returns {Array<{ text: string, quoted: boolean }>|null}
+ * @returns {Array<Array<{ text: string, quoted: boolean }>>} one entry per loop
  */
-export function findLoopedIssueCreate(command) {
-  if (typeof command !== 'string' || command.length === 0) return null;
+export function findLoopedIssueCreates(command) {
+  if (typeof command !== 'string' || command.length === 0) return [];
 
   let tokens;
   let segments;
@@ -793,7 +811,7 @@ export function findLoopedIssueCreate(command) {
     tokens = tokenizeCommand(command);
     segments = splitChainSegments(tokens);
   } catch {
-    return null; // fail OPEN, same posture as statementsOf
+    return []; // fail OPEN, same posture as statementsOf
   }
 
   // EVERY issue-create statement is a candidate, keyed by its HEAD token's
@@ -822,22 +840,39 @@ export function findLoopedIssueCreate(command) {
     const shape = matchStatement(seg);
     if (shape && shape.kind === 'issue') createHeads.set(seg[0], seg);
   }
-  if (createHeads.size === 0) return null;
+  if (createHeads.size === 0) return [];
 
   const kept = new Set(segments.flat());
+  const found = [];
   let depth = 0;
   for (const tok of tokens) {
     // A create head at depth 0 is a create AFTER (or BEFORE) a loop, not inside
     // one: `while x; do echo a; done; glab issue create` stays unimplicated.
     if (createHeads.has(tok)) {
-      if (depth > 0) return createHeads.get(tok);
+      if (depth > 0) found.push(createHeads.get(tok));
       continue;
     }
     if (tok.quoted || kept.has(tok)) continue; // an argument, or a separator
     if (tok.text === 'do') depth += 1;
     else if (tok.text === 'done' && depth > 0) depth -= 1;
   }
-  return null;
+  return found;
+}
+
+/**
+ * The FIRST looped issue-create statement, or `null`.
+ *
+ * @deprecated since #1379 — use {@link findLoopedIssueCreates}, which reports
+ * EVERY implicated loop. A caller that classifies anything per loop (a cap
+ * exemption, a per-loop deny reason) is WRONG on this API for a command with
+ * two loops; kept only because this module has no `exports` map, so every
+ * export is a public entrypoint a consumer may already import.
+ *
+ * @param {string} command
+ * @returns {Array<{ text: string, quoted: boolean }>|null}
+ */
+export function findLoopedIssueCreate(command) {
+  return findLoopedIssueCreates(command)[0] ?? null;
 }
 
 /**
@@ -881,7 +916,7 @@ export function findLoopedIssueCreate(command) {
  * to charging 1 for N. The unit test `tests/hooks/vcs-create-matcher.test.mjs`
  * pins the coupling directly. Revisit if that set is ever narrowed.
  *
- * Boolean wrapper over {@link findLoopedIssueCreate} — kept as the named
+ * Boolean wrapper over {@link findLoopedIssueCreates} — kept as the named
  * question for callers that only need the FACT (and for the sibling suites that
  * pin it). A caller that must classify the cap exemption asks for the STATEMENT
  * instead; see that function's docblock for why the distinction is load-bearing.
@@ -890,7 +925,7 @@ export function findLoopedIssueCreate(command) {
  * @returns {boolean} false when the command has no issue-create statement at all
  */
 export function isLoopedIssueCreate(command) {
-  return findLoopedIssueCreate(command) !== null;
+  return findLoopedIssueCreates(command).length > 0;
 }
 
 /**

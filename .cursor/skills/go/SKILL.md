@@ -1,6 +1,7 @@
 ---
 name: go
 description: Approve session plan and begin wave execution
+disable-model-invocation: true
 ---
 
 # go

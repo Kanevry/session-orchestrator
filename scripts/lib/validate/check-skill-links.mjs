@@ -20,7 +20,7 @@
  * citations, not intra-surface markdown links. Different predicate, different blind spot.
  *
  * WHAT IT CHECKS
- *   For every `.md` under the scanned surfaces, every inline link `[text](target)` whose target is
+ *   For every `.md`/`.mdc` under the scanned surfaces, every inline link `[text](target)` whose target is
  *   relative (not http(s):, not mailto:, not `#anchor`, not an absolute path) must exist on disk,
  *   resolved against the LINKING FILE's own directory. A `#fragment` suffix is stripped before the
  *   existence check — anchors are out of scope (no heading index here); the path half is not.
@@ -53,8 +53,28 @@ import { isMainModule } from '../is-main-module.mjs';
  * `-/issues/N` renderer links now carved out by `SKIP_TARGET`, two of them genuinely dangling
  * links to PRDs that had been archived to the private Meta-Vault. Both classes were resolved
  * before the widening, so the widening itself lands at 0 findings.
+ *
+ * `.cursor/rules` joined in the 3ebf0e9d fix-pass, with its yield stated honestly: that surface
+ * ships in the npm tarball and is symlinked into consumer repos by `scripts/cursor-install.mjs`,
+ * and it carried two citations of `commands/{go,close}.md` after those files were folded into
+ * their skills. Measured 2026-09-17: `.cursor/rules/*.mdc` contain ZERO `[text](target)` links
+ * (`grep -rnoE '\[[^]]*\]\([^)]+\)' .cursor/rules/` → no matches), so the widening adds 9 files
+ * and 0 checked links today and would NOT by itself have caught that defect — those citations are
+ * INLINE-CODE (`` `commands/go.md` ``), which this checker deliberately skips (see DELIBERATE
+ * NON-CHECKS). It is a forward guard for the day a real link is authored there, not the catcher
+ * for the backticked-citation class; that class has no gate in this repo (recorded, not assumed).
  */
-export const SCAN_DIRS = Object.freeze(['skills', 'commands', 'agents', '.claude/rules', 'docs']);
+export const SCAN_DIRS = Object.freeze(['skills', 'commands', 'agents', '.claude/rules', 'docs', '.cursor/rules']);
+
+/**
+ * File extensions this checker treats as instruction markdown.
+ *
+ * `.mdc` is Cursor's own rule extension and is the ONLY reason `.cursor/rules`
+ * is scannable at all: every file there is `<nnn>-<name>.mdc`, so a `.md`-only
+ * filter would have added the directory to {@link SCAN_DIRS} and enumerated
+ * zero files — a widening that looks live and checks nothing.
+ */
+export const MD_EXTENSIONS = Object.freeze(['.md', '.mdc']);
 
 /** Path segments that end the walk: vendored or machine-owned trees, never instruction. */
 export const PRUNE_DIRS = new Set(['node_modules', '.git', 'coverage', 'dist', '.pnpm']);
@@ -109,8 +129,8 @@ function fencedLineNumbers(text) {
  * and the check would report clean on the tree that carries the defect. This repo has the incident
  * on record (`.claude/rules/measurement-discipline.md` § "A `git grep` drift sweep cannot see
  * untracked files": a release sweep passed, then failed after the commit, from the same working
- * tree with no edit in between). The cost of the filesystem walk is that a gitignored `.md` under
- * these four directories would also be checked — there are none, and one would be a finding worth
+ * tree with no edit in between). The cost of the filesystem walk is that a gitignored markdown file
+ * under these directories would also be checked — there are none, and one would be a finding worth
  * seeing anyway.
  *
  * @param {string} repoRoot
@@ -126,7 +146,7 @@ export function listMarkdown(repoRoot, { dirs = SCAN_DIRS } = {}) {
     let entries;
     try { entries = readdirSync(abs, { recursive: true, withFileTypes: true }); } catch { continue; }
     for (const e of entries) {
-      if (!e.isFile() || !e.name.endsWith('.md')) continue;
+      if (!e.isFile() || !MD_EXTENSIONS.some((ext) => e.name.endsWith(ext))) continue;
       // parentPath is absolute; make the record repo-relative with POSIX separators.
       const rel = relative(repoRoot, join(e.parentPath ?? abs, e.name));
       const posix = sep === '/' ? rel : rel.split(sep).join('/');

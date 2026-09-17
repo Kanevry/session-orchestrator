@@ -125,7 +125,11 @@ describe('source validation before publication', () => {
     ['name: other\n', 'name'],
     ['metadata: wrong\n', 'metadata'],
     ['allowed-tools: 4\n', 'allowed-tools'],
-    ['user-invocable: "false"\n', 'user-invocable'],
+    // A QUOTED `user-invocable` is no longer a hard fail — it is normalised by
+    // the shared `isUserInvocableValue` (2026-09-17: the boolean-only throw
+    // crashed this generator on a value the Cursor and Pi generators happily
+    // turned into a wrapper). A non-scalar still is.
+    ['user-invocable: [nope]\n', 'user-invocable'],
     ['description: [unclosed\n', 'YAML'],
   ])('rejects invalid %s without updating earlier valid entries', (invalid, field) => {
     command('go');
@@ -149,6 +153,73 @@ describe('source validation before publication', () => {
     expect(result.ok).toBe(false);
     expect(result.errors.join('\n')).toContain('skills/plan/SKILL.md');
     expect(result.written).toEqual([]);
+  });
+
+  // HIGH-2 (2026-09-17): one value, four verdicts — `user-invocable: "true"`
+  // threw here, produced a wrapper on Cursor/Pi, and counted for neither
+  // counter. The shared normaliser makes every quoted/cased form of `true`
+  // produce the same generated POLICY + `$ARGUMENTS` wiring a bare `true`
+  // produces.
+  //
+  // QA-MED-2 (2026-09-17): the ORIGINAL 4-form list — `'"true"'`, `"'true'"`,
+  // `'True'` and `'true # a slash command'` — all SURVIVE a revert of the
+  // shared normaliser back to its OLD form (`value === true || value ===
+  // 'true'`): js-yaml's CORE_SCHEMA already resolves `True` and `true # c` to
+  // the BOOLEAN `true`, and `"true"`/`'true'` to the exact STRING `'true'`,
+  // all of which the OLD predicate accepted on its own (measured via
+  // `yaml.load(src, {schema: yaml.CORE_SCHEMA})`; old `isUserInvocableValue`
+  // at `git show HEAD:scripts/lib/user-invocable-skills.mjs`). `' true'` (a
+  // quoted leading space) and `'TRUE'` (quoted, so js-yaml keeps it a STRING
+  // instead of resolving it to a boolean) are the two forms that actually
+  // distinguish the two predicates: OLD rejects both, NEW accepts both.
+  //
+  // Measured deviation from a byte-identical full-file assertion: unlike the
+  // 4 original forms, `' true'` and `'TRUE'` do NOT round-trip through
+  // `toPortableFrontmatter`'s `toMetadataString` (`scripts/generate-agents-skills.mjs`)
+  // as the literal text `true` — that helper does a bare `String(value)`
+  // with no case/whitespace normalisation, so the projected
+  // `metadata.user-invocable` frontmatter field legitimately echoes the
+  // source token verbatim (`' true'` / `'TRUE'`), not `'true'`. That is a
+  // portability-mirror concern, not the HIGH-2/QA-MED-2 defect class. So this
+  // test compares the parts that DO depend on `isUserInvocableValue`'s
+  // verdict — the generated policy file and the `$ARGUMENTS`-bearing body —
+  // rather than the full raw SKILL.md text.
+  it.each(["' true'", "'TRUE'"])(
+    'reads user-invocable: %s exactly like a bare true (same policy + $ARGUMENTS wiring)',
+    (form) => {
+      write('skills/close/SKILL.md', '---\nname: close\ndescription: Close it.\nuser-invocable: true\n---\n\nBody.\n');
+      expect(generateCodexSurface({ pluginRoot: root }).ok).toBe(true);
+      const barePolicyPath = join(root, '.codex-plugin/skills/close/agents/openai.yaml');
+      const barePolicy = yaml.load(readFileSync(barePolicyPath, 'utf8'));
+      const bareBody = readSkill('close').body;
+
+      rmSync(join(root, '.codex-plugin'), { recursive: true, force: true });
+      write('skills/close/SKILL.md', `---\nname: close\ndescription: Close it.\nuser-invocable: ${form}\n---\n\nBody.\n`);
+      const result = generateCodexSurface({ pluginRoot: root });
+      expect(result.ok).toBe(true);
+      const quotedPolicy = yaml.load(readFileSync(barePolicyPath, 'utf8'));
+      const quotedBody = readSkill('close').body;
+
+      expect(quotedPolicy).toEqual(barePolicy);
+      expect(quotedBody).toBe(bareBody);
+      expect(quotedBody).toContain('$ARGUMENTS');
+    },
+  );
+
+  // QA-MED-2 (2026-09-17): the rejects-invalid table above used to carry
+  // `['user-invocable: "false"\n', 'user-invocable']` (`git show
+  // 3ebf0e9d:tests/scripts/generate-codex-skills.test.mjs`); replacing it with
+  // the non-scalar `[nope]` case lost the quoted-false pin. `"false"` is a
+  // VALID string scalar — `validateFrontmatter` never throws on it — so it
+  // belongs here as its own not-invocable assertion, not back in the
+  // rejects-invalid table.
+  it('treats user-invocable: "false" as not user-invocable rather than throwing', () => {
+    write('skills/quiet/SKILL.md', '---\nname: quiet\ndescription: A quiet skill.\nuser-invocable: "false"\n---\n\nBody.\n');
+    const result = generateCodexSurface({ pluginRoot: root });
+    expect(result.ok).toBe(true);
+    const entry = readSkill('quiet');
+    expect(entry.body).not.toContain('$ARGUMENTS');
+    expect(existsSync(join(root, '.codex-plugin/skills/quiet/agents/openai.yaml'))).toBe(false);
   });
 
   it('rejects an invalid native skill policy before publishing the public command', () => {

@@ -9,8 +9,8 @@ alwaysApply: false
 This rule is an index, not the procedure. Canonical skills:
 
 - `/session` → Read `commands/session.md`, then `skills/session-start/SKILL.md`
-- `/go` → Read `commands/go.md`, then `skills/wave-executor/SKILL.md`
-- `/close` → Read `commands/close.md`, then `skills/session-end/SKILL.md`
+- `/go` → Read `skills/go/SKILL.md`, then `skills/wave-executor/SKILL.md`
+- `/close` → Read `skills/close/SKILL.md`, then `skills/session-end/SKILL.md`
 
 Cursor has no Skill tool. Follow those files exactly. The summary below is not a substitute.
 

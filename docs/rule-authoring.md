@@ -336,6 +336,69 @@ This writes `.orchestrator/runtime/reconcile-candidates.jsonl` (creating it if
 absent). Verify with a dry run: `alreadyMaterialized` must equal
 absorbed + dropped, not absorbed alone.
 
+#### The expiry sweep (`scripts/sweep-expired-rules.mjs`, #1377)
+
+`rule-loader.mjs` stops INJECTING a generated rule once its `expires-at` has
+passed; nothing removed one from disk, so an expired consolidated file stayed
+tracked, kept costing bytes against `generated-byte-ceiling`, and kept reading
+as live corpus to every human and every grep. The sweep
+(`scripts/lib/reconcile/rule-expiry-sweep.mjs`, CLI
+`node scripts/sweep-expired-rules.mjs`, `--dry-run` default) closes that gap
+under four contracts, all of them consequences of the four merge rules above:
+
+1. **Prose goes, the pair STAYS.** An expired entry's `###` block is deleted;
+   its provenance pair is converted to the `markers only` shape already present
+   in the corpus — a same-line HTML comment appended to the `- learning-id:`
+   bullet, leaving the backticked value regex-visible to
+   `BODY_LEARNING_ID_RE`. Per point 1, deleting the pair would make the
+   learning look unmaterialized and `/reconcile` would regenerate it. **A pair
+   is never deleted while its file survives.**
+
+2. **Two fail-open cases, both reported rather than guessed.** An entry carries
+   no date of its own; its date is recoverable only via `learning-id` →
+   `.orchestrator/metrics/learnings.jsonl` `expires_at` (measured 2026-09-17 @
+   `9e8146b4`: 87 of 92 unique ids resolve, 5 do not). An **unresolvable id**
+   keeps its entry and blocks the file delete. An **ambiguous file** — where the
+   `###` headings do not map 1:1 onto the non-`markers only` pairs, because
+   several learnings were merged into one prose entry — gets `action: 'keep'`
+   plus a `skipped` record with reason `no-1to1-mapping`. Measured the same day,
+   the 1:1 mapping held in 3 of the 7 live files
+   (`measurement-discipline` 12/12, `process-contracts` 6/6,
+   `toolchain-and-build` 10/10) and failed in the other 4. Malformed
+   `learnings.jsonl` lines are COUNTED (`malformedLines`), never skipped.
+
+3. **Deleting a whole file obeys the stamp-before-delete rule above.** A file is
+   deleted only when it has zero kept AND zero unresolved pairs, and EVERY pair
+   on it — markers-only ones included, since those are dedupe markers too — is
+   stamped via `markCandidateProcessed` BEFORE the `unlink`. Stamping afterwards
+   leaves a window in which neither the file nor a terminal verdict exists.
+
+4. **The header is recomputed only for a file the sweep actually rewrites.**
+   Point 2's earliest-date rule is re-applied over the pairs that remain and
+   are not expired, in the frontmatter and in the body sentence
+   ``**`expires-at` <D> = the EARLIEST of the <N> absorbed dates**``. A file
+   with nothing expired is left BYTE-IDENTICAL, so a recompute-on-every-run
+   cannot silently shorten a healthy file's TTL. The discrepancy is reported as
+   the plan's `advisory` field instead — computed over every RESOLVABLE pair on
+   the file and emitted BEFORE the `no-1to1-mapping` skip, so an ambiguous file
+   still gets one. Measured 2026-09-17
+   (`node scripts/sweep-expired-rules.mjs --json`, 7 files scanned, 0 expired),
+   **6 of the 7 files carry a discrepancy**: `identity-and-locks` 2026-10-01 vs
+   2026-10-02, `measurement-discipline` 2026-10-04 vs 2026-10-02,
+   `process-contracts` 2026-10-04 vs 2026-10-27,
+   `review-and-adapter-contracts` 2026-10-04 vs 2026-10-02, `test-hygiene`
+   2026-10-20 vs 2026-10-07, `toolchain-and-build` 2026-10-01 vs 2026-10-16 —
+   only `guard-design` agrees with its content. Three are the harmful direction,
+   a header OUTLIVING its content (`measurement-discipline`,
+   `review-and-adapter-contracts`, `test-hygiene`); the other three expire
+   earlier than they need to, which costs injection and loses nothing. `N`
+   counts the pairs remaining in the file, which is the total pair count — an
+   absorbed date stays absorbed after its prose is gone, and all 7 live
+   sentences carry that number.
+
+`--apply` emits `orchestrator.rules.expiry_sweep_applied` after the writes
+succeed (see `docs/events-schema.md`); a dry run emits nothing.
+
 ## Authoring Examples
 
 ### (a) Hand-authored always-on rule (no frontmatter)

@@ -1,6 +1,7 @@
 ---
 description: "Use when you have a feature idea but the scope or UX is still ambiguous — runs a lightweight Socratic design dialogue (3-5 AUQ rounds) and writes a spec markdown file. Use BEFORE /plan feature when product intent needs validation; skip to /plan feature when scope is already clear. HARD-GATE prevents any code work until the design is user-approved."
 argument-hint: "[topic-or-feature-slug]"
+disable-model-invocation: true
 ---
 
 # /brainstorm

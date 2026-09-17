@@ -30,6 +30,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 
+import { isMainModule } from './is-main-module.mjs';
+
 // ---------------------------------------------------------------------------
 // Configuration defaults (mirrors the .sh defaults)
 // ---------------------------------------------------------------------------
@@ -296,14 +298,7 @@ async function _cliMain() {
   process.exit(3);
 }
 
-// Detect CLI invocation: import.meta.url matches the argv[1] path
-const isMain = process.argv[1] && (
-  process.argv[1] === new URL(import.meta.url).pathname ||
-  // Handle invocation without file:// prefix
-  process.argv[1].endsWith('fetch-baseline.mjs')
-);
-
-if (isMain) {
+if (isMainModule(import.meta.url)) {
   _cliMain().catch((err) => {
     process.stderr.write(`FATAL: ${err instanceof Error ? err.message : String(err)}\n`);
     process.exit(3);

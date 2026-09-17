@@ -32,6 +32,7 @@ import {
   isIssueCreate,
   isLoopedIssueCreate,
   findLoopedIssueCreate,
+  findLoopedIssueCreates,
   extractTitle,
   findIssueCreateStatements,
   matchesBypass,
@@ -433,5 +434,41 @@ describe('vcs-create-matcher — findLoopedIssueCreate returns the looped statem
   ])('%s → null', (_label, command) => {
     expect(findLoopedIssueCreate(command)).toBeNull();
     expect(isLoopedIssueCreate(command)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findLoopedIssueCreates — EVERY implicated loop, not just the first
+// ---------------------------------------------------------------------------
+//
+// TV-001 bug this catches (reproduced 2026-09-17 @ 9e8146b4): the single-value
+// scan `return`ed on the FIRST create head found at depth > 0, so a command
+// with TWO loops reported ONE. `hooks/pre-bash-issue-budget.mjs` G3b classifies
+// the cap exemption PER bulk statement, so with one loop reported an EXEMPT
+// first loop was the only thing judged and every later loop went unexamined —
+// ALLOW for a command that files an unknowable number of untemplated issues.
+
+describe('vcs-create-matcher — findLoopedIssueCreates enumerates every loop', () => {
+  it('reports BOTH loops of a two-loop command (the first-only scan reported one)', () => {
+    const twoLoops = 'for i in 1 2 3; do glab issue create --label carryover --title x$i; done; '
+      + 'for j in 1 2 3; do glab issue create --title junk$j; done';
+    const loops = findLoopedIssueCreates(twoLoops);
+    expect(loops).toHaveLength(2);
+    expect(loops[1].map((t) => t.text).join(' ')).toContain('junk');
+  });
+
+  it('reports both loops of a while-read pair', () => {
+    const loops = findLoopedIssueCreates(
+      'while read t; do glab issue create --label carryover --title "$t"; done < a; '
+      + 'while read u; do glab issue create --title "$u"; done < b',
+    );
+    expect(loops).toHaveLength(2);
+  });
+
+  it('returns [] when no create sits inside a loop, and agrees with the wrappers', () => {
+    const cmd = 'while true; do echo a; done; glab issue create --title z';
+    expect(findLoopedIssueCreates(cmd)).toEqual([]);
+    expect(findLoopedIssueCreate(cmd)).toBeNull();
+    expect(isLoopedIssueCreate(cmd)).toBe(false);
   });
 });

@@ -284,12 +284,16 @@ describe('graceful skip behaviour', () => {
     writeClaim('- **40 skills** present.');
     const j = parseJson(runChecker(vault).stdout);
     expect(j.checks_run).toContain('skill-count');
-    expect(j.checks_run).not.toContain('command-count');
+    // `skills/` exists, so the slash-command surface is MEASURED (0 user-invocable
+    // skills + no commands/ = 0), not skipped — the union gate is
+    // `isDir(commands) || isDir(skills)`, the same as site-numbers countCommands.
+    expect(j.checks_run).toContain('command-count');
+    expect(j.command_count.actual).toBe(0);
     expect(j.checks_run).not.toContain('agent-count');
     expect(j.checks_run).not.toContain('hook-event-count');
     expect(j.checks_run).not.toContain('test-count');
     // Each absent surface left a skip note.
-    expect(j.checks_skipped.some((s) => s.startsWith('command-count'))).toBe(true);
+    expect(j.checks_skipped.some((s) => s.startsWith('command-count'))).toBe(false);
     expect(j.checks_skipped.some((s) => s.startsWith('agent-count'))).toBe(true);
     expect(j.checks_skipped.some((s) => s.startsWith('hook-event-count'))).toBe(true);
   });

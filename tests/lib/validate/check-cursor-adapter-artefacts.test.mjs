@@ -67,10 +67,17 @@ describe('validateCursorArtefacts — generated-artefact frontmatter spec', () =
   it('passes artefacts the FIXED generator produces from a bracket-shaped source argument-hint', () => {
     const root = makeFixture();
     try {
-      mkdirSync(path.join(root, 'scripts'), { recursive: true });
+      mkdirSync(path.join(root, 'scripts', 'lib'), { recursive: true });
       mkdirSync(path.join(root, 'commands'), { recursive: true });
       mkdirSync(path.join(root, 'skills', 'session-start'), { recursive: true });
       copyFileSync(GENERATOR, path.join(root, 'scripts', 'generate-cursor-adapter.mjs'));
+      // The generator imports the shared user-invocable normaliser; a fixture copy
+      // of the generator alone would ERR_MODULE_NOT_FOUND (the import list is part
+      // of the fixture contract — same shape as installGenerator() in
+      // tests/scripts/generate-cursor-adapter.test.mjs).
+      for (const rel of ['lib/user-invocable-skills.mjs', 'lib/agent-frontmatter.mjs']) {
+        copyFileSync(path.join(REPO_ROOT, 'scripts', rel), path.join(root, 'scripts', rel));
+      }
       writeFileSync(
         path.join(root, 'commands', 'autopilot.md'),
         '---\ndescription: Autonomous loop — kill-switches (Phase C-1.b)\nargument-hint: "[--headless] [--verbose] [--max-sessions=N]"\n---\n# body\n',

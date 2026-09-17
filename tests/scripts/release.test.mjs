@@ -52,6 +52,7 @@ import {
   describeTagProgress,
   evaluateGithubCiRow,
   collectDriftHits,
+  evaluateCiPreflightRows,
 } from '../../scripts/release.mjs';
 import { fixtureGit, fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 import { DEGRADED_REASONS } from '../../scripts/lib/ci-status-banner.mjs';
@@ -1445,5 +1446,45 @@ describe('evaluateGithubCiRow', () => {
 
   it('self-disables when the checkout has no github remote', () => {
     expect(evaluateGithubCiRow(undefined, null)).toEqual({ ok: true, detail: 'skipped — no github remote' });
+  });
+});
+
+// ── #1332 fix: the GitHub CI row must ask about the RELEASE commit ───────────
+
+describe('evaluateCiPreflightRows', () => {
+  // BUG this catches: before this fix, neither `checkCiStatus` call passed
+  // `sha`, so the GitHub branch fell back to `commits/HEAD` — GitHub's OWN
+  // default-branch head, not necessarily the commit being released. A release
+  // cut before the mirror had received the commit therefore read the WRONG
+  // commit's CI status as this release's. Both platform calls must receive
+  // `sha` equal to the local HEAD of the commit under release — never the
+  // network, so `checkCiStatus` is stubbed.
+  it('asks both platforms about the release commit, not their own HEAD', async () => {
+    fixtureGit(['init', '-q'], root);
+    fixtureGit(['config', 'user.email', 'test@example.org'], root);
+    fixtureGit(['config', 'user.name', 'Test'], root);
+    writeFileSync(join(root, 'file.txt'), 'x');
+    fixtureGit(['add', 'file.txt'], root);
+    fixtureGit(['commit', '-q', '-m', 'init'], root);
+    const head = fixtureGit(['rev-parse', 'HEAD'], root).trim();
+
+    const calls = [];
+    const checkCiStatus = vi.fn(async (opts) => {
+      calls.push(opts);
+      return { status: 'green', ok: true };
+    });
+
+    const rows = await evaluateCiPreflightRows(root, head, {
+      checkCiStatus,
+      resolveRepoSpec: () => 'github.com/Owner/repo',
+    });
+
+    expect(checkCiStatus).toHaveBeenCalledTimes(2);
+    expect(calls[0]).toMatchObject({ repoRoot: root, sha: head });
+    expect(calls[1]).toMatchObject({ repoRoot: root, vcs: 'github', sha: head });
+    expect(rows).toEqual({
+      gitlab: { ok: true, detail: 'status: green' },
+      github: { ok: true, detail: 'github.com/Owner/repo — status: green' },
+    });
   });
 });

@@ -22,6 +22,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isUserInvocableValue } from './lib/user-invocable-skills.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(__filename);
@@ -56,15 +57,23 @@ function skillDirs() {
  * scalars in practice, which the previous line-at-a-time parser read as the
  * literal `>`. Mirrors `generate-cursor-adapter.mjs`.
  *
+ * A UTF-8 BOM before the opening `---`, or CRLF line endings, used to make the
+ * two probes below miss the block entirely: the file parsed as "no
+ * frontmatter", so `user-invocable` silently disappeared and the skill was
+ * demoted out of `pi/prompts/` with no diagnostic anywhere. Both are normalised
+ * away first — the same treatment `parseAgentFrontmatter`
+ * (`scripts/lib/agent-frontmatter.mjs`) gives them.
+ *
  * @param {string} content
  * @returns {Record<string, string>}
  */
 function parseFrontmatter(content) {
-  if (!content.startsWith('---\n')) return {};
-  const end = content.indexOf('\n---\n', 4);
+  const text = (content.charCodeAt(0) === 0xfeff ? content.slice(1) : content).replace(/\r\n?/g, '\n');
+  if (!text.startsWith('---\n')) return {};
+  const end = text.indexOf('\n---\n', 4);
   if (end === -1) return {};
 
-  const lines = content.slice(4, end).split('\n');
+  const lines = text.slice(4, end).split('\n');
   const fields = {};
   let i = 0;
   while (i < lines.length) {
@@ -127,30 +136,21 @@ function clampDescription(text) {
 }
 
 /**
- * The repo-wide marker for "operator-facing slash command".
- *
- * EXPLICIT means the literal `true` and nothing else: a missing key, `false`,
- * or any other value is a library skill. Surrounding whitespace is tolerated
- * (`user-invocable: true ` is the same declaration), because trailing spaces
- * are invisible in an editor and would otherwise silently demote a skill out of
- * `pi/prompts/` with no diagnostic anywhere.
- *
- * @param {unknown} value the raw frontmatter value
- * @returns {boolean}
- */
-function isUserInvocable(value) {
-  if (value === true) return true;
-  return typeof value === 'string' && value.trim() === 'true';
-}
-
-/**
  * Skills that declare themselves operator-facing slash commands.
+ *
+ * The predicate is `isUserInvocableValue` from `scripts/lib/user-invocable-skills.mjs`
+ * — the ONE normaliser for this marker, shared with the Cursor and Codex
+ * generators and with every counter. A local copy here is how the quoted-value
+ * disagreement arose (`"true"`: wrapper generated on two adapters, counted by
+ * neither counter, crash on the third).
+ *
  * @returns {string[]} skill names, sorted
  */
 function userInvocableSkills() {
   return skillDirs().filter((name) => {
-    const fields = parseFrontmatter(readFileSync(path.join(SKILLS_DIR, name, 'SKILL.md'), 'utf8'));
-    return isUserInvocable(fields['user-invocable']);
+    const file = path.join(SKILLS_DIR, name, 'SKILL.md');
+    const fields = parseFrontmatter(readFileSync(file, 'utf8'));
+    return isUserInvocableValue(fields['user-invocable'], file);
   });
 }
 

@@ -140,13 +140,23 @@ Do NOT reinvent the claim — always go through `claimRepo`/`acquire`. The `ok:f
 
 ## Phase 4: Route
 
-With the lease held, the **coordinator** invokes the chosen entry slash-command for repo R:
+With the lease held, routing splits on whether the chosen entry is model-invocable:
 
-- `/session housekeeping` or `/session deep` — execution modes.
-- `/plan` — read-only planning precursor (produces a wave plan; does not execute).
-- `/discovery` — read-only investigation precursor (maps scope; does not execute).
+- **`/session housekeeping` or `/session deep`** (execution modes) and **`/plan`** (read-only
+  planning precursor) are NOT something the coordinator can invoke itself. `commands/session.md`
+  documents `session` and `plan` as **reserved terminal-only built-in names** — under
+  non-interactive (`claude -p`) invocation the bare form answers `"isn't available in this
+  environment"` — and `skills/plan/SKILL.md` additionally carries
+  `disable-model-invocation: true`, which blocks the `Skill` tool from invoking it regardless of
+  interactivity. The coordinator therefore **hands the operator the exact command to type**, one
+  line per option — `/session-orchestrator:session <mode>` or `/session-orchestrator:plan
+  [new|feature|retro]` — rather than attempting to invoke either itself.
+- **`/discovery`** — read-only investigation precursor (maps scope; does not execute).
+  `skills/discovery/SKILL.md` carries no `disable-model-invocation` flag, so the coordinator MAY
+  invoke it directly via the `Skill` tool when the operator picks this option — no hand-off line
+  needed.
 
-`/plan` and `/discovery` are **read-only precursors**, NOT execution modes — the menu may route to them, but they only produce artifacts for a later execution session. The full mode taxonomy lives in the mode-selector surface (P2 of this epic); the dispatcher only routes to the entry command the operator picked.
+`/plan` and `/discovery` remain **read-only precursors**, NOT execution modes — the menu may route to them, but they only produce artifacts for a later execution session. The full mode taxonomy lives in the mode-selector surface (P2 of this epic); the dispatcher only routes to the entry command the operator picked.
 
 ## Phase 5: Edge cases
 

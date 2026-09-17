@@ -22,7 +22,7 @@ import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-import { checkSkillLinks, listMarkdown, SCAN_DIRS, PRUNE_DIRS } from '@lib/validate/check-skill-links.mjs';
+import { checkSkillLinks, listMarkdown, SCAN_DIRS, PRUNE_DIRS, MD_EXTENSIONS } from '@lib/validate/check-skill-links.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..', '..');
@@ -171,12 +171,25 @@ describe('enumeration', () => {
     expect(checkSkillLinks(root).ok).toBe(true);
   });
 
-  it('scans every instruction surface, docs/ included (#1258)', () => {
-    expect([...SCAN_DIRS]).toEqual(['skills', 'commands', 'agents', '.claude/rules', 'docs']);
+  it('scans every instruction surface, docs/ and .cursor/rules included', () => {
+    expect([...SCAN_DIRS]).toEqual(['skills', 'commands', 'agents', '.claude/rules', 'docs', '.cursor/rules']);
     const root = makeFixture(
       Object.fromEntries(SCAN_DIRS.map((d) => [`${d}/x.md`, '[dead](nope.md)\n'])),
     );
     expect(checkSkillLinks(root).findings).toHaveLength(SCAN_DIRS.length);
+  });
+
+  it('enumerates Cursor `.mdc` rules — a .md-only filter makes the .cursor/rules widening inert', () => {
+    // Every file under .cursor/rules is `<nnn>-<name>.mdc`, so listing the
+    // directory in SCAN_DIRS while filtering on `.md` alone would scan zero
+    // files there and still read as coverage. That surface ships in the npm
+    // tarball and is symlinked into consumer repos by cursor-install.mjs.
+    expect([...MD_EXTENSIONS]).toEqual(['.md', '.mdc']);
+    const root = makeFixture({ '.cursor/rules/010-session-workflow.mdc': 'Read [go](skills/go/SKILL.md).\n' });
+    expect(listMarkdown(root)).toEqual(['.cursor/rules/010-session-workflow.mdc']);
+    expect(checkSkillLinks(root).findings).toEqual([
+      { file: '.cursor/rules/010-session-workflow.mdc', line: 1, target: 'skills/go/SKILL.md' },
+    ]);
   });
 
   it('returns an empty list rather than throwing when a surface is absent', () => {

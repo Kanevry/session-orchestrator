@@ -53,7 +53,7 @@
 import { readStdin, emitAllow, emitDeny, emitWarn } from '../scripts/lib/io.mjs';
 import { resolveProjectDir } from '../scripts/lib/platform.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
-import { findIssueCreateStatements, findLoopedIssueCreate } from './_lib/vcs-create-matcher.mjs';
+import { findIssueCreateStatements, findLoopedIssueCreates } from './_lib/vcs-create-matcher.mjs';
 import {
   loadIssueBudgetConfig,
   resolveIssueBudgetSessionId,
@@ -187,15 +187,39 @@ function resolveToolCallId(input) {
  * entry #N … nothing is lost", which would be false here — an uncountable bulk
  * request is not parked, it is handed back whole.
  *
+ * ## Why the lane is a parameter (#1379)
+ *
+ * Until 2026-09-17 this text said "sits inside a shell loop body (`do … done`)"
+ * on BOTH lanes, so the `xargs` deny (`echo b | xargs -I% glab issue create
+ * --title junk%` — no loop anywhere) sent the operator looking for a loop the
+ * command does not have. Only the lane SENTENCE varies; every other line is
+ * byte-identical across lanes, and tests pin them.
+ *
  * @param {{ "max-per-session": number }} config
+ * @param {{ lane?: "loop"|"xargs"|"mixed" }} [opts]
  * @returns {string}
  */
-function formatLoopDenyReason(config) {
+function formatLoopDenyReason(config, { lane = 'loop' } = {}) {
+  const LANE_SENTENCES = {
+    loop: [
+      'The `issue create` call sits inside a shell loop body (`do … done`), so the cap cannot',
+      'charge it honestly: the word list is expanded by the shell AFTER this hook runs, so',
+      '`for i in $(seq 1 50)` would file 50 issues against a count of 1.',
+    ],
+    xargs: [
+      'The `issue create` call is driven by `xargs`, so the cap cannot charge it honestly: the',
+      'word list arrives on stdin AFTER this hook runs, so `seq 1 50 | xargs` would file 50',
+      'issues against a count of 1.',
+    ],
+    mixed: [
+      'The `issue create` calls are driven by a shell loop body (`do … done`) AND by `xargs`,',
+      'so the cap cannot charge them honestly: both word lists are produced AFTER this hook',
+      'runs, so `seq 1 50 | xargs` would file 50 issues against a count of 1.',
+    ],
+  };
   return [
     'issue-budget: this command creates an UNKNOWN number of issues — refusing to guess.',
-    'The `issue create` call sits inside a shell loop body (`do … done`), so the cap cannot',
-    'charge it honestly: the word list is expanded by the shell AFTER this hook runs, so',
-    '`for i in $(seq 1 50)` would file 50 issues against a count of 1.',
+    ...(LANE_SENTENCES[lane] ?? LANE_SENTENCES.loop),
     '',
     'Nothing was parked as overflow, because nothing is lost: re-issue the create calls as',
     'SEPARATE commands and each one is counted normally against the cap',
@@ -328,16 +352,33 @@ async function main() {
   // Fail-CLOSED when a command carries SEVERAL bulk statements and only some are
   // exempt: `some()` over the non-exempt ones denies, because the command as a
   // whole still files an uncountable number of untemplated issues.
-  const loopedTokens = findLoopedIssueCreate(command);
-  const bulkTexts = [
-    ...(loopedTokens ? [loopedTokens.map((t) => t.text).join(' ')] : []),
-    ...statements.filter((s) => s.bulk).map((s) => s.text),
+  //
+  // EVERY loop, not the first (#1379): the loop lane used to contribute at most
+  // ONE entry here, so an exempt FIRST loop was the only loop classified and
+  // every later loop went unjudged. Reproduced 2026-09-17 @ `9e8146b4`:
+  //   for i in 1 2 3; do glab issue create --label carryover --title x$i; done;
+  //   for j in 1 2 3; do glab issue create --title junk$j; done  → ALLOW (count=1)
+  const bulkEntries = [
+    ...findLoopedIssueCreates(command).map((tokens) => ({
+      lane: 'loop',
+      text: tokens.map((t) => t.text).join(' '),
+    })),
+    ...statements.filter((s) => s.bulk).map((s) => ({ lane: 'xargs', text: s.text })),
   ];
-  const uncountableBulk = bulkTexts.some((text) => !classifyExemption(text).exempt);
+  const uncountableEntries = bulkEntries.filter((e) => !classifyExemption(e.text).exempt);
+  const uncountableBulk = uncountableEntries.length > 0;
+  // ONE lane resolution for BOTH reports (#1379 follow-up). The deny already
+  // named the lane it fired on; the `warn` undercount notice at the bottom of
+  // main() said "inside a loop body" unconditionally, so the xargs lane — where
+  // no loop exists anywhere in the command — sent the operator looking for one.
+  // Resolved here rather than twice, so the two reports can never disagree.
+  const uncountableLanes = new Set(uncountableEntries.map((e) => e.lane));
+  const uncountableLane =
+    uncountableLanes.size > 1 ? 'mixed' : ([...uncountableLanes][0] ?? 'loop');
   if (uncountableBulk && config.mode === 'strict') {
     // Nothing is charged and nothing is parked — the command is handed back
     // whole, which is what makes unrolling it the correct next action.
-    return emitDeny(formatLoopDenyReason(config));
+    return emitDeny(formatLoopDenyReason(config, { lane: uncountableLane }));
   }
 
   const sessionId = await resolveSessionId(input, projectDir);
@@ -425,11 +466,32 @@ async function main() {
   // to name the undercount out loud — a silent 1-for-N is the exact failure the
   // deny above exists to prevent, and `warn` must not reintroduce it quietly.
   // emitWarn, not stderr: under exit 0 stderr reaches only the debug log (#916).
-  if (uncountableBulk && verdict.decision === 'allow') {
+  //
+  // GATED ON THE BULK STATEMENTS, NEVER ON THE LAST VERDICT (2026-09-17). The
+  // condition used to read `verdict.decision === 'allow'`, i.e. the verdict of
+  // the LAST statement of the chain — so one exempt statement written AFTER an
+  // uncountable one silenced the notice the two paragraphs above declare
+  // mandatory. Reproduced through this hook binary in `mode: warn`:
+  //   for i in 1 2; do glab issue create --title j$i; done; \
+  //     glab issue create --title "[Carryover] z"
+  //   → stdout EMPTY, ledger count=1 exempt=1 (the trailing exempt statement is
+  //     an unrelated neighbour, exactly as in G3b's own invariant); without it,
+  //     the identical loop reported the UNDERCOUNT.
+  // Reaching this point already means no statement blocked and none warned
+  // (both branches above return), so the uncountable bulk statement — non-exempt
+  // by construction of `uncountableEntries` — was charged as 1. The two negated
+  // conditions are kept explicit so a future reordering of those branches cannot
+  // turn this back into a report about the wrong statement.
+  if (uncountableBulk && !blocked && !verdicts.some((v) => v.decision === 'warn')) {
+    const LANE_PHRASES = {
+      loop: 'inside a loop body',
+      xargs: 'driven by `xargs`',
+      mixed: 'inside a loop body and by `xargs`',
+    };
     return emitWarn(
-      `pre-bash-issue-budget: bulk create inside a loop body charged as 1 ` +
+      `pre-bash-issue-budget: bulk create ${LANE_PHRASES[uncountableLane]} charged as 1 ` +
         `(${verdict.count}/${verdict.max}) — the real number of issues this files is not ` +
-        `knowable before the shell expands the word list, so the count is an UNDERCOUNT. ` +
+        `knowable before the word list is expanded, so the count is an UNDERCOUNT. ` +
         `Set \`issue-budget.mode: strict\` to deny this shape instead.`,
     );
   }

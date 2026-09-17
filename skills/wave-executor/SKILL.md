@@ -253,10 +253,13 @@ A housekeeping session is **ONE coordinator-direct wave**, not a shrunken multi-
 |---|---|---|---|
 | 1 | `claude-md-drift-check` | unconditional | checker JSON (`errors`/`warnings` counts) |
 | 2 | expired-learnings sweep | unconditional | `orchestrator.learnings.sweep_applied` |
-| 3 | `/evolve analyze` | AUQ-gated (the operator approves the proposed learnings) | `orchestrator.evolve.completed` |
-| 4 | `/reconcile` | AUQ-gated (rule proposals are never applied unasked) | `orchestrator.reconcile.completed` with `dry_run: false` |
-| 5 | `/evolve dialectic` | AUQ-gated (the derived thesis is presented, not committed) | `orchestrator.dialectic.completed` |
-| 6 | `/memory-cleanup` | AUQ-gated (deletions are operator-approved) | `orchestrator.memory.cleanup_completed` |
+| 3 | expired-generated-**rules** sweep — `node scripts/sweep-expired-rules.mjs` (`--dry-run` first, then `--apply`) | AUQ-gated (it rewrites and can DELETE tracked `.claude/rules/*.md` files) | `orchestrator.rules.expiry_sweep_applied` |
+| 4 | `/evolve analyze` | AUQ-gated (the operator approves the proposed learnings) | `orchestrator.evolve.completed` |
+| 5 | `/reconcile` | AUQ-gated (rule proposals are never applied unasked) | `orchestrator.reconcile.completed` with `dry_run: false` |
+| 6 | `/evolve dialectic` | AUQ-gated (the derived thesis is presented, not committed) | `orchestrator.dialectic.completed` |
+| 7 | `/memory-cleanup` | AUQ-gated (deletions are operator-approved) | `orchestrator.memory.cleanup_completed` |
+
+Row 3 runs directly after row 2 because its evidence comes from row 2's corpus: an entry's date is recoverable only via its `learning-id` → `learnings.jsonl` `expires_at`, so the rule sweep must see the store the learnings sweep left behind. Show the operator the dry-run plan — it names every rewrite, every delete, every `no-1to1-mapping` skip and every unresolvable pair — before asking. Contract: `docs/rule-authoring.md` § Consolidated rules → "The expiry sweep".
 
 The session-start probe `maintenance-due` (`scripts/lib/maintenance-due-banner.mjs`) says which of these are DUE for this repo; a run that is not due may be skipped, and the skip is reported. An AUQ-gated run the operator declines is reported as declined — never as done. **Absence of the artefact event is the only evidence that counts**: a run claimed in prose without its event is not a run (`.claude/rules/verification-before-completion.md`).
 

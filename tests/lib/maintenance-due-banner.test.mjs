@@ -321,7 +321,13 @@ describe('checkMaintenanceDue', () => {
     const row = computed.due.find((d) => d.id === 'generated-rules-expiring');
     // HR-106: the row carries the file and the date the verdict was computed
     // from — a bare "1 rule expiring" would leave the operator grepping.
-    expect(row?.detail).toBe(`nearly-expired.md ${expiresAt}`);
+    // Since #1377 the row also names the REPAIR — the operator who is told only
+    // which file expired has to rediscover that the sweep command exists. The
+    // assertion pins the file+date (the HR-106 fact) and the COMMAND, not the
+    // sentence around it: pinning the whole copy text makes a wording edit red
+    // while catching no bug (`test-value.md` TV-002c).
+    expect(row?.detail).toContain(`nearly-expired.md ${expiresAt}`);
+    expect(row?.detail).toContain('scripts/sweep-expired-rules.mjs');
     expect(computed.total).toBe(MAINTENANCE_TOTAL_SIGNALS);
     expect(computed.undeterminable).toEqual([]);
 

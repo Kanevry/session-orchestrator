@@ -633,6 +633,28 @@ describe('check 5: surface-count family (command/skill/agent/hook/test)', () => 
     expect(j.checks_run).toContain('skill-count');
   });
 
+  // ARCH-M4 (2026-09-17): a `skills/` dir with zero user-invocable skills and
+  // no `commands/` dir used to SKIP the surface (fromSkills.length === 0 read
+  // as "artifact absent"), while `scripts/site-numbers.mjs` `countCommands`
+  // measures a real `0` there (its gate is `isDir(commands) || isDir(skills)`).
+  // A `0` claim must pass silently and a wrong claim must still be caught.
+  it('counts 0 (not skip) when skills/ exists with nothing user-invocable and no commands/ dir', () => {
+    mkdirSync(join(vault, 'skills', 'library'), { recursive: true });
+    writeFileSync(join(vault, 'skills', 'library', 'SKILL.md'), '---\nname: library\ndescription: not invocable.\n---\n# library\n');
+
+    writeFileSync(join(vault, 'CLAUDE.md'), 'We ship 0 commands today.\n');
+    const okRun = parseJson(runChecker(vault, ['--skip-issue-refs']).stdout);
+    expect(okRun.checks_run).toContain('command-count');
+    expect(okRun.command_count).toEqual({ actual: 0 });
+    expect(okRun.errors.filter((e) => e.check === 'command-count')).toHaveLength(0);
+
+    writeFileSync(join(vault, 'CLAUDE.md'), 'We ship 1 commands today.\n');
+    const driftRun = parseJson(runChecker(vault, ['--skip-issue-refs']).stdout);
+    const errs = driftRun.errors.filter((e) => e.check === 'command-count');
+    expect(errs).toHaveLength(1);
+    expect(errs[0].message).toBe('Narrative claims 1 commands but actual on-disk count is 0');
+  });
+
   it('--skip-surface-count removes every surface from checks_run', () => {
     mkdirSync(join(vault, 'commands'), { recursive: true });
     writeFileSync(join(vault, 'commands/a.md'), '# a\n');
@@ -644,6 +666,34 @@ describe('check 5: surface-count family (command/skill/agent/hook/test)', () => 
     expect(j.checks_run).not.toContain('command-count');
     expect(j.checks_run).not.toContain('skill-count');
     expect(j.errors.filter((e) => /-count$/.test(e.check)).length).toBe(0);
+  });
+});
+
+describe('check 10: docs-parity commands actual shares the command-count union (#1370 fold regression)', () => {
+  // Bug: the #1370 commands→skills fold adapted the command-count surface
+  // (Check 5) to the commands/*.md ∪ user-invocable-skills union, but left the
+  // docs-parity sub-check (a) `commands` actual on a raw `commands/`
+  // readdirSync — so a repo with 1 commands/*.md file + 2 user-invocable
+  // skills undercounted docs-parity's actual as 1 instead of 3, flagging a
+  // correct `## Commands (3)` claim as drift while accepting the wrong `(1)`.
+  it('accepts the union count (3) and flags the raw-readdirSync count (1) as drift', () => {
+    mkdirSync(join(vault, 'commands'), { recursive: true });
+    writeFileSync(join(vault, 'commands', 'session.md'), '# session\n');
+    for (const name of ['alpha', 'beta']) {
+      mkdirSync(join(vault, 'skills', name), { recursive: true });
+      writeFileSync(join(vault, 'skills', name, 'SKILL.md'), '---\nname: ' + name + '\nuser-invocable: true\n---\n# ' + name + '\n');
+    }
+    mkdirSync(join(vault, 'docs'), { recursive: true });
+
+    writeFileSync(join(vault, 'docs', 'components.md'), '## Commands (3)\n');
+    const correctRun = parseJson(runChecker(vault, ['--skip-issue-refs']).stdout);
+    expect(correctRun.errors.filter((e) => e.check === 'docs-parity')).toHaveLength(0);
+
+    writeFileSync(join(vault, 'docs', 'components.md'), '## Commands (1)\n');
+    const wrongRun = parseJson(runChecker(vault, ['--skip-issue-refs']).stdout);
+    const wrongErrs = wrongRun.errors.filter((e) => e.check === 'docs-parity');
+    expect(wrongErrs).toHaveLength(1);
+    expect(wrongErrs[0].message).toBe('docs/components.md claims 1 commands but actual on-disk count is 3');
   });
 });
 
