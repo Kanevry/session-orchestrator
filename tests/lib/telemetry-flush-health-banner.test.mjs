@@ -13,7 +13,7 @@
  * writes the real repo's `.orchestrator/metrics/events.jsonl`.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -23,10 +23,32 @@ import {
   renderBanner,
 } from '../../scripts/lib/telemetry-flush-health-banner.mjs';
 
+/**
+ * TOCTOU seam for the `{missing: true}` read result (see the "rotated away
+ * between the existence check and the read" case below).
+ *
+ * `checkTelemetryFlushHealth` pre-checks `existsSync(file)` and only then reads
+ * the tail, so the reader's OWN ENOENT branch is unreachable from a plain
+ * missing file — it exists for the window between those two calls, which is
+ * exactly when a sibling session rotates the ledger. Forcing `existsSync` to
+ * yes while the file really is absent reproduces that window deterministically:
+ * only the existence PROBE is faked, the read below is the real `node:fs` one
+ * and really throws ENOENT.
+ */
+const toctou = vi.hoisted(() => ({ forceExists: false }));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal();
+  const existsSync = (p) =>
+    toctou.forceExists && String(p).endsWith('events.jsonl') ? true : actual.existsSync(p);
+  return { ...actual, default: { ...actual.default, existsSync }, existsSync };
+});
+
 const tmpDirs = [];
 
 beforeEach(() => {
   tmpDirs.length = 0;
+  toctou.forceExists = false;
 });
 
 afterEach(async () => {
@@ -113,6 +135,21 @@ describe('checkTelemetryFlushHealth', () => {
   // probe run's budget slot with it — a fresh clone has no events.jsonl.
   it('returns null when the events ledger does not exist', async () => {
     const dir = await mkRepo(undefined);
+    expect(checkTelemetryFlushHealth({ repoRoot: dir })).toBeNull();
+  });
+
+  // BUG (HR-105, the OTHER side of the ledger-unreadable warning below): the
+  // reader maps ENOENT to `{missing: true}` — one of its three documented
+  // return forms — while every other fs error becomes `{error}`. Folding ENOENT
+  // into `{error}` would make a ledger ROTATED AWAY between the existence check
+  // and the read display as "the sandbox guard state cannot be confirmed": a
+  // scary banner for a healthy channel, and one no session can reproduce because
+  // the file is back a millisecond later. Absence and unreadability must stay
+  // apart in BOTH directions, not only the one the warning covers.
+  it('returns null when the ledger is rotated away between the existence check and the read', async () => {
+    const dir = await mkRepo(undefined); // no events.jsonl on disk
+    toctou.forceExists = true; // …but the existence probe says there is one
+
     expect(checkTelemetryFlushHealth({ repoRoot: dir })).toBeNull();
   });
 

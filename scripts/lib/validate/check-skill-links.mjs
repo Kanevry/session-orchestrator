@@ -62,7 +62,15 @@ import { isMainModule } from '../is-main-module.mjs';
  * and 0 checked links today and would NOT by itself have caught that defect — those citations are
  * INLINE-CODE (`` `commands/go.md` ``), which this checker deliberately skips (see DELIBERATE
  * NON-CHECKS). It is a forward guard for the day a real link is authored there, not the catcher
- * for the backticked-citation class; that class has no gate in this repo (recorded, not assumed).
+ * for the backticked-citation class.
+ *
+ * That last clause read "and that class has no gate in this repo" until #1384 P3, when it stopped
+ * being true: `check-skill-script-paths.mjs` — which DOES judge complete inline-code spans against
+ * `MARKDOWN_CITATION_RE` — took the same two roots and `.mdc` into its own `SCAN_DIRS`, and is
+ * blocking via `scripts/validate-plugin.mjs`. Measured 2026-09-18: its corpus went 295 → 329 files
+ * and it reported the `commands/{go,close}.md` class of defect (4 blocking findings on first run).
+ * So the division of labour is: LINKS here, backticked CITATIONS there — neither surface is
+ * ungated.
  */
 export const SCAN_DIRS = Object.freeze(['skills', 'commands', 'agents', '.claude/rules', 'docs', '.cursor/rules']);
 

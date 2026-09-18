@@ -48,28 +48,54 @@
  *      `no-1to1-mapping` and touches nothing. It never guesses which paragraph
  *      belongs to which learning.
  *
- * ## Header recompute happens ONLY on a file this sweep rewrites
+ * ## Header recompute is ONE-DIRECTIONAL: raised, never lowered
  *
  * A consolidated file's frontmatter `expires-at` plus the body sentence
  * ``**`expires-at` <D> = the EARLIEST of the <N> absorbed dates**`` must not
- * outlive its shortest-lived content. Both are recomputed — but only for a file
- * the sweep actually rewrites. A file with nothing expired is left
- * BYTE-IDENTICAL, deliberately, because a recompute-on-every-run would silently
- * shorten a healthy file's TTL on the very first live invocation. The
- * discrepancy is REPORTED instead, as the per-plan `advisory` field — see
- * {@link headerAdvisory}, which is computed BEFORE the `no-1to1-mapping` skip
- * so a skipped file still gets one.
+ * outlive its shortest-lived content. The two directions of a
+ * header-vs-content discrepancy are NOT symmetric, so they are handled
+ * differently:
  *
- * Measured 2026-09-17 (`node scripts/sweep-expired-rules.mjs --json`, 7 files
- * scanned, 0 expired): **6 of the 7 carry a discrepancy** — `identity-and-locks`
- * 2026-10-01 vs 2026-10-02, `measurement-discipline` 2026-10-04 vs 2026-10-02,
- * `process-contracts` 2026-10-04 vs 2026-10-27, `review-and-adapter-contracts`
- * 2026-10-04 vs 2026-10-02, `test-hygiene` 2026-10-20 vs 2026-10-07,
- * `toolchain-and-build` 2026-10-01 vs 2026-10-16; only `guard-design` agrees
- * with its content. Three of the six are the harmful direction — a header
- * OUTLIVING its content: `measurement-discipline`, `review-and-adapter-contracts`
- * and `test-hygiene`. The other three expire EARLIER than they need to, which
- * costs injection but loses nothing.
+ *   - **Header EARLIER than the earliest absorbed date → RAISED, and that raise
+ *     is itself a rewrite trigger** (`action: 'rewrite'`,
+ *     `reason: 'header-raise'`). Left alone, the cliff has no way back:
+ *     `scripts/lib/rule-loader.mjs` drops a file whose header has passed out of
+ *     injection even though not one absorbed entry expired, while the surviving
+ *     `learning-key`/`learning-id` markers keep `/reconcile` treating those
+ *     learnings as materialized — so the substance goes dark silently and is
+ *     never re-proposed. Measured 2026-09-18 (`--json`, live corpus): 3 of 7
+ *     files are in that state (`identity-and-locks` 2026-10-01 vs 2026-10-02,
+ *     `process-contracts` 2026-10-04 vs 2026-10-27, `toolchain-and-build`
+ *     2026-10-01 vs 2026-10-16), i.e. 31.5 kB of corpus that would fall dark
+ *     with nothing expired.
+ *   - **Header LATER than the earliest absorbed date → NEVER lowered**, only
+ *     reported via the per-plan `advisory` field. Lowering on every run would
+ *     shorten a healthy file's TTL — killing an entry early — on the very first
+ *     live invocation, which is the direction that destroys substance rather
+ *     than preserving it.
+ *
+ * The raise is MINIMAL: exactly the frontmatter `expires-at:` line and the
+ * `COUNTER_RE` body sentence change; every other byte of the file is left
+ * untouched (see {@link rewriteHeaderOnly}). It needs no entry↔pair mapping —
+ * it compares the frontmatter date against dates read out of `learnings.jsonl`
+ * by id — so a `no-1to1-mapping` file gets it too, exactly like the advisory
+ * (see {@link headerAdvisory}); that file's `skipped` record refers to the
+ * PROSE sweep, which still touches nothing there.
+ *
+ * `reason` rather than a novel `action` value, deliberately: the CLI
+ * (`scripts/sweep-expired-rules.mjs`) aggregates its human summary line and its
+ * `applied` counters over the three actions `rewrite`/`delete`/`keep` only, so a
+ * fourth action name would make a header raise invisible in exactly the preview
+ * an operator reads before `--apply`. A raise IS a write; it is counted as one.
+ *
+ * Measured 2026-09-18 (`node scripts/sweep-expired-rules.mjs --json`, 7 files
+ * scanned, 0 expired, 0 skipped): **3 of the 7 carry a discrepancy**, all three
+ * in the header-EARLIER direction and therefore all three raises —
+ * `identity-and-locks` 2026-10-01 → 2026-10-02, `process-contracts` 2026-10-04
+ * → 2026-10-27, `toolchain-and-build` 2026-10-01 → 2026-10-16. The other four
+ * agree with their content. (An earlier reading on 2026-09-17 listed six
+ * discrepancies including three header-LATER ones; the corpus has been
+ * hand-consolidated since, so re-measure rather than trusting either list.)
  *
  * Before the advisory moved above the skip branch it reached only the 3
  * 1:1-mappable files, which structurally excluded the four merged-prose files —
@@ -293,6 +319,51 @@ function dateOnly(iso) {
 }
 
 /**
+ * The earliest resolvable absorbed date on the file, as `YYYY-MM-DD`.
+ *
+ * Population: EVERY provenance pair whose `learning-id` resolves to a parseable
+ * `expires_at`, markers-only pairs included — an absorbed date stays absorbed
+ * after its prose is gone, which is exactly what the body sentence's `N` counts.
+ * Unresolvable ids contribute nothing (they are reported separately as
+ * `unresolvedPairIds`), so a file whose ids all fail to resolve yields `null`
+ * rather than a guess.
+ *
+ * @param {ReturnType<typeof parseConsolidatedRule>} parsed
+ * @param {Map<string, string>} expiryById
+ * @returns {string|null}
+ */
+function earliestResolvableDate(parsed, expiryById) {
+  const dates = parsed.pairs
+    .map((p) => expiryById.get(p.id))
+    .filter((v) => typeof v === 'string' && Number.isFinite(Date.parse(v)))
+    .sort();
+  return dates.length > 0 ? dateOnly(dates[0]) : null;
+}
+
+/**
+ * The date to RAISE a too-low header to, or `null` when there is nothing to do.
+ *
+ * One-directional by contract: returns a date only when the header expires
+ * STRICTLY EARLIER than the earliest resolvable absorbed date. A header that
+ * outlives its content is never lowered here — see the module header for why
+ * the two directions are not symmetric.
+ *
+ * @param {ReturnType<typeof parseConsolidatedRule>} parsed
+ * @param {Map<string, string>} expiryById
+ * @returns {string|null}
+ */
+function headerRaiseTarget(parsed, expiryById) {
+  if (!parsed.expiresAt || parsed.expiresAtLine < 0) return null;
+  const headerMs = Date.parse(parsed.expiresAt);
+  if (!Number.isFinite(headerMs)) return null;
+  const earliest = earliestResolvableDate(parsed, expiryById);
+  if (earliest === null) return null;
+  const earliestMs = Date.parse(earliest);
+  if (!Number.isFinite(earliestMs) || earliestMs <= headerMs) return null;
+  return earliest;
+}
+
+/**
  * The header-vs-content discrepancy, as a one-line advisory string.
  *
  * Population: EVERY provenance pair on the file whose `learning-id` resolves to
@@ -312,14 +383,68 @@ function dateOnly(iso) {
  */
 function headerAdvisory(parsed, expiryById) {
   if (!parsed.expiresAt) return undefined;
-  const dates = parsed.pairs
-    .map((p) => expiryById.get(p.id))
-    .filter((v) => typeof v === 'string' && Number.isFinite(Date.parse(v)))
-    .sort();
-  if (dates.length === 0) return undefined;
-  const earliest = dateOnly(dates[0]);
-  if (earliest === parsed.expiresAt) return undefined;
+  const earliest = earliestResolvableDate(parsed, expiryById);
+  if (earliest === null || earliest === parsed.expiresAt) return undefined;
   return `header expires-at ${parsed.expiresAt} != earliest resolvable absorbed date ${earliest}`;
+}
+
+/**
+ * Rewrite ONLY the two dated header lines — the frontmatter `expires-at:` and
+ * the `COUNTER_RE` body sentence. Every other byte of the file is carried over
+ * untouched; that byte-identity is the whole safety argument for making a raise
+ * a rewrite trigger, and it is pinned by a test.
+ *
+ * @param {ReturnType<typeof parseConsolidatedRule>} parsed
+ * @param {string} target  `YYYY-MM-DD` to raise the header to
+ * @returns {string}
+ */
+function rewriteHeaderOnly(parsed, target) {
+  const lines = [...parsed.lines];
+  if (parsed.expiresAtLine >= 0) lines[parsed.expiresAtLine] = `expires-at: ${target}`;
+  if (parsed.counterLine >= 0) {
+    lines[parsed.counterLine] = lines[parsed.counterLine].replace(
+      COUNTER_RE,
+      `**\`expires-at\` ${target} = the EARLIEST of the ${parsed.pairs.length} absorbed dates**`,
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * The plan for a file with NO expired entry: a byte-identical `keep`, or — when
+ * the header sits below the earliest absorbed date — a minimal `header-raise`
+ * rewrite. Shared by both no-expiry branches (the `no-1to1-mapping` skip and
+ * the ordinary nothing-expired case) because the raise needs no entry↔pair
+ * mapping.
+ *
+ * @param {object} base        the common plan fields
+ * @param {ReturnType<typeof parseConsolidatedRule>} parsed
+ * @param {string|undefined} advisory
+ * @param {string|null} raiseTo
+ * @returns {object}
+ */
+function keepOrRaisePlan(base, parsed, advisory, raiseTo) {
+  if (raiseTo === null) {
+    return {
+      ...base,
+      action: 'keep',
+      newExpiresAt: null,
+      newAbsorbedCount: parsed.pairs.length,
+      bytesAfter: base.bytesBefore,
+      ...(advisory ? { advisory } : {}),
+    };
+  }
+  const nextContent = rewriteHeaderOnly(parsed, raiseTo);
+  return {
+    ...base,
+    action: 'rewrite',
+    reason: 'header-raise',
+    newExpiresAt: raiseTo,
+    newAbsorbedCount: parsed.pairs.length,
+    bytesAfter: Buffer.byteLength(nextContent, 'utf8'),
+    nextContent,
+    ...(advisory ? { advisory } : {}),
+  };
 }
 
 /**
@@ -387,25 +512,29 @@ export async function planRuleExpirySweep(opts = {}) {
     // never receive one. Measured 2026-09-17: the advisory reached 3 of 7 files
     // where 6 of 7 have the discrepancy.
     const advisory = headerAdvisory(parsed, expiryById);
+    const raiseTo = headerRaiseTarget(parsed, expiryById);
 
     if (parsed.entries.length !== substantive.length) {
-      // FAIL-OPEN (decision 3): report, never guess. A skipped file still
-      // carries its advisory — reporting is all this branch can do.
+      // FAIL-OPEN (decision 3): report, never guess — the PROSE sweep touches
+      // nothing here. A skipped file still carries its advisory, and still gets
+      // a too-low header raised: neither needs an entry↔pair mapping.
       skipped.push({ file: rule.file, reason: 'no-1to1-mapping' });
-      plans.push({
-        file: rule.file,
-        action: 'keep',
-        expiredPairIds: [],
-        keptPairIds: substantive.map((p) => p.id),
-        unresolvedPairIds: substantive.filter((p) => !expiryById.has(p.id)).map((p) => p.id),
-        newExpiresAt: null,
-        newAbsorbedCount: parsed.pairs.length,
-        bytesBefore: Buffer.byteLength(content, 'utf8'),
-        bytesAfter: Buffer.byteLength(content, 'utf8'),
-        headings: parsed.entries.length,
-        substantivePairs: substantive.length,
-        ...(advisory ? { advisory } : {}),
-      });
+      plans.push(
+        keepOrRaisePlan(
+          {
+            file: rule.file,
+            expiredPairIds: [],
+            keptPairIds: substantive.map((p) => p.id),
+            unresolvedPairIds: substantive.filter((p) => !expiryById.has(p.id)).map((p) => p.id),
+            bytesBefore: Buffer.byteLength(content, 'utf8'),
+            headings: parsed.entries.length,
+            substantivePairs: substantive.length,
+          },
+          parsed,
+          advisory,
+          raiseTo,
+        ),
+      );
       continue;
     }
 
@@ -443,16 +572,11 @@ export async function planRuleExpirySweep(opts = {}) {
     };
 
     if (expired.length === 0) {
-      // Byte-identical. The header/earliest discrepancy is REPORTED, never
-      // silently repaired — see the module header.
-      plans.push({
-        ...base,
-        action: 'keep',
-        newExpiresAt: null,
-        newAbsorbedCount: parsed.pairs.length,
-        bytesAfter: base.bytesBefore,
-        ...(advisory ? { advisory } : {}),
-      });
+      // Byte-identical, UNLESS the header sits below the earliest absorbed date
+      // — that one direction is repaired (raised), never merely reported, or the
+      // whole file falls out of injection with nothing expired. The opposite
+      // direction stays an advisory. See the module header.
+      plans.push(keepOrRaisePlan(base, parsed, advisory, raiseTo));
       continue;
     }
 
@@ -474,6 +598,7 @@ export async function planRuleExpirySweep(opts = {}) {
     plans.push({
       ...base,
       action: 'rewrite',
+      reason: 'expired-entries',
       newExpiresAt: earliest,
       newAbsorbedCount: parsed.pairs.length,
       bytesAfter: Buffer.byteLength(nextContent, 'utf8'),
@@ -575,6 +700,10 @@ function assertSweepable(abs, rulesDir, file) {
  * between the two leaves a stamped candidate and a live file (harmless — the
  * file still dedupes) rather than an unstamped learning with no file, which
  * `/reconcile` would re-propose.
+ *
+ * A plan carrying `reason: 'header-raise'` is an ordinary `action: 'rewrite'`
+ * here — same guards, same atomic write, counted in `rewritten` — because it IS
+ * a write to a tracked rule file; only its `nextContent` is narrower.
  *
  * Every rewrite and every delete passes {@link assertSweepable} first (regular
  * file, inside the rules directory, not a symlink), and every rewrite goes

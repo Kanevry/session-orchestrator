@@ -185,4 +185,4 @@ async function updateUser(id: string, data: Partial<User>): Promise<void> {
 - Batch operations: use `.upsert()` or `.insert()` with arrays instead of individual inserts in loops.
 
 ## See Also
-development.md · security.md · security-web.md · testing.md · frontend.md · backend.md · swift.md · mvp-scope.md · cli-design.md · parallel-sessions.md
+security-web.md · frontend.md · backend.md · swift.md · parallel-sessions.md

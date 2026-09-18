@@ -31,8 +31,10 @@
  * @module scripts/lib/telemetry-flush-health-banner
  */
 
-import { existsSync, openSync, readSync, fstatSync, closeSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
+
+import { readTailWindow } from './tail-window.mjs';
 
 /**
  * Bytes of `events.jsonl` read from the END of the file.
@@ -82,31 +84,11 @@ function sanitizeReason(reason) {
  * @returns {{text: string} | {missing: true} | {error: string}}
  */
 function readTail(file) {
-  let fd;
   try {
-    fd = openSync(file, 'r');
-    const { size } = fstatSync(fd);
-    const length = Math.min(size, TAIL_BYTES);
-    const start = size - length;
-    const buf = Buffer.allocUnsafe(length);
-    let read = 0;
-    while (read < length) {
-      const n = readSync(fd, buf, read, length - read, start + read);
-      if (n <= 0) break;
-      read += n;
-    }
-    return { text: buf.subarray(0, read).toString('utf8') };
+    return { text: readTailWindow(file, TAIL_BYTES).text };
   } catch (err) {
     if (err?.code === 'ENOENT') return { missing: true };
     return { error: typeof err?.code === 'string' ? err.code : 'EUNKNOWN' };
-  } finally {
-    if (fd !== undefined) {
-      try {
-        closeSync(fd);
-      } catch {
-        /* best effort */
-      }
-    }
   }
 }
 

@@ -2,7 +2,7 @@
   {
     "name": "ecosystem-health",
     "command": "node \"${CLAUDE_PLUGIN_ROOT}\"/scripts/lib/ecosystem-health.mjs --watch",
-    "description": "Ecosystem repo health watcher (CI status, branch drift, stale baselines across vault-registered projects). Emits one NDJSON line per detected state change. Hung on session-start because the previous trigger (on-skill-invoke:ecosystem-health) was self-referential: it could only start when the ecosystem-health skill ran, and that skill has 0 recorded invocations fleet-wide, so the watcher never started once.",
+    "description": "Local state-file watcher: every 900 s it stats and reads ONE file, .orchestrator/metrics/ecosystem-health.jsonl under the plugin root, and emits one NDJSON line per change (appeared / disappeared / changed). No network, no CI or branch probing, no repo enumeration, no Session Config read. Nothing writes that file yet (0 writers, measured 2026-09-18), so every run emits `no-state-yet` and idles until SIGTERM — ceiling and revisit trigger at DEFAULT_INTERVAL_S in scripts/lib/ecosystem-health.mjs. Hung on session-start because the previous trigger (on-skill-invoke:ecosystem-health) was self-referential: it could only start when the ecosystem-health skill ran, and that skill has 0 recorded invocations fleet-wide, so the watcher never started once.",
     "when": "on-skill-invoke:session-start"
   },
   {

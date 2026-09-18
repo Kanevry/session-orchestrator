@@ -387,4 +387,4 @@ export async function askAI(prompt: string, options?: { model?: string; maxToken
 - Checking budget after the LLM call (check before, enforce before spending)
 
 ## See Also
-development.md · security.md · security-web.md · testing.md · frontend.md · backend-data.md · swift.md · mvp-scope.md · cli-design.md · parallel-sessions.md
+security-web.md · frontend.md · backend-data.md · swift.md · parallel-sessions.md

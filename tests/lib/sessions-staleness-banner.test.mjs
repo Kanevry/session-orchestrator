@@ -360,6 +360,30 @@ describe('checkSessionsStaleness — backfill-stub self-erasure fix (isBackfillS
     expect(result.deltaHours).toBe(10);
   });
 
+  // Live-reproduced 2026-09-18 (s23): after a stub was superseded by the
+  // `state-md-completed` record, the probe still classified the replacement as
+  // a stub (any `_backfill_source`), anchored on its started_at and warned
+  // ~14h — recommending a backfill run that has nothing left to do.
+  it('anchors on a state-md-completed supersede record\'s completed_at, not its started_at', () => {
+    const supersede = JSON.parse(stubLine({
+      sessionId: 'main-x',
+      startedAt: '2026-01-01T17:30:00.000Z',
+      completedAt: '2026-01-02T07:45:00.000Z',
+      statusAbandoned: false,
+      backfillSource: 'state-md-completed',
+    }));
+    supersede.status = 'completed';
+    supersede.supersedes = 'main-x';
+    writeSessions(tmpRepo, [
+      sessionLine('2026-01-01T12:00:00.000Z'),
+      stubLine({ sessionId: 'main-x', startedAt: '2026-01-01T17:30:00.000Z', completedAt: '2026-01-02T07:45:00.000Z' }),
+      JSON.stringify(supersede),
+    ]);
+    writeEvents(tmpRepo, [eventLine('2026-01-02T08:25:00.000Z')]);
+    const now = Date.parse('2026-01-02T09:00:00.000Z');
+    expect(checkSessionsStaleness({ repoRoot: tmpRepo, now })).toBe(null);
+  });
+
   it('falls back to the newest stub\'s started_at (not completed_at) and flags stubFallback:true when EVERY record is a stub', () => {
     writeSessions(tmpRepo, [
       stubLine({ sessionId: 'main-stub-1', startedAt: '2026-01-01T00:00:00.000Z', completedAt: '2026-01-01T00:05:00.000Z' }),

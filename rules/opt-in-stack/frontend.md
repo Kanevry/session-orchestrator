@@ -95,4 +95,4 @@ tier: wave-only
 - No arbitrary z-index (`z-index: 999 / 9999`). Build a semantic z-index scale (dropdown → sticky → modal → toast → tooltip); never magic numbers.
 
 ## See Also
-development.md · security.md · security-web.md · testing.md · backend.md · backend-data.md · mvp-scope.md · parallel-sessions.md
+security-web.md · backend.md · backend-data.md · parallel-sessions.md

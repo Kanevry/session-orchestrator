@@ -177,6 +177,7 @@ function runCli(pluginRoot) {
     } else {
       const detail = ((result.stdout ?? '') + (result.stderr ?? '')).trim();
       fail(`Cursor adapter wrappers are stale${detail ? `: ${detail}` : ''}`);
+      console.log('        Remedy: node scripts/generate-cursor-adapter.mjs');
     }
   }
 

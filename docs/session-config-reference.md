@@ -200,6 +200,15 @@ down session-start.
 | `stale-branch-days` | integer | `7` | Days of inactivity before a branch is flagged as stale. |
 | `stale-issue-days` | integer | `30` | Days without progress before an issue is flagged for triage. |
 
+**`cross-repo.projects` block form (#469, #478).** Not to be confused with the flat `cross-repos` list above. The dotted name is only how `parseSessionConfig()` returns it (`scripts/lib/config.mjs:446`); in the config file it is a `projects:` sub-key under a top-level `cross-repo:` block:
+
+```yaml
+cross-repo:
+  projects: [~/Projects/my-app, ~/Projects/another-app]   # INLINE list only
+```
+
+Parsed by `_parseCrossRepo()` (`scripts/lib/config/cross-repo.mjs:50-84`). Only the inline form on the `projects:` line is read — a block list of `- ` items under `projects:` yields `[]` without a warning (measured 2026-09-18). An entry containing anything outside `[A-Za-z0-9._~/-]` (a shell metacharacter, a space) is dropped with one stderr line `cross-repo: rejected project entry with shell metacharacter: …`. Absent, empty, `none` or `null` → `[]`. Readers additionally drop entries resolving outside `~/Projects/` (confinement root, `getConfinementRoot()`). Read by `scripts/run-migrate-v2-cross-repo.mjs`, `scripts/vault-integration-watcher.mjs`, `scripts/promote-vault-strict.mjs`, and — as a secondary repo source after the filesystem scan — `scripts/lib/dispatcher/enumerate.mjs:303`.
+
 ## Auto-Skill Dispatch (#337)
 
 Opt-in phrase-match meta-skill (`skills/using-orchestrator/SKILL.md`) that inspects the user's first message for implicit slash-command intent (e.g. "plane neues Projekt", "run discovery on the backlog") and dispatches to the highest-confidence matching entry-point skill via the `Skill` tool — before that skill's own Phase 1 — once the bootstrap gate is open. Off by default; when `false` (or absent) the meta-skill returns immediately with zero reads, zero logging, zero side effects, and every calling skill behaves exactly as if it was never invoked.
@@ -343,6 +352,7 @@ slopcheck:
 | `grounding-check` | boolean | `true` | Enable file-level grounding verification in session-end Phase 1.1a (planned vs touched files). When true, session-end compares each agent's declared file scope against `git diff --name-only $SESSION_START_REF..HEAD` and reports scope creep + incomplete coverage. Informational — does not block session close. |
 | `grounding-injection-max-files` | integer | `3` | Max files with recent `edit-format-friction` stagnation history to inject as line-numbered GROUNDING blocks into each agent's prompt before dispatch (wave-executor pre-dispatch step). Per-agent scope; selects top N by recency. `0` disables the feature. Gated on `persistence: true`. (#85) |
 | `isolation` | string | `auto` | Agent isolation mode: `worktree`, `none`, or `auto`. `auto` resolves per-wave via the graduated default (#194): ≤2 agents → `none`, 3–4 agents on feature/deep → `worktree`, ≥5 agents → `worktree`, housekeeping 3–4 → `none`. Explicit `worktree` or `none` overrides the graduation. The resolved value surfaces per wave as `waves[].isolation` in the session shape's JSON output (`scripts/session-shape.mjs`) — a coordinator-direct or read-only wave resolves `none` without consulting the graduation at all. See [isolation graduation](#isolation-graduation) below. |
+| `worktree-exclude` | list | `[node_modules, dist, build, .next, .nuxt, coverage, .cache, .turbo, .vercel, out]` | Top-level directory names deleted (recursive `fs.rm`) from a freshly created worktree, to cut disk and RAM on constrained hosts (#192). Parsed as a flat list by `scripts/lib/config.mjs:237-241`; read by `createWorktree()` (`scripts/lib/worktree/lifecycle.mjs:155-181`) and applied by `applyWorktreeExcludes()` (`scripts/lib/worktree/listing.mjs`). Names only, no globs, no nested paths; a name absent from the worktree is skipped silently. `null` / `none` / `[]` disable all excludes. **Scope limit (measured 2026-09-18):** `createWorktree()` has no production caller — `grep -rn "createWorktree(" scripts hooks skills` finds only a comment in `scripts/lib/wave-executor/foreign-dispatch.mjs`, which creates its own detached worktree with `git worktree add`. Wave dispatch under `isolation: worktree` uses the harness's native Agent worktree and never reads this key, so setting it changes nothing in a wave today. |
 | `max-turns` | integer or string | `auto` | Maximum agent turns before PARTIAL. Auto expands PER SESSION TYPE inside the resolved shape (`scripts/lib/session-shape.mjs` `MAX_TURNS_DEFAULT`, § Session Shapes above): housekeeping=8, feature=15, deep=25 (`maxTurnsDefault` in the shape JSON, applied to every wave). The `ultradeep` profile does **not** use one flat number — it sets `max-turns` PER WAVE: 40 for the Research+Code-Discovery wave, 25 for Impl-Core/Impl-Polish/Quality, 15 for Release/Finalization (the Synthesis-Gate wave is coordinator-direct and carries no `max-turns` at all). |
 | `auto-commit-per-wave` | boolean | `false` | Automatically commit each wave's work after the Quality-Lite gate passes. Checkpoint commits per wave reduce the risk of data loss from `git stash` collisions in parallel sessions (V3.3 RESCUE incident — see GitLab #214). When `false`, all work is committed at session-end via `/close`. Requires `persistence: true`; the flag is silently ignored when `persistence: false`. Trade-off: each wave produces an additional commit; git log shows N+1 commits instead of 1. Use `/simplify` or `git rebase -i --autosquash` before final close to squash if a clean history is desired. **Implementation note:** the procedural commit sequence (`scripts/lib/auto-commit.mjs`) is deferred to V3.6. Until then, setting this flag to `true` triggers a session-start warning that auto-commits are not yet active — the flag is a no-op but is validated so projects can opt in early. <!-- path-check: historical --> |
 
@@ -1003,14 +1013,14 @@ All fields live under a top-level `dialectic` object in your Session Config (CLA
 dialectic:
   cadence: 5              # integer ≥ 0; 0 = kill-switch
   model: haiku            # haiku | sonnet | opus
-  budget-tokens: 8000     # input token budget per call
+  budget-tokens: 32000    # input token ceiling per call
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `dialectic.cadence` | integer | `5` | Number of sessions between auto-dialectic dispatches. Set to `0` to disable all dispatches (kill-switch). Non-integer and negative values silently fall back to default. **The dispatch moment moved (2026-09-09):** `shouldDispatchAutoDialectic()` is still the decision function this key feeds, but session-end Phase 3.6.7's own auto-trigger nudge is gone — retired as a standalone close-time prompt, and its recording wrapper (with the `orchestrator.dialectic.nudge_decided` event) removed in #1288 — see § Persistence & Safety above "Nudge retirement". The session-start `maintenance-due` probe now calls it as one of seven signals, so a due dialectic surfaces where the operator can act on it (session start), not where they are closing down. |
 | `dialectic.model` | string | `haiku` | Model tier for the critique call. Must be one of `haiku`, `sonnet`, `opus`. **Fail-fast**: unknown values cause parse-config.mjs to exit 1 at startup — NOT silently ignored. |
-| `dialectic.budget-tokens` | integer | `8000` | Input token budget per call. Output budget is fixed at 4000 (per #506). Non-integer and negative values fall back to default. |
+| `dialectic.budget-tokens` | integer | `32000` | Input token ceiling per call (`DEFAULT_BUDGET_TOKENS`, `scripts/lib/config/dialectic.mjs:24`). `32000` — card bodies + steering alone estimated ~12k tokens in this repo, a consumer repo measured 30,262 (2026-09-18); the value is a ceiling, the pre-dispatch estimate aborts above it (`checkBudget()`, `scripts/dialectic-deriver.mjs:125`, status `budget-exceeded` — never a truncation). Output budget is fixed at 4000 (per #506). Non-integer and negative values fall back to default. |
 
 **Used by:** `skills/evolve/SKILL.md` Phase 6, `scripts/dialectic-deriver.mjs`, `scripts/lib/auto-dialectic.mjs`, and the session-start `maintenance-due` probe (`scripts/lib/maintenance-due-banner.mjs`). Session-end Phase 3.6.7 no longer reads it (retired 2026-09-09).
 
@@ -1018,9 +1028,9 @@ dialectic:
 
 **Trigger behavior:** When `cadence > 0` AND sessions-since-last-dialectic ≥ cadence AND (≥1 new session OR ≥1 new learning since last run), `shouldDispatchAutoDialectic()` returns `trigger: true` and the session-start `maintenance-due` probe reports it; the housekeeping session then runs the deriver in dry-run mode (session-end Phase 3.6.7 is retired — it dispatches nothing). The diff sidecar lands at `.orchestrator/dialectic-pending.md` (gitignored, vault-mirror-excluded). When `cadence: 0`, the signal never fires; manual `/evolve --dialectic` always works. <!-- path-check: example -->
 
-**Token cost:** With defaults (cadence: 5, budget-tokens: 8000, output 4000, model haiku), ~12k tokens every 5 sessions. At haiku pricing this is ~$0.02/run. Surfaced in Final Report.
+**Token cost:** `budget-tokens` is a ceiling, not a spend — a run costs its actual input plus at most 4000 output tokens, once every 5 sessions with the default cadence (model haiku). Surfaced in Final Report.
 
-**Empirical note (2026-07-04 session-3) — the parser default of `8000` proved structurally unreachable for this repo's own peer-card/steering corpus.** Fixed overhead (Peer-Cards + Steering + scaffold) alone runs ≈13k tokens, and a full input set (top-50 learnings + last-10 sessions) runs ≈28.4k tokens — both already exceed the `8000` default before any call is made. This repo's own committed Session Config therefore sets `budget-tokens: 32000`, not the documented default. If your repo accumulates a similarly large peer-card/steering corpus over time, raise `budget-tokens` accordingly rather than leaving the low default in place — a too-low budget silently truncates the dialectic critique input rather than erroring.
+**Empirical note — why the default is `32000` (#1380).** The former parser default of `8000` proved structurally unreachable: in this repo (2026-07-04 session-3) the fixed overhead (Peer-Cards + Steering + scaffold) alone ran ≈13k tokens and a full input set (top-50 learnings + last-10 sessions) ≈28.4k tokens; a consumer repo measured 30,262 (2026-09-18). Because the budget gate aborts BEFORE dispatch instead of truncating (`scripts/dialectic-deriver.mjs:604-612`), a corpus of that size can never run under `8000` — it ends `budget-exceeded` every time. If your peer-card/steering corpus outgrows `32000`, raise `budget-tokens` — a too-low ceiling aborts the run, it never shortens the input.
 
 ## Eval (#803)
 
@@ -1204,6 +1214,33 @@ docs-orchestrator:
 - `skills/session-start/SKILL.md` — Phase 2.5 docs-context step (activated when `enabled: true`)
 - `skills/session-end/SKILL.md` — Phase 3.2 gap-reporting step (activated when `enabled: true`)
 - `agents/docs-writer.md` — agent dispatched for documentation generation
+
+## GitLab Portfolio (GH #41)
+
+Opt-in cross-repo health dashboard for the `gitlab-portfolio` skill (`/portfolio`): discovers repos from `<vault>/01-projects/*/_overview.md`, aggregates open issues, MRs, critical labels and stale signals, and writes `_PORTFOLIO.md` into the vault. It needs `vault-integration.vault-dir` — the CLI exits 2 without it (`scripts/lib/gitlab-portfolio/cli.mjs`).
+
+All fields live under a top-level `gitlab-portfolio` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`):
+
+```yaml
+gitlab-portfolio:
+  enabled: false                 # opt-in
+  mode: warn                     # warn | strict | off
+  stale-days: 30                 # integer ≥ 1
+  critical-labels:               # BLOCK list only — see the row below
+    - priority::critical
+    - priority::high
+```
+
+| Field | Type | Default | Allowed values | Description |
+|-------|------|---------|----------------|-------------|
+| `gitlab-portfolio.enabled` | boolean | `false` | `true` / `false` | Only the literal `true` enables it. When false, `/portfolio` prints `disabled` and exits 0 (`cli.mjs:192-199`), and session-start Phase 2.7 skips its dry-run banner (`skills/session-start/SKILL.md` § Phase 2.7). |
+| `gitlab-portfolio.mode` | string | `warn` | `warn` / `strict` / `off` | `strict` makes the CLI exit 2 when any repo failed to fetch (`cli.mjs:375`). `warn` and `off` both exit 0 in the CLI; `off` additionally suppresses the session-start banner. An unknown value falls back to `warn`. |
+| `gitlab-portfolio.stale-days` | integer | `30` | integer ≥ 1 | An open issue whose `updated_at` is older than this counts as stale (`scripts/lib/gitlab-portfolio/aggregator.mjs`). An invalid value falls back to `30`. |
+| `gitlab-portfolio.critical-labels` | array of string | `[priority::critical, priority::high]` | non-empty strings | Labels that count an issue as critical; matching is scope-tolerant (`priority:critical` also matches). **Block list only:** items need their own `- ` lines indented at least 3 spaces. The inline form `critical-labels: [a, b]` is NOT read — the parser silently keeps the default (measured 2026-09-18 via `_parseGitlabPortfolio`). |
+
+Parsing is tolerant: `_parseGitlabPortfolio()` (`scripts/lib/config/gitlab-portfolio.mjs`, called at `scripts/lib/config.mjs:443`) drops unknown sub-keys and replaces invalid values with the defaults above, never throwing. The strict check lives separately in `validateGitlabPortfolio()` (`scripts/lib/config-schema.mjs:369-405`, wired at `:104-106`), which reports wrong types and unknown sub-keys as schema errors under `enforcement`.
+
+**Used by:** `scripts/lib/gitlab-portfolio/cli.mjs` (`/portfolio`, and session-start Phase 2.7 via `--dry-run`), `skills/gitlab-portfolio/SKILL.md`.
 
 ## Events Rotation
 

@@ -1,11 +1,20 @@
 /**
- * auto-dialectic.mjs — Cadence helper for session-end Phase 3.6.7 (#506, F2.5).
+ * auto-dialectic.mjs — Cadence helper for the dialectic derivation (#506, F2.5).
  *
- * Mirrors the auto-dream.mjs API shape exactly. Decides whether the post-session
- * dialectic derivation should fire, writes the proposed peer-card diff to
+ * Mirrors the auto-dream.mjs API shape exactly. Decides whether a dialectic
+ * derivation is DUE, writes the proposed peer-card diff to
  * `.orchestrator/dialectic-pending.md` atomically, and tracks the last-run
- * timestamp at `.orchestrator/dialectic-last-run` so the next session can
- * compute cadence delta.
+ * timestamp at `.orchestrator/dialectic-last-run`.
+ *
+ * Who calls what (the session-end Phase 3.6.7 auto-trigger is GONE — #1288):
+ *   - `shouldDispatchAutoDialectic` — read by the session-start `maintenance-due`
+ *     probe (`scripts/lib/maintenance-due-banner.mjs`) to report the `dialectic`
+ *     signal. Side-effect-free by contract: a variant advancing the last-run stamp
+ *     would consume the signal it reports.
+ *   - `writeDialecticPending` / `consumeDialecticPending` / `writeDialecticLastRun` —
+ *     called by `/evolve dialectic` (Step 6.4 in
+ *     `skills/evolve/references/evolve-dialectic-mode.md`), the only trigger today.
+ *   - Both sidecars are READ by the same `maintenance-due` probe.
  *
  * Decision inputs (PRD F2.5 acceptance criteria):
  *   - dialectic.cadence (default 5) — sessions since last dialectic run
@@ -17,7 +26,7 @@
  * separate helpers. No external deps — Node 20+ stdlib only.
  */
 
-import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, rename, unlink, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -180,15 +189,16 @@ export async function readDialecticSignals({ repoRoot } = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * Decide whether session-end Phase 3.6.7 should dispatch
- * `/evolve --dialectic --dry-run`.
+ * Decide whether a dialectic derivation is DUE — i.e. whether the operator should
+ * run `/evolve dialectic` (dry-run first). Read by the session-start
+ * `maintenance-due` probe; no auto-trigger consumes this any more (#1288).
  *
  * Rules (PRD F2.5):
  *   - cadence === 0 → never trigger (kill-switch).
  *   - AC4 precondition: sessionsSinceLast === 0 AND learningsSinceLast === 0 →
  *     no new input since last run → skip with reason
- *     `no-new-input-since-last-run` (this skip MUST surface in the Final
- *     Report verbatim as `dialectic: skipped (no new input since last run)`).
+ *     `no-new-input-since-last-run` (the reason string is part of the contract —
+ *     the `maintenance-due` probe reports it verbatim).
  *   - sessionsSinceLast >= cadence → trigger (cadence threshold met).
  *   - Otherwise → skip with reason `under-threshold (sessions=N/M)`.
  *
@@ -257,8 +267,12 @@ export async function shouldDispatchAutoDialectic({
  * never a half-written intermediate (mirrors auto-dream.mjs:248-251).
  *
  * Defensive: returns `{ok: false, error}` on filesystem failure rather than
- * throwing — callers (session-end Phase 3.6.7 step 7) should log the error
- * and continue rather than aborting the close.
+ * throwing — the caller logs the error and continues.
+ *
+ * Caller: `/evolve dialectic` Step 6.4 (`skills/evolve/references/evolve-dialectic-mode.md`),
+ * after a successful `--apply` AND after the operator explicitly discards a
+ * proposal. Without this write the maintenance-due `dialectic` signal never
+ * resets (#1380). The session-end auto-trigger that used to call it is gone.
  *
  * @param {object} args
  * @param {string} args.repoRoot
@@ -293,11 +307,17 @@ export async function writeDialecticLastRun({ repoRoot, isoTimestamp } = {}) {
  * Write the proposed dialectic diff to `.orchestrator/dialectic-pending.md`
  * atomically.
  *
+ * Caller: `/evolve dialectic` Step 6.4's dry-run branch
+ * (`skills/evolve/references/evolve-dialectic-mode.md`) — `runDialecticDeriver()`
+ * returns the diff and the caller persists it here. There is no session-end
+ * auto-trigger any more (#1288).
+ *
  * Caller supplies the body (a Markdown document containing the peer-card
  * diff and any narrative). This helper prepends a minimal hand-rolled YAML
- * frontmatter block carrying the metadata session-end's Final Report and
- * the next session's --apply step both rely on. The frontmatter is hand
- * rolled (no js-yaml dep) — auto-dream pattern.
+ * frontmatter block carrying the metadata the operator's review and the later
+ * `--apply` step rely on; the session-start `maintenance-due` probe reads the
+ * resulting file's presence + age for its `pending-sidecar` signal. The
+ * frontmatter is hand rolled (no js-yaml dep) — auto-dream pattern.
  *
  * Atomicity: tmp+rename (mirrors auto-dream.mjs:248-251).
  *
@@ -364,6 +384,35 @@ export async function writeDialecticPending({
   await rename(tmp, target);
 
   return { path: target, bytes: Buffer.byteLength(content, 'utf8') };
+}
+
+/**
+ * Consume (delete) `.orchestrator/dialectic-pending.md` once its proposal has
+ * been applied or explicitly discarded. Mirrors auto-dream's `--apply-pending`,
+ * which unlinks its sidecar on success: without this, the maintenance-due
+ * `pending-sidecar` signal stays due for the sidecar's full 14-day window
+ * after the proposal was already dealt with (#1380).
+ *
+ * ENOENT is tolerated (`consumed: false`) — "already gone" is the desired end
+ * state. Any other filesystem error returns `{ok: false, error}` rather than
+ * throwing, matching `writeDialecticLastRun`.
+ *
+ * @param {object} args
+ * @param {string} args.repoRoot
+ * @returns {Promise<{ok:boolean, consumed?:boolean, error?:string, path?:string}>}
+ */
+export async function consumeDialecticPending({ repoRoot } = {}) {
+  if (!repoRoot) {
+    return { ok: false, error: 'consumeDialecticPending: repoRoot is required' };
+  }
+  const target = pendingPath(repoRoot);
+  try {
+    await unlink(target);
+    return { ok: true, consumed: true, path: target };
+  } catch (err) {
+    if (err?.code === 'ENOENT') return { ok: true, consumed: false, path: target };
+    return { ok: false, error: err.message };
+  }
 }
 
 /**

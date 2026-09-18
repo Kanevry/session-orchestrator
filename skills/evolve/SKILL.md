@@ -15,7 +15,7 @@ args-schema:
   - flag: --model <name>
     description: "Override single-pass LLM (haiku|sonnet|opus)"
   - flag: --budget-tokens <N>
-    description: "Token budget for derivation prompt (default 8000)"
+    description: "Input token ceiling for derivation prompt (default 32000; aborts above it, never truncates)"
 description: >
   Use this skill when extracting session patterns into reusable learnings. Three modes: analyze (extract from session history),
   review (edit/manage existing learnings), list (display active learnings). Manages .orchestrator/metrics/learnings.jsonl.

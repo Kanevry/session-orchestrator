@@ -42,17 +42,25 @@
  *                           meaningful when > 0 (foreign activity happened
  *                           AFTER the last ledger entry).
  *
- * Backfill-stub self-erasure fix — the anchor axis: a backfill-produced
- * `sessions.jsonl` record (`_backfill_source` / `status: 'abandoned'`, see
- * `session-close-backfill.mjs` `synthesizeRecord()`) sets `completed_at =
- * max(started_at, lastTerminalMs ?? nowMs)`. When the abandoned session
- * never emitted a STOPPED/ENDED event — the COMMON case, since that is
- * *why* it is "abandoned" — `completed_at` silently becomes the BACKFILL
- * RUN's own wall-clock instant, not a measurement of when the session
- * actually ended. Anchoring `lastLedgerEntry()` on that value means a
- * backfill run can retroactively erase a multi-day staleness gap just by
- * writing a stub today (observed: a 92.5h gap to the last GENUINE record
- * collapsed to 0.6h the moment a backfill stub landed).
+ * Backfill-stub self-erasure fix — the anchor axis: a backfill STUB
+ * (`status: 'abandoned'`, see `session-close-backfill.mjs` `synthesizeRecord()`)
+ * is a reconstruction, not a measured close. Before #914 R1 its `completed_at`
+ * could be the BACKFILL RUN's own wall-clock; since #914 R1 it is
+ * events-derived (terminal event, else last life-sign, else `started_at`) and
+ * flagged in `_backfill_incomplete_fields` whenever it is an estimate. A stub's
+ * `completed_at` is still refused as an anchor: an abandoned session proves
+ * the ledger alive only at its start. Anchoring on it once let a backfill run
+ * retroactively erase a multi-day staleness gap just by writing a stub today
+ * (observed: a 92.5h gap to the last GENUINE record collapsed to 0.6h).
+ *
+ * A `state-md-completed` backfill (status `completed`, #429/#1068) is NOT a
+ * stub: its status is the session's own truth claim, and its timestamps are
+ * events-derived like any other. Treating every `_backfill_source` as a stub
+ * kept the probe warning after a stub had been superseded, and recommended a
+ * backfill run with nothing left to do (live 2026-09-18). Independently of the
+ * kind, a timestamp named in a record's `_backfill_incomplete_fields` was not
+ * measured (e.g. `started_at` fell back to the backfill run's `now`) and is
+ * never an anchor candidate.
  *
  * Two axes were available to fix this: (a) skip stub records when scanning
  * for the ledger anchor, keeping `completed_at` as the anchor field; or (b)
@@ -63,10 +71,9 @@
  * (a session's own mid-session events would newly count as "after" the
  * anchor), reintroducing false positives on the opposite side. (a) is
  * chosen: a stub's `completed_at` is NEVER an anchor candidate. Stub
- * recognition uses EITHER marker (OR, not AND) deliberately — both are set by
- * the same producer today, but requiring both would silently stop matching the
- * day a future backfill variant drops one of them while keeping the other; OR
- * degrades gracefully (still catches it), AND does not.
+ * recognition: `status: 'abandoned'` alone suffices, and so does a
+ * `_backfill_source` on any record whose status is not `completed` — OR, not
+ * AND, so a future backfill variant that drops one marker is still caught.
  *
  * #1125 — newest-across-ALL records, not genuine-first: excluding the stub's
  * `completed_at` (above) is correct; excluding the whole STUB from the anchor
@@ -166,26 +173,44 @@ function readJsonlLines(filePath) {
 }
 
 /**
- * True when a `sessions.jsonl` record's `completed_at` was SYNTHESIZED by
- * the backfill engine (`scripts/lib/session-close-backfill.mjs`
- * `synthesizeRecord()`) rather than measured at real session-close time —
- * see the module-header "Backfill-stub self-erasure fix" section above for
- * the full reasoning behind the OR (not AND) combination of the two markers.
+ * True when a `sessions.jsonl` record is a backfill STUB — a reconstruction
+ * whose `completed_at` is never an anchor candidate (module header,
+ * "Backfill-stub self-erasure fix").
  *
- * Reuses `isRealSession()` from `./session-schema/filters.mjs` — its own doc
- * names `status: 'abandoned'` "the canonical marker" for exactly this phantom
- * class, so this is the SAME predicate every other real/phantom-aware
- * consumer in this repo already relies on, not a hand-rolled duplicate of it.
- * `_backfill_source` is layered on top as the second, independent signal.
- * Caller guarantees `record` is already a non-null object (see
- * `lastLedgerEntry()`'s guard above the call site).
+ * `isRealSession()` (`./session-schema/filters.mjs`) catches `status:
+ * 'abandoned'`, the canonical phantom marker. A `_backfill_source` counts only
+ * when the status is not `completed`: the `state-md-completed` supersede record
+ * is the session's own completion claim. Same exclusion as
+ * `isSupersedableStub()` in `session-close-backfill.mjs` (which keeps
+ * `completed` out of its stub statuses); not imported from there because that
+ * predicate demands BOTH markers before a record may be OVERWRITTEN, where
+ * this one accepts EITHER — a record only has to be doubtful to be
+ * disqualified as a time anchor. The two therefore disagree by design on
+ * `{_backfill_source, status: 'interrupted'}`, and the names say which
+ * question each answers.
+ * Caller guarantees `record` is already a non-null object.
  *
  * @param {object} record
  * @returns {boolean}
  */
-function isBackfillStub(record) {
+function isNonAnchorStub(record) {
   if (!isRealSession(record)) return true;
-  return typeof record._backfill_source === 'string' && record._backfill_source.length > 0;
+  return typeof record._backfill_source === 'string' && record._backfill_source.length > 0
+    && record.status !== 'completed';
+}
+
+/**
+ * Anchor candidate for one timestamp field of a record — `null` when the
+ * backfill engine listed that field in `_backfill_incomplete_fields` (it was
+ * not measured, e.g. a `started_at` that fell back to the backfill run's now).
+ *
+ * @param {object} record
+ * @param {'started_at'|'completed_at'} field
+ * @returns {{iso: string, ms: number}|null}
+ */
+function fieldCandidate(record, field) {
+  if (Array.isArray(record._backfill_incomplete_fields) && record._backfill_incomplete_fields.includes(field)) return null;
+  return tsCandidate(record[field]);
 }
 
 /**
@@ -225,15 +250,16 @@ function keepNewer(current, candidate) {
  *
  * Which timestamp each record kind contributes, and why (full reasoning in the
  * module header, "#1125 — newest-across-ALL records"):
- *   - GENUINE (`!isBackfillStub()`) → `completed_at`, written by the real
+ *   - GENUINE (`!isNonAnchorStub()`) → `completed_at`, written by the real
  *     session-end path; falling back to `started_at` when `completed_at` is
  *     absent or unparseable, so a truncated/in-flight record still contributes
  *     the coverage it does prove. Taking the newer of the two can only move the
  *     anchor forward, never backward, so it does not inflate `deltaHours`.
- *   - BACKFILL STUB → `started_at` ONLY. Its `completed_at` may be the backfill
- *     RUN's own wall-clock rather than a measurement of when the session ended
- *     (see `synthesizeRecord()`), and anchoring on that would let a backfill run
- *     retroactively erase a real multi-day gap.
+ *   - BACKFILL STUB → `started_at` ONLY. An abandoned session proves the
+ *     ledger alive at its start, not at a reconstructed end; anchoring on the
+ *     stub's `completed_at` would let a backfill run erase a real gap.
+ *   - Either kind: a field listed in `_backfill_incomplete_fields` was not
+ *     measured and contributes nothing (`fieldCandidate()`).
  *
  * The two kinds are MAXED, not ranked: an older genuine record must not outrank
  * a newer stub (that priority order was the #1125 false-alert defect). When the
@@ -258,13 +284,13 @@ function lastLedgerEntry(records) {
   for (const record of records) {
     if (!record || typeof record !== 'object') continue;
 
-    if (isBackfillStub(record)) {
-      newestStub = keepNewer(newestStub, tsCandidate(record.started_at));
+    if (isNonAnchorStub(record)) {
+      newestStub = keepNewer(newestStub, fieldCandidate(record, 'started_at'));
       continue;
     }
 
-    let own = tsCandidate(record.completed_at);
-    const started = tsCandidate(record.started_at);
+    let own = fieldCandidate(record, 'completed_at');
+    const started = fieldCandidate(record, 'started_at');
     // `completed_at` is the normal anchor and wins ties; `started_at` only
     // takes over when it is genuinely newer or `completed_at` is unusable.
     if (started !== null && (own === null || started.ms > own.ms)) own = started;

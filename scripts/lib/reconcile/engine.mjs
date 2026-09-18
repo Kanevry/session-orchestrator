@@ -104,26 +104,36 @@
  * @property {string} [error]  - present only when the never-throws top-level guard fired.
  */
 
-import { readFileSync, readdirSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute } from 'node:path';
 
 import { expandTilde } from '../common.mjs';
 import { learningKeyOf } from '../learnings/kebab.mjs';
-import { migrateLegacyLearning, normalizeLearning } from '../learnings/schema.mjs';
+import {
+  countReconcileBacklog,
+  defaultLoadCandidatesForDedupe,
+  defaultLoadLearnings,
+  defaultReadMaterializedProvenance,
+  partitionMaterialized,
+} from './backlog.mjs';
 import { filterEligible } from './eligibility.mjs';
 import { toActivationMetadata } from './emitter.mjs';
 import { renderRule } from './renderer.mjs';
 import {
   DEFAULT_STORE_PATH,
   buildCandidate,
-  isProcessed,
   makeCandidateId,
-  loadCandidates as realLoadCandidates,
   mergeCandidates as realMergeCandidates,
 } from './idempotency.mjs';
 
-/** Default repo-relative location of the learnings corpus. */
-const DEFAULT_LEARNINGS_PATH = '.orchestrator/metrics/learnings.jsonl';
+/**
+ * Re-exported from the LEAF module `./backlog.mjs` (which now owns the
+ * side-effect-free backlog half) so every existing importer of these two names
+ * keeps working unchanged. A read-only probe should import them from
+ * `./backlog.mjs` DIRECTLY — importing them from here drags this orchestrator's
+ * whole closure (emitter, renderer, unicode validator, candidate-store writer)
+ * into the probe. See that module's header for the measured cost.
+ */
+export { countReconcileBacklog, partitionMaterialized };
 
 /**
  * Default volume brake (issue #900 D) — mirrors the `reconcile.max-proposals-
@@ -155,57 +165,6 @@ function zeroedResult(error) {
   };
   if (typeof error === 'string') result.error = error;
   return result;
-}
-
-/**
- * Default learnings loader — read + parse `<repoRoot>/.orchestrator/metrics/learnings.jsonl`
- * line-by-line, migrate/normalize records through the learnings schema SSOT,
- * and skip blank/malformed lines. A missing file (ENOENT) yields `[]`
- * silently; an unreadable one (EACCES/EISDIR/…) yields `[]` with a stderr
- * WARN (#1210 — ENOENT and other read failures are different facts, same
- * split as `sessions-canonical.mjs` `readCanonicalSessions`).
- *
- * @param {string|undefined} repoRoot
- * @returns {Array<Record<string, unknown>>}
- */
-function defaultLoadLearnings(repoRoot) {
-  const root = typeof repoRoot === 'string' && repoRoot.length > 0 ? repoRoot : process.cwd();
-  const absPath = isAbsolute(DEFAULT_LEARNINGS_PATH)
-    ? DEFAULT_LEARNINGS_PATH
-    : join(root, DEFAULT_LEARNINGS_PATH);
-
-  let raw;
-  try {
-    raw = readFileSync(absPath, 'utf8');
-  } catch (err) {
-    if (!err || err.code !== 'ENOENT') {
-      process.stderr.write(
-        `⚠ defaultLoadLearnings: cannot read ${absPath} ` +
-          `(${err?.code ?? '?'}: ${err?.message ?? String(err)}) — ` +
-          'treating as EMPTY, counts below are floors\n',
-      );
-    }
-    return [];
-  }
-
-  /** @type {Array<Record<string, unknown>>} */
-  const records = [];
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) continue;
-    let parsed;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch {
-      continue; // skip malformed line
-    }
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      records.push(
-        /** @type {Record<string, unknown>} */ (normalizeLearning(migrateLegacyLearning(parsed))),
-      );
-    }
-  }
-  return records;
 }
 
 /**
@@ -353,109 +312,6 @@ export function resolveEffectiveTargets({ targets, baselineRoot } = {}) {
 }
 
 /**
- * Default sidecar-candidate loader for the issue #484 idempotency dedupe
- * check (below, step 3a). Deliberately gated on `repoRoot` being a
- * caller-supplied, non-empty string — UNLIKE `defaultLoadLearnings` and
- * `realMergeCandidates`, this does NOT fall back to `process.cwd()` when
- * `repoRoot` is absent. Every existing engine test exercises this module via
- * `opts.learnings` with no `repoRoot`, precisely to avoid touching this repo's
- * OWN `.orchestrator/runtime/reconcile-candidates.jsonl`; a cwd fallback here
- * would silently read it. The disk-touching default is reserved for callers
- * that always pass an explicit `repoRoot` (the `/reconcile` skill resolves it
- * via `git rev-parse --show-toplevel`).
- * @param {string|undefined} repoRoot
- * @returns {{ records: import('./idempotency.mjs').ReconcileCandidate[] }}
- */
-function defaultLoadCandidatesForDedupe(repoRoot) {
-  if (typeof repoRoot !== 'string' || repoRoot.length === 0) return { records: [] };
-  const { records } = realLoadCandidates({ repoRoot });
-  return { records };
-}
-
-/** Frontmatter form emitted by renderer.mjs: `learning-key: <value>` (no backticks, no leading dash). */
-const FRONTMATTER_LEARNING_KEY_RE = /^learning-key:\s*(.+)$/gm;
-/** Provenance-body form emitted by renderer.mjs: `` - learning-key: `<value>` ``. */
-const BODY_LEARNING_KEY_RE = /-\s*learning-key:\s*`([^`]+)`/g;
-/** Provenance-body form emitted by renderer.mjs: `` - learning-id: `<value>` ``. */
-const BODY_LEARNING_ID_RE = /-\s*learning-id:\s*`([^`]+)`/g;
-
-/**
- * Scan `<repoRoot>/.claude/rules/*.md` for the provenance markers the
- * renderer stamps on every machine-generated rule — the frontmatter
- * `learning-key:` line and the body `## Provenance` block's `learning-key`/
- * `learning-id` bullets (`renderer.mjs`) — and return the two identity sets a
- * learning can already be materialized under. A learning whose derived
- * `learning_key` OR raw `.id` appears in either set already has a rule file
- * on disk: re-proposing it is the issue #484 defect (9 of 10 proposals in one
- * run were learnings a `.claude/rules/` file already covered).
- *
- * **This scan is the AUTHORITATIVE half of the dedupe contract** (#1242). The
- * `.claude/rules/*.md` files it reads are TRACKED, so they survive a fresh
- * clone, a wiped working copy, and any loss of `.orchestrator/runtime/` (which
- * is gitignored — `.gitignore:114`). The idempotency sidecar consulted beside
- * it is a CACHE that can only SHORT-CIRCUIT this scan, never replace it: on a
- * fresh clone the sidecar is empty and correctness rests entirely on the
- * markers below. Measured 2026-09-07 on this repo: with the sidecar emptied,
- * the run produced the identical 10 proposals and 30 "already materialized"
- * rejections; with this scan disabled instead, 5 already-consolidated
- * learnings were re-proposed.
- *
- * Both marker forms are load-bearing. Frontmatter `learning-key:` is a YAML
- * SCALAR and can name exactly ONE learning, so a CONSOLIDATED rule file (one
- * file absorbing N learnings) carries the remaining N-1 identities ONLY as
- * `## Provenance` body bullets. Breaking {@link BODY_LEARNING_KEY_RE} would
- * therefore silently re-propose most of a consolidated corpus while every
- * single-learning file still deduped correctly — pinned by the "fresh clone,
- * consolidated shape" test in `tests/lib/reconcile/engine.test.mjs`.
- *
- * `rule-loader.mjs` only EXCLUDES expired rules from injection; it never
- * deletes a file, so an expired rule keeps deduping through these markers.
- *
- * Gated the same way as {@link defaultLoadCandidatesForDedupe}: an absent
- * `repoRoot` yields empty sets rather than falling back to `process.cwd()`.
- * Never throws — a missing `.claude/rules/` dir or an unreadable file
- * degrades to "nothing materialized" for that source, never a crash.
- * @param {string|undefined} repoRoot
- * @returns {{ keys: Set<string>, ids: Set<string> }}
- */
-function defaultReadMaterializedProvenance(repoRoot) {
-  const keys = new Set();
-  const ids = new Set();
-  if (typeof repoRoot !== 'string' || repoRoot.length === 0) return { keys, ids };
-
-  const rulesDir = join(repoRoot, '.claude', 'rules');
-  let entries;
-  try {
-    entries = readdirSync(rulesDir);
-  } catch {
-    return { keys, ids }; // no rules dir yet → nothing materialized
-  }
-
-  for (const entry of entries) {
-    if (!entry.endsWith('.md')) continue;
-    let content;
-    try {
-      content = readFileSync(join(rulesDir, entry), 'utf8');
-    } catch {
-      continue; // unreadable file — skip it, do not fail the whole scan
-    }
-    for (const m of content.matchAll(FRONTMATTER_LEARNING_KEY_RE)) {
-      const v = m[1].trim();
-      if (v) keys.add(v);
-    }
-    for (const m of content.matchAll(BODY_LEARNING_KEY_RE)) {
-      const v = m[1].trim();
-      if (v) keys.add(v);
-    }
-    for (const m of content.matchAll(BODY_LEARNING_ID_RE)) {
-      const v = m[1].trim();
-      if (v && v !== 'n/a') ids.add(v);
-    }
-  }
-  return { keys, ids };
-}
-
-/**
  * Run the reconciliation engine.
  *
  * Composes the four leaf modules into the full proposal pipeline. NEVER throws —
@@ -597,32 +453,13 @@ async function runReconcileInner(
     const { records: existingCandidates } = loadCandidatesForDedupe(repoRoot) ?? { records: [] };
     const materialized = readMaterializedProvenance(repoRoot) ?? { keys: new Set(), ids: new Set() };
 
-    /** @type {Array<Record<string, unknown>>} */
-    const stillEligible = [];
-    let alreadyMaterialized = 0;
+    const { stillEligible, materializedItems } = partitionMaterialized(eligible, {
+      existingCandidates,
+      materialized,
+    });
+    const alreadyMaterialized = materializedItems.length;
 
-    for (const learning of eligible) {
-      const learningKey = rejectedLearningKey(learning);
-      const learningId =
-        learning &&
-        typeof learning === 'object' &&
-        typeof learning.id === 'string' &&
-        learning.id.length > 0
-          ? learning.id
-          : null;
-
-      const sidecarTerminal =
-        learningKey !== null && isProcessed({ learning_key: learningKey }, existingCandidates);
-      const onDisk =
-        (learningKey !== null && materialized.keys.has(learningKey)) ||
-        (learningId !== null && materialized.ids.has(learningId));
-
-      if (!sidecarTerminal && !onDisk) {
-        stillEligible.push(learning);
-        continue;
-      }
-
-      alreadyMaterialized += 1;
+    for (const { learning, learningKey, sidecarTerminal, onDisk } of materializedItems) {
       const type = learningType(learning);
       const reason = sidecarTerminal
         ? 'already processed — the idempotency sidecar already carries a terminal verdict for this learning-key'

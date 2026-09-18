@@ -39,10 +39,11 @@
  *  - Production code is silent: no console.log, no console.warn.
  */
 
-import { open, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { readCanonicalSessions } from './sessions-canonical.mjs';
+import { readTailWindow } from './tail-window.mjs';
 import { withStateMdLock } from './session-lock.mjs';
 import { resolveStateMdPath } from './state-md/frontmatter-mutators.mjs';
 import { parseStateMd } from './state-md/yaml-parser.mjs';
@@ -208,31 +209,19 @@ const EVENTS_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000;
 async function readSessionIdsFromEvents(repoRoot) {
   const filePath = path.join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
 
-  let text = '';
-  // Assigned in the try below; every path that reaches its read site has
-  // passed through that assignment (the catch returns early).
-  let windowIsPartial;
-  let handle = null;
+  let window;
   try {
-    handle = await open(filePath, 'r');
-    const { size } = await handle.stat();
-    const start = size > EVENTS_TAIL_BYTES ? size - EVENTS_TAIL_BYTES : 0;
-    windowIsPartial = start > 0;
-    const length = size - start;
-    if (length > 0) {
-      const buf = Buffer.alloc(length);
-      const { bytesRead } = await handle.read(buf, 0, length, start);
-      text = buf.subarray(0, bytesRead).toString('utf8');
-    }
+    // Sync read inside an async function: 1 MiB ceiling, one call per n-claim —
+    // the shared primitive (tail-window.mjs) owns the byte window, this reader
+    // keeps its own fail-open mapping.
+    window = readTailWindow(filePath, EVENTS_TAIL_BYTES);
   } catch {
     return [];
-  } finally {
-    if (handle !== null) await handle.close().catch(() => {});
   }
 
-  const lines = text.split(/\r?\n/);
+  const lines = window.text.split(/\r?\n/);
   // The window started mid-file, so line 0 may be a truncated record.
-  if (windowIsPartial) lines.shift();
+  if (window.cut) lines.shift();
 
   const cutoff = Date.now() - EVENTS_MAX_AGE_MS;
   const ids = [];

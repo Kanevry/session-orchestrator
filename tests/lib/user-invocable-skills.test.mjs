@@ -81,6 +81,22 @@ describe('isUserInvocableValue — the single normaliser', () => {
   it('is callable with one argument (existing consumers)', () => {
     expect(isUserInvocableValue('true')).toBe(true);
   });
+
+  // BUG this catches (#1384 P1, measured 2026-09-18): the WARN named
+  // `user-invocable` unconditionally, while the Cursor adapter judges the
+  // SIBLING key `disable-model-invocation` with the same predicate. A
+  // `disable-model-invocation: yes` demotion therefore told the operator to fix
+  // `user-invocable:` — a line that does not exist in that file. Red before the
+  // third parameter: the WARN carried the wrong key name.
+  it('names the KEY it was asked about, not always `user-invocable`', () => {
+    expect(isUserInvocableValue('yes', 'skills/probe/SKILL.md', 'disable-model-invocation'))
+      .toBe(false);
+    const warned = stderr.mock.calls.map((c) => String(c[0])).filter((line) => line.includes('WARN'));
+    expect(warned.length).toBe(1);
+    expect(warned[0]).toContain('disable-model-invocation: "yes"');
+    expect(warned[0]).toContain('Write `disable-model-invocation: true`');
+    expect(warned[0]).not.toContain('user-invocable:');
+  });
 });
 
 describe('userInvocableSkills / slashCommandNames over a temp tree', () => {

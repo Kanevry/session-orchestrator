@@ -341,3 +341,39 @@ describe('mergeDerivedBody — full-body apply seam (#1310)', () => {
     expect(twice).toBe(once);
   });
 });
+
+describe('mergeDerivedBody — region wrapping several headings is fail-closed (#1380)', () => {
+  const MULTI = [
+    'Intro.',
+    '',
+    '<!-- BEGIN MANAGED: dialectic -->',
+    '## Alpha',
+    '',
+    'alpha hand note',
+    '',
+    '## Beta',
+    '',
+    'beta hand note',
+    '',
+    '## Gamma',
+    '',
+    'gamma hand note',
+    '<!-- END MANAGED: dialectic -->',
+    '',
+  ].join('\n');
+
+  it.each([
+    ['Alpha', ['Alpha']],
+    ['Beta', ['Beta']],
+  ])('a proposal of only ## %s leaves the region untouched and reports it', (heading, skipped) => {
+    const result = mergeDerivedBody(MULTI, `## ${heading}\n\n- derived\n`);
+    expect(result.body).toBe(MULTI);
+    expect(result.body.split(`## ${heading}`).length - 1).toBe(1);
+    expect(result.conflicts).toContainEqual({
+      type: 'multi-heading-region',
+      region: 'dialectic',
+      headings: ['Alpha', 'Beta', 'Gamma'],
+      skipped,
+    });
+  });
+});

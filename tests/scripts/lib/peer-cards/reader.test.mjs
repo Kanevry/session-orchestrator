@@ -166,6 +166,27 @@ describe('readPeerCards', () => {
     expect(result.user.isStale).toBe(true);
   });
 
+  // #1380: Prettier reflows the one-line list writer.mjs emits into a multi-line
+  // flow list the STATE.md parser rejects — the reader must still parse it, and an
+  // unparseable frontmatter must never leak into `body`.
+  it('parses a Prettier-reflowed multi-line list and never returns frontmatter as body', async () => {
+    const peersDir = path.join(tmpRoot, '.orchestrator', 'peers');
+    await mkdir(peersDir, { recursive: true });
+    const reflowed = VALID_USER_BODY.replace(
+      'source_sessions: ["session-2026-05-23"]',
+      'source_sessions:\n  [\n    "session-2026-05-22",\n    "session-2026-05-23",\n  ]',
+    );
+    await writeFile(path.join(peersDir, 'USER.md'), reflowed, 'utf8');
+    await writeFile(path.join(peersDir, 'AGENT.md'), '---\nid: x\nmeta:\n  nested: y\n---\n\n## Body\n', 'utf8');
+
+    const result = await readPeerCards(tmpRoot, { now: new Date('2026-05-23T12:00:00Z') });
+
+    expect(result.user.frontmatter.source_sessions).toEqual(['session-2026-05-22', 'session-2026-05-23']);
+    expect(result.user.body.startsWith('## Preferences')).toBe(true);
+    expect(result.agent.frontmatter).toBe(null);
+    expect(result.agent.body).toBe('## Body\n');
+  });
+
   it('flags a stale card (>30 days since updated) with isStale=true', async () => {
     const peersDir = path.join(tmpRoot, '.orchestrator', 'peers');
     await mkdir(peersDir, { recursive: true });

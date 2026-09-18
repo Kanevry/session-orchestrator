@@ -11,6 +11,16 @@
  * #1241 adds blocking repo-rooted `.md` paths quoted as complete inline-code
  * spans, with the same annotations and fence handling. Scan roots stay fixed.
  *
+ * ## The runtime-artefact carve-out needs BOTH halves
+ *
+ * A missing citation is excused as a runtime artefact only when it sits under
+ * a harness STATE root ({@link RUNTIME_STATE_PREFIXES}) *and* git ignores it.
+ * The git half alone is not the claim it looks like: `.gitignore` also
+ * declines to track real local documents (`docs/specs/`, `docs/_private/`) and
+ * build output (`coverage/`, `node_modules/`), so "git ignores it" would have
+ * silenced a typo in a `docs/specs/…` citation forever — in the very check
+ * whose subject is "ships in the tarball, target missing".
+ *
  * ## Why
  *
  * Prose is not executed. A skill body that tells the coordinator to run
@@ -98,14 +108,45 @@
  * @module scripts/lib/validate/check-skill-script-paths
  */
 
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { enumerateRepoFiles } from './enumerate-repo-files.mjs';
 import { forEachLine } from './markdown-fences.mjs';
 import { isMainModule } from '../is-main-module.mjs';
 
-/** Documentation roots whose prose is treated as a claim about the repo. */
-export const SCAN_DIRS = Object.freeze(['skills', 'commands', 'agents', 'docs']);
+/**
+ * Documentation roots whose prose is treated as a claim about the repo.
+ *
+ * `.claude/rules` and `.cursor/rules` joined in #1384 P3. Both are instruction
+ * corpora loaded by every session, and both cite repo paths in backticks with
+ * exactly the grammar {@link MARKDOWN_CITATION_RE} already judges — but until
+ * this widening neither had a gate. The real incident:
+ * `.cursor/rules/010-session-workflow.mdc` kept citing `commands/go.md` and
+ * `commands/close.md` after `3ebf0e9d` folded those files into their skills,
+ * and that surface SHIPS (npm tarball, symlinked into consumer repos by
+ * `scripts/cursor-install.mjs`). Same widening, mirrored in
+ * `check-skill-links.mjs` § SCAN_DIRS.
+ */
+export const SCAN_DIRS = Object.freeze([
+  'skills',
+  'commands',
+  'agents',
+  'docs',
+  '.claude/rules',
+  '.cursor/rules',
+]);
+
+/**
+ * Extensions treated as instruction markdown.
+ *
+ * `.mdc` is Cursor's own rule extension and is the ONLY reason `.cursor/rules`
+ * is scannable at all: every file there is `<nnn>-<name>.mdc`, so a `.md`-only
+ * filter would have added the directory to {@link SCAN_DIRS} and enumerated
+ * zero files — a widening that looks live and checks nothing. Same constant,
+ * same reason, as `check-skill-links.mjs` § MD_EXTENSIONS.
+ */
+export const MD_EXTENSIONS = Object.freeze(['.md', '.mdc']);
 
 /**
  * A cited script path. One regex, one alternation, reused for every
@@ -164,6 +205,107 @@ const PLACEHOLDER_FRAGMENTS = Object.freeze(['example', 'my-', '<', 'placeholder
 export function isPlaceholderCitation(citedPath) {
   const lower = citedPath.toLowerCase();
   return PLACEHOLDER_FRAGMENTS.some((fragment) => lower.includes(fragment));
+}
+
+/**
+ * The per-harness STATE roots. A missing citation may be excused as a runtime
+ * artefact ONLY from inside one of these — and only when git also ignores it
+ * (see {@link isRuntimeArtifact}).
+ *
+ * Each is a harness's own session-state directory: `.orchestrator/` (this
+ * plugin's ledgers, locks and metrics), plus the four harness mirrors that
+ * carry a per-session `STATE.md` / `wave-scope.json` / `filescopes/` —
+ * `.claude/`, `.codex/`, `.cursor/` (all three gitignored file-by-file in this
+ * repo's `.gitignore`) and `.pi/` (`skills/_shared/platform-tools.md` § Pi;
+ * absent from this checkout, listed so the Pi harness is covered wherever the
+ * plugin is installed).
+ *
+ * Ceiling (BV-004): exactly these five prefixes, and ONLY in conjunction with
+ * the git test. `.gitignore` here also declines to track real, hand-authored
+ * documents that simply do not ship (`docs/specs/`, `docs/_private/`) and
+ * whole build outputs (`coverage/`, `node_modules/`) — a typo in a
+ * `docs/specs/…` citation is a defect this check exists to catch, so those
+ * must keep REPORTING. Revisit when a harness adds a sixth state root, or
+ * when a state root stops being a dot-directory at the repo root.
+ */
+export const RUNTIME_STATE_PREFIXES = Object.freeze([
+  '.orchestrator/',
+  '.claude/',
+  '.codex/',
+  '.cursor/',
+  '.pi/',
+]);
+
+/**
+ * Does `citedPath` live under a harness state root?
+ *
+ * Necessary but NOT sufficient for the runtime-artefact carve-out — the git
+ * test in {@link gitIgnoredPaths} is the second half. `.claude/rules/x.md` is
+ * under a state root and TRACKED, so it still reports.
+ *
+ * @param {string} citedPath repo-relative POSIX path
+ * @returns {boolean}
+ */
+export function isRuntimeStatePath(citedPath) {
+  return RUNTIME_STATE_PREFIXES.some((prefix) => citedPath.startsWith(prefix));
+}
+
+/**
+ * Which of `candidates` git IGNORES — one half of the runtime-artefact test
+ * (the other is {@link isRuntimeStatePath}).
+ *
+ * The rules corpora widened into by #1384 P3 cite paths that never exist in a
+ * checkout and are not supposed to: `.cursor/STATE.md`, `.orchestrator/…`
+ * ledgers, per-session state files. Rather than a hand-kept name list (which
+ * would rot the moment a new ledger is added, and which nothing measures), the
+ * test is MECHANICAL and matches the repo's own definition: a path the
+ * repository declines to track, which does not exist, is by construction
+ * written at runtime — so there is nothing for a citation gate to catch.
+ *
+ * That predicate alone is too wide, which is why the prefix half exists: "git
+ * ignores it" and "it is written at runtime" are not the same claim. Measured
+ * 2026-09-18, `gitIgnoredPaths` matched `docs/specs/foo.md`,
+ * `docs/_private/x.md`, `coverage/report.md` and `node_modules/x/y.mjs` just
+ * as readily as `.orchestrator/metrics/events.jsonl` — real local documents
+ * whose dead citations this check must still report.
+ *
+ * ONE `git check-ignore --stdin` for the whole run, never one per path: the
+ * corpus carries hundreds of citations and a per-path spawn would dominate the
+ * check's runtime.
+ *
+ * Fails OPEN toward REPORTING (the safe direction here): a missing `git`, a
+ * non-git root, or exit 128 yields an empty set, so every absent citation is
+ * still reported and no real defect is suppressed by a tooling failure. Exit 1
+ * means "none of them are ignored" and is NOT an error.
+ *
+ * @param {string} repoRoot absolute repo root
+ * @param {string[]} candidates repo-relative POSIX paths (already known absent)
+ * @returns {Set<string>} the subset git ignores
+ */
+export function gitIgnoredPaths(repoRoot, candidates) {
+  const unique = [...new Set(candidates)].filter((p) => p.length > 0 && !p.includes('\n'));
+  if (unique.length === 0) return new Set();
+  let stdout;
+  try {
+    stdout = execFileSync('git', ['check-ignore', '--stdin'], {
+      cwd: repoRoot,
+      input: `${unique.join('\n')}\n`,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+      maxBuffer: 8 * 1024 * 1024,
+    });
+  } catch (error) {
+    // Exit 1 = nothing matched, and git still wrote (empty) stdout. Anything
+    // else (128, ENOENT, non-git root) leaves `stdout` undefined → empty set.
+    if (error?.status !== 1) return new Set();
+    stdout = typeof error.stdout === 'string' ? error.stdout : '';
+  }
+  return new Set(
+    String(stdout)
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean),
+  );
 }
 
 /** The annotation marker, in any of its three classes. */
@@ -274,9 +416,19 @@ export function scanSkillScriptPaths({ pluginRoot, dirs = SCAN_DIRS, strictSh = 
     existing: 0,
     annotated: 0,
     placeholders: 0,
+    runtimeArtifacts: 0,
     findings: 0,
     warnings: 0,
   };
+
+  /**
+   * Citations that are absent AND unannotated — judged only after the corpus
+   * loop, when the single `git check-ignore` call can separate a dead
+   * reference from a path written at runtime.
+   *
+   * @type {{file: string, citation: {line: number, path: string}}[]}
+   */
+  const pending = [];
 
   /** @type {string[]} */
   let files;
@@ -290,7 +442,7 @@ export function scanSkillScriptPaths({ pluginRoot, dirs = SCAN_DIRS, strictSh = 
     // honours `.gitignore`, so the #1143 exposure a bare `readdirSync` walk
     // would reintroduce (a worktree under `.claude/worktrees/`, gitignored
     // `docs/specs/*.md`) stays closed — see that module's header.
-    files = enumerateRepoFiles({ repoRoot: pluginRoot, dirs, exts: ['.md'] });
+    files = enumerateRepoFiles({ repoRoot: pluginRoot, dirs, exts: MD_EXTENSIONS });
   } catch (error) {
     findings.push({
       kind: 'tool-error',
@@ -389,30 +541,48 @@ export function scanSkillScriptPaths({ pluginRoot, dirs = SCAN_DIRS, strictSh = 
       }
       if (marker && !marker.ok) continue; // already reported as bad-annotation
 
-      // `.mjs` and `.md` are blocking.
-      // `.sh` is advisory (`warn`) unless the caller opted into `strictSh`.
-      const isSh = path.extname(citation.path) === '.sh';
-      const severity = isSh && !strictSh ? 'warn' : 'fail';
-      if (severity === 'warn') summary.warnings += 1;
-      findings.push({
-        kind: 'missing-path',
-        file: relative,
-        line: citation.line,
-        path: citation.path,
-        annotation: null,
-        message:
-          (isSh
-            ? severity === 'warn'
-              ? `\`${citation.path}\` does not exist (advisory — .sh citations do not block ` +
-                'validate-plugin until re-run with --strict-sh; see #1187) — '
-              : `\`${citation.path}\` does not exist (--strict-sh) — `
-            : `\`${citation.path}\` does not exist — `) +
-          'create it, fix the path, or annotate the citation with ' +
-          '`<!-- path-check: planned #<iid> | historical | example -->` on this line or the ' +
-          'line directly above',
-        severity,
-      });
+      // Deferred, not reported yet: the runtime-artefact test below needs ONE
+      // `git check-ignore` for the whole corpus, not one per citation.
+      pending.push({ file: relative, citation });
     }
+  }
+
+  // BOTH halves, never one: under a harness state root AND untracked by git.
+  // Only state-root candidates are even offered to git, so the subprocess
+  // shrinks to the paths that could possibly qualify.
+  const ignored = gitIgnoredPaths(
+    pluginRoot,
+    pending.map((p) => p.citation.path).filter(isRuntimeStatePath),
+  );
+
+  for (const { file: relative, citation } of pending) {
+    if (isRuntimeStatePath(citation.path) && ignored.has(citation.path)) {
+      summary.runtimeArtifacts += 1;
+      continue;
+    }
+    // `.mjs` and `.md` are blocking.
+    // `.sh` is advisory (`warn`) unless the caller opted into `strictSh`.
+    const isSh = path.extname(citation.path) === '.sh';
+    const severity = isSh && !strictSh ? 'warn' : 'fail';
+    if (severity === 'warn') summary.warnings += 1;
+    findings.push({
+      kind: 'missing-path',
+      file: relative,
+      line: citation.line,
+      path: citation.path,
+      annotation: null,
+      message:
+        (isSh
+          ? severity === 'warn'
+            ? `\`${citation.path}\` does not exist (advisory — .sh citations do not block ` +
+              'validate-plugin until re-run with --strict-sh; see #1187) — '
+            : `\`${citation.path}\` does not exist (--strict-sh) — `
+          : `\`${citation.path}\` does not exist — `) +
+        'create it, fix the path, or annotate the citation with ' +
+        '`<!-- path-check: planned #<iid> | historical | example -->` on this line or the ' +
+        'line directly above',
+      severity,
+    });
   }
 
   findings.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);

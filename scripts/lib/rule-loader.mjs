@@ -11,8 +11,9 @@
  * when at least one `scopePath` matches at least one glob pattern.
  *
  * `paths:` is a same-shape alias for `globs:` (issue #795) — some repos use a
- * `paths:` frontmatter convention instead of `globs:` (e.g. projects-baseline:
- * 26 rule files, all `paths:`, 0 `globs:`). Before #795 these repos'
+ * `paths:` frontmatter convention instead of `globs:` (projects-baseline did
+ * when #795 landed; it now carries both keys — measured count:
+ * docs/baseline.md). Before #795 these repos'
  * path-scoped rules were silently misclassified as always-on, inflating the
  * `instruction-budget-guard.mjs` (#687) always-on count with a false positive.
  * `paths:` supports the identical inline-array and block-list forms as

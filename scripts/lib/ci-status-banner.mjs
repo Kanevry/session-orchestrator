@@ -104,7 +104,8 @@ function degradedResult(reason, detail) {
   // Escape here so BOTH routes are covered at their common exit. Slice first,
   // escape after: the budget is 200 chars of DETAIL, and escaping cannot then
   // leave a cut mid-`\uXXXX`.
-  const tail = detail ? ` — ${escapeControlBytes(String(detail).trim().slice(0, 200))}` : '';
+  const escaped = detail ? escapeControlBytes(String(detail).trim().slice(0, 200)) : '';
+  const tail = escaped ? ` — ${escaped}` : '';
   return {
     severity: 'warn',
     ok: false,
@@ -112,6 +113,14 @@ function degradedResult(reason, detail) {
       `⚠ ci-status: CI status for HEAD could not be determined (${reason}) — ` +
       `state UNKNOWN, not "green".${tail}`,
     degraded: reason,
+    // The SAME already-clamped, already-escaped tail, carried as a field rather
+    // than only inside the banner sentence. Consumers that render their own row
+    // (the release preflight's `ci-green-on-head`) otherwise had to discard the
+    // only distinguishing part: a short sha, an unknown commit and a missing
+    // pipeline all printed the identical `CI status unknown (query-failed)`.
+    // Absent when there is no detail, so `ci.detail` stays falsy exactly where
+    // there is nothing to add.
+    ...(escaped ? { detail: escaped } : {}),
   };
 }
 
@@ -153,6 +162,40 @@ function escapeControlBytes(text) {
     CONTROL_BYTE_RE,
     (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`,
   );
+}
+
+/**
+ * Ceiling (BV-004) for one API-supplied fragment embedded in a reading's
+ * operator-facing fields. 60 characters fits every real GitLab pipeline status
+ * and every CI job name this repo has ever produced (`test (macos-latest)` is
+ * 20), and keeps the release-preflight row on one line. Revisit if a platform
+ * starts emitting job names that need more.
+ */
+const API_TEXT_MAX = 60;
+
+/**
+ * Clamp AND control-byte-escape a string that came from a CI platform's API
+ * before it is interpolated into a reading (`details.reason`,
+ * `failingJobName`, `allowFailureJobs`).
+ *
+ * The degraded branch has done this since #1031 ({@link degradedResult}); the
+ * READ branch had not, so a pipeline `status` or job `name` reached the
+ * operator's terminal verbatim — including
+ * `scripts/release.mjs`'s `ci-green-on-head` row, the one line that decides
+ * whether a release proceeds. A status shaped `x\r\u001b[32m✓ ... PASS`
+ * repainted that row green while the row's own verdict stayed `ok:false`.
+ *
+ * Escaped at GENERATION, not at each render: there are four renderers
+ * (session-start banner, release preflight × 2, session-start probes) and only
+ * one producer, so the invariant "a reading carries no raw control bytes"
+ * belongs here. Slice first, escape after — the budget is 60 chars of API
+ * TEXT, and escaping afterwards cannot leave a cut mid-`\uXXXX`.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function sanitizeApiText(value) {
+  return escapeControlBytes(String(value ?? '').trim().slice(0, API_TEXT_MAX));
 }
 
 /**
@@ -581,7 +624,7 @@ async function checkGitlab(repoRoot, now, deps = {}) {
       if (Array.isArray(jobs)) {
         const softFailed = jobs
           .filter((j) => j.status === 'failed' && j.allow_failure === true)
-          .map((j) => j.name);
+          .map((j) => sanitizeApiText(j.name));
         if (softFailed.length > 0) allowFailureJobs = softFailed;
       }
     } catch {
@@ -606,7 +649,7 @@ async function checkGitlab(repoRoot, now, deps = {}) {
       details: {
         currentPipelineId: currentPipeline.id,
         cliUsed: 'glab',
-        reason: `pipeline-${pipelineStatus}`,
+        reason: `pipeline-${sanitizeApiText(pipelineStatus)}`,
       },
     };
   }
@@ -648,7 +691,7 @@ async function checkGitlab(repoRoot, now, deps = {}) {
       );
       if (Array.isArray(jobs)) {
         const failedJob = jobs.find((j) => j.status === 'failed');
-        failingJobName = failedJob ? failedJob.name : undefined;
+        failingJobName = failedJob ? sanitizeApiText(failedJob.name) : undefined;
       }
     } catch {
       // Non-fatal — we still report red status without job name.
@@ -674,7 +717,7 @@ async function checkGitlab(repoRoot, now, deps = {}) {
     details: {
       currentPipelineId: currentPipeline.id,
       cliUsed: 'glab',
-      reason: `unrecognised-status-${pipelineStatus}`,
+      reason: `unrecognised-status-${sanitizeApiText(pipelineStatus)}`,
     },
   };
 }
@@ -757,7 +800,7 @@ async function checkGithub(repoRoot, deps = {}) {
     return {
       status: 'red',
       ok: false,
-      failingJobName: failedRun.name,
+      failingJobName: sanitizeApiText(failedRun.name),
       details: {
         cliUsed: 'gh',
         reason: 'lastGreen-not-implemented-for-github',

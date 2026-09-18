@@ -49,7 +49,7 @@ const SENTINEL_BEGIN_RE = new RegExp(`<!--\\s*BEGIN\\s+MANAGED:\\s*(${SECTION_NA
 
 /**
  * @typedef {Object} Conflict
- * @property {'duplicate-section' | 'orphan-begin'} type
+ * @property {'duplicate-section' | 'orphan-begin' | 'unmapped-preamble' | 'multi-heading-region'} type
  * @property {string} [name] — section name (for duplicate-section and orphan-begin)
  */
 
@@ -317,8 +317,14 @@ function escapeRegex(s) {
 // the two, so `/evolve dialectic --apply` could not complete (#1310, correcting
 // #1303 point 3 — the signatures line up, the seam did not).
 //
-// The mapping is DERIVED, not invented: every managed region in the live cards
-// wraps exactly one `## ` heading, so the heading IS the section unit. Existing
+// The mapping is DERIVED, not invented: a managed region wrapping exactly one
+// `## ` heading makes that heading the section unit. A region wrapping SEVERAL
+// headings cannot be addressed per heading without splitting the region (a
+// storage-format change), so it is fail-closed (#1380): `deriveManagedUpdates`
+// never targets it, and every proposed heading that lives inside it is skipped
+// — neither replaced (which would delete its sibling headings' hand text) nor
+// appended (which would duplicate the heading) — and reported as a
+// `multi-heading-region` conflict by `mergeDerivedBody`. Existing
 // names are read back out of the card rather than re-slugified, because the live
 // names are NOT a pure function of their headings — measured 2026-09-11 in
 // `.orchestrator/peers/AGENT.md`: "Guard and protocol-migration discipline" →
@@ -359,6 +365,9 @@ function slugifyHeading(heading) {
  *  • Text BEFORE the first `## ` heading → returned as `preamble`. It is NOT
  *    written into any section (it has no sentinel to own it); `mergeDerivedBody`
  *    surfaces it as an `unmapped-preamble` conflict so a caller cannot miss it.
+ *  • Heading that lives inside an existing managed region wrapping MORE than one
+ *    `## ` heading → SKIPPED (not in `managedUpdates`, not in `mapping`) and
+ *    listed in `skippedRegions`; that region is never a target (#1380).
  *  • Content under `###`+ headings stays inside its parent `##` section.
  *  • A proposed body that already carries BEGIN/END sentinels keeps them inside
  *    the section content — it is the deriver's job not to emit them (see
@@ -370,7 +379,8 @@ function slugifyHeading(heading) {
  * @param {string} [existingBody] — the on-disk body, for existing-name lookup
  * @returns {{ managedUpdates: Record<string,string>,
  *             mapping: Array<{heading: string, section: string, origin: 'existing'|'new'}>,
- *             preamble: string }}
+ *             preamble: string,
+ *             skippedRegions: Array<{region: string, headings: string[], skipped: string[]}> }}
  */
 export function deriveManagedUpdates(proposedBody, existingBody = '') {
   if (typeof proposedBody !== 'string') {
@@ -383,13 +393,25 @@ export function deriveManagedUpdates(proposedBody, existingBody = '') {
   // heading-key → existing section name, read out of the live card
   const existingByHeading = new Map();
   const existingNames = new Set();
+  // Fail-closed bookkeeping for regions wrapping more than one `## ` heading (#1380).
+  /** @type {Map<string, {region: string, headings: string[], skipped: string[]}>} */
+  const multiHeading = new Map();
+  const multiHeadingByKey = new Map();
   if (existingBody.length > 0) {
     for (const s of parseSections(existingBody).sections) {
       if (s.type !== 'managed') continue;
       existingNames.add(s.name);
-      const h = s.content.match(/^##[ \t]+(.+?)[ \t]*$/m);
-      if (h && !existingByHeading.has(headingKey(h[1]))) {
-        existingByHeading.set(headingKey(h[1]), s.name);
+      H2_RE.lastIndex = 0;
+      const regionHeads = [...s.content.matchAll(H2_RE)].map(h => h[1]);
+      if (regionHeads.length > 1) {
+        const entry = multiHeading.get(s.name) ?? { region: s.name, headings: [], skipped: [] };
+        entry.headings.push(...regionHeads);
+        multiHeading.set(s.name, entry);
+        for (const h of regionHeads) multiHeadingByKey.set(headingKey(h), entry);
+        continue;
+      }
+      if (regionHeads.length === 1 && !existingByHeading.has(headingKey(regionHeads[0]))) {
+        existingByHeading.set(headingKey(regionHeads[0]), s.name);
       }
     }
   }
@@ -409,6 +431,12 @@ export function deriveManagedUpdates(proposedBody, existingBody = '') {
     const end = i + 1 < heads.length ? heads[i + 1].index : proposedBody.length;
     const content = proposedBody.slice(start, end).trim();
 
+    const blocked = multiHeadingByKey.get(headingKey(heading));
+    if (blocked !== undefined) {
+      blocked.skipped.push(heading);
+      continue;
+    }
+
     const existing = existingByHeading.get(headingKey(heading));
     let section;
     let origin;
@@ -419,7 +447,9 @@ export function deriveManagedUpdates(proposedBody, existingBody = '') {
       const base = slugifyHeading(heading);
       let candidate = base;
       let n = 2;
-      while (used.has(candidate)) {
+      // A multi-heading region is never a target — not even via a slug that
+      // happens to equal its name.
+      while (used.has(candidate) || multiHeading.has(candidate)) {
         candidate = `${base}-${n++}`;
       }
       section = candidate;
@@ -431,7 +461,8 @@ export function deriveManagedUpdates(proposedBody, existingBody = '') {
     mapping.push({ heading, section, origin });
   }
 
-  return { managedUpdates, mapping, preamble };
+  const skippedRegions = [...multiHeading.values()].filter(e => e.skipped.length > 0);
+  return { managedUpdates, mapping, preamble, skippedRegions };
 }
 
 /**
@@ -439,13 +470,20 @@ export function deriveManagedUpdates(proposedBody, existingBody = '') {
  * This is the function `/evolve dialectic --apply` calls; `mergePeerCard` stays
  * the section-map primitive its existing callers already use.
  *
+ * A managed region wrapping several `## ` headings is left byte-unchanged; each
+ * skipped proposed heading surfaces as a
+ * `{ type: 'multi-heading-region', region, headings, skipped }` conflict (#1380).
+ *
  * @param {string} existingBody
  * @param {string} proposedBody
  * @returns {MergeResult & { mapping: Array<{heading: string, section: string, origin: 'existing'|'new'}>, preamble: string }}
  */
 export function mergeDerivedBody(existingBody, proposedBody) {
-  const { managedUpdates, mapping, preamble } = deriveManagedUpdates(proposedBody, existingBody);
+  const { managedUpdates, mapping, preamble, skippedRegions } = deriveManagedUpdates(proposedBody, existingBody);
   const result = mergePeerCard(existingBody, managedUpdates);
+  for (const { region, headings, skipped } of skippedRegions) {
+    result.conflicts.push({ type: 'multi-heading-region', region, headings, skipped });
+  }
   if (preamble.length > 0) {
     result.conflicts.push({ type: 'unmapped-preamble', content: preamble });
   }

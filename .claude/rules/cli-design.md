@@ -51,7 +51,7 @@ review-date: 2026-10-23
 
 ## Shared Module Library (common.mjs)
 
-The plugin uses a single shared module library — `scripts/lib/common.mjs` — for ESM utilities. The legacy `scripts/lib/common.sh` and `scripts/lib/platform.sh` shell sources have been removed (issues #218 + #317; commit history). All scripts under `scripts/lib/` are now `.mjs` and import from this module.
+The plugin uses a single shared module library — `scripts/lib/common.mjs` — for ESM utilities. The legacy `scripts/lib/common.sh` and `scripts/lib/platform.sh` shell sources have been removed (issues #218 + #317; commit history). All scripts under `scripts/lib/` are now `.mjs` and import from this module. <!-- path-check: historical -->
 
 - Top-level orchestrators (`scripts/run-quality-gate.mjs`, `scripts/validate-plugin.mjs`, `scripts/codex-install.mjs`, `scripts/cursor-install.mjs`, etc.) spawn `.mjs` sub-scripts via `node`, never `bash`.
 - Nested helpers under `scripts/lib/gates/` and `scripts/lib/validate/` are `.mjs` modules. The gates layer additionally exposes a domain-local `scripts/lib/gates/gate-helpers.mjs` for gate-specific helpers (run check, extract counts, debug-artifact collection, change-set resolution).

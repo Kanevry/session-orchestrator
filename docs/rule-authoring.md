@@ -285,6 +285,18 @@ them silently loses a learning or regenerates it:
    TTL past what its type registry granted it.) State the rule in the file
    itself, so the next editor does not "fix" it upward.
 
+   The expiry sweep (`node scripts/sweep-expired-rules.mjs`) maintains this in
+   ONE direction: a header sitting EARLIER than the earliest absorbed date is
+   RAISED to it — the raise is its own rewrite trigger (`action: "rewrite"`,
+   `reason: "header-raise"`, visible in `--json` before `--apply`), and it
+   touches nothing but the frontmatter line and the sentence above. Without it
+   the file passes its header date with nothing expired, `rule-loader.mjs`
+   stops injecting it, and the surviving provenance markers keep `/reconcile`
+   treating its learnings as materialized — the substance goes dark and is
+   never re-proposed. The sweep never LOWERS a header: a header that outlives
+   its content is reported as an `advisory` only, because lowering on every run
+   would cut a healthy entry's TTL short.
+
 3. **`paths:` is the canonical scope key, and it carries the UNION of the
    parts.** The merged file loads for any path any of its parts covered, so its
    list is the union of theirs. `paths:` is the key Claude Code's OWN native

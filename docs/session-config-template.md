@@ -477,8 +477,10 @@ Opt-in mode for `/evolve --dialectic` and session-end Phase 3.6.7 auto-trigger. 
 dialectic:
   cadence: 5              # integer ≥ 0; 0 = kill-switch (no critique dispatches)
   model: haiku            # haiku | sonnet | opus — fail-fast on unknown value
-  budget-tokens: 8000     # integer ≥ 0 — input token budget per critique call
+  budget-tokens: 32000    # integer ≥ 0 — input token CEILING per critique call; the pre-dispatch estimate aborts above it
 ```
+
+`32000` — card bodies + steering alone estimated ~12k tokens in this repo, a consumer repo measured 30,262 (2026-09-18); the value is a ceiling, the pre-dispatch estimate aborts above it.
 
 Read by: `scripts/lib/config/dialectic.mjs`, `scripts/lib/auto-dialectic.mjs`, `skills/session-end/SKILL.md` Phase 3.6.7, `skills/evolve/SKILL.md` Phase 6.
 
@@ -693,6 +695,8 @@ vcs: gitlab
 gitlab-host: gitlab.example.com        # only if remote URL doesn't expose it
 mirror: github
 cross-repos: []
+cross-repo:
+  projects: [~/Projects/my-app]        # block form (#469) — NOT the flat `cross-repos` above; INLINE list only
 pencil: path/to/design.pen             # design-code alignment input
 ecosystem-health: true
 health-endpoints: []
@@ -745,6 +749,7 @@ auto-commit-per-wave: false            # opt-in: commit after each wave's Qualit
 # Heavy-repo preflight & worktree hygiene (HR-003)
 heavy-repo: false                      # true clamps the dispatched agent count to agents-per-wave
 worktree-cleanup: default              # default | aggressive
+worktree-exclude: [node_modules, dist, build, .next, .nuxt, coverage, .cache, .turbo, .vercel, out]   # default; top-level dirs removed from a createWorktree() worktree; null disables
 
 # Env-aware
 resource-awareness: true
@@ -779,6 +784,15 @@ vault-integration:
   mode: warn
   vault-name:                          # optional (#660) — per-project vault namespace override; null/absent → deriveRepo()
   gitlab-groups: []
+
+# GitLab portfolio dashboard — /portfolio (GH #41); needs vault-integration.vault-dir
+gitlab-portfolio:
+  enabled: false                       # opt-in; only the literal true enables it
+  mode: warn                           # warn | strict | off
+  stale-days: 30                       # integer ≥ 1
+  critical-labels:                     # BLOCK list only — an inline [a, b] is silently ignored
+    - priority::critical
+    - priority::high
 
 # Vault mirror quality thresholds
 vault-mirror:
@@ -898,7 +912,7 @@ discovery-validator:
 dialectic:
   cadence: 5              # integer ≥ 0; 0 = kill-switch (no critique dispatches)
   model: haiku            # haiku | sonnet | opus — fail-fast on unknown value
-  budget-tokens: 8000     # integer ≥ 0 — input token budget per critique call
+  budget-tokens: 32000    # integer ≥ 0 — input token ceiling per critique call (aborts above, never truncates)
 
 # Eval — Standard v1 harness config surface (#809 / Epic #803)
 eval:

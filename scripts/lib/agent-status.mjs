@@ -58,6 +58,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { appendJsonl } from './common.mjs';
 import { writeJsonAtomicSync } from './io.mjs';
 import { tryAcquireFileLock, releaseFileLock } from './file-lock.mjs';
+import { readTailWindow } from './tail-window.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -304,36 +305,6 @@ function newestTsMs(entries) {
 }
 
 /**
- * Read the last `maxBytes` of a file. Returns the raw text plus whether the
- * window cut into the file (i.e. the first line in `text` may be partial).
- * @param {string} file
- * @param {number} maxBytes
- * @returns {{ text: string, size: number, cut: boolean }}
- */
-function readTail(file, maxBytes) {
-  const fd = fs.openSync(file, 'r');
-  try {
-    const size = fs.fstatSync(fd).size;
-    const want = Math.min(size, maxBytes);
-    const start = size - want;
-    const buf = Buffer.allocUnsafe(want);
-    let read = 0;
-    while (read < want) {
-      const n = fs.readSync(fd, buf, read, want - read, start + read);
-      if (n <= 0) break;
-      read += n;
-    }
-    return { text: buf.subarray(0, read).toString('utf8'), size, cut: start > 0 };
-  } finally {
-    try {
-      fs.closeSync(fd);
-    } catch {
-      /* best-effort */
-    }
-  }
-}
-
-/**
  * Shared write path for both setters: append the JSONL record, then perform a
  * lock-serialised read-modify-write of the LWW map. No-throw.
  *
@@ -481,7 +452,7 @@ export function rebuildCurrentFromLedger(opts = {}) {
 
   let tail;
   try {
-    tail = readTail(jsonlFile, maxBytes);
+    tail = readTailWindow(jsonlFile, maxBytes);
   } catch (err) {
     const reason = err?.code === 'ENOENT' ? 'ledger-missing' : 'ledger-unreadable';
     return {

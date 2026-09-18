@@ -55,7 +55,7 @@ import {
   evaluateCiPreflightRows,
 } from '../../scripts/release.mjs';
 import { fixtureGit, fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
-import { DEGRADED_REASONS } from '../../scripts/lib/ci-status-banner.mjs';
+import { DEGRADED_REASONS, checkCiStatus } from '../../scripts/lib/ci-status-banner.mjs';
 
 // Fixture shapes are copied from the live repo files (golden-record rule in
 // .claude/rules/testing.md) — hand-inventing them would let the real files
@@ -1289,6 +1289,39 @@ describe('evaluateCiRow', () => {
       .toEqual({ ok: false, detail: 'CI status unknown (query-failed)' });
   });
 
+  // BUG this catches (#1384 P5, measured 2026-09-18 with the DI fakes below):
+  // the row discarded the probe's `detail` and `details.reason`, so the three
+  // DIFFERENT ways it goes red printed two identical strings — an operator
+  // reading `CI status unknown (query-failed)` could not tell a malformed sha
+  // from a commit GitHub has never seen, nor `status: unknown` from a HEAD with
+  // no pipeline. All three still fail closed; only diagnosability was lost.
+  // Red before the fix: cases 1 and 2 collapsed onto one string.
+  it('distinguishes the three ways the row goes red', () => {
+    const shortSha = evaluateCiRow({
+      severity: 'warn', ok: false, degraded: 'query-failed',
+      detail: 'sha must be a full hex commit id',
+    });
+    const unknownCommit = evaluateCiRow({
+      severity: 'warn', ok: false, degraded: 'query-failed',
+      detail: 'HTTP 422: No commit found for SHA',
+    });
+    const noPipeline = evaluateCiRow({
+      status: 'unknown', ok: false,
+      details: { currentPipelineId: null, cliUsed: 'glab', reason: 'no-pipeline-for-head-sha' },
+    });
+
+    expect(shortSha).toEqual({
+      ok: false, detail: 'CI status unknown (query-failed: sha must be a full hex commit id)',
+    });
+    expect(unknownCommit).toEqual({
+      ok: false, detail: 'CI status unknown (query-failed: HTTP 422: No commit found for SHA)',
+    });
+    expect(noPipeline).toEqual({
+      ok: false, detail: 'status: unknown (no-pipeline-for-head-sha)',
+    });
+    expect(new Set([shortSha.detail, unknownCommit.detail, noPipeline.detail]).size).toBe(3);
+  });
+
   it('never passes a degraded result, whatever the reason', () => {
     // Loop over the EXPORTED enum, not a hand-typed copy of it: the branch
     // under test is reason-agnostic, so a hand list adds no coverage and
@@ -1310,6 +1343,34 @@ describe('evaluateCiRow', () => {
 
   it('fails an unknown reading', () => {
     expect(evaluateCiRow({ status: 'unknown' })).toEqual({ ok: false, detail: 'status: unknown' });
+  });
+
+  // BUG this catches (#1384 f-4, security MED): `details.reason` is built by
+  // interpolating a RAW GitLab/GitHub API `status` value
+  // (`unrecognised-status-${pipelineStatus}`), and this row appends it to the
+  // one line that decides a release. A pipeline status carrying `\r` plus an
+  // ANSI colour sequence therefore repainted the preflight line green while
+  // `ok:false` held — terminal spoofing at the release gate. Red before the
+  // fix: the row contained the raw ESC/CR bytes and the full 300-char payload.
+  it('cannot be spoofed by control bytes in an API-supplied pipeline status', async () => {
+    const hostileStatus = `x\r\u001b[32m✓ ci-green-on-head  PASS${'A'.repeat(300)}`;
+    const sha = 'a'.repeat(40);
+    const execFile = vi.fn((cmd, args, opts, cb) => {
+      const done = typeof opts === 'function' ? opts : cb;
+      done(null, { stdout: JSON.stringify([{ id: 7, sha, status: hostileStatus }]), stderr: '' });
+    });
+
+    const ci = await checkCiStatus(
+      { repoRoot: '/repo', vcs: 'gitlab', timeoutMs: 2000, sha },
+      { execFile, resolveGitlabProjectTarget: () => ({ host: 'gitlab.example', encodedProjectPath: 'g%2Fp' }) },
+    );
+    const row = evaluateCiRow(ci);
+
+    expect(row.ok).toBe(false);
+    // eslint-disable-next-line no-control-regex -- matching control bytes IS the assertion
+    expect(row.detail).not.toMatch(/[\u0000-\u001f\u007f]/);
+    expect(row.detail).toContain('\\u001b');
+    expect(row.detail.length).toBeLessThan(140);
   });
 
   // `null` is the probe's ABSENCE state (no VCS remote) — a release still may

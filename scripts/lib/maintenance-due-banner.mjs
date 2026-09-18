@@ -344,7 +344,9 @@ export async function computeMaintenanceDue(opts = {}) {
     // --- reconcile (S3) ----------------------------------------------------
     if (nudge.nudge === true) {
       // HR-106: report what the rule JUDGED. `computeReconcileNudge` nudges on
-      // a BACKLOG (eligible-unmaterialized learnings), never on a date — so
+      // a BACKLOG — rule-eligible learnings minus those already materialized
+      // in the sidecar or `.claude/rules/` (`countReconcileBacklog`, #1380;
+      // before #1380 it counted all eligible ones) — never on a date — so
       // printing `lastRunAt` here put today's date next to the word "due" and
       // read as "last run today and already due again". Measured 2026-09-09
       // (learning 013a45ba): with 108 learnings capped under

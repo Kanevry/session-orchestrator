@@ -35,6 +35,7 @@ if (!existsSync(generator)) {
   } else {
     const detail = ((result.stdout ?? '') + (result.stderr ?? '')).trim();
     fail(`pi prompt wrappers are stale${detail ? `: ${detail}` : ''}`);
+    console.log('        Remedy: node scripts/generate-pi-prompts.mjs');
   }
 }
 

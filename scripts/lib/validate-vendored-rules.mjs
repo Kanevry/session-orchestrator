@@ -617,8 +617,9 @@ export function validateRuleContent({ content, relPath, targetRoot = null, requi
 }
 
 /**
- * Validates every `*.md` rule file under `dir`, recursively (skips dotfiles
- * and `_index.md`).
+ * Validates every `*.md` rule file under `dir`, recursively (skips dotfiles,
+ * `_index.md` and `README.md` — neither is a vendored rule: `rules-sync.mjs`
+ * vendors only the entries listed in `_index.md`, #1164).
  *
  * When `pluginRoot` is given, every scanned file is additionally passed through
  * `scanVendoringLeaks()` and the findings are collected into the additive
@@ -642,7 +643,7 @@ export function validateRulesDir({ dir, targetRoot = null, requireProvenance = f
       const absPath = join(absDir, entry.name);
       if (entry.isDirectory()) {
         files.push(...collectRuleFiles(absPath));
-      } else if (entry.isFile() && entry.name.endsWith('.md') && entry.name !== '_index.md') {
+      } else if (entry.isFile() && entry.name.endsWith('.md') && entry.name !== '_index.md' && entry.name !== 'README.md') {
         files.push(relative(dir, absPath).replace(/\\/g, '/'));
       }
     }

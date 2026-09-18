@@ -881,14 +881,36 @@ export function evaluateNpmAuth(whoami) {
  * never found out". Only an actual `status: 'green'` reading passes; a release
  * must never proceed on an unknown CI state.
  *
- * @param {null | {status?: string, failingJobName?: string, degraded?: string}} ci
+ * The row also carries the CAUSE the probe already knows, because the three
+ * ways this row goes red are indistinguishable without it (#1384 P5): a short
+ * `sha`, a commit the mirror has never seen, and a HEAD with no pipeline all
+ * printed `CI status unknown (query-failed)` / `status: unknown`. The probe's
+ * `detail` (degraded branch, `degradedResult`) and `details.reason` /
+ * `failingJobName` (read branch, `sanitizeApiText`) are clamped and
+ * control-byte-escaped AT THEIR GENERATION in `ci-status-banner.mjs` —
+ * appended here, never re-formatted. That escaping is load-bearing, not
+ * hygiene: the read branch interpolates a RAW API `status` value into
+ * `reason`, and until #1384 f-4 a status carrying `\r` + an ANSI sequence
+ * could repaint THIS row green while its verdict stayed `ok:false`. Do not
+ * append a further probe field here without checking it goes through one of
+ * those two. With neither present the text is byte-identical to
+ * before, so a plain green or a named failing job reads exactly as it did.
+ *
+ * @param {null | {status?: string, failingJobName?: string, degraded?: string,
+ *   detail?: string, details?: {reason?: string}}} ci
  * @returns {{ok: boolean, detail: string}}
  */
 export function evaluateCiRow(ci) {
   if (ci === null || ci === undefined) return { ok: false, detail: 'CI status unavailable' };
-  if (ci.degraded) return { ok: false, detail: `CI status unknown (${ci.degraded})` };
-  const job = ci.failingJobName ? ` (${ci.failingJobName})` : '';
-  return { ok: ci.status === 'green', detail: `status: ${ci.status}${job}` };
+  if (ci.degraded) {
+    const why = ci.detail ? `: ${ci.detail}` : '';
+    return { ok: false, detail: `CI status unknown (${ci.degraded}${why})` };
+  }
+  // A failing job NAMES the failure, so it wins over the generic reason;
+  // `reason` is what fills the gap when there is no job to name (`unknown`).
+  const reason = ci.failingJobName || ci.details?.reason || '';
+  const why = reason ? ` (${reason})` : '';
+  return { ok: ci.status === 'green', detail: `status: ${ci.status}${why}` };
 }
 
 /**

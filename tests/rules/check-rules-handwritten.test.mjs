@@ -296,8 +296,8 @@ describe('check-rules — handwritten WARNs never affect the exit code', () => {
 // ---------------------------------------------------------------------------
 // `paths:` alone satisfies the axis requirement (#795 alias). Previously
 // UNTESTED (QA Defect 2) despite being the axis form the primary downstream
-// consumer (projects-baseline: 26 rule files, all `paths:`, 0 `globs:` — see
-// rule-loader.mjs module doc) relies on exclusively.
+// consumer (projects-baseline) relied on exclusively when #795 landed —
+// measured count: docs/baseline.md.
 // ---------------------------------------------------------------------------
 
 describe('check-rules — paths: alone satisfies the handwritten axis requirement (#795 alias)', () => {

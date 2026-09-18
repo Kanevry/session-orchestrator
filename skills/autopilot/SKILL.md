@@ -235,6 +235,7 @@ import { runLoop, parseFlags } from '$PLUGIN_ROOT/scripts/lib/autopilot.mjs';
 import { buildLiveSignals } from '$PLUGIN_ROOT/scripts/lib/build-live-signals.mjs';
 import { selectMode } from '$PLUGIN_ROOT/scripts/lib/mode-selector.mjs';
 import { probe, evaluate } from '$PLUGIN_ROOT/scripts/lib/resource-probe.mjs';
+import { detectPeers } from '$PLUGIN_ROOT/scripts/lib/session-registry.mjs';
 
 const flags = parseFlags(process.argv.slice(2));
 
@@ -250,14 +251,27 @@ const modeSelector = async () => {
   return selectMode(signals);
 };
 
+let cachedProbeSnapshot = null;   // written by peerCounter, read by resourceEvaluator
+
 const resourceEvaluator = () => {
-  const snapshot = probeSync();   // or cached snapshot if probe is async
-  return evaluate(snapshot, thresholds);
+  // Synchronous by contract: never calls probe() itself (it is async) — reads
+  // the snapshot peerCounter refreshed on the prior iteration.
+  if (cachedProbeSnapshot === null) {
+    return { verdict: 'warn', reasons: ['probe not yet available'], recommended_agents_per_wave_cap: null };
+  }
+  return evaluate(cachedProbeSnapshot, thresholds);
 };
 
-const peerCounter = () => {
-  // Synchronous-friendly count from a recent probe snapshot.
-  return latestSnapshot.claude_processes_count ?? 0;
+const peerCounter = async () => {
+  // A SESSION count, not a process count (host-resources.md HR-103) —
+  // claude_processes_count runs ~6 processes per session. `ownSessionId` is
+  // this coordinator's registry id, so detectPeers() excludes it.
+  const [peers, snapshot] = await Promise.all([
+    detectPeers({ sessionId: ownSessionId, freshnessMin: 15 }),
+    probe(),
+  ]);
+  cachedProbeSnapshot = snapshot;
+  return peers.length;
 };
 
 const sessionRunner = async ({ mode, autopilotRunId }) => {
@@ -289,8 +303,9 @@ The in-process driver has Claude (the coordinator) call `/session <mode>` betwee
 - **Pro:** zero new infra. Reuses canonical kill-switch logic. Validates `buildLiveSignals`
   against real Phase 7.5 swap before headless complexity. Each iteration carries
   inter-session memory through STATE.md / sessions.jsonl / learnings.
-- **Con:** not truly autonomous — Claude must stay in the chat. Doesn't deliver
-  walk-away UX. That's Phase C-5's job.
+- **Con:** not truly autonomous — Claude must stay in the chat. The in-process
+  driver does not deliver walk-away UX; that is the shipped headless driver
+  (`--headless`, `scripts/autopilot.mjs`, Phase C-5; see § Headless Driver Wiring).
 
 ### Headless Driver Wiring (Option A — `scripts/autopilot.mjs`)
 

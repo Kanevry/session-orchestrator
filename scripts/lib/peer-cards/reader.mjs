@@ -104,11 +104,11 @@ async function readOneCard(absPath, now) {
     };
   }
 
-  const parsed = parseStateMd(content);
+  const parsed = parseStateMd(foldMultilineLists(content));
   if (parsed === null) {
     return {
       frontmatter: null,
-      body: content,
+      body: stripFrontmatterBlock(content),
       stalenessDays: Infinity,
       isStale: true,
       validation: { ok: false, errors: ['no frontmatter or malformed YAML'] },
@@ -122,4 +122,80 @@ async function readOneCard(absPath, now) {
   const isStale = stalenessDays > STALENESS_THRESHOLD_DAYS;
 
   return { frontmatter, body, stalenessDays, isStale, validation };
+}
+
+// `---\n<frontmatter>\n---\n` at the very start — same shape `parseStateMd` matches.
+const FRONTMATTER_BLOCK_RE = /^---\r?\n([\s\S]*?)\r?\n---(\r?\n|$)/;
+
+/**
+ * Fold multi-line list values of top-level frontmatter keys into the one-line
+ * flow form (`key: [a, b]`) that `parseStateMd` understands. Two shapes (#1380):
+ *   • a multi-line flow list — `key:\n  [\n    "a",\n    "b",\n  ]` — which is how
+ *     Prettier reformats the one-line list `writer.mjs` emits;
+ *   • a block list — `key:\n  - a\n  - b` — as a hand edit would write it.
+ * Done here, not in the shared STATE.md parser: its mutators rely on `null` for
+ * shapes it does not understand. A block list whose items are mappings
+ * (`- name: x`) is left untouched — that is the parser's own block-seq form.
+ * Content outside the frontmatter block is never modified.
+ *
+ * @param {string} content — full file content
+ * @returns {string}
+ */
+function foldMultilineLists(content) {
+  const m = FRONTMATTER_BLOCK_RE.exec(content);
+  if (!m) return content;
+  const lines = m[1].split(/\r?\n/);
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const key = /^([\w-]+):\s*$/.exec(lines[i]);
+    const next = lines[i + 1];
+    if (!key || next === undefined || !/^\s+\S/.test(next)) {
+      out.push(lines[i]);
+      continue;
+    }
+    if (next.trim().startsWith('[')) {
+      let j = i + 1;
+      const parts = [];
+      while (j < lines.length && /^\s+\S/.test(lines[j])) {
+        parts.push(lines[j].trim());
+        if (lines[j].trim().endsWith(']')) break;
+        j++;
+      }
+      if (j < lines.length && lines[j].trim().endsWith(']')) {
+        const inner = parts.join(' ').slice(1, -1).trim().replace(/,\s*$/, '');
+        out.push(`${key[1]}: [${inner.replace(/\s*,\s*/g, ', ')}]`);
+        i = j;
+        continue;
+      }
+    } else {
+      let j = i + 1;
+      const items = [];
+      while (j < lines.length && /^\s+-\s+\S/.test(lines[j])) {
+        items.push(lines[j].trim().slice(1).trim());
+        j++;
+      }
+      const endsBlock = j >= lines.length || !/^\s/.test(lines[j]);
+      if (items.length > 0 && endsBlock && !items.some((it) => /^[\w-]+:(\s|$)/.test(it))) {
+        out.push(`${key[1]}: [${items.join(', ')}]`);
+        i = j - 1;
+        continue;
+      }
+    }
+    out.push(lines[i]);
+  }
+  return `---\n${out.join('\n')}\n---${m[2]}${content.slice(m[0].length)}`;
+}
+
+/**
+ * Remove a leading `---…---` frontmatter block so an unparseable one never reaches
+ * a body consumer (the dialectic deriver payload) as if it were markdown (#1380).
+ *
+ * @param {string} content
+ * @returns {string}
+ */
+function stripFrontmatterBlock(content) {
+  const m = FRONTMATTER_BLOCK_RE.exec(content);
+  if (!m) return content;
+  const rest = content.slice(m[0].length);
+  return rest.startsWith('\n') ? rest.slice(1) : rest;
 }

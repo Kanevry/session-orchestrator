@@ -97,7 +97,7 @@ After each wave, output a recap:
 
 Document: 8-section full PRD. Save to `{plan-prd-location}/YYYY-MM-DD-{project-name}.md`.
 
-After PRD approval: run `$BASELINE_PATH/scripts/setup-project.sh`, verify repo, populate CLAUDE.md, commit PRD.
+After PRD approval: run `$BASELINE_PATH/scripts/setup-project.sh`, verify repo, populate CLAUDE.md, commit PRD. <!-- path-check: example -->
 
 Issues: Epic (project name) + sub-issues per MVP feature from PRD Section 4 (Solution & Scope).
 

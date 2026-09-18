@@ -39,6 +39,9 @@ const CURSOR_SKILLS_DIR = path.join(ROOT, '.cursor', 'skills');
 const CHECK_ONLY = process.argv.includes('--check');
 const DESCRIPTION_MAX = 1024;
 
+/** Memo for {@link skillFlags} — skill name → parsed frontmatter + both markers. */
+const SKILL_FLAGS = new Map();
+
 function isDir(p) {
   try { return statSync(p).isDirectory(); } catch { return false; }
 }
@@ -201,11 +204,41 @@ Cursor has no Skill tool. When the command says to invoke a skill, Read \`skills
  * @returns {string[]} skill names, sorted
  */
 function userInvocableSkills() {
-  return skillDirs().filter((name) => {
-    const file = path.join(SKILLS_DIR, name, 'SKILL.md');
-    const fields = parseFrontmatter(readFileSync(file, 'utf8'));
-    return isUserInvocableValue(fields['user-invocable'], file);
-  });
+  return skillDirs().filter((name) => skillFlags(name).userInvocable);
+}
+
+/**
+ * Both boolean markers of ONE skill, parsed and judged exactly once.
+ *
+ * Memoised because the predicate is not side-effect free: a truthy-lookalike
+ * value (`yes`, `on`, `1`) emits a stderr WARN, so reading the same key from
+ * three call sites emitted the same warning three times — measured 2026-09-18
+ * on a two-skill fixture: 3 WARN lines for 2 defects. One skill, one reading,
+ * one diagnostic.
+ *
+ * @param {string} skillName
+ * @returns {{file: string, fields: Record<string, string>, userInvocable: boolean,
+ *   sourceDisablesModel: boolean, disablesModel: boolean}}
+ */
+function skillFlags(skillName) {
+  const cached = SKILL_FLAGS.get(skillName);
+  if (cached) return cached;
+  const file = path.join(SKILLS_DIR, skillName, 'SKILL.md');
+  const fields = parseFrontmatter(readFileSync(file, 'utf8'));
+  const userInvocable = isUserInvocableValue(fields['user-invocable'], file, 'user-invocable');
+  const sourceDisablesModel = isUserInvocableValue(
+    fields['disable-model-invocation'], file, 'disable-model-invocation',
+  );
+  const flags = {
+    file,
+    fields,
+    userInvocable,
+    sourceDisablesModel,
+    // See {@link disablesModelInvocation} for the two OR-ed grounds.
+    disablesModel: sourceDisablesModel || !userInvocable,
+  };
+  SKILL_FLAGS.set(skillName, flags);
+  return flags;
 }
 
 /**
@@ -217,8 +250,7 @@ function userInvocableSkills() {
  * @returns {string}
  */
 function renderSkillCommand(skillName) {
-  const skillPath = path.join(SKILLS_DIR, skillName, 'SKILL.md');
-  const fields = parseFrontmatter(readFileSync(skillPath, 'utf8'));
+  const { fields, sourceDisablesModel } = skillFlags(skillName);
   const description = clampDescription(fields.description || `Session Orchestrator skill: ${skillName}`);
   // Same GH#54 rule as renderCommand: `argument-hint` ALWAYS goes through
   // yamlQuote(), because its canonical authored form (`[mode] [--flag]`) is a
@@ -233,7 +265,7 @@ function renderSkillCommand(skillName) {
     '---',
     frontmatterLine('description', yamlQuote(description)),
     frontmatterLine('argument-hint', yamlQuote(fields['argument-hint'])),
-    isUserInvocableValue(fields['disable-model-invocation'], skillPath) ? 'disable-model-invocation: true' : null,
+    sourceDisablesModel ? 'disable-model-invocation: true' : null,
     '---',
   ].filter(Boolean).join('\n');
 
@@ -283,18 +315,19 @@ Cursor has no Skill tool. When the skill says to invoke another skill, Read \`sk
  *   | false/absent| true           | no      |
  *   | false/absent| false/absent   | yes (2) |
  *
- * @param {Record<string, string>} fields source skill frontmatter
- * @param {string} [file] SKILL.md path, named in a demotion WARN
+ * Both readings come from {@link skillFlags} (`sourceDisablesModel ||
+ * !userInvocable`), which parses each SKILL.md once — so a truthy-lookalike
+ * value warns once per key per skill instead of once per call site.
+ *
+ * @param {string} skillName
  * @returns {boolean}
  */
-function disablesModelInvocation(fields, file) {
-  return isUserInvocableValue(fields['disable-model-invocation'], file)
-    || !isUserInvocableValue(fields['user-invocable'], file);
+function disablesModelInvocation(skillName) {
+  return skillFlags(skillName).disablesModel;
 }
 
 function renderSkill(skillName) {
-  const skillPath = path.join(SKILLS_DIR, skillName, 'SKILL.md');
-  const fields = parseFrontmatter(readFileSync(skillPath, 'utf8'));
+  const { fields } = skillFlags(skillName);
   const description = clampDescription(fields.description || `Session Orchestrator skill: ${skillName}`);
   // Same rule as renderCommand: no frontmatter value is emitted raw. `name` is
   // a directory basename today, so it is plain-safe in practice — routing it
@@ -304,7 +337,7 @@ function renderSkill(skillName) {
     `name: ${yamlQuote(skillName)}`,
     `description: ${yamlQuote(description)}`,
   ];
-  if (disablesModelInvocation(fields, skillPath)) {
+  if (disablesModelInvocation(skillName)) {
     lines.push('disable-model-invocation: true');
   }
   lines.push('---');

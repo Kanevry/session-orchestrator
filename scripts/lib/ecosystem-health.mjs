@@ -40,6 +40,17 @@
 import { existsSync, statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+// Ceiling (BV-004): one process per session that invoked session-start
+// (monitors/monitors.json `when: on-skill-invoke:session-start`), alive until
+// SIGTERM; one stat + one full readFileSync of ONE local file per 900 s
+// (resolved against CLAUDE_PLUGIN_ROOT, not the repo); no network, no repo
+// enumeration, no Session Config read (runs even with `ecosystem-health: false`).
+// The watched file has NO producer (0 writers, measured 2026-09-18:
+// `rg -l "ecosystem-health\.jsonl"` → this file only) — every run emits
+// `no-state-yet` and idles. Revisit when: (1) code starts writing
+// .orchestrator/metrics/ecosystem-health.jsonl → switch to a tail read and gate
+// on `ecosystem-health` enabled; or (2) peer sessions regularly exceed ~5 (one
+// idle node process per live session).
 const DEFAULT_INTERVAL_S = 15 * 60; // 15min
 const STATE_FILE_REL = '.orchestrator/metrics/ecosystem-health.jsonl';
 

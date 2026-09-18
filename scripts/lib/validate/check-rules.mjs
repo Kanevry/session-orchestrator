@@ -60,9 +60,9 @@
 //           Order and duplicates are irrelevant (a glob list is matched
 //           any-of), so the comparison is over the sorted unique set.
 //           NOT flagged: `paths:` alone. It is the form the native
-//           documentation prescribes and the form the primary downstream
-//           consumer uses exclusively (projects-baseline: 26 rule files, all
-//           `paths:`, 0 `globs:` — rule-loader.mjs module doc). The
+//           documentation prescribes, and the primary downstream consumer
+//           (projects-baseline) carries `paths:` on every scoped rule —
+//           measured count: docs/baseline.md. The
 //           `globs:`-is-canonical preference for VENDORED rules is a separate,
 //           warn-level concern already owned by
 //           scripts/lib/validate-vendored-rules.mjs (~:289, issue #742) and is

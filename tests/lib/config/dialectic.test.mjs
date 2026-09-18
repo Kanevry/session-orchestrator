@@ -9,7 +9,7 @@
  *       NOT defaulted; this edge case has no eval.mjs analogue since eval has
  *       no integer kill-switch field)
  *     - unknown model ⇒ throw with a speaking message
- *     - budget-tokens garbage/negative ⇒ silently defaults to 8000, no throw
+ *     - budget-tokens garbage/negative ⇒ silently defaults to 32000, no throw
  *     - quoted values stripped (double + single quote forms)
  *     - non-indented follow-up line ends the block scan
  *     - inline comment on the `dialectic:` KEY line itself ⇒ block never
@@ -39,7 +39,7 @@ const hermetic = { hostPaths: { env: {}, ownerConfig: undefined } };
 const DEFAULTS = Object.freeze({
   cadence: 5,
   model: 'haiku',
-  'budget-tokens': 8000,
+  'budget-tokens': 32000,
 });
 
 // ---------------------------------------------------------------------------
@@ -110,10 +110,10 @@ describe('_parseDialectic — budget-tokens silently defaults on garbage', () =>
   it.each([
     ['a negative value', '-100'],
     ['non-numeric garbage', 'lots'],
-  ])('defaults budget-tokens to 8000 when the value is %s', (_label, value) => {
+  ])('defaults budget-tokens to 32000 when the value is %s', (_label, value) => {
     const content = ['dialectic:', `  budget-tokens: ${value}`, ''].join('\n');
     expect(() => _parseDialectic(content)).not.toThrow();
-    expect(_parseDialectic(content)['budget-tokens']).toBe(8000);
+    expect(_parseDialectic(content)['budget-tokens']).toBe(32000);
   });
 });
 
@@ -161,7 +161,7 @@ describe('_parseDialectic — empty model value throws (LOW batch)', () => {
 // ---------------------------------------------------------------------------
 
 describe('_parseDialectic — budget-tokens: 0 kill-switch (LOW batch)', () => {
-  it('parses budget-tokens: 0 verbatim rather than falling back to the default of 8000', () => {
+  it('parses budget-tokens: 0 verbatim rather than falling back to the default of 32000', () => {
     const content = ['dialectic:', '  budget-tokens: 0', ''].join('\n');
     expect(_parseDialectic(content)['budget-tokens']).toBe(0);
   });

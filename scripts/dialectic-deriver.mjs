@@ -49,6 +49,7 @@ import { readPeerCards } from './lib/peer-cards/reader.mjs';
 import { filterRealSessions } from './lib/session-schema/filters.mjs';
 import { readCanonicalSessions } from './lib/sessions-canonical.mjs';
 import { recordDialecticRun } from './lib/learnings/evolve-telemetry.mjs';
+import { DEFAULT_BUDGET_TOKENS } from './lib/config/dialectic.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,8 +58,11 @@ import { recordDialecticRun } from './lib/learnings/evolve-telemetry.mjs';
 /** Allowed LLM model identifiers. Per #506 EARS unwanted-behaviour: fail-fast on others. */
 export const ALLOWED_MODELS = Object.freeze(['haiku', 'sonnet', 'opus']);
 
-/** Default per-call budget (input + output tokens). Per #506 AC2. */
-export const DEFAULT_BUDGET = Object.freeze({ input: 8000, output: 4000 });
+/**
+ * Default per-call budget (input + output tokens). Per #506 AC2; the input
+ * ceiling is `DEFAULT_BUDGET_TOKENS` from the config parser (SSOT, #1380).
+ */
+export const DEFAULT_BUDGET = Object.freeze({ input: DEFAULT_BUDGET_TOKENS, output: 4000 });
 
 /** Industry-standard heuristic: ~4 chars per token for English prose. */
 const CHARS_PER_TOKEN = 4;
@@ -309,19 +313,21 @@ export function buildPrompt(payload, model, randomNonce = () => randomBytes(4).t
     '',
     '```diff',
     '# target: user',
-    '<full proposed body of USER.md, replacing existing content>',
+    '<the `## ` sections of USER.md you change or add>',
     '```',
     '',
     '```diff',
     '# target: agent',
-    '<full proposed body of AGENT.md, replacing existing content>',
+    '<the `## ` sections of AGENT.md you change or add>',
     '```',
     '',
     'Rules:',
     '- Emit at most one block per target. Omit a target entirely when no update is warranted.',
-    '- The block body is the FULL replacement body — not a unified diff hunk.',
+    '- The block body is a set of whole `## ` sections — not a unified diff hunk. It is merged per section:',
+    '  omitted sections stay UNCHANGED (nothing is deleted), so emit ONLY the sections you change or newly',
+    '  ground, and reuse an existing heading verbatim to update that section.',
     '- Preserve existing peer-card frontmatter; do not include `---` frontmatter lines in your block.',
-    '- Do not invent new sections that are not grounded in the supplied learnings or sessions.',
+    '- Do not invent sections without evidence from the supplied learnings or sessions — nothing downstream rejects them.',
     `- Operate within the dialectic budget appropriate for model '${model}'.`,
     '',
   ].join('\n');

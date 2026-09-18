@@ -62,4 +62,4 @@ tier: wave-only
 - Validate all server-sent data with Codable schemas. Never `force-unwrap` optional JSON fields.
 
 ## See Also
-development.md · security.md · testing.md · frontend.md · backend.md · mvp-scope.md · parallel-sessions.md
+frontend.md · backend.md · parallel-sessions.md

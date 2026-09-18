@@ -318,11 +318,25 @@ Capture the exit code. If non-zero, parse the output for error count and file lo
 
 4. **Add supporting files if needed.** Place them in the same directory (e.g., `skills/my-skill/templates.md`). Reference them from SKILL.md with instructions like "Read `templates.md` in this skill directory."
 
-5. **If the skill should be user-invocable, create a command** (see [Adding a New Command](#adding-a-new-command)).
+5. **If the skill should be a slash command, set `user-invocable: true` in the SKILL.md frontmatter** (plus `argument-hint` / `disable-model-invocation` where needed — see `skills/go/SKILL.md`). Do NOT add a `commands/<name>.md`: a command beside a same-named user-invocable skill claims one `/name` twice — `generate-pi-prompts.mjs` and `generate-cursor-adapter.mjs` abort on the collision, and `tests/commands/headless-bare-command-availability.test.mjs` forbids the twin (#1370).
 
-6. **Test the skill** by invoking it in a project repo. If it is called by another skill, trigger the parent skill and verify the chain works end to end.
+6. **Regenerate the adapters** — the copies under `.agents/`, `.codex-plugin/`, `.cursor/` and `pi/` are generated, never hand-edited:
+
+   | Generator | Run when | `validate-plugin` check |
+   |---|---|---|
+   | `node scripts/generate-agents-skills.mjs` | any skill (`.agents/skills/`) | `check-agents-skills` |
+   | `node scripts/generate-codex-skills.mjs` | any skill or command (`.codex-plugin/skills/`) | `check-codex-skills` |
+   | `node scripts/generate-cursor-adapter.mjs` | any skill (`.cursor/skills/`); a command or `user-invocable: true` skill also lands in `.cursor/commands/` | `check-cursor-adapter` |
+   | `node scripts/generate-pi-prompts.mjs` | a command or a `user-invocable: true` skill (`pi/prompts/`) | `check-pi-prompts` |
+   | `node scripts/generate-hook-import-set.mjs` | only when a hook entry file's transitive imports change — never for a `.md` edit | `hook-import-set` |
+
+   Then run `node scripts/validate-plugin.mjs`; each check above fails on a stale copy and names its generator.
+
+7. **Test the skill** by invoking it in a project repo. If it is called by another skill, trigger the parent skill and verify the chain works end to end.
 
 ## Adding a New Command
+
+A new slash command is normally a **skill** with `user-invocable: true` — see step 5 of [Adding a New Skill](#adding-a-new-skill). Since #1370 folded 24 command files into their same-named skills, `commands/` holds only the names a skill cannot carry (`HEADLESS_EXCEPTIONS` in `tests/commands/headless-bare-command-availability.test.mjs`). Use the steps below only for such a name.
 
 1. **Create the command file:**
 
@@ -366,15 +380,23 @@ Capture the exit code. If non-zero, parse the output for error count and file lo
 
 5. **Test** by running `/<my-command>` in Claude Code.
 
-6. **Give it a same-named skill, or put it on the exception list.** In print
-   mode (`claude -p`) a plugin's bare `/name` alias comes from the **skill
-   registry only** — a `commands/<name>.md` with no `skills/<name>/SKILL.md`
-   answers `Unknown command: /<name>` headlessly (claude 2.1.273, measured
+6. **Put the name on the exception list — never add a same-named skill.** In
+   print mode (`claude -p`) a `commands/<name>.md` with no
+   `skills/<name>/SKILL.md` answers `Unknown command: /<name>`, and one WITH a
+   same-named skill is listed twice in the `/` picker (claude 2.1.273, measured
    2026-09-16, #1370). `tests/commands/headless-bare-command-availability.test.mjs`
-   enforces the pairing; the documented exceptions are `session`, `plan`
-   (reserved terminal-only built-in names) and `templates-ack`.
+   therefore fails on any command outside `HEADLESS_EXCEPTIONS` (today:
+   `session`, a reserved terminal-only built-in name, and `templates-ack`) and on
+   any command/skill twin. Add the entry there with the reason the name cannot
+   be a skill.
 
-7. **Headless smoke** (manual — costs model turns, not run in CI):
+7. **Regenerate the adapters:** `node scripts/generate-codex-skills.mjs`,
+   `node scripts/generate-cursor-adapter.mjs` (`.cursor/commands/`) and
+   `node scripts/generate-pi-prompts.mjs` (`pi/prompts/`), then
+   `node scripts/validate-plugin.mjs` (table in
+   [Adding a New Skill](#adding-a-new-skill), step 6).
+
+8. **Headless smoke** (manual — costs model turns, not run in CI):
 
    ```bash
    env -u ANTHROPIC_API_KEY claude -p "/close" --plugin-dir "$PWD" --permission-mode bypassPermissions --model sonnet --max-turns 1

@@ -90,7 +90,7 @@ Dedupe anchors — dropping a pair regenerates that learning.
 - learning-key: `anti-pattern/ein-arbeitskopie-artefakt-state-md-session-lock-ist-kein-prozesslokaler-identitaetszeuge-zeugen-stufen-nicht-vereinigen`
 - learning-id: `1e3f362b-2c95-4858-9265-3eacf407455d`
 - learning-key: `anti-pattern/identitaets-union-mit-einem-repo-globalen-artefakt-ist-in-geteilter-arbeitskopie-selbstbestaetigend`
-- learning-id: `4ad4b89f-44ac-484c-b5b9-19de8d192fe6`
+- learning-id: `4ad4b89f-44ac-484c-b5b9-19de8d192fe6`  <!-- markers only (substance: folded into the working-copy-artefact entry above — "rank witnesses, never union them"; the `some()` union over a repo-global artefact is self-confirming in a shared working copy) -->
 - learning-key: `anti-pattern/zwei-schreiber-zwei-identitaets-aufloesungswege-das-duplikat-teilt-keinen-einzigen-schluessel`
 - learning-id: `eee01f54-fdcf-4b9e-b5e6-b6cb494818fb`  <!-- markers only (substance: stamp the RAW uuid AND the semantic id so the join exists; `session.ended` bridge since #1068) -->
 - learning-key: `convention/ein-dispatchter-subagent-traegt-die-rohe-session-id-des-koordinators-nie-eine-eigene`

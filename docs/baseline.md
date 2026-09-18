@@ -12,12 +12,18 @@ A separate git repository (not vendored, not a submodule, not on npm) carrying:
 - `packages/zod-schemas/src/vault-frontmatter.ts` — the canonical Zod schema for
   Obsidian vault note frontmatter.
 - `templates/shared/.vault.yaml.template` — the canonical `.vault.yaml` template.
-- A `.claude/rules/` corpus. Measured: **26 rule files, all using `paths:`
-  frontmatter, 0 using `globs:`** (`scripts/lib/rule-loader.mjs` module doc;
-  restated in `scripts/lib/validate/check-rules.mjs`). That corpus is the reason
-  `paths:` exists as a same-shape alias for `globs:` at all (#795) — the fleet's
-  rules are read **from the baseline**, not from this plugin, so the plugin had to
-  learn the baseline's frontmatter convention rather than the other way round.
+- A `.claude/rules/` corpus. Measured 2026-09-18 at projects-baseline `5cc51f2`,
+  counting top-level keys inside each file's frontmatter block only: **32 rule
+  files — 23 carry BOTH `paths:` and `globs:`, 9 carry neither, 0 carry only
+  `paths:`, 0 carry only `globs:`** (per `.claude/rules/*.md`: extract the
+  frontmatter, `grep -c '^paths:'` / `grep -c '^globs:'`, then
+  `sort | uniq -c` over the per-file pairs). This is the one dated count; the
+  comments in `scripts/lib/rule-loader.mjs`, `scripts/lib/validate/check-rules.mjs`
+  and the two `check-rules` test files point here instead of restating it.
+  When #795 landed the corpus scoped its rules with `paths:` alone — that is the
+  reason `paths:` exists as a same-shape alias for `globs:` at all: the fleet's
+  rules are read **from the baseline**, not from this plugin, so the plugin had
+  to learn the baseline's frontmatter convention rather than the other way round.
 
 ## How bootstrap finds it
 

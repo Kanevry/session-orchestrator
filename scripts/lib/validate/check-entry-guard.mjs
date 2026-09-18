@@ -76,6 +76,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { isMainModule } from '../is-main-module.mjs';
+import { maskSource } from './check-untracked-test-deps.mjs';
 
 /**
  * Files whose `process.argv[1]` comparison the oracle flags but which are NOT
@@ -102,50 +103,20 @@ const SELF_EXEMPT = 'scripts/lib/is-main-module.mjs';
 /**
  * Remove comments while preserving character offsets (so line numbers survive).
  *
+ * A thin wrapper over the shared lexer `maskSource` in `keepLiterals` mode:
+ * string, template and regex literals are skipped INTACT. That is load-bearing
+ * twice over — the V1 idiom \`file://${process.argv[1]}\` carries a `//` that a
+ * naive scanner reads as a line comment, and a regex literal must be recognised
+ * as one (#1383: a `/` the lexer read as a division let the regex body's `/*`
+ * open a block comment that blanked the guard below it — a fail-open miss, for
+ * a quote-bearing regex, a `/[/*]/` character class, and a regex after a keyword
+ * alike).
+ *
  * @param {string} src module source
  * @returns {string} same length, comment bytes replaced by spaces
  */
 export function stripComments(src) {
-  const out = src.split('');
-  let i = 0;
-  let mode = 'code';
-  while (i < src.length) {
-    const two = src.slice(i, i + 2);
-    if (mode === 'code') {
-      if (two === '//') mode = 'line';
-      else if (two === '/*') mode = 'block';
-      else if (src[i] === '`' || src[i] === "'" || src[i] === '"') {
-        // Skip OVER the literal to its closing delimiter, leaving the contents
-        // intact. This is load-bearing, not hygiene: the V1 idiom is
-        // \`file://${process.argv[1]}\` and the `//` in `file://` reads as a line
-        // comment to a naive scanner, which blanks the rest of the line and
-        // makes the most common variant of the defect class invisible.
-        const quote = src[i];
-        i++;
-        while (i < src.length && src[i] !== quote) {
-          if (src[i] === '\\') i++;
-          i++;
-        }
-        i++;
-        continue;
-      }
-    }
-    if (mode === 'line') {
-      if (src[i] === '\n') mode = 'code';
-      else out[i] = ' ';
-    } else if (mode === 'block') {
-      if (src[i] !== '\n') out[i] = ' ';
-      if (two === '*/') {
-        out[i] = ' ';
-        out[i + 1] = ' ';
-        i += 2;
-        mode = 'code';
-        continue;
-      }
-    }
-    i++;
-  }
-  return out.join('');
+  return maskSource(src, { keepLiterals: true });
 }
 
 /**
@@ -153,16 +124,8 @@ export function stripComments(src) {
  * Scanned rather than matched in one shot so the RECEIVER can be judged from the
  * text preceding each hit — a `.endsWith()` on anything other than
  * `process.argv[1]` is not this defect class.
- *
- * The quote characters are spelled `\x27` / `\x22` / `\x60` rather than
- * literally, and that is load-bearing for THIS file specifically: `stripComments`
- * below has no notion of a regex literal, so a bare `'` inside one reads as the
- * start of a string and desynchronises the scanner for the rest of the module —
- * measured 2026-09-17, a literal-quote version of this regex made the census
- * report a line-comment 40 lines further down as a finding. Same rule applies to
- * every regex added to this module.
  */
-const ENDS_WITH_LITERAL = /endsWith\(\s*([\x27\x22\x60])([^\x27\x22\x60]*)\1\s*\)/g;
+const ENDS_WITH_LITERAL = /endsWith\(\s*(['"`])([^'"`]*)\1\s*\)/g;
 
 /**
  * The receiver chain, whitespace-stripped, that makes an `.endsWith()` call a
@@ -170,7 +133,7 @@ const ENDS_WITH_LITERAL = /endsWith\(\s*([\x27\x22\x60])([^\x27\x22\x60]*)\1\s*\
  * wrapper (`String(...)`, `path.basename(...)`) still matches; anchored at the
  * END so only the call immediately downstream of `process.argv[1]` counts.
  */
-const ARGV_RECEIVER_TAIL = /process\.argv\[1\](?:\|\|\x27\x27|\|\|\x22\x22)?\)*\??\.$/;
+const ARGV_RECEIVER_TAIL = /process\.argv\[1\](?:\|\|''|\|\|"")?\)*\??\.$/;
 
 /**
  * Findings for one module body.

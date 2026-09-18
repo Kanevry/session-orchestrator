@@ -102,11 +102,19 @@ function normaliseScalar(text) {
  * than inventing a fifth dialect. Because the demotion is the surprising half,
  * each one emits exactly one stderr WARN naming the file.
  *
+ * The same normalisation governs the SIBLING boolean marker
+ * `disable-model-invocation` (the Cursor and Codex adapters read it with this
+ * predicate). The WARN therefore names the key it was asked about rather than a
+ * hard-coded `user-invocable`: measured 2026-09-18, a `disable-model-invocation:
+ * yes` demotion reported `user-invocable: "yes"`, sending the operator to a
+ * line that does not exist in that file.
+ *
  * @param {unknown} value the raw frontmatter value
  * @param {string} [file] path named in the WARN when a truthy-looking value is demoted
+ * @param {string} [key] frontmatter key named in the WARN (default `user-invocable`)
  * @returns {boolean}
  */
-export function isUserInvocableValue(value, file) {
+export function isUserInvocableValue(value, file, key = 'user-invocable') {
   if (value === true) return true;
   if (typeof value !== 'string') return false;
   const token = normaliseScalar(value);
@@ -114,8 +122,8 @@ export function isUserInvocableValue(value, file) {
   if (TRUTHY_LOOKALIKE.test(token)) {
     const where = file ? `${file}: ` : '';
     process.stderr.write(
-      `WARN ${where}user-invocable: ${JSON.stringify(value)} is NOT a slash-command marker — `
-        + 'only `true` is (YAML 1.2 reads yes/on/1 as strings). Write `user-invocable: true`.\n',
+      `WARN ${where}${key}: ${JSON.stringify(value)} is NOT a slash-command marker — `
+        + `only \`true\` is (YAML 1.2 reads yes/on/1 as strings). Write \`${key}: true\`.\n`,
     );
   }
   return false;

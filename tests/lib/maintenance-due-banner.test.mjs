@@ -26,6 +26,11 @@ import {
   TAIL_CHUNK_BYTES,
   GENERATED_RULE_EXPIRY_HORIZON_DAYS,
 } from '@lib/maintenance-due-banner.mjs';
+import {
+  consumeDialecticPending,
+  writeDialecticLastRun,
+  writeDialecticPending,
+} from '@lib/auto-dialectic.mjs';
 
 let tmpRepo;
 let savedEnv;
@@ -257,6 +262,32 @@ describe('checkMaintenanceDue', () => {
     fs.utimesSync(sidecar, old, old);
     const aged = await computeMaintenanceDue({ repoRoot: tmpRepo, config: {} });
     expect(aged.due.map((d) => d.id)).not.toContain('pending-sidecar');
+  });
+
+  // BUG (#1380): `/evolve dialectic` never advanced `dialectic-last-run` nor
+  // deleted `dialectic-pending.md`, so after a run was applied both signals
+  // stayed due — the banner nagged about work that was already done. Pins the
+  // Step 6.4 bookkeeping pair against the probe that reads its effects.
+  it('clears dialectic + pending-sidecar once a dialectic run is recorded and its sidecar consumed', async () => {
+    writeMetrics(
+      'sessions.jsonl',
+      Array.from({ length: 6 }, (_, i) =>
+        JSON.stringify({ session_id: `s-${i}`, started_at: `2026-01-0${i + 1}T08:00:00.000Z` }),
+      ),
+    );
+    await writeDialecticPending({ repoRoot: tmpRepo, diff: '# target: user\n## A\n- x\n' });
+
+    const before = await computeMaintenanceDue({ repoRoot: tmpRepo, config: {} });
+    expect(before.due.map((d) => d.id)).toEqual(expect.arrayContaining(['dialectic', 'pending-sidecar']));
+
+    const lastRun = await writeDialecticLastRun({ repoRoot: tmpRepo, isoTimestamp: new Date().toISOString() });
+    const consumed = await consumeDialecticPending({ repoRoot: tmpRepo });
+    expect(lastRun.ok).toBe(true);
+    expect(consumed).toMatchObject({ ok: true, consumed: true });
+
+    const after = await computeMaintenanceDue({ repoRoot: tmpRepo, config: {} });
+    expect(after.due.map((d) => d.id)).not.toContain('dialectic');
+    expect(after.due.map((d) => d.id)).not.toContain('pending-sidecar');
   });
 
   // BUG (HR-106): a constant `total: 6` reports a denominator the rule never

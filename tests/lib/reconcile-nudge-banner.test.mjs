@@ -33,17 +33,33 @@ afterEach(() => {
   }
 });
 
-/** Build one JSONL learning line. No `expires_at` → never treated as expired. */
-function learningLine({ type = 'convention', confidence = 0.8, file_paths, id } = {}, i = 0) {
+/**
+ * Default fixture insight — 41 chars, i.e. ABOVE the `reconcile.min-insight-chars`
+ * default (24) the nudge now shares with `/reconcile`. A short placeholder here
+ * would make every eligibility case in this file measure the placeholder gate
+ * instead of the behaviour under test; the short-insight case has its own test.
+ */
+const DEFAULT_INSIGHT = 'a sufficiently long insight for eligibility';
+
+/**
+ * Build one JSONL learning line. No `expires_at`, and `created_at` is the real
+ * clock — so the natural-TTL gate the nudge now shares with the engine (#1380,
+ * `filterEligible({ now })`) never rejects it. A fixed past date here would be a
+ * time bomb once its TTL elapsed.
+ */
+function learningLine(
+  { type = 'convention', confidence = 0.8, file_paths, id, insight = DEFAULT_INSIGHT } = {},
+  i = 0,
+) {
   const obj = {
     id: id ?? `id-${i}`,
     type,
     subject: `subject-${i}`,
-    insight: 'test insight',
+    insight,
     evidence: 'test evidence',
     confidence,
     source_session: 'main-2026-01-01-1',
-    created_at: '2026-01-01T00:00:00.000Z',
+    created_at: new Date().toISOString(),
     schema_version: 1,
   };
   if (file_paths) obj.file_paths = file_paths;
@@ -175,6 +191,79 @@ describe('checkReconcileNudge — nudge (c): rule-eligible learnings', () => {
       file_paths: ['scripts/lib/example.mjs'],
     });
     expect(await checkReconcileNudge({ repoRoot: tmpRepo })).toBe(null);
+  });
+
+  it('a learning whose insight is shorter than reconcile.min-insight-chars does not count — the nudge applies the same gate /reconcile does', async () => {
+    // Same corpus as the passing case above, one field changed: an insight below
+    // the Session Config gate. /reconcile rejects these as `placeholder-insight`,
+    // so a banner counting them would nudge for work /reconcile cannot clear.
+    writeLearnings(tmpRepo, NUDGE_MIN_ELIGIBLE, {
+      type: 'anti-pattern',
+      confidence: 0.5,
+      file_paths: ['scripts/lib/example.mjs'],
+      insight: 'too short',
+    });
+    fs.writeFileSync(
+      path.join(tmpRepo, 'CLAUDE.md'),
+      '## Session Config\n\nreconcile:\n  enabled: true\n  min-insight-chars: 24\n',
+      'utf8',
+    );
+
+    const computed = await computeReconcileNudge({ repoRoot: tmpRepo });
+    expect(computed.eligibleCount).toBe(0);
+    expect(computed.backlogCount).toBe(0);
+    expect(computed.nudge).toBe(false);
+    expect(await checkReconcileNudge({ repoRoot: tmpRepo })).toBe(null);
+  });
+
+  it('an injected reconcile.min-insight-chars wins over the CLAUDE.md value — per-KEY precedence, not per-block', async () => {
+    // The docblock on `_resolveReconcileSettings` promises precedence PER KEY, and
+    // `enabled` has a test for it — `min-insight-chars` had none, so dropping the
+    // key from the injected-config branch (`minInsightChars: hasChars` → `false`)
+    // left every test green while the banner silently judged on CLAUDE.md's value.
+    // DEFAULT_INSIGHT is 41 chars: above CLAUDE.md's 24, below the injected 200.
+    // Only if the INJECTED value reaches `filterEligible` does the backlog go to 0.
+    writeLearnings(tmpRepo, NUDGE_MIN_ELIGIBLE, {
+      type: 'anti-pattern',
+      confidence: 0.5,
+      file_paths: ['scripts/lib/example.mjs'],
+    });
+    fs.writeFileSync(
+      path.join(tmpRepo, 'CLAUDE.md'),
+      '## Session Config\n\nreconcile:\n  enabled: true\n  min-insight-chars: 24\n',
+      'utf8',
+    );
+
+    // Control: with no injection the CLAUDE.md value (24) applies and all three count.
+    const onClaudeMd = await computeReconcileNudge({ repoRoot: tmpRepo });
+    expect(onClaudeMd.eligibleCount).toBe(NUDGE_MIN_ELIGIBLE);
+    expect(onClaudeMd.backlogCount).toBe(NUDGE_MIN_ELIGIBLE);
+
+    const injected = await computeReconcileNudge({
+      repoRoot: tmpRepo,
+      config: { reconcile: { 'min-insight-chars': 200 } },
+    });
+    expect(injected.eligibleCount).toBe(0);
+    expect(injected.backlogCount).toBe(0);
+    expect(injected.nudge).toBe(false);
+  });
+
+  it('#1380: eligible learnings already materialized under .claude/rules/ do not count — /reconcile could not clear them', async () => {
+    writeLearnings(tmpRepo, NUDGE_MIN_ELIGIBLE, {
+      type: 'anti-pattern',
+      confidence: 0.5,
+      file_paths: ['scripts/lib/example.mjs'],
+    });
+    const rulesDir = path.join(tmpRepo, '.claude', 'rules');
+    fs.mkdirSync(rulesDir, { recursive: true });
+    const provenance = Array.from({ length: NUDGE_MIN_ELIGIBLE }, (_, i) => `- learning-id: \`id-${i}\``);
+    fs.writeFileSync(path.join(rulesDir, 'x.md'), `# X\n\n## Provenance\n${provenance.join('\n')}\n`, 'utf8');
+
+    const computed = await computeReconcileNudge({ repoRoot: tmpRepo });
+    expect(computed.eligibleCount).toBe(NUDGE_MIN_ELIGIBLE);
+    expect(computed.alreadyMaterialized).toBe(NUDGE_MIN_ELIGIBLE);
+    expect(computed.backlogCount).toBe(0);
+    expect(computed.nudge).toBe(false);
   });
 });
 
@@ -320,6 +409,8 @@ describe('computeReconcileNudge — pure shape', () => {
       totalLearnings: 0,
       activeLearnings: 0,
       eligibleCount: 0,
+      alreadyMaterialized: 0,
+      backlogCount: 0,
       lastRunAt: null,
       lastRunCandidateCount: 0,
       delta: 0,

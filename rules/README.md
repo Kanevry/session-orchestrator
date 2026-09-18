@@ -9,7 +9,7 @@ It is **not** the always-on rule set of *this* repository — those live in
 "rules" but play opposite roles: `rules/` ships rules **out** to other repos,
 `.claude/rules/` is what this repo runs on day-to-day.
 
-Every file here carries a
+Every rule file here carries a
 `<!-- source: session-orchestrator plugin (canonical: rules/<path>) -->` header.
 On sync, plugin-sourced files are overwritten in the consumer while its
 locally-authored rules are preserved (copy-on-write). The canonical manifest of

@@ -15,13 +15,22 @@ import { preprocessBlockLines } from './block-preprocess.mjs';
 const ALLOWED_MODELS = new Set(['haiku', 'sonnet', 'opus']);
 
 /**
+ * Default `dialectic.budget-tokens` — the INPUT ceiling of one derivation call
+ * (SSOT; `scripts/dialectic-deriver.mjs` `DEFAULT_BUDGET.input` imports it).
+ * It is an upper bound the pre-dispatch estimate aborts on, not a spend: card
+ * bodies + steering alone estimated ~12k tokens here and ~30k in a consumer
+ * repo, so the former default of 8000 aborted real runs (#1380).
+ */
+export const DEFAULT_BUDGET_TOKENS = 32000;
+
+/**
  * Parse the top-level `dialectic:` YAML block from markdown content.
  * Independent of the `## Session Config` section boundary.
  *
  * Defaults:
  *   cadence:       5 (integer ≥ 0 — session count between auto-runs; 0 = disabled)
  *   model:         'haiku'
- *   budget-tokens: 8000 (integer ≥ 0)
+ *   budget-tokens: DEFAULT_BUDGET_TOKENS (32000, integer ≥ 0)
  *
  * Throws if `model` is present but not one of haiku|sonnet|opus.
  *
@@ -29,7 +38,7 @@ const ALLOWED_MODELS = new Set(['haiku', 'sonnet', 'opus']);
  * @returns {{ cadence: number, model: string, "budget-tokens": number }}
  */
 export function _parseDialectic(content) {
-  const defaults = { cadence: 5, model: 'haiku', 'budget-tokens': 8000 };
+  const defaults = { cadence: 5, model: 'haiku', 'budget-tokens': DEFAULT_BUDGET_TOKENS };
 
   const lines = preprocessBlockLines(content);
   let inBlock = false;
@@ -49,7 +58,7 @@ export function _parseDialectic(content) {
 
   let cadence = 5;
   let model = 'haiku';
-  let budgetTokens = 8000;
+  let budgetTokens = DEFAULT_BUDGET_TOKENS;
 
   for (const rawLine of blockLines) {
     const clean = rawLine.replace(/\s*#.*$/, '').replace(/\s+$/, '');

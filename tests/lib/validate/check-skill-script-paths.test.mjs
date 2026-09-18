@@ -531,3 +531,71 @@ describe('#1248 — enumeration must see untracked files', () => {
     expect(result.ok).toBe(true);
   });
 });
+
+/**
+ * #1384 P3 — the rules corpora were the one instruction surface with no
+ * citation gate, and it is the surface where the real defect landed:
+ * `.cursor/rules/010-session-workflow.mdc` went on citing `commands/go.md` /
+ * `commands/close.md` after `3ebf0e9d` folded those files into their skills,
+ * and that directory SHIPS (npm tarball, symlinked into consumer repos).
+ *
+ * Both halves of the widening are load-bearing and both are asserted here:
+ * `.cursor/rules` in `SCAN_DIRS` alone enumerates zero files, because every
+ * file there is `.mdc`; and without the runtime-artefact carve-out the same
+ * scan would report every `.orchestrator/…` ledger the rules legitimately
+ * name. A git fixture is mandatory — the carve-out asks git, not a name list.
+ */
+describe('#1384 P3 — .cursor/rules/*.mdc citations, minus runtime artefacts', () => {
+  const roots = [];
+  const git = (cwd, args) => fixtureGitSpawn(args, cwd);
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) removeTree(root);
+  });
+
+  it('reports the dead `commands/gone.md` citation and NOT the gitignored runtime path', () => {
+    const root = makeTmpDir('skill-script-paths-mdc-');
+    roots.push(root);
+    mkdirSync(path.join(root, '.cursor/rules'), { recursive: true });
+    writeFileSync(path.join(root, '.gitignore'), '.orchestrator/\n');
+    writeFileSync(
+      path.join(root, '.cursor/rules/x.mdc'),
+      'Run `commands/gone.md` and read `.orchestrator/metrics/ledger.md` for state.\n',
+    );
+    git(root, ['init', '-q']);
+
+    const result = scanSkillScriptPaths({ pluginRoot: root });
+
+    expect(result.findings.map((f) => f.path)).toEqual(['commands/gone.md']);
+    expect(result.summary.runtimeArtifacts).toBe(1);
+    expect(result.ok).toBe(false);
+  });
+
+  /**
+   * THE BUG (security review, 2026-09-18): the carve-out's predicate was "git
+   * ignores it", not "it is a runtime artefact" — and this repo's `.gitignore`
+   * also declines to track REAL local documents that simply do not ship
+   * (`docs/specs/`, `docs/_private/`, `coverage/`, `node_modules/`). A typo in
+   * a `docs/specs/…` citation would therefore never be reported again, in the
+   * exact check whose header says it exists for "ships in the tarball, target
+   * missing". Both halves are now required: under a harness state root AND
+   * untracked.
+   */
+  it('excuses a gitignored STATE-root path but still REPORTS a gitignored docs/specs one', () => {
+    const root = makeTmpDir('skill-script-paths-prefix-');
+    roots.push(root);
+    mkdirSync(path.join(root, '.cursor/rules'), { recursive: true });
+    writeFileSync(path.join(root, '.gitignore'), '.orchestrator/\ndocs/specs/\n');
+    writeFileSync(
+      path.join(root, '.cursor/rules/x.mdc'),
+      'State lives in `.orchestrator/metrics/x.md`; the design is in `docs/specs/x.md`.\n',
+    );
+    git(root, ['init', '-q']);
+
+    const result = scanSkillScriptPaths({ pluginRoot: root });
+
+    expect(result.findings.map((f) => f.path)).toEqual(['docs/specs/x.md']);
+    expect(result.summary.runtimeArtifacts).toBe(1);
+    expect(result.ok).toBe(false);
+  });
+});

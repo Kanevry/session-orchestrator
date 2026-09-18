@@ -45,6 +45,14 @@
  *   - `surfaceTopN` (`./learnings/surface.mjs`) — the canonical active-learning
  *     filter (confidence > floor, not expired); called with a large cap to get
  *     the full active set rather than a top-N slice.
+ *   - `countReconcileBacklog` (`./reconcile/backlog.mjs`) — the SAME eligibility +
+ *     materialization partition `/reconcile` applies, imported from the LEAF module
+ *     rather than from `./reconcile/engine.mjs`. The engine is WRITE-capable (it
+ *     merges the candidate store) and drags the emitter, renderer and unicode
+ *     validator behind it: importing the count from there took this probe's static
+ *     closure from 11 modules / 151,946 B to 19 / 322,897 B (+112 %, measured
+ *     2026-09-18), inherited unasked by `maintenance-due-banner.mjs`. A banner must
+ *     not be able to reach a writer.
  *   - `filterEligible` (`./reconcile/eligibility.mjs`) — the SAME type/file_paths
  *     allow-list gate the reconcile engine itself uses (deliberately NOT
  *     confidence-gated — mirrors `runReconcile`'s own posture, see
@@ -68,7 +76,7 @@ import { join } from 'node:path';
 
 import { readLearnings } from './learnings/io.mjs';
 import { surfaceTopN } from './learnings/surface.mjs';
-import { filterEligible } from './reconcile/eligibility.mjs';
+import { countReconcileBacklog } from './reconcile/backlog.mjs';
 import { loadCandidates } from './reconcile/idempotency.mjs';
 import { readConfigFile } from './config/io.mjs';
 import { _parseReconcile } from './config/reconcile.mjs';
@@ -82,8 +90,66 @@ export const NUDGE_MIN_LEARNINGS = 20;
 /** Nudge threshold (b): new learnings accrued since the last determinable reconcile run. */
 export const NUDGE_MIN_DELTA = 15;
 
-/** Nudge threshold (c): rule-eligible learnings (type + file_paths allow-list), regardless of confidence. */
+/**
+ * Nudge threshold (c): reconcile BACKLOG — rule-eligible learnings (type + file_paths
+ * allow-list, not expired, regardless of confidence) MINUS those already materialized
+ * in the idempotency sidecar or a `.claude/rules/` provenance marker. Counting the
+ * materialized ones too made the probe un-greenable (#1380: 98 eligible, 35 already
+ * materialized, and no `/reconcile` run could ever clear it).
+ */
 export const NUDGE_MIN_ELIGIBLE = 3;
+
+/**
+ * Resolve the `reconcile` Session Config settings this module needs, in ONE read.
+ *
+ * Both consumers go through here, so the nudge can never judge on a different
+ * population than `/reconcile` does: the skill reads `reconcile.min-insight-chars`
+ * (default 24) and forwards it to the engine, and so must this probe. Before #1380
+ * follow-up the value was only read AFTER the backlog had already been counted, which
+ * left the placeholder-insight gate practically OFF for the banner.
+ *
+ * Precedence: an injected already-parsed Session Config wins per KEY (DI seam, avoids a
+ * second CLAUDE.md read); any key it does not carry falls back to parsing
+ * CLAUDE.md/AGENTS.md; an unreadable config falls back to `_parseReconcile('')`, i.e.
+ * the parser's OWN documented defaults — never a literal repeated here.
+ *
+ * Never throws.
+ *
+ * @param {string} repoRoot
+ * @param {unknown} [config] already-parsed Session Config
+ * @returns {Promise<{enabled: boolean, minInsightChars: number}>}
+ */
+async function _resolveReconcileSettings(repoRoot, config) {
+  const injected =
+    config && typeof config === 'object' && /** @type {any} */ (config).reconcile &&
+    typeof (/** @type {any} */ (config).reconcile) === 'object'
+      ? /** @type {Record<string, unknown>} */ (/** @type {any} */ (config).reconcile)
+      : null;
+
+  const hasEnabled = injected !== null && typeof injected.enabled === 'boolean';
+  const hasChars = injected !== null && Number.isFinite(injected['min-insight-chars']);
+  if (hasEnabled && hasChars) {
+    return {
+      enabled: /** @type {boolean} */ (injected.enabled),
+      minInsightChars: Number(injected['min-insight-chars']),
+    };
+  }
+
+  let parsed;
+  try {
+    parsed = _parseReconcile(await readConfigFile(repoRoot));
+  } catch {
+    // Config unreadable — take the parser's own defaults (single source of truth).
+    parsed = _parseReconcile('');
+  }
+
+  return {
+    enabled: hasEnabled ? /** @type {boolean} */ (injected.enabled) : parsed.enabled,
+    minInsightChars: hasChars
+      ? Number(injected['min-insight-chars'])
+      : parsed['min-insight-chars'],
+  };
+}
 
 /**
  * Resolve the max `created_at` across reconcile-candidate sidecar records —
@@ -110,11 +176,19 @@ function _lastRunAt(candidates) {
  *
  * @param {object} [opts]
  * @param {string} [opts.repoRoot] — project root (defaults to process.cwd()).
- * @param {Date|number} [opts.now] — injectable clock, forwarded to the active-learning filter.
+ * @param {Date|number} [opts.now] — injectable clock, forwarded to the active-learning
+ *   filter AND the eligibility expiry gate.
+ * @param {number} [opts.minInsightChars] — forwarded to the eligibility filter. When
+ *   OMITTED the value is read from Session Config (`reconcile.min-insight-chars`,
+ *   default 24) rather than left inert, so the nudge and `/reconcile` count the SAME
+ *   population — see `_resolveReconcileSettings`.
+ * @param {object} [opts.config] — optional already-parsed Session Config (DI seam).
  * @returns {Promise<{
  *   totalLearnings: number,
  *   activeLearnings: number,
  *   eligibleCount: number,
+ *   alreadyMaterialized: number,
+ *   backlogCount: number,
  *   lastRunAt: string|null,
  *   lastRunCandidateCount: number,
  *   delta: number,
@@ -131,6 +205,8 @@ export async function computeReconcileNudge(opts = {}) {
     totalLearnings: 0,
     activeLearnings: 0,
     eligibleCount: 0,
+    alreadyMaterialized: 0,
+    backlogCount: 0,
     lastRunAt: null,
     lastRunCandidateCount: 0,
     delta: 0,
@@ -166,20 +242,29 @@ export async function computeReconcileNudge(opts = {}) {
 
   if (active.length === 0) return empty;
 
-  let eligibleCount;
-  try {
-    eligibleCount = filterEligible(entries).eligible.length;
-  } catch {
-    eligibleCount = 0;
-  }
+  // Same partition a real /reconcile run applies (engine.mjs step 3/3a) — one
+  // truth, so the nudge can only fire on work /reconcile is able to clear.
+  // That includes the placeholder-insight gate: when the caller did not supply
+  // `minInsightChars`, read it from Session Config BEFORE counting, or the
+  // banner counts learnings `/reconcile` would reject.
+  const minInsightChars = Number.isFinite(opts.minInsightChars)
+    ? Number(opts.minInsightChars)
+    : (await _resolveReconcileSettings(repoRoot, opts.config)).minInsightChars;
 
+  // The candidate store is read ONCE, BEFORE the backlog count — the count needs
+  // the same records for its sidecar-dedupe half, and reading them here lets it
+  // be handed down instead of read a second time (`candidatesRead` says whether
+  // the hand-down is trustworthy; on a failed read we hand nothing down and let
+  // `countReconcileBacklog` decide for itself rather than pass a fake empty set).
   /** @type {Array<Record<string, unknown>>} */
   let candidates;
   /** @type {number|undefined} */
   let skippedCandidates;
+  let candidatesRead = false;
   try {
     const diag = loadCandidates({ repoRoot });
     candidates = Array.isArray(diag?.records) ? diag.records : [];
+    candidatesRead = Array.isArray(diag?.records);
     // Absence-preserving, mirroring `engine.mjs` `summary.skipped`: only a
     // finite count means "the store was inspected". Absent ⇒ never checked,
     // 0 ⇒ checked and clean.
@@ -189,6 +274,25 @@ export async function computeReconcileNudge(opts = {}) {
     // Store never inspected → leave `skippedCandidates` absent rather than
     // fabricating a clean 0.
   }
+
+  // ONE corpus, ONE population. `entries` (read above via `readLearnings`) is
+  // handed down instead of letting the count re-read and re-normalize the same
+  // file: the banner line names `activeLearnings` and `backlogCount` side by
+  // side, and two independent reads of one file are two populations wearing one
+  // sentence (HR-106). `repoRoot` stays required — the sidecar and the
+  // `.claude/rules/` provenance scan are resolved from it.
+  // Never throws (all-zero on failure).
+  const {
+    eligible: eligibleCount,
+    alreadyMaterialized,
+    backlog: backlogCount,
+  } = countReconcileBacklog({
+    repoRoot,
+    learnings: entries,
+    ...(candidatesRead ? { existingCandidates: candidates } : {}),
+    now: opts.now,
+    minInsightChars,
+  });
 
   const lastRunAt = _lastRunAt(candidates);
   const lastRunCandidateCount = Array.isArray(candidates) ? candidates.length : 0;
@@ -213,15 +317,18 @@ export async function computeReconcileNudge(opts = {}) {
   if (lastRunAt !== null && delta > NUDGE_MIN_DELTA) {
     reasons.push(`${delta} new learnings since the last reconcile run`);
   }
-  // (c) — enough rule-eligible learnings to be worth a batch, independent of confidence.
-  if (eligibleCount >= NUDGE_MIN_ELIGIBLE) {
-    reasons.push(`${eligibleCount} rule-eligible learnings`);
+  // (c) — enough NOT-YET-MATERIALIZED rule-eligible learnings to be worth a
+  // batch, independent of confidence. HR-106: the reason names the number judged.
+  if (backlogCount >= NUDGE_MIN_ELIGIBLE) {
+    reasons.push(`${backlogCount} rule-eligible learnings awaiting a rule`);
   }
 
   const computed = {
     totalLearnings: entries.length,
     activeLearnings: active.length,
     eligibleCount,
+    alreadyMaterialized,
+    backlogCount,
     lastRunAt,
     lastRunCandidateCount,
     delta,
@@ -234,25 +341,6 @@ export async function computeReconcileNudge(opts = {}) {
     /** @type {any} */ (computed).skippedCandidates = skippedCandidates;
   }
   return computed;
-}
-
-/**
- * Best-effort extraction of `reconcile.enabled` from an already-parsed Session
- * Config object (DI/test seam — avoids re-reading CLAUDE.md when the caller
- * already has it). Returns `null` when unresolvable from `config` alone, in
- * which case `checkReconcileNudge` falls back to reading CLAUDE.md/AGENTS.md.
- *
- * @param {unknown} config
- * @returns {boolean|null}
- */
-function _reconcileEnabledFromConfig(config) {
-  if (config && typeof config === 'object') {
-    const rc = /** @type {Record<string, unknown>} */ (config).reconcile;
-    if (rc && typeof rc === 'object' && typeof (/** @type {any} */ (rc).enabled) === 'boolean') {
-      return /** @type {any} */ (rc).enabled;
-    }
-  }
-  return null;
 }
 
 /**
@@ -274,25 +362,29 @@ export async function checkReconcileNudge(opts = {}) {
     const { repoRoot, config, now } = opts;
     if (!repoRoot || typeof repoRoot !== 'string') return null;
 
+    // ONE config read for both settings, BEFORE the backlog is counted — the
+    // `min-insight-chars` gate must reach `countReconcileBacklog`, and reading the
+    // config afterwards (as this did before) left it inert.
+    let reconcileEnabled = false;
+    let minInsightChars;
+    try {
+      ({ enabled: reconcileEnabled, minInsightChars } = await _resolveReconcileSettings(
+        repoRoot,
+        config,
+      ));
+    } catch {
+      // Unreachable in practice (_resolveReconcileSettings never throws) — keep the
+      // conservative default and let computeReconcileNudge resolve the gate itself.
+      reconcileEnabled = false;
+    }
+
     let computed;
     try {
-      computed = await computeReconcileNudge({ repoRoot, now });
+      computed = await computeReconcileNudge({ repoRoot, now, minInsightChars });
     } catch {
       return null;
     }
     if (!computed || computed.nudge !== true) return null;
-
-    let reconcileEnabled = _reconcileEnabledFromConfig(config);
-    if (reconcileEnabled === null) {
-      try {
-        const content = await readConfigFile(repoRoot);
-        reconcileEnabled = _parseReconcile(content).enabled;
-      } catch {
-        // Config unreadable — fall back to the documented config default (false)
-        // so the informational parenthetical still renders conservatively.
-        reconcileEnabled = false;
-      }
-    }
 
     // Three-state last-run label. `never` is a claim about history and must only
     // be made when the store was inspected and held nothing: a store whose lines
@@ -323,7 +415,8 @@ export async function checkReconcileNudge(opts = {}) {
     }
 
     const lines = [
-      `⚠ reconcile-nudge: ${computed.activeLearnings} active learnings, ${computed.eligibleCount} rule-eligible, ` +
+      `⚠ reconcile-nudge: ${computed.activeLearnings} active learnings, ${computed.backlogCount} rule-eligible awaiting a rule ` +
+        `(${computed.alreadyMaterialized} already materialized), ` +
         `last reconcile run: ${lastRunLabel} — run /reconcile to convert learnings into rules.`,
     ];
     if (reconcileEnabled === false) {

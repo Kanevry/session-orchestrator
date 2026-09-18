@@ -348,22 +348,74 @@ describe('planRuleExpirySweep + applyRuleExpirySweep', () => {
     // `id-beta` was ONLY in the broken line, so it is unresolved, not expired.
     expect(plan.plans[0].unresolvedPairIds).toEqual(['id-beta']);
     expect(plan.plans[0].expiredPairIds).toEqual([]);
-    expect(plan.plans[0].action).toBe('keep');
+    // Nothing expired — the only write planned is the header raise (header
+    // 2026-01-01 sits below the earliest RESOLVABLE date 2026-09-01).
+    expect(plan.plans[0].reason).toBe('header-raise');
+    expect(plan.plans[0].newExpiresAt).toBe('2026-09-01');
   });
 
-  it('reports the header-vs-earliest discrepancy as an advisory and leaves an unexpired file byte-identical (bug: recomputing the header on every run silently shortened three healthy live files\' TTL)', async () => {
+  it('reports a header that OUTLIVES its content as an advisory and leaves the file byte-identical — a header is never LOWERED (bug: recomputing in both directions on every run shortens a healthy file\'s TTL and kills an entry early)', async () => {
     const entries = [{ key: 'anti-pattern/alpha', id: 'id-alpha', heading: 'Alpha' }];
-    writeRule('fixture.md', { expiresAt: '2026-10-04', entries });
+    // Header 2026-12-15 is LATER than the single absorbed date 2026-12-01.
+    writeRule('fixture.md', { expiresAt: '2026-12-15', entries });
     writeLearnings([learning('id-alpha', 'anti-pattern/alpha', FUTURE)]);
 
     const before = readRule();
     const plan = await planRuleExpirySweep({ repoRoot, now: NOW });
     expect(plan.plans[0].action).toBe('keep');
+    expect(plan.plans[0].reason).toBeUndefined();
     expect(plan.plans[0].advisory).toBe(
-      'header expires-at 2026-10-04 != earliest resolvable absorbed date 2026-12-01',
+      'header expires-at 2026-12-15 != earliest resolvable absorbed date 2026-12-01',
     );
     applyRuleExpirySweep(plan, { repoRoot, now: NOW });
     expect(readRule()).toBe(before);
+  });
+
+  it('T13 — a header BELOW the earliest absorbed date is raised to it with nothing expired, and every other byte of the file is unchanged (bug: a too-low header drops the whole file out of rule-loader injection while its materialized markers keep /reconcile from ever re-proposing the learnings — substance goes dark with no way back)', async () => {
+    const entries = [
+      { key: 'anti-pattern/alpha', id: 'id-alpha', heading: 'Alpha holds' },
+      { key: 'proven-pattern/gamma', id: 'id-gamma', heading: 'Gamma holds' },
+    ];
+    // Header 2026-10-01; both absorbed dates are LATER, earliest 2026-10-16.
+    writeRule('fixture.md', { expiresAt: '2026-10-01', entries });
+    writeLearnings([
+      learning('id-alpha', 'anti-pattern/alpha', '2026-10-16T00:00:00.000Z'),
+      learning('id-gamma', 'proven-pattern/gamma', '2026-11-20T00:00:00.000Z'),
+    ]);
+
+    const before = readRule();
+    const plan = await planRuleExpirySweep({ repoRoot, now: NOW });
+    // The rewrite reason is visible in the dry-run plan (and thus in `--json`)
+    // BEFORE anything is written.
+    expect(plan.plans[0].action).toBe('rewrite');
+    expect(plan.plans[0].reason).toBe('header-raise');
+    expect(plan.plans[0].expiredPairIds).toEqual([]);
+    expect(plan.plans[0].newExpiresAt).toBe('2026-10-16');
+    expect(readRule()).toBe(before); // dry-run still writes nothing
+
+    const res = applyRuleExpirySweep(plan, { repoRoot, now: NOW });
+    expect(res.errors).toEqual([]);
+    expect(res.rewritten).toEqual(['fixture.md']);
+
+    const after = readRule();
+    const parsed = parseConsolidatedRule(after);
+    expect(parsed.expiresAt).toBe('2026-10-16');
+    expect(parsed.counterDate).toBe('2026-10-16');
+    expect(parsed.counterCount).toBe(2);
+
+    // Byte-identity of everything else: exactly the frontmatter line and the
+    // counter sentence differ, and the remaining lines match position for
+    // position.
+    const beforeLines = before.split('\n');
+    const afterLines = after.split('\n');
+    expect(afterLines).toHaveLength(beforeLines.length);
+    const changed = beforeLines
+      .map((l, i) => (l === afterLines[i] ? -1 : i))
+      .filter((i) => i >= 0);
+    expect(changed).toEqual([
+      parseConsolidatedRule(before).expiresAtLine,
+      parseConsolidatedRule(before).counterLine,
+    ]);
   });
 
   it('T9 — a `no-1to1-mapping` file STILL carries the header advisory (bug: computing it after the skip branch structurally excluded the 4 merged-prose files, test-hygiene.md among them, so the shipped instrument could not report the very header-outliving-content defect its docblock named)', async () => {

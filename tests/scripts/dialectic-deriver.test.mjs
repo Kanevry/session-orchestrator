@@ -55,8 +55,8 @@ describe('exported constants', () => {
     expect(ALLOWED_MODELS).toEqual(['haiku', 'sonnet', 'opus']);
   });
 
-  it('DEFAULT_BUDGET is { input: 8000, output: 4000 }', () => {
-    expect(DEFAULT_BUDGET).toEqual({ input: 8000, output: 4000 });
+  it('DEFAULT_BUDGET is { input: 32000, output: 4000 }', () => {
+    expect(DEFAULT_BUDGET).toEqual({ input: 32000, output: 4000 });
   });
 });
 

@@ -19,14 +19,14 @@ Parse `$ARGUMENTS` for trailing flags after the `dialectic` keyword:
 | `--apply` | `false` | Write diff to USER.md/AGENT.md via merger.mjs; without it = dry-run |
 | `--dry-run` | `true` | Explicit dry-run (default); mutually exclusive with --apply |
 | `--model <name>` | from Session Config `dialectic.model` (default `haiku`) | Override LLM |
-| `--budget-tokens <N>` | from Session Config `dialectic.budget-tokens` (default 8000) | Token budget |
+| `--budget-tokens <N>` | from Session Config `dialectic.budget-tokens` (default 32000) | Input-token ceiling (the pre-dispatch estimate aborts above it; not a spend) |
 
 Mutex check: `--apply` + `--dry-run` together = error "flags mutually exclusive".
 
 ### Step 6.1: Pre-checks
 - Bootstrap gate (Phase 0) — already executed
 - Persistence check (Phase 1.2) — already executed
-- Cadence check: if invoked via session-end Phase 3.6.7 auto-trigger, the trigger has already pre-checked cadence. For manual invocation, skip cadence — manual always runs.
+- Cadence check: none. `/evolve dialectic` is invoked MANUALLY (by the operator, or by the session-start maintenance loop acting on the `maintenance-due` probe's `dialectic` signal) and always runs. The session-end Phase 3.6.7 auto-trigger that used to pre-check cadence was removed in #1288; `shouldDispatchAutoDialectic` (`scripts/lib/auto-dialectic.mjs`) survives only as the side-effect-free signal that probe reads, and this phase never calls it.
 
 ### Step 6.2: Data Load
 Read all 4 input sources via `runDialecticDeriver()` from `scripts/dialectic-deriver.mjs` (see W2 I1):
@@ -60,19 +60,30 @@ const result = await runDialecticDeriver({
   dispatchAgent,
   repoRoot: process.cwd(),
   model: argv.model ?? config.dialectic?.model ?? 'haiku',
-  budget: { input: argv['budget-tokens'] ?? config.dialectic?.['budget-tokens'] ?? 8000, output: 4000 },
+  budget: { input: argv['budget-tokens'] ?? config.dialectic?.['budget-tokens'] ?? 32000, output: 4000 },
   dryRun: !argv.apply,
   allowEmptying: argv['allow-emptying'] ?? false,
 });
 ```
 
 ### Step 6.4: Diff Output & Apply Gate
-- If dry-run (default): present diff inline; write to `.orchestrator/dialectic-pending.md` via `writeDialecticPending({ repoRoot, diff })` from `scripts/lib/auto-dialectic.mjs` (path constant `DIALECTIC_PENDING_PATH`; atomic tmp+rename). `runDialecticDeriver()` does NOT write this file itself — the dry-run branch returns the diff and the caller persists it. The body parameter is named `diff`, not `body`: a non-string or empty value throws `TypeError`, as does a missing `repoRoot`. EXIT. Suggestion: "Re-run with `/evolve --dialectic --apply` to apply." <!-- path-check: example -->
+- If dry-run (default): present diff inline; write to `.orchestrator/dialectic-pending.md` via `writeDialecticPending({ repoRoot, diff })` from `scripts/lib/auto-dialectic.mjs` (path constant `DIALECTIC_PENDING_PATH`; atomic tmp+rename). `runDialecticDeriver()` does NOT write this file itself — the dry-run branch returns the diff and the caller persists it. The body parameter is named `diff`, not `body`, and it is a Markdown **string**: `result.diff` is an OBJECT `{ user?, agent? }`, so serialize it first — passing the object throws `TypeError` (as does an empty string or a missing `repoRoot`). An empty `result.diff` (no target proposed) has nothing to review: write no sidecar. EXIT. Suggestion: "Re-run with `/evolve --dialectic --apply` to apply." <!-- path-check: example -->
+
+  ```javascript
+  const FENCE = '`'.repeat(3);
+  const pendingBody = ['user', 'agent']
+    .filter((t) => typeof result.diff?.[t] === 'string')
+    .map((t) => [`${FENCE}diff`, `# target: ${t}`, result.diff[t].trimEnd(), FENCE].join('\n'))
+    .join('\n\n');
+  if (pendingBody) {
+    await writeDialecticPending({ repoRoot, diff: pendingBody, usage: result.usage, model });
+  }
+  ```
 - If `--apply`: call **`mergeDerivedBody(existingBody, result.diff[target])`** from `scripts/lib/peer-cards/merger.mjs` for each card target, then `writePeerCard(repoRoot, 'user', mergedUserCard)` and `writePeerCard(repoRoot, 'agent', mergedAgentCard)` from `scripts/lib/peer-cards/writer.mjs`. Update the `updated:` frontmatter.
 
   **`writePeerCard` shape (#1303).** `writePeerCard(repoRoot, target, card)` takes `card = { frontmatter, body }`. `frontmatter.id` (kebab-case slug, 2..128 chars) is **required and never auto-filled**; `type: 'peer-card'`, `target`, `updated` (defaults to `new Date().toISOString()`) and `created` (defaults to `updated`) are filled by the writer. ISO timestamps may carry optional milliseconds (`scripts/lib/peer-cards/schema.mjs` `ISO_DATETIME_REGEX`). A missing `id` returns `{ ok: false, errors: [...] }` and leaves the target file untouched — it does **not** throw; branch on `result.ok`.
 
-  **Why `mergeDerivedBody` and not `mergePeerCard` directly (#1310):** the deriver emits a FULL BODY STRING per target (`agents/dialectic-deriver.md` § Output format); `mergePeerCard` consumes a SECTION MAP keyed by sentinel name. `mergeDerivedBody` is the adapter between the two — it splits the proposed body at `## ` headings and maps each heading to a sentinel section. `mergePeerCard` stays available as the section-map primitive. Handling per heading class, all of it in `mergeDerivedBody`'s return value:
+  **Why `mergeDerivedBody` and not `mergePeerCard` directly (#1310):** the deriver emits, per target, the WHOLE `## ` SECTIONS it changes or adds — never the card's full body (`agents/dialectic-deriver.md` § Output format: "Omitted sections stay unchanged (nothing auto-deletes), so emit only the sections you change or newly ground"). `mergePeerCard` consumes a SECTION MAP keyed by sentinel name. `mergeDerivedBody` is the adapter between the two — it splits the proposed text at `## ` headings and maps each heading to a sentinel section, merging SECTION-WISE. Do not read this as a full-body replacement: a deriver that emitted the full body would overwrite every hand-written managed section with an LLM reproduction, and `detectEmptying` (`scripts/dialectic-deriver.mjs`) would not catch it — it refuses only a proposal with ZERO content lines. `mergePeerCard` stays available as the section-map primitive. Handling per heading class, all of it in `mergeDerivedBody`'s return value:
 
   | Heading in the proposed body | Section name | Merge effect | Surfaced as |
   |---|---|---|---|
@@ -81,10 +92,18 @@ const result = await runDialecticDeriver({
   | Existing managed section the proposal omits | — | KEPT (no auto-delete, per `mergePeerCard` semantics) | — |
   | Section name outside `[A-Za-z0-9_-]+` | — | `mergePeerCard` **throws** `invalid section name` | fix the name before merging |
   | Text before the first `## ` heading | — | NOT applied | `preamble` + a `{ type: 'unmapped-preamble' }` entry in `conflicts[]` |
+  | Falls inside an existing managed region that wraps MORE than one `## ` heading | — | NOT applied — the region stays byte-unchanged (no replace, which would delete its sibling headings' hand-written text; no append, which would duplicate the heading) | `{ type: 'multi-heading-region', region, headings, skipped }` in `conflicts[]` — `region` is the region's section name, `headings` the `## ` headings it wraps, `skipped` the proposed headings dropped. Operator action: split the region by hand into one managed region per heading, then re-run — or discard the proposal for those headings |
 
   Existing names are read back out of the card rather than re-derived because the live names are not a pure function of their headings — measured 2026-09-11 in `.orchestrator/peers/AGENT.md`: `## Guard and protocol-migration discipline` → `guard-and-protocol-migration`. Re-slugifying would APPEND a duplicate section instead of replacing one.
 
-  **Present `conflicts[]` before writing.** A non-empty `conflicts[]` (`duplicate-section`, `orphan-begin`, `unmapped-preamble`) is operator-visible content that the merge did not place — report it beside the delta line rather than writing silently.
+  **Present `conflicts[]` before writing.** A non-empty `conflicts[]` (`duplicate-section`, `orphan-begin`, `unmapped-preamble`, `multi-heading-region`) is operator-visible content that the merge did not place — report it beside the delta line rather than writing silently.
+- **Close the loop — after a successful `--apply` AND after the operator explicitly discards a reviewed proposal** (never after a dry-run, a failure, or a skip): record the run and consume the sidecar, both from `scripts/lib/auto-dialectic.mjs`. Without these two calls the maintenance-due probe keeps `dialectic` (measured against `.orchestrator/dialectic-last-run`) and `pending-sidecar` (`.orchestrator/dialectic-pending.md` younger than 14 days) due forever — nothing else writes the one or deletes the other (#1380). Both return `{ ok, error? }` and never throw; log a failure and continue. <!-- path-check: example -->
+
+  ```javascript
+  const lastRun = await writeDialecticLastRun({ repoRoot, isoTimestamp: new Date().toISOString() });
+  const consumed = await consumeDialecticPending({ repoRoot }); // ENOENT → { ok: true, consumed: false }
+  if (!lastRun.ok || !consumed.ok) console.error(`⚠ dialectic bookkeeping: ${lastRun.error ?? consumed.error}`);
+  ```
 - Report: `Dialectic-derived: M deltas to USER.md, N deltas to AGENT.md. Dry-run | Applied. Tokens: in=<X> out=<Y>.`
 
 **Telemetry (#1200, #1206) — emitted by `scripts/dialectic-deriver.mjs`, not skill prose.**
@@ -117,7 +136,7 @@ await recordDialecticRun({
 ### Step 6.5: Error Handling
 - `status: 'unknown-model'` → fail with clear error (already thrown by validateModel)
 - `status: 'budget-exceeded'` → emit `{status:'budget-exceeded', used:N, budget:M}`, do NOT truncate.
-  Measured in a consumer repo (S119, 2026-09-10): 12 learnings + 127 sessions estimated at 11 158 input tokens against the 8000 default. Raise with `--budget-tokens 16000` or `dialectic.budget-tokens` in Session Config rather than trimming inputs.
+  The budget is an input CEILING, not a spend. The former 8000 default aborted real runs — a consumer repo estimated 11 158 input tokens (S119, 2026-09-10) and later 30 262, this repo ~12 268 for card bodies + steering alone — so the default is 32000 since #1380. If a repo still exceeds it, raise `--budget-tokens` or `dialectic.budget-tokens` in Session Config rather than trimming inputs.
 - `status: 'would-empty-card'` → warn + require `--allow-emptying` flag
 - `status: 'empty-input'` → exit clean with message "dialectic: skipped (no input)"
 - subagent crash → log ⚠, exit cleanly (do NOT write to `.orchestrator/dialectic-pending.md`) <!-- path-check: example -->

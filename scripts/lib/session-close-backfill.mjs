@@ -531,15 +531,23 @@ function synthesizeRecord({ recordId, synthetic, gathered, nowMs, status = 'aban
 const BACKFILL_STUB_STATUSES = new Set(['abandoned']);
 
 /**
- * True when a sessions.jsonl record is a backfilled STUB — reconstructed
- * provenance (`_backfill_source`) AND a stub status. Both are required: a
- * hand-written `abandoned` record with no backfill provenance is somebody's
- * deliberate statement and is never superseded on our own initiative.
+ * True when a sessions.jsonl record is a backfilled stub this module may
+ * SUPERSEDE — reconstructed provenance (`_backfill_source`) AND a stub status.
+ * Both are required: a hand-written `abandoned` record with no backfill
+ * provenance is somebody's deliberate statement and is never superseded on our
+ * own initiative.
+ *
+ * Named for the decision it makes, not for the record class, because
+ * `sessions-staleness-banner.mjs` asks a DIFFERENT question about the same
+ * records — `isNonAnchorStub()` there accepts EITHER marker, since a record
+ * only needs to be doubtful to be disqualified as a time anchor, where this
+ * one must be proven reconstructed before it may be overwritten. Both are
+ * module-local on purpose; they must not be shared.
  *
  * @param {unknown} record
  * @returns {boolean}
  */
-function isBackfillStub(record) {
+function isSupersedableStub(record) {
   if (!record || typeof record !== 'object' || Array.isArray(record)) return false;
   if (typeof record._backfill_source !== 'string') return false;
   return BACKFILL_STUB_STATUSES.has(record.status);
@@ -636,7 +644,7 @@ function classifyExisting(readFileSync, sessionsPath, { recordId, sessionId, sem
   const sessionRecords = readJsonlSafe(readFileSync, sessionsPath);
   const newest = findRecordedSession(sessionRecords, { sessionId, semanticSessionId, startedAt });
   if (!newest) return { kind: 'absent' };
-  if (isBackfillStub(newest)) {
+  if (isSupersedableStub(newest)) {
     return { kind: 'stub', matchedId: newest.session_id, stubId: newest.session_id };
   }
   return { kind: 'canonical', matchedId: newest.session_id };
@@ -1117,6 +1125,18 @@ export async function backfillCompletedFromStateMd({
       });
       if (existing.kind === 'canonical') {
         return { action: 'skipped-already-recorded', sessionId: existing.matchedId };
+      }
+      // Key-occupancy guard (#1380 P6) — the counterpart of the abandoned
+      // path's occupied-key check. Identity can say `absent` (label drift
+      // veto, conflicting native join) while a canonical, authoritative record
+      // already holds `recordId`; canonical readers collapse by session_id
+      // newest-wins, so appending here would displace that record with this
+      // zero-counter one. `recordId` is already the native id whenever STATE.md
+      // carries one, so there is no alternate key to fall back to: skip.
+      if (existing.kind === 'absent'
+        && canonicalizeSessions(readJsonlSafe(readFileSync, sessionsPath))
+          .some((record) => record?.session_id === recordId && !isSupersedableStub(record))) {
+        return { action: 'skipped-already-recorded', sessionId: recordId };
       }
       const supersedes = existing.kind === 'stub' ? existing.stubId : null;
       // Preserve a matched stub's key for its append-only replacement. Without

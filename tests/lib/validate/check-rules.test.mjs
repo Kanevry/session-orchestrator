@@ -619,9 +619,9 @@ describe('check-rules — harness parity: globs: without paths: (#1108)', () => 
 
   // BUG CAUGHT: an over-broad check that demands BOTH keys. `paths:` alone is
   // the form the native documentation prescribes and the form the primary
-  // downstream consumer uses exclusively (projects-baseline: 26 rule files,
-  // all `paths:`, 0 `globs:`). Demanding `globs:` too would turn that repo red
-  // and would contradict validate-vendored-rules.mjs (~:289), which already
+  // downstream consumer (projects-baseline) relied on when #795 landed —
+  // measured count: docs/baseline.md. Demanding `globs:` too would turn such a
+  // repo red and would contradict validate-vendored-rules.mjs (~:289), which already
   // owns the globs:-is-canonical-for-vendored-rules preference at WARN level.
   it('does not fire on a paths:-only rule (the shape Claude Code documents)', () => {
     const { root, rulesDir } = makeFixture();

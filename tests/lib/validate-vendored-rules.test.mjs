@@ -129,6 +129,17 @@ describe('paths-frontmatter — scope is the rules/ fleet library', () => {
 
     expect(result.files.length).toBeGreaterThan(0);
     expect(offenders).toEqual([]);
+
+    // #1164: the same live library must also clear the two gates rules-sync
+    // applies — README.md is not a vendored rule (no provenance header), and a
+    // `See Also` name with no target under rules/** dangles in every consumer.
+    const strict = validateRulesDir({
+      dir: join(REPO_ROOT, 'rules'),
+      requireProvenance: true,
+      pluginRoot: REPO_ROOT,
+    });
+    expect(strict.errorCount).toBe(0);
+    expect(strict.sanitizer).toEqual([]);
   });
 
   it('scopes its remedy to vendored rules and exempts a repo-local .claude/rules/ file', () => {

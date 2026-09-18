@@ -118,7 +118,7 @@ Dedupe anchors — dropping a pair regenerates that learning.
 - learning-key: `anti-pattern/eine-flag-ueberspringende-regex-kann-wertaufnehmende-git-globalflags-nicht-erraten`
 - learning-id: `6b60f6b5-a63b-42dd-9f78-2808d78dfe11`  <!-- markers only (substance: fixed — `isGitWrite()` is argument-aware since C3, `wave-transcript-tail.mjs:107-129`) -->
 - learning-key: `anti-pattern/ein-agent-ohne-materialisierten-scope-1020-der-koordinator-dispatcht-der-hook-blockt-der-agent-eskaliert-der-koordinator-merkt-es-erst-per-sendmessage`
-- learning-id: `e18f28d9-d47e-43a1-99eb-3631a7147ed8`
+- learning-id: `e18f28d9-d47e-43a1-99eb-3631a7147ed8`  <!-- markers only (substance: folded into the two-required-shapes entry above, second paragraph — W4-F8 dispatched without a materialised scope; the HOOK is the catcher) -->
 - learning-key: `anti-pattern/ein-deckel-dessen-key-name-eine-teilmenge-behauptet-die-sein-zaehler-nie-filtert`
 - learning-id: `088151eb-6623-462d-a6ed-6c558e9a362b`  <!-- markers only (substance: `scripts/lib/instruction-budget-guard.mjs` DEFAULT_GENERATED_BYTE_CEILING docblock (#1297)) -->
 - learning-key: `anti-pattern/ein-config-key-den-nur-der-konsument-kennt-leser-mit-default-aber-kein-producer-emittiert-ihn`
@@ -126,7 +126,7 @@ Dedupe anchors — dropping a pair regenerates that learning.
 - learning-key: `recurring-issue/der-tailer-meldet-git-stash-version-als-psa007-git-write-der-psa-007-regex-ist-argument-blind`
 - learning-id: `der-tailer-meldet-git-stash-version-als-psa007-git-write-der-psa-007-regex-ist-argument-bl-2026-09-04`  <!-- markers only (substance: same fix as the flag-skipping regex — `isGitWrite()` argument-aware, #1215) -->
 - learning-key: `anti-pattern/die-dritte-masker-senke-hat-die-luecke-der-ersten-beiden-nicht-feldvergleich-vs-dokumentvergleich`
-- learning-id: `5949e882-0d7e-40be-afa8-aa7c1fd4832c`
+- learning-id: `5949e882-0d7e-40be-afa8-aa7c1fd4832c`  <!-- markers only (substance: folded into the Masker-Guard entry above, paragraph "Die DRITTE Senke" — document comparison vs five canonical fields) -->
 - learning-key: `anti-pattern/folding-a-banner-only-budget-axis-into-overbudget-turns-a-live-corpus-test-pin-into-a-ci-trip-wire-the-writer-cannot-see`
-- learning-id: `6f0caca5-689d-494d-83a1-020b0ca2b3e8`
+- learning-id: `6f0caca5-689d-494d-83a1-020b0ca2b3e8`  <!-- markers only (substance: folded into the Config-Key entry above, paragraph "Dieselbe Deckel-Linie" — folding a banner-only axis into overBudget trips a live-corpus test pin) -->
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695), consolidated by hand 2026-09-06

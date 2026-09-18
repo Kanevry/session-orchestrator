@@ -443,6 +443,28 @@ it('validates every historical entry', () => {
   });
 });
 
+describe('maskSource — the regex/comment lexer', () => {
+  // The bug: a `/` inside a CHARACTER CLASS. `/[/*]/` was read as a division
+  // followed by a BLOCK COMMENT opener, so everything up to the next `*/`
+  // anywhere in the file was blanked — here the third line's `*/` closes it and
+  // two lines of real code vanish. Nothing covered the regex branch before:
+  // disabling it left all 26 tests green.
+  it('keeps a regex whose character class contains `/` from opening a block comment', () => {
+    const src = 'const RE = /[/*]/;\nconst s = "x*/y";\nconst t = 1;\n';
+    expect(maskSource(src, { keepLiterals: true })).toBe(src);
+  });
+
+  // The named ceiling of the one-token lookback made mechanical: after a `)` a
+  // `/` is still read as division, so `/[/*]/` there opens a `/*` that never
+  // closes. Blanking such an unterminated opener to EOF is how a validator goes
+  // SILENT — `check-entry-guard` returned [] for a file whose guard sat below
+  // one. An unterminated `/*` is therefore not a comment at all.
+  it('does not blank to EOF on an unterminated `/*` left by a misread division', () => {
+    const src = 'const ok = (x) => x;\nif (ok(1)) /[/*]/.test(s);\nconst KEEP = "kept";\n';
+    expect(maskSource(src, { keepLiterals: true })).toBe(src);
+  });
+});
+
 describe('false-positive regression over the live corpus', () => {
   it('flags almost none of the R3 candidate corpus (a loosening to R3 would flag all of it)', () => {
     // R3 — "the test contains a bare untracked path literal" — was measured at

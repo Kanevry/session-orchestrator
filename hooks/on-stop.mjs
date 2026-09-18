@@ -32,17 +32,14 @@
 import path from 'node:path';
 import {
   promises as fs,
-  closeSync,
   existsSync,
-  fstatSync,
-  openSync,
   readFileSync,
-  readSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
+import { readTailWindow } from '../scripts/lib/tail-window.mjs';
 import { AGENT_ID_RE, resolveSubagentSidecar } from './_lib/subagent-paths.mjs';
 // #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
 if (!shouldRunHook('on-stop')) process.exit(0);
@@ -743,17 +740,11 @@ function firstNonEmptyString(input, keys) {
  * @returns {string|null}
  */
 function readStatusFromTranscriptTail(transcriptPath) {
-  let fd = null;
   try {
-    fd = openSync(transcriptPath, 'r');
-    const size = fstatSync(fd).size;
-    const length = Math.min(size, STATUS_TAIL_BYTES);
-    const start = size - length;
-    const buf = Buffer.alloc(length);
-    const read = readSync(fd, buf, 0, length, start);
-    let lines = buf.subarray(0, read).toString('utf8').split('\n');
+    const window = readTailWindow(transcriptPath, STATUS_TAIL_BYTES);
+    let lines = window.text.split('\n');
     // Drop the leading partial line when the window did not start at byte 0.
-    if (start > 0) lines = lines.slice(1);
+    if (window.cut) lines = lines.slice(1);
 
     for (let i = lines.length - 1; i >= 0; i -= 1) {
       const line = lines[i].trim();
@@ -774,10 +765,6 @@ function readStatusFromTranscriptTail(transcriptPath) {
     return null;
   } catch {
     return null;
-  } finally {
-    if (fd !== null) {
-      try { closeSync(fd); } catch { /* best-effort */ }
-    }
   }
 }
 

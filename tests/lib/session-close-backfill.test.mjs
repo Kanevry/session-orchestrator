@@ -1022,6 +1022,32 @@ describe('backfillCompletedFromStateMd — #429', () => {
     expect(readSessions()).toHaveLength(1);
   });
 
+  // #1380 P6 — the bug: identity said `absent` (label path, started_at drift
+  // > 6h vetoes the match) while a canonical, complete record already held the
+  // very key the backfill writes under. Appending there displaced the full
+  // original under newest-wins with a zero-counter record, and every later run
+  // reported `skipped-already-recorded` without ever repairing it.
+  it('never appends under a key a canonical non-stub record already occupies (legacy key, started_at drift)', async () => {
+    writeStateMd({ ...COMPLETED_FRONTMATTER, started_at: '2026-05-27T18:00:00.000Z' });
+    seedSessions([{
+      session_id: 'main-2026-05-27-session-1',
+      session_type: 'deep',
+      started_at: '2026-05-27T09:00:00.000Z',
+      completed_at: '2026-05-27T12:00:00.000Z',
+      total_waves: 3,
+      waves: [{ wave: 1, role: 'coordinator' }],
+      agent_summary: { complete: 3, partial: 0, failed: 0, spiral: 0 },
+      total_agents: 3,
+      total_files_changed: 5,
+      status: 'completed',
+    }]);
+
+    const res = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+
+    expect(res).toEqual({ action: 'skipped-already-recorded', sessionId: 'main-2026-05-27-session-1' });
+    expect(readSessions()).toHaveLength(1);
+  });
+
   it('preserves the latest canonical completion when an older same-key stub has a stronger native join', async () => {
     writeStateMd({ ...COMPLETED_FRONTMATTER, 'session-id': UUID });
     const completion = {

@@ -113,6 +113,7 @@ import path from 'node:path';
 import { appendSubagent } from '../scripts/lib/subagents-schema.mjs';
 import { getProjectDir } from '../scripts/lib/platform.mjs';
 import { resolveSubagentSidecar } from './_lib/subagent-paths.mjs';
+import { readTailWindow } from '../scripts/lib/tail-window.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -593,25 +594,18 @@ function resolveSubagentTranscriptPath(parentTranscriptPath, agentId) {
  * @returns {number|null} epoch-ms of the matching start, or null
  */
 function findStartTimestampMs(filePath, agentId) {
-  let fd;
   try {
     if (typeof agentId !== 'string' || !agentId.trim()) return null;
     if (!fs.existsSync(filePath)) return null;
 
-    const { size } = fs.statSync(filePath);
-    if (size === 0) return null;
+    const window = readTailWindow(filePath, START_JOIN_TAIL_BYTES);
+    if (window.size === 0) return null;
 
-    const readLen = Math.min(size, START_JOIN_TAIL_BYTES);
-    const from = size - readLen;
-    const buf = Buffer.allocUnsafe(readLen);
-    fd = fs.openSync(filePath, 'r');
-    fs.readSync(fd, buf, 0, readLen, from);
-
-    const lines = buf.toString('utf8').split('\n');
+    const lines = window.text.split('\n');
     // When the window does not cover the whole file, the first element is a
     // record sliced mid-line (possibly mid-UTF-8-sequence). Drop it rather than
     // feed a corrupt fragment to JSON.parse.
-    if (from > 0) lines.shift();
+    if (window.cut) lines.shift();
 
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i].trim();
@@ -631,10 +625,6 @@ function findStartTimestampMs(filePath, agentId) {
     return null;
   } catch {
     return null;
-  } finally {
-    if (fd !== undefined) {
-      try { fs.closeSync(fd); } catch { /* ignore */ }
-    }
   }
 }
 

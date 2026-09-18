@@ -41,7 +41,7 @@ SEC identifiers are sequential; gaps are intentional:
 - Rotate secrets on any suspected exposure. Immediately.
 
 ### Secrets Inventory (SEC-005)
-Past ~10 managed secrets, `.env.example` documents shape, not lifecycle. Commit a canonical inventory at `.claude/docs/SECRETS-INVENTORY.md`, one row per variable: **Variable | Purpose | Status | Expiry | Backup / Rotation**. Status is a closed enum: `OK`, `EINGESCHRÄNKT` (degraded scope), `KAPUTT` (broken/revoked), `INAKTIV` (feature disabled, kept for history). Template: `templates/shared/.claude/docs/SECRETS-INVENTORY.template.md`. Harvested from clank (~40 entries), where drift between "what's in .env" and "what's actually in use" became unmanageable without it. Sweep quarterly; open a `priority:high` issue for any secret expiring in < 30 days. Rotation schedule per secret type: the baseline `infrastructure` rules (not vendored into this plugin).
+Past ~10 managed secrets, `.env.example` documents shape, not lifecycle. Commit a canonical inventory at `.claude/docs/SECRETS-INVENTORY.md`, one row per variable: **Variable | Purpose | Status | Expiry | Backup / Rotation**. Status is a closed enum: `OK`, `EINGESCHRÄNKT` (degraded scope), `KAPUTT` (broken/revoked), `INAKTIV` (feature disabled, kept for history). Template: `templates/shared/.claude/docs/SECRETS-INVENTORY.template.md`. Harvested from clank (~40 entries), where drift between "what's in .env" and "what's actually in use" became unmanageable without it. Sweep quarterly; open a `priority:high` issue for any secret expiring in < 30 days. Rotation schedule per secret type: the baseline `infrastructure` rules (not vendored into this plugin). <!-- path-check: example -->
 
 ## Error Exposure (SEC-009)
 - Never return `error.message` directly to the client.
@@ -169,7 +169,7 @@ Cross-references: API `scripts/lib/slopcheck.mjs` · discovery probe `supply-cha
 - JWT: RS256 or ES256 for signing. Never HS256 with weak secrets. Verify `alg` header to prevent algorithm confusion.
 
 ## Vulnerability Disclosure
-- Every repo SHOULD include a `SECURITY.md` with responsible disclosure process, response timelines and scope definition. Template: `templates/shared/SECURITY.md` — customize contact email and scope per project.
+- Every repo SHOULD include a `SECURITY.md` with responsible disclosure process, response timelines and scope definition. Template: `templates/shared/SECURITY.md` — customize contact email and scope per project. <!-- path-check: example -->
 
 ## See Also
 development.md · testing.md · mvp-scope.md · cli-design.md · parallel-sessions.md

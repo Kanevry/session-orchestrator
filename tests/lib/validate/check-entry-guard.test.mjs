@@ -108,6 +108,38 @@ describe('findFragileGuards', () => {
       ),
     ).toEqual([]);
   });
+
+  // #1383: a regex literal the lexer fails to recognise desyncs into a `/*` that
+  // blanks the guard below it — a fail-open miss.
+  //
+  // The fixture is the CHARACTER-CLASS form (`/[/*]/`), not the earlier
+  // quote-in-regex one: measured 2026-09-18, that earlier fixture was rescued by
+  // the string branch's EOL bail and stayed green with the regex branch disabled
+  // (`if (false)`) — it proved nothing about the branch it was written for. This
+  // form has no such rescue; the trailing block comment supplies the `*/` that
+  // closes the misread opener and swallows the guard.
+  it('still flags a guard below a regex whose character class contains `/`', () => {
+    const src =
+      'const RE = /[/*]/;\n' +
+      'if (process.argv[1] === import.meta.url) main();\n' +
+      '/* trailing note */\n';
+    const findings = findFragileGuards(src);
+    expect(findings.map((f) => f.line)).toEqual([2]);
+  });
+
+  // The same desync, reached through a KEYWORD instead of a character class:
+  // `return /\/*$/` — the lexer's one-char lookback saw `n` (a word character)
+  // and read the `/` as a division, so the regex body's `/*` opened a block
+  // comment that ran to the next `*/` and blanked the guard. Measured
+  // 2026-09-18 on the pre-fix lexer: `findings: []`, the whole file silent.
+  it('still flags a guard below a regex that follows a keyword', () => {
+    const src =
+      'function norm(p) { return /\\/*$/.test(p); }\n' +
+      "if (process.argv[1].endsWith('cli.mjs')) { main(); }\n" +
+      '/* trailing note */\n';
+    const findings = findFragileGuards(src);
+    expect(findings.map((f) => f.line)).toEqual([2]);
+  });
 });
 
 describe('runCheckEntryGuard', () => {
